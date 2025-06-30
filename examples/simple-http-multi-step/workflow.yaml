@@ -1,0 +1,13 @@
+name: simple
+steps:
+- id: web
+  task:
+    name: http
+    inputs:
+      method: GET
+      url: https://microsoft.com
+- id: output
+  task:
+    name: echo
+    inputs:
+      message: ${web.status_code}

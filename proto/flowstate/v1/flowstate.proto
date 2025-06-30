@@ -1,0 +1,354 @@
+syntax = "proto3";
+
+package flowstate.v1;
+
+import "buf/validate/validate.proto";
+import "google/api/expr/v1alpha1/syntax.proto";
+import "google/api/expr/v1alpha1/value.proto";
+import "google/api/field_behavior.proto";
+
+option go_package = "flowstatev1";
+
+// Workflows in Flowstate is a collection of steps that can be executed in a
+// specific order. Each step within a workflow can have inputs and outputs,
+// and can be a task that performs some action. The workflow can be run and the
+// outputs of each step are collected in a structured way that allows for subsequent
+// steps to access the outputs of previous steps.
+message Workflow {
+  // StepOutputs is a map of step IDs to their outputs. Each step's outputs are
+  // represented as a map of named values, allowing for structured outputs that
+  // can be referenced by subsequent steps in the workflow.
+  //
+  // This is used to collect the outputs of each step in the workflow, which can
+  // then be used as inputs to other steps or returned as the final result of the
+  // workflow run.
+  message StepOutputs {
+    map<string, Node.Outputs> step_values = 1 [
+      (buf.validate.field).required = true,
+      (google.api.field_behavior) = REQUIRED,
+      (buf.validate.field).map = {
+        keys: {required: true}
+        values: {required: true}
+      }
+    ];
+  }
+
+  // Workflow is identified by a unique name.
+  string name = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+      pattern: "^[A-Za-z0-9-_]+$" // Alphanumeric, dashes, and underscores.
+    }
+  ];
+
+  // Workflows can have an optional description that provides additional context or
+  // information about the workflow itself that may be useful for users or developers.
+  optional string description = 2 [(buf.validate.field).string = {max_len: 256}];
+
+  // Steps are the individual tasks or operations that make up the workflow.
+  // Each step is represented by a Node, which can be a task or another type of
+  // operation. The steps are executed in the order they are defined in the workflow.
+  // Each step can have its own inputs and outputs, allowing for complex workflows
+  // that can perform a variety of operations.
+  repeated Node steps = 3 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).repeated = {
+      min_items: 1
+      max_items: 100
+      items: {required: true}
+    }
+  ];
+
+  // Inputs are key-value pairs that can be used to provide initial data to the workflow.
+  // These inputs can be used by the steps in the workflow to perform their tasks.
+  map<string, Value> inputs = 4 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).map = {
+      keys: {required: true}
+      values: {required: true}
+    }
+  ];
+
+  // Labels are key-value pairs that can be used to organize and categorize workflows.
+  map<string, string> labels = 5 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).map = {
+      keys: {required: true}
+      values: {required: true}
+    }
+  ];
+}
+
+// Node represents a step in the workflow. Each node can be a task or another type of operation.
+// Nodes can have outputs that are structured as named values, allowing for complex workflows
+// where the outputs of one node can be used as inputs to another node.
+message Node {
+  // Outputs are the results produced by the node. Each output is a named value that can be
+  // referenced by subsequent nodes in the workflow. This allows for structured outputs that
+  // can be used to pass data between nodes.
+  message Outputs {
+    map<string, Value> named_values = 1 [
+      (buf.validate.field).required = true,
+      (google.api.field_behavior) = REQUIRED,
+      (buf.validate.field).map = {
+        keys: {required: true}
+        values: {required: true}
+      }
+    ];
+  }
+
+  // Each node has a unique identifier within the workflow. This ID is used to reference the
+  // node in the workflow's step outputs and can be used to access the outputs of the
+  // node after the workflow has been executed.
+  string id = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+      pattern: "^[A-Za-z0-9-_]+$" // Alphanumeric, dashes, and underscores.
+    }
+  ];
+
+  // A node must be a specific kind of operation.
+  oneof kind {
+    option (buf.validate.oneof).required = true;
+    Task task = 2;
+  }
+}
+
+// Value represents a value that can be used in expressions or as inputs/outputs in tasks.
+// It can be a primitive type (like string, int, float, or bool), a structured type
+// (like a struct or list), an expression (ParsedExpr), or an error. The Value type is used
+// to encapsulate different kinds of data that can be used within the workflow.
+message Value {
+  enum Type {
+    TYPE_UNSPECIFIED = 0;
+    TYPE_STRING = 1;
+    TYPE_INT = 2;
+    TYPE_FLOAT = 3;
+    TYPE_BOOL = 4;
+    TYPE_STRUCT = 5;
+    TYPE_LIST = 6;
+    TYPE_EXPR = 7;
+    TYPE_ERROR = 8;
+  }
+
+  message Error {
+    enum Code {
+      CODE_UNSPECIFIED = 0;
+      CODE_INVALID_ARGUMENT = 1;
+      CODE_NOT_FOUND = 2;
+      CODE_PERMISSION_DENIED = 3;
+      CODE_UNAUTHENTICATED = 4;
+      CODE_INTERNAL = 5;
+      CODE_UNAVAILABLE = 6;
+    }
+    string message = 1 [
+      (buf.validate.field).required = true,
+      (google.api.field_behavior) = REQUIRED
+    ];
+    Code code = 2 [
+      (buf.validate.field).required = true,
+      (google.api.field_behavior) = REQUIRED,
+      (buf.validate.field).enum = {
+        defined_only: true
+        not_in: [0]
+      }
+    ];
+  }
+
+  oneof kind {
+    option (buf.validate.oneof).required = true;
+    google.api.expr.v1alpha1.ParsedExpr expr = 1;
+    google.api.expr.v1alpha1.Value literal = 2;
+    Error error = 3;
+    // TODO(kent): we're using "value" to represent a "literal" value, which isn't quite the same.
+    // So, this is probably worth revisiting. The "value" allows for more complex types, like a
+    // struct or list, while the "literal" is more of a primitive value like a string, int, or bool.
+    //
+    // https://github.com/googleapis/googleapis/blob/34b323e7ee72888dd9337cce8b24233ae078f23b/google/api/expr/v1beta1/expr.proto#L230-L241C9
+    // https://github.com/googleapis/googleapis/blob/34b323e7ee72888dd9337cce8b24233ae078f23b/google/api/expr/v1beta1/value.proto#L29-L72
+    //
+    // google.api.expr.v1alpha1.Literal literal = 2;
+  }
+}
+
+// Task represents a specific operation that can be performed within a workflow as a node step.
+message Task {
+  // Echo is a simple task that echoes back the input message.
+  message Echo {
+    message Inputs {
+      string message = 1 [
+        (buf.validate.field).required = true,
+        (google.api.field_behavior) = REQUIRED
+      ];
+    }
+    message Outputs {
+      string result = 1 [(buf.validate.field).required = true];
+    }
+  }
+
+  // Printf is a task that formats a string using a format string and a list of arguments.
+  message Printf {
+    message Inputs {
+      string format = 1 [
+        (buf.validate.field).required = true,
+        (google.api.field_behavior) = REQUIRED
+      ];
+      repeated Value args = 2 [
+        (buf.validate.field).required = true,
+        (google.api.field_behavior) = REQUIRED,
+        (buf.validate.field).repeated = {
+          min_items: 1
+          max_items: 100
+          items: {required: true}
+        }
+      ];
+    }
+    message Outputs {
+      string result = 1 [(buf.validate.field).required = true];
+    }
+  }
+
+  // HTTP is a task that performs an HTTP request to a specified URL with optional method, headers, and body.
+  // It returns the HTTP response status code, headers, and body as outputs.
+  //
+  // This is obviously useful, but also dangerous since it's just SSRF (Server-Side Request Forgery) in disguise.
+  message HTTP {
+    message Inputs {
+      string url = 1 [
+        (buf.validate.field).required = true,
+        (buf.validate.field).string.uri = true,
+        (google.api.field_behavior) = REQUIRED
+      ];
+      optional string method = 2 [(buf.validate.field).string = {
+        min_len: 3
+        max_len: 6
+        pattern: '^(?i)(GET|POST|PUT|PATCH|DELETE)$'
+      }];
+      map<string, string> headers = 3;
+      optional string body = 4;
+    }
+    message Outputs {
+      int32 status_code = 1 [(buf.validate.field).int32 = {
+        gte: 100
+        lte: 599
+      }];
+      map<string, string> headers = 2;
+      string body = 3;
+    }
+  }
+
+  // Tasks have specific names that identify the type of task being performed,
+  // such as "echo", "printf", or "http". The name is used to determine which
+  // task implementation to execute when the workflow is run.
+  string name = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+      pattern: "^[A-Za-z0-9-_]+$"
+    }
+  ];
+
+  // Tasks can have an optional description that provides additional context or
+  // information about the task itself. This can be useful for users or developers
+  // to understand what the task does and how it should be used within the workflow.
+  optional string description = 2 [(buf.validate.field).string = {
+    min_len: 0
+    max_len: 256
+  }];
+
+  // Inputs are the parameters that the task requires to perform its operation.
+  map<string, Value> inputs = 3 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).map = {
+      keys: {required: true}
+      values: {required: true}
+    }
+  ];
+}
+
+// RunRequest is the request message for running a workflow.
+message RunRequest {
+  Workflow workflow = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED
+  ];
+}
+
+// RunResponse is the response message for a workflow run.
+message RunResponse {
+  message Error {
+    string message = 1 [(buf.validate.field).required = true];
+  }
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    STATUS_RUNNING = 1;
+    STATUS_COMPLETED = 2;
+    STATUS_FAILED = 3;
+    STATUS_CANCELED = 4;
+    STATUS_TERMINATED = 5;
+    STATUS_TIMED_OUT = 6;
+  }
+  string workflow_id = 1 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).string.uuid = true
+  ];
+  string run_id = 2 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).string.uuid = true
+  ];
+  Status status = 3 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).enum = {
+      defined_only: true
+      not_in: [0]
+    }
+  ];
+  oneof kind {
+    option (buf.validate.oneof).required = true;
+    Error error = 4;
+    Workflow.StepOutputs outputs = 5;
+  }
+}
+
+// GetRequest is the request message for getting a workflow run.
+message GetRequest {
+  string workflow_id = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED
+  ];
+  optional string run_id = 2 [(buf.validate.field).string.uuid = true];
+}
+
+// GetResponse is the response message for getting a workflow run.
+message GetResponse {
+  string workflow_id = 1;
+  string run_id = 2;
+  RunResponse.Status status = 3 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).enum = {
+      defined_only: true
+      not_in: [0]
+    }
+  ];
+  oneof kind {
+    option (buf.validate.oneof).required = true;
+    RunResponse.Error error = 4;
+    Workflow.StepOutputs outputs = 5;
+  }
+}
+
+// WorkflowService is the service that provides operations for managing and running workflows.
+service WorkflowService {
+  rpc Run(RunRequest) returns (RunResponse) {}
+  rpc Get(GetRequest) returns (GetResponse) {}
+}

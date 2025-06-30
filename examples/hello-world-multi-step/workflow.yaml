@@ -1,0 +1,12 @@
+name: simple-multi-step
+steps:
+- id: a
+  task:
+    name: echo
+    inputs:
+      message: hello world
+- id: b
+  task:
+    name: echo
+    inputs:
+      message: ${a.result}
