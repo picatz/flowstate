@@ -14,6 +14,7 @@ import (
 	"connectrpc.com/connect"
 	"connectrpc.com/otelconnect"
 	"connectrpc.com/validate"
+	"github.com/charmbracelet/fang"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
@@ -280,7 +281,22 @@ func main() {
 	rootCmd := &cobra.Command{
 		Use:     "flow",
 		Short:   "Flowstate workflow engine",
+		Long:    "Flowstate is a workflow engine that uses Temporal for durable execution and CEL expressions for dynamic workflows.",
 		Version: version,
+		Example: `# Run a workflow locally (without Temporal):
+flow run local examples/hello-world/workflow.yaml
+
+# Run a workflow using Temporal via the server:
+flow run examples/hello-world/workflow.yaml
+
+# Start a Temporal worker:
+flow worker
+
+# Start the Flowstate API server:
+flow server
+
+# Start the LSP server for Flowfile editing:
+flow lsp`,
 	}
 
 	rootCmd.PersistentFlags().BoolVarP(&verboseLogging, "verbose", "v", false, "enable verbose logging")
@@ -289,8 +305,17 @@ func main() {
 	runCmd := &cobra.Command{
 		Use:   "run [workflow-file]",
 		Short: "Run a workflow",
+		Long:  "Execute a workflow using the Flowstate service. The workflow file should be a YAML file containing step definitions.",
 		Args:  cobra.MinimumNArgs(1),
 		RunE:  runWorkflow,
+		Example: `# Run a workflow using the Flowstate server:
+flow run examples/hello-world/workflow.yaml
+
+# Run with a specific workflow ID:
+flow run examples/hello-world/workflow.yaml --workflow-id my-workflow
+
+# Run with a custom timeout:
+flow run examples/hello-world/workflow.yaml --timeout 5m`,
 	}
 
 	runCmd.Flags().StringP("workflow-id", "w", "", "Workflow ID (auto-generated if not specified)")
@@ -300,6 +325,7 @@ func main() {
 	runLocalCmd := &cobra.Command{
 		Use:   "local [workflow-file]",
 		Short: "Run a workflow locally without Temporal",
+		Long:  "Execute a workflow locally without using Temporal or the Flowstate service. This is useful for testing and development.",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			workflowFilePath := args[0]
@@ -324,13 +350,27 @@ func main() {
 			cmd.OutOrStdout().Write([]byte("\n"))
 			return nil
 		},
+		Example: `# Run a workflow locally:
+flow run local examples/hello-world/workflow.yaml
+
+# Run a multi-step workflow:
+flow run local examples/hello-world-multi-step/workflow.yaml`,
 	}
 
 	// Worker command, which starts a Temporal worker to process workflows and activities.
 	workerCmd := &cobra.Command{
 		Use:   "worker",
 		Short: "Start a worker",
+		Long:  "Start a Temporal worker to process workflows and activities. The worker connects to the Temporal server and processes tasks from the specified task queue.",
 		RunE:  runWorker,
+		Example: `# Start a worker with default settings:
+flow worker
+
+# Start a worker with custom Temporal server:
+flow worker --address localhost:7233
+
+# Start a worker with custom namespace:
+flow worker --namespace production`,
 	}
 
 	workerCmd.Flags().StringVar(&temporalAddress, "address", temporalAddress, "service address for Temporal server")
@@ -341,15 +381,46 @@ func main() {
 	serverCmd := &cobra.Command{
 		Use:   "server",
 		Short: "Start a server",
+		Long:  "Start a Flowstate API server to handle workflow requests. The server provides HTTP/gRPC endpoints for managing workflows and integrates with Temporal for execution.",
 		RunE:  runServer,
+		Example: `# Start the server with default settings:
+flow server
+
+# Start the server with verbose logging:
+flow server --verbose`,
 	}
 
 	// LSP command, which starts a Language Server Protocol (LSP) server for Flowfile files.
 	lspCmd := &cobra.Command{
 		Use:   "lsp",
 		Short: "Start a Flowfile Language Server Protocol (LSP) server",
+		Long:  "Start an LSP server for Flowfile editing support in text editors and IDEs. This provides syntax highlighting, completion, and validation for Flowfile YAML files.",
 		RunE:  runLSP,
+		Example: `# Start the LSP server:
+flow lsp`,
 	}
+
+	// Add command groups for better organization
+	rootCmd.AddGroup(&cobra.Group{
+		ID:    "workflow",
+		Title: "Workflow Commands",
+	})
+
+	rootCmd.AddGroup(&cobra.Group{
+		ID:    "infrastructure",
+		Title: "Infrastructure Commands",
+	})
+
+	rootCmd.AddGroup(&cobra.Group{
+		ID:    "development",
+		Title: "Development Commands",
+	})
+
+	// Set command groups
+	runCmd.GroupID = "workflow"
+	workerCmd.GroupID = "infrastructure"
+	serverCmd.GroupID = "infrastructure"
+	lspCmd.GroupID = "development"
 
 	// Add commands to root.
 	rootCmd.AddCommand(runCmd)
@@ -362,9 +433,8 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
 	defer cancel()
 
-	// Execute the CLI command with the context that handles OS signals.
-	if err := rootCmd.ExecuteContext(ctx); err != nil {
-		fmt.Println(err)
+	// Execute the CLI command with Fang for enhanced styling and features.
+	if err := fang.Execute(ctx, rootCmd, fang.WithNotifySignal(os.Interrupt, os.Kill)); err != nil {
 		os.Exit(1)
 	}
 }
