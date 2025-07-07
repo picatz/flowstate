@@ -15,6 +15,7 @@ import (
 	"connectrpc.com/connect"
 	"connectrpc.com/otelconnect"
 	"connectrpc.com/validate"
+	"github.com/google/go-cmp/cmp"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
@@ -27,6 +28,8 @@ import (
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/worker"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/testing/protocmp"
 )
 
 type testingLogger struct {
@@ -204,7 +207,9 @@ func TestFlowstateServer(t *testing.T) {
 	time.Sleep(1 * time.Second)
 
 	expResp := &v1.GetResponse{
-		Status: v1.RunResponse_STATUS_COMPLETED,
+		WorkflowId: runResp.Msg.GetWorkflowId(),
+		RunId:      runResp.Msg.GetRunId(),
+		Status:     v1.RunResponse_STATUS_COMPLETED,
 		Kind: &v1.GetResponse_Outputs{
 			Outputs: &v1.Workflow_StepOutputs{
 				StepValues: map[string]*v1.Node_Outputs{
@@ -225,12 +230,17 @@ func TestFlowstateServer(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NotNil(t, getResp)
-	
-	// Check that the response has the expected status and outputs
-	require.Equal(t, expResp.Status, getResp.Msg.Status)
-	require.Equal(t, expResp.Kind.(*v1.GetResponse_Outputs).Outputs.StepValues, getResp.Msg.Kind.(*v1.GetResponse_Outputs).Outputs.StepValues)
-	
-	// Also check that the workflow_id and run_id are present
-	require.NotEmpty(t, getResp.Msg.WorkflowId)
-	require.NotEmpty(t, getResp.Msg.RunId)
+	require.True(
+		t,
+		proto.Equal(
+			getResp.Msg,
+			expResp,
+		),
+		"Expected and actual responses differ:\n%s",
+		cmp.Diff(
+			getResp.Msg,
+			expResp,
+			protocmp.Transform(),
+		),
+	)
 }
