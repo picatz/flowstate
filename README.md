@@ -132,6 +132,7 @@ Each step in a `Flowfile` has named inputs and produces named outputs, which can
 | `echo`    | `message` (`string`) | `result` (`string`) |
 | `printf`  | `format` (`string`), `args` (`list[string]`) | `result` (`string`) |
 | `http`    | `method` (`string`), `url` (`string`), `headers` (`map[string]string]`), `body` (`string`) | `status_code` (`int`), `body` (`string`), `headers` (`map[string]string]`) |
+| `cel`     | `expr` (`string`), `vars` (`map[string]any`), `libs` (`list[string]`, e.g. `math`, `strings`, `regex`) | `result` (dynamic) |
 
 Tasks can be chained together as tasks. For example, the following `Flowfile` makes an HTTP `GET` request to `https://microsoft.com`, and then echoes the status code of the response:
 
@@ -150,8 +151,9 @@ steps:
         message: ${string(web.status_code)}
 ```
 
-> [!TIP] 
+> [!TIP]
 > Use `${...}` for expressions, like referencing previous step outputs referenced by their `id` and output name.
+> The `cel` task evaluates the expression string provided in its `expr` input at runtime. Variables for the expression are provided under the `vars` input. Use the optional `libs` input to enable CEL extension libraries such as `math`, `strings`, `lists`, `sets`, `encoders`, `protos`, `bindings`, `comprehensions`, or `regex`.
 
 ## Getting Started
 

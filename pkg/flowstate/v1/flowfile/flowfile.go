@@ -8,7 +8,6 @@ import (
 	"github.com/google/cel-go/cel"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-	exprpb "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -53,6 +52,20 @@ func (f *flowfile) toProto() (*v1.Workflow, error) {
 			Inputs: map[string]*v1.Value{},
 		}
 		for k, v := range s.Task.Inputs {
+			if k == "vars" {
+				varsMap, ok := v.(map[string]any)
+				if !ok {
+					return nil, fmt.Errorf("step %s vars must be a map", s.ID)
+				}
+				for vk, vv := range varsMap {
+					val, err := toProtoValue(vv)
+					if err != nil {
+						return nil, fmt.Errorf("step %s var %s: %w", s.ID, vk, err)
+					}
+					task.Inputs[vk] = val
+				}
+				continue
+			}
 			val, err := toProtoValue(v)
 			if err != nil {
 				return nil, fmt.Errorf("step %s input %s: %w", s.ID, k, err)
@@ -82,41 +95,13 @@ func toProtoValue(v any) (*v1.Value, error) {
 			if valueExpr.GetError() != nil {
 				return nil, fmt.Errorf("invalid expression %q: %w", m[1], valueExpr.Error())
 			}
-
 			return valueExpr, nil
 		}
 		// Literal string
-		return &v1.Value{
-			Kind: &v1.Value_Literal{
-				Literal: &exprpb.Value{
-					Kind: &exprpb.Value_StringValue{StringValue: val},
-				},
-			},
-		}, nil
-	case int, int64:
-		return &v1.Value{
-			Kind: &v1.Value_Literal{
-				Literal: &exprpb.Value{
-					Kind: &exprpb.Value_Int64Value{Int64Value: toInt64(val)},
-				},
-			},
-		}, nil
-	case float64:
-		return &v1.Value{
-			Kind: &v1.Value_Literal{
-				Literal: &exprpb.Value{
-					Kind: &exprpb.Value_DoubleValue{DoubleValue: val},
-				},
-			},
-		}, nil
-	case bool:
-		return &v1.Value{
-			Kind: &v1.Value_Literal{
-				Literal: &exprpb.Value{
-					Kind: &exprpb.Value_BoolValue{BoolValue: val},
-				},
-			},
-		}, nil
+		return v1.NewValue(val), nil
+	case int, int64, float64, bool, map[string]any, []any:
+		// Other supported literal types
+		return v1.NewValue(val), nil
 	default:
 		return nil, fmt.Errorf("unsupported input type: %T", v)
 	}

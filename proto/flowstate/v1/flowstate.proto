@@ -244,6 +244,33 @@ message Task {
     }
   }
 
+  // CEL is a task that evaluates an arbitrary CEL expression and returns the result.
+  // The expression string can reference outputs from previous steps in the workflow.
+  message CEL {
+    message Inputs {
+      string expr = 1 [
+        (buf.validate.field).required = true,
+        (google.api.field_behavior) = REQUIRED
+      ];
+      // Additional variables that can be referenced from the CEL expression.
+      // Each key represents the variable name and the value is resolved prior
+      // to evaluating the expression.
+      map<string, Value> vars = 2 [(buf.validate.field).map = {
+        keys: {required: true}
+        values: {required: true}
+      }];
+      // Optional list of CEL extension libraries to enable when evaluating the
+      // expression. Supported values include "math", "strings", "lists",
+      // "sets", "encoders", "protos", "bindings", and "comprehensions".
+      repeated string libs = 3;
+    }
+    message Outputs {
+      // Result of evaluating the CEL expression. The dynamic type depends on
+      // the expression itself.
+      Value result = 1 [(buf.validate.field).required = true];
+    }
+  }
+
   // Tasks have specific names that identify the type of task being performed,
   // such as "echo", "printf", or "http". The name is used to determine which
   // task implementation to execute when the workflow is run.

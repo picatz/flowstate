@@ -94,6 +94,7 @@ func TestFlowstateServer(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = devServer.Stop() })
 
 	// $ go run cmd/flow/main.go worker
 	w := worker.New(devServer.Client(), engine.RunTaskQueueName, worker.Options{})
@@ -206,7 +207,9 @@ func TestFlowstateServer(t *testing.T) {
 	time.Sleep(1 * time.Second)
 
 	expResp := &v1.GetResponse{
-		Status: v1.RunResponse_STATUS_COMPLETED,
+		WorkflowId: runResp.Msg.GetWorkflowId(),
+		RunId:      runResp.Msg.GetRunId(),
+		Status:     v1.RunResponse_STATUS_COMPLETED,
 		Kind: &v1.GetResponse_Outputs{
 			Outputs: &v1.Workflow_StepOutputs{
 				StepValues: map[string]*v1.Node_Outputs{
