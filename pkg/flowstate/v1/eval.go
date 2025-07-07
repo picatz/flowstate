@@ -117,6 +117,30 @@ func NewLiteralList(vals ...any) *Value {
 	}
 }
 
+func NewLiteralMap(m map[string]any) *Value {
+	if m == nil {
+		return &Value{Kind: &Value_Literal{Literal: &expr.Value{Kind: &expr.Value_NullValue{}}}}
+	}
+
+	entries := make([]*expr.MapValue_Entry, 0, len(m))
+	for k, v := range m {
+		entries = append(entries, &expr.MapValue_Entry{
+			Key:   NewLiteral(k).GetLiteral(),
+			Value: NewValue(v).GetLiteral(),
+		})
+	}
+
+	return &Value{
+		Kind: &Value_Literal{
+			Literal: &expr.Value{
+				Kind: &expr.Value_MapValue{
+					MapValue: &expr.MapValue{Entries: entries},
+				},
+			},
+		},
+	}
+}
+
 func NewLiteral(val any) *Value {
 	switch v := val.(type) {
 	case string:
@@ -258,6 +282,8 @@ func NewValue(v any) *Value {
 	switch val := v.(type) {
 	case *Value:
 		return val
+	case map[string]any:
+		return NewLiteralMap(val)
 	case string, int, float64, float32, int64, bool, *expr.Value:
 		return NewLiteral(val)
 	case []any:
@@ -281,6 +307,15 @@ func NewValue(v any) *Value {
 				slice[i] = rv.Index(i).Interface()
 			}
 			return NewLiteralList(slice...)
+		}
+
+		if rv.Kind() == reflect.Map && rv.Type().Key().Kind() == reflect.String {
+			m := make(map[string]any, rv.Len())
+			iter := rv.MapRange()
+			for iter.Next() {
+				m[iter.Key().String()] = iter.Value().Interface()
+			}
+			return NewLiteralMap(m)
 		}
 
 		return &Value{

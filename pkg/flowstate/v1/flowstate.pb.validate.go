@@ -2054,6 +2054,105 @@ var _ interface {
 	ErrorName() string
 } = Task_HTTPValidationError{}
 
+// Validate checks the field values on Task_CEL with the rules defined in the
+// proto definition for this message. If any rules are violated, the first
+// error encountered is returned, or nil if there are no violations.
+func (m *Task_CEL) Validate() error {
+	return m.validate(false)
+}
+
+// ValidateAll checks the field values on Task_CEL with the rules defined in
+// the proto definition for this message. If any rules are violated, the
+// result is a list of violation errors wrapped in Task_CELMultiError, or nil
+// if none found.
+func (m *Task_CEL) ValidateAll() error {
+	return m.validate(true)
+}
+
+func (m *Task_CEL) validate(all bool) error {
+	if m == nil {
+		return nil
+	}
+
+	var errors []error
+
+	if len(errors) > 0 {
+		return Task_CELMultiError(errors)
+	}
+
+	return nil
+}
+
+// Task_CELMultiError is an error wrapping multiple validation errors returned
+// by Task_CEL.ValidateAll() if the designated constraints aren't met.
+type Task_CELMultiError []error
+
+// Error returns a concatenation of all the error messages it wraps.
+func (m Task_CELMultiError) Error() string {
+	var msgs []string
+	for _, err := range m {
+		msgs = append(msgs, err.Error())
+	}
+	return strings.Join(msgs, "; ")
+}
+
+// AllErrors returns a list of validation violation errors.
+func (m Task_CELMultiError) AllErrors() []error { return m }
+
+// Task_CELValidationError is the validation error returned by
+// Task_CEL.Validate if the designated constraints aren't met.
+type Task_CELValidationError struct {
+	field  string
+	reason string
+	cause  error
+	key    bool
+}
+
+// Field function returns field value.
+func (e Task_CELValidationError) Field() string { return e.field }
+
+// Reason function returns reason value.
+func (e Task_CELValidationError) Reason() string { return e.reason }
+
+// Cause function returns cause value.
+func (e Task_CELValidationError) Cause() error { return e.cause }
+
+// Key function returns key value.
+func (e Task_CELValidationError) Key() bool { return e.key }
+
+// ErrorName returns error name.
+func (e Task_CELValidationError) ErrorName() string { return "Task_CELValidationError" }
+
+// Error satisfies the builtin error interface
+func (e Task_CELValidationError) Error() string {
+	cause := ""
+	if e.cause != nil {
+		cause = fmt.Sprintf(" | caused by: %v", e.cause)
+	}
+
+	key := ""
+	if e.key {
+		key = "key for "
+	}
+
+	return fmt.Sprintf(
+		"invalid %sTask_CEL.%s: %s%s",
+		key,
+		e.field,
+		e.reason,
+		cause)
+}
+
+var _ error = Task_CELValidationError{}
+
+var _ interface {
+	Field() string
+	Reason() string
+	Key() bool
+	Cause() error
+	ErrorName() string
+} = Task_CELValidationError{}
+
 // Validate checks the field values on Task_Echo_Inputs with the rules defined
 // in the proto definition for this message. If any rules are violated, the
 // first error encountered is returned, or nil if there are no violations.
@@ -2721,6 +2820,283 @@ var _ interface {
 	Cause() error
 	ErrorName() string
 } = Task_HTTP_OutputsValidationError{}
+
+// Validate checks the field values on Task_CEL_Inputs with the rules defined
+// in the proto definition for this message. If any rules are violated, the
+// first error encountered is returned, or nil if there are no violations.
+func (m *Task_CEL_Inputs) Validate() error {
+	return m.validate(false)
+}
+
+// ValidateAll checks the field values on Task_CEL_Inputs with the rules
+// defined in the proto definition for this message. If any rules are
+// violated, the result is a list of violation errors wrapped in
+// Task_CEL_InputsMultiError, or nil if none found.
+func (m *Task_CEL_Inputs) ValidateAll() error {
+	return m.validate(true)
+}
+
+func (m *Task_CEL_Inputs) validate(all bool) error {
+	if m == nil {
+		return nil
+	}
+
+	var errors []error
+
+	// no validation rules for Expr
+
+	{
+		sorted_keys := make([]string, len(m.GetVars()))
+		i := 0
+		for key := range m.GetVars() {
+			sorted_keys[i] = key
+			i++
+		}
+		sort.Slice(sorted_keys, func(i, j int) bool { return sorted_keys[i] < sorted_keys[j] })
+		for _, key := range sorted_keys {
+			val := m.GetVars()[key]
+			_ = val
+
+			// no validation rules for Vars[key]
+
+			if all {
+				switch v := interface{}(val).(type) {
+				case interface{ ValidateAll() error }:
+					if err := v.ValidateAll(); err != nil {
+						errors = append(errors, Task_CEL_InputsValidationError{
+							field:  fmt.Sprintf("Vars[%v]", key),
+							reason: "embedded message failed validation",
+							cause:  err,
+						})
+					}
+				case interface{ Validate() error }:
+					if err := v.Validate(); err != nil {
+						errors = append(errors, Task_CEL_InputsValidationError{
+							field:  fmt.Sprintf("Vars[%v]", key),
+							reason: "embedded message failed validation",
+							cause:  err,
+						})
+					}
+				}
+			} else if v, ok := interface{}(val).(interface{ Validate() error }); ok {
+				if err := v.Validate(); err != nil {
+					return Task_CEL_InputsValidationError{
+						field:  fmt.Sprintf("Vars[%v]", key),
+						reason: "embedded message failed validation",
+						cause:  err,
+					}
+				}
+			}
+
+		}
+	}
+
+	if len(errors) > 0 {
+		return Task_CEL_InputsMultiError(errors)
+	}
+
+	return nil
+}
+
+// Task_CEL_InputsMultiError is an error wrapping multiple validation errors
+// returned by Task_CEL_Inputs.ValidateAll() if the designated constraints
+// aren't met.
+type Task_CEL_InputsMultiError []error
+
+// Error returns a concatenation of all the error messages it wraps.
+func (m Task_CEL_InputsMultiError) Error() string {
+	var msgs []string
+	for _, err := range m {
+		msgs = append(msgs, err.Error())
+	}
+	return strings.Join(msgs, "; ")
+}
+
+// AllErrors returns a list of validation violation errors.
+func (m Task_CEL_InputsMultiError) AllErrors() []error { return m }
+
+// Task_CEL_InputsValidationError is the validation error returned by
+// Task_CEL_Inputs.Validate if the designated constraints aren't met.
+type Task_CEL_InputsValidationError struct {
+	field  string
+	reason string
+	cause  error
+	key    bool
+}
+
+// Field function returns field value.
+func (e Task_CEL_InputsValidationError) Field() string { return e.field }
+
+// Reason function returns reason value.
+func (e Task_CEL_InputsValidationError) Reason() string { return e.reason }
+
+// Cause function returns cause value.
+func (e Task_CEL_InputsValidationError) Cause() error { return e.cause }
+
+// Key function returns key value.
+func (e Task_CEL_InputsValidationError) Key() bool { return e.key }
+
+// ErrorName returns error name.
+func (e Task_CEL_InputsValidationError) ErrorName() string { return "Task_CEL_InputsValidationError" }
+
+// Error satisfies the builtin error interface
+func (e Task_CEL_InputsValidationError) Error() string {
+	cause := ""
+	if e.cause != nil {
+		cause = fmt.Sprintf(" | caused by: %v", e.cause)
+	}
+
+	key := ""
+	if e.key {
+		key = "key for "
+	}
+
+	return fmt.Sprintf(
+		"invalid %sTask_CEL_Inputs.%s: %s%s",
+		key,
+		e.field,
+		e.reason,
+		cause)
+}
+
+var _ error = Task_CEL_InputsValidationError{}
+
+var _ interface {
+	Field() string
+	Reason() string
+	Key() bool
+	Cause() error
+	ErrorName() string
+} = Task_CEL_InputsValidationError{}
+
+// Validate checks the field values on Task_CEL_Outputs with the rules defined
+// in the proto definition for this message. If any rules are violated, the
+// first error encountered is returned, or nil if there are no violations.
+func (m *Task_CEL_Outputs) Validate() error {
+	return m.validate(false)
+}
+
+// ValidateAll checks the field values on Task_CEL_Outputs with the rules
+// defined in the proto definition for this message. If any rules are
+// violated, the result is a list of violation errors wrapped in
+// Task_CEL_OutputsMultiError, or nil if none found.
+func (m *Task_CEL_Outputs) ValidateAll() error {
+	return m.validate(true)
+}
+
+func (m *Task_CEL_Outputs) validate(all bool) error {
+	if m == nil {
+		return nil
+	}
+
+	var errors []error
+
+	if all {
+		switch v := interface{}(m.GetResult()).(type) {
+		case interface{ ValidateAll() error }:
+			if err := v.ValidateAll(); err != nil {
+				errors = append(errors, Task_CEL_OutputsValidationError{
+					field:  "Result",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		case interface{ Validate() error }:
+			if err := v.Validate(); err != nil {
+				errors = append(errors, Task_CEL_OutputsValidationError{
+					field:  "Result",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		}
+	} else if v, ok := interface{}(m.GetResult()).(interface{ Validate() error }); ok {
+		if err := v.Validate(); err != nil {
+			return Task_CEL_OutputsValidationError{
+				field:  "Result",
+				reason: "embedded message failed validation",
+				cause:  err,
+			}
+		}
+	}
+
+	if len(errors) > 0 {
+		return Task_CEL_OutputsMultiError(errors)
+	}
+
+	return nil
+}
+
+// Task_CEL_OutputsMultiError is an error wrapping multiple validation errors
+// returned by Task_CEL_Outputs.ValidateAll() if the designated constraints
+// aren't met.
+type Task_CEL_OutputsMultiError []error
+
+// Error returns a concatenation of all the error messages it wraps.
+func (m Task_CEL_OutputsMultiError) Error() string {
+	var msgs []string
+	for _, err := range m {
+		msgs = append(msgs, err.Error())
+	}
+	return strings.Join(msgs, "; ")
+}
+
+// AllErrors returns a list of validation violation errors.
+func (m Task_CEL_OutputsMultiError) AllErrors() []error { return m }
+
+// Task_CEL_OutputsValidationError is the validation error returned by
+// Task_CEL_Outputs.Validate if the designated constraints aren't met.
+type Task_CEL_OutputsValidationError struct {
+	field  string
+	reason string
+	cause  error
+	key    bool
+}
+
+// Field function returns field value.
+func (e Task_CEL_OutputsValidationError) Field() string { return e.field }
+
+// Reason function returns reason value.
+func (e Task_CEL_OutputsValidationError) Reason() string { return e.reason }
+
+// Cause function returns cause value.
+func (e Task_CEL_OutputsValidationError) Cause() error { return e.cause }
+
+// Key function returns key value.
+func (e Task_CEL_OutputsValidationError) Key() bool { return e.key }
+
+// ErrorName returns error name.
+func (e Task_CEL_OutputsValidationError) ErrorName() string { return "Task_CEL_OutputsValidationError" }
+
+// Error satisfies the builtin error interface
+func (e Task_CEL_OutputsValidationError) Error() string {
+	cause := ""
+	if e.cause != nil {
+		cause = fmt.Sprintf(" | caused by: %v", e.cause)
+	}
+
+	key := ""
+	if e.key {
+		key = "key for "
+	}
+
+	return fmt.Sprintf(
+		"invalid %sTask_CEL_Outputs.%s: %s%s",
+		key,
+		e.field,
+		e.reason,
+		cause)
+}
+
+var _ error = Task_CEL_OutputsValidationError{}
+
+var _ interface {
+	Field() string
+	Reason() string
+	Key() bool
+	Cause() error
+	ErrorName() string
+} = Task_CEL_OutputsValidationError{}
 
 // Validate checks the field values on RunResponse_Error with the rules defined
 // in the proto definition for this message. If any rules are violated, the

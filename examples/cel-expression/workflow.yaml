@@ -1,0 +1,16 @@
+name: cel-demo
+steps:
+  - id: greet
+    task:
+      name: echo
+      inputs:
+        message: hello
+  - id: modify
+    task:
+      name: cel
+      inputs:
+        expr: "regex.replace(strings.upper(vars.greeting), 'HELLO', 'HI')"
+        libs: [strings, regex]
+        vars:
+          greeting: ${greet.result}
+

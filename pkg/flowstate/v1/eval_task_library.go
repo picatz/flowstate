@@ -8,6 +8,9 @@ import (
 	"strings"
 
 	"github.com/google/cel-go/cel"
+	ref "github.com/google/cel-go/common/types/ref"
+	"github.com/google/cel-go/ext"
+	"github.com/google/cel-go/interpreter"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/proto"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
@@ -18,6 +21,7 @@ var taskLibrary = map[string]taskFunc{
 	"echo":   taskFuncEcho,
 	"printf": taskFuncPrintf,
 	"http":   taskFuncHTTP(http.DefaultClient),
+	"cel":    taskFuncCEL,
 }
 
 type taskFunc func(ctx context.Context, input map[string]*Value, prevStepOutputs *Workflow_StepOutputs) (*Node_Outputs, error)
@@ -136,6 +140,172 @@ func taskFuncHTTP(httpClient *http.Client) taskFunc {
 	}
 }
 
+func taskFuncCEL(ctx context.Context, input map[string]*Value, prevStepOutputs *Workflow_StepOutputs) (*Node_Outputs, error) {
+	exprInput, ok := input["expr"]
+	if !ok {
+		return nil, fmt.Errorf("missing expr input")
+	}
+
+	var exprStr string
+	if lit := exprInput.GetLiteral(); lit != nil {
+		exprStr = lit.GetStringValue()
+	} else {
+		val, err := valueToCEL(exprInput, prevStepOutputs)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve expr input: %w", err)
+		}
+		if s, ok := val.Value().(string); ok {
+			exprStr = s
+		} else {
+			return nil, fmt.Errorf("expr input must resolve to string, got %T", val.Value())
+		}
+	}
+
+	varBindings := map[string]*Value{}
+	var libs []string
+	for k, v := range input {
+		switch k {
+		case "expr":
+			continue
+		case "libs":
+			if lit := v.GetLiteral(); lit != nil {
+				if lv := lit.GetListValue(); lv != nil {
+					for _, elem := range lv.Values {
+						if s := elem.GetStringValue(); s != "" {
+							libs = append(libs, s)
+						} else {
+							return nil, fmt.Errorf("libs elements must be strings")
+						}
+					}
+				} else if s := lit.GetStringValue(); s != "" {
+					libs = append(libs, s)
+				} else {
+					return nil, fmt.Errorf("libs input must be a string or list of strings")
+				}
+			} else {
+				return nil, fmt.Errorf("libs input must be literal")
+			}
+			continue
+		case "vars":
+			lit := v.GetLiteral()
+			if lit == nil {
+				return nil, fmt.Errorf("vars input must be literal")
+			}
+			mv, ok := lit.GetKind().(*expr.Value_MapValue)
+			if !ok {
+				return nil, fmt.Errorf("vars input must be a map")
+			}
+			for _, entry := range mv.MapValue.Entries {
+				key := entry.GetKey().GetStringValue()
+				varBindings[key] = &Value{Kind: &Value_Literal{Literal: entry.Value}}
+			}
+		default:
+			varBindings[k] = v
+		}
+	}
+
+	var envOpts []cel.EnvOption
+	for _, name := range libs {
+		switch strings.ToLower(name) {
+		case "math":
+			envOpts = append(envOpts, ext.Math())
+		case "strings":
+			envOpts = append(envOpts, ext.Strings())
+		case "lists":
+			envOpts = append(envOpts, ext.Lists())
+		case "sets":
+			envOpts = append(envOpts, ext.Sets())
+		case "encoders":
+			envOpts = append(envOpts, ext.Encoders())
+		case "protos":
+			envOpts = append(envOpts, ext.Protos())
+		case "bindings":
+			envOpts = append(envOpts, ext.Bindings())
+		case "comprehensions":
+			envOpts = append(envOpts, ext.TwoVarComprehensions())
+		case "regex":
+			envOpts = append(envOpts, cel.OptionalTypes(), ext.Regex())
+		case "optional":
+			envOpts = append(envOpts, cel.OptionalTypes())
+		default:
+			return nil, fmt.Errorf("unknown CEL extension library %q", name)
+		}
+	}
+
+	env, err := cel.NewEnv(envOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create CEL environment: %w", err)
+	}
+
+	ast, issues := env.Parse(exprStr)
+	if issues != nil && issues.Err() != nil {
+		return nil, fmt.Errorf("failed to parse CEL expression: %w", issues.Err())
+	}
+
+	prg, err := env.Program(ast)
+	if err != nil {
+		return nil, fmt.Errorf("failed to compile CEL expression: %w", err)
+	}
+
+	celVars := make(map[string]any, len(varBindings))
+	for name, val := range varBindings {
+		cval, err := valueToCEL(val, prevStepOutputs)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve var %s: %w", name, err)
+		}
+		celVars[name] = cval
+	}
+	bindings := map[string]any{"vars": celVars}
+
+	// Create an activation containing the user-provided variables.
+	varAct, err := interpreter.NewActivation(bindings)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create activation: %w", err)
+	}
+	// Combine the step outputs with the variable activation so expressions
+	// can reference both previous steps and local variables.
+	act := interpreter.NewHierarchicalActivation(&StepsOutputActivation{Prev: prevStepOutputs}, varAct)
+
+	out, _, err := prg.Eval(act)
+	if err != nil {
+		return nil, fmt.Errorf("failed to evaluate CEL expression: %w", err)
+	}
+
+	resultVal, err := cel.RefValueToValue(out)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert CEL value: %w", err)
+	}
+
+	return nodeOutputsFromProtoMessage(&Task_CEL_Outputs{Result: NewLiteral(resultVal)})
+}
+
+// valueToCEL resolves the given Value into a CEL value. Literals are converted
+// directly, while expressions are evaluated using a minimal CEL environment that
+// can reference previous step outputs.
+func valueToCEL(v *Value, prevStepOutputs *Workflow_StepOutputs) (ref.Val, error) {
+	switch kind := v.GetKind().(type) {
+	case *Value_Literal:
+		return cel.ValueToRefValue(TypeAdapter, kind.Literal)
+	case *Value_Expr:
+		ast := cel.ParsedExprToAst(kind.Expr)
+		env, err := cel.NewEnv()
+		if err != nil {
+			return nil, fmt.Errorf("failed to create CEL environment: %w", err)
+		}
+		prg, err := env.Program(ast)
+		if err != nil {
+			return nil, fmt.Errorf("failed to compile CEL expression: %w", err)
+		}
+		out, _, err := prg.Eval(cel.Activation(&StepsOutputActivation{Prev: prevStepOutputs}))
+		if err != nil {
+			return nil, fmt.Errorf("failed to evaluate CEL expression: %w", err)
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("unsupported value kind %T", kind)
+	}
+}
+
 func nodeOutputsFromProtoMessage(msg proto.Message) (*Node_Outputs, error) {
 	outputs := &Node_Outputs{
 		NamedValues: map[string]*Value{},
@@ -223,6 +393,22 @@ func nodeOutputsFromProtoMessage(msg proto.Message) (*Node_Outputs, error) {
 						},
 					},
 				}
+			}
+		case protoreflect.MessageKind:
+			msgType := fieldDesc.Message().FullName()
+			switch msgType {
+			case "google.api.expr.v1alpha1.Value":
+				if v, ok := val.Message().Interface().(*expr.Value); ok {
+					outputs.NamedValues[fieldName] = &Value{
+						Kind: &Value_Literal{Literal: v},
+					}
+				}
+			case "flowstate.v1.Value":
+				if v, ok := val.Message().Interface().(*Value); ok {
+					outputs.NamedValues[fieldName] = v
+				}
+			default:
+				return nil, fmt.Errorf("unsupported message type in output: %s", msgType)
 			}
 		default:
 			return nil, fmt.Errorf("unsupported field type: %s", fieldDesc.Kind().String())
