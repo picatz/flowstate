@@ -3,6 +3,7 @@ package flowstatev1
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/google/cel-go/cel"
@@ -241,6 +242,68 @@ func newValueExprWithErr(exprStr string) (*Value, error) {
 			Expr: parsedExpr,
 		},
 	}, nil
+}
+
+func NewValue(v any) *Value {
+	if v == nil {
+		return &Value{
+			Kind: &Value_Literal{
+				Literal: &expr.Value{
+					Kind: &expr.Value_NullValue{},
+				},
+			},
+		}
+	}
+
+	switch val := v.(type) {
+	case *Value:
+		return val
+	case string, int, float64, float32, int64, bool, *expr.Value:
+		return NewLiteral(val)
+	case []any:
+		return NewLiteralList(val...)
+	case error:
+		return &Value{
+			Kind: &Value_Error_{
+				Error: &Value_Error{
+					Message: fmt.Errorf("flowstatev1: error value: %w", val).Error(),
+					Code:    Value_Error_CODE_INTERNAL,
+				},
+			},
+		}
+	default:
+		// Handle other slice types using reflection
+		rv := reflect.ValueOf(v)
+		if rv.Kind() == reflect.Slice {
+			// Convert slice to []any
+			slice := make([]any, rv.Len())
+			for i := 0; i < rv.Len(); i++ {
+				slice[i] = rv.Index(i).Interface()
+			}
+			return NewLiteralList(slice...)
+		}
+
+		return &Value{
+			Kind: &Value_Error_{
+				Error: &Value_Error{
+					Message: fmt.Sprintf("flowstatev1: unsupported type for new value: %T", val),
+					Code:    Value_Error_CODE_INTERNAL,
+				},
+			},
+		}
+	}
+}
+
+func NewNamedValues(inputValues map[string]any) map[string]*Value {
+	if inputValues == nil {
+		return nil
+	}
+
+	outputValues := make(map[string]*Value, len(inputValues))
+	for name, val := range inputValues {
+		outputValues[name] = NewValue(val)
+	}
+	return outputValues
 }
 
 func (v *Value) Error() error {
