@@ -3,6 +3,8 @@ package flowfile
 import (
 	"fmt"
 	"regexp"
+	"sort"
+	"strings"
 
 	yaml "github.com/goccy/go-yaml"
 	"github.com/google/cel-go/cel"
@@ -99,23 +101,137 @@ func toProtoValue(v any) (*v1.Value, error) {
 		}
 		// Literal string
 		return v1.NewValue(val), nil
-	case int, int64, float64, bool, map[string]any, []any:
-		// Other supported literal types
+	case int, int64, float64, bool:
+		// Other supported primitive literal types
+		return v1.NewValue(val), nil
+	case map[string]any:
+		// If any nested value contains an expression, convert the entire map
+		// to a CEL map expression to allow per-key expressions.
+		if needsCEL(val) {
+			celExpr, err := toCELExprFromAny(val)
+			if err != nil {
+				return nil, fmt.Errorf("failed to convert map to CEL expr: %w", err)
+			}
+			return v1.NewExpr(celExpr), nil
+		}
+		return v1.NewValue(val), nil
+	case []any:
+		if needsCEL(val) {
+			celExpr, err := toCELExprFromAny(val)
+			if err != nil {
+				return nil, fmt.Errorf("failed to convert list to CEL expr: %w", err)
+			}
+			return v1.NewExpr(celExpr), nil
+		}
 		return v1.NewValue(val), nil
 	default:
 		return nil, fmt.Errorf("unsupported input type: %T", v)
 	}
 }
 
-// toInt64 converts int or int64 to int64, otherwise returns 0.
-func toInt64(v any) int64 {
-	switch i := v.(type) {
-	case int:
-		return int64(i)
-	case int64:
-		return i
+// needsCEL returns true if the provided value (map/list) contains any nested
+// string of the form ${...} that should be converted to a CEL expression.
+func needsCEL(v any) bool {
+	switch x := v.(type) {
+	case map[string]any:
+		for _, vv := range x {
+			if containsExpr(vv) {
+				return true
+			}
+		}
+		return false
+	case []any:
+		for _, vv := range x {
+			if containsExpr(vv) {
+				return true
+			}
+		}
+		return false
+	default:
+		return false
 	}
-	return 0
+}
+
+func containsExpr(v any) bool {
+	switch t := v.(type) {
+	case string:
+		return flowfileExprPattern.MatchString(t)
+	case map[string]any, []any:
+		return needsCEL(t)
+	default:
+		return false
+	}
+}
+
+// toCELExprFromAny builds a CEL expression string from a Go literal that may
+// contain nested ${...} expression strings. String literals are quoted; ${...}
+// strings are included as raw CEL expressions.
+func toCELExprFromAny(v any) (string, error) {
+	switch x := v.(type) {
+	case string:
+		if m := flowfileExprPattern.FindStringSubmatch(x); m != nil {
+			return m[1], nil
+		}
+		return quoteCELString(x), nil
+	case int:
+		return fmt.Sprintf("%d", x), nil
+	case int64:
+		return fmt.Sprintf("%d", x), nil
+	case uint:
+		return fmt.Sprintf("%d", x), nil
+	case uint64:
+		return fmt.Sprintf("%d", x), nil
+	case uint32:
+		return fmt.Sprintf("%d", x), nil
+	case float64:
+		return fmt.Sprintf("%g", x), nil
+	case float32:
+		return fmt.Sprintf("%g", x), nil
+	case bool:
+		if x {
+			return "true", nil
+		}
+		return "false", nil
+	case map[string]any:
+		// Use stable key order for test determinism
+		keys := make([]string, 0, len(x))
+		for k := range x {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		parts := make([]string, 0, len(x))
+		for _, k := range keys {
+			valExpr, err := toCELExprFromAny(x[k])
+			if err != nil {
+				return "", err
+			}
+			parts = append(parts, fmt.Sprintf("%s: %s", quoteCELString(k), valExpr))
+		}
+		return fmt.Sprintf("{%s}", strings.Join(parts, ", ")), nil
+	case []any:
+		elems := make([]string, 0, len(x))
+		for _, e := range x {
+			valExpr, err := toCELExprFromAny(e)
+			if err != nil {
+				return "", err
+			}
+			elems = append(elems, valExpr)
+		}
+		return fmt.Sprintf("[%s]", strings.Join(elems, ", ")), nil
+	default:
+		return "", fmt.Errorf("unsupported type in CEL expr conversion: %T", v)
+	}
+}
+
+func quoteCELString(s string) string {
+	// Use single quotes and escape existing single quotes/backslashes.
+	esc := strings.ReplaceAll(s, "\\", "\\\\")
+	esc = strings.ReplaceAll(esc, "'", "\\'")
+	return "'" + esc + "'"
+}
+
+func escapeSingleQuotes(s string) string {
+	return strings.ReplaceAll(s, "'", "\\'")
 }
 
 // Unmarshal parses a Flowfile YAML-based DSL representation into a

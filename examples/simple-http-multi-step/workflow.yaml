@@ -10,4 +10,5 @@ steps:
   task:
     name: echo
     inputs:
-      message: ${web.status_code}
+      # Convert status_code (int) to string for echo
+      message: ${string(web.status_code)}

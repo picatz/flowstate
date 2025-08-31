@@ -876,6 +876,83 @@ func (*GetResponse_Error) isGetResponse_Kind() {}
 
 func (*GetResponse_Outputs) isGetResponse_Kind() {}
 
+// RunState is the durable workflow state used by the Temporal RunV2 entrypoint.
+// It allows the workflow to continue-as-new while carrying only the minimal
+// required subset of previously produced outputs for the remaining steps.
+type RunState struct {
+	state         protoimpl.MessageState
+	sizeCache     protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+
+	Workflow *Workflow `protobuf:"bytes,1,opt,name=workflow,proto3" json:"workflow,omitempty"`
+	// Zero-based index of the next step to execute.
+	NextStep int32 `protobuf:"varint,2,opt,name=next_step,json=nextStep,proto3" json:"next_step,omitempty"`
+	// Compact subset of outputs needed by subsequent steps.
+	Outputs *Workflow_StepOutputs `protobuf:"bytes,3,opt,name=outputs,proto3" json:"outputs,omitempty"`
+	// Step budget for Continue-As-New. If 0 or unset, server/workflow defaults apply.
+	StepsBudget int32 `protobuf:"varint,4,opt,name=steps_budget,json=stepsBudget,proto3" json:"steps_budget,omitempty"`
+}
+
+func (x *RunState) Reset() {
+	*x = RunState{}
+	if protoimpl.UnsafeEnabled {
+		mi := &file_flowstate_v1_flowstate_proto_msgTypes[8]
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		ms.StoreMessageInfo(mi)
+	}
+}
+
+func (x *RunState) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RunState) ProtoMessage() {}
+
+func (x *RunState) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[8]
+	if protoimpl.UnsafeEnabled && x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RunState.ProtoReflect.Descriptor instead.
+func (*RunState) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *RunState) GetWorkflow() *Workflow {
+	if x != nil {
+		return x.Workflow
+	}
+	return nil
+}
+
+func (x *RunState) GetNextStep() int32 {
+	if x != nil {
+		return x.NextStep
+	}
+	return 0
+}
+
+func (x *RunState) GetOutputs() *Workflow_StepOutputs {
+	if x != nil {
+		return x.Outputs
+	}
+	return nil
+}
+
+func (x *RunState) GetStepsBudget() int32 {
+	if x != nil {
+		return x.StepsBudget
+	}
+	return 0
+}
+
 // StepOutputs is a map of step IDs to their outputs. Each step's outputs are
 // represented as a map of named values, allowing for structured outputs that
 // can be referenced by subsequent steps in the workflow.
@@ -894,7 +971,7 @@ type Workflow_StepOutputs struct {
 func (x *Workflow_StepOutputs) Reset() {
 	*x = Workflow_StepOutputs{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_flowstate_v1_flowstate_proto_msgTypes[8]
+		mi := &file_flowstate_v1_flowstate_proto_msgTypes[9]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -907,7 +984,7 @@ func (x *Workflow_StepOutputs) String() string {
 func (*Workflow_StepOutputs) ProtoMessage() {}
 
 func (x *Workflow_StepOutputs) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[8]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[9]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -944,7 +1021,7 @@ type Node_Outputs struct {
 func (x *Node_Outputs) Reset() {
 	*x = Node_Outputs{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_flowstate_v1_flowstate_proto_msgTypes[12]
+		mi := &file_flowstate_v1_flowstate_proto_msgTypes[13]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -957,7 +1034,7 @@ func (x *Node_Outputs) String() string {
 func (*Node_Outputs) ProtoMessage() {}
 
 func (x *Node_Outputs) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[12]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[13]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -992,7 +1069,7 @@ type Value_Error struct {
 func (x *Value_Error) Reset() {
 	*x = Value_Error{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_flowstate_v1_flowstate_proto_msgTypes[14]
+		mi := &file_flowstate_v1_flowstate_proto_msgTypes[15]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -1005,7 +1082,7 @@ func (x *Value_Error) String() string {
 func (*Value_Error) ProtoMessage() {}
 
 func (x *Value_Error) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[14]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[15]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1045,7 +1122,7 @@ type Task_Echo struct {
 func (x *Task_Echo) Reset() {
 	*x = Task_Echo{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_flowstate_v1_flowstate_proto_msgTypes[15]
+		mi := &file_flowstate_v1_flowstate_proto_msgTypes[16]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -1058,7 +1135,7 @@ func (x *Task_Echo) String() string {
 func (*Task_Echo) ProtoMessage() {}
 
 func (x *Task_Echo) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[15]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[16]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1084,7 +1161,7 @@ type Task_Printf struct {
 func (x *Task_Printf) Reset() {
 	*x = Task_Printf{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_flowstate_v1_flowstate_proto_msgTypes[16]
+		mi := &file_flowstate_v1_flowstate_proto_msgTypes[17]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -1097,7 +1174,7 @@ func (x *Task_Printf) String() string {
 func (*Task_Printf) ProtoMessage() {}
 
 func (x *Task_Printf) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[16]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[17]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1126,7 +1203,7 @@ type Task_HTTP struct {
 func (x *Task_HTTP) Reset() {
 	*x = Task_HTTP{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_flowstate_v1_flowstate_proto_msgTypes[17]
+		mi := &file_flowstate_v1_flowstate_proto_msgTypes[18]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -1139,7 +1216,7 @@ func (x *Task_HTTP) String() string {
 func (*Task_HTTP) ProtoMessage() {}
 
 func (x *Task_HTTP) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[17]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[18]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1166,7 +1243,7 @@ type Task_CEL struct {
 func (x *Task_CEL) Reset() {
 	*x = Task_CEL{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_flowstate_v1_flowstate_proto_msgTypes[18]
+		mi := &file_flowstate_v1_flowstate_proto_msgTypes[19]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -1179,7 +1256,7 @@ func (x *Task_CEL) String() string {
 func (*Task_CEL) ProtoMessage() {}
 
 func (x *Task_CEL) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[18]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[19]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1206,7 +1283,7 @@ type Task_Echo_Inputs struct {
 func (x *Task_Echo_Inputs) Reset() {
 	*x = Task_Echo_Inputs{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_flowstate_v1_flowstate_proto_msgTypes[20]
+		mi := &file_flowstate_v1_flowstate_proto_msgTypes[21]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -1219,7 +1296,7 @@ func (x *Task_Echo_Inputs) String() string {
 func (*Task_Echo_Inputs) ProtoMessage() {}
 
 func (x *Task_Echo_Inputs) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[20]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[21]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1253,7 +1330,7 @@ type Task_Echo_Outputs struct {
 func (x *Task_Echo_Outputs) Reset() {
 	*x = Task_Echo_Outputs{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_flowstate_v1_flowstate_proto_msgTypes[21]
+		mi := &file_flowstate_v1_flowstate_proto_msgTypes[22]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -1266,7 +1343,7 @@ func (x *Task_Echo_Outputs) String() string {
 func (*Task_Echo_Outputs) ProtoMessage() {}
 
 func (x *Task_Echo_Outputs) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[21]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[22]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1301,7 +1378,7 @@ type Task_Printf_Inputs struct {
 func (x *Task_Printf_Inputs) Reset() {
 	*x = Task_Printf_Inputs{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_flowstate_v1_flowstate_proto_msgTypes[22]
+		mi := &file_flowstate_v1_flowstate_proto_msgTypes[23]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -1314,7 +1391,7 @@ func (x *Task_Printf_Inputs) String() string {
 func (*Task_Printf_Inputs) ProtoMessage() {}
 
 func (x *Task_Printf_Inputs) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[22]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[23]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1355,7 +1432,7 @@ type Task_Printf_Outputs struct {
 func (x *Task_Printf_Outputs) Reset() {
 	*x = Task_Printf_Outputs{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_flowstate_v1_flowstate_proto_msgTypes[23]
+		mi := &file_flowstate_v1_flowstate_proto_msgTypes[24]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -1368,7 +1445,7 @@ func (x *Task_Printf_Outputs) String() string {
 func (*Task_Printf_Outputs) ProtoMessage() {}
 
 func (x *Task_Printf_Outputs) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[23]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[24]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1405,7 +1482,7 @@ type Task_HTTP_Inputs struct {
 func (x *Task_HTTP_Inputs) Reset() {
 	*x = Task_HTTP_Inputs{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_flowstate_v1_flowstate_proto_msgTypes[24]
+		mi := &file_flowstate_v1_flowstate_proto_msgTypes[25]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -1418,7 +1495,7 @@ func (x *Task_HTTP_Inputs) String() string {
 func (*Task_HTTP_Inputs) ProtoMessage() {}
 
 func (x *Task_HTTP_Inputs) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[24]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[25]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1475,7 +1552,7 @@ type Task_HTTP_Outputs struct {
 func (x *Task_HTTP_Outputs) Reset() {
 	*x = Task_HTTP_Outputs{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_flowstate_v1_flowstate_proto_msgTypes[25]
+		mi := &file_flowstate_v1_flowstate_proto_msgTypes[26]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -1488,7 +1565,7 @@ func (x *Task_HTTP_Outputs) String() string {
 func (*Task_HTTP_Outputs) ProtoMessage() {}
 
 func (x *Task_HTTP_Outputs) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[25]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[26]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1544,7 +1621,7 @@ type Task_CEL_Inputs struct {
 func (x *Task_CEL_Inputs) Reset() {
 	*x = Task_CEL_Inputs{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_flowstate_v1_flowstate_proto_msgTypes[28]
+		mi := &file_flowstate_v1_flowstate_proto_msgTypes[29]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -1557,7 +1634,7 @@ func (x *Task_CEL_Inputs) String() string {
 func (*Task_CEL_Inputs) ProtoMessage() {}
 
 func (x *Task_CEL_Inputs) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[28]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[29]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1607,7 +1684,7 @@ type Task_CEL_Outputs struct {
 func (x *Task_CEL_Outputs) Reset() {
 	*x = Task_CEL_Outputs{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_flowstate_v1_flowstate_proto_msgTypes[29]
+		mi := &file_flowstate_v1_flowstate_proto_msgTypes[30]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -1620,7 +1697,7 @@ func (x *Task_CEL_Outputs) String() string {
 func (*Task_CEL_Outputs) ProtoMessage() {}
 
 func (x *Task_CEL_Outputs) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[29]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[30]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1654,7 +1731,7 @@ type RunResponse_Error struct {
 func (x *RunResponse_Error) Reset() {
 	*x = RunResponse_Error{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_flowstate_v1_flowstate_proto_msgTypes[31]
+		mi := &file_flowstate_v1_flowstate_proto_msgTypes[32]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -1667,7 +1744,7 @@ func (x *RunResponse_Error) String() string {
 func (*RunResponse_Error) ProtoMessage() {}
 
 func (x *RunResponse_Error) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[31]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[32]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1955,27 +2032,40 @@ var file_flowstate_v1_flowstate_proto_rawDesc = []byte{
 	0x74, 0x65, 0x2e, 0x76, 0x31, 0x2e, 0x57, 0x6f, 0x72, 0x6b, 0x66, 0x6c, 0x6f, 0x77, 0x2e, 0x53,
 	0x74, 0x65, 0x70, 0x4f, 0x75, 0x74, 0x70, 0x75, 0x74, 0x73, 0x48, 0x00, 0x52, 0x07, 0x6f, 0x75,
 	0x74, 0x70, 0x75, 0x74, 0x73, 0x42, 0x0d, 0x0a, 0x04, 0x6b, 0x69, 0x6e, 0x64, 0x12, 0x05, 0xba,
-	0x48, 0x02, 0x08, 0x01, 0x32, 0x8d, 0x01, 0x0a, 0x0f, 0x57, 0x6f, 0x72, 0x6b, 0x66, 0x6c, 0x6f,
-	0x77, 0x53, 0x65, 0x72, 0x76, 0x69, 0x63, 0x65, 0x12, 0x3c, 0x0a, 0x03, 0x52, 0x75, 0x6e, 0x12,
-	0x18, 0x2e, 0x66, 0x6c, 0x6f, 0x77, 0x73, 0x74, 0x61, 0x74, 0x65, 0x2e, 0x76, 0x31, 0x2e, 0x52,
-	0x75, 0x6e, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x1a, 0x19, 0x2e, 0x66, 0x6c, 0x6f, 0x77,
-	0x73, 0x74, 0x61, 0x74, 0x65, 0x2e, 0x76, 0x31, 0x2e, 0x52, 0x75, 0x6e, 0x52, 0x65, 0x73, 0x70,
-	0x6f, 0x6e, 0x73, 0x65, 0x22, 0x00, 0x12, 0x3c, 0x0a, 0x03, 0x47, 0x65, 0x74, 0x12, 0x18, 0x2e,
-	0x66, 0x6c, 0x6f, 0x77, 0x73, 0x74, 0x61, 0x74, 0x65, 0x2e, 0x76, 0x31, 0x2e, 0x47, 0x65, 0x74,
-	0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x1a, 0x19, 0x2e, 0x66, 0x6c, 0x6f, 0x77, 0x73, 0x74,
-	0x61, 0x74, 0x65, 0x2e, 0x76, 0x31, 0x2e, 0x47, 0x65, 0x74, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e,
-	0x73, 0x65, 0x22, 0x00, 0x42, 0xad, 0x01, 0x0a, 0x10, 0x63, 0x6f, 0x6d, 0x2e, 0x66, 0x6c, 0x6f,
-	0x77, 0x73, 0x74, 0x61, 0x74, 0x65, 0x2e, 0x76, 0x31, 0x42, 0x0e, 0x46, 0x6c, 0x6f, 0x77, 0x73,
-	0x74, 0x61, 0x74, 0x65, 0x50, 0x72, 0x6f, 0x74, 0x6f, 0x50, 0x01, 0x5a, 0x38, 0x67, 0x69, 0x74,
-	0x68, 0x75, 0x62, 0x2e, 0x63, 0x6f, 0x6d, 0x2f, 0x70, 0x69, 0x63, 0x61, 0x74, 0x7a, 0x2f, 0x66,
-	0x6c, 0x6f, 0x77, 0x73, 0x74, 0x61, 0x74, 0x65, 0x2f, 0x70, 0x6b, 0x67, 0x2f, 0x66, 0x6c, 0x6f,
-	0x77, 0x73, 0x74, 0x61, 0x74, 0x65, 0x2f, 0x76, 0x31, 0x3b, 0x66, 0x6c, 0x6f, 0x77, 0x73, 0x74,
-	0x61, 0x74, 0x65, 0x76, 0x31, 0xa2, 0x02, 0x03, 0x46, 0x58, 0x58, 0xaa, 0x02, 0x0c, 0x46, 0x6c,
-	0x6f, 0x77, 0x73, 0x74, 0x61, 0x74, 0x65, 0x2e, 0x56, 0x31, 0xca, 0x02, 0x0c, 0x46, 0x6c, 0x6f,
-	0x77, 0x73, 0x74, 0x61, 0x74, 0x65, 0x5c, 0x56, 0x31, 0xe2, 0x02, 0x18, 0x46, 0x6c, 0x6f, 0x77,
-	0x73, 0x74, 0x61, 0x74, 0x65, 0x5c, 0x56, 0x31, 0x5c, 0x47, 0x50, 0x42, 0x4d, 0x65, 0x74, 0x61,
-	0x64, 0x61, 0x74, 0x61, 0xea, 0x02, 0x0d, 0x46, 0x6c, 0x6f, 0x77, 0x73, 0x74, 0x61, 0x74, 0x65,
-	0x3a, 0x3a, 0x56, 0x31, 0x62, 0x06, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x33,
+	0x48, 0x02, 0x08, 0x01, 0x22, 0xc7, 0x01, 0x0a, 0x08, 0x52, 0x75, 0x6e, 0x53, 0x74, 0x61, 0x74,
+	0x65, 0x12, 0x3d, 0x0a, 0x08, 0x77, 0x6f, 0x72, 0x6b, 0x66, 0x6c, 0x6f, 0x77, 0x18, 0x01, 0x20,
+	0x01, 0x28, 0x0b, 0x32, 0x16, 0x2e, 0x66, 0x6c, 0x6f, 0x77, 0x73, 0x74, 0x61, 0x74, 0x65, 0x2e,
+	0x76, 0x31, 0x2e, 0x57, 0x6f, 0x72, 0x6b, 0x66, 0x6c, 0x6f, 0x77, 0x42, 0x09, 0xe0, 0x41, 0x02,
+	0xba, 0x48, 0x03, 0xc8, 0x01, 0x01, 0x52, 0x08, 0x77, 0x6f, 0x72, 0x6b, 0x66, 0x6c, 0x6f, 0x77,
+	0x12, 0x1b, 0x0a, 0x09, 0x6e, 0x65, 0x78, 0x74, 0x5f, 0x73, 0x74, 0x65, 0x70, 0x18, 0x02, 0x20,
+	0x01, 0x28, 0x05, 0x52, 0x08, 0x6e, 0x65, 0x78, 0x74, 0x53, 0x74, 0x65, 0x70, 0x12, 0x3c, 0x0a,
+	0x07, 0x6f, 0x75, 0x74, 0x70, 0x75, 0x74, 0x73, 0x18, 0x03, 0x20, 0x01, 0x28, 0x0b, 0x32, 0x22,
+	0x2e, 0x66, 0x6c, 0x6f, 0x77, 0x73, 0x74, 0x61, 0x74, 0x65, 0x2e, 0x76, 0x31, 0x2e, 0x57, 0x6f,
+	0x72, 0x6b, 0x66, 0x6c, 0x6f, 0x77, 0x2e, 0x53, 0x74, 0x65, 0x70, 0x4f, 0x75, 0x74, 0x70, 0x75,
+	0x74, 0x73, 0x52, 0x07, 0x6f, 0x75, 0x74, 0x70, 0x75, 0x74, 0x73, 0x12, 0x21, 0x0a, 0x0c, 0x73,
+	0x74, 0x65, 0x70, 0x73, 0x5f, 0x62, 0x75, 0x64, 0x67, 0x65, 0x74, 0x18, 0x04, 0x20, 0x01, 0x28,
+	0x05, 0x52, 0x0b, 0x73, 0x74, 0x65, 0x70, 0x73, 0x42, 0x75, 0x64, 0x67, 0x65, 0x74, 0x32, 0x8d,
+	0x01, 0x0a, 0x0f, 0x57, 0x6f, 0x72, 0x6b, 0x66, 0x6c, 0x6f, 0x77, 0x53, 0x65, 0x72, 0x76, 0x69,
+	0x63, 0x65, 0x12, 0x3c, 0x0a, 0x03, 0x52, 0x75, 0x6e, 0x12, 0x18, 0x2e, 0x66, 0x6c, 0x6f, 0x77,
+	0x73, 0x74, 0x61, 0x74, 0x65, 0x2e, 0x76, 0x31, 0x2e, 0x52, 0x75, 0x6e, 0x52, 0x65, 0x71, 0x75,
+	0x65, 0x73, 0x74, 0x1a, 0x19, 0x2e, 0x66, 0x6c, 0x6f, 0x77, 0x73, 0x74, 0x61, 0x74, 0x65, 0x2e,
+	0x76, 0x31, 0x2e, 0x52, 0x75, 0x6e, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x22, 0x00,
+	0x12, 0x3c, 0x0a, 0x03, 0x47, 0x65, 0x74, 0x12, 0x18, 0x2e, 0x66, 0x6c, 0x6f, 0x77, 0x73, 0x74,
+	0x61, 0x74, 0x65, 0x2e, 0x76, 0x31, 0x2e, 0x47, 0x65, 0x74, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73,
+	0x74, 0x1a, 0x19, 0x2e, 0x66, 0x6c, 0x6f, 0x77, 0x73, 0x74, 0x61, 0x74, 0x65, 0x2e, 0x76, 0x31,
+	0x2e, 0x47, 0x65, 0x74, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x22, 0x00, 0x42, 0xad,
+	0x01, 0x0a, 0x10, 0x63, 0x6f, 0x6d, 0x2e, 0x66, 0x6c, 0x6f, 0x77, 0x73, 0x74, 0x61, 0x74, 0x65,
+	0x2e, 0x76, 0x31, 0x42, 0x0e, 0x46, 0x6c, 0x6f, 0x77, 0x73, 0x74, 0x61, 0x74, 0x65, 0x50, 0x72,
+	0x6f, 0x74, 0x6f, 0x50, 0x01, 0x5a, 0x38, 0x67, 0x69, 0x74, 0x68, 0x75, 0x62, 0x2e, 0x63, 0x6f,
+	0x6d, 0x2f, 0x70, 0x69, 0x63, 0x61, 0x74, 0x7a, 0x2f, 0x66, 0x6c, 0x6f, 0x77, 0x73, 0x74, 0x61,
+	0x74, 0x65, 0x2f, 0x70, 0x6b, 0x67, 0x2f, 0x66, 0x6c, 0x6f, 0x77, 0x73, 0x74, 0x61, 0x74, 0x65,
+	0x2f, 0x76, 0x31, 0x3b, 0x66, 0x6c, 0x6f, 0x77, 0x73, 0x74, 0x61, 0x74, 0x65, 0x76, 0x31, 0xa2,
+	0x02, 0x03, 0x46, 0x58, 0x58, 0xaa, 0x02, 0x0c, 0x46, 0x6c, 0x6f, 0x77, 0x73, 0x74, 0x61, 0x74,
+	0x65, 0x2e, 0x56, 0x31, 0xca, 0x02, 0x0c, 0x46, 0x6c, 0x6f, 0x77, 0x73, 0x74, 0x61, 0x74, 0x65,
+	0x5c, 0x56, 0x31, 0xe2, 0x02, 0x18, 0x46, 0x6c, 0x6f, 0x77, 0x73, 0x74, 0x61, 0x74, 0x65, 0x5c,
+	0x56, 0x31, 0x5c, 0x47, 0x50, 0x42, 0x4d, 0x65, 0x74, 0x61, 0x64, 0x61, 0x74, 0x61, 0xea, 0x02,
+	0x0d, 0x46, 0x6c, 0x6f, 0x77, 0x73, 0x74, 0x61, 0x74, 0x65, 0x3a, 0x3a, 0x56, 0x31, 0x62, 0x06,
+	0x70, 0x72, 0x6f, 0x74, 0x6f, 0x33,
 }
 
 var (
@@ -1991,7 +2081,7 @@ func file_flowstate_v1_flowstate_proto_rawDescGZIP() []byte {
 }
 
 var file_flowstate_v1_flowstate_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_flowstate_v1_flowstate_proto_msgTypes = make([]protoimpl.MessageInfo, 32)
+var file_flowstate_v1_flowstate_proto_msgTypes = make([]protoimpl.MessageInfo, 33)
 var file_flowstate_v1_flowstate_proto_goTypes = []interface{}{
 	(Value_Type)(0),              // 0: flowstate.v1.Value.Type
 	(Value_Error_Code)(0),        // 1: flowstate.v1.Value.Error.Code
@@ -2004,71 +2094,74 @@ var file_flowstate_v1_flowstate_proto_goTypes = []interface{}{
 	(*RunResponse)(nil),          // 8: flowstate.v1.RunResponse
 	(*GetRequest)(nil),           // 9: flowstate.v1.GetRequest
 	(*GetResponse)(nil),          // 10: flowstate.v1.GetResponse
-	(*Workflow_StepOutputs)(nil), // 11: flowstate.v1.Workflow.StepOutputs
-	nil,                          // 12: flowstate.v1.Workflow.InputsEntry
-	nil,                          // 13: flowstate.v1.Workflow.LabelsEntry
-	nil,                          // 14: flowstate.v1.Workflow.StepOutputs.StepValuesEntry
-	(*Node_Outputs)(nil),         // 15: flowstate.v1.Node.Outputs
-	nil,                          // 16: flowstate.v1.Node.Outputs.NamedValuesEntry
-	(*Value_Error)(nil),          // 17: flowstate.v1.Value.Error
-	(*Task_Echo)(nil),            // 18: flowstate.v1.Task.Echo
-	(*Task_Printf)(nil),          // 19: flowstate.v1.Task.Printf
-	(*Task_HTTP)(nil),            // 20: flowstate.v1.Task.HTTP
-	(*Task_CEL)(nil),             // 21: flowstate.v1.Task.CEL
-	nil,                          // 22: flowstate.v1.Task.InputsEntry
-	(*Task_Echo_Inputs)(nil),     // 23: flowstate.v1.Task.Echo.Inputs
-	(*Task_Echo_Outputs)(nil),    // 24: flowstate.v1.Task.Echo.Outputs
-	(*Task_Printf_Inputs)(nil),   // 25: flowstate.v1.Task.Printf.Inputs
-	(*Task_Printf_Outputs)(nil),  // 26: flowstate.v1.Task.Printf.Outputs
-	(*Task_HTTP_Inputs)(nil),     // 27: flowstate.v1.Task.HTTP.Inputs
-	(*Task_HTTP_Outputs)(nil),    // 28: flowstate.v1.Task.HTTP.Outputs
-	nil,                          // 29: flowstate.v1.Task.HTTP.Inputs.HeadersEntry
-	nil,                          // 30: flowstate.v1.Task.HTTP.Outputs.HeadersEntry
-	(*Task_CEL_Inputs)(nil),      // 31: flowstate.v1.Task.CEL.Inputs
-	(*Task_CEL_Outputs)(nil),     // 32: flowstate.v1.Task.CEL.Outputs
-	nil,                          // 33: flowstate.v1.Task.CEL.Inputs.VarsEntry
-	(*RunResponse_Error)(nil),    // 34: flowstate.v1.RunResponse.Error
-	(*v1alpha1.ParsedExpr)(nil),  // 35: google.api.expr.v1alpha1.ParsedExpr
-	(*v1alpha1.Value)(nil),       // 36: google.api.expr.v1alpha1.Value
+	(*RunState)(nil),             // 11: flowstate.v1.RunState
+	(*Workflow_StepOutputs)(nil), // 12: flowstate.v1.Workflow.StepOutputs
+	nil,                          // 13: flowstate.v1.Workflow.InputsEntry
+	nil,                          // 14: flowstate.v1.Workflow.LabelsEntry
+	nil,                          // 15: flowstate.v1.Workflow.StepOutputs.StepValuesEntry
+	(*Node_Outputs)(nil),         // 16: flowstate.v1.Node.Outputs
+	nil,                          // 17: flowstate.v1.Node.Outputs.NamedValuesEntry
+	(*Value_Error)(nil),          // 18: flowstate.v1.Value.Error
+	(*Task_Echo)(nil),            // 19: flowstate.v1.Task.Echo
+	(*Task_Printf)(nil),          // 20: flowstate.v1.Task.Printf
+	(*Task_HTTP)(nil),            // 21: flowstate.v1.Task.HTTP
+	(*Task_CEL)(nil),             // 22: flowstate.v1.Task.CEL
+	nil,                          // 23: flowstate.v1.Task.InputsEntry
+	(*Task_Echo_Inputs)(nil),     // 24: flowstate.v1.Task.Echo.Inputs
+	(*Task_Echo_Outputs)(nil),    // 25: flowstate.v1.Task.Echo.Outputs
+	(*Task_Printf_Inputs)(nil),   // 26: flowstate.v1.Task.Printf.Inputs
+	(*Task_Printf_Outputs)(nil),  // 27: flowstate.v1.Task.Printf.Outputs
+	(*Task_HTTP_Inputs)(nil),     // 28: flowstate.v1.Task.HTTP.Inputs
+	(*Task_HTTP_Outputs)(nil),    // 29: flowstate.v1.Task.HTTP.Outputs
+	nil,                          // 30: flowstate.v1.Task.HTTP.Inputs.HeadersEntry
+	nil,                          // 31: flowstate.v1.Task.HTTP.Outputs.HeadersEntry
+	(*Task_CEL_Inputs)(nil),      // 32: flowstate.v1.Task.CEL.Inputs
+	(*Task_CEL_Outputs)(nil),     // 33: flowstate.v1.Task.CEL.Outputs
+	nil,                          // 34: flowstate.v1.Task.CEL.Inputs.VarsEntry
+	(*RunResponse_Error)(nil),    // 35: flowstate.v1.RunResponse.Error
+	(*v1alpha1.ParsedExpr)(nil),  // 36: google.api.expr.v1alpha1.ParsedExpr
+	(*v1alpha1.Value)(nil),       // 37: google.api.expr.v1alpha1.Value
 }
 var file_flowstate_v1_flowstate_proto_depIdxs = []int32{
 	4,  // 0: flowstate.v1.Workflow.steps:type_name -> flowstate.v1.Node
-	12, // 1: flowstate.v1.Workflow.inputs:type_name -> flowstate.v1.Workflow.InputsEntry
-	13, // 2: flowstate.v1.Workflow.labels:type_name -> flowstate.v1.Workflow.LabelsEntry
+	13, // 1: flowstate.v1.Workflow.inputs:type_name -> flowstate.v1.Workflow.InputsEntry
+	14, // 2: flowstate.v1.Workflow.labels:type_name -> flowstate.v1.Workflow.LabelsEntry
 	6,  // 3: flowstate.v1.Node.task:type_name -> flowstate.v1.Task
-	35, // 4: flowstate.v1.Value.expr:type_name -> google.api.expr.v1alpha1.ParsedExpr
-	36, // 5: flowstate.v1.Value.literal:type_name -> google.api.expr.v1alpha1.Value
-	17, // 6: flowstate.v1.Value.error:type_name -> flowstate.v1.Value.Error
-	22, // 7: flowstate.v1.Task.inputs:type_name -> flowstate.v1.Task.InputsEntry
+	36, // 4: flowstate.v1.Value.expr:type_name -> google.api.expr.v1alpha1.ParsedExpr
+	37, // 5: flowstate.v1.Value.literal:type_name -> google.api.expr.v1alpha1.Value
+	18, // 6: flowstate.v1.Value.error:type_name -> flowstate.v1.Value.Error
+	23, // 7: flowstate.v1.Task.inputs:type_name -> flowstate.v1.Task.InputsEntry
 	3,  // 8: flowstate.v1.RunRequest.workflow:type_name -> flowstate.v1.Workflow
 	2,  // 9: flowstate.v1.RunResponse.status:type_name -> flowstate.v1.RunResponse.Status
-	34, // 10: flowstate.v1.RunResponse.error:type_name -> flowstate.v1.RunResponse.Error
-	11, // 11: flowstate.v1.RunResponse.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
+	35, // 10: flowstate.v1.RunResponse.error:type_name -> flowstate.v1.RunResponse.Error
+	12, // 11: flowstate.v1.RunResponse.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
 	2,  // 12: flowstate.v1.GetResponse.status:type_name -> flowstate.v1.RunResponse.Status
-	34, // 13: flowstate.v1.GetResponse.error:type_name -> flowstate.v1.RunResponse.Error
-	11, // 14: flowstate.v1.GetResponse.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
-	14, // 15: flowstate.v1.Workflow.StepOutputs.step_values:type_name -> flowstate.v1.Workflow.StepOutputs.StepValuesEntry
-	5,  // 16: flowstate.v1.Workflow.InputsEntry.value:type_name -> flowstate.v1.Value
-	15, // 17: flowstate.v1.Workflow.StepOutputs.StepValuesEntry.value:type_name -> flowstate.v1.Node.Outputs
-	16, // 18: flowstate.v1.Node.Outputs.named_values:type_name -> flowstate.v1.Node.Outputs.NamedValuesEntry
-	5,  // 19: flowstate.v1.Node.Outputs.NamedValuesEntry.value:type_name -> flowstate.v1.Value
-	1,  // 20: flowstate.v1.Value.Error.code:type_name -> flowstate.v1.Value.Error.Code
-	5,  // 21: flowstate.v1.Task.InputsEntry.value:type_name -> flowstate.v1.Value
-	5,  // 22: flowstate.v1.Task.Printf.Inputs.args:type_name -> flowstate.v1.Value
-	29, // 23: flowstate.v1.Task.HTTP.Inputs.headers:type_name -> flowstate.v1.Task.HTTP.Inputs.HeadersEntry
-	30, // 24: flowstate.v1.Task.HTTP.Outputs.headers:type_name -> flowstate.v1.Task.HTTP.Outputs.HeadersEntry
-	33, // 25: flowstate.v1.Task.CEL.Inputs.vars:type_name -> flowstate.v1.Task.CEL.Inputs.VarsEntry
-	5,  // 26: flowstate.v1.Task.CEL.Outputs.result:type_name -> flowstate.v1.Value
-	5,  // 27: flowstate.v1.Task.CEL.Inputs.VarsEntry.value:type_name -> flowstate.v1.Value
-	7,  // 28: flowstate.v1.WorkflowService.Run:input_type -> flowstate.v1.RunRequest
-	9,  // 29: flowstate.v1.WorkflowService.Get:input_type -> flowstate.v1.GetRequest
-	8,  // 30: flowstate.v1.WorkflowService.Run:output_type -> flowstate.v1.RunResponse
-	10, // 31: flowstate.v1.WorkflowService.Get:output_type -> flowstate.v1.GetResponse
-	30, // [30:32] is the sub-list for method output_type
-	28, // [28:30] is the sub-list for method input_type
-	28, // [28:28] is the sub-list for extension type_name
-	28, // [28:28] is the sub-list for extension extendee
-	0,  // [0:28] is the sub-list for field type_name
+	35, // 13: flowstate.v1.GetResponse.error:type_name -> flowstate.v1.RunResponse.Error
+	12, // 14: flowstate.v1.GetResponse.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
+	3,  // 15: flowstate.v1.RunState.workflow:type_name -> flowstate.v1.Workflow
+	12, // 16: flowstate.v1.RunState.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
+	15, // 17: flowstate.v1.Workflow.StepOutputs.step_values:type_name -> flowstate.v1.Workflow.StepOutputs.StepValuesEntry
+	5,  // 18: flowstate.v1.Workflow.InputsEntry.value:type_name -> flowstate.v1.Value
+	16, // 19: flowstate.v1.Workflow.StepOutputs.StepValuesEntry.value:type_name -> flowstate.v1.Node.Outputs
+	17, // 20: flowstate.v1.Node.Outputs.named_values:type_name -> flowstate.v1.Node.Outputs.NamedValuesEntry
+	5,  // 21: flowstate.v1.Node.Outputs.NamedValuesEntry.value:type_name -> flowstate.v1.Value
+	1,  // 22: flowstate.v1.Value.Error.code:type_name -> flowstate.v1.Value.Error.Code
+	5,  // 23: flowstate.v1.Task.InputsEntry.value:type_name -> flowstate.v1.Value
+	5,  // 24: flowstate.v1.Task.Printf.Inputs.args:type_name -> flowstate.v1.Value
+	30, // 25: flowstate.v1.Task.HTTP.Inputs.headers:type_name -> flowstate.v1.Task.HTTP.Inputs.HeadersEntry
+	31, // 26: flowstate.v1.Task.HTTP.Outputs.headers:type_name -> flowstate.v1.Task.HTTP.Outputs.HeadersEntry
+	34, // 27: flowstate.v1.Task.CEL.Inputs.vars:type_name -> flowstate.v1.Task.CEL.Inputs.VarsEntry
+	5,  // 28: flowstate.v1.Task.CEL.Outputs.result:type_name -> flowstate.v1.Value
+	5,  // 29: flowstate.v1.Task.CEL.Inputs.VarsEntry.value:type_name -> flowstate.v1.Value
+	7,  // 30: flowstate.v1.WorkflowService.Run:input_type -> flowstate.v1.RunRequest
+	9,  // 31: flowstate.v1.WorkflowService.Get:input_type -> flowstate.v1.GetRequest
+	8,  // 32: flowstate.v1.WorkflowService.Run:output_type -> flowstate.v1.RunResponse
+	10, // 33: flowstate.v1.WorkflowService.Get:output_type -> flowstate.v1.GetResponse
+	32, // [32:34] is the sub-list for method output_type
+	30, // [30:32] is the sub-list for method input_type
+	30, // [30:30] is the sub-list for extension type_name
+	30, // [30:30] is the sub-list for extension extendee
+	0,  // [0:30] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_flowstate_proto_init() }
@@ -2174,6 +2267,18 @@ func file_flowstate_v1_flowstate_proto_init() {
 			}
 		}
 		file_flowstate_v1_flowstate_proto_msgTypes[8].Exporter = func(v interface{}, i int) interface{} {
+			switch v := v.(*RunState); i {
+			case 0:
+				return &v.state
+			case 1:
+				return &v.sizeCache
+			case 2:
+				return &v.unknownFields
+			default:
+				return nil
+			}
+		}
+		file_flowstate_v1_flowstate_proto_msgTypes[9].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*Workflow_StepOutputs); i {
 			case 0:
 				return &v.state
@@ -2185,7 +2290,7 @@ func file_flowstate_v1_flowstate_proto_init() {
 				return nil
 			}
 		}
-		file_flowstate_v1_flowstate_proto_msgTypes[12].Exporter = func(v interface{}, i int) interface{} {
+		file_flowstate_v1_flowstate_proto_msgTypes[13].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*Node_Outputs); i {
 			case 0:
 				return &v.state
@@ -2197,7 +2302,7 @@ func file_flowstate_v1_flowstate_proto_init() {
 				return nil
 			}
 		}
-		file_flowstate_v1_flowstate_proto_msgTypes[14].Exporter = func(v interface{}, i int) interface{} {
+		file_flowstate_v1_flowstate_proto_msgTypes[15].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*Value_Error); i {
 			case 0:
 				return &v.state
@@ -2209,7 +2314,7 @@ func file_flowstate_v1_flowstate_proto_init() {
 				return nil
 			}
 		}
-		file_flowstate_v1_flowstate_proto_msgTypes[15].Exporter = func(v interface{}, i int) interface{} {
+		file_flowstate_v1_flowstate_proto_msgTypes[16].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*Task_Echo); i {
 			case 0:
 				return &v.state
@@ -2221,7 +2326,7 @@ func file_flowstate_v1_flowstate_proto_init() {
 				return nil
 			}
 		}
-		file_flowstate_v1_flowstate_proto_msgTypes[16].Exporter = func(v interface{}, i int) interface{} {
+		file_flowstate_v1_flowstate_proto_msgTypes[17].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*Task_Printf); i {
 			case 0:
 				return &v.state
@@ -2233,7 +2338,7 @@ func file_flowstate_v1_flowstate_proto_init() {
 				return nil
 			}
 		}
-		file_flowstate_v1_flowstate_proto_msgTypes[17].Exporter = func(v interface{}, i int) interface{} {
+		file_flowstate_v1_flowstate_proto_msgTypes[18].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*Task_HTTP); i {
 			case 0:
 				return &v.state
@@ -2245,7 +2350,7 @@ func file_flowstate_v1_flowstate_proto_init() {
 				return nil
 			}
 		}
-		file_flowstate_v1_flowstate_proto_msgTypes[18].Exporter = func(v interface{}, i int) interface{} {
+		file_flowstate_v1_flowstate_proto_msgTypes[19].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*Task_CEL); i {
 			case 0:
 				return &v.state
@@ -2257,7 +2362,7 @@ func file_flowstate_v1_flowstate_proto_init() {
 				return nil
 			}
 		}
-		file_flowstate_v1_flowstate_proto_msgTypes[20].Exporter = func(v interface{}, i int) interface{} {
+		file_flowstate_v1_flowstate_proto_msgTypes[21].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*Task_Echo_Inputs); i {
 			case 0:
 				return &v.state
@@ -2269,7 +2374,7 @@ func file_flowstate_v1_flowstate_proto_init() {
 				return nil
 			}
 		}
-		file_flowstate_v1_flowstate_proto_msgTypes[21].Exporter = func(v interface{}, i int) interface{} {
+		file_flowstate_v1_flowstate_proto_msgTypes[22].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*Task_Echo_Outputs); i {
 			case 0:
 				return &v.state
@@ -2281,7 +2386,7 @@ func file_flowstate_v1_flowstate_proto_init() {
 				return nil
 			}
 		}
-		file_flowstate_v1_flowstate_proto_msgTypes[22].Exporter = func(v interface{}, i int) interface{} {
+		file_flowstate_v1_flowstate_proto_msgTypes[23].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*Task_Printf_Inputs); i {
 			case 0:
 				return &v.state
@@ -2293,7 +2398,7 @@ func file_flowstate_v1_flowstate_proto_init() {
 				return nil
 			}
 		}
-		file_flowstate_v1_flowstate_proto_msgTypes[23].Exporter = func(v interface{}, i int) interface{} {
+		file_flowstate_v1_flowstate_proto_msgTypes[24].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*Task_Printf_Outputs); i {
 			case 0:
 				return &v.state
@@ -2305,7 +2410,7 @@ func file_flowstate_v1_flowstate_proto_init() {
 				return nil
 			}
 		}
-		file_flowstate_v1_flowstate_proto_msgTypes[24].Exporter = func(v interface{}, i int) interface{} {
+		file_flowstate_v1_flowstate_proto_msgTypes[25].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*Task_HTTP_Inputs); i {
 			case 0:
 				return &v.state
@@ -2317,7 +2422,7 @@ func file_flowstate_v1_flowstate_proto_init() {
 				return nil
 			}
 		}
-		file_flowstate_v1_flowstate_proto_msgTypes[25].Exporter = func(v interface{}, i int) interface{} {
+		file_flowstate_v1_flowstate_proto_msgTypes[26].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*Task_HTTP_Outputs); i {
 			case 0:
 				return &v.state
@@ -2329,7 +2434,7 @@ func file_flowstate_v1_flowstate_proto_init() {
 				return nil
 			}
 		}
-		file_flowstate_v1_flowstate_proto_msgTypes[28].Exporter = func(v interface{}, i int) interface{} {
+		file_flowstate_v1_flowstate_proto_msgTypes[29].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*Task_CEL_Inputs); i {
 			case 0:
 				return &v.state
@@ -2341,7 +2446,7 @@ func file_flowstate_v1_flowstate_proto_init() {
 				return nil
 			}
 		}
-		file_flowstate_v1_flowstate_proto_msgTypes[29].Exporter = func(v interface{}, i int) interface{} {
+		file_flowstate_v1_flowstate_proto_msgTypes[30].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*Task_CEL_Outputs); i {
 			case 0:
 				return &v.state
@@ -2353,7 +2458,7 @@ func file_flowstate_v1_flowstate_proto_init() {
 				return nil
 			}
 		}
-		file_flowstate_v1_flowstate_proto_msgTypes[31].Exporter = func(v interface{}, i int) interface{} {
+		file_flowstate_v1_flowstate_proto_msgTypes[32].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*RunResponse_Error); i {
 			case 0:
 				return &v.state
@@ -2385,14 +2490,14 @@ func file_flowstate_v1_flowstate_proto_init() {
 		(*GetResponse_Error)(nil),
 		(*GetResponse_Outputs)(nil),
 	}
-	file_flowstate_v1_flowstate_proto_msgTypes[24].OneofWrappers = []interface{}{}
+	file_flowstate_v1_flowstate_proto_msgTypes[25].OneofWrappers = []interface{}{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: file_flowstate_v1_flowstate_proto_rawDesc,
 			NumEnums:      3,
-			NumMessages:   32,
+			NumMessages:   33,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

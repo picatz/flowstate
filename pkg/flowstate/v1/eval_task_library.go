@@ -120,6 +120,13 @@ func taskFuncHTTP(httpClient *http.Client) taskFunc {
 			return nil, fmt.Errorf("failed to create HTTP request: %w", err)
 		}
 
+		// Apply request headers if provided.
+		if taskInputs.Headers != nil {
+			for k, v := range taskInputs.Headers {
+				httpReq.Header.Add(k, v)
+			}
+		}
+
 		httpResp, err := httpClient.Do(httpReq)
 		if err != nil {
 			return nil, fmt.Errorf("failed to execute HTTP request: %w", err)
@@ -353,7 +360,42 @@ func nodeOutputsFromProtoMessage(msg proto.Message) (*Node_Outputs, error) {
 			continue
 		}
 		if fieldDesc.IsMap() {
-			// For now, skip map fields (could add support if needed)
+			// Convert proto map fields into a CEL MapValue literal.
+			mv := msg.ProtoReflect().Get(fieldDesc).Map()
+			entries := make([]*expr.MapValue_Entry, 0, mv.Len())
+			mv.Range(func(k protoreflect.MapKey, v protoreflect.Value) bool {
+				// Only string keys are supported in our protos.
+				key := &expr.Value{Kind: &expr.Value_StringValue{StringValue: k.String()}}
+
+				// Convert value based on value kind.
+				var val *expr.Value
+				switch fieldDesc.MapValue().Kind() {
+				case protoreflect.StringKind:
+					val = &expr.Value{Kind: &expr.Value_StringValue{StringValue: v.String()}}
+				case protoreflect.Int32Kind, protoreflect.Int64Kind:
+					val = &expr.Value{Kind: &expr.Value_Int64Value{Int64Value: v.Int()}}
+				case protoreflect.BoolKind:
+					val = &expr.Value{Kind: &expr.Value_BoolValue{BoolValue: v.Bool()}}
+				case protoreflect.MessageKind:
+					// If the value is a flowstate.v1.Value, unwrap its literal.
+					if vv, ok := v.Message().Interface().(*Value); ok {
+						if lit := vv.GetLiteral(); lit != nil {
+							val = lit
+							break
+						}
+					}
+					// Fallback: unsupported message kind in map
+					val = &expr.Value{Kind: &expr.Value_NullValue{}}
+				default:
+					// Fallback to null for unsupported kinds to avoid panic.
+					val = &expr.Value{Kind: &expr.Value_NullValue{}}
+				}
+				entries = append(entries, &expr.MapValue_Entry{Key: key, Value: val})
+				return true
+			})
+			outputs.NamedValues[fieldName] = &Value{
+				Kind: &Value_Literal{Literal: &expr.Value{Kind: &expr.Value_MapValue{MapValue: &expr.MapValue{Entries: entries}}}},
+			}
 			continue
 		}
 		val = msg.ProtoReflect().Get(fieldDesc)
@@ -408,7 +450,31 @@ func nodeOutputsFromProtoMessage(msg proto.Message) (*Node_Outputs, error) {
 					outputs.NamedValues[fieldName] = v
 				}
 			default:
-				return nil, fmt.Errorf("unsupported message type in output: %s", msgType)
+				// Generic nested message -> convert to a CEL map by reflecting fields.
+				nested := val.Message()
+				nd := nested.Descriptor().Fields()
+				nestedEntries := make([]*expr.MapValue_Entry, 0, nd.Len())
+				for i := 0; i < nd.Len(); i++ {
+					f := nd.Get(i)
+					fv := nested.Get(f)
+					key := &expr.Value{Kind: &expr.Value_StringValue{StringValue: string(f.Name())}}
+					var ev *expr.Value
+					switch f.Kind() {
+					case protoreflect.StringKind:
+						ev = &expr.Value{Kind: &expr.Value_StringValue{StringValue: fv.String()}}
+					case protoreflect.Int32Kind, protoreflect.Int64Kind:
+						ev = &expr.Value{Kind: &expr.Value_Int64Value{Int64Value: fv.Int()}}
+					case protoreflect.BoolKind:
+						ev = &expr.Value{Kind: &expr.Value_BoolValue{BoolValue: fv.Bool()}}
+					default:
+						// For now, represent unsupported nested kinds as null.
+						ev = &expr.Value{Kind: &expr.Value_NullValue{}}
+					}
+					nestedEntries = append(nestedEntries, &expr.MapValue_Entry{Key: key, Value: ev})
+				}
+				outputs.NamedValues[fieldName] = &Value{
+					Kind: &Value_Literal{Literal: &expr.Value{Kind: &expr.Value_MapValue{MapValue: &expr.MapValue{Entries: nestedEntries}}}},
+				}
 			}
 		default:
 			return nil, fmt.Errorf("unsupported field type: %s", fieldDesc.Kind().String())
@@ -427,7 +493,73 @@ func populateProtoMessageFromValueMap(input map[string]*Value, msg proto.Message
 			continue // Field not provided in input map
 		}
 		if fieldDesc.IsMap() {
-			return fmt.Errorf("populateProtoMessageFromValueMap does not support map fields")
+			// Support string-keyed maps with primitive values and flowstate.v1.Value messages.
+			m := msg.ProtoReflect().Mutable(fieldDesc).Map()
+			switch v := val.GetKind().(type) {
+			case *Value_Literal:
+				if mv, ok := v.Literal.GetKind().(*expr.Value_MapValue); ok {
+					for _, e := range mv.MapValue.Entries {
+						k := e.Key.GetStringValue()
+						switch fieldDesc.MapValue().Kind() {
+						case protoreflect.StringKind:
+							m.Set(protoreflect.ValueOfString(k).MapKey(), protoreflect.ValueOfString(e.Value.GetStringValue()))
+						case protoreflect.Int32Kind, protoreflect.Int64Kind:
+							m.Set(protoreflect.ValueOfString(k).MapKey(), protoreflect.ValueOfInt64(e.Value.GetInt64Value()))
+						case protoreflect.BoolKind:
+							m.Set(protoreflect.ValueOfString(k).MapKey(), protoreflect.ValueOfBool(e.Value.GetBoolValue()))
+						case protoreflect.MessageKind:
+							// Accept flowstate.v1.Value only.
+							if e.Value.GetKind() != nil {
+								vv := &Value{Kind: &Value_Literal{Literal: e.Value}}
+								m.Set(protoreflect.ValueOfString(k).MapKey(), protoreflect.ValueOfMessage(vv.ProtoReflect()))
+							}
+						}
+					}
+					continue
+				}
+				return fmt.Errorf("expected map literal for field %q", fieldName)
+			case *Value_Expr:
+				// Evaluate the CEL expression and convert to a protobuf expr.Value.
+				ast := cel.ParsedExprToAst(v.Expr)
+				env, err := cel.NewEnv()
+				if err != nil {
+					return fmt.Errorf("failed to create CEL environment: %w", err)
+				}
+				prg, err := env.Program(ast)
+				if err != nil {
+					return fmt.Errorf("failed to compile CEL expression: %w", err)
+				}
+				out, _, err := prg.Eval(cel.Activation(&StepsOutputActivation{Prev: prevStepOutputs}))
+				if err != nil {
+					return fmt.Errorf("failed to evaluate CEL expression: %w", err)
+				}
+				// Try to convert to expr.Value and then to a map literal.
+				pv, err := cel.RefValueToValue(out)
+				if err != nil {
+					return fmt.Errorf("failed to convert CEL value: %w", err)
+				}
+				if mv, ok := pv.GetKind().(*expr.Value_MapValue); ok {
+					for _, e := range mv.MapValue.Entries {
+						k := e.Key.GetStringValue()
+						switch fieldDesc.MapValue().Kind() {
+						case protoreflect.StringKind:
+							m.Set(protoreflect.ValueOfString(k).MapKey(), protoreflect.ValueOfString(e.Value.GetStringValue()))
+						case protoreflect.Int32Kind, protoreflect.Int64Kind:
+							m.Set(protoreflect.ValueOfString(k).MapKey(), protoreflect.ValueOfInt64(e.Value.GetInt64Value()))
+						case protoreflect.BoolKind:
+							m.Set(protoreflect.ValueOfString(k).MapKey(), protoreflect.ValueOfBool(e.Value.GetBoolValue()))
+						case protoreflect.MessageKind:
+							// Allow flowstate.v1.Value as a map value in inputs if needed.
+							vv := &Value{Kind: &Value_Literal{Literal: e.Value}}
+							m.Set(protoreflect.ValueOfString(k).MapKey(), protoreflect.ValueOfMessage(vv.ProtoReflect()))
+						}
+					}
+					continue
+				}
+				return fmt.Errorf("expected map from CEL for field %q", fieldName)
+			default:
+				return fmt.Errorf("unsupported map input for field %q: %T", fieldName, val)
+			}
 		}
 		if fieldDesc.IsList() {
 			// Expect input value to be a list of *Value

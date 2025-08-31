@@ -100,6 +100,7 @@ func TestFlowstateServer(t *testing.T) {
 	w := worker.New(devServer.Client(), engine.RunTaskQueueName, worker.Options{})
 	w.RegisterWorkflow(engine.Run)
 	w.RegisterActivity(engine.Task)
+	w.RegisterActivity(engine.TaskWithPrev)
 
 	err = w.Start()
 	require.NoError(t, err)

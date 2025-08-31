@@ -114,6 +114,7 @@ func runWorker(cmd *cobra.Command, args []string) error {
 	// Register workflow and activities
 	w.RegisterWorkflow(engine.Run)
 	w.RegisterActivity(engine.Task)
+	w.RegisterActivity(engine.TaskWithPrev)
 
 	log.Printf("Starting worker on task queue: %s", temporalTaskQueue)
 	if verboseLogging {

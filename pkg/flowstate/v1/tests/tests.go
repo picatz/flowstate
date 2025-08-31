@@ -173,6 +173,7 @@ var Workflows = []struct {
 				"web": {
 					NamedValues: map[string]*v1.Value{
 						"status_code": v1.NewLiteral(int64(200)),
+						"headers":     v1.NewLiteralMap(map[string]any{}),
 					},
 				},
 				"output": {

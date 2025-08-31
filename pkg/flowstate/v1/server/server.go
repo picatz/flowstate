@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 	"fmt"
+	"os"
+	"strconv"
 	"time"
 
 	"connectrpc.com/connect"
@@ -47,7 +49,19 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 		WorkflowRunTimeout: 6 * time.Hour,
 	}
 
-	run, err := s.temporalClient.ExecuteWorkflow(ctx, options, engine.Run, req.Msg.GetWorkflow())
+	// Read optional env-configured step budget once and capture in workflow input state
+	// to maintain determinism during replay.
+	var stepsBudget int
+	if s := os.Getenv("FLOWSTATE_MAX_STEPS_PER_RUN"); s != "" {
+		if v, err := strconv.Atoi(s); err == nil && v > 0 {
+			stepsBudget = v
+		}
+	}
+
+	run, err := s.temporalClient.ExecuteWorkflow(ctx, options, engine.Run, &v1.RunState{
+		Workflow:    req.Msg.GetWorkflow(),
+		StepsBudget: int32(stepsBudget),
+	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("unable to execute workflow: %w", err))
 	}

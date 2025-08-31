@@ -1,0 +1,28 @@
+name: headers and nested outputs
+steps:
+  - id: web
+    task:
+      name: http
+      inputs:
+        method: GET
+        url: https://httpbin.org/anything
+        headers:
+          X-From: Flowstate
+          X-Env: dev
+  - id: echo_header
+    task:
+      name: echo
+      inputs:
+        message: ${string(web.status_code)}
+  - id: nested
+    task:
+      name: cel
+      inputs:
+        # Note: CEL expressions for the cel task's `expr` input must be strings.
+        # Quote the whole expression so it is treated as a string value.
+        expr: "{'outer': {'inner': 'value'}}"
+  - id: pick
+    task:
+      name: echo
+      inputs:
+        message: ${nested.result['outer']['inner']}

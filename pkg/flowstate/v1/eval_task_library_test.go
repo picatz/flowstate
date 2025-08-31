@@ -8,7 +8,11 @@ import (
 	"github.com/stretchr/testify/require"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protodesc"
+	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/testing/protocmp"
+	"google.golang.org/protobuf/types/descriptorpb"
+	"google.golang.org/protobuf/types/dynamicpb"
 )
 
 func checkProtoEqual(t *testing.T, expected, actual proto.Message) {
@@ -316,4 +320,123 @@ func Test_taskFuncCEL(t *testing.T) {
 			test.check(t, result, err)
 		})
 	}
+}
+
+func Test_nodeOutputsFromProtoMessage_MapHeaders(t *testing.T) {
+	outs, err := nodeOutputsFromProtoMessage(&Task_HTTP_Outputs{
+		StatusCode: 200,
+		Body:       "ok",
+		Headers:    map[string]string{"A": "1", "B": "2"},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, outs)
+	hv := outs.NamedValues["headers"].GetLiteral().GetMapValue()
+	require.NotNil(t, hv)
+	// Collect to regular map and assert both keys exist
+	got := map[string]string{}
+	for _, e := range hv.Entries {
+		got[e.Key.GetStringValue()] = e.Value.GetStringValue()
+	}
+	require.Equal(t, map[string]string{"A": "1", "B": "2"}, got)
+}
+
+func Test_populateProtoMessageFromValueMap_MapHeadersInput(t *testing.T) {
+	inputs := map[string]*Value{
+		"url":     NewLiteral("https://example.com"),
+		"method":  NewLiteral("GET"),
+		"headers": NewLiteralMap(map[string]any{"A": "1", "B": "2"}),
+	}
+	msg := &Task_HTTP_Inputs{}
+	err := populateProtoMessageFromValueMap(inputs, msg, &Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}})
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{"A": "1", "B": "2"}, msg.GetHeaders())
+}
+
+func Test_populateProtoMessageFromValueMap_MapHeadersExprInput(t *testing.T) {
+	inputs := map[string]*Value{
+		"url":    NewLiteral("https://example.com"),
+		"method": NewLiteral("GET"),
+		// {'A': '1', 'B': string(2)} => map[string]any{"A":"1","B":"2"}
+		"headers": NewExpr("{'A': '1', 'B': string(2)}"),
+	}
+	msg := &Task_HTTP_Inputs{}
+	err := populateProtoMessageFromValueMap(inputs, msg, &Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}})
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{"A": "1", "B": "2"}, msg.GetHeaders())
+}
+
+func Test_populateProtoMessageFromValueMap_MapNonStringExprInput(t *testing.T) {
+	// Build a dynamic message with map<string,int64> and map<string,bool> fields.
+	// message DynMapContainer { map<string,int64> ints = 1; map<string,bool> bools = 2; }
+
+	intsEntry := &descriptorpb.DescriptorProto{
+		Name: proto.String("IntsEntry"),
+		Field: []*descriptorpb.FieldDescriptorProto{
+			{Name: proto.String("key"), Number: proto.Int32(1), Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(), Type: descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum()},
+			{Name: proto.String("value"), Number: proto.Int32(2), Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(), Type: descriptorpb.FieldDescriptorProto_TYPE_INT64.Enum()},
+		},
+		Options: &descriptorpb.MessageOptions{MapEntry: proto.Bool(true)},
+	}
+	boolsEntry := &descriptorpb.DescriptorProto{
+		Name: proto.String("BoolsEntry"),
+		Field: []*descriptorpb.FieldDescriptorProto{
+			{Name: proto.String("key"), Number: proto.Int32(1), Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(), Type: descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum()},
+			{Name: proto.String("value"), Number: proto.Int32(2), Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(), Type: descriptorpb.FieldDescriptorProto_TYPE_BOOL.Enum()},
+		},
+		Options: &descriptorpb.MessageOptions{MapEntry: proto.Bool(true)},
+	}
+
+	container := &descriptorpb.DescriptorProto{
+		Name: proto.String("DynMapContainer"),
+		Field: []*descriptorpb.FieldDescriptorProto{
+			{Name: proto.String("ints"), Number: proto.Int32(1), Label: descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum(), Type: descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(), TypeName: proto.String(".flowstate.v1.test.DynMapContainer.IntsEntry")},
+			{Name: proto.String("bools"), Number: proto.Int32(2), Label: descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum(), Type: descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(), TypeName: proto.String(".flowstate.v1.test.DynMapContainer.BoolsEntry")},
+		},
+		NestedType: []*descriptorpb.DescriptorProto{intsEntry, boolsEntry},
+	}
+
+	fdp := &descriptorpb.FileDescriptorProto{
+		Syntax:      proto.String("proto3"),
+		Name:        proto.String("dyn_test.proto"),
+		Package:     proto.String("flowstate.v1.test"),
+		MessageType: []*descriptorpb.DescriptorProto{container},
+	}
+
+	files, err := protodesc.NewFiles(&descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{fdp}})
+	require.NoError(t, err)
+	d, err := files.FindDescriptorByName("flowstate.v1.test.DynMapContainer")
+	require.NoError(t, err)
+	md, ok := d.(protoreflect.MessageDescriptor)
+	require.True(t, ok)
+
+	msg := dynamicpb.NewMessage(md)
+
+	inputs := map[string]*Value{
+		"ints":  NewExpr("{'A': 1, 'B': 2}"),
+		"bools": NewExpr("{'T': true, 'F': false}"),
+	}
+	err = populateProtoMessageFromValueMap(inputs, msg, &Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}})
+	require.NoError(t, err)
+
+	// Collect map values from the dynamic message and assert
+	intsField := md.Fields().ByName("ints")
+	boolsField := md.Fields().ByName("bools")
+	require.NotNil(t, intsField)
+	require.NotNil(t, boolsField)
+
+	gotInts := map[string]int64{}
+	mints := msg.ProtoReflect().Get(intsField).Map()
+	mints.Range(func(k protoreflect.MapKey, v protoreflect.Value) bool {
+		gotInts[k.String()] = v.Int()
+		return true
+	})
+	require.Equal(t, map[string]int64{"A": 1, "B": 2}, gotInts)
+
+	gotBools := map[string]bool{}
+	mbools := msg.ProtoReflect().Get(boolsField).Map()
+	mbools.Range(func(k protoreflect.MapKey, v protoreflect.Value) bool {
+		gotBools[k.String()] = v.Bool()
+		return true
+	})
+	require.Equal(t, map[string]bool{"T": true, "F": false}, gotBools)
 }

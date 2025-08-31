@@ -1361,6 +1361,167 @@ var _ interface {
 	ErrorName() string
 } = GetResponseValidationError{}
 
+// Validate checks the field values on RunState with the rules defined in the
+// proto definition for this message. If any rules are violated, the first
+// error encountered is returned, or nil if there are no violations.
+func (m *RunState) Validate() error {
+	return m.validate(false)
+}
+
+// ValidateAll checks the field values on RunState with the rules defined in
+// the proto definition for this message. If any rules are violated, the
+// result is a list of violation errors wrapped in RunStateMultiError, or nil
+// if none found.
+func (m *RunState) ValidateAll() error {
+	return m.validate(true)
+}
+
+func (m *RunState) validate(all bool) error {
+	if m == nil {
+		return nil
+	}
+
+	var errors []error
+
+	if all {
+		switch v := interface{}(m.GetWorkflow()).(type) {
+		case interface{ ValidateAll() error }:
+			if err := v.ValidateAll(); err != nil {
+				errors = append(errors, RunStateValidationError{
+					field:  "Workflow",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		case interface{ Validate() error }:
+			if err := v.Validate(); err != nil {
+				errors = append(errors, RunStateValidationError{
+					field:  "Workflow",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		}
+	} else if v, ok := interface{}(m.GetWorkflow()).(interface{ Validate() error }); ok {
+		if err := v.Validate(); err != nil {
+			return RunStateValidationError{
+				field:  "Workflow",
+				reason: "embedded message failed validation",
+				cause:  err,
+			}
+		}
+	}
+
+	// no validation rules for NextStep
+
+	if all {
+		switch v := interface{}(m.GetOutputs()).(type) {
+		case interface{ ValidateAll() error }:
+			if err := v.ValidateAll(); err != nil {
+				errors = append(errors, RunStateValidationError{
+					field:  "Outputs",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		case interface{ Validate() error }:
+			if err := v.Validate(); err != nil {
+				errors = append(errors, RunStateValidationError{
+					field:  "Outputs",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		}
+	} else if v, ok := interface{}(m.GetOutputs()).(interface{ Validate() error }); ok {
+		if err := v.Validate(); err != nil {
+			return RunStateValidationError{
+				field:  "Outputs",
+				reason: "embedded message failed validation",
+				cause:  err,
+			}
+		}
+	}
+
+	// no validation rules for StepsBudget
+
+	if len(errors) > 0 {
+		return RunStateMultiError(errors)
+	}
+
+	return nil
+}
+
+// RunStateMultiError is an error wrapping multiple validation errors returned
+// by RunState.ValidateAll() if the designated constraints aren't met.
+type RunStateMultiError []error
+
+// Error returns a concatenation of all the error messages it wraps.
+func (m RunStateMultiError) Error() string {
+	var msgs []string
+	for _, err := range m {
+		msgs = append(msgs, err.Error())
+	}
+	return strings.Join(msgs, "; ")
+}
+
+// AllErrors returns a list of validation violation errors.
+func (m RunStateMultiError) AllErrors() []error { return m }
+
+// RunStateValidationError is the validation error returned by
+// RunState.Validate if the designated constraints aren't met.
+type RunStateValidationError struct {
+	field  string
+	reason string
+	cause  error
+	key    bool
+}
+
+// Field function returns field value.
+func (e RunStateValidationError) Field() string { return e.field }
+
+// Reason function returns reason value.
+func (e RunStateValidationError) Reason() string { return e.reason }
+
+// Cause function returns cause value.
+func (e RunStateValidationError) Cause() error { return e.cause }
+
+// Key function returns key value.
+func (e RunStateValidationError) Key() bool { return e.key }
+
+// ErrorName returns error name.
+func (e RunStateValidationError) ErrorName() string { return "RunStateValidationError" }
+
+// Error satisfies the builtin error interface
+func (e RunStateValidationError) Error() string {
+	cause := ""
+	if e.cause != nil {
+		cause = fmt.Sprintf(" | caused by: %v", e.cause)
+	}
+
+	key := ""
+	if e.key {
+		key = "key for "
+	}
+
+	return fmt.Sprintf(
+		"invalid %sRunState.%s: %s%s",
+		key,
+		e.field,
+		e.reason,
+		cause)
+}
+
+var _ error = RunStateValidationError{}
+
+var _ interface {
+	Field() string
+	Reason() string
+	Key() bool
+	Cause() error
+	ErrorName() string
+} = RunStateValidationError{}
+
 // Validate checks the field values on Workflow_StepOutputs with the rules
 // defined in the proto definition for this message. If any rules are
 // violated, the first error encountered is returned, or nil if there are no violations.

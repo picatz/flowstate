@@ -374,6 +374,22 @@ message GetResponse {
   }
 }
 
+// RunState is the durable workflow state used by the Temporal Run entrypoint.
+// It allows the workflow to continue-as-new while carrying only the minimal
+// required subset of previously produced outputs for the remaining steps.
+message RunState {
+  Workflow workflow = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED
+  ];
+  // Zero-based index of the next step to execute.
+  int32 next_step = 2;
+  // Compact subset of outputs needed by subsequent steps.
+  Workflow.StepOutputs outputs = 3;
+  // Step budget for Continue-As-New. If 0 or unset, server/workflow defaults apply.
+  int32 steps_budget = 4;
+}
+
 // WorkflowService is the service that provides operations for managing and running workflows.
 service WorkflowService {
   rpc Run(RunRequest) returns (RunResponse) {}

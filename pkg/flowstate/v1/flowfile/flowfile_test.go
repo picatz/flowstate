@@ -121,6 +121,69 @@ steps:
 	)
 }
 
+func TestFlowfile_MapWithExprValues(t *testing.T) {
+	data := []byte(`
+name: http-with-headers
+steps:
+  - id: web
+    task:
+      name: http
+      inputs:
+        url: https://example.com
+        method: GET
+        headers:
+          A: "1"
+          B: ${string(2)}
+`)
+	wf, err := flowfile.Unmarshal(data)
+	require.NoError(t, err)
+	// headers should be encoded as a CEL expression map, not a literal
+	headers := wf.Steps[0].GetTask().Inputs["headers"]
+	require.NotNil(t, headers)
+	require.NotNil(t, headers.GetExpr())
+}
+
+func TestFlowfile_ListWithExprValues(t *testing.T) {
+	data := []byte(`
+name: list-exprs
+steps:
+  - id: s
+    task:
+      name: echo
+      inputs:
+        # mixed list: contains an embedded ${...} so parser should encode as CEL expr
+        lst:
+          - 1
+          - ${1 + 1}
+          - 3
+`)
+	wf, err := flowfile.Unmarshal(data)
+	require.NoError(t, err)
+	v := wf.Steps[0].GetTask().Inputs["lst"]
+	require.NotNil(t, v)
+	require.NotNil(t, v.GetExpr())
+
+	// all-literal list remains literal
+	data2 := []byte(`
+name: list-literals
+steps:
+  - id: s
+    task:
+      name: echo
+      inputs:
+        lst:
+          - 1
+          - 2
+          - 3
+`)
+	wf2, err := flowfile.Unmarshal(data2)
+	require.NoError(t, err)
+	v2 := wf2.Steps[0].GetTask().Inputs["lst"]
+	require.NotNil(t, v2)
+	require.NotNil(t, v2.GetLiteral())
+	require.NotNil(t, v2.GetLiteral().GetListValue())
+}
+
 // FuzzRoundTrip tests the round-trip conversion of a Flowfile YAML-based DSL
 // representation to a flowstatev1.Workflow proto representation and back.
 func FuzzRoundTrip(f *testing.F) {
