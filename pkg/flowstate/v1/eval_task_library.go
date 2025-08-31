@@ -2,12 +2,14 @@ package flowstatev1
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 
 	"github.com/google/cel-go/cel"
+	"github.com/google/cel-go/common/types"
 	ref "github.com/google/cel-go/common/types/ref"
 	"github.com/google/cel-go/ext"
 	"github.com/google/cel-go/interpreter"
@@ -234,6 +236,39 @@ func taskFuncCEL(ctx context.Context, input map[string]*Value, prevStepOutputs *
 			envOpts = append(envOpts, cel.OptionalTypes(), ext.Regex())
 		case "optional":
 			envOpts = append(envOpts, cel.OptionalTypes())
+		case "json":
+			envOpts = append(envOpts,
+				cel.Function("json_parse",
+					cel.Overload("json_parse_string",
+						[]*cel.Type{cel.StringType}, cel.DynType,
+						cel.UnaryBinding(func(val ref.Val) ref.Val {
+							s, ok := val.Value().(string)
+							if !ok {
+								return types.NewErr("json_parse: expected string input, got %T", val)
+							}
+							var out any
+							if err := json.Unmarshal([]byte(s), &out); err != nil {
+								return types.NewErr("json_parse: %v", err)
+							}
+							return types.DefaultTypeAdapter.NativeToValue(out)
+						}),
+					),
+					cel.Overload("json_parse_bytes",
+						[]*cel.Type{cel.BytesType}, cel.DynType,
+						cel.UnaryBinding(func(val ref.Val) ref.Val {
+							b, ok := val.Value().([]byte)
+							if !ok {
+								return types.NewErr("json_parse: expected bytes input, got %T", val)
+							}
+							var out any
+							if err := json.Unmarshal(b, &out); err != nil {
+								return types.NewErr("json_parse: %v", err)
+							}
+							return types.DefaultTypeAdapter.NativeToValue(out)
+						}),
+					),
+				),
+			)
 		default:
 			return nil, fmt.Errorf("unknown CEL extension library %q", name)
 		}

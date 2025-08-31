@@ -123,6 +123,29 @@ The above `Flowfile` defines two steps:
 
 ## Task Outputs and Data Flow
 
+### Parse JSON with CEL
+
+You can keep HTTP simple (returning `status_code`, `headers`, `body`) and use the CEL task to parse JSON without a separate HTTP+JSON task. Enable the optional `json` library and use `json_parse(string)`:
+
+```yaml
+steps:
+  - id: resp 
+    task:
+      name: http
+      inputs:
+        method: GET
+        url: https://httpbin.org/json
+  - id: pick
+    task:
+      name: cel
+      inputs:
+        libs: [json]
+        expr: json_parse(resp.body)['slideshow']['title']
+```
+
+The CEL task’s `result` will be the selected field from the parsed JSON. This keeps activities minimal and payloads small while letting you shape data in CEL.
+
+
 Each step in a `Flowfile` has named inputs and produces named outputs, which can be referenced by later steps using CEL expressions using the step `id` and output name. The outputs of a step are determined by the task being used, and can be of various types (e.g., `string`, `int`, `map`, etc.). The outputs of a step can be used as inputs to later steps, allowing for complex data flows and transformations.
 
 ### Available Tasks
