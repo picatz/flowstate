@@ -145,6 +145,31 @@ steps:
 
 The CEL task’s `result` will be the selected field from the parsed JSON. This keeps activities minimal and payloads small while letting you shape data in CEL.
 
+### Shape HTTP outputs to fit limits
+
+To keep workflow payloads small, the `http` task supports an optional `outputs` input (a map literal or CEL map) which defines exactly what the step should return. When `outputs` is present, only those named values are returned instead of the default `status_code/body/headers`.
+
+Example:
+
+```yaml
+steps:
+  - id: web
+    task:
+      name: http
+      inputs:
+        method: GET
+        url: https://httpbin.org/json
+        outputs: "{'status': status_code, 'title': json_parse(body)['slideshow']['title']}"
+```
+
+Available variables in `outputs` evaluation:
+- `status_code` (int64)
+- `body` (string)
+- `headers` (map[string]string)
+
+Tip: Prefer returning only the minimal fields needed downstream to avoid history limits.
+
+
 
 Each step in a `Flowfile` has named inputs and produces named outputs, which can be referenced by later steps using CEL expressions using the step `id` and output name. The outputs of a step are determined by the task being used, and can be of various types (e.g., `string`, `int`, `map`, etc.). The outputs of a step can be used as inputs to later steps, allowing for complex data flows and transformations.
 

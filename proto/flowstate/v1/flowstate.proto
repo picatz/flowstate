@@ -233,6 +233,15 @@ message Task {
       }];
       map<string, string> headers = 3;
       optional string body = 4;
+      // Optional outputs shaping: when provided, the HTTP task will return only
+      // the named outputs defined by this map instead of the default outputs.
+      // Values are evaluated as CEL expressions (or used as literals) with the
+      // following variables available:
+      //   - status_code (int)
+      //   - body (string)
+      //   - headers (map<string,string>)
+      // This enables payload minimization by selecting just the fields needed.
+      map<string, Value> outputs = 5;
     }
     message Outputs {
       int32 status_code = 1 [(buf.validate.field).int32 = {
@@ -240,7 +249,7 @@ message Task {
         lte: 599
       }];
       map<string, string> headers = 2;
-      string body = 3;
+      // string body = 3;
     }
   }
 

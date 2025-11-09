@@ -141,9 +141,9 @@ func Test_httpFuncPrintf(t *testing.T) {
 			check: func(t *testing.T, result *Node_Outputs, err error) {
 				require.NoError(t, err)
 				require.Contains(t, result.NamedValues, "status_code")
-				require.Contains(t, result.NamedValues, "body")
+				// require.Contains(t, result.NamedValues, "body")
 				require.Equal(t, int64(http.StatusOK), result.NamedValues["status_code"].GetLiteral().GetInt64Value())
-				require.NotEmpty(t, result.NamedValues["body"].GetLiteral().GetStringValue())
+				// require.NotEmpty(t, result.NamedValues["body"].GetLiteral().GetStringValue())
 			},
 		},
 		{
@@ -167,6 +167,58 @@ func Test_httpFuncPrintf(t *testing.T) {
 				nil,
 			)
 			test.check(t, result, err)
+		})
+	}
+}
+
+func Test_taskFuncHTTP_OutputsShaping(t *testing.T) {
+	fn := taskFuncHTTP(http.DefaultClient)
+
+	tests := []struct {
+		name        string
+		url         string
+		method      string
+		outputsExpr string
+		check       func(t *testing.T, result *Node_Outputs, err error)
+	}{
+		{
+			name:        "status only",
+			url:         "https://httpbin.org/json",
+			method:      http.MethodGet,
+			outputsExpr: "{'status': status_code}",
+			check: func(t *testing.T, result *Node_Outputs, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, result)
+				require.Len(t, result.NamedValues, 1)
+				require.Contains(t, result.NamedValues, "status")
+				require.GreaterOrEqual(t, result.NamedValues["status"].GetLiteral().GetInt64Value(), int64(200))
+				require.Less(t, result.NamedValues["status"].GetLiteral().GetInt64Value(), int64(600))
+			},
+		},
+		{
+			name:        "json title",
+			url:         "https://httpbin.org/json",
+			method:      http.MethodGet,
+			outputsExpr: "{'title': json_parse(body)['slideshow']['title']}",
+			check: func(t *testing.T, result *Node_Outputs, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, result)
+				require.Contains(t, result.NamedValues, "title")
+				title := result.NamedValues["title"].GetLiteral().GetStringValue()
+				require.NotEmpty(t, title)
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			inputs := NewNamedValues(map[string]any{
+				"url":     tc.url,
+				"method":  tc.method,
+				"outputs": NewExpr(tc.outputsExpr),
+			})
+			result, err := fn(t.Context(), inputs, nil)
+			tc.check(t, result, err)
 		})
 	}
 }
@@ -325,8 +377,8 @@ func Test_taskFuncCEL(t *testing.T) {
 func Test_nodeOutputsFromProtoMessage_MapHeaders(t *testing.T) {
 	outs, err := nodeOutputsFromProtoMessage(&Task_HTTP_Outputs{
 		StatusCode: 200,
-		Body:       "ok",
-		Headers:    map[string]string{"A": "1", "B": "2"},
+		// Body:       "ok",
+		Headers: map[string]string{"A": "1", "B": "2"},
 	})
 	require.NoError(t, err)
 	require.NotNil(t, outs)

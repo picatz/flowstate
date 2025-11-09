@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"strings"
 
@@ -100,12 +101,45 @@ func taskFuncPrintf(ctx context.Context, input map[string]*Value, prevStepOutput
 
 func taskFuncHTTP(httpClient *http.Client) taskFunc {
 	return func(ctx context.Context, input map[string]*Value, prevStepOutputs *Workflow_StepOutputs) (*Node_Outputs, error) {
-
 		taskInputs := &Task_HTTP_Inputs{
 			Method: proto.String(http.MethodGet),
 		}
-		if err := populateProtoMessageFromValueMap(input, taskInputs, prevStepOutputs); err != nil {
+
+		var outputsSpec *Value
+		inputForPopulate := input
+		if rawOutputs, ok := input["outputs"]; ok {
+			outputsSpec = rawOutputs
+			inputForPopulate = make(map[string]*Value, len(input)-1)
+			for k, v := range input {
+				if k == "outputs" {
+					continue
+				}
+				inputForPopulate[k] = v
+			}
+		}
+
+		if err := populateProtoMessageFromValueMap(inputForPopulate, taskInputs, prevStepOutputs); err != nil {
 			return nil, fmt.Errorf("failed to parse http task inputs: %w", err)
+		}
+
+		var outputsExpr *expr.ParsedExpr
+		if outputsSpec != nil {
+			switch kind := outputsSpec.GetKind().(type) {
+			case *Value_Literal:
+				converted, err := literalToValueMap(kind.Literal)
+				if err != nil {
+					return nil, fmt.Errorf("invalid outputs literal: %w", err)
+				}
+				if len(converted) > 0 {
+					taskInputs.Outputs = converted
+				}
+			case *Value_Expr:
+				outputsExpr = kind.Expr
+			case *Value_Error_:
+				return nil, fmt.Errorf("invalid outputs specification: %s", kind.Error.GetMessage())
+			default:
+				return nil, fmt.Errorf("unsupported outputs specification kind: %T", kind)
+			}
 		}
 
 		if err := taskInputs.ValidateAll(); err != nil {
@@ -141,12 +175,236 @@ func taskFuncHTTP(httpClient *http.Client) taskFunc {
 		if err != nil {
 			return nil, fmt.Errorf("failed to read HTTP response body: %w", err)
 		}
-		return nodeOutputsFromProtoMessage(&Task_HTTP_Outputs{
+		// Build default outputs
+		defaultOuts := &Task_HTTP_Outputs{
 			StatusCode: int32(httpResp.StatusCode),
-			Body:       string(respBody),
-			// Headers:    fmt.Sprintf("%v", httpResp.Header),
-		})
+			// Body:       string(respBody),
+		}
+
+		// If typed outputs provided (either as explicit map entries or via a CEL map expression),
+		// evaluate them using the response variables and return only those named values.
+		if len(taskInputs.Outputs) > 0 || outputsExpr != nil {
+			env, err := cel.NewEnv(
+				cel.Variable(
+					"status_code",
+					cel.IntType,
+				),
+				cel.Variable(
+					"headers",
+					cel.MapType(cel.StringType, cel.ListType(cel.StringType)),
+				),
+				cel.Variable(
+					"body",
+					cel.StringType,
+				),
+				cel.Function("json_parse",
+					cel.Overload("json_parse_string",
+						[]*cel.Type{cel.StringType}, cel.DynType,
+						cel.UnaryBinding(func(val ref.Val) ref.Val {
+							s, ok := val.Value().(string)
+							if !ok {
+								return types.NewErr("json_parse: expected string input, got %T", val)
+							}
+							var out any
+							if err := json.Unmarshal([]byte(s), &out); err != nil {
+								return types.NewErr("json_parse: %v", err)
+							}
+							return types.DefaultTypeAdapter.NativeToValue(out)
+						}),
+					),
+				),
+			)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create CEL environment: %w", err)
+			}
+			respVars := map[string]any{
+				"status_code": int64(httpResp.StatusCode),
+				"body":        string(respBody),
+			}
+			if len(httpResp.Header) > 0 {
+				h := make(map[string][]string, len(httpResp.Header))
+				maps.Copy(h, httpResp.Header)
+				respVars["headers"] = h
+			}
+			varAct, err := interpreter.NewActivation(respVars)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create activation: %w", err)
+			}
+			act := interpreter.NewHierarchicalActivation(&StepsOutputActivation{Prev: prevStepOutputs}, varAct)
+
+			if outputsExpr != nil {
+				ast := cel.ParsedExprToAst(outputsExpr)
+				prg, err := env.Program(ast)
+				if err != nil {
+					return nil, fmt.Errorf("failed to compile HTTP outputs expression: %w", err)
+				}
+				out, _, err := prg.Eval(act)
+				if err != nil {
+					return nil, fmt.Errorf("failed to evaluate HTTP outputs expression: %w", err)
+				}
+				pv, err := cel.RefValueToValue(out)
+				if err != nil {
+					return nil, fmt.Errorf("failed to convert HTTP outputs expression result: %w", err)
+				}
+				mv, ok := pv.GetKind().(*expr.Value_MapValue)
+				if !ok {
+					return nil, fmt.Errorf("HTTP outputs expression must evaluate to a map")
+				}
+				outputs := &Node_Outputs{NamedValues: make(map[string]*Value, len(mv.MapValue.Entries))}
+				for _, e := range mv.MapValue.Entries {
+					outputs.NamedValues[e.Key.GetStringValue()] = &Value{
+						Kind: &Value_Literal{Literal: e.Value},
+					}
+				}
+				return outputs, nil
+			}
+
+			outputs := &Node_Outputs{NamedValues: map[string]*Value{}}
+			for name, v := range taskInputs.Outputs {
+				switch k := v.GetKind().(type) {
+				case *Value_Expr:
+					ast := cel.ParsedExprToAst(k.Expr)
+					prg, err := env.Program(ast)
+					if err != nil {
+						return nil, fmt.Errorf("failed to compile CEL outputs: %w", err)
+					}
+					out, _, err := prg.Eval(act)
+					if err != nil {
+						return nil, fmt.Errorf("failed to evaluate CEL outputs: %w", err)
+					}
+					pv, err := cel.RefValueToValue(out)
+					if err != nil {
+						return nil, fmt.Errorf("failed to convert outputs value: %w", err)
+					}
+					outputs.NamedValues[name] = &Value{Kind: &Value_Literal{Literal: pv}}
+				case *Value_Literal:
+					outputs.NamedValues[name] = &Value{Kind: &Value_Literal{Literal: k.Literal}}
+				default:
+					return nil, fmt.Errorf("unsupported outputs value kind for %q: %T", name, v.GetKind())
+				}
+			}
+			return outputs, nil
+		}
+		// If caller provided an `outputs` map (as a CEL map or literal map) in inputs,
+		// evaluate it against response variables and return only those named values.
+		// if ov, ok := input["outputs"]; ok && ov != nil {
+		// 	// Prepare CEL environment with a built-in json_parse function.
+		// 	env, err := cel.NewEnv(
+		// 		cel.Function("json_parse",
+		// 			cel.Overload("json_parse_string",
+		// 				[]*cel.Type{cel.StringType}, cel.DynType,
+		// 				cel.UnaryBinding(func(val ref.Val) ref.Val {
+		// 					s, ok := val.Value().(string)
+		// 					if !ok {
+		// 						return types.NewErr("json_parse: expected string input, got %T", val)
+		// 					}
+		// 					var out any
+		// 					if err := json.Unmarshal([]byte(s), &out); err != nil {
+		// 						return types.NewErr("json_parse: %v", err)
+		// 					}
+		// 					return types.DefaultTypeAdapter.NativeToValue(out)
+		// 				}),
+		// 			),
+		// 		),
+		// 	)
+		// 	if err != nil {
+		// 		return nil, fmt.Errorf("failed to create CEL environment: %w", err)
+		// 	}
+
+		// 	// Activation variables
+		// 	respVars := map[string]any{
+		// 		"status_code": int64(httpResp.StatusCode),
+		// 		"body":        string(respBody),
+		// 	}
+		// 	// Headers as map[string]string
+		// 	if len(httpResp.Header) > 0 {
+		// 		h := make(map[string]string, len(httpResp.Header))
+		// 		for k, v := range httpResp.Header {
+		// 			if len(v) > 0 {
+		// 				h[k] = v[0]
+		// 			}
+		// 		}
+		// 		respVars["headers"] = h
+		// 	}
+		// 	act, err := interpreter.NewActivation(respVars)
+		// 	if err != nil {
+		// 		return nil, fmt.Errorf("failed to create activation: %w", err)
+		// 	}
+
+		// 	// If outputs is a CEL expression, evaluate to a map; if it's a literal map, use directly.
+		// 	var outMap map[string]*expr.Value
+		// 	switch k := ov.GetKind().(type) {
+		// 	case *Value_Expr:
+		// 		ast := cel.ParsedExprToAst(k.Expr)
+		// 		prg, err := env.Program(ast)
+		// 		if err != nil {
+		// 			return nil, fmt.Errorf("failed to compile CEL outputs: %w", err)
+		// 		}
+		// 		out, _, err := prg.Eval(act)
+		// 		if err != nil {
+		// 			return nil, fmt.Errorf("failed to evaluate CEL outputs: %w", err)
+		// 		}
+		// 		pv, err := cel.RefValueToValue(out)
+		// 		if err != nil {
+		// 			return nil, fmt.Errorf("failed to convert outputs value: %w", err)
+		// 		}
+		// 		mv, ok := pv.GetKind().(*expr.Value_MapValue)
+		// 		if !ok {
+		// 			return nil, fmt.Errorf("outputs must evaluate to map")
+		// 		}
+		// 		outMap = map[string]*expr.Value{}
+		// 		for _, e := range mv.MapValue.Entries {
+		// 			outMap[e.Key.GetStringValue()] = e.Value
+		// 		}
+		// 	case *Value_Literal:
+		// 		if mv, ok := k.Literal.GetKind().(*expr.Value_MapValue); ok {
+		// 			outMap = map[string]*expr.Value{}
+		// 			for _, e := range mv.MapValue.Entries {
+		// 				outMap[e.Key.GetStringValue()] = e.Value
+		// 			}
+		// 		} else {
+		// 			return nil, fmt.Errorf("outputs literal must be a map")
+		// 		}
+		// 	default:
+		// 		return nil, fmt.Errorf("unsupported outputs kind: %T", ov.GetKind())
+		// 	}
+
+		// 	// Build Node_Outputs from evaluated map.
+		// 	outputs := &Node_Outputs{NamedValues: map[string]*Value{}}
+		// 	for name, lit := range outMap {
+		// 		outputs.NamedValues[name] = &Value{Kind: &Value_Literal{Literal: lit}}
+		// 	}
+		// 	return outputs, nil
+		// }
+
+		return nodeOutputsFromProtoMessage(defaultOuts)
 	}
+}
+
+func literalToValueMap(lit *expr.Value) (map[string]*Value, error) {
+	if lit == nil {
+		return nil, nil
+	}
+	mv, ok := lit.GetKind().(*expr.Value_MapValue)
+	if !ok {
+		return nil, fmt.Errorf("outputs literal must be a map")
+	}
+	if len(mv.MapValue.Entries) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]*Value, len(mv.MapValue.Entries))
+	for _, entry := range mv.MapValue.Entries {
+		key := entry.GetKey().GetStringValue()
+		if key == "" {
+			return nil, fmt.Errorf("outputs map keys must be strings")
+		}
+		out[key] = &Value{
+			Kind: &Value_Literal{
+				Literal: entry.Value,
+			},
+		}
+	}
+	return out, nil
 }
 
 func taskFuncCEL(ctx context.Context, input map[string]*Value, prevStepOutputs *Workflow_StepOutputs) (*Node_Outputs, error) {
