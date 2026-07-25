@@ -90,6 +90,26 @@ Two leak classes, both found the hard way:
 Test the containment shapes, not just the value: `%v`, `%+v`, `%#v`, and `%s` on the
 value, on a struct holding it, and on a slice of those.
 
+## Test that A cannot reach B, not that A can reach A
+
+A tenant boundary can be present, checked, and covered by passing tests, and still
+leak — because the encoding is ambiguous rather than the check missing.
+
+The env provider derived a variable name as `prefix + NAMESPACE + "_" + name`. Its
+tenancy tests passed, because each asserted that a tenant reads its own secret.
+Probing the other direction found the default tenant reading `TEAM_A_API_KEY`, and
+namespace `team` reading `A_API_KEY`, both resolving
+`$FLOWSTATE_SECRET_TEAM_A_API_KEY` — team-a's secret, from two other tenants. The
+file provider had the same shape.
+
+No separator fixes it, because every character legal in a prefix is legal in a name.
+Namespacing is therefore explicit and fail-closed per backend, and where the file
+provider is namespaced *every* tenant gets a segment including the default one
+(`_default`, unforgeable because `ValidateNamespace` forbids underscores).
+
+So: an isolation test asserting that each party reaches its own resource is a
+functionality test wearing a security test's clothes. Write the negative direction.
+
 ## Diagnostics are a feature
 
 The authoring experience is a product surface. A diagnostic should name the position
