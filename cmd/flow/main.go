@@ -3,11 +3,14 @@ package main
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
+	"text/tabwriter"
 	"time"
 
 	"connectrpc.com/authn"
@@ -16,11 +19,13 @@ import (
 	"connectrpc.com/validate"
 	"github.com/charmbracelet/fang"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile/lsp"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/temporalclient"
 	"github.com/sourcegraph/jsonrpc2"
 	"github.com/spf13/cobra"
 	"go.temporal.io/sdk/client"
@@ -31,64 +36,59 @@ import (
 // Set by the build system, e.g. using -ldflags="-X main.version=1.0.0"
 var version = "dev"
 
-// must is a utility function that panics if the error is not nil.
-func must[T any](value T, err error) T {
-	if err != nil {
-		panic(err)
-	}
-	return value
-}
-
-// maybe is a utility function that returns the value if no error,
-// otherwise returns the zero value of T. We don't actually use the error
-// parameter here, but it is included to match a common pattern
-// where we might want to ignore the error in a more complex scenario,
-// like when there's a fallback default value or similar logic.
-//
-// It's generally not a good idea to ignore errors, of course.
-func maybe[T any](value T, _ error) T {
-	return value
-}
-
-// Global configuration variables for the Flowstate CLI.
-//
-// Since these are global, they are inherently cursed and should be used
-// with caution. They are initialized from environment variables or
-// default values, and are used throughout the CLI commands to configure
-// the Flowstate service, Temporal client, and other settings.
+// Configuration for the Flowstate CLI, resolved from the environment at startup
+// and overridable by flags.
 //
 // TODO(kent): consider refactoring to avoid global state, e.g. by passing
 // configuration structs to command handlers or using a context-based approach.
 var (
-	flowstateAddress   string        = cmp.Or(os.Getenv("FLOWSTATE_ADDRESS"), "localhost:9233")
-	temporalAddress    string        = cmp.Or(os.Getenv("TEMPORAL_ADDRESS"), "localhost:7233")
-	temporalNamespace  string        = cmp.Or(os.Getenv("TEMPORAL_NAMESPACE"), "default")
-	temporalTaskQueue  string        = cmp.Or(os.Getenv("TEMPORAL_TASK_QUEUE"), engine.RunTaskQueueName)
-	workflowRunTimeout time.Duration = cmp.Or(
-		maybe(time.ParseDuration(os.Getenv("WORKFLOW_RUN_TIMEOUT"))),
-		must(time.ParseDuration("10m")),
-	)
-	verboseLogging bool          = cmp.Or(os.Getenv("FLOWSTATE_VERBOSE_LOGGING") == "true", false)
+	flowstateAddress  string = cmp.Or(os.Getenv("FLOWSTATE_ADDRESS"), "localhost:9233")
+	temporalTaskQueue string = cmp.Or(os.Getenv("TEMPORAL_TASK_QUEUE"), engine.RunTaskQueueName)
+	verboseLogging    bool   = os.Getenv("FLOWSTATE_VERBOSE_LOGGING") == "true"
+
+	// Temporal connection settings are deliberately empty by default. Unset
+	// means "use Temporal's own environment configuration" — the standard
+	// TEMPORAL_* variables and the TOML profile the `temporal` CLI reads — so
+	// these flags override that configuration rather than replacing it.
+	temporalAddressFlag   string
+	temporalNamespaceFlag string
+	temporalProfileFlag   string
+
+	// Authentication settings for `flow server`. There is no default that
+	// accepts callers: either a trust policy is configured, or anonymous access
+	// is requested explicitly.
+	authPolicyPath string
+	insecureNoAuth bool
+
 	temporalClient client.Client = nil
 )
 
-// initTemporalClient initializes a Temporal client using config settings
-func initTemporalClient() (client.Client, error) {
+// initTemporalClient connects to Temporal.
+//
+// Configuration comes from Temporal's own environment configuration — the
+// standard TEMPORAL_* variables and the same TOML profile file the `temporal` CLI
+// reads — so a self-hosted cluster, Temporal Cloud, and a local development
+// server differ only in configuration. Flags override whatever that resolves to.
+func initTemporalClient(ctx context.Context) (client.Client, error) {
 	if temporalClient != nil {
 		return temporalClient, nil
 	}
 
-	clientOptions := client.Options{
-		Namespace: temporalNamespace,
+	cfg := temporalclient.Config{
+		Address:   temporalAddressFlag,
+		Namespace: temporalNamespaceFlag,
+		Profile:   temporalProfileFlag,
 	}
 
-	if temporalAddress != "" {
-		clientOptions.HostPort = temporalAddress
+	if verboseLogging {
+		if opts, err := cfg.Options(); err == nil {
+			log.Printf("Temporal: %s", temporalclient.Describe(opts))
+		}
 	}
 
-	c, err := client.Dial(clientOptions)
+	c, err := temporalclient.Dial(ctx, cfg)
 	if err != nil {
-		return nil, fmt.Errorf("unable to create Temporal client: %w", err)
+		return nil, err
 	}
 
 	temporalClient = c
@@ -100,7 +100,7 @@ func initTemporalClient() (client.Client, error) {
 func runWorker(cmd *cobra.Command, args []string) error {
 	// Initialize a Temporal client using the configured address
 	// and namespace global variables (yuck, amiright).
-	c, err := initTemporalClient()
+	c, err := initTemporalClient(cmd.Context())
 	if err != nil {
 		return err
 	}
@@ -114,12 +114,11 @@ func runWorker(cmd *cobra.Command, args []string) error {
 	// Register workflow and activities
 	w.RegisterWorkflow(engine.Run)
 	w.RegisterActivity(engine.Task)
+	w.RegisterActivity(engine.TaskInScope)
+	// Registered so a run started before scopes existed can still complete.
 	w.RegisterActivity(engine.TaskWithPrev)
 
 	log.Printf("Starting worker on task queue: %s", temporalTaskQueue)
-	if verboseLogging {
-		log.Printf("Temporal configuration: address=%s namespace=%s", temporalAddress, temporalNamespace)
-	}
 
 	// Start worker (non-blocking) such that it can run in the background
 	// while we wait for shutdown signals.
@@ -148,15 +147,9 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 
 	workflowFilePath := args[0]
 
-	// Read workflow definition from file.
-	workflowDFileData, err := os.ReadFile(workflowFilePath)
+	workflow, err := loadWorkflow(workflowFilePath)
 	if err != nil {
-		return fmt.Errorf("error reading workflow file: %w", err)
-	}
-
-	workflow, err := flowfile.Unmarshal(workflowDFileData)
-	if err != nil {
-		return fmt.Errorf("error parsing workflow file: %w", err)
+		return err
 	}
 
 	// TODO(kent): support HTTPs connections.
@@ -207,7 +200,14 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 // that listens for incoming workflow requests and serves them using the
 // Flowstate service implementation over HTTP (via Connect RPC).
 func runServer(cmd *cobra.Command, args []string) error {
-	c, err := initTemporalClient()
+	// Resolve configuration before doing any I/O, so a misconfiguration is
+	// reported immediately rather than after waiting on a connection attempt.
+	verifier, err := authVerifier()
+	if err != nil {
+		return err
+	}
+
+	c, err := initTemporalClient(cmd.Context())
 	if err != nil {
 		return err
 	}
@@ -231,48 +231,238 @@ func runServer(cmd *cobra.Command, args []string) error {
 				interceptor,
 				otelInterceptor,
 			),
+			// Bound how much an unauthenticated caller can make the server
+			// allocate. connect-go defaults to unlimited, so without this a
+			// single request — or a compressed one that inflates enormously —
+			// can exhaust memory.
+			connect.WithReadMaxBytes(maxRequestBytes),
 		),
 	)
 
-	authMiddleware := authn.NewMiddleware(func(ctx context.Context, req *http.Request) (any, error) {
-		// TODO(kent): implement authentication logic here.
-		// For now, we just return nil to allow all requests.
-		return nil, nil
-	})
+	authMiddleware := authn.NewMiddleware(auth.NewAuthenticator(verifier).Authenticate)
 
-	// TODO(kent): add more flags and secure defaults for the server.
-	// It's generally insecure to run an HTTP server without TLS in production,
-	// and even more so to expose it publicly without additional limits like timeouts,
-	// rate limiting, etc.
 	httpServer := &http.Server{
 		Addr:    flowstateAddress,
 		Handler: authMiddleware.Wrap(mux),
+
+		// Without these a client that opens a connection and sends bytes
+		// slowly, or never, occupies a connection indefinitely. Go's zero
+		// values mean no timeout at all, so they must be set explicitly.
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       2 * time.Minute,
+		WriteTimeout:      2 * time.Minute,
+		IdleTimeout:       2 * time.Minute,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	log.Printf("Starting Flowstate server on %s", httpServer.Addr)
+	if insecureNoAuth {
+		log.Printf("WARNING: authentication is disabled; every caller is anonymous " +
+			"and can start workflows. Do not use this outside local development.")
+	}
+
+	serveErr := make(chan error, 1)
 	go func() {
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Could not listen on %s: %v\n", httpServer.Addr, err)
+		// Report a listen failure instead of terminating the process from a
+		// goroutine, so shutdown still runs and the error reaches the caller.
+		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serveErr <- fmt.Errorf("listening on %s: %w", httpServer.Addr, err)
+			return
 		}
+		serveErr <- nil
 	}()
-	<-cmd.Context().Done()
+
+	select {
+	case err := <-serveErr:
+		return err
+	case <-cmd.Context().Done():
+	}
+
 	log.Println("Shutting down server...")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
 	defer cancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		log.Fatalf("Server forced to shutdown: %v", err)
+		return fmt.Errorf("server forced to shutdown: %w", err)
 	}
 	log.Println("Server stopped")
 
 	return nil
 }
 
-// TODO(kent): this is very experimental and a work in progress.
+// maxRequestBytes bounds a single RPC request body.
+//
+// A workflow specification is text and a large one is still small; this leaves
+// generous room while keeping an unauthenticated caller from choosing how much
+// memory the server allocates.
+const maxRequestBytes = 4 << 20 // 4 MiB
+
+// authVerifier builds the token verifier the server authenticates with.
+//
+// Anonymous access requires --insecure-no-auth. It is not a fallback for a
+// missing or unreadable policy: a server that cannot load its trust policy must
+// refuse to start rather than quietly begin accepting everyone, which is exactly
+// the failure this replaces.
+func authVerifier() (auth.Verifier, error) {
+	if insecureNoAuth {
+		return auth.InsecureAnonymousVerifier(), nil
+	}
+
+	if authPolicyPath == "" {
+		return nil, fmt.Errorf("no authentication configured: pass --auth-policy with a trust policy, " +
+			"or --insecure-no-auth to allow anonymous access for local development")
+	}
+
+	data, err := os.ReadFile(authPolicyPath)
+	if err != nil {
+		return nil, fmt.Errorf("reading auth policy: %w", err)
+	}
+	policy, err := auth.ParsePolicy(data)
+	if err != nil {
+		return nil, fmt.Errorf("parsing auth policy %s: %w", authPolicyPath, err)
+	}
+	verifier, err := auth.NewOIDCVerifier(policy)
+	if err != nil {
+		return nil, fmt.Errorf("configuring token verification: %w", err)
+	}
+	return verifier, nil
+}
+
+// stdio adapts the process's standard input and output into the single
+// ReadWriteCloser a JSON-RPC connection expects.
+//
+// Language servers speak over stdin and stdout, so reads and writes must come
+// from different files. Passing os.Stdin alone would send every reply back into
+// the input stream, where no editor would ever see it.
+type stdio struct{}
+
+func (stdio) Read(p []byte) (int, error)  { return os.Stdin.Read(p) }
+func (stdio) Write(p []byte) (int, error) { return os.Stdout.Write(p) }
+func (stdio) Close() error {
+	err := os.Stdin.Close()
+	if outErr := os.Stdout.Close(); err == nil {
+		err = outErr
+	}
+	return err
+}
+
+// runLSP serves the Flowfile language server over stdin and stdout.
 func runLSP(cmd *cobra.Command, args []string) error {
+	// Diagnostics go to stderr; stdout carries the JSON-RPC protocol and must
+	// not be polluted with log output.
 	log.SetFlags(0)
 	log.SetOutput(os.Stderr)
-	server := &lsp.FlowfileServer{}
-	jsonrpc2.NewConn(cmd.Context(), jsonrpc2.NewBufferedStream(os.Stdin, jsonrpc2.VSCodeObjectCodec{}), server)
+
+	conn := jsonrpc2.NewConn(
+		cmd.Context(),
+		jsonrpc2.NewBufferedStream(stdio{}, jsonrpc2.VSCodeObjectCodec{}),
+		jsonrpc2.AsyncHandler(&lsp.FlowfileServer{}),
+	)
+
+	// NewConn serves in a background goroutine and returns immediately, so
+	// without waiting here the process exits before handling a single request.
+	select {
+	case <-conn.DisconnectNotify():
+		return nil
+	case <-cmd.Context().Done():
+		return conn.Close()
+	}
+}
+
+// runValidate implements the validate sub-command, reporting problems in one or
+// more Flowfiles without executing anything.
+//
+// Checking a workflow by running it is not an option for a workload engine: the
+// steps have side effects. This is the command that makes a Flowfile safe to
+// check.
+func runValidate(cmd *cobra.Command, args []string) error {
+	out := cmd.OutOrStdout()
+	var failed bool
+
+	for _, path := range args {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("error reading workflow file: %w", err)
+		}
+
+		diagnostics, err := flowfile.ValidateSource(data)
+		if err != nil {
+			// A parse failure already carries its own line and column.
+			failed = true
+			fmt.Fprintf(out, "%s: %v\n", path, err)
+			continue
+		}
+		if len(diagnostics) == 0 {
+			fmt.Fprintf(out, "%s: ok\n", path)
+			continue
+		}
+
+		failed = true
+		for _, d := range diagnostics {
+			fmt.Fprintf(out, "%s:%s\n", path, d.Error())
+		}
+	}
+
+	if failed {
+		return errValidationFailed
+	}
+	return nil
+}
+
+// errValidationFailed reports that validation found problems. It carries no
+// message of its own because the diagnostics have already been printed.
+var errValidationFailed = errors.New("validation failed")
+
+// loadWorkflow reads, compiles, and validates a Flowfile.
+//
+// Validation happens before execution so that a mistake is reported instead of
+// partially performed. An unknown task name, for instance, used to fail only when
+// its step was reached, by which point earlier steps had already made their
+// requests.
+func loadWorkflow(path string) (*v1.Workflow, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("error reading workflow file: %w", err)
+	}
+
+	workflow, err := flowfile.Unmarshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+
+	diagnostics, err := flowfile.ValidateSource(data)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if len(diagnostics) > 0 {
+		lines := make([]string, 0, len(diagnostics))
+		for _, d := range diagnostics {
+			lines = append(lines, fmt.Sprintf("%s:%s", path, d.Error()))
+		}
+		return nil, errors.New(strings.Join(lines, "\n"))
+	}
+
+	return workflow, nil
+}
+
+// runTasks implements the tasks sub-command, listing the tasks a workflow may
+// use along with the expression libraries available to them.
+//
+// The listing is derived from the task registry rather than maintained by hand,
+// so it cannot drift from what the engine will actually execute.
+func runTasks(cmd *cobra.Command, args []string) error {
+	out := cmd.OutOrStdout()
+
+	tw := tabwriter.NewWriter(out, 0, 8, 2, ' ', 0)
+	fmt.Fprintln(tw, "TASK\tDESCRIPTION")
+	for _, def := range v1.DefaultRegistry().All() {
+		fmt.Fprintf(tw, "%s\t%s\n", def.Name, def.Summary)
+	}
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+
+	fmt.Fprintf(out, "\nCEL libraries available to the cel task via the libs input:\n  %s\n",
+		strings.Join(v1.ExtensionLibraries(), ", "))
 	return nil
 }
 
@@ -312,15 +502,9 @@ flow lsp`,
 		Example: `# Run a workflow using the Flowstate server:
 flow run examples/hello-world/workflow.yaml
 
-# Run with a specific workflow ID:
-flow run examples/hello-world/workflow.yaml --workflow-id my-workflow
-
-# Run with a custom timeout:
-flow run examples/hello-world/workflow.yaml --timeout 5m`,
+# Check a workflow without running it:
+flow validate examples/hello-world/workflow.yaml`,
 	}
-
-	runCmd.Flags().StringP("workflow-id", "w", "", "Workflow ID (auto-generated if not specified)")
-	runCmd.Flags().DurationVar(&workflowRunTimeout, "timeout", 10*time.Minute, "Workflow execution timeout")
 
 	// Run local command, which executes a workflow locally without using Temporal or the Flowstate service.
 	runLocalCmd := &cobra.Command{
@@ -330,13 +514,9 @@ flow run examples/hello-world/workflow.yaml --timeout 5m`,
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			workflowFilePath := args[0]
-			workflowData, err := os.ReadFile(workflowFilePath)
+			workflow, err := loadWorkflow(workflowFilePath)
 			if err != nil {
-				return fmt.Errorf("error reading workflow file: %w", err)
-			}
-			workflow, err := flowfile.Unmarshal(workflowData)
-			if err != nil {
-				return fmt.Errorf("error parsing workflow file: %w", err)
+				return err
 			}
 			result, err := v1.Run(cmd.Context(), workflow)
 			if err != nil {
@@ -374,10 +554,7 @@ flow worker --address localhost:7233
 flow worker --namespace production`,
 	}
 
-	workerCmd.Flags().StringVar(&temporalAddress, "address", temporalAddress, "service address for Temporal server")
-	workerCmd.Flags().StringVar(&temporalNamespace, "namespace", temporalNamespace, "namespace for Temporal workflows")
-	workerCmd.Flags().StringVar(&temporalTaskQueue, "task-queue", temporalTaskQueue, "task queue for Temporal workflows and activities")
-
+	// These override Temporal's environment configuration when set; unset means
 	// Server command, which starts a Flowstate server to handle workflow requests.
 	serverCmd := &cobra.Command{
 		Use:   "server",
@@ -391,12 +568,55 @@ flow server
 flow server --verbose`,
 	}
 
+	// use whatever TEMPORAL_* variables or the temporal.toml profile resolve to.
+	for _, c := range []*cobra.Command{workerCmd, serverCmd} {
+		c.Flags().StringVar(&temporalAddressFlag, "address", "", "Temporal server address (overrides environment configuration)")
+		c.Flags().StringVar(&temporalNamespaceFlag, "namespace", "", "Temporal namespace (overrides environment configuration)")
+		c.Flags().StringVar(&temporalProfileFlag, "profile", "", "Temporal configuration profile to use")
+	}
+	workerCmd.Flags().StringVar(&temporalTaskQueue, "task-queue", temporalTaskQueue, "task queue for Temporal workflows and activities")
+
+	serverCmd.Flags().StringVar(&authPolicyPath, "auth-policy", "",
+		"path to an OIDC/workload-identity trust policy (YAML) describing which issuers to accept")
+	serverCmd.Flags().BoolVar(&insecureNoAuth, "insecure-no-auth", false,
+		"allow unauthenticated access; for local development only")
+
+	// Validate command, which checks Flowfiles without executing them.
+	validateCmd := &cobra.Command{
+		Use:   "validate [workflow-file...]",
+		Short: "Check workflows for problems without running them",
+		Long: "Check one or more Flowfiles for problems without executing them. " +
+			"Reports unknown tasks, duplicate or unusable step ids, and references to " +
+			"steps that do not exist or have not run yet, with the line each problem is on.",
+		Args:          cobra.MinimumNArgs(1),
+		RunE:          runValidate,
+		SilenceErrors: true,
+		Example: `# Check a single workflow:
+flow validate examples/hello-world/workflow.yaml
+
+# Check every example:
+flow validate examples/*/workflow.yaml`,
+	}
+
+	// Tasks command, which lists the available tasks.
+	tasksCmd := &cobra.Command{
+		Use:   "tasks",
+		Short: "List the tasks workflows can use",
+		Long:  "List the tasks available to workflow steps, along with the CEL libraries expressions can enable.",
+		Args:  cobra.NoArgs,
+		RunE:  runTasks,
+		Example: `# List available tasks:
+flow tasks`,
+	}
+
 	// LSP command, which starts a Language Server Protocol (LSP) server for Flowfile files.
 	lspCmd := &cobra.Command{
 		Use:   "lsp",
 		Short: "Start a Flowfile Language Server Protocol (LSP) server",
-		Long:  "Start an LSP server for Flowfile editing support in text editors and IDEs. This provides syntax highlighting, completion, and validation for Flowfile YAML files.",
-		RunE:  runLSP,
+		Long: "Start a language server for Flowfile editing in text editors and IDEs, " +
+			"serving the Language Server Protocol over stdin and stdout. It reports " +
+			"Flowfile problems as diagnostics as you type.",
+		RunE: runLSP,
 		Example: `# Start the LSP server:
 flow lsp`,
 	}
@@ -419,12 +639,16 @@ flow lsp`,
 
 	// Set command groups
 	runCmd.GroupID = "workflow"
+	validateCmd.GroupID = "workflow"
+	tasksCmd.GroupID = "workflow"
 	workerCmd.GroupID = "infrastructure"
 	serverCmd.GroupID = "infrastructure"
 	lspCmd.GroupID = "development"
 
 	// Add commands to root.
 	rootCmd.AddCommand(runCmd)
+	rootCmd.AddCommand(validateCmd)
+	rootCmd.AddCommand(tasksCmd)
 	rootCmd.AddCommand(workerCmd)
 	rootCmd.AddCommand(serverCmd)
 	runCmd.AddCommand(runLocalCmd)

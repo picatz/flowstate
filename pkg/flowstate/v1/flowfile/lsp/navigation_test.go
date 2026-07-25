@@ -1,0 +1,144 @@
+package lsp
+
+import (
+	"testing"
+
+	"github.com/sourcegraph/go-lsp"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+const navigationSource = `name: navigation
+steps:
+  - id: web
+    task:
+      name: http
+      inputs:
+        url: https://example.com
+  - id: status
+    task:
+      name: echo
+      inputs:
+        message: ${string(web.status_code)}
+  - id: shout
+    task:
+      name: shell
+      inputs:
+        message: hi
+`
+
+// TestDefinition checks that a reference jumps to the step that declares it.
+func TestDefinition(t *testing.T) {
+	t.Parallel()
+
+	c := newClient(t)
+	c.initialize()
+	const uri = "file:///navigation.yaml"
+	c.open(uri, navigationSource)
+
+	t.Run("reference resolves to the step id", func(t *testing.T) {
+		pos := positionOf(t, navigationSource, "web.status_code", 1)
+		got := c.definition(uri, pos.Line, pos.Character)
+		require.Len(t, got, 1)
+		assert.Equal(t, lsp.DocumentURI(uri), got[0].URI)
+		assert.Equal(t, "web", textInRange(navigationSource, got[0].Range))
+		assert.Equal(t, 2, got[0].Range.Start.Line, "should point at the id declaration")
+	})
+
+	t.Run("the output name also resolves to the step", func(t *testing.T) {
+		pos := positionOf(t, navigationSource, "status_code)", 2)
+		got := c.definition(uri, pos.Line, pos.Character)
+		require.Len(t, got, 1)
+		assert.Equal(t, "web", textInRange(navigationSource, got[0].Range))
+	})
+
+	t.Run("nothing to go to outside an expression", func(t *testing.T) {
+		pos := positionOf(t, navigationSource, "https://example.com", 2)
+		assert.Empty(t, c.definition(uri, pos.Line, pos.Character))
+	})
+
+	t.Run("a forward reference does not resolve", func(t *testing.T) {
+		const src = `name: fwd
+steps:
+  - id: a
+    task:
+      name: echo
+      inputs:
+        message: ${later.result}
+  - id: later
+    task:
+      name: echo
+      inputs:
+        message: hi
+`
+		c.open("file:///fwd.yaml", src)
+		pos := positionOf(t, src, "${later.result}", 3)
+		assert.Empty(t, c.definition("file:///fwd.yaml", pos.Line, pos.Character),
+			"jumping to a step that has not run would suggest the reference works")
+	})
+}
+
+// TestDocumentSymbols checks the outline an editor shows.
+func TestDocumentSymbols(t *testing.T) {
+	t.Parallel()
+
+	c := newClient(t)
+	c.initialize()
+	const uri = "file:///symbols.yaml"
+	c.open(uri, navigationSource)
+
+	got := c.symbols(uri)
+	require.Len(t, got, 3)
+
+	assert.Equal(t, "web", got[0].Name)
+	assert.Equal(t, "http", got[0].ContainerName)
+	assert.Equal(t, lsp.SKFunction, got[0].Kind)
+	assert.Equal(t, lsp.DocumentURI(uri), got[0].Location.URI)
+
+	assert.Equal(t, "status", got[1].Name)
+	assert.Equal(t, "echo", got[1].ContainerName)
+
+	// An unregistered task is labelled as such rather than presented as real.
+	assert.Equal(t, "shout", got[2].Name)
+	assert.Equal(t, "shell (unknown task)", got[2].ContainerName)
+
+	// Each symbol's range must cover its whole step and nothing beyond it, or an
+	// editor's breadcrumb flickers as the cursor moves through the file.
+	assert.Equal(t, 2, got[0].Location.Range.Start.Line)
+	assert.Equal(t, 6, got[0].Location.Range.End.Line)
+	assert.Equal(t, 7, got[1].Location.Range.Start.Line)
+	assert.Equal(t, 11, got[1].Location.Range.End.Line)
+	assert.Equal(t, 12, got[2].Location.Range.Start.Line)
+}
+
+// TestDocumentSymbolsNamesAnUnnamedStep checks that a step with no id still appears
+// in the outline, since an empty row is worse than a placeholder.
+func TestDocumentSymbolsNamesAnUnnamedStep(t *testing.T) {
+	t.Parallel()
+
+	c := newClient(t)
+	c.initialize()
+	c.open("file:///noid.yaml", `name: noid
+steps:
+  - task:
+      name: echo
+      inputs:
+        message: hi
+`)
+	got := c.symbols("file:///noid.yaml")
+	require.Len(t, got, 1)
+	assert.Equal(t, "(step with no id)", got[0].Name)
+}
+
+// TestSymbolsAndDefinitionOnUnparseableDocument checks that both features return an
+// empty result rather than stale or invented positions.
+func TestSymbolsAndDefinitionOnUnparseableDocument(t *testing.T) {
+	t.Parallel()
+
+	c := newClient(t)
+	c.initialize()
+	c.open("file:///broken.yaml", "name: x\nsteps:\n  - id: a\n  \ttask: y\n")
+
+	assert.Empty(t, c.symbols("file:///broken.yaml"))
+	assert.Empty(t, c.definition("file:///broken.yaml", 3, 5))
+}

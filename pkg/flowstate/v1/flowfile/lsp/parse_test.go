@@ -1,0 +1,389 @@
+package lsp
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// These tests pin the positional model, because every feature's precision depends
+// on it: a range that is off by one puts a squiggle under the wrong character and
+// makes hover resolve to the wrong token.
+
+func TestParseRecordsExactRanges(t *testing.T) {
+	t.Parallel()
+
+	const src = `name: model
+steps:
+  - id: first
+    task:
+      name: echo
+      inputs:
+        message: "quoted value"
+  - id: second
+    task:
+      name: http
+      inputs:
+        url: https://example.com
+        headers:
+          X-Trace: ${first.result}
+        outputs: "{'code': status_code}"
+`
+	doc := newDocument("file:///model.yaml", 1, src)
+	require.NoError(t, doc.parseErr)
+	require.NotNil(t, doc.parsed)
+
+	t.Run("top level keys", func(t *testing.T) {
+		require.NotNil(t, doc.parsed.nameEntry)
+		assert.Equal(t, "name", textInRange(src, doc.parsed.nameEntry.keyRange))
+		assert.Equal(t, "model", textInRange(src, doc.parsed.nameEntry.valueRange()))
+
+		require.NotNil(t, doc.parsed.stepsEntry)
+		assert.Equal(t, "steps", textInRange(src, doc.parsed.stepsEntry.keyRange))
+	})
+
+	require.Len(t, doc.parsed.steps, 2)
+	first, second := doc.parsed.steps[0], doc.parsed.steps[1]
+
+	t.Run("step identity", func(t *testing.T) {
+		assert.Equal(t, "first", first.id)
+		assert.Equal(t, "echo", first.taskName)
+		assert.Equal(t, "first", textInRange(src, first.idEntry.valueRange()))
+		assert.Equal(t, "echo", textInRange(src, first.nameEntry.valueRange()))
+	})
+
+	t.Run("a quoted value's range includes its quotes", func(t *testing.T) {
+		// The range is what an editor underlines, and underlining the text inside
+		// the quotes but not the quotes reads as an off-by-one bug.
+		message := first.input("message")
+		require.NotNil(t, message)
+		assert.Equal(t, `"quoted value"`, textInRange(src, message.valueRange()))
+		// The decoded text is what the compiler sees.
+		assert.Equal(t, "quoted value", message.value.text)
+	})
+
+	t.Run("an expression nested in a mapping is located", func(t *testing.T) {
+		headers := second.input("headers")
+		require.NotNil(t, headers)
+		require.Equal(t, kindMapping, headers.value.kind)
+		require.Len(t, headers.value.entries, 1)
+
+		nested := headers.value.entries[0]
+		assert.Equal(t, "X-Trace", nested.key)
+		require.NotNil(t, nested.value)
+		require.True(t, nested.value.fenced)
+		assert.Equal(t, "first.result", nested.value.expr)
+		assert.Equal(t, "${first.result}", textInRange(src, nested.value.exprRange))
+		// exprOffset must point at the first character of the expression source,
+		// which is where a CEL error location is measured from.
+		assert.Equal(t, "first.result}", src[nested.value.exprOffset:nested.value.exprOffset+len("first.result}")])
+	})
+
+	t.Run("a quoted expression input reports its content offset", func(t *testing.T) {
+		outputs := second.input("outputs")
+		require.NotNil(t, outputs)
+		// textOffset skips the opening quote, so a CEL error inside lands inside.
+		assert.Equal(t, byte('{'), src[outputs.value.textOffset])
+		assert.Equal(t, `"{'code': status_code}"`, textInRange(src, outputs.valueRange()))
+	})
+
+	t.Run("step ranges cover whole steps and do not overlap", func(t *testing.T) {
+		assert.Equal(t, 2, first.rng.Start.Line)
+		assert.Equal(t, 6, first.rng.End.Line)
+		assert.Equal(t, 7, second.rng.Start.Line)
+		assert.Equal(t, 14, second.rng.End.Line)
+	})
+}
+
+func TestParseHandlesShapesTheDSLDoesNotExpect(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		src  string
+		// check runs against the model, which must be usable in every case.
+		check func(t *testing.T, doc *document)
+	}{
+		{
+			name: "a block scalar is recorded without a multi-line range",
+			src: `name: block
+steps:
+  - id: a
+    task:
+      name: cel
+      inputs:
+        expr: |
+          1 + 1
+`,
+			check: func(t *testing.T, doc *document) {
+				require.Len(t, doc.parsed.steps, 1)
+				expr := doc.parsed.steps[0].input("expr")
+				require.NotNil(t, expr)
+				require.NotNil(t, expr.value)
+				// The range stays on one line: a folded reconstruction cannot be
+				// measured against the source.
+				assert.Equal(t, expr.value.rng.Start.Line, expr.value.rng.End.Line)
+				// A block scalar is never treated as a ${...} expression, because
+				// the compiler does not treat one as one either.
+				assert.False(t, expr.value.fenced)
+			},
+		},
+		{
+			name: "a single-key mapping is the same shape as a multi-key one",
+			// The parser returns a bare MappingValueNode for one key and a
+			// MappingNode for two, and the model must not care which.
+			src: `name: single
+steps:
+  - id: a
+    task:
+      name: echo
+      inputs:
+        message: only
+`,
+			check: func(t *testing.T, doc *document) {
+				require.Len(t, doc.parsed.steps, 1)
+				assert.Len(t, doc.parsed.steps[0].inputs, 1)
+				assert.Equal(t, "only", doc.parsed.steps[0].input("message").valueText())
+			},
+		},
+		{
+			name: "a key with no value is absent rather than empty",
+			src: `name: pending
+steps:
+  - id: a
+    task:
+      name:
+`,
+			check: func(t *testing.T, doc *document) {
+				require.Len(t, doc.parsed.steps, 1)
+				step := doc.parsed.steps[0]
+				require.NotNil(t, step.nameEntry, "the key itself is still recorded")
+				assert.Nil(t, step.nameEntry.value)
+				assert.Equal(t, "", step.taskName)
+				// The fallback range is the key, so a diagnostic still lands
+				// somewhere sensible.
+				assert.Equal(t, step.nameEntry.keyRange, step.nameEntry.valueRange())
+			},
+		},
+		{
+			name: "an alias value is recorded but not interpreted",
+			src: `name: alias
+base: &b
+  name: echo
+steps:
+  - id: a
+    task: *b
+`,
+			check: func(t *testing.T, doc *document) {
+				require.Len(t, doc.parsed.steps, 1)
+				step := doc.parsed.steps[0]
+				require.NotNil(t, step.taskEntry)
+				require.NotNil(t, step.taskEntry.value)
+				assert.Equal(t, kindOther, step.taskEntry.value.kind)
+				// Nothing is claimed about a shape the DSL does not describe.
+				assert.Empty(t, step.inputs)
+			},
+		},
+		{
+			name: "steps that is not a sequence yields no steps",
+			src:  "name: x\nsteps: nope\n",
+			check: func(t *testing.T, doc *document) {
+				assert.Empty(t, doc.parsed.steps)
+				assert.NotNil(t, doc.parsed.stepsEntry)
+			},
+		},
+		{
+			name: "an empty document has a usable model",
+			src:  "",
+			check: func(t *testing.T, doc *document) {
+				require.NotNil(t, doc.parsed)
+				assert.Nil(t, doc.parsed.nameEntry)
+				assert.Empty(t, doc.parsed.steps)
+			},
+		},
+		{
+			name: "a flow-style step is modelled like a block one",
+			src:  "name: flow\nsteps: [{id: a, task: {name: echo, inputs: {message: hi}}}]\n",
+			check: func(t *testing.T, doc *document) {
+				require.Len(t, doc.parsed.steps, 1)
+				step := doc.parsed.steps[0]
+				assert.Equal(t, "a", step.id)
+				assert.Equal(t, "echo", step.taskName)
+				assert.Equal(t, "hi", step.input("message").valueText())
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			doc := newDocument("file:///shape.yaml", 1, tt.src)
+			require.NoError(t, doc.parseErr, "this shape should parse as YAML")
+			require.NotNil(t, doc.parsed)
+			tt.check(t, doc)
+
+			// Whatever the shape, analysis must complete without panicking.
+			assert.NotPanics(t, func() { diagnose(doc) })
+		})
+	}
+}
+
+func TestStepLookupPrefersTheFirstDeclaration(t *testing.T) {
+	t.Parallel()
+
+	// Duplicate ids are a diagnostic, but until the author fixes one the model has
+	// to resolve references somehow. The first declaration wins, matching the order
+	// the engine would write outputs in.
+	doc := newDocument("file:///dupe.yaml", 1, `name: dupe
+steps:
+  - id: a
+    task:
+      name: echo
+      inputs:
+        message: one
+  - id: a
+    task:
+      name: http
+      inputs:
+        url: https://example.com
+`)
+	require.NoError(t, doc.parseErr)
+	step := doc.parsed.step("a")
+	require.NotNil(t, step)
+	assert.Equal(t, 0, step.index)
+	assert.Equal(t, "echo", step.taskName)
+}
+
+func TestOutlineScannerTolerantOfBrokenText(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		src  string
+		want []outlineStep
+	}{
+		{
+			name: "a half-typed input key",
+			src: `name: x
+steps:
+  - id: first
+    task:
+      name: echo
+      inputs:
+        mes
+`,
+			want: []outlineStep{{id: "first", taskName: "echo"}},
+		},
+		{
+			name: "libs in a flow list and a block list",
+			src: `name: x
+steps:
+  - id: a
+    task:
+      name: cel
+      inputs:
+        libs: [json, math]
+  - id: b
+    task:
+      name: cel
+      inputs:
+        libs:
+          - strings
+          - sets
+`,
+			want: []outlineStep{
+				{id: "a", taskName: "cel", libs: []string{"json", "math"}},
+				{id: "b", taskName: "cel", libs: []string{"strings", "sets"}},
+			},
+		},
+		{
+			name: "nested values are not mistaken for input names",
+			src: `name: x
+steps:
+  - id: a
+    task:
+      name: http
+      inputs:
+        url: https://example.com
+        headers:
+          X-One: a
+          X-Two: b
+`,
+			want: []outlineStep{{
+				id:        "a",
+				taskName:  "http",
+				inputKeys: []string{"url", "headers"},
+			}},
+		},
+		{
+			name: "a comment does not end a step",
+			src: `name: x
+steps:
+  - id: a
+    task:
+      # which task to run
+      name: echo
+      inputs:
+        message: hi
+`,
+			want: []outlineStep{{id: "a", taskName: "echo", inputKeys: []string{"message"}}},
+		},
+		{
+			name: "no steps key at all",
+			src:  "name: x\n",
+			want: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := scanOutline(newLineIndex(tt.src))
+			require.Len(t, got, len(tt.want))
+			for i, want := range tt.want {
+				assert.Equal(t, want.id, got[i].id, "step %d id", i)
+				assert.Equal(t, want.taskName, got[i].taskName, "step %d task", i)
+				if want.libs != nil {
+					assert.Equal(t, want.libs, got[i].libs, "step %d libs", i)
+				}
+				if want.inputKeys != nil {
+					assert.Equal(t, want.inputKeys, got[i].inputKeys, "step %d input keys", i)
+				}
+			}
+		})
+	}
+}
+
+func TestKeyPath(t *testing.T) {
+	t.Parallel()
+
+	const src = `name: x
+steps:
+  - id: a
+    task:
+      name: echo
+      inputs:
+        message: hi
+        headers:
+          X: y
+    retry:
+      attempts: 3
+`
+	ix := newLineIndex(src)
+	tests := []struct {
+		name string
+		line int
+		want []string
+	}{
+		{name: "top level", line: 0, want: []string{}},
+		{name: "a step's own key", line: 3, want: []string{"steps"}},
+		{name: "inside task", line: 4, want: []string{"steps", "task"}},
+		{name: "inside inputs", line: 6, want: []string{"steps", "task", "inputs"}},
+		{name: "inside a nested input value", line: 8, want: []string{"steps", "task", "inputs", "headers"}},
+		{name: "inside retry", line: 10, want: []string{"steps", "retry"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, keyPath(ix, tt.line))
+		})
+	}
+}

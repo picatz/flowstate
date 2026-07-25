@@ -18,6 +18,8 @@ func main() {
 	w := worker.New(c, engine.RunTaskQueueName, worker.Options{})
 	w.RegisterWorkflow(engine.Run)
 	w.RegisterActivity(engine.Task)
+	w.RegisterActivity(engine.TaskInScope)
+	// Registered so a run started before scopes existed can still complete.
 	w.RegisterActivity(engine.TaskWithPrev)
 
 	err = w.Run(worker.InterruptCh())
