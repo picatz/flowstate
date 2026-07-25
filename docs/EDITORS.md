@@ -9,7 +9,7 @@ that only ever offers things the engine will accept.
 | Feature | What you get |
 | --- | --- |
 | **Diagnostics** | YAML syntax errors, CEL syntax errors underlined inside the expression, unknown tasks, duplicate and unusable step ids, references to steps that do not exist or have not run yet, inputs a task does not declare (with a spelling suggestion), required inputs left out, unknown CEL libraries, malformed step timeouts and retry intervals, and a step that is no kind of work or more than one. |
-| **Hover** | A task's summary and full typed signature; an input's type, whether it is required, and the value constraints the schema enforces; what a `${step.output}` reference resolves to and what type it produces; what a loop's iterator binds; what a CEL library provides; what each `Flowfile` key means. |
+| **Hover** | A task's summary and full typed signature; an input's type, whether it is required, and the value constraints the schema enforces; what a `${step.output}` reference resolves to and what type it produces; what a loop's iterator binds; what a `${secret('scheme:name')}` reference names; what a CEL library provides; what each `Flowfile` key means. |
 | **Completion** | Task names after `name:`; input keys for the step's task, required ones first, already-written ones omitted; the names in scope inside `${...}` (see the scoping rules below); a step's actual output names after `${step.`; CEL library names in `libs`; and the document's own keys (`id`, `if`, `timeout`, `retry`, `for_each`, `parallel`, …). |
 | **Go to definition** | Jump from a `${step.output}` reference to that step's `id:` declaration. |
 | **Document symbols** | An outline of the workflow's steps, each labelled with the task it runs, and for a nested step the block it belongs to. |
@@ -52,6 +52,16 @@ Not implemented, and deliberately not advertised: formatting, rename, code actio
 references, and workspace symbols. The server also never type-checks expressions —
 it only parses them — because a step's output types are not statically known for
 every task, and a wrong squiggle under working code is worse than no squiggle.
+
+Secret references are described on hover but **not** offered by completion. A
+`${secret('env:API_KEY')}` marker compiles and validates today, but no task consumes
+one yet, so a workflow using it fails at run time — suggesting it would be offering
+a trap. Hover reads the reference through the same parser the compiler uses, so it
+cannot describe a form a worker would refuse, and it names the scheme rather than a
+backend: which provider serves `vault` is a deployment's choice, made worker-side.
+Misplaced references — combined into a larger expression, or used in `if` or
+`for_each.items`, where resolving them would put the secret into workflow history —
+are reported by the validator with its own explanation.
 
 Inputs a task evaluates itself are not reference-checked, because they resolve
 against a scope the document does not model: the `http` task's `outputs` expression

@@ -334,11 +334,9 @@ worker's own internal endpoints in production.
 ## Secrets
 
 > [!NOTE]
-> `${secret(...)}` now compiles to a reference, and a malformed one is a validation
-> error rather than a run-time failure. What does not work yet is the placement in
-> the example below: a reference inside a `headers` map is currently refused, and
-> resolution is not yet wired into the tasks that would use it. Tracked in
-> [docs/HANDOFF.md](docs/HANDOFF.md); treat this section as the intended design
+> `${secret(...)}` compiles to a reference and a malformed one is a validation error,
+> but no task consumes a reference yet, and the placement shown below — inside a
+> `headers` map — is currently refused. Treat this section as the intended design
 > rather than as working behavior until this note is gone.
 
 A secret never appears in a workflow. A *reference* to one does:

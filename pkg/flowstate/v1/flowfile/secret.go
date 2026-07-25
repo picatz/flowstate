@@ -42,21 +42,49 @@ const (
 	// can go, because it reaches the task untouched.
 	secretAllowed secretPlacement = iota
 
-	// secretNotWholeValue is anywhere the reference would have to be combined with
-	// something — inside a larger expression, or nested in a list or a mapping.
+	// secretNotWholeValue is inside a larger expression, where the reference would
+	// have to be combined with something.
 	secretNotWholeValue
+
+	// secretInStructure is nested in a list or a mapping.
+	secretInStructure
 
 	// secretNotEvaluable is a field the workflow evaluates itself: a step's
 	// condition, or a loop's items.
 	secretNotEvaluable
 )
 
-// The two ways a reference can be out of place, each explained by what a secret
-// reference is rather than by the rule alone.
+// Why a reference can be out of place. Each says what is actually true of the
+// position it is in, because the three reasons are genuinely different and an
+// author sent hunting for the wrong mistake is worse off than one told nothing.
 const (
 	notWholeValueHelp = "a secret reference has to be the whole value of a task input; " +
 		"it names a value that does not exist until the worker running the step resolves it, " +
 		"so nothing workflow-side can combine it with anything else"
+
+	// This one is a limitation rather than a rule, and says so: the schema has no
+	// way to carry a reference inside a structure, since a value is either a
+	// reference or a structure and never a structure holding one.
+	//
+	// It looks like the check is merely in the wrong place, and it is not. Values
+	// exist per task input, because Task.inputs is map<string, Value> — a mapping
+	// containing any expression compiles to one Value_Expr holding a CEL
+	// map-construction expression, and its entries are nodes inside that one AST.
+	// An Authorization entry therefore never occupies a Value of its own, so there
+	// is nowhere further down to anchor the check, and Value's oneof has no nested
+	// kind that could hold a reference there even if something were willing to
+	// resolve it.
+	//
+	// Lifting the limitation means one of two things, not a smaller check: a task
+	// input that accepts a SecretRef directly, which is cheap and unblocks the
+	// header case; or a Value kind that nests Values, which is general and forces
+	// Task.HTTP.Inputs.headers to stop being map<string, string>.
+	inStructureHelp = "a secret reference cannot be nested inside a list or a mapping: " +
+		"a structure holding an expression compiles into a single expression, which the workflow " +
+		"evaluates, and evaluating a secret is what would put it in history. " +
+		"This is a current limitation rather than a mistake in the file — a value can be a reference " +
+		"or a structure, never a structure containing one — so an authorization header needs a task " +
+		"input that accepts the reference itself"
 
 	notEvaluableHelp = "a secret reference cannot go where the workflow evaluates the value itself; " +
 		"resolving it here would put the secret in workflow history, which is durable and " +
@@ -79,12 +107,8 @@ func (c *compiler) secret(parsed *expr.ParsedExpr, src string, span Span, r ref,
 
 	at := markerSpan(parsed, call.GetId(), src, span)
 
-	switch {
-	case placement == secretNotEvaluable:
-		c.report(at, r, "%s", notEvaluableHelp)
-		return nil, true
-	case placement == secretNotWholeValue, call != parsed.GetExpr():
-		c.report(at, r, "%s", notWholeValueHelp)
+	if help := misplacedHelp(placement, call == parsed.GetExpr()); help != "" {
+		c.report(at, r, "%s", help)
 		return nil, true
 	}
 
@@ -109,6 +133,25 @@ func (c *compiler) secret(parsed *expr.ParsedExpr, src string, span Span, r ref,
 		Scheme: reference.GetScheme(),
 		Name:   reference.GetName(),
 	}}}, true
+}
+
+// misplacedHelp explains why a reference cannot be where it is, or returns empty
+// when it can.
+//
+// isWholeExpression distinguishes a reference written on its own from one buried in
+// a larger expression, which is the difference between a task input that is a
+// reference and one that computes with a value it must never see.
+func misplacedHelp(placement secretPlacement, isWholeExpression bool) string {
+	switch {
+	case placement == secretNotEvaluable:
+		return notEvaluableHelp
+	case placement == secretInStructure:
+		return inStructureHelp
+	case placement == secretNotWholeValue, !isWholeExpression:
+		return notWholeValueHelp
+	default:
+		return ""
+	}
 }
 
 // findSecretCall returns the outermost call to the marker anywhere in an
