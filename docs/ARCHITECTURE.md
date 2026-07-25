@@ -257,6 +257,49 @@ itself, redacts itself when formatted, and errors are scrubbed before leaving th
 A revealed value cannot be wiped from memory — Go strings are immutable — so the guarantee is
 about where a value travels, not how long it lives.
 
+### Plugins
+
+The built-in task set and secret providers will never cover what people need. A
+plugin is a separate process that extends the engine, speaking the services in
+`proto/flowstate/v1/plugin.proto` over Connect RPC.
+
+**Separate processes, because that is where isolation exists.** A plugin is someone
+else's code running inside a worker that holds credentials and can reach internal
+networks. In-process, a panic takes the worker down, a dependency conflicts with the
+engine's own, and a bug can read anything the worker can. Out of process, those are
+the operating system's problem. The cost is a serialization boundary; that cost buys
+the isolation, which is the same trade HashiCorp's plugin model makes and the same
+reason it makes it.
+
+**The protocol is a schema, not a Go interface.** A plugin can be written in any
+language with Connect or gRPC support, and the engine neither loads nor links
+anything to talk to one. Connect specifically because the rest of the system speaks
+it — one RPC stack to understand — and because it works over plain HTTP, so a
+plugin is debuggable with `curl` against its socket.
+
+**Capabilities, not plugin types.** A plugin advertises what it can do rather than
+being of a kind, and one binary may resolve secrets, provide tasks, and serve
+something added later. The useful integrations are rarely single-purpose: a plugin
+for a cloud provider naturally offers both its secrets manager and tasks that call
+its API, and splitting those would mean two processes, two handshakes, and two
+copies of the same credentials. Capabilities are additive — an engine ignores ones
+it does not know, and a plugin ignores requests for ones it did not advertise — so
+old plugins keep working against new engines.
+
+Discovery follows the convention that has worked elsewhere: an executable named
+`flowstate-plugin-<name>`, found on a configured path. Nothing is loaded to discover
+what a plugin does; the engine asks it.
+
+A plugin task is indistinguishable from a built-in one to the rest of the system,
+because a plugin ships protobuf descriptors for its inputs and outputs. Validation,
+editor completion, and generated documentation read the same shape either way, which
+is the registry invariant applied across a process boundary.
+
+What a plugin cannot do is escape policy. It resolves secrets only for schemes the
+deployment permitted, receives the tenant a workload belongs to rather than choosing
+one, and its network access is the worker's to govern. A plugin is an extension of
+the engine's capability, not an exemption from its rules.
+
 ### Tenancy
 
 Multiple teams sharing a deployment need their workloads, secrets, and egress kept apart. A

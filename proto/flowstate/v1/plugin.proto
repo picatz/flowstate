@@ -1,0 +1,270 @@
+syntax = "proto3";
+
+package flowstate.v1;
+
+import "buf/validate/validate.proto";
+import "flowstate/v1/flowstate.proto";
+import "google/api/field_behavior.proto";
+import "google/protobuf/duration.proto";
+
+option go_package = "flowstatev1";
+
+// Flowstate plugins are separate processes that extend the engine, speaking the
+// services defined in this file over Connect RPC.
+//
+// # Why processes
+//
+// A plugin is someone else's code running inside a worker that holds credentials
+// and reaches internal networks. Loading it in-process would mean a panic takes
+// the worker down, a dependency conflicts with the engine's own, and a bug reads
+// any memory the worker can. A separate process makes those the operating
+// system's problem, which is where isolation actually exists. The cost is a
+// serialization boundary, and that cost buys the isolation.
+//
+// # Why Connect RPC and Protobuf
+//
+// The protocol is a schema, not a Go interface. A plugin can therefore be written
+// in any language with Connect or gRPC support, and the engine does not need to
+// load, link, or trust anything to talk to it. Connect specifically because the
+// rest of Flowstate speaks it, so there is one RPC stack to understand, and
+// because it works over plain HTTP — which makes a plugin debuggable with curl
+// against its socket.
+//
+// # Capabilities, not plugin types
+//
+// A plugin advertises capabilities rather than being of a kind. One binary may
+// resolve secrets, provide tasks, and serve something added later. That matters
+// because the useful integrations are not single-purpose: a plugin for a cloud
+// provider naturally offers both its secrets manager and tasks that call its API,
+// and forcing those into separate binaries would mean two processes, two
+// handshakes, and two copies of the same credentials.
+//
+// The engine asks what a plugin can do, then uses only what it advertises and
+// only what the deployment permits.
+
+// Capability names a thing a plugin can do.
+//
+// Adding a capability is additive: an engine ignores capabilities it does not
+// know, and a plugin ignores requests for capabilities it did not advertise, so
+// an older plugin keeps working against a newer engine and vice versa.
+enum Capability {
+  CAPABILITY_UNSPECIFIED = 0;
+
+  // Resolves secret references. See SecretService.
+  CAPABILITY_SECRETS = 1;
+
+  // Provides tasks that workflow steps can run. See TaskService.
+  CAPABILITY_TASKS = 2;
+}
+
+// PluginManifest is what a plugin says about itself.
+message PluginManifest {
+  // Name identifies the plugin. By convention it matches the binary's suffix, so
+  // `flowstate-plugin-vault` names itself "vault".
+  string name = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 64
+      pattern: "^[a-z0-9][a-z0-9-]*$"
+    }
+  ];
+
+  // Version is the plugin's own version, for operator diagnostics. It is not used
+  // for compatibility decisions; protocol_version is.
+  string version = 2 [(buf.validate.field).string = {max_len: 64}];
+
+  // Description is one line about what the plugin does, shown by `flow plugins`.
+  string description = 3 [(buf.validate.field).string = {max_len: 256}];
+
+  // Capabilities are what this plugin can do. A plugin advertising none is
+  // useless and is refused at startup rather than being kept alive.
+  repeated Capability capabilities = 4 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 16
+  }];
+
+  // Schemes are the secret reference schemes this plugin resolves, meaningful
+  // only with CAPABILITY_SECRETS. A deployment refuses a plugin claiming a scheme
+  // another plugin already claims, since two answers for one scheme is a
+  // configuration error rather than something to resolve by ordering.
+  repeated string schemes = 5 [(buf.validate.field).repeated = {
+    max_items: 32
+    items: {
+      string: {
+        min_len: 1
+        max_len: 32
+        pattern: "^[a-z0-9-]+$"
+      }
+    }
+  }];
+
+  // Tasks are the task definitions this plugin provides, meaningful only with
+  // CAPABILITY_TASKS.
+  repeated TaskManifest tasks = 6 [(buf.validate.field).repeated = {max_items: 64}];
+}
+
+// TaskManifest describes a task a plugin provides, so the engine can validate a
+// workflow that uses it before running anything.
+//
+// The descriptors are what make a plugin task indistinguishable from a built-in
+// one to the rest of the system: validation, editor completion, and generated
+// documentation all read the same shape whether the task ships with the engine or
+// arrives from a plugin.
+message TaskManifest {
+  string name = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 64
+      pattern: "^[a-z][a-z0-9_]*$"
+    }
+  ];
+
+  // Summary is one line, shown by `flow tasks` and in editor completion.
+  string summary = 2 [(buf.validate.field).string = {max_len: 256}];
+
+  // Inputs and outputs are serialized FileDescriptorProtos plus the full name of
+  // the message within them, so the engine can validate inputs against the
+  // plugin's own schema without compiling the plugin's code.
+  bytes input_descriptor = 3;
+  string input_message = 4 [(buf.validate.field).string = {max_len: 256}];
+  bytes output_descriptor = 5;
+  string output_message = 6 [(buf.validate.field).string = {max_len: 256}];
+
+  // DeferredInputs are inputs whose expressions the task evaluates itself, in a
+  // scope the workflow does not have. See TaskDef in the engine for why this must
+  // be declared rather than inferred.
+  repeated string deferred_inputs = 7 [(buf.validate.field).repeated = {max_items: 16}];
+
+  // NeedsScope reports whether the task must receive prior step outputs and the
+  // variables bound by enclosing control flow.
+  bool needs_scope = 8;
+}
+
+// PluginService is the capability handshake every plugin must implement.
+service PluginService {
+  // Describe reports what the plugin is and can do. The engine calls it once,
+  // immediately after connecting, and refuses a plugin whose manifest does not
+  // validate.
+  rpc Describe(DescribePluginRequest) returns (DescribePluginResponse) {}
+
+  // Health reports whether the plugin is able to serve. The engine polls it to
+  // decide whether to restart a plugin that has stopped answering, and a plugin
+  // that cannot reach its own backend should report unhealthy rather than failing
+  // every request — the distinction tells an operator whether to look at the
+  // plugin or at what it depends on.
+  rpc Health(HealthRequest) returns (HealthResponse) {}
+}
+
+message DescribePluginRequest {
+  // HostVersion tells the plugin what it is talking to, so a plugin can refuse an
+  // engine it knows it cannot serve.
+  string host_version = 1 [(buf.validate.field).string = {max_len: 64}];
+}
+
+message DescribePluginResponse {
+  PluginManifest manifest = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED
+  ];
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+
+    // Serving means requests will be attempted.
+    STATUS_SERVING = 1;
+
+    // NotServing means the plugin is running but cannot serve — typically because
+    // something it depends on is unreachable. The engine reports this to the
+    // operator rather than restarting, since restarting will not fix a
+    // dependency.
+    STATUS_NOT_SERVING = 2;
+  }
+
+  Status status = 1;
+
+  // Message explains a non-serving status, for the operator. It must not contain
+  // credential material: this is logged.
+  string message = 2 [(buf.validate.field).string = {max_len: 1024}];
+}
+
+// SecretService resolves secret references, for a plugin advertising
+// CAPABILITY_SECRETS.
+//
+// The value crosses the process boundary in a response and exists in the engine
+// only inside the activity that asked for it. It is never returned as a step
+// output and never enters workflow history.
+service SecretService {
+  rpc Resolve(ResolveSecretRequest) returns (ResolveSecretResponse) {}
+}
+
+message ResolveSecretRequest {
+  // Ref is the secret to resolve. Its scheme is one the plugin advertised.
+  SecretRef ref = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED
+  ];
+
+  // Namespace is the tenant the requesting workload belongs to, established from
+  // the authenticated caller rather than declared by the workload. A plugin
+  // serving several tenants must scope resolution by it; ignoring it would let one
+  // tenant read another's secrets.
+  string namespace = 2 [(buf.validate.field).string = {max_len: 256}];
+
+  // Identity is who the requesting workload acts as, so a plugin can apply its own
+  // authorization in addition to the engine's. It carries no credentials.
+  WorkloadIdentity identity = 3;
+}
+
+message ResolveSecretResponse {
+  // Value is the resolved secret. A plugin must not log it, and must not include
+  // it in an error message.
+  bytes value = 1;
+
+  // ExpiresIn, when set, is how long the value remains valid, letting the engine
+  // cache it no longer than the plugin considers safe. Unset means the engine
+  // applies its own default.
+  google.protobuf.Duration expires_in = 2;
+}
+
+// TaskService executes tasks, for a plugin advertising CAPABILITY_TASKS.
+service TaskService {
+  rpc Execute(ExecuteTaskRequest) returns (ExecuteTaskResponse) {}
+}
+
+message ExecuteTaskRequest {
+  // Task is the step's task, with its inputs already resolved unless the manifest
+  // declared them deferred.
+  Task task = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED
+  ];
+
+  // Scope is what the task's own expressions evaluate against, sent only when the
+  // manifest declared needs_scope.
+  Scope scope = 2;
+
+  // Identity is who the workload acts as, and namespace the tenant it belongs to,
+  // so a plugin task can authorize what it does on the workload's behalf.
+  WorkloadIdentity identity = 3;
+  string namespace = 4 [(buf.validate.field).string = {max_len: 256}];
+}
+
+message ExecuteTaskResponse {
+  // Outputs are the task's results, matching the manifest's output message.
+  Node.Outputs outputs = 1;
+
+  // Retryable reports whether a failure could succeed on another attempt. It is
+  // meaningful only when the RPC itself fails with an application error, and
+  // exists because only the plugin knows whether its backend failure was
+  // transient. The engine defaults to not retrying, so a plugin that says nothing
+  // gets the safe answer.
+  bool retryable = 2;
+}
