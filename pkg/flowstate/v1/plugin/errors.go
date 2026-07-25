@@ -26,9 +26,11 @@ var (
 	// line before the deadline. The process has been killed.
 	ErrHandshakeTimeout = errors.New("plugin: handshake timed out")
 
-	// ErrLaunch reports that the process could not be started at all: no such
-	// file, not executable, or a socket path the operating system will not
-	// accept.
+	// ErrLaunch reports that a plugin could not be brought up: the process would
+	// not start — no such file, not executable, a socket path the operating
+	// system will not accept — or it started and then could not describe
+	// itself. They are one classification because they are one outcome: no
+	// usable plugin, and nothing to retry into.
 	ErrLaunch = errors.New("plugin: launch failed")
 
 	// ErrExited reports that the plugin process exited. It wraps the exit status

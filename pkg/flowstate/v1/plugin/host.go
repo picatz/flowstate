@@ -105,6 +105,18 @@ func (h *Host) Open(ctx context.Context) error {
 		problems []error
 	)
 
+	// A deployment that pinned its plugin set expects that set. A name in Only
+	// with no binary behind it is a missing installation or a typo, and either
+	// one silently yields a worker without a capability someone thought it had.
+	for _, name := range h.cfg.Only {
+		if !slices.ContainsFunc(found, func(f Found) bool { return f.Name == name }) {
+			problems = append(problems, fmt.Errorf(
+				"%w: no %s%s on the search path %v",
+				ErrLaunch, BinaryPrefix, name, h.cfg.SearchPath,
+			))
+		}
+	}
+
 	for _, f := range found {
 		if !h.cfg.wanted(f.Name) {
 			h.log.Debug("plugin not in the configured set, so it was not launched", "plugin", f.Name)
@@ -132,10 +144,16 @@ func (h *Host) Open(ctx context.Context) error {
 	if len(problems) > 0 {
 		// Nothing is left running. A half-open host would be a worker with an
 		// unpredictable subset of its plugins, which is worse than none.
-		for _, p := range launched {
-			p.close(context.Background())
-		}
 		h.cancel()
+
+		// Bounded, because this runs on the path that reports a configuration
+		// error: a plugin ignoring its signals must not turn a clear refusal
+		// into a hang.
+		stopCtx, stopCancel := context.WithTimeout(context.WithoutCancel(ctx), h.cfg.ShutdownGrace*3)
+		for _, p := range launched {
+			p.close(stopCtx)
+		}
+		stopCancel()
 
 		h.mu.Lock()
 		h.closed = true

@@ -174,17 +174,23 @@ func ParseHandshake(line string) (Handshake, error) {
 	}
 
 	fields := strings.Split(line, "|")
-	if len(fields) != handshakeFields {
-		return Handshake{}, fmt.Errorf(
-			"handshake line has %d fields, want %d of the form %q",
-			len(fields), handshakeFields, Sentinel+"|1|1|unix|/path/to/socket",
-		)
-	}
 
+	// The sentinel is checked before the field count, because the overwhelmingly
+	// common cause of an unparseable line is a binary that is not a plugin at
+	// all, and "is this a Flowstate plugin?" is a far more useful thing to tell
+	// someone than a complaint about how many fields their program's greeting
+	// has.
 	if fields[0] != Sentinel {
 		return Handshake{}, fmt.Errorf(
 			"handshake line starts with %q, want %q — is this a Flowstate plugin?",
 			truncate(fields[0], 64), Sentinel,
+		)
+	}
+
+	if len(fields) != handshakeFields {
+		return Handshake{}, fmt.Errorf(
+			"handshake line has %d fields, want %d of the form %q",
+			len(fields), handshakeFields, Sentinel+"|1|1|unix|/path/to/socket",
 		)
 	}
 

@@ -137,9 +137,16 @@ type Plugin struct {
 	cfg  Config
 	log  *slog.Logger
 
-	// procCtx bounds every process this supervises. The host cancels it to shut
-	// everything down.
+	// procCtx bounds every process this supervises, and cancel ends it.
+	//
+	// It is derived from the host's context but cancelled independently, so that
+	// closing one plugin does not depend on the host having cancelled first.
+	// Without that, the order of "stop the process" and "stop supervising it"
+	// would matter, and getting it wrong deadlocks: the supervisor waits on a
+	// process that has been stopped while the closer waits on a supervisor that
+	// has not been told to stop.
 	procCtx context.Context
+	cancel  context.CancelFunc
 
 	mu       sync.RWMutex
 	inst     *instance
@@ -157,19 +164,23 @@ type Plugin struct {
 // Describe. It returns an error rather than a Plugin if either fails: a plugin
 // that cannot start is refused at startup rather than kept around in a broken
 // state, so a worker's plugin set is what it says it is.
-func newPlugin(procCtx context.Context, cfg Config, found Found) (*Plugin, error) {
+func newPlugin(hostCtx context.Context, cfg Config, found Found) (*Plugin, error) {
+	procCtx, cancel := context.WithCancel(hostCtx)
+
 	p := &Plugin{
 		name:           found.Name,
 		path:           found.Path,
 		cfg:            cfg,
 		log:            cfg.logger().With("plugin", found.Name),
 		procCtx:        procCtx,
+		cancel:         cancel,
 		state:          StateStarting,
 		supervisorDone: make(chan struct{}),
 	}
 
 	inst, manifest, err := p.start()
 	if err != nil {
+		cancel()
 		close(p.supervisorDone)
 		return nil, err
 	}
@@ -378,7 +389,7 @@ func (p *Plugin) describe(inst *instance) (*flowstatev1.PluginManifest, error) {
 		HostVersion: p.cfg.HostVersion,
 	}))
 	if err != nil {
-		return nil, pluginError(p.name, p.path, fmt.Errorf("describing: %w", err))
+		return nil, pluginError(p.name, p.path, fmt.Errorf("%w: describing: %w", ErrLaunch, err))
 	}
 
 	manifest := resp.Msg.GetManifest()
@@ -566,6 +577,12 @@ func (p *Plugin) noteExit(inst *instance, ranFor time.Duration) {
 	inst.stop(p.procCtx, p.cfg.ShutdownGrace)
 
 	p.mu.Lock()
+	if p.state == StateStopped {
+		// close ran while this was waking up. It has already said what the
+		// plugin's state is, and it is not restarting.
+		p.mu.Unlock()
+		return
+	}
 	p.inst = nil
 	p.state = StateRestarting
 	if exitErr != nil {
@@ -673,6 +690,12 @@ func (p *Plugin) sleep(d time.Duration) bool {
 // close terminates the plugin and waits for supervision to finish.
 func (p *Plugin) close(ctx context.Context) {
 	p.closeOnce.Do(func() {
+		// First, so that nothing relaunches the process that is about to be
+		// stopped, and so that a supervisor blocked anywhere — waiting out a
+		// backoff, mid-launch, mid-health-check — is already on its way out
+		// before anything waits for it.
+		p.cancel()
+
 		p.mu.Lock()
 		inst := p.inst
 		p.inst = nil
@@ -683,8 +706,7 @@ func (p *Plugin) close(ctx context.Context) {
 			inst.stop(ctx, p.cfg.ShutdownGrace)
 		}
 
-		// The host has already cancelled procCtx, so the supervisor is on its
-		// way out; waiting for it is what makes Close mean the plugin is gone
+		// Waiting for the supervisor is what makes this mean the plugin is gone
 		// rather than going.
 		select {
 		case <-p.supervisorDone:
