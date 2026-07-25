@@ -56,6 +56,37 @@ closure, because `fmt` cannot call a method on a value it reaches through an
 unexported field and so prints the fields instead — that is how a private signing
 key was found printable through `%+v` on an enclosing struct.
 
+## The plugin ecosystem, now started
+
+`proto/flowstate/v1/plugin.proto` defines the protocol and is generated. Agent
+`plugin-host` is building `pkg/flowstate/v1/plugin/**`: discovery of
+`flowstate-plugin-<name>` executables, a handshake over a Unix socket, supervision,
+Connect clients, adapters onto the secrets and task registries, and an SDK plus a
+worked example plugin.
+
+The design decisions, so they are not relitigated: separate processes because that
+is where isolation actually exists; Connect RPC and Protobuf so the protocol is a
+schema rather than a Go interface and a plugin can be written in any language;
+capability-based rather than typed, because the useful integrations are rarely
+single-purpose and one binary should be able to serve secrets and tasks both. The
+handshake follows the lessons go-plugin learned — magic cookie, version
+negotiation, one handshake line on stdout then stderr only, bounded handshake
+timeout, socket at mode 0600, a per-launch shared secret, and lifecycle in both
+directions — without using go-plugin itself, since our protocol is proto-first.
+
+A plugin ships protobuf descriptors for its task inputs and outputs, so a plugin
+task is indistinguishable from a built-in one to validation, editor completion, and
+generated documentation. That is the registry invariant applied across a process
+boundary.
+
+What a plugin cannot do is escape policy: it resolves only permitted schemes,
+receives the tenant rather than choosing it, and its network access remains the
+worker's to govern.
+
+Left to decide: whether Vault stays in-process, becomes a plugin, or both. Env and
+file should stay in-process — a map lookup and a syscall do not justify a process
+boundary.
+
 ## Not started, roughly in order of value
 
 1. **Wire secrets into a task end to end.** The schema, the resolver, and the
