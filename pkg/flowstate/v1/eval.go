@@ -3,11 +3,14 @@ package flowstatev1
 import (
 	"context"
 	"fmt"
+	"math"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
+	"github.com/google/cel-go/common/types/ref"
 	"github.com/google/cel-go/interpreter"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )
@@ -22,76 +25,166 @@ var TypeAdapter = types.DefaultTypeAdapter
 // Ensure StepsOutputActivation implements the interpreter.Activation interface.
 var _ interpreter.Activation = (*StepsOutputActivation)(nil)
 
-// StepsOutputActivation is an interpreter activation that provides access to the
-// outputs of the previous steps in a workflow. It allows resolving values by their names
-// and supports nested field access using dot notation (e.g., "stepName.fieldName").
+// maxActivationDepth bounds how deeply stored expressions may nest while being
+// resolved. A stored expression is evaluated against this same activation, so a
+// workflow whose step output references itself would otherwise recurse until the
+// stack is exhausted.
+const maxActivationDepth = 32
+
+// StepsOutputActivation is a CEL activation that exposes the outputs of earlier
+// workflow steps to an expression.
+//
+// A name is resolved as a step ID, optionally followed by an output name, so an
+// expression may reference either a whole step's outputs or one named output of
+// it. Selection deeper than that is left to CEL, which applies it to the
+// returned value.
 type StepsOutputActivation struct {
+	// Prev holds the outputs of steps that have already run.
 	Prev *Workflow_StepOutputs
+
+	// Vars holds variables bound by enclosing control flow, such as a loop's
+	// current item. They are resolved before step outputs, so a loop body can
+	// refer to its iterator by name.
+	//
+	// Resolution stops at the variable itself: an expression selecting into it,
+	// like item.name, is resolved by returning the item and letting CEL apply the
+	// selection — the same contract step outputs follow.
+	Vars map[string]ref.Val
+
+	// Ctx bounds evaluation of any stored expression encountered while
+	// resolving a name. A context is held here, rather than passed in,
+	// because ResolveName implements a fixed third-party interface that has
+	// no place to thread one. Nil is treated as [context.Background].
+	Ctx context.Context
+
+	// Eval evaluates stored expressions. Nil uses [DefaultEvaluator].
+	Eval *Evaluator
+
+	// depth counts nested stored-expression evaluations, bounded by
+	// maxActivationDepth.
+	depth int
 }
 
-func (e *StepsOutputActivation) ResolveName(name string) (any, bool) {
-	if e.Prev == nil {
-		return nil, false
+// evaluator returns the evaluator to use, defaulting to the shared one.
+func (e *StepsOutputActivation) evaluator() *Evaluator {
+	if e.Eval != nil {
+		return e.Eval
 	}
-	if e.Prev.StepValues == nil {
+	return DefaultEvaluator()
+}
+
+// context returns the context to evaluate under, defaulting to a background
+// context.
+func (e *StepsOutputActivation) context() context.Context {
+	if e.Ctx != nil {
+		return e.Ctx
+	}
+	return context.Background()
+}
+
+// ResolveName resolves a step ID, or a step ID and output name joined by a dot,
+// to a CEL value.
+//
+// Reporting failure as a missing name (rather than an error) is what CEL's
+// activation contract allows, so an evaluation error while resolving a stored
+// expression surfaces to the author as an unresolved reference.
+func (e *StepsOutputActivation) ResolveName(name string) (any, bool) {
+	// A variable bound by enclosing control flow shadows nothing: a step id and
+	// an iterator name may not collide, which validation enforces, so checking
+	// variables first is unambiguous rather than a precedence rule to remember.
+	if v, ok := e.Vars[name]; ok {
+		return v, true
+	}
+
+	if e.Prev == nil || e.Prev.StepValues == nil {
 		return nil, false
 	}
 
-	selectorFields := strings.Split(name, ".")
-	if len(selectorFields) == 0 {
-		return nil, false
-	}
-	stepName := selectorFields[0]
+	stepName, outputName, hasOutput := strings.Cut(name, ".")
 
 	outputs, hasVal := e.Prev.StepValues[stepName]
 	if !hasVal {
 		return nil, false
 	}
-
-	if len(selectorFields) == 1 {
-		return outputs, true
-	}
-	currentVal := outputs
-	for _, field := range selectorFields[1:] {
-		if currentVal == nil || currentVal.NamedValues == nil {
+	if !hasOutput {
+		// Return CEL-native values, not the protobuf message. CEL has no type
+		// registered for Node.Outputs, so handing it back makes any expression
+		// referencing a bare step ID fail with "unknown type" — including the
+		// fallback CEL performs when a longer name does not resolve.
+		vals, err := e.outputsToMap(outputs)
+		if err != nil {
 			return nil, false
 		}
-		nextVal, hasField := currentVal.NamedValues[field]
-		if !hasField {
-			return nil, false
-		}
-		currentVal = &Node_Outputs{
-			NamedValues: map[string]*Value{
-				field: nextVal,
-			},
-		}
+		return vals, true
 	}
 
-	v := currentVal.NamedValues[selectorFields[len(selectorFields)-1]]
+	// A name addresses at most a step and one of its outputs. Anything longer
+	// must be reported as unresolved rather than answered with the output
+	// value, because CEL resolves a qualified name by trying successively
+	// shorter prefixes: claiming to resolve "step.output.field" would consume
+	// the qualifiers CEL needs to apply itself, yielding the whole output where
+	// the author asked for one field inside it.
+	if strings.Contains(outputName, ".") {
+		return nil, false
+	}
+
+	v, hasField := outputs.GetNamedValues()[outputName]
+	if !hasField {
+		return nil, false
+	}
+
+	rv, err := e.resolveValue(v)
+	if err != nil {
+		return nil, false
+	}
+	return rv, true
+}
+
+// outputsToMap converts a step's outputs into a CEL map, resolving each value to
+// a native CEL value so that CEL can apply its own selection and indexing.
+func (e *StepsOutputActivation) outputsToMap(outputs *Node_Outputs) (ref.Val, error) {
+	named := outputs.GetNamedValues()
+	entries := make(map[ref.Val]ref.Val, len(named))
+	for name, v := range named {
+		rv, err := e.resolveValue(v)
+		if err != nil {
+			return nil, err
+		}
+		entries[types.String(name)] = rv
+	}
+	return types.NewRefValMap(TypeAdapter, entries), nil
+}
+
+// resolveValue converts a stored value into a CEL value, evaluating it first if
+// it is an expression.
+func (e *StepsOutputActivation) resolveValue(v *Value) (ref.Val, error) {
 	switch v.GetKind().(type) {
 	case *Value_Expr:
-		ast := cel.ParsedExprToAst(v.GetExpr())
-		env, err := cel.NewEnv()
-		if err != nil {
-			return nil, false
+		if e.depth >= maxActivationDepth {
+			return nil, fmt.Errorf("expression nesting exceeded %d levels", maxActivationDepth)
 		}
-		prg, err := env.Program(ast)
-		if err != nil {
-			return nil, false
+		child := &StepsOutputActivation{
+			Prev:  e.Prev,
+			Ctx:   e.Ctx,
+			Eval:  e.Eval,
+			depth: e.depth + 1,
 		}
-		out, _, err := prg.Eval(cel.Activation(e))
-		if err != nil {
-			return nil, false
-		}
-		return out, true
+		return e.evaluator().EvalParsedBase(e.context(), v.GetExpr(), cel.Activation(child))
 	case *Value_Literal:
-		rv, err := cel.ValueToRefValue(TypeAdapter, v.GetLiteral())
-		if err != nil {
-			return nil, false
-		}
-		return rv, true
+		return cel.ValueToRefValue(TypeAdapter, v.GetLiteral())
+
+	case *Value_SecretRef:
+		// A secret reference is deliberately unresolvable here. Resolving it
+		// would produce a value in workflow code, and anything a workflow
+		// computes can end up in history — which is exactly what referencing a
+		// secret instead of embedding it is meant to prevent. Only the activity
+		// that needs the value resolves it, worker-side.
+		return nil, fmt.Errorf("a secret reference cannot be read in an expression; "+
+			"pass it to a task input that accepts one (%s:%s)",
+			v.GetSecretRef().GetScheme(), v.GetSecretRef().GetName())
+
 	default:
-		return nil, false
+		return nil, fmt.Errorf("unsupported value kind %T", v.GetKind())
 	}
 }
 
@@ -102,7 +195,11 @@ func (e *StepsOutputActivation) Parent() interpreter.Activation {
 func NewLiteralList(vals ...any) *Value {
 	literals := make([]*expr.Value, 0, len(vals))
 	for _, v := range vals {
-		literals = append(literals, NewLiteral(v).GetLiteral())
+		// NewValue rather than NewLiteral: NewLiteral handles only scalars, so a
+		// list of maps or of nested lists silently became a list of error values
+		// whose literal is nil — which is how a loop's per-iteration results came
+		// out empty.
+		literals = append(literals, NewValue(v).GetLiteral())
 	}
 	return &Value{
 		Kind: &Value_Literal{
@@ -246,7 +343,7 @@ func NewExpr(exprStr string) *Value {
 }
 
 func newValueExprWithErr(exprStr string) (*Value, error) {
-	env, err := cel.NewEnv()
+	env, err := DefaultEvaluator().Env()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create CEL environment: %w", err)
 	}
@@ -361,32 +458,289 @@ func eval(ctx context.Context, w *Workflow) (*Workflow_StepOutputs, error) {
 		StepValues: make(map[string]*Node_Outputs),
 	}
 
-	for _, node := range w.Steps {
-		switch n := node.Kind.(type) {
-		case *Node_Task:
-			taskResult, err := n.Task.Eval(ctx, stepOutputs)
-			if err != nil {
-				return nil, err
-			}
-			stepOutputs.StepValues[node.Id] = taskResult
-		default:
-			return nil, fmt.Errorf("unsupported node kind: %T", n)
-		}
+	if err := runNodes(ctx, w.Steps, NewScope(stepOutputs)); err != nil {
+		return nil, err
 	}
-
 	return stepOutputs, nil
 }
 
+// runNodes executes a list of nodes in order, writing their outputs into out.
+//
+// Conditions, timeouts, retries, continue-on-error, loops, and parallel branches
+// behave the same here as they do under durable execution. Local runs exist to
+// tell an author what will happen in production, so a local run that disagrees is
+// worse than no local run at all.
+//
+// It is recursive because control flow nests: a loop body may contain a parallel
+// block whose branches contain further loops.
+func runNodes(ctx context.Context, nodes []*Node, scope *Scope) error {
+	for _, node := range nodes {
+		run, err := EvalConditionInScope(ctx, node.GetCondition(), scope)
+		if err != nil {
+			return fmt.Errorf("step %q: %w", node.GetId(), err)
+		}
+		if !run {
+			continue
+		}
+
+		outputs, err := runNode(ctx, node, scope)
+		if err != nil {
+			if !node.GetPolicy().GetContinueOnError() {
+				return fmt.Errorf("step %q: %w", node.GetId(), err)
+			}
+			scope.Outputs.StepValues[node.GetId()] = &Node_Outputs{
+				NamedValues: map[string]*Value{"error": NewLiteral(err.Error())},
+			}
+			continue
+		}
+		if outputs != nil {
+			scope.Outputs.StepValues[node.GetId()] = outputs
+		}
+	}
+	return nil
+}
+
+// runNode executes one node and returns the outputs it records.
+func runNode(ctx context.Context, node *Node, scope *Scope) (*Node_Outputs, error) {
+	switch n := node.Kind.(type) {
+	case *Node_Task:
+		return runStepWithPolicy(ctx, n.Task, node.GetPolicy(), scope)
+
+	case *Node_ForEach:
+		return runForEach(ctx, n.ForEach, scope)
+
+	case *Node_Parallel:
+		return nil, runParallel(ctx, n.Parallel, scope)
+
+	default:
+		return nil, fmt.Errorf("unsupported node kind: %T", n)
+	}
+}
+
+// runForEach runs a loop body once per item.
+//
+// Iterations run sequentially here regardless of MaxParallel. The durable driver
+// honors it, but reproducing concurrency locally would only reorder side effects
+// without reproducing anything an author can act on — and sequential execution
+// makes a local run's output deterministic, which is what makes it useful for
+// comparison.
+func runForEach(ctx context.Context, loop *ForEach, scope *Scope) (*Node_Outputs, error) {
+	items, err := ResolveItems(ctx, loop, scope)
+	if err != nil {
+		return nil, err
+	}
+
+	name := IteratorName(loop)
+	iterations := make([]*Workflow_StepOutputs, 0, len(items))
+
+	for i, item := range items {
+		// Each iteration gets its own output scope, seeded with what was visible
+		// before the loop. Body steps therefore cannot see a previous iteration's
+		// outputs, which keeps an iteration's behavior independent of how many
+		// ran before it.
+		iterationOutputs := &Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}}
+		for k, v := range scope.GetOutputs().GetStepValues() {
+			iterationOutputs.StepValues[k] = v
+		}
+
+		iterationScope := scope.WithVars(name, item)
+		iterationScope.Outputs = iterationOutputs
+
+		if err := runNodes(ctx, loop.GetBody(), iterationScope); err != nil {
+			return nil, fmt.Errorf("iteration %d: %w", i, err)
+		}
+
+		iterations = append(iterations, onlyBodyOutputs(loop.GetBody(), iterationOutputs))
+	}
+
+	return LoopOutputs(iterations), nil
+}
+
+// onlyBodyOutputs narrows an iteration's scope to the outputs its own body
+// produced, so a loop's results describe the loop rather than repeating whatever
+// preceded it.
+func onlyBodyOutputs(body []*Node, scope *Workflow_StepOutputs) *Workflow_StepOutputs {
+	result := &Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}}
+	for _, node := range body {
+		if outputs, ok := scope.GetStepValues()[node.GetId()]; ok {
+			result.StepValues[node.GetId()] = outputs
+		}
+	}
+	return result
+}
+
+// runParallel runs each branch and merges their outputs.
+//
+// Branches run sequentially in the local driver for the same reason loop
+// iterations do: determinism. Because branches may not depend on each other's
+// outputs, running them in order produces the same result the durable driver
+// reaches concurrently.
+func runParallel(ctx context.Context, parallel *Parallel, scope *Scope) error {
+	before := &Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}}
+	for k, v := range scope.GetOutputs().GetStepValues() {
+		before.StepValues[k] = v
+	}
+
+	for i, branch := range parallel.GetBranches() {
+		// Every branch starts from the outputs that existed before the block, so
+		// a branch cannot observe a sibling's work even though they run in order
+		// here. A workflow that accidentally depended on that would behave
+		// differently under concurrent execution.
+		branchOutputs := &Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}}
+		for k, v := range before.GetStepValues() {
+			branchOutputs.StepValues[k] = v
+		}
+
+		branchScope := &Scope{Outputs: branchOutputs, Vars: scope.GetVars()}
+		if err := runNodes(ctx, branch.GetSteps(), branchScope); err != nil {
+			return fmt.Errorf("branch %d: %w", i, err)
+		}
+
+		for _, node := range branch.GetSteps() {
+			if outputs, ok := branchOutputs.GetStepValues()[node.GetId()]; ok {
+				scope.Outputs.StepValues[node.GetId()] = outputs
+			}
+		}
+	}
+	return nil
+}
+
+// EvalCondition reports whether a step's condition allows it to run.
+//
+// A nil condition means the step always runs. A condition that does not produce a
+// boolean is an error rather than being coerced, so a mistake surfaces instead of
+// being silently interpreted.
+func EvalCondition(ctx context.Context, condition *Value, prev *Workflow_StepOutputs) (bool, error) {
+	return EvalConditionInScope(ctx, condition, NewScope(prev))
+}
+
+// EvalConditionInScope evaluates a condition against a scope, so a loop body can
+// guard on its own item as well as on earlier steps' outputs.
+func EvalConditionInScope(ctx context.Context, condition *Value, scope *Scope) (bool, error) {
+	if condition == nil {
+		return true, nil
+	}
+
+	ev := DefaultEvaluator()
+	switch kind := condition.GetKind().(type) {
+	case *Value_Literal:
+		b, ok := kind.Literal.GetKind().(*expr.Value_BoolValue)
+		if !ok {
+			return false, fmt.Errorf("condition must be a boolean, got %s", literalKindName(kind.Literal))
+		}
+		return b.BoolValue, nil
+
+	case *Value_Expr:
+		out, err := ev.EvalParsedBase(ctx, kind.Expr, scope.Activation(ctx))
+		if err != nil {
+			return false, fmt.Errorf("evaluating condition: %w", err)
+		}
+		b, ok := out.Value().(bool)
+		if !ok {
+			return false, fmt.Errorf("condition must evaluate to a boolean, got %s", out.Type())
+		}
+		return b, nil
+
+	default:
+		return false, fmt.Errorf("unsupported condition kind %T", condition.GetKind())
+	}
+}
+
+// runStepWithPolicy executes a task, applying the step's timeout and retrying
+// failures the policy allows.
+//
+// Retries here are in-process and therefore not durable: a crash loses them,
+// which is exactly the difference durable execution removes. They exist so that a
+// local run reproduces the same observable outcome — a flaky dependency that
+// succeeds on the second attempt succeeds in both places — rather than to make
+// local execution reliable.
+func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scope *Scope) (*Node_Outputs, error) {
+	attempts := 1
+	if retry := policy.GetRetry(); retry != nil && retry.GetMaxAttempts() > 0 {
+		attempts = int(retry.GetMaxAttempts())
+	}
+
+	var err error
+	for attempt := 1; ; attempt++ {
+		var out *Node_Outputs
+		out, err = runStepAttempt(ctx, task, policy, scope)
+		if err == nil {
+			return out, nil
+		}
+
+		// Only failures that could plausibly succeed on another attempt are
+		// retried, matching how the durable driver classifies them.
+		if attempt >= attempts || !ClassifyError(err).Retryable() {
+			return nil, err
+		}
+
+		delay := retryDelay(policy.GetRetry(), attempt)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+}
+
+// runStepAttempt performs one attempt, bounded by the step's timeout.
+func runStepAttempt(ctx context.Context, task *Task, policy *StepPolicy, scope *Scope) (*Node_Outputs, error) {
+	if timeout := policy.GetTimeout().AsDuration(); timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	return task.EvalInScope(ctx, scope)
+}
+
+// retryDelay returns how long to wait before the next attempt.
+func retryDelay(retry *RetryPolicy, attempt int) time.Duration {
+	interval := retry.GetInitialInterval().AsDuration()
+	if interval <= 0 {
+		interval = time.Second
+	}
+
+	backoff := retry.GetBackoffCoefficient()
+	if backoff < 1 {
+		backoff = 2
+	}
+
+	delay := float64(interval) * math.Pow(backoff, float64(attempt-1))
+	if max := retry.GetMaxInterval().AsDuration(); max > 0 && time.Duration(delay) > max {
+		return max
+	}
+	return time.Duration(delay)
+}
+
 func (t *Task) Eval(ctx context.Context, prevStepOutputs *Workflow_StepOutputs) (*Node_Outputs, error) {
+	return t.EvalInScope(ctx, NewScope(prevStepOutputs))
+}
+
+// EvalInScope executes the task against a scope, which is how a loop body's
+// inputs and a task's own expressions reference the current item.
+//
+// Expression inputs are resolved into a copy of the task before execution, which
+// is the single place resolution happens for the local driver — the durable driver
+// resolves the same way before scheduling an activity, so both agree on what a
+// task receives.
+func (t *Task) EvalInScope(ctx context.Context, scope *Scope) (*Node_Outputs, error) {
 	if t == nil {
 		return nil, fmt.Errorf("task cannot be nil")
 	}
-	f, ok := taskLibrary[t.Name]
+	if len(scope.GetVars()) > 0 {
+		resolved, err := ResolveTaskInputs(ctx, t, scope)
+		if err != nil {
+			return nil, err
+		}
+		t = resolved
+	}
+	if t == nil {
+		return nil, fmt.Errorf("task cannot be nil")
+	}
+	def, ok := LookupTask(t.Name)
 	if !ok {
-		return nil, fmt.Errorf("unsupported task name: %s", t.Name)
+		return nil, NewTaskError(t.Name, ErrorKindUnknownTask, fmt.Errorf(
+			"unknown task %q (available: %s)", t.Name, strings.Join(TaskNames(), ", ")))
 	}
-	if f == nil {
-		return nil, fmt.Errorf("task function for %s is nil", t.Name)
-	}
-	return f(ctx, t.Inputs, prevStepOutputs)
+	return def.Fn(ctx, t.Inputs, scope)
 }

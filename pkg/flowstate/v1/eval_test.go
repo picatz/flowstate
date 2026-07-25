@@ -30,11 +30,58 @@ func runWorkflow(t *testing.T, input *v1.Workflow, expected *v1.Workflow_StepOut
 }
 
 func TestRunWorkflow(t *testing.T) {
-	for _, test := range tests.Workflows {
+	baseURL := tests.NewHTTPServer(t)
+	for _, test := range tests.Workflows(baseURL) {
 		t.Run(test.Name, func(t *testing.T) {
 			b, err := flowfile.Marshal(test.Workflow)
 			require.NoError(t, err)
 			fmt.Println("\n" + string(b) + "\n")
+			runWorkflow(t, test.Workflow, test.ExpectedOutputs)
+		})
+	}
+}
+
+// TestRunWorkflowZeroValues pins that legitimately empty values survive a round
+// trip through the task input and output conversion layer.
+func TestRunWorkflowZeroValues(t *testing.T) {
+	for _, test := range tests.ZeroValueCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			runWorkflow(t, test.Workflow, test.ExpectedOutputs)
+		})
+	}
+}
+
+// TestRunWorkflowControlFlow covers loops and parallel branches in the local
+// driver. The engine package runs the same cases against the durable driver.
+func TestRunWorkflowControlFlow(t *testing.T) {
+	for _, test := range tests.ControlFlowCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			runWorkflow(t, test.Workflow, test.ExpectedOutputs)
+		})
+	}
+}
+
+// TestRunWorkflowPolicy covers conditions and per-step policy in the local
+// driver. The same cases run against the Temporal driver in the engine package,
+// which is what keeps the two from diverging.
+func TestRunWorkflowPolicy(t *testing.T) {
+	failedSteps := tests.PolicyCaseFailedSteps()
+
+	for _, test := range tests.PolicyCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			if test.ExpectedOutputs == nil {
+				// Cases whose failure text is engine-specific: assert the shape
+				// instead of the exact message.
+				out, err := v1.Run(t.Context(), test.Workflow)
+				require.NoError(t, err)
+
+				step, ok := failedSteps[test.Name]
+				require.True(t, ok, "case with no expected outputs must name its failed step")
+				require.Contains(t, out.GetStepValues(), step)
+				require.Contains(t, out.GetStepValues()[step].GetNamedValues(), "error",
+					"a step tolerated by continue_on_error must record its failure")
+				return
+			}
 			runWorkflow(t, test.Workflow, test.ExpectedOutputs)
 		})
 	}

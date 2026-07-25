@@ -1,6 +1,7 @@
 package flowstatev1
 
 import (
+	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"net/http"
 	"testing"
 
@@ -159,7 +160,7 @@ func Test_httpFuncPrintf(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			fn := taskFuncHTTP(http.DefaultClient)
+			fn := taskFuncHTTP(testEgressPolicy(t))
 
 			result, err := fn(
 				t.Context(),
@@ -172,7 +173,7 @@ func Test_httpFuncPrintf(t *testing.T) {
 }
 
 func Test_taskFuncHTTP_OutputsShaping(t *testing.T) {
-	fn := taskFuncHTTP(http.DefaultClient)
+	fn := taskFuncHTTP(testEgressPolicy(t))
 
 	tests := []struct {
 		name        string
@@ -367,7 +368,7 @@ func Test_taskFuncCEL(t *testing.T) {
 			result, err := taskFuncCEL(
 				t.Context(),
 				NewNamedValues(test.input),
-				test.prev,
+				NewScope(test.prev),
 			)
 			test.check(t, result, err)
 		})
@@ -399,7 +400,7 @@ func Test_populateProtoMessageFromValueMap_MapHeadersInput(t *testing.T) {
 		"headers": NewLiteralMap(map[string]any{"A": "1", "B": "2"}),
 	}
 	msg := &Task_HTTP_Inputs{}
-	err := populateProtoMessageFromValueMap(inputs, msg, &Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}})
+	err := populateProtoMessageFromValueMap(t.Context(), inputs, msg, NewScope(&Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}}))
 	require.NoError(t, err)
 	require.Equal(t, map[string]string{"A": "1", "B": "2"}, msg.GetHeaders())
 }
@@ -412,7 +413,7 @@ func Test_populateProtoMessageFromValueMap_MapHeadersExprInput(t *testing.T) {
 		"headers": NewExpr("{'A': '1', 'B': string(2)}"),
 	}
 	msg := &Task_HTTP_Inputs{}
-	err := populateProtoMessageFromValueMap(inputs, msg, &Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}})
+	err := populateProtoMessageFromValueMap(t.Context(), inputs, msg, NewScope(&Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}}))
 	require.NoError(t, err)
 	require.Equal(t, map[string]string{"A": "1", "B": "2"}, msg.GetHeaders())
 }
@@ -467,7 +468,7 @@ func Test_populateProtoMessageFromValueMap_MapNonStringExprInput(t *testing.T) {
 		"ints":  NewExpr("{'A': 1, 'B': 2}"),
 		"bools": NewExpr("{'T': true, 'F': false}"),
 	}
-	err = populateProtoMessageFromValueMap(inputs, msg, &Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}})
+	err = populateProtoMessageFromValueMap(t.Context(), inputs, msg, NewScope(&Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}}))
 	require.NoError(t, err)
 
 	// Collect map values from the dynamic message and assert
@@ -491,4 +492,16 @@ func Test_populateProtoMessageFromValueMap_MapNonStringExprInput(t *testing.T) {
 		return true
 	})
 	require.Equal(t, map[string]bool{"T": true, "F": false}, gotBools)
+}
+
+// testEgressPolicy returns an egress policy permitting loopback, which tests
+// need because their servers listen on localhost and the default policy denies
+// internal addresses.
+func testEgressPolicy(t *testing.T) *netpolicy.Policy {
+	t.Helper()
+	p, err := netpolicy.New(netpolicy.WithAllowLoopback())
+	if err != nil {
+		t.Fatalf("building test egress policy: %v", err)
+	}
+	return p
 }
