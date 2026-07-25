@@ -26,9 +26,14 @@ func TestResolveTaskInputs_PreResolveValueExprs(t *testing.T) {
 			task := &v1.Task{Name: "echo", Inputs: map[string]*v1.Value{
 				"message": v1.NewExpr(tc.expr),
 			}}
-			err := resolveTaskInputs(task, prev)
+			resolved, err := v1.ResolveTaskInputs(t.Context(), task, v1.NewScope(prev))
 			require.NoError(t, err)
-			got := task.Inputs["message"].GetLiteral().GetStringValue()
+			got := resolved.Inputs["message"].GetLiteral().GetStringValue()
+
+			// Resolution returns a copy; the original must be untouched so a
+			// loop body's task can be resolved again for the next iteration.
+			require.NotNil(t, task.Inputs["message"].GetExpr(),
+				"resolution must not mutate the task it was given")
 			require.Equal(t, tc.expect, got)
 		})
 	}
@@ -65,9 +70,9 @@ func TestResolveTaskInputs_MixedTypes_Table(t *testing.T) {
 			task := &v1.Task{Name: "echo", Inputs: map[string]*v1.Value{
 				"message": v1.NewExpr(tc.expr),
 			}}
-			err := resolveTaskInputs(task, prev)
+			resolved, err := v1.ResolveTaskInputs(t.Context(), task, v1.NewScope(prev))
 			require.NoError(t, err)
-			lit := task.Inputs["message"].GetLiteral()
+			lit := resolved.Inputs["message"].GetLiteral()
 			if tc.wantStr != nil {
 				require.Equal(t, *tc.wantStr, lit.GetStringValue())
 			}

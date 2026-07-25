@@ -101,6 +101,7 @@ func TestFlowstateServer(t *testing.T) {
 	w.RegisterWorkflow(engine.Run)
 	w.RegisterActivity(engine.Task)
 	w.RegisterActivity(engine.TaskWithPrev)
+	w.RegisterActivity(engine.TaskInScope)
 
 	err = w.Start()
 	require.NoError(t, err)

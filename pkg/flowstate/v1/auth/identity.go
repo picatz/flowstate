@@ -1,0 +1,286 @@
+package auth
+
+import (
+	"fmt"
+	"log/slog"
+	"maps"
+	"reflect"
+	"slices"
+	"strings"
+)
+
+// WorkloadIdentity is who a running workload is, and on whose behalf it acts.
+//
+// It is the outbound counterpart to [Principal]. A Principal is a caller
+// Flowstate authenticated; a WorkloadIdentity is the identity a Flowstate
+// workload carries when it goes out and calls something else. The server derives
+// one from the Principal that submitted the run, and it travels with the run, so
+// the last step of a long workload acts as the same identity as the first.
+//
+// It holds identity and never credentials, which is what makes it safe to
+// persist in workflow history and to log.
+//
+// This mirrors the flowstate.v1.WorkloadIdentity protobuf message. Use
+// [IdentityFrom] to convert one; this package deliberately does not import the
+// generated types, so that the package defining them can import this one.
+type WorkloadIdentity struct {
+	// Subject is the principal the workload acts for: the "sub" of the caller
+	// who submitted the run, such as
+	// "repo:picatz/flowstate:ref:refs/heads/main".
+	Subject string
+
+	// Issuer is where that principal came from, the "iss" of the token that
+	// authenticated it.
+	Issuer string
+
+	// Claims are the claims an operator chose to carry from the submitting
+	// caller's token, such as "repository" or "email".
+	Claims map[string]string
+
+	// Namespace is the tenant or environment the workload runs in.
+	Namespace string
+
+	// Deployment names the Flowstate deployment running the workload.
+	Deployment string
+}
+
+// IdentitySource is anything that exposes a workload identity through the
+// accessors generated for the flowstate.v1.WorkloadIdentity protobuf message.
+//
+// # Why this is an interface and not that message
+//
+// This indirection looks like something to simplify away, and it is not.
+//
+// The package that defines the generated types has to be able to import this one:
+// the http task lives there, and a task resolving a credential calls [Broker].
+// If this package imported the generated types in return, that would be an import
+// cycle, and the build would fail. Naming only the accessors keeps the dependency
+// pointing one way, while [IdentityFrom] still takes a
+// *flowstatev1.WorkloadIdentity directly at the call site.
+//
+// So the rule is: this package depends on no other Flowstate package. Anything
+// that needs to cross that line crosses it as an interface or a plain Go value.
+type IdentitySource interface {
+	GetSubject() string
+	GetIssuer() string
+	GetClaims() map[string]string
+	GetNamespace() string
+	GetDeployment() string
+}
+
+// IdentityFrom converts a protobuf workload identity, or anything shaped like
+// one, into a [WorkloadIdentity]:
+//
+//	identity := auth.IdentityFrom(state.GetIdentity())
+//
+// It takes an [IdentitySource] rather than the generated message so that this
+// package depends on no other Flowstate package; see [IdentitySource] for why
+// that matters and why it must stay that way.
+//
+// An absent source yields the zero identity, which [WorkloadIdentity.Validate]
+// rejects, so an unset identity cannot silently become a usable one.
+//
+// A nil pointer counts as absent, not only a nil interface. An unset protobuf
+// field arrives as a typed nil wrapped in the interface, which is the common case
+// for a run submitted before any identity was established, and no method is called
+// on it: whether that would have been safe is a property of the caller's type, and
+// this is not the place to find out.
+func IdentityFrom(source IdentitySource) WorkloadIdentity {
+	if source == nil || isNilPointer(source) {
+		return WorkloadIdentity{}
+	}
+
+	return WorkloadIdentity{
+		Subject:    source.GetSubject(),
+		Issuer:     source.GetIssuer(),
+		Claims:     maps.Clone(source.GetClaims()),
+		Namespace:  source.GetNamespace(),
+		Deployment: source.GetDeployment(),
+	}
+}
+
+// isNilPointer reports whether an interface value holds a nil pointer, the shape
+// an unset protobuf message field takes once it is assigned to an interface.
+func isNilPointer(value any) bool {
+	reflected := reflect.ValueOf(value)
+	return reflected.Kind() == reflect.Pointer && reflected.IsNil()
+}
+
+// IdentityFromPrincipal derives the identity a run should act as from the caller
+// that submitted it.
+//
+// The namespace comes from the caller whenever the trust policy determined one,
+// and the namespace argument is only the fallback for a deployment whose policy
+// names none, meaning a single tenant. That precedence is the tenant boundary: a
+// namespace supplied by the submitting request, rather than derived from the
+// verified token, would let a caller choose its own tenant.
+//
+// Only the named claims are carried. A workload's identity should assert what a
+// downstream relying party needs to authorize it, not everything the submitting
+// caller's token happened to contain, and claims copied here can end up in an
+// assertion sent to a third party.
+func IdentityFromPrincipal(principal Principal, namespace, deployment string, claimNames ...string) WorkloadIdentity {
+	if principal.Namespace != "" {
+		namespace = principal.Namespace
+	}
+
+	identity := WorkloadIdentity{
+		Subject:    principal.Subject,
+		Issuer:     principal.Issuer,
+		Namespace:  namespace,
+		Deployment: deployment,
+	}
+
+	for _, name := range claimNames {
+		if value, ok := principal.StringClaim(name); ok {
+			if identity.Claims == nil {
+				identity.Claims = make(map[string]string, len(claimNames))
+			}
+			identity.Claims[name] = value
+		}
+	}
+
+	return identity
+}
+
+// IsZero reports whether the identity is unset.
+func (w WorkloadIdentity) IsZero() bool {
+	return w.Subject == "" && w.Issuer == "" && w.Namespace == "" && w.Deployment == "" && len(w.Claims) == 0
+}
+
+// String returns the identity in the form used in messages: the principal the
+// workload acts for, qualified by where it runs.
+func (w WorkloadIdentity) String() string {
+	if w.IsZero() {
+		return "no identity"
+	}
+	return fmt.Sprintf("%s/%s acting for %s", w.Namespace, w.Deployment, w.Subject)
+}
+
+// LogValue implements [slog.LogValuer], recording the identity without its
+// carried claims, which may hold personal data.
+func (w WorkloadIdentity) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("subject", w.Subject),
+		slog.String("issuer", w.Issuer),
+		slog.String("namespace", w.Namespace),
+		slog.String("deployment", w.Deployment),
+	)
+}
+
+// StepRef points at the unit of work an assertion is minted for: which step, of
+// which run, of which workload.
+//
+// A credential is obtained for one step of one run, so that a relying party's
+// authorization can be as narrow as one step of one workload, and so that a
+// credential leaked from one step is not usable as another.
+//
+// It is deliberately not called Scope. flowstate.v1.Scope is the scope an
+// expression is evaluated in, which is bound variables and earlier step outputs;
+// this is a location in an execution. Two types called Scope, one of them a proto
+// that travels to workers, would be a lasting source of confusion.
+type StepRef struct {
+	// Workflow is the workload's name, which is stable across runs and is
+	// therefore what a relying party's policy names.
+	Workflow string
+
+	// Run identifies the individual execution. It is carried as a claim for
+	// audit, and deliberately not part of the subject: a relying party cannot
+	// enumerate run identifiers in advance.
+	Run string
+
+	// Step is the step within the workload that is asking for the credential.
+	Step string
+}
+
+// IsZero reports whether the reference is unset.
+func (s StepRef) IsZero() bool {
+	return s == StepRef{}
+}
+
+// subjectSeparator joins the components of an assertion subject. Components may
+// not contain it, so a subject can be split back into exactly the parts that
+// produced it, and cannot be forged by a component that spans two levels.
+const subjectSeparator = "/"
+
+// subjectPrefix marks a subject as one Flowstate minted, so a relying party
+// trusting several issuers can tell at a glance which one a subject belongs to.
+const subjectPrefix = "flowstate:"
+
+// defaultComponent stands in for a namespace or deployment an operator has not
+// set, so that a subject always has the same number of components. Without it, a
+// workload with no deployment would produce a subject that a prefix rule written
+// for a different level would match.
+const defaultComponent = "default"
+
+// SubjectFor returns the subject a minted assertion will carry for this identity
+// and step:
+//
+//	flowstate:<namespace>/<deployment>/<workflow>/<step>
+//
+// The shape is fixed and hierarchical so that a relying party can authorize at
+// whatever level it wants with a prefix match: a whole namespace, one
+// deployment, one workload, or a single step. An operator writing a cloud trust
+// policy needs the exact string, so this is exported and used by minting rather
+// than being computed twice.
+//
+// The run identifier is not part of the subject; it travels as a claim.
+func (w WorkloadIdentity) SubjectFor(ref StepRef) (string, error) {
+	components := []string{
+		orDefault(w.Namespace),
+		orDefault(w.Deployment),
+		ref.Workflow,
+		ref.Step,
+	}
+
+	names := []string{"namespace", "deployment", "workflow", "step"}
+	for i, component := range components {
+		switch {
+		case component == "":
+			return "", fmt.Errorf("%w: %s is required to name a workload", ErrInvalidIdentity, names[i])
+		case strings.ContainsAny(component, subjectSeparator+":"):
+			// Otherwise one component could spell out several, and a subject
+			// could be made to look like a different workload's.
+			return "", fmt.Errorf("%w: %s %q must not contain %q or %q",
+				ErrInvalidIdentity, names[i], truncate(component, 64), subjectSeparator, ":")
+		}
+	}
+
+	return subjectPrefix + strings.Join(components, subjectSeparator), nil
+}
+
+// orDefault substitutes the placeholder for an unset subject component.
+func orDefault(component string) string {
+	if component == "" {
+		return defaultComponent
+	}
+	return component
+}
+
+// Validate reports whether the identity is usable for minting an assertion.
+//
+// An identity with no subject or issuer is one Flowstate never established.
+// Minting for it would produce an assertion that asserts nothing about who the
+// workload acts for, which a relying party would nonetheless accept as a
+// Flowstate workload.
+func (w WorkloadIdentity) Validate() error {
+	switch {
+	case w.IsZero():
+		return fmt.Errorf("%w: no identity was established for this workload", ErrInvalidIdentity)
+	case w.Subject == "":
+		return fmt.Errorf("%w: identity has no subject", ErrInvalidIdentity)
+	case w.Issuer == "":
+		return fmt.Errorf("%w: identity has no issuer", ErrInvalidIdentity)
+	}
+
+	for _, name := range slices.Sorted(maps.Keys(w.Claims)) {
+		if slices.Contains(reservedClaims, name) {
+			// A carried claim that shadowed a reserved one would let whoever
+			// controls the submitting token dictate the minted assertion.
+			return fmt.Errorf("%w: carried claim %q collides with the reserved claim of the same name",
+				ErrInvalidIdentity, name)
+		}
+	}
+
+	return nil
+}

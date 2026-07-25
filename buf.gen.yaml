@@ -6,16 +6,20 @@ managed:
     except:
       - buf.build/googleapis/googleapis
       - buf.build/bufbuild/protovalidate
+# Plugin versions are pinned to match the corresponding runtime libraries in
+# go.mod, so generated code and runtime never drift apart.
+#
+# Validation is NOT generated: the schema declares its rules with protovalidate
+# (buf.validate options), which are enforced at runtime by buf.build/go/protovalidate
+# reading the descriptors. See pkg/flowstate/v1/validate.go.
 plugins:
-  - plugin: buf.build/protocolbuffers/go:v1.31.0
+  # google.golang.org/protobuf
+  - plugin: buf.build/protocolbuffers/go:v1.36.11
     out: ./pkg
     opt:
       - paths=source_relative
-  - plugin: buf.build/connectrpc/go:v1.18.1
-    out: ./pkg
-    opt:
-      - paths=source_relative
-  - plugin: buf.build/bufbuild/validate-go:v1.0.2
+  # connectrpc.com/connect
+  - plugin: buf.build/connectrpc/go:v1.20.0
     out: ./pkg
     opt:
       - paths=source_relative

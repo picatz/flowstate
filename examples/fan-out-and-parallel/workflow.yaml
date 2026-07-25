@@ -1,0 +1,62 @@
+# Workloads are rarely a straight line. A step can repeat over a computed list, or
+# split into branches that run at the same time.
+#
+#   for_each:  repeat a body once per item; max_parallel bounds concurrency
+#   parallel:  run independent branches concurrently, joining before what follows
+#
+# A loop reports every iteration through its own `results` output, rather than
+# leaking body outputs into the enclosing scope where iterations would overwrite
+# each other.
+name: fan out and parallel
+steps:
+  # Produce the list to work through. In a real workload this would come from an
+  # API call or a query.
+  - id: targets
+    task:
+      name: cel
+      inputs:
+        expr: "['alpha', 'beta', 'gamma']"
+
+  # Repeat the body once per target. Inside the body, the current item is bound to
+  # `name`, and body steps can reference each other within an iteration.
+  - id: process
+    for_each:
+      items: ${targets.result}
+      iterator: name
+      max_parallel: 3
+      steps:
+        - id: label
+          task:
+            name: printf
+            inputs:
+              format: "processing %s"
+              args:
+                - ${name}
+
+  # Independent work that has no reason to be sequential. Branches must not depend
+  # on each other's outputs, since there is no ordering between them.
+  - id: checks
+    parallel:
+      - steps:
+          - id: check_config
+            task:
+              name: echo
+              inputs:
+                message: config ok
+      - steps:
+          - id: check_quota
+            task:
+              name: echo
+              inputs:
+                message: quota ok
+
+  # Both branches' outputs are visible once the block completes.
+  - id: summary
+    task:
+      name: printf
+      inputs:
+        format: "%s / %s / processed %d target(s)"
+        args:
+          - ${check_config.result}
+          - ${check_quota.result}
+          - ${size(process.results)}

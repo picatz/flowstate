@@ -6,6 +6,7 @@ import "buf/validate/validate.proto";
 import "google/api/expr/v1alpha1/syntax.proto";
 import "google/api/expr/v1alpha1/value.proto";
 import "google/api/field_behavior.proto";
+import "google/protobuf/duration.proto";
 
 option go_package = "flowstatev1";
 
@@ -118,7 +119,219 @@ message Node {
   oneof kind {
     option (buf.validate.oneof).required = true;
     Task task = 2;
+    ForEach for_each = 5;
+    Parallel parallel = 6;
   }
+
+  // Condition determines whether the step runs.
+  //
+  // It is evaluated before the step is scheduled and must produce a boolean. A
+  // step whose condition is false is skipped and produces no outputs, so a later
+  // step referencing it will not resolve — which is the honest outcome, since
+  // the value genuinely does not exist.
+  //
+  // Unset means the step always runs.
+  Value condition = 3;
+
+  // Policy controls how the step is executed: how long it may take, whether and
+  // how it is retried, and whether its failure ends the run.
+  //
+  // Unset means the engine's defaults apply.
+  StepPolicy policy = 4;
+}
+
+// SecretRef names a secret without containing it.
+//
+// A workflow specification is persisted, replayed, and readable by anyone who can
+// read workflow history, so it must never carry a credential. It carries this
+// instead: enough to find the value at the moment it is needed, and nothing more.
+//
+// The scheme and name are separate fields rather than one joined string so that
+// the schema itself rejects a malformed reference at the boundary, before any
+// worker tries to resolve it.
+//
+// This message must never gain a field holding a value. Adding one would make
+// every workflow that used it leak a credential into history, and the mistake
+// would be invisible until someone read the history.
+message SecretRef {
+  // Scheme selects the provider that resolves the reference, such as "env",
+  // "file", "vault", or "keychain".
+  //
+  // A scheme is how a secrets backend plugs in: a deployment registers providers
+  // for the schemes it permits, and a reference to an unregistered scheme is
+  // refused rather than guessed at. A deployment that permits no secrets at all
+  // registers none, and every reference fails.
+  string scheme = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 32
+      pattern: "^[a-z0-9-]+$"
+    }
+  ];
+
+  // Name locates the secret within that provider: an environment variable
+  // suffix, a path under a mounted directory, a vault path. Its meaning belongs
+  // to the provider, including how it expresses versions.
+  //
+  // The pattern here cannot express everything that matters — control characters
+  // are also rejected, in code, because a reference reaching a log or history
+  // must not be able to forge lines in it.
+  string name = 2 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 1024
+    }
+  ];
+}
+
+// Scope is what an expression is evaluated against.
+//
+// It holds the outputs of steps that have already run, plus any variables bound
+// by enclosing control flow, such as a loop's current item.
+//
+// This is part of the schema rather than an internal Go type because it crosses
+// the wire: a task that evaluates its own expressions — the cel task's `expr`, the
+// http task's `outputs` — does so on a worker, so the scope has to travel with it.
+// Without that, a loop body could not use its own iterator in those inputs.
+//
+// Variables are Values, the same representation step outputs use, so anything a
+// step can produce can also be bound as a variable.
+message Scope {
+  // Outputs holds the outputs of steps that have already run.
+  Workflow.StepOutputs outputs = 1;
+
+  // Vars holds variables bound by enclosing control flow. Names must not collide
+  // with step ids, since expressions resolve both from one namespace.
+  map<string, Value> vars = 2 [(buf.validate.field).map = {
+    keys: {required: true}
+    values: {required: true}
+  }];
+}
+
+// ForEach runs a body of steps once per item of a list.
+//
+// This is how a workload expresses "do this to each of these" without the author
+// unrolling it by hand, which they cannot do anyway when the list is computed at
+// run time.
+//
+// The body sees the current item under the iterator's name, and body steps can
+// reference each other within an iteration. Body step outputs do not escape the
+// iteration; the loop as a whole reports every iteration's outputs through its own
+// `results` output, so that what a later step sees does not depend on which
+// iteration happened to run last.
+message ForEach {
+  // Items is an expression producing the list to iterate. An empty list runs the
+  // body zero times, which is a normal outcome rather than an error.
+  Value items = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED
+  ];
+
+  // Iterator names the variable bound to the current item inside the body.
+  // Defaults to "item". It must not collide with a step id, since both are
+  // resolved from the same namespace.
+  string iterator = 2 [(buf.validate.field).string = {
+    max_len: 128
+    pattern: "^[A-Za-z_][A-Za-z0-9_]*$"
+  }];
+
+  // Body is the steps to run per item.
+  repeated Node body = 3 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).repeated = {
+      min_items: 1
+      max_items: 100
+      items: {required: true}
+    }
+  ];
+
+  // MaxParallel bounds how many iterations run concurrently. Zero or one runs
+  // them one at a time, which is the safe default: concurrency is worth
+  // requesting explicitly, because it changes both the load placed on whatever
+  // the body touches and the order in which side effects happen.
+  int32 max_parallel = 4 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 1000
+  }];
+}
+
+// Parallel runs several branches of steps concurrently and waits for all of them.
+//
+// Branches are for work that is independent by construction — checking three
+// services, publishing to two destinations — where doing it sequentially wastes
+// time for no benefit. Steps within a branch still run in order.
+//
+// Branches must not depend on each other's outputs. There is no ordering between
+// them, so such a dependency would be a race; each branch sees the outputs that
+// existed before the parallel node began, plus its own.
+message Parallel {
+  message Branch {
+    repeated Node steps = 1 [
+      (buf.validate.field).required = true,
+      (buf.validate.field).repeated = {
+        min_items: 1
+        max_items: 100
+        items: {required: true}
+      }
+    ];
+  }
+
+  repeated Branch branches = 1 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).repeated = {
+      min_items: 1
+      max_items: 100
+      items: {required: true}
+    }
+  ];
+}
+
+// StepPolicy controls the execution of a single step.
+//
+// These settings exist because one policy cannot fit every step. Reading a
+// configuration file and provisioning a cluster differ by orders of magnitude in
+// how long they take and how safe they are to repeat, and a workload engine that
+// applies the same timeout and the same retry count to both is wrong for at least
+// one of them.
+message StepPolicy {
+  // Timeout bounds a single attempt at the step. A step exceeding it fails that
+  // attempt, which may then be retried according to Retry.
+  google.protobuf.Duration timeout = 1 [(buf.validate.field).duration = {gt: {}}];
+
+  // Retry describes how a failed attempt is retried. Only failures that could
+  // plausibly succeed on another attempt are retried; a step that failed because
+  // its inputs are invalid is not retried regardless of this setting.
+  RetryPolicy retry = 2;
+
+  // ContinueOnError lets the run proceed when this step fails.
+  //
+  // The step records its failure instead of ending the run, which is what makes
+  // best-effort work expressible: a notification that could not be delivered
+  // should not abandon the workload that succeeded.
+  bool continue_on_error = 3;
+}
+
+// RetryPolicy describes how a failed step attempt is retried.
+message RetryPolicy {
+  // MaxAttempts bounds total attempts, including the first. Zero uses the
+  // engine's default. One disables retrying, which is the right choice for an
+  // operation that is not safe to repeat.
+  int32 max_attempts = 1 [(buf.validate.field).int32 = {gte: 0}];
+
+  // InitialInterval is the delay before the second attempt.
+  google.protobuf.Duration initial_interval = 2 [(buf.validate.field).duration = {gt: {}}];
+
+  // BackoffCoefficient multiplies the delay after each attempt. Values below one
+  // are rejected, since a shrinking delay defeats the purpose of backing off.
+  double backoff_coefficient = 3 [(buf.validate.field).double = {gte: 1.0}];
+
+  // MaxInterval caps the delay between attempts, so exponential growth does not
+  // produce an unbounded wait.
+  google.protobuf.Duration max_interval = 4 [(buf.validate.field).duration = {gt: {}}];
 }
 
 // Value represents a value that can be used in expressions or as inputs/outputs in tasks.
@@ -167,6 +380,16 @@ message Value {
     google.api.expr.v1alpha1.ParsedExpr expr = 1;
     google.api.expr.v1alpha1.Value literal = 2;
     Error error = 3;
+
+    // A reference to a secret, resolved only where the value is needed.
+    //
+    // This kind is inert everywhere except the activity that uses it. The
+    // compiler produces it, the control plane transports it, and workflow-side
+    // evaluation passes it through untouched — it is never resolved into a value
+    // and never copied into step outputs, because workflow history is durable and
+    // broadly readable. Only the worker executing the task resolves it, and the
+    // value exists solely for that call.
+    SecretRef secret_ref = 4;
     // TODO(kent): we're using "value" to represent a "literal" value, which isn't quite the same.
     // So, this is probably worth revisiting. The "value" allows for more complex types, like a
     // struct or list, while the "literal" is more of a primitive value like a string, int, or bool.
@@ -233,6 +456,15 @@ message Task {
       }];
       map<string, string> headers = 3;
       optional string body = 4;
+      // Optional outputs shaping: when provided, the HTTP task will return only
+      // the named outputs defined by this map instead of the default outputs.
+      // Values are evaluated as CEL expressions (or used as literals) with the
+      // following variables available:
+      //   - status_code (int)
+      //   - body (string)
+      //   - headers (map<string,string>)
+      // This enables payload minimization by selecting just the fields needed.
+      map<string, Value> outputs = 5;
     }
     message Outputs {
       int32 status_code = 1 [(buf.validate.field).int32 = {
@@ -240,6 +472,9 @@ message Task {
         lte: 599
       }];
       map<string, string> headers = 2;
+      // Response body, returned by default so a step can be referenced as
+      // ${step.body}. Large responses are better trimmed with the `outputs`
+      // input above, which keeps workflow payloads small.
       string body = 3;
     }
   }
@@ -377,17 +612,85 @@ message GetResponse {
 // RunState is the durable workflow state used by the Temporal Run entrypoint.
 // It allows the workflow to continue-as-new while carrying only the minimal
 // required subset of previously produced outputs for the remaining steps.
+// WorkloadIdentity describes who a run acts as.
+//
+// A running workload has two identities at once, and both matter. It is a
+// specific workload — this workflow, this run, this step — and it is acting on
+// behalf of whoever asked for the work. Downstream systems need both to make an
+// authorization decision: "the nightly-reconcile workflow" and "started by the
+// deploy pipeline" answer different questions, and a system granting access
+// usually cares about the pair.
+//
+// This is carried through the run so that every step knows what it is acting as,
+// and so an assertion presented to an external system states something true
+// rather than something assumed. It holds identity, never credentials: it is
+// persisted in workflow history, which is durable and broadly readable, so
+// nothing secret may appear here.
+message WorkloadIdentity {
+  // Subject identifies the caller that requested the run, as established by
+  // authenticating their request. Empty when the run was started without
+  // authentication, which is only possible in development.
+  string subject = 1;
+
+  // Issuer is the identity provider that vouched for the subject.
+  string issuer = 2;
+
+  // Claims carries additional non-secret claims from the caller's token that
+  // authorization decisions may key on, such as a repository, environment, or
+  // team. Only claims an operator has configured as relevant are copied here,
+  // so this does not become a dumping ground for whole tokens.
+  map<string, string> claims = 3;
+
+  // Namespace and deployment identify which Flowstate installation is running
+  // the workload, so an assertion from a staging deployment is distinguishable
+  // from a production one.
+  string namespace = 4;
+  string deployment = 5;
+}
+
+// Frame is one level of the execution position within a workflow.
+//
+// A workflow with nested control flow cannot record where it is with a single
+// index: "the third item of the loop in the second branch" is a path, not a
+// number. Frames are that path, outermost first, which is what allows a run to be
+// suspended and resumed from inside a loop rather than only between top-level
+// steps.
+message Frame {
+  // NextNode is the index of the next node to execute at this level.
+  int32 next_node = 1 [(buf.validate.field).int32 = {gte: 0}];
+
+  // NextIteration is the index of the next item to process, for a frame
+  // standing inside a for_each.
+  int32 next_iteration = 2 [(buf.validate.field).int32 = {gte: 0}];
+
+  // Results holds the outputs of iterations already completed by a for_each at
+  // this level, so a resumed run still reports every iteration's results and not
+  // only those from the run that finished the loop.
+  repeated Workflow.StepOutputs results = 3;
+}
+
 message RunState {
   Workflow workflow = 1 [
     (buf.validate.field).required = true,
     (google.api.field_behavior) = REQUIRED
   ];
-  // Zero-based index of the next step to execute.
+  // Zero-based index of the next top-level step to execute.
+  //
+  // Superseded by frames, which can also describe a position inside nested
+  // control flow. It is still honored when frames is empty, so a run started
+  // before frames existed continues correctly.
   int32 next_step = 2;
   // Compact subset of outputs needed by subsequent steps.
   Workflow.StepOutputs outputs = 3;
   // Step budget for Continue-As-New. If 0 or unset, server/workflow defaults apply.
   int32 steps_budget = 4;
+  // Execution position, outermost frame first. When empty, execution starts from
+  // next_step at the top level.
+  repeated Frame frames = 6;
+  // Identity the run acts as, established when the run was requested and
+  // preserved across Continue-As-New so later steps act as the same principal
+  // the caller was authenticated as.
+  WorkloadIdentity identity = 5;
 }
 
 // WorkflowService is the service that provides operations for managing and running workflows.

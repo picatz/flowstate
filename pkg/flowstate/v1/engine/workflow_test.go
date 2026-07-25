@@ -26,6 +26,7 @@ func runWorkflow(t *testing.T, input *v1.Workflow, expected *v1.Workflow_StepOut
 	env.RegisterWorkflow(engine.Run)
 	env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
 	env.OnActivity(engine.TaskWithPrev, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskWithPrev)
+	env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 
 	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: input})
 	require.True(t, env.IsWorkflowCompleted())
@@ -44,11 +45,67 @@ func runWorkflow(t *testing.T, input *v1.Workflow, expected *v1.Workflow_StepOut
 }
 
 func TestRunWorkflow(t *testing.T) {
-	for _, test := range tests.Workflows {
+	baseURL := tests.NewHTTPServer(t)
+	for _, test := range tests.Workflows(baseURL) {
 		t.Run(test.Name, func(t *testing.T) {
 			b, err := flowfile.Marshal(test.Workflow)
 			require.NoError(t, err)
 			fmt.Println("\n" + string(b) + "\n")
+			runWorkflow(t, test.Workflow, test.ExpectedOutputs)
+		})
+	}
+}
+
+// TestRunWorkflowPolicy runs the shared condition and policy cases against the
+// durable driver.
+//
+// These are the same cases the local driver runs, which is the point: control flow
+// is where the two would most easily diverge, and a condition that skipped a step
+// locally but ran it here would make local runs untrustworthy.
+func TestRunWorkflowPolicy(t *testing.T) {
+	failedSteps := tests.PolicyCaseFailedSteps()
+
+	for _, test := range tests.PolicyCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			testSuite := &testsuite.WorkflowTestSuite{}
+			env := testSuite.NewTestWorkflowEnvironment()
+			env.RegisterWorkflow(engine.Run)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.TaskWithPrev, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskWithPrev)
+			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow})
+			require.True(t, env.IsWorkflowCompleted())
+			require.NoError(t, env.GetWorkflowError())
+
+			var output v1.Workflow_StepOutputs
+			require.NoError(t, env.GetWorkflowResult(&output))
+
+			if test.ExpectedOutputs == nil {
+				step, ok := failedSteps[test.Name]
+				require.True(t, ok, "case with no expected outputs must name its failed step")
+				require.Contains(t, output.GetStepValues(), step)
+				require.Contains(t, output.GetStepValues()[step].GetNamedValues(), "error",
+					"a step tolerated by continue_on_error must record its failure")
+				return
+			}
+
+			require.True(
+				t,
+				proto.Equal(test.ExpectedOutputs, &output),
+				"Expected output does not match actual output:\n%s",
+				cmp.Diff(test.ExpectedOutputs, &output, protocmp.Transform()),
+			)
+		})
+	}
+}
+
+// TestRunWorkflowControlFlow runs the shared loop and parallel cases against the
+// durable driver, where iterations and branches are genuinely concurrent.
+func TestRunWorkflowControlFlow(t *testing.T) {
+	for _, test := range tests.ControlFlowCases() {
+		t.Run(test.Name, func(t *testing.T) {
 			runWorkflow(t, test.Workflow, test.ExpectedOutputs)
 		})
 	}
@@ -64,6 +121,7 @@ func TestRunWorkflow_ContinueAsNewBudget(t *testing.T) {
 	// Register activities (mock passthrough to real funcs)
 	env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
 	env.OnActivity(engine.TaskWithPrev, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskWithPrev)
+	env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 
 	// Workflow with 3 dependent echo steps to ensure carryover works across continues
 	wf := &v1.Workflow{
@@ -105,6 +163,7 @@ func TestRunWorkflow_StateBudget(t *testing.T) {
 
 	env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
 	env.OnActivity(engine.TaskWithPrev, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskWithPrev)
+	env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 
 	wf := &v1.Workflow{
 		Name: "state-budget",

@@ -1,0 +1,309 @@
+package flowfile
+
+import (
+	"fmt"
+	"maps"
+	"slices"
+	"strings"
+
+	yaml "github.com/goccy/go-yaml"
+	"github.com/google/cel-go/cel"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+	"google.golang.org/protobuf/types/known/durationpb"
+)
+
+// Writing a workflow back out is the inverse of parsing it, and has to stay that
+// way: `flow fmt` and the language server both rely on Marshal(Unmarshal(x))
+// meaning the same thing as x. The document is assembled as ordered mappings so
+// that keys come out in the order a reader expects rather than alphabetically, and
+// so that an empty mapping stays distinguishable from an absent one.
+
+// Marshal writes a workflow as a Flowfile.
+//
+// It reports an error rather than writing a document that would read back as
+// something else. That happens for a value the DSL cannot express: a literal
+// string containing ${, which would be read as an expression, and an expression
+// whose source used a macro, which cel-go cannot write back.
+func Marshal(wf *v1.Workflow) ([]byte, error) {
+	doc := yaml.MapSlice{{Key: "name", Value: wf.GetName()}}
+
+	if wf.Description != nil {
+		doc = append(doc, yaml.MapItem{Key: "description", Value: wf.GetDescription()})
+	}
+
+	// A workflow with no steps is not a usable one — [Validate] says so — but
+	// writing `steps: []` for it would be worse than leaving the key out: reading
+	// that back is an author asking for an empty list, which is a different
+	// mistake and gets a different diagnostic.
+	if len(wf.GetSteps()) > 0 {
+		steps, err := stepsToYAML(wf.GetSteps())
+		if err != nil {
+			return nil, err
+		}
+		doc = append(doc, yaml.MapItem{Key: "steps", Value: steps})
+	}
+
+	return yaml.Marshal(doc)
+}
+
+// stepsToYAML writes a list of steps, recursing through nested control flow so
+// that a loop body and a parallel branch come back out as they went in.
+func stepsToYAML(nodes []*v1.Node) ([]any, error) {
+	steps := make([]any, 0, len(nodes))
+	for _, node := range nodes {
+		step, err := stepToYAML(node)
+		if err != nil {
+			return nil, err
+		}
+		steps = append(steps, step)
+	}
+	return steps, nil
+}
+
+// stepToYAML writes one step.
+func stepToYAML(node *v1.Node) (yaml.MapSlice, error) {
+	step := yaml.MapSlice{{Key: "id", Value: node.GetId()}}
+
+	if condition := node.GetCondition(); condition != nil {
+		value, err := exprValueToYAML(condition)
+		if err != nil {
+			return nil, fmt.Errorf("step %q if: %w", node.GetId(), err)
+		}
+		step = append(step, yaml.MapItem{Key: "if", Value: value})
+	}
+
+	if policy := node.GetPolicy(); policy != nil {
+		if timeout := policy.GetTimeout(); timeout != nil {
+			step = append(step, yaml.MapItem{Key: "timeout", Value: durationToYAML(timeout)})
+		}
+		if retry := policy.GetRetry(); retry != nil {
+			step = append(step, yaml.MapItem{Key: "retry", Value: retryToYAML(retry)})
+		}
+		if policy.GetContinueOnError() {
+			step = append(step, yaml.MapItem{Key: "continue_on_error", Value: true})
+		}
+	}
+
+	switch kind := node.GetKind().(type) {
+	case *v1.Node_Task:
+		task, err := taskToYAML(kind.Task)
+		if err != nil {
+			return nil, fmt.Errorf("step %q: %w", node.GetId(), err)
+		}
+		step = append(step, yaml.MapItem{Key: "task", Value: task})
+
+	case *v1.Node_ForEach:
+		loop, err := forEachToYAML(kind.ForEach)
+		if err != nil {
+			return nil, fmt.Errorf("step %q for_each: %w", node.GetId(), err)
+		}
+		step = append(step, yaml.MapItem{Key: "for_each", Value: loop})
+
+	case *v1.Node_Parallel:
+		branches := make([]any, 0, len(kind.Parallel.GetBranches()))
+		for i, branch := range kind.Parallel.GetBranches() {
+			steps, err := stepsToYAML(branch.GetSteps())
+			if err != nil {
+				return nil, fmt.Errorf("step %q parallel branch %d: %w", node.GetId(), i+1, err)
+			}
+			branches = append(branches, yaml.MapSlice{{Key: "steps", Value: steps}})
+		}
+		step = append(step, yaml.MapItem{Key: "parallel", Value: branches})
+
+	default:
+		return nil, fmt.Errorf("step %q: has no task, for_each, or parallel", node.GetId())
+	}
+
+	return step, nil
+}
+
+// taskToYAML writes a task's name, description, and inputs.
+func taskToYAML(task *v1.Task) (yaml.MapSlice, error) {
+	out := yaml.MapSlice{{Key: "name", Value: task.GetName()}}
+	if task.Description != nil {
+		out = append(out, yaml.MapItem{Key: "description", Value: task.GetDescription()})
+	}
+
+	inputs := yaml.MapSlice{}
+	// Input names come from a protobuf map, whose order is not defined, so they are
+	// sorted: the same workflow has to produce the same document every time for a
+	// formatter to be usable or a diff to be readable.
+	for _, name := range slices.Sorted(maps.Keys(task.GetInputs())) {
+		value, err := inputValueToYAML(task.GetInputs()[name])
+		if err != nil {
+			return nil, fmt.Errorf("input %q: %w", name, err)
+		}
+		inputs = append(inputs, yaml.MapItem{Key: name, Value: value})
+	}
+	out = append(out, yaml.MapItem{Key: "inputs", Value: inputs})
+
+	return out, nil
+}
+
+// forEachToYAML writes a loop and its body.
+func forEachToYAML(loop *v1.ForEach) (yaml.MapSlice, error) {
+	items, err := exprValueToYAML(loop.GetItems())
+	if err != nil {
+		return nil, fmt.Errorf("items: %w", err)
+	}
+
+	out := yaml.MapSlice{{Key: "items", Value: items}}
+	if iterator := loop.GetIterator(); iterator != "" {
+		out = append(out, yaml.MapItem{Key: "iterator", Value: iterator})
+	}
+	if maxParallel := loop.GetMaxParallel(); maxParallel != 0 {
+		out = append(out, yaml.MapItem{Key: "max_parallel", Value: maxParallel})
+	}
+
+	steps, err := stepsToYAML(loop.GetBody())
+	if err != nil {
+		return nil, err
+	}
+	return append(out, yaml.MapItem{Key: "steps", Value: steps}), nil
+}
+
+// retryToYAML writes a retry policy, leaving out what was never set so that the
+// engine's defaults keep applying to it.
+func retryToYAML(retry *v1.RetryPolicy) yaml.MapSlice {
+	out := yaml.MapSlice{}
+	if attempts := retry.GetMaxAttempts(); attempts != 0 {
+		out = append(out, yaml.MapItem{Key: "attempts", Value: attempts})
+	}
+	if interval := retry.GetInitialInterval(); interval != nil {
+		out = append(out, yaml.MapItem{Key: "interval", Value: durationToYAML(interval)})
+	}
+	if backoff := retry.GetBackoffCoefficient(); backoff != 0 {
+		out = append(out, yaml.MapItem{Key: "backoff", Value: backoff})
+	}
+	if maxInterval := retry.GetMaxInterval(); maxInterval != nil {
+		out = append(out, yaml.MapItem{Key: "max_interval", Value: durationToYAML(maxInterval)})
+	}
+	return out
+}
+
+// durationToYAML writes a duration the way the DSL reads one.
+func durationToYAML(d *durationpb.Duration) string {
+	return d.AsDuration().String()
+}
+
+// inputValueToYAML writes a task input.
+//
+// An expression is written fenced. The fence is optional when reading a field the
+// schema types as an expression, but an input can be either, so writing it is what
+// makes the document mean what it meant.
+func inputValueToYAML(value *v1.Value) (any, error) {
+	switch kind := value.GetKind().(type) {
+	case *v1.Value_Expr:
+		text, err := exprToText(kind.Expr)
+		if err != nil {
+			return nil, err
+		}
+		return fenceOpen + text + fenceClose, nil
+	case *v1.Value_Literal:
+		return literalToYAML(kind.Literal)
+	case *v1.Value_SecretRef:
+		return secretRefToDSL(kind.SecretRef)
+	default:
+		return nil, fmt.Errorf("cannot be written as YAML: %w", value.Error())
+	}
+}
+
+// exprValueToYAML writes a value in a field the schema types as an expression: a
+// step's condition, or a loop's items.
+//
+// A literal is written as itself, which is unambiguous because a non-string YAML
+// value in one of these fields is read back as a literal. A literal string is the
+// one thing that cannot be written, since a string there is expression source.
+func exprValueToYAML(value *v1.Value) (any, error) {
+	if literal := value.GetLiteral(); literal != nil {
+		if _, isString := literal.GetKind().(*expr.Value_StringValue); isString {
+			return nil, fmt.Errorf(
+				"is the literal string %q, which cannot be written here: a string in this field is read as an expression",
+				literal.GetStringValue())
+		}
+	}
+	if reference := value.GetSecretRef(); reference != nil {
+		// The compiler refuses one here, so this is a specification built by hand.
+		// Writing it would produce a Flowfile that does not compile.
+		return nil, fmt.Errorf("is a secret reference, which cannot be written here: %s", notEvaluableHelp)
+	}
+	return inputValueToYAML(value)
+}
+
+// exprToText renders an expression back into source.
+func exprToText(parsed *expr.ParsedExpr) (string, error) {
+	text, err := cel.AstToString(cel.ParsedExprToAst(parsed))
+	if err != nil {
+		// cel-go refuses to write back a comprehension, because the parsed form no
+		// longer records the macro it came from. Saying so is better than writing
+		// the expanded form, which is valid CEL that no author would recognize.
+		return "", fmt.Errorf("expression cannot be written back as source, "+
+			"which happens when it was written with a macro such as a comprehension: %w", err)
+	}
+	return text, nil
+}
+
+// literalToYAML writes a literal value, keeping the order of a map's entries so
+// that reading the document back produces the same literal.
+func literalToYAML(literal *expr.Value) (any, error) {
+	switch kind := literal.GetKind().(type) {
+	case *expr.Value_StringValue:
+		if containsFence(kind.StringValue) {
+			return nil, fmt.Errorf(
+				"is the literal string %q, which cannot be written: ${ marks an expression, so it would be read back as one",
+				kind.StringValue)
+		}
+		return kind.StringValue, nil
+	case *expr.Value_Int64Value:
+		return kind.Int64Value, nil
+	case *expr.Value_Uint64Value:
+		return kind.Uint64Value, nil
+	case *expr.Value_DoubleValue:
+		return kind.DoubleValue, nil
+	case *expr.Value_BoolValue:
+		return kind.BoolValue, nil
+	case *expr.Value_NullValue:
+		return nil, nil
+	case *expr.Value_ListValue:
+		out := make([]any, 0, len(kind.ListValue.GetValues()))
+		for i, elem := range kind.ListValue.GetValues() {
+			value, err := literalToYAML(elem)
+			if err != nil {
+				return nil, fmt.Errorf("element %d: %w", i, err)
+			}
+			out = append(out, value)
+		}
+		return out, nil
+	case *expr.Value_MapValue:
+		out := make(yaml.MapSlice, 0, len(kind.MapValue.GetEntries()))
+		for _, entry := range kind.MapValue.GetEntries() {
+			key, isString := entry.GetKey().GetKind().(*expr.Value_StringValue)
+			if !isString {
+				return nil, fmt.Errorf("map keys must be strings, but one is %s", literalKind(entry.GetKey()))
+			}
+			value, err := literalToYAML(entry.GetValue())
+			if err != nil {
+				return nil, fmt.Errorf("key %q: %w", key.StringValue, err)
+			}
+			out = append(out, yaml.MapItem{Key: key.StringValue, Value: value})
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("cannot be written as YAML: it is %s", literalKind(literal))
+	}
+}
+
+// literalKind names a literal's type for a message about one that cannot be
+// written.
+func literalKind(literal *expr.Value) string {
+	if literal == nil {
+		return "nothing"
+	}
+	name := fmt.Sprintf("%T", literal.GetKind())
+	if i := strings.LastIndex(name, "_"); i >= 0 {
+		name = name[i+1:]
+	}
+	return strings.ToLower(strings.TrimSuffix(name, "Value"))
+}

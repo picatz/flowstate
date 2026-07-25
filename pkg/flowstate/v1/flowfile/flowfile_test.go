@@ -186,9 +186,14 @@ steps:
 
 // FuzzRoundTrip tests the round-trip conversion of a Flowfile YAML-based DSL
 // representation to a flowstatev1.Workflow proto representation and back.
+//
+// The seeds are every shape of the DSL, because the fuzzer explores outward from
+// them: with only a two-step workflow to start from it never reaches a loop body or
+// a policy, and those are where a round trip is most easily lost.
 func FuzzRoundTrip(f *testing.F) {
-	// Add a basic test case to start with.
-	f.Add(`name: hello
+	for _, seed := range []string{
+		// A basic case to start with.
+		`name: hello
 steps:
 - id: a
   task:
@@ -200,7 +205,96 @@ steps:
     name: echo
     inputs:
       message: ${a.result}
-`)
+`,
+		// Conditions and policy, in both the fenced and bare spellings.
+		`name: policy
+description: ""
+steps:
+- id: a
+  if: ${gate.result == 'go'}
+  timeout: 30s
+  retry:
+    attempts: 3
+    interval: 1s
+    backoff: 2
+    max_interval: 10s
+  continue_on_error: true
+  task:
+    name: echo
+    inputs:
+      message: go
+- id: b
+  if: a.result != ''
+  retry: {}
+  task:
+    name: echo
+    inputs:
+      message: ""
+`,
+		// Nested control flow, including a loop inside a branch.
+		`name: control
+steps:
+- id: loop
+  for_each:
+    items: ${['a', 'b']}
+    iterator: n
+    max_parallel: 2
+    steps:
+    - id: body
+      task:
+        name: echo
+        inputs:
+          message: ${n}
+- id: fan
+  parallel:
+  - steps:
+    - id: left
+      for_each:
+        items: [1, 2]
+        steps:
+        - id: inner
+          task:
+            name: echo
+            inputs:
+              message: ${string(item)}
+  - steps:
+    - id: right
+      task:
+        name: echo
+        inputs:
+          message: right
+`,
+		// Structures, expressions inside them, and the zero values the engine
+		// relies on surviving.
+		`name: shapes
+steps:
+- id: a
+  task:
+    name: http
+    inputs:
+      url: https://example.com
+      headers:
+        A: "1"
+        B: ${string(2)}
+      outputs: "${ {'status': status_code, 'body': body} }"
+- id: b
+  task:
+    name: printf
+    inputs:
+      format: ""
+      args:
+      - ${a.status}
+      - 0
+      - false
+      - ""
+      nested:
+        k: v
+        n: 0
+        list: [1, 2, 3]
+`,
+	} {
+		f.Add(seed)
+	}
 
 	f.Fuzz(func(t *testing.T, input string) {
 		// Unmarshal the input string into a Workflow proto.

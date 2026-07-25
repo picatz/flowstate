@@ -1,0 +1,9 @@
+version: v1
+# The example plugin's schema is generated with the locally installed
+# protoc-gen-go rather than a remote plugin, so that regenerating it needs no
+# network. The version is whatever go.mod pins for google.golang.org/protobuf.
+plugins:
+  - plugin: go
+    out: ./gen
+    opt:
+      - paths=source_relative

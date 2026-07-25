@@ -1,0 +1,139 @@
+// Package plugin runs Flowstate plugins: separate processes that extend the
+// engine, discovered on a configured path, launched and supervised by this
+// package, and spoken to over Connect RPC on a Unix domain socket.
+//
+// A plugin is someone else's code running inside a worker that holds credentials
+// and can reach internal networks. Out of process, a panic in it does not take
+// the worker down, its dependencies cannot conflict with the engine's, and a bug
+// in it cannot read the worker's memory. Those become the operating system's
+// problem, which is where isolation actually exists. The protocol is the schema
+// in proto/flowstate/v1/plugin.proto, so a plugin may be written in any language
+// with Connect or gRPC support and the engine loads nothing to talk to one.
+//
+// # Using it
+//
+// A worker builds a [Host] over the directories it will accept plugins from,
+// opens it, and takes adapters from it:
+//
+//	host, err := plugin.NewHost(plugin.Config{
+//		SearchPath: []string{"/usr/local/lib/flowstate/plugins"},
+//		Logger:     logger,
+//	})
+//	if err != nil {
+//		return err
+//	}
+//	defer host.Close(context.Background())
+//
+//	if err := host.Open(ctx); err != nil {
+//		return err
+//	}
+//
+//	for _, provider := range host.SecretProviders() {
+//		if err := registry.Register(provider); err != nil {
+//			return err
+//		}
+//	}
+//	for _, def := range host.TaskDefs() {
+//		if err := tasks.Register(def); err != nil {
+//			return err
+//		}
+//	}
+//
+// [Host.Close] must run. It is what kills the plugin processes; nothing else
+// does.
+//
+// # What is refused, and why it is refused rather than worked around
+//
+// Every one of these is a configuration error that would otherwise become a
+// runtime surprise:
+//
+//   - A search path entry that is relative, or world-writable. A plugin
+//     directory is arbitrary code execution; a directory anyone can write to is
+//     arbitrary code execution by anyone. See [Config.AllowInsecureSearchPath]
+//     for the escape hatch and what it costs.
+//   - A binary that does not handshake within [Config.HandshakeTimeout]. It is
+//     killed rather than waited on.
+//   - A handshake naming a protocol version the host did not offer, or an
+//     address other than the socket the host assigned.
+//   - A manifest that does not satisfy its protovalidate rules, or that
+//     advertises no capabilities. A plugin that can do nothing is a live process
+//     with nothing to do.
+//   - Two plugins claiming one secret scheme. Two answers for one scheme is a
+//     configuration error, and resolving it by load order means the answer
+//     depends on directory iteration.
+//   - A scheme not in [Config.PermittedSchemes], when that is set. A deployment
+//     that lists what it permits gets exactly that and nothing a newly dropped-in
+//     binary adds.
+//
+// # The handshake, end to end
+//
+// The host creates a directory only its own user can enter, mode 0700, and
+// assigns a socket path inside it. It launches the binary with an explicit argv
+// and no shell, in its own process group, with an environment carrying: a magic
+// cookie, the protocol versions the host speaks, the socket path, a per-launch
+// secret generated from crypto/rand, and the number of an inherited file
+// descriptor.
+//
+// The plugin checks the cookie. Without it — someone ran the binary from a
+// shell — it prints an explanation to stderr and exits, rather than printing a
+// handshake line and speaking a binary protocol into a terminal. It then picks
+// the highest protocol version it shares with the host, or exits saying it
+// cannot serve any of them. It listens on the assigned path, sets the socket to
+// mode 0600, and prints one line to stdout:
+//
+//	FLOWSTATE-PLUGIN|1|1|unix|/var/folders/.../s
+//
+// After that line the plugin never uses stdout again; everything else it says
+// goes to stderr, which the host reads line by line and logs attributed to that
+// plugin. The host bounds the wait for that line, bounds its length, and checks
+// every field: the sentinel, a handshake format version it understands, a
+// protocol version it offered, and the exact socket path it assigned.
+//
+// Then it dials the socket and calls Describe, validates the manifest with
+// [github.com/picatz/flowstate/pkg/flowstate/v1.Validate], and refuses the
+// plugin if it does not validate or advertises nothing. Every subsequent request
+// carries the per-launch secret as a header, so a process that somehow reaches
+// the socket still cannot impersonate the host.
+//
+// The socket's mode is defense in depth rather than the defense. Linux checks
+// write permission on a socket file, but several BSD-derived systems — macOS
+// among them — do not, and enforce only the traversal permission of the
+// directory containing it. The 0700 directory is therefore what actually keeps
+// other users out on every platform this runs on, and the 0600 socket is the
+// second line for the platforms that honor it.
+//
+// # Lifecycle in both directions
+//
+// [Host.Close] signals each plugin's process group, waits, and escalates to a
+// kill: a process group rather than a process, because a plugin that spawned
+// children of its own would otherwise leave them behind. In the other direction
+// the host holds the write end of a pipe whose read end the plugin inherited, so
+// a host that crashes without running any cleanup still closes that descriptor,
+// and the plugin sees EOF and exits. Neither side depends on the other behaving
+// well.
+//
+// A plugin that exits on its own is relaunched with exponential backoff, capped
+// at [Config.MaxRestarts]. One that crashes on every launch stops being
+// relaunched and is reported through [Host.Plugins] rather than being retried
+// forever. A relaunched plugin must describe itself the same way it did before:
+// a plugin that comes back claiming different schemes or different tasks is
+// refused, because adapters already handed to the engine are bound to what it
+// claimed the first time.
+//
+// # Bounds
+//
+// A plugin is not trusted because an operator installed it. Every call is bound
+// by a timeout and by connect.WithReadMaxBytes, the handshake by a timeout and a
+// line length, captured stderr by a line length, and reconstructed descriptors
+// by size and file count. See [Config] for the knobs and their defaults.
+//
+// # Writing a plugin
+//
+// Use the SDK in [github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk],
+// which does the handshake, the socket, the server, the token check, and the
+// signal handling, so that a plugin is a manifest and its implementations. The
+// worked example under examples/flowstate-plugin-example advertises both
+// capabilities. A plugin in another language implements what is described above;
+// the format is documented here so it can be, and the SDK is a convenience
+// rather than a requirement.
+package plugin

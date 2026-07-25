@@ -2,34 +2,116 @@ package flowstatev1
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
+	"os"
 	"strings"
+	"sync"
 
 	"github.com/google/cel-go/cel"
 	ref "github.com/google/cel-go/common/types/ref"
-	"github.com/google/cel-go/ext"
 	"github.com/google/cel-go/interpreter"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/proto"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
 )
 
-var taskLibrary = map[string]taskFunc{
-	"echo":   taskFuncEcho,
-	"printf": taskFuncPrintf,
-	"http":   taskFuncHTTP(http.DefaultClient),
-	"cel":    taskFuncCEL,
+// builtinTasks returns the definitions of the tasks Flowstate ships with.
+//
+// Each definition declares how the engine must treat the task's inputs, so no
+// part of the engine needs to know a task's name to execute it correctly.
+func builtinTasks() []TaskDef {
+	return []TaskDef{
+		{
+			Name:    "echo",
+			Summary: "Return the given message unchanged.",
+			Inputs:  (&Task_Echo_Inputs{}).ProtoReflect().Descriptor(),
+			Outputs: (&Task_Echo_Outputs{}).ProtoReflect().Descriptor(),
+			Fn:      taskFuncEcho,
+		},
+		{
+			Name:    "printf",
+			Summary: "Format a string from a format specifier and arguments.",
+			Inputs:  (&Task_Printf_Inputs{}).ProtoReflect().Descriptor(),
+			Outputs: (&Task_Printf_Outputs{}).ProtoReflect().Descriptor(),
+			Fn:      taskFuncPrintf,
+		},
+		// `outputs` expressions reference the response (status_code, body,
+		// headers), which exists only after the request completes, so the http
+		// task evaluates them itself rather than the workflow resolving them.
+		HTTPTaskDef(defaultEgressPolicy()),
+		{
+			Name:    "cel",
+			Summary: "Evaluate a CEL expression and return its result.",
+			Inputs:  (&Task_CEL_Inputs{}).ProtoReflect().Descriptor(),
+			Outputs: (&Task_CEL_Outputs{}).ProtoReflect().Descriptor(),
+			// The `expr` input is the expression this task exists to evaluate,
+			// and `vars` supplies its scope; both belong to the task.
+			DeferredInputs:   []string{"expr", "vars"},
+			NeedsPrevOutputs: true,
+			Fn:               taskFuncCEL,
+		},
+	}
 }
 
-type taskFunc func(ctx context.Context, input map[string]*Value, prevStepOutputs *Workflow_StepOutputs) (*Node_Outputs, error)
+// AllowLoopbackEgressEnv names the environment variable that permits the http
+// task to reach loopback addresses.
+//
+// Developing against a service on localhost is ordinary and the default policy
+// denies it, so there has to be a way to say yes. It is an explicit opt-in rather
+// than a default because the same permission is what lets a workflow reach a
+// worker's own internal endpoints in production.
+const AllowLoopbackEgressEnv = "FLOWSTATE_ALLOW_LOOPBACK_EGRESS"
 
-func taskFuncEcho(ctx context.Context, input map[string]*Value, prevStepOutputs *Workflow_StepOutputs) (*Node_Outputs, error) {
+// defaultEgressPolicy is the egress policy the http task enforces.
+//
+// A workflow names the URL it fetches, which makes the http task a way to ask
+// the worker to make a request on the author's behalf — including to addresses
+// only the worker can reach, such as internal services and cloud instance
+// metadata. The policy is what makes that safe: it denies internal address
+// ranges, re-checks every redirect hop, and bounds the response, all by default.
+//
+// It is built once. A failure to build it is a defect in Flowstate rather than
+// something a workflow can cause, so it panics rather than falling back to an
+// ungoverned client — failing open here would undo the entire point.
+var defaultEgressPolicy = sync.OnceValue(func() *netpolicy.Policy {
+	var opts []netpolicy.Option
+	if os.Getenv(AllowLoopbackEgressEnv) == "true" {
+		opts = append(opts, netpolicy.WithAllowLoopback())
+	}
+	p, err := netpolicy.New(opts...)
+	if err != nil {
+		panic("flowstate: building the default egress policy: " + err.Error())
+	}
+	return p
+})
+
+// HTTPTaskDef returns the http task definition enforcing the given egress policy.
+//
+// Registering the result replaces the built-in http task, which is how a
+// deployment applies its own egress rules — or how a test points the task at a
+// local server the default policy would refuse to reach.
+func HTTPTaskDef(policy *netpolicy.Policy) TaskDef {
+	return TaskDef{
+		Name:             "http",
+		Summary:          "Perform an HTTP request and return the response.",
+		Inputs:           (&Task_HTTP_Inputs{}).ProtoReflect().Descriptor(),
+		Outputs:          (&Task_HTTP_Outputs{}).ProtoReflect().Descriptor(),
+		DeferredInputs:   []string{"outputs"},
+		NeedsPrevOutputs: true,
+		Fn:               taskFuncHTTP(policy),
+	}
+}
+
+func taskFuncEcho(ctx context.Context, input map[string]*Value, scope *Scope) (*Node_Outputs, error) {
 	taskInputs := &Task_Echo_Inputs{}
-	if err := populateProtoMessageFromValueMap(input, taskInputs, prevStepOutputs); err != nil {
-		return nil, fmt.Errorf("failed to parse echo task inputs: %w", err)
+	if err := populateProtoMessageFromValueMap(ctx, input, taskInputs, scope); err != nil {
+		return nil, NewTaskError("echo", ErrorKindInvalidInput, err)
 	}
 
 	return nodeOutputsFromProtoMessage(&Task_Echo_Outputs{
@@ -37,28 +119,19 @@ func taskFuncEcho(ctx context.Context, input map[string]*Value, prevStepOutputs 
 	})
 }
 
-func taskFuncPrintf(ctx context.Context, input map[string]*Value, prevStepOutputs *Workflow_StepOutputs) (*Node_Outputs, error) {
+func taskFuncPrintf(ctx context.Context, input map[string]*Value, scope *Scope) (*Node_Outputs, error) {
 	taskInputs := &Task_Printf_Inputs{}
-	if err := populateProtoMessageFromValueMap(input, taskInputs, prevStepOutputs); err != nil {
-		return nil, fmt.Errorf("failed to parse printf task inputs: %w", err)
+	if err := populateProtoMessageFromValueMap(ctx, input, taskInputs, scope); err != nil {
+		return nil, NewTaskError("printf", ErrorKindInvalidInput, err)
 	}
 
 	args := make([]any, len(taskInputs.Args))
 	for i, arg := range taskInputs.Args {
 		switch kind := arg.GetKind().(type) {
 		case *Value_Expr:
-			ast := cel.ParsedExprToAst(kind.Expr)
-			env, err := cel.NewEnv()
+			out, err := valueToCEL(ctx, arg, scope)
 			if err != nil {
-				return nil, fmt.Errorf("failed to create CEL environment: %w", err)
-			}
-			prg, err := env.Program(ast)
-			if err != nil {
-				return nil, fmt.Errorf("failed to compile CEL expression: %w", err)
-			}
-			out, _, err := prg.Eval(cel.Activation(&StepsOutputActivation{Prev: prevStepOutputs}))
-			if err != nil {
-				return nil, fmt.Errorf("failed to evaluate CEL expression: %w", err)
+				return nil, fmt.Errorf("printf argument %d: %w", i, err)
 			}
 			value, err := cel.RefValueToValue(out)
 			if err != nil {
@@ -96,18 +169,109 @@ func taskFuncPrintf(ctx context.Context, input map[string]*Value, prevStepOutput
 	})
 }
 
-func taskFuncHTTP(httpClient *http.Client) taskFunc {
-	return func(ctx context.Context, input map[string]*Value, prevStepOutputs *Workflow_StepOutputs) (*Node_Outputs, error) {
+// maxHTTPResponseBytes bounds how much of an HTTP response body the http task
+// will read.
+//
+// The binding reason is memory safety: a worker must not let a remote endpoint
+// decide how much it allocates. The value is also chosen to sit within
+// Temporal's default per-payload limit, so a body that reads successfully can
+// actually flow through a workflow.
+//
+// This is a default, not a ceiling on what the system can handle. Genuinely
+// large payloads are a solved problem on this substrate — a custom payload
+// codec can offload the blob to external storage and carry a reference through
+// history (the claim-check pattern), which is the coherent way to raise this
+// rather than simply buffering more in the worker. Until that codec exists,
+// workflows needing only part of a large response should select fields with the
+// outputs input.
 
+// firstHeaderValues flattens response headers to one value per name, which is
+// the shape the schema declares and the shape a workflow author expects when
+// writing ${step.headers['Content-Type']}.
+//
+// Repeated headers keep their first value. Expressions needing every value of a
+// repeated header can reach them through the outputs input, where headers are
+// exposed as lists.
+func firstHeaderValues(h http.Header) map[string]string {
+	if len(h) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(h))
+	for name, values := range h {
+		if len(values) > 0 {
+			out[name] = values[0]
+		}
+	}
+	return out
+}
+
+// httpOutputsEnv returns the CEL environment used to shape HTTP task outputs.
+//
+// It declares the response variables an expression may reference and enables the
+// json library, so a workflow can pick fields out of a JSON body without a
+// dedicated task per response shape. The environment is built once and shared.
+var httpOutputsEnv = sync.OnceValues(func() (*cel.Env, error) {
+	env, err := cel.NewEnv(
+		cel.Variable("status_code", cel.IntType),
+		cel.Variable("headers", cel.MapType(cel.StringType, cel.ListType(cel.StringType))),
+		cel.Variable("body", cel.StringType),
+		jsonLibrary(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create HTTP outputs CEL environment: %w", err)
+	}
+	return env, nil
+})
+
+func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
+	return func(ctx context.Context, input map[string]*Value, scope *Scope) (*Node_Outputs, error) {
 		taskInputs := &Task_HTTP_Inputs{
 			Method: proto.String(http.MethodGet),
 		}
-		if err := populateProtoMessageFromValueMap(input, taskInputs, prevStepOutputs); err != nil {
-			return nil, fmt.Errorf("failed to parse http task inputs: %w", err)
+
+		var outputsSpec *Value
+		inputForPopulate := input
+		if rawOutputs, ok := input["outputs"]; ok {
+			outputsSpec = rawOutputs
+			inputForPopulate = make(map[string]*Value, len(input)-1)
+			for k, v := range input {
+				if k == "outputs" {
+					continue
+				}
+				inputForPopulate[k] = v
+			}
 		}
 
-		if err := taskInputs.ValidateAll(); err != nil {
-			return nil, fmt.Errorf("invalid http task inputs: %w", err)
+		if err := populateProtoMessageFromValueMap(ctx, inputForPopulate, taskInputs, scope); err != nil {
+			return nil, NewTaskError("http", ErrorKindInvalidInput, err)
+		}
+
+		var outputsExpr *expr.ParsedExpr
+		if outputsSpec != nil {
+			switch kind := outputsSpec.GetKind().(type) {
+			case *Value_Literal:
+				converted, err := literalToValueMap(kind.Literal)
+				if err != nil {
+					return nil, fmt.Errorf("invalid outputs literal: %w", err)
+				}
+				if len(converted) > 0 {
+					taskInputs.Outputs = converted
+				}
+			case *Value_Expr:
+				outputsExpr = kind.Expr
+			case *Value_Error_:
+				return nil, fmt.Errorf("invalid outputs specification: %s", kind.Error.GetMessage())
+			default:
+				return nil, fmt.Errorf("unsupported outputs specification kind: %T", kind)
+			}
+		}
+
+		// Enforce the constraints the schema declares (a valid URI, a known
+		// method). This is real validation: the previously generated validator
+		// was produced by a plugin that reads a different option set than the
+		// schema uses, so every check in it was a no-op.
+		if err := Validate(taskInputs); err != nil {
+			return nil, NewTaskError("http", ErrorKindInvalidInput, err)
 		}
 
 		var body io.Reader
@@ -127,37 +291,168 @@ func taskFuncHTTP(httpClient *http.Client) taskFunc {
 			}
 		}
 
-		httpResp, err := httpClient.Do(httpReq)
+		httpResp, err := policy.Client().Do(httpReq)
 		if err != nil {
-			return nil, fmt.Errorf("failed to execute HTTP request: %w", err)
+			// A policy denial is deliberate and will happen again; a connection
+			// reset, DNS failure, or timeout may succeed later. Distinguishing
+			// them is what stops a denied request from being retried.
+			if errors.Is(err, netpolicy.ErrDenied) {
+				return nil, NewTaskError("http", ErrorKindPolicyDenied, err)
+			}
+			return nil, NewTaskError("http", ErrorKindUpstream, err)
 		}
 		defer httpResp.Body.Close()
 		if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-			return nil, fmt.Errorf("HTTP request failed with status code %d", httpResp.StatusCode)
+			// A 4xx is the endpoint rejecting this request and will reject it
+			// again; a 5xx may be transient.
+			kind := ErrorKindUpstream
+			if httpResp.StatusCode >= 400 && httpResp.StatusCode < 500 {
+				kind = ErrorKindInvalidInput
+			}
+			return nil, NewTaskError("http", kind, fmt.Errorf(
+				"%s %s returned status %d", taskInputs.GetMethod(), taskInputs.GetUrl(), httpResp.StatusCode))
 		}
-		respBody, err := io.ReadAll(httpResp.Body)
+
+		// The policy bounds the read, so no endpoint a workflow names can decide
+		// how much memory the worker allocates.
+		respBody, err := policy.ReadResponseBody(httpResp)
 		if err != nil {
-			return nil, fmt.Errorf("failed to read HTTP response body: %w", err)
+			var tooLarge *netpolicy.BodyTooLargeError
+			if errors.As(err, &tooLarge) {
+				return nil, NewTaskError("http", ErrorKindLimitExceeded, fmt.Errorf(
+					"response body from %s is too large: %w; use the outputs input to select only the fields this step needs",
+					taskInputs.GetUrl(), err))
+			}
+			return nil, NewTaskError("http", ErrorKindUpstream,
+				fmt.Errorf("failed to read HTTP response body: %w", err))
 		}
-		return nodeOutputsFromProtoMessage(&Task_HTTP_Outputs{
+
+		// Default outputs mirror the response so a workflow can reference
+		// ${step.status_code}, ${step.body}, and ${step.headers} without
+		// declaring an outputs expression.
+		defaultOuts := &Task_HTTP_Outputs{
 			StatusCode: int32(httpResp.StatusCode),
 			Body:       string(respBody),
-			// Headers:    fmt.Sprintf("%v", httpResp.Header),
-		})
+			Headers:    firstHeaderValues(httpResp.Header),
+		}
+
+		// If typed outputs provided (either as explicit map entries or via a CEL map expression),
+		// evaluate them using the response variables and return only those named values.
+		if len(taskInputs.Outputs) > 0 || outputsExpr != nil {
+			env, err := httpOutputsEnv()
+			if err != nil {
+				return nil, err
+			}
+			respVars := map[string]any{
+				"status_code": int64(httpResp.StatusCode),
+				"body":        string(respBody),
+			}
+			if len(httpResp.Header) > 0 {
+				h := make(map[string][]string, len(httpResp.Header))
+				maps.Copy(h, httpResp.Header)
+				respVars["headers"] = h
+			}
+			varAct, err := interpreter.NewActivation(respVars)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create activation: %w", err)
+			}
+			act := interpreter.NewHierarchicalActivation(&StepsOutputActivation{Prev: scope.StepOutputs()}, varAct)
+
+			if outputsExpr != nil {
+				ast := cel.ParsedExprToAst(outputsExpr)
+				prg, err := env.Program(ast)
+				if err != nil {
+					return nil, fmt.Errorf("failed to compile HTTP outputs expression: %w", err)
+				}
+				out, _, err := prg.Eval(act)
+				if err != nil {
+					return nil, fmt.Errorf("failed to evaluate HTTP outputs expression: %w", err)
+				}
+				pv, err := cel.RefValueToValue(out)
+				if err != nil {
+					return nil, fmt.Errorf("failed to convert HTTP outputs expression result: %w", err)
+				}
+				mv, ok := pv.GetKind().(*expr.Value_MapValue)
+				if !ok {
+					return nil, fmt.Errorf("HTTP outputs expression must evaluate to a map")
+				}
+				outputs := &Node_Outputs{NamedValues: make(map[string]*Value, len(mv.MapValue.Entries))}
+				for _, e := range mv.MapValue.Entries {
+					outputs.NamedValues[e.Key.GetStringValue()] = &Value{
+						Kind: &Value_Literal{Literal: e.Value},
+					}
+				}
+				return outputs, nil
+			}
+
+			outputs := &Node_Outputs{NamedValues: map[string]*Value{}}
+			for name, v := range taskInputs.Outputs {
+				switch k := v.GetKind().(type) {
+				case *Value_Expr:
+					ast := cel.ParsedExprToAst(k.Expr)
+					prg, err := env.Program(ast)
+					if err != nil {
+						return nil, fmt.Errorf("failed to compile CEL outputs: %w", err)
+					}
+					out, _, err := prg.Eval(act)
+					if err != nil {
+						return nil, fmt.Errorf("failed to evaluate CEL outputs: %w", err)
+					}
+					pv, err := cel.RefValueToValue(out)
+					if err != nil {
+						return nil, fmt.Errorf("failed to convert outputs value: %w", err)
+					}
+					outputs.NamedValues[name] = &Value{Kind: &Value_Literal{Literal: pv}}
+				case *Value_Literal:
+					outputs.NamedValues[name] = &Value{Kind: &Value_Literal{Literal: k.Literal}}
+				default:
+					return nil, fmt.Errorf("unsupported outputs value kind for %q: %T", name, v.GetKind())
+				}
+			}
+			return outputs, nil
+		}
+
+		return nodeOutputsFromProtoMessage(defaultOuts)
 	}
 }
 
-func taskFuncCEL(ctx context.Context, input map[string]*Value, prevStepOutputs *Workflow_StepOutputs) (*Node_Outputs, error) {
+func literalToValueMap(lit *expr.Value) (map[string]*Value, error) {
+	if lit == nil {
+		return nil, nil
+	}
+	mv, ok := lit.GetKind().(*expr.Value_MapValue)
+	if !ok {
+		return nil, fmt.Errorf("outputs literal must be a map")
+	}
+	if len(mv.MapValue.Entries) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]*Value, len(mv.MapValue.Entries))
+	for _, entry := range mv.MapValue.Entries {
+		key := entry.GetKey().GetStringValue()
+		if key == "" {
+			return nil, fmt.Errorf("outputs map keys must be strings")
+		}
+		out[key] = &Value{
+			Kind: &Value_Literal{
+				Literal: entry.Value,
+			},
+		}
+	}
+	return out, nil
+}
+
+func taskFuncCEL(ctx context.Context, input map[string]*Value, scope *Scope) (*Node_Outputs, error) {
 	exprInput, ok := input["expr"]
 	if !ok {
-		return nil, fmt.Errorf("missing expr input")
+		return nil, NewTaskError("cel", ErrorKindInvalidInput, fmt.Errorf("missing expr input"))
 	}
 
 	var exprStr string
 	if lit := exprInput.GetLiteral(); lit != nil {
 		exprStr = lit.GetStringValue()
 	} else {
-		val, err := valueToCEL(exprInput, prevStepOutputs)
+		val, err := valueToCEL(ctx, exprInput, scope)
 		if err != nil {
 			return nil, fmt.Errorf("failed to resolve expr input: %w", err)
 		}
@@ -211,52 +506,23 @@ func taskFuncCEL(ctx context.Context, input map[string]*Value, prevStepOutputs *
 		}
 	}
 
-	var envOpts []cel.EnvOption
-	for _, name := range libs {
-		switch strings.ToLower(name) {
-		case "math":
-			envOpts = append(envOpts, ext.Math())
-		case "strings":
-			envOpts = append(envOpts, ext.Strings())
-		case "lists":
-			envOpts = append(envOpts, ext.Lists())
-		case "sets":
-			envOpts = append(envOpts, ext.Sets())
-		case "encoders":
-			envOpts = append(envOpts, ext.Encoders())
-		case "protos":
-			envOpts = append(envOpts, ext.Protos())
-		case "bindings":
-			envOpts = append(envOpts, ext.Bindings())
-		case "comprehensions":
-			envOpts = append(envOpts, ext.TwoVarComprehensions())
-		case "regex":
-			envOpts = append(envOpts, cel.OptionalTypes(), ext.Regex())
-		case "optional":
-			envOpts = append(envOpts, cel.OptionalTypes())
-		default:
-			return nil, fmt.Errorf("unknown CEL extension library %q", name)
-		}
-	}
+	ev := DefaultEvaluator()
 
-	env, err := cel.NewEnv(envOpts...)
+	// The set of available extension libraries, and the cost limits every
+	// expression runs under, are owned by the evaluator (see celenv.go).
+	env, err := ev.Env(libs...)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create CEL environment: %w", err)
+		return nil, err
 	}
 
 	ast, issues := env.Parse(exprStr)
 	if issues != nil && issues.Err() != nil {
-		return nil, fmt.Errorf("failed to parse CEL expression: %w", issues.Err())
-	}
-
-	prg, err := env.Program(ast)
-	if err != nil {
-		return nil, fmt.Errorf("failed to compile CEL expression: %w", err)
+		return nil, NewTaskError("cel", ErrorKindExpression, fmt.Errorf("parse expression: %w", issues.Err()))
 	}
 
 	celVars := make(map[string]any, len(varBindings))
 	for name, val := range varBindings {
-		cval, err := valueToCEL(val, prevStepOutputs)
+		cval, err := valueToCEL(ctx, val, scope)
 		if err != nil {
 			return nil, fmt.Errorf("failed to resolve var %s: %w", name, err)
 		}
@@ -271,11 +537,11 @@ func taskFuncCEL(ctx context.Context, input map[string]*Value, prevStepOutputs *
 	}
 	// Combine the step outputs with the variable activation so expressions
 	// can reference both previous steps and local variables.
-	act := interpreter.NewHierarchicalActivation(&StepsOutputActivation{Prev: prevStepOutputs}, varAct)
+	act := interpreter.NewHierarchicalActivation(scope.Activation(ctx), varAct)
 
-	out, _, err := prg.Eval(act)
+	out, err := ev.Eval(ctx, env, ast, act)
 	if err != nil {
-		return nil, fmt.Errorf("failed to evaluate CEL expression: %w", err)
+		return nil, err
 	}
 
 	resultVal, err := cel.RefValueToValue(out)
@@ -287,27 +553,14 @@ func taskFuncCEL(ctx context.Context, input map[string]*Value, prevStepOutputs *
 }
 
 // valueToCEL resolves the given Value into a CEL value. Literals are converted
-// directly, while expressions are evaluated using a minimal CEL environment that
-// can reference previous step outputs.
-func valueToCEL(v *Value, prevStepOutputs *Workflow_StepOutputs) (ref.Val, error) {
+// directly, while expressions are evaluated against previous step outputs under
+// the shared evaluator's limits.
+func valueToCEL(ctx context.Context, v *Value, scope *Scope) (ref.Val, error) {
 	switch kind := v.GetKind().(type) {
 	case *Value_Literal:
 		return cel.ValueToRefValue(TypeAdapter, kind.Literal)
 	case *Value_Expr:
-		ast := cel.ParsedExprToAst(kind.Expr)
-		env, err := cel.NewEnv()
-		if err != nil {
-			return nil, fmt.Errorf("failed to create CEL environment: %w", err)
-		}
-		prg, err := env.Program(ast)
-		if err != nil {
-			return nil, fmt.Errorf("failed to compile CEL expression: %w", err)
-		}
-		out, _, err := prg.Eval(cel.Activation(&StepsOutputActivation{Prev: prevStepOutputs}))
-		if err != nil {
-			return nil, fmt.Errorf("failed to evaluate CEL expression: %w", err)
-		}
-		return out, nil
+		return DefaultEvaluator().EvalParsedBase(ctx, kind.Expr, scope.Activation(ctx))
 	default:
 		return nil, fmt.Errorf("unsupported value kind %T", kind)
 	}
@@ -399,42 +652,55 @@ func nodeOutputsFromProtoMessage(msg proto.Message) (*Node_Outputs, error) {
 			continue
 		}
 		val = msg.ProtoReflect().Get(fieldDesc)
+
+		// Emit the field unless the schema gives it explicit presence and it is
+		// unset. Skipping any field that merely holds a zero value would drop a
+		// legitimately empty result — an empty response body, a count of zero —
+		// leaving downstream ${step.field} references unresolvable.
+		if fieldDesc.HasPresence() && !msg.ProtoReflect().Has(fieldDesc) {
+			continue
+		}
+
 		switch fieldDesc.Kind() {
 		case protoreflect.StringKind:
-			if strVal := val.String(); strVal != "" {
-				outputs.NamedValues[fieldName] = &Value{
-					Kind: &Value_Literal{
-						Literal: &expr.Value{
-							Kind: &expr.Value_StringValue{
-								StringValue: strVal,
-							},
-						},
+			outputs.NamedValues[fieldName] = &Value{
+				Kind: &Value_Literal{
+					Literal: &expr.Value{
+						Kind: &expr.Value_StringValue{StringValue: val.String()},
 					},
-				}
+				},
 			}
 		case protoreflect.Int32Kind, protoreflect.Int64Kind:
-			if intVal := val.Int(); intVal != 0 {
-				outputs.NamedValues[fieldName] = &Value{
-					Kind: &Value_Literal{
-						Literal: &expr.Value{
-							Kind: &expr.Value_Int64Value{
-								Int64Value: intVal,
-							},
-						},
+			outputs.NamedValues[fieldName] = &Value{
+				Kind: &Value_Literal{
+					Literal: &expr.Value{
+						Kind: &expr.Value_Int64Value{Int64Value: val.Int()},
 					},
-				}
+				},
 			}
 		case protoreflect.BoolKind:
-			if boolVal := val.Bool(); boolVal {
-				outputs.NamedValues[fieldName] = &Value{
-					Kind: &Value_Literal{
-						Literal: &expr.Value{
-							Kind: &expr.Value_BoolValue{
-								BoolValue: boolVal,
-							},
-						},
+			outputs.NamedValues[fieldName] = &Value{
+				Kind: &Value_Literal{
+					Literal: &expr.Value{
+						Kind: &expr.Value_BoolValue{BoolValue: val.Bool()},
 					},
-				}
+				},
+			}
+		case protoreflect.DoubleKind, protoreflect.FloatKind:
+			outputs.NamedValues[fieldName] = &Value{
+				Kind: &Value_Literal{
+					Literal: &expr.Value{
+						Kind: &expr.Value_DoubleValue{DoubleValue: val.Float()},
+					},
+				},
+			}
+		case protoreflect.BytesKind:
+			outputs.NamedValues[fieldName] = &Value{
+				Kind: &Value_Literal{
+					Literal: &expr.Value{
+						Kind: &expr.Value_BytesValue{BytesValue: val.Bytes()},
+					},
+				},
 			}
 		case protoreflect.MessageKind:
 			msgType := fieldDesc.Message().FullName()
@@ -483,7 +749,167 @@ func nodeOutputsFromProtoMessage(msg proto.Message) (*Node_Outputs, error) {
 	return outputs, nil
 }
 
-func populateProtoMessageFromValueMap(input map[string]*Value, msg proto.Message, prevStepOutputs *Workflow_StepOutputs) error {
+// appendListElements converts CEL list elements into a repeated protobuf field.
+//
+// Both a literal list and the result of a list expression pass through here, so
+// the two cannot disagree about what a list may contain. They previously did: the
+// expression path inspected the evaluated value's native Go type and understood
+// only strings, integers, and booleans, which rejected every list of
+// message-typed elements — including printf's args, whose elements are
+// flowstate.v1.Value. A list mixing a step reference with a literal therefore
+// failed, while the same list written entirely as literals worked.
+func appendListElements(
+	ctx context.Context,
+	elems []*expr.Value,
+	fieldDesc protoreflect.FieldDescriptor,
+	listField protoreflect.List,
+	scope *Scope,
+) error {
+	for i, elem := range elems {
+		if fieldDesc.Kind() == protoreflect.MessageKind {
+			pv, err := listMessageElement(ctx, elem, fieldDesc, scope)
+			if err != nil {
+				return fmt.Errorf("element %d: %w", i, err)
+			}
+			listField.Append(pv)
+			continue
+		}
+
+		pv, err := scalarFromLiteral(elem, fieldDesc)
+		if err != nil {
+			return fmt.Errorf("element %d: %w", i, err)
+		}
+		listField.Append(pv)
+	}
+	return nil
+}
+
+// listMessageElement converts one CEL value into a message element of a repeated
+// field.
+func listMessageElement(
+	ctx context.Context,
+	elem *expr.Value,
+	fieldDesc protoreflect.FieldDescriptor,
+	scope *Scope,
+) (protoreflect.Value, error) {
+	msgType := fieldDesc.Message()
+
+	// A flowstate.v1.Value carries the CEL value as-is, which is what lets a task
+	// like printf accept arguments of mixed type.
+	if msgType.FullName() == "flowstate.v1.Value" {
+		wrapped := &Value{Kind: &Value_Literal{Literal: elem}}
+		return protoreflect.ValueOfMessage(wrapped.ProtoReflect()), nil
+	}
+
+	mapVal, ok := elem.GetKind().(*expr.Value_MapValue)
+	if !ok {
+		return protoreflect.Value{}, fmt.Errorf("expected a map to build %s, got %s",
+			msgType.FullName(), literalKindName(elem))
+	}
+
+	msgTypeInfo, err := protoregistry.GlobalTypes.FindMessageByName(msgType.FullName())
+	if err != nil {
+		return protoreflect.Value{}, fmt.Errorf("could not find message type %q: %w", msgType.FullName(), err)
+	}
+
+	nested := msgTypeInfo.New().Interface()
+	inputMap := make(map[string]*Value, len(mapVal.MapValue.GetEntries()))
+	for _, e := range mapVal.MapValue.GetEntries() {
+		inputMap[e.GetKey().GetStringValue()] = &Value{Kind: &Value_Literal{Literal: e.GetValue()}}
+	}
+	if err := populateProtoMessageFromValueMap(ctx, inputMap, nested, scope); err != nil {
+		return protoreflect.Value{}, err
+	}
+	return protoreflect.ValueOfMessage(nested.ProtoReflect()), nil
+}
+
+// scalarFromLiteral converts a CEL literal to a protobuf value for a scalar
+// field.
+//
+// The conversion is driven by which kind the literal actually holds, not by
+// whether the extracted value is non-zero. Testing the extracted value conflates
+// "wrong type" with "legitimately empty", which rejected every zero value a
+// workflow could supply: an empty string message, a count of 0, a flag set to
+// false.
+func scalarFromLiteral(lit *expr.Value, fieldDesc protoreflect.FieldDescriptor) (protoreflect.Value, error) {
+	switch fieldDesc.Kind() {
+	case protoreflect.StringKind:
+		v, ok := lit.GetKind().(*expr.Value_StringValue)
+		if !ok {
+			return protoreflect.Value{}, fmt.Errorf("expected a string, got %s", literalKindName(lit))
+		}
+		return protoreflect.ValueOfString(v.StringValue), nil
+	case protoreflect.Int32Kind, protoreflect.Int64Kind:
+		switch v := lit.GetKind().(type) {
+		case *expr.Value_Int64Value:
+			if fieldDesc.Kind() == protoreflect.Int32Kind {
+				return protoreflect.ValueOfInt32(int32(v.Int64Value)), nil
+			}
+			return protoreflect.ValueOfInt64(v.Int64Value), nil
+		case *expr.Value_Uint64Value:
+			if fieldDesc.Kind() == protoreflect.Int32Kind {
+				return protoreflect.ValueOfInt32(int32(v.Uint64Value)), nil
+			}
+			return protoreflect.ValueOfInt64(int64(v.Uint64Value)), nil
+		default:
+			return protoreflect.Value{}, fmt.Errorf("expected an integer, got %s", literalKindName(lit))
+		}
+	case protoreflect.BoolKind:
+		v, ok := lit.GetKind().(*expr.Value_BoolValue)
+		if !ok {
+			return protoreflect.Value{}, fmt.Errorf("expected a boolean, got %s", literalKindName(lit))
+		}
+		return protoreflect.ValueOfBool(v.BoolValue), nil
+	case protoreflect.DoubleKind, protoreflect.FloatKind:
+		v, ok := lit.GetKind().(*expr.Value_DoubleValue)
+		if !ok {
+			return protoreflect.Value{}, fmt.Errorf("expected a number, got %s", literalKindName(lit))
+		}
+		if fieldDesc.Kind() == protoreflect.FloatKind {
+			return protoreflect.ValueOfFloat32(float32(v.DoubleValue)), nil
+		}
+		return protoreflect.ValueOfFloat64(v.DoubleValue), nil
+	case protoreflect.BytesKind:
+		v, ok := lit.GetKind().(*expr.Value_BytesValue)
+		if !ok {
+			return protoreflect.Value{}, fmt.Errorf("expected bytes, got %s", literalKindName(lit))
+		}
+		return protoreflect.ValueOfBytes(v.BytesValue), nil
+	default:
+		return protoreflect.Value{}, fmt.Errorf("unsupported field type %s", fieldDesc.Kind())
+	}
+}
+
+// literalKindName names the kind a CEL literal holds, for error messages that
+// tell a workflow author what they actually supplied.
+func literalKindName(lit *expr.Value) string {
+	switch lit.GetKind().(type) {
+	case *expr.Value_StringValue:
+		return "a string"
+	case *expr.Value_Int64Value:
+		return "an integer"
+	case *expr.Value_Uint64Value:
+		return "an unsigned integer"
+	case *expr.Value_DoubleValue:
+		return "a number"
+	case *expr.Value_BoolValue:
+		return "a boolean"
+	case *expr.Value_BytesValue:
+		return "bytes"
+	case *expr.Value_NullValue:
+		return "null"
+	case *expr.Value_ListValue:
+		return "a list"
+	case *expr.Value_MapValue:
+		return "a map"
+	case nil:
+		return "nothing"
+	default:
+		return fmt.Sprintf("%T", lit.GetKind())
+	}
+}
+
+func populateProtoMessageFromValueMap(ctx context.Context, input map[string]*Value, msg proto.Message, scope *Scope) error {
 	msgFields := msg.ProtoReflect().Descriptor().Fields()
 	for i := 0; i < msgFields.Len(); i++ {
 		fieldDesc := msgFields.Get(i)
@@ -520,20 +946,10 @@ func populateProtoMessageFromValueMap(input map[string]*Value, msg proto.Message
 				return fmt.Errorf("expected map literal for field %q", fieldName)
 			case *Value_Expr:
 				// Evaluate the CEL expression and convert to a protobuf expr.Value.
-				ast := cel.ParsedExprToAst(v.Expr)
-				env, err := cel.NewEnv()
+				out, err := valueToCEL(ctx, val, scope)
 				if err != nil {
-					return fmt.Errorf("failed to create CEL environment: %w", err)
+					return fmt.Errorf("field %q: %w", fieldName, err)
 				}
-				prg, err := env.Program(ast)
-				if err != nil {
-					return fmt.Errorf("failed to compile CEL expression: %w", err)
-				}
-				out, _, err := prg.Eval(cel.Activation(&StepsOutputActivation{Prev: prevStepOutputs}))
-				if err != nil {
-					return fmt.Errorf("failed to evaluate CEL expression: %w", err)
-				}
-				// Try to convert to expr.Value and then to a map literal.
 				pv, err := cel.RefValueToValue(out)
 				if err != nil {
 					return fmt.Errorf("failed to convert CEL value: %w", err)
@@ -562,100 +978,38 @@ func populateProtoMessageFromValueMap(input map[string]*Value, msg proto.Message
 			}
 		}
 		if fieldDesc.IsList() {
-			// Expect input value to be a list of *Value
-			var listField = msg.ProtoReflect().Mutable(fieldDesc).List()
+			listField := msg.ProtoReflect().Mutable(fieldDesc).List()
 			switch v := val.GetKind().(type) {
 			case *Value_Literal:
-				// Support google.api.expr.v1alpha1.Value with list kind
-				if lv, ok := v.Literal.GetKind().(*expr.Value_ListValue); ok {
-					for _, elem := range lv.ListValue.Values {
-						switch fieldDesc.Kind() {
-						case protoreflect.StringKind:
-							listField.Append(protoreflect.ValueOfString(elem.GetStringValue()))
-						case protoreflect.Int32Kind, protoreflect.Int64Kind:
-							listField.Append(protoreflect.ValueOfInt64(elem.GetInt64Value()))
-						case protoreflect.BoolKind:
-							listField.Append(protoreflect.ValueOfBool(elem.GetBoolValue()))
-						case protoreflect.MessageKind:
-							msgType := fieldDesc.Message()
-							msgTypeName := string(msgType.FullName())
-							if msgTypeName == "flowstate.v1.Value" {
-								// Directly wrap the expr.Value as a *Value
-								// For printf.args, etc.
-								v := &Value{Kind: &Value_Literal{Literal: elem}}
-								listField.Append(protoreflect.ValueOfMessage(v.ProtoReflect()))
-								continue
-							}
-							msgTypeInfo, err := protoregistry.GlobalTypes.FindMessageByName(msgType.FullName())
-							if err != nil {
-								return fmt.Errorf("could not find message type %q: %w", msgTypeName, err)
-							}
-							msgVal := msgTypeInfo.New().Interface()
-							if structVal, ok := elem.Kind.(*expr.Value_MapValue); ok {
-								inputMap := make(map[string]*Value)
-								for _, e := range structVal.MapValue.Entries {
-									k := e.Key.GetStringValue()
-									v := e.Value
-									inputMap[k] = &Value{Kind: &Value_Literal{Literal: v}}
-								}
-								err := populateProtoMessageFromValueMap(inputMap, msgVal, prevStepOutputs)
-								if err != nil {
-									return fmt.Errorf("failed to populate sub-message for list field %q: %w", fieldName, err)
-								}
-								listField.Append(protoreflect.ValueOfMessage(msgVal.ProtoReflect()))
-							} else {
-								return fmt.Errorf("expected struct value for message element in list field %q", fieldName)
-							}
-						default:
-							return fmt.Errorf("unsupported list element type: %s", fieldDesc.Kind().String())
-						}
-					}
-				} else {
-					return fmt.Errorf("expected ListValue for list field %q", fieldName)
+				lv, ok := v.Literal.GetKind().(*expr.Value_ListValue)
+				if !ok {
+					return fmt.Errorf("field %q expects a list, but got %s",
+						fieldName, literalKindName(v.Literal))
+				}
+				if err := appendListElements(ctx, lv.ListValue.GetValues(), fieldDesc, listField, scope); err != nil {
+					return fmt.Errorf("field %q: %w", fieldName, err)
 				}
 			case *Value_Expr:
-				// Evaluate CEL expression, expect result to be a slice
-				ast := cel.ParsedExprToAst(v.Expr)
-				env, err := cel.NewEnv()
+				// Evaluate the expression, then convert its result through the
+				// same path a literal list takes. Inspecting the CEL value's
+				// native Go type instead would diverge from the literal path —
+				// which is how a list mixing a reference with a literal, such as
+				// printf's args, came to be rejected.
+				out, err := valueToCEL(ctx, val, scope)
 				if err != nil {
-					return fmt.Errorf("failed to create CEL environment: %w", err)
+					return fmt.Errorf("field %q: %w", fieldName, err)
 				}
-				prg, err := env.Program(ast)
+				converted, err := cel.RefValueToValue(out)
 				if err != nil {
-					return fmt.Errorf("failed to compile CEL expression: %w", err)
+					return fmt.Errorf("field %q: converting expression result: %w", fieldName, err)
 				}
-				out, _, err := prg.Eval(cel.Activation(&StepsOutputActivation{Prev: prevStepOutputs}))
-				if err != nil {
-					return fmt.Errorf("failed to evaluate CEL expression: %w", err)
+				lv, ok := converted.GetKind().(*expr.Value_ListValue)
+				if !ok {
+					return fmt.Errorf("field %q expects a list, but the expression produced %s",
+						fieldName, literalKindName(converted))
 				}
-				// Try to convert to []interface{}
-				if arr, ok := out.Value().([]interface{}); ok {
-					for _, elem := range arr {
-						switch fieldDesc.Kind() {
-						case protoreflect.StringKind:
-							if s, ok := elem.(string); ok {
-								listField.Append(protoreflect.ValueOfString(s))
-							} else {
-								return fmt.Errorf("expected string in list for field %q", fieldName)
-							}
-						case protoreflect.Int32Kind, protoreflect.Int64Kind:
-							if i, ok := elem.(int64); ok {
-								listField.Append(protoreflect.ValueOfInt64(i))
-							} else {
-								return fmt.Errorf("expected int64 in list for field %q", fieldName)
-							}
-						case protoreflect.BoolKind:
-							if b, ok := elem.(bool); ok {
-								listField.Append(protoreflect.ValueOfBool(b))
-							} else {
-								return fmt.Errorf("expected bool in list for field %q", fieldName)
-							}
-						default:
-							return fmt.Errorf("unsupported list element type: %s", fieldDesc.Kind().String())
-						}
-					}
-				} else {
-					return fmt.Errorf("expected array result from CEL for list field %q", fieldName)
+				if err := appendListElements(ctx, lv.ListValue.GetValues(), fieldDesc, listField, scope); err != nil {
+					return fmt.Errorf("field %q: %w", fieldName, err)
 				}
 			default:
 				return fmt.Errorf("unsupported value type for list field %q: %T", fieldName, val)
@@ -664,71 +1018,25 @@ func populateProtoMessageFromValueMap(input map[string]*Value, msg proto.Message
 		}
 		switch kind := val.GetKind().(type) {
 		case *Value_Expr:
-			ast := cel.ParsedExprToAst(kind.Expr)
-			env, err := cel.NewEnv()
+			out, err := valueToCEL(ctx, val, scope)
 			if err != nil {
-				return fmt.Errorf("failed to create CEL environment: %w", err)
-			}
-			prg, err := env.Program(ast)
-			if err != nil {
-				return fmt.Errorf("failed to compile CEL expression: %w", err)
-			}
-			out, _, err := prg.Eval(cel.Activation(&StepsOutputActivation{
-				Prev: prevStepOutputs,
-			}))
-			if err != nil {
-				return fmt.Errorf("failed to evaluate CEL expression: %w", err)
+				return fmt.Errorf("field %q: %w", fieldName, err)
 			}
 			value, err := cel.RefValueToValue(out)
 			if err != nil {
 				return fmt.Errorf("failed to convert CEL reference to value: %w", err)
 			}
-			switch fieldDesc.Kind() {
-			case protoreflect.StringKind:
-				if strVal := value.GetStringValue(); strVal != "" {
-					msg.ProtoReflect().Set(fieldDesc, protoreflect.ValueOfString(strVal))
-				} else {
-					return fmt.Errorf("expected string value for field %q, got %T", fieldName, value.GetKind())
-				}
-			case protoreflect.Int32Kind, protoreflect.Int64Kind:
-				if intVal := value.GetInt64Value(); intVal != 0 {
-					msg.ProtoReflect().Set(fieldDesc, protoreflect.ValueOfInt64(intVal))
-				} else {
-					return fmt.Errorf("expected int64 value for field %q, got %T", fieldName, value.GetKind())
-				}
-			case protoreflect.BoolKind:
-				if boolVal := value.GetBoolValue(); boolVal {
-					msg.ProtoReflect().Set(fieldDesc, protoreflect.ValueOfBool(boolVal))
-				} else {
-					return fmt.Errorf("expected bool value for field %q, got %T", fieldName, value.GetKind())
-				}
-			default:
-				return fmt.Errorf("unsupported field type: %s", fieldDesc.Kind().String())
+			pv, err := scalarFromLiteral(value, fieldDesc)
+			if err != nil {
+				return fmt.Errorf("field %q: %w", fieldName, err)
 			}
+			msg.ProtoReflect().Set(fieldDesc, pv)
 		case *Value_Literal:
-			lit := kind.Literal
-			switch fieldDesc.Kind() {
-			case protoreflect.StringKind:
-				if strVal := lit.GetStringValue(); strVal != "" {
-					msg.ProtoReflect().Set(fieldDesc, protoreflect.ValueOfString(strVal))
-				} else {
-					return fmt.Errorf("expected string value for field %q, got %T", fieldName, lit.GetKind())
-				}
-			case protoreflect.Int32Kind, protoreflect.Int64Kind:
-				if intVal := lit.GetInt64Value(); intVal != 0 {
-					msg.ProtoReflect().Set(fieldDesc, protoreflect.ValueOfInt64(intVal))
-				} else {
-					return fmt.Errorf("expected int64 value for field %q, got %T", fieldName, lit.GetKind())
-				}
-			case protoreflect.BoolKind:
-				if boolVal := lit.GetBoolValue(); boolVal {
-					msg.ProtoReflect().Set(fieldDesc, protoreflect.ValueOfBool(boolVal))
-				} else {
-					return fmt.Errorf("expected bool value for field %q, got %T", fieldName, lit.GetKind())
-				}
-			default:
-				return fmt.Errorf("unsupported field type: %s", fieldDesc.Kind().String())
+			pv, err := scalarFromLiteral(kind.Literal, fieldDesc)
+			if err != nil {
+				return fmt.Errorf("field %q: %w", fieldName, err)
 			}
+			msg.ProtoReflect().Set(fieldDesc, pv)
 		default:
 			return fmt.Errorf("unsupported value type: %T", val)
 		}

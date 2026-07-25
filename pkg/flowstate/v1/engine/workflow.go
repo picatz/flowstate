@@ -1,13 +1,11 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
-	"time"
 
 	"github.com/google/cel-go/cel"
-	"github.com/google/cel-go/common/types"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )
@@ -26,9 +24,6 @@ const RunTaskQueueName = "flowstate-run-task-queue"
 // continuing-as-new when no label overrides are provided.
 const defaultMaxStepsPerRun = 200
 
-// Continue-As-New policy: use server suggestions or a server-injected step budget.
-// The DSL no longer exposes labels to control Continue-As-New.
-
 // Run is the durable workflow entrypoint that supports Continue-As-New.
 // It executes from the provided state and yields final step outputs when done.
 func Run(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error) {
@@ -36,16 +31,7 @@ func Run(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error
 		return nil, fmt.Errorf("workflow cannot be nil or empty")
 	}
 
-	ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		StartToCloseTimeout: time.Minute,
-		RetryPolicy: &temporal.RetryPolicy{
-			InitialInterval:        time.Second,
-			BackoffCoefficient:     2.0,
-			MaximumInterval:        100 * time.Second,
-			MaximumAttempts:        5,
-			NonRetryableErrorTypes: []string{"ErrRunFailed"},
-		},
-	})
+	ctx = workflow.WithActivityOptions(ctx, defaultActivityOptions())
 
 	logger := workflow.GetLogger(ctx)
 
@@ -57,8 +43,6 @@ func Run(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error
 		stepOutputs.StepValues = map[string]*v1.Node_Outputs{}
 	}
 
-	stepsProcessed := 0
-
 	// Determine step budget from state (injected by server) or default.
 	stepsBudget := int(st.StepsBudget)
 	if stepsBudget <= 0 {
@@ -66,111 +50,93 @@ func Run(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error
 		stepsBudget = defaultMaxStepsPerRun
 	}
 
-	for i := int(st.NextStep); i < len(st.Workflow.Steps); i++ {
-		node := st.Workflow.Steps[i]
-		logger.Info("processing step", "id", node.Id, "kind", node.Kind)
-
-		switch node.Kind.(type) {
-		case *v1.Node_Task:
-			var evalOutput v1.Node_Outputs
-			t := node.GetTask()
-
-			// Resolve any CEL expressions in task inputs before scheduling.
-			if err := resolveTaskInputs(t, stepOutputs); err != nil {
-				return nil, &ErrRunFailed{Message: err.Error()}
-			}
-
-			var evalErr error
-			if t.GetName() == "cel" {
-				compactPrev := compactPrevOutputsForTask(t, stepOutputs)
-				evalErr = workflow.ExecuteActivity(ctx, TaskWithPrev, t, compactPrev).Get(ctx, &evalOutput)
-			} else {
-				evalErr = workflow.ExecuteActivity(ctx, Task, t).Get(ctx, &evalOutput)
-			}
-			if evalErr != nil {
-				return nil, &ErrRunFailed{Message: evalErr.Error()}
-			}
-
-			logger.Info("task evaluated successfully", "output", &evalOutput)
-			stepOutputs.StepValues[node.Id] = &evalOutput
-			stepsProcessed++
-
-			// Continue-As-New if suggested by server or we hit the step budget;
-			// and if more steps remain.
-			shouldCAN := stepsProcessed >= stepsBudget
-			if info := workflow.GetInfo(ctx); info != nil {
-				if info.GetContinueAsNewSuggested() {
-					shouldCAN = true
-				}
-			}
-			if shouldCAN && i < len(st.Workflow.Steps)-1 {
-				carry := compactOutputsForRemainingSteps(st.Workflow.Steps, i+1, stepOutputs)
-				next := &v1.RunState{
-					Workflow:    st.Workflow,
-					NextStep:    int32(i + 1),
-					Outputs:     carry,
-					StepsBudget: int32(stepsBudget),
-				}
-				return nil, workflow.NewContinueAsNewError(ctx, Run, next)
-			}
-		default:
-			return nil, fmt.Errorf("unsupported node kind: %T", node.Kind)
-		}
+	// Execute through the recursive executor, which handles nested control flow
+	// and records where to resume if the run has to be continued as new.
+	exec := &executor{
+		ctx:    ctx,
+		spec:   st.Workflow,
+		scope:  v1.NewScope(stepOutputs),
+		budget: stepsBudget,
+		resume: resumeFrames(st),
 	}
 
-	return stepOutputs, nil
+	err := exec.runNodes(st.Workflow.GetSteps(), 0)
+	switch {
+	case err == nil:
+		return stepOutputs, nil
+
+	case errors.Is(err, errContinueAsNew):
+		carry := compactOutputsForFrames(st.Workflow, exec.frames, stepOutputs)
+		next := &v1.RunState{
+			Workflow:    st.Workflow,
+			Outputs:     carry,
+			StepsBudget: int32(stepsBudget),
+			Frames:      exec.frames,
+			// Identity must survive Continue-As-New. A long workload spans
+			// several runs, and a step in the last one acts on behalf of the
+			// same caller as a step in the first; dropping it would silently
+			// turn an authenticated workload into an anonymous one partway
+			// through.
+			Identity: st.Identity,
+		}
+		logger.Info("continuing as new", "frames", len(exec.frames))
+		return nil, workflow.NewContinueAsNewError(ctx, Run, next)
+
+	default:
+		return nil, err
+	}
 }
 
-// resolveTaskInputs evaluates any CEL expressions in the task inputs using the
-// current step outputs and replaces them with literal values. This minimizes
-// activity inputs and avoids repeatedly passing previous outputs in payloads.
-func resolveTaskInputs(task *v1.Task, prev *v1.Workflow_StepOutputs) error {
-	if task == nil || len(task.Inputs) == 0 {
-		return nil
+// resumeFrames returns the position a run resumes from.
+//
+// A run started before frames existed carries only next_step, so that is
+// translated into an equivalent single frame rather than being ignored — an
+// in-flight workload must not restart from the beginning because the state model
+// grew a field.
+func resumeFrames(st *v1.RunState) []*v1.Frame {
+	if frames := st.GetFrames(); len(frames) > 0 {
+		return frames
 	}
-
-	for k, val := range task.Inputs {
-		switch kind := val.GetKind().(type) {
-		case *v1.Value_Expr:
-			ast := cel.ParsedExprToAst(kind.Expr)
-			env, err := cel.NewEnv()
-			if err != nil {
-				return fmt.Errorf("failed to create CEL env for %q: %w", k, err)
-			}
-			prg, err := env.Program(ast)
-			if err != nil {
-				return fmt.Errorf("failed to compile CEL for %q: %w", k, err)
-			}
-			out, _, err := prg.Eval(cel.Activation(&v1.StepsOutputActivation{Prev: prev}))
-			if err != nil {
-				return fmt.Errorf("failed to evaluate CEL for %q: %w", k, err)
-			}
-			exprVal, err := cel.RefValueToValue(out)
-			if err != nil {
-				return fmt.Errorf("failed to convert CEL value for %q: %w", k, err)
-			}
-			task.Inputs[k] = &v1.Value{Kind: &v1.Value_Literal{Literal: exprVal}}
-		case *v1.Value_Literal:
-			// Already a literal; nothing to do.
-			_ = types.DefaultTypeAdapter // avoid unused import if build tags change
-		default:
-			// Unknown kind; leave as-is so task library can handle or error.
-		}
+	if st.GetNextStep() > 0 {
+		return []*v1.Frame{{NextNode: st.GetNextStep()}}
 	}
 	return nil
 }
 
-// maxStepsPerRun returns the configured step budget for Continue-As-New by
-// reading an optional label on the workflow. Using labels keeps configuration
-// deterministic across replays (unlike env vars which may change between runs).
+// compactOutputsForFrames carries forward only the outputs the remaining work can
+// still reference.
 //
-// Label: "flowstate/max-steps-per-run" (string int > 0)
-// Fallback: defaultMaxStepsPerRun
+// With nested control flow the remaining work is no longer a suffix of the
+// top-level steps, so this is conservative: it keeps everything reachable from the
+// top-level step the run will resume at. Carrying an output that turns out to be
+// unnecessary costs payload; dropping one that is needed breaks the run.
+func compactOutputsForFrames(spec *v1.Workflow, frames []*v1.Frame, outputs *v1.Workflow_StepOutputs) *v1.Workflow_StepOutputs {
+	if len(frames) == 0 {
+		return outputs
+	}
+	from := int(frames[0].GetNextNode())
 
-// maxHistoryLength returns an optional max history length (number of events)
-// from workflow labels. When set (>0), the workflow will Continue-As-New when
-// the current history length exceeds this value.
-// Label: "flowstate/max-history-length"
+	// Mid-loop suspension resumes inside the step at frames[0], so that step's
+	// own inputs still matter.
+	if len(frames) > 1 && from > 0 {
+		from--
+	}
+	return compactOutputsForRemainingSteps(spec.GetSteps(), from, outputs)
+}
+
+// failedStepOutputs records a failure as a step's outputs.
+//
+// A step allowed to continue past its own failure still has to leave something
+// behind, so that a later step can branch on whether it worked. Reporting the
+// failure under a well-known `error` output makes that expressible as
+// `${step.error}`, and its absence means the step succeeded.
+func failedStepOutputs(err error) *v1.Node_Outputs {
+	return &v1.Node_Outputs{
+		NamedValues: map[string]*v1.Value{
+			"error": v1.NewLiteral(err.Error()),
+		},
+	}
+}
 
 // collectRefsFromExpr recursively walks a CEL expression and returns a map of
 // step IDs to the set of fields referenced on that step. If a step is
