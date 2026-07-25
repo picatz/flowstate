@@ -1,0 +1,28 @@
+# By default the http task returns status_code, body, and headers. The optional
+# `outputs` input replaces those with exactly the values this step should return,
+# which keeps only what later steps need in the workflow's payloads.
+#
+# Expressions in `outputs` are evaluated after the response arrives, so they can
+# reference status_code, body, and headers directly. The json library is
+# available for picking fields out of a JSON body.
+name: http output shaping
+steps:
+  - id: web
+    task:
+      name: http
+      inputs:
+        method: GET
+        url: https://httpbin.org/json
+        # ${...} marks a CEL expression, as everywhere else in a Flowfile; a bare
+        # string would be a literal. Quote it because YAML would otherwise read
+        # the colons inside as mapping syntax.
+        outputs: "${ {'status': status_code, 'title': json_parse(body)['slideshow']['title']} }"
+
+  - id: report
+    task:
+      name: printf
+      inputs:
+        format: "got %d for %s"
+        args:
+          - ${web.status}
+          - ${web.title}
