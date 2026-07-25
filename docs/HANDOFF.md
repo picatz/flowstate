@@ -7,11 +7,11 @@ the durable document.
 Branch: `harden-and-expand-engine`, seven commits, pushed. A clean checkout builds,
 vets clean, and passes tests in every package except the two noted below.
 
-## Blocking, do this first
+## Resolved late in the day
 
-**The Flowfile parser has no expansion budget.** `maxAliasDepth` in
-`flowfile/parse.go` bounds how far an alias *chain* is followed. It does not bound
-how many nodes an alias *expands to*, and expansion is what explodes:
+**The Flowfile parser now bounds alias expansion.** It previously bounded only how
+far an alias *chain* was followed, not how many nodes an alias *expanded to*, and
+expansion is what explodes:
 
 ```yaml
 a: &a ["x","x","x","x","x","x","x","x","x","x"]
@@ -19,18 +19,25 @@ b: &b [*a,*a,*a,*a,*a,*a,*a,*a,*a,*a]
 c: &c [*b,*b,*b,*b,*b,*b,*b,*b,*b,*b]
 ```
 
-Ten per level, nine levels, 10^9 nodes, every chain one hop long. A `flowfile.test`
-process reached 23 GB of resident memory and 32 GB of swap on this and had to be
-killed.
+Ten per level, ten levels, 10^9 nodes, every chain one hop long. A `flowfile.test`
+process reached 23 GB resident and 32 GB of swap on this and had to be killed.
 
-What it needs: a total node budget during alias resolution, an input size cap
-before parsing, both reported as ordinary diagnostics. Cycle detection is necessary
-but does not substitute — the document above is acyclic. `DefaultCostLimit` in
-`v1/celenv.go` is the model to follow, including how the reasoning is written down.
+`maxNodes` and `maxDepth` in `flowfile/parse.go` now bound it, reported as an
+ordinary diagnostic with a position:
 
-Until that lands, do not run `go test` on `pkg/flowstate/v1/flowfile/`, and do not
-fuzz it at all. `FuzzRoundTrip` is the only fuzz target in the repo and it lives in
-that package.
+```
+7:22: steps[0].task.inputs.m5[5][6][6][6][8]: holds more than 100000 values once
+      aliases are expanded, which is more than a Flowfile is meant to hold
+```
+
+Verified against the document above under a 512 MiB cap: rejected immediately.
+
+Still worth doing tomorrow: confirm the four parser tests that were failing
+(`TestParseReportsPositions`, `TestParsePositionPaths`, `TestParseExpressionContexts`,
+`TestParseAnchorsAndMerge`) now pass, with a bounded run —
+`GOMEMLIMIT=512MiB go test -timeout 30s ./pkg/flowstate/v1/flowfile/`. Fuzzing that
+package is reasonable again now that the bound exists, but run it with
+`-parallel 1`, a small `-fuzztime`, and `GOMEMLIMIT` set.
 
 ## Also unfinished
 
