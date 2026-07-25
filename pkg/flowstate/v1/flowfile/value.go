@@ -21,7 +21,7 @@ import (
 // is expression source and the ${...} fence is optional; where the field can be
 // either, the fence is what makes it an expression.
 
-// exprFence is the punctuation that marks a task input as an expression.
+// The fence is the punctuation that marks a value as an expression.
 const (
 	fenceOpen  = "${"
 	fenceClose = "}"
@@ -98,11 +98,20 @@ func fenceError(s string) error {
 	return fmt.Errorf("%q mixes literal text with an expression: %s", s, interpolationHelp)
 }
 
+// inputValue compiles a task input, where what the value holds is whatever the task
+// declares and so only a fenced string is an expression.
+func (c *compiler) inputValue(n ast.Node, path string, r ref) *v1.Value {
+	return c.value(n, path, r, false)
+}
+
+// exprValue compiles a field the schema types as an expression — a step's
+// condition, a loop's items — where a string is expression source and the fence is
+// optional.
+func (c *compiler) exprValue(n ast.Node, path string, r ref) *v1.Value {
+	return c.value(n, path, r, true)
+}
+
 // value compiles one node into a schema Value.
-//
-// exprCtx selects the rule: in an expression context — a step's condition, a
-// loop's items — a string is expression source, with the fence optional. In a task
-// input, only a fenced string is an expression.
 //
 // It returns nil after reporting a diagnostic, so a caller building a message must
 // tolerate a missing value; the workflow is discarded when any diagnostic is
@@ -119,15 +128,9 @@ func (c *compiler) value(n ast.Node, path string, r ref, exprCtx bool) *v1.Value
 		return c.scalarString(n, node.Value, path, r, exprCtx)
 	case *ast.LiteralNode:
 		// A block scalar: | or >. Its text is a string like any other.
-		return c.scalarString(n, node.Value.GetValue().(string), path, r, exprCtx)
+		return c.scalarString(n, blockText(node), path, r, exprCtx)
 	case *ast.MappingNode, *ast.MappingValueNode, *ast.SequenceNode:
 		return c.composite(n, path, r)
-	case *ast.NullNode:
-		if node.GetToken() != nil && node.GetToken().Type == implicitNull {
-			c.report(spanOfNode(n), r, "has no value; give it one or remove the key")
-			return nil
-		}
-		return &v1.Value{Kind: &v1.Value_Literal{Literal: &expr.Value{Kind: &expr.Value_NullValue{}}}}
 	default:
 		lit := c.literal(n, path, r)
 		if lit == nil {
@@ -135,6 +138,14 @@ func (c *compiler) value(n ast.Node, path string, r ref, exprCtx bool) *v1.Value
 		}
 		return &v1.Value{Kind: &v1.Value_Literal{Literal: lit}}
 	}
+}
+
+// blockText returns the text of a block scalar, written with | or >.
+func blockText(n *ast.LiteralNode) string {
+	if n == nil || n.Value == nil {
+		return ""
+	}
+	return n.Value.Value
 }
 
 // scalarString applies the expression rule to a string scalar.
@@ -236,8 +247,7 @@ func (c *compiler) containsExpr(n ast.Node) bool {
 		_, fenced := splitFence(node.Value)
 		return fenced
 	case *ast.LiteralNode:
-		s, _ := node.Value.GetValue().(string)
-		_, fenced := splitFence(s)
+		_, fenced := splitFence(blockText(node))
 		return fenced
 	case *ast.SequenceNode:
 		for _, v := range node.Values {
@@ -273,8 +283,7 @@ func (c *compiler) literal(n ast.Node, path string, r ref) *expr.Value {
 		}
 		return &expr.Value{Kind: &expr.Value_StringValue{StringValue: node.Value}}
 	case *ast.LiteralNode:
-		s, _ := node.Value.GetValue().(string)
-		return &expr.Value{Kind: &expr.Value_StringValue{StringValue: s}}
+		return &expr.Value{Kind: &expr.Value_StringValue{StringValue: blockText(node)}}
 	case *ast.IntegerNode:
 		switch v := node.Value.(type) {
 		case int64:
@@ -350,8 +359,7 @@ func (c *compiler) celText(n ast.Node, path string, r ref) (string, bool) {
 	case *ast.StringNode:
 		return c.celTextString(n, node.Value, r)
 	case *ast.LiteralNode:
-		s, _ := node.Value.GetValue().(string)
-		return c.celTextString(n, s, r)
+		return c.celTextString(n, blockText(node), r)
 	case *ast.IntegerNode:
 		switch v := node.Value.(type) {
 		case int64:

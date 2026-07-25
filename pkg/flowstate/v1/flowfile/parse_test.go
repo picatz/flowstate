@@ -1,8 +1,10 @@
 package flowfile_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +13,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/testing/protocmp"
 )
@@ -1068,4 +1071,336 @@ func asDiagnostics(err error, into *flowfile.Diagnostics) bool {
 		*into = ds
 	}
 	return ok
+}
+
+// TestParseRejects covers the remaining ways a Flowfile can be wrong, where what
+// matters is that the message names the problem rather than exactly where it is.
+func TestParseRejects(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{
+			name: "iterator that is not a name",
+			src: forEachWith(`items: ${[1]}
+      iterator: 5`),
+			want: "must be a string",
+		},
+		{
+			name: "max_parallel that is not a number",
+			src: forEachWith(`items: ${[1]}
+      max_parallel: many`),
+			want: "must be a whole number",
+		},
+		{
+			name: "max_parallel beyond what the schema allows",
+			src: forEachWith(`items: ${[1]}
+      max_parallel: 5000`),
+			want: "must be between 0 and 1000",
+		},
+		{
+			name: "for_each with no body",
+			src: `name: t
+steps:
+  - id: a
+    for_each:
+      items: ${[1]}
+`,
+			want: "for_each requires steps",
+		},
+		{
+			name: "backoff that is not a number",
+			src: `name: t
+steps:
+  - id: a
+    retry:
+      backoff: fast
+    task:
+      name: echo
+      inputs: {}
+`,
+			want: "must be a number",
+		},
+		{
+			name: "continue_on_error that is not a bool",
+			src: `name: t
+steps:
+  - id: a
+    continue_on_error: sometimes
+    task:
+      name: echo
+      inputs: {}
+`,
+			want: "must be true or false",
+		},
+		{
+			name: "timeout of zero",
+			src: `name: t
+steps:
+  - id: a
+    timeout: 0s
+    task:
+      name: echo
+      inputs: {}
+`,
+			want: "must be greater than zero",
+		},
+		{
+			name: "parallel branch with no steps",
+			src: `name: t
+steps:
+  - id: a
+    parallel:
+      - {}
+`,
+			want: "parallel branch 1 requires steps",
+		},
+		{
+			name: "parallel with no branches",
+			src: `name: t
+steps:
+  - id: a
+    parallel: []
+`,
+			want: "parallel must have at least one branch",
+		},
+		{
+			name: "unknown key in a parallel branch",
+			src: `name: t
+steps:
+  - id: a
+    parallel:
+      - step:
+          - id: b
+`,
+			want: `unknown key "step"; did you mean "steps"?`,
+		},
+		{
+			name: "task that is not a mapping",
+			src: `name: t
+steps:
+  - id: a
+    task: echo
+`,
+			want: "must be a mapping of keys to values, but a string was written here",
+		},
+		{
+			name: "non-string key in an input map",
+			src: taskInput(`headers:
+          1: one`),
+			want: "keys must be strings, but a number was written here",
+		},
+		{
+			name: "unterminated expression",
+			src:  taskInput(`message: ${a.result`),
+			want: "unterminated expression",
+		},
+		{
+			name: "two expressions in one value",
+			src:  taskInput(`message: ${a.result} ${b.result}`),
+			want: "must be the whole value",
+		},
+		{
+			name: "expression in a workflow name",
+			src: `name: ${chosen}
+steps:
+  - id: a
+    task:
+      name: echo
+      inputs: {}
+`,
+			want: "name: cannot be an expression",
+		},
+		{
+			name: "nested value with no value",
+			src: taskInput(`headers:
+          A:`),
+			want: "has no value",
+		},
+		{
+			name: "a tagged value",
+			src:  taskInput(`message: !!str 5`),
+			want: "cannot be used as a value",
+		},
+		{
+			name: "nested deeper than a Flowfile goes",
+			src:  taskInput("message: " + strings.Repeat("[", 200) + strings.Repeat("]", 200)),
+			want: "nests more than 64 levels deep",
+		},
+		{
+			name: "an alias expanded past what a Flowfile holds",
+			src: taskInput(`a: &a [x, x, x, x, x, x, x, x, x, x]
+        b: &b [*a, *a, *a, *a, *a, *a, *a, *a, *a, *a]
+        c: &c [*b, *b, *b, *b, *b, *b, *b, *b, *b, *b]
+        d: &d [*c, *c, *c, *c, *c, *c, *c, *c, *c, *c]
+        e: &e [*d, *d, *d, *d, *d, *d, *d, *d, *d, *d]
+        f: [*e, *e, *e, *e, *e, *e, *e, *e, *e, *e]`),
+			want: "holds more than 100000 values",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := flowfile.Unmarshal([]byte(tt.src))
+			if err == nil {
+				t.Fatal("Unmarshal() succeeded, want a diagnostic")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("diagnostics do not mention %q; got:\n%v", tt.want, err)
+			}
+			t.Logf("reported: %v", err)
+		})
+	}
+}
+
+// TestParseValueKinds covers every kind of value the DSL can hold, both as a
+// literal and inside a structure that a nested expression turns into one
+// expression. The two paths build values separately, so a type handled by one and
+// not the other is exactly the kind of gap that survives review.
+func TestParseValueKinds(t *testing.T) {
+	literals := `name: t
+steps:
+  - id: a
+    task:
+      name: cel
+      inputs:
+        text: plain
+        number: 7
+        fraction: 1.5
+        flag: true
+        nothing: null
+        big: 18446744073709551615
+        list: [1, hello, false, 2.5]
+        block: |
+          two
+          lines
+        mapping:
+          k: v
+`
+	workflow, err := flowfile.Unmarshal([]byte(literals))
+	if err != nil {
+		t.Fatalf("Unmarshal() error: %v", err)
+	}
+	inputs := workflow.GetSteps()[0].GetTask().GetInputs()
+	for name, want := range map[string]string{
+		"text":     "plain",
+		"number":   "7",
+		"fraction": "1.5",
+		"flag":     "true",
+		"nothing":  "null",
+		"big":      "18446744073709551615",
+		"block":    "two\nlines\n",
+	} {
+		got := inputs[name].GetLiteral()
+		if got == nil {
+			t.Errorf("input %q is not a literal: %v", name, inputs[name])
+			continue
+		}
+		if text := literalText(got); text != want {
+			t.Errorf("input %q = %s, want %s", name, text, want)
+		}
+	}
+	requireRoundTrip(t, workflow)
+
+	// The same values, in a structure that one expression makes an expression.
+	computed := `name: t
+steps:
+  - id: a
+    task:
+      name: cel
+      inputs:
+        vals:
+          text: plain
+          number: 7
+          fraction: 1.5
+          flag: true
+          nothing: null
+          list: [1, hello]
+          computed: ${1 + 1}
+`
+	workflow, err = flowfile.Unmarshal([]byte(computed))
+	if err != nil {
+		t.Fatalf("Unmarshal() error: %v", err)
+	}
+	value := workflow.GetSteps()[0].GetTask().GetInputs()["vals"]
+	requireExpr(t, value,
+		`{"text": "plain", "number": 7, "fraction": 1.5, "flag": true, "nothing": null, "list": [1, "hello"], "computed": 1 + 1}`)
+	requireRoundTrip(t, workflow)
+}
+
+// literalText renders a literal for a message about one that is not what it should
+// be.
+func literalText(literal *expr.Value) string {
+	switch kind := literal.GetKind().(type) {
+	case *expr.Value_StringValue:
+		return kind.StringValue
+	case *expr.Value_Int64Value:
+		return strconv.FormatInt(kind.Int64Value, 10)
+	case *expr.Value_Uint64Value:
+		return strconv.FormatUint(kind.Uint64Value, 10)
+	case *expr.Value_DoubleValue:
+		return strconv.FormatFloat(kind.DoubleValue, 'g', -1, 64)
+	case *expr.Value_BoolValue:
+		return strconv.FormatBool(kind.BoolValue)
+	case *expr.Value_NullValue:
+		return "null"
+	default:
+		return fmt.Sprintf("%v", literal)
+	}
+}
+
+// forEachWith returns a workflow whose single step is a loop with the given body of
+// for_each keys.
+func forEachWith(keys string) string {
+	return `name: t
+steps:
+  - id: a
+    for_each:
+      ` + keys + `
+      steps:
+        - id: b
+          task:
+            name: echo
+            inputs: {}
+`
+}
+
+// TestParseHoistsCelVars pins the one place the compiler reshapes what was written:
+// a `vars` mapping is flattened into the inputs around it.
+//
+// The cel task binds every input it does not recognize as a variable, and needs
+// each one resolved on its own — a nested map holding an expression would arrive as
+// one expression the task cannot resolve. Compiling `vars` as written would break
+// every workflow that passes a step output through it.
+func TestParseHoistsCelVars(t *testing.T) {
+	workflow, err := flowfile.Unmarshal([]byte(`name: t
+steps:
+  - id: greet
+    task:
+      name: echo
+      inputs:
+        message: hello
+  - id: modify
+    task:
+      name: cel
+      inputs:
+        expr: "vars.greeting"
+        libs: [strings]
+        vars:
+          greeting: ${greet.result}
+`))
+	if err != nil {
+		t.Fatalf("Unmarshal() error: %v", err)
+	}
+
+	inputs := workflow.GetSteps()[1].GetTask().GetInputs()
+	if _, present := inputs["vars"]; present {
+		t.Error("vars should have been flattened into the inputs around it")
+	}
+	greeting, ok := inputs["greeting"]
+	if !ok {
+		t.Fatalf("greeting was not hoisted; inputs are %v", inputs)
+	}
+	requireExpr(t, greeting, "greet.result")
 }

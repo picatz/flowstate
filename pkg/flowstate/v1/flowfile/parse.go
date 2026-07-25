@@ -237,8 +237,9 @@ func (c *compiler) compile(file *ast.File) *v1.Workflow {
 	// and "an empty description" stay distinguishable — which is what the schema's
 	// optional means, and what makes Marshal an exact inverse.
 	if f, found := fields.get("description"); found {
-		description, _ := c.text(f.value, "description", ref{path: "description", label: "description"})
-		workflow.Description = proto.String(description)
+		if description, ok := c.text(f.value, "description", ref{path: "description", label: "description"}); ok {
+			workflow.Description = proto.String(description)
+		}
 	}
 
 	if f, found := fields.get("steps"); found {
@@ -382,21 +383,26 @@ func (c *compiler) step(n ast.Node, path string) *v1.Node {
 	span := spanOfNode(n)
 	c.pos.record(path, span)
 
-	fields, ok := c.fields(n, path, ref{path: path}, stepKeys)
+	entries, ok := c.entries(n, path, ref{path: path})
 	if !ok {
 		return nil
 	}
 
+	// The id is read before anything else so that every diagnostic below can name
+	// the step, which is how an author finds it in a file of thirty — including a
+	// diagnostic about a key written above the id.
 	step := &v1.Node{}
-	if f, found := fields.get("id"); found {
-		id, _ := c.text(f.value, fieldPath(path, "id"), ref{path: fieldPath(path, "id"), label: "id"})
-		step.Id = id
-		c.pos.recordStep(id, path)
+	for _, e := range entries {
+		if e.name == "id" {
+			id, _ := c.text(e.value, fieldPath(path, "id"), ref{path: fieldPath(path, "id"), label: "id"})
+			step.Id = id
+			c.pos.recordStep(id, path)
+			break
+		}
 	}
 
-	// Once the id is known, every remaining diagnostic can name the step, which is
-	// how an author finds it in a file of thirty.
 	r := ref{step: step.GetId(), path: path}
+	fields := c.check(entries, r, stepKeys)
 
 	var kinds []field
 	for _, name := range stepKindKeys {
@@ -435,7 +441,7 @@ func (c *compiler) step(n ast.Node, path string) *v1.Node {
 
 	if f, found := fields.get("if"); found {
 		condition := ref{step: step.GetId(), path: fieldPath(path, "if"), label: "if"}
-		step.Condition = c.value(f.value, fieldPath(path, "if"), condition, true)
+		step.Condition = c.exprValue(f.value, fieldPath(path, "if"), condition)
 	}
 
 	step.Policy = c.policy(fields, path, r)
@@ -458,9 +464,10 @@ func (c *compiler) task(n ast.Node, path string, r ref) *v1.Task {
 		task.Name = name
 	}
 	if f, found := fields.get("description"); found {
-		description, _ := c.text(f.value, fieldPath(path, "description"),
-			ref{step: r.step, path: fieldPath(path, "description"), label: "task description"})
-		task.Description = proto.String(description)
+		if description, ok := c.text(f.value, fieldPath(path, "description"),
+			ref{step: r.step, path: fieldPath(path, "description"), label: "task description"}); ok {
+			task.Description = proto.String(description)
+		}
 	}
 	if f, found := fields.get("inputs"); found {
 		c.inputs(f.value, fieldPath(path, "inputs"), r, task.Inputs)
@@ -502,7 +509,7 @@ func (c *compiler) inputs(n ast.Node, path string, r ref, into map[string]*v1.Va
 		}
 
 		valuePath := fieldPath(path, e.name)
-		if value := c.value(e.value, valuePath, ref{step: r.step, input: e.name, path: valuePath}, false); value != nil {
+		if value := c.inputValue(e.value, valuePath, ref{step: r.step, input: e.name, path: valuePath}); value != nil {
 			into[e.name] = value
 		}
 	}
@@ -518,7 +525,7 @@ func (c *compiler) hoistVars(n ast.Node, path string, r ref, into map[string]*v1
 	}
 	for _, e := range entries {
 		valuePath := fieldPath(path, e.name)
-		if value := c.value(e.value, valuePath, ref{step: r.step, input: e.name, path: valuePath}, false); value != nil {
+		if value := c.inputValue(e.value, valuePath, ref{step: r.step, input: e.name, path: valuePath}); value != nil {
 			into[e.name] = value
 		}
 	}
@@ -535,8 +542,8 @@ func (c *compiler) forEach(n ast.Node, path string, r ref) *v1.ForEach {
 
 	if f, found := fields.get("items"); found {
 		itemsPath := fieldPath(path, "items")
-		loop.Items = c.value(f.value, itemsPath,
-			ref{step: r.step, path: itemsPath, label: "for_each items"}, true)
+		loop.Items = c.exprValue(f.value, itemsPath,
+			ref{step: r.step, path: itemsPath, label: "for_each items"})
 	} else {
 		c.report(spanOfNode(n), r, "for_each requires items, an expression producing the list to iterate over")
 	}
@@ -724,7 +731,11 @@ func (c *compiler) fields(n ast.Node, path string, r ref, known []string) (*fiel
 	if !ok {
 		return nil, false
 	}
+	return c.check(entries, r, known), true
+}
 
+// check reports any entry whose key is not one of known, and returns the rest.
+func (c *compiler) check(entries []entry, r ref, known []string) *fieldSet {
 	fs := &fieldSet{index: make(map[string]int, len(entries))}
 	for _, e := range entries {
 		if !slices.Contains(known, e.name) {
@@ -734,7 +745,7 @@ func (c *compiler) fields(n ast.Node, path string, r ref, known []string) (*fiel
 		fs.index[e.name] = len(fs.list)
 		fs.list = append(fs.list, e)
 	}
-	return fs, true
+	return fs
 }
 
 // expectedKeys says what could have been written instead, naming the nearest
@@ -869,8 +880,7 @@ func (c *compiler) keyName(n ast.Node, r ref) (string, bool) {
 	case *ast.StringNode:
 		return node.Value, true
 	case *ast.LiteralNode:
-		s, _ := node.Value.GetValue().(string)
-		return s, true
+		return blockText(node), true
 	default:
 		c.report(spanOfNode(n), r, "keys must be strings, but %s was written here", describeNode(n))
 		return "", false
@@ -976,7 +986,7 @@ func (c *compiler) text(n ast.Node, path string, r ref) (string, bool) {
 	case *ast.StringNode:
 		value = node.Value
 	case *ast.LiteralNode:
-		value, _ = node.Value.GetValue().(string)
+		value = blockText(node)
 	default:
 		c.report(spanOfNode(n), r, "must be a string, but %s was written here", describeNode(n))
 		return "", false

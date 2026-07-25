@@ -1,7 +1,6 @@
 package flowfile
 
 import (
-	"fmt"
 	"strconv"
 	"strings"
 
@@ -347,10 +346,4 @@ func spanWithin(n ast.Node, inner string) Span {
 	}
 	start := advance(outer.Start, text[:i])
 	return Span{Start: start, End: advance(start, inner)}
-}
-
-// String renders a span the way a diagnostic prefix does, for tests and debug
-// output.
-func (p *Positions) String() string {
-	return fmt.Sprintf("flowfile.Positions{%d paths, %d steps}", len(p.spans), len(p.steps))
 }
