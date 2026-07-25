@@ -27,12 +27,23 @@ const (
 	fenceClose = "}"
 )
 
-// splitFence returns the expression source inside a whole-value ${...} fence.
+// SplitFence returns the expression source inside a whole-value ${...} fence, and
+// reports whether the value is written with that shape.
+//
+// It answers only the question of shape. Whether the source inside is a usable
+// expression is [ExprError]'s question, and [ExprSource] is the two together — which
+// is the safer default for a caller that would otherwise treat a malformed fence as
+// literal text. Use this one when you compile the contents yourself, as the language
+// server does to place a CEL syntax error at the character it is on.
 //
 // Where the fence ends is not decided by counting braces — CEL decides, when the
 // contents are compiled — because an expression may legitimately contain them:
 // ${ {'k': 1} } is one expression, not a fence around {'k'.
-func splitFence(s string) (inner string, fenced bool) {
+//
+// It is exported because what counts as an expression has to mean the same thing in
+// the compiler, in validation, and in the editor. A second implementation of this
+// rule is how they would come to disagree.
+func SplitFence(s string) (inner string, fenced bool) {
 	if len(s) < len(fenceOpen)+len(fenceClose) {
 		return "", false
 	}
@@ -52,13 +63,14 @@ const interpolationHelp = "a ${...} expression must be the whole value; " +
 	"write it as one expression instead, like ${'total: ' + count.result}"
 
 // ExprSource returns the expression source inside a whole-value ${...} fence, and
-// reports whether the value is an expression at all.
+// reports whether the value is a usable expression.
 //
-// It is exported because what counts as an expression has to mean the same thing
-// everywhere: the compiler, validation, and the language server all decide it, and
-// a second implementation is how they would come to disagree.
+// It reports false for a fence whose contents do not compile, so a caller that
+// ignores [ExprError] cannot act on a corrupt expression — which is the failure this
+// replaced, where "${a} and ${b}" matched a regex and compiled the mangled middle.
+// [SplitFence] is the shape alone, for a caller that compiles the contents itself.
 func ExprSource(s string) (string, bool) {
-	inner, fenced := splitFence(s)
+	inner, fenced := SplitFence(s)
 	if !fenced || ExprError(s) != nil {
 		return "", false
 	}
@@ -72,7 +84,7 @@ func ExprSource(s string) (string, bool) {
 // outside the fence, a fence that was never closed, and a fence whose contents are
 // not an expression.
 func ExprError(s string) error {
-	inner, fenced := splitFence(s)
+	inner, fenced := SplitFence(s)
 	if !fenced {
 		return fenceError(s)
 	}
@@ -150,8 +162,15 @@ func blockText(n *ast.LiteralNode) string {
 
 // scalarString applies the expression rule to a string scalar.
 func (c *compiler) scalarString(n ast.Node, text, path string, r ref, exprCtx bool) *v1.Value {
-	if inner, fenced := splitFence(text); fenced {
-		return c.expression(n, inner, path, r)
+	// A whole scalar is the one place a secret reference can go, and only when the
+	// scalar is a task input: a field the workflow evaluates itself cannot hold one.
+	placement := secretAllowed
+	if exprCtx {
+		placement = secretNotEvaluable
+	}
+
+	if inner, fenced := SplitFence(text); fenced {
+		return c.expression(n, inner, path, r, placement)
 	}
 
 	if err := fenceError(text); err != nil {
@@ -160,7 +179,7 @@ func (c *compiler) scalarString(n ast.Node, text, path string, r ref, exprCtx bo
 	}
 
 	if exprCtx {
-		return c.expression(n, text, path, r)
+		return c.expression(n, text, path, r, placement)
 	}
 	return &v1.Value{Kind: &v1.Value_Literal{Literal: &expr.Value{
 		Kind: &expr.Value_StringValue{StringValue: text},
@@ -170,7 +189,11 @@ func (c *compiler) scalarString(n ast.Node, text, path string, r ref, exprCtx bo
 // expression compiles expression source written at n into a Value, recording the
 // span of the source itself so a later diagnostic about the expression can
 // underline it rather than the whole line.
-func (c *compiler) expression(n ast.Node, src, path string, r ref) *v1.Value {
+//
+// placement says whether this is somewhere a ${secret(...)} reference may appear;
+// see [compiler.secret], which compiles the marker rather than leaving a call for
+// something to evaluate later.
+func (c *compiler) expression(n ast.Node, src, path string, r ref, placement secretPlacement) *v1.Value {
 	span := spanWithin(n, src)
 	c.recordExpr(path, span)
 
@@ -185,6 +208,10 @@ func (c *compiler) expression(n ast.Node, src, path string, r ref) *v1.Value {
 		}
 		c.report(at, r, "is not a valid expression: %s", msg)
 		return nil
+	}
+
+	if reference, isSecret := c.secret(val.GetExpr(), src, span, r, placement); isSecret {
+		return reference
 	}
 	return normalizeExpr(val)
 }
@@ -224,7 +251,10 @@ func (c *compiler) composite(n ast.Node, path string, r ref) *v1.Value {
 		if !ok {
 			return nil
 		}
-		return c.expression(n, text, path, r)
+		// A reference nested in a structure would have to be built into the
+		// expression that builds the structure, which is exactly the combining a
+		// secret cannot survive.
+		return c.expression(n, text, path, r, secretNotWholeValue)
 	}
 	lit := c.literal(n, path, r)
 	if lit == nil {
@@ -244,10 +274,10 @@ func (c *compiler) containsExpr(n ast.Node) bool {
 
 	switch node := n.(type) {
 	case *ast.StringNode:
-		_, fenced := splitFence(node.Value)
+		_, fenced := SplitFence(node.Value)
 		return fenced
 	case *ast.LiteralNode:
-		_, fenced := splitFence(blockText(node))
+		_, fenced := SplitFence(blockText(node))
 		return fenced
 	case *ast.SequenceNode:
 		for _, v := range node.Values {
@@ -418,7 +448,7 @@ func (c *compiler) celText(n ast.Node, path string, r ref) (string, bool) {
 // celTextString renders one string inside a structure: a fenced value is the
 // expression it fences, and anything else is a CEL string literal.
 func (c *compiler) celTextString(n ast.Node, text string, r ref) (string, bool) {
-	if inner, fenced := splitFence(text); fenced {
+	if inner, fenced := SplitFence(text); fenced {
 		return inner, true
 	}
 	if err := fenceError(text); err != nil {

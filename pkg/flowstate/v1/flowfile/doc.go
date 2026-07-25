@@ -65,5 +65,31 @@
 // evaluated. A ${...} written in one of those is reported rather than accepted as
 // the literal text of an expression that will never run.
 //
+// # Secrets
+//
+// A secret is referenced, never written:
+//
+//	headers:
+//	  Authorization: ${secret('vault:prod/api#token')}
+//
+// It looks like a function and is not one. The marker is recognized when the
+// workflow is compiled and becomes a reference in the specification, so nothing
+// evaluates a call by that name — which is the point, because a function returns its
+// value to workflow code, and everything workflow code produces is written to
+// durable, broadly readable history. Only the worker running the step resolves the
+// reference, and the value exists for that call alone.
+//
+// A reference is `scheme:name`. The scheme selects the backend; everything after the
+// first colon is the name, and the DSL treats it as opaque — `vault:prod/api#token`
+// names `prod/api#token` to the vault backend, and what the `#` means there is
+// vault's business, not the DSL's.
+//
+// A reference has to be the whole value of a task input. It cannot be combined with
+// anything, so ${'Bearer ' + secret('env:TOKEN')} is refused rather than compiled
+// into an expression that fails at run time; it cannot be nested in a list or a
+// mapping, for the same reason; and it cannot appear in an `if` or a loop's `items`,
+// which the workflow evaluates itself. Each of those is a compile error naming the
+// line and column it is on.
+//
 // [flowstatev1.Workflow]: https://pkg.go.dev/github.com/picatz/flowstate/pkg/flowstate/v1#Workflow
 package flowfile

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -190,6 +189,3 @@ func hasCommand(name string) error {
 
 	return nil
 }
-
-// osEnviron is indirected so a test can control what a child would inherit.
-var osEnviron = os.Environ

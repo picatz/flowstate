@@ -203,6 +203,8 @@ func inputValueToYAML(value *v1.Value) (any, error) {
 		return fenceOpen + text + fenceClose, nil
 	case *v1.Value_Literal:
 		return literalToYAML(kind.Literal)
+	case *v1.Value_SecretRef:
+		return secretRefToDSL(kind.SecretRef)
 	default:
 		return nil, fmt.Errorf("cannot be written as YAML: %w", value.Error())
 	}
@@ -221,6 +223,11 @@ func exprValueToYAML(value *v1.Value) (any, error) {
 				"is the literal string %q, which cannot be written here: a string in this field is read as an expression",
 				literal.GetStringValue())
 		}
+	}
+	if reference := value.GetSecretRef(); reference != nil {
+		// The compiler refuses one here, so this is a specification built by hand.
+		// Writing it would produce a Flowfile that does not compile.
+		return nil, fmt.Errorf("is a secret reference, which cannot be written here: %s", notEvaluableHelp)
 	}
 	return inputValueToYAML(value)
 }

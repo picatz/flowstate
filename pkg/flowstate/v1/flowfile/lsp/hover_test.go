@@ -243,6 +243,120 @@ steps:
 	})
 }
 
+// TestHoverOnSecretReferences covers the one thing an author cannot see from the
+// text: what a ${secret('scheme:name')} marker actually names, and why it may only
+// be a whole task input.
+func TestHoverOnSecretReferences(t *testing.T) {
+	t.Parallel()
+
+	c := newClient(t)
+	c.initialize()
+
+	t.Run("a valid reference", func(t *testing.T) {
+		const src = `name: secrets
+steps:
+  - id: a
+    task:
+      name: echo
+      inputs:
+        message: ${secret('env:API_KEY')}
+`
+		const uri = "file:///secret-ok.yaml"
+		require.Empty(t, messages(c.open(uri, src).Diagnostics))
+
+		pos := positionOf(t, src, "secret('env:API_KEY')", 3)
+		got := c.hover(uri, pos.Line, pos.Character)
+		require.NotNil(t, got)
+		text := hoverText(got)
+		assert.Contains(t, text, "env:API_KEY")
+		assert.Contains(t, text, "resolved by whichever provider this deployment registers")
+		assert.Contains(t, text, "never enters workflow history")
+		// The scheme is described, never a concrete backend: which provider serves
+		// a scheme is a deployment's choice, made worker-side.
+		assert.NotContains(t, text, "environment variable")
+
+		require.NotNil(t, got.Range)
+		assert.Equal(t, "secret('env:API_KEY')", textInRange(src, *got.Range))
+	})
+
+	t.Run("a reference with no scheme says why", func(t *testing.T) {
+		const src = `name: secrets
+steps:
+  - id: a
+    task:
+      name: echo
+      inputs:
+        message: ${secret('API_KEY')}
+`
+		const uri = "file:///secret-bad.yaml"
+		// The compiler reports it too; hover must agree rather than describe it as
+		// if it worked.
+		require.NotEmpty(t, messages(c.open(uri, src).Diagnostics))
+
+		pos := positionOf(t, src, "secret('API_KEY')", 3)
+		got := c.hover(uri, pos.Line, pos.Character)
+		require.NotNil(t, got)
+		assert.Contains(t, hoverText(got), "not usable as written")
+		assert.Contains(t, hoverText(got), "has no provider")
+	})
+
+	t.Run("an opaque name is not interpreted", func(t *testing.T) {
+		const src = `name: secrets
+steps:
+  - id: a
+    task:
+      name: echo
+      inputs:
+        message: ${secret('vault:prod/api#token')}
+`
+		const uri = "file:///secret-vault.yaml"
+		c.open(uri, src)
+
+		pos := positionOf(t, src, "vault:prod/api#token", 2)
+		got := c.hover(uri, pos.Line, pos.Character)
+		require.NotNil(t, got)
+		// Everything after the first colon belongs to the provider, so it is
+		// reported verbatim rather than parsed into parts the DSL does not define.
+		assert.Contains(t, hoverText(got), "prod/api#token")
+		assert.Contains(t, hoverText(got), "`vault`")
+	})
+}
+
+func TestSecretRefAt(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		src     string
+		cursor  int
+		wantRef string
+		wantErr bool
+	}{
+		{name: "cursor on the marker", src: `secret('env:A')`, cursor: 2, wantRef: "env:A"},
+		{name: "cursor in the reference", src: `secret('env:A')`, cursor: 10, wantRef: "env:A"},
+		{name: "cursor at the end", src: `secret('env:A')`, cursor: 15, wantRef: "env:A"},
+		{name: "double quotes", src: `secret("env:A")`, cursor: 3, wantRef: "env:A"},
+		{name: "not a secret call", src: `step.output`, cursor: 3, wantErr: true},
+		{name: "cursor outside the call", src: `x + secret('env:A')`, cursor: 0, wantErr: true},
+		{name: "unterminated quote", src: `secret('env:A`, cursor: 3, wantErr: true},
+		{name: "no closing paren", src: `secret('env:A'`, cursor: 3, wantErr: true},
+		{name: "empty", src: ``, cursor: 0, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ref, span, err := secretRefAt(tt.src, tt.cursor)
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantRef, ref)
+			assert.Equal(t, tt.src[span[0]:span[1]], tt.src[span[0]:span[1]])
+			assert.Contains(t, tt.src[span[0]:span[1]], tt.wantRef)
+		})
+	}
+}
+
 // TestHoverUsesUTF16Columns is the position-correctness test. The reference sits
 // after an astral-plane character, so a server counting bytes or code points
 // instead of UTF-16 code units would resolve the cursor to the wrong text.

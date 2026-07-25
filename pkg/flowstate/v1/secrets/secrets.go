@@ -238,6 +238,29 @@ func ValidateRef(r Ref) error {
 	return nil
 }
 
+// ValidateScheme reports whether a provider scheme is well formed: one to
+// [MaxSchemeLen] lowercase letters, digits, and dashes.
+//
+// It is exported for providers implemented outside this package, which otherwise
+// have to reimplement the same check to validate a configurable scheme — and a
+// provider whose idea of a valid scheme differs from the registry's is one that
+// fails at registration for reasons its own configuration never explained.
+func ValidateScheme(scheme string) error {
+	switch {
+	case scheme == "":
+		return fmt.Errorf("%w: scheme must not be empty", ErrInvalidRef)
+	case len(scheme) > MaxSchemeLen:
+		return fmt.Errorf("%w: scheme is longer than %d characters", ErrInvalidRef, MaxSchemeLen)
+	case !validScheme(scheme):
+		return fmt.Errorf(
+			"%w: scheme %q may only contain lowercase letters, digits, and dashes",
+			ErrInvalidRef, scheme,
+		)
+	}
+
+	return nil
+}
+
 // validScheme reports whether s is a well-formed provider scheme.
 func validScheme(s string) bool {
 	for _, c := range s {

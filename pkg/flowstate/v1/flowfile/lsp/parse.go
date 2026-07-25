@@ -7,6 +7,7 @@ import (
 	"github.com/goccy/go-yaml/parser"
 	"github.com/goccy/go-yaml/token"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/sourcegraph/go-lsp"
 )
 
@@ -18,10 +19,10 @@ import (
 // searching the text, so a step id that also appears inside a string value
 // cannot be mistaken for its declaration.
 
-// Which scalars are expressions is decided by [flowfile.ExprSource], the
-// compiler's own rule, rather than by a pattern kept here. The compiler treats a
-// value as an expression only when the whole scalar is one, so a looser rule here
-// would report CEL errors inside strings the engine keeps as literal text.
+// Which scalars are expressions is decided by [flowfile.SplitFence], the compiler's
+// own rule, rather than by a pattern kept here. The compiler treats a value as an
+// expression only when the whole scalar is one, so a looser rule would report CEL
+// errors inside strings the engine keeps as literal text.
 
 // valueKind distinguishes the YAML shapes a Flowfile value can take.
 type valueKind int
@@ -668,7 +669,11 @@ func buildValue(n ast.Node, ix *lineIndex) *value {
 		return v
 	}
 
-	if source, ok := fencedSource(v.text); ok {
+	// The fence rule is the compiler's, not a copy of it. Validity is deliberately
+	// a separate question, decided by running the CEL parser, so that a fenced
+	// scalar whose contents are broken still has a position to report against —
+	// which is exactly the case the author most needs pointed at.
+	if source, ok := flowfile.SplitFence(v.text); ok && source != "" {
 		if inner := strings.Index(raw, exprOpen); inner >= 0 {
 			v.fenced = true
 			v.expr = source
@@ -679,30 +684,12 @@ func buildValue(n ast.Node, ix *lineIndex) *value {
 	return v
 }
 
-// The fence delimiters, matching the compiler's.
+// The fence delimiters, needed to locate the fence in the source text. The rule
+// for what counts as fenced is [flowfile.SplitFence], not these.
 const (
 	exprOpen  = "${"
 	exprClose = "}"
 )
-
-// fencedSource returns the text between the fences of a scalar written entirely as
-// one ${...}, and whether it is.
-//
-// This is only the fence *shape*. Whether what is inside is a valid expression is
-// left to [flowfile.ExprSource], because that is the subtle half of the rule — it
-// runs the CEL parser, which is how nested braces work without brace counting.
-// Positions are needed even when the contents are invalid, which is why the shape
-// is recognized separately from the validity.
-func fencedSource(text string) (string, bool) {
-	if !strings.HasPrefix(text, exprOpen) || !strings.HasSuffix(text, exprClose) {
-		return "", false
-	}
-	inner := text[len(exprOpen) : len(text)-len(exprClose)]
-	if inner == "" {
-		return "", false
-	}
-	return inner, true
-}
 
 // restOfLine returns the range from a byte offset to the end of its line.
 func restOfLine(ix *lineIndex, start int) lsp.Range {

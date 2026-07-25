@@ -1,11 +1,14 @@
 package lsp
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 	"github.com/sourcegraph/go-lsp"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
@@ -213,6 +216,13 @@ func hoverReference(doc *document, from *parsedStep, v *value, pos lsp.Position)
 		return nil
 	}
 
+	// A secret reference resolves to neither a step nor an iterator, so it is
+	// described before either lookup.
+	if ref, span, err := secretRefAt(v.expr, cursor); err == nil {
+		rng := doc.index.rangeOfOffsets(v.exprOffset+span[0], v.exprOffset+span[1])
+		return markdownHover(secretDoc(ref), rng)
+	}
+
 	// A loop iterator is a name that resolves, but to an item rather than to a
 	// step, so it is described before the step lookup that would not find it.
 	for _, loop := range from.iteratorsInScope() {
@@ -269,6 +279,77 @@ func hoverReference(doc *document, from *parsedStep, v *value, pos lsp.Position)
 		fmt.Fprintf(&b, "\n\nThe task guarantees: %s.", strings.Join(cs, "; "))
 	}
 	return markdownHover(b.String(), rng)
+}
+
+// secretRefAt returns the reference text of a secret marker containing the cursor,
+// along with the byte span of the whole `secret('...')` call.
+//
+// The marker's name comes from flowfile rather than a literal here, so an editor
+// cannot describe a spelling the compiler does not recognize. The argument must be
+// a quoted literal — a reference is resolved at compile time, so there is nothing
+// for a computed one to resolve against — which is what makes scanning for it
+// reliable rather than a guess at CEL syntax.
+func secretRefAt(src string, cursor int) (string, [2]int, error) {
+	var span [2]int
+	call := flowfile.SecretMarker + "("
+	for at := 0; ; {
+		i := strings.Index(src[at:], call)
+		if i < 0 {
+			return "", span, errNoSecretRef
+		}
+		start := at + i
+
+		rest := src[start+len(call):]
+		quote := strings.IndexAny(rest, `'"`)
+		if quote < 0 {
+			return "", span, errNoSecretRef
+		}
+		end := strings.IndexByte(rest[quote+1:], rest[quote])
+		if end < 0 {
+			return "", span, errNoSecretRef
+		}
+
+		ref := rest[quote+1 : quote+1+end]
+		closing := strings.IndexByte(rest[quote+1+end:], ')')
+		if closing < 0 {
+			return "", span, errNoSecretRef
+		}
+		span = [2]int{start, start + len(call) + quote + 1 + end + closing + 1}
+
+		if cursor >= span[0] && cursor <= span[1] {
+			return ref, span, nil
+		}
+		at = span[1]
+	}
+}
+
+// errNoSecretRef reports that a cursor is not inside a secret reference. It is a
+// sentinel rather than a bool so the caller reads as a lookup rather than a test.
+var errNoSecretRef = errors.New("no secret reference at this position")
+
+// secretDoc renders what a secret reference names.
+//
+// The reference is parsed with the secrets package's own parser, so the editor
+// cannot accept a form a worker would refuse. What it deliberately does not say is
+// which backend a scheme resolves to: that is a deployment's choice, registered
+// worker-side, and naming a concrete provider here would be a guess about someone
+// else's configuration.
+func secretDoc(ref string) string {
+	var b strings.Builder
+	parsed, err := secrets.ParseRef(ref)
+	if err != nil {
+		fmt.Fprintf(&b, "**secret reference** — not usable as written\n\n%s", err)
+		return b.String()
+	}
+
+	fmt.Fprintf(&b, "**secret** · `%s`\n\n", secrets.RefString(parsed))
+	fmt.Fprintf(&b, "Scheme `%s`, resolved by whichever provider this deployment registers for it. "+
+		"The name `%s` is passed to that provider unchanged.\n\n",
+		parsed.GetScheme(), parsed.GetName())
+	b.WriteString("The value is resolved on the worker running the step, at the moment it runs. " +
+		"It never enters workflow history, which is why a reference has to be the whole value of a " +
+		"task input and cannot be combined with anything else.")
+	return b.String()
 }
 
 // referenceAt returns the identifier and optional field selected at a cursor

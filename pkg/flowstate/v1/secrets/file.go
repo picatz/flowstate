@@ -21,10 +21,11 @@ const DefaultFileMaxBytes int64 = 1 << 20 // 1 MiB
 // a volume, or a systemd credential, or a Docker secret.
 //
 // Reference names are relative to the directory. "file:api-key" reads
-// <dir>/api-key, and "file:db/password" reads <dir>/db/password. Within a
-// namespace, the namespace is a subdirectory: the same reference in namespace
-// "team-a" reads <dir>/team-a/api-key, which is how two tenants sharing a worker
-// keep their secrets apart.
+// <dir>/api-key, and "file:db/password" reads <dir>/db/password. That flat layout
+// is what a Kubernetes secret volume mounts, which is why it is the default.
+//
+// [WithFileNamespaced] gives each tenant a directory of its own, for a worker
+// serving more than one.
 //
 // The directory is opened once and every read goes through [os.Root], so a name
 // cannot escape it: "..", an absolute path, and a symlink pointing outside are all
@@ -33,11 +34,20 @@ const DefaultFileMaxBytes int64 = 1 << 20 // 1 MiB
 //
 // It is safe for concurrent use.
 type FileProvider struct {
-	dir      string
-	root     *os.Root
-	maxBytes int64
-	verbatim bool
+	dir        string
+	root       *os.Root
+	maxBytes   int64
+	verbatim   bool
+	namespaced bool
 }
+
+// DefaultNamespaceDir is the directory the unnamespaced tenant reads when the
+// provider is namespaced.
+//
+// It begins with an underscore, which [ValidateNamespace] forbids, so no tenant can
+// name a namespace that resolves to it. That is what keeps the default tenant's
+// secrets separate from every other tenant's rather than merely differently named.
+const DefaultNamespaceDir = "_default"
 
 // FileOption configures a [FileProvider].
 type FileOption func(*FileProvider)
@@ -47,6 +57,24 @@ type FileOption func(*FileProvider)
 func WithFileMaxBytes(n int64) FileOption {
 	return func(p *FileProvider) {
 		p.maxBytes = n
+	}
+}
+
+// WithFileNamespaced puts every tenant's secrets in a directory of their own,
+// which is what makes this provider usable by more than one tenant.
+//
+// With it, "file:api-key" reads <dir>/<namespace>/api-key, and the unnamespaced
+// tenant reads <dir>/[DefaultNamespaceDir]/api-key. Every tenant gets a segment,
+// including the default one — without that, the default tenant could read
+// <dir>/team-a/api-key simply by naming "team-a/api-key", since a reference may
+// contain a slash.
+//
+// Without it, a non-empty namespace is refused. That is the fail-closed choice, and
+// it keeps the flat layout a Kubernetes secret volume mounts, where every key sits
+// directly in the mount directory.
+func WithFileNamespaced() FileOption {
+	return func(p *FileProvider) {
+		p.namespaced = true
 	}
 }
 
@@ -115,12 +143,26 @@ func (p *FileProvider) Resolve(_ context.Context, req Request) (Secret, error) {
 		return Secret{}, &ResolveError{Ref: ref, Err: err}
 	}
 
-	// A namespace becomes a subdirectory, so "file:api-key" in namespace "team-a"
-	// reads <dir>/team-a/api-key and cannot reach <dir>/team-b/api-key. The
-	// namespace is validated before it gets here, so it cannot contain a slash or
-	// a dot segment, and os.Root refuses an escape regardless.
-	if req.Namespace != "" {
-		name = path.Join(req.Namespace, name)
+	// The namespace becomes a leading directory. The name is cleaned first, so it
+	// carries no dot segments to climb back out with, and os.Root refuses an escape
+	// regardless.
+	switch {
+	case p.namespaced:
+		segment := req.Namespace
+		if segment == "" {
+			segment = DefaultNamespaceDir
+		}
+		name = path.Join(segment, name)
+
+	case req.Namespace != "":
+		return Secret{}, &ResolveError{
+			Ref: ref,
+			Err: fmt.Errorf(
+				"%w: this worker's file provider is not namespaced, so it cannot resolve secrets for namespace %q; "+
+					"configure it with WithFileNamespaced",
+				ErrNamespace, req.Namespace,
+			),
+		}
 	}
 
 	file, err := p.root.Open(name)

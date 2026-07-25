@@ -3,6 +3,7 @@ package secrets
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -28,6 +29,10 @@ const DefaultEnvPrefix = "FLOWSTATE_SECRET_"
 type EnvProvider struct {
 	prefix string
 	allow  []string
+
+	// namespacePrefixes maps a namespace to the variable prefix its secrets live
+	// under. It is configured rather than derived; see WithEnvNamespaces.
+	namespacePrefixes map[string]string
 }
 
 // EnvOption configures an [EnvProvider].
@@ -44,6 +49,45 @@ type EnvOption func(*EnvProvider) error
 func WithEnvPrefix(prefix string) EnvOption {
 	return func(p *EnvProvider) error {
 		p.prefix = prefix
+		return nil
+	}
+}
+
+// WithEnvNamespaces maps each namespace to the environment variable prefix its
+// secrets live under, which is what makes this provider usable by more than one
+// tenant.
+//
+// The mapping is configured rather than derived from the namespace, because an
+// environment is flat and a derived prefix collides. Deriving
+// $FLOWSTATE_SECRET_TEAM_A_API_KEY from namespace "team-a" and name "API_KEY"
+// produces exactly what namespace "team" and name "A_API_KEY" produce, and what
+// the unnamespaced tenant produces from the name "TEAM_A_API_KEY" — three tenants
+// reading one variable. There is no separator that fixes it, because every
+// character legal in a prefix is also legal in a name.
+//
+// So an operator states the prefixes, and they are checked for the overlap that
+// would reintroduce the problem: no prefix may be a prefix of another.
+//
+// Without this, a non-empty namespace is refused. That is the fail-closed choice:
+// an environment is a reasonable single-tenant backend and a poor multi-tenant one,
+// and a deployment that needs real separation should use files or a vault, whose
+// hierarchies can express it.
+func WithEnvNamespaces(prefixes map[string]string) EnvOption {
+	return func(p *EnvProvider) error {
+		for namespace, prefix := range prefixes {
+			if err := ValidateNamespace(namespace); err != nil {
+				return fmt.Errorf("secrets: env namespace mapping: %w", err)
+			}
+			if prefix == "" {
+				return fmt.Errorf("secrets: env prefix for namespace %q must not be empty", namespace)
+			}
+		}
+
+		if p.namespacePrefixes == nil {
+			p.namespacePrefixes = make(map[string]string, len(prefixes))
+		}
+		maps.Copy(p.namespacePrefixes, prefixes)
+
 		return nil
 	}
 }
@@ -82,6 +126,12 @@ func NewEnvProvider(opts ...EnvOption) (*EnvProvider, error) {
 		}
 	}
 
+	// Every prefix in play must be distinguishable from every other, or two
+	// tenants can name one variable.
+	if err := checkDisjointPrefixes(provider.prefix, provider.namespacePrefixes); err != nil {
+		return nil, err
+	}
+
 	if provider.prefix == "" && len(provider.allow) == 0 {
 		return nil, fmt.Errorf(
 			"secrets: an empty environment prefix exposes every variable in the worker's environment; " +
@@ -113,7 +163,10 @@ func (p *EnvProvider) Resolve(_ context.Context, req Request) (Secret, error) {
 		return Secret{}, notConfigured(ref, p.prefix)
 	}
 
-	variable := p.variable(req.Namespace, ref.GetName())
+	variable, err := p.variable(req.Namespace, ref.GetName())
+	if err != nil {
+		return Secret{}, &ResolveError{Ref: ref, Err: err}
+	}
 
 	value, found := os.LookupEnv(variable)
 	switch {
@@ -134,21 +187,49 @@ func (p *EnvProvider) Resolve(_ context.Context, req Request) (Secret, error) {
 
 // variable returns the environment variable a reference reads, within a namespace.
 //
-// A namespace becomes part of the name — "env:API_KEY" in namespace "team-a" reads
-// $FLOWSTATE_SECRET_TEAM_A_API_KEY — so two tenants sharing a worker cannot read
-// each other's secrets even though their workflows name the same reference. The
-// empty namespace reads the unprefixed form, which is what a single-tenant
-// deployment sets.
-//
-// The namespace is uppercased and its dashes become underscores, because those are
-// not legal in a variable name. It is validated before it reaches here, so the
-// mapping cannot produce anything a shell would treat oddly.
-func (p *EnvProvider) variable(namespace, name string) string {
+// The empty namespace reads the configured prefix, which is what a single-tenant
+// deployment sets. A named namespace reads the prefix an operator mapped to it, and
+// a namespace with no mapping is refused rather than guessed at — see
+// [WithEnvNamespaces] for why the prefix cannot be derived.
+func (p *EnvProvider) variable(namespace, name string) (string, error) {
 	if namespace == "" {
-		return p.prefix + name
+		return p.prefix + name, nil
 	}
 
-	return p.prefix + strings.ToUpper(strings.ReplaceAll(namespace, "-", "_")) + "_" + name
+	prefix, ok := p.namespacePrefixes[namespace]
+	if !ok {
+		return "", fmt.Errorf(
+			"%w: this worker's environment provider has no prefix configured for namespace %q, "+
+				"so it cannot resolve secrets for it",
+			ErrNamespace, namespace,
+		)
+	}
+
+	return prefix + name, nil
+}
+
+// checkDisjointPrefixes reports whether any configured prefix is a prefix of
+// another, which would let one tenant name another's variable.
+func checkDisjointPrefixes(base string, namespaced map[string]string) error {
+	all := map[string]string{"": base}
+	maps.Copy(all, namespaced)
+
+	for aNS, a := range all {
+		for bNS, b := range all {
+			if aNS == bNS {
+				continue
+			}
+			if strings.HasPrefix(b, a) {
+				return fmt.Errorf(
+					"secrets: env prefix %q (namespace %q) starts with %q (namespace %q), "+
+						"so one tenant could name the other's variables",
+					b, bNS, a, aNS,
+				)
+			}
+		}
+	}
+
+	return nil
 }
 
 // permitted reports whether the reference names a variable this provider may read.
@@ -178,7 +259,10 @@ func notConfigured(ref Ref, prefix string) error {
 // Names returns the reference names resolvable in a namespace, sorted, for
 // reporting a worker's configuration. It returns names, never values.
 func (p *EnvProvider) NamesIn(namespace string) []string {
-	prefix := p.variable(namespace, "")
+	prefix, err := p.variable(namespace, "")
+	if err != nil {
+		return nil
+	}
 
 	var names []string
 
