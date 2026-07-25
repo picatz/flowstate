@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package example.v1;
+
+option go_package = "github.com/picatz/flowstate/pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/gen/example/v1;examplev1";
+
+// The example plugin's own task schema.
+//
+// It is defined here, in the plugin's own module, rather than reusing one of the
+// engine's messages, because that is the case a plugin author is actually in:
+// their task has a shape the engine has never seen. The descriptors for these
+// messages travel to the engine in the plugin's manifest, which is what lets it
+// validate a workflow using this task, complete these field names in an editor,
+// and document the task — without compiling anything of this plugin's.
+
+// GreetInputs are the inputs to the greet task.
+message GreetInputs {
+  // Name is who to greet.
+  string name = 1;
+
+  // Greeting overrides the default "Hello".
+  string greeting = 2;
+}
+
+// GreetOutputs are the results of the greet task.
+message GreetOutputs {
+  // Message is the assembled greeting.
+  string message = 1;
+
+  // Length is how long the message is, in bytes.
+  int64 length = 2;
+}
