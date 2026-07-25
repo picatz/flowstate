@@ -135,31 +135,32 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 // error, because whether to allow that at all is decided by the authenticator,
 // not here.
 func (s *FlowstateServer) identityFor(ctx context.Context) *v1.WorkloadIdentity {
-	identity := &v1.WorkloadIdentity{
-		Namespace:  s.namespace,
-		Deployment: s.deployment,
-	}
-
 	principal, ok := auth.PrincipalFromContext(ctx)
 	if !ok {
-		return identity
-	}
-
-	identity.Subject = principal.Subject
-	identity.Issuer = principal.Issuer
-
-	if len(s.identityClaims) > 0 {
-		identity.Claims = make(map[string]string, len(s.identityClaims))
-		for _, name := range s.identityClaims {
-			if v, found := principal.Claims[name]; found {
-				if str, isString := v.(string); isString {
-					identity.Claims[name] = str
-				}
-			}
+		// An unauthenticated caller yields an identity with no subject rather
+		// than an error: whether to allow that at all is the authenticator's
+		// decision, not this one's.
+		return &v1.WorkloadIdentity{
+			Namespace:  s.namespace,
+			Deployment: s.deployment,
 		}
 	}
 
-	return identity
+	// Derived rather than assembled here, so the namespace precedence has one
+	// implementation. The verified caller's namespace wins; WithNamespace is only
+	// the fallback for a deployment whose trust policy names none, meaning a
+	// single tenant. The other order would make the tenant boundary decorative —
+	// a namespace determined by how the server was started rather than by who the
+	// caller is means every tenant shares one.
+	derived := auth.IdentityFromPrincipal(principal, s.namespace, s.deployment, s.identityClaims...)
+
+	return &v1.WorkloadIdentity{
+		Subject:    derived.Subject,
+		Issuer:     derived.Issuer,
+		Claims:     derived.Claims,
+		Namespace:  derived.Namespace,
+		Deployment: derived.Deployment,
+	}
 }
 
 // Get retrieves the status of a workflow execution by its ID (and optionally its run ID).
