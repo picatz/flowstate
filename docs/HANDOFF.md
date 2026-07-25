@@ -4,11 +4,17 @@ Where the work stands and what to pick up next. Delete this file once it is stal
 — it describes a moment, not the design. [ARCHITECTURE.md](./ARCHITECTURE.md) is
 the durable document.
 
-Branch: `harden-and-expand-engine`, pushed. A clean checkout builds and vets clean.
-Every package passes except `secrets`, noted below.
+Branch: `harden-and-expand-engine`, pushed. Verified from a fresh clone of the
+pushed branch, not from the working tree: it builds clean, vets clean, and all ten
+packages pass.
 
 Start here: `go build ./... && GOMEMLIMIT=1GiB go test -timeout 180s ./pkg/flowstate/...`
 Bounds are not optional — see CLAUDE.md for why.
+
+Verify from a clean clone before believing a green working tree. Several times today
+an editor reported a package broken that built fine, and once reported one fine that
+was broken; both were snapshots taken mid-edit while another agent was writing. The
+clone is the only view that is not a snapshot of someone's unsaved work.
 
 ## Resolved late in the day
 
@@ -44,11 +50,18 @@ package is reasonable again now that the bound exists, but run it with
 
 ## Also unfinished
 
-**`pkg/flowstate/v1/secrets` is mid-refactor and uncommitted.** It builds; its
-tests do not. `Resolve` is moving from taking a `Ref` to taking a `Request` so
-resolution can be scoped by namespace, and `NewRef`, `RefString`, `ValidateRef`,
-`ErrPermission`, and `ErrUnavailable` are in flux. A Vault provider and a provider
-registry exist in partial form. Get it compiling and passing before adding anything.
+**`pkg/flowstate/v1/secrets` landed and is green.** It was the last red package and
+is now committed: references, a provider registry dispatching by scheme, env and file
+in-process, Vault, and the value hygiene described below. Local providers for the
+macOS keychain and 1Password were in progress at the end of the day and may or may not
+have landed with it — check whether `keychain.go` and `onepassword.go` are tracked.
+
+Both shell out, which is right for those two: `op` and `security` are CLI-first and
+neither has a stable library. Two things that shape must get right, because neither
+fails loudly. The subprocess needs a bounded timeout, since a keychain prompt waits
+for a human who is not there and an activity that hangs holds its slot until the
+schedule-to-close timeout fires. And its stderr must never reach a log line: `op` puts
+the item reference in its error text, and `security` echoes the account name.
 
 **`pkg/flowstate/v1/sensitive` does not exist yet.** It is the agreed home for one
 secret-bearing value type shared by `secrets` and `auth`, which today have two with

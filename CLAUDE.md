@@ -108,9 +108,22 @@ When several agents edit interlocking packages:
 - **Never edit a file you do not own.** Report the problem to whoever owns it. Every
   cross-package finding today was fixed faster by reporting it than it would have
   been by two agents editing one file.
-- **A build error in someone else's file is probably a stale snapshot.** Three
+- **A build error in someone else's file is probably a stale snapshot.** Several
   "urgent broken build" reports today were the tree caught mid-edit. Re-read the file
   before diagnosing, and verify with a fresh `go build ./<their package>/`.
+
+  The loudest version of this is a generated type appearing undefined —
+  `undefined: v1.Node_ForEach`, `undefined: flowstatev1.PluginManifest`. `buf
+  generate` rewrites each `.pb.go` in place, so for a moment every type in the file
+  is gone and every package importing it looks catastrophically broken. It reads
+  like someone deleted the schema. Re-run the build before reacting; the alarming
+  reading is almost always the wrong one.
+
+- **Verify from a clean clone before believing the tree is green.** A working tree
+  shared by several agents is a snapshot of everyone's unsaved work, and its
+  greenness says nothing about what is committed. Clone the pushed branch to a
+  scratch directory and build, vet, and test there. That is the only view a
+  colleague pulling tomorrow will actually get.
 - **Verify claims rather than relaying them.** Reproduce a coverage number or a
   failure before acting on it.
 - **Leave a green stopping point.** A package with fewer features that compiles and
