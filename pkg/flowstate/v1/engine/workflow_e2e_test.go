@@ -33,6 +33,7 @@ func TestRun_E2E_CEL_ContinueAsNew(t *testing.T) {
 	w.RegisterWorkflow(engine.Run)
 	w.RegisterActivity(engine.Task)
 	w.RegisterActivity(engine.TaskWithPrev)
+	w.RegisterActivity(engine.TaskInScope)
 	require.NoError(t, w.Start())
 	t.Cleanup(w.Stop)
 
