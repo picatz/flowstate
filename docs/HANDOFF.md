@@ -105,22 +105,36 @@ boundary.
 
 ## Not started, roughly in order of value
 
-1. **`${secret('scheme:name')}` does not compile.** It passes `flow validate` and
-   then fails at run time with `no such overload`, because CEL's parser accepts a
-   call to an unknown function and nothing rejects it earlier. The README carries a
-   note saying so; remove the note when this lands. Assigned to `flowfile-parser`:
-   compile the marker to a `SecretRef` at compile time, refuse it anywhere but as a
-   whole input value, and explain why in the message. It cannot be a runtime CEL
-   function — resolving in workflow code would put the value somewhere history can
-   reach.
+1. **A secret cannot be used as an HTTP header, which is the main thing secrets are
+   for.** `${secret('scheme:name')}` now compiles to a `SecretRef` and a malformed
+   reference is a validation error — that part landed. But this is refused:
 
-2. **Wire secrets into a task end to end.** The schema, the resolver, and the
-   providers exist; nothing connects them. A string input should accept a
-   `SecretRef`, resolved inside the activity. The DSL needs syntax for it —
-   `${secret('env:API_KEY')}` compiling through `ParseRef`, so a malformed
-   reference is a compile error. Scrub the response body before evaluating an
-   `outputs` expression, or a server echoing a token back lands it in step outputs,
-   and step outputs go to history.
+   ```yaml
+   inputs:
+     headers:
+       Authorization: ${secret('env:API_TOKEN')}
+   ```
+   ```
+   step "call" input "headers": a secret reference has to be the whole value of a
+   task input
+   ```
+
+   The secret *is* the whole value — of the `Authorization` entry. Either resolution
+   does not descend into map and list values yet, in which case the refusal is right
+   but the message cites a rule that does not apply and should say what is actually
+   true; or the check is anchored at the top-level input when it belongs wherever a
+   `Value` is built. Determine which before changing anything: allowing it while the
+   resolver cannot reach it would send an empty header rather than fail, and a
+   silently empty credential is worse than a refusal.
+
+   Check the README note about the marker not working, and remove it if it is now
+   wrong.
+
+2. **Wire secrets into a task end to end.** The schema, the resolver, the providers,
+   and now the syntax all exist; nothing connects them. A string input should accept
+   a `SecretRef` and resolve it inside the activity. Scrub the response body before
+   evaluating an `outputs` expression, or a server echoing a token back lands it in
+   step outputs, and step outputs go to history.
 
 3. **Mount the JWKS and discovery handlers**, both **outside** the authn
    middleware — a relying party fetches them before it has any credential, so

@@ -334,10 +334,12 @@ worker's own internal endpoints in production.
 ## Secrets
 
 > [!NOTE]
-> The reference *form* below is defined in the schema and refused correctly in
-> expressions, but `${secret(...)}` does not compile yet — it currently passes
-> validation and fails at run time. Tracked in
-> [docs/HANDOFF.md](docs/HANDOFF.md); do not rely on it until this note is gone.
+> `${secret(...)}` now compiles to a reference, and a malformed one is a validation
+> error rather than a run-time failure. What does not work yet is the placement in
+> the example below: a reference inside a `headers` map is currently refused, and
+> resolution is not yet wired into the tasks that would use it. Tracked in
+> [docs/HANDOFF.md](docs/HANDOFF.md); treat this section as the intended design
+> rather than as working behavior until this note is gone.
 
 A secret never appears in a workflow. A *reference* to one does:
 
