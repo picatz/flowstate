@@ -290,6 +290,20 @@ Discovery follows the convention that has worked elsewhere: an executable named
 `flowstate-plugin-<name>`, found on a configured path. Nothing is loaded to discover
 what a plugin does; the engine asks it.
 
+**The service is the extension interface, in-process or not.** There is no
+hand-written Go interface a provider must satisfy alongside the RPC service — the
+generated service interface *is* the contract. Connect generates client and handler
+interfaces with identical signatures, so one implementation satisfies both: an
+environment or file provider is a plain Go type implementing `SecretService` with no
+server and no socket, a plugin-backed provider is a Connect client to the same
+service, and the engine cannot tell them apart or need to.
+
+That collapses a whole layer. A second Go interface mirroring the service would be a
+second definition of the same contract — the drift the proto-first invariant exists
+to prevent — and would need an adapter in both directions. Extending the protocol
+extends both paths at once, and an in-process provider costs no serialization,
+because nothing serializes when the call is a Go method call.
+
 A plugin task is indistinguishable from a built-in one to the rest of the system,
 because a plugin ships protobuf descriptors for its inputs and outputs. Validation,
 editor completion, and generated documentation read the same shape either way, which
