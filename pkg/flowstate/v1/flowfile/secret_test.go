@@ -101,14 +101,19 @@ func TestSecretReferenceRejected(t *testing.T) {
 			src: taskInput(`args:
           - ${secret('env:TOKEN')}
           - plain`),
-			want: "has to be the whole value of a task input",
+			want: "cannot be nested inside a list or a mapping",
 		},
 		{
-			name: "nested in a mapping",
+			// The header case, which is the first thing anyone writes. It is
+			// refused because there is no reference to emit: the whole mapping
+			// compiles to one expression the workflow evaluates. The message has
+			// to say that rather than cite the combination rule, which does not
+			// apply — nothing is being combined with this secret.
+			name: "an authorization header",
 			src: taskInput(`headers:
-          Authorization: ${secret('env:TOKEN')}
+          Authorization: ${secret('env:API_TOKEN')}
           Accept: application/json`),
-			want: "has to be the whole value of a task input",
+			want: "current limitation rather than a mistake in the file",
 		},
 		{
 			name: "passed to another call",

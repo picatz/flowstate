@@ -69,8 +69,7 @@
 //
 // A secret is referenced, never written:
 //
-//	headers:
-//	  Authorization: ${secret('vault:prod/api#token')}
+//	token: ${secret('vault:prod/api#token')}
 //
 // It looks like a function and is not one. The marker is recognized when the
 // workflow is compiled and becomes a reference in the specification, so nothing
@@ -84,12 +83,22 @@
 // names `prod/api#token` to the vault backend, and what the `#` means there is
 // vault's business, not the DSL's.
 //
-// A reference has to be the whole value of a task input. It cannot be combined with
-// anything, so ${'Bearer ' + secret('env:TOKEN')} is refused rather than compiled
-// into an expression that fails at run time; it cannot be nested in a list or a
-// mapping, for the same reason; and it cannot appear in an `if` or a loop's `items`,
-// which the workflow evaluates itself. Each of those is a compile error naming the
-// line and column it is on.
+// A reference has to be the whole value of a task input, and each way of writing one
+// somewhere else is a compile error naming the line and column it is on. It cannot be
+// combined with anything, so ${'Bearer ' + secret('env:TOKEN')} is refused rather
+// than compiled into an expression that fails at run time. It cannot appear in an
+// `if` or a loop's `items`, which the workflow evaluates itself.
+//
+// And — a limitation rather than a rule, which the diagnostic says — it cannot be
+// nested in a list or a mapping, so an authorization header cannot yet be written the
+// obvious way:
+//
+//	headers:
+//	  Authorization: ${secret('env:API_TOKEN')}   # refused, for now
+//
+// A structure containing any expression compiles into a single expression, and the
+// workflow evaluates that expression, which is the one thing all of this exists to
+// prevent.
 //
 // [flowstatev1.Workflow]: https://pkg.go.dev/github.com/picatz/flowstate/pkg/flowstate/v1#Workflow
 package flowfile

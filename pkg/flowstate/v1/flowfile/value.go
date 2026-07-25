@@ -251,10 +251,11 @@ func (c *compiler) composite(n ast.Node, path string, r ref) *v1.Value {
 		if !ok {
 			return nil
 		}
-		// A reference nested in a structure would have to be built into the
-		// expression that builds the structure, which is exactly the combining a
-		// secret cannot survive.
-		return c.expression(n, text, path, r, secretNotWholeValue)
+		// A reference nested in a structure would have to be built into the one
+		// expression that builds the structure, and the workflow evaluates that
+		// expression. There is no reference to emit here even in principle: a value
+		// is a reference or a structure, never a structure holding one.
+		return c.expression(n, text, path, r, secretInStructure)
 	}
 	lit := c.literal(n, path, r)
 	if lit == nil {
