@@ -89,7 +89,16 @@ boundary.
 
 ## Not started, roughly in order of value
 
-1. **Wire secrets into a task end to end.** The schema, the resolver, and the
+1. **`${secret('scheme:name')}` does not compile.** It passes `flow validate` and
+   then fails at run time with `no such overload`, because CEL's parser accepts a
+   call to an unknown function and nothing rejects it earlier. The README carries a
+   note saying so; remove the note when this lands. Assigned to `flowfile-parser`:
+   compile the marker to a `SecretRef` at compile time, refuse it anywhere but as a
+   whole input value, and explain why in the message. It cannot be a runtime CEL
+   function — resolving in workflow code would put the value somewhere history can
+   reach.
+
+2. **Wire secrets into a task end to end.** The schema, the resolver, and the
    providers exist; nothing connects them. A string input should accept a
    `SecretRef`, resolved inside the activity. The DSL needs syntax for it —
    `${secret('env:API_KEY')}` compiling through `ParseRef`, so a malformed
@@ -97,7 +106,7 @@ boundary.
    `outputs` expression, or a server echoing a token back lands it in step outputs,
    and step outputs go to history.
 
-2. **Mount the JWKS and discovery handlers**, both **outside** the authn
+3. **Mount the JWKS and discovery handlers**, both **outside** the authn
    middleware — a relying party fetches them before it has any credential, so
    putting them behind authentication is how a working federation setup silently
    stops verifying. Worth a test asserting it.
@@ -110,7 +119,7 @@ boundary.
    is published in the JWKS and named in every assertion, so a date like `2026-07`
    makes rotation self-documenting. `policy.Federation.Broker(key)` gives the broker.
 
-3. **Wire the Temporal namespace mapping.** `auth.Tenancy` is done and needs exactly
+4. **Wire the Temporal namespace mapping.** `auth.Tenancy` is done and needs exactly
    two calls from `temporalclient`: `TemporalNamespaces()` at startup, to dial one
    client per distinct namespace so per-run selection is a map lookup rather than a
    connection attempt; and `TemporalNamespace(identity.Namespace)` per run. The bool
@@ -120,18 +129,18 @@ boundary.
    a default, which is fail-closed on purpose. A nil `*Tenancy` is valid and returns
    false everywhere, so it can be called unconditionally.
 
-4. **Call `SecretPolicy.Authorize` from the secrets store.** It is implemented and
+5. **Call `SecretPolicy.Authorize` from the secrets store.** It is implemented and
    tested but nothing invokes it, so secret access is currently unauthorized.
 
-5. **Durable waiting.** `sleep:` and `wait_until:` as durable timers, and
+6. **Durable waiting.** `sleep:` and `wait_until:` as durable timers, and
    `wait_for_signal:` with `flow signal` for human approval gates. This is the
    capability that most distinguishes the engine from a task runner, and the frame
    stack now makes it tractable.
 
-6. **Sub-workflows.** A `workflow:` step as a Temporal child workflow, which also
+7. **Sub-workflows.** A `workflow:` step as a Temporal child workflow, which also
    relieves payload pressure on fan-out by giving each one its own history.
 
-7. **Lifecycle RPCs.** List, cancel, terminate, signal, query — thin wrappers over
+8. **Lifecycle RPCs.** List, cancel, terminate, signal, query — thin wrappers over
    what Temporal already provides. The service is still only `Run` and `Get`.
 
 ## What is done and verified

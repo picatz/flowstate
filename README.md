@@ -333,6 +333,12 @@ worker's own internal endpoints in production.
 
 ## Secrets
 
+> [!NOTE]
+> The reference *form* below is defined in the schema and refused correctly in
+> expressions, but `${secret(...)}` does not compile yet — it currently passes
+> validation and fails at run time. Tracked in
+> [docs/HANDOFF.md](docs/HANDOFF.md); do not rely on it until this note is gone.
+
 A secret never appears in a workflow. A *reference* to one does:
 
 ```yaml
