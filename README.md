@@ -331,6 +331,69 @@ To develop against a service on `localhost`, set `FLOWSTATE_ALLOW_LOOPBACK_EGRES
 It is an explicit opt-in because the same permission is what would let a workflow reach a
 worker's own internal endpoints in production.
 
+## Secrets
+
+A secret never appears in a workflow. A *reference* to one does:
+
+```yaml
+steps:
+  - id: notify
+    task:
+      name: http
+      inputs:
+        method: POST
+        url: https://api.example.com/events
+        headers:
+          Authorization: ${secret('vault:prod/api#token')}
+```
+
+A reference is `scheme:name`. The scheme selects which backend resolves it, and the
+name means whatever that backend means by it — an environment variable, a path under
+a mounted directory, a vault path.
+
+The reference is all that exists in the compiled workflow, in the request that
+submits it, and in the durable history Temporal keeps. The value is resolved on the
+worker, inside the step that uses it, and exists only for that call. Referencing a
+secret in an expression is refused, because computing with it in workflow code would
+put the result in history:
+
+```
+a secret reference cannot be read in an expression; pass it to a task input that
+accepts one (vault:prod/api#token)
+```
+
+Which backend resolves a scheme is the deployment's choice, and the same workflow
+runs unchanged against any of them. That is the point of referencing rather than
+embedding: a laptop can resolve `db:password` from the OS keychain while production
+resolves it from a vault, and the Flowfile does not know or care.
+
+A deployment registers only the schemes it permits. An unregistered scheme is
+refused rather than guessed at, and a deployment that registers nothing refuses every
+reference — the right configuration for one that should not handle secrets at all.
+
+## Plugins
+
+The built-in tasks and secret backends will not cover everything, so the engine is
+extensible by code it does not ship. A plugin is a separate executable named
+`flowstate-plugin-<name>` that speaks Connect RPC over a Unix socket.
+
+Separate, because a plugin runs inside a worker that holds credentials and can reach
+internal networks: in the same process, a panic takes the worker down and a bug reads
+whatever the worker can. The protocol is defined in the schema rather than as a Go
+interface, so a plugin can be written in any language with Connect or gRPC support.
+
+A plugin advertises *capabilities* rather than being of a kind, so one binary can
+resolve secrets and provide tasks both — which is what the useful integrations
+actually look like. A plugin-provided task ships its own protobuf descriptors, so
+`flow validate`, editor completion, and `flow tasks` treat it exactly like a built-in
+one.
+
+A plugin extends what the engine can do, not what it is allowed to do: it resolves
+only permitted schemes, receives the tenant a workload belongs to rather than
+choosing one, and its network access remains governed by the worker.
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and the handshake.
+
 ## Configuration
 
 Flowstate's own settings:
