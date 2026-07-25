@@ -4,8 +4,11 @@ Where the work stands and what to pick up next. Delete this file once it is stal
 — it describes a moment, not the design. [ARCHITECTURE.md](./ARCHITECTURE.md) is
 the durable document.
 
-Branch: `harden-and-expand-engine`, seven commits, pushed. A clean checkout builds,
-vets clean, and passes tests in every package except the two noted below.
+Branch: `harden-and-expand-engine`, pushed. A clean checkout builds and vets clean.
+Every package passes except `secrets`, noted below.
+
+Start here: `go build ./... && GOMEMLIMIT=1GiB go test -timeout 180s ./pkg/flowstate/...`
+Bounds are not optional — see CLAUDE.md for why.
 
 ## Resolved late in the day
 
