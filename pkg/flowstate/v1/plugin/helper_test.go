@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -517,6 +518,31 @@ func (w testWriter) Write(p []byte) (int, error) {
 	w.t.Log(strings.TrimRight(string(p), "\n"))
 	return len(p), nil
 }
+
+// newCapturingLogger logs both to the test's output and into a buffer, so a
+// test can assert on what was logged as well as read it on a failure.
+func newCapturingLogger(t *testing.T, into *strings.Builder) *slog.Logger {
+	t.Helper()
+
+	var mu sync.Mutex
+	capture := writerFunc(func(p []byte) (int, error) {
+		mu.Lock()
+		into.Write(p)
+		mu.Unlock()
+		return testWriter{t}.Write(p)
+	})
+
+	return slog.New(slog.NewTextHandler(capture, &slog.HandlerOptions{Level: slog.LevelDebug}))
+}
+
+// writerFunc adapts a function to io.Writer.
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+
+// fmtSprint formats a value, for the containment checks that have to try every
+// verb rather than assume one.
+func fmtSprint(verb string, v any) string { return fmt.Sprintf(verb, v) }
 
 // openHost builds and opens a host over a directory of fake plugins, and closes
 // it when the test ends.
