@@ -180,6 +180,14 @@ func scalar(field protoreflect.FieldDescriptor, value *expr.Value) (protoreflect
 			}
 			return protoreflect.Value{}, fmt.Errorf("%q is not a value of %s", truncate(v.StringValue, 64), field.Enum().FullName())
 		}
+	case protoreflect.MessageKind:
+		// An element or map value declared as flowstate's own Value type, which
+		// is how a task accepts something whose shape it does not constrain —
+		// the http task's `outputs` map is exactly this.
+		if field.Message().FullName() == "flowstate.v1.Value" {
+			wrapped := &flowstatev1.Value{Kind: &flowstatev1.Value_Literal{Literal: value}}
+			return protoreflect.ValueOfMessage(wrapped.ProtoReflect()), nil
+		}
 	default:
 		return protoreflect.Value{}, fmt.Errorf(
 			"has type %s, which DecodeInputs does not convert; read it from the input map directly",

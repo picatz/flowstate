@@ -1,0 +1,461 @@
+package sdk
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+
+	"connectrpc.com/connect"
+	"google.golang.org/protobuf/proto"
+
+	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+)
+
+// TestManifestIsDerived checks that what the engine is told about a plugin comes
+// from what the plugin implements, so that a plugin cannot advertise something
+// it did not write.
+func TestManifestIsDerived(t *testing.T) {
+	t.Parallel()
+
+	resolve := func(context.Context, SecretRequest) (SecretResponse, error) {
+		return SecretResponse{Value: []byte("v")}, nil
+	}
+	run := func(context.Context, map[string]*flowstatev1.Value, *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
+		return nil, nil
+	}
+
+	tests := []struct {
+		name             string
+		plugin           Plugin
+		wantCapabilities []flowstatev1.Capability
+		wantErr          string
+	}{
+		{
+			name: "secrets only",
+			plugin: Plugin{
+				Name:    "s",
+				Secrets: &Secrets{Schemes: []string{"s"}, Resolve: resolve},
+			},
+			wantCapabilities: []flowstatev1.Capability{flowstatev1.Capability_CAPABILITY_SECRETS},
+		},
+		{
+			name: "tasks only",
+			plugin: Plugin{
+				Name:  "t",
+				Tasks: []Task{{Name: "t_do", Fn: run}},
+			},
+			wantCapabilities: []flowstatev1.Capability{flowstatev1.Capability_CAPABILITY_TASKS},
+		},
+		{
+			name: "both",
+			plugin: Plugin{
+				Name:    "b",
+				Secrets: &Secrets{Schemes: []string{"b"}, Resolve: resolve},
+				Tasks:   []Task{{Name: "b_do", Fn: run}},
+			},
+			wantCapabilities: []flowstatev1.Capability{
+				flowstatev1.Capability_CAPABILITY_SECRETS,
+				flowstatev1.Capability_CAPABILITY_TASKS,
+			},
+		},
+		{
+			name:    "implements nothing",
+			plugin:  Plugin{Name: "n"},
+			wantErr: "implements nothing",
+		},
+		{
+			name: "secrets with no resolver",
+			plugin: Plugin{
+				Name:    "s",
+				Secrets: &Secrets{Schemes: []string{"s"}},
+			},
+			wantErr: "no Resolve function",
+		},
+		{
+			name: "secrets with no schemes",
+			plugin: Plugin{
+				Name:    "s",
+				Secrets: &Secrets{Resolve: resolve},
+			},
+			wantErr: "no reference would ever reach it",
+		},
+		{
+			name: "a task with no function",
+			plugin: Plugin{
+				Name:  "t",
+				Tasks: []Task{{Name: "t_do"}},
+			},
+			wantErr: "has no Fn",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			manifest, err := test.plugin.manifest()
+
+			if test.wantErr != "" {
+				if err == nil {
+					t.Fatalf("manifest built, want a refusal")
+				}
+				if !strings.Contains(err.Error(), test.wantErr) {
+					t.Errorf("error = %q, want it to mention %q", err.Error(), test.wantErr)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("manifest: %v", err)
+			}
+
+			if len(manifest.GetCapabilities()) != len(test.wantCapabilities) {
+				t.Fatalf("capabilities = %v, want %v", manifest.GetCapabilities(), test.wantCapabilities)
+			}
+			for i, want := range test.wantCapabilities {
+				if got := manifest.GetCapabilities()[i]; got != want {
+					t.Errorf("capability %d = %v, want %v", i, got, want)
+				}
+			}
+
+			// The engine refuses a manifest that does not validate, so the SDK
+			// should never build one that would be.
+			if err := flowstatev1.Validate(manifest); err != nil {
+				t.Errorf("the SDK built a manifest the engine would refuse: %v", err)
+			}
+		})
+	}
+}
+
+// TestDescribeMessageOmitsWhatTheEngineHas checks the size decision: a plugin
+// whose task takes a flowstate type should not ship the engine a copy of the
+// engine's own schema, which drags protobuf's, protovalidate's, and CEL's
+// descriptors with it.
+func TestDescribeMessageOmitsWhatTheEngineHas(t *testing.T) {
+	t.Parallel()
+
+	raw, name, err := describeMessage(&flowstatev1.Task_Echo_Inputs{})
+	if err != nil {
+		t.Fatalf("describeMessage: %v", err)
+	}
+
+	if name != "flowstate.v1.Task.Echo.Inputs" {
+		t.Errorf("name = %q, want the message's full name", name)
+	}
+	if len(raw) != 0 {
+		t.Errorf("shipped %d bytes of descriptor for a message the engine already has", len(raw))
+	}
+}
+
+// TestDescribeMessageNoMessage checks the side of a task that declares no
+// schema.
+func TestDescribeMessageNoMessage(t *testing.T) {
+	t.Parallel()
+
+	raw, name, err := describeMessage(nil)
+	if err != nil {
+		t.Fatalf("describeMessage: %v", err)
+	}
+	if raw != nil || name != "" {
+		t.Errorf("describeMessage(nil) = (%d bytes, %q), want nothing", len(raw), name)
+	}
+}
+
+// TestInputsRoundTrip checks that a task's inputs and outputs survive the trip
+// between the engine's named values and the typed message a task is written
+// against.
+func TestInputsRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	inputs := map[string]*flowstatev1.Value{
+		"url":     flowstatev1.NewLiteral("https://example.com/x"),
+		"method":  flowstatev1.NewLiteral("POST"),
+		"body":    flowstatev1.NewLiteral("hello"),
+		"headers": flowstatev1.NewLiteralMap(map[string]any{"X-Test": "yes"}),
+		// A map of the engine's own Value type, which is how a task takes
+		// something whose shape it does not constrain.
+		"outputs": flowstatev1.NewLiteralMap(map[string]any{"code": "status_code"}),
+		// An input the message has no field for is ignored rather than refused,
+		// so a workflow written against a newer task still runs.
+		"unknown_to_this_version": flowstatev1.NewLiteral("ignored"),
+	}
+
+	var decoded flowstatev1.Task_HTTP_Inputs
+	if err := DecodeInputs(inputs, &decoded); err != nil {
+		t.Fatalf("DecodeInputs: %v", err)
+	}
+
+	if decoded.GetUrl() != "https://example.com/x" {
+		t.Errorf("url = %q", decoded.GetUrl())
+	}
+	if decoded.GetMethod() != "POST" {
+		t.Errorf("method = %q", decoded.GetMethod())
+	}
+	if decoded.GetBody() != "hello" {
+		t.Errorf("body = %q", decoded.GetBody())
+	}
+	if got := decoded.GetHeaders()["X-Test"]; got != "yes" {
+		t.Errorf("headers[X-Test] = %q, want %q", got, "yes")
+	}
+	if got := decoded.GetOutputs()["code"].GetLiteral().GetStringValue(); got != "status_code" {
+		t.Errorf("outputs[code] = %q, want %q", got, "status_code")
+	}
+
+	outputs, err := EncodeOutputs(&flowstatev1.Task_HTTP_Outputs{
+		StatusCode: 201,
+		Body:       "created",
+		Headers:    map[string]string{"Location": "/x/1"},
+	})
+	if err != nil {
+		t.Fatalf("EncodeOutputs: %v", err)
+	}
+
+	named := outputs.GetNamedValues()
+	if got := named["status_code"].GetLiteral().GetInt64Value(); got != 201 {
+		t.Errorf("status_code = %d, want 201", got)
+	}
+	if got := named["body"].GetLiteral().GetStringValue(); got != "created" {
+		t.Errorf("body = %q, want %q", got, "created")
+	}
+
+	entries := named["headers"].GetLiteral().GetMapValue().GetEntries()
+	if len(entries) != 1 || entries[0].GetKey().GetStringValue() != "Location" {
+		t.Errorf("headers = %v, want one Location entry", entries)
+	}
+}
+
+// TestDecodeInputsRefusals checks the inputs a task cannot be given, each with a
+// message saying what to do instead.
+func TestDecodeInputsRefusals(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		inputs      map[string]*flowstatev1.Value
+		wantMessage string
+	}{
+		{
+			name:        "the wrong type",
+			inputs:      map[string]*flowstatev1.Value{"url": flowstatev1.NewLiteral(42)},
+			wantMessage: "is not a string",
+		},
+		{
+			name:        "an unresolved expression",
+			inputs:      map[string]*flowstatev1.Value{"url": flowstatev1.NewExpr("1 + 1")},
+			wantMessage: "DeferredInputs",
+		},
+		{
+			name: "a secret reference in a typed field",
+			inputs: map[string]*flowstatev1.Value{
+				"url": {Kind: &flowstatev1.Value_SecretRef{
+					SecretRef: &flowstatev1.SecretRef{Scheme: "env", Name: "URL"},
+				}},
+			},
+			wantMessage: "declare the field as flowstate.v1.Value",
+		},
+		{
+			name:        "a map where a scalar belongs",
+			inputs:      map[string]*flowstatev1.Value{"url": flowstatev1.NewLiteralMap(map[string]any{"a": "b"})},
+			wantMessage: "is not a string",
+		},
+		{
+			name:        "a scalar where a map belongs",
+			inputs:      map[string]*flowstatev1.Value{"headers": flowstatev1.NewLiteral("nope")},
+			wantMessage: "wants a map",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			var decoded flowstatev1.Task_HTTP_Inputs
+			err := DecodeInputs(test.inputs, &decoded)
+			if err == nil {
+				t.Fatal("DecodeInputs accepted an input it cannot convert")
+			}
+			if !strings.Contains(err.Error(), test.wantMessage) {
+				t.Errorf("error = %q, want it to mention %q", err.Error(), test.wantMessage)
+			}
+		})
+	}
+}
+
+// TestDecodeIntegerPrecision checks that a fractional number is refused rather
+// than truncated, since truncating would turn an author's mistake into a
+// plausible result.
+func TestDecodeIntegerPrecision(t *testing.T) {
+	t.Parallel()
+
+	var whole flowstatev1.Task_HTTP_Outputs
+	if err := DecodeInputs(map[string]*flowstatev1.Value{
+		"status_code": flowstatev1.NewLiteral(float64(200)),
+	}, &whole); err != nil {
+		t.Fatalf("a whole number in a float was refused: %v", err)
+	}
+	if whole.GetStatusCode() != 200 {
+		t.Errorf("status_code = %d, want 200", whole.GetStatusCode())
+	}
+
+	var fractional flowstatev1.Task_HTTP_Outputs
+	if err := DecodeInputs(map[string]*flowstatev1.Value{
+		"status_code": flowstatev1.NewLiteral(200.5),
+	}, &fractional); err == nil {
+		t.Errorf("200.5 was accepted as an int32 (became %d)", fractional.GetStatusCode())
+	}
+}
+
+// TestErrorClassification checks that every error leaving a plugin carries an
+// explicit verdict on retrying, including one the author never classified.
+//
+// The schema says a plugin that says nothing should get the non-retrying answer.
+// The SDK says it on their behalf, which is more reliable than leaving the engine
+// to infer it from a status code chosen for other reasons.
+func TestErrorClassification(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		err           error
+		wantCode      connect.Code
+		wantRetryable bool
+	}{
+		{
+			name:     "not found",
+			err:      NotFound("no such secret %q", "k"),
+			wantCode: connect.CodeNotFound,
+		},
+		{
+			name:     "permission denied",
+			err:      PermissionDenied("refused"),
+			wantCode: connect.CodePermissionDenied,
+		},
+		{
+			name:     "invalid input",
+			err:      InvalidInput("bad"),
+			wantCode: connect.CodeInvalidArgument,
+		},
+		{
+			name:     "failed",
+			err:      Failed("broken"),
+			wantCode: connect.CodeUnknown,
+		},
+		{
+			name:          "unavailable",
+			err:           Unavailable("cannot reach the backend"),
+			wantCode:      connect.CodeUnavailable,
+			wantRetryable: true,
+		},
+		{
+			name:     "an error the author did not classify",
+			err:      errors.New("something went wrong"),
+			wantCode: connect.CodeUnknown,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			converted := asConnectError(test.err)
+
+			var connectErr *connect.Error
+			if !errors.As(converted, &connectErr) {
+				t.Fatalf("asConnectError returned %T, want a *connect.Error", converted)
+			}
+			if got := connectErr.Code(); got != test.wantCode {
+				t.Errorf("code = %v, want %v", got, test.wantCode)
+			}
+
+			// The cause survives, so a plugin author's errors.Is still works.
+			if !strings.Contains(converted.Error(), test.err.Error()) {
+				t.Errorf("error = %q, want it to carry %q", converted.Error(), test.err.Error())
+			}
+
+			retryable, found := retryableDetail(t, connectErr)
+			if !found {
+				t.Fatal("no retryable verdict was attached; the engine would have to guess")
+			}
+			if retryable != test.wantRetryable {
+				t.Errorf("retryable = %v, want %v", retryable, test.wantRetryable)
+			}
+		})
+	}
+}
+
+// TestConnectErrorPassesThrough checks that an author who built a connect.Error
+// themselves has said exactly what they meant, and it is not reinterpreted.
+func TestConnectErrorPassesThrough(t *testing.T) {
+	t.Parallel()
+
+	original := connect.NewError(connect.CodeAborted, errors.New("mine"))
+
+	converted := asConnectError(original)
+	if converted != error(original) {
+		t.Errorf("a connect.Error was rewritten: %v", converted)
+	}
+}
+
+// retryableDetail reads the verdict attached to an error.
+func retryableDetail(t *testing.T, err *connect.Error) (retryable, found bool) {
+	t.Helper()
+
+	for _, detail := range err.Details() {
+		value, valueErr := detail.Value()
+		if valueErr != nil {
+			continue
+		}
+		if response, ok := value.(*flowstatev1.ExecuteTaskResponse); ok {
+			return response.GetRetryable(), true
+		}
+	}
+
+	return false, false
+}
+
+// TestTaskManifestCarriesDeclarations checks that what the engine needs in order
+// to treat a plugin task correctly reaches it.
+func TestTaskManifestCarriesDeclarations(t *testing.T) {
+	t.Parallel()
+
+	task := Task{
+		Name:           "x_do",
+		Summary:        "does x",
+		Input:          &flowstatev1.Task_Echo_Inputs{},
+		Output:         &flowstatev1.Task_Echo_Outputs{},
+		DeferredInputs: []string{"expr"},
+		NeedsScope:     true,
+		Fn: func(context.Context, map[string]*flowstatev1.Value, *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
+			return nil, nil
+		},
+	}
+
+	manifest, err := task.manifest()
+	if err != nil {
+		t.Fatalf("manifest: %v", err)
+	}
+
+	if manifest.GetName() != "x_do" || manifest.GetSummary() != "does x" {
+		t.Errorf("manifest = %v, want the task's name and summary", manifest)
+	}
+	if !manifest.GetNeedsScope() {
+		t.Error("needs_scope was not carried, so the task would not receive its scope")
+	}
+	if got := manifest.GetDeferredInputs(); len(got) != 1 || got[0] != "expr" {
+		t.Errorf("deferred_inputs = %v, want [expr]", got)
+	}
+	if manifest.GetInputMessage() != "flowstate.v1.Task.Echo.Inputs" {
+		t.Errorf("input_message = %q", manifest.GetInputMessage())
+	}
+
+	// Mutating the task's slice afterwards must not change the manifest.
+	task.DeferredInputs[0] = "changed"
+	if manifest.GetDeferredInputs()[0] != "expr" {
+		t.Error("the manifest aliases the task's slice")
+	}
+
+	if !proto.Equal(manifest, manifest) {
+		t.Error("the manifest is not a well-formed message")
+	}
+}
