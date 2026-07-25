@@ -66,26 +66,41 @@ key was found printable through `%+v` on an enclosing struct.
    `outputs` expression, or a server echoing a token back lands it in step outputs,
    and step outputs go to history.
 
-2. **Mount the JWKS and discovery handlers.** `broker.Issuer().Handler()` at
-   `auth.DiscoveryPath` and the JWKS path, and they must sit **outside** the authn
-   middleware — a relying party fetches them before it has any credential. Worth a
-   test asserting that, because it is exactly the kind of thing that regresses
-   silently. Also needs an `--identity-key` flag for the signing key.
+2. **Mount the JWKS and discovery handlers**, both **outside** the authn
+   middleware — a relying party fetches them before it has any credential, so
+   putting them behind authentication is how a working federation setup silently
+   stops verifying. Worth a test asserting it.
 
-3. **Enforce tenancy.** `auth/tenancy.go` and `auth/secretpolicy.go` exist. The
-   rule to preserve: a workload's namespace comes from the authenticated caller,
-   never from the workload. Optional mapping onto Temporal namespaces needs
-   something from `temporalclient`.
+       mux.Handle(auth.DiscoveryPath, broker.Issuer().Handler())
+       mux.Handle(broker.Issuer().JWKSPath(), broker.Issuer().Handler())
 
-4. **Durable waiting.** `sleep:` and `wait_until:` as durable timers, and
+   Also needs `--identity-key` / `FLOWSTATE_IDENTITY_KEY`, a PEM path, decoded with
+   `x509.ParsePKCS8PrivateKey` into `auth.NewSigningKey(keyID, parsed)`. The key id
+   is published in the JWKS and named in every assertion, so a date like `2026-07`
+   makes rotation self-documenting. `policy.Federation.Broker(key)` gives the broker.
+
+3. **Wire the Temporal namespace mapping.** `auth.Tenancy` is done and needs exactly
+   two calls from `temporalclient`: `TemporalNamespaces()` at startup, to dial one
+   client per distinct namespace so per-run selection is a map lookup rather than a
+   connection attempt; and `TemporalNamespace(identity.Namespace)` per run. The bool
+   matters — **false with no error means the deployment maps nothing, so use the
+   namespace the process was configured with**, which is the zero-configuration
+   path. An error means namespaces are mapped but this one has neither an entry nor
+   a default, which is fail-closed on purpose. A nil `*Tenancy` is valid and returns
+   false everywhere, so it can be called unconditionally.
+
+4. **Call `SecretPolicy.Authorize` from the secrets store.** It is implemented and
+   tested but nothing invokes it, so secret access is currently unauthorized.
+
+5. **Durable waiting.** `sleep:` and `wait_until:` as durable timers, and
    `wait_for_signal:` with `flow signal` for human approval gates. This is the
    capability that most distinguishes the engine from a task runner, and the frame
    stack now makes it tractable.
 
-5. **Sub-workflows.** A `workflow:` step as a Temporal child workflow, which also
+6. **Sub-workflows.** A `workflow:` step as a Temporal child workflow, which also
    relieves payload pressure on fan-out by giving each one its own history.
 
-6. **Lifecycle RPCs.** List, cancel, terminate, signal, query — thin wrappers over
+7. **Lifecycle RPCs.** List, cancel, terminate, signal, query — thin wrappers over
    what Temporal already provides. The service is still only `Run` and `Get`.
 
 ## What is done and verified
@@ -107,6 +122,32 @@ key was found printable through `%+v` on an enclosing struct.
   document symbols, verified over the real protocol rather than only in tests.
 - All ten examples validate and run.
 
+## Traps that will otherwise be rediscovered painfully
+
+**`picatz/jose` behaves in four surprising ways**, which is why the auth package does
+some things the long way. Simplifying to `jwt.ParseAndVerify` plus `jwk.FetchSet`
+looks obvious and would silently break Kubernetes tokens:
+
+- `jwt.Verify`'s audience check rejects array audiences — its type switch handles
+  only `string` and `[]string`, while JSON yields `[]any` — so it errors on every
+  multi-audience token, including every Kubernetes projected service-account token.
+  Claim validation is therefore hand-rolled and jose is used only for signatures.
+- It cannot verify ES384, and cannot sign ES512. Hence ES384's absence from
+  `DefaultAlgorithms`. `TestOIDCVerifierVerifiesEveryAdvertisedAlgorithm` mints and
+  verifies end to end for every advertised algorithm and keeps that list honest.
+- `jwk.Validate` rejects `kty: OKP`, so `jwk.FetchSet` cannot load an Ed25519 key
+  set at all.
+- `jwk.FetchSet` reads the response body unbounded.
+
+**`auth` imports no other Flowstate package, deliberately.** `pkg/flowstate/v1` must
+be able to import it for the http task, so the dependency points one way and
+crossings happen as interfaces (`IdentitySource`, `SecretReference`) or plain Go
+values. This one self-reports if broken, since the build fails.
+
+**Do not format a `secrets.Ref` with `%v`.** The generated message has its own
+`String()` emitting protobuf text format, so a log line would read
+`scheme:"env" name:"API_KEY"`. Use `secrets.RefString`.
+
 ## Two bugs worth remembering
 
 Both were found by writing something ordinary, not by looking for them.
@@ -120,3 +161,9 @@ Writing a plain `printf` example revealed that a list mixing a step reference wi
 a literal was rejected, because the literal and expression paths had diverged. And
 input resolution mutated the task in place, which would have made a loop's second
 iteration read the first iteration's values.
+
+A third, found by a teammate's own test and worth the same attention: secret
+authorization initially authorized the *zero* identity, because a workload with no
+namespace resolved to a `default` placeholder tenant and matched rules written for
+it. A run that reached a worker without the identity it was submitted with would
+have been authorized as that tenant.
