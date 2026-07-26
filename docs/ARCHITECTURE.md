@@ -143,14 +143,14 @@ Rows marked **(done)** are implemented; the rest are the shape the surface shoul
 | Activity retry policy | per-step `retry:` **(done)** |
 | Activity timeouts | per-step `timeout:` **(done)** |
 | Error classification | retryable vs permanent, decided by the failure not a preference **(done)** |
-| Durable timer | `sleep:` / `wait_until:` step |
+| Durable timer | `sleep:` / `wait_until:` step — a `wait:` node kind, not a task, since it schedules no activity |
 | Signal | `wait_for_signal:` step, `flow signal` — human-in-the-loop approval gates |
 | Query | `flow inspect` — read live state of a running workload |
 | Update | synchronous request/response against a running workload |
 | Child workflow | `workflow:` step — sub-workflow composition with its own history |
 | Continue-As-New | transparent history and payload management (already implemented) |
 | Schedules | `triggers: { schedule: ... }`, `flow schedule` |
-| Search attributes and memo | labels projected into visibility, `flow list --filter` |
+| Search attributes and memo | labels projected into visibility, `flow list --filter`; a run's tenant is recorded as a memo, which needs no cluster-side registration so a dev server works unconfigured |
 | Cancellation scopes | `on_failure:` compensation, saga semantics |
 | Conditional execution | per-step `if:`, evaluated in workflow code so the branch is in history **(done)** |
 | Bounded concurrency | `for_each` with `max_parallel:`, fanning out over a computed list **(done)** |
@@ -361,6 +361,22 @@ The local driver short-circuits from the spec directly to the `StepExecutor`, sk
 control plane and Temporal. That is the entire difference between `flow run local` and a
 durable run, and invariant 3 exists to keep it that way.
 
+Waiting is the case where holding that line costs something and is worth it. A step that
+waits for a signal has to be signalable locally, or local runs stop being able to
+rehearse the workflows that most need rehearsing — so a local run accepts real signals
+rather than prompting on a terminal, and `flow signal` addresses either driver
+identically. Prompting would have been easier and would have made the two drivers
+disagree about the one thing local execution exists to predict.
+
+Suspension interacts with waiting in one direction only, and the direction is not the
+obvious one. The step budget is checked *between* nodes, after a node has returned, so a
+wait cannot be suspended through — a timer needs nothing to survive Continue-As-New,
+because it is workflow state and replays. What does not survive is a signal that arrived
+*before* its wait step was reached: any unrelated Continue-As-New in between discards it,
+and Temporal warns rather than failing. So declared signal channels are drained before
+suspending and their payloads carried in `RunState`. The useful side effect is that
+approving in advance works, which people will do whether or not it was designed for.
+
 ### Data flow between steps
 
 Each step produces named, typed outputs, recorded under its step ID. Later steps reference
@@ -378,6 +394,50 @@ claim-check pattern — so raising a limit becomes a deliberate infrastructure c
 than a worker buffering more and hoping. That codec is the right place to absorb large
 payloads; per-task byte caps exist to bound worker memory, not to express what the system
 can handle.
+
+### Interaction shape, not protocol
+
+When adding a way to reach the outside world, the question that decides the design is
+not which protocol it speaks. It is what shape the interaction has, because that is
+what determines whether it can live inside an activity at all.
+
+| Shape | Fits one activity? | Model |
+|---|---|---|
+| Unary request/response | Yes | One activity |
+| Server-streaming, finite | Yes, if bounded | One activity collecting to a bound |
+| Server-streaming, long-lived | No | A listener producing signals into a waiting workflow |
+| Client-streaming | Mostly | An activity sending a bounded collection |
+| Bidirectional | No | A listener plus signals, or a session outside the workflow |
+
+Protocols span several rows each. gRPC has all five. HTTP has three, once SSE and
+chunked responses are counted. So "HTTP now, gRPC later, websockets never" is not a
+plan — it groups by the wrong axis, and websockets stop looking special once you see
+they are just the bidirectional row.
+
+Two consequences worth holding onto:
+
+**Do not encode a shape as an assumption.** For gRPC, the method descriptor already
+reports `IsStreamingClient` and `IsStreamingServer`, so an author should never have to
+declare what we could look up, and the set of *supported* shapes can grow without a
+schema change — growing support changes what is refused. Refuse the unsupported shapes
+with a diagnostic naming the alternative, rather than leaving them unrepresentable.
+
+**A streaming response is not a unary response with more elements.** It is a different
+row with a different execution model, so it gets its own output rather than widening
+the unary one to repeated. `Task.HTTP.Outputs.json` is a single value for exactly this
+reason: adding a field later is free, widening one is breaking, and a repeated field
+would make every author write `[0]` forever for a shape their request does not have.
+
+This framing has already paid for itself twice. Both bugs were an unbounded assumption
+that a response arrives complete and readable in one shot. A `POST` that reached the
+server and then timed out was retried, though it may have taken effect; and a `POST`
+that returned `200 OK` and then failed mid-body was *also* retried, though the status
+had already said it succeeded. The second is worse, and neither looks like a streaming
+concern until you notice that a break after the headers is how streaming normally
+fails.
+
+Bound a stream by messages, bytes, **and** duration. All three: a slow trickle of small
+messages defeats a message count and a byte cap both.
 
 ## Design tensions worth knowing
 
