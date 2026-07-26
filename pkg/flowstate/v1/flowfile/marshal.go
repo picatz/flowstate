@@ -112,8 +112,15 @@ func stepToYAML(node *v1.Node) (yaml.MapSlice, error) {
 		}
 		step = append(step, yaml.MapItem{Key: "parallel", Value: branches})
 
+	case *v1.Node_Wait:
+		key, value, err := waitToYAML(kind.Wait)
+		if err != nil {
+			return nil, fmt.Errorf("step %q: %w", node.GetId(), err)
+		}
+		step = append(step, yaml.MapItem{Key: key, Value: value})
+
 	default:
-		return nil, fmt.Errorf("step %q: has no task, for_each, or parallel", node.GetId())
+		return nil, fmt.Errorf("step %q: has no %s", node.GetId(), stepKindList())
 	}
 
 	return step, nil
@@ -324,5 +331,39 @@ func literalKind(literal *expr.Value) string {
 			name = name[i+1:]
 		}
 		return strings.ToLower(strings.TrimSuffix(name, "Value"))
+	}
+}
+
+// waitToYAML renders a wait back into the key an author wrote it as.
+//
+// Which key it was is recoverable from the wait itself, because each kind of wait
+// is a different member of the oneof — so a round trip returns the spelling that
+// was written rather than a canonical one, and a file that goes through `flow fmt`
+// does not silently change shape.
+func waitToYAML(wait *v1.Wait) (string, any, error) {
+	switch kind := wait.GetKind().(type) {
+	case *v1.Wait_Duration:
+		return "sleep", durationToYAML(kind.Duration), nil
+
+	case *v1.Wait_Until:
+		value, err := exprValueToYAML(kind.Until)
+		if err != nil {
+			return "", nil, fmt.Errorf("wait_until: %w", err)
+		}
+		return "wait_until", value, nil
+
+	case *v1.Wait_Signal:
+		// The scalar form when there is nothing else to say, which is what an
+		// author most often wrote and what reads best coming back.
+		if wait.GetTimeout() == nil {
+			return "wait_for_signal", kind.Signal.GetName(), nil
+		}
+		return "wait_for_signal", yaml.MapSlice{
+			{Key: "name", Value: kind.Signal.GetName()},
+			{Key: "timeout", Value: durationToYAML(wait.GetTimeout())},
+		}, nil
+
+	default:
+		return "", nil, fmt.Errorf("wait has no sleep, wait_until, or wait_for_signal")
 	}
 }

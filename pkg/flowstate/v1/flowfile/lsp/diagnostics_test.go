@@ -209,7 +209,7 @@ steps:
 			want: []want{{
 				code:       codeFlowfile,
 				severity:   lsp.Error,
-				contains:   "must have one of task, for_each, or parallel",
+				contains:   "must have one of task, for_each, parallel, sleep, wait_until, or wait_for_signal",
 				underlines: "a",
 			}},
 		},
