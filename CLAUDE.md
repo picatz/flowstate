@@ -100,6 +100,25 @@ Two leak classes, both found the hard way:
 Test the containment shapes, not just the value: `%v`, `%+v`, `%#v`, and `%s` on the
 value, on a struct holding it, and on a slice of those.
 
+## A capability is not done until it is reachable from a Flowfile
+
+Twice now a subsystem has been complete, tested, and impossible to use.
+
+Secrets resolved, cached, scoped by tenant, and refused to be printed — and no workflow
+could reference one, because `${secret(...)}` did not compile. Durable waiting executed
+correctly on both drivers, with the schema, the engine, and Continue-As-New handling all
+in place — and no Flowfile could express it, because the parser had no spelling for
+`sleep:` or `wait_for_signal:`.
+
+Both times the tests passed, because they built the value or the node directly in Go.
+That proves an executor works and says nothing about whether anyone can reach it. A test
+that constructs `&v1.Node{Kind: &v1.Node_Wait{...}}` is a test of the engine; the feature
+is the path from a file someone writes.
+
+So a capability lands when a Flowfile can express it, `flow validate` accepts it, and an
+example in `examples/` exercises it — those run in CI, which is what keeps them honest.
+Until then it is scaffolding, however green the package is.
+
 ## Test that A cannot reach B, not that A can reach A
 
 A tenant boundary can be present, checked, and covered by passing tests, and still
