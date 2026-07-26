@@ -159,8 +159,7 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// TODO(kent): support HTTPs connections.
-	flowstateClient := flowstatev1connect.NewWorkflowServiceClient(http.DefaultClient, fmt.Sprintf("http://%s", flowstateAddress))
+	flowstateClient := newWorkflowServiceClient()
 
 	runResp, err := flowstateClient.Run(cmd.Context(), &connect.Request[v1.RunRequest]{
 		Msg: &v1.RunRequest{
