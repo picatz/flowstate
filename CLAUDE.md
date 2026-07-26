@@ -34,6 +34,16 @@ the attack:
 Depth bounds do not stop breadth explosions, and time bounds do not stop memory
 explosions. Ask which resource the attacker controls, then bound that resource.
 
+And check that a bound covers the path an attacker would actually take, rather than
+the one a cooperative peer takes. `connect.WithReadMaxBytes` bounds a *successful*
+response: connect-go v1.20.0 builds a separate unmarshaler for a non-200 body
+(`protocol_connect.go:541`) without carrying the limit over, and the check at `:1119`
+is gated on it being greater than zero. A hostile peer answers with an HTTP 500 and
+an arbitrarily large body. The cap therefore belongs on the `http.RoundTripper`,
+below the RPC library, where no path the library treats specially can miss it — see
+`plugin/transport.go`. A bound configured through a library option is only as good as
+that library's coverage of its own error paths.
+
 ## Running tests
 
 Always bound test runs:
