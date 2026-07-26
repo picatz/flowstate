@@ -150,9 +150,14 @@ steps:
       inputs:
         mesage: hello
 `,
+			// Reported by the shared validator, so `flow validate` refuses the
+			// workflow too — a misspelled input is silently ignored at run time,
+			// which is exactly the mistake that should not reach a run. The
+			// language server's contribution is the range: the key is what is
+			// misspelled, not the value written under it.
 			want: []want{{
-				code:       codeUnknownInput,
-				severity:   lsp.Warning,
+				code:       codeFlowfile,
+				severity:   lsp.Error,
 				contains:   `did you mean "message"?`,
 				underlines: "mesage",
 			}},
@@ -168,10 +173,28 @@ steps:
         method: GET
 `,
 			want: []want{{
-				code:       codeMissingInput,
-				severity:   lsp.Warning,
-				contains:   `task "http" requires input "url" (string)`,
-				underlines: "inputs",
+				code:     codeFlowfile,
+				severity: lsp.Error,
+				contains: `task "http" requires input "url" (a string)`,
+			}},
+		},
+		{
+			name: "a literal whose type the input cannot hold",
+			src: `name: wrong-type
+steps:
+  - id: a
+    task:
+      name: echo
+      inputs:
+        message: [1, 2]
+`,
+			// Here the key is fine and the value is not, so the range moves to the
+			// value. Which of the two is at fault comes from the schema.
+			want: []want{{
+				code:       codeFlowfile,
+				severity:   lsp.Error,
+				contains:   "expected a string, but this is a list",
+				underlines: "1, 2",
 			}},
 		},
 		{

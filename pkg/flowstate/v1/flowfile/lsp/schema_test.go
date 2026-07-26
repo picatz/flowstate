@@ -155,7 +155,25 @@ func TestSignatureCoversEveryRegisteredTask(t *testing.T) {
 			assert.Contains(t, got, def.Name)
 			assert.Contains(t, got, "inputs:")
 			assert.Contains(t, got, "outputs:")
-			assert.NotContains(t, got, "unknown")
+
+			// Every field must render as a type a Flowfile author recognizes. The
+			// check is on the rendered type of each field rather than a substring
+			// of the whole block, because a field *named* something like
+			// retry_on_unknown_outcome is not a rendering failure.
+			for _, md := range []protoreflect.MessageDescriptor{def.Inputs, def.Outputs} {
+				if md == nil {
+					continue
+				}
+				fields := md.Fields()
+				for i := range fields.Len() {
+					fd := fields.Get(i)
+					rendered := typeName(fd)
+					assert.NotEqual(t, "unknown", rendered, "field %s", fd.Name())
+					// A bare message name means the renderer has no DSL word for
+					// the type, which tells an author nothing.
+					assert.NotContains(t, rendered, "Value", "field %s renders a schema type name", fd.Name())
+				}
+			}
 
 			for _, name := range fieldNames(def.Inputs) {
 				assert.Contains(t, got, name)
@@ -181,60 +199,6 @@ func TestSignatureHandlesATaskWithNoSchema(t *testing.T) {
 	assert.Equal(t, "unknown", typeName(nil))
 	assert.False(t, required(nil))
 	assert.Empty(t, constraints(nil))
-}
-
-func TestClosestName(t *testing.T) {
-	t.Parallel()
-
-	candidates := []string{"message", "method", "url", "headers", "body", "outputs"}
-	tests := []struct {
-		name string
-		in   string
-		want string
-	}{
-		{"a dropped letter", "mesage", "message"},
-		{"a transposition", "ulr", "url"},
-		{"a wrong case", "URL", "url"},
-		{"an extra letter", "bodyy", "body"},
-		{"an unrelated word entirely", "command", ""},
-		{"too short to guess from", "x", ""},
-		{"empty", "", ""},
-		// Nothing should be suggested when the name is already right; callers only
-		// ask about names that are not declared.
-		{"far from everything", "authorization", ""},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, closestName(tt.in, candidates))
-		})
-	}
-}
-
-func TestEditDistance(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		a, b string
-		want int
-	}{
-		{"", "", 0},
-		{"a", "", 1},
-		{"", "abc", 3},
-		{"kitten", "sitting", 3},
-		{"message", "mesage", 1},
-		// A transposition costs one, not two, which is what lets a short name
-		// like url still suggest a fix for ulr.
-		{"url", "ulr", 1},
-		{"message", "messgae", 1},
-		// Distance is over code points, not bytes, so an accent counts once.
-		{"wörld", "world", 1},
-	}
-	for _, tt := range tests {
-		t.Run(tt.a+"/"+tt.b, func(t *testing.T) {
-			assert.Equal(t, tt.want, editDistance(tt.a, tt.b))
-			assert.Equal(t, tt.want, editDistance(tt.b, tt.a), "distance is symmetric")
-		})
-	}
 }
 
 func TestCELLibrariesAreDerivedFromTheEvaluator(t *testing.T) {

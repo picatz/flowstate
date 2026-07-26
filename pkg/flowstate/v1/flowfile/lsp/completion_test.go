@@ -179,7 +179,11 @@ steps:
       inputs:
         message: ${web.|}
 `,
-			exact: []string{"status_code", "headers", "body"},
+			// Derived from the task's Outputs descriptor rather than listed here,
+			// so an output added to the schema appears in completion without this
+			// test — or the completion code — being touched. Hardcoding the list
+			// meant this went red the moment the http task grew a `json` output.
+			exact: taskOutputNames(t, "http"),
 			detailContains: map[string]string{
 				"status_code": "int",
 				"body":        "string",
@@ -563,4 +567,15 @@ func filterLabels(got, keep []string) []string {
 		}
 	}
 	return out
+}
+
+// taskOutputNames returns the output names a registered task declares, in schema
+// order, which is the order completion offers them in.
+func taskOutputNames(t *testing.T, task string) []string {
+	t.Helper()
+	def, ok := v1.LookupTask(task)
+	require.True(t, ok, "task %q is not registered", task)
+	names := fieldNames(def.Outputs)
+	require.NotEmpty(t, names, "task %q declares no outputs", task)
+	return names
 }

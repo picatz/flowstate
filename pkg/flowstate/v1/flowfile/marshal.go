@@ -295,15 +295,34 @@ func literalToYAML(literal *expr.Value) (any, error) {
 	}
 }
 
-// literalKind names a literal's type for a message about one that cannot be
-// written.
+// literalKind names a literal's type the way a Flowfile author would, for a message
+// about one that is not what was wanted — whether that is a value Marshal cannot
+// write or an input whose type a task does not accept.
 func literalKind(literal *expr.Value) string {
-	if literal == nil {
+	switch literal.GetKind().(type) {
+	case nil:
 		return "nothing"
+	case *expr.Value_StringValue:
+		return "a string"
+	case *expr.Value_BytesValue:
+		return "a string of bytes"
+	case *expr.Value_BoolValue:
+		return "true or false"
+	case *expr.Value_Int64Value, *expr.Value_Uint64Value:
+		return "a whole number"
+	case *expr.Value_DoubleValue:
+		return "a number"
+	case *expr.Value_NullValue:
+		return "null"
+	case *expr.Value_ListValue:
+		return "a list"
+	case *expr.Value_MapValue:
+		return "a mapping"
+	default:
+		name := fmt.Sprintf("%T", literal.GetKind())
+		if i := strings.LastIndex(name, "_"); i >= 0 {
+			name = name[i+1:]
+		}
+		return strings.ToLower(strings.TrimSuffix(name, "Value"))
 	}
-	name := fmt.Sprintf("%T", literal.GetKind())
-	if i := strings.LastIndex(name, "_"); i >= 0 {
-		name = name[i+1:]
-	}
-	return strings.ToLower(strings.TrimSuffix(name, "Value"))
 }

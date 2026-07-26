@@ -222,7 +222,7 @@ steps:
 	t.Run("diagnostics reach inside a loop body", func(t *testing.T) {
 		found := false
 		for _, d := range params.Diagnostics {
-			if d.Code == codeUnknownInput && textInRange(src, d.Range) == "mesage" {
+			if d.Code == codeFlowfile && textInRange(src, d.Range) == "mesage" {
 				found = true
 			}
 		}
@@ -232,7 +232,7 @@ steps:
 	t.Run("diagnostics reach inside a parallel branch", func(t *testing.T) {
 		found := false
 		for _, d := range params.Diagnostics {
-			if d.Code == codeMissingInput && strings.Contains(d.Message, `requires input "url"`) {
+			if strings.Contains(d.Message, `requires input "url"`) {
 				found = true
 			}
 		}

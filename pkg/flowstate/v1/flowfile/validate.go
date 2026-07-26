@@ -222,6 +222,12 @@ func Validate(wf *v1.Workflow) Diagnostics {
 		// same names, so it is checked the same way.
 		ds = append(ds, validateInputRefs(id, "if", node.GetCondition(), available, i, wf)...)
 
+		// What the task declares its inputs to be is checked separately from what
+		// they reference, because the two fail differently: a reference that
+		// cannot resolve is a mistake about the workflow, and an input the task
+		// does not have is a mistake about the task.
+		ds = append(ds, validateTaskInputs(id, task)...)
+
 		checkable, _ := v1.ResolvableInputs(task.GetName(), task.GetInputs())
 		for _, name := range sortedInputNames(checkable) {
 			ds = append(ds, validateInputRefs(id, name, checkable[name], available, i, wf)...)
@@ -384,6 +390,7 @@ func validateNested(nodes []*v1.Node, enclosing map[string]bool, index int, wf *
 		}
 
 		ds = append(ds, validateInputRefs(id, "if", node.GetCondition(), available, index, wf)...)
+		ds = append(ds, validateTaskInputs(id, task)...)
 
 		checkable, _ := v1.ResolvableInputs(task.GetName(), task.GetInputs())
 		for _, name := range sortedInputNames(checkable) {

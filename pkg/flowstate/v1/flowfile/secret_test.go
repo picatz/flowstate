@@ -287,7 +287,7 @@ steps:
       inputs:
         method: POST
         url: https://api.example.com/events
-        token: ${secret('vault:prod/api#token')}
+        body: ${secret('vault:prod/api#token')}
 `)
 	ds, err := flowfile.ValidateSource(good)
 	if err != nil {
@@ -305,7 +305,7 @@ steps:
       inputs:
         method: POST
         url: https://api.example.com/events
-        token: ${secret('API_KEY')}
+        body: ${secret('API_KEY')}
 `)
 	if _, err := flowfile.ValidateSource(bad); err == nil {
 		t.Error("ValidateSource() accepted a malformed reference; it used to say ok and fail at run time")
