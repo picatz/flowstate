@@ -579,6 +579,7 @@ $ go run ./cmd/flow
 
   WORKFLOW COMMANDS
 
+    get [workflow-id] [--flags]                   Report what a run is doing
     run [command] [workflow-file] [--flags]       Run a workflow
     signal [workflow-id] [signal-name] [--flags]  Send a signal to a waiting run
     tasks                                         List the tasks workflows can use

@@ -702,6 +702,32 @@ flow validate examples/hello-world/workflow.yaml
 flow validate examples/*/workflow.yaml`,
 	}
 
+	// Get command, which asks a server what a run is doing.
+	//
+	// `flow run` polls for this while it waits, which serves the case where the
+	// person who started the workload is still watching. A durable workload's
+	// whole point is outliving that terminal, so it has to be askable about later.
+	getCmd := &cobra.Command{
+		Use:   "get [workflow-id]",
+		Short: "Report what a run is doing",
+		Long: "Report the status of a run, and its outputs if it has finished. The status is " +
+			"written to stderr and the outputs to stdout, so the outputs can be piped. A run " +
+			"that failed is reported as a failure, so `flow get id && ...` behaves as expected.",
+		Args: cobra.ExactArgs(1),
+		RunE: runGet,
+		Example: `# Ask what a run is doing:
+flow get flowstate-workflow-3f7c
+
+# Keep only the outputs:
+flow get flowstate-workflow-3f7c | jq .stepValues
+
+# Ask about one attempt rather than the current one:
+flow get flowstate-workflow-3f7c --run-id 0198f1e2-...`,
+	}
+
+	getCmd.Flags().StringVar(&getRunID, "run-id", "",
+		"ask about one attempt of the workload; unset asks about whichever is current")
+
 	// Signal command, which answers a gate on a run that is already waiting.
 	//
 	// The counterpart to `flow run local --signal`: there the answers are given
@@ -740,7 +766,7 @@ flow run local examples/approval-gate/workflow.yaml --signal deploy-approved='{"
 	// to use --address, so this is the flag they were being sent to look for.
 	//
 	// `run local` deliberately does not get it: it contacts nothing.
-	for _, c := range []*cobra.Command{runCmd, signalCmd} {
+	for _, c := range []*cobra.Command{runCmd, getCmd, signalCmd} {
 		c.Flags().StringVar(&flowstateAddress, "address", flowstateAddress,
 			"address of the Flowstate server (overrides FLOWSTATE_ADDRESS); "+
 				"an explicit https:// scheme is honored")
@@ -792,6 +818,7 @@ flow lsp`,
 	runCmd.GroupID = "workflow"
 	validateCmd.GroupID = "workflow"
 	tasksCmd.GroupID = "workflow"
+	getCmd.GroupID = "workflow"
 	signalCmd.GroupID = "workflow"
 	workerCmd.GroupID = "infrastructure"
 	serverCmd.GroupID = "infrastructure"
@@ -801,6 +828,7 @@ flow lsp`,
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(validateCmd)
 	rootCmd.AddCommand(tasksCmd)
+	rootCmd.AddCommand(getCmd)
 	rootCmd.AddCommand(signalCmd)
 	rootCmd.AddCommand(workerCmd)
 	rootCmd.AddCommand(serverCmd)

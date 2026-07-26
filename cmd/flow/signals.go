@@ -183,36 +183,10 @@ func runSignal(cmd *cobra.Command, args []string) error {
 	}
 
 	if _, err := newWorkflowServiceClient().Signal(cmd.Context(), connect.NewRequest(request)); err != nil {
-		return signalFailure(workflowID, err)
+		return refusedRun("signalling", workflowID, err)
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "delivered %s to %s\n", name, workflowID)
 	return nil
 }
 
-// signalFailure turns a refused signal into something a person can act on.
-//
-// The server answers not-found for a run that does not exist and for a run in
-// another tenant alike, and that conflation is deliberate: distinguishing them
-// would confirm that an id belongs to somebody, which is precisely the fact a
-// caller in the wrong tenant must not learn. Right for the wire, unhelpful on a
-// terminal — where a bare "no such run" reads as "you mistyped the id" and sends
-// someone to check the one thing that is probably fine.
-//
-// So this restates the ambiguity the server chose rather than resolving it. The
-// client learns nothing it did not already have, and the person reading it knows
-// which possibilities to rule out.
-func signalFailure(workflowID string, err error) error {
-	switch connect.CodeOf(err) {
-	case connect.CodeNotFound:
-		return fmt.Errorf("no run %q to signal: it may have already finished, or it may "+
-			"belong to a tenant your credentials do not establish", workflowID)
-	case connect.CodeUnauthenticated, connect.CodePermissionDenied:
-		return fmt.Errorf("refused when signalling %q: %w", workflowID, err)
-	case connect.CodeUnavailable:
-		return fmt.Errorf("no Flowstate server answered at %s (set --address or FLOWSTATE_ADDRESS "+
-			"to point somewhere else): %w", flowstateAddress, err)
-	default:
-		return fmt.Errorf("signalling %q: %w", workflowID, err)
-	}
-}

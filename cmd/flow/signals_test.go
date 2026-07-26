@@ -172,6 +172,12 @@ type fakeWorkflowService struct {
 
 	got *v1.SignalRequest
 	err error
+
+	// The Get half, whose handler lives in get_test.go: one stand-in server
+	// covers every verb the CLI has.
+	gotGet      *v1.GetRequest
+	getResponse *v1.GetResponse
+	getErr      error
 }
 
 // Signal implements [flowstatev1connect.WorkflowServiceHandler].
@@ -296,13 +302,15 @@ func TestSignalRefusesAnInvalidNameBeforeSending(t *testing.T) {
 	require.Nil(t, fake.got, "an invalid signal name was sent anyway")
 }
 
-// TestSignalOnAnUnaddressableRunNamesBothPossibilities checks the message a person
-// gets when the server refuses.
+// TestSignalOnAnUnaddressableRunNamesEveryCause checks the message a person gets
+// when the server refuses.
 //
-// The server deliberately cannot say whether the run is absent or someone else's.
-// A bare "no such run" therefore reads as "you mistyped the id", which sends the
-// reader to check the one thing that is probably fine.
-func TestSignalOnAnUnaddressableRunNamesBothPossibilities(t *testing.T) {
+// The server deliberately cannot say whether the run is absent or someone else's,
+// so a bare "no such run" reads as "you mistyped the id" and sends the reader to
+// check the one thing that is probably fine. All three causes get named, including
+// retention: a run that finished is still readable until it ages out, so "it
+// finished" and "it aged out" are different answers and only one of them is here.
+func TestSignalOnAnUnaddressableRunNamesEveryCause(t *testing.T) {
 	fake := &fakeWorkflowService{
 		err: connect.NewError(connect.CodeNotFound, errors.New(`no such run "deploy-abc123"`)),
 	}
@@ -311,6 +319,7 @@ func TestSignalOnAnUnaddressableRunNamesBothPossibilities(t *testing.T) {
 
 	err := runSignal(cmd, []string{"deploy-abc123", "deploy-approved"})
 	require.ErrorContains(t, err, "deploy-abc123")
-	require.ErrorContains(t, err, "already finished")
+	require.ErrorContains(t, err, "check the id")
 	require.ErrorContains(t, err, "tenant")
+	require.ErrorContains(t, err, "retention")
 }
