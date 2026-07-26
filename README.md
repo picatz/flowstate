@@ -544,27 +544,58 @@ $ go run ./cmd/flow run ./examples/hello-world-multi-step/workflow.yaml
 
 ## CLI
 
-The Flowstate CLI (`flow`) provides commands to run workflows, start a worker, or start a server. The worker is responsible for executing workflow tasks as part of Temporal, while the server provides an API for managing and monitoring workflows that users of Flowstate would interact with. Users would submit their `Flowfile` workflows to the server, which would then schedule and manage their execution using Temporal.
+The Flowstate CLI (`flow`) provides commands to run workflows, signal a run that is waiting for one, start a worker, or start a server. The worker is responsible for executing workflow tasks as part of Temporal, while the server provides an API for managing and monitoring workflows that users of Flowstate would interact with. Users would submit their `Flowfile` workflows to the server, which would then schedule and manage their execution using Temporal.
 
 ```console
 $ go run ./cmd/flow
-Flowstate workflow engine
 
-Usage:
-  flow [command]
+  Flowstate is a workflow engine that uses Temporal for durable execution and CEL expressions for dynamic workflows.
 
-Available Commands:
-  completion  Generate the autocompletion script for the specified shell
-  help        Help about any command
-  lsp         Start a Flowfile Language Server Protocol (LSP) server
-  run         Run a workflow
-  server      Start a server
-  worker      Start a worker
+  USAGE
 
-Flags:
-  -h, --help      help for flow
-  -v, --verbose   enable verbose logging
-      --version   version for flow
+    flow [command] [--flags]  
 
-Use "flow [command] --help" for more information about a command.
+  EXAMPLES
+
+    # Run a workflow locally (without Temporal):  
+    flow run local examples/hello-world/workflow.yaml  
+      
+    # Run a workflow using Temporal via the server:  
+    flow run examples/hello-world/workflow.yaml  
+      
+    # Start a Temporal worker:  
+    flow worker  
+      
+    # Start the Flowstate API server:  
+    flow server  
+      
+    # Start the LSP server for Flowfile editing:  
+    flow lsp  
+
+  COMMANDS
+
+    completion [command]                          Generate the autocompletion script for the specified shell
+    help [command]                                Help about any command
+
+  WORKFLOW COMMANDS
+
+    run [command] [workflow-file] [--flags]       Run a workflow
+    signal [workflow-id] [signal-name] [--flags]  Send a signal to a waiting run
+    tasks                                         List the tasks workflows can use
+    validate [workflow-file...]                   Check workflows for problems without running them
+
+  INFRASTRUCTURE COMMANDS
+
+    server [--flags]                              Start a server
+    worker [--flags]                              Start a worker
+
+  DEVELOPMENT COMMANDS
+
+    lsp                                           Start a Flowfile Language Server Protocol (LSP) server
+
+  FLAGS
+
+    -h --help                                     Help for flow
+    -v --verbose                                  Enable verbose logging
+    --version                                     Version for flow
 ```

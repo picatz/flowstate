@@ -702,6 +702,53 @@ flow validate examples/hello-world/workflow.yaml
 flow validate examples/*/workflow.yaml`,
 	}
 
+	// Signal command, which answers a gate on a run that is already waiting.
+	//
+	// The counterpart to `flow run local --signal`: there the answers are given
+	// before the run starts, because a local run is a process with nobody to
+	// signal it; here the run is durable and the answer arrives whenever the
+	// person gets to it, which is the case an approval gate exists for.
+	signalCmd := &cobra.Command{
+		Use:   "signal [workflow-id] [signal-name]",
+		Short: "Send a signal to a waiting run",
+		Long: "Deliver a signal to a run waiting for one, which is how a human approval reaches " +
+			"a workload. The payload becomes the waiting step's outputs, so its keys are what " +
+			"later steps read as ${step_id.key}.",
+		Args:  cobra.ExactArgs(2),
+		RunE:  runSignal,
+		Example: `# Approve a deploy waiting on a gate:
+flow signal deploy-abc123 deploy-approved --data '{"approved": true, "by": "someone@example.com"}'
+
+# Decline it; the workload can tell this apart from nobody answering:
+flow signal deploy-abc123 deploy-approved --data '{"approved": false}'
+
+# Send a signal that carries nothing:
+flow signal deploy-abc123 deploy-approved
+
+# Answer the same gate on a local run, which is given its answers up front:
+flow run local examples/approval-gate/workflow.yaml --signal deploy-approved='{"approved": true}'`,
+	}
+
+	signalCmd.Flags().StringVar(&signalData, "data", "",
+		`signal payload as a JSON object, whose keys become the waiting step's outputs, e.g. --data '{"approved": true}'`)
+
+	// The commands that talk to a Flowstate server can say which one.
+	//
+	// FLOWSTATE_ADDRESS was the only way to point these somewhere until now, which
+	// meant addressing a second deployment took an exported variable rather than a
+	// flag. Both the plain-HTTP warning and the no-server error already told people
+	// to use --address, so this is the flag they were being sent to look for.
+	//
+	// `run local` deliberately does not get it: it contacts nothing.
+	for _, c := range []*cobra.Command{runCmd, signalCmd} {
+		c.Flags().StringVar(&flowstateAddress, "address", flowstateAddress,
+			"address of the Flowstate server (overrides FLOWSTATE_ADDRESS); "+
+				"an explicit https:// scheme is honored")
+	}
+	signalCmd.Flags().StringVar(&signalRunID, "run-id", "",
+		"pin the signal to one run of the workload; unset addresses whichever run is current, "+
+			"which is what approving a workload means")
+
 	// Tasks command, which lists the available tasks.
 	tasksCmd := &cobra.Command{
 		Use:   "tasks",
@@ -745,6 +792,7 @@ flow lsp`,
 	runCmd.GroupID = "workflow"
 	validateCmd.GroupID = "workflow"
 	tasksCmd.GroupID = "workflow"
+	signalCmd.GroupID = "workflow"
 	workerCmd.GroupID = "infrastructure"
 	serverCmd.GroupID = "infrastructure"
 	lspCmd.GroupID = "development"
@@ -753,6 +801,7 @@ flow lsp`,
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(validateCmd)
 	rootCmd.AddCommand(tasksCmd)
+	rootCmd.AddCommand(signalCmd)
 	rootCmd.AddCommand(workerCmd)
 	rootCmd.AddCommand(serverCmd)
 	runCmd.AddCommand(runLocalCmd)

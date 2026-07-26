@@ -1,12 +1,19 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"connectrpc.com/connect"
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 )
 
 // TestParseSignalFlag covers the flag that makes an approval gate runnable on a
@@ -150,4 +157,160 @@ func TestReportUnansweredGates(t *testing.T) {
 		"the warning does not say what would answer it")
 	require.NotContains(t, out.String(), `"answered"`,
 		"a gate that was answered was reported as unanswered")
+}
+
+// A capability is not done until somebody can reach it.
+//
+// The tests above cover the parsing, which proves nothing about whether typing
+// `flow signal` puts a signal on the wire. These cover the path a person actually
+// takes: flags, through validation, to an RPC a server receives.
+
+// fakeWorkflowService records what the CLI sent, and answers with what a test asks
+// it to.
+type fakeWorkflowService struct {
+	flowstatev1connect.UnimplementedWorkflowServiceHandler
+
+	got *v1.SignalRequest
+	err error
+}
+
+// Signal implements [flowstatev1connect.WorkflowServiceHandler].
+func (f *fakeWorkflowService) Signal(_ context.Context, req *connect.Request[v1.SignalRequest]) (*connect.Response[v1.SignalResponse], error) {
+	f.got = req.Msg
+	if f.err != nil {
+		return nil, f.err
+	}
+	return connect.NewResponse(&v1.SignalResponse{}), nil
+}
+
+// serveFake stands a fake Flowstate server up and points the CLI at it for the
+// duration of one test.
+func serveFake(t *testing.T, fake *fakeWorkflowService) {
+	t.Helper()
+
+	mux := http.NewServeMux()
+	mux.Handle(flowstatev1connect.NewWorkflowServiceHandler(fake))
+
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	// The address is process-wide configuration, so it is restored rather than
+	// left pointing at a server that has been closed.
+	previous := flowstateAddress
+	flowstateAddress = server.URL
+	t.Cleanup(func() { flowstateAddress = previous })
+}
+
+// signalCommand builds the command runSignal expects, with its flags reset.
+func signalCommand(t *testing.T) (*cobra.Command, *strings.Builder) {
+	t.Helper()
+
+	previousData, previousRunID := signalData, signalRunID
+	t.Cleanup(func() { signalData, signalRunID = previousData, previousRunID })
+	signalData, signalRunID = "", ""
+
+	var out strings.Builder
+	cmd := &cobra.Command{}
+	cmd.SetContext(t.Context())
+	cmd.SetOut(&out)
+
+	return cmd, &out
+}
+
+// TestSignalReachesTheServer is the reachability proof: what a person types
+// arrives as the request the server handles.
+func TestSignalReachesTheServer(t *testing.T) {
+	fake := &fakeWorkflowService{}
+	serveFake(t, fake)
+	cmd, out := signalCommand(t)
+
+	signalData = `{"approved": true, "by": "someone@example.com"}`
+	signalRunID = "run-1"
+
+	require.NoError(t, runSignal(cmd, []string{"deploy-abc123", "deploy-approved"}))
+
+	require.NotNil(t, fake.got, "nothing reached the server")
+	require.Equal(t, "deploy-abc123", fake.got.GetWorkflowId())
+	require.Equal(t, "deploy-approved", fake.got.GetName())
+	require.Equal(t, "run-1", fake.got.GetRunId(), "--run-id was dropped")
+
+	// The payload is what a later step reads as ${approval.approved}, so its
+	// shape surviving the trip is the whole point of sending it.
+	values := fake.got.GetPayload().GetNamedValues()
+	require.True(t, values["approved"].GetLiteral().GetBoolValue())
+	require.Equal(t, "someone@example.com", values["by"].GetLiteral().GetStringValue())
+
+	require.Contains(t, out.String(), "deploy-approved",
+		"a delivered signal said nothing about what it delivered")
+}
+
+// TestSignalWithoutAPayloadSendsAnAbsentOne pins down how "carries nothing" is
+// spelled on the wire.
+//
+// Node.Outputs.named_values is required, so an empty map is not something the
+// schema lets a message say — sending one is refused before it leaves. A signal
+// with no --data therefore travels with no payload at all, and the server turns
+// that back into empty outputs so a later ${approval.timed_out} still resolves.
+func TestSignalWithoutAPayloadSendsAnAbsentOne(t *testing.T) {
+	fake := &fakeWorkflowService{}
+	serveFake(t, fake)
+	cmd, _ := signalCommand(t)
+
+	require.NoError(t, runSignal(cmd, []string{"deploy-abc123", "deploy-approved"}),
+		"a signal carrying nothing is a reasonable thing to send and was refused")
+
+	require.NotNil(t, fake.got, "nothing reached the server")
+	require.Nil(t, fake.got.GetPayload(),
+		"an empty payload was sent, which the schema forbids; absent is how a signal says it carries nothing")
+}
+
+// TestSignalRefusesAMalformedPayloadBeforeSending checks that a quoting mistake
+// is caught here rather than delivered.
+func TestSignalRefusesAMalformedPayloadBeforeSending(t *testing.T) {
+	fake := &fakeWorkflowService{}
+	serveFake(t, fake)
+	cmd, _ := signalCommand(t)
+
+	// The shell-quoting mistake this is most likely to be: a bare list rather
+	// than an object.
+	signalData = `[1, 2]`
+
+	err := runSignal(cmd, []string{"deploy-abc123", "deploy-approved"})
+	require.ErrorContains(t, err, "not a JSON object")
+	require.ErrorContains(t, err, "--data", "the error does not name the flag that was wrong")
+	require.Nil(t, fake.got, "a malformed payload was sent anyway")
+}
+
+// TestSignalRefusesAnInvalidNameBeforeSending checks the schema's own rules run
+// before the round trip.
+//
+// The rules are read off the descriptor rather than restated in the CLI, so this
+// also fails if the two ever drift apart.
+func TestSignalRefusesAnInvalidNameBeforeSending(t *testing.T) {
+	fake := &fakeWorkflowService{}
+	serveFake(t, fake)
+	cmd, _ := signalCommand(t)
+
+	err := runSignal(cmd, []string{"deploy-abc123", "not a signal name"})
+	require.Error(t, err, "a signal name the schema forbids was accepted")
+	require.Nil(t, fake.got, "an invalid signal name was sent anyway")
+}
+
+// TestSignalOnAnUnaddressableRunNamesBothPossibilities checks the message a person
+// gets when the server refuses.
+//
+// The server deliberately cannot say whether the run is absent or someone else's.
+// A bare "no such run" therefore reads as "you mistyped the id", which sends the
+// reader to check the one thing that is probably fine.
+func TestSignalOnAnUnaddressableRunNamesBothPossibilities(t *testing.T) {
+	fake := &fakeWorkflowService{
+		err: connect.NewError(connect.CodeNotFound, errors.New(`no such run "deploy-abc123"`)),
+	}
+	serveFake(t, fake)
+	cmd, _ := signalCommand(t)
+
+	err := runSignal(cmd, []string{"deploy-abc123", "deploy-approved"})
+	require.ErrorContains(t, err, "deploy-abc123")
+	require.ErrorContains(t, err, "already finished")
+	require.ErrorContains(t, err, "tenant")
 }

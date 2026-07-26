@@ -364,9 +364,24 @@ durable run, and invariant 3 exists to keep it that way.
 Waiting is the case where holding that line costs something and is worth it. A step that
 waits for a signal has to be signalable locally, or local runs stop being able to
 rehearse the workflows that most need rehearsing — so a local run accepts real signals
-rather than prompting on a terminal, and `flow signal` addresses either driver
-identically. Prompting would have been easier and would have made the two drivers
-disagree about the one thing local execution exists to predict.
+rather than prompting on a terminal. Prompting would have been easier and would have made
+the two drivers disagree about the one thing local execution exists to predict.
+
+What the two drivers share is the payload and everything downstream of it: a JSON object
+whose keys become the waiting step's outputs, so `${approval.approved}` means the same
+thing either way. What differs is only how it arrives, and it differs because of what a
+local run *is*. A durable run is addressable, so `flow signal <workflow-id> <name>` reaches
+it whenever the person gets round to it. A local run is a process with nobody to signal it
+after it starts, so its answers are given up front with `flow run local --signal
+name=json` and buffered until the gate is reached. Those are the same capability under
+the constraint each driver actually has, which is the distinction invariant 3 is about —
+not that the two are reached by identical commands.
+
+One wrinkle lives in the schema rather than in either driver: `Node.Outputs.named_values`
+is required, so an empty map is not something a message can say. A signal that carries
+nothing therefore travels with its payload *absent*, and the server substitutes empty
+outputs on arrival. That is what keeps `${approval.timed_out}` resolving on a gate
+somebody answered with nothing to add.
 
 Suspension interacts with waiting in one direction only, and the direction is not the
 obvious one. The step budget is checked *between* nodes, after a node has returned, so a
