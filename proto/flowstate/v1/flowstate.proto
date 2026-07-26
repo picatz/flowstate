@@ -646,6 +646,13 @@ message Task {
       // already how this schema represents a literal, so the conversions an
       // expression needs to read it exist rather than being a third value type to
       // translate between.
+      //
+      // A JSON number arrives as a double, so `{"id":7}` reads as 7.0 rather than
+      // 7. That is what encoding/json produces for an untyped number and what the
+      // `json_parse` CEL function already does, and one rule that surprises is
+      // better than two that disagree. It matters when comparing: write
+      // `${call.json.id == 7}` and CEL will compare numerically, but do not expect
+      // `string(call.json.id)` to read as "7".
       google.api.expr.v1alpha1.Value json = 4;
     }
   }
