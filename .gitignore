@@ -22,3 +22,6 @@ go.work
 
 # macOS
 .DS_Store
+
+# The compiled CLI, when built in place with `go build ./cmd/flow`.
+/flow

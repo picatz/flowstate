@@ -597,7 +597,15 @@ flow validate examples/hello-world/workflow.yaml`,
 			if err != nil {
 				return err
 			}
-			result, err := v1.Run(cmd.Context(), workflow)
+			// A workload that waits for a signal needs something able to deliver
+			// one, or it blocks with nothing that could ever release it.
+			ctx, err := withLocalSignals(cmd.Context(), localSignals)
+			if err != nil {
+				return err
+			}
+			reportUnansweredGates(cmd.ErrOrStderr(), workflow, localSignals)
+
+			result, err := v1.Run(ctx, workflow)
 			if err != nil {
 				return fmt.Errorf("error running workflow locally: %w", err)
 			}
@@ -614,8 +622,20 @@ flow validate examples/hello-world/workflow.yaml`,
 flow run local examples/hello-world/workflow.yaml
 
 # Run a multi-step workflow:
-flow run local examples/hello-world-multi-step/workflow.yaml`,
+flow run local examples/hello-world-multi-step/workflow.yaml
+
+# Run a workflow with an approval gate, answering the gate up front:
+flow run local examples/approval-gate/workflow.yaml --signal deploy-approved='{"approved": true}'`,
 	}
+
+	// Supplying signals up front is what makes an approval gate something an author
+	// can exercise on their laptop rather than first meeting in production. A local
+	// run is a process, so there is nobody to signal it after it starts; the local
+	// waiter buffers what is given here, so a gate reached later still finds its
+	// answer waiting — the same behavior the durable driver has because Temporal
+	// buffers signals for a run.
+	runLocalCmd.Flags().StringArrayVar(&localSignals, "signal", nil,
+		`answer a wait_for_signal step, as name=json (repeatable), e.g. --signal deploy-approved='{"approved": true}'`)
 
 	// Worker command, which starts a Temporal worker to process workflows and activities.
 	workerCmd := &cobra.Command{
