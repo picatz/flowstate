@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -102,7 +102,7 @@ func HTTPTaskDef(policy *netpolicy.Policy) TaskDef {
 		Summary:          "Perform an HTTP request and return the response.",
 		Inputs:           (&Task_HTTP_Inputs{}).ProtoReflect().Descriptor(),
 		Outputs:          (&Task_HTTP_Outputs{}).ProtoReflect().Descriptor(),
-		DeferredInputs:   []string{"outputs"},
+		DeferredInputs:   []string{"outputs", "expect"},
 		NeedsPrevOutputs: true,
 		Fn:               taskFuncHTTP(policy),
 	}
@@ -185,6 +185,55 @@ func taskFuncPrintf(ctx context.Context, input map[string]*Value, scope *Scope) 
 // workflows needing only part of a large response should select fields with the
 // outputs input.
 
+// idempotentMethods are the methods RFC 9110 defines as idempotent: repeating one
+// has the same effect on the server as making it once.
+//
+// POST and PATCH are absent deliberately. They are the methods for which a repeat
+// is a second effect.
+var idempotentMethods = map[string]bool{
+	http.MethodGet:     true,
+	http.MethodHead:    true,
+	http.MethodPut:     true,
+	http.MethodDelete:  true,
+	http.MethodOptions: true,
+	http.MethodTrace:   true,
+}
+
+// retriableTransportFailure reports whether a request that failed without a
+// response can be attempted again.
+//
+// A transport failure is not one situation but two, and they differ in the only way
+// that matters. If the connection was never established, the request cannot have
+// taken effect, and retrying it is safe whatever the method. If the request was
+// written and then the transport failed — a timeout awaiting the response, a reset
+// mid-flight — the outcome is *unknown*: the server may have completed the work and
+// failed only to tell us. Retrying that is not retrying a failure, it is performing
+// the operation a second time.
+//
+// For an idempotent method that is fine by definition. For a POST or a PATCH it is
+// how one charge becomes two, so an unknown outcome is reported as permanent and the
+// author decides what to do about it. That matches what ErrorKind.Retryable already
+// documents as the intent — "retrying a POST that already took effect is worse than
+// surfacing a failure that might have resolved on its own" — which the transport
+// path previously did not honor, because it classified by transport-versus-policy and
+// never looked at the method.
+func retriableTransportFailure(method string, err error) bool {
+	if idempotentMethods[strings.ToUpper(method)] {
+		return true
+	}
+
+	// A dial failure means no bytes reached the server: connection refused, no
+	// route, DNS failure. Nothing can have happened, so this stays retriable even
+	// for a non-idempotent method — which keeps the common "the server is not up
+	// yet" case working.
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Op == "dial" {
+		return true
+	}
+
+	return false
+}
+
 // firstHeaderValues flattens response headers to one value per name, which is
 // the shape the schema declares and the shape a workflow author expects when
 // writing ${step.headers['Content-Type']}.
@@ -215,6 +264,10 @@ var httpOutputsEnv = sync.OnceValues(func() (*cel.Env, error) {
 		cel.Variable("status_code", cel.IntType),
 		cel.Variable("headers", cel.MapType(cel.StringType, cel.ListType(cel.StringType))),
 		cel.Variable("body", cel.StringType),
+
+		// The parsed body, present when the step asked for parse_json. Declared
+		// dynamically typed because its shape is the endpoint's, not ours.
+		cel.Variable("json", cel.DynType),
 		jsonLibrary(),
 	)
 	if err != nil {
@@ -229,13 +282,16 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 			Method: proto.String(http.MethodGet),
 		}
 
-		var outputsSpec *Value
+		// `outputs` and `expect` are evaluated against the response rather than
+		// against earlier steps, so they are held back from population: resolving
+		// them here would fail on `status_code` and `body`, which do not exist yet.
+		var outputsSpec, expectSpec *Value
 		inputForPopulate := input
-		if rawOutputs, ok := input["outputs"]; ok {
-			outputsSpec = rawOutputs
-			inputForPopulate = make(map[string]*Value, len(input)-1)
+		if _, hasOutputs := input["outputs"]; hasOutputs || input["expect"] != nil {
+			outputsSpec, expectSpec = input["outputs"], input["expect"]
+			inputForPopulate = make(map[string]*Value, len(input))
 			for k, v := range input {
-				if k == "outputs" {
+				if k == "outputs" || k == "expect" {
 					continue
 				}
 				inputForPopulate[k] = v
@@ -274,12 +330,22 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 			return nil, NewTaskError("http", ErrorKindInvalidInput, err)
 		}
 
-		var body io.Reader
-		if taskInputs.Body != nil {
-			body = strings.NewReader(taskInputs.GetBody())
+		requestURL, err := applyQuery(taskInputs.GetUrl(), taskInputs.GetQuery())
+		if err != nil {
+			return nil, NewTaskError("http", ErrorKindInvalidInput, err)
 		}
 
-		httpReq, err := http.NewRequestWithContext(ctx, taskInputs.GetMethod(), taskInputs.GetUrl(), body)
+		bodyText, contentType, err := httpRequestBody(taskInputs)
+		if err != nil {
+			return nil, NewTaskError("http", ErrorKindInvalidInput, err)
+		}
+
+		var body io.Reader
+		if bodyText != "" || taskInputs.Body != nil {
+			body = strings.NewReader(bodyText)
+		}
+
+		httpReq, err := http.NewRequestWithContext(ctx, taskInputs.GetMethod(), requestURL, body)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create HTTP request: %w", err)
 		}
@@ -291,6 +357,13 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 			}
 		}
 
+		// A structured body implies the header describing it, but only when the author
+		// did not say: someone sending a JSON variant like application/ld+json has
+		// been more specific than we can be, and overwriting that would be wrong.
+		if contentType != "" && httpReq.Header.Get("Content-Type") == "" {
+			httpReq.Header.Set("Content-Type", contentType)
+		}
+
 		httpResp, err := policy.Client().Do(httpReq)
 		if err != nil {
 			// A policy denial is deliberate and will happen again; a connection
@@ -299,20 +372,22 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 			if errors.Is(err, netpolicy.ErrDenied) {
 				return nil, NewTaskError("http", ErrorKindPolicyDenied, err)
 			}
+
+			if !taskInputs.GetRetryOnUnknownOutcome() && !retriableTransportFailure(taskInputs.GetMethod(), err) {
+				return nil, NewTaskError("http", ErrorKindUpstreamUnknown, fmt.Errorf(
+					"%s %s failed with no response, so whether it took effect is unknown: %w",
+					taskInputs.GetMethod(), taskInputs.GetUrl(), err))
+			}
+
 			return nil, NewTaskError("http", ErrorKindUpstream, err)
 		}
 		defer httpResp.Body.Close()
-		if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-			// A 4xx is the endpoint rejecting this request and will reject it
-			// again; a 5xx may be transient.
-			kind := ErrorKindUpstream
-			if httpResp.StatusCode >= 400 && httpResp.StatusCode < 500 {
-				kind = ErrorKindInvalidInput
-			}
-			return nil, NewTaskError("http", kind, fmt.Errorf(
-				"%s %s returned status %d", taskInputs.GetMethod(), taskInputs.GetUrl(), httpResp.StatusCode))
-		}
 
+		// The body is read before success is decided, because `expect` is an
+		// expression over the response and the interesting cases are about its
+		// content: a 200 carrying an error, or a 404 that means "not yet". Reading it
+		// first costs nothing — the policy bounds the read either way.
+		//
 		// The policy bounds the read, so no endpoint a workflow names can decide
 		// how much memory the worker allocates.
 		respBody, err := policy.ReadResponseBody(httpResp)
@@ -323,8 +398,42 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 					"response body from %s is too large: %w; use the outputs input to select only the fields this step needs",
 					taskInputs.GetUrl(), err))
 			}
+			// The status said the request succeeded and only reading the reply
+			// failed. For an idempotent method another attempt is free; for a POST
+			// or a PATCH it would perform the operation a second time, and this
+			// time we know the first one completed rather than merely suspecting
+			// it. So the outcome is reported rather than retried.
+			//
+			// This path matters more than it looks. A failure after the headers is
+			// the normal way a chunked or event-stream response breaks, so it stops
+			// being an edge case as soon as a response is anything but one buffered
+			// body.
+			if !taskInputs.GetRetryOnUnknownOutcome() && !idempotentMethods[strings.ToUpper(taskInputs.GetMethod())] {
+				return nil, NewTaskError("http", ErrorKindUpstreamUnknown, fmt.Errorf(
+					"%s %s returned %d and then the response could not be read, so it took effect but its result is lost: %w",
+					taskInputs.GetMethod(), taskInputs.GetUrl(), httpResp.StatusCode, err))
+			}
+
 			return nil, NewTaskError("http", ErrorKindUpstream,
 				fmt.Errorf("failed to read HTTP response body: %w", err))
+		}
+
+		// Parsing is opt-in, so a body that is not JSON is a real error here rather
+		// than a silently empty value: a step that asked for JSON and got HTML has a
+		// problem worth naming.
+		var parsedJSON *expr.Value
+		if taskInputs.GetParseJson() {
+			parsedJSON, err = parseJSONResponse(respBody)
+			if err != nil {
+				return nil, NewTaskError("http", ErrorKindInvalidInput, fmt.Errorf(
+					"%s %s: %w", taskInputs.GetMethod(), taskInputs.GetUrl(), err))
+			}
+		}
+
+		respVars := httpResponseVars(httpResp, respBody, parsedJSON)
+
+		if err := httpExpectationMet(ctx, taskInputs, expectSpec, httpResp, respVars, scope); err != nil {
+			return nil, err
 		}
 
 		// Default outputs mirror the response so a workflow can reference
@@ -334,6 +443,7 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 			StatusCode: int32(httpResp.StatusCode),
 			Body:       string(respBody),
 			Headers:    firstHeaderValues(httpResp.Header),
+			Json:       parsedJSON,
 		}
 
 		// If typed outputs provided (either as explicit map entries or via a CEL map expression),
@@ -342,15 +452,6 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 			env, err := httpOutputsEnv()
 			if err != nil {
 				return nil, err
-			}
-			respVars := map[string]any{
-				"status_code": int64(httpResp.StatusCode),
-				"body":        string(respBody),
-			}
-			if len(httpResp.Header) > 0 {
-				h := make(map[string][]string, len(httpResp.Header))
-				maps.Copy(h, httpResp.Header)
-				respVars["headers"] = h
 			}
 			varAct, err := interpreter.NewActivation(respVars)
 			if err != nil {
@@ -1016,6 +1117,32 @@ func populateProtoMessageFromValueMap(ctx context.Context, input map[string]*Val
 			}
 			continue
 		}
+		// A singular flowstate.v1.Value field carries whatever the author wrote,
+		// unconverted: a literal of any shape, or a secret reference. The http task's
+		// `json` body is one, since a request body can be an object of any shape and
+		// flattening it to a scalar would lose it.
+		if fieldDesc.Kind() == protoreflect.MessageKind &&
+			fieldDesc.Message().FullName() == "flowstate.v1.Value" {
+			resolved := val
+
+			// An expression is evaluated first, so the field holds a value rather
+			// than something still to be computed.
+			if val.GetExpr() != nil {
+				out, err := valueToCEL(ctx, val, scope)
+				if err != nil {
+					return fmt.Errorf("field %q: %w", fieldName, err)
+				}
+				literal, err := cel.RefValueToValue(out)
+				if err != nil {
+					return fmt.Errorf("field %q: converting expression result: %w", fieldName, err)
+				}
+				resolved = &Value{Kind: &Value_Literal{Literal: literal}}
+			}
+
+			msg.ProtoReflect().Set(fieldDesc, protoreflect.ValueOfMessage(resolved.ProtoReflect()))
+			continue
+		}
+
 		switch kind := val.GetKind().(type) {
 		case *Value_Expr:
 			out, err := valueToCEL(ctx, val, scope)

@@ -512,6 +512,9 @@ func runNode(ctx context.Context, node *Node, scope *Scope) (*Node_Outputs, erro
 	case *Node_Parallel:
 		return nil, runParallel(ctx, n.Parallel, scope)
 
+	case *Node_Wait:
+		return runWait(ctx, node, n.Wait, scope)
+
 	default:
 		return nil, fmt.Errorf("unsupported node kind: %T", n)
 	}
