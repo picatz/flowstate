@@ -16,11 +16,15 @@ that only ever offers things the engine will accept.
 
 Everything above is read from the task registry and the Protobuf schema at the
 moment you ask for it, so a task added to the engine shows up in your editor with
-no change to the language server. The rules about what a *workflow* may say — step
-ids, unknown tasks, references that cannot resolve, durations, step structure — come
-from the same validator `flow validate` uses, so the editor and the command line
-never disagree about a file. The language server's contribution there is the
-position: the same message, under the token at fault.
+no change to the language server.
+
+The rules about what a workflow may *say* — step ids, unknown tasks, references that
+cannot resolve, inputs a task does not declare, literals of the wrong type,
+durations, step structure — all come from the same validator `flow validate` uses.
+The language server's contribution there is position: the same message, under the
+token at fault. A misspelled input underlines the key, because the key is what is
+wrong; a literal of the wrong type underlines the value. Which of the two is at
+fault is decided from the schema, not from the wording of the message.
 
 All of it also works inside a `for_each` body and a `parallel` branch, not only at
 the top level.
@@ -43,10 +47,11 @@ name the editor offers is always one the workflow can resolve:
   finished while the step runs.
 
 Each diagnostic carries a stable code you can filter on: `yaml-syntax`,
-`cel-syntax`, `unknown-cel-library`, `unknown-input`, `missing-input`,
-`document-too-large`, and `flowfile` for everything the shared validator reports —
-the same problems `flow validate` prints, with the same wording, positioned onto
-the token at fault.
+`cel-syntax`, `unknown-cel-library`, `document-too-large`, and `flowfile` for
+everything the shared validator reports — the same problems `flow validate` prints,
+with the same wording, positioned onto the token at fault. Most of what you will see
+is `flowfile`, and that is the point: the editor and the command line cannot
+disagree about a file.
 
 Not implemented, and deliberately not advertised: formatting, rename, code actions,
 references, and workspace symbols. The server also never type-checks expressions —

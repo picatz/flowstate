@@ -53,6 +53,11 @@ const (
 	// closed, so an evaluation error denies the request.
 	ReasonRuleError Reason = "rule error"
 
+	// ReasonControlPlane indicates the request targeted Flowstate's own control
+	// plane, which is reserved. Either the self-administration capability is off,
+	// or it is on and the request carried no run identity to act as.
+	ReasonControlPlane Reason = "control plane"
+
 	// ReasonRequest indicates the request itself was unusable, for example a
 	// request with no URL or an address that never resolved to an IP.
 	ReasonRequest Reason = "request"

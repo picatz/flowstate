@@ -39,13 +39,11 @@ const diagnosticSource = "flowstate"
 
 // Stable codes, so an editor can group or filter and a user can search.
 const (
-	codeYAMLSyntax   = "yaml-syntax"
-	codeCELSyntax    = "cel-syntax"
-	codeCELLibrary   = "unknown-cel-library"
-	codeUnknownInput = "unknown-input"
-	codeMissingInput = "missing-input"
-	codeFlowfile     = "flowfile"
-	codeTooLarge     = "document-too-large"
+	codeYAMLSyntax = "yaml-syntax"
+	codeCELSyntax  = "cel-syntax"
+	codeCELLibrary = "unknown-cel-library"
+	codeFlowfile   = "flowfile"
+	codeTooLarge   = "document-too-large"
 )
 
 // diagnose returns every problem found in a document.
@@ -80,10 +78,8 @@ func diagnose(doc *document) []lsp.Diagnostic {
 	// shown a second time.
 	flagged := checkExpressions(doc, set)
 
-	// These have no counterpart in the validator, because they are schema
-	// questions rather than workflow ones: whether a task declares an input, and
-	// whether a CEL library exists.
-	checkTaskInputs(doc, set)
+	// Unknown CEL library names have no counterpart in the validator, and are
+	// reported from inside the expression check below.
 
 	// Everything else belongs to flowfile: step structure, durations, ids, unknown
 	// tasks, references that cannot resolve. Its diagnostics are used as written
@@ -414,83 +410,6 @@ func tokenWidth(s string) int {
 	return i
 }
 
-// checkTaskInputs reports inputs a task does not declare and required inputs a
-// step leaves out, both read from the task's schema.
-func checkTaskInputs(doc *document, set *diagnosticSet) {
-	if doc.parsed == nil {
-		return
-	}
-	for _, s := range doc.parsed.steps {
-		def, ok := v1.LookupTask(s.taskName)
-		if !ok || def.Inputs == nil {
-			// An unknown task is reported on its own; guessing at its inputs
-			// would add nothing but noise.
-			continue
-		}
-		// An inputs value that is not a mapping is a different problem, already
-		// reported by the compiler. Checking names inside it would be guessing.
-		if s.inputsEntry != nil && (s.inputsEntry.value == nil || s.inputsEntry.value.kind != kindMapping) {
-			continue
-		}
-
-		declared := fieldNames(def.Inputs)
-
-		// misspelled records the input a typo was probably meant to be, so that
-		// one mistake does not also get reported as the required input it left
-		// unset. "mesage: hi" is one problem, not two.
-		misspelled := map[string]bool{}
-
-		for _, in := range s.inputs {
-			if findField(def.Inputs, in.key) != nil {
-				continue
-			}
-			if acceptsAnyInput(def) {
-				continue
-			}
-			msg := fmt.Sprintf("task %q has no input %q", def.Name, in.key)
-			if suggestion := closestName(in.key, declared); suggestion != "" {
-				misspelled[suggestion] = true
-				msg += fmt.Sprintf("; did you mean %q?", suggestion)
-			} else {
-				msg += fmt.Sprintf("; it accepts %s", strings.Join(declared, ", "))
-			}
-			set.add(lsp.Diagnostic{
-				Range:    in.keyRange,
-				Severity: lsp.Warning,
-				Source:   diagnosticSource,
-				Code:     codeUnknownInput,
-				// A warning, not an error: the engine ignores an input a task
-				// does not declare rather than refusing the workflow, so the
-				// step runs and quietly does the wrong thing.
-				Message: msg,
-			})
-		}
-
-		fields := def.Inputs.Fields()
-		for i := range fields.Len() {
-			fd := fields.Get(i)
-			if !required(fd) || s.input(string(fd.Name())) != nil || misspelled[string(fd.Name())] {
-				continue
-			}
-			rng := s.rng
-			switch {
-			case s.inputsEntry != nil:
-				rng = s.inputsEntry.keyRange
-			case s.nameEntry != nil:
-				rng = s.nameEntry.valueRange()
-			}
-			set.add(lsp.Diagnostic{
-				Range:    rng,
-				Severity: lsp.Warning,
-				Source:   diagnosticSource,
-				Code:     codeMissingInput,
-				Message: fmt.Sprintf("task %q requires input %q (%s)",
-					def.Name, fd.Name(), typeName(fd)),
-			})
-		}
-	}
-}
-
 // acceptsAnyInput reports whether a task takes input names beyond those its
 // schema declares.
 //
@@ -556,6 +475,15 @@ func rangeOfFlowfileDiagnostic(doc *document, d flowfile.Diagnostic) lsp.Range {
 	// not in the field name.
 	if d.Field != "" {
 		if e := step.entryForField(d.Field); e != nil {
+			// An input the task does not declare is a problem with the key, not
+			// with what was written under it: `mesage: hello` has a perfectly good
+			// value. Which case this is comes from the schema — the field is either
+			// declared or it is not — rather than from reading the message.
+			if def, known := v1.LookupTask(step.taskName); known && step.input(d.Field) != nil {
+				if findField(def.Inputs, d.Field) == nil {
+					return e.keyRange
+				}
+			}
 			return narrowToExpression(e.valueRange(), e.value)
 		}
 	}

@@ -3,6 +3,7 @@ package flowstatev1
 import (
 	"errors"
 	"fmt"
+	"time"
 )
 
 // An ErrorKind classifies why a task failed, which determines whether retrying
@@ -40,6 +41,16 @@ const (
 	// response larger than the configured maximum. The same request would
 	// produce the same result.
 	ErrorKindLimitExceeded ErrorKind = "LimitExceeded"
+
+	// ErrorKindUpstreamUnknown indicates a dependency may or may not have applied
+	// the operation, because the request was sent and no answer came back.
+	//
+	// It is permanent, and that is the point. An unknown outcome is not a failure
+	// that another attempt could clear up; it is an operation that may already
+	// have taken effect. Retrying a POST whose response was lost is how one charge
+	// becomes two. The step fails once and the author decides, which they can do
+	// and the engine cannot.
+	ErrorKindUpstreamUnknown ErrorKind = "UpstreamUnknown"
 
 	// ErrorKindUpstream indicates a dependency failed in a way that may be
 	// transient: a connection reset, a timeout, a server-side error. These are
@@ -87,6 +98,7 @@ func PermanentErrorKinds() []ErrorKind {
 		ErrorKindExpression,
 		ErrorKindPolicyDenied,
 		ErrorKindLimitExceeded,
+		ErrorKindUpstreamUnknown,
 	}
 }
 
@@ -103,6 +115,16 @@ type TaskError struct {
 
 	// Err is the underlying cause.
 	Err error
+
+	// RetryAfter is how long to wait before another attempt, when the failure said
+	// so. A 429 or a 503 carrying a Retry-After header is the server telling us when
+	// to come back, and honoring it beats guessing.
+	//
+	// It is carried on the error rather than slept off where the failure happened,
+	// because sleeping inside an activity holds a worker slot for the duration. The
+	// substrate schedules the next attempt; the activity only reports when it should
+	// be. Zero means no preference, and the ordinary backoff applies.
+	RetryAfter time.Duration
 }
 
 // Error implements the error interface.
@@ -123,6 +145,22 @@ func (e *TaskError) Unwrap() error { return e.Err }
 
 // Retryable reports whether the failure could succeed if attempted again.
 func (e *TaskError) Retryable() bool { return e.Kind.Retryable() }
+
+// RetryAfter returns how long a failure asked us to wait before another attempt, or
+// zero when it did not say.
+//
+// It looks through wrapping with errors.As rather than asserting a type, because a
+// task failure reaches the engine wrapped — a plugin's failure arrives inside
+// fmt.Errorf("plugin %q: %w", ...) — and an assertion would silently find nothing
+// for every one of those.
+func RetryAfter(err error) time.Duration {
+	var taskErr *TaskError
+	if errors.As(err, &taskErr) {
+		return taskErr.RetryAfter
+	}
+
+	return 0
+}
 
 // NewTaskError returns a [TaskError] classifying a failure of the named task.
 func NewTaskError(task string, kind ErrorKind, err error) *TaskError {

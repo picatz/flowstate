@@ -24,6 +24,9 @@ $ flow validate examples/hello-world/workflow.yaml
 | [cel-expression](cel-expression) | The `cel` task with `vars` and the `strings`/`regex` libraries | no |
 | [headers-and-nested](headers-and-nested) | Request headers, and selecting into a nested result | yes |
 | [http-json-via-cel](http-json-via-cel) | Parsing a JSON body with `json_parse` in a later step | yes |
+| [http-query-and-json](http-query-and-json) | `query:` parameters, a structured `json:` body, and `parse_json:` | yes |
+| [http-form](http-form) | A url-encoded `form:` body, as OAuth token endpoints expect | yes |
+| [http-expect](http-expect) | `expect:` — accepting a 404, and rejecting a 200 with an error in the body | yes |
 | [http-output-shaping](http-output-shaping) | Returning only chosen fields from a response via `outputs` | yes |
 | [simple-http-multi-step](simple-http-multi-step) | Using a response status code in a later step | yes |
 

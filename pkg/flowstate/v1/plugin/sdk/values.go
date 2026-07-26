@@ -199,10 +199,15 @@ func scalar(field protoreflect.FieldDescriptor, value *expr.Value) (protoreflect
 			return protoreflect.Value{}, fmt.Errorf("%q is not a value of %s", truncate(v.StringValue, 64), field.Enum().FullName())
 		}
 	case protoreflect.MessageKind:
-		// An element or map value declared as flowstate's own Value type, which
-		// is how a task accepts something whose shape it does not constrain —
-		// the http task's `outputs` map is exactly this.
-		if field.Message().FullName() == "flowstate.v1.Value" {
+		// A field, element, or map value whose declared type does not constrain
+		// its shape — the http task's `outputs` map and `json` input are both
+		// this. Either spelling is accepted, going in as well as coming out, so
+		// that a task can take structured input as readily as it can return
+		// structured output.
+		switch field.Message().FullName() {
+		case celValueName:
+			return protoreflect.ValueOfMessage(value.ProtoReflect()), nil
+		case flowstateValueName:
 			wrapped := &flowstatev1.Value{Kind: &flowstatev1.Value_Literal{Literal: value}}
 			return protoreflect.ValueOfMessage(wrapped.ProtoReflect()), nil
 		}
@@ -361,13 +366,23 @@ func encodeScalar(field protoreflect.FieldDescriptor, value protoreflect.Value) 
 	case protoreflect.EnumKind:
 		return &expr.Value{Kind: &expr.Value_Int64Value{Int64Value: int64(value.Enum())}}, nil
 	case protoreflect.MessageKind:
-		// A field already holding flowstate's own Value type is what it is —
-		// provided it holds a literal. An output carrying an unevaluated
-		// expression or a secret reference is not an output: the first is
-		// something the task was supposed to evaluate, and the second must never
-		// become a step output at all, since step outputs are written to
-		// workflow history.
-		if field.Message().FullName() == "flowstate.v1.Value" {
+		switch field.Message().FullName() {
+		// The type this schema already uses to carry a value of unconstrained
+		// shape. A task returning structured data — a list of objects, a parsed
+		// response body — declares its output as this and is done: there is
+		// nothing to convert, because it is already the representation a step
+		// output is made of.
+		case celValueName:
+			if v, ok := value.Message().Interface().(*expr.Value); ok {
+				return v, nil
+			}
+
+		// flowstate's own wrapper around the same thing, provided it holds a
+		// literal. An output carrying an unevaluated expression or a secret
+		// reference is not an output: the first is something the task was
+		// supposed to evaluate, and the second must never become a step output at
+		// all, since step outputs are written to workflow history.
+		case flowstateValueName:
 			v, ok := value.Message().Interface().(*flowstatev1.Value)
 			if !ok {
 				break
@@ -380,12 +395,58 @@ func encodeScalar(field protoreflect.FieldDescriptor, value protoreflect.Value) 
 				v.GetKind(),
 			)
 		}
+
+		// Any other message is refused rather than converted.
+		//
+		// Converting one would mean inventing a mapping from its fields onto a
+		// CEL value, and that mapping would be this package's invention rather
+		// than the schema's: field names would come out however JSON naming
+		// mangles them, and the result would not match the descriptor the engine
+		// validates the task against. Refusing precisely is worth more than
+		// converting approximately, so the error says what to do instead.
+		return nil, fmt.Errorf(
+			"has message type %s, which EncodeOutputs does not convert. "+
+				"Declare the field as %s to return data of any shape, and build it with sdk.Literal — "+
+				"for example `Data: sdk.Literal(map[string]any{\"items\": items})`",
+			field.Message().FullName(), celValueName,
+		)
 	}
 
 	return nil, fmt.Errorf(
 		"has type %s, which EncodeOutputs does not convert; build the named value directly",
 		field.Kind(),
 	)
+}
+
+// The two message types a task output may be declared as when its shape is not
+// fixed. They are named as constants because the check is by full name — a
+// plugin's own copy of a descriptor is a different Go type but the same protobuf
+// type, and comparing names is what makes both work.
+const (
+	celValueName       = "google.api.expr.v1alpha1.Value"
+	flowstateValueName = "flowstate.v1.Value"
+)
+
+// Literal builds a value of any shape, for a task output whose type is not fixed.
+//
+// It is the companion to declaring an output field as
+// google.api.expr.v1alpha1.Value: that says "this output can be anything", and
+// this is how a plugin says what it is this time. Maps, slices, and the ordinary
+// scalars all work, nested to any depth:
+//
+//	outputs, err := sdk.EncodeOutputs(&examplev1.QueryOutputs{
+//		Rows:  sdk.Literal([]any{map[string]any{"id": 1, "name": "a"}}),
+//		Count: 1,
+//	})
+//
+// A workflow then reads it the way it reads anything else —
+// `${query.rows[0].name}` — with no step in between to parse it.
+//
+// A type it cannot represent yields an error value rather than a panic, so a
+// plugin that hands it something unexpected produces a diagnosable output instead
+// of taking the process down.
+func Literal(v any) *expr.Value {
+	return flowstatev1.NewValue(v).GetLiteral()
 }
 
 // literalValue wraps a CEL literal as a step output.

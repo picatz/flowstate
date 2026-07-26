@@ -152,6 +152,14 @@ func New(opts ...Option) (*Policy, error) {
 		}
 	}
 
+	if cfg.selfAdministration && len(cfg.controlPlane) == 0 {
+		return nil, fmt.Errorf(
+			"%w: WithSelfAdministration permits Flowstate's own control plane, but no control-plane address "+
+				"was declared with WithControlPlane, so it permits nothing",
+			ErrInvalidPolicy,
+		)
+	}
+
 	p := &Policy{cfg: cfg}
 
 	if err := p.compileRules(); err != nil {
@@ -429,7 +437,20 @@ func (p *Policy) controlDial(ctx context.Context, network, address string, _ sys
 		}
 	}
 
-	if err := p.CheckAddr(addrPort); err != nil {
+	// The control plane is decided before the ordinary address policy: it is
+	// reserved when undeclared, and when permitted it is permitted on the
+	// operator's word rather than on its address category.
+	handled, err := p.checkControlPlane(ctx, addrPort)
+	if err != nil {
+		return err
+	}
+	if !handled {
+		if err := p.CheckAddr(addrPort); err != nil {
+			return err
+		}
+	} else if err := p.checkDeniedNetworks(addrPort); err != nil {
+		// A denied network still wins, so an operator can carve a control-plane
+		// address back out without withdrawing the capability.
 		return err
 	}
 

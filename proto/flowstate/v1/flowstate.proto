@@ -121,6 +121,7 @@ message Node {
     Task task = 2;
     ForEach for_each = 5;
     Parallel parallel = 6;
+    Wait wait = 7;
   }
 
   // Condition determines whether the step runs.
@@ -186,6 +187,98 @@ message SecretRef {
       max_len: 1024
     }
   ];
+}
+
+// Wait suspends a workload until time passes, a condition holds, or a signal
+// arrives.
+//
+// This is the primitive a CI system fundamentally cannot copy. A run that waits
+// a week for a human approval and survives every worker restart in between is
+// not a long-running process — the process may not exist for most of that week.
+// The wait is durable state on the execution substrate, so a worker that is
+// redeployed, crashes, or moves machines resumes exactly where it was.
+//
+// It is a node kind rather than a task, because waiting schedules no activity
+// and touches nothing outside the workflow: no worker executes it, no
+// credentials are needed, and nothing can fail except the wait itself. Making it
+// a task would put an evaluator and an activity round trip behind something that
+// is a timer.
+message Wait {
+  // What is being waited for.
+  oneof kind {
+    option (buf.validate.oneof).required = true;
+
+    // Duration waits for time to pass, as `sleep: 30s`.
+    //
+    // It is a durable timer, so the workload is not holding a worker or a thread
+    // while it elapses. A week is as reasonable as a second.
+    google.protobuf.Duration duration = 1;
+
+    // Until waits for an expression to become true, as `wait_until: <expr>`.
+    //
+    // The expression is evaluated against the outputs of steps that have already
+    // run, and re-evaluated when those change. It cannot wait for something
+    // outside the workload, because nothing outside the workload can change what
+    // it can see — for that, wait for a signal.
+    Value until = 2;
+
+    // Signal waits for something outside the workload to say it may proceed,
+    // which is what makes a human approval gate expressible.
+    Signal signal = 3;
+  }
+
+  // Timeout bounds how long the wait may last, for a wait that might otherwise
+  // never end.
+  //
+  // It is meaningful for `until` and `signal`, and meaningless for `duration`,
+  // where the duration is already the bound. A wait that times out is not a
+  // failure: it produces its outputs with `timed_out` true, so an author decides
+  // what a lapsed approval means with an ordinary `if:` rather than having to
+  // treat a normal outcome as an error.
+  //
+  // Unset means the wait may last as long as the run does. That is a deliberate
+  // choice for an approval gate that genuinely should block until someone acts,
+  // and a mistake everywhere else.
+  google.protobuf.Duration timeout = 4;
+}
+
+// Signal names something a workload waits to be told.
+//
+// The payload a signal carries becomes the waiting step's outputs, which is what
+// makes a gate compose with everything else: `${approval.approved}` resolves the
+// way any other step reference does, so it works in an `if:`, in a task input,
+// and in a later expression, with no special form for signals.
+message Signal {
+  // Name is what a sender addresses. It is part of the workload's contract with
+  // whatever approves it, so it is written by the author rather than generated.
+  string name = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+      pattern: "^[A-Za-z0-9][A-Za-z0-9-_]*$"
+    }
+  ];
+}
+
+// PendingSignal is a signal that arrived before the step waiting for it was
+// reached, carried across Continue-As-New.
+//
+// It exists because Temporal delivers a signal to the run that is current when it
+// arrives, and a run that suspends drops anything still buffered on a channel it
+// has not read. Without carrying them, approving a gate before the run reaches it
+// — which is ordinary behavior, not misuse — would silently lose the approval and
+// leave the run waiting forever.
+message PendingSignal {
+  // Name is the signal that arrived.
+  string name = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED
+  ];
+
+  // Payload is what it carried, which becomes the waiting step's outputs.
+  Node.Outputs payload = 2;
 }
 
 // Scope is what an expression is evaluated against.
@@ -463,8 +556,68 @@ message Task {
       //   - status_code (int)
       //   - body (string)
       //   - headers (map<string,string>)
+      //   - json (the parsed body, when `parse_json` asked for it)
       // This enables payload minimization by selecting just the fields needed.
       map<string, Value> outputs = 5;
+
+      // Query parameters, escaped and appended to the URL.
+      //
+      // Building a query string by hand is where escaping bugs live, and they are
+      // the kind that work until a value contains an ampersand.
+      //
+      // A secret reference here is refused rather than resolved: query strings are
+      // written to access logs, kept in browser history, and forwarded in Referer
+      // headers by anything that follows a redirect. The diagnostic says to use a
+      // header instead, because the author's intent is clear and only the placement
+      // is wrong.
+      map<string, Value> query = 6;
+
+      // A structured request body, serialized as JSON with a matching Content-Type.
+      //
+      // The common case, and until now the most laborious: sending an object meant
+      // building the JSON by hand in a CEL expression and remembering the header.
+      // Mutually exclusive with `body` and `form` — three ways to say what to send
+      // is a request whose meaning depends on field order.
+      Value json = 7;
+
+      // A form body, url-encoded with a matching Content-Type. Mutually exclusive
+      // with `body` and `json`.
+      map<string, Value> form = 8;
+
+      // Which responses count as success, as a CEL expression over the same
+      // variables `outputs` sees.
+      //
+      // The default is unchanged and needs no expression: 2xx succeeds, 4xx fails
+      // permanently, 5xx is retried. This is for the cases that default cannot
+      // express — a 404 that means "not there yet, and that is fine", or an API
+      // that answers 200 with an error in the body:
+      //
+      //   expect: ${status_code == 200 || status_code == 404}
+      //   expect: ${status_code == 200 && !json.error}
+      //
+      // One expression rather than a status list plus a predicate, because a list
+      // is the expression `status_code in [200, 404]` and two spellings of one idea
+      // is two things to keep in agreement.
+      Value expect = 9;
+
+      // Parse the response body as JSON into the `json` output.
+      //
+      // Off by default, and deliberately not inferred from Content-Type: parsing an
+      // untrusted body is work an attacker chooses, so it happens when an author
+      // asked for it. A body that is not JSON is an error naming the offset, not a
+      // silently empty value.
+      optional bool parse_json = 10;
+
+      // Retry a non-idempotent request whose outcome is unknown.
+      //
+      // A POST that reached the server and then failed before answering may have
+      // taken effect, so by default it is not retried: doing the operation twice is
+      // worse than surfacing a failure that might have resolved on its own. Set
+      // this when the endpoint is idempotency-keyed and a retry is therefore safe.
+      //
+      // It does not affect a request that never connected, which is retried for any
+      // method because it cannot have taken effect.
+      optional bool retry_on_unknown_outcome = 11;
     }
     message Outputs {
       int32 status_code = 1 [(buf.validate.field).int32 = {
@@ -476,6 +629,31 @@ message Task {
       // ${step.body}. Large responses are better trimmed with the `outputs`
       // input above, which keeps workflow payloads small.
       string body = 3;
+
+      // The response body parsed as JSON, present when `parse_json` asked for it,
+      // so ${step.json.items[0].id} works without a second step to parse it.
+      //
+      // Deliberately a single value rather than a repeated one, and it should stay
+      // that way. A streaming response is not a unary response with more elements —
+      // it is a different interaction shape with a different execution model, since
+      // a long-lived stream cannot live inside one activity at all. When streaming
+      // arrives it gets its own field, which costs nothing because adding a field is
+      // additive. Widening this one to repeated would break every workflow that
+      // reads it, and would make every author write [0] forever to accommodate a
+      // shape their request does not have.
+      //
+      // Carried as a CEL value rather than google.protobuf.Value because that is
+      // already how this schema represents a literal, so the conversions an
+      // expression needs to read it exist rather than being a third value type to
+      // translate between.
+      //
+      // A JSON number arrives as a double, so `{"id":7}` reads as 7.0 rather than
+      // 7. That is what encoding/json produces for an untyped number and what the
+      // `json_parse` CEL function already does, and one rule that surprises is
+      // better than two that disagree. It matters when comparing: write
+      // `${call.json.id == 7}` and CEL will compare numerically, but do not expect
+      // `string(call.json.id)` to read as "7".
+      google.api.expr.v1alpha1.Value json = 4;
     }
   }
 
@@ -691,10 +869,68 @@ message RunState {
   // preserved across Continue-As-New so later steps act as the same principal
   // the caller was authenticated as.
   WorkloadIdentity identity = 5;
+
+  // PendingSignals are signals that arrived before the step waiting for them was
+  // reached, drained from their channels before this run suspended.
+  //
+  // They must be carried, because a suspended run drops whatever is still
+  // buffered on a channel it never read. A workload whose approval arrived while
+  // it was on an earlier step would otherwise reach the gate with the approval
+  // already lost, and wait forever — the worst failure available to a feature
+  // whose whole promise is that waiting is reliable.
+  repeated PendingSignal pending_signals = 7;
 }
+
+// SignalRequest delivers a signal to a waiting run.
+message SignalRequest {
+  // WorkflowId identifies the run to signal.
+  //
+  // A caller may address only runs in a namespace their own authenticated
+  // identity establishes. The namespace is never taken from this request: a
+  // caller who could name their own tenant could name someone else's, and an id
+  // is not a capability.
+  string workflow_id = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 256
+    }
+  ];
+
+  // RunId optionally pins the signal to one run of the workload. Unset addresses
+  // whichever run is current, which is what a human approving a gate means: they
+  // are approving the workload, and they neither know nor care how many times it
+  // has been continued as new.
+  string run_id = 2 [(buf.validate.field).string = {max_len: 256}];
+
+  // Name is the signal being sent, matching what the waiting step declared.
+  string name = 3 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+      pattern: "^[A-Za-z0-9][A-Za-z0-9-_]*$"
+    }
+  ];
+
+  // Payload becomes the waiting step's outputs, so `${approval.approved}`
+  // resolves to what a sender put here.
+  Node.Outputs payload = 4;
+}
+
+message SignalResponse {}
 
 // WorkflowService is the service that provides operations for managing and running workflows.
 service WorkflowService {
   rpc Run(RunRequest) returns (RunResponse) {}
   rpc Get(GetRequest) returns (GetResponse) {}
+
+  // Signal delivers a signal to a run waiting for one, which is how a human
+  // approval reaches a workload. It is the same call whether the run is local or
+  // durable, so `flow signal` behaves identically against both — the local driver
+  // exists to tell an author what production will do, and a gate an author cannot
+  // exercise locally is a gate they will first exercise in production.
+  rpc Signal(SignalRequest) returns (SignalResponse) {}
 }

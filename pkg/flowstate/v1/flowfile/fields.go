@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/goccy/go-yaml/ast"
 
@@ -304,13 +303,13 @@ func (c *compiler) duration(n ast.Node, path string, r ref) (*durationpb.Duratio
 	text, ok := n.(*ast.StringNode)
 	if !ok {
 		c.report(spanOfNode(n), r,
-			"must be a duration written as a string, like 30s, 5m, or 1h, but %s was written here", describeNode(n))
+			"must be a duration written as a string, like 30s, 5m, 1h, or 7d, but %s was written here", describeNode(n))
 		return nil, false
 	}
 
-	d, err := time.ParseDuration(text.Value)
+	d, err := parseDuration(text.Value)
 	if err != nil {
-		c.report(spanOfNode(n), r, "%q is not a duration; write it as 30s, 5m, or 1h", text.Value)
+		c.report(spanOfNode(n), r, "%q is not a duration; write it as 30s, 5m, 1h, or 7d", text.Value)
 		return nil, false
 	}
 	if d <= 0 {

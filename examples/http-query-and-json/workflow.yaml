@@ -1,0 +1,57 @@
+# Composing a request: query parameters and a JSON body.
+#
+# Both existed only as manual work before. A query string had to be concatenated
+# into the url by hand, which is where escaping bugs live — a value containing a
+# space, an ampersand, or an equals sign silently produced a different request than
+# the author meant. A JSON body meant building the JSON inside a CEL expression and
+# remembering to set Content-Type.
+name: http query and json
+steps:
+  # `query` takes a map. Values are escaped once, here, so a value containing
+  # characters that mean something in a query string is sent as itself.
+  #
+  # A list becomes a repeated parameter, which is how a server that accepts more
+  # than one value for a name expects to receive them. Parameters already present
+  # in the url are kept, so a base url with a fixed parameter still works.
+  - id: search
+    task:
+      name: http
+      inputs:
+        method: GET
+        url: https://httpbin.org/get?source=flowstate
+        query:
+          q: hello world & goodbye
+          page: 2
+          tag: [alpha, beta]
+        # Asking for the body to be parsed is opt-in. Parsing a response an outside
+        # party controls is work an attacker chooses, so it happens when a workflow
+        # says so rather than because a header claimed the body was JSON.
+        parse_json: true
+
+  # `json` sends a structured body and sets Content-Type: application/json. No
+  # hand-built JSON, and no header to remember. It is mutually exclusive with `body`
+  # and `form`: a request has one body, and accepting two would make its meaning
+  # depend on which field the engine happened to read first.
+  - id: submit
+    task:
+      name: http
+      inputs:
+        method: POST
+        url: https://httpbin.org/post
+        json:
+          # Values can reference earlier steps, like any other input.
+          echoed_query: ${search.json.args}
+          nested:
+            works: true
+            count: 3
+        parse_json: true
+
+  - id: report
+    task:
+      name: printf
+      inputs:
+        format: "sent %s and the server echoed it back"
+        args:
+          # Quoted because the colon inside the expression would otherwise be read
+          # as YAML mapping syntax.
+          - "${submit.json.json.nested.works ? 'a nested object' : 'nothing'}"

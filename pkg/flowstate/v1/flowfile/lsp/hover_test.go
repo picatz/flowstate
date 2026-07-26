@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/sourcegraph/go-lsp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -58,8 +59,6 @@ func TestHover(t *testing.T) {
 				"url", "string", "(required)",
 				"status_code", "int",
 				"headers", "map[string, string]",
-				// Derived from the task definition, not from a list here.
-				"evaluates `outputs` itself",
 				"${step.status_code}",
 			},
 		},
@@ -241,6 +240,63 @@ steps:
 		assert.Contains(t, hoverText(got), "Outputs:")
 		assert.Contains(t, hoverText(got), "body")
 	})
+}
+
+// TestHoverDescribesDeferredInputs checks that hover names the inputs a task
+// evaluates itself, reading them from the task definition.
+//
+// The list is derived rather than asserted literally, because it grew: the http
+// task gained `expect` alongside `outputs`, which both broke a hardcoded assertion
+// and turned the sentence into "evaluates `outputs`, `expect` itself".
+func TestHoverDescribesDeferredInputs(t *testing.T) {
+	t.Parallel()
+
+	c := newClient(t)
+	c.initialize()
+
+	for _, def := range v1.DefaultRegistry().All() {
+		if len(def.DeferredInputs) == 0 {
+			continue
+		}
+		t.Run(def.Name, func(t *testing.T) {
+			src := "name: deferred\nsteps:\n  - id: a\n    task:\n      name: " + def.Name + "\n"
+			uri := "file:///deferred-" + def.Name + ".yaml"
+			c.open(uri, src)
+
+			pos := positionOf(t, src, def.Name+"\n", 0)
+			got := c.hover(uri, pos.Line, pos.Character)
+			require.NotNil(t, got)
+			text := hoverText(got)
+
+			for _, name := range def.DeferredInputs {
+				assert.Contains(t, text, "`"+name+"`")
+			}
+			// The whole sentence is pinned, which fixes the joining exactly. An
+			// assertion that the popup contains no comma-joined list anywhere would
+			// be broader than its intent — the outputs line joins names that way
+			// legitimately — and broader-than-intent is what made the last two of
+			// these fail on a coincidence.
+			assert.Contains(t, text, "The task evaluates "+joinNames(def.DeferredInputs)+" itself")
+		})
+	}
+}
+
+func TestJoinNames(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		in   []string
+		want string
+	}{
+		{nil, ""},
+		{[]string{"a"}, "`a`"},
+		{[]string{"a", "b"}, "`a` and `b`"},
+		{[]string{"a", "b", "c"}, "`a`, `b`, and `c`"},
+		{[]string{"a", "b", "c", "d"}, "`a`, `b`, `c`, and `d`"},
+	}
+	for _, tt := range tests {
+		assert.Equal(t, tt.want, joinNames(tt.in))
+	}
 }
 
 // TestHoverOnSecretReferences covers the one thing an author cannot see from the

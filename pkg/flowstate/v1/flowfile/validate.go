@@ -192,10 +192,13 @@ func Validate(wf *v1.Workflow) Diagnostics {
 					available[branchID] = true
 				}
 
+			case *v1.Node_Wait:
+				ds = append(ds, validateWait(id, kind.Wait, available, i, wf)...)
+
 			default:
 				ds = append(ds, Diagnostic{
 					Step:    id,
-					Message: "step must have one of task, for_each, or parallel",
+					Message: "step must have one of " + stepKindList(),
 				})
 			}
 			available[id] = true
@@ -221,6 +224,12 @@ func Validate(wf *v1.Workflow) Diagnostics {
 		// A condition is an expression like any other, and resolves against the
 		// same names, so it is checked the same way.
 		ds = append(ds, validateInputRefs(id, "if", node.GetCondition(), available, i, wf)...)
+
+		// What the task declares its inputs to be is checked separately from what
+		// they reference, because the two fail differently: a reference that
+		// cannot resolve is a mistake about the workflow, and an input the task
+		// does not have is a mistake about the task.
+		ds = append(ds, validateTaskInputs(id, task)...)
 
 		checkable, _ := v1.ResolvableInputs(task.GetName(), task.GetInputs())
 		for _, name := range sortedInputNames(checkable) {
@@ -365,10 +374,12 @@ func validateNested(nodes []*v1.Node, enclosing map[string]bool, index int, wf *
 				ds = append(ds, validateLoop(id, kind.ForEach, available, index, wf)...)
 			case *v1.Node_Parallel:
 				ds = append(ds, validateParallel(id, kind.Parallel, available, index, wf)...)
+			case *v1.Node_Wait:
+				ds = append(ds, validateWait(id, kind.Wait, available, index, wf)...)
 			default:
 				ds = append(ds, Diagnostic{
 					Step:    id,
-					Message: "step must have one of task, for_each, or parallel",
+					Message: "step must have one of " + stepKindList(),
 				})
 			}
 			available[id] = true
@@ -384,6 +395,7 @@ func validateNested(nodes []*v1.Node, enclosing map[string]bool, index int, wf *
 		}
 
 		ds = append(ds, validateInputRefs(id, "if", node.GetCondition(), available, index, wf)...)
+		ds = append(ds, validateTaskInputs(id, task)...)
 
 		checkable, _ := v1.ResolvableInputs(task.GetName(), task.GetInputs())
 		for _, name := range sortedInputNames(checkable) {
@@ -565,4 +577,29 @@ func ValidateSource(data []byte) (Diagnostics, error) {
 		}
 	}
 	return ds, nil
+}
+
+// validateWait checks a waiting step.
+//
+// A wait's outputs are referenceable like any other step's — `timed_out` always,
+// plus whatever a signal's sender put in its payload — so the caller marks the step
+// available afterwards. What can be checked here is the shape of the wait and the
+// references in its own expression; what cannot is whether a payload will contain a
+// given key, because that is up to whoever sends the signal and is not knowable from
+// the file.
+func validateWait(id string, wait *v1.Wait, available map[string]bool, index int, wf *v1.Workflow) Diagnostics {
+	var ds Diagnostics
+
+	if err := v1.ValidateWait(wait); err != nil {
+		ds = append(ds, Diagnostic{Step: id, Message: err.Error()})
+		return ds
+	}
+
+	if until := wait.GetUntil(); until != nil {
+		// The same reference checking a condition gets, since it is the same kind
+		// of expression resolving against the same names.
+		ds = append(ds, validateInputRefs(id, "wait_until", until, available, index, wf)...)
+	}
+
+	return ds
 }

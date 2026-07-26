@@ -1,0 +1,44 @@
+# Saying which responses count as success.
+#
+# The default needs no expression and has not changed: 2xx succeeds, 4xx fails
+# permanently, 5xx is retried. `expect` is for the cases that default cannot
+# express, and it replaces the default judgement entirely for that step.
+name: http expect
+steps:
+  # A 404 that means "not there, and that is fine". Without `expect` this step
+  # would fail the run; with it, the workflow decides what absence means.
+  - id: maybe_missing
+    task:
+      name: http
+      inputs:
+        method: GET
+        url: https://httpbin.org/status/404
+        expect: ${status_code == 200 || status_code == 404}
+
+  - id: report_missing
+    task:
+      name: printf
+      inputs:
+        format: "lookup answered %d, which this step accepts"
+        args:
+          - ${maybe_missing.status_code}
+
+  # An API that answers 200 with an error in the body. `expect` is an expression
+  # over the same response variables `outputs` sees, so it can read the parsed
+  # body — which is why the body is read before success is decided.
+  - id: checked
+    task:
+      name: http
+      inputs:
+        method: GET
+        url: https://httpbin.org/json
+        parse_json: true
+        expect: ${status_code == 200 && !has(json.error)}
+
+  - id: report_checked
+    task:
+      name: printf
+      inputs:
+        format: "response carried no error field: %s"
+        args:
+          - ${string(checked.status_code)}

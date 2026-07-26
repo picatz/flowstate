@@ -58,6 +58,10 @@ func Run(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error
 		scope:  v1.NewScope(stepOutputs),
 		budget: stepsBudget,
 		resume: resumeFrames(st),
+
+		// Signals that arrived before their step was reached, carried from the
+		// run that suspended. A wait consumes from here before it blocks.
+		signals: &signalCarry{pending: st.GetPendingSignals()},
 	}
 
 	err := exec.runNodes(st.Workflow.GetSteps(), 0)
@@ -67,11 +71,21 @@ func Run(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error
 
 	case errors.Is(err, errContinueAsNew):
 		carry := compactOutputsForFrames(st.Workflow, exec.frames, stepOutputs)
+
+		// Drained before suspending, and this is the whole reason it happens
+		// here: a run that continues as new drops whatever is still buffered on
+		// a signal channel it never read. A workload whose approval arrived
+		// while it was on an earlier step would otherwise resume with the
+		// approval gone and wait forever.
+		pending := drainSignals(ctx, st.Workflow, exec.signals.pending)
+
 		next := &v1.RunState{
 			Workflow:    st.Workflow,
 			Outputs:     carry,
 			StepsBudget: int32(stepsBudget),
 			Frames:      exec.frames,
+
+			PendingSignals: pending,
 			// Identity must survive Continue-As-New. A long workload spans
 			// several runs, and a step in the last one acts on behalf of the
 			// same caller as a step in the first; dropping it would silently
@@ -79,7 +93,8 @@ func Run(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error
 			// through.
 			Identity: st.Identity,
 		}
-		logger.Info("continuing as new", "frames", len(exec.frames))
+		logger.Info("continuing as new",
+			"frames", len(exec.frames), "carried_signals", len(pending))
 		return nil, workflow.NewContinueAsNewError(ctx, Run, next)
 
 	default:
@@ -298,6 +313,72 @@ func compactPrevOutputsForTask(task *v1.Task, prev *v1.Workflow_StepOutputs) *v1
 	return trimmed
 }
 
+// collectNodeRefs records every step output a node could still need.
+//
+// Every expression site in the node counts, not only a task's inputs: a step's
+// condition, a loop's item list and everything in its body, every branch of a
+// parallel block, and a wait's own expression. Dropping an output one of those
+// needs is a correctness failure — the resumed run fails on an unresolved
+// reference — while keeping one it turns out not to need only costs payload. So
+// when in doubt this keeps more.
+func collectNodeRefs(node *v1.Node, prev *v1.Workflow_StepOutputs, refs map[string]map[string]struct{}) {
+	if node == nil {
+		return
+	}
+
+	// A condition decides whether the step runs at all, so it is evaluated before
+	// anything else and its references are needed just as much.
+	collectValueRefs(node.GetCondition(), "", "", prev, refs)
+
+	switch kind := node.GetKind().(type) {
+	case *v1.Node_Task:
+		task := kind.Task
+		for name, value := range task.GetInputs() {
+			collectValueRefs(value, task.GetName(), name, prev, refs)
+		}
+
+	case *v1.Node_ForEach:
+		collectValueRefs(kind.ForEach.GetItems(), "", "", prev, refs)
+		for _, inner := range kind.ForEach.GetBody() {
+			collectNodeRefs(inner, prev, refs)
+		}
+
+	case *v1.Node_Parallel:
+		for _, branch := range kind.Parallel.GetBranches() {
+			for _, inner := range branch.GetSteps() {
+				collectNodeRefs(inner, prev, refs)
+			}
+		}
+
+	case *v1.Node_Wait:
+		// A `wait_until` expression can name a step's output — "wait until the
+		// deadline the previous step computed" — and a run that suspended before
+		// the wait needs that output to still be there when it resumes.
+		collectValueRefs(kind.Wait.GetUntil(), "", "", prev, refs)
+	}
+}
+
+// collectValueRefs records the step outputs one value references.
+//
+// taskName and inputName are only needed for the cel task, whose expression
+// arrives as a literal string rather than a parsed expression, and so has to be
+// parsed here to be seen at all.
+func collectValueRefs(value *v1.Value, taskName, inputName string, prev *v1.Workflow_StepOutputs, refs map[string]map[string]struct{}) {
+	switch kind := value.GetKind().(type) {
+	case *v1.Value_Expr:
+		collectRefsFromParsedExpr(kind.Expr, prev, refs)
+
+	case *v1.Value_Literal:
+		if taskName == "cel" && inputName == "expr" {
+			if s := kind.Literal.GetStringValue(); s != "" {
+				if parsed, err := parseCELString(s); err == nil {
+					collectRefsFromParsedExpr(parsed, prev, refs)
+				}
+			}
+		}
+	}
+}
+
 // compactOutputsForRemainingSteps examines the remaining steps and returns a
 // minimal subset of step outputs required to evaluate their inputs.
 func compactOutputsForRemainingSteps(steps []*v1.Node, from int, prev *v1.Workflow_StepOutputs) *v1.Workflow_StepOutputs {
@@ -306,25 +387,7 @@ func compactOutputsForRemainingSteps(steps []*v1.Node, from int, prev *v1.Workfl
 	}
 	refs := map[string]map[string]struct{}{}
 	for i := from; i < len(steps); i++ {
-		n := steps[i]
-		t := n.GetTask()
-		if t == nil {
-			continue
-		}
-		for k, v := range t.Inputs {
-			switch kind := v.GetKind().(type) {
-			case *v1.Value_Expr:
-				collectRefsFromParsedExpr(kind.Expr, prev, refs)
-			case *v1.Value_Literal:
-				if t.GetName() == "cel" && k == "expr" {
-					if s := kind.Literal.GetStringValue(); s != "" {
-						if pe, err := parseCELString(s); err == nil {
-							collectRefsFromParsedExpr(pe, prev, refs)
-						}
-					}
-				}
-			}
-		}
+		collectNodeRefs(steps[i], prev, refs)
 	}
 
 	if len(refs) == 0 {

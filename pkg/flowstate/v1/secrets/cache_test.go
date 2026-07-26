@@ -279,6 +279,101 @@ func Test_NewCache_nilProvider(t *testing.T) {
 	})
 }
 
+// Test_Cache_providerSuppliedTTL covers a provider saying how long caching is safe,
+// which is what a plugin's expires_in and a vault's lease duration report.
+func Test_Cache_providerSuppliedTTL(t *testing.T) {
+	ref := NewRef("test", "key")
+
+	t.Run("a shorter provider TTL shortens the entry", func(t *testing.T) {
+		// A backend knows when its own credential stops working, so a shorter answer
+		// is always taken: holding one past its lifetime hands out something the
+		// backend has already stopped honoring.
+		provider := &ttlProvider{value: "first", ttl: 10 * time.Second}
+		cache, clk := newTestCache(t, provider, WithCacheTTL(time.Minute))
+
+		secret, err := cache.Resolve(t.Context(), Request{Ref: ref})
+		require.NoError(t, err)
+		require.Equal(t, "first", secret.Reveal())
+		require.Equal(t, 10*time.Second, secret.TTL())
+
+		provider.value = "second"
+
+		// Inside the provider's window, still cached.
+		clk.advance(9 * time.Second)
+
+		secret, err = cache.Resolve(t.Context(), Request{Ref: ref})
+		require.NoError(t, err)
+		require.Equal(t, "first", secret.Reveal())
+
+		// Past it, re-read — even though the cache's own minute has not elapsed.
+		clk.advance(2 * time.Second)
+
+		secret, err = cache.Resolve(t.Context(), Request{Ref: ref})
+		require.NoError(t, err)
+		require.Equal(t, "second", secret.Reveal())
+	})
+
+	t.Run("a longer provider TTL is capped by the cache", func(t *testing.T) {
+		// The other direction is the operator's call: a provider claiming a day must
+		// not override a policy that says a minute.
+		provider := &ttlProvider{value: "first", ttl: 24 * time.Hour}
+		cache, clk := newTestCache(t, provider, WithCacheTTL(time.Minute))
+
+		_, err := cache.Resolve(t.Context(), Request{Ref: ref})
+		require.NoError(t, err)
+
+		provider.value = "second"
+		clk.advance(2 * time.Minute)
+
+		secret, err := cache.Resolve(t.Context(), Request{Ref: ref})
+		require.NoError(t, err)
+		require.Equal(t, "second", secret.Reveal(), "the cache's own limit still applies")
+	})
+
+	t.Run("a provider that does not say gets the cache default", func(t *testing.T) {
+		provider := &countingProvider{value: "v"}
+		cache, clk := newTestCache(t, provider, WithCacheTTL(time.Minute))
+
+		_, err := cache.Resolve(t.Context(), Request{Ref: ref})
+		require.NoError(t, err)
+
+		clk.advance(30 * time.Second)
+
+		_, err = cache.Resolve(t.Context(), Request{Ref: ref})
+		require.NoError(t, err)
+		require.Equal(t, 1, provider.count(), "still inside the cache's own TTL")
+	})
+
+	t.Run("an empty value carries no TTL", func(t *testing.T) {
+		// There is nothing to cache, so there is nothing to say a lifetime about.
+		secret := NewSecretWithTTL(NewRef("env", "X"), "", time.Minute)
+		require.True(t, secret.IsZero())
+		require.Zero(t, secret.TTL())
+	})
+
+	t.Run("a non-positive TTL means the provider did not say", func(t *testing.T) {
+		for _, ttl := range []time.Duration{0, -time.Second} {
+			secret := NewSecretWithTTL(NewRef("env", "X"), "v", ttl)
+			require.Equal(t, ttl, secret.TTL())
+
+			cache, _ := newTestCache(t, &ttlProvider{value: "v", ttl: ttl}, WithCacheTTL(time.Minute))
+			require.Equal(t, time.Minute, cache.lifetime(secret))
+		}
+	})
+}
+
+// ttlProvider reports a lifetime with its value, as a plugin or a vault would.
+type ttlProvider struct {
+	value string
+	ttl   time.Duration
+}
+
+func (p *ttlProvider) Scheme() string { return "test" }
+
+func (p *ttlProvider) Resolve(_ context.Context, req Request) (Secret, error) {
+	return NewSecretWithTTL(req.Ref, p.value, p.ttl), nil
+}
+
 func Test_Cache_bounds(t *testing.T) {
 	t.Run("the cache does not grow past its limit", func(t *testing.T) {
 		// A workflow naming an unbounded set of references must not be able to grow

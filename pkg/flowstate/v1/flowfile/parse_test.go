@@ -43,7 +43,7 @@ steps:
       inputs: {}
 `,
 			line: 4, col: 14,
-			want: `timeout "30 seconds" is not a duration; write it as 30s, 5m, or 1h`,
+			want: `timeout "30 seconds" is not a duration; write it as 30s, 5m, 1h, or 7d`,
 		},
 		{
 			name: "duration written as a number",
@@ -82,7 +82,7 @@ steps:
       inputs: {}
 `,
 			line: 4, col: 5,
-			want: `unknown key "nonsense"; the keys here are id, if, timeout, retry, continue_on_error, task, for_each, and parallel`,
+			want: `unknown key "nonsense"; the keys here are id, if, timeout, retry, continue_on_error, task, for_each, parallel, sleep, wait_until, and wait_for_signal`,
 		},
 		{
 			name: "unknown workflow key",
@@ -125,7 +125,7 @@ steps:
     timeout: 5s
 `,
 			line: 3, col: 5,
-			want: "must have one of task, for_each, or parallel",
+			want: "must have one of task, for_each, parallel, sleep, wait_until, or wait_for_signal",
 		},
 		{
 			name: "non-string task name",

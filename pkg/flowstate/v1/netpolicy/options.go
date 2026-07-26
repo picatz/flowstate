@@ -92,6 +92,14 @@ type config struct {
 	rootCAs       *x509.CertPool
 	minTLSVersion uint16
 
+	// controlPlane holds the addresses declared as Flowstate's own control plane,
+	// which are reserved: denied even when their category is allowed.
+	controlPlane map[netip.AddrPort]struct{}
+
+	// selfAdministration permits those addresses, for a request carrying the run's
+	// identity.
+	selfAdministration bool
+
 	proxy func(*http.Request) (*url.URL, error)
 }
 

@@ -7,9 +7,11 @@ import (
 	"testing"
 
 	"connectrpc.com/connect"
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/proto"
 
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/stretchr/testify/require"
 )
 
 // TestManifestIsDerived checks that what the engine is told about a plugin comes
@@ -222,6 +224,163 @@ func TestInputsRoundTrip(t *testing.T) {
 	entries := named["headers"].GetLiteral().GetMapValue().GetEntries()
 	if len(entries) != 1 || entries[0].GetKey().GetStringValue() != "Location" {
 		t.Errorf("headers = %v, want one Location entry", entries)
+	}
+}
+
+// TestStructuredOutputs checks that a plugin task can return data whose shape is
+// not fixed.
+//
+// Any plugin worth writing eventually returns something other than flat scalars —
+// a list of rows, a parsed response body — and until this worked, the SDK's
+// convenience path stopped applying at exactly the point a plugin got
+// interesting. The http task's own `json` output is this case, which is how the
+// gap surfaced.
+func TestStructuredOutputs(t *testing.T) {
+	t.Parallel()
+
+	outputs, err := EncodeOutputs(&flowstatev1.Task_HTTP_Outputs{
+		StatusCode: 200,
+		Body:       `{"items":[{"id":1,"name":"a"}]}`,
+		Json: Literal(map[string]any{
+			"items": []any{map[string]any{"id": 1, "name": "a"}},
+		}),
+	})
+	require.NoError(t, err, "a task could not return structured data")
+
+	named := outputs.GetNamedValues()
+
+	// The scalars alongside it still work.
+	require.Equal(t, int64(200), named["status_code"].GetLiteral().GetInt64Value())
+
+	// And the structured value arrives as a value a workflow can navigate, so
+	// ${call.json.items[0].name} resolves with no step in between to parse it.
+	entries := named["json"].GetLiteral().GetMapValue().GetEntries()
+	require.Len(t, entries, 1)
+	require.Equal(t, "items", entries[0].GetKey().GetStringValue())
+
+	items := entries[0].GetValue().GetListValue().GetValues()
+	require.Len(t, items, 1)
+
+	first := items[0].GetMapValue().GetEntries()
+	require.Len(t, first, 2)
+
+	byKey := map[string]*expr.Value{}
+	for _, entry := range first {
+		byKey[entry.GetKey().GetStringValue()] = entry.GetValue()
+	}
+	require.Equal(t, "a", byKey["name"].GetStringValue())
+	require.Equal(t, int64(1), byKey["id"].GetInt64Value())
+}
+
+// TestStructuredOutputsRoundTrip checks that what a task returns can be read back
+// as an input, since one plugin's output is often the next step's input.
+func TestStructuredOutputsRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	outputs, err := EncodeOutputs(&flowstatev1.Task_HTTP_Outputs{
+		Json: Literal(map[string]any{"ok": true}),
+	})
+	require.NoError(t, err)
+
+	// The http task's `json` *input* is flowstate's spelling of the same idea, so
+	// feeding one to the other exercises both message types.
+	var decoded flowstatev1.Task_HTTP_Inputs
+	require.NoError(t, DecodeInputs(map[string]*flowstatev1.Value{
+		"url":  flowstatev1.NewLiteral("https://example.com"),
+		"json": outputs.GetNamedValues()["json"],
+	}, &decoded))
+
+	entries := decoded.GetJson().GetLiteral().GetMapValue().GetEntries()
+	require.Len(t, entries, 1)
+	require.Equal(t, "ok", entries[0].GetKey().GetStringValue())
+	require.True(t, entries[0].GetValue().GetBoolValue())
+}
+
+// TestUnsupportedMessageOutputSaysWhatToDo checks the refusal, which is the part
+// an author actually meets.
+//
+// Converting an arbitrary message would mean inventing a mapping from its fields
+// onto a CEL value — this package's invention rather than the schema's, whose
+// field names would come out however JSON naming mangles them and would not match
+// the descriptor the engine validates the task against. So it refuses, and the
+// error has to be worth receiving.
+func TestUnsupportedMessageOutputSaysWhatToDo(t *testing.T) {
+	t.Parallel()
+
+	// A message-typed output that is neither spelling of "any shape".
+	_, err := EncodeOutputs(&flowstatev1.Node{
+		Id:   "x",
+		Kind: &flowstatev1.Node_Task{Task: &flowstatev1.Task{Name: "echo"}},
+	})
+	require.Error(t, err, "an arbitrary message was converted rather than refused")
+
+	for _, want := range []string{
+		"google.api.expr.v1alpha1.Value", // what to declare instead
+		"sdk.Literal",                    // how to build it
+	} {
+		require.Contains(t, err.Error(), want,
+			"the refusal does not tell the author what to do instead")
+	}
+}
+
+// TestLiteral checks the helper on its own, including the shapes a plugin author
+// is most likely to hand it.
+func TestLiteral(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		value any
+		check func(t *testing.T, got *expr.Value)
+	}{
+		{
+			name:  "a string",
+			value: "hello",
+			check: func(t *testing.T, got *expr.Value) {
+				require.Equal(t, "hello", got.GetStringValue())
+			},
+		},
+		{
+			name:  "a bool",
+			value: true,
+			check: func(t *testing.T, got *expr.Value) {
+				require.True(t, got.GetBoolValue())
+			},
+		},
+		{
+			name:  "a list",
+			value: []any{"a", "b"},
+			check: func(t *testing.T, got *expr.Value) {
+				require.Len(t, got.GetListValue().GetValues(), 2)
+			},
+		},
+		{
+			name:  "a nested map",
+			value: map[string]any{"outer": map[string]any{"inner": 1}},
+			check: func(t *testing.T, got *expr.Value) {
+				entries := got.GetMapValue().GetEntries()
+				require.Len(t, entries, 1)
+				require.Equal(t, "outer", entries[0].GetKey().GetStringValue())
+				require.Len(t, entries[0].GetValue().GetMapValue().GetEntries(), 1)
+			},
+		},
+		{
+			name:  "nothing",
+			value: nil,
+			check: func(t *testing.T, got *expr.Value) {
+				require.NotNil(t, got, "nil produced no value at all")
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := Literal(test.value)
+			require.NotNil(t, got)
+			test.check(t, got)
+		})
 	}
 }
 

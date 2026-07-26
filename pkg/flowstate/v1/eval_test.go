@@ -87,6 +87,20 @@ func TestRunWorkflowPolicy(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowWait covers durable waiting in the local driver.
+//
+// The same cases run against the Temporal driver in the engine package. Waiting is
+// where the two drivers are most different underneath — a timer here is a sleep in
+// a process, and there it is state on a server — so it is where holding them to
+// one set of expectations matters most.
+func TestRunWorkflowWait(t *testing.T) {
+	for _, test := range tests.WaitCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			runWorkflow(t, test.Workflow, test.ExpectedOutputs)
+		})
+	}
+}
+
 func Test_CELNestedOutputsReference(t *testing.T) {
 	wf := &v1.Workflow{
 		Name: "nested",

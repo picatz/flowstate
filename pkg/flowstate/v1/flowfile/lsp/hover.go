@@ -148,9 +148,14 @@ func taskDoc(def v1.TaskDef) string {
 	}
 	fmt.Fprintf(&b, "\n\n%s", signature(def))
 
-	if len(def.DeferredInputs) > 0 {
-		fmt.Fprintf(&b, "\n\nThe task evaluates `%s` itself, so those inputs may reference values that exist only while it runs.",
-			strings.Join(def.DeferredInputs, "`, `"))
+	if n := len(def.DeferredInputs); n > 0 {
+		subject, verb := "those inputs", "inputs"
+		if n == 1 {
+			subject, verb = "it", "input"
+		}
+		_ = verb
+		fmt.Fprintf(&b, "\n\nThe task evaluates %s itself, so %s may reference values that exist only while it runs.",
+			joinNames(def.DeferredInputs), subject)
 	}
 	if def.Outputs != nil && def.Outputs.Fields().Len() > 0 {
 		names := fieldNames(def.Outputs)
@@ -412,4 +417,25 @@ func prefixEach(prefix string, names []string) []string {
 		out = append(out, prefix+n)
 	}
 	return out
+}
+
+// joinNames renders a list of names as prose: "a", "a and b", or "a, b, and c".
+//
+// Hover text is read, not parsed, and a comma-separated list of two reads as a
+// mistake. This came up when a task gained a second input it evaluates itself.
+func joinNames(names []string) string {
+	quoted := make([]string, 0, len(names))
+	for _, n := range names {
+		quoted = append(quoted, "`"+n+"`")
+	}
+	switch len(quoted) {
+	case 0:
+		return ""
+	case 1:
+		return quoted[0]
+	case 2:
+		return quoted[0] + " and " + quoted[1]
+	default:
+		return strings.Join(quoted[:len(quoted)-1], ", ") + ", and " + quoted[len(quoted)-1]
+	}
 }

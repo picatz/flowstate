@@ -51,8 +51,8 @@ const (
 // the author no reason to doubt it, which is the worst of both outcomes.
 var (
 	workflowKeys = []string{"name", "description", "steps"}
-	stepKeys     = []string{"id", "if", "timeout", "retry", "continue_on_error", "task", "for_each", "parallel"}
-	stepKindKeys = []string{"task", "for_each", "parallel"}
+	stepKeys     = []string{"id", "if", "timeout", "retry", "continue_on_error", "task", "for_each", "parallel", "sleep", "wait_until", "wait_for_signal"}
+	stepKindKeys = []string{"task", "for_each", "parallel", "sleep", "wait_until", "wait_for_signal"}
 	taskKeys     = []string{"name", "description", "inputs"}
 	retryKeys    = []string{"attempts", "interval", "backoff", "max_interval"}
 	forEachKeys  = []string{"items", "iterator", "max_parallel", "steps"}
@@ -367,7 +367,7 @@ func (c *compiler) steps(n ast.Node, path string, r ref) []*v1.Node {
 
 	sequence, ok := n.(*ast.SequenceNode)
 	if !ok {
-		c.report(spanOfNode(n), r, "must be a list of steps, each with an id and one of task, for_each, or parallel")
+		c.report(spanOfNode(n), r, "must be a list of steps, each with an id and one of %s", stepKindList())
 		return nil
 	}
 	if len(sequence.Values) == 0 {
@@ -424,7 +424,7 @@ func (c *compiler) step(n ast.Node, path string) *v1.Node {
 
 	switch len(kinds) {
 	case 0:
-		c.report(span, r, "must have one of task, for_each, or parallel; a step has to do something")
+		c.report(span, r, "must have one of %s; a step has to do something", stepKindList())
 	case 1:
 		kind := kinds[0]
 		kindPath := fieldPath(path, kind.name)
@@ -443,6 +443,18 @@ func (c *compiler) step(n ast.Node, path string) *v1.Node {
 			if parallel := c.parallel(kind.value, kindPath, r); parallel != nil {
 				step.Kind = &v1.Node_Parallel{Parallel: parallel}
 			}
+		case "sleep":
+			if wait := c.sleep(kind.value, kindPath, r); wait != nil {
+				step.Kind = &v1.Node_Wait{Wait: wait}
+			}
+		case "wait_until":
+			if wait := c.waitUntil(kind.value, kindPath, r); wait != nil {
+				step.Kind = &v1.Node_Wait{Wait: wait}
+			}
+		case "wait_for_signal":
+			if wait := c.waitForSignal(kind.value, kindPath, r); wait != nil {
+				step.Kind = &v1.Node_Wait{Wait: wait}
+			}
 		}
 	default:
 		c.report(spanOfNode(kinds[1].key), r,
@@ -456,6 +468,7 @@ func (c *compiler) step(n ast.Node, path string) *v1.Node {
 	}
 
 	step.Policy = c.policy(fields, path, r)
+	c.checkWaitPolicy(step, fields, path, r)
 
 	return step
 }

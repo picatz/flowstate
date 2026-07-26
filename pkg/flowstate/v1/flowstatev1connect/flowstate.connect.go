@@ -37,12 +37,20 @@ const (
 	WorkflowServiceRunProcedure = "/flowstate.v1.WorkflowService/Run"
 	// WorkflowServiceGetProcedure is the fully-qualified name of the WorkflowService's Get RPC.
 	WorkflowServiceGetProcedure = "/flowstate.v1.WorkflowService/Get"
+	// WorkflowServiceSignalProcedure is the fully-qualified name of the WorkflowService's Signal RPC.
+	WorkflowServiceSignalProcedure = "/flowstate.v1.WorkflowService/Signal"
 )
 
 // WorkflowServiceClient is a client for the flowstate.v1.WorkflowService service.
 type WorkflowServiceClient interface {
 	Run(context.Context, *connect.Request[v1.RunRequest]) (*connect.Response[v1.RunResponse], error)
 	Get(context.Context, *connect.Request[v1.GetRequest]) (*connect.Response[v1.GetResponse], error)
+	// Signal delivers a signal to a run waiting for one, which is how a human
+	// approval reaches a workload. It is the same call whether the run is local or
+	// durable, so `flow signal` behaves identically against both — the local driver
+	// exists to tell an author what production will do, and a gate an author cannot
+	// exercise locally is a gate they will first exercise in production.
+	Signal(context.Context, *connect.Request[v1.SignalRequest]) (*connect.Response[v1.SignalResponse], error)
 }
 
 // NewWorkflowServiceClient constructs a client for the flowstate.v1.WorkflowService service. By
@@ -68,13 +76,20 @@ func NewWorkflowServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(workflowServiceMethods.ByName("Get")),
 			connect.WithClientOptions(opts...),
 		),
+		signal: connect.NewClient[v1.SignalRequest, v1.SignalResponse](
+			httpClient,
+			baseURL+WorkflowServiceSignalProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("Signal")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // workflowServiceClient implements WorkflowServiceClient.
 type workflowServiceClient struct {
-	run *connect.Client[v1.RunRequest, v1.RunResponse]
-	get *connect.Client[v1.GetRequest, v1.GetResponse]
+	run    *connect.Client[v1.RunRequest, v1.RunResponse]
+	get    *connect.Client[v1.GetRequest, v1.GetResponse]
+	signal *connect.Client[v1.SignalRequest, v1.SignalResponse]
 }
 
 // Run calls flowstate.v1.WorkflowService.Run.
@@ -87,10 +102,21 @@ func (c *workflowServiceClient) Get(ctx context.Context, req *connect.Request[v1
 	return c.get.CallUnary(ctx, req)
 }
 
+// Signal calls flowstate.v1.WorkflowService.Signal.
+func (c *workflowServiceClient) Signal(ctx context.Context, req *connect.Request[v1.SignalRequest]) (*connect.Response[v1.SignalResponse], error) {
+	return c.signal.CallUnary(ctx, req)
+}
+
 // WorkflowServiceHandler is an implementation of the flowstate.v1.WorkflowService service.
 type WorkflowServiceHandler interface {
 	Run(context.Context, *connect.Request[v1.RunRequest]) (*connect.Response[v1.RunResponse], error)
 	Get(context.Context, *connect.Request[v1.GetRequest]) (*connect.Response[v1.GetResponse], error)
+	// Signal delivers a signal to a run waiting for one, which is how a human
+	// approval reaches a workload. It is the same call whether the run is local or
+	// durable, so `flow signal` behaves identically against both — the local driver
+	// exists to tell an author what production will do, and a gate an author cannot
+	// exercise locally is a gate they will first exercise in production.
+	Signal(context.Context, *connect.Request[v1.SignalRequest]) (*connect.Response[v1.SignalResponse], error)
 }
 
 // NewWorkflowServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -112,12 +138,20 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 		connect.WithSchema(workflowServiceMethods.ByName("Get")),
 		connect.WithHandlerOptions(opts...),
 	)
+	workflowServiceSignalHandler := connect.NewUnaryHandler(
+		WorkflowServiceSignalProcedure,
+		svc.Signal,
+		connect.WithSchema(workflowServiceMethods.ByName("Signal")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/flowstate.v1.WorkflowService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case WorkflowServiceRunProcedure:
 			workflowServiceRunHandler.ServeHTTP(w, r)
 		case WorkflowServiceGetProcedure:
 			workflowServiceGetHandler.ServeHTTP(w, r)
+		case WorkflowServiceSignalProcedure:
+			workflowServiceSignalHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -133,4 +167,8 @@ func (UnimplementedWorkflowServiceHandler) Run(context.Context, *connect.Request
 
 func (UnimplementedWorkflowServiceHandler) Get(context.Context, *connect.Request[v1.GetRequest]) (*connect.Response[v1.GetResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.Get is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) Signal(context.Context, *connect.Request[v1.SignalRequest]) (*connect.Response[v1.SignalResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.Signal is not implemented"))
 }

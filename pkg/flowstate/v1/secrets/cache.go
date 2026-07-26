@@ -220,8 +220,23 @@ func (c *Cache) store(key string, secret Secret) {
 
 	c.entries[key] = cacheEntry{
 		secret:  secret,
-		expires: c.now().Add(c.ttl),
+		expires: c.now().Add(c.lifetime(secret)),
 	}
+}
+
+// lifetime returns how long an entry may be reused.
+//
+// A provider that reported a lifetime shortens the entry; it cannot lengthen it. A
+// backend knows when its own credential stops working, and holding one past that
+// hands out something already refused — so a shorter answer is always taken. The
+// other direction is the operator's call, not the backend's: a provider claiming a
+// day would otherwise override a policy that says an hour.
+func (c *Cache) lifetime(secret Secret) time.Duration {
+	if ttl := secret.TTL(); ttl > 0 && ttl < c.ttl {
+		return ttl
+	}
+
+	return c.ttl
 }
 
 // evictLocked makes room for one entry. It drops everything expired first, and if

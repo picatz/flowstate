@@ -2,6 +2,7 @@ package lsp
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
@@ -16,9 +17,16 @@ import (
 // nothing this file can say that the engine would not also enforce, because both
 // read the same schema.
 
-// dynamicValueMessage is the schema message that carries a CEL value, and so a
-// field whose type the Flowfile author sees as "whatever the expression yields".
-const dynamicValueMessage protoreflect.FullName = "flowstate.v1.Value"
+// dynamicValueMessages are the messages that carry a CEL value, and so fields whose
+// type a Flowfile author sees as "whatever the expression yields".
+//
+// There are two because the schema uses both: its own wrapper, and CEL's, which the
+// http task's parsed `json` output is. Neither name means anything in the DSL — an
+// author has no `Value` type to reason about — so both render as `any`.
+var dynamicValueMessages = []protoreflect.FullName{
+	"flowstate.v1.Value",
+	"google.api.expr.v1alpha1.Value",
+}
 
 // fieldNames returns the input or output names a message declares, in field
 // number order, which is the order the schema author chose.
@@ -79,7 +87,7 @@ func scalarTypeName(fd protoreflect.FieldDescriptor) string {
 	case protoreflect.EnumKind:
 		return string(fd.Enum().Name())
 	case protoreflect.MessageKind, protoreflect.GroupKind:
-		if fd.Message().FullName() == dynamicValueMessage {
+		if slices.Contains(dynamicValueMessages, fd.Message().FullName()) {
 			// A CEL value: the concrete type is whatever the expression
 			// produces, which is exactly what "any" tells the author.
 			return "any"
@@ -230,59 +238,4 @@ func writeFields(b *strings.Builder, label string, md protoreflect.MessageDescri
 		}
 		b.WriteString("\n")
 	}
-}
-
-// closestName returns the candidate closest to name, or the empty string when
-// none is close enough to be worth suggesting.
-//
-// The threshold is deliberately tight. Suggesting "message" for "url" would be
-// noise, while suggesting it for "mesage" is the whole point of the check.
-func closestName(name string, candidates []string) string {
-	best, bestDist := "", 0
-	limit := max(len(name)/3, 1)
-	for _, c := range candidates {
-		d := editDistance(strings.ToLower(name), strings.ToLower(c))
-		if d > limit {
-			continue
-		}
-		if best == "" || d < bestDist {
-			best, bestDist = c, d
-		}
-	}
-	return best
-}
-
-// editDistance returns the edit distance between a and b, counting a transposition
-// of two adjacent characters as one edit.
-//
-// Plain Levenshtein charges two for a transposition, which puts "ulr" two away from
-// "url" and so past the suggestion threshold for any short name — and transposing
-// two characters is the most common way to misspell one. Distances are over code
-// points, so an accented character costs the same as an ASCII one.
-func editDistance(a, b string) int {
-	ar, br := []rune(a), []rune(b)
-
-	// Rows for i-2, i-1, and i; the i-2 row is what makes transposition cost one.
-	prev2 := make([]int, len(br)+1)
-	prev := make([]int, len(br)+1)
-	curr := make([]int, len(br)+1)
-	for j := range prev {
-		prev[j] = j
-	}
-
-	for i := 1; i <= len(ar); i++ {
-		curr[0] = i
-		for j := 1; j <= len(br); j++ {
-			cost := 1
-			if ar[i-1] == br[j-1] {
-				cost = 0
-			}
-			curr[j] = min(prev[j]+1, curr[j-1]+1, prev[j-1]+cost)
-			if i > 1 && j > 1 && ar[i-1] == br[j-2] && ar[i-2] == br[j-1] {
-				curr[j] = min(curr[j], prev2[j-2]+1)
-			}
-		}
-		prev2, prev, curr = prev, curr, prev2
-	}
-	return prev[len(br)]
 }
