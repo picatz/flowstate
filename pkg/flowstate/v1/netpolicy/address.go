@@ -214,16 +214,8 @@ func (p *Policy) CheckAddr(addr netip.AddrPort) error {
 		candidates = append(candidates, embedded)
 	}
 
-	for _, denied := range p.cfg.denyNetworks {
-		for _, candidate := range candidates {
-			if denied.Contains(candidate) {
-				return &DenyError{
-					Reason: ReasonAddress,
-					Target: target,
-					Detail: "within denied network " + denied.String(),
-				}
-			}
-		}
+	if err := p.checkDeniedNetworks(addr); err != nil {
+		return err
 	}
 
 	cat := classify(ip)
@@ -260,6 +252,39 @@ func (p *Policy) CheckAddr(addr netip.AddrPort) error {
 			Reason: ReasonAddress,
 			Target: target,
 			Detail: string(cat) + " addresses are not allowed",
+		}
+	}
+
+	return nil
+}
+
+// checkDeniedNetworks reports whether an address falls in a denied network.
+//
+// It is separate so that the control-plane path can apply it too: a declared
+// control plane is permitted on the operator's word, but an explicit denial is
+// still a denial, which lets one address be carved out without withdrawing the
+// capability.
+func (p *Policy) checkDeniedNetworks(addr netip.AddrPort) error {
+	if len(p.cfg.denyNetworks) == 0 {
+		return nil
+	}
+
+	ip := normalize(addr.Addr())
+
+	candidates := []netip.Addr{ip}
+	if embedded, ok := embeddedIPv4(ip); ok {
+		candidates = append(candidates, embedded)
+	}
+
+	for _, denied := range p.cfg.denyNetworks {
+		for _, candidate := range candidates {
+			if denied.Contains(candidate) {
+				return &DenyError{
+					Reason: ReasonAddress,
+					Target: ip.String(),
+					Detail: "within denied network " + denied.String(),
+				}
+			}
 		}
 	}
 
