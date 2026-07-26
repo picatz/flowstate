@@ -5,6 +5,10 @@ import (
 	"fmt"
 	"strconv"
 	"time"
+
+	"github.com/google/cel-go/cel"
+	"github.com/google/cel-go/common/types"
+	"github.com/google/cel-go/common/types/ref"
 )
 
 // TimedOutOutput is the output every wait produces, reporting whether it ended
@@ -47,6 +51,44 @@ func WaitOutputs(payload *Node_Outputs, timedOut bool) *Node_Outputs {
 	return out
 }
 
+// NowIdentifier is the name a wait expression uses for the moment it is being
+// evaluated, so `wait_until: ${now + days(1)}` means what it reads as.
+//
+// # Why this is bound here and nowhere else
+//
+// The value comes from the caller, which is workflow code holding the driver's
+// own clock: `workflow.Now` under Temporal, the wall clock locally. Both are
+// deterministic for their driver — Temporal's replays to the same instant — so a
+// wait computed from it survives replay and a worker restart.
+//
+// A task input is the other case, and it is the reason this is not simply bound
+// everywhere. Input expressions are resolved inside an activity, so a `now` there
+// would be read afresh on every attempt: a retried step would compute a different
+// value than the one that failed, and two steps in the same run would disagree
+// about what time it is. Neither is a bug anybody would find quickly. Making the
+// name resolvable in exactly the place with a clock behind it keeps the awkward
+// version from being expressible at all.
+//
+// It is reserved as a step id for the same reason: a step named `now` would be
+// silently shadowed inside a wait expression, and `flowfile` refuses it rather
+// than letting a reference quietly mean something else.
+const NowIdentifier = "now"
+
+// evalWaitExpr evaluates a wait's expression with [NowIdentifier] bound.
+func evalWaitExpr(ctx context.Context, v *Value, scope *Scope, now time.Time) (ref.Val, error) {
+	switch kind := v.GetKind().(type) {
+	case *Value_Literal:
+		return cel.ValueToRefValue(TypeAdapter, kind.Literal)
+	case *Value_Expr:
+		activation := scope.ActivationWith(ctx, map[string]ref.Val{
+			NowIdentifier: types.DefaultTypeAdapter.NativeToValue(now),
+		})
+		return DefaultEvaluator().EvalParsedBase(ctx, kind.Expr, activation)
+	default:
+		return nil, fmt.Errorf("unsupported value kind %T", kind)
+	}
+}
+
 // EvalWaitDeadline resolves a `wait_until` expression to the moment it names.
 //
 // # Why this is a time and not a condition
@@ -71,7 +113,7 @@ func EvalWaitDeadline(ctx context.Context, until *Value, scope *Scope, now time.
 		return time.Time{}, fmt.Errorf("wait_until has no expression")
 	}
 
-	value, err := valueToCEL(ctx, until, scope)
+	value, err := evalWaitExpr(ctx, until, scope, now)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("evaluating wait_until: %w", err)
 	}

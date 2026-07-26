@@ -6,6 +6,8 @@ import (
 	"sort"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"google.golang.org/protobuf/proto"
@@ -222,4 +224,54 @@ func visitNodes(m proto.Message, fn func(*v1.Node)) {
 
 		return true
 	})
+}
+
+// `now` resolves in a wait and nowhere else, and the diagnostics have to say so.
+//
+// A name that works in one field and not another is the kind of thing an author
+// hits once and remembers wrongly, so the message for the wrong placement names
+// the right one rather than reporting an unknown step.
+
+// TestNowResolvesInAWaitUntil checks the placement that works.
+func TestNowResolvesInAWaitUntil(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := flowfile.Unmarshal([]byte(
+		"name: t\nsteps:\n  - id: hold\n    wait_until: ${now + days(1)}\n"))
+	require.NoError(t, err)
+
+	require.Empty(t, flowfile.Validate(workflow),
+		"`now` was reported as unresolved inside the one field that binds it")
+}
+
+// TestNowInATaskInputSaysWhereItIsAvailable checks the placement that does not.
+func TestNowInATaskInputSaysWhereItIsAvailable(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := flowfile.Unmarshal([]byte(
+		"name: t\nsteps:\n  - id: report\n    task:\n      name: echo\n      inputs:\n        message: ${now}\n"))
+	require.NoError(t, err)
+
+	diagnostics := flowfile.Validate(workflow)
+	require.NotEmpty(t, diagnostics, "`now` resolved in a task input, where nothing binds it")
+
+	message := diagnostics.Error()
+	require.Contains(t, message, "wait_until",
+		"the diagnostic does not say where `now` is available")
+	require.NotContains(t, message, "unknown step",
+		"`now` was reported as a missing step, which sends the author looking for one they never wrote")
+}
+
+// TestStepNamedNowIsRefused checks that the shadowing is prevented rather than
+// merely survived.
+func TestStepNamedNowIsRefused(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := flowfile.Unmarshal([]byte(
+		"name: t\nsteps:\n  - id: now\n    task:\n      name: echo\n      inputs:\n        message: hi\n"))
+	require.NoError(t, err)
+
+	diagnostics := flowfile.Validate(workflow)
+	require.NotEmpty(t, diagnostics, "a step named `now` was accepted")
+	require.Contains(t, diagnostics.Error(), "choose another id")
 }

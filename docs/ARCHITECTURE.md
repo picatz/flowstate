@@ -377,6 +377,17 @@ name=json` and buffered until the gate is reached. Those are the same capability
 the constraint each driver actually has, which is the distinction invariant 3 is about —
 not that the two are reached by identical commands.
 
+A wait deadline may be computed rather than written down: inside `wait_until:`, `now` is
+the moment the wait is evaluated, and `seconds`/`minutes`/`hours`/`days`/`weeks` build
+durations, so `${now + days(3)}` says what it reads as. `now` is bound there and nowhere
+else, and that placement is invariant 4 rather than an omission — its value is the
+driver's own clock (`workflow.Now` under Temporal, which replays to the same instant), so
+a deadline computed from it survives replay. A task input is resolved inside an activity,
+where each retry would read a different value and two steps in a run would disagree about
+what time it is; making the name resolvable only where a replay-safe clock exists keeps
+that version from being expressible at all. A step may therefore not be called `now`,
+since a bound name wins over a step's outputs and the shadowing would be silent.
+
 One wrinkle lives in the schema rather than in either driver: `Node.Outputs.named_values`
 is required, so an empty map is not something a message can say. A signal that carries
 nothing therefore travels with its payload *absent*, and the server substitutes empty

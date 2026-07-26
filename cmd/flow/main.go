@@ -542,6 +542,16 @@ func runTasks(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintf(out, "\nCEL libraries available to the cel task via the libs input:\n  %s\n",
 		strings.Join(v1.ExtensionLibraries(), ", "))
+
+	// Listed separately because they are not opt-in: they are in every
+	// environment, including a `wait_until:` expression, which has no libs input
+	// to enable anything with. Somebody reading this to find out what an
+	// expression can say would otherwise conclude the answer is the list above.
+	fmt.Fprintf(out, "\nDuration constructors available to every expression:\n  %s\n",
+		strings.Join(v1.DurationUnits(), ", "))
+	fmt.Fprintf(out, "\nInside wait_until, %s is the moment the wait is evaluated,\n"+
+		"so a deadline can be written as ${%s + days(3)}.\n", v1.NowIdentifier, v1.NowIdentifier)
+
 	return nil
 }
 
