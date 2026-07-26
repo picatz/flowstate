@@ -33,6 +33,47 @@ jobs:
       - name: Test
         run: go test -race ./...
 
+  # The schema is a public contract, not an internal detail: plugins are separate
+  # processes that compile against these descriptors, so breaking it breaks every
+  # plugin in the wild rather than producing a compile error someone can see. That
+  # is why this is its own job — a schema failure is not a broken test.
+  proto:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # buf breaking compares against the base branch, which has to be present.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # `buf lint` is deliberately absent for now: it reports six pre-existing
+      # violations, all of them the plugin protocol's request and response messages
+      # not being named after their RPC methods. The fix is to move that protocol
+      # into its own proto package rather than to rename inside a shared one, which
+      # is its own change. Adding the step before that lands would only turn a known
+      # issue into a red build that everyone learns to ignore.
+
+      # proto/buf.yaml has declared FILE and WIRE breaking rules from the start and
+      # nothing ran them.
+      - name: Check for breaking changes
+        run: go run github.com/bufbuild/buf/cmd/buf@latest breaking --against '.git#branch=origin/main'
+
+      # Generated code is committed, so it can disagree with the schema it came
+      # from. That disagreement is invisible locally — the build stays green using
+      # the stale generated code — and shows up as a mystery when someone else
+      # regenerates. Several people editing one schema at once makes this likely
+      # rather than theoretical.
+      - name: Verify generated code is current
+        run: |
+          go run github.com/bufbuild/buf/cmd/buf@latest generate
+          git diff --exit-code -- . || {
+            echo "::error::generated code does not match the schema; run 'buf generate' and commit the result"
+            exit 1
+          }
+
   vulncheck:
     runs-on: ubuntu-latest
     steps:
