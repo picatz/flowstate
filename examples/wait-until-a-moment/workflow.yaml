@@ -1,0 +1,44 @@
+name: wait-until-a-moment
+description: Holds a workload until a moment carried in data, rather than for a fixed delay.
+
+# `sleep:` waits for a duration. `wait_until:` waits for a *moment*, and the
+# difference matters whenever the moment comes from somewhere else — a publication
+# embargo, a maintenance window, a scheduled cutover. The workload does not know
+# how long to wait, only when to resume.
+#
+# The expression must produce a time: an RFC 3339 string, a timestamp, or Unix
+# seconds. It deliberately cannot be a condition. Nothing a blocked workload can
+# observe changes while it is blocked, so `wait_until: ${retries > 3}` would spell
+# "wait forever" — the engine refuses a boolean and says so, and points at
+# `wait_for_signal:` for the case where something outside the workload decides.
+#
+# Like every wait here, this is a durable timer rather than a sleeping worker. A
+# workload can hold until next Tuesday while the fleet it started on is replaced.
+
+steps:
+  # In a real workload this is a field in an HTTP response or a run input. It is
+  # computed here so the example is self-contained.
+  #
+  # The moment shipped in this file is in the past, so the example completes
+  # immediately rather than blocking a reader who runs it. That is not a
+  # workaround: a moment already past is defined to release the wait, because a
+  # workload resumed after an outage should reach an open window and catch up
+  # rather than fail for being late.
+  - id: embargo
+    task:
+      name: cel
+      inputs:
+        expr: "string(timestamp('2026-01-01T09:00:00Z'))"
+
+  # The line worth copying. The wait is over a value produced by an earlier step,
+  # so it composes with everything else the same way any `${...}` reference does.
+  - id: hold
+    wait_until: ${embargo.result}
+
+  - id: publish
+    task:
+      name: printf
+      inputs:
+        format: "embargo lifted at %s; publishing"
+        args:
+          - ${embargo.result}
