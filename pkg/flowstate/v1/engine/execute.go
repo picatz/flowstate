@@ -40,6 +40,22 @@ type executor struct {
 
 	// resume is the position to resume from, consumed as execution descends.
 	resume []*v1.Frame
+
+	// signals holds signals that arrived before the step waiting for them was
+	// reached, carried from a previous run. A wait consumes from here before it
+	// blocks on a channel.
+	//
+	// It is shared by pointer with every nested executor, because a signal
+	// consumed by a wait inside a loop body or a parallel branch must be consumed
+	// for the whole run — a copy per level would let one signal satisfy several
+	// waits. No lock is needed: workflow coroutines are scheduled cooperatively,
+	// so only one of them runs at a time.
+	signals *signalCarry
+}
+
+// signalCarry holds the run's early-arriving signals.
+type signalCarry struct {
+	pending []*v1.PendingSignal
 }
 
 // runNodes executes a list of nodes in order at one nesting level.
@@ -106,6 +122,9 @@ func (e *executor) runNode(node *v1.Node, depth int, descend bool) error {
 
 	case *v1.Node_Parallel:
 		return e.runParallel(kind.Parallel, depth)
+
+	case *v1.Node_Wait:
+		return e.runWait(node, kind.Wait)
 
 	default:
 		return &ErrRunFailed{Message: fmt.Sprintf("unsupported node kind: %T", node.Kind)}

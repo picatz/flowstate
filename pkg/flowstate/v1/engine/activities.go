@@ -57,6 +57,20 @@ func activityError(taskName string, err error) error {
 
 	kind := v1.ClassifyError(err)
 	if kind.Retryable() {
+		// A failure that told us when to come back gets that carried to the
+		// substrate, which schedules the next attempt. The alternative — sleeping
+		// where the failure happened — would hold a worker slot for the duration.
+		//
+		// This belongs on the retryable path and only here: a delay on a
+		// non-retryable error is inert, because there is no next attempt to delay.
+		if delay := v1.RetryAfter(err); delay > 0 {
+			return temporal.NewApplicationErrorWithOptions(err.Error(), kind.String(),
+				temporal.ApplicationErrorOptions{
+					Cause:          err,
+					NextRetryDelay: delay,
+				})
+		}
+
 		// Returning the error unchanged leaves it retryable, which is
 		// Temporal's default for application errors.
 		return err

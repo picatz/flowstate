@@ -1,10 +1,14 @@
 package engine
 
 import (
+	"errors"
+	"fmt"
 	"testing"
+	"time"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/stretchr/testify/require"
+	"go.temporal.io/sdk/temporal"
 )
 
 func TestResolveTaskInputs_PreResolveValueExprs(t *testing.T) {
@@ -203,4 +207,70 @@ func TestCompactOutputsForRemainingSteps_Table(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Test_activityError_retryAfter covers carrying a server's Retry-After to the
+// substrate, and the two ways that could go wrong.
+//
+// The delay belongs on the retryable path and only there: a non-retryable
+// application error has no next attempt to delay, so setting it would be inert while
+// looking implemented.
+func Test_activityError_retryAfter(t *testing.T) {
+	t.Run("a retryable failure with a delay carries it", func(t *testing.T) {
+		err := activityError("http", &v1.TaskError{
+			Task:       "http",
+			Kind:       v1.ErrorKindUpstream,
+			Err:        errors.New("429 Too Many Requests"),
+			RetryAfter: 30 * time.Second,
+		})
+
+		var appErr *temporal.ApplicationError
+		require.ErrorAs(t, err, &appErr)
+		require.Equal(t, 30*time.Second, appErr.NextRetryDelay())
+		require.False(t, appErr.NonRetryable(), "carrying a delay must not make it permanent")
+	})
+
+	t.Run("a retryable failure with no delay takes exactly its old path", func(t *testing.T) {
+		// The plugin host depends on this: a retryable kind with no delay must be
+		// returned unchanged, since an unwrapped error is retryable by default.
+		original := &v1.TaskError{Task: "http", Kind: v1.ErrorKindUpstream, Err: errors.New("boom")}
+
+		err := activityError("http", original)
+		require.Same(t, original, err, "the zero case must stay on the path it takes today")
+	})
+
+	t.Run("a permanent failure ignores a delay", func(t *testing.T) {
+		err := activityError("http", &v1.TaskError{
+			Task:       "http",
+			Kind:       v1.ErrorKindInvalidInput,
+			Err:        errors.New("bad request"),
+			RetryAfter: 30 * time.Second,
+		})
+
+		var appErr *temporal.ApplicationError
+		require.ErrorAs(t, err, &appErr)
+		require.True(t, appErr.NonRetryable())
+	})
+
+	t.Run("a delay is found through wrapping", func(t *testing.T) {
+		// A plugin's failure arrives inside fmt.Errorf("plugin %q: %w", ...), so a
+		// type assertion would miss every one of them.
+		wrapped := fmt.Errorf("plugin %q: %w", "example", &v1.TaskError{
+			Task:       "http",
+			Kind:       v1.ErrorKindUpstream,
+			Err:        errors.New("503"),
+			RetryAfter: 5 * time.Second,
+		})
+
+		err := activityError("http", wrapped)
+
+		var appErr *temporal.ApplicationError
+		require.ErrorAs(t, err, &appErr)
+		require.Equal(t, 5*time.Second, appErr.NextRetryDelay())
+	})
+
+	t.Run("a non-task error is unaffected", func(t *testing.T) {
+		require.Zero(t, v1.RetryAfter(errors.New("plain")))
+		require.Zero(t, v1.RetryAfter(nil))
+	})
 }
