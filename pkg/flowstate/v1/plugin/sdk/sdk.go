@@ -73,6 +73,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/proto"
@@ -914,6 +915,11 @@ func (s *taskService) Execute(ctx context.Context, req *connect.Request[flowstat
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
+	}
+	// Cut on a rune boundary, since this bounds text that came from a workflow
+	// or from a backend rather than from here.
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
 	}
 	return s[:n] + "..."
 }

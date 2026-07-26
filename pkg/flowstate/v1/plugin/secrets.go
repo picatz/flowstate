@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
 	"connectrpc.com/connect"
 
@@ -37,6 +38,10 @@ type secretProvider struct {
 	plugin *Plugin
 	scheme string
 	cfg    Config
+
+	// warnOnce keeps the unimplemented-TTL warning to one line per plugin
+	// rather than one per resolution.
+	warnOnce sync.Once
 }
 
 // newSecretProvider returns the provider for one of a plugin's schemes.
@@ -118,6 +123,22 @@ func (s *secretProvider) Resolve(ctx context.Context, req secrets.Request) (secr
 		}
 	}
 
+	// The response's expires_in is a per-value hint that the engine should cache
+	// this no longer than the plugin considers safe, and it cannot be honored
+	// yet: secrets.Provider returns (Secret, error), with nowhere to carry a
+	// TTL, so secrets.Cache applies its own default regardless. A plugin vending
+	// a short-lived lease therefore has it cached for the cache's default
+	// instead. Saying so once per resolution would be noise, so it is said once
+	// per plugin and only when a plugin actually asks for something shorter.
+	if expires := resp.Msg.GetExpiresIn().AsDuration(); expires > 0 {
+		s.warnOnce.Do(func() {
+			s.plugin.log.Warn(
+				"plugin asks that resolved secrets not be cached beyond a limit, which this engine cannot honor yet; the configured cache TTL applies instead",
+				"scheme", s.scheme, "requested", expires,
+			)
+		})
+	}
+
 	// The one statement the value appears in. NewSecret closes over it, so from
 	// here it is reachable only through Reveal.
 	return secrets.NewSecret(ref, string(value)), nil
@@ -154,7 +175,10 @@ func (s *secretProvider) classify(err error) error {
 			secrets.ErrUnknownScheme, s.plugin.Name(), err)
 	case connect.CodeResourceExhausted:
 		return fmt.Errorf("%w: %w", secrets.ErrTooLarge, err)
-	case connect.CodeUnavailable, connect.CodeDeadlineExceeded, connect.CodeAborted:
+	case connect.CodeUnavailable, connect.CodeDeadlineExceeded, connect.CodeAborted, connect.CodeCanceled:
+		// Cancellation the plugin reported rather than the caller's own, which
+		// the check above catches. It says nothing is wrong with the reference,
+		// so another attempt is worth making.
 		return fmt.Errorf("%w: %w", secrets.ErrUnavailable, err)
 	default:
 		// Unclassified is permanent. Guessing that a failure is retryable is the

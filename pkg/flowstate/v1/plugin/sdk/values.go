@@ -2,6 +2,7 @@ package sdk
 
 import (
 	"fmt"
+	"math"
 
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/proto"
@@ -83,23 +84,36 @@ func setField(msg protoreflect.Message, field protoreflect.FieldDescriptor, valu
 func setLiteral(msg protoreflect.Message, field protoreflect.FieldDescriptor, literal *expr.Value) error {
 	switch {
 	case field.IsMap():
+		// Only string keys, checked before anything is built: the key is
+		// constructed as a string below, and protobuf's reflection panics rather
+		// than erroring when a value of the wrong type is set on a map. A panic
+		// here would surface to the engine as a dropped connection, which reads
+		// as a transient failure and gets retried into the same panic.
+		if kind := field.MapKey().Kind(); kind != protoreflect.StringKind {
+			return fmt.Errorf(
+				"has %s map keys, which DecodeInputs does not convert; read this input from the map directly",
+				kind,
+			)
+		}
+
 		entries := literal.GetMapValue()
 		if entries == nil {
 			return fmt.Errorf("wants a map")
 		}
+
 		mapValue := msg.Mutable(field).Map()
 		for _, entry := range entries.GetEntries() {
-			key := entry.GetKey().GetStringValue()
-			if key == "" && entry.GetKey().GetKind() != nil {
-				if _, isString := entry.GetKey().GetKind().(*expr.Value_StringValue); !isString {
-					return fmt.Errorf("has a non-string map key")
-				}
+			key, isString := entry.GetKey().GetKind().(*expr.Value_StringValue)
+			if !isString {
+				return fmt.Errorf("has a map key that is not a string")
 			}
+
 			converted, err := scalar(field.MapValue(), entry.GetValue())
 			if err != nil {
-				return fmt.Errorf("map value for %q: %w", truncate(key, 64), err)
+				return fmt.Errorf("map value for %q: %w", truncate(key.StringValue, 64), err)
 			}
-			mapValue.Set(protoreflect.ValueOfString(key).MapKey(), converted)
+
+			mapValue.Set(protoreflect.ValueOfString(key.StringValue).MapKey(), converted)
 		}
 		return nil
 
@@ -146,8 +160,12 @@ func scalar(field protoreflect.FieldDescriptor, value *expr.Value) (protoreflect
 		if v, ok := value.GetKind().(*expr.Value_BoolValue); ok {
 			return protoreflect.ValueOfBool(v.BoolValue), nil
 		}
+	// The range checks below are the same reasoning [integer] applies to a
+	// fractional value: a number that does not fit is a workflow author's
+	// mistake, and wrapping it into a plausible one — 4294967296 becoming 0, or
+	// 1e300 becoming +Inf — turns a diagnosable failure into a wrong answer.
 	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
-		if n, ok := integer(value); ok {
+		if n, ok := integer(value); ok && n >= math.MinInt32 && n <= math.MaxInt32 {
 			return protoreflect.ValueOfInt32(int32(n)), nil
 		}
 	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
@@ -155,7 +173,7 @@ func scalar(field protoreflect.FieldDescriptor, value *expr.Value) (protoreflect
 			return protoreflect.ValueOfInt64(n), nil
 		}
 	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
-		if n, ok := integer(value); ok && n >= 0 {
+		if n, ok := integer(value); ok && n >= 0 && n <= math.MaxUint32 {
 			return protoreflect.ValueOfUint32(uint32(n)), nil
 		}
 	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
@@ -163,7 +181,7 @@ func scalar(field protoreflect.FieldDescriptor, value *expr.Value) (protoreflect
 			return protoreflect.ValueOfUint64(uint64(n)), nil
 		}
 	case protoreflect.FloatKind:
-		if f, ok := number(value); ok {
+		if f, ok := number(value); ok && !overflowsFloat32(f) {
 			return protoreflect.ValueOfFloat32(float32(f)), nil
 		}
 	case protoreflect.DoubleKind:
@@ -171,7 +189,7 @@ func scalar(field protoreflect.FieldDescriptor, value *expr.Value) (protoreflect
 			return protoreflect.ValueOfFloat64(f), nil
 		}
 	case protoreflect.EnumKind:
-		if n, ok := integer(value); ok {
+		if n, ok := integer(value); ok && n >= math.MinInt32 && n <= math.MaxInt32 {
 			return protoreflect.ValueOfEnum(protoreflect.EnumNumber(n)), nil
 		}
 		if v, ok := value.GetKind().(*expr.Value_StringValue); ok {
@@ -217,6 +235,17 @@ func integer(value *expr.Value) (int64, bool) {
 		}
 	}
 	return 0, false
+}
+
+// overflowsFloat32 reports whether a float64 cannot be held as a float32.
+//
+// An infinity that was already infinite is fine; one produced by narrowing is
+// not, because it silently replaces a number with something that is not one.
+func overflowsFloat32(f float64) bool {
+	if math.IsInf(f, 0) || math.IsNaN(f) {
+		return false
+	}
+	return math.Abs(f) > math.MaxFloat32
 }
 
 // number reads a literal as a float.
@@ -332,11 +361,24 @@ func encodeScalar(field protoreflect.FieldDescriptor, value protoreflect.Value) 
 	case protoreflect.EnumKind:
 		return &expr.Value{Kind: &expr.Value_Int64Value{Int64Value: int64(value.Enum())}}, nil
 	case protoreflect.MessageKind:
-		// A field already holding flowstate's own Value type is what it is.
+		// A field already holding flowstate's own Value type is what it is —
+		// provided it holds a literal. An output carrying an unevaluated
+		// expression or a secret reference is not an output: the first is
+		// something the task was supposed to evaluate, and the second must never
+		// become a step output at all, since step outputs are written to
+		// workflow history.
 		if field.Message().FullName() == "flowstate.v1.Value" {
-			if v, ok := value.Message().Interface().(*flowstatev1.Value); ok {
-				return v.GetLiteral(), nil
+			v, ok := value.Message().Interface().(*flowstatev1.Value)
+			if !ok {
+				break
 			}
+			if literal := v.GetLiteral(); literal != nil {
+				return literal, nil
+			}
+			return nil, fmt.Errorf(
+				"holds a %T rather than a value; a task's outputs must be values it computed",
+				v.GetKind(),
+			)
 		}
 	}
 

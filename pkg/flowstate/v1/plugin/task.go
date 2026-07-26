@@ -108,40 +108,69 @@ func (p *Plugin) taskFunc(manifest *flowstatev1.TaskManifest) flowstatev1.TaskFu
 // SDK always answer explicitly, so this applies only to one that returns a bare
 // error.
 func taskError(task, plugin string, err error) error {
-	if retryable, ok := retryableFromDetails(err); ok {
-		kind := flowstatev1.ErrorKindInvalidInput
-		if retryable {
+	kind := kindForCode(err)
+
+	// The plugin's own verdict decides only whether to retry, not what the
+	// failure was. Letting it decide both would mean a plugin's NotFound and its
+	// PermissionDenied arriving as "inputs that do not satisfy the task's
+	// schema", which tells a workflow author to fix inputs that are fine.
+	if retryable, said := retryableFromDetails(err); said {
+		switch {
+		case retryable:
 			kind = flowstatev1.ErrorKindUpstream
-		}
-		return flowstatev1.NewTaskError(task, kind, fmt.Errorf("plugin %q: %w", plugin, err))
-	}
-
-	kind := flowstatev1.ErrorKindInternal
-
-	if code, ok := connectError(err); ok {
-		switch code {
-		case connect.CodeInvalidArgument, connect.CodeFailedPrecondition, connect.CodeOutOfRange:
+		case kind.Retryable():
+			// It says permanent and the code says otherwise. The plugin knows
+			// its own backend, so it wins — and the only permanent kind that
+			// describes "the task failed" without naming a cause it cannot know
+			// is this one.
 			kind = flowstatev1.ErrorKindInvalidInput
-		case connect.CodePermissionDenied, connect.CodeUnauthenticated:
-			kind = flowstatev1.ErrorKindPolicyDenied
-		case connect.CodeUnimplemented, connect.CodeNotFound:
-			kind = flowstatev1.ErrorKindUnknownTask
-		case connect.CodeUnavailable, connect.CodeDeadlineExceeded, connect.CodeAborted, connect.CodeResourceExhausted:
-			// Resource exhaustion belongs here rather than with the limits: a
-			// plugin reporting it is rate limited or out of capacity is
-			// reporting something that passes, unlike a response that was too
-			// large to read.
-			kind = flowstatev1.ErrorKindUpstream
 		}
-	}
-
-	// A cancelled or expired caller context is not the plugin's failure, and
-	// classifying it as one would blame the plugin in the step's error.
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		kind = flowstatev1.ErrorKindUpstream
 	}
 
 	return flowstatev1.NewTaskError(task, kind, fmt.Errorf("plugin %q: %w", plugin, err))
+}
+
+// kindForCode maps a Connect status code onto the engine's error kinds.
+//
+// The codes not listed are the ones that say a plugin broke rather than that
+// something it was asked to do could not be done, and they land on
+// [flowstatev1.ErrorKindInternal] — which is retryable, for the reason the engine
+// gives for retrying its own internal errors: a genuine defect is better
+// surfaced by exhausting attempts than by being silently swallowed. A plugin that
+// means "do not retry this" says so with the detail read above, and every plugin
+// built with the SDK does.
+func kindForCode(err error) flowstatev1.ErrorKind {
+	// A cancelled or expired caller context is not the plugin's failure, and
+	// classifying it as one would blame the plugin in the step's error.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return flowstatev1.ErrorKindUpstream
+	}
+
+	code, ok := connectError(err)
+	if !ok {
+		return flowstatev1.ErrorKindInternal
+	}
+
+	switch code {
+	case connect.CodeInvalidArgument, connect.CodeFailedPrecondition, connect.CodeOutOfRange:
+		return flowstatev1.ErrorKindInvalidInput
+	case connect.CodePermissionDenied, connect.CodeUnauthenticated:
+		return flowstatev1.ErrorKindPolicyDenied
+	case connect.CodeUnimplemented, connect.CodeNotFound:
+		return flowstatev1.ErrorKindUnknownTask
+	case connect.CodeUnavailable, connect.CodeDeadlineExceeded, connect.CodeAborted, connect.CodeResourceExhausted:
+		// Resource exhaustion belongs here rather than with the limits: a plugin
+		// reporting it is rate limited or out of capacity is reporting something
+		// that passes, unlike a response that was too large to read.
+		return flowstatev1.ErrorKindUpstream
+	case connect.CodeCanceled:
+		// Cancellation the plugin reported rather than the caller's own, which
+		// the check above catches. Nothing about the task is wrong, so it is not
+		// reported as though something is.
+		return flowstatev1.ErrorKindUpstream
+	default:
+		return flowstatev1.ErrorKindInternal
+	}
 }
 
 // retryableFromDetails reads a plugin's own verdict on whether a failure could

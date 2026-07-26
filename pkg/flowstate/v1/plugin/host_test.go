@@ -554,9 +554,19 @@ func TestTaskErrorClassification(t *testing.T) {
 		name          string
 		mode          string
 		wantRetryable bool
+		wantKind      flowstatev1.ErrorKind
 	}{
 		{name: "plugin says the failure is transient", mode: "retryable", wantRetryable: true},
 		{name: "plugin says the failure is permanent", mode: "permanent", wantRetryable: false},
+		{
+			// The verdict on retrying must not overwrite what the failure was: a
+			// refused backend reported as bad inputs tells a workflow author to
+			// fix inputs that are fine.
+			name:          "plugin says permanent, and says why",
+			mode:          "denied",
+			wantRetryable: false,
+			wantKind:      flowstatev1.ErrorKindPolicyDenied,
+		},
 	}
 
 	for _, test := range tests {
@@ -575,6 +585,9 @@ func TestTaskErrorClassification(t *testing.T) {
 
 			if got := taskErr.Retryable(); got != test.wantRetryable {
 				t.Errorf("Retryable = %v (kind %s), want %v", got, taskErr.Kind, test.wantRetryable)
+			}
+			if test.wantKind != "" && taskErr.Kind != test.wantKind {
+				t.Errorf("kind = %s, want %s", taskErr.Kind, test.wantKind)
 			}
 		})
 	}

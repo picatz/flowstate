@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"slices"
 	"time"
+	"unicode/utf8"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/internal/protocol"
 )
@@ -318,9 +319,16 @@ func isEnvEntry(s string) bool {
 }
 
 // truncate bounds text bound for an error message or a log line.
+//
+// It cuts on a rune boundary. Everything this bounds was chosen by another
+// process, so cutting mid-rune is not hypothetical, and a broken rune in a log
+// line is a log line some consumer will refuse to parse.
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
 	}
 	return s[:n] + "..."
 }

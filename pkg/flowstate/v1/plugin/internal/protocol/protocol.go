@@ -40,6 +40,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // Environment variable names the host sets when it launches a plugin.
@@ -306,6 +307,11 @@ func Negotiate(offered, supported []int) (int, bool) {
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
+	}
+	// Cut on a rune boundary: this bounds text another process chose, and a
+	// broken rune in a log line is a line some consumer will refuse to parse.
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
 	}
 	return s[:n] + "..."
 }

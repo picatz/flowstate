@@ -176,6 +176,14 @@ func (h *Host) bind(launched []*Plugin) []error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	// Close may have run while these were being launched, in which case it found
+	// an empty map and stopped nothing. Publishing them now would hand the
+	// engine adapters for plugins nothing will ever stop, so they are reported
+	// as a problem instead and Open's cleanup path stops them.
+	if h.closed {
+		return []error{ErrClosed}
+	}
+
 	var problems []error
 
 	for _, p := range launched {
@@ -248,17 +256,35 @@ func (h *Host) Close(ctx context.Context) error {
 
 	var wg sync.WaitGroup
 	for _, p := range plugins {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			p.close(ctx)
-		}()
+		wg.Go(func() { p.close(ctx) })
 	}
 	wg.Wait()
 
+	h.mu.Lock()
+	// Adapters already handed to the engine keep working — they report the
+	// plugin closed — but nothing new should be handed out from a closed host.
+	h.plugins = make(map[string]*Plugin)
+	h.schemes = make(map[string]*Plugin)
+	h.taskDefs = make(map[string]taskBinding)
+	h.mu.Unlock()
+
 	h.log.Info("plugins stopped", "count", len(plugins))
 
-	return ctx.Err()
+	// Only report a failure if waiting actually gave up. A Close that stopped
+	// everything within its deadline succeeded, and returning the context's
+	// error because some unrelated deadline passed afterwards would say
+	// otherwise.
+	if err := ctx.Err(); err != nil {
+		for _, p := range plugins {
+			select {
+			case <-p.supervisorDone:
+			default:
+				return fmt.Errorf("plugin: stopped waiting for plugins to finish: %w", err)
+			}
+		}
+	}
+
+	return nil
 }
 
 // Names returns the names of the running plugins, sorted.

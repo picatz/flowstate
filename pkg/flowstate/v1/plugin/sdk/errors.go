@@ -91,26 +91,38 @@ func asConnectError(err error) error {
 		return nil
 	}
 
-	// An author who built a connect.Error themselves has said exactly what they
+	// An author who returned a connect.Error directly has said exactly what they
 	// meant, so it is passed through rather than reinterpreted.
-	var connectErr *connect.Error
-	if errors.As(err, &connectErr) {
+	//
+	// A type assertion rather than errors.As, deliberately: errors.As unwraps, so
+	// a connect error wrapped in context — fmt.Errorf("fetching lease: %w", ...)
+	// — would come back as the bare inner error and the author's context would
+	// be dropped from what the engine logs. A wrapped one falls through instead,
+	// keeping its message and gaining the retry verdict.
+	if connectErr, ok := err.(*connect.Error); ok {
 		return connectErr
 	}
 
 	code, retryable := connect.CodeUnknown, false
 
 	var known *classified
-	if errors.As(err, &known) {
+	var wrapped *connect.Error
+
+	switch {
+	case errors.As(err, &known):
 		code, retryable = known.code, known.retryable
+	case errors.As(err, &wrapped):
+		// A connect error with context wrapped around it: the author chose the
+		// code, so it is kept, and the safe verdict on retrying is added.
+		code = wrapped.Code()
 	}
 
-	wrapped := connect.NewError(code, err)
+	converted := connect.NewError(code, err)
 
 	detail, detailErr := connect.NewErrorDetail(&flowstatev1.ExecuteTaskResponse{Retryable: retryable})
 	if detailErr == nil {
-		wrapped.AddDetail(detail)
+		converted.AddDetail(detail)
 	}
 
-	return wrapped
+	return converted
 }

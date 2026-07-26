@@ -3,6 +3,7 @@
 package plugin
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"syscall"
@@ -38,17 +39,25 @@ func terminateProcess(proc *os.Process, kill bool) error {
 		signal = syscall.SIGKILL
 	}
 
-	if err := syscall.Kill(-proc.Pid, signal); err != nil {
-		if err == syscall.ESRCH {
-			return nil
-		}
+	err := syscall.Kill(-proc.Pid, signal)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, syscall.ESRCH):
+		// Nothing there, which is the outcome that was wanted.
+		return nil
+	case errors.Is(err, syscall.EPERM):
+		// The group exists but is not ours to signal, which means this pid no
+		// longer identifies our child's group. Falling back to the process would
+		// be signalling someone else's process by number, so nothing is done.
+		return err
+	default:
 		// The group could not be signalled — most plausibly because setpgid did
 		// not take effect — so fall back to the process itself rather than
-		// leaving it running.
+		// leaving it running. os.Process refuses to signal a pid it has already
+		// reaped, which is the guard that makes this safe.
 		return proc.Signal(signal)
 	}
-
-	return nil
 }
 
 // processAlive reports whether a pid still exists.

@@ -37,7 +37,10 @@ func TestMain(m *testing.M) {
 	if os.Getenv(protocol.MagicCookieEnv) == protocol.MagicCookieValue {
 		os.Exit(runFakePlugin())
 	}
-	os.Exit(m.Run())
+
+	code := m.Run()
+	removeBuiltExample()
+	os.Exit(code)
 }
 
 // fakeMode is which fake plugin this process is, taken from the name it was
@@ -433,6 +436,21 @@ func (s *fakeTaskService) Execute(ctx context.Context, req *connect.Request[flow
 			err.AddDetail(detail)
 		}
 		return nil, err
+
+	case "denied":
+		// A classified permanent failure whose cause is not bad inputs. The kind
+		// the host reports has to say permission rather than blaming the inputs.
+		err := connect.NewError(connect.CodePermissionDenied, errors.New("the backend refused"))
+		if detail, dErr := connect.NewErrorDetail(&flowstatev1.ExecuteTaskResponse{Retryable: false}); dErr == nil {
+			err.AddDetail(detail)
+		}
+		return nil, err
+
+	case "huge-error":
+		// A failure whose *error* body is enormous. Connect's read limit does
+		// not cover the error path, so this is what proves the host bounds it
+		// anyway.
+		return nil, connect.NewError(connect.CodeInternal, errors.New(strings.Repeat("z", 512<<10)))
 	}
 
 	// Echo back what came in, plus what the request carried about the workload,

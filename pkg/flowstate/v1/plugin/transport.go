@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"time"
@@ -85,7 +86,7 @@ func newClients(socketPath, token string, maxResponseBytes int) *clients {
 	}
 
 	httpClient := &http.Client{
-		Transport: transport,
+		Transport: &boundedTransport{base: transport, max: int64(maxResponseBytes)},
 		// No client-level timeout: every call carries its own deadline through
 		// the context, and a timeout here would silently override a caller's
 		// shorter one and be invisible to a caller's longer one.
@@ -105,6 +106,49 @@ func newClients(socketPath, token string, maxResponseBytes int) *clients {
 		task:      flowstatev1connect.NewTaskServiceClient(httpClient, pluginBaseURL, opts...),
 		transport: transport,
 	}
+}
+
+// boundedTransport caps every response body, including the ones Connect's own
+// limit does not reach.
+//
+// connect.WithReadMaxBytes bounds a *successful* response. On a non-200 it
+// builds a separate unmarshaler for the error body without carrying that limit
+// over, so the whole body is buffered — which means the bound is on the path a
+// hostile plugin would not use, and absent on the one it would. A plugin that
+// answers any request with an HTTP 500 and a body of its choosing could
+// otherwise exhaust the worker's memory, which is precisely the "bound the
+// resource the attacker controls" rule this package is built on.
+//
+// Limiting at the transport covers both paths, because every response goes
+// through it whatever its status.
+type boundedTransport struct {
+	base *http.Transport
+	max  int64
+}
+
+// RoundTrip implements [http.RoundTripper].
+func (t *boundedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.base.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+
+	// One byte past the limit, so that a body at exactly the limit still parses
+	// and one over it fails to rather than being silently truncated into
+	// something that might parse.
+	resp.Body = boundedBody{
+		Reader: io.LimitReader(resp.Body, t.max+1),
+		Closer: resp.Body,
+	}
+
+	return resp, nil
+}
+
+// boundedBody is a response body read through a limit, still closing the
+// original.
+type boundedBody struct {
+	io.Reader
+	io.Closer
 }
 
 // authInterceptor presents the per-launch secret on every request.

@@ -651,6 +651,18 @@ func (p *Plugin) restart() bool {
 	}
 
 	p.mu.Lock()
+	if p.state == StateStopped {
+		// close ran while this relaunch was in flight. It found no instance to
+		// stop, because there was none yet, so this one has to be stopped here
+		// or it is a process nothing owns — with a socket directory, three
+		// pipes, and an open connection behind it.
+		p.mu.Unlock()
+
+		// Not procCtx: it is already cancelled, so waiting on it would skip the
+		// grace period and go straight to killing.
+		inst.stop(context.Background(), p.cfg.ShutdownGrace)
+		return false
+	}
 	p.inst = inst
 	p.manifest = manifest
 	p.state = StateReady
@@ -666,6 +678,12 @@ func (p *Plugin) fail(err error) {
 	wrapped := pluginError(p.name, p.path, err)
 
 	p.mu.Lock()
+	if p.state == StateStopped {
+		// close has already said what this plugin's state is, and "stopped" is a
+		// truer answer for a caller than "gave up after N restarts".
+		p.mu.Unlock()
+		return
+	}
 	p.inst = nil
 	p.state = StateFailed
 	p.lastErr = wrapped
@@ -726,20 +744,32 @@ func backoffFor(attempt int, base, max time.Duration) time.Duration {
 	if attempt < 1 {
 		attempt = 1
 	}
+	if base <= 0 {
+		return 0
+	}
 
 	delay := base
 	for range attempt - 1 {
-		delay *= 2
-		if delay >= max {
+		// Tested before doubling rather than after, so a large base cannot
+		// overflow into a negative duration — which a timer treats as elapsed,
+		// turning the backoff into no backoff at all.
+		if delay >= max/2 {
 			delay = max
 			break
 		}
+		delay *= 2
+	}
+	if delay > max {
+		delay = max
 	}
 
-	// Full jitter: a delay uniformly distributed over the whole interval, which
-	// spreads a group of restarts more evenly than jittering around the target.
-	if delay > 0 {
-		delay = time.Duration(rand.Int64N(int64(delay))) + delay/2
+	// Equal jitter: half the interval, plus a random amount up to the other
+	// half, so the result stays within [delay/2, delay] and never exceeds the
+	// configured cap. Full jitter would spread a group of restarts more evenly
+	// but permits a delay of nearly zero, and for one plugin in a crash loop
+	// that is the thing the delay exists to prevent.
+	if half := int64(delay / 2); half > 0 {
+		delay = delay/2 + time.Duration(rand.Int64N(half+1))
 	}
 
 	return delay
@@ -798,17 +828,24 @@ func manifestUnchanged(before, after *flowstatev1.PluginManifest) error {
 // sameSet reports whether two slices hold the same elements, ignoring order and
 // repetition.
 func sameSet[T comparable](a, b []T) bool {
-	seen := make(map[T]struct{}, len(a))
+	inA := make(map[T]struct{}, len(a))
 	for _, v := range a {
-		seen[v] = struct{}{}
+		inA[v] = struct{}{}
 	}
+
+	inB := make(map[T]struct{}, len(b))
 	for _, v := range b {
-		if _, ok := seen[v]; !ok {
+		if _, ok := inA[v]; !ok {
 			return false
 		}
-		delete(seen, v)
+		inB[v] = struct{}{}
 	}
-	return len(seen) == 0
+
+	// Compared as sets on both sides, so that a repeated element on one side
+	// alone does not read as a difference — and, more importantly, so that an
+	// element present only in a is caught. Deleting from one map as b is walked
+	// gets the second case wrong whenever b repeats something.
+	return len(inA) == len(inB)
 }
 
 // capabilityNames renders capabilities for a log line or an error.

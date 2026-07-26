@@ -388,7 +388,16 @@ func (i *instance) stop(ctx context.Context, grace time.Duration) {
 			i.hostPipe.Close()
 		}
 
-		if i.proc != nil {
+		// Only signal a process that has not been reaped. Termination addresses
+		// the process *group*, which os.Process cannot guard the way it guards a
+		// signal to a reaped process: once the child has been waited on its pid
+		// is free, and on a busy machine with a small pid_max it is reused
+		// within minutes. Signalling it then would send SIGTERM to whatever
+		// group now holds that number.
+		//
+		// This is the common path, not an edge: the supervisor reaches here from
+		// the exit it observed, so the process is already gone.
+		if i.proc != nil && !i.reaped() {
 			terminateProcess(i.proc, false)
 
 			if !i.waitExit(ctx, grace) {
@@ -415,6 +424,21 @@ func (i *instance) stop(ctx context.Context, grace time.Duration) {
 			os.RemoveAll(i.socketDir)
 		}
 	})
+}
+
+// reaped reports whether the process has already been waited on, after which its
+// pid means nothing.
+func (i *instance) reaped() bool {
+	if i.exited == nil {
+		return true
+	}
+
+	select {
+	case <-i.exited:
+		return true
+	default:
+		return false
+	}
 }
 
 // waitExit reports whether the process was reaped within the grace period.

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,6 +21,18 @@ import (
 // examplePackage is the worked example plugin, built and run for real by the
 // tests below.
 const examplePackage = "github.com/picatz/flowstate/pkg/flowstate/v1/plugin/examples/flowstate-plugin-example"
+
+// exampleDir holds the directory the example plugin was built into, so that
+// [TestMain] can remove it once every test has finished with it.
+var exampleDir atomic.Pointer[string]
+
+// removeBuiltExample deletes the built example plugin. It is called from
+// TestMain rather than a t.Cleanup because the build is shared by every test.
+func removeBuiltExample() {
+	if dir := exampleDir.Swap(nil); dir != nil {
+		os.RemoveAll(*dir)
+	}
+}
 
 // buildExample compiles the example plugin once per test run and returns a
 // directory holding it, ready to be a search path entry.
@@ -36,6 +49,12 @@ var buildExample = sync.OnceValues(func() (string, error) {
 	if err != nil {
 		return "", err
 	}
+
+	// Built once for the whole run and shared, so no single test can own its
+	// removal; TestMain does it after every test has finished. A package that
+	// tests a host for not leaking things has no business leaving a compiled
+	// binary in the temporary directory on every run.
+	exampleDir.Store(&dir)
 
 	output := filepath.Join(dir, BinaryPrefix+"example")
 
