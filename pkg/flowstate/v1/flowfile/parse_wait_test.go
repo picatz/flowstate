@@ -275,7 +275,7 @@ steps:
       name: echo
       inputs:
         message: ${approval.by}
-  - id: loop
+  - id: pauses
     for_each:
       items: ${[1, 2]}
       steps:
