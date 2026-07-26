@@ -3,17 +3,19 @@ package main
 import (
 	"cmp"
 	"context"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"text/tabwriter"
 	"time"
 
-	"connectrpc.com/authn"
 	"connectrpc.com/connect"
 	"connectrpc.com/otelconnect"
 	"connectrpc.com/validate"
@@ -59,6 +61,11 @@ var (
 	// is requested explicitly.
 	authPolicyPath string
 	insecureNoAuth bool
+
+	// identityKeyPath holds the private key Flowstate signs its own assertions
+	// with, when the trust policy configures federation. Unset means the server
+	// verifies callers but issues nothing, which is the inbound-only deployment.
+	identityKeyPath string
 
 	temporalClient client.Client = nil
 )
@@ -202,7 +209,12 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 func runServer(cmd *cobra.Command, args []string) error {
 	// Resolve configuration before doing any I/O, so a misconfiguration is
 	// reported immediately rather than after waiting on a connection attempt.
-	verifier, err := authVerifier()
+	verifier, policy, err := authVerifier()
+	if err != nil {
+		return err
+	}
+
+	broker, err := identityBroker(policy)
 	if err != nil {
 		return err
 	}
@@ -223,8 +235,8 @@ func runServer(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("error creating OpenTelemetry interceptor: %w", err)
 	}
 
-	mux := http.NewServeMux()
-	mux.Handle(
+	rpcMux := http.NewServeMux()
+	rpcMux.Handle(
 		flowstatev1connect.NewWorkflowServiceHandler(
 			server.New(c),
 			connect.WithInterceptors(
@@ -239,11 +251,9 @@ func runServer(cmd *cobra.Command, args []string) error {
 		),
 	)
 
-	authMiddleware := authn.NewMiddleware(auth.NewAuthenticator(verifier).Authenticate)
-
 	httpServer := &http.Server{
 		Addr:    flowstateAddress,
-		Handler: authMiddleware.Wrap(mux),
+		Handler: serverHandler(verifier, broker, rpcMux),
 
 		// Without these a client that opens a connection and sends bytes
 		// slowly, or never, occupies a connection indefinitely. Go's zero
@@ -259,6 +269,13 @@ func runServer(cmd *cobra.Command, args []string) error {
 	if insecureNoAuth {
 		log.Printf("WARNING: authentication is disabled; every caller is anonymous " +
 			"and can start workflows. Do not use this outside local development.")
+	}
+	if broker != nil {
+		// Log the discovery URL rather than the fact of federation: an operator
+		// configuring a relying party needs this exact string, and finding it by
+		// reading source is the sort of friction that gets solved by guessing.
+		log.Printf("Issuing workload identity assertions; discovery at %s%s",
+			broker.Issuer().URL(), auth.DiscoveryPath)
 	}
 
 	serveErr := make(chan error, 1)
@@ -302,29 +319,92 @@ const maxRequestBytes = 4 << 20 // 4 MiB
 // missing or unreadable policy: a server that cannot load its trust policy must
 // refuse to start rather than quietly begin accepting everyone, which is exactly
 // the failure this replaces.
-func authVerifier() (auth.Verifier, error) {
+func authVerifier() (auth.Verifier, *auth.Policy, error) {
 	if insecureNoAuth {
-		return auth.InsecureAnonymousVerifier(), nil
+		return auth.InsecureAnonymousVerifier(), nil, nil
 	}
 
 	if authPolicyPath == "" {
-		return nil, fmt.Errorf("no authentication configured: pass --auth-policy with a trust policy, " +
+		return nil, nil, fmt.Errorf("no authentication configured: pass --auth-policy with a trust policy, " +
 			"or --insecure-no-auth to allow anonymous access for local development")
 	}
 
 	data, err := os.ReadFile(authPolicyPath)
 	if err != nil {
-		return nil, fmt.Errorf("reading auth policy: %w", err)
+		return nil, nil, fmt.Errorf("reading auth policy: %w", err)
 	}
 	policy, err := auth.ParsePolicy(data)
 	if err != nil {
-		return nil, fmt.Errorf("parsing auth policy %s: %w", authPolicyPath, err)
+		return nil, nil, fmt.Errorf("parsing auth policy %s: %w", authPolicyPath, err)
 	}
 	verifier, err := auth.NewOIDCVerifier(policy)
 	if err != nil {
-		return nil, fmt.Errorf("configuring token verification: %w", err)
+		return nil, nil, fmt.Errorf("configuring token verification: %w", err)
 	}
-	return verifier, nil
+	return verifier, &policy, nil
+}
+
+// identityBroker builds the broker that issues Flowstate's own assertions, or
+// returns nil when the deployment does not federate outward.
+//
+// The signing key is a file rather than a policy field because a policy is
+// configuration a person edits and reads, and a private key is neither. The key
+// id is published in the JWKS and named in every assertion, so a date makes
+// rotation self-documenting: a verifier that has cached "2026-07" can be handed
+// "2026-08" without a coordinated restart.
+func identityBroker(policy *auth.Policy) (*auth.Broker, error) {
+	if policy == nil || policy.Federation == nil {
+		if identityKeyPath != "" {
+			return nil, fmt.Errorf("--identity-key was given but the trust policy configures no federation: " +
+				"add a federation section, or drop the key")
+		}
+		return nil, nil
+	}
+
+	if identityKeyPath == "" {
+		return nil, fmt.Errorf("the trust policy configures federation but no signing key was given: " +
+			"pass --identity-key with a PKCS#8 PEM private key, since Flowstate cannot issue an " +
+			"assertion it cannot sign")
+	}
+
+	pem, err := os.ReadFile(identityKeyPath)
+	if err != nil {
+		return nil, fmt.Errorf("reading identity key: %w", err)
+	}
+	key, err := parseSigningKey(identityKeyPath, pem)
+	if err != nil {
+		return nil, err
+	}
+
+	broker, err := policy.Federation.Broker(key)
+	if err != nil {
+		return nil, fmt.Errorf("configuring identity federation: %w", err)
+	}
+	return broker, nil
+}
+
+// parseSigningKey decodes a PKCS#8 PEM private key, deriving the key id from the
+// file's name.
+func parseSigningKey(path string, data []byte) (auth.SigningKey, error) {
+	block, _ := pem.Decode(data)
+	if block == nil {
+		return auth.SigningKey{}, fmt.Errorf("identity key %s is not PEM-encoded", path)
+	}
+
+	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return auth.SigningKey{}, fmt.Errorf("identity key %s is not a PKCS#8 private key "+
+			"(convert one with: openssl pkcs8 -topk8 -nocrypt -in old.pem -out new.pem): %w", path, err)
+	}
+
+	// The file's base name becomes the key id, so `2026-07.pem` publishes as
+	// "2026-07". Naming the file is the whole of key rotation.
+	id := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	key, err := auth.NewSigningKey(id, parsed)
+	if err != nil {
+		return auth.SigningKey{}, fmt.Errorf("identity key %s: %w", path, err)
+	}
+	return key, nil
 }
 
 // stdio adapts the process's standard input and output into the single
@@ -580,6 +660,11 @@ flow server --verbose`,
 		"path to an OIDC/workload-identity trust policy (YAML) describing which issuers to accept")
 	serverCmd.Flags().BoolVar(&insecureNoAuth, "insecure-no-auth", false,
 		"allow unauthenticated access; for local development only")
+	serverCmd.Flags().StringVar(&identityKeyPath, "identity-key",
+		os.Getenv("FLOWSTATE_IDENTITY_KEY"),
+		"path to a PKCS#8 PEM private key Flowstate signs its own assertions with, "+
+			"required when the trust policy configures federation; the file's base name "+
+			"becomes the published key id, so 2026-07.pem publishes as \"2026-07\"")
 
 	// Validate command, which checks Flowfiles without executing them.
 	validateCmd := &cobra.Command{
