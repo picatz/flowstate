@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"time"
 )
 
 // Redacted is what a [Secret] renders as everywhere a value could otherwise
@@ -68,6 +69,10 @@ type Secret struct {
 	// The func field also makes Secret incomparable, so == is a compile error and
 	// an equality check has to go through the constant-time comparison.
 	reveal func() string
+
+	// ttl is how long the provider says caching this value is safe, or zero when
+	// it did not say. See NewSecretWithTTL.
+	ttl time.Duration
 }
 
 // NewSecret builds a resolved secret. It is how a [Provider] returns its result,
@@ -84,6 +89,35 @@ func NewSecret(ref Ref, value string) Secret {
 	}
 
 	return Secret{ref: ref, reveal: func() string { return value }}
+}
+
+// NewSecretWithTTL builds a resolved secret that says how long caching it is safe.
+//
+// A provider that knows the answer should say so. A backend issuing short-lived
+// credentials knows their lifetime; a plugin reports it as the expires_in of its
+// response; a vault knows a lease duration. Without this, a [Cache] can only apply
+// its own default, which is either too long — handing out a credential the backend
+// has already stopped honoring — or uselessly short for everything else.
+//
+// A non-positive ttl means the provider is not saying, and the cache applies its
+// own default. A ttl shorter than the cache's own shortens the entry; one longer is
+// capped by the cache, because a provider is entitled to say "expire sooner than
+// you planned" and not to say "hold this longer than the operator allows".
+func NewSecretWithTTL(ref Ref, value string, ttl time.Duration) Secret {
+	secret := NewSecret(ref, value)
+	if secret.IsZero() {
+		return secret
+	}
+
+	secret.ttl = ttl
+
+	return secret
+}
+
+// TTL returns how long the provider said caching this value is safe, or zero when
+// it did not say.
+func (s Secret) TTL() time.Duration {
+	return s.ttl
 }
 
 // Ref returns the reference the secret was resolved from. It is safe to log.
