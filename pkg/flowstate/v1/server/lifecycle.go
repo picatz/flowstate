@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"connectrpc.com/connect"
+	common "go.temporal.io/api/common/v1"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
@@ -62,25 +63,36 @@ func (s *FlowstateServer) authorizeRun(ctx context.Context, workflowID, runID st
 		return nil, nil, notFound(workflowID)
 	}
 
-	recorded, err := runTenant(resp)
+	if !ownedBy(caller, resp.GetWorkflowExecutionInfo().GetMemo()) {
+		return nil, nil, notFound(workflowID)
+	}
+
+	return temporal, resp, nil
+}
+
+// ownedBy reports whether a run belongs to the given tenant.
+//
+// This is the single answer to "is this run mine", and every verb asks it here
+// rather than deciding for itself. Addressing one run and listing many look like
+// different problems, but they are the same question asked once or asked in a
+// loop, and two copies of it would eventually disagree — at which point a run
+// hidden from Get would still appear in List, which is the whole of the breach.
+func ownedBy(caller string, memo *common.Memo) bool {
+	recorded, err := memoTenant(memo)
 	switch {
 	case errors.Is(err, errNoTenantRecorded):
 		// A run started before tenants were recorded. It is reachable only from
 		// the empty namespace, which is what a single-tenant deployment resolves
 		// in — so such a deployment keeps working, and a multi-tenant one cannot
 		// reach a run whose tenant was never established.
-		if caller != "" {
-			return nil, nil, notFound(workflowID)
-		}
+		return caller == ""
 	case err != nil:
 		// The memo is there and unreadable. Nothing can be concluded about who
 		// owns this run, so nobody may act on it.
-		return nil, nil, notFound(workflowID)
-	case recorded != caller:
-		return nil, nil, notFound(workflowID)
+		return false
+	default:
+		return recorded == caller
 	}
-
-	return temporal, resp, nil
 }
 
 // notFound is the one answer every unauthorized or absent run gets.
@@ -88,9 +100,13 @@ func notFound(workflowID string) *connect.Error {
 	return connect.NewError(connect.CodeNotFound, fmt.Errorf("no such run %q", workflowID))
 }
 
-// runTenant reads the namespace recorded on a run when it started.
-func runTenant(resp *workflowservice.DescribeWorkflowExecutionResponse) (string, error) {
-	payload, ok := resp.GetWorkflowExecutionInfo().GetMemo().GetFields()[namespaceMemoKey]
+// memoTenant reads the namespace recorded on a run when it started.
+//
+// Takes the memo rather than a Describe response because a listing carries the
+// same memo on every execution it returns, which is what makes filtering a page
+// of runs cost nothing beyond the listing itself — no second call per run.
+func memoTenant(memo *common.Memo) (string, error) {
+	payload, ok := memo.GetFields()[namespaceMemoKey]
 	if !ok {
 		return "", errNoTenantRecorded
 	}
@@ -136,4 +152,58 @@ func (s *FlowstateServer) Signal(ctx context.Context, req *connect.Request[v1.Si
 	}
 
 	return connect.NewResponse(&v1.SignalResponse{}), nil
+}
+
+// Cancel asks a run to stop, letting it clean up on the way out.
+//
+// Cooperative, which is the whole difference from [FlowstateServer.Terminate]:
+// the run is told to stop and gets to finish responding, so a workload that has
+// to release a lock or undo half a deployment still does. The cost is that a run
+// wedged on something that never returns may not stop at all — that is when
+// terminate is the answer, and not before.
+func (s *FlowstateServer) Cancel(ctx context.Context, req *connect.Request[v1.CancelRequest]) (*connect.Response[v1.CancelResponse], error) {
+	if err := v1.Validate(req.Msg); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	workflowID, runID := req.Msg.GetWorkflowId(), req.Msg.GetRunId()
+
+	// Acted on through the client authorization used, so the run cancelled is the
+	// run that was checked.
+	temporal, _, err := s.authorizeRun(ctx, workflowID, runID)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := temporal.CancelWorkflow(ctx, workflowID, runID); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("cancelling run %q: %w", workflowID, err))
+	}
+
+	return connect.NewResponse(&v1.CancelResponse{}), nil
+}
+
+// Terminate stops a run immediately, running none of its cleanup.
+//
+// The reason is recorded because it is the only account of the decision there
+// will be: a terminated run does not get to explain itself, so whoever finds it
+// later has this and nothing else.
+func (s *FlowstateServer) Terminate(ctx context.Context, req *connect.Request[v1.TerminateRequest]) (*connect.Response[v1.TerminateResponse], error) {
+	if err := v1.Validate(req.Msg); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	workflowID, runID := req.Msg.GetWorkflowId(), req.Msg.GetRunId()
+
+	// Acted on through the client authorization used, so the run terminated is the
+	// run that was checked.
+	temporal, _, err := s.authorizeRun(ctx, workflowID, runID)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := temporal.TerminateWorkflow(ctx, workflowID, runID, req.Msg.GetReason()); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("terminating run %q: %w", workflowID, err))
+	}
+
+	return connect.NewResponse(&v1.TerminateResponse{}), nil
 }

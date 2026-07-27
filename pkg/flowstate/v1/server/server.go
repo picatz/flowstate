@@ -341,7 +341,16 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 
 // getWorkflowExecutionStatus maps the Temporal workflow execution status to Flowstate's run response status.
 func getWorkflowExecutionStatus(resp *workflowservice.DescribeWorkflowExecutionResponse) v1.RunResponse_Status {
-	switch resp.GetWorkflowExecutionInfo().GetStatus() {
+	return runStatus(resp.GetWorkflowExecutionInfo().GetStatus())
+}
+
+// runStatus maps a Temporal execution status to Flowstate's.
+//
+// Takes the status rather than a Describe response so a listing maps it the same
+// way a Get does: two mappings would eventually disagree, and a run reported as
+// running in one verb and failed in the other is a bug nobody can reproduce.
+func runStatus(status enums.WorkflowExecutionStatus) v1.RunResponse_Status {
+	switch status {
 	case enums.WORKFLOW_EXECUTION_STATUS_CANCELED:
 		return v1.RunResponse_STATUS_CANCELED
 	case enums.WORKFLOW_EXECUTION_STATUS_COMPLETED:

@@ -7,6 +7,7 @@ import "google/api/expr/v1alpha1/syntax.proto";
 import "google/api/expr/v1alpha1/value.proto";
 import "google/api/field_behavior.proto";
 import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
 
 option go_package = "flowstatev1";
 
@@ -214,12 +215,23 @@ message Wait {
     // while it elapses. A week is as reasonable as a second.
     google.protobuf.Duration duration = 1;
 
-    // Until waits for an expression to become true, as `wait_until: <expr>`.
+    // Until waits for a *moment*, as `wait_until: <expr>`.
     //
-    // The expression is evaluated against the outputs of steps that have already
-    // run, and re-evaluated when those change. It cannot wait for something
-    // outside the workload, because nothing outside the workload can change what
-    // it can see — for that, wait for a signal.
+    // The expression is evaluated once, against the outputs of steps that have
+    // already run, and must produce a time; a boolean is refused rather than
+    // polled. Inside it `now` names the moment the wait is evaluated — taken from
+    // the driver's clock, so it replays to the same instant — and the duration
+    // units make a relative deadline readable: `${now + days(3)}`.
+    //
+    // It is a moment and not a condition because a condition here could only ever
+    // spell "wait forever". A blocked workload runs no step, so nothing it can
+    // see changes while it waits: a condition over step outputs is either already
+    // true or never going to be. Waiting on something outside the workload is
+    // what a signal is for.
+    //
+    // A moment already past releases the wait immediately, which is what lets a
+    // workload resumed after an outage reach an open window and catch up instead
+    // of failing for being late.
     Value until = 2;
 
     // Signal waits for something outside the workload to say it may proceed,
@@ -922,15 +934,168 @@ message SignalRequest {
 
 message SignalResponse {}
 
+// Stopping a run is two different asks, and the difference is not a detail of
+// implementation — it decides whether the workload's cleanup happens.
+//
+// Cancel is cooperative. It asks the run to stop and the run gets to finish
+// responding: a workload that has to release a lock, roll back a partial
+// deployment, or tell someone it gave up still does that. The cost is that a run
+// which is wedged — blocked on something that never returns — may not stop.
+//
+// Terminate is not cooperative. The execution stops where it is, no further step
+// runs, and nothing the workload would have done on the way out is done. It is
+// the answer when a run must stop now and when a run cannot be made to stop any
+// other way, and it should be the second thing tried rather than the first.
+//
+// So: cancel by default, terminate when cancel will not do. Anything holding a
+// resource it is responsible for releasing is a reason to prefer cancel, and
+// terminating it is a decision to leak that resource on purpose.
+
+// CancelRequest asks a run to stop, letting it clean up on the way out.
+message CancelRequest {
+  // WorkflowId identifies the run to cancel.
+  //
+  // A caller may address only runs in a namespace their own authenticated
+  // identity establishes. The namespace is never taken from this request: a
+  // caller who could name their own tenant could name someone else's, and an id
+  // is not a capability.
+  string workflow_id = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 256
+    }
+  ];
+
+  // RunId optionally pins the request to one run of the workload. Unset
+  // addresses whichever run is current, which is what someone stopping a
+  // workload means: they neither know nor care how many times it has been
+  // continued as new.
+  string run_id = 2 [(buf.validate.field).string = {max_len: 256}];
+}
+
+message CancelResponse {}
+
+// TerminateRequest stops a run immediately, without letting it clean up.
+message TerminateRequest {
+  // WorkflowId identifies the run to terminate.
+  //
+  // A caller may address only runs in a namespace their own authenticated
+  // identity establishes. The namespace is never taken from this request: a
+  // caller who could name their own tenant could name someone else's, and an id
+  // is not a capability.
+  string workflow_id = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 256
+    }
+  ];
+
+  // RunId optionally pins the request to one run of the workload. Unset
+  // addresses whichever run is current.
+  string run_id = 2 [(buf.validate.field).string = {max_len: 256}];
+
+  // Reason is recorded on the terminated execution, so whoever finds the run
+  // later learns why it was stopped rather than only that it was.
+  //
+  // A terminated run leaves no trace of its own explaining itself — that is what
+  // terminate means — so this is the only account of the decision there will be.
+  string reason = 3 [(buf.validate.field).string = {max_len: 1024}];
+}
+
+message TerminateResponse {}
+
+// ListRequest asks for the caller's runs.
+message ListRequest {
+  // PageSize bounds how many runs come back. Zero takes the server's default.
+  //
+  // This bounds the answer, not the work: the server filters by tenant itself
+  // (see ListResponse.next_page_token), so a small page is not a promise of a
+  // small scan.
+  int32 page_size = 1 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 1000
+  }];
+
+  // PageToken continues a previous List. Opaque: it encodes where the scan
+  // stopped, and nothing else should be read from or written into it.
+  string page_token = 2 [(buf.validate.field).string = {max_len: 4096}];
+}
+
+// RunSummary describes one run in a listing.
+//
+// Deliberately not a run's outputs. A listing is about which workloads exist and
+// what they are doing; reading what one produced is Get, which is one run and one
+// authorization decision. A list that returned outputs would make "show me my
+// runs" the cheapest way to read every workload's data at once.
+message RunSummary {
+  string workflow_id = 1;
+  string run_id = 2;
+  RunResponse.Status status = 3;
+
+  // StartTime is when the workload began.
+  google.protobuf.Timestamp start_time = 4;
+
+  // CloseTime is when it finished, unset while it is still running.
+  google.protobuf.Timestamp close_time = 5;
+}
+
+// ListResponse returns a page of the caller's runs.
+message ListResponse {
+  repeated RunSummary runs = 1;
+
+  // NextPageToken continues the listing, and is set whenever the scan stopped
+  // with more to look at — including when this page came back short or empty.
+  //
+  // That case is real rather than theoretical. The tenant a run belongs to is
+  // recorded as a memo, which Temporal cannot filter on, so the server reads a
+  // bounded number of executions and keeps the ones that are the caller's. In a
+  // namespace shared by several tenants a scan can therefore end having found
+  // few matches, or none, while plenty remain. An empty page with a token set
+  // means "keep asking", and only an empty token means the listing is done.
+  string next_page_token = 2;
+}
+
 // WorkflowService is the service that provides operations for managing and running workflows.
 service WorkflowService {
   rpc Run(RunRequest) returns (RunResponse) {}
   rpc Get(GetRequest) returns (GetResponse) {}
 
   // Signal delivers a signal to a run waiting for one, which is how a human
-  // approval reaches a workload. It is the same call whether the run is local or
-  // durable, so `flow signal` behaves identically against both — the local driver
-  // exists to tell an author what production will do, and a gate an author cannot
-  // exercise locally is a gate they will first exercise in production.
+  // approval reaches a workload.
+  //
+  // This addresses a durable run. A local run is a process with nobody to signal
+  // it once it has started, so `flow run local` answers its gates from flags
+  // instead. What the two drivers share is the payload and everything downstream
+  // of it — the same signal name, the same outputs, the same expressions reading
+  // them — which is the part that has to match for a local run to tell an author
+  // what production will do.
   rpc Signal(SignalRequest) returns (SignalResponse) {}
+
+  // List returns the runs belonging to the caller's tenant.
+  //
+  // The filtering is done here rather than by Temporal, and that follows from how
+  // Run records a tenant: as a memo, because a memo needs no cluster-side
+  // registration and a first run therefore needs nothing but `temporal server
+  // start-dev`. Temporal cannot query a memo. A search attribute could be
+  // queried, but it would make listing your own runs fail until an operator had
+  // registered the attribute — a basic verb that does not work out of the box is
+  // worse than one that scans.
+  //
+  // So the scan is bounded instead, and the bound is on how many executions the
+  // server reads rather than on how many it returns: a caller asking for ten runs
+  // in a namespace holding a hundred thousand must not be able to make the server
+  // walk all of them. See ListResponse.next_page_token for what that means for a
+  // caller — a short or empty page is not the end of the listing.
+  rpc List(ListRequest) returns (ListResponse) {}
+
+  // Cancel asks a run to stop and lets it clean up on the way out.
+  rpc Cancel(CancelRequest) returns (CancelResponse) {}
+
+  // Terminate stops a run immediately, running none of its cleanup. Prefer
+  // Cancel; see CancelRequest for when this is the right answer anyway.
+  rpc Terminate(TerminateRequest) returns (TerminateResponse) {}
 }

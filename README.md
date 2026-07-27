@@ -544,59 +544,60 @@ $ go run ./cmd/flow run ./examples/hello-world-multi-step/workflow.yaml
 
 ## CLI
 
-The Flowstate CLI (`flow`) provides commands to run workflows, signal a run that is waiting for one, start a worker, or start a server. The worker is responsible for executing workflow tasks as part of Temporal, while the server provides an API for managing and monitoring workflows that users of Flowstate would interact with. Users would submit their `Flowfile` workflows to the server, which would then schedule and manage their execution using Temporal.
+`flow` is the command line interface. A workflow is authored as a Flowfile,
+checked without running it, then either run locally or submitted to a server that
+executes it durably through Temporal.
 
-```console
-$ go run ./cmd/flow
+A table rather than a paste of `flow --help`, because a pasted copy of the help
+output goes stale the first time somebody adds a subcommand and nobody notices.
+Run `flow <command> --help` for the flags; that is the copy that cannot drift.
 
-  Flowstate is a workflow engine that uses Temporal for durable execution and CEL expressions for dynamic workflows.
+| Command | What it does |
+| --- | --- |
+| `flow validate <file...>` | Check Flowfiles without executing them. Reports the line and column of each problem. |
+| `flow run <file>` | Submit a workflow to a server, which runs it durably. |
+| `flow run local <file>` | Run a workflow in this process, with no server and no Temporal. Answers signal gates from `--signal name=json`. |
+| `flow get <id>` | Report what a run is doing, and its outputs if it finished. Status on stderr, outputs on stdout, so `flow get id \| jq` sees only the data. |
+| `flow list` | List your runs. |
+| `flow signal <id> <name>` | Deliver a signal to a run that is waiting, which is how a human approval reaches a workload. |
+| `flow cancel <id>` | Ask a run to stop, letting it clean up. |
+| `flow terminate <id>` | Stop a run immediately, running none of its cleanup. |
+| `flow tasks` | List the tasks a workflow may use, and the expression libraries available to them. |
+| `flow worker` | Start a Temporal worker, which is what actually executes steps. |
+| `flow server` | Start the Flowstate API server that accepts workflows. |
+| `flow lsp` | Serve the Flowfile language server over stdin and stdout, for editor diagnostics. |
 
-  USAGE
+`run`, `get`, `list`, `signal`, `cancel` and `terminate` talk to a server, and
+take `--address` (or `FLOWSTATE_ADDRESS`) to say which one. `run local` does not:
+it contacts nothing.
 
-    flow [command] [--flags]  
+### Stopping a run
 
-  EXAMPLES
+`cancel` and `terminate` are different asks, and the difference decides whether
+the workload's cleanup happens.
 
-    # Run a workflow locally (without Temporal):  
-    flow run local examples/hello-world/workflow.yaml  
-      
-    # Run a workflow using Temporal via the server:  
-    flow run examples/hello-world/workflow.yaml  
-      
-    # Start a Temporal worker:  
-    flow worker  
-      
-    # Start the Flowstate API server:  
-    flow server  
-      
-    # Start the LSP server for Flowfile editing:  
-    flow lsp  
+**`flow cancel`** is cooperative. The run is asked to stop and gets to finish
+responding, so a workload that has to release a lock, roll back a partial
+deployment, or tell somebody it gave up still does. The cost is that a run wedged
+on something that never returns may not stop at all.
 
-  COMMANDS
+**`flow terminate`** is not. The execution stops where it is, no further step
+runs, and nothing the workload would have done on the way out is done. Its
+`--reason` is recorded on the run, and it is the only account of the decision
+anyone will find, because a terminated run does not get to explain itself.
 
-    completion [command]                          Generate the autocompletion script for the specified shell
-    help [command]                                Help about any command
+Prefer cancel. Reach for terminate when a run must stop now, or when cancelling
+did not stop it — and understand that terminating something holding a resource is
+a decision to leak that resource on purpose.
 
-  WORKFLOW COMMANDS
+### Listing runs
 
-    get [workflow-id] [--flags]                   Report what a run is doing
-    run [command] [workflow-file] [--flags]       Run a workflow
-    signal [workflow-id] [signal-name] [--flags]  Send a signal to a waiting run
-    tasks                                         List the tasks workflows can use
-    validate [workflow-file...]                   Check workflows for problems without running them
+`flow list` returns one page and stops. A page can come back short, or even
+empty, while runs of yours remain: the tenant a run belongs to is recorded as a
+Temporal memo, which cannot be queried, so the server reads a bounded number of
+executions per request and keeps the ones that are yours. In a busy namespace a
+scan can spend its whole budget among other tenants' runs.
 
-  INFRASTRUCTURE COMMANDS
-
-    server [--flags]                              Start a server
-    worker [--flags]                              Start a worker
-
-  DEVELOPMENT COMMANDS
-
-    lsp                                           Start a Flowfile Language Server Protocol (LSP) server
-
-  FLAGS
-
-    -h --help                                     Help for flow
-    -v --verbose                                  Enable verbose logging
-    --version                                     Version for flow
-```
+So an empty page is not the end of the listing — only an empty page token is.
+`flow list` says on stderr when more remain, and `flow list --all` keeps asking
+until they do not.

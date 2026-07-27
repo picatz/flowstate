@@ -1,0 +1,222 @@
+package server_test
+
+import (
+	"slices"
+	"testing"
+	"time"
+
+	"connectrpc.com/connect"
+	"github.com/stretchr/testify/require"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+)
+
+// Stopping and listing are the same authorization question Get and Signal ask, so
+// they are tested the same way: the negative direction first, because a check that
+// refuses everyone passes a test that only tries what should work.
+//
+// Listing is the one that needs the negative direction most. Get and Signal are
+// refused by naming a run the caller cannot reach; a listing is not asked about a
+// run at all, so nothing about the request itself reveals a mistake. A List that
+// forgot to filter would look completely healthy to every test that only checked
+// that a tenant can see its own runs.
+
+// TestAnotherTenantCannotStopARun checks that a run cannot be stopped by someone
+// who cannot see it.
+//
+// Worth more than the read-side equivalent: reading another tenant's run leaks
+// their data, and terminating it takes their workload away, which they discover
+// as an outage.
+func TestAnotherTenantCannotStopARun(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTenantFixture(t)
+
+	started, err := fixture.teamA.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+		Workflow: gatedWorkflow(),
+	}))
+	require.NoError(t, err)
+
+	workflowID := started.Msg.GetWorkflowId()
+	require.NotEmpty(t, workflowID)
+
+	t.Run("cannot cancel it", func(t *testing.T) {
+		_, err := fixture.teamB.Cancel(t.Context(), connect.NewRequest(&v1.CancelRequest{
+			WorkflowId: workflowID,
+		}))
+		require.Error(t, err, "another tenant cancelled a run it cannot see")
+
+		// Not found rather than denied, for the same reason every other verb
+		// answers that way: denied would confirm the run exists somewhere.
+		require.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+	})
+
+	t.Run("cannot terminate it", func(t *testing.T) {
+		_, err := fixture.teamB.Terminate(t.Context(), connect.NewRequest(&v1.TerminateRequest{
+			WorkflowId: workflowID,
+			Reason:     "not mine to stop",
+		}))
+		require.Error(t, err, "another tenant terminated a run it cannot see")
+		require.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+	})
+
+	t.Run("and it is still running", func(t *testing.T) {
+		// The refusals above would also be satisfied by a Terminate that failed
+		// *after* stopping the run. What matters to the run's owner is that their
+		// workload is still there.
+		resp, err := fixture.teamA.Get(t.Context(), connect.NewRequest(&v1.GetRequest{
+			WorkflowId: workflowID,
+		}))
+		require.NoError(t, err)
+		require.Equal(t, v1.RunResponse_STATUS_RUNNING, resp.Msg.GetStatus(),
+			"a refused stop stopped the run anyway")
+	})
+
+	t.Run("its owner still can", func(t *testing.T) {
+		// The positive direction: a check that refused everyone would pass every
+		// subtest above.
+		_, err := fixture.teamA.Terminate(t.Context(), connect.NewRequest(&v1.TerminateRequest{
+			WorkflowId: workflowID,
+			Reason:     "done with it",
+		}))
+		require.NoError(t, err, "a run's own tenant could not stop it")
+
+		require.Eventually(t, func() bool {
+			resp, err := fixture.teamA.Get(t.Context(), connect.NewRequest(&v1.GetRequest{
+				WorkflowId: workflowID,
+			}))
+			return err == nil && resp.Msg.GetStatus() == v1.RunResponse_STATUS_TERMINATED
+		}, 30*time.Second, 100*time.Millisecond, "the run was never actually terminated")
+	})
+}
+
+// TestCancelLetsARunStop checks the cooperative half.
+//
+// Which closed status a cancelled run lands in is up to how the workload responds
+// — that is what cooperative means — so this asserts that it stops rather than
+// asserting one outcome. Terminate is the one with a single answer, and it is
+// pinned above.
+func TestCancelLetsARunStop(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTenantFixture(t)
+
+	started, err := fixture.teamA.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+		Workflow: gatedWorkflow(),
+	}))
+	require.NoError(t, err)
+
+	workflowID := started.Msg.GetWorkflowId()
+
+	require.Eventually(t, func() bool {
+		resp, err := fixture.teamA.Get(t.Context(), connect.NewRequest(&v1.GetRequest{
+			WorkflowId: workflowID,
+		}))
+		return err == nil && resp.Msg.GetStatus() == v1.RunResponse_STATUS_RUNNING
+	}, 30*time.Second, 100*time.Millisecond, "the run never reached a running state")
+
+	_, err = fixture.teamA.Cancel(t.Context(), connect.NewRequest(&v1.CancelRequest{
+		WorkflowId: workflowID,
+	}))
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		resp, err := fixture.teamA.Get(t.Context(), connect.NewRequest(&v1.GetRequest{
+			WorkflowId: workflowID,
+		}))
+		return err == nil && resp.Msg.GetStatus() != v1.RunResponse_STATUS_RUNNING
+	}, 60*time.Second, 200*time.Millisecond, "a cancelled run never stopped")
+}
+
+// TestListReturnsOnlyTheCallersRuns is the test the List implementation exists to
+// pass.
+//
+// The tenant is a memo, which Temporal cannot filter on, so every run in the
+// namespace comes back from the listing and the server drops the ones that are not
+// the caller's. That filter is the only thing standing between a caller and every
+// other tenant's run ids — and unlike Get, nothing about the request would look
+// wrong if it were missing.
+func TestListReturnsOnlyTheCallersRuns(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTenantFixture(t)
+
+	teamARuns := make(map[string]bool)
+	for range 2 {
+		started, err := fixture.teamA.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+			Workflow: gatedWorkflow(),
+		}))
+		require.NoError(t, err)
+		teamARuns[started.Msg.GetWorkflowId()] = true
+	}
+
+	startedB, err := fixture.teamB.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+		Workflow: gatedWorkflow(),
+	}))
+	require.NoError(t, err)
+	teamBRun := startedB.Msg.GetWorkflowId()
+
+	// Temporal's visibility store is updated asynchronously, so a listing taken
+	// immediately can legitimately be empty. Waiting for the run a tenant *should*
+	// see is what makes the negative assertion below meaningful: an empty listing
+	// would otherwise satisfy "sees none of team A's runs" while proving nothing.
+	var listedForB []string
+	require.Eventually(t, func() bool {
+		listedForB = listRunIDs(t, func() (*connect.Response[v1.ListResponse], error) {
+			return fixture.teamB.List(t.Context(), connect.NewRequest(&v1.ListRequest{}))
+		})
+		return slices.Contains(listedForB, teamBRun)
+	}, 30*time.Second, 200*time.Millisecond, "a tenant could not see its own run")
+
+	// The direction that matters. Team B's listing must not name a run of team
+	// A's, even though every one of them was in the listing the server read.
+	for _, id := range listedForB {
+		require.False(t, teamARuns[id],
+			"a tenant's listing contained another tenant's run %q", id)
+	}
+
+	var listedForA []string
+	require.Eventually(t, func() bool {
+		listedForA = listRunIDs(t, func() (*connect.Response[v1.ListResponse], error) {
+			return fixture.teamA.List(t.Context(), connect.NewRequest(&v1.ListRequest{}))
+		})
+		for id := range teamARuns {
+			if !slices.Contains(listedForA, id) {
+				return false
+			}
+		}
+		return true
+	}, 30*time.Second, 200*time.Millisecond, "a tenant could not see all of its own runs")
+
+	require.False(t, slices.Contains(listedForA, teamBRun),
+		"a tenant's listing contained another tenant's run")
+}
+
+// TestListRefusesAPageTokenItDidNotIssue checks that a caller's token is parsed
+// rather than trusted.
+func TestListRefusesAPageTokenItDidNotIssue(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTenantFixture(t)
+
+	_, err := fixture.teamA.List(t.Context(), connect.NewRequest(&v1.ListRequest{
+		PageToken: "not a token!!",
+	}))
+	require.Error(t, err)
+	require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+}
+
+// listRunIDs collects the workflow ids from one page of a listing.
+func listRunIDs(t *testing.T, call func() (*connect.Response[v1.ListResponse], error)) []string {
+	t.Helper()
+
+	resp, err := call()
+	require.NoError(t, err)
+
+	ids := make([]string, 0, len(resp.Msg.GetRuns()))
+	for _, run := range resp.Msg.GetRuns() {
+		ids = append(ids, run.GetWorkflowId())
+	}
+
+	return ids
+}

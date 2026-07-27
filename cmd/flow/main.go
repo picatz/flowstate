@@ -750,8 +750,8 @@ flow get flowstate-workflow-3f7c --run-id 0198f1e2-...`,
 		Long: "Deliver a signal to a run waiting for one, which is how a human approval reaches " +
 			"a workload. The payload becomes the waiting step's outputs, so its keys are what " +
 			"later steps read as ${step_id.key}.",
-		Args:  cobra.ExactArgs(2),
-		RunE:  runSignal,
+		Args: cobra.ExactArgs(2),
+		RunE: runSignal,
 		Example: `# Approve a deploy waiting on a gate:
 flow signal deploy-abc123 deploy-approved --data '{"approved": true, "by": "someone@example.com"}'
 
@@ -776,7 +776,13 @@ flow run local examples/approval-gate/workflow.yaml --signal deploy-approved='{"
 	// to use --address, so this is the flag they were being sent to look for.
 	//
 	// `run local` deliberately does not get it: it contacts nothing.
-	for _, c := range []*cobra.Command{runCmd, getCmd, signalCmd} {
+	//
+	// Built from one list so a verb added later cannot be given a group and left
+	// without an address — the way `get` and `signal` were first written.
+	lifecycleCmds := lifecycleCommands()
+	serverCmds := append([]*cobra.Command{runCmd, getCmd, signalCmd}, lifecycleCmds...)
+
+	for _, c := range serverCmds {
 		c.Flags().StringVar(&flowstateAddress, "address", flowstateAddress,
 			"address of the Flowstate server (overrides FLOWSTATE_ADDRESS); "+
 				"an explicit https:// scheme is honored")
@@ -830,6 +836,9 @@ flow lsp`,
 	tasksCmd.GroupID = "workflow"
 	getCmd.GroupID = "workflow"
 	signalCmd.GroupID = "workflow"
+	for _, c := range lifecycleCmds {
+		c.GroupID = "workflow"
+	}
 	workerCmd.GroupID = "infrastructure"
 	serverCmd.GroupID = "infrastructure"
 	lspCmd.GroupID = "development"
@@ -840,6 +849,9 @@ flow lsp`,
 	rootCmd.AddCommand(tasksCmd)
 	rootCmd.AddCommand(getCmd)
 	rootCmd.AddCommand(signalCmd)
+	for _, c := range lifecycleCmds {
+		rootCmd.AddCommand(c)
+	}
 	rootCmd.AddCommand(workerCmd)
 	rootCmd.AddCommand(serverCmd)
 	runCmd.AddCommand(runLocalCmd)

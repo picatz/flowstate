@@ -178,6 +178,49 @@ type fakeWorkflowService struct {
 	gotGet      *v1.GetRequest
 	getResponse *v1.GetResponse
 	getErr      error
+
+	// The lifecycle verbs, whose handlers live in lifecycle_test.go.
+	gotCancel    *v1.CancelRequest
+	gotTerminate *v1.TerminateRequest
+
+	// listResponses is answered in order, so a test can describe a listing that
+	// takes several pages — including a page that comes back empty with more to
+	// find, which a bounded scan produces and a caller must not read as the end.
+	listResponses []*v1.ListResponse
+	listCalls     int
+	lastListToken string
+	listErr       error
+}
+
+// Cancel implements [flowstatev1connect.WorkflowServiceHandler].
+func (f *fakeWorkflowService) Cancel(_ context.Context, req *connect.Request[v1.CancelRequest]) (*connect.Response[v1.CancelResponse], error) {
+	f.gotCancel = req.Msg
+	return connect.NewResponse(&v1.CancelResponse{}), nil
+}
+
+// Terminate implements [flowstatev1connect.WorkflowServiceHandler].
+func (f *fakeWorkflowService) Terminate(_ context.Context, req *connect.Request[v1.TerminateRequest]) (*connect.Response[v1.TerminateResponse], error) {
+	f.gotTerminate = req.Msg
+	return connect.NewResponse(&v1.TerminateResponse{}), nil
+}
+
+// List implements [flowstatev1connect.WorkflowServiceHandler].
+func (f *fakeWorkflowService) List(_ context.Context, req *connect.Request[v1.ListRequest]) (*connect.Response[v1.ListResponse], error) {
+	f.lastListToken = req.Msg.GetPageToken()
+	f.listCalls++
+
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+
+	if len(f.listResponses) == 0 {
+		return connect.NewResponse(&v1.ListResponse{}), nil
+	}
+
+	next := f.listResponses[0]
+	f.listResponses = f.listResponses[1:]
+
+	return connect.NewResponse(next), nil
 }
 
 // Signal implements [flowstatev1connect.WorkflowServiceHandler].
