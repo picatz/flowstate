@@ -542,6 +542,16 @@ func runTasks(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintf(out, "\nCEL libraries available to the cel task via the libs input:\n  %s\n",
 		strings.Join(v1.ExtensionLibraries(), ", "))
+
+	// Listed separately because they are not opt-in: they are in every
+	// environment, including a `wait_until:` expression, which has no libs input
+	// to enable anything with. Somebody reading this to find out what an
+	// expression can say would otherwise conclude the answer is the list above.
+	fmt.Fprintf(out, "\nDuration constructors available to every expression:\n  %s\n",
+		strings.Join(v1.DurationUnits(), ", "))
+	fmt.Fprintf(out, "\nInside wait_until, %s is the moment the wait is evaluated,\n"+
+		"so a deadline can be written as ${%s + days(3)}.\n", v1.NowIdentifier, v1.NowIdentifier)
+
 	return nil
 }
 
@@ -702,6 +712,79 @@ flow validate examples/hello-world/workflow.yaml
 flow validate examples/*/workflow.yaml`,
 	}
 
+	// Get command, which asks a server what a run is doing.
+	//
+	// `flow run` polls for this while it waits, which serves the case where the
+	// person who started the workload is still watching. A durable workload's
+	// whole point is outliving that terminal, so it has to be askable about later.
+	getCmd := &cobra.Command{
+		Use:   "get [workflow-id]",
+		Short: "Report what a run is doing",
+		Long: "Report the status of a run, and its outputs if it has finished. The status is " +
+			"written to stderr and the outputs to stdout, so the outputs can be piped. A run " +
+			"that failed is reported as a failure, so `flow get id && ...` behaves as expected.",
+		Args: cobra.ExactArgs(1),
+		RunE: runGet,
+		Example: `# Ask what a run is doing:
+flow get flowstate-workflow-3f7c
+
+# Keep only the outputs:
+flow get flowstate-workflow-3f7c | jq .stepValues
+
+# Ask about one attempt rather than the current one:
+flow get flowstate-workflow-3f7c --run-id 0198f1e2-...`,
+	}
+
+	getCmd.Flags().StringVar(&getRunID, "run-id", "",
+		"ask about one attempt of the workload; unset asks about whichever is current")
+
+	// Signal command, which answers a gate on a run that is already waiting.
+	//
+	// The counterpart to `flow run local --signal`: there the answers are given
+	// before the run starts, because a local run is a process with nobody to
+	// signal it; here the run is durable and the answer arrives whenever the
+	// person gets to it, which is the case an approval gate exists for.
+	signalCmd := &cobra.Command{
+		Use:   "signal [workflow-id] [signal-name]",
+		Short: "Send a signal to a waiting run",
+		Long: "Deliver a signal to a run waiting for one, which is how a human approval reaches " +
+			"a workload. The payload becomes the waiting step's outputs, so its keys are what " +
+			"later steps read as ${step_id.key}.",
+		Args:  cobra.ExactArgs(2),
+		RunE:  runSignal,
+		Example: `# Approve a deploy waiting on a gate:
+flow signal deploy-abc123 deploy-approved --data '{"approved": true, "by": "someone@example.com"}'
+
+# Decline it; the workload can tell this apart from nobody answering:
+flow signal deploy-abc123 deploy-approved --data '{"approved": false}'
+
+# Send a signal that carries nothing:
+flow signal deploy-abc123 deploy-approved
+
+# Answer the same gate on a local run, which is given its answers up front:
+flow run local examples/approval-gate/workflow.yaml --signal deploy-approved='{"approved": true}'`,
+	}
+
+	signalCmd.Flags().StringVar(&signalData, "data", "",
+		`signal payload as a JSON object, whose keys become the waiting step's outputs, e.g. --data '{"approved": true}'`)
+
+	// The commands that talk to a Flowstate server can say which one.
+	//
+	// FLOWSTATE_ADDRESS was the only way to point these somewhere until now, which
+	// meant addressing a second deployment took an exported variable rather than a
+	// flag. Both the plain-HTTP warning and the no-server error already told people
+	// to use --address, so this is the flag they were being sent to look for.
+	//
+	// `run local` deliberately does not get it: it contacts nothing.
+	for _, c := range []*cobra.Command{runCmd, getCmd, signalCmd} {
+		c.Flags().StringVar(&flowstateAddress, "address", flowstateAddress,
+			"address of the Flowstate server (overrides FLOWSTATE_ADDRESS); "+
+				"an explicit https:// scheme is honored")
+	}
+	signalCmd.Flags().StringVar(&signalRunID, "run-id", "",
+		"pin the signal to one run of the workload; unset addresses whichever run is current, "+
+			"which is what approving a workload means")
+
 	// Tasks command, which lists the available tasks.
 	tasksCmd := &cobra.Command{
 		Use:   "tasks",
@@ -745,6 +828,8 @@ flow lsp`,
 	runCmd.GroupID = "workflow"
 	validateCmd.GroupID = "workflow"
 	tasksCmd.GroupID = "workflow"
+	getCmd.GroupID = "workflow"
+	signalCmd.GroupID = "workflow"
 	workerCmd.GroupID = "infrastructure"
 	serverCmd.GroupID = "infrastructure"
 	lspCmd.GroupID = "development"
@@ -753,6 +838,8 @@ flow lsp`,
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(validateCmd)
 	rootCmd.AddCommand(tasksCmd)
+	rootCmd.AddCommand(getCmd)
+	rootCmd.AddCommand(signalCmd)
 	rootCmd.AddCommand(workerCmd)
 	rootCmd.AddCommand(serverCmd)
 	runCmd.AddCommand(runLocalCmd)

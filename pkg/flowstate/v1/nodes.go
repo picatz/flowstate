@@ -34,6 +34,33 @@ func (s *Scope) StepOutputs() *Workflow_StepOutputs {
 	return s.Outputs
 }
 
+// ActivationWith returns the scope's activation with additional names bound.
+//
+// The extra names win over the scope's own, which is why the only caller binds a
+// name no step may take: shadowing a step's outputs silently would be worse than
+// any convenience it bought.
+func (s *Scope) ActivationWith(ctx context.Context, extra map[string]ref.Val) cel.Activation {
+	if len(extra) == 0 {
+		return s.Activation(ctx)
+	}
+
+	vars := make(map[string]ref.Val, len(extra))
+	if s != nil {
+		for name, v := range s.Vars {
+			rv, err := cel.ValueToRefValue(TypeAdapter, v.GetLiteral())
+			if err != nil {
+				rv = types.NewErr("variable %q: %v", name, err)
+			}
+			vars[name] = rv
+		}
+	}
+	for name, v := range extra {
+		vars[name] = v
+	}
+
+	return Activation(ctx, s.StepOutputs(), vars)
+}
+
 // Activation returns the CEL activation for this scope.
 func (s *Scope) Activation(ctx context.Context) cel.Activation {
 	if s == nil {

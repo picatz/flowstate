@@ -2,6 +2,7 @@ package flowfile
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -152,6 +153,17 @@ func Validate(wf *v1.Workflow) Diagnostics {
 				Message: fmt.Sprintf(
 					"id %q is not a valid identifier, so ${%s.…} cannot be parsed; use letters, digits, and underscores, starting with a letter or underscore",
 					id, id),
+			})
+		case id == v1.NowIdentifier:
+			// Refused rather than shadowed. A wait expression binds `now` to the
+			// moment it is evaluated, and a bound name wins over a step's outputs
+			// — so a step called `now` would keep working everywhere except inside
+			// a `wait_until:`, where it would quietly mean something else.
+			ds = append(ds, Diagnostic{
+				Step: id,
+				Message: fmt.Sprintf(
+					"id %q is the built-in naming the moment a wait is evaluated, which a step of the same name would shadow inside `wait_until:`; choose another id",
+					id),
 			})
 		}
 
@@ -433,6 +445,19 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, available map[st
 		}
 
 		switch {
+		case ref == v1.NowIdentifier:
+			// Reported as what it is rather than as an unknown step. `now` does
+			// exist — an author has read about it, or copied a `wait_until:` — so
+			// "unknown step" sends them looking for a step they never wrote. The
+			// answer they need is that it is bound where a clock exists and not
+			// here, and what to do instead.
+			ds = append(ds, Diagnostic{
+				Step: stepID, Field: inputName,
+				Message: "`now` is only available in `wait_until:`, where the engine binds it to the " +
+					"moment the wait is evaluated; a task input is resolved inside an activity, which " +
+					"has no clock that survives a retry, so compute the moment in a `wait_until:` or " +
+					"pass the time in as an input",
+			})
 		case ref == stepID:
 			ds = append(ds, Diagnostic{
 				Step: stepID, Field: inputName,
@@ -597,8 +622,16 @@ func validateWait(id string, wait *v1.Wait, available map[string]bool, index int
 
 	if until := wait.GetUntil(); until != nil {
 		// The same reference checking a condition gets, since it is the same kind
-		// of expression resolving against the same names.
-		ds = append(ds, validateInputRefs(id, "wait_until", until, available, index, wf)...)
+		// of expression resolving against the same names — plus `now`, which the
+		// engine binds when it evaluates a deadline and binds nowhere else. Added
+		// for this one field rather than to the workflow's scope, so that using it
+		// in a task input is still reported: there is no clock behind it there,
+		// and a name that resolves in one place and not another has to say so.
+		withNow := make(map[string]bool, len(available)+1)
+		maps.Copy(withNow, available)
+		withNow[v1.NowIdentifier] = true
+
+		ds = append(ds, validateInputRefs(id, "wait_until", until, withNow, index, wf)...)
 	}
 
 	return ds

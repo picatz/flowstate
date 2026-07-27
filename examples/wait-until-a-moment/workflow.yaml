@@ -1,0 +1,67 @@
+name: wait-until-a-moment
+description: Holds a workload until a moment it computes, rather than for a fixed delay.
+
+# `sleep:` waits for a duration. `wait_until:` waits for a *moment*, and the
+# difference matters whenever the moment is computed rather than written down — a
+# publication embargo, a maintenance window, a scheduled cutover, a retry that
+# should land at a particular time rather than after a particular gap.
+#
+# Inside a wait expression, `now` is the moment the wait is evaluated, so a
+# deadline can be built relative to it. It is bound here and nowhere else: a task
+# input is resolved inside an activity, where every retry would read a different
+# value, so a `now` there would quietly disagree with itself. Using it in a task
+# input is a diagnostic that says so.
+#
+# The duration units — seconds, minutes, hours, days, weeks — are available to
+# every expression. Go's own duration parser stops at hours, which is why
+# `days(3)` exists rather than making anyone write `duration('72h')`.
+#
+# The expression must produce a time. It deliberately cannot be a condition:
+# nothing a blocked workload observes changes while it is blocked, so
+# `wait_until: ${retries > 3}` would spell "wait forever". The engine refuses a
+# boolean and points at `wait_for_signal:` for the case where something outside
+# the workload decides.
+#
+# Like every wait here, this is a durable timer rather than a sleeping worker. A
+# workload can hold until next Tuesday while the fleet it started on is replaced.
+
+steps:
+  - id: request
+    task:
+      name: printf
+      inputs:
+        format: "queued at %s"
+        args:
+          - v1.4.2
+
+  # A moment computed from the clock the driver controls, so it survives replay
+  # and a worker restart. Kept short so the example finishes if someone runs it;
+  # `now + days(3)` or `now + weeks(1)` is the same expression at a useful scale.
+  - id: settle
+    wait_until: ${now + seconds(2)}
+
+  # The other shape, and the one wait_until exists for: a moment that arrived as
+  # data rather than one this workload chose. In a real workload the embargo is a
+  # field in an HTTP response or a run input.
+  #
+  # The moment shipped in this file is in the past, so this releases immediately
+  # rather than blocking a reader who runs the example. That is not a workaround:
+  # a moment already past is defined to release the wait, so a workload resumed
+  # after an outage reaches an open window and catches up instead of failing for
+  # being late.
+  - id: embargo
+    task:
+      name: cel
+      inputs:
+        expr: "string(timestamp('2026-01-01T09:00:00Z'))"
+
+  - id: hold
+    wait_until: ${embargo.result}
+
+  - id: publish
+    task:
+      name: printf
+      inputs:
+        format: "embargo lifted at %s; publishing"
+        args:
+          - ${embargo.result}

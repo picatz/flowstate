@@ -1,12 +1,14 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
 	"strings"
 
+	"connectrpc.com/connect"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 )
 
@@ -81,6 +83,41 @@ func isLoopbackAddress(address string) bool {
 		return ip.IsLoopback()
 	}
 	return false
+}
+
+// refusedRun turns a refused request about an existing run into something a
+// person can act on.
+//
+// The server answers not-found for a run that does not exist and for a run in
+// another tenant alike, and that conflation is deliberate: distinguishing them
+// would confirm that an id belongs to somebody, which is precisely the fact a
+// caller in the wrong tenant must not learn. Right for the wire, unhelpful on a
+// terminal — a bare "no such run" reads as "you mistyped the id" and sends the
+// reader to check the one thing that is probably fine.
+//
+// So this restates the ambiguity the server chose rather than resolving it, and
+// names all three causes rather than the likeliest one. The client learns nothing
+// it did not already have, and the person reading it knows what to rule out. Note
+// that a *finished* run is still readable and still signalable-looking: Temporal
+// keeps closed executions for its retention period, so ageing out is a separate
+// cause from having finished.
+//
+// The verb says what was being attempted, because "no run X is addressable" is a
+// different problem depending on whether it came from reading one or signalling
+// one.
+func refusedRun(verb, workflowID string, err error) error {
+	switch connect.CodeOf(err) {
+	case connect.CodeNotFound:
+		return fmt.Errorf("no run %q is addressable: check the id, or it belongs to a tenant "+
+			"your credentials do not establish, or it has aged out of Temporal's retention", workflowID)
+	case connect.CodeUnauthenticated, connect.CodePermissionDenied:
+		return fmt.Errorf("refused while %s %q: %w", verb, workflowID, err)
+	case connect.CodeUnavailable:
+		return fmt.Errorf("no Flowstate server answered at %s (set --address or FLOWSTATE_ADDRESS "+
+			"to point somewhere else): %w", flowstateAddress, err)
+	default:
+		return fmt.Errorf("%s %q: %w", verb, workflowID, err)
+	}
 }
 
 // boundedTransport caps every response body, including the ones Connect's own limit

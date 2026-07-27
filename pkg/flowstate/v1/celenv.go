@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
@@ -263,7 +265,19 @@ func ExtensionLibraries() []string {
 
 // buildEnv constructs a CEL environment enabling the named extension libraries.
 func buildEnv(libs []string) (*cel.Env, error) {
-	opts := make([]cel.EnvOption, 0, len(libs)+1)
+	opts := make([]cel.EnvOption, 0, len(libs)+len(durationLibrary())+1)
+
+	// Always present rather than opt-in, unlike the libraries below. A
+	// `wait_until:` step has no `libs:` key to enable anything with — the
+	// expression is the whole of the step — so a unit only reachable through opt-in
+	// would be missing exactly where durations are most written.
+	//
+	// This also gives the two spellings of a delay the same vocabulary: the
+	// Flowfile's own duration parser already accepts `sleep: 3d`, and without these
+	// the expression form would have made an author reach for `duration('72h')` to
+	// say the same thing.
+	opts = append(opts, durationLibrary()...)
+
 	for _, name := range libs {
 		libOpts, ok := extensionLibraries[strings.ToLower(name)]
 		if !ok {
@@ -315,4 +329,85 @@ func jsonLibrary() cel.EnvOption {
 			}),
 		),
 	)
+}
+
+// durationUnits are the duration constructors available to every expression,
+// largest first so the list reads the way a person says a duration.
+//
+// Go's own parser — which CEL's duration() calls — understands ns through h and
+// stops, because outside a fixed offset a "day" is a calendar question rather
+// than a quantity: days differ in length across a daylight-saving boundary. What
+// a wait needs is the quantity, since it is an offset to a moment and not a date
+// calculation, so days(3) is exactly 72 hours and this comment is where that is
+// written down.
+//
+// Anything genuinely calendar-shaped — "09:00 next Tuesday in Berlin" — is a
+// different problem, and one that needs a timezone to even be well posed. It is
+// deliberately absent rather than approximated here, because a `days` that is
+// usually right is worse than one that is always a fixed offset and says so.
+var durationUnits = []struct {
+	name string
+	per  time.Duration
+}{
+	{"weeks", 7 * 24 * time.Hour},
+	{"days", 24 * time.Hour},
+	{"hours", time.Hour},
+	{"minutes", time.Minute},
+	{"seconds", time.Second},
+}
+
+// durationLibrary provides the duration constructors, so an author writes
+// `days(3)` rather than counting hours into `duration('72h')`.
+//
+// hours, minutes and seconds duplicate what duration() can already spell. They
+// exist anyway, because the point is that a reader can scan `days(3) + hours(12)`
+// without stopping, and a set of units with a hole in it makes them stop.
+func durationLibrary() []cel.EnvOption {
+	opts := make([]cel.EnvOption, 0, len(durationUnits))
+
+	for _, unit := range durationUnits {
+		// Captured per iteration so each overload closes over its own unit.
+		name, per := unit.name, unit.per
+
+		// The largest count this unit can express before int64 nanoseconds wrap.
+		// An author's expression is untrusted input, and without a bound
+		// days(400000) becomes a *negative* duration: a wait meant for the far
+		// future would already be in the past, and would release immediately
+		// rather than fail. A silent sign flip is the worst available outcome, so
+		// the limit is checked rather than the result inspected afterwards.
+		limit := int64(math.MaxInt64 / int64(per))
+
+		opts = append(opts, cel.Function(name,
+			cel.Overload(name+"_int",
+				[]*cel.Type{cel.IntType}, cel.DurationType,
+				cel.UnaryBinding(func(val ref.Val) ref.Val {
+					count, ok := val.Value().(int64)
+					if !ok {
+						return types.NewErr("%s: expected an integer, got %v", name, val.Type())
+					}
+					if count > limit || count < -limit {
+						return types.NewErr(
+							"%s(%d) is out of range: a duration cannot exceed about 292 years, so this unit stops at %d",
+							name, count, limit)
+					}
+					return types.DefaultTypeAdapter.NativeToValue(time.Duration(count) * per)
+				}),
+			),
+		))
+	}
+
+	return opts
+}
+
+// DurationUnits returns the names of the duration constructors every expression
+// can use, largest unit first.
+//
+// Derived from the same table the functions are built from, so documentation and
+// editor completion cannot drift from what an expression will actually accept.
+func DurationUnits() []string {
+	names := make([]string, 0, len(durationUnits))
+	for _, unit := range durationUnits {
+		names = append(names, unit.name)
+	}
+	return names
 }
