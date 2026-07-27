@@ -544,13 +544,11 @@ $ go run ./cmd/flow run ./examples/hello-world-multi-step/workflow.yaml
 
 ## CLI
 
-`flow` is the command line interface. A workflow is authored as a Flowfile,
-checked without running it, then either run locally or submitted to a server that
+`flow` is the command line interface. You write a workflow as a Flowfile, check
+it, and then either run it on your own machine or hand it to a server that
 executes it durably through Temporal.
 
-A table rather than a paste of `flow --help`, because a pasted copy of the help
-output goes stale the first time somebody adds a subcommand and nobody notices.
-Run `flow <command> --help` for the flags; that is the copy that cannot drift.
+Run `flow <command> --help` for the full flags of any of these.
 
 | Command | What it does |
 | --- | --- |
