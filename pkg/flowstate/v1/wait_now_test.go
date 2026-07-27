@@ -134,3 +134,42 @@ func TestWaitDeadlineNowDoesNotShadowAStepsOutputs(t *testing.T) {
 	require.NotEmpty(t, diagnostics, "a step named `now` was accepted")
 	require.Contains(t, diagnostics.Error(), "choose another id")
 }
+
+// A loop iterator is the other name an author picks that lands in a wait's scope,
+// and it reaches it by a different route: a step id resolves through the scope's
+// outputs, while an iterator is bound into its vars. The clock is bound over both.
+//
+// So this is the same test as the one above pointed at the other route. It asserts
+// the refusal *and* the shadowing that makes the refusal necessary, because the
+// refusal alone would keep passing if the binding order were ever reversed — and
+// reversing it is the change that looks like a fix from the wrong end.
+func TestWaitDeadlineNowDoesNotShadowALoopIterator(t *testing.T) {
+	t.Parallel()
+
+	// The shadowing itself, at the level the drivers share. The item is a moment
+	// carried as data — the shape a for_each over embargo times has — so if the
+	// iterator won, the deadline would be the item.
+	item := "2001-01-01T00:00:00Z"
+	clock := time.Date(2030, 6, 1, 12, 0, 0, 0, time.UTC)
+
+	scope := v1.NewScope(nil).WithVars(v1.NowIdentifier, v1.NewLiteral(item))
+
+	deadline, err := v1.EvalWaitDeadline(t.Context(), waitUntil(t, "${now}"), scope, clock)
+	require.NoError(t, err)
+	require.Equal(t, clock, deadline.UTC(),
+		"the loop variable won, so the clock a wait deadline needs is not the one it got")
+
+	// Which is why the name cannot be chosen. Without this the workflow above is
+	// authorable, and the only symptom is a wait that ends at the wrong moment.
+	source := "name: t\nsteps:\n" +
+		"  - id: targets\n    task:\n      name: cel\n      inputs:\n        expr: \"['a']\"\n" +
+		"  - id: sweep\n    for_each:\n      items: ${targets.result}\n      iterator: now\n" +
+		"      steps:\n        - id: hold\n          wait_until: ${now}\n"
+
+	workflow, err := flowfile.Unmarshal([]byte(source))
+	require.NoError(t, err, "the workflow did not compile")
+
+	diagnostics := flowfile.Validate(workflow)
+	require.NotEmpty(t, diagnostics, "a loop iterator named `now` was accepted")
+	require.Contains(t, diagnostics.Error(), "choose another iterator")
+}

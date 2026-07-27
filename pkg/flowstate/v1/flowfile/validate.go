@@ -316,6 +316,25 @@ func validateLoop(stepID string, loop *v1.ForEach, enclosing map[string]bool, in
 				iterator),
 		})
 	}
+	if iterator == v1.NowIdentifier {
+		// The same refusal a step id gets, for the same reason and by the other
+		// route into a wait's scope. A loop variable is bound into the scope's
+		// vars; `wait_until:` binds the clock on top of that and wins. So a body
+		// that says `${now}` reads as the item everywhere except inside a wait,
+		// where it silently becomes the clock — and a deadline computed from the
+		// wrong value is not a failure anyone sees, just a wait that ends at the
+		// wrong moment.
+		//
+		// Refusing the name is the whole fix: binding order cannot be reversed
+		// without making a step or a loop able to hide the clock, which is the
+		// same problem pointed the other way.
+		ds = append(ds, Diagnostic{
+			Step: stepID, Field: "iterator",
+			Message: fmt.Sprintf(
+				"%q is the built-in naming the moment a wait is evaluated, which a loop variable of the same name would shadow inside `wait_until:`; choose another iterator",
+				iterator),
+		})
+	}
 
 	inner := make(map[string]bool, len(enclosing)+1)
 	for k := range enclosing {
