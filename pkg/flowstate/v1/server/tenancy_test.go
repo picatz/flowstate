@@ -78,7 +78,7 @@ func gatedWorkflow() *v1.Workflow {
 			},
 			{
 				Id:        "deploy",
-				Condition: v1.NewExpr("approval.approved"),
+				Condition: v1.NewExpr("approval.payload.approved"),
 				Kind: &v1.Node_Task{Task: &v1.Task{
 					Name:   "echo",
 					Inputs: map[string]*v1.Value{"message": v1.NewLiteral("deploying")},
@@ -205,7 +205,7 @@ func TestApprovalGateEndToEnd(t *testing.T) {
 	outputs := final.Msg.GetOutputs().GetStepValues()
 
 	require.NotNil(t, outputs["approval"], "the gate recorded no outputs")
-	require.True(t, outputs["approval"].GetNamedValues()["approved"].GetLiteral().GetBoolValue(),
+	require.True(t, payloadField(t, outputs["approval"], "approved").GetBoolValue(),
 		"what the approver sent did not reach the workload")
 
 	require.NotNil(t, outputs["deploy"], "the gated step did not run after approval")

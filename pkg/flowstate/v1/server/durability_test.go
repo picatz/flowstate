@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"testing"
 	"time"
 
@@ -127,8 +128,29 @@ func TestWaitSurvivesAWorkerRestart(t *testing.T) {
 
 	outputs := final.Msg.GetOutputs().GetStepValues()
 
-	require.True(t, outputs["approval"].GetNamedValues()["approved"].GetLiteral().GetBoolValue(),
+	require.True(t, payloadField(t, outputs["approval"], "approved").GetBoolValue(),
 		"the approval did not reach a run whose original worker was gone")
 	require.NotNil(t, outputs["deploy"],
 		"the gated step did not run after the worker was replaced")
+}
+
+// payloadField reads one entry out of a wait's `payload` mapping.
+//
+// A signal sender's data is rooted under one key rather than spread across the
+// step's outputs, so reading it is a lookup inside a map — see v1.PayloadOutput
+// for why it is not spread.
+func payloadField(t *testing.T, outputs *v1.Node_Outputs, name string) *expr.Value {
+	t.Helper()
+
+	payload := outputs.GetNamedValues()[v1.PayloadOutput].GetLiteral().GetMapValue()
+	require.NotNil(t, payload, "the wait produced no payload mapping")
+
+	for _, entry := range payload.GetEntries() {
+		if entry.GetKey().GetStringValue() == name {
+			return entry.GetValue()
+		}
+	}
+
+	t.Fatalf("the payload has no %q; it holds %d entries", name, len(payload.GetEntries()))
+	return nil
 }

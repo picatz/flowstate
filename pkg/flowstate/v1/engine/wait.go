@@ -66,7 +66,7 @@ func (e *executor) waitFor(node *v1.Node, d time.Duration) error {
 		}
 	}
 
-	e.recordOutputs(node, v1.WaitOutputs(nil, false))
+	e.recordOutputs(node, v1.TimerOutputs(false))
 
 	return nil
 }
@@ -82,7 +82,7 @@ func (e *executor) waitForSignal(node *v1.Node, signal *v1.Signal, timeout time.
 	if payload, ok := e.takePendingSignal(name); ok {
 		workflow.GetLogger(e.ctx).Info("step consumed a signal that arrived earlier",
 			"id", node.GetId(), "signal", name)
-		e.recordOutputs(node, v1.WaitOutputs(payload, false))
+		e.recordOutputs(node, v1.SignalOutputs(payload, false))
 		return nil
 	}
 
@@ -138,11 +138,11 @@ func (e *executor) waitForSignal(node *v1.Node, signal *v1.Signal, timeout time.
 
 		workflow.GetLogger(e.ctx).Info("wait timed out",
 			"id", node.GetId(), "signal", name, "timeout", timeout)
-		e.recordOutputs(node, v1.WaitOutputs(nil, true))
+		e.recordOutputs(node, v1.SignalOutputs(nil, true))
 		return nil
 	}
 
-	e.recordOutputs(node, v1.WaitOutputs(&payload, false))
+	e.recordOutputs(node, v1.SignalOutputs(&payload, false))
 
 	return nil
 }

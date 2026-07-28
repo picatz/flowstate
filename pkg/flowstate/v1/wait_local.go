@@ -159,7 +159,7 @@ func runWait(ctx context.Context, node *Node, wait *Wait, scope *Scope) (*Node_O
 // interrupts it.
 func waitLocally(ctx context.Context, d time.Duration) (*Node_Outputs, error) {
 	if d <= 0 {
-		return WaitOutputs(nil, false), nil
+		return TimerOutputs(false), nil
 	}
 
 	timer := time.NewTimer(d)
@@ -167,7 +167,7 @@ func waitLocally(ctx context.Context, d time.Duration) (*Node_Outputs, error) {
 
 	select {
 	case <-timer.C:
-		return WaitOutputs(nil, false), nil
+		return TimerOutputs(false), nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
@@ -191,7 +191,7 @@ func waitForSignalLocally(ctx context.Context, signal *Signal, timeout time.Dura
 
 	payload, err := waiter.WaitForSignal(waitCtx, name)
 	if err == nil {
-		return WaitOutputs(payload, false), nil
+		return SignalOutputs(payload, false), nil
 	}
 
 	// The wait's own timeout expiring is a normal outcome; the caller's context
@@ -199,7 +199,7 @@ func waitForSignalLocally(ctx context.Context, signal *Signal, timeout time.Dura
 	// told apart by asking whose context ended — checking only for
 	// DeadlineExceeded would report an interrupted run as a lapsed approval.
 	if ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded) {
-		return WaitOutputs(nil, true), nil
+		return SignalOutputs(nil, true), nil
 	}
 
 	return nil, err

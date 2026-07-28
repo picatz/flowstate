@@ -91,13 +91,23 @@ discovered late:
 speak a poorer dialect than a `cel` step, in the same file, for no reason a reader
 could infer. One dialect, recorded in the compiled spec.
 
-**Signal payloads under `steps.<id>.payload.*`.** The proposal files this as
-ergonomics. It is a security fix and should be prioritised as one: today a signal
-sender injects arbitrary names into a step's output namespace, which is the namespace
-later expressions resolve against. A sender controlling part of an expression
-namespace is an integrity problem, and `timed_out` being unforgeable only because of
-ordering is not a defence. Rooting sender data under `payload.*` makes it unforgeable
-by grammar.
+**Signal payloads under `<id>.payload.*`.** *(landed)* The proposal files this as
+ergonomics. It is a security fix and was prioritised as one: a signal sender used to
+inject arbitrary names into a step's output namespace, which is the namespace later
+expressions resolve against. A sender controlling part of an expression namespace is
+an integrity problem, and `timed_out` being unforgeable only because of ordering is
+not a defence — it is a defence that holds for exactly the names somebody thought to
+write down, and this engine will grow more wait outputs. Rooting sender data under
+`payload` makes it unforgeable by grammar rather than by vigilance.
+
+Two things fell out of doing it that the proposal did not name. A wait with no sender
+— `sleep`, `wait_until` — gets *no* payload rather than an empty one, because
+offering an empty mapping invites `${pause.payload.x}` on a step where one can never
+arrive, and the honest answer to that is a diagnostic. And the mapping is built in
+sorted order, because it is serialised into `RunState` and carried across every
+Continue-As-New: a protobuf map has no iteration order, so two encodings of one
+payload could otherwise differ, in persisted workflow state, for no cause a reader
+could see.
 
 **Specifying the absent/null/default algebra before shipping it.** Terraform shipped
 `optional()` with nested-default semantics left implicit and spent three years on the
@@ -230,7 +240,12 @@ check that does not run.
 
 **Phase 1 — make the language smaller.** The naming model, verb-key flattening, one
 pinned profile, `vars` in its three positions, `edition:`, reserved-keyword
-diagnostics for the grammar Phase 4 will need, `flow fix --edition`. Everything here
+diagnostics for the grammar Phase 4 will need, `flow fix --edition`.
+
+Signal payloads under `payload` are done. Of the rest, the flattening is the item
+to take next and the one with a written execution plan below; pinning the profile
+is the only Phase 1 item that needs a schema break, so it goes last rather than
+first. Everything here
 removes a rule or a spelling.
 
 **Phase 2 — the contract, with its checker.** `inputs`, `outputs`, `check:`,
@@ -246,6 +261,61 @@ queues, `undo:` compensation, search attributes, Nexus consume.
 **Phase 5 — the living workflow.** `state:` and entities (with their bound),
 `flow migrate` with frame-checked proofs, `flow sim`, `flow prove`, catalogs, Nexus
 publish.
+
+## Executing the flattening
+
+Written down because it was attempted once and backed out, and the reasons were
+not the ones expected. Anyone picking it up should not have to rediscover these.
+
+**It touches no proto.** `http:` with the request under it lowers to the same
+`Task{name, inputs}`, so `buf breaking` has nothing to say about it. That makes it
+the *cheapest* break in Phase 1, not the most expensive — the one that needs a
+deliberate schema break is pinning the language profile, which deletes the `libs`
+input. Sequence accordingly.
+
+**Its precondition is already enforced.** A step key is a property or a task name,
+told apart by asking the registry, which only works while the two sets are
+disjoint — and `Registry.Register` now refuses a task named for the grammar. That
+was the part that would have made the grammar genuinely ambiguous.
+
+**The parser and marshaller are the small half.** Roughly forty lines: `stepKeys`
+and `stepKindKeys` become functions over `v1.TaskNames()`, the kind switch grows a
+default arm that reads the key as a task name, `task()` loses its `name`/`inputs`
+lookup, and `stepToYAML` emits the task's name as the key. Both were written and
+worked.
+
+**The assertions are the large half, and they are the risk.** Every diagnostic
+inside a task step moves two lines and two columns. That makes ~59 of them fail at
+once, and resetting them to whatever the new output prints is how a real
+regression gets absorbed into a migration diff. Read each one. The good news is
+that they are not uniformly fragile:
+
+- `flowfile/parse_test.go` asserts line and column numbers directly. These are the
+  ones that need reading.
+- The language server's tests mostly assert the *text* a diagnostic underlines
+  (`underlines: "nope"`), which survives the move untouched. Do not assume the LSP
+  is the hard part; it is mostly not.
+
+**Two fixture shapes do not rewrite mechanically.** Flow style — `task: {name:
+echo, inputs: {...}}` — appears in the README and one LSP fixture. And the
+completion tests place a `|` cursor marker *inside* the shape being flattened, so
+the marker's meaning moves with it. A rewriter must refuse both rather than guess,
+which is also what `flow fix` will have to do; a script that silently mangles them
+is worse than one that stops.
+
+**`Task.description` has nowhere to live afterwards**, since the value under
+`http:` is the inputs and a `description` key there would collide with an input of
+that name. Removing the field is right and is a FILE-level break — spend it in the
+commit that lands the grammar, with `reserved 2;` so the number can never be
+repurposed.
+
+**Order that keeps every step green:** parser and marshaller together (they are
+inverses and the round-trip tests cover both); then examples, via the rewriter
+rather than a throwaway script, so the rewriter is exercised on real files before
+anyone depends on it; then `flowfile`'s own tests, reading each position; then the
+language server; then the README. `edition:` belongs in this same change rather
+than before it — on its own it declares a boundary that nothing crosses, which is
+scaffolding by this repo's own rule.
 
 ## The standing rule
 
