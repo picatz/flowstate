@@ -167,8 +167,12 @@ func TestRunWorkflow_StateBudget(t *testing.T) {
 
 	wf := &v1.Workflow{
 		Name: "state-budget",
-		// Set budget equal to number of steps to avoid Continue-As-New in unit test env
-		Labels: map[string]string{"flowstate/max-steps-per-run": "3"},
+		// No Labels here. A label reading `flowstate/max-steps-per-run` used to sit
+		// on this workflow with a comment claiming it set the budget, and nothing
+		// reads Workflow.labels anywhere in the tree — the budget comes from
+		// RunState.StepsBudget, which this test sets below and always did. An inert
+		// field that reads like a live one is worse than an absent feature: the next
+		// person to want a per-workflow budget would have found it and believed it.
 		Steps: []*v1.Node{
 			{Id: "a", Kind: &v1.Node_Task{Task: &v1.Task{Name: "echo", Inputs: map[string]*v1.Value{"message": v1.NewLiteral("hi")}}}},
 			{Id: "b", Kind: &v1.Node_Task{Task: &v1.Task{Name: "echo", Inputs: map[string]*v1.Value{"message": v1.NewExpr("a.result")}}}},

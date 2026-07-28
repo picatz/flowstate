@@ -808,3 +808,68 @@ func Test_WithAllowMulticast(t *testing.T) {
 	require.NoError(t, policy.CheckAddr(netip.MustParseAddrPort("224.0.0.1:80")))
 	requireDenied(t, policy.CheckAddr(netip.MustParseAddrPort("127.0.0.1:80")), ReasonAddress, "loopback")
 }
+
+// TestAllowedNetworkDoesNotAdmitAnEmbeddedAddress is the negative direction of an
+// asymmetry that has to stay asymmetric.
+//
+// Matching a rule against the embedded IPv4 address as well as the address itself
+// is right on the deny side: it stops a denied prefix being reached through NAT64
+// or one of the other IPv4-in-IPv6 forms. Sharing that expansion with the allow
+// side runs it backwards — a rule then permits addresses it never named.
+//
+// The two addresses below are the proof. Neither is in 10.0.0.0/8; they merely
+// carry it. 2002::/16 is globally routable, so a workflow reaching one is reaching
+// a real host somewhere else entirely, on the strength of an allowlist that exists
+// precisely to be exhaustive.
+func TestAllowedNetworkDoesNotAdmitAnEmbeddedAddress(t *testing.T) {
+	t.Parallel()
+
+	policy, err := New(WithAllowNetworks(netip.MustParsePrefix("10.0.0.0/8")))
+	require.NoError(t, err)
+
+	t.Run("the address the rule names is allowed", func(t *testing.T) {
+		// The positive direction in the same test: a check that refused everything
+		// would pass every case below.
+		require.NoError(t, policy.CheckAddr(netip.MustParseAddrPort("10.0.0.1:443")),
+			"an address inside the allowed network was refused")
+	})
+
+	for _, test := range []struct {
+		name string
+		addr string
+	}{
+		{"6to4 carrying an allowed address", "[2002:a00:1::1]:443"},
+		{"NAT64 carrying an allowed address", "[64:ff9b::a00:1]:443"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := policy.CheckAddr(netip.MustParseAddrPort(test.addr))
+			require.Error(t, err, "an address outside every allowed network was permitted "+
+				"because it embeds one that is inside")
+
+			var denied *DenyError
+			require.ErrorAs(t, err, &denied)
+			require.Equal(t, ReasonAddress, denied.Reason)
+		})
+	}
+}
+
+// TestDeniedNetworkStillCatchesAnEmbeddedAddress is the half that must not change.
+//
+// Narrowing the allow path is only correct while the deny path keeps expanding: a
+// denied prefix reached through NAT64 is the evasion the expansion exists to stop,
+// and it would be an easy thing to remove by symmetry while fixing the other side.
+func TestDeniedNetworkStillCatchesAnEmbeddedAddress(t *testing.T) {
+	t.Parallel()
+
+	policy, err := New(WithDenyNetworks(netip.MustParsePrefix("10.0.0.0/8")), WithAllowPrivateNetworks())
+	require.NoError(t, err)
+
+	for _, addr := range []string{
+		"10.0.0.1:443",
+		"[2002:a00:1::1]:443",
+		"[64:ff9b::a00:1]:443",
+	} {
+		require.Error(t, policy.CheckAddr(netip.MustParseAddrPort(addr)),
+			"a denied network was reached through %s", addr)
+	}
+}

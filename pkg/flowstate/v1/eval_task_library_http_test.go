@@ -1,6 +1,7 @@
 package flowstatev1
 
 import (
+	"context"
 	"errors"
 	"net"
 	"net/http"
@@ -179,4 +180,75 @@ func Test_taskFuncHTTP_transportFailureIdempotency(t *testing.T) {
 		require.ErrorContains(t, err, "whether it took effect is unknown")
 		require.True(t, errors.Is(err, err), "sanity")
 	})
+}
+
+// TestHTTPOutputsAreCostBounded is the coverage test the cost limit did not have.
+//
+// The limit itself was tested — TestEvaluatorCostLimit exercises the Evaluator and
+// passes. What nothing checked was whether every evaluation site goes through it,
+// and the http task's `outputs:` did not: it built a cel.Program by hand with no
+// ProgramOption and ran it with Eval rather than ContextEval, so it had neither a
+// cost limit nor a way to be cancelled.
+//
+// That is the expression an author most directly controls. A nest of `.map()`
+// comprehensions — about twenty-five characters of YAML per factor of ten — ran to
+// completion past the step's own timeout, and because the program never observed
+// the context, a timed-out attempt kept running while Temporal scheduled the next
+// one.
+//
+// This is the "test that A cannot reach B" mistake on a different axis: a test of
+// the mechanism standing in for a test of its coverage. So this asserts the
+// property at the site rather than at the evaluator.
+func TestHTTPOutputsAreCostBounded(t *testing.T) {
+	t.Parallel()
+
+	server, _ := httpTaskServer(t, http.StatusOK, `{"n": [1,2,3,4,5,6,7,8,9,10]}`, http.Header{
+		"Content-Type": []string{"application/json"},
+	})
+
+	// Nested comprehensions over ten elements: 10^5 iterations, which is far past
+	// the cost limit and far too fast to be caught by any timeout.
+	const explosive = `{"boom": json_parse(body).n.map(a, json_parse(body).n.map(b, ` +
+		`json_parse(body).n.map(c, json_parse(body).n.map(d, ` +
+		`json_parse(body).n.map(e, a + b + c + d + e)))))}`
+
+	_, err := runHTTPTask(t, map[string]any{
+		"url":     server.URL,
+		"method":  http.MethodGet,
+		"outputs": NewExpr(explosive),
+	})
+
+	require.Error(t, err, "an unbounded outputs expression ran to completion")
+	require.Contains(t, err.Error(), "cost limit",
+		"the evaluation was stopped, but not by the cost limit — so the bound may not be the thing that stopped it: %v", err)
+}
+
+// TestHTTPOutputsAreCancellable is the other half of the same defect.
+//
+// A bound on cost does not make an evaluation stoppable, and the two failures are
+// different: one is an author asking for too much work, the other is a run being
+// told to stop while the work is in flight. `Eval` cannot observe a context at all,
+// so a cancelled run left the goroutine running.
+func TestHTTPOutputsAreCancellable(t *testing.T) {
+	t.Parallel()
+
+	server, _ := httpTaskServer(t, http.StatusOK, `{"n": [1,2,3,4,5,6,7,8,9,10]}`, http.Header{
+		"Content-Type": []string{"application/json"},
+	})
+
+	policy, err := netpolicy.New(netpolicy.WithAllowLoopback(), netpolicy.WithTimeout(5*time.Second))
+	require.NoError(t, err)
+
+	// Cancelled before the task runs, so the evaluation must refuse to start
+	// rather than run to completion and then notice.
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	_, err = taskFuncHTTP(policy)(ctx, NewNamedValues(map[string]any{
+		"url":     server.URL,
+		"method":  http.MethodGet,
+		"outputs": NewExpr(`{"n": json_parse(body).n}`),
+	}), nil)
+
+	require.Error(t, err, "a cancelled run still evaluated an outputs expression")
 }

@@ -304,10 +304,17 @@ to prevent — and would need an adapter in both directions. Extending the proto
 extends both paths at once, and an in-process provider costs no serialization,
 because nothing serializes when the call is a Go method call.
 
-A plugin task is indistinguishable from a built-in one to the rest of the system,
-because a plugin ships protobuf descriptors for its inputs and outputs. Validation,
-editor completion, and generated documentation read the same shape either way, which
-is the registry invariant applied across a process boundary.
+A plugin task is meant to be indistinguishable from a built-in one to the rest of the
+system, because a plugin ships protobuf descriptors for its inputs and outputs.
+Validation, editor completion, and generated documentation would read the same shape
+either way, which is the registry invariant applied across a process boundary.
+
+That is the design and not yet the behaviour: `Host.Register` exists and is called by
+nothing, so the registry those surfaces read holds only the built-ins. The seam is one
+call wide, and until it is made, this paragraph describes an intention. It stays
+written in the future tense until then — a document that asserts a capability the code
+does not have is worse than one that admits the gap, because it stops anyone going
+looking for it.
 
 What a plugin cannot do is escape policy. It resolves secrets only for schemes the
 deployment permitted, receives the tenant a workload belongs to rather than choosing

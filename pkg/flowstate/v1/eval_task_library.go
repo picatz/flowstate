@@ -457,15 +457,20 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 			if err != nil {
 				return nil, fmt.Errorf("failed to create activation: %w", err)
 			}
-			act := interpreter.NewHierarchicalActivation(&StepsOutputActivation{Prev: scope.StepOutputs()}, varAct)
+			// Ctx and Eval are set so that a stored expression resolved while
+			// shaping these outputs is itself cancellable and cost-bounded.
+			// Without them StepsOutputActivation falls back to context.Background.
+			act := interpreter.NewHierarchicalActivation(
+				&StepsOutputActivation{Prev: scope.StepOutputs(), Ctx: ctx, Eval: DefaultEvaluator()},
+				varAct)
 
 			if outputsExpr != nil {
-				ast := cel.ParsedExprToAst(outputsExpr)
-				prg, err := env.Program(ast)
-				if err != nil {
-					return nil, fmt.Errorf("failed to compile HTTP outputs expression: %w", err)
-				}
-				out, _, err := prg.Eval(act)
+				// Through the shared evaluator, which is what applies the cost
+				// limit and makes the evaluation cancellable. Building a program
+				// here by hand did neither: an author's `outputs:` expression is
+				// the expression they most directly control, and it was the one
+				// place in the engine that ran unbounded.
+				out, err := DefaultEvaluator().EvalParsed(ctx, env, outputsExpr, act)
 				if err != nil {
 					return nil, fmt.Errorf("failed to evaluate HTTP outputs expression: %w", err)
 				}
@@ -490,12 +495,8 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 			for name, v := range taskInputs.Outputs {
 				switch k := v.GetKind().(type) {
 				case *Value_Expr:
-					ast := cel.ParsedExprToAst(k.Expr)
-					prg, err := env.Program(ast)
-					if err != nil {
-						return nil, fmt.Errorf("failed to compile CEL outputs: %w", err)
-					}
-					out, _, err := prg.Eval(act)
+					// Same path as the whole-block form above, for the same reason.
+					out, err := DefaultEvaluator().EvalParsed(ctx, env, k.Expr, act)
 					if err != nil {
 						return nil, fmt.Errorf("failed to evaluate CEL outputs: %w", err)
 					}

@@ -29,8 +29,7 @@ message Workflow {
       (buf.validate.field).required = true,
       (google.api.field_behavior) = REQUIRED,
       (buf.validate.field).map = {
-        keys: {required: true}
-        values: {required: true}
+        keys: {string: {min_len: 1}}
       }
     ];
   }
@@ -61,7 +60,6 @@ message Workflow {
     (buf.validate.field).repeated = {
       min_items: 1
       max_items: 100
-      items: {required: true}
     }
   ];
 
@@ -70,8 +68,7 @@ message Workflow {
   map<string, Value> inputs = 4 [
     (google.api.field_behavior) = OPTIONAL,
     (buf.validate.field).map = {
-      keys: {required: true}
-      values: {required: true}
+      keys: {string: {min_len: 1}}
     }
   ];
 
@@ -79,8 +76,7 @@ message Workflow {
   map<string, string> labels = 5 [
     (google.api.field_behavior) = OPTIONAL,
     (buf.validate.field).map = {
-      keys: {required: true}
-      values: {required: true}
+      keys: {string: {min_len: 1}}
     }
   ];
 }
@@ -97,8 +93,7 @@ message Node {
       (buf.validate.field).required = true,
       (google.api.field_behavior) = REQUIRED,
       (buf.validate.field).map = {
-        keys: {required: true}
-        values: {required: true}
+        keys: {string: {min_len: 1}}
       }
     ];
   }
@@ -312,8 +307,7 @@ message Scope {
   // Vars holds variables bound by enclosing control flow. Names must not collide
   // with step ids, since expressions resolve both from one namespace.
   map<string, Value> vars = 2 [(buf.validate.field).map = {
-    keys: {required: true}
-    values: {required: true}
+    keys: {string: {min_len: 1}}
   }];
 }
 
@@ -350,7 +344,6 @@ message ForEach {
     (buf.validate.field).repeated = {
       min_items: 1
       max_items: 100
-      items: {required: true}
     }
   ];
 
@@ -380,7 +373,6 @@ message Parallel {
       (buf.validate.field).repeated = {
         min_items: 1
         max_items: 100
-        items: {required: true}
       }
     ];
   }
@@ -390,7 +382,6 @@ message Parallel {
     (buf.validate.field).repeated = {
       min_items: 1
       max_items: 100
-      items: {required: true}
     }
   ];
 }
@@ -534,7 +525,6 @@ message Task {
         (buf.validate.field).repeated = {
           min_items: 1
           max_items: 100
-          items: {required: true}
         }
       ];
     }
@@ -681,8 +671,7 @@ message Task {
       // Each key represents the variable name and the value is resolved prior
       // to evaluating the expression.
       map<string, Value> vars = 2 [(buf.validate.field).map = {
-        keys: {required: true}
-        values: {required: true}
+        keys: {string: {min_len: 1}}
       }];
       // Optional list of CEL extension libraries to enable when evaluating the
       // expression. Supported values include "math", "strings", "lists",
@@ -722,8 +711,7 @@ message Task {
     (buf.validate.field).required = true,
     (google.api.field_behavior) = OPTIONAL,
     (buf.validate.field).map = {
-      keys: {required: true}
-      values: {required: true}
+      keys: {string: {min_len: 1}}
     }
   ];
 }
