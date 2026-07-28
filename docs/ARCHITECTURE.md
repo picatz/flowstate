@@ -200,7 +200,7 @@ Rows marked **(done)** are implemented; the rest are the shape the surface shoul
 | Best-effort steps | per-step `continue_on_error:`, recording the failure as `${step.error}` **(done)** |
 | Activity heartbeats | progress reporting for long-running tasks |
 | Task queues | routing steps to specialized or plugin workers |
-| Priorities and rate limits | per-step scheduling controls |
+| Priorities and rate limits | a run is scheduled under a fairness key taken from its authenticated tenant, so one tenant's large workload cannot crowd out another's **(done)**; per-step controls still to come |
 | **Nexus** | cross-namespace and cross-team calls — both consuming and *exposing* operations |
 
 ### Nexus
@@ -376,9 +376,21 @@ makes "team A cannot read team B's secrets" a property of the system rather than
 convention.
 
 Namespaces scope the things a tenant should not share: which secret schemes and names
-resolve, which egress rules apply, which runs are visible, and which downstream identities a
-workload may assume. The same reference can resolve differently in two namespaces, which is
-what lets one workload definition serve several teams.
+resolve, which egress rules apply, which runs are visible, which downstream identities a
+workload may assume, and *when their work is scheduled*.
+
+That last one is the least obvious and the first to bite. One task queue serves every
+tenant, so without a fairness key the queue is first-come-first-served and a tenant is one
+large workload away from everybody else's work sitting behind theirs — not deliberately,
+which is what makes it likely, since a five-thousand-iteration loop is an ordinary thing to
+write. A run therefore carries a Temporal fairness key taken from its authenticated tenant,
+which dispatches each tenant a share in proportion to weight rather than to volume.
+Activities inherit it from the run, so it covers every task the run goes on to schedule,
+and Temporal carries it across Continue-As-New — which matters, because the workloads that
+suspend are exactly the ones that crowd a queue.
+
+The same reference can resolve differently in two namespaces, which is what lets one
+workload definition serve several teams.
 
 Temporal has its own namespaces, providing isolation of history and visibility. Mapping a
 Flowstate namespace onto a Temporal namespace is worth supporting for deployments that want

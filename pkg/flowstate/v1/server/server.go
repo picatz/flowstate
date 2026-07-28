@@ -13,10 +13,12 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/temporalclient"
 	"go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/temporal"
 )
 
 // New creates a new FlowstateServer instance with the provided Temporal client.
@@ -76,6 +78,15 @@ func WithNamespacePool(pool *temporalclient.Pool) Option {
 // gets its own `timeout:`.
 func WithExecutionTimeout(d time.Duration) Option {
 	return func(s *FlowstateServer) { s.executionTimeout = d }
+}
+
+// WithMaxStepsPerRun sets how many steps a run executes before continuing as new.
+//
+// Otherwise read once from FLOWSTATE_MAX_STEPS_PER_RUN, which an embedder
+// building a server has no way to influence, and a test has no way to set without
+// mutating the environment every other test shares.
+func WithMaxStepsPerRun(steps int) Option {
+	return func(s *FlowstateServer) { s.maxStepsPerRun = steps }
 }
 
 // WithIdentityClaims names the caller token claims to carry into a run's
@@ -247,6 +258,25 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 		Memo: map[string]any{
 			namespaceMemoKey: identity.GetNamespace(),
 		},
+
+		// One task queue serves every tenant, so without this the queue is
+		// first-come-first-served and a tenant is one large workload away from
+		// everyone else's work sitting behind theirs. A five-thousand-iteration
+		// loop is an ordinary thing to write and a denial of service to everyone
+		// sharing the queue with it — not deliberately, which is what makes it
+		// likely.
+		//
+		// Temporal's fairness mechanism dispatches in proportion to weight per
+		// key, so keying on the tenant gives each an equal share regardless of how
+		// much work any of them submits. Activities inherit the run's priority, so
+		// setting it here covers every task the run goes on to schedule, which is
+		// where the contention actually is.
+		//
+		// Taken from the authenticated identity and never from the request, the
+		// same rule as the namespace above: a workload must not be able to name
+		// the bucket it is scheduled in, or the first thing anyone writes is the
+		// one that puts them in their own.
+		Priority: fairnessFor(identity.GetNamespace()),
 	}
 
 	// Chosen from the identity established by authenticating the caller, never
@@ -273,6 +303,34 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 			Status:     v1.RunResponse_STATUS_RUNNING,
 		},
 	), nil
+}
+
+// maxFairnessKeyBytes is what Temporal accepts for a fairness key.
+//
+// Asserted against [secrets.MaxNamespaceLen] below rather than assumed, because
+// the two numbers are owned by different packages and only happen to be
+// compatible. A namespace is validated to 63 characters and a fairness key may be
+// 64 bytes, so every legal namespace fits — with one byte to spare, which is not
+// the kind of margin to leave unwatched.
+const maxFairnessKeyBytes = 64
+
+// A compile-time check, so raising the namespace limit fails the build here
+// rather than producing keys the server quietly rejects at submit.
+var _ = [1]struct{}{}[secrets.MaxNamespaceLen-maxFairnessKeyBytes+1]
+
+// fairnessFor returns the scheduling priority for a tenant.
+//
+// The empty namespace — an untenanted deployment, or one started with
+// --insecure-no-auth — gets the empty key, which is Temporal's own default and
+// the right answer: where there is one tenant there is nothing to be fair
+// between.
+//
+// Only the key is set. Weight is left at its default so every tenant gets an
+// equal share, and PriorityKey is left alone because ranking one tenant above
+// another is a decision for whoever operates the deployment, expressed in task
+// queue configuration, rather than something a server should invent.
+func fairnessFor(namespace string) temporal.Priority {
+	return temporal.Priority{FairnessKey: namespace}
 }
 
 // identityFor builds the identity a run will act as from the authenticated
