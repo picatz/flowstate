@@ -16,6 +16,16 @@ permissions:
 # an unrelated pull request turns someone else's release into your red build, and
 # the person who has to work out why is never the person who caused it.
 #
+# The actions used in the jobs below are pinned the same way, and for a second
+# reason as well. A tag is a mutable pointer that the action's own repository
+# controls: `@v4` is whatever that repository decides `v4` means at the moment
+# this workflow runs, and these steps run in our repository with our token.
+# Pinning a commit makes the code that runs a decision recorded here rather than
+# one taken elsewhere afterwards. The trailing comment names the release the SHA
+# is, because forty hex characters tell a reviewer nothing on their own — and
+# Dependabot's github-actions entry updates the SHA and that comment together,
+# which is what keeps this current rather than merely frozen.
+#
 # govulncheck still reports newly disclosed vulnerabilities while pinned: the
 # advisory database is fetched at run time, so only the analyser is fixed here.
 # That is the split worth having — reproducible tool, current facts.
@@ -44,12 +54,12 @@ jobs:
     # applies to a step's own timeout.
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # go.mod pins a patched toolchain via its `toolchain` directive. Reading the
       # version from go.mod keeps CI on exactly what local builds use, so a
       # toolchain-level security fix cannot be present locally and missing here.
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
 
@@ -86,12 +96,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # buf breaking compares against the base branch, which has to be present.
           fetch-depth: 0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
 
@@ -124,8 +134,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
 
