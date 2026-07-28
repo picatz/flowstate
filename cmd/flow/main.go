@@ -551,17 +551,74 @@ func loadWorkflow(path string) (*v1.Workflow, error) {
 //
 // The listing is derived from the task registry rather than maintained by hand,
 // so it cannot drift from what the engine will actually execute.
+// writeFields prints one task's inputs or outputs, aligned under a label.
+//
+// A block per task rather than a row per task, which is what this was. `http` has
+// eleven inputs; on one line they run past any terminal and take the table's
+// alignment with them, so the shape that fits four tasks today would be unusable
+// the moment somebody registers a fifth with a real schema. A block is the same
+// width whatever the task holds.
+//
+// The writer is passed in so that a task's inputs and outputs share one, and
+// therefore share a column layout. Two tabwriters would align each block against
+// itself and against nothing else, which reads as a mistake even when every
+// number in it is right.
+//
+// Required inputs are marked with `*` rather than only sorted first, because a
+// mark survives being piped, logged, and read by somebody who cannot see colour.
+func writeFields(tw *tabwriter.Writer, label string, fields []v1.InputField) {
+	for i, field := range fields {
+		name := field.Name
+		if field.Required {
+			name += "*"
+		}
+
+		// The label sits beside the first row and the rest align under it, so the
+		// eye reads down a column rather than hunting for where one list ends.
+		heading := ""
+		if i == 0 {
+			heading = label
+		}
+
+		note := ""
+		if field.Deferred {
+			// Worth saying, because it changes what an author may write here. The
+			// engine resolves an expression before scheduling the step; these the
+			// task evaluates itself, against a scope the workflow does not have —
+			// which is why `http`'s `outputs` can name `status_code` and an
+			// ordinary input cannot.
+			note = "\tthe task evaluates this itself, in its own scope"
+		}
+
+		fmt.Fprintf(tw, "  %s\t%s\t%s%s\n", heading, name, field.Type, note)
+	}
+}
+
 func runTasks(cmd *cobra.Command, args []string) error {
 	out := cmd.OutOrStdout()
 
-	tw := tabwriter.NewWriter(out, 0, 8, 2, ' ', 0)
-	fmt.Fprintln(tw, "TASK\tDESCRIPTION")
-	for _, def := range v1.DefaultRegistry().All() {
-		fmt.Fprintf(tw, "%s\t%s\n", def.Name, def.Summary)
+	// What a task takes, not just that it exists.
+	//
+	// This listed a name and a one-line summary, which tells a reader that `http`
+	// exists and nothing about how to write one — so the next stop was the
+	// README's hand-maintained table, which is exactly the drift the registry
+	// exists to prevent. The schema knows; printing it here means the answer
+	// cannot go stale.
+	for i, def := range v1.DefaultRegistry().All() {
+		if i > 0 {
+			fmt.Fprintln(out)
+		}
+		fmt.Fprintf(out, "%s\n  %s\n", def.Name, def.Summary)
+
+		tw := tabwriter.NewWriter(out, 0, 8, 2, ' ', 0)
+		writeFields(tw, "inputs", v1.Inputs(def))
+		writeFields(tw, "outputs", v1.Outputs(def))
+		if err := tw.Flush(); err != nil {
+			return err
+		}
 	}
-	if err := tw.Flush(); err != nil {
-		return err
-	}
+
+	fmt.Fprintf(out, "\n* marks an input the task cannot run without.\n")
 
 	fmt.Fprintf(out, "\nCEL libraries available to the cel task via the libs input:\n  %s\n",
 		strings.Join(v1.ExtensionLibraries(), ", "))

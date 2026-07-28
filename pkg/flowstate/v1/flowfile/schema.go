@@ -4,10 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
@@ -330,17 +328,5 @@ func fieldNames(md protoreflect.MessageDescriptor) []string {
 // This is read from the field's protovalidate rules rather than from a list here,
 // so that marking a field required in the schema is all it takes.
 func requiredField(field protoreflect.FieldDescriptor) bool {
-	rules, _ := proto.GetExtension(field.Options(), validate.E_Field).(*validate.FieldRules)
-	if rules == nil {
-		return false
-	}
-	if rules.GetRequired() {
-		return true
-	}
-	// A repeated field with min_items is required by another name, and the schema
-	// uses both spellings.
-	if repeated := rules.GetRepeated(); repeated != nil && repeated.GetMinItems() > 0 {
-		return true
-	}
-	return false
+	return v1.RequiredInput(field)
 }
