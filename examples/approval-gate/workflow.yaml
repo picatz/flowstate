@@ -38,11 +38,14 @@ steps:
   #
   # Two namespaces, and the split is deliberate. `timed_out` is what the engine
   # observed and is always there; everything under `payload` is what the sender
-  # asserted, so it is rooted where a sender cannot reach anything else. Guard on
-  # `timed_out` before reading a payload key: after a timeout the payload is empty,
-  # and naming a key that is not in it fails the run with an unresolved reference.
+  # asserted, so it is rooted where a sender cannot reach anything else.
+  #
+  # A payload key is only there if a sender sent it, and naming one that is absent
+  # fails the run with an unresolved reference. `has()` asks without asserting, and
+  # is safe on a wait that timed out — the payload is then an empty mapping rather
+  # than nothing, so there is still something to look inside.
   - id: deploy
-    if: ${!approval.timed_out && approval.payload.approved}
+    if: ${has(approval.payload.approved) && approval.payload.approved}
     task:
       name: printf
       inputs:
@@ -51,7 +54,7 @@ steps:
           - ${approval.payload.by}
 
   - id: rejected
-    if: ${!approval.timed_out && !approval.payload.approved}
+    if: ${has(approval.payload.approved) && !approval.payload.approved}
     task:
       name: echo
       inputs:
