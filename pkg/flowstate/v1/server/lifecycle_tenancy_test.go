@@ -180,12 +180,14 @@ func TestListReturnsOnlyTheCallersRuns(t *testing.T) {
 	// see is what makes the negative assertion below meaningful: an empty listing
 	// would otherwise satisfy "sees none of team A's runs" while proving nothing.
 	var listedForB []string
+	var listErrB error
 	require.Eventually(t, func() bool {
-		listedForB = listRunIDs(t, func() (*connect.Response[v1.ListResponse], error) {
+		listedForB, listErrB = listRunIDs(func() (*connect.Response[v1.ListResponse], error) {
 			return fixture.teamB.List(t.Context(), connect.NewRequest(&v1.ListRequest{}))
 		})
-		return slices.Contains(listedForB, teamBRun)
+		return listErrB == nil && slices.Contains(listedForB, teamBRun)
 	}, 30*time.Second, 200*time.Millisecond, "a tenant could not see its own run")
+	require.NoError(t, listErrB, "listing a tenant's own runs was refused")
 
 	// The direction that matters. Team B's listing must not name a run of team
 	// A's, even though every one of them was in the listing the server read.
@@ -195,10 +197,14 @@ func TestListReturnsOnlyTheCallersRuns(t *testing.T) {
 	}
 
 	var listedForA []string
+	var listErrA error
 	require.Eventually(t, func() bool {
-		listedForA = listRunIDs(t, func() (*connect.Response[v1.ListResponse], error) {
+		listedForA, listErrA = listRunIDs(func() (*connect.Response[v1.ListResponse], error) {
 			return fixture.teamA.List(t.Context(), connect.NewRequest(&v1.ListRequest{}))
 		})
+		if listErrA != nil {
+			return false
+		}
 		for id := range teamARuns {
 			if !slices.Contains(listedForA, id) {
 				return false
@@ -206,6 +212,7 @@ func TestListReturnsOnlyTheCallersRuns(t *testing.T) {
 		}
 		return true
 	}, 30*time.Second, 200*time.Millisecond, "a tenant could not see all of its own runs")
+	require.NoError(t, listErrA, "listing a tenant's own runs was refused")
 
 	require.False(t, slices.Contains(listedForA, teamBRun),
 		"a tenant's listing contained another tenant's run")
@@ -225,17 +232,25 @@ func TestListRefusesAPageTokenItDidNotIssue(t *testing.T) {
 	require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }
 
-// listRunIDs collects the workflow ids from one page of a listing.
-func listRunIDs(t *testing.T, call func() (*connect.Response[v1.ListResponse], error)) []string {
-	t.Helper()
-
+// listRunIDs collects the workflow ids from one page of a listing, reporting an
+// RPC failure rather than asserting on it.
+//
+// It must not call require.NoError, because its callers run it inside
+// require.Eventually, and testify evaluates that condition on its own goroutine.
+// A failed assertion there calls t.FailNow, which is runtime.Goexit off the test
+// goroutine: the condition never returns, Eventually waits out its whole timeout,
+// and reports its own message instead. A refused List would be diagnosed as
+// Temporal visibility lag, thirty seconds later.
+func listRunIDs(call func() (*connect.Response[v1.ListResponse], error)) ([]string, error) {
 	resp, err := call()
-	require.NoError(t, err)
+	if err != nil {
+		return nil, err
+	}
 
 	ids := make([]string, 0, len(resp.Msg.GetRuns()))
 	for _, run := range resp.Msg.GetRuns() {
 		ids = append(ids, run.GetWorkflowId())
 	}
 
-	return ids
+	return ids, nil
 }

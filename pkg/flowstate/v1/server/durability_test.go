@@ -46,7 +46,20 @@ func TestWaitSurvivesAWorkerRestart(t *testing.T) {
 	// newWorker starts a worker and returns a function that stops it, so the test
 	// can take the compute away and put different compute back.
 	newWorker := func() func() {
-		w := worker.New(temporal, engine.RunTaskQueueName, worker.Options{})
+		w := worker.New(temporal, engine.RunTaskQueueName, worker.Options{
+			// This test takes the compute away mid-run, so the replacement
+			// worker's first job is whatever the departed one's sticky queue was
+			// still holding. Temporal only clears that stickiness after this
+			// timeout, which makes it the dominant cost of "replace the fleet"
+			// here — and the default five seconds compounds badly on a loaded
+			// machine, where the run then also waits out a workflow-task retry.
+			//
+			// Shortened rather than waited out, because stickiness is not what
+			// this test is about: it asserts that a durable wait survives losing
+			// every worker, and how quickly the server notices is Temporal's
+			// business rather than the property under test.
+			StickyScheduleToStartTimeout: time.Second,
+		})
 		w.RegisterWorkflow(engine.Run)
 		w.RegisterActivity(engine.Task)
 		w.RegisterActivity(engine.TaskWithPrev)

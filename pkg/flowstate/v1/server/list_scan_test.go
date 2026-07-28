@@ -131,8 +131,14 @@ func TestListStopsOnceThePageIsFull(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Len(t, response.Msg.GetRuns(), 5, "the page was not filled to what was asked for")
-	require.LessOrEqual(t, scanned, listBatchSize,
-		"a page that filled on the first batch kept reading anyway")
+
+	// Exactly the page's capacity, not merely "no more than a batch". Asserting
+	// against listBatchSize (100) is satisfied by reading a hundred to return
+	// five — which is precisely the mid-batch bug this file exists to prevent, so
+	// the looser bound could not fail on the one thing it was written for.
+	require.Equal(t, 5, scanned,
+		"the listing read more executions than the page had room for, which is how a "+
+			"cursor ends up advanced past runs that were never returned")
 }
 
 // Walking the pages must reach every run, and that is not implied by any single
@@ -251,8 +257,9 @@ func TestListStopsWhenAPeerReturnsNothingForever(t *testing.T) {
 	response, err := New(temporal).List(t.Context(), connect.NewRequest(&v1types.ListRequest{PageSize: 10}))
 	require.NoError(t, err)
 
-	require.Less(t, calls, patience,
-		"the listing kept asking a peer that never returns anything; nothing bounds the request count")
+	require.LessOrEqual(t, calls, maxListRequests,
+		"the listing kept asking a peer that never returns anything; the request count is not "+
+			"bounded by maxListRequests")
 	require.Empty(t, response.Msg.GetRuns())
 	require.NotEmpty(t, response.Msg.GetNextPageToken(),
 		"a listing that gave up early must say there is more")
@@ -445,8 +452,11 @@ func TestPageSizeCeilingMatchesTheSchema(t *testing.T) {
 	field := (&v1types.ListRequest{}).ProtoReflect().Descriptor().Fields().ByName("page_size")
 	require.NotNil(t, field, "page_size is gone from the schema")
 
-	rules, ok := proto.GetExtension(field.Options(), validate.E_Field).(*validate.FieldRules)
-	require.True(t, ok, "page_size carries no validation rules")
+	// NotNil rather than the type assertion's ok: GetExtension returns a typed-nil
+	// pointer when the field carries no rules at all, so `ok` is true even then
+	// and asserting on it could never fail.
+	rules, _ := proto.GetExtension(field.Options(), validate.E_Field).(*validate.FieldRules)
+	require.NotNil(t, rules, "page_size carries no validation rules")
 
 	require.Equal(t, int32(maxListPageSize), rules.GetInt32().GetLte(),
 		"the schema's page-size ceiling and maxListPageSize disagree, so an ask the schema "+

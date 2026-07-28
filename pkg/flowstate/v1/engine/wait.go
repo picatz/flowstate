@@ -90,34 +90,27 @@ func (e *executor) waitForSignal(node *v1.Node, signal *v1.Signal, timeout time.
 
 	var payload v1.Node_Outputs
 
-	if timeout <= 0 {
-		// No timeout: wait as long as the run lasts. This is what an approval
-		// gate that should genuinely block until someone acts looks like.
-		if !channel.Receive(e.ctx, &payload) {
-			// The channel closed, which for a signal channel means the run is
-			// being torn down rather than that a signal arrived. Cancellation is
-			// the ordinary reason for that, and it has to keep its own identity
-			// on the way out or a run somebody stopped deliberately is recorded
-			// as having failed.
-			if err := e.ctx.Err(); err != nil {
-				return stepFailed(err, "step %q: stopped waiting for signal %q", node.GetId(), name)
-			}
-			return &ErrRunFailed{Message: fmt.Sprintf(
-				"step %q: stopped waiting for signal %q", node.GetId(), name)}
-		}
-		e.recordOutputs(node, v1.WaitOutputs(&payload, false))
-		return nil
-	}
-
-	// A selector rather than two sequential waits, because whichever happens
-	// first has to win: receiving with a timeout means one blocking operation,
-	// not a receive that a timer cannot interrupt.
+	// One selector for both shapes, and cancellation is a case in it.
+	//
+	// A bare channel.Receive cannot be the no-timeout path, which is what it was:
+	// the SDK's signal channels are never closed, and Receive only returns false
+	// on a closed empty channel, so it does not observe cancellation at all. A
+	// gate with no timeout — the spelling this file recommends for an approval
+	// that should block until somebody acts — therefore ignored `flow cancel`
+	// entirely and stayed RUNNING until the run timeout, or forever without one.
+	//
+	// Selecting on ctx.Done() is what makes cancellation reach a waiting step,
+	// and it is the same construction with or without a deadline; only the timer
+	// case is conditional.
 	var received bool
 	selector := workflow.NewSelector(e.ctx)
 	selector.AddReceive(channel, func(c workflow.ReceiveChannel, _ bool) {
 		received = c.Receive(e.ctx, &payload)
 	})
-	selector.AddFuture(workflow.NewTimer(e.ctx, timeout), func(workflow.Future) {})
+	selector.AddReceive(e.ctx.Done(), func(workflow.ReceiveChannel, bool) {})
+	if timeout > 0 {
+		selector.AddFuture(workflow.NewTimer(e.ctx, timeout), func(workflow.Future) {})
+	}
 	selector.Select(e.ctx)
 
 	// Cancellation has to be distinguished from the timer before `received` is
@@ -135,6 +128,14 @@ func (e *executor) waitForSignal(node *v1.Node, signal *v1.Signal, timeout time.
 	}
 
 	if !received {
+		// Only a deadline can produce this now that cancellation is handled
+		// above: with no timeout there is nothing else for the selector to have
+		// woken on.
+		if timeout <= 0 {
+			return &ErrRunFailed{Message: fmt.Sprintf(
+				"step %q: stopped waiting for signal %q", node.GetId(), name)}
+		}
+
 		workflow.GetLogger(e.ctx).Info("wait timed out",
 			"id", node.GetId(), "signal", name, "timeout", timeout)
 		e.recordOutputs(node, v1.WaitOutputs(nil, true))

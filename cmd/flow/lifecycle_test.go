@@ -61,8 +61,13 @@ func TestCancelReachesTheServer(t *testing.T) {
 
 	// Cancellation is a request, not a result. Reporting it as "cancelled" would
 	// claim something not yet true, and a script would build on the claim.
-	require.NotContains(t, strings.ToLower(errOut.String()), "cancelled ",
+	// Neither spelling of the past tense, since claiming the run *is* cancelled is
+	// the misreport this guards — and the repo's own vocabulary is the single-l
+	// STATUS_CANCELED, so matching only "cancelled" would miss it.
+	require.NotRegexp(t, `(?i)cancell?ed`, errOut.String(),
 		"a cooperative request was reported as a completed one")
+	require.Regexp(t, `^asked `, errOut.String(),
+		"the message does not read as a request")
 	require.Contains(t, errOut.String(), "cleanup",
 		"the message does not say the run is still finishing")
 }
@@ -165,7 +170,9 @@ func TestListRefusalsExplainThemselves(t *testing.T) {
 
 	// A listing names no run, so "check the id" would be answering a question
 	// nobody asked.
-	require.Contains(t, err.Error(), "listing runs")
+	// The refusal branch specifically: "listing runs" alone also matches the
+	// generic default, so deleting the refusal case entirely would still pass.
+	require.Contains(t, err.Error(), "refused while listing runs")
 	require.NotContains(t, err.Error(), "check the id")
 }
 
@@ -205,7 +212,8 @@ func TestListAllStopsIfTheTokenDoesNotAdvance(t *testing.T) {
 
 	// It stopped, and it did not throw away what it had already been told.
 	require.Contains(t, out.String(), "run-1")
-	require.Less(t, fake.listCalls, 4, "the CLI kept asking after the token stopped moving")
+	require.Equal(t, 2, fake.listCalls,
+		"the CLI kept asking after the token stopped moving")
 }
 
 // Cancel and Terminate are refused before anything is addressed, so a malformed

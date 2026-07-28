@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 
 	"connectrpc.com/connect"
@@ -52,6 +53,11 @@ const (
 	// than always paying for the whole budget.
 	listBatchSize = 100
 
+	// listQuery scopes a listing to workflows this engine started.
+	//
+	// The type name is the Go function Temporal registers, `engine.Run`.
+	listQuery = `WorkflowType = 'Run'`
+
 	// maxListRequests bounds how many times one listing may call Temporal.
 	//
 	// A second bound is needed because the first one does not cover this: both
@@ -61,11 +67,15 @@ const (
 	// does — and on a peer that answers that way every time, a listing bounded
 	// only by executions read never terminates at all.
 	//
-	// Equal to maxListScan on purpose. A request that returns anything spends at
-	// least one execution of the scan budget, so a peer making progress reaches
-	// that limit first and never this one; the two can only come apart for a peer
-	// that is returning nothing, which is exactly the case this exists for.
-	maxListRequests = maxListScan
+	// It also bounds a second thing, which is why it is not simply maxListScan.
+	// Each request asks for at most the page's remaining capacity, so a caller
+	// asking for a *small* page reads few executions per round trip: page_size=1
+	// against a namespace holding none of the caller's runs would otherwise spend
+	// the whole scan budget one execution at a time, a thousand sequential calls
+	// to Temporal for one request. Bounding round trips caps that at a hundred,
+	// and the listing says there is more rather than pretending it finished — so
+	// the work still gets done, across calls the caller asked for.
+	maxListRequests = 100
 )
 
 // List returns a page of the runs belonging to the caller's tenant.
@@ -129,8 +139,34 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 		resp, err := temporal.ListWorkflow(ctx, &workflowservice.ListWorkflowExecutionsRequest{
 			PageSize:      int32(batch),
 			NextPageToken: cursor,
+
+			// Scoped to this engine's own workflows.
+			//
+			// A Temporal namespace is not necessarily Flowstate's alone, and the
+			// tenant check cannot tell "a Flowstate run from before tenants were
+			// recorded" from "not a Flowstate run at all" — both arrive with no
+			// memo, and both therefore read as belonging to the default tenant.
+			// Unscoped, a listing would enumerate whatever else shares the
+			// namespace, and every id it returned would then be a live argument to
+			// `flow cancel` and `flow terminate`.
+			//
+			// WorkflowType is one of Temporal's own default search attributes, so
+			// this needs no registration and keeps the promise that a first run
+			// wants nothing but `temporal server start-dev`. It also stops another
+			// application's executions from spending this listing's scan budget.
+			Query: listQuery,
 		})
 		if err != nil {
+			// A page token comes from the caller, and Temporal reports one it
+			// cannot deserialize as an ordinary error. Reported as InvalidArgument
+			// rather than Internal, because a caller's malformed input is not a
+			// server fault — and relaying the message would hand back Temporal's
+			// own text, which names namespaces this deployment does not otherwise
+			// disclose.
+			if len(cursor) > 0 {
+				return nil, connect.NewError(connect.CodeInvalidArgument,
+					errors.New("page token is not a token this server issued"))
+			}
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("listing runs: %w", err))
 		}
 

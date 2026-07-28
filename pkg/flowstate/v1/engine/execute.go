@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 )
 
@@ -85,6 +86,21 @@ func (e *executor) runNodes(nodes []*v1.Node, depth int) error {
 
 		if err := e.runNode(node, depth, descend); err != nil {
 			if errors.Is(err, errContinueAsNew) {
+				return err
+			}
+			// Cancellation is not a step failure, so `continue_on_error` does not
+			// get to tolerate it. That policy says "this task may fail without
+			// stopping the workload"; it says nothing about the workload being
+			// stopped, and the two are opposite instructions.
+			//
+			// Without this the run walks on after being cancelled. Every
+			// remaining step then fails immediately with the same cancellation —
+			// the context is already cancelled — and each is tolerated in turn,
+			// so runNodes returns nil and the workflow *completes*. `flow cancel`
+			// would report success and the outputs would read as an ordinary
+			// best-effort failure. That is worse than the FAILED status this
+			// branch set out to fix, because nothing about it looks wrong.
+			if temporal.IsCanceledError(err) {
 				return err
 			}
 			if !node.GetPolicy().GetContinueOnError() {
