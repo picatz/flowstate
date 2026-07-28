@@ -1,17 +1,12 @@
 package server_test
 
 import (
-	"context"
-	"fmt"
 	"slices"
 	"testing"
 	"time"
 
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/require"
-	enumspb "go.temporal.io/api/enums/v1"
-	historypb "go.temporal.io/api/history/v1"
-	"go.temporal.io/sdk/converter"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -132,7 +127,7 @@ func TestCancelLetsARunStop(t *testing.T) {
 
 	workflowID := started.Msg.GetWorkflowId()
 
-	waitUntilParkedAtTheGate(t, fixture, workflowID)
+	waitUntilParkedAtTheGate(t, fixture.temporal, workflowID)
 
 	_, err = fixture.teamA.Cancel(t.Context(), connect.NewRequest(&v1.CancelRequest{
 		WorkflowId: workflowID,
@@ -158,93 +153,10 @@ func TestCancelLetsARunStop(t *testing.T) {
 	// The run stopped at the gate rather than past it. `deploy` is conditional on
 	// `approval.approved`, so it running at all would mean the cancellation was
 	// read as an answer.
-	ran, err := stepsScheduled(t.Context(), fixture, workflowID)
+	ran, err := stepsScheduled(t.Context(), fixture.temporal, workflowID)
 	require.NoError(t, err)
 	require.Equal(t, []string{"requesting approval"}, ran,
 		"a step ran after the run was cancelled at its gate")
-}
-
-// waitUntilParkedAtTheGate blocks until the run has actually reached its approval
-// gate.
-//
-// Nothing on the RPC surface can answer this, which is why it reads history: a
-// status says a run is going, not what it is doing. A gate with a timeout starts a
-// durable timer and nothing else in this workload starts one, so a TimerStarted
-// event is exactly the evidence wanted — and history is written when the workflow
-// task completes, so unlike a listing there is no visibility lag to wait out.
-func waitUntilParkedAtTheGate(t *testing.T, fixture *tenantFixture, workflowID string) {
-	t.Helper()
-
-	require.Eventually(t, func() bool {
-		events, err := historyOf(t.Context(), fixture, workflowID)
-		if err != nil {
-			return false
-		}
-
-		return slices.ContainsFunc(events, func(event *historypb.HistoryEvent) bool {
-			return event.GetEventType() == enumspb.EVENT_TYPE_TIMER_STARTED
-		})
-	}, 30*time.Second, 100*time.Millisecond, "the run never reached its approval gate")
-}
-
-// stepsScheduled reports the message each step this run scheduled was given, in
-// the order they were scheduled.
-//
-// The message identifies the step because every step in gatedWorkflow is an echo
-// with its own, which is cheaper than correlating scheduled events back to step
-// ids and says the same thing.
-func stepsScheduled(ctx context.Context, fixture *tenantFixture, workflowID string) ([]string, error) {
-	events, err := historyOf(ctx, fixture, workflowID)
-	if err != nil {
-		return nil, err
-	}
-
-	var messages []string
-	for _, event := range events {
-		attributes := event.GetActivityTaskScheduledEventAttributes()
-		if attributes == nil {
-			continue
-		}
-
-		payloads := attributes.GetInput().GetPayloads()
-		if len(payloads) == 0 {
-			return nil, fmt.Errorf("a step was scheduled with no input")
-		}
-
-		// The resolved task is the first argument of every step activity, whichever
-		// of the three was scheduled.
-		var task v1.Task
-		if err := converter.GetDefaultDataConverter().FromPayload(payloads[0], &task); err != nil {
-			return nil, fmt.Errorf("reading what a step was scheduled with: %w", err)
-		}
-
-		messages = append(messages, task.GetInputs()["message"].GetLiteral().GetStringValue())
-	}
-
-	return messages, nil
-}
-
-// historyOf collects a run's history.
-//
-// It reports an error rather than asserting on one, because its callers run inside
-// require.Eventually and testify evaluates that condition on its own goroutine — a
-// failed assertion there is runtime.Goexit off the test goroutine, so the condition
-// never returns and Eventually reports its own message a timeout later. The same
-// trap listRunIDs documents, in the same package.
-func historyOf(ctx context.Context, fixture *tenantFixture, workflowID string) ([]*historypb.HistoryEvent, error) {
-	iterator := fixture.temporal.GetWorkflowHistory(
-		ctx, workflowID, "", false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
-
-	var events []*historypb.HistoryEvent
-	for iterator.HasNext() {
-		event, err := iterator.Next()
-		if err != nil {
-			return nil, err
-		}
-		events = append(events, event)
-	}
-
-	return events, nil
 }
 
 // TestListReturnsOnlyTheCallersRuns is the test the List implementation exists to

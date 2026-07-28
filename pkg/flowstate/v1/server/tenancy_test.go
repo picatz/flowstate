@@ -7,12 +7,9 @@ import (
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/require"
 	"go.temporal.io/sdk/client"
-	"go.temporal.io/sdk/testsuite"
-	"go.temporal.io/sdk/worker"
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
 
@@ -39,23 +36,13 @@ type tenantFixture struct {
 	temporal client.Client
 }
 
-// newTenantFixture starts everything needed to run and address real workloads.
+// newTenantFixture starts everything needed to run and address real workloads,
+// inside a Temporal namespace belonging to this test alone.
 func newTenantFixture(t *testing.T) *tenantFixture {
 	t.Helper()
 
-	devServer, err := testsuite.StartDevServer(t.Context(), testsuite.DevServerOptions{
-		ClientOptions: &client.Options{Logger: &testingLogger{t: t}},
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = devServer.Stop() })
-
-	w := worker.New(devServer.Client(), engine.RunTaskQueueName, worker.Options{})
-	w.RegisterWorkflow(engine.Run)
-	w.RegisterActivity(engine.Task)
-	w.RegisterActivity(engine.TaskWithPrev)
-	w.RegisterActivity(engine.TaskInScope)
-	require.NoError(t, w.Start())
-	t.Cleanup(w.Stop)
+	temporal, _ := newTemporalNamespace(t)
+	startWorker(t, temporal)
 
 	// Two tenants, one cluster. Without an authenticator in front, a caller's
 	// namespace is the one the server was configured with, which is what a
@@ -63,9 +50,9 @@ func newTenantFixture(t *testing.T) *tenantFixture {
 	// as far as the authorization logic is concerned, and that is the logic under
 	// test.
 	return &tenantFixture{
-		teamA:    server.New(devServer.Client(), server.WithNamespace("team-a")),
-		teamB:    server.New(devServer.Client(), server.WithNamespace("team-b")),
-		temporal: devServer.Client(),
+		teamA:    server.New(temporal, server.WithNamespace("team-a")),
+		teamB:    server.New(temporal, server.WithNamespace("team-b")),
+		temporal: temporal,
 	}
 }
 

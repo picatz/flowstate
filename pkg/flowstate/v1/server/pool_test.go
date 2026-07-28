@@ -6,8 +6,6 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/require"
-	"go.temporal.io/sdk/client"
-	"go.temporal.io/sdk/testsuite"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
@@ -50,25 +48,31 @@ func (m mapper) TemporalNamespaces() []string {
 	return namespaces
 }
 
-// newPooledServer starts a dev server and returns a Flowstate server routing
-// through a pool built over the given mapping.
-func newPooledServer(t *testing.T, callerNamespace string, mapping map[string]string) *server.FlowstateServer {
+// newPooledServer returns a Flowstate server routing through a pool that maps the
+// named Flowstate namespaces onto this test's own Temporal namespace.
+//
+// The routed namespaces are given by name rather than as a mapping, because what
+// they map *to* is no longer a constant: each test registers its own Temporal
+// namespace, so a mapping written into a test would name a namespace belonging to
+// somebody else.
+func newPooledServer(t *testing.T, callerNamespace string, routed ...string) *server.FlowstateServer {
 	t.Helper()
 
-	devServer, err := testsuite.StartDevServer(t.Context(), testsuite.DevServerOptions{
-		ClientOptions: &client.Options{Logger: &testingLogger{t: t}},
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = devServer.Stop() })
+	temporal, namespace := newTemporalNamespace(t)
+
+	mapping := make(map[string]string, len(routed))
+	for _, name := range routed {
+		mapping[name] = namespace
+	}
 
 	pool, err := temporalclient.NewPool(t.Context(), temporalclient.Config{
 		Address:   devServer.FrontendHostPort(),
-		Namespace: "default",
+		Namespace: namespace,
 	}, mapper{mapping: mapping})
 	require.NoError(t, err)
 	t.Cleanup(pool.Close)
 
-	return server.New(devServer.Client(),
+	return server.New(temporal,
 		server.WithNamespace(callerNamespace),
 		server.WithNamespacePool(pool),
 	)
@@ -84,7 +88,7 @@ func newPooledServer(t *testing.T, callerNamespace string, mapping map[string]st
 // than accepted.
 func TestUnroutableTenantIsRefusedNotRedirected(t *testing.T) {
 	// The deployment maps team-a, and this caller is team-b.
-	flowstate := newPooledServer(t, "team-b", map[string]string{"team-a": "default"})
+	flowstate := newPooledServer(t, "team-b", "team-a")
 
 	_, err := flowstate.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
 		Workflow: gatedWorkflow(),
@@ -106,7 +110,7 @@ func TestUnroutableTenantIsRefusedNotRedirected(t *testing.T) {
 // TestRoutableTenantRuns is the positive direction, so the check above is not
 // passing merely because everything is refused.
 func TestRoutableTenantRuns(t *testing.T) {
-	flowstate := newPooledServer(t, "team-a", map[string]string{"team-a": "default"})
+	flowstate := newPooledServer(t, "team-a", "team-a")
 
 	started, err := flowstate.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
 		Workflow: gatedWorkflow(),
@@ -129,7 +133,7 @@ func TestRoutableTenantRuns(t *testing.T) {
 // this one": treating the first as an error would mean every single-tenant
 // deployment had to describe a tenancy it does not have.
 func TestMappingNothingStillRuns(t *testing.T) {
-	flowstate := newPooledServer(t, "", nil)
+	flowstate := newPooledServer(t, "")
 
 	started, err := flowstate.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
 		Workflow: gatedWorkflow(),
