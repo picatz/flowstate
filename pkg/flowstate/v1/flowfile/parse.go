@@ -494,7 +494,7 @@ func (c *compiler) task(n ast.Node, path string, r ref) *v1.Task {
 		}
 	}
 	if f, found := fields.get("inputs"); found {
-		c.inputs(f.value, fieldPath(path, "inputs"), r, task.Inputs)
+		c.inputs(f.value, fieldPath(path, "inputs"), r, task.GetName(), task.Inputs)
 	}
 
 	return task
@@ -505,7 +505,7 @@ func (c *compiler) task(n ast.Node, path string, r ref) *v1.Task {
 // Input names are whatever the task declares, so unlike everywhere else there is
 // no set of known keys to check against; the registry's descriptors are what
 // [Validate] and the language server check names against.
-func (c *compiler) inputs(n ast.Node, path string, r ref, into map[string]*v1.Value) {
+func (c *compiler) inputs(n ast.Node, path string, r ref, taskName string, into map[string]*v1.Value) {
 	n = c.resolve(n, path, r)
 	if n == nil {
 		return
@@ -527,7 +527,15 @@ func (c *compiler) inputs(n ast.Node, path string, r ref, into map[string]*v1.Va
 		// resolved individually: a nested map containing an expression would
 		// arrive as one expression the task cannot resolve. This is a
 		// compatibility shim for that task's input shape, not a general rule.
-		if e.name == "vars" {
+		//
+		// Which is why it is gated on the task. It used to fire on the key name
+		// alone, for every task, so writing `vars:` under `echo` silently emptied
+		// it into the surrounding inputs and produced a diagnostic naming a key at
+		// a level the author never wrote it at — `task "echo" has no such input`
+		// pointing at `greeting`, when what they wrote was `vars`. A diagnostic
+		// that names something the file does not contain is worse than none, and
+		// this file's rule is that a misspelling is reported where it was made.
+		if e.name == "vars" && c.taskAcceptsUndeclaredInputs(taskName) {
 			c.hoistVars(e.value, fieldPath(path, "vars"), r, into)
 			continue
 		}
@@ -537,6 +545,21 @@ func (c *compiler) inputs(n ast.Node, path string, r ref, into map[string]*v1.Va
 			into[e.name] = value
 		}
 	}
+}
+
+// taskAcceptsUndeclaredInputs reports whether a task binds input names its schema
+// does not declare, which is the only shape the `vars` hoist above is for.
+//
+// An unregistered task answers false: an unknown task name is already reported by
+// [Validate], and flattening on behalf of a task nobody can run would only add a
+// second, more confusing diagnostic to the first.
+func (c *compiler) taskAcceptsUndeclaredInputs(name string) bool {
+	def, found := v1.LookupTask(name)
+	if !found {
+		return false
+	}
+
+	return acceptsUndeclaredInputs(def)
 }
 
 // hoistVars flattens a `vars` mapping into the inputs around it.

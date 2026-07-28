@@ -473,7 +473,9 @@ func httpExpectSatisfied(
 	}
 
 	out, err := DefaultEvaluator().EvalParsed(ctx, env, parsed,
-		interpreter.NewHierarchicalActivation(&StepsOutputActivation{Prev: scope.StepOutputs()}, activation))
+		interpreter.NewHierarchicalActivation(
+			&StepsOutputActivation{Prev: scope.StepOutputs(), Ctx: ctx, Eval: DefaultEvaluator()},
+			activation))
 	if err != nil {
 		return NewTaskError("http", ErrorKindExpression, fmt.Errorf("evaluating expect: %w", err))
 	}

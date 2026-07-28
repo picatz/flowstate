@@ -1404,3 +1404,53 @@ steps:
 	}
 	requireExpr(t, greeting, "greet.result")
 }
+
+// TestVarsUnderATaskThatHasNoVarsIsReportedWhereItWasWritten pins a diagnostic's
+// position, which is the thing this file treats as a feature.
+//
+// `vars:` is a compatibility shim for the cel task, whose inputs are whatever its
+// expression references. The hoist that implements it used to fire on the key name
+// alone, for every task — so writing `vars:` under `echo` emptied it into the
+// surrounding inputs and then reported the *contents* as unknown inputs:
+//
+//	step "a" input "greeting": task "echo" has no such input; it accepts message
+//	step "a": task "echo" requires input "message" (a string)
+//
+// Neither line names `vars`, which is the only thing the author wrote wrong. They
+// are sent looking for a mistake in a key they did not type, at a level they did
+// not type it at, while the real one sits untouched above.
+func TestVarsUnderATaskThatHasNoVarsIsReportedWhereItWasWritten(t *testing.T) {
+	t.Parallel()
+
+	const src = `name: misplaced-vars
+steps:
+  - id: a
+    task:
+      name: echo
+      inputs:
+        message: hi
+        vars:
+          greeting: hello
+`
+
+	diagnostics, err := flowfile.ValidateSource([]byte(src))
+	if err != nil {
+		t.Fatalf("the file did not compile at all: %v", err)
+	}
+	if len(diagnostics) == 0 {
+		t.Fatal("vars under a task that declares no vars input was accepted")
+	}
+
+	reported := diagnostics.Error()
+
+	// It is reported as an input `echo` does not have — which is exactly what it
+	// is — and it is reported against `vars`, the key in the file.
+	if !strings.Contains(reported, `"vars"`) {
+		t.Errorf("the diagnostic does not name the key the author actually wrote:\n%s", reported)
+	}
+
+	// And not against its contents, which the author never wrote at that level.
+	if strings.Contains(reported, "greeting") {
+		t.Errorf("the diagnostic points inside vars, at a key that only exists after the hoist:\n%s", reported)
+	}
+}

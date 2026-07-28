@@ -390,9 +390,17 @@ interface, so a plugin can be written in any language with Connect or gRPC suppo
 
 A plugin advertises *capabilities* rather than being of a kind, so one binary can
 resolve secrets and provide tasks both — which is what the useful integrations
-actually look like. A plugin-provided task ships its own protobuf descriptors, so
-`flow validate`, editor completion, and `flow tasks` treat it exactly like a built-in
-one.
+actually look like. A plugin-provided task ships its own protobuf descriptors, which
+is what will let `flow validate`, editor completion, and `flow tasks` treat it
+exactly like a built-in one.
+
+**None of that is reachable yet.** The protocol, the host, the SDK and a worked
+example are all here and tested, and nothing wires the host into `flow worker` — so
+the task registry every one of those surfaces reads is built from the built-ins
+alone, and a Flowfile naming a plugin task is told `unknown task`. There is no `flow
+plugins` command either. This section describes a design that is finished and a path
+that is not yet connected; it is called out rather than quietly implied, because a
+capability nobody can reach is not done.
 
 A plugin extends what the engine can do, not what it is allowed to do: it resolves
 only permitted schemes, receives the tenant a workload belongs to rather than
