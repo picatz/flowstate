@@ -424,3 +424,102 @@ func TestValidateSchemaRulesCompile(t *testing.T) {
 		}
 	}
 }
+
+// TestValidateRefusesEmptyMapKeys is the test for a rule that used to be written
+// down and never ran.
+//
+// The schema said `keys: {required: true}` on every string-keyed map — task
+// inputs, workflow inputs, labels, step outputs, named values, scope vars. It
+// reads like a constraint and it is not one: `required` cannot apply to a map key,
+// because a key is never absent. protovalidate ignores it and `buf lint` reports
+// it as unenforceable, which is why lint was not in CI.
+//
+// So the constraint was decorative and the hole was real: a workflow naming a task
+// input `""` validated cleanly. That name is what an expression would have to
+// reference, and nothing can reference the empty name — so the run was accepted
+// and could never be correct.
+//
+// The rule now says the thing that is true and enforceable, min_len: 1. The same
+// edit removed `values:`/`items: {required: true}`, which were unenforceable *and*
+// redundant: protovalidate already recurses into a nested message, which is what
+// actually refuses a nil value — as the second half of this test pins, so that
+// removing them cannot quietly remove the check somebody thought they were.
+func TestValidateRefusesEmptyMapKeys(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		workflow *v1.Workflow
+	}{
+		{
+			name: "an empty task input name",
+			workflow: &v1.Workflow{
+				Name: "empty-input-name",
+				Steps: []*v1.Node{{
+					Id: "a",
+					Kind: &v1.Node_Task{Task: &v1.Task{
+						Name:   "echo",
+						Inputs: map[string]*v1.Value{"": v1.NewLiteral("hi")},
+					}},
+				}},
+			},
+		},
+		{
+			name: "an empty label key",
+			workflow: &v1.Workflow{
+				Name:   "empty-label-key",
+				Labels: map[string]string{"": "value"},
+				Steps: []*v1.Node{{
+					Id:   "a",
+					Kind: &v1.Node_Task{Task: &v1.Task{Name: "echo"}},
+				}},
+			},
+		},
+		{
+			name: "an empty workflow input name",
+			workflow: &v1.Workflow{
+				Name:   "empty-workflow-input",
+				Inputs: map[string]*v1.Value{"": v1.NewLiteral("hi")},
+				Steps: []*v1.Node{{
+					Id:   "a",
+					Kind: &v1.Node_Task{Task: &v1.Task{Name: "echo"}},
+				}},
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			require.Error(t, v1.Validate(test.workflow),
+				"a map key nothing can reference was accepted")
+		})
+	}
+}
+
+// TestValidateStillRefusesAnAbsentMapValue is the other direction of the same
+// edit.
+//
+// `values: {required: true}` was removed as unenforceable, and the check it looked
+// like it was doing has to still happen — by recursion into the value message
+// rather than by the rule that was deleted. If this ever stops failing, the
+// removal took something real with it.
+func TestValidateStillRefusesAnAbsentMapValue(t *testing.T) {
+	t.Parallel()
+
+	err := v1.Validate(&v1.Workflow{
+		Name: "nil-input-value",
+		Steps: []*v1.Node{{
+			Id: "a",
+			Kind: &v1.Node_Task{Task: &v1.Task{
+				Name:   "echo",
+				Inputs: map[string]*v1.Value{"message": nil},
+			}},
+		}},
+	})
+
+	require.Error(t, err, "a task input with no value at all was accepted")
+	require.Contains(t, err.Error(), "kind",
+		"the refusal did not come from recursing into the value, so it may not survive")
+}
