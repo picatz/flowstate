@@ -20,6 +20,7 @@ import (
 	"connectrpc.com/otelconnect"
 	"connectrpc.com/validate"
 	"github.com/charmbracelet/fang"
+	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
@@ -559,9 +560,12 @@ func runTasks(cmd *cobra.Command, args []string) error {
 func main() {
 	// Root command for the Flowstate CLI application (flow).
 	rootCmd := &cobra.Command{
-		Use:     "flow",
-		Short:   "Flowstate workflow engine",
-		Long:    "Flowstate is a workflow engine that uses Temporal for durable execution and CEL expressions for dynamic workflows.",
+		Use:   "flow",
+		Short: "Durable, policy-governed workload engine",
+		Long: "Flowstate runs workloads that have to finish correctly despite crashes, network " +
+			"failures, and long waits. You write one as a Flowfile — YAML with CEL expressions — " +
+			"and run it in this process or durably on Temporal. The two behave the same, which is " +
+			"what makes a local run worth rehearsing with.",
 		Version: version,
 		Example: `# Run a workflow locally (without Temporal):
 flow run local examples/hello-world/workflow.yaml
@@ -862,7 +866,20 @@ flow lsp`,
 	defer cancel()
 
 	// Execute the CLI command with Fang for enhanced styling and features.
-	if err := fang.Execute(ctx, rootCmd, fang.WithNotifySignal(os.Interrupt, os.Kill)); err != nil {
+	// The help and every error report are drawn by fang, so they are dressed in
+	// the same palette as everything the CLI prints itself. A binary whose help is
+	// one colour and whose output is another reads as two tools.
+	//
+	// The version is handed over explicitly because fang sets root.Version for
+	// itself otherwise, which silently overwrote the value the build stamps in via
+	// -ldflags — so `flow --version` reported "unknown (built from source)" on
+	// every release binary.
+	err := fang.Execute(ctx, rootCmd,
+		fang.WithNotifySignal(os.Interrupt, os.Kill),
+		fang.WithColorSchemeFunc(ui.FangColorScheme),
+		fang.WithVersion(version),
+	)
+	if err != nil {
 		os.Exit(1)
 	}
 }
