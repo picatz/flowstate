@@ -87,57 +87,66 @@ func runList(cmd *cobra.Command, args []string) error {
 	token := listPageToken
 	rows := 0
 
-	for {
-		request := &v1.ListRequest{PageSize: listPageSize, PageToken: token}
-		if err := v1.Validate(request); err != nil {
-			return err
-		}
-
-		response, err := client.List(cmd.Context(), connect.NewRequest(request))
-		if err != nil {
-			return refusedList(err)
-		}
-
-		for _, run := range response.Msg.GetRuns() {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n",
-				run.GetWorkflowId(),
-				statusLabel(run.GetStatus()),
-				formatRunTime(run.GetStartTime().AsTime(), run.GetStartTime() != nil),
-				formatRunTime(run.GetCloseTime().AsTime(), run.GetCloseTime() != nil),
-			)
-			rows++
-		}
-
-		previous := token
-		token = response.Msg.GetNextPageToken()
-
-		// An empty token is the only end of the listing. A short page is not:
-		// the scan may have spent its budget among runs belonging to somebody
-		// else.
-		if token == "" || !listAll {
-			break
-		}
-
-		// A token that has not moved means the next request is the one just made.
-		// `--all` is the only loop here whose end is decided by the far side, so
-		// it is the only one that can be made to run forever by a server that is
-		// wrong or hostile — and a CLI that hangs looks like a slow listing rather
-		// than a fault, which is how somebody spends an afternoon on it.
-		if token == previous {
-			// Flushed before returning, so the caller keeps the runs already
-			// listed. They were reported correctly; only the continuation is
-			// broken, and throwing away good rows to report a bad token would
-			// make the failure worse than it is.
-			if flushErr := tw.Flush(); flushErr != nil {
-				return flushErr
+	// The walk is its own function so that every way out of it — success, a
+	// refused page, a token that stopped moving — passes through the one flush
+	// below.
+	//
+	// A tabwriter buffers until flushed, so returning an error directly from
+	// inside the loop discards rows that were retrieved and formatted correctly.
+	// `--all` makes that worth caring about: page four failing is no reason to
+	// throw away pages one through three, and a caller who sees an error and no
+	// output cannot tell how far it got.
+	walk := func() error {
+		for {
+			request := &v1.ListRequest{PageSize: listPageSize, PageToken: token}
+			if err := v1.Validate(request); err != nil {
+				return err
 			}
-			return fmt.Errorf("the server returned the same page token twice, so continuing would "+
-				"ask it the same question forever; %d run(s) listed before stopping", rows)
+
+			response, err := client.List(cmd.Context(), connect.NewRequest(request))
+			if err != nil {
+				return refusedList(err)
+			}
+
+			for _, run := range response.Msg.GetRuns() {
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n",
+					run.GetWorkflowId(),
+					statusLabel(run.GetStatus()),
+					formatRunTime(run.GetStartTime().AsTime(), run.GetStartTime() != nil),
+					formatRunTime(run.GetCloseTime().AsTime(), run.GetCloseTime() != nil),
+				)
+				rows++
+			}
+
+			previous := token
+			token = response.Msg.GetNextPageToken()
+
+			// An empty token is the only end of the listing. A short page is not:
+			// the scan may have spent its budget among runs belonging to somebody
+			// else.
+			if token == "" || !listAll {
+				return nil
+			}
+
+			// A token that has not moved means the next request is the one just
+			// made. `--all` is the only loop here whose end is decided by the far
+			// side, so it is the only one a server that is wrong or hostile can
+			// make run forever — and a CLI that hangs reads as a slow listing
+			// rather than a fault, which is how somebody loses an afternoon.
+			if token == previous {
+				return fmt.Errorf("the server returned the same page token twice, so continuing "+
+					"would ask it the same question forever; %d run(s) listed before stopping", rows)
+			}
 		}
 	}
 
+	walkErr := walk()
+
 	if err := tw.Flush(); err != nil {
 		return err
+	}
+	if walkErr != nil {
+		return walkErr
 	}
 
 	if rows == 0 && token == "" {

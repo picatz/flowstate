@@ -232,3 +232,30 @@ func TestStopVerbsRejectAMalformedRequest(t *testing.T) {
 		})
 	}
 }
+
+// A page failing partway through `--all` must not discard the pages that
+// succeeded.
+//
+// The table is buffered until flushed, so returning the error directly loses
+// rows that were retrieved and formatted correctly — and a caller who sees an
+// error with no output cannot tell whether it failed on the first page or the
+// fortieth.
+func TestListAllKeepsRowsWhenALaterPageFails(t *testing.T) {
+	fake := &fakeWorkflowService{
+		listResponses: []*v1.ListResponse{
+			{Runs: []*v1.RunSummary{{WorkflowId: "run-early", Status: v1.RunResponse_STATUS_RUNNING}}, NextPageToken: "page-2"},
+		},
+		// The second call has no canned response and fails instead.
+		listErrAfter: 1,
+	}
+	serveFake(t, fake)
+	cmd, out, _ := lifecycleCommand(t)
+
+	listAll = true
+
+	err := runList(cmd, nil)
+	require.Error(t, err, "a failed page was reported as success")
+
+	require.Contains(t, out.String(), "run-early",
+		"a page that succeeded was thrown away because a later one failed")
+}

@@ -140,6 +140,17 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 			if !ownedBy(caller, execution.GetMemo()) {
 				continue
 			}
+
+			// A workload that continued as new is several executions sharing one
+			// workflow id, and a listing is about workloads. Left in, a long
+			// workload would appear once per segment — the same id repeated, most
+			// of them closed — and the more work it had done the more of the page
+			// it would occupy. The current segment carries the workload's real
+			// status, so the earlier ones are skipped rather than deduplicated
+			// afterwards, which would need the whole listing in hand to do.
+			if execution.GetStatus() == enums.WORKFLOW_EXECUTION_STATUS_CONTINUED_AS_NEW {
+				continue
+			}
 			runs = append(runs, summarize(execution))
 			if len(runs) == pageSize {
 				break

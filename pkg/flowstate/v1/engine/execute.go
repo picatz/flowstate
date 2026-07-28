@@ -76,7 +76,7 @@ func (e *executor) runNodes(nodes []*v1.Node, depth int) error {
 
 		run, err := v1.EvalConditionInScope(context.Background(), node.GetCondition(), e.scope)
 		if err != nil {
-			return &ErrRunFailed{Message: fmt.Sprintf("step %q: %v", node.GetId(), err)}
+			return stepFailed(err, "step %q: %v", node.GetId(), err)
 		}
 		if !run {
 			workflow.GetLogger(e.ctx).Info("skipping step, condition is false", "id", node.GetId())
@@ -138,7 +138,7 @@ func (e *executor) runTask(node *v1.Node, task *v1.Task) error {
 	// values into the next.
 	resolved, err := v1.ResolveTaskInputs(context.Background(), task, e.scope)
 	if err != nil {
-		return &ErrRunFailed{Message: fmt.Sprintf("step %q: %v", node.GetId(), err)}
+		return stepFailed(err, "step %q: %v", node.GetId(), err)
 	}
 
 	stepCtx := workflow.WithActivityOptions(e.ctx, activityOptionsFor(node.GetPolicy()))
@@ -155,7 +155,7 @@ func (e *executor) runTask(node *v1.Node, task *v1.Task) error {
 		evalErr = workflow.ExecuteActivity(stepCtx, Task, resolved).Get(stepCtx, &out)
 	}
 	if evalErr != nil {
-		return &ErrRunFailed{Message: fmt.Sprintf("step %q: %v", node.GetId(), evalErr)}
+		return stepFailed(evalErr, "step %q: %v", node.GetId(), evalErr)
 	}
 
 	e.scope.Outputs.StepValues[node.GetId()] = &out
@@ -167,7 +167,7 @@ func (e *executor) runTask(node *v1.Node, task *v1.Task) error {
 func (e *executor) runForEach(node *v1.Node, loop *v1.ForEach, depth int, descend bool) error {
 	items, err := v1.ResolveItems(context.Background(), loop, e.scope)
 	if err != nil {
-		return &ErrRunFailed{Message: fmt.Sprintf("step %q: %v", node.GetId(), err)}
+		return stepFailed(err, "step %q: %v", node.GetId(), err)
 	}
 
 	name := v1.IteratorName(loop)
@@ -200,7 +200,7 @@ func (e *executor) runForEach(node *v1.Node, loop *v1.ForEach, depth int, descen
 			if errors.Is(err, errContinueAsNew) {
 				return err
 			}
-			return &ErrRunFailed{Message: fmt.Sprintf("step %q iteration %d: %v", node.GetId(), i, err)}
+			return stepFailed(err, "step %q iteration %d: %v", node.GetId(), i, err)
 		}
 		results = append(results, iteration)
 
@@ -299,7 +299,7 @@ func (e *executor) runIterationsConcurrently(loop *v1.ForEach, iterator string, 
 
 	for i, err := range errs {
 		if err != nil {
-			return nil, &ErrRunFailed{Message: fmt.Sprintf("iteration %d: %v", i, err)}
+			return nil, stepFailed(err, "iteration %d: %v", i, err)
 		}
 	}
 	return results, nil
@@ -340,7 +340,7 @@ func (e *executor) runParallel(parallel *v1.Parallel, depth int) error {
 
 	for i, err := range errs {
 		if err != nil {
-			return &ErrRunFailed{Message: fmt.Sprintf("branch %d: %v", i, err)}
+			return stepFailed(err, "branch %d: %v", i, err)
 		}
 	}
 

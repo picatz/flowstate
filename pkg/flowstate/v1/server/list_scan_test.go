@@ -6,14 +6,17 @@ import (
 	"strconv"
 	"testing"
 
+	"buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	common "go.temporal.io/api/common/v1"
+	enums "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/workflow/v1"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/mocks"
+	"google.golang.org/protobuf/proto"
 
 	v1types "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -421,4 +424,84 @@ func TestListPageSizeIsDefaultedAndBounded(t *testing.T) {
 		require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 	})
 
+}
+
+// The page-size ceiling is written twice — once in the schema, once here — and
+// the two must not drift.
+//
+// Which one wins decides the behavior a caller sees, and the failure is silent
+// either way. If the schema's ceiling rose above this one, an ask the schema
+// accepts would be quietly shrunk here, and a caller who asked for five thousand
+// and received a thousand has no way to tell that from a namespace holding a
+// thousand runs — the exact "that is all there was" reading the refusal exists to
+// prevent. If it fell below, this clamp would be unreachable and the second line
+// of defence would be gone without anything failing.
+//
+// So the constraint is read from the descriptor rather than restated, and a
+// change to either side has to be a change to both.
+func TestPageSizeCeilingMatchesTheSchema(t *testing.T) {
+	t.Parallel()
+
+	field := (&v1types.ListRequest{}).ProtoReflect().Descriptor().Fields().ByName("page_size")
+	require.NotNil(t, field, "page_size is gone from the schema")
+
+	rules, ok := proto.GetExtension(field.Options(), validate.E_Field).(*validate.FieldRules)
+	require.True(t, ok, "page_size carries no validation rules")
+
+	require.Equal(t, int32(maxListPageSize), rules.GetInt32().GetLte(),
+		"the schema's page-size ceiling and maxListPageSize disagree, so an ask the schema "+
+			"accepts would be silently shrunk here (or this clamp is unreachable)")
+}
+
+// A workload that continued as new is several executions sharing one workflow id,
+// and this engine reaches that state by design: a run that exhausts its step
+// budget continues as new.
+//
+// Listing them all would show one workload once per segment, most of them closed,
+// and the more work it had done the more of the page it would take. Worse, the
+// status Temporal records on a prior segment has no mapping of its own, so before
+// this each of those rows read UNSPECIFIED.
+func TestListShowsAContinuedWorkloadOnce(t *testing.T) {
+	t.Parallel()
+
+	// One workload: two segments it has already left, and the one it is in.
+	segments := []*workflow.WorkflowExecutionInfo{
+		{
+			Execution: &common.WorkflowExecution{WorkflowId: "long-runner", RunId: "run-1"},
+			Status:    enums.WORKFLOW_EXECUTION_STATUS_CONTINUED_AS_NEW,
+		},
+		{
+			Execution: &common.WorkflowExecution{WorkflowId: "long-runner", RunId: "run-2"},
+			Status:    enums.WORKFLOW_EXECUTION_STATUS_CONTINUED_AS_NEW,
+		},
+		{
+			Execution: &common.WorkflowExecution{WorkflowId: "long-runner", RunId: "run-3"},
+			Status:    enums.WORKFLOW_EXECUTION_STATUS_RUNNING,
+		},
+	}
+
+	temporal := &mocks.Client{}
+	temporal.On("ListWorkflow", mock.Anything, mock.Anything).Return(
+		&workflowservice.ListWorkflowExecutionsResponse{Executions: segments}, nil)
+
+	response, err := New(temporal).List(t.Context(), connect.NewRequest(&v1types.ListRequest{}))
+	require.NoError(t, err)
+
+	require.Len(t, response.Msg.GetRuns(), 1,
+		"a workload that continued as new was listed once per segment")
+	require.Equal(t, "long-runner", response.Msg.GetRuns()[0].GetWorkflowId())
+	require.Equal(t, "run-3", response.Msg.GetRuns()[0].GetRunId(),
+		"the listing named a segment the workload has already left")
+	require.Equal(t, v1types.RunResponse_STATUS_RUNNING, response.Msg.GetRuns()[0].GetStatus())
+}
+
+// And asked about directly, a segment reports the workload's state rather than
+// falling through to UNSPECIFIED — which Get rejects as an unknown status, so
+// asking about an earlier segment by run id used to return an internal error.
+func TestContinuedAsNewReadsAsRunning(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, v1types.RunResponse_STATUS_RUNNING,
+		runStatus(enums.WORKFLOW_EXECUTION_STATUS_CONTINUED_AS_NEW),
+		"a continued-as-new segment has no status of its own")
 }

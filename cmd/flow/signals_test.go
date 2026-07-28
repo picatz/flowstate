@@ -190,6 +190,10 @@ type fakeWorkflowService struct {
 	listCalls     int
 	lastListToken string
 	listErr       error
+
+	// listErrAfter makes List fail once this many calls have succeeded, which is
+	// how a test describes a walk that breaks partway rather than at the start.
+	listErrAfter int
 }
 
 // Cancel implements [flowstatev1connect.WorkflowServiceHandler].
@@ -211,6 +215,9 @@ func (f *fakeWorkflowService) List(_ context.Context, req *connect.Request[v1.Li
 
 	if f.listErr != nil {
 		return nil, f.listErr
+	}
+	if f.listErrAfter > 0 && f.listCalls > f.listErrAfter {
+		return nil, connect.NewError(connect.CodeUnavailable, errors.New("page unavailable"))
 	}
 
 	if len(f.listResponses) == 0 {

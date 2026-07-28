@@ -30,9 +30,20 @@ the attack:
   billion-laughs document has a depth of one per alias and multiplies breadth at
   every level.
 - Recursive resolution is bounded by depth (`maxActivationDepth`).
+- A paged listing is bounded by executions read *and* by requests made
+  (`maxListScan`, `maxListRequests`).
 
 Depth bounds do not stop breadth explosions, and time bounds do not stop memory
 explosions. Ask which resource the attacker controls, then bound that resource.
+
+Bounding one resource does not bound another the peer controls the ratio to.
+`List` reads executions until it has filled a page or spent its scan budget, and
+both of those only advance when executions come back — how many come back per
+request is the *peer's* choice. Temporal's visibility store can legitimately answer
+with an empty page carrying a next-page token, so against a peer that answers that
+way every time, a loop bounded only by executions read never terminates: nothing it
+checks ever changes. Requests therefore have their own bound. Whenever a loop's
+progress is measured in units the far side decides, count the round trips too.
 
 And check that a bound covers the path an attacker would actually take, rather than
 the one a cooperative peer takes. `connect.WithReadMaxBytes` bounds a *successful*
@@ -62,6 +73,33 @@ A `go test` command that returns does not mean the test binary exited. If a run
 behaves oddly, check:
 
     ps -Ao pid,rss,args | grep -E '\.test|-fuzz' | grep -v grep
+
+## Run what CI runs, before pushing
+
+CI is a backstop, not the feedback loop. Every check in `.github/workflows/ci.yml`
+runs locally in under a couple of minutes, so discovering a failure there means a
+round trip that bought nothing — and on a shared runner it means someone else waits
+behind it too.
+
+    go build ./...
+    go vet ./...
+    gofmt -l ./cmd ./pkg                       # must print nothing
+    GOMEMLIMIT=2GiB go test -race -timeout 900s ./...
+    go run github.com/bufbuild/buf/cmd/buf@v1.72.0 generate && git diff --exit-code
+    go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+
+Two of those repay the trouble in ways that are not obvious.
+
+`buf generate` followed by `git diff --exit-code` is the one people skip, and it is
+the one that fails for someone else rather than for you: committed generated code
+that disagrees with its schema builds perfectly until the next person regenerates.
+
+`govulncheck` reports *reachability* against a database fetched when it runs, so it
+can go red on a tree nobody touched — a new advisory is not a new bug in your diff.
+Before assuming a finding is yours, run it against `main`. If `main` fails too, the
+advisory arrived rather than the code changed, and the fix is a dependency bump that
+belongs to everyone. Say so plainly wherever you report it, because a scan naming
+your file makes it look like yours.
 
 ## Both execution drivers must agree
 
@@ -138,6 +176,33 @@ provider is namespaced *every* tenant gets a segment including the default one
 
 So: an isolation test asserting that each party reaches its own resource is a
 functionality test wearing a security test's clothes. Write the negative direction.
+
+## Test the traversal, not just the step
+
+The same mistake has a second shape. Where the tenancy tests covered one direction
+of a boundary, `List`'s tests covered one *page* of a walk — and a paging bug does
+not live in a page.
+
+`List` asked Temporal for a hundred executions, stopped appending once the page held
+fifty, and advanced the cursor past the whole batch anyway. Temporal's page token
+addresses a batch, so the other fifty ended up behind a cursor that had already moved
+past them: runs the caller owned, absent from every later page rather than delayed.
+Walking a namespace of 23 owned runs five at a time returned 5 and then reported the
+listing *complete* — not short, but claiming to be the whole of it.
+
+Two tests covered `List` and both stayed green through it. One asserted a page holds
+the number of runs asked for; the other that the scan stops. Both are page-shaped,
+and neither can see a cursor that skips. What fails is walking to exhaustion and
+checking the *set* — every item reached, exactly once, and nothing belonging to
+anyone else (`TestListPagingReachesEveryRun`,
+`TestListPagingReachesEveryRunAmongOtherTenants`).
+
+Two habits follow. Test the join of two features and not only each half: paging was
+tested, filtering was tested, and the bug lived precisely where a filter decides
+where in a batch a page fills. And when a bound exists, assert it was *reached* as
+well as not exceeded — `scanned <= maxListScan` is also satisfied by a listing that
+gave up after one batch, and under-scanning hides a caller's own runs just as
+effectively as over-scanning costs the server.
 
 ## Diagnostics are a feature
 

@@ -90,12 +90,22 @@ func TestAnotherTenantCannotStopARun(t *testing.T) {
 	})
 }
 
-// TestCancelLetsARunStop checks the cooperative half.
+// TestCancelLetsARunStop checks the cooperative half, and checks it precisely.
 //
-// Which closed status a cancelled run lands in is up to how the workload responds
-// — that is what cooperative means — so this asserts that it stops rather than
-// asserting one outcome. Terminate is the one with a single answer, and it is
-// pinned above.
+// This first asserted only that the run stopped, on the reasoning that a
+// cooperative stop leaves the outcome to the workload. That was too generous by
+// exactly the amount that mattered: the run did stop, and it stopped reporting
+// STATUS_FAILED, because the engine wrapped Temporal's cancellation in a plain
+// error and the type Temporal reads to record CANCELED was formatted away. A
+// workload somebody stopped on purpose looked like a fault.
+//
+// Worse, the gate this workload waits on took the cancellation for its timeout —
+// a cancelled selector leaves `received` false, the same shape as nobody
+// answering — so the run recorded "not approved" and walked on to the next step
+// instead of stopping. Both are invisible to an assertion that only asks whether
+// the run is still going.
+//
+// So the status is pinned. A cancelled run reports cancelled, or this fails.
 func TestCancelLetsARunStop(t *testing.T) {
 	t.Parallel()
 
@@ -120,12 +130,21 @@ func TestCancelLetsARunStop(t *testing.T) {
 	}))
 	require.NoError(t, err)
 
+	var final v1.RunResponse_Status
 	require.Eventually(t, func() bool {
 		resp, err := fixture.teamA.Get(t.Context(), connect.NewRequest(&v1.GetRequest{
 			WorkflowId: workflowID,
 		}))
-		return err == nil && resp.Msg.GetStatus() != v1.RunResponse_STATUS_RUNNING
+		if err != nil || resp.Msg.GetStatus() == v1.RunResponse_STATUS_RUNNING {
+			return false
+		}
+		final = resp.Msg.GetStatus()
+		return true
 	}, 60*time.Second, 200*time.Millisecond, "a cancelled run never stopped")
+
+	require.Equal(t, v1.RunResponse_STATUS_CANCELED, final,
+		"a run stopped on purpose reported %s, so `flow get` tells whoever finds it that "+
+			"something went wrong", final)
 }
 
 // TestListReturnsOnlyTheCallersRuns is the test the List implementation exists to

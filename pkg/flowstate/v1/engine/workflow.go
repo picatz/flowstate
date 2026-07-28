@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/cel-go/cel"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )
@@ -16,6 +17,30 @@ type ErrRunFailed struct {
 
 func (e *ErrRunFailed) Error() string {
 	return fmt.Sprintf("engine: flowstate run failed: %s", e.Message)
+}
+
+// stepFailed reports a step failure, except when the run is being cancelled.
+//
+// Temporal decides whether a closed run reads as CANCELED or FAILED from the
+// error the workflow function returns, and it recognises cancellation by type.
+// [ErrRunFailed] carries a message and nothing else, so wrapping a cancellation
+// in one formats the type away: the run stops, and it is recorded as having
+// failed.
+//
+// That is not a cosmetic difference. `flow cancel` is the verb for stopping a
+// workload on purpose, and a workload somebody stopped on purpose reporting a
+// failure sends whoever finds it later looking for a fault that never happened —
+// while a real failure at the same moment is indistinguishable from it.
+//
+// So a cancellation propagates untouched and everything else becomes a run
+// failure. Cancellation reaches here from anything that blocks on the workflow's
+// context — an activity, a timer, a signal channel — which is why this is a
+// helper rather than a check at one site.
+func stepFailed(err error, format string, args ...any) error {
+	if temporal.IsCanceledError(err) {
+		return err
+	}
+	return &ErrRunFailed{Message: fmt.Sprintf(format, args...)}
 }
 
 const RunTaskQueueName = "flowstate-run-task-queue"

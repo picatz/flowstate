@@ -363,6 +363,22 @@ func runStatus(status enums.WorkflowExecutionStatus) v1.RunResponse_Status {
 		return v1.RunResponse_STATUS_TERMINATED
 	case enums.WORKFLOW_EXECUTION_STATUS_TIMED_OUT:
 		return v1.RunResponse_STATUS_TIMED_OUT
+
+	case enums.WORKFLOW_EXECUTION_STATUS_CONTINUED_AS_NEW:
+		// Running, because the workload is. Continue-As-New closes one execution
+		// and opens another, so this status marks a segment of a workload that
+		// carried on rather than a workload that ended — and this engine reaches
+		// it routinely, since a run that exhausts its step budget continues as new
+		// by design.
+		//
+		// Callers address workloads, not segments: a run id is optional
+		// everywhere, and unset means "whichever is current". Reporting a segment
+		// as anything else would answer a question about the workload with a fact
+		// about its bookkeeping. Left unmapped it fell to the default below, which
+		// Get then rejects as an unknown status — asking about an earlier segment
+		// by run id returned an internal error.
+		return v1.RunResponse_STATUS_RUNNING
+
 	default:
 		return v1.RunResponse_STATUS_UNSPECIFIED
 	}
