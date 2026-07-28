@@ -82,6 +82,12 @@ func (d Diagnostic) Error() string {
 		fmt.Fprintf(&b, "%d:%d: ", d.Line, d.Column)
 	case d.Line > 0:
 		fmt.Fprintf(&b, "%d: ", d.Line)
+	default:
+		// No position at all, which happens for a problem with the document as a
+		// whole rather than with anything in it. Callers join this to a filename
+		// with a colon, so without a separator here `file.yaml` and the first word
+		// of the message run together.
+		b.WriteString(" ")
 	}
 	switch {
 	case d.Step != "" && d.Field != "":
@@ -689,6 +695,18 @@ func ValidateSource(data []byte) (Diagnostics, error) {
 			ds[i].Column = span.Start.Column
 		}
 	}
+
+	// Whether it will *fit* is a different question from whether it is well
+	// formed, and an author should meet it here rather than at submit.
+	//
+	// It has no position, because there is nothing to point at: no single line is
+	// at fault, the document is. A diagnostic with no line is unusual enough in
+	// this package to be worth saying out loud — everything else here names a
+	// token, and the exception is deliberate rather than an omission.
+	if err := v1.CheckSpecSize(wf); err != nil {
+		ds = append(ds, Diagnostic{Message: err.Error()})
+	}
+
 	return ds, nil
 }
 

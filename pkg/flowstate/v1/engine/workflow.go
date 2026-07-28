@@ -118,6 +118,26 @@ func Run(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error
 			// through.
 			Identity: st.Identity,
 		}
+		// Refused here rather than left to Temporal, because Temporal's refusal is
+		// not an outcome — it fails the workflow task, and a failed workflow task
+		// is retried indefinitely. The run stays RUNNING, climbs an attempt count
+		// nobody is watching, and occupies a worker on every attempt. It never
+		// completes and it never fails, which is the one state a durable system
+		// must not leave a workload in.
+		//
+		// proto.Size is pure arithmetic over a value the workflow already holds, so
+		// it is safe in workflow code — no clock, no I/O, and the same answer on
+		// replay.
+		//
+		// A run that reaches this has usually made a step's output too large to
+		// carry, which is why the message names both halves of the total: the
+		// specification is the part an author sized deliberately, and the outputs
+		// are the part that grew.
+		if err := v1.CheckRunStateSize(next); err != nil {
+			logger.Error("cannot continue as new", "error", err.Error())
+			return nil, &ErrRunFailed{Message: err.Error()}
+		}
+
 		logger.Info("continuing as new",
 			"frames", len(exec.frames), "carried_signals", len(pending))
 

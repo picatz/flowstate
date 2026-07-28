@@ -184,7 +184,7 @@ dependency on an optional feature is how an invariant dies quietly.
 
 *Since written:* the feature this depends on now exists. `flow worker
 --deployment-name --build-id` pins a run to the interpreter it started on and
-takes the current version at Continue-As-New, and invariant 9 in
+takes the current version at Continue-As-New, and invariant 10 in
 [ARCHITECTURE.md](ARCHITECTURE.md) records what that costs. The precondition is
 therefore checkable rather than hypothetical — but it is still a precondition, and
 the workflow-side evaluation above must refuse to enable itself on a worker that

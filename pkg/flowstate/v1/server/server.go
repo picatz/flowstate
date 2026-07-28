@@ -197,6 +197,22 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
+	// Size is a separate question from validity, and it has to be asked here
+	// because here is where somebody is still listening.
+	//
+	// A specification under Temporal's blob limit is accepted and then carried,
+	// with everything the run accumulates, across every Continue-As-New. Past the
+	// limit Temporal refuses the Continue-As-New, which fails the workflow task,
+	// which is retried — so the run does not fail, it wedges: RUNNING forever, on
+	// an ever-climbing attempt count, occupying a worker each time. Measured at
+	// 1.2 MiB: submitted fine, ran a step, attempt 5 forty-five seconds later.
+	//
+	// Refusing at submit turns that into a sentence an author can act on. The
+	// engine keeps its own check for what this one cannot predict.
+	if err := v1.CheckSpecSize(req.Msg.GetWorkflow()); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
 	workflowID := fmt.Sprintf("flowstate-workflow-%s", uuid.NewString())
 
 	// Capture the identity now, while the authenticated caller is still in scope.

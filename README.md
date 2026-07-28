@@ -421,6 +421,27 @@ Flowstate's own settings:
 | `FLOWSTATE_BUILD_ID` | unset | Version identifier for this worker's binary, unique per build |
 | `FLOWSTATE_VERBOSE_LOGGING` | `false` | Verbose logging |
 
+### How much a workload may carry
+
+A run carries its specification and its step outputs together, across every
+continue-as-new, and Temporal will not store a payload past its blob limit. So there are
+two limits, and both report rather than truncate:
+
+- A **specification** is refused past 1 MiB, by `flow validate` and again at submit. Note
+  that this is not the size of the file: expressions compile to syntax trees, and a
+  Flowfile of ordinary expressions has been measured expanding more than fivefold.
+- A **run** fails, with a reason, if what it must carry forward would not fit.
+
+The second one exists because the alternative is silence. Temporal's refusal fails the
+workflow task rather than the run, and a failed workflow task is retried — so a workload
+that outgrows the limit reports RUNNING, climbs an attempt count nobody is watching, and
+never finishes. A run that cannot continue is failed here instead, which is the difference
+between something you can find and something you cannot.
+
+If you hit either, the fix is nearly always the same: a step producing something large
+should write it somewhere and pass a reference, because every output a later step can
+still reach is carried across every suspension.
+
 ### Deploying without disturbing running workloads
 
 A worker runs an *interpreter*. There is one workflow type, and every workload anybody has
