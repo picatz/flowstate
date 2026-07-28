@@ -37,10 +37,29 @@ const maxResponseBytes = 32 << 20 // 32 MiB
 // fine" is not a bound.
 func newWorkflowServiceClient() flowstatev1connect.WorkflowServiceClient {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
+	baseURL := serverBaseURL(flowstateAddress)
 
 	return flowstatev1connect.NewWorkflowServiceClient(
-		&http.Client{Transport: &boundedTransport{base: transport, max: maxResponseBytes}},
-		serverBaseURL(flowstateAddress),
+		&http.Client{
+			Transport: &authorizingTransport{
+				base:    &boundedTransport{base: transport, max: maxResponseBytes},
+				baseURL: baseURL,
+			},
+
+			// A credential must not follow a redirect. net/http strips the
+			// Authorization header when a redirect crosses to another host, which
+			// covers the obvious case and not the one that matters: a redirect to
+			// a different *path* on the same host keeps the header, and a
+			// compromised or merely misconfigured server could use that to collect
+			// tokens at an endpoint that only logs them.
+			//
+			// Connect has no use for redirects — an RPC endpoint either answers or
+			// does not — so refusing them costs nothing and removes the question.
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
+		baseURL,
 	)
 }
 
@@ -49,17 +68,21 @@ func newWorkflowServiceClient() flowstatev1connect.WorkflowServiceClient {
 // An explicit scheme is honored, so pointing the CLI at a TLS-terminated server is a
 // matter of saying so. A bare address keeps defaulting to http, because that is what
 // it has always done and a local development server does not speak TLS — but a bare
-// *remote* address earns a warning, since a credential sent that way crosses the
-// network in the clear and nothing else in the output would say so.
+// *remote* address earns a warning, because a request going somewhere else in the
+// clear is worth knowing about even when it carries nothing secret.
+//
+// The credential half of this is no longer a warning. [tokenFor] refuses to put a
+// token on a plaintext connection to anywhere but this machine, which is the same
+// concern enforced rather than announced: a warning nobody reads is not a control,
+// and by the time it matters the token is already on the wire.
 func serverBaseURL(address string) string {
 	if strings.HasPrefix(address, "http://") || strings.HasPrefix(address, "https://") {
 		return address
 	}
 
 	if !isLoopbackAddress(address) {
-		log.Printf("WARNING: talking to %s over plain HTTP; any credential sent "+
-			"travels in the clear. Use https:// in --address (or FLOWSTATE_ADDRESS) "+
-			"to encrypt it.", address)
+		log.Printf("WARNING: talking to %s over plain HTTP. Use https:// in --address "+
+			"(or FLOWSTATE_ADDRESS) to encrypt it.", address)
 	}
 
 	return "http://" + address

@@ -826,6 +826,15 @@ flow run local examples/approval-gate/workflow.yaml --signal deploy-approved='{"
 		c.Flags().StringVar(&flowstateAddress, "address", flowstateAddress,
 			"address of the Flowstate server (overrides FLOWSTATE_ADDRESS); "+
 				"an explicit https:// scheme is honored")
+
+		// A path, never the token. A credential in argv is a credential in `ps`
+		// and in shell history — and the file form is the one federated identity
+		// arrives in anyway, since Kubernetes projects a service account token to
+		// a path and rotates it there. Read per request for that reason.
+		c.Flags().StringVar(&tokenFilePath, "token-file", tokenFilePath,
+			"file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); "+
+				"re-read per request, so a rotating token keeps working. "+
+				"Without it, FLOWSTATE_TOKEN is used, and neither means anonymous")
 	}
 	signalCmd.Flags().StringVar(&signalRunID, "run-id", "",
 		"pin the signal to one run of the workload; unset addresses whichever run is current, "+

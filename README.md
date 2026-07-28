@@ -417,9 +417,34 @@ Flowstate's own settings:
 | `FLOWSTATE_ADDRESS` | `localhost:9233` | Address the API server listens on, and that `flow run` connects to |
 | `TEMPORAL_TASK_QUEUE` | `flowstate-run-task-queue` | Task queue workers serve and workflows are routed to |
 | `FLOWSTATE_ALLOW_LOOPBACK_EGRESS` | unset | Permit the `http` task to reach loopback addresses |
+| `FLOWSTATE_TOKEN_FILE` | unset | File holding the bearer token `flow` authenticates with, re-read per request |
+| `FLOWSTATE_TOKEN` | unset | Bearer token, used when no token file is set |
 | `FLOWSTATE_DEPLOYMENT_NAME` | unset | Worker Deployment this worker belongs to (see below) |
 | `FLOWSTATE_BUILD_ID` | unset | Version identifier for this worker's binary, unique per build |
 | `FLOWSTATE_VERBOSE_LOGGING` | `false` | Verbose logging |
+
+### Authenticating
+
+`flow` presents a bearer token when one is configured, and is anonymous when one is
+not — which is what a development server started with `--insecure-no-auth` expects.
+
+```console
+$ flow run workflow.yaml --token-file /var/run/secrets/tokens/flowstate
+$ FLOWSTATE_TOKEN="$(gcloud auth print-identity-token)" flow list
+```
+
+The file form is the one to reach for, because it is the shape federated identity
+actually arrives in: Kubernetes projects a service account token to a path and rotates
+the file underneath you. It is re-read on every request for that reason, so a token that
+rotates mid-command keeps working.
+
+There is deliberately no flag that takes the token itself. A credential in `argv` is a
+credential in `ps` and in shell history.
+
+**A credential is not sent over plain HTTP to anywhere but this machine.** A bearer token
+is a bearer token — whoever holds it is you — so `flow` refuses rather than warns, and
+tells you to use an `https://` address. If something else is providing the encryption (a
+sidecar terminating TLS, say), `FLOWSTATE_INSECURE_PLAINTEXT_TOKEN=true` overrides it.
 
 ### How much a workload may carry
 
