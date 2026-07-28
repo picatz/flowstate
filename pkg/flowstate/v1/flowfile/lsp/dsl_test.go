@@ -20,32 +20,81 @@ import (
 // gained if, timeout, retry, and continue_on_error. This test derives the real key
 // set by asking flowfile to marshal a workflow with every field populated, so the
 // next addition fails here instead of quietly going unsupported.
+//
+// "Every field populated" is the whole load-bearing part, and it is where this test
+// was weaker than it looked. The fixture held a single task step, so Marshal was
+// never asked to render a wait — and the three keys that spell one, which had been
+// shipped, reachable from a Flowfile, and exercised by examples in CI the whole
+// time, were absent from the rendered document this compares against. A guard that
+// derives the real key set from a fixture only knows the keys the fixture reaches.
+//
+// So the fixture is a workflow that uses every *kind* of step, not merely every
+// field of one kind.
 func TestDSLKeysMatchTheDSL(t *testing.T) {
 	t.Parallel()
 
-	// A workflow exercising every field the DSL can express.
+	// A workflow exercising every field and every step kind the DSL can express.
 	workflow := &v1.Workflow{
 		Name:        "every-field",
 		Description: ptr("described"),
-		Steps: []*v1.Node{{
-			Id:        "only",
-			Condition: v1.NewExpr("true"),
-			Policy: &v1.StepPolicy{
-				Timeout:         durationpb.New(30_000_000_000),
-				ContinueOnError: true,
-				Retry: &v1.RetryPolicy{
-					MaxAttempts:        3,
-					InitialInterval:    durationpb.New(1_000_000_000),
-					BackoffCoefficient: 2,
-					MaxInterval:        durationpb.New(60_000_000_000),
+		Steps: []*v1.Node{
+			{
+				Id:        "only",
+				Condition: v1.NewExpr("true"),
+				Policy: &v1.StepPolicy{
+					Timeout:         durationpb.New(30_000_000_000),
+					ContinueOnError: true,
+					Retry: &v1.RetryPolicy{
+						MaxAttempts:        3,
+						InitialInterval:    durationpb.New(1_000_000_000),
+						BackoffCoefficient: 2,
+						MaxInterval:        durationpb.New(60_000_000_000),
+					},
 				},
+				Kind: &v1.Node_Task{Task: &v1.Task{
+					Name:        "echo",
+					Description: ptr("a step"),
+					Inputs:      map[string]*v1.Value{"message": v1.NewValue("hi")},
+				}},
 			},
-			Kind: &v1.Node_Task{Task: &v1.Task{
-				Name:        "echo",
-				Description: ptr("a step"),
-				Inputs:      map[string]*v1.Value{"message": v1.NewValue("hi")},
-			}},
-		}},
+			{
+				Id: "loop",
+				Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+					Items:       v1.NewLiteralList("a", "b"),
+					Iterator:    "each",
+					MaxParallel: 2,
+					Body:        []*v1.Node{{Id: "inner", Kind: &v1.Node_Task{Task: &v1.Task{Name: "echo"}}}},
+				}},
+			},
+			{
+				Id: "branches",
+				Kind: &v1.Node_Parallel{Parallel: &v1.Parallel{
+					Branches: []*v1.Parallel_Branch{
+						{Steps: []*v1.Node{{Id: "left", Kind: &v1.Node_Task{Task: &v1.Task{Name: "echo"}}}}},
+					},
+				}},
+			},
+			{
+				Id:   "pause",
+				Kind: &v1.Node_Wait{Wait: &v1.Wait{Kind: &v1.Wait_Duration{Duration: durationpb.New(30_000_000_000)}}},
+			},
+			{
+				Id: "until",
+				Kind: &v1.Node_Wait{Wait: &v1.Wait{
+					Kind: &v1.Wait_Until{Until: v1.NewExpr("now + days(3)")},
+				}},
+			},
+			{
+				// The mapping form, not the scalar one: a bare
+				// `wait_for_signal: name` renders no nested keys, so only a gate
+				// carrying a timeout makes Marshal emit `name` and `timeout`.
+				Id: "gate",
+				Kind: &v1.Node_Wait{Wait: &v1.Wait{
+					Kind:    &v1.Wait_Signal{Signal: &v1.Signal{Name: "deploy-approved"}},
+					Timeout: durationpb.New(3_600_000_000_000),
+				}},
+			},
+		},
 	}
 
 	rendered, err := flowfile.Marshal(workflow)
@@ -240,7 +289,7 @@ steps:
 	})
 
 	t.Run("hover works on a nested step's task", func(t *testing.T) {
-		pos := positionOfKey(t, src, "name", 12)
+		pos := positionOfKey(t, src, "name", 12, "")
 		got := c.hover(uri, pos.Line, pos.Character)
 		require.NotNil(t, got, "no hover on a key inside a loop body")
 	})
@@ -615,6 +664,14 @@ steps:
               name: echo
               inputs:
                 message: hi
+  - id: pause
+    sleep: 30s
+  - id: window
+    wait_until: ${now + days(3)}
+  - id: approval
+    wait_for_signal:
+      name: deploy-approved
+      timeout: 24h
 `
 	c := newClient(t)
 	c.initialize()
@@ -635,10 +692,15 @@ steps:
 				continue
 			}
 			t.Run(level+"."+k.name, func(t *testing.T) {
-				// Keys such as name, description, and steps exist at more than one
-				// level, so the search has to skip the shallower one.
-				minIndent := map[string]int{"steps": 4, "task": 6, "retry": 6, "for_each": 6}[level]
-				pos := positionOfKey(t, src, k.name, minIndent)
+				// Keys such as name, description, steps and timeout exist at more
+				// than one level, so the search has to be told which one is meant.
+				// Indentation separates most of them; `name` needs more, because a
+				// task's and a gate's sit at the same depth, so the search starts
+				// from the line that opens the block.
+				minIndent := map[string]int{
+					"steps": 4, "task": 6, "retry": 6, "for_each": 6, "wait_for_signal": 6,
+				}[level]
+				pos := positionOfKey(t, src, k.name, minIndent, level+":")
 				got := c.hover(uri, pos.Line, pos.Character)
 				require.NotNil(t, got, "no hover for the %s key at %v", k.name, pos)
 				assert.Contains(t, hoverText(got), k.docs)
@@ -650,9 +712,18 @@ steps:
 // positionOfKey returns a position on the name of the line declaring a key at or
 // deeper than minIndent, which is how a key that exists at several levels — name and
 // description do — is disambiguated.
-func positionOfKey(t *testing.T, src, key string, minIndent int) lsp.Position {
+func positionOfKey(t *testing.T, src, key string, minIndent int, after string) lsp.Position {
 	t.Helper()
+
+	// Nothing to skip past for a key whose level is the step itself.
+	started := after == "" || !strings.Contains(src, after)
+
 	for i, line := range strings.Split(src, "\n") {
+		if !started {
+			started = strings.Contains(line, after)
+			continue
+		}
+
 		m := keyLine.FindStringSubmatch(line)
 		if m == nil || m[3] != key || len(m[1])+len(m[2]) < minIndent {
 			continue
