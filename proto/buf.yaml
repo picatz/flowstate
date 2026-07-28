@@ -7,5 +7,31 @@ breaking:
     - FILE
     - WIRE
 lint:
+  # STANDARD is what DEFAULT was renamed to. Same rules, current spelling.
   use:
-    - DEFAULT
+    - STANDARD
+
+  # Two rules, suppressed for one file, and only because fixing them properly
+  # costs more than they are worth today.
+  #
+  # The plugin protocol's request and response messages are named after what they
+  # carry rather than after the method that carries them: `Describe` takes a
+  # `DescribePluginRequest`, not a `DescribeRequest`. Six violations, all this
+  # shape. The names are the better ones in a package shared with the workflow
+  # service — a bare `ResolveRequest` next to `RunRequest` and `SignalRequest`
+  # says nothing about what it resolves — and the real fix is to move the plugin
+  # protocol into a package of its own, where `DescribeRequest` is unambiguous.
+  #
+  # That move is a FILE-level break, so it is a deliberate one and belongs in a
+  # commit that is about it. What must not happen in the meantime is the other
+  # forty-one rules going unenforced: until now `buf lint` ran in CI not at all,
+  # so a genuinely bad name anywhere in the schema had nothing to catch it.
+  #
+  # Scoped to the file rather than switched off, so the same mistake made in
+  # flowstate.proto still fails — and so deleting these four lines is the whole of
+  # what the move has to do here.
+  ignore_only:
+    RPC_REQUEST_STANDARD_NAME:
+      - flowstate/v1/plugin.proto
+    RPC_RESPONSE_STANDARD_NAME:
+      - flowstate/v1/plugin.proto

@@ -213,7 +213,20 @@ Each phase lands green and reachable from a Flowfile.
 **Phase 0 — pay the debt that is already found.** No language change. Every item
 verified against the code before it is worked, because a diagnosis is a claim.
 Currently confirmed: nineteen unenforceable schema rules masking a real hole (fixed);
-the plugin protocol's six naming violations, which block `buf lint` entering CI.
+the plugin protocol's six naming violations, which blocked `buf lint` entering CI.
+
+The second turned out to have a cheaper first move than the one recorded. The six
+violations are one rule pair in one file, and the stated fix — moving the plugin
+protocol into its own package — is a FILE-level break that has to be spent
+deliberately. Meanwhile the *other* forty-one lint rules were going unenforced
+while everyone waited for it. They now run in CI, with the pair suppressed for
+that one file and nowhere else, so the move gets to be its own reviewed change
+and deleting four lines from `proto/buf.yaml` is the whole of what it owes here.
+
+The general shape is worth naming, because it recurs: when one known problem
+blocks a check, scope the exception to the problem rather than deferring the
+check. A check that runs everywhere except one file is worth vastly more than a
+check that does not run.
 
 **Phase 1 — make the language smaller.** The naming model, verb-key flattening, one
 pinned profile, `vars` in its three positions, `edition:`, reserved-keyword
