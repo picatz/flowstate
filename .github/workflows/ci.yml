@@ -105,12 +105,20 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # `buf lint` is deliberately absent for now: it reports six pre-existing
-      # violations, all of them the plugin protocol's request and response messages
-      # not being named after their RPC methods. The fix is to move that protocol
-      # into its own proto package rather than to rename inside a shared one, which
-      # is its own change. Adding the step before that lands would only turn a known
-      # issue into a red build that everyone learns to ignore.
+      # Forty-three rules, forty-one of them enforced everywhere.
+      #
+      # This step was absent because six pre-existing violations would have made it
+      # red on arrival, and a red build everyone learns to ignore is worse than no
+      # build. All six are one rule pair in one file — the plugin protocol's request
+      # and response messages not being named after their methods — and fixing that
+      # properly means moving the protocol into its own package, which is a
+      # FILE-level break and belongs in a commit about it.
+      #
+      # So the two rules are suppressed for that one file in proto/buf.yaml, which
+      # is checked in and commented, and everything else is enforced from now on.
+      # Trading forty-one rules for six known violations is the wrong way round.
+      - name: Lint
+        run: go run github.com/bufbuild/buf/cmd/buf@${{ env.BUF_VERSION }} lint
 
       # proto/buf.yaml has declared FILE and WIRE breaking rules from the start and
       # nothing ran them.
