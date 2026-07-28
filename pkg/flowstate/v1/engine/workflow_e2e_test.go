@@ -30,10 +30,7 @@ func TestRun_E2E_CEL_ContinueAsNew(t *testing.T) {
 
 	// Start worker and register our workflow + activities
 	w := worker.New(devServer.Client(), engine.RunTaskQueueName, worker.Options{})
-	w.RegisterWorkflow(engine.Run)
-	w.RegisterActivity(engine.Task)
-	w.RegisterActivity(engine.TaskWithPrev)
-	w.RegisterActivity(engine.TaskInScope)
+	engine.Register(w)
 	require.NoError(t, w.Start())
 	t.Cleanup(w.Stop)
 

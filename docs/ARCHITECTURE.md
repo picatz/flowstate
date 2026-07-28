@@ -129,6 +129,37 @@ of these is a bug, even if it passes tests.
    no cloud dependency and no external identity provider. Temporal Cloud, Nexus endpoints,
    and federated identity are opt-in configuration, never prerequisites.
 
+9. **`RunState` is a wire contract between interpreter versions.** One version writes it at
+   Continue-As-New and a *different* version reads it back — see below. So it obeys the
+   rules a published message obeys: add fields, never renumber, never repurpose, and read a
+   field the writer did not set as absent rather than as a default that means something.
+   A change to `RunState` that would be fine in a single-version deployment can strand a
+   workload that spans a deploy.
+
+### Versioning: pinned within a run, upgraded between runs
+
+Invariant 4 says workflow-side code is frozen; this is what "frozen" means when the workflow
+code is an *interpreter*. Flowstate has exactly one workflow type, so every workload in the
+fleet is running the same function — a change to loop compaction or to how a wait consumes a
+carried signal is a change to every run in flight at once. Temporal replays a run's history
+through the code the worker is running now, which makes interpreter behavior a determinism
+input in the same way a clock read is.
+
+So `engine.Register` registers `Run` as **pinned**: a run finishes on the interpreter it
+started on, and deploying does not touch anything in flight. And the Continue-As-New in
+`engine/workflow.go` is issued with **auto-upgrade**, because pinning alone would hold a
+long workload on its original version forever and leave an operator no way to drain one.
+
+Continue-As-New is the only safe seam: the next run replays nothing, starting from `RunState`
+instead of from history. That is the whole reason invariant 9 exists — the seam is only sound
+if the two versions either side of it agree about the message crossing it.
+
+Both halves are opt-in (`--deployment-name` and `--build-id` on `flow worker`) and inert
+without them, which is what keeps invariant 8. One planned capability depends on the
+guarantee rather than merely benefiting from it: expression evaluation may move into workflow
+code only where versioning pins the interpreter, because cel-go's behavior is pinned by the
+binary and by nothing else. See [DSL.md](DSL.md).
+
 ## Leaning into Temporal
 
 Temporal's primitives are the vocabulary of durable execution. The roadmap is largely a
@@ -148,7 +179,8 @@ Rows marked **(done)** are implemented; the rest are the shape the surface shoul
 | Query | `flow inspect` — read live state of a running workload |
 | Update | synchronous request/response against a running workload |
 | Child workflow | `workflow:` step — sub-workflow composition with its own history |
-| Continue-As-New | transparent history and payload management (already implemented) |
+| Continue-As-New | transparent history and payload management **(done)** |
+| Worker Deployment Versioning | `flow worker --deployment-name --build-id`; a run is pinned to the interpreter it started on and takes the current version at Continue-As-New **(done)** |
 | Schedules | `triggers: { schedule: ... }`, `flow schedule` |
 | Search attributes and memo | labels projected into visibility, `flow list --filter`; a run's tenant is recorded as a memo, which needs no cluster-side registration so a dev server works unconfigured |
 | Cancellation scopes | `on_failure:` compensation, saga semantics |

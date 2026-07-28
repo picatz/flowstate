@@ -417,7 +417,32 @@ Flowstate's own settings:
 | `FLOWSTATE_ADDRESS` | `localhost:9233` | Address the API server listens on, and that `flow run` connects to |
 | `TEMPORAL_TASK_QUEUE` | `flowstate-run-task-queue` | Task queue workers serve and workflows are routed to |
 | `FLOWSTATE_ALLOW_LOOPBACK_EGRESS` | unset | Permit the `http` task to reach loopback addresses |
+| `FLOWSTATE_DEPLOYMENT_NAME` | unset | Worker Deployment this worker belongs to (see below) |
+| `FLOWSTATE_BUILD_ID` | unset | Version identifier for this worker's binary, unique per build |
 | `FLOWSTATE_VERBOSE_LOGGING` | `false` | Verbose logging |
+
+### Deploying without disturbing running workloads
+
+A worker runs an *interpreter*. There is one workflow type, and every workload anybody has
+written is a value it executes — so shipping a change to the engine changes the behaviour of
+every run in flight at once, including one that is a month old and half finished. Temporal
+replays a run's history through whatever code the worker is running now, which is what makes
+that a correctness question rather than a stylistic one.
+
+Setting both halves of a version turns that off:
+
+```console
+$ flow worker --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"
+```
+
+A run is then **pinned** to the interpreter it started on and takes the **current** version
+at its next Continue-As-New. Deploying stops reaching work already underway; long workloads
+still migrate forward on their own, so an old version drains rather than being held open by
+whatever is still running on it. Point traffic at a new build the usual way — with `temporal
+worker deployment set-current-version`, or the equivalent in your rollout tooling.
+
+Unversioned is the default and is fine for development, where "whatever is deployed runs
+whatever is in flight" is what you want. The worker says which of the two it is at startup.
 
 ### Connecting to Temporal
 

@@ -120,7 +120,29 @@ func Run(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error
 		}
 		logger.Info("continuing as new",
 			"frames", len(exec.frames), "carried_signals", len(pending))
-		return nil, workflow.NewContinueAsNewError(ctx, Run, next)
+
+		// The one moment a run may change interpreter version.
+		//
+		// [Run] is registered Pinned, so a run executes to its end on the
+		// interpreter it started on — history is replayed through code, and
+		// changing the interpreter under a run in flight is the same hazard as
+		// reading a clock in workflow code. Pinned alone, though, would hold a
+		// long workload on its original version across every Continue-As-New for
+		// as long as it lives, and a version with runs still on it cannot be
+		// drained: an operator could never retire one.
+		//
+		// Here that is safe, and this is the only place it is. The next run
+		// replays nothing — it starts from the state below rather than from
+		// history — so the interpreter that resumes it need not be the one that
+		// suspended it. What the two must agree about is RunState itself, which
+		// is why its compatibility is an invariant rather than a convention (see
+		// docs/ARCHITECTURE.md).
+		//
+		// Inert where versioning is off: with no deployment on the task queue
+		// there is no version to move to. See engine/versioning.go.
+		return nil, workflow.NewContinueAsNewErrorWithOptions(ctx, workflow.ContinueAsNewErrorOptions{
+			InitialVersioningBehavior: workflow.ContinueAsNewVersioningBehaviorAutoUpgrade,
+		}, Run, next)
 
 	default:
 		return nil, err
