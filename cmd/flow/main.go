@@ -183,7 +183,7 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("error getting workflow run status: %w", err)
 		}
 		if resp.Msg.Status == v1.RunResponse_STATUS_COMPLETED {
-			log.Printf("Workflow completed successfully! WorkflowID: %s, RunID: %s", resp.Msg.WorkflowId, resp.Msg.RunId)
+			log.Printf("run completed: workflow %s run %s", resp.Msg.GetWorkflowId(), resp.Msg.GetRunId())
 
 			b, err := protojson.Marshal(resp.Msg.GetOutputs())
 			if err != nil {
@@ -196,7 +196,10 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 		} else if resp.Msg.Status == v1.RunResponse_STATUS_FAILED {
 			return fmt.Errorf("workflow execution failed: %s", resp.Msg.GetError())
 		} else {
-			log.Printf("Workflow is still running. Status: %s", resp.Msg.Status)
+			// statusLabel, not the raw enum: `flow get` and `flow list` both say
+			// RUNNING, and a third spelling of one status is a third thing for a
+			// reader to reconcile.
+			log.Printf("run is still going; %s", statusLabel(resp.Msg.GetStatus()))
 		}
 	}
 
@@ -627,7 +630,10 @@ flow validate examples/hello-world/workflow.yaml`,
 			if err != nil {
 				return fmt.Errorf("error marshaling result to JSON: %w", err)
 			}
-			log.Printf("Workflow completed successfully! Result: %s", string(b))
+			// The result itself goes to stdout below. Logging it here as well
+			// meant a person read it twice and a pipe read it once, and the two
+			// copies were free to drift.
+			log.Println("run completed")
 			cmd.OutOrStdout().Write(b)
 			cmd.OutOrStdout().Write([]byte("\n"))
 			return nil
@@ -738,6 +744,8 @@ flow get flowstate-workflow-3f7c | jq .stepValues
 # Ask about one attempt rather than the current one:
 flow get flowstate-workflow-3f7c --run-id 0198f1e2-...`,
 	}
+
+	addOutputFlag(getCmd)
 
 	getCmd.Flags().StringVar(&getRunID, "run-id", "",
 		"ask about one attempt of the workload; unset asks about whichever is current")

@@ -8,6 +8,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 
+	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
@@ -77,15 +78,16 @@ func runTerminate(cmd *cobra.Command, args []string) error {
 // silently misses their own runs, which is why --all exists and why a partial
 // listing says so on stderr.
 func runList(cmd *cobra.Command, args []string) error {
-	client := newWorkflowServiceClient()
+	format, err := resolveOutputFormat()
+	if err != nil {
+		return err
+	}
 
-	// The listing goes to stdout as a table and everything else to stderr, so
-	// `flow list | ...` sees rows and nothing else.
-	tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 8, 2, ' ', 0)
-	fmt.Fprintln(tw, "RUN\tSTATUS\tSTARTED\tFINISHED")
+	surface := newSurface(cmd)
+	client := newWorkflowServiceClient()
+	rendering := newListRendering(surface, format)
 
 	token := listPageToken
-	rows := 0
 
 	// The walk is its own function so that every way out of it — success, a
 	// refused page, a token that stopped moving — passes through the one flush
@@ -95,7 +97,8 @@ func runList(cmd *cobra.Command, args []string) error {
 	// inside the loop discards rows that were retrieved and formatted correctly.
 	// `--all` makes that worth caring about: page four failing is no reason to
 	// throw away pages one through three, and a caller who sees an error and no
-	// output cannot tell how far it got.
+	// output cannot tell how far it got. The same reasoning applies to the JSON
+	// forms, so they are flushed through the same path.
 	walk := func() error {
 		for {
 			request := &v1.ListRequest{PageSize: listPageSize, PageToken: token}
@@ -108,14 +111,8 @@ func runList(cmd *cobra.Command, args []string) error {
 				return refusedList(err)
 			}
 
-			for _, run := range response.Msg.GetRuns() {
-				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n",
-					run.GetWorkflowId(),
-					statusLabel(run.GetStatus()),
-					formatRunTime(run.GetStartTime().AsTime(), run.GetStartTime() != nil),
-					formatRunTime(run.GetCloseTime().AsTime(), run.GetCloseTime() != nil),
-				)
-				rows++
+			if err := rendering.add(response.Msg.GetRuns()); err != nil {
+				return err
 			}
 
 			previous := token
@@ -135,32 +132,128 @@ func runList(cmd *cobra.Command, args []string) error {
 			// rather than a fault, which is how somebody loses an afternoon.
 			if token == previous {
 				return fmt.Errorf("the server returned the same page token twice, so continuing "+
-					"would ask it the same question forever; %d run(s) listed before stopping", rows)
+					"would ask it the same question forever; %d run(s) listed before stopping",
+					rendering.rows)
 			}
 		}
 	}
 
 	walkErr := walk()
 
-	if err := tw.Flush(); err != nil {
+	if err := rendering.flush(token); err != nil {
 		return err
 	}
 	if walkErr != nil {
 		return walkErr
 	}
 
-	if rows == 0 && token == "" {
-		fmt.Fprintln(cmd.ErrOrStderr(), "no runs")
-	}
+	// Said on stderr, and only to a person: a program asked for a format that
+	// carries the token in the answer itself, so telling it again in prose it
+	// would have to parse is worse than saying nothing.
+	if format == FormatText {
+		if rendering.rows == 0 && token == "" {
+			fmt.Fprintln(surface.Err, "no runs")
+		}
 
-	// Said plainly, because the alternative is a caller concluding from a short
-	// page that they have seen everything.
-	if token != "" {
-		fmt.Fprintf(cmd.ErrOrStderr(),
-			"more runs remain; continue with --page-token %s, or pass --all to walk the rest\n", token)
+		// Said plainly, because the alternative is a caller concluding from a
+		// short page that they have seen everything.
+		if token != "" {
+			fmt.Fprintf(surface.Err,
+				"more runs remain; continue with --page-token %s, or pass --all to walk the rest\n", token)
+		}
 	}
 
 	return nil
+}
+
+// listRendering accumulates a listing and writes it in the requested shape.
+//
+// The three shapes want three different moments to write at, and pretending
+// otherwise is how one of them ends up badly served:
+//
+//   - text writes rows as they arrive into a tabwriter, which aligns them at the
+//     flush. The header is deliberately withheld until the first row: a listing
+//     that failed before returning anything used to print a bare header to stdout,
+//     which a pipe reads as a successful listing that found nothing.
+//   - jsonl writes each run immediately, so a reader gets the first one without
+//     waiting for the last — which is the point of the line-per-record form.
+//   - json has to hold everything, because one document cannot be written until
+//     its last element is known.
+type listRendering struct {
+	surface *ui.UI
+	format  OutputFormat
+
+	table  *tabwriter.Writer
+	header bool
+
+	// runs is held only for the single-document form.
+	runs []*v1.RunSummary
+
+	// rows is what was rendered, for the messages that count it.
+	rows int
+}
+
+func newListRendering(surface *ui.UI, format OutputFormat) *listRendering {
+	rendering := &listRendering{surface: surface, format: format}
+	if format == FormatText {
+		rendering.table = tabwriter.NewWriter(surface.Out, 0, 8, 2, ' ', 0)
+	}
+
+	return rendering
+}
+
+// add renders one page.
+func (r *listRendering) add(runs []*v1.RunSummary) error {
+	for _, run := range runs {
+		r.rows++
+
+		switch r.format {
+		case FormatJSON:
+			r.runs = append(r.runs, run)
+
+		case FormatJSONL:
+			if err := writeJSON(r.surface, r.format, run); err != nil {
+				return err
+			}
+
+		default:
+			if !r.header {
+				fmt.Fprintln(r.table, "WORKFLOW_ID\tSTATUS\tSTARTED\tFINISHED")
+				r.header = true
+			}
+
+			fmt.Fprintf(r.table, "%s\t%s\t%s\t%s\n",
+				run.GetWorkflowId(),
+				r.surface.Theme.Tone(statusTone(run.GetStatus())).Render(statusLabel(run.GetStatus())),
+				formatRunTime(run.GetStartTime().AsTime(), run.GetStartTime() != nil),
+				formatRunTime(run.GetCloseTime().AsTime(), run.GetCloseTime() != nil),
+			)
+		}
+	}
+
+	return nil
+}
+
+// flush writes whatever the shape could not write as it went.
+//
+// The page token is carried into the single-document form rather than only into
+// the prose on stderr, because a program reading JSON has no way to act on a
+// sentence — and a listing that stopped early without saying so is how a caller
+// silently misses their own runs.
+func (r *listRendering) flush(token string) error {
+	switch r.format {
+	case FormatJSON:
+		return writeJSON(r.surface, r.format, &v1.ListResponse{
+			Runs:          r.runs,
+			NextPageToken: token,
+		})
+
+	case FormatJSONL:
+		return nil
+
+	default:
+		return r.table.Flush()
+	}
 }
 
 // formatRunTime renders a run's timestamp, or a placeholder when it has none.
@@ -210,9 +303,14 @@ flow list
 # Walk every page rather than stopping at the first:
 flow list --all
 
-# Keep only the ids:
-flow list | tail -n +2 | awk '{print $1}'`,
+# Keep only the workflow ids, which is what get, signal, cancel and terminate take:
+flow list -o jsonl | jq -r .workflowId
+
+# Every run that is still going:
+flow list --all -o json | jq '.runs[] | select(.status == "STATUS_RUNNING")'`,
 	}
+
+	addOutputFlag(listCmd)
 
 	listCmd.Flags().Int32Var(&listPageSize, "page-size", 0,
 		"how many runs to return per page; unset takes the server's default")

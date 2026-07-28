@@ -22,6 +22,12 @@ var getRunID string
 // started it has to be askable about afterwards, and an approval gate is the
 // clearest example: it is waiting precisely because nobody is watching.
 func runGet(cmd *cobra.Command, args []string) error {
+	format, err := resolveOutputFormat()
+	if err != nil {
+		return err
+	}
+
+	surface := newSurface(cmd)
 	workflowID := args[0]
 
 	request := &v1.GetRequest{WorkflowId: workflowID}
@@ -45,19 +51,44 @@ func runGet(cmd *cobra.Command, args []string) error {
 
 	msg := response.Msg
 
+	// A machine reader gets the whole answer as one document — status, both ids,
+	// outputs, and the failure if there was one — rather than the outputs alone
+	// with the status split off onto another stream. Splitting is right for a
+	// person, who is reading two things; it is wrong for a program, which is
+	// reading one.
+	//
+	// The exit status is still the run's outcome, so `flow get x -o json && ...`
+	// behaves the way the shell reader expects either way.
+	if format.Machine() {
+		if err := writeJSON(surface, format, msg); err != nil {
+			return err
+		}
+
+		if failure := msg.GetError(); failure != nil {
+			return fmt.Errorf("run %s ended %s: %s",
+				workflowID, strings.ToLower(statusLabel(msg.GetStatus())), failure.GetMessage())
+		}
+
+		return nil
+	}
+
 	// The status goes to stderr and the outputs to stdout, so `flow get x | jq`
 	// receives a workload's data and nothing else, while somebody watching a
 	// terminal still sees what happened. A run that is still going produces no
 	// stdout at all, which is the honest answer to "what did it produce".
-	fmt.Fprintf(cmd.ErrOrStderr(), "%s %s run %s\n",
-		statusLabel(msg.GetStatus()), msg.GetWorkflowId(), msg.GetRunId())
+	// The status is the one value on this line worth finding before the line is
+	// read, which is what a filled label is for. It is the word either way: strip
+	// the styling and the sentence still says what happened.
+	fmt.Fprintf(surface.Err, "%s workflow %s run %s\n",
+		surface.Theme.Pill(statusTone(msg.GetStatus()), statusLabel(msg.GetStatus())),
+		msg.GetWorkflowId(), msg.GetRunId())
 
 	if outputs := msg.GetOutputs(); outputs != nil {
 		encoded, err := protojson.Marshal(outputs)
 		if err != nil {
 			return fmt.Errorf("formatting the outputs of %s: %w", workflowID, err)
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "%s\n", encoded)
+		fmt.Fprintf(surface.Out, "%s\n", encoded)
 	}
 
 	// A run that failed is reported as a failure, so `flow get x && ...` behaves

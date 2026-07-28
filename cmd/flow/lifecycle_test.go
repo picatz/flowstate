@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -27,15 +28,18 @@ func lifecycleCommand(t *testing.T) (*cobra.Command, *strings.Builder, *strings.
 		cancelRunID, terminateRunID, terminateWhy, listPageToken string
 		listPageSize                                             int32
 		listAll                                                  bool
-	}{cancelRunID, terminateRunID, terminateWhy, listPageToken, listPageSize, listAll}
+		outputFormat                                             string
+	}{cancelRunID, terminateRunID, terminateWhy, listPageToken, listPageSize, listAll, outputFormat}
 
 	t.Cleanup(func() {
 		cancelRunID, terminateRunID, terminateWhy = previous.cancelRunID, previous.terminateRunID, previous.terminateWhy
 		listPageToken, listPageSize, listAll = previous.listPageToken, previous.listPageSize, previous.listAll
+		outputFormat = previous.outputFormat
 	})
 
 	cancelRunID, terminateRunID, terminateWhy = "", "", ""
 	listPageToken, listPageSize, listAll = "", 0, false
+	outputFormat = string(FormatText)
 
 	var out, errOut strings.Builder
 	cmd := &cobra.Command{}
@@ -117,8 +121,8 @@ func TestListRendersRunsAndSaysWhenMoreRemain(t *testing.T) {
 	// The header first, because everything below asserts a position in a row and
 	// a position means nothing without the column it belongs to.
 	require.Equal(t,
-		[]string{"RUN", "STATUS", "STARTED", "FINISHED"},
-		tableRow(t, out.String(), "RUN"),
+		[]string{"WORKFLOW_ID", "STATUS", "STARTED", "FINISHED"},
+		tableRow(t, out.String(), "WORKFLOW_ID"),
 		"the columns are not the ones the rows are checked against")
 
 	// A finished run: every field, in order, on its own line. The close time is
@@ -304,4 +308,145 @@ func TestListAllKeepsRowsWhenALaterPageFails(t *testing.T) {
 
 	require.Contains(t, out.String(), "run-early",
 		"a page that succeeded was thrown away because a later one failed")
+}
+
+// The machine formats are a contract with whatever is parsing them — a script, a
+// CI job, an agent driving the CLI as a tool — so they are asserted as one.
+//
+// Every assertion here goes through encoding/json rather than looking for
+// substrings, because a consumer will address a field by name and a test that
+// matches text would pass on output no `jq` expression could read.
+
+// TestListJSONIsOneDocumentAConsumerCanIndex covers `flow list -o json | jq`.
+func TestListJSONIsOneDocumentAConsumerCanIndex(t *testing.T) {
+	fake := &fakeWorkflowService{
+		listResponses: []*v1.ListResponse{{
+			Runs: []*v1.RunSummary{
+				{
+					WorkflowId: "run-running",
+					Status:     v1.RunResponse_STATUS_RUNNING,
+					StartTime:  timestamppb.New(mustTime(t, "2026-07-01T09:00:00Z")),
+				},
+				{
+					WorkflowId: "run-done",
+					Status:     v1.RunResponse_STATUS_COMPLETED,
+					StartTime:  timestamppb.New(mustTime(t, "2026-07-01T08:00:00Z")),
+					CloseTime:  timestamppb.New(mustTime(t, "2026-07-01T08:30:00Z")),
+				},
+			},
+			NextPageToken: "more",
+		}},
+	}
+	serveFake(t, fake)
+	cmd, out, errOut := lifecycleCommand(t)
+
+	outputFormat = string(FormatJSON)
+
+	require.NoError(t, runList(cmd, nil))
+
+	var listing struct {
+		Runs []struct {
+			WorkflowID string `json:"workflowId"`
+			Status     string `json:"status"`
+			StartTime  string `json:"startTime"`
+			CloseTime  string `json:"closeTime"`
+		} `json:"runs"`
+		NextPageToken string `json:"nextPageToken"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out.String()), &listing),
+		"the answer is not one JSON document, so `flow list -o json | jq` cannot read it")
+
+	require.Len(t, listing.Runs, 2)
+
+	// The field names are the schema's, not names invented here, which is what
+	// makes a consumer's expression survive a change to this file.
+	require.Equal(t, "run-running", listing.Runs[0].WorkflowID)
+	require.Equal(t, "STATUS_RUNNING", listing.Runs[0].Status,
+		"a status came back as something other than its schema name")
+	require.Equal(t, "run-done", listing.Runs[1].WorkflowID)
+	require.Equal(t, "STATUS_COMPLETED", listing.Runs[1].Status)
+	require.Equal(t, "2026-07-01T08:30:00Z", listing.Runs[1].CloseTime)
+
+	// The token reaches a program in the answer rather than only in prose it
+	// would have to parse. A listing that stopped early without saying so in a
+	// form the reader can act on is how a caller silently misses their own runs.
+	require.Equal(t, "more", listing.NextPageToken,
+		"a bounded listing did not tell a machine reader there was more")
+
+	// And the prose is withheld, because it is addressed to a person who is not
+	// the one reading this.
+	require.NotContains(t, errOut.String(), "more runs remain",
+		"a machine format still emitted advice meant for a human")
+}
+
+// TestListJSONLIsOneRunPerLine covers the streaming shape.
+func TestListJSONLIsOneRunPerLine(t *testing.T) {
+	fake := &fakeWorkflowService{
+		listResponses: []*v1.ListResponse{
+			{
+				Runs:          []*v1.RunSummary{{WorkflowId: "run-1", Status: v1.RunResponse_STATUS_RUNNING}},
+				NextPageToken: "page-2",
+			},
+			{Runs: []*v1.RunSummary{{WorkflowId: "run-2", Status: v1.RunResponse_STATUS_COMPLETED}}},
+		},
+	}
+	serveFake(t, fake)
+	cmd, out, _ := lifecycleCommand(t)
+
+	outputFormat = string(FormatJSONL)
+	listAll = true
+
+	require.NoError(t, runList(cmd, nil))
+
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	require.Len(t, lines, 2, "the streaming form did not write one run per line")
+
+	// Each line stands alone, which is the property that lets a reader consume the
+	// first run without waiting for the last.
+	for i, want := range []string{"run-1", "run-2"} {
+		var run struct {
+			WorkflowID string `json:"workflowId"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(lines[i]), &run), "line %d is not a document on its own", i+1)
+		require.Equal(t, want, run.WorkflowID)
+	}
+}
+
+// TestListFailingBeforeAnyRunWritesNothingToStdout is the defect a header hides.
+//
+// A bare header on stdout is indistinguishable, to anything parsing it, from a
+// listing that succeeded and found nothing — so a script sees "you have no runs"
+// where the truth is "the server refused you".
+func TestListFailingBeforeAnyRunWritesNothingToStdout(t *testing.T) {
+	fake := &fakeWorkflowService{
+		listErr: connect.NewError(connect.CodePermissionDenied, errors.New("no")),
+	}
+	serveFake(t, fake)
+	cmd, out, _ := lifecycleCommand(t)
+
+	require.Error(t, runList(cmd, nil))
+
+	require.Empty(t, out.String(),
+		"a listing that returned nothing still wrote to stdout, which reads as an empty listing")
+}
+
+// TestListRefusesAFormatItDoesNotHave checks that a mistyped --output is answered
+// rather than quietly ignored.
+func TestListRefusesAFormatItDoesNotHave(t *testing.T) {
+	fake := &fakeWorkflowService{}
+	serveFake(t, fake)
+	cmd, _, _ := lifecycleCommand(t)
+
+	outputFormat = "yaml"
+
+	err := runList(cmd, nil)
+	require.Error(t, err, "an unknown --output was accepted and something else was rendered")
+
+	// The message says what is accepted, since that is the next question.
+	require.Contains(t, err.Error(), "yaml")
+	require.Contains(t, err.Error(), "text")
+	require.Contains(t, err.Error(), "jsonl")
+
+	require.Equal(t, 0, fake.listCalls,
+		"a request that could not be rendered was still sent")
 }
