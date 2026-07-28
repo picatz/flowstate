@@ -206,13 +206,19 @@ func (p *Policy) CheckAddr(addr netip.AddrPort) error {
 	ip := normalize(addr.Addr())
 	target := ip.String()
 
-	// The network lists are matched against the embedded IPv4 address as well as
-	// the address itself, so a prefix cannot be sidestepped by naming its target
-	// through NAT64 or one of the other IPv4-in-IPv6 forms.
-	candidates := []netip.Addr{ip}
-	if embedded, ok := embeddedIPv4(ip); ok {
-		candidates = append(candidates, embedded)
-	}
+	// A denied network is matched against the embedded IPv4 address as well as the
+	// address itself, so a prefix cannot be sidestepped by naming its target
+	// through NAT64 or one of the other IPv4-in-IPv6 forms. That expansion belongs
+	// to the deny side only, and the asymmetry is the point: widening the set of
+	// addresses a rule *catches* makes a denial harder to evade, and widening the
+	// set a rule *permits* does the opposite.
+	//
+	// It was shared, and that let an allowance name one address and grant another:
+	// with `WithAllowNetworks(10.0.0.0/8)` and nothing else, both `2002:a00:1::1`
+	// and `64:ff9b::a00:1` were allowed. Neither is in 10.0.0.0/8 — they merely
+	// carry it — and 2002::/16 is globally routable, so the destination reached is
+	// a real host somewhere else. An allowlist exists to be exhaustive; one that
+	// permits an address it never named is not one.
 
 	if err := p.checkDeniedNetworks(addr); err != nil {
 		return err
@@ -222,10 +228,8 @@ func (p *Policy) CheckAddr(addr netip.AddrPort) error {
 
 	if len(p.cfg.allowNetworks) > 0 {
 		for _, allowed := range p.cfg.allowNetworks {
-			for _, candidate := range candidates {
-				if !allowed.Contains(candidate) {
-					continue
-				}
+			// The address actually being dialled, and only that one.
+			if allowed.Contains(ip) {
 				// An allowed network exempts an address from the category denials,
 				// but never from the metadata denial: handing a workflow the
 				// credentials of the instance it runs on takes its own opt-in, so
