@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"fmt"
+	"strconv"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -120,4 +122,87 @@ func TestListStopsOnceThePageIsFull(t *testing.T) {
 	require.Len(t, response.Msg.GetRuns(), 5, "the page was not filled to what was asked for")
 	require.LessOrEqual(t, scanned, listBatchSize,
 		"a page that filled on the first batch kept reading anyway")
+}
+
+// Walking the pages must reach every run, and that is not implied by any single
+// page being correct.
+//
+// Temporal's page token addresses a whole batch. If a page fills partway through
+// one and the cursor is advanced anyway, the rest of that batch sits behind a
+// cursor that has moved past it: those runs belong to the caller, and they are
+// gone from every later page rather than merely delayed. Nothing about the
+// response says so — each page looks complete, the token looks healthy, and the
+// listing simply ends up short.
+//
+// Which is why this walks to exhaustion and checks the set. Asserting that one
+// page holds the right number of runs would pass with half the namespace missing.
+func TestListPagingReachesEveryRun(t *testing.T) {
+	t.Parallel()
+
+	// More runs than one page holds, and deliberately not a multiple of the page
+	// size, so the last page is partial too.
+	const total, pageSize = 23, 5
+
+	all := make([]*workflow.WorkflowExecutionInfo, 0, total)
+	for i := range total {
+		all = append(all, &workflow.WorkflowExecutionInfo{
+			Execution: &common.WorkflowExecution{WorkflowId: fmt.Sprintf("run-%02d", i)},
+		})
+	}
+
+	// A namespace that pages the way Temporal does: the token is an opaque
+	// position, and a request returns the executions after it.
+	temporal := &mocks.Client{}
+	temporal.On("ListWorkflow", mock.Anything, mock.Anything).Return(
+		func(_ context.Context, request *workflowservice.ListWorkflowExecutionsRequest) *workflowservice.ListWorkflowExecutionsResponse {
+			offset := 0
+			if token := request.GetNextPageToken(); len(token) > 0 {
+				parsed, err := strconv.Atoi(string(token))
+				require.NoError(t, err)
+				offset = parsed
+			}
+
+			end := min(offset+int(request.GetPageSize()), len(all))
+
+			resp := &workflowservice.ListWorkflowExecutionsResponse{Executions: all[offset:end]}
+			if end < len(all) {
+				resp.NextPageToken = []byte(strconv.Itoa(end))
+			}
+
+			return resp
+		},
+		nil,
+	)
+
+	server := New(temporal)
+
+	seen := map[string]int{}
+	token := ""
+	pages := 0
+
+	for {
+		response, err := server.List(t.Context(), connect.NewRequest(&v1types.ListRequest{
+			PageSize:  pageSize,
+			PageToken: token,
+		}))
+		require.NoError(t, err)
+
+		for _, run := range response.Msg.GetRuns() {
+			seen[run.GetWorkflowId()]++
+		}
+
+		pages++
+		require.Less(t, pages, 50, "the listing never terminated")
+
+		token = response.Msg.GetNextPageToken()
+		if token == "" {
+			break
+		}
+	}
+
+	require.Len(t, seen, total, "walking every page did not reach every run")
+	for _, execution := range all {
+		id := execution.GetExecution().GetWorkflowId()
+		require.Equal(t, 1, seen[id], "run %q was skipped or returned twice", id)
+	}
 }

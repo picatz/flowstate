@@ -91,7 +91,19 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 	scanned := 0
 
 	for len(runs) < pageSize && scanned < maxListScan {
-		batch := min(listBatchSize, maxListScan-scanned)
+		// Never ask for more executions than the page has room for.
+		//
+		// This is what keeps the cursor honest. Temporal's page token addresses a
+		// whole batch, so it can only be advanced once every execution in that
+		// batch has been considered. Asking for a hundred and stopping after
+		// filling the page on the fiftieth would leave fifty executions behind a
+		// cursor that has already moved past them — runs the caller owns, gone
+		// from every subsequent page, unreachable even by walking to the end.
+		//
+		// Bounding the request by the remaining capacity makes that unrepresentable
+		// rather than merely avoided: a batch can then only fill the page on its
+		// final execution, which is exactly when advancing past it is right.
+		batch := min(listBatchSize, pageSize-len(runs), maxListScan-scanned)
 
 		// Namespace is left unset so the SDK fills it from the client that was
 		// selected above, keeping the listing in the namespace the caller resolved
