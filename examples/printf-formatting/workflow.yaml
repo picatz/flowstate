@@ -1,6 +1,6 @@
 # The printf task formats a string from a format specifier and arguments.
 # Arguments may be literals or references to earlier step outputs.
-name: printf formatting
+name: printf-formatting
 steps:
   - id: name
     task:

@@ -528,3 +528,117 @@ func Test_Retryable(t *testing.T) {
 		})
 	}
 }
+
+// Test_tenancy_isolation_localProviders is the negative direction for the two
+// providers the isolation suite never covered.
+//
+// CLAUDE.md's rule is that an isolation test asserting each party reaches its own
+// resource is a functionality test wearing a security test's clothes, and the env
+// and file providers were fixed after exactly that gap was probed. The 1Password
+// and keychain providers were never probed, and one of them had the same defect.
+//
+// The op provider mapped a namespace straight onto a vault name. Every character
+// legal in a vault name is legal in a namespace, so a tenant whose namespace
+// equalled the configured default vault — a team slug, a service-account name,
+// whatever an operator passed to WithOnePasswordVault — read the untenanted
+// tenant's entire vault. Nothing about the request looked wrong, because nothing
+// about it was wrong.
+func Test_tenancy_isolation_localProviders(t *testing.T) {
+	t.Run("a 1Password namespace cannot name the default tenant's vault", func(t *testing.T) {
+		// The collision, written as the attack: the operator's default vault is
+		// "flowstate", and a tenant is called "flowstate" too. ValidateNamespace
+		// permits it, because lowercase letters are legal in a namespace.
+		runner := &fakeRunner{out: []byte("default-tenant-secret\n")}
+
+		provider, err := NewOnePasswordProvider(
+			withOnePasswordRunner(runner),
+			WithOnePasswordVault("flowstate"),
+			WithOnePasswordNamespaced(),
+		)
+		require.NoError(t, err)
+
+		store, err := NewStore(provider)
+		require.NoError(t, err)
+
+		resolver, err := store.For(Namespace("flowstate"))
+		require.NoError(t, err)
+
+		_, err = resolver.Resolve(t.Context(), NewRef("op", "api#password"))
+		require.NoError(t, err, "the fixture should resolve; what matters is which vault it read")
+
+		// The unnamespaced tenant reads a vault no namespace can spell, so the two
+		// cannot land in the same place however the namespace is chosen.
+		require.NotEmpty(t, runner.calls)
+		argv := strings.Join(runner.calls[0], " ")
+		require.Contains(t, argv, "op://flowstate/api/password",
+			"a namespaced tenant should read the vault named after it")
+
+		defaultRunner := &fakeRunner{out: []byte("default-tenant-secret\n")}
+		defaultProvider, err := NewOnePasswordProvider(
+			withOnePasswordRunner(defaultRunner),
+			WithOnePasswordVault("flowstate"),
+			WithOnePasswordNamespaced(),
+		)
+		require.NoError(t, err)
+
+		defaultStore, err := NewStore(defaultProvider)
+		require.NoError(t, err)
+
+		defaultResolver, err := defaultStore.For(Namespace(""))
+		require.NoError(t, err)
+
+		_, err = defaultResolver.Resolve(t.Context(), NewRef("op", "api#password"))
+		require.NoError(t, err)
+
+		require.NotEmpty(t, defaultRunner.calls)
+		defaultArgv := strings.Join(defaultRunner.calls[0], " ")
+		require.Contains(t, defaultArgv, "op://"+DefaultOnePasswordNamespaceVault+"/api/password",
+			"the unnamespaced tenant must read a vault a namespace cannot name")
+
+		require.NotEqual(t, argv, defaultArgv,
+			"a tenant named after the configured vault read the default tenant's secrets")
+	})
+
+	t.Run("an unnamespaced 1Password provider refuses a namespaced run", func(t *testing.T) {
+		// Fail closed rather than serving the default vault: a worker configured
+		// for one tenant must not become multi-tenant because an identity arrived
+		// carrying a namespace.
+		provider, err := NewOnePasswordProvider(withOnePasswordRunner(&fakeRunner{}))
+		require.NoError(t, err)
+
+		store, err := NewStore(provider)
+		require.NoError(t, err)
+
+		resolver, err := store.For(Namespace("team-a"))
+		require.NoError(t, err)
+
+		_, err = resolver.Resolve(t.Context(), NewRef("op", "api#password"))
+		require.ErrorIs(t, err, ErrNamespace)
+		require.ErrorContains(t, err, "WithOnePasswordNamespaced")
+	})
+
+	t.Run("an unnamespaced keychain provider refuses a namespaced run", func(t *testing.T) {
+		provider, err := NewKeychainProvider(withKeychainRunner(&fakeRunner{}))
+		require.NoError(t, err)
+
+		store, err := NewStore(provider)
+		require.NoError(t, err)
+
+		resolver, err := store.For(Namespace("team-a"))
+		require.NoError(t, err)
+
+		_, err = resolver.Resolve(t.Context(), NewRef("keychain", "api-key"))
+		require.ErrorIs(t, err, ErrNamespace)
+		require.ErrorContains(t, err, "WithKeychainNamespaced")
+	})
+
+	t.Run("a keychain namespace cannot forge another tenant's service", func(t *testing.T) {
+		// Safe here for a reason worth pinning: the separator is "/", which
+		// ValidateNamespace forbids, so no namespace can spell another's service.
+		// That is a property of the separator and the validator together, and it
+		// would be lost by anyone "simplifying" either one.
+		require.Error(t, ValidateNamespace("flowstate/team-a"),
+			"a namespace containing the keychain separator was accepted, which makes the "+
+				"service mapping ambiguous")
+	})
+}

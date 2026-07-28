@@ -42,6 +42,22 @@ const (
 type KeychainProvider struct {
 	service string
 	runner  commandRunner
+
+	// namespaced opts this provider into tenancy, and is off by default for the
+	// same reason it is off elsewhere: a worker must not become multi-tenant
+	// because an identity happened to carry a namespace.
+	namespaced bool
+}
+
+// WithKeychainNamespaced gives each tenant its own keychain service.
+//
+// With it, a run in namespace "team-a" reads service "<service>/team-a" and the
+// unnamespaced tenant reads "<service>/[DefaultNamespaceDir]". Every tenant gets a
+// segment, including the default one.
+func WithKeychainNamespaced() KeychainOption {
+	return func(p *KeychainProvider) {
+		p.namespaced = true
+	}
 }
 
 // KeychainOption configures a [KeychainProvider].
@@ -108,11 +124,16 @@ func (p *KeychainProvider) Resolve(ctx context.Context, req Request) (Secret, er
 		return Secret{}, &ResolveError{Ref: ref, Err: err}
 	}
 
+	service, err := p.serviceFor(req.Namespace)
+	if err != nil {
+		return Secret{}, &ResolveError{Ref: ref, Err: err}
+	}
+
 	// The tool takes the service and account as separate arguments, so neither can
 	// be read as an option or a shell construct however it is spelled.
 	out, err := p.runner.run(ctx, KeychainCommand,
 		"find-generic-password",
-		"-s", p.serviceFor(req.Namespace),
+		"-s", service,
 		"-a", account,
 		"-w",
 	)
@@ -132,13 +153,36 @@ func (p *KeychainProvider) Resolve(ctx context.Context, req Request) (Secret, er
 	return NewSecret(ref, value), nil
 }
 
-// serviceFor returns the keychain service a namespace's secrets live under.
-func (p *KeychainProvider) serviceFor(namespace string) string {
-	if namespace == "" {
-		return p.service
+// serviceFor returns the keychain service a namespace's secrets live under, or
+// refuses.
+//
+// The separator is safe here in a way it is not for a vault name or an
+// environment variable: ValidateNamespace forbids "/", so no namespace can forge
+// the service of another. That is worth stating, because the same shape is a
+// collision in the providers where the separator is legal in a name, and the
+// difference is not visible from the code alone.
+//
+// What it did not have is the opt-in, and that is the half that matters here: a
+// worker configured for one tenant would silently start serving per-tenant
+// services the moment a namespaced identity arrived, reading somewhere the
+// operator never provisioned and reporting "not found" rather than "not
+// configured". Refusing says which of those it is.
+func (p *KeychainProvider) serviceFor(namespace string) (string, error) {
+	switch {
+	case p.namespaced:
+		if namespace == "" {
+			return p.service + "/" + DefaultNamespaceDir, nil
+		}
+		return p.service + "/" + namespace, nil
+
+	case namespace != "":
+		return "", fmt.Errorf(
+			"%w: this worker's keychain provider is not namespaced, so it cannot resolve secrets "+
+				"for namespace %q; configure it with WithKeychainNamespaced",
+			ErrNamespace, namespace)
 	}
 
-	return p.service + "/" + namespace
+	return p.service, nil
 }
 
 // Service returns the configured keychain service name. It is safe to log.

@@ -9,12 +9,16 @@ import (
 
 func Test_KeychainProvider_Resolve(t *testing.T) {
 	tests := []struct {
-		name      string
-		namespace string
-		ref       string
-		out       string
-		runErr    error
-		check     func(t *testing.T, secret Secret, err error, runner *fakeRunner)
+		name string
+		// namespaced opts the provider into tenancy. Off by default, matching the
+		// provider, because a worker configured for one tenant must not become
+		// multi-tenant just because a request carried a namespace.
+		namespaced bool
+		namespace  string
+		ref        string
+		out        string
+		runErr     error
+		check      func(t *testing.T, secret Secret, err error, runner *fakeRunner)
 	}{
 		// Negative cases first.
 		{
@@ -80,10 +84,11 @@ func Test_KeychainProvider_Resolve(t *testing.T) {
 			},
 		},
 		{
-			name:      "a namespace scopes the service",
-			namespace: "team-a",
-			ref:       "github-token",
-			out:       "team-a-value\n",
+			name:       "a namespace scopes the service",
+			namespaced: true,
+			namespace:  "team-a",
+			ref:        "github-token",
+			out:        "team-a-value\n",
 			check: func(t *testing.T, secret Secret, err error, runner *fakeRunner) {
 				require.NoError(t, err)
 				require.Equal(t, "team-a-value", secret.Reveal())
@@ -108,7 +113,12 @@ func Test_KeychainProvider_Resolve(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			runner := &fakeRunner{out: []byte(test.out), err: test.runErr}
 
-			provider, err := NewKeychainProvider(withKeychainRunner(runner))
+			options := []KeychainOption{withKeychainRunner(runner)}
+			if test.namespaced {
+				options = append(options, WithKeychainNamespaced())
+			}
+
+			provider, err := NewKeychainProvider(options...)
 			require.NoError(t, err)
 			require.Equal(t, "keychain", provider.Scheme())
 
@@ -136,12 +146,16 @@ func Test_NewKeychainProvider(t *testing.T) {
 
 func Test_OnePasswordProvider_Resolve(t *testing.T) {
 	tests := []struct {
-		name      string
-		namespace string
-		ref       string
-		out       string
-		runErr    error
-		check     func(t *testing.T, secret Secret, err error, runner *fakeRunner)
+		name string
+		// namespaced opts the provider into tenancy. Off by default, matching the
+		// provider, because a worker configured for one tenant must not become
+		// multi-tenant just because a request carried a namespace.
+		namespaced bool
+		namespace  string
+		ref        string
+		out        string
+		runErr     error
+		check      func(t *testing.T, secret Secret, err error, runner *fakeRunner)
 	}{
 		// Negative cases first.
 		{
@@ -216,10 +230,11 @@ func Test_OnePasswordProvider_Resolve(t *testing.T) {
 			},
 		},
 		{
-			name:      "a namespace selects the vault",
-			namespace: "team-a",
-			ref:       "github#token",
-			out:       "team-a-token",
+			name:       "a namespace selects the vault",
+			namespaced: true,
+			namespace:  "team-a",
+			ref:        "github#token",
+			out:        "team-a-token",
 			check: func(t *testing.T, secret Secret, err error, runner *fakeRunner) {
 				require.NoError(t, err)
 				require.Contains(t, runner.argv(t), "op://team-a/github/token",
@@ -242,7 +257,12 @@ func Test_OnePasswordProvider_Resolve(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			runner := &fakeRunner{out: []byte(test.out), err: test.runErr}
 
-			provider, err := NewOnePasswordProvider(withOnePasswordRunner(runner))
+			options := []OnePasswordOption{withOnePasswordRunner(runner)}
+			if test.namespaced {
+				options = append(options, WithOnePasswordNamespaced())
+			}
+
+			provider, err := NewOnePasswordProvider(options...)
 			require.NoError(t, err)
 			require.Equal(t, "op", provider.Scheme())
 

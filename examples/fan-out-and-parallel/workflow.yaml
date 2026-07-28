@@ -7,7 +7,7 @@
 # A loop reports every iteration through its own `results` output, rather than
 # leaking body outputs into the enclosing scope where iterations would overwrite
 # each other.
-name: fan out and parallel
+name: fan-out-and-parallel
 steps:
   # Produce the list to work through. In a real workload this would come from an
   # API call or a query.

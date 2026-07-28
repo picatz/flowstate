@@ -7,7 +7,7 @@
 #
 # Only failures that could plausibly succeed on another attempt are retried, so a
 # step that failed because its inputs were invalid fails once regardless of retry.
-name: conditional and retry
+name: conditional-and-retry
 steps:
   - id: check
     task:

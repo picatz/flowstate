@@ -181,6 +181,22 @@ func (s *FlowstateServer) Shutdown(ctx context.Context) error {
 
 // Run starts a new workflow execution.
 func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRequest]) (*connect.Response[v1.RunResponse], error) {
+	// The specification is the largest attacker-controlled value this service
+	// accepts, and this was the one RPC that did not check it. Signal, Cancel,
+	// Terminate and List all validate here; Run did not, so every rule the schema
+	// declares — the name pattern, the step-count ceiling, the URL format, every
+	// length bound — held only because the CLI happens to install a protovalidate
+	// interceptor in front of the handler.
+	//
+	// That is a bound enforced by a caller's configuration rather than by the
+	// component the bound belongs to, which fails open for any embedder that
+	// builds a server without it. Invariant 6 says specification validation denies
+	// by default; defaulting is not something a handler can leave to whoever wired
+	// it up.
+	if err := v1.Validate(req.Msg); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
 	workflowID := fmt.Sprintf("flowstate-workflow-%s", uuid.NewString())
 
 	// Capture the identity now, while the authenticated caller is still in scope.

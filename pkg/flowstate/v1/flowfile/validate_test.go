@@ -1,9 +1,14 @@
 package flowfile_test
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
@@ -490,4 +495,69 @@ steps:
 	} else {
 		t.Logf("reported: %v", err)
 	}
+}
+
+// TestEveryExampleSurvivesTheSchema walks the examples through the check the
+// server now makes, which is not the check `flow validate` was making.
+//
+// `flowfile.Validate` reports what an author can fix by reading their file:
+// unknown tasks, bad references, duplicate ids. `v1.Validate` enforces what the
+// schema declares: patterns, lengths, ceilings. Nothing ran the second one over
+// the examples, and nothing on the submit path ran it at all — so eight of the
+// fifteen shipped examples had names the schema refuses, compiled cleanly, said
+// "ok", and would have been rejected the first time anyone ran them against a
+// server.
+//
+// This is the join CLAUDE.md warns about: two validators, each tested, and the
+// defect living in the gap between them. So this asserts the composition rather
+// than either half.
+func TestEveryExampleSurvivesTheSchema(t *testing.T) {
+	t.Parallel()
+
+	paths, err := filepath.Glob(filepath.Join("..", "..", "..", "..", "examples", "*", "workflow.yaml"))
+	require.NoError(t, err)
+	require.NotEmpty(t, paths, "no examples were found, so this test proves nothing")
+
+	for _, path := range paths {
+		t.Run(filepath.Base(filepath.Dir(path)), func(t *testing.T) {
+			t.Parallel()
+
+			source, err := os.ReadFile(path)
+			require.NoError(t, err)
+
+			workflow, _, err := flowfile.Parse(source)
+			require.NoError(t, err, "the example does not compile")
+
+			require.NoError(t, v1.Validate(workflow),
+				"the example compiles but the schema refuses it, so `flow run` would fail on a file "+
+					"this repo ships as a worked example")
+		})
+	}
+}
+
+// TestAnIllegalWorkflowNameIsReportedBeforeItIsSubmitted is the other half.
+//
+// The schema's refusal names a protobuf field path, which is true and useless to
+// somebody looking at a line of YAML. The diagnostic has a position and offers a
+// name to paste, because "may not contain spaces" is a rule and `http-expect` is
+// an answer.
+func TestAnIllegalWorkflowNameIsReportedBeforeItIsSubmitted(t *testing.T) {
+	t.Parallel()
+
+	const src = `name: my workflow
+steps:
+  - id: a
+    task:
+      name: echo
+      inputs:
+        message: hi
+`
+
+	diagnostics, err := flowfile.ValidateSource([]byte(src))
+	require.NoError(t, err)
+	require.NotEmpty(t, diagnostics, "a name the schema refuses was accepted by flow validate")
+
+	reported := diagnostics.Error()
+	require.Contains(t, reported, "spaces", "the diagnostic does not say what is wrong: %s", reported)
+	require.Contains(t, reported, "my-workflow", "the diagnostic does not offer a name that works: %s", reported)
 }

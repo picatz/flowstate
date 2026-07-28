@@ -5,7 +5,7 @@
 # Expressions in `outputs` are evaluated after the response arrives, so they can
 # reference status_code, body, and headers directly. The json library is
 # available for picking fields out of a JSON body.
-name: http output shaping
+name: http-output-shaping
 steps:
   - id: web
     task:
