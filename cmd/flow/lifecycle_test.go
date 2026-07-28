@@ -114,13 +114,25 @@ func TestListRendersRunsAndSaysWhenMoreRemain(t *testing.T) {
 
 	require.NoError(t, runList(cmd, nil))
 
-	require.Contains(t, out.String(), "run-running")
-	require.Contains(t, out.String(), "run-done")
-	require.Contains(t, out.String(), "2026-07-01T08:30:00Z", "a finished run lost its close time")
+	// The header first, because everything below asserts a position in a row and
+	// a position means nothing without the column it belongs to.
+	require.Equal(t,
+		[]string{"RUN", "STATUS", "STARTED", "FINISHED"},
+		tableRow(t, out.String(), "RUN"),
+		"the columns are not the ones the rows are checked against")
 
-	// A run still going has no close time. Rendering the zero instant would
-	// report it as having finished in 1970.
-	require.NotContains(t, out.String(), "1970", "an unfinished run was given a close time")
+	// A finished run: every field, in order, on its own line. The close time is
+	// the field most easily rendered in the wrong column, and the status is the
+	// one nothing used to check at all.
+	require.Equal(t,
+		[]string{"run-done", "COMPLETED", "2026-07-01T08:00:00Z", "2026-07-01T08:30:00Z"},
+		tableRow(t, out.String(), "run-done"))
+
+	// A run still going has no close time, so it renders a placeholder. Rendering
+	// the zero instant instead would report it as having finished in 1970.
+	require.Equal(t,
+		[]string{"run-running", "RUNNING", "2026-07-01T09:00:00Z", "-"},
+		tableRow(t, out.String(), "run-running"))
 
 	// The listing is a bounded scan, so a page that came back with a token still
 	// set means runs remain. A caller that stops here misses their own runs, so
@@ -174,6 +186,32 @@ func TestListRefusalsExplainThemselves(t *testing.T) {
 	// generic default, so deleting the refusal case entirely would still pass.
 	require.Contains(t, err.Error(), "refused while listing runs")
 	require.NotContains(t, err.Error(), "check the id")
+}
+
+// tableRow returns the whitespace-separated fields of the row that starts with
+// the given first column.
+//
+// A row is a record, so it is checked as one. Asserting substrings against the
+// whole buffer is what let three separate rendering bugs through here: `Contains`
+// is satisfied by a value appearing anywhere, so swapping the STARTED and
+// FINISHED columns passed, giving an unfinished run a close time passed as long as
+// some other row had one, and the STATUS column was never asserted at all —
+// `statusLabel` returning "" for every status passed every `TestList*`.
+//
+// Fields rather than the raw line because the separator is a tabwriter's padding,
+// which is a rendering detail and not the contract; the order and the content are.
+func tableRow(t *testing.T, rendered, first string) []string {
+	t.Helper()
+
+	for _, line := range strings.Split(rendered, "\n") {
+		if fields := strings.Fields(line); len(fields) > 0 && fields[0] == first {
+			return fields
+		}
+	}
+
+	t.Fatalf("no row beginning %q in the listing:\n%s", first, rendered)
+
+	return nil
 }
 
 // mustTime parses a fixed instant for a fixture.

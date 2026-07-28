@@ -1,12 +1,17 @@
 package server_test
 
 import (
+	"context"
+	"fmt"
 	"slices"
 	"testing"
 	"time"
 
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/require"
+	enumspb "go.temporal.io/api/enums/v1"
+	historypb "go.temporal.io/api/history/v1"
+	"go.temporal.io/sdk/converter"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -106,6 +111,15 @@ func TestAnotherTenantCannotStopARun(t *testing.T) {
 // the run is still going.
 //
 // So the status is pinned. A cancelled run reports cancelled, or this fails.
+//
+// And it is cancelled where the interesting branch is. This waited only for
+// STATUS_RUNNING, which is true the instant Temporal accepts the run — before its
+// first step is scheduled, let alone its gate reached. Cancelling then races the
+// run's own progress, so the branch the test exists for was reached sometimes and
+// by luck. It now waits for evidence the run is parked at the gate, and asserts
+// afterwards that the step beyond the gate never ran: a cancellation taken for the
+// gate's timeout would record "nobody approved" and walk on, which is well-formed
+// enough that a status assertion alone cannot see it.
 func TestCancelLetsARunStop(t *testing.T) {
 	t.Parallel()
 
@@ -118,12 +132,7 @@ func TestCancelLetsARunStop(t *testing.T) {
 
 	workflowID := started.Msg.GetWorkflowId()
 
-	require.Eventually(t, func() bool {
-		resp, err := fixture.teamA.Get(t.Context(), connect.NewRequest(&v1.GetRequest{
-			WorkflowId: workflowID,
-		}))
-		return err == nil && resp.Msg.GetStatus() == v1.RunResponse_STATUS_RUNNING
-	}, 30*time.Second, 100*time.Millisecond, "the run never reached a running state")
+	waitUntilParkedAtTheGate(t, fixture, workflowID)
 
 	_, err = fixture.teamA.Cancel(t.Context(), connect.NewRequest(&v1.CancelRequest{
 		WorkflowId: workflowID,
@@ -145,6 +154,97 @@ func TestCancelLetsARunStop(t *testing.T) {
 	require.Equal(t, v1.RunResponse_STATUS_CANCELED, final,
 		"a run stopped on purpose reported %s, so `flow get` tells whoever finds it that "+
 			"something went wrong", final)
+
+	// The run stopped at the gate rather than past it. `deploy` is conditional on
+	// `approval.approved`, so it running at all would mean the cancellation was
+	// read as an answer.
+	ran, err := stepsScheduled(t.Context(), fixture, workflowID)
+	require.NoError(t, err)
+	require.Equal(t, []string{"requesting approval"}, ran,
+		"a step ran after the run was cancelled at its gate")
+}
+
+// waitUntilParkedAtTheGate blocks until the run has actually reached its approval
+// gate.
+//
+// Nothing on the RPC surface can answer this, which is why it reads history: a
+// status says a run is going, not what it is doing. A gate with a timeout starts a
+// durable timer and nothing else in this workload starts one, so a TimerStarted
+// event is exactly the evidence wanted — and history is written when the workflow
+// task completes, so unlike a listing there is no visibility lag to wait out.
+func waitUntilParkedAtTheGate(t *testing.T, fixture *tenantFixture, workflowID string) {
+	t.Helper()
+
+	require.Eventually(t, func() bool {
+		events, err := historyOf(t.Context(), fixture, workflowID)
+		if err != nil {
+			return false
+		}
+
+		return slices.ContainsFunc(events, func(event *historypb.HistoryEvent) bool {
+			return event.GetEventType() == enumspb.EVENT_TYPE_TIMER_STARTED
+		})
+	}, 30*time.Second, 100*time.Millisecond, "the run never reached its approval gate")
+}
+
+// stepsScheduled reports the message each step this run scheduled was given, in
+// the order they were scheduled.
+//
+// The message identifies the step because every step in gatedWorkflow is an echo
+// with its own, which is cheaper than correlating scheduled events back to step
+// ids and says the same thing.
+func stepsScheduled(ctx context.Context, fixture *tenantFixture, workflowID string) ([]string, error) {
+	events, err := historyOf(ctx, fixture, workflowID)
+	if err != nil {
+		return nil, err
+	}
+
+	var messages []string
+	for _, event := range events {
+		attributes := event.GetActivityTaskScheduledEventAttributes()
+		if attributes == nil {
+			continue
+		}
+
+		payloads := attributes.GetInput().GetPayloads()
+		if len(payloads) == 0 {
+			return nil, fmt.Errorf("a step was scheduled with no input")
+		}
+
+		// The resolved task is the first argument of every step activity, whichever
+		// of the three was scheduled.
+		var task v1.Task
+		if err := converter.GetDefaultDataConverter().FromPayload(payloads[0], &task); err != nil {
+			return nil, fmt.Errorf("reading what a step was scheduled with: %w", err)
+		}
+
+		messages = append(messages, task.GetInputs()["message"].GetLiteral().GetStringValue())
+	}
+
+	return messages, nil
+}
+
+// historyOf collects a run's history.
+//
+// It reports an error rather than asserting on one, because its callers run inside
+// require.Eventually and testify evaluates that condition on its own goroutine — a
+// failed assertion there is runtime.Goexit off the test goroutine, so the condition
+// never returns and Eventually reports its own message a timeout later. The same
+// trap listRunIDs documents, in the same package.
+func historyOf(ctx context.Context, fixture *tenantFixture, workflowID string) ([]*historypb.HistoryEvent, error) {
+	iterator := fixture.temporal.GetWorkflowHistory(
+		ctx, workflowID, "", false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
+
+	var events []*historypb.HistoryEvent
+	for iterator.HasNext() {
+		event, err := iterator.Next()
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+
+	return events, nil
 }
 
 // TestListReturnsOnlyTheCallersRuns is the test the List implementation exists to
