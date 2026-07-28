@@ -30,6 +30,13 @@ import (
 type tenantFixture struct {
 	teamA *server.FlowstateServer
 	teamB *server.FlowstateServer
+
+	// The Temporal client the two servers share, for the one question the RPC
+	// surface deliberately cannot answer: where in its steps a run has got to.
+	// `Get` reports a status, and a status says a run is going rather than what
+	// it is doing — so a test that has to act on a run *at a particular step*
+	// reads history instead of guessing from a status.
+	temporal client.Client
 }
 
 // newTenantFixture starts everything needed to run and address real workloads.
@@ -56,8 +63,9 @@ func newTenantFixture(t *testing.T) *tenantFixture {
 	// as far as the authorization logic is concerned, and that is the logic under
 	// test.
 	return &tenantFixture{
-		teamA: server.New(devServer.Client(), server.WithNamespace("team-a")),
-		teamB: server.New(devServer.Client(), server.WithNamespace("team-b")),
+		teamA:    server.New(devServer.Client(), server.WithNamespace("team-a")),
+		teamB:    server.New(devServer.Client(), server.WithNamespace("team-b")),
+		temporal: devServer.Client(),
 	}
 }
 

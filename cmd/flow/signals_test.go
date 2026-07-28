@@ -9,8 +9,11 @@ import (
 	"testing"
 
 	"connectrpc.com/connect"
+	"github.com/google/go-cmp/cmp"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+	"google.golang.org/protobuf/testing/protocmp"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
@@ -25,28 +28,63 @@ import (
 func TestParseSignalFlag(t *testing.T) {
 	t.Parallel()
 
+	// The expected payloads are written out rather than built by handing the same
+	// Go value to the same conversion the code under test uses, which would assert
+	// only that a function agrees with itself.
+	//
+	// That mattered: this table previously compared key *presence* and never a
+	// value, so replacing every nested map and list with null passed the whole
+	// ./cmd/flow/ suite. Nothing else on the branch checks that a nested payload
+	// survives, and a gate whose ${approval.meta.ticket} resolves to null is a gate
+	// that looks answered and carries nothing.
+	str := func(s string) *expr.Value {
+		return &expr.Value{Kind: &expr.Value_StringValue{StringValue: s}}
+	}
+
 	tests := []struct {
 		name    string
 		flag    string
-		want    map[string]any
+		want    *v1.Node_Outputs
 		wantErr string
 	}{
 		{
 			name: "a name and an object",
 			flag: `deploy-approved={"approved": true, "by": "me@example.com"}`,
-			want: map[string]any{"approved": true, "by": "me@example.com"},
+			want: &v1.Node_Outputs{NamedValues: map[string]*v1.Value{
+				"approved": v1.NewLiteral(true),
+				"by":       v1.NewLiteral("me@example.com"),
+			}},
 		},
 		{
 			name: "a nested payload",
 			flag: `deploy-approved={"meta": {"ticket": "OPS-1"}}`,
-			want: map[string]any{"meta": nil}, // presence is what matters here
+			want: &v1.Node_Outputs{NamedValues: map[string]*v1.Value{
+				"meta": {Kind: &v1.Value_Literal{Literal: &expr.Value{
+					Kind: &expr.Value_MapValue{MapValue: &expr.MapValue{
+						Entries: []*expr.MapValue_Entry{{Key: str("ticket"), Value: str("OPS-1")}},
+					}},
+				}}},
+			}},
+		},
+		{
+			// A list nests differently from a mapping and is the other half of what
+			// went unchecked.
+			name: "a payload holding a list",
+			flag: `deploy-approved={"reviewers": ["ana", "bo"]}`,
+			want: &v1.Node_Outputs{NamedValues: map[string]*v1.Value{
+				"reviewers": {Kind: &v1.Value_Literal{Literal: &expr.Value{
+					Kind: &expr.Value_ListValue{ListValue: &expr.ListValue{
+						Values: []*expr.Value{str("ana"), str("bo")},
+					}},
+				}}},
+			}},
 		},
 		{
 			// A signal that carries nothing is a reasonable thing to send: the
 			// wait completes and reports it did not time out.
 			name: "no payload at all",
 			flag: "deploy-approved=",
-			want: map[string]any{},
+			want: &v1.Node_Outputs{NamedValues: map[string]*v1.Value{}},
 		},
 		{
 			name:    "no payload separator",
@@ -86,12 +124,11 @@ func TestParseSignalFlag(t *testing.T) {
 
 			require.NoError(t, err)
 			require.Equal(t, "deploy-approved", name)
-			require.Len(t, payload.GetNamedValues(), len(test.want))
 
-			for key := range test.want {
-				require.Contains(t, payload.GetNamedValues(), key,
-					"the payload lost the %q key", key)
-			}
+			require.Empty(t,
+				cmp.Diff(test.want, payload, protocmp.Transform()),
+				"the payload a later step would read differs from what was sent:\n%s",
+				cmp.Diff(test.want, payload, protocmp.Transform()))
 		})
 	}
 }
