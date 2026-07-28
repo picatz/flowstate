@@ -1,0 +1,42 @@
+version: 2
+
+# Without this file only Dependabot's security alerts run, and those open a pull
+# request for the vulnerability rather than keeping anything current. The
+# difference showed up the hard way: GO-2026-6061 landed against a pinned
+# `google.golang.org/grpc`, and the first anyone knew of it was `vulncheck` going
+# red on an unrelated pull request whose author then had to work out that the
+# finding was not theirs. A scheduled bump would have arrived on its own branch,
+# named the advisory, and been reviewable as what it is.
+updates:
+  # The module graph. Grouped, because a Go dependency bump is rarely interesting
+  # on its own and twelve separate pull requests for one week's patch releases is
+  # how people learn to merge them without reading.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # Kept apart from everything else: these three move together, and a bump to
+      # one that leaves the others behind is how a build breaks in a way that
+      # looks like a code problem.
+      temporal:
+        patterns:
+          - go.temporal.io/*
+      # Patch and minor together — the ordinary background noise of a Go module
+      # graph, which is safe to review as one thing.
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  # The workflows themselves, which are code that runs with a token and is
+  # currently referenced by moving tags. Keeping this here is what makes pinning
+  # actions to commit SHAs maintainable rather than a thing that rots: Dependabot
+  # updates a pinned SHA and says which release it corresponds to, whereas a
+  # human doing it by hand stops after the first month.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3

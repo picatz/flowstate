@@ -189,4 +189,3 @@ func runSignal(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(cmd.OutOrStdout(), "delivered %s to %s\n", name, workflowID)
 	return nil
 }
-

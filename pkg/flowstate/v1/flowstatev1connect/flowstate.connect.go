@@ -39,6 +39,13 @@ const (
 	WorkflowServiceGetProcedure = "/flowstate.v1.WorkflowService/Get"
 	// WorkflowServiceSignalProcedure is the fully-qualified name of the WorkflowService's Signal RPC.
 	WorkflowServiceSignalProcedure = "/flowstate.v1.WorkflowService/Signal"
+	// WorkflowServiceListProcedure is the fully-qualified name of the WorkflowService's List RPC.
+	WorkflowServiceListProcedure = "/flowstate.v1.WorkflowService/List"
+	// WorkflowServiceCancelProcedure is the fully-qualified name of the WorkflowService's Cancel RPC.
+	WorkflowServiceCancelProcedure = "/flowstate.v1.WorkflowService/Cancel"
+	// WorkflowServiceTerminateProcedure is the fully-qualified name of the WorkflowService's Terminate
+	// RPC.
+	WorkflowServiceTerminateProcedure = "/flowstate.v1.WorkflowService/Terminate"
 )
 
 // WorkflowServiceClient is a client for the flowstate.v1.WorkflowService service.
@@ -46,11 +53,36 @@ type WorkflowServiceClient interface {
 	Run(context.Context, *connect.Request[v1.RunRequest]) (*connect.Response[v1.RunResponse], error)
 	Get(context.Context, *connect.Request[v1.GetRequest]) (*connect.Response[v1.GetResponse], error)
 	// Signal delivers a signal to a run waiting for one, which is how a human
-	// approval reaches a workload. It is the same call whether the run is local or
-	// durable, so `flow signal` behaves identically against both — the local driver
-	// exists to tell an author what production will do, and a gate an author cannot
-	// exercise locally is a gate they will first exercise in production.
+	// approval reaches a workload.
+	//
+	// This addresses a durable run. A local run is a process with nobody to signal
+	// it once it has started, so `flow run local` answers its gates from flags
+	// instead. What the two drivers share is the payload and everything downstream
+	// of it — the same signal name, the same outputs, the same expressions reading
+	// them — which is the part that has to match for a local run to tell an author
+	// what production will do.
 	Signal(context.Context, *connect.Request[v1.SignalRequest]) (*connect.Response[v1.SignalResponse], error)
+	// List returns the runs belonging to the caller's tenant.
+	//
+	// The filtering is done here rather than by Temporal, and that follows from how
+	// Run records a tenant: as a memo, because a memo needs no cluster-side
+	// registration and a first run therefore needs nothing but `temporal server
+	// start-dev`. Temporal cannot query a memo. A search attribute could be
+	// queried, but it would make listing your own runs fail until an operator had
+	// registered the attribute — a basic verb that does not work out of the box is
+	// worse than one that scans.
+	//
+	// So the scan is bounded instead, and the bound is on how many executions the
+	// server reads rather than on how many it returns: a caller asking for ten runs
+	// in a namespace holding a hundred thousand must not be able to make the server
+	// walk all of them. See ListResponse.next_page_token for what that means for a
+	// caller — a short or empty page is not the end of the listing.
+	List(context.Context, *connect.Request[v1.ListRequest]) (*connect.Response[v1.ListResponse], error)
+	// Cancel asks a run to stop and lets it clean up on the way out.
+	Cancel(context.Context, *connect.Request[v1.CancelRequest]) (*connect.Response[v1.CancelResponse], error)
+	// Terminate stops a run immediately, running none of its cleanup. Prefer
+	// Cancel; see CancelRequest for when this is the right answer anyway.
+	Terminate(context.Context, *connect.Request[v1.TerminateRequest]) (*connect.Response[v1.TerminateResponse], error)
 }
 
 // NewWorkflowServiceClient constructs a client for the flowstate.v1.WorkflowService service. By
@@ -82,14 +114,35 @@ func NewWorkflowServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(workflowServiceMethods.ByName("Signal")),
 			connect.WithClientOptions(opts...),
 		),
+		list: connect.NewClient[v1.ListRequest, v1.ListResponse](
+			httpClient,
+			baseURL+WorkflowServiceListProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("List")),
+			connect.WithClientOptions(opts...),
+		),
+		cancel: connect.NewClient[v1.CancelRequest, v1.CancelResponse](
+			httpClient,
+			baseURL+WorkflowServiceCancelProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("Cancel")),
+			connect.WithClientOptions(opts...),
+		),
+		terminate: connect.NewClient[v1.TerminateRequest, v1.TerminateResponse](
+			httpClient,
+			baseURL+WorkflowServiceTerminateProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("Terminate")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // workflowServiceClient implements WorkflowServiceClient.
 type workflowServiceClient struct {
-	run    *connect.Client[v1.RunRequest, v1.RunResponse]
-	get    *connect.Client[v1.GetRequest, v1.GetResponse]
-	signal *connect.Client[v1.SignalRequest, v1.SignalResponse]
+	run       *connect.Client[v1.RunRequest, v1.RunResponse]
+	get       *connect.Client[v1.GetRequest, v1.GetResponse]
+	signal    *connect.Client[v1.SignalRequest, v1.SignalResponse]
+	list      *connect.Client[v1.ListRequest, v1.ListResponse]
+	cancel    *connect.Client[v1.CancelRequest, v1.CancelResponse]
+	terminate *connect.Client[v1.TerminateRequest, v1.TerminateResponse]
 }
 
 // Run calls flowstate.v1.WorkflowService.Run.
@@ -107,16 +160,56 @@ func (c *workflowServiceClient) Signal(ctx context.Context, req *connect.Request
 	return c.signal.CallUnary(ctx, req)
 }
 
+// List calls flowstate.v1.WorkflowService.List.
+func (c *workflowServiceClient) List(ctx context.Context, req *connect.Request[v1.ListRequest]) (*connect.Response[v1.ListResponse], error) {
+	return c.list.CallUnary(ctx, req)
+}
+
+// Cancel calls flowstate.v1.WorkflowService.Cancel.
+func (c *workflowServiceClient) Cancel(ctx context.Context, req *connect.Request[v1.CancelRequest]) (*connect.Response[v1.CancelResponse], error) {
+	return c.cancel.CallUnary(ctx, req)
+}
+
+// Terminate calls flowstate.v1.WorkflowService.Terminate.
+func (c *workflowServiceClient) Terminate(ctx context.Context, req *connect.Request[v1.TerminateRequest]) (*connect.Response[v1.TerminateResponse], error) {
+	return c.terminate.CallUnary(ctx, req)
+}
+
 // WorkflowServiceHandler is an implementation of the flowstate.v1.WorkflowService service.
 type WorkflowServiceHandler interface {
 	Run(context.Context, *connect.Request[v1.RunRequest]) (*connect.Response[v1.RunResponse], error)
 	Get(context.Context, *connect.Request[v1.GetRequest]) (*connect.Response[v1.GetResponse], error)
 	// Signal delivers a signal to a run waiting for one, which is how a human
-	// approval reaches a workload. It is the same call whether the run is local or
-	// durable, so `flow signal` behaves identically against both — the local driver
-	// exists to tell an author what production will do, and a gate an author cannot
-	// exercise locally is a gate they will first exercise in production.
+	// approval reaches a workload.
+	//
+	// This addresses a durable run. A local run is a process with nobody to signal
+	// it once it has started, so `flow run local` answers its gates from flags
+	// instead. What the two drivers share is the payload and everything downstream
+	// of it — the same signal name, the same outputs, the same expressions reading
+	// them — which is the part that has to match for a local run to tell an author
+	// what production will do.
 	Signal(context.Context, *connect.Request[v1.SignalRequest]) (*connect.Response[v1.SignalResponse], error)
+	// List returns the runs belonging to the caller's tenant.
+	//
+	// The filtering is done here rather than by Temporal, and that follows from how
+	// Run records a tenant: as a memo, because a memo needs no cluster-side
+	// registration and a first run therefore needs nothing but `temporal server
+	// start-dev`. Temporal cannot query a memo. A search attribute could be
+	// queried, but it would make listing your own runs fail until an operator had
+	// registered the attribute — a basic verb that does not work out of the box is
+	// worse than one that scans.
+	//
+	// So the scan is bounded instead, and the bound is on how many executions the
+	// server reads rather than on how many it returns: a caller asking for ten runs
+	// in a namespace holding a hundred thousand must not be able to make the server
+	// walk all of them. See ListResponse.next_page_token for what that means for a
+	// caller — a short or empty page is not the end of the listing.
+	List(context.Context, *connect.Request[v1.ListRequest]) (*connect.Response[v1.ListResponse], error)
+	// Cancel asks a run to stop and lets it clean up on the way out.
+	Cancel(context.Context, *connect.Request[v1.CancelRequest]) (*connect.Response[v1.CancelResponse], error)
+	// Terminate stops a run immediately, running none of its cleanup. Prefer
+	// Cancel; see CancelRequest for when this is the right answer anyway.
+	Terminate(context.Context, *connect.Request[v1.TerminateRequest]) (*connect.Response[v1.TerminateResponse], error)
 }
 
 // NewWorkflowServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -144,6 +237,24 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 		connect.WithSchema(workflowServiceMethods.ByName("Signal")),
 		connect.WithHandlerOptions(opts...),
 	)
+	workflowServiceListHandler := connect.NewUnaryHandler(
+		WorkflowServiceListProcedure,
+		svc.List,
+		connect.WithSchema(workflowServiceMethods.ByName("List")),
+		connect.WithHandlerOptions(opts...),
+	)
+	workflowServiceCancelHandler := connect.NewUnaryHandler(
+		WorkflowServiceCancelProcedure,
+		svc.Cancel,
+		connect.WithSchema(workflowServiceMethods.ByName("Cancel")),
+		connect.WithHandlerOptions(opts...),
+	)
+	workflowServiceTerminateHandler := connect.NewUnaryHandler(
+		WorkflowServiceTerminateProcedure,
+		svc.Terminate,
+		connect.WithSchema(workflowServiceMethods.ByName("Terminate")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/flowstate.v1.WorkflowService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case WorkflowServiceRunProcedure:
@@ -152,6 +263,12 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 			workflowServiceGetHandler.ServeHTTP(w, r)
 		case WorkflowServiceSignalProcedure:
 			workflowServiceSignalHandler.ServeHTTP(w, r)
+		case WorkflowServiceListProcedure:
+			workflowServiceListHandler.ServeHTTP(w, r)
+		case WorkflowServiceCancelProcedure:
+			workflowServiceCancelHandler.ServeHTTP(w, r)
+		case WorkflowServiceTerminateProcedure:
+			workflowServiceTerminateHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -171,4 +288,16 @@ func (UnimplementedWorkflowServiceHandler) Get(context.Context, *connect.Request
 
 func (UnimplementedWorkflowServiceHandler) Signal(context.Context, *connect.Request[v1.SignalRequest]) (*connect.Response[v1.SignalResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.Signal is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) List(context.Context, *connect.Request[v1.ListRequest]) (*connect.Response[v1.ListResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.List is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) Cancel(context.Context, *connect.Request[v1.CancelRequest]) (*connect.Response[v1.CancelResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.Cancel is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) Terminate(context.Context, *connect.Request[v1.TerminateRequest]) (*connect.Response[v1.TerminateResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.Terminate is not implemented"))
 }

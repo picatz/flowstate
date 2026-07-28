@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 )
 
@@ -76,7 +77,7 @@ func (e *executor) runNodes(nodes []*v1.Node, depth int) error {
 
 		run, err := v1.EvalConditionInScope(context.Background(), node.GetCondition(), e.scope)
 		if err != nil {
-			return &ErrRunFailed{Message: fmt.Sprintf("step %q: %v", node.GetId(), err)}
+			return stepFailed(err, "step %q: %v", node.GetId(), err)
 		}
 		if !run {
 			workflow.GetLogger(e.ctx).Info("skipping step, condition is false", "id", node.GetId())
@@ -85,6 +86,21 @@ func (e *executor) runNodes(nodes []*v1.Node, depth int) error {
 
 		if err := e.runNode(node, depth, descend); err != nil {
 			if errors.Is(err, errContinueAsNew) {
+				return err
+			}
+			// Cancellation is not a step failure, so `continue_on_error` does not
+			// get to tolerate it. That policy says "this task may fail without
+			// stopping the workload"; it says nothing about the workload being
+			// stopped, and the two are opposite instructions.
+			//
+			// Without this the run walks on after being cancelled. Every
+			// remaining step then fails immediately with the same cancellation —
+			// the context is already cancelled — and each is tolerated in turn,
+			// so runNodes returns nil and the workflow *completes*. `flow cancel`
+			// would report success and the outputs would read as an ordinary
+			// best-effort failure. That is worse than the FAILED status this
+			// branch set out to fix, because nothing about it looks wrong.
+			if temporal.IsCanceledError(err) {
 				return err
 			}
 			if !node.GetPolicy().GetContinueOnError() {
@@ -138,7 +154,7 @@ func (e *executor) runTask(node *v1.Node, task *v1.Task) error {
 	// values into the next.
 	resolved, err := v1.ResolveTaskInputs(context.Background(), task, e.scope)
 	if err != nil {
-		return &ErrRunFailed{Message: fmt.Sprintf("step %q: %v", node.GetId(), err)}
+		return stepFailed(err, "step %q: %v", node.GetId(), err)
 	}
 
 	stepCtx := workflow.WithActivityOptions(e.ctx, activityOptionsFor(node.GetPolicy()))
@@ -155,7 +171,7 @@ func (e *executor) runTask(node *v1.Node, task *v1.Task) error {
 		evalErr = workflow.ExecuteActivity(stepCtx, Task, resolved).Get(stepCtx, &out)
 	}
 	if evalErr != nil {
-		return &ErrRunFailed{Message: fmt.Sprintf("step %q: %v", node.GetId(), evalErr)}
+		return stepFailed(evalErr, "step %q: %v", node.GetId(), evalErr)
 	}
 
 	e.scope.Outputs.StepValues[node.GetId()] = &out
@@ -167,7 +183,7 @@ func (e *executor) runTask(node *v1.Node, task *v1.Task) error {
 func (e *executor) runForEach(node *v1.Node, loop *v1.ForEach, depth int, descend bool) error {
 	items, err := v1.ResolveItems(context.Background(), loop, e.scope)
 	if err != nil {
-		return &ErrRunFailed{Message: fmt.Sprintf("step %q: %v", node.GetId(), err)}
+		return stepFailed(err, "step %q: %v", node.GetId(), err)
 	}
 
 	name := v1.IteratorName(loop)
@@ -200,7 +216,7 @@ func (e *executor) runForEach(node *v1.Node, loop *v1.ForEach, depth int, descen
 			if errors.Is(err, errContinueAsNew) {
 				return err
 			}
-			return &ErrRunFailed{Message: fmt.Sprintf("step %q iteration %d: %v", node.GetId(), i, err)}
+			return stepFailed(err, "step %q iteration %d: %v", node.GetId(), i, err)
 		}
 		results = append(results, iteration)
 
@@ -299,7 +315,7 @@ func (e *executor) runIterationsConcurrently(loop *v1.ForEach, iterator string, 
 
 	for i, err := range errs {
 		if err != nil {
-			return nil, &ErrRunFailed{Message: fmt.Sprintf("iteration %d: %v", i, err)}
+			return nil, stepFailed(err, "iteration %d: %v", i, err)
 		}
 	}
 	return results, nil
@@ -340,7 +356,7 @@ func (e *executor) runParallel(parallel *v1.Parallel, depth int) error {
 
 	for i, err := range errs {
 		if err != nil {
-			return &ErrRunFailed{Message: fmt.Sprintf("branch %d: %v", i, err)}
+			return stepFailed(err, "branch %d: %v", i, err)
 		}
 	}
 
