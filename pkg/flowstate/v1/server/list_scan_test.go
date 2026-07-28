@@ -79,6 +79,14 @@ func TestListStopsScanningAndSaysSo(t *testing.T) {
 	require.LessOrEqual(t, scanned, maxListScan,
 		"a request for a small page read more executions than the scan bound allows")
 
+	// And it spent the budget rather than giving up early, which the bound above
+	// cannot distinguish on its own: a listing that stopped after one batch would
+	// satisfy it while quietly reporting far less than it could have found. Both
+	// directions matter, because under-scanning hides the caller's own runs just
+	// as effectively as over-scanning costs the server.
+	require.Equal(t, maxListScan, scanned,
+		"the listing stopped short of its scan budget with matches still to look for")
+
 	require.Empty(t, response.Msg.GetRuns(), "runs belonging to another tenant were returned")
 
 	// And having stopped early, it must say so. A caller that reads an empty page
@@ -205,4 +213,212 @@ func TestListPagingReachesEveryRun(t *testing.T) {
 		id := execution.GetExecution().GetWorkflowId()
 		require.Equal(t, 1, seen[id], "run %q was skipped or returned twice", id)
 	}
+}
+
+// A peer that answers with nothing, forever, must not spin the server.
+//
+// Both loop guards — the page filling and the scan budget — only advance when
+// executions come back. Temporal's visibility store can legitimately return an
+// empty page carrying a next-page token, so a listing that only bounds
+// executions read does not bound the requests it makes: nothing terminates.
+//
+// The mock is finite so a regression fails rather than hangs, but the shape is
+// the unbounded one.
+func TestListStopsWhenAPeerReturnsNothingForever(t *testing.T) {
+	t.Parallel()
+
+	const patience = 10_000
+
+	calls := 0
+	temporal := &mocks.Client{}
+	temporal.On("ListWorkflow", mock.Anything, mock.Anything).Return(
+		func(_ context.Context, _ *workflowservice.ListWorkflowExecutionsRequest) *workflowservice.ListWorkflowExecutionsResponse {
+			calls++
+			if calls > patience {
+				return &workflowservice.ListWorkflowExecutionsResponse{}
+			}
+			// Nothing to show, and always more to come.
+			return &workflowservice.ListWorkflowExecutionsResponse{
+				NextPageToken: []byte(strconv.Itoa(calls)),
+			}
+		},
+		nil,
+	)
+
+	response, err := New(temporal).List(t.Context(), connect.NewRequest(&v1types.ListRequest{PageSize: 10}))
+	require.NoError(t, err)
+
+	require.Less(t, calls, patience,
+		"the listing kept asking a peer that never returns anything; nothing bounds the request count")
+	require.Empty(t, response.Msg.GetRuns())
+	require.NotEmpty(t, response.Msg.GetNextPageToken(),
+		"a listing that gave up early must say there is more")
+}
+
+// Paging and filtering have to be right *together*, which neither test above
+// establishes.
+//
+// TestListPagingReachesEveryRun walks a namespace where everything is the
+// caller's, so the filter never fires mid-batch. TestListReturnsOnlyTheCallersRuns
+// filters, but reads a single page. The bug this file already carries a fix for
+// lived exactly in the join of the two: a page filling partway through a batch.
+// Filtering changes where in a batch that happens, so it is the case most able to
+// put the cursor and the page out of step.
+func TestListPagingReachesEveryRunAmongOtherTenants(t *testing.T) {
+	t.Parallel()
+
+	// Interleaved rather than grouped, so batches straddle the boundary between
+	// whose runs are whose instead of aligning neatly with it.
+	const total, pageSize = 60, 4
+
+	all := make([]*workflow.WorkflowExecutionInfo, 0, total)
+	mine := map[string]bool{}
+	for i := range total {
+		id := fmt.Sprintf("run-%02d", i)
+		if i%3 == 0 {
+			all = append(all, &workflow.WorkflowExecutionInfo{
+				Execution: &common.WorkflowExecution{WorkflowId: id},
+			})
+			mine[id] = true
+			continue
+		}
+		all = append(all, otherTenantsRun(t, id))
+	}
+
+	temporal := &mocks.Client{}
+	temporal.On("ListWorkflow", mock.Anything, mock.Anything).Return(
+		func(_ context.Context, request *workflowservice.ListWorkflowExecutionsRequest) *workflowservice.ListWorkflowExecutionsResponse {
+			offset := 0
+			if token := request.GetNextPageToken(); len(token) > 0 {
+				parsed, err := strconv.Atoi(string(token))
+				require.NoError(t, err)
+				offset = parsed
+			}
+
+			end := min(offset+int(request.GetPageSize()), len(all))
+
+			resp := &workflowservice.ListWorkflowExecutionsResponse{Executions: all[offset:end]}
+			if end < len(all) {
+				resp.NextPageToken = []byte(strconv.Itoa(end))
+			}
+			return resp
+		},
+		nil,
+	)
+
+	server := New(temporal)
+
+	seen := map[string]int{}
+	token := ""
+	for pages := 0; ; pages++ {
+		require.Less(t, pages, 100, "the listing never terminated")
+
+		response, err := server.List(t.Context(), connect.NewRequest(&v1types.ListRequest{
+			PageSize:  pageSize,
+			PageToken: token,
+		}))
+		require.NoError(t, err)
+
+		require.LessOrEqual(t, len(response.Msg.GetRuns()), pageSize,
+			"a page came back larger than it was asked for")
+
+		for _, run := range response.Msg.GetRuns() {
+			seen[run.GetWorkflowId()]++
+		}
+
+		token = response.Msg.GetNextPageToken()
+		if token == "" {
+			break
+		}
+	}
+
+	// Every one of the caller's runs, exactly once.
+	require.Len(t, seen, len(mine), "walking every page did not reach every run the caller owns")
+	for id := range mine {
+		require.Equal(t, 1, seen[id], "run %q was skipped or returned twice", id)
+	}
+
+	// And none of anybody else's, which paging must not quietly reintroduce.
+	for id := range seen {
+		require.True(t, mine[id], "a listing returned another tenant's run %q", id)
+	}
+}
+
+// An empty namespace ends the listing rather than reporting more to come.
+func TestListOnAnEmptyNamespaceIsDone(t *testing.T) {
+	t.Parallel()
+
+	temporal := &mocks.Client{}
+	temporal.On("ListWorkflow", mock.Anything, mock.Anything).Return(
+		&workflowservice.ListWorkflowExecutionsResponse{}, nil)
+
+	response, err := New(temporal).List(t.Context(), connect.NewRequest(&v1types.ListRequest{}))
+	require.NoError(t, err)
+
+	require.Empty(t, response.Msg.GetRuns())
+	require.Empty(t, response.Msg.GetNextPageToken(),
+		"an exhausted listing asked the caller to keep going")
+}
+
+// What a caller asks for bounds the page, and what they may ask for is bounded
+// in turn — a page size is a request for work, so it is not simply trusted.
+//
+// The ceiling is enforced twice, and the two cover different ways in: the schema
+// refuses an oversized ask outright, which is what any caller going through the
+// RPC meets, and List clamps for itself so the bound still holds on a path that
+// did not validate. Only the first is reachable from here — the second is asserted
+// by construction rather than by a test that would only be re-checking `min`.
+func TestListPageSizeIsDefaultedAndBounded(t *testing.T) {
+	t.Parallel()
+
+	// A namespace with more runs than any of these ask for, so the page size is
+	// what decides the answer's length rather than the supply.
+	newServer := func() *FlowstateServer {
+		temporal := &mocks.Client{}
+		temporal.On("ListWorkflow", mock.Anything, mock.Anything).Return(
+			func(_ context.Context, request *workflowservice.ListWorkflowExecutionsRequest) *workflowservice.ListWorkflowExecutionsResponse {
+				executions := make([]*workflow.WorkflowExecutionInfo, 0, request.GetPageSize())
+				for range int(request.GetPageSize()) {
+					executions = append(executions, &workflow.WorkflowExecutionInfo{
+						Execution: &common.WorkflowExecution{WorkflowId: "mine"},
+					})
+				}
+				return &workflowservice.ListWorkflowExecutionsResponse{
+					Executions:    executions,
+					NextPageToken: []byte("more"),
+				}
+			},
+			nil,
+		)
+		return New(temporal)
+	}
+
+	t.Run("unset takes the default", func(t *testing.T) {
+		t.Parallel()
+
+		response, err := newServer().List(t.Context(), connect.NewRequest(&v1types.ListRequest{}))
+		require.NoError(t, err)
+		require.Len(t, response.Msg.GetRuns(), defaultListPageSize)
+	})
+
+	t.Run("a modest ask is honored", func(t *testing.T) {
+		t.Parallel()
+
+		response, err := newServer().List(t.Context(), connect.NewRequest(&v1types.ListRequest{PageSize: 3}))
+		require.NoError(t, err)
+		require.Len(t, response.Msg.GetRuns(), 3)
+	})
+
+	t.Run("an ask above the ceiling is refused, not quietly shrunk", func(t *testing.T) {
+		t.Parallel()
+
+		// Refused rather than clamped, because silently returning a thousand
+		// when someone asked for ten thousand reads as "that is all there was".
+		_, err := newServer().List(t.Context(), connect.NewRequest(&v1types.ListRequest{
+			PageSize: maxListPageSize + 1,
+		}))
+		require.Error(t, err)
+		require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	})
+
 }

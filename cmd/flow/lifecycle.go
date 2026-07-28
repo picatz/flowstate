@@ -108,6 +108,7 @@ func runList(cmd *cobra.Command, args []string) error {
 			rows++
 		}
 
+		previous := token
 		token = response.Msg.GetNextPageToken()
 
 		// An empty token is the only end of the listing. A short page is not:
@@ -115,6 +116,23 @@ func runList(cmd *cobra.Command, args []string) error {
 		// else.
 		if token == "" || !listAll {
 			break
+		}
+
+		// A token that has not moved means the next request is the one just made.
+		// `--all` is the only loop here whose end is decided by the far side, so
+		// it is the only one that can be made to run forever by a server that is
+		// wrong or hostile — and a CLI that hangs looks like a slow listing rather
+		// than a fault, which is how somebody spends an afternoon on it.
+		if token == previous {
+			// Flushed before returning, so the caller keeps the runs already
+			// listed. They were reported correctly; only the continuation is
+			// broken, and throwing away good rows to report a bad token would
+			// make the failure worse than it is.
+			if flushErr := tw.Flush(); flushErr != nil {
+				return flushErr
+			}
+			return fmt.Errorf("the server returned the same page token twice, so continuing would "+
+				"ask it the same question forever; %d run(s) listed before stopping", rows)
 		}
 	}
 

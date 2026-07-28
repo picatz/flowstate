@@ -51,6 +51,21 @@ const (
 	// than maxListScan so a request that fills its page early stops early rather
 	// than always paying for the whole budget.
 	listBatchSize = 100
+
+	// maxListRequests bounds how many times one listing may call Temporal.
+	//
+	// A second bound is needed because the first one does not cover this: both
+	// the page and the scan budget only advance when executions come back, and
+	// how many come back is the peer's choice, not ours. A visibility store may
+	// answer with an empty page and a next-page token — Temporal's legitimately
+	// does — and on a peer that answers that way every time, a listing bounded
+	// only by executions read never terminates at all.
+	//
+	// Equal to maxListScan on purpose. A request that returns anything spends at
+	// least one execution of the scan budget, so a peer making progress reaches
+	// that limit first and never this one; the two can only come apart for a peer
+	// that is returning nothing, which is exactly the case this exists for.
+	maxListRequests = maxListScan
 )
 
 // List returns a page of the runs belonging to the caller's tenant.
@@ -89,8 +104,11 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 
 	runs := make([]*v1.RunSummary, 0, pageSize)
 	scanned := 0
+	requests := 0
 
-	for len(runs) < pageSize && scanned < maxListScan {
+	for len(runs) < pageSize && scanned < maxListScan && requests < maxListRequests {
+		requests++
+
 		// Never ask for more executions than the page has room for.
 		//
 		// This is what keeps the cursor honest. Temporal's page token addresses a

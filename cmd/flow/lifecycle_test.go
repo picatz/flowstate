@@ -178,3 +178,57 @@ func mustTime(t *testing.T, value string) time.Time {
 
 	return parsed
 }
+
+// `--all` keeps asking until the server says it is done, which makes its
+// termination the server's decision rather than the CLI's.
+//
+// A server that answers with a token it has already issued would otherwise loop
+// here forever. That is not obviously a fault from the outside — a hanging `flow
+// list` looks like a large listing — so it is reported rather than endured.
+func TestListAllStopsIfTheTokenDoesNotAdvance(t *testing.T) {
+	fake := &fakeWorkflowService{
+		// The same token every time, as a buggy or hostile server would.
+		listResponses: []*v1.ListResponse{
+			{Runs: []*v1.RunSummary{{WorkflowId: "run-1", Status: v1.RunResponse_STATUS_RUNNING}}, NextPageToken: "stuck"},
+			{Runs: []*v1.RunSummary{{WorkflowId: "run-2", Status: v1.RunResponse_STATUS_RUNNING}}, NextPageToken: "stuck"},
+			{Runs: []*v1.RunSummary{{WorkflowId: "run-3", Status: v1.RunResponse_STATUS_RUNNING}}, NextPageToken: "stuck"},
+		},
+	}
+	serveFake(t, fake)
+	cmd, out, _ := lifecycleCommand(t)
+
+	listAll = true
+
+	err := runList(cmd, nil)
+	require.Error(t, err, "a non-advancing page token was followed indefinitely")
+	require.Contains(t, err.Error(), "same page token twice")
+
+	// It stopped, and it did not throw away what it had already been told.
+	require.Contains(t, out.String(), "run-1")
+	require.Less(t, fake.listCalls, 4, "the CLI kept asking after the token stopped moving")
+}
+
+// Cancel and Terminate are refused before anything is addressed, so a malformed
+// request is a bad request rather than a lookup against a real run.
+func TestStopVerbsRejectAMalformedRequest(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		run  func(*cobra.Command) error
+	}{
+		{"cancel with no workflow id", func(c *cobra.Command) error { return runCancel(c, []string{""}) }},
+		{"terminate with no workflow id", func(c *cobra.Command) error { return runTerminate(c, []string{""}) }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fake := &fakeWorkflowService{}
+			serveFake(t, fake)
+			cmd, _, _ := lifecycleCommand(t)
+
+			require.Error(t, test.run(cmd))
+
+			// Nothing left the process. A request the schema refuses should not
+			// become a call the server has to answer.
+			require.Nil(t, fake.gotCancel, "a malformed cancel still reached the server")
+			require.Nil(t, fake.gotTerminate, "a malformed terminate still reached the server")
+		})
+	}
+}
