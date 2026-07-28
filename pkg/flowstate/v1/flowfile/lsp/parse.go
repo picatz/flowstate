@@ -145,8 +145,10 @@ type parsedStep struct {
 	// whether the step runs at all.
 	conditionEntry *entry
 
-	// forEachEntry and parallelEntry are the other two kinds of work a step can
-	// be. Exactly one of task, for_each, and parallel is present in a valid step.
+	// forEachEntry and parallelEntry are two of the other kinds of work a step can
+	// be. Exactly one of the kinds [flowfile.StepKinds] names is present in a valid
+	// step; the three wait kinds carry no nested expressions of their own beyond
+	// wait_until's, so they need no entry of their own here.
 	forEachEntry  *entry
 	parallelEntry *entry
 
@@ -166,6 +168,16 @@ type parsedStep struct {
 	// inside them are checked, but nothing else interprets them.
 	timeoutEntry *entry
 	retryEntry   *entry
+
+	// waitForSignalEntry is a gate written in its mapping form, whose own `name`
+	// and `timeout` keys are documented at their own level.
+	//
+	// Kept apart from the step's `timeout` deliberately: the two are spelled the
+	// same and mean different things — the step's bounds one attempt at it, and a
+	// gate's bounds how long it waits before reporting `timed_out`. Without this,
+	// hovering the one inside a gate answered with the documentation for the other,
+	// which is the kind of wrong answer that is worse than no answer.
+	waitForSignalEntry *entry
 
 	// taskName is the task the step invokes, empty when not written.
 	taskName string
@@ -495,6 +507,12 @@ func fillParsedStep(s *parsedStep, entries []*entry) {
 		case "retry":
 			if s.retryEntry == nil {
 				s.retryEntry = e
+			}
+		case "wait_for_signal":
+			// Only the mapping form has keys of its own; `wait_for_signal: name`
+			// is a scalar and is documented at the step level like any other key.
+			if s.waitForSignalEntry == nil && e.value != nil && e.value.kind == kindMapping {
+				s.waitForSignalEntry = e
 			}
 		case "parallel":
 			if s.parallelEntry == nil {

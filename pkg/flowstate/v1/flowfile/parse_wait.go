@@ -2,6 +2,7 @@ package flowfile
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -104,18 +105,37 @@ func expandDays(s string) (string, error) {
 // isDigit reports whether b is an ASCII digit.
 func isDigit(b byte) bool { return b >= '0' && b <= '9' }
 
-// stepKindList renders the kinds a step may be, for a diagnostic that has to say
-// what was expected.
+// StepKinds returns the keys that spell the kinds of work a step can be, in the
+// order a diagnostic lists them.
+//
+// Exported because this package is not the only surface that has to describe the
+// DSL. The language server carries its own table of the document shape — the shape
+// lives in unexported structs here, so it has no choice — and that table told
+// authors a step was "one of task, for_each, and parallel" for as long as waiting
+// had existed. Three shipped kinds, reachable from a Flowfile and exercised by
+// examples in CI, that the editor said were not there.
+//
+// A copy is returned because the caller must not be able to edit the DSL by
+// editing a slice header.
+func StepKinds() []string {
+	return slices.Clone(stepKindKeys)
+}
+
+// StepKindList renders the kinds a step may be as prose: "a, b, or c".
 //
 // Built from [stepKindKeys] rather than written out, so that adding a kind cannot
-// leave a diagnostic describing the DSL as it used to be.
-func stepKindList() string {
+// leave a diagnostic — or an editor — describing the DSL as it used to be.
+func StepKindList() string {
 	kinds := stepKindKeys
 	if len(kinds) < 2 {
 		return strings.Join(kinds, "")
 	}
 	return strings.Join(kinds[:len(kinds)-1], ", ") + ", or " + kinds[len(kinds)-1]
 }
+
+// stepKindList is the internal spelling, kept so the diagnostics that call it read
+// unchanged.
+func stepKindList() string { return StepKindList() }
 
 // sleep compiles `sleep: 30s` into a durable timer.
 func (c *compiler) sleep(n ast.Node, path string, r ref) *v1.Wait {

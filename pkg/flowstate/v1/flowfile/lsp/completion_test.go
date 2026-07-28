@@ -290,12 +290,34 @@ steps:
 			exact: []string{"name", "description", "steps"},
 		},
 		{
+			// Every kind of work a step can be is offered, and the list is written
+			// out here on purpose: this is the assertion that would have caught
+			// waiting being missing from completion, and deriving it from the same
+			// place the code derives it from would make it agree with the code
+			// rather than with the language.
 			name: "step keys",
 			src: `name: c
 steps:
   - |
 `,
-			exact: []string{"id", "task", "for_each", "parallel", "if", "timeout", "retry", "continue_on_error"},
+			exact: []string{
+				"id",
+				"task", "for_each", "parallel", "sleep", "wait_until", "wait_for_signal",
+				"if", "timeout", "retry", "continue_on_error",
+			},
+		},
+		{
+			// The mapping form of a gate. The scalar form takes a name directly, so
+			// these two keys only exist for an author who needs a timeout — which is
+			// the form worth offering, since the scalar one needs no help.
+			name: "wait_for_signal keys",
+			src: `name: c
+steps:
+  - id: approval
+    wait_for_signal:
+      |
+`,
+			exact: []string{"name", "timeout"},
 		},
 		{
 			name: "input keys inside a for_each body",

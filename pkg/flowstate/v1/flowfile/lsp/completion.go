@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/sourcegraph/go-lsp"
 )
 
@@ -26,6 +27,20 @@ type dslKey struct {
 	docs string
 }
 
+// oneStepKind names every kind of work a step can be, derived from the flowfile
+// package rather than written out here.
+//
+// Written out, this sentence said "One of `task`, `for_each`, and `parallel`" for
+// as long as waiting had existed — a closed enumeration, stated with confidence, of
+// half the language. An author who typed `sleep:` got no completion, no hover, and
+// this sentence telling them the key was not one of the choices, while the parser,
+// the engine, both drivers, and two examples in CI all accepted it.
+//
+// Deriving it means the next kind added to the DSL cannot leave this describing the
+// language as it used to be. It is the same reasoning `stepKindList` was written
+// with on the diagnostics side; this package simply had no way to reach it.
+var oneStepKind = "A step does exactly one of " + flowfile.StepKindList() + "."
+
 // dslKeys are the keys the Flowfile document shape defines, as opposed to those a
 // task's schema defines.
 //
@@ -44,13 +59,26 @@ var dslKeys = map[string][]dslKey{
 	},
 	"steps": {
 		{name: "id", detail: "string", docs: "How later steps reference this one, as `${id.output}`. Must be a valid CEL identifier and unique in the workflow."},
-		{name: "task", detail: "map", docs: "Run a task. One of `task`, `for_each`, and `parallel`."},
-		{name: "for_each", detail: "map", docs: "Repeat a body of steps once per item of a list. One of `task`, `for_each`, and `parallel`."},
-		{name: "parallel", detail: "list", docs: "Run branches of steps concurrently. One of `task`, `for_each`, and `parallel`."},
+		{name: "task", detail: "map", docs: "Run a task. " + oneStepKind},
+		{name: "for_each", detail: "map", docs: "Repeat a body of steps once per item of a list. " + oneStepKind},
+		{name: "parallel", detail: "list", docs: "Run branches of steps concurrently. " + oneStepKind},
+		{name: "sleep", detail: "duration", docs: "Wait for a duration on a durable timer, written as `30s`, `5m`, `1h`, or `7d`. " +
+			"The run holds nothing while it waits, so a week is as cheap as a second. " + oneStepKind},
+		{name: "wait_until", detail: "expression", docs: "Wait until a moment, written as `${...}` producing an RFC 3339 time. " +
+			"Inside it, `now` is the moment the wait is evaluated and `seconds`/`minutes`/`hours`/`days`/`weeks` build durations, " +
+			"so a deadline reads as `${now + days(3)}`. " + oneStepKind},
+		{name: "wait_for_signal", detail: "string or map", docs: "Wait for a named signal, which is how a human approval reaches a workload. " +
+			"Write `wait_for_signal: deploy-approved`, or a mapping with `name:` and `timeout:`. " +
+			"What the sender sent becomes this step's outputs. " + oneStepKind},
 		{name: "if", detail: "expression", docs: "A condition deciding whether the step runs, written as `${...}`. A step that is skipped produces no outputs."},
 		{name: "timeout", detail: "duration", docs: "Bounds one attempt at the step, written as `30s`, `5m`, or `1h`."},
 		{name: "retry", detail: "map", docs: "How a failed attempt is retried. Omit it to use the engine's defaults."},
-		{name: "continue_on_error", detail: "bool", docs: "Let the run proceed when this step fails."},
+		{name: "continue_on_error", detail: "bool", docs: "Let the run proceed when this step fails. A cancellation is not a failure, so this does not tolerate one."},
+	},
+	"wait_for_signal": {
+		{name: "name", detail: "string", docs: "The signal this step waits for, and what a sender addresses with `flow signal <workflow-id> <name>`."},
+		{name: "timeout", detail: "duration", docs: "Bounds the wait. A gate that lapses is not a failure: the step produces `timed_out: true` and the run carries on, " +
+			"so an author branches on it with `if: ${!approval.timed_out}`. Omit it to wait indefinitely."},
 	},
 	"for_each": {
 		{name: "items", detail: "expression", docs: "An expression producing the list to iterate, written as `${...}`."},
@@ -63,7 +91,7 @@ var dslKeys = map[string][]dslKey{
 	},
 	"task": {
 		{name: "name", detail: "string", docs: "The registered task to run."},
-		{name: "description", detail: "string", docs: "Optional prose about this step."},
+		{name: "description", detail: "string", docs: "Optional prose about this task."},
 		{name: "inputs", detail: "map", docs: "The task's inputs. Which ones are accepted comes from the task's schema."},
 	},
 	"retry": {
@@ -137,6 +165,8 @@ func completeAt(doc *document, pos lsp.Position) *lsp.CompletionList {
 		return list(dslCandidates("for_each", word, replace))
 	case endsWith(path, "parallel"):
 		return list(dslCandidates("parallel", word, replace))
+	case endsWith(path, "wait_for_signal"):
+		return list(dslCandidates("wait_for_signal", word, replace))
 	case endsWith(path, "steps"):
 		return list(dslCandidates("steps", word, replace))
 	case len(path) == 0:

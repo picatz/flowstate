@@ -120,6 +120,7 @@ func dslKeyAt(step *parsedStep, pos lsp.Position) (dslKey, lsp.Range, bool) {
 	}{
 		{"retry", step.retryEntry},
 		{"for_each", step.forEachEntry},
+		{"wait_for_signal", step.waitForSignalEntry},
 	} {
 		if block.entry != nil && block.entry.value != nil {
 			levels = append(levels, level{block.name, block.entry.value.entries})
