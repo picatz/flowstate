@@ -42,6 +42,51 @@ because of what it *doesn't* touch: it lowers to the existing `Task{name, inputs
 message. The DSL gets four levels shallower and the wire contract does not move,
 which is exactly what proto-first is for.
 
+It has a precondition that turned out to be the interesting part, and that is now
+enforced (`pkg/flowstate/v1/stepkeys.go`). Once a step names its task directly, a
+key on a step means one of two things and the reader tells them apart by asking the
+registry — which only works while the two sets are disjoint. They were not.
+`TaskManifest.name` in the plugin protocol is validated as `^[a-z][a-z0-9_]*$`, and
+every word the step grammar uses matches it, so a plugin advertising a task called
+`sleep`, `retry` or `timeout` was legal and registered verbatim. No parser can
+recover an author's intent from `timeout: 30s` when both readings are legitimate,
+so the constraint belongs at the moment the name is chosen: `Registry.Register`
+refuses a reserved name and a misconfigured plugin fails at startup.
+
+The rest of the flattening is not landed. It is a single sweep across the parser,
+the marshaller, the language server's positional model and completion tables,
+fifteen examples, and roughly three hundred embedded YAML fixtures — and it must
+land in one piece, because half a grammar is not a grammar. The parser and
+marshaller changes were written and backed out rather than left half-applied; the
+work is scoped, not started.
+
+Two findings from that attempt are worth keeping, because both would have been
+discovered late:
+
+- **Positions move.** Every diagnostic in a task step shifts two lines and two
+  columns, so the position assertions are not incidental to the migration — they
+  are most of it, and each one needs reading rather than resetting to whatever the
+  new output says.
+- **Flow style and cursor markers do not rewrite mechanically.** `task: {name: echo,
+  inputs: {...}}` appears in the README and in one LSP fixture, and the completion
+  tests place a `|` cursor marker *inside* the shape being flattened, so the marker's
+  meaning changes with it. A rewriter must refuse these rather than guess, which is
+  also what `flow fix` will have to do.
+- **`Task.description` has to go somewhere, and removing it is a reviewed break.**
+  The flat form has no place to write one: the value under `http:` is the inputs,
+  so a `description` key there would collide with an input of that name. Deleting
+  the field is the obvious answer and `buf breaking` refuses it — the repo runs
+  FILE as well as WIRE rules, and FILE covers generated Go, so `GetDescription()`
+  disappearing is a break even with the number reserved.
+
+  That refusal is correct and should not be worked around by loosening the rule.
+  A `reserved 2;` keeps the *wire* safe, which is the property that matters for a
+  spec written by an older build; what FILE is protecting is source compatibility
+  for embedders, and the honest way to spend it is deliberately, in the commit
+  that lands the grammar, rather than quietly in a commit about something else.
+  It was removed here as a consequence of the flattening and put back when the
+  flattening was backed out.
+
 **One language profile, pinned per run.** Per-step `libs:` means `if:` and `items:`
 speak a poorer dialect than a `cel` step, in the same file, for no reason a reader
 could infer. One dialect, recorded in the compiled spec.

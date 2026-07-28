@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"sync"
 
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
@@ -103,6 +104,16 @@ func (r *Registry) Register(def TaskDef) error {
 	}
 	if def.Fn == nil {
 		return fmt.Errorf("task %q has no function", def.Name)
+	}
+
+	// A step names its task directly, so a task named for part of the step
+	// grammar would make one key mean two things — and both readings would be
+	// legitimate, which is not something a parser can resolve. Refused here
+	// because this is the only moment the name is chosen; see stepkeys.go.
+	if IsReservedStepKey(def.Name) {
+		return fmt.Errorf("task %q takes a name the step grammar already uses, "+
+			"so `%s:` on a step would be ambiguous; the reserved names are %s",
+			def.Name, def.Name, strings.Join(ReservedStepKeys(), ", "))
 	}
 
 	r.mu.Lock()
