@@ -128,7 +128,23 @@ func Test_taskFuncHTTP(t *testing.T) {
 	}
 }
 
+// A loopback server, not a real one on the internet.
+//
+// Two tests here used to fetch https://www.google.com and https://httpbin.org,
+// and CI went red when httpbin answered 503 — a build failed, on a pull request
+// that had not touched this code, because somebody else's free service was
+// having a bad afternoon. It also meant the suite could not be run on a train.
+//
+// Nothing was gained for the cost. What is under test is the http task: whether
+// it reports a status code, whether an outputs expression shapes the result,
+// whether a malformed URL is refused. None of that is a claim about a remote
+// host, so none of it needs one. The egress policy already allows loopback for
+// exactly this reason.
 func Test_httpFuncPrintf(t *testing.T) {
+	server, _ := httpTaskServer(t, http.StatusOK, `{"ok": true}`, http.Header{
+		"Content-Type": []string{"application/json"},
+	})
+
 	tests := []struct {
 		name  string
 		input map[string]any
@@ -137,14 +153,12 @@ func Test_httpFuncPrintf(t *testing.T) {
 		{
 			name: "valid URL",
 			input: map[string]any{
-				"url": "https://www.google.com",
+				"url": server.URL,
 			},
 			check: func(t *testing.T, result *Node_Outputs, err error) {
 				require.NoError(t, err)
 				require.Contains(t, result.NamedValues, "status_code")
-				// require.Contains(t, result.NamedValues, "body")
 				require.Equal(t, int64(http.StatusOK), result.NamedValues["status_code"].GetLiteral().GetInt64Value())
-				// require.NotEmpty(t, result.NamedValues["body"].GetLiteral().GetStringValue())
 			},
 		},
 		{
@@ -175,38 +189,53 @@ func Test_httpFuncPrintf(t *testing.T) {
 func Test_taskFuncHTTP_OutputsShaping(t *testing.T) {
 	fn := taskFuncHTTP(testEgressPolicy(t))
 
+	// The body httpbin.org/json used to serve, served from loopback instead. Its
+	// shape is what the json_parse case below reaches into, so it is the fixture
+	// rather than an arbitrary document.
+	server, _ := httpTaskServer(t, http.StatusOK,
+		`{"slideshow": {"author": "Yours Truly", "title": "Sample Slide Show"}}`,
+		http.Header{"Content-Type": []string{"application/json"}})
+
 	tests := []struct {
 		name        string
-		url         string
 		method      string
 		outputsExpr string
 		check       func(t *testing.T, result *Node_Outputs, err error)
 	}{
 		{
 			name:        "status only",
-			url:         "https://httpbin.org/json",
 			method:      http.MethodGet,
 			outputsExpr: "{'status': status_code}",
 			check: func(t *testing.T, result *Node_Outputs, err error) {
 				require.NoError(t, err)
 				require.NotNil(t, result)
+
+				// Exactly one output: an outputs expression names what comes out,
+				// so anything else surviving would mean the shaping was ignored.
 				require.Len(t, result.NamedValues, 1)
 				require.Contains(t, result.NamedValues, "status")
-				require.GreaterOrEqual(t, result.NamedValues["status"].GetLiteral().GetInt64Value(), int64(200))
-				require.Less(t, result.NamedValues["status"].GetLiteral().GetInt64Value(), int64(600))
+
+				// The status the server actually sent. Asserting a range was all a
+				// remote host could support, and any 2xx-5xx would have satisfied
+				// it — including one from a service that was failing.
+				require.Equal(t, int64(http.StatusOK),
+					result.NamedValues["status"].GetLiteral().GetInt64Value())
 			},
 		},
 		{
 			name:        "json title",
-			url:         "https://httpbin.org/json",
 			method:      http.MethodGet,
 			outputsExpr: "{'title': json_parse(body)['slideshow']['title']}",
 			check: func(t *testing.T, result *Node_Outputs, err error) {
 				require.NoError(t, err)
 				require.NotNil(t, result)
 				require.Contains(t, result.NamedValues, "title")
-				title := result.NamedValues["title"].GetLiteral().GetStringValue()
-				require.NotEmpty(t, title)
+
+				// The value, not merely that something came back. What is being
+				// tested is that an expression can reach into a parsed body, which
+				// NotEmpty would not have distinguished from reaching the wrong key.
+				require.Equal(t, "Sample Slide Show",
+					result.NamedValues["title"].GetLiteral().GetStringValue())
 			},
 		},
 	}
@@ -214,7 +243,7 @@ func Test_taskFuncHTTP_OutputsShaping(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			inputs := NewNamedValues(map[string]any{
-				"url":     tc.url,
+				"url":     server.URL,
 				"method":  tc.method,
 				"outputs": NewExpr(tc.outputsExpr),
 			})

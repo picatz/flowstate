@@ -6,8 +6,6 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/require"
-	"go.temporal.io/sdk/client"
-	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/worker"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -27,20 +25,22 @@ import (
 // server. So the test does exactly the thing that would break the other model:
 // the worker that started the run is stopped entirely, and a *different* worker
 // finishes it.
-// Deliberately not parallel. Every test in this package starts its own Temporal
-// dev server, and this one additionally stops and replaces a worker and then waits
-// for the server to redeliver work to the replacement. Run alongside four other
-// dev servers it exceeded its own patience and failed for lack of CPU rather than
-// for lack of correctness — a flake that would have been read as this feature
-// being unreliable, which is the opposite of what it is here to show.
+//
+// Deliberately not parallel. This test stops every worker and then waits for the
+// server to notice and redeliver the work to a replacement, which is a timeout on
+// the server's side rather than something the test can hurry along — so its ninety
+// seconds of patience needs to be ninety seconds of the machine actually making
+// progress.
+//
+// It used to share the runner with twelve other Temporal dev servers, one per test
+// in this package, and failed roughly one run in eight for lack of CPU rather than
+// for lack of correctness. Two attempts to fix that by adjusting timeouts here were
+// tried and reverted; the package now shares one server, which is where the problem
+// was. Staying sequential keeps this one from competing with the parallel tests for
+// the machine it is measuring.
 func TestWaitSurvivesAWorkerRestart(t *testing.T) {
-	devServer, err := testsuite.StartDevServer(t.Context(), testsuite.DevServerOptions{
-		ClientOptions: &client.Options{Logger: &testingLogger{t: t}},
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = devServer.Stop() })
+	temporal, _ := newTemporalNamespace(t)
 
-	temporal := devServer.Client()
 	flowstate := server.New(temporal, server.WithNamespace("team-a"))
 
 	// newWorker starts a worker and returns a function that stops it, so the test
@@ -72,19 +72,25 @@ func TestWaitSurvivesAWorkerRestart(t *testing.T) {
 		return resp.Msg.GetStatus()
 	}
 
-	// Wait until the run is actually blocked on the gate. Signalling before it
-	// gets there would test the early-arrival path instead, which is a different
-	// test.
-	require.Eventually(t, func() bool {
-		desc, err := temporal.DescribeWorkflowExecution(t.Context(), workflowID, "")
-		if err != nil {
-			return false
-		}
-		// No pending activity and still running means it is sitting in the wait
-		// rather than mid-step.
-		return len(desc.GetPendingActivities()) == 0 &&
-			status() == v1.RunResponse_STATUS_RUNNING
-	}, 30*time.Second, 100*time.Millisecond, "the run never reached the gate")
+	// Wait until the run is actually blocked on the gate, and wait for evidence
+	// that it is rather than for the absence of evidence that it is not.
+	//
+	// This asked whether the run had no pending activity and was still running,
+	// which is exactly what a run looks like *before* it has scheduled anything —
+	// so the condition was satisfied at the instant the run started, and the
+	// workers were then taken away while the first step's activity was still
+	// executing. Temporal had recorded that activity as started on a worker that
+	// no longer existed, and nothing could complete it until its start-to-close
+	// timeout expired two minutes later, which is thirty seconds past this test's
+	// patience. That is the whole of the one-in-eight flake: not capacity, and not
+	// the ninety seconds. A slower machine only lost the race more often.
+	//
+	// The gate's own durable timer is the positive evidence, and it cannot exist
+	// until the step before it has completed.
+	waitUntilParkedAtTheGate(t, temporal, workflowID)
+
+	require.Equal(t, v1.RunResponse_STATUS_RUNNING, status(),
+		"the run was not still going when it reached its gate")
 
 	// Take away every worker. Nothing is executing this workload now, and nothing
 	// is holding its place either — that is the point.

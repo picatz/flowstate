@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,7 +18,6 @@ import (
 	"connectrpc.com/validate"
 	"github.com/google/go-cmp/cmp"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 	"github.com/picatz/jose/pkg/header"
@@ -25,15 +25,46 @@ import (
 	"github.com/picatz/jose/pkg/jwk"
 	"github.com/picatz/jose/pkg/jwt"
 	"github.com/stretchr/testify/require"
-	"go.temporal.io/sdk/client"
-	"go.temporal.io/sdk/testsuite"
-	"go.temporal.io/sdk/worker"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/testing/protocmp"
 )
 
+// testingLogger routes a Temporal client's log through the test that owns it, and
+// stops the moment that test is over.
+//
+// The stopping is the whole reason this is not three lines. A Temporal client owns
+// worker goroutines that keep polling and logging for a short while after Stop
+// returns, and testing.T.Logf called after its test has finished is not a stray
+// line — it is a panic ("Log in goroutine after Test has completed"), or under
+// -race a data race against the test framework's own state. It surfaced as three
+// unrelated tests failing at once, including a pure mock test that touches none of
+// this, because a race report fails whatever happened to be running.
+//
+// So a cleanup closes the logger before the test's own bookkeeping is torn down,
+// and every line after that is dropped rather than written somewhere it must not
+// be. Dropping is right: those lines belong to a test that has already reported.
 type testingLogger struct {
 	t *testing.T
+
+	// Guards closed, and orders the write in Close against reads from whichever
+	// worker goroutine is still going.
+	mu     sync.Mutex
+	closed bool
+}
+
+// newTestingLogger returns a logger that writes to t until t finishes.
+func newTestingLogger(t *testing.T) *testingLogger {
+	t.Helper()
+
+	logger := &testingLogger{t: t}
+	t.Cleanup(func() {
+		logger.mu.Lock()
+		defer logger.mu.Unlock()
+
+		logger.closed = true
+	})
+
+	return logger
 }
 
 func renderKeyvals(keyvals ...any) string {
@@ -48,23 +79,36 @@ func renderKeyvals(keyvals ...any) string {
 	return result
 }
 
-func (l *testingLogger) Debug(msg string, keyvals ...any) {
-	l.t.Logf("DEBUG: %s %s", msg, renderKeyvals(keyvals...))
+// log writes one line, unless the test it belongs to has finished.
+func (l *testingLogger) log(level, msg string, keyvals ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.closed {
+		return
+	}
+
+	l.t.Logf("%s: %s %s", level, msg, renderKeyvals(keyvals...))
 }
+
+func (l *testingLogger) Debug(msg string, keyvals ...any) {
+	l.log("DEBUG", msg, keyvals...)
+}
+
 func (l *testingLogger) Debugf(msg string, keyvals ...any) {
-	l.t.Logf("DEBUG: %s %v", msg, renderKeyvals(keyvals...))
+	l.log("DEBUG", msg, keyvals...)
 }
 
 func (l *testingLogger) Info(msg string, keyvals ...any) {
-	l.t.Logf("INFO: %s %v", msg, renderKeyvals(keyvals...))
+	l.log("INFO", msg, keyvals...)
 }
 
 func (l *testingLogger) Warn(msg string, keyvals ...any) {
-	l.t.Logf("WARN: %s %v", msg, renderKeyvals(keyvals...))
+	l.log("WARN", msg, keyvals...)
 }
 
 func (l *testingLogger) Error(msg string, keyvals ...any) {
-	l.t.Logf("ERROR: %s %v", msg, renderKeyvals(keyvals...))
+	l.log("ERROR", msg, keyvals...)
 }
 
 /*
@@ -87,25 +131,10 @@ func newTemporalClient(t *testing.T) client.Client {
 */
 
 func TestFlowstateServer(t *testing.T) {
-	// $ temporal server start-dev
-	devServer, err := testsuite.StartDevServer(t.Context(), testsuite.DevServerOptions{
-		ClientOptions: &client.Options{
-			Logger: &testingLogger{t: t},
-		},
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = devServer.Stop() })
-
-	// $ go run cmd/flow/main.go worker
-	w := worker.New(devServer.Client(), engine.RunTaskQueueName, worker.Options{})
-	w.RegisterWorkflow(engine.Run)
-	w.RegisterActivity(engine.Task)
-	w.RegisterActivity(engine.TaskWithPrev)
-	w.RegisterActivity(engine.TaskInScope)
-
-	err = w.Start()
-	require.NoError(t, err)
-	t.Cleanup(w.Stop)
+	// $ temporal server start-dev, shared by the package, in a namespace of this
+	// test's own; and $ go run cmd/flow/main.go worker, polling only that one.
+	temporal, _ := newTemporalNamespace(t)
+	startWorker(t, temporal)
 
 	interceptor, err := validate.NewInterceptor()
 	require.NoError(t, err)
@@ -113,7 +142,7 @@ func TestFlowstateServer(t *testing.T) {
 	otelInterceptor, err := otelconnect.NewInterceptor()
 	require.NoError(t, err)
 
-	flowstateServer := server.New(devServer.Client())
+	flowstateServer := server.New(temporal)
 
 	mux := http.NewServeMux()
 	mux.Handle(
