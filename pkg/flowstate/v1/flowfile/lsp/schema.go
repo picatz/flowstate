@@ -54,17 +54,7 @@ func findField(md protoreflect.MessageDescriptor, name string) protoreflect.Fiel
 // the way Protobuf names them: a repeated string is a list, and a field carrying
 // a CEL value is dynamic.
 func typeName(fd protoreflect.FieldDescriptor) string {
-	if fd == nil {
-		return "unknown"
-	}
-	switch {
-	case fd.IsMap():
-		return fmt.Sprintf("map[%s, %s]", scalarTypeName(fd.MapKey()), scalarTypeName(fd.MapValue()))
-	case fd.IsList():
-		return fmt.Sprintf("list[%s]", scalarTypeName(fd))
-	default:
-		return scalarTypeName(fd)
-	}
+	return v1.InputTypeName(fd)
 }
 
 // scalarTypeName names the type of a single value of the field's element type.
@@ -113,19 +103,7 @@ func fieldRules(fd protoreflect.FieldDescriptor) *validate.FieldRules {
 // This is read from protovalidate rather than from a list here, so that a field
 // that becomes required in the schema immediately becomes required in the editor.
 func required(fd protoreflect.FieldDescriptor) bool {
-	rules := fieldRules(fd)
-	if rules == nil {
-		return false
-	}
-	if rules.GetRequired() {
-		return true
-	}
-	// min_items: 1 on a repeated field is required by another name, and the
-	// schema uses both spellings.
-	if r := rules.GetRepeated(); r != nil && r.HasMinItems() && r.GetMinItems() > 0 {
-		return true
-	}
-	return false
+	return v1.RequiredInput(fd)
 }
 
 // constraints renders a field's protovalidate rules as short phrases, so hover

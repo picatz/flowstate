@@ -531,6 +531,19 @@ Run `flow tasks` for this table generated from the engine's own task registry, a
 the CEL libraries available to the `cel` task. Because the listing is derived from the
 registry, it cannot drift from what the engine will actually execute.
 
+`flow tasks --output json` emits the same catalog as one document, for a script or an
+agent that has to address a value rather than recognise one:
+
+```console
+$ flow tasks --output json | jq '.tasks[] | select(.name == "http") | .inputs[] | select(.required)'
+{
+  "name": "url",
+  "type": "string",
+  "required": true,
+  "deferred": false
+}
+```
+
 Tasks can be chained together as tasks. For example, the following `Flowfile` makes an HTTP `GET` request to `https://microsoft.com`, and then echoes the status code of the response:
 
 ```yaml

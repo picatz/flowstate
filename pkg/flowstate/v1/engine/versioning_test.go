@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"context"
 	"reflect"
 	"runtime"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/nexus-rpc/sdk-go/nexus"
 	"github.com/stretchr/testify/require"
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/testsuite"
@@ -160,13 +162,28 @@ func TestAPinnedRunTakesTheCurrentVersionAtContinueAsNew(t *testing.T) {
 	require.NoError(t, err)
 
 	first := run.GetRunID()
-	require.NoError(t, temporal.SignalWorkflow(t.Context(), run.GetID(), "", "one", &v1.Node_Outputs{}))
 
-	// Build two is current before the run continues as new, so there is a version
-	// to move *to*. Without this the assertion below would pass for the wrong
-	// reason: build one would still be the only place to go.
+	// The run has to be executing on build one before build two exists, or the
+	// test proves nothing about moving between them.
+	//
+	// This is a wait rather than an assumption because the ordering is the whole
+	// experiment, and getting it wrong is invisible: an earlier version of this
+	// test signalled the gate first and started build two afterwards, so on a
+	// fast machine the Continue-As-New happened while build one was still
+	// current, the new run pinned to build one, and stopping build one stranded
+	// it. It passed anyway, most of the time, which is the worst way for a test
+	// to be wrong.
+	requireRunHasExecuted(t, temporal, run.GetID())
+
+	// Build two is current *before* the gate opens, so that when the run
+	// continues as new there is a version to move to. Without this the assertion
+	// below would pass for the wrong reason: build one would still be the only
+	// place to go.
 	startVersionedWorker(t, temporal, taskQueue, deployment, buildTwo)
 	setCurrentVersion(t, temporal, deployment, buildTwo)
+
+	// Only now does the gate open, which is what causes the suspension.
+	require.NoError(t, temporal.SignalWorkflow(t.Context(), run.GetID(), "", "one", &v1.Node_Outputs{}))
 
 	// Continue-As-New starts a new run under the same workflow id, so the run id
 	// changing is the event, and it is the only externally visible one.
@@ -184,8 +201,83 @@ func TestAPinnedRunTakesTheCurrentVersionAtContinueAsNew(t *testing.T) {
 	require.NoError(t, temporal.SignalWorkflow(t.Context(), run.GetID(), "", "two", &v1.Node_Outputs{}))
 
 	var outputs v1.Workflow_StepOutputs
-	require.NoError(t, run.Get(t.Context(), &outputs),
-		"the resumed run never completed, so it stayed pinned to a build that is gone")
+	requireRunCompletes(t, temporal, run, &outputs)
+}
+
+// requireRunHasExecuted blocks until a run has completed at least one workflow
+// task, which is when it has committed to the version serving it.
+//
+// A run's version is decided by whoever picks up its first task, so "has it
+// started" is the question, and a status of RUNNING does not answer it — a run is
+// RUNNING from the moment it is created, before any worker has seen it. History
+// does answer it: the first WorkflowTaskCompleted is written when a worker
+// finishes the first task, and cannot appear before one has.
+func requireRunHasExecuted(t *testing.T, temporal client.Client, workflowID string) {
+	t.Helper()
+
+	require.Eventually(t, func() bool {
+		history := temporal.GetWorkflowHistory(t.Context(), workflowID, "",
+			false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
+
+		for history.HasNext() {
+			event, err := history.Next()
+			if err != nil {
+				return false
+			}
+			if event.GetEventType() == enumspb.EVENT_TYPE_WORKFLOW_TASK_COMPLETED {
+				return true
+			}
+		}
+		return false
+	}, 60*time.Second, 200*time.Millisecond, "the run never reached a worker")
+}
+
+// requireRunCompletes waits for a run to finish, within a bound, and says what
+// state it was in when it did not.
+//
+// The bound is the point. `run.Get` with only the test's context waits until the
+// *package* deadline, so a run that never gets picked up takes the whole engine
+// suite down with it — eleven minutes of nothing, ending in a goroutine dump of
+// Temporal pollers that names no test. That is what happened, on a CI runner
+// slower than this machine.
+//
+// Which is precisely the distinction this test's own subject matter is about: a
+// bounded wait fails, an unbounded one hangs, and only one of those tells you
+// anything. Asserting on a deadline you chose beats inheriting one you did not.
+//
+// The description on failure is the other half. "It did not finish" sends the
+// next person to run it again; "it is RUNNING on attempt 4 of a workflow task"
+// tells them nothing is serving it, which is the answer.
+func requireRunCompletes(t *testing.T, temporal client.Client, run client.WorkflowRun, out any) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
+	defer cancel()
+
+	err := run.Get(ctx, out)
+	if err == nil {
+		return
+	}
+
+	// The context decides, not the error. Temporal wraps a cancelled Get in its
+	// own type, so errors.Is does not see the deadline through it — which turns a
+	// diagnostic into a bare "the resumed run failed" and throws away everything
+	// the next person needed. Checked by making the run unreachable and reading
+	// what came out.
+	if ctx.Err() == nil {
+		require.NoError(t, err, "the resumed run failed")
+	}
+
+	description, describeErr := temporal.DescribeWorkflowExecution(t.Context(), run.GetID(), "")
+	if describeErr != nil {
+		t.Fatalf("the run never completed and could not be described: %v", describeErr)
+	}
+
+	info := description.GetWorkflowExecutionInfo()
+	t.Fatalf("the resumed run never completed, so nothing served it after build one stopped: "+
+		"status=%v runID=%s historyLength=%d pendingWorkflowTaskAttempt=%d",
+		info.GetStatus(), info.GetExecution().GetRunId(), info.GetHistoryLength(),
+		description.GetPendingWorkflowTask().GetAttempt())
 }
 
 // startVersionedWorker runs one build of the interpreter, returning a function
