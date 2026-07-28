@@ -1,6 +1,7 @@
 package flowfile_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -645,4 +646,44 @@ func TestTheEvaluatorRefusesAnUnknownLibraryBeforeItCaches(t *testing.T) {
 	require.Error(t, err, "an unknown library was accepted, and is now cached forever")
 	require.Contains(t, err.Error(), "definitely-not-a-library")
 	require.Contains(t, err.Error(), "strings", "the refusal does not say what is available")
+}
+
+// TestAWorkflowTooLargeToRunIsReportedAtValidateTime moves a failure from the
+// substrate to the desk.
+//
+// Size is not a schema rule and cannot be one: the schema says what a workflow is,
+// and this is about what Temporal will store for a run. An author who learns it at
+// submit learns it from the wrong place — and what they learned before this check
+// existed was "Blob data size exceeds limit", which is true and useless.
+//
+// The source bound does not cover this, which is the whole reason the check is
+// separate. Source and specification are bounded at the same 1 MiB, but a
+// specification is not the same size as the file it came from: an expression is a
+// few bytes of text and a parsed syntax tree once compiled. Measured at 5.4x for
+// a file of ordinary expressions — so a 200 KiB Flowfile, comfortably inside every
+// limit it can see, compiles to something no run can carry.
+func TestAWorkflowTooLargeToRunIsReportedAtValidateTime(t *testing.T) {
+	t.Parallel()
+
+	// Ninety-nine steps, inside the schema's hundred-step ceiling, each holding
+	// one long expression. Nothing here is malformed and nothing is even unusual;
+	// it is a generated workflow of the kind a catalog or a fan-out produces.
+	expression := "first.result" + strings.Repeat(" + first.result", 180)
+
+	var src strings.Builder
+	src.WriteString("name: expands\nsteps:\n  - id: first\n    task:\n      name: echo\n      inputs:\n        message: hello\n")
+	for i := range 99 {
+		fmt.Fprintf(&src, "  - id: s%d\n    task:\n      name: echo\n      inputs:\n        message: ${%s}\n", i, expression)
+	}
+
+	require.Less(t, src.Len(), 1<<20,
+		"the fixture is caught by the source bound, so it never reaches the check it is about")
+
+	diagnostics, err := flowfile.ValidateSource([]byte(src.String()))
+	require.NoError(t, err, "the fixture no longer parses, so it tests nothing")
+	require.NotEmpty(t, diagnostics, "a workflow too large to run was accepted")
+
+	reported := diagnostics.Error()
+	require.Contains(t, reported, "step outputs",
+		"the diagnostic does not explain that a run carries more than the workflow: %s", reported)
 }

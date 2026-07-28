@@ -129,7 +129,17 @@ of these is a bug, even if it passes tests.
    no cloud dependency and no external identity provider. Temporal Cloud, Nexus endpoints,
    and federated identity are opt-in configuration, never prerequisites.
 
-9. **`RunState` is a wire contract between interpreter versions.** One version writes it at
+9. **A run that cannot continue must fail, not hang.** Temporal refuses to store a payload
+   past its blob limit, and a Continue-As-New over that limit fails the *workflow task* —
+   which is retried indefinitely. The run reports RUNNING, climbs an attempt count nobody
+   watches, and takes a worker on every try; it never completes and it never fails. So the
+   engine weighs `RunState` itself before suspending and fails the run with a reason
+   (`v1.CheckRunStateSize`), and the server refuses an oversized specification at submit
+   where an author is still there to be told (`v1.CheckSpecSize`). Anything that can make a
+   workload un-storable needs an answer at the point it becomes true, because the
+   substrate's own answer is silence.
+
+10. **`RunState` is a wire contract between interpreter versions.** One version writes it at
    Continue-As-New and a *different* version reads it back — see below. So it obeys the
    rules a published message obeys: add fields, never renumber, never repurpose, and read a
    field the writer did not set as absent rather than as a default that means something.
@@ -151,7 +161,7 @@ started on, and deploying does not touch anything in flight. And the Continue-As
 long workload on its original version forever and leave an operator no way to drain one.
 
 Continue-As-New is the only safe seam: the next run replays nothing, starting from `RunState`
-instead of from history. That is the whole reason invariant 9 exists — the seam is only sound
+instead of from history. That is the whole reason invariant 10 exists — the seam is only sound
 if the two versions either side of it agree about the message crossing it.
 
 Both halves are opt-in (`--deployment-name` and `--build-id` on `flow worker`) and inert
