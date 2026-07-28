@@ -116,10 +116,15 @@ steps:
         libs: [json, nope]
         expr: "1"
 `,
+			// Reported by the shared validator, so `flow validate` refuses the file
+			// too — a misspelled library used to compile cleanly and fail once the
+			// activity ran. The language server's contribution is the range: the
+			// validator can only name `libs`, and underlining the whole list would
+			// leave the reader to find which of two names is the wrong one.
 			want: []want{{
-				code:       codeCELLibrary,
+				code:       codeFlowfile,
 				severity:   lsp.Error,
-				contains:   `unknown CEL library "nope"`,
+				contains:   `unknown CEL extension library "nope"`,
 				underlines: "nope",
 			}},
 		},

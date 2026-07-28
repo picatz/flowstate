@@ -41,7 +41,6 @@ const diagnosticSource = "flowstate"
 const (
 	codeYAMLSyntax = "yaml-syntax"
 	codeCELSyntax  = "cel-syntax"
-	codeCELLibrary = "unknown-cel-library"
 	codeFlowfile   = "flowfile"
 	codeTooLarge   = "document-too-large"
 )
@@ -77,9 +76,6 @@ func diagnose(doc *document) []lsp.Diagnostic {
 	// flags are recorded so the validator's report of the same problem is not
 	// shown a second time.
 	flagged := checkExpressions(doc, set)
-
-	// Unknown CEL library names have no counterpart in the validator, and are
-	// reported from inside the expression check below.
 
 	// Everything else belongs to flowfile: step structure, durations, ids, unknown
 	// tasks, references that cannot resolve. Its diagnostics are used as written
@@ -269,11 +265,10 @@ func checkExpressions(doc *document, set *diagnosticSet) []lsp.Range {
 
 		// A step's libraries change how its own expression source parses, because
 		// some of them contribute macros.
-		libs := checkLibraries(doc, set, s, def, taskKnown)
-		stepEnv, libErr := ev.Env(libs...)
+		stepEnv, libErr := ev.Env(stepLibraries(s, def, taskKnown)...)
 		if libErr != nil {
-			// The unknown library was already reported against the libs entry;
-			// falling back keeps the expression itself checked.
+			// Falling back keeps the expression itself checked rather than
+			// abandoning the step over a library problem reported elsewhere.
 			stepEnv = baseEnv
 		}
 
@@ -313,12 +308,20 @@ func checkExpressions(doc *document, set *diagnosticSet) []lsp.Range {
 	return flagged
 }
 
-// checkLibraries validates a step's CEL library list and returns the names it
-// enables.
+// stepLibraries returns the CEL libraries a step enables, skipping any name this
+// build does not have.
+//
+// It reports nothing. An unknown name is a rule, the rule lives in the shared
+// validator, and this package's standing constraint is that the editor must never
+// disagree with `flow validate` about the same file — so what arrives here is
+// re-placed onto the offending element rather than restated. Skipping the name is
+// still necessary: handing it to the evaluator would fail environment construction
+// and cost the rest of the step its expression checks, over a mistake already
+// being reported.
 //
 // The set of legal names belongs to the evaluator, so an added library becomes
 // valid in the editor at the same moment it becomes valid in the engine.
-func checkLibraries(doc *document, set *diagnosticSet, s *parsedStep, def v1.TaskDef, taskKnown bool) []string {
+func stepLibraries(s *parsedStep, def v1.TaskDef, taskKnown bool) []string {
 	if !taskKnown || def.Inputs == nil {
 		return nil
 	}
@@ -345,14 +348,6 @@ func checkLibraries(doc *document, set *diagnosticSet, s *parsedStep, def v1.Tas
 			continue
 		}
 		if _, ok := lookupCELLibrary(el.text); !ok {
-			set.add(lsp.Diagnostic{
-				Range:    el.rng,
-				Severity: lsp.Error,
-				Source:   diagnosticSource,
-				Code:     codeCELLibrary,
-				Message: fmt.Sprintf("unknown CEL library %q; available libraries are %s",
-					el.text, strings.Join(v1.ExtensionLibraries(), ", ")),
-			})
 			continue
 		}
 		libs = append(libs, el.text)
@@ -484,6 +479,12 @@ func rangeOfFlowfileDiagnostic(doc *document, d flowfile.Diagnostic) lsp.Range {
 					return e.keyRange
 				}
 			}
+			// One element of a list, when the validator said which. `libs:
+			// [json, nope]` is a problem with `nope`, and underlining the whole
+			// list makes the reader find it themselves.
+			if rng, ok := rangeOfLiteral(e.value, d.Value); ok {
+				return rng
+			}
 			return narrowToExpression(e.valueRange(), e.value)
 		}
 	}
@@ -537,6 +538,33 @@ func idSuspect(doc *document, step *parsedStep) bool {
 		}
 	}
 	return false
+}
+
+// rangeOfLiteral finds the scalar inside a value whose text is literal.
+//
+// It is how a diagnostic that names an element — Diagnostic.Value — gets placed on
+// that element. The match is on the value the validator reported, never on text
+// pulled back out of the message, so rewording a diagnostic cannot move a squiggle.
+//
+// Only an unambiguous match counts. Two identical entries are two identical
+// mistakes, and underlining one of them would be picking arbitrarily; the whole
+// value is the honest answer there.
+func rangeOfLiteral(v *value, literal string) (lsp.Range, bool) {
+	if v == nil || literal == "" {
+		return lsp.Range{}, false
+	}
+
+	var found []lsp.Range
+	walkValues(v, func(c *value) {
+		if c.kind == kindScalar && !c.fenced && c.text == literal {
+			found = append(found, c.rng)
+		}
+	})
+	if len(found) != 1 {
+		return lsp.Range{}, false
+	}
+
+	return found[0], true
 }
 
 // narrowToExpression returns the range of the single expression inside a value,

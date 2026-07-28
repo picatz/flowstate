@@ -561,3 +561,88 @@ steps:
 	require.Contains(t, reported, "spaces", "the diagnostic does not say what is wrong: %s", reported)
 	require.Contains(t, reported, "my-workflow", "the diagnostic does not offer a name that works: %s", reported)
 }
+
+// TestUnknownCELLibraryIsReportedAtValidateTime covers a misspelling that used to
+// survive every check and fail during a run.
+//
+// The library names are a closed set the registry knows, so there was never a
+// reason for `stirngs` to be a run-time answer — the workflow started, the step was
+// scheduled, an activity ran, and only then did anyone learn. CLAUDE.md's rule is
+// that a misspelled key must be reported, because silently doing nothing gives the
+// author no reason to doubt the file.
+func TestUnknownCELLibraryIsReportedAtValidateTime(t *testing.T) {
+	t.Parallel()
+
+	const src = `name: bad-library
+steps:
+  - id: shout
+    task:
+      name: cel
+      inputs:
+        expr: "'hi'.upperAscii()"
+        libs: [stirngs]
+`
+
+	diagnostics, err := flowfile.ValidateSource([]byte(src))
+	require.NoError(t, err)
+	require.NotEmpty(t, diagnostics, "a misspelled CEL library was accepted")
+
+	reported := diagnostics.Error()
+	require.Contains(t, reported, "stirngs", "the diagnostic does not name what was misspelled: %s", reported)
+	require.Contains(t, reported, "strings", "the diagnostic does not list what is available: %s", reported)
+}
+
+// TestAComputedLibraryListIsNotReported is the other side, and the one that keeps
+// the check honest.
+//
+// A `libs:` produced by an expression is resolved at run time against a scope this
+// validator cannot see. Reporting it would be a false diagnostic, and this package
+// holds those to be worse than missing ones — they train authors to ignore the
+// tool.
+func TestAComputedLibraryListIsNotReported(t *testing.T) {
+	t.Parallel()
+
+	const src = `name: computed-libraries
+steps:
+  - id: pick
+    task:
+      name: echo
+      inputs:
+        message: strings
+  - id: shout
+    task:
+      name: cel
+      inputs:
+        expr: "'hi'.upperAscii()"
+        libs: ${[pick.result]}
+`
+
+	diagnostics, err := flowfile.ValidateSource([]byte(src))
+	require.NoError(t, err)
+
+	for _, d := range diagnostics {
+		require.NotContains(t, d.Message, "extension library",
+			"a library list this validator cannot see was reported anyway: %s", d.Message)
+	}
+}
+
+// TestTheEvaluatorRefusesAnUnknownLibraryBeforeItCaches is the resource bound
+// underneath the diagnostic.
+//
+// The evaluator caches an environment per library set, keyed on names a workflow
+// supplies, and cached failures too — so every distinct unknown name became a
+// permanent entry in a process-wide map with no eviction. A loop with
+// `continue_on_error` carries on past the fail-closed error, so one run could add
+// an entry per iteration.
+//
+// The name is refused before it can become a key, which bounds the key space at
+// the subsets of the known libraries by construction rather than by hoping nobody
+// asks twice.
+func TestTheEvaluatorRefusesAnUnknownLibraryBeforeItCaches(t *testing.T) {
+	t.Parallel()
+
+	_, err := v1.DefaultEvaluator().Env("definitely-not-a-library")
+	require.Error(t, err, "an unknown library was accepted, and is now cached forever")
+	require.Contains(t, err.Error(), "definitely-not-a-library")
+	require.Contains(t, err.Error(), "strings", "the refusal does not say what is available")
+}

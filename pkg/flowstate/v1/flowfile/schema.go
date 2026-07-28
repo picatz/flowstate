@@ -35,6 +35,61 @@ import (
 // produces no diagnostic. That matters more here than coverage does: a validator
 // that reports a mistake the author did not make teaches them to stop reading it.
 
+// validateTaskLibraries reports a CEL extension library this build does not have.
+//
+// A misspelled library used to compile cleanly and fail at run time, which is the
+// "a misspelled key must be reported" rule with the failure moved as late as it can
+// go: the workflow starts, the step is scheduled, an activity runs, and only then
+// does anyone learn that `stirngs` is not a library. The names are a closed set the
+// registry knows, so there is no reason for that to be a run-time answer.
+//
+// It also closes the front door on a resource bound. The evaluator caches an
+// environment per library set, and until recently cached the failures too — so
+// every distinct unknown name became a permanent entry in a process-wide map. That
+// is fixed where it belongs, in the evaluator; this is the half that means an
+// author never arrives there by accident.
+func validateTaskLibraries(stepID string, task *v1.Task) Diagnostics {
+	var ds Diagnostics
+
+	libs, present := task.GetInputs()["libs"]
+	if !present {
+		return ds
+	}
+
+	// Only a literal list can be checked. An expression producing the list is
+	// resolved at run time against a scope this validator cannot see, and
+	// reporting it would be a false diagnostic — which this package holds to be
+	// worse than a missing one.
+	list := libs.GetLiteral().GetListValue()
+	if list == nil {
+		return ds
+	}
+
+	known := make(map[string]bool)
+	for _, name := range v1.ExtensionLibraries() {
+		known[name] = true
+	}
+
+	for _, value := range list.GetValues() {
+		name := value.GetStringValue()
+		if name == "" || known[strings.ToLower(strings.TrimSpace(name))] {
+			continue
+		}
+
+		ds = append(ds, Diagnostic{
+			Step:  stepID,
+			Field: "libs",
+			// The element, not just the field: a surface with positions can then
+			// underline the name that is wrong rather than the whole list.
+			Value: name,
+			Message: fmt.Sprintf("unknown CEL extension library %q; available libraries are %s",
+				name, strings.Join(v1.ExtensionLibraries(), ", ")),
+		})
+	}
+
+	return ds
+}
+
 // validateTaskInputs reports what the task's own schema says is wrong with its
 // inputs: a name it does not declare, a required one left out, and a literal
 // whose type the field cannot hold.

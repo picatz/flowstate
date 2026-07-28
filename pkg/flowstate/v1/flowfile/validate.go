@@ -56,6 +56,19 @@ type Diagnostic struct {
 	// Field names the input or property at fault, when applicable.
 	Field string
 
+	// Value is the literal at fault *inside* Field, when the field holds a list
+	// and one element of it is the problem.
+	//
+	// This validator runs against the compiled workflow, which carries no
+	// positions, so on its own it can only name the field: `libs: [json, nope]`
+	// is reported against `libs`. A surface that does have positions — the
+	// language server — can then underline `nope` rather than the whole list.
+	//
+	// Naming the element in a field rather than leaving it to be read back out of
+	// Message is the point. Deriving a range from message text is how rewording a
+	// diagnostic silently moves a squiggle somewhere else.
+	Value string
+
 	// Message states the problem and, where possible, how to fix it.
 	Message string
 }
@@ -297,6 +310,7 @@ func Validate(wf *v1.Workflow) Diagnostics {
 		// cannot resolve is a mistake about the workflow, and an input the task
 		// does not have is a mistake about the task.
 		ds = append(ds, validateTaskInputs(id, task)...)
+		ds = append(ds, validateTaskLibraries(id, task)...)
 
 		checkable, _ := v1.ResolvableInputs(task.GetName(), task.GetInputs())
 		for _, name := range sortedInputNames(checkable) {
