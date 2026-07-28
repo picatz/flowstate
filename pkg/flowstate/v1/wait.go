@@ -3,12 +3,15 @@ package flowstatev1
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"strconv"
 	"time"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )
 
 // TimedOutOutput is the output every wait produces, reporting whether it ended
@@ -33,20 +36,80 @@ const TimedOutOutput = "timed_out"
 // consumes one signal and the first to arrive is the one that approved it.
 const MaxPendingSignals = 128
 
-// WaitOutputs builds the outputs of a completed wait.
+// PayloadOutput is where a signal sender's data lands: `${approval.payload.approved}`.
 //
-// A signal's payload becomes the step's outputs directly, which is what lets
-// `${approval.approved}` resolve like any other step reference rather than
-// needing a form of its own.
-func WaitOutputs(payload *Node_Outputs, timedOut bool) *Node_Outputs {
-	out := &Node_Outputs{NamedValues: map[string]*Value{}}
+// Rooted rather than spread, and the reason is integrity rather than tidiness.
+// A signal's payload used to become the step's outputs *directly*, so whoever
+// sent the signal chose names in the namespace that every later expression
+// resolves against. A sender who guessed a step id could introduce any name they
+// liked into it, and expressions elsewhere in the workload would silently start
+// resolving against a value they picked.
+//
+// `timed_out` was protected from that, but only by ordering — it was written
+// last, so a payload carrying it lost. That is a defence that works for exactly
+// the names somebody thought to write down, and this engine will grow more
+// wait outputs. Under one root there is nothing to think of: a sender can only
+// ever name things inside `payload`, by grammar, and no future output can
+// collide with one.
+const PayloadOutput = "payload"
 
-	for name, value := range payload.GetNamedValues() {
-		out.NamedValues[name] = value
+// TimerOutputs builds the outputs of a wait that nobody sends anything to: a
+// `sleep`, or a `wait_until` reaching its moment.
+//
+// No [PayloadOutput], because there is no sender. An empty mapping would be
+// truthful and misleading — it would invite `${pause.payload.x}` on a step where
+// a payload can never arrive, and the answer to that should be a diagnostic, not
+// an empty map.
+func TimerOutputs(timedOut bool) *Node_Outputs {
+	return &Node_Outputs{
+		NamedValues: map[string]*Value{
+			TimedOutOutput: NewLiteral(timedOut),
+		},
+	}
+}
+
+// SignalOutputs builds the outputs of a wait for a signal.
+//
+// The wait's own outputs sit at the top — [TimedOutOutput], and whatever else is
+// added later — and everything the sender supplied sits under [PayloadOutput].
+// The separation is the point: one half is what the engine observed, the other is
+// what somebody else asserted, and an expression should not have to know which is
+// which by remembering a list of reserved names.
+//
+// The payload mapping is present even when it is empty, which is the case for a
+// wait that timed out. `has(gate.payload.approved)` is then answerable either
+// way, rather than failing on a missing `payload` — the point of a root is that
+// there is always something to look inside.
+func SignalOutputs(payload *Node_Outputs, timedOut bool) *Node_Outputs {
+	out := TimerOutputs(timedOut)
+
+	named := payload.GetNamedValues()
+	entries := make([]*expr.MapValue_Entry, 0, len(named))
+
+	// Sorted, because a protobuf map has no order and this value is serialized
+	// into the run's state and carried across every Continue-As-New. Two encodings
+	// of the same payload would differ for no reason a reader could see, and a
+	// workflow's persisted state is exactly the wrong place for that.
+	for _, name := range slices.Sorted(maps.Keys(named)) {
+		literal := named[name].GetLiteral()
+		if literal == nil {
+			// Not a literal, so it did not come from a sender — a signal carries
+			// data, not expressions. Skipped rather than guessed at.
+			continue
+		}
+		entries = append(entries, &expr.MapValue_Entry{
+			Key:   NewLiteral(name).GetLiteral(),
+			Value: literal,
+		})
 	}
 
-	// Set last, so a payload cannot claim otherwise.
-	out.NamedValues[TimedOutOutput] = NewLiteral(timedOut)
+	out.NamedValues[PayloadOutput] = &Value{
+		Kind: &Value_Literal{
+			Literal: &expr.Value{
+				Kind: &expr.Value_MapValue{MapValue: &expr.MapValue{Entries: entries}},
+			},
+		},
+	}
 
 	return out
 }

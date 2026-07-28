@@ -36,21 +36,22 @@ steps:
   # A wait reports how it ended rather than failing, so a lapsed approval is an
   # ordinary branch and not an error to be tolerated.
   #
-  # Note this asks about `timed_out`, which every wait produces, rather than about
-  # `approved`, which only exists if a sender sent it: after a timeout there is no
-  # payload, and naming a key that is not there fails the run with an unresolved
-  # reference.
+  # Two namespaces, and the split is deliberate. `timed_out` is what the engine
+  # observed and is always there; everything under `payload` is what the sender
+  # asserted, so it is rooted where a sender cannot reach anything else. Guard on
+  # `timed_out` before reading a payload key: after a timeout the payload is empty,
+  # and naming a key that is not in it fails the run with an unresolved reference.
   - id: deploy
-    if: ${!approval.timed_out && approval.approved}
+    if: ${!approval.timed_out && approval.payload.approved}
     task:
       name: printf
       inputs:
         format: "deploying, approved by %s"
         args:
-          - ${approval.by}
+          - ${approval.payload.by}
 
   - id: rejected
-    if: ${!approval.timed_out && !approval.approved}
+    if: ${!approval.timed_out && !approval.payload.approved}
     task:
       name: echo
       inputs:

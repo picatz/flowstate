@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"testing"
 	"time"
 
@@ -182,11 +183,15 @@ func TestWaitForSignal(t *testing.T) {
 	approval := outputs.GetStepValues()["approval"]
 	require.NotNil(t, approval)
 
-	// The payload became the step's outputs, which is what lets
-	// ${approval.approved} resolve like any other step reference.
-	require.True(t, approval.GetNamedValues()["approved"].GetLiteral().GetBoolValue())
-	require.Equal(t, "someone@example.com",
-		approval.GetNamedValues()["by"].GetLiteral().GetStringValue())
+	// The sender's data is under `payload`, which is what makes
+	// ${approval.payload.approved} the spelling and what keeps a sender from
+	// naming anything outside it.
+	require.True(t, payloadField(t, approval, "approved").GetBoolValue())
+	require.Equal(t, "someone@example.com", payloadField(t, approval, "by").GetStringValue())
+
+	// And not at the top level, which is the property being protected.
+	require.NotContains(t, approval.GetNamedValues(), "approved",
+		"a sender's key reached the step's own output namespace")
 	require.False(t, approval.GetNamedValues()[v1.TimedOutOutput].GetLiteral().GetBoolValue())
 
 	require.NotNil(t, outputs.GetStepValues()["deploy"], "the gated step did not run after approval")
@@ -255,7 +260,7 @@ func TestWaitTimeoutLeavesPayloadKeysAbsent(t *testing.T) {
 			{
 				Id: "deploy",
 				// The obvious thing to write, and the thing that fails.
-				Condition: v1.NewExpr("approval.approved"),
+				Condition: v1.NewExpr("approval.payload.approved"),
 				Kind: &v1.Node_Task{Task: &v1.Task{
 					Name:   "echo",
 					Inputs: map[string]*v1.Value{"message": v1.NewLiteral("deploying")},
@@ -305,7 +310,7 @@ func TestWaitForSignalArrivingEarly(t *testing.T) {
 	var outputs v1.Workflow_StepOutputs
 	require.NoError(t, env.GetWorkflowResult(&outputs))
 
-	require.True(t, outputs.GetStepValues()["approval"].GetNamedValues()["approved"].GetLiteral().GetBoolValue())
+	require.True(t, payloadField(t, outputs.GetStepValues()["approval"], "approved").GetBoolValue())
 	require.NotNil(t, outputs.GetStepValues()["deploy"])
 }
 
@@ -332,7 +337,7 @@ func TestWaitForSignalSurvivesContinueAsNew(t *testing.T) {
 			// away.
 			{
 				Id:        "deploy",
-				Condition: v1.NewExpr("approval.approved"),
+				Condition: v1.NewExpr("approval.payload.approved"),
 				Kind: &v1.Node_Task{Task: &v1.Task{
 					Name:   "echo",
 					Inputs: map[string]*v1.Value{"message": v1.NewLiteral("deploying")},
@@ -385,7 +390,7 @@ func TestWaitForSignalSurvivesContinueAsNew(t *testing.T) {
 
 	approval := outputs.GetStepValues()["approval"]
 	require.NotNil(t, approval, "the gate's outputs were not carried to the step that needed them")
-	require.True(t, approval.GetNamedValues()["approved"].GetLiteral().GetBoolValue(),
+	require.True(t, payloadField(t, approval, "approved").GetBoolValue(),
 		"the approval arrived but what the approver sent was lost")
 
 	require.NotNil(t, outputs.GetStepValues()["deploy"],
@@ -565,4 +570,25 @@ func TestSignalNames(t *testing.T) {
 	require.Equal(t,
 		[]string{"top-level", "per-item", "branch-signal"},
 		v1.SignalNames(spec))
+}
+
+// payloadField reads one entry out of a wait's `payload` mapping.
+//
+// A signal sender's data is rooted under one key rather than spread across the
+// step's outputs, so reading it is a lookup inside a map — see v1.PayloadOutput
+// for why it is not spread.
+func payloadField(t *testing.T, outputs *v1.Node_Outputs, name string) *expr.Value {
+	t.Helper()
+
+	payload := outputs.GetNamedValues()[v1.PayloadOutput].GetLiteral().GetMapValue()
+	require.NotNil(t, payload, "the wait produced no payload mapping")
+
+	for _, entry := range payload.GetEntries() {
+		if entry.GetKey().GetStringValue() == name {
+			return entry.GetValue()
+		}
+	}
+
+	t.Fatalf("the payload has no %q; it holds %d entries", name, len(payload.GetEntries()))
+	return nil
 }

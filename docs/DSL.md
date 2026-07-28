@@ -91,13 +91,23 @@ discovered late:
 speak a poorer dialect than a `cel` step, in the same file, for no reason a reader
 could infer. One dialect, recorded in the compiled spec.
 
-**Signal payloads under `steps.<id>.payload.*`.** The proposal files this as
-ergonomics. It is a security fix and should be prioritised as one: today a signal
-sender injects arbitrary names into a step's output namespace, which is the namespace
-later expressions resolve against. A sender controlling part of an expression
-namespace is an integrity problem, and `timed_out` being unforgeable only because of
-ordering is not a defence. Rooting sender data under `payload.*` makes it unforgeable
-by grammar.
+**Signal payloads under `<id>.payload.*`.** *(landed)* The proposal files this as
+ergonomics. It is a security fix and was prioritised as one: a signal sender used to
+inject arbitrary names into a step's output namespace, which is the namespace later
+expressions resolve against. A sender controlling part of an expression namespace is
+an integrity problem, and `timed_out` being unforgeable only because of ordering is
+not a defence — it is a defence that holds for exactly the names somebody thought to
+write down, and this engine will grow more wait outputs. Rooting sender data under
+`payload` makes it unforgeable by grammar rather than by vigilance.
+
+Two things fell out of doing it that the proposal did not name. A wait with no sender
+— `sleep`, `wait_until` — gets *no* payload rather than an empty one, because
+offering an empty mapping invites `${pause.payload.x}` on a step where one can never
+arrive, and the honest answer to that is a diagnostic. And the mapping is built in
+sorted order, because it is serialised into `RunState` and carried across every
+Continue-As-New: a protobuf map has no iteration order, so two encodings of one
+payload could otherwise differ, in persisted workflow state, for no cause a reader
+could see.
 
 **Specifying the absent/null/default algebra before shipping it.** Terraform shipped
 `optional()` with nested-default semantics left implicit and spent three years on the

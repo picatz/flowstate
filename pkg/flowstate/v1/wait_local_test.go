@@ -3,6 +3,7 @@ package flowstatev1_test
 import (
 	"context"
 	"errors"
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"testing"
 	"time"
 
@@ -32,7 +33,7 @@ func gatedLocalWorkflow(timeout time.Duration) *v1.Workflow {
 			{Id: "approval", Kind: &v1.Node_Wait{Wait: wait}},
 			{
 				Id:        "deploy",
-				Condition: v1.NewExpr("approval.approved"),
+				Condition: v1.NewExpr("approval.payload.approved"),
 				Kind: &v1.Node_Task{Task: &v1.Task{
 					Name:   "echo",
 					Inputs: map[string]*v1.Value{"message": v1.NewLiteral("deploying")},
@@ -79,7 +80,7 @@ func TestLocalSignalReleasesAGate(t *testing.T) {
 
 		approval := got.outputs.GetStepValues()["approval"]
 		require.NotNil(t, approval)
-		require.True(t, approval.GetNamedValues()["approved"].GetLiteral().GetBoolValue())
+		require.True(t, payloadField(t, approval, "approved").GetBoolValue())
 		require.False(t, approval.GetNamedValues()[v1.TimedOutOutput].GetLiteral().GetBoolValue())
 
 		require.NotNil(t, got.outputs.GetStepValues()["deploy"],
@@ -109,7 +110,7 @@ func TestLocalSignalArrivingEarly(t *testing.T) {
 	require.NoError(t, err)
 
 	require.True(t,
-		outputs.GetStepValues()["approval"].GetNamedValues()["approved"].GetLiteral().GetBoolValue())
+		payloadField(t, outputs.GetStepValues()["approval"], "approved").GetBoolValue())
 	require.NotNil(t, outputs.GetStepValues()["deploy"])
 }
 
@@ -206,4 +207,25 @@ func TestLocalSignalCancellationIsNotATimeout(t *testing.T) {
 	case <-time.After(15 * time.Second):
 		t.Fatal("a cancelled run did not stop")
 	}
+}
+
+// payloadField reads one entry out of a wait's `payload` mapping.
+//
+// A signal sender's data is rooted under one key rather than spread across the
+// step's outputs, so reading it is a lookup inside a map rather than a lookup in
+// the outputs — see [v1.PayloadOutput] for why.
+func payloadField(t *testing.T, outputs *v1.Node_Outputs, name string) *expr.Value {
+	t.Helper()
+
+	payload := outputs.GetNamedValues()[v1.PayloadOutput].GetLiteral().GetMapValue()
+	require.NotNil(t, payload, "the wait produced no payload mapping")
+
+	for _, entry := range payload.GetEntries() {
+		if entry.GetKey().GetStringValue() == name {
+			return entry.GetValue()
+		}
+	}
+
+	t.Fatalf("the payload has no %q; it holds %d entries", name, len(payload.GetEntries()))
+	return nil
 }
