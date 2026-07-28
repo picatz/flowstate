@@ -498,6 +498,75 @@ message Value {
 }
 
 // Task represents a specific operation that can be performed within a workflow as a node step.
+// TaskCatalog is what this build can execute, described so that something other
+// than a person can read it.
+//
+// The task registry is the single source of truth for capability — the engine
+// dispatches from it, the validator checks against it, the editor completes from
+// it — and until this existed the only way out of the process was a table meant
+// for a terminal. An agent driving the CLI as a tool, a generator producing
+// documentation, or an editor that is not this project's language server all had
+// to parse columns, which is not a contract.
+//
+// It is a schema type rather than a shape invented in the CLI because it
+// describes the system, which is what this file is for: a field added to it
+// appears in every consumer without any of them changing, and it is already
+// versioned and wire-stable if a `ListTasks` RPC ever wants to return one.
+message TaskCatalog {
+  // Tasks is every task this build can run, sorted by name.
+  repeated TaskDescription tasks = 1;
+
+  // CelLibraries are the CEL extension libraries a `cel` step may enable through
+  // its `libs` input.
+  repeated string cel_libraries = 2;
+
+  // DurationUnits are the duration constructors available to *every* expression
+  // — `days(3)`, `minutes(30)` — rather than only where a library is enabled.
+  // Listed separately for that reason: somebody reading cel_libraries to find out
+  // what an expression can say would otherwise conclude these are unavailable.
+  repeated string duration_units = 3;
+
+  // NowIdentifier is the name bound to the evaluation moment inside a
+  // `wait_until` expression, and nowhere else. It is the one identifier whose
+  // availability depends on position, so a reader cannot infer it.
+  string now_identifier = 4;
+}
+
+// TaskDescription is one task's name and shape.
+message TaskDescription {
+  string name = 1;
+
+  // Summary is a single line, the same one `flow tasks` prints.
+  string summary = 2;
+
+  repeated TaskField inputs = 3;
+  repeated TaskField outputs = 4;
+}
+
+// TaskField is one input or output, described in the DSL's vocabulary.
+message TaskField {
+  string name = 1;
+
+  // Type is what an author would call it — `string`, `list[string]`,
+  // `map[string, string]`, or `any` where the shape is whatever an expression
+  // produced. Deliberately not the Protobuf type name, which is accurate about
+  // the schema and useless about the file being written.
+  string type = 2;
+
+  // Required reports whether the task cannot run without this input. Never set on
+  // an output, where the question does not arise.
+  bool required = 3;
+
+  // Deferred reports that the task evaluates this input's expression itself,
+  // against a scope the workflow does not have.
+  //
+  // It changes what may legally be written here, which is why it is a field
+  // rather than prose: `http`'s `outputs` may name `status_code` because the task
+  // evaluates it after the response arrives, and an ordinary input may not,
+  // because the engine resolves it before the step is even scheduled.
+  bool deferred = 4;
+}
+
 message Task {
   // Echo is a simple task that echoes back the input message.
   message Echo {

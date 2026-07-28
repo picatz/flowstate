@@ -197,3 +197,46 @@ func describeFields(md protoreflect.MessageDescriptor, deferred []string) []Inpu
 
 	return out
 }
+
+// Catalog describes everything this build can execute.
+//
+// Built from the registry rather than maintained, so a task added to it appears
+// here, in `flow tasks`, in the editor's completion, and in whatever an agent
+// reads, without any of those being touched. That is the whole argument for the
+// registry being the single source of truth for capability, and this is the last
+// surface that was not derived from it.
+func Catalog() *TaskCatalog {
+	defs := DefaultRegistry().All()
+
+	catalog := &TaskCatalog{
+		Tasks:         make([]*TaskDescription, 0, len(defs)),
+		CelLibraries:  ExtensionLibraries(),
+		DurationUnits: DurationUnits(),
+		NowIdentifier: NowIdentifier,
+	}
+
+	for _, def := range defs {
+		catalog.Tasks = append(catalog.Tasks, &TaskDescription{
+			Name:    def.Name,
+			Summary: def.Summary,
+			Inputs:  taskFields(Inputs(def)),
+			Outputs: taskFields(Outputs(def)),
+		})
+	}
+
+	return catalog
+}
+
+// taskFields converts the described fields into their schema form.
+func taskFields(fields []InputField) []*TaskField {
+	out := make([]*TaskField, 0, len(fields))
+	for _, field := range fields {
+		out = append(out, &TaskField{
+			Name:     field.Name,
+			Type:     field.Type,
+			Required: field.Required,
+			Deferred: field.Deferred,
+		})
+	}
+	return out
+}

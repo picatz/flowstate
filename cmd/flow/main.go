@@ -597,6 +597,23 @@ func writeFields(tw *tabwriter.Writer, label string, fields []v1.InputField) {
 func runTasks(cmd *cobra.Command, args []string) error {
 	out := cmd.OutOrStdout()
 
+	format, err := resolveOutputFormat()
+	if err != nil {
+		return err
+	}
+
+	// The registry, as a document, for everything that is not a person: an agent
+	// driving this CLI as a tool, a generator producing documentation, an editor
+	// that is not this project's language server. All of them previously had to
+	// parse the columns below, and column positions are not a contract.
+	//
+	// One document rather than one per line even for jsonl, because a catalog is
+	// one answer — a consumer wants `.tasks[] | select(.name=="http")`, not a
+	// stream it has to reassemble before it can index into it.
+	if format.Machine() {
+		return writeJSON(newSurface(cmd), FormatJSON, v1.Catalog())
+	}
+
 	// What a task takes, not just that it exists.
 	//
 	// This listed a name and a one-line summary, which tells a reader that `http`
@@ -904,9 +921,16 @@ flow run local examples/approval-gate/workflow.yaml --signal deploy-approved='{"
 		Long:  "List the tasks available to workflow steps, along with the CEL libraries expressions can enable.",
 		Args:  cobra.NoArgs,
 		RunE:  runTasks,
-		Example: `# List available tasks:
-flow tasks`,
+		Example: `# List available tasks, their inputs, and their outputs:
+flow tasks
+
+# The same thing as a document, for a script or an agent:
+flow tasks --output json
+
+# What inputs does the http task take, and which are required?
+flow tasks --output json | jq '.tasks[] | select(.name == "http") | .inputs'`,
 	}
+	addOutputFlag(tasksCmd)
 
 	// LSP command, which starts a Language Server Protocol (LSP) server for Flowfile files.
 	lspCmd := &cobra.Command{
