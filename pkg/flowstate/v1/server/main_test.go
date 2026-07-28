@@ -178,10 +178,7 @@ func startWorker(t *testing.T, temporal client.Client) {
 	t.Helper()
 
 	w := worker.New(temporal, engine.RunTaskQueueName, worker.Options{})
-	w.RegisterWorkflow(engine.Run)
-	w.RegisterActivity(engine.Task)
-	w.RegisterActivity(engine.TaskWithPrev)
-	w.RegisterActivity(engine.TaskInScope)
+	engine.Register(w)
 
 	require.NoError(t, w.Start())
 	t.Cleanup(w.Stop)

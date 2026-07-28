@@ -154,6 +154,25 @@ func (e *Evaluator) Limits() Limits {
 // Requesting an unknown library is an error, reported with the set of libraries
 // that do exist.
 func (e *Evaluator) Env(libs ...string) (*cel.Env, error) {
+	// Refused before it can become a key, which is what bounds the cache.
+	//
+	// The key is derived from names a workflow supplies, and a failed
+	// construction used to be memoized alongside a successful one — so every
+	// distinct unknown name became a permanent entry in a process-wide map with
+	// no eviction. A loop with `continue_on_error` carries on past the
+	// fail-closed error, so one run could add an entry per iteration: 200,000
+	// distinct names retained 165 MiB, for the life of the worker, across runs
+	// and across tenants.
+	//
+	// Rejecting first makes the key space the 2^11 subsets of the known
+	// libraries, by construction rather than by hoping nobody asks twice. It is
+	// the same rule the rest of this repo applies to anything a peer controls the
+	// size of: bound the resource the attacker chooses, and the attacker chooses
+	// the name.
+	if err := checkLibraries(libs); err != nil {
+		return nil, err
+	}
+
 	key := libsKey(libs)
 	if cached, ok := e.envs.Load(key); ok {
 		res := cached.(*envResult)
@@ -165,6 +184,22 @@ func (e *Evaluator) Env(libs ...string) (*cel.Env, error) {
 	actual, _ := e.envs.LoadOrStore(key, res)
 	stored := actual.(*envResult)
 	return stored.env, stored.err
+}
+
+// checkLibraries refuses a library name this build does not have.
+//
+// Reported before anything is cached, and worded the way the runtime already
+// words it, so an author reading a diagnostic from `flow validate` and an
+// operator reading an error from a worker see the same sentence.
+func checkLibraries(libs []string) error {
+	for _, lib := range libs {
+		if _, ok := extensionLibraries[strings.ToLower(strings.TrimSpace(lib))]; !ok {
+			return fmt.Errorf("unknown CEL extension library %q; available libraries are %s",
+				lib, strings.Join(ExtensionLibraries(), ", "))
+		}
+	}
+
+	return nil
 }
 
 // Eval evaluates ast in env against the given activation, enforcing e's limits

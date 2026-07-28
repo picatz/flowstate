@@ -137,6 +137,15 @@ That is a deployment precondition the language is taking a dependency on. It is
 writable down, testable, and fine — but it must be stated, because a silent
 dependency on an optional feature is how an invariant dies quietly.
 
+*Since written:* the feature this depends on now exists. `flow worker
+--deployment-name --build-id` pins a run to the interpreter it started on and
+takes the current version at Continue-As-New, and invariant 9 in
+[ARCHITECTURE.md](ARCHITECTURE.md) records what that costs. The precondition is
+therefore checkable rather than hypothetical — but it is still a precondition, and
+the workflow-side evaluation above must refuse to enable itself on a worker that
+has not opted in. A capability that assumes a deployment posture and does not
+verify it is the same defect as one that assumes a bound and does not enforce it.
+
 **`flow test` mocks must not see resolved secrets.** The proposal matches mocks with
 `where: ${...}`, a CEL predicate over the task's *resolved* inputs. Resolved inputs
 are exactly where a `SecretRef` has become a real value. That makes a test file a

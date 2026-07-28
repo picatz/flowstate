@@ -11,6 +11,14 @@ const (
 	// OnePasswordCommand is the 1Password CLI.
 	OnePasswordCommand = "op"
 
+	// DefaultOnePasswordNamespaceVault is the vault the unnamespaced tenant reads
+	// when the provider is namespaced.
+	//
+	// Deliberately unspellable as a namespace: ValidateNamespace forbids an
+	// underscore, so no tenant can name itself this and read what belongs to the
+	// tenant that has no name.
+	DefaultOnePasswordNamespaceVault = "_default"
+
 	// DefaultOnePasswordVault is the vault secrets are read from when a namespace
 	// does not name its own.
 	DefaultOnePasswordVault = "flowstate"
@@ -46,12 +54,35 @@ const (
 //
 // It is safe for concurrent use.
 type OnePasswordProvider struct {
-	vault  string
+	vault string
+
+	// namespaced opts this provider into tenancy. Off by default, and refusing a
+	// namespaced request while off, because a worker configured for one tenant
+	// must not silently become multi-tenant the moment a namespaced identity
+	// arrives.
+	namespaced bool
+
 	runner commandRunner
 }
 
 // OnePasswordOption configures an [OnePasswordProvider].
 type OnePasswordOption func(*OnePasswordProvider)
+
+// WithOnePasswordNamespaced gives each tenant its own vault.
+//
+// With it, a run in namespace "team-a" reads vault "team-a", and the unnamespaced
+// tenant reads [DefaultOnePasswordNamespaceVault] — every tenant gets a segment,
+// including the default one, which is what keeps the mapping unambiguous.
+//
+// Without it, a namespaced request is refused rather than served from the default
+// vault. That is the fail-closed direction: a provider that quietly ignores the
+// namespace hands one tenant another's secrets, and does it without any error to
+// notice.
+func WithOnePasswordNamespaced() OnePasswordOption {
+	return func(p *OnePasswordProvider) {
+		p.namespaced = true
+	}
+}
 
 // WithOnePasswordVault replaces the vault read when a run has no namespace.
 func WithOnePasswordVault(vault string) OnePasswordOption {
@@ -111,7 +142,10 @@ func (p *OnePasswordProvider) Resolve(ctx context.Context, req Request) (Secret,
 		return Secret{}, &ResolveError{Ref: ref, Err: err}
 	}
 
-	vault := p.vaultFor(req.Namespace)
+	vault, err := p.vaultFor(req.Namespace)
+	if err != nil {
+		return Secret{}, &ResolveError{Ref: ref, Err: err}
+	}
 
 	// The reference is built here rather than taken from the workflow, and each
 	// segment is validated above, so a name cannot reach outside its vault by
@@ -134,13 +168,38 @@ func (p *OnePasswordProvider) Resolve(ctx context.Context, req Request) (Secret,
 	return NewSecret(ref, value), nil
 }
 
-// vaultFor returns the vault a namespace's secrets live in.
-func (p *OnePasswordProvider) vaultFor(namespace string) string {
-	if namespace == "" {
-		return p.vault
+// vaultFor returns the vault a namespace's secrets live in, or refuses.
+//
+// The namespace used to be the vault name outright, which is the encoding
+// ambiguity CLAUDE.md documents for the env and file providers, in the one
+// provider that never got the fix. A namespace is a legal vault name and a vault
+// name is a legal namespace, so a tenant whose namespace happened to equal the
+// configured default vault — a team slug, a service-account name, whatever an
+// operator passed to WithOnePasswordVault — read the untenanted tenant's entire
+// vault. Nothing in the request looked wrong, because nothing was wrong with the
+// request.
+//
+// A separator does not fix it, for the same reason it does not fix the others:
+// every character legal in a vault name is legal in a namespace. So the mapping is
+// explicit, opt-in, and gives every tenant a segment including the default one —
+// and [DefaultOnePasswordNamespaceVault] is unforgeable because ValidateNamespace
+// refuses an underscore.
+func (p *OnePasswordProvider) vaultFor(namespace string) (string, error) {
+	switch {
+	case p.namespaced:
+		if namespace == "" {
+			return DefaultOnePasswordNamespaceVault, nil
+		}
+		return namespace, nil
+
+	case namespace != "":
+		return "", fmt.Errorf(
+			"%w: this worker's 1Password provider is not namespaced, so it cannot resolve secrets "+
+				"for namespace %q; configure it with WithOnePasswordNamespaced",
+			ErrNamespace, namespace)
 	}
 
-	return namespace
+	return p.vault, nil
 }
 
 // Vault returns the configured default vault. It is safe to log.

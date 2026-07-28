@@ -47,11 +47,16 @@ name the editor offers is always one the workflow can resolve:
   finished while the step runs.
 
 Each diagnostic carries a stable code you can filter on: `yaml-syntax`,
-`cel-syntax`, `unknown-cel-library`, `document-too-large`, and `flowfile` for
-everything the shared validator reports — the same problems `flow validate` prints,
-with the same wording, positioned onto the token at fault. Most of what you will see
-is `flowfile`, and that is the point: the editor and the command line cannot
-disagree about a file.
+`cel-syntax`, `document-too-large`, and `flowfile` for everything the shared
+validator reports — the same problems `flow validate` prints, with the same wording,
+positioned onto the token at fault. Most of what you will see is `flowfile`, and that
+is the point: the editor and the command line cannot disagree about a file.
+
+The two syntax codes are the exceptions, and they earn it: a document that will not
+parse has no model for the validator to run against, so there is nothing for it to
+report and no risk of two answers. Everywhere else, the rule has one home and this
+server only improves the position — including where the validator names a list
+element it has no coordinates for, such as the wrong name in `libs: [json, nope]`.
 
 Not implemented, and deliberately not advertised: formatting, rename, code actions,
 references, and workspace symbols. The server also never type-checks expressions —

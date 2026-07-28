@@ -1,4 +1,4 @@
-name: headers and nested outputs
+name: headers-and-nested-outputs
 steps:
   - id: web
     task:

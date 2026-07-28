@@ -5,7 +5,7 @@
 # space, an ampersand, or an equals sign silently produced a different request than
 # the author meant. A JSON body meant building the JSON inside a CEL expression and
 # remembering to set Content-Type.
-name: http query and json
+name: http-query-and-json
 steps:
   # `query` takes a map. Values are escaped once, here, so a value containing
   # characters that mean something in a query string is sent as itself.

@@ -1,9 +1,14 @@
 package flowfile_test
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
@@ -490,4 +495,154 @@ steps:
 	} else {
 		t.Logf("reported: %v", err)
 	}
+}
+
+// TestEveryExampleSurvivesTheSchema walks the examples through the check the
+// server now makes, which is not the check `flow validate` was making.
+//
+// `flowfile.Validate` reports what an author can fix by reading their file:
+// unknown tasks, bad references, duplicate ids. `v1.Validate` enforces what the
+// schema declares: patterns, lengths, ceilings. Nothing ran the second one over
+// the examples, and nothing on the submit path ran it at all — so eight of the
+// fifteen shipped examples had names the schema refuses, compiled cleanly, said
+// "ok", and would have been rejected the first time anyone ran them against a
+// server.
+//
+// This is the join CLAUDE.md warns about: two validators, each tested, and the
+// defect living in the gap between them. So this asserts the composition rather
+// than either half.
+func TestEveryExampleSurvivesTheSchema(t *testing.T) {
+	t.Parallel()
+
+	paths, err := filepath.Glob(filepath.Join("..", "..", "..", "..", "examples", "*", "workflow.yaml"))
+	require.NoError(t, err)
+	require.NotEmpty(t, paths, "no examples were found, so this test proves nothing")
+
+	for _, path := range paths {
+		t.Run(filepath.Base(filepath.Dir(path)), func(t *testing.T) {
+			t.Parallel()
+
+			source, err := os.ReadFile(path)
+			require.NoError(t, err)
+
+			workflow, _, err := flowfile.Parse(source)
+			require.NoError(t, err, "the example does not compile")
+
+			require.NoError(t, v1.Validate(workflow),
+				"the example compiles but the schema refuses it, so `flow run` would fail on a file "+
+					"this repo ships as a worked example")
+		})
+	}
+}
+
+// TestAnIllegalWorkflowNameIsReportedBeforeItIsSubmitted is the other half.
+//
+// The schema's refusal names a protobuf field path, which is true and useless to
+// somebody looking at a line of YAML. The diagnostic has a position and offers a
+// name to paste, because "may not contain spaces" is a rule and `http-expect` is
+// an answer.
+func TestAnIllegalWorkflowNameIsReportedBeforeItIsSubmitted(t *testing.T) {
+	t.Parallel()
+
+	const src = `name: my workflow
+steps:
+  - id: a
+    task:
+      name: echo
+      inputs:
+        message: hi
+`
+
+	diagnostics, err := flowfile.ValidateSource([]byte(src))
+	require.NoError(t, err)
+	require.NotEmpty(t, diagnostics, "a name the schema refuses was accepted by flow validate")
+
+	reported := diagnostics.Error()
+	require.Contains(t, reported, "spaces", "the diagnostic does not say what is wrong: %s", reported)
+	require.Contains(t, reported, "my-workflow", "the diagnostic does not offer a name that works: %s", reported)
+}
+
+// TestUnknownCELLibraryIsReportedAtValidateTime covers a misspelling that used to
+// survive every check and fail during a run.
+//
+// The library names are a closed set the registry knows, so there was never a
+// reason for `stirngs` to be a run-time answer — the workflow started, the step was
+// scheduled, an activity ran, and only then did anyone learn. CLAUDE.md's rule is
+// that a misspelled key must be reported, because silently doing nothing gives the
+// author no reason to doubt the file.
+func TestUnknownCELLibraryIsReportedAtValidateTime(t *testing.T) {
+	t.Parallel()
+
+	const src = `name: bad-library
+steps:
+  - id: shout
+    task:
+      name: cel
+      inputs:
+        expr: "'hi'.upperAscii()"
+        libs: [stirngs]
+`
+
+	diagnostics, err := flowfile.ValidateSource([]byte(src))
+	require.NoError(t, err)
+	require.NotEmpty(t, diagnostics, "a misspelled CEL library was accepted")
+
+	reported := diagnostics.Error()
+	require.Contains(t, reported, "stirngs", "the diagnostic does not name what was misspelled: %s", reported)
+	require.Contains(t, reported, "strings", "the diagnostic does not list what is available: %s", reported)
+}
+
+// TestAComputedLibraryListIsNotReported is the other side, and the one that keeps
+// the check honest.
+//
+// A `libs:` produced by an expression is resolved at run time against a scope this
+// validator cannot see. Reporting it would be a false diagnostic, and this package
+// holds those to be worse than missing ones — they train authors to ignore the
+// tool.
+func TestAComputedLibraryListIsNotReported(t *testing.T) {
+	t.Parallel()
+
+	const src = `name: computed-libraries
+steps:
+  - id: pick
+    task:
+      name: echo
+      inputs:
+        message: strings
+  - id: shout
+    task:
+      name: cel
+      inputs:
+        expr: "'hi'.upperAscii()"
+        libs: ${[pick.result]}
+`
+
+	diagnostics, err := flowfile.ValidateSource([]byte(src))
+	require.NoError(t, err)
+
+	for _, d := range diagnostics {
+		require.NotContains(t, d.Message, "extension library",
+			"a library list this validator cannot see was reported anyway: %s", d.Message)
+	}
+}
+
+// TestTheEvaluatorRefusesAnUnknownLibraryBeforeItCaches is the resource bound
+// underneath the diagnostic.
+//
+// The evaluator caches an environment per library set, keyed on names a workflow
+// supplies, and cached failures too — so every distinct unknown name became a
+// permanent entry in a process-wide map with no eviction. A loop with
+// `continue_on_error` carries on past the fail-closed error, so one run could add
+// an entry per iteration.
+//
+// The name is refused before it can become a key, which bounds the key space at
+// the subsets of the known libraries by construction rather than by hoping nobody
+// asks twice.
+func TestTheEvaluatorRefusesAnUnknownLibraryBeforeItCaches(t *testing.T) {
+	t.Parallel()
+
+	_, err := v1.DefaultEvaluator().Env("definitely-not-a-library")
+	require.Error(t, err, "an unknown library was accepted, and is now cached forever")
+	require.Contains(t, err.Error(), "definitely-not-a-library")
+	require.Contains(t, err.Error(), "strings", "the refusal does not say what is available")
 }

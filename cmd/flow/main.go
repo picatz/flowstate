@@ -57,6 +57,18 @@ var (
 	temporalNamespaceFlag string
 	temporalProfileFlag   string
 
+	// Worker Deployment Versioning, off unless both halves are configured.
+	//
+	// A version is the pair, so honouring one without the other would produce a
+	// worker claiming a version nothing can address. Defaulted from the
+	// environment because the build id is a property of the artifact and belongs
+	// in whatever built it — a CI job knows the commit; a person typing `flow
+	// worker` does not.
+	//
+	// See pkg/flowstate/v1/engine/versioning.go for what turning this on buys.
+	workerDeploymentName = os.Getenv("FLOWSTATE_DEPLOYMENT_NAME")
+	workerBuildID        = os.Getenv("FLOWSTATE_BUILD_ID")
+
 	// Authentication settings for `flow server`. There is no default that
 	// accepts callers: either a trust policy is configured, or anonymous access
 	// is requested explicitly.
@@ -114,19 +126,26 @@ func runWorker(cmd *cobra.Command, args []string) error {
 	}
 	defer c.Close()
 
-	// Create a new Temporal worker for the specified task queue.
+	deployment := engine.DeploymentOptions(workerDeploymentName, workerBuildID)
+
 	w := worker.New(c, temporalTaskQueue, worker.Options{
-		// TODO(kent): consider making this configurable using flags or env vars.
+		DeploymentOptions: deployment,
 	})
 
-	// Register workflow and activities
-	w.RegisterWorkflow(engine.Run)
-	w.RegisterActivity(engine.Task)
-	w.RegisterActivity(engine.TaskInScope)
-	// Registered so a run started before scopes existed can still complete.
-	w.RegisterActivity(engine.TaskWithPrev)
+	engine.Register(w)
 
-	log.Printf("Starting worker on task queue: %s", temporalTaskQueue)
+	if deployment.UseVersioning {
+		log.Printf("Starting worker on task queue %s as %s/%s",
+			temporalTaskQueue, deployment.Version.DeploymentName, deployment.Version.BuildID)
+	} else {
+		// Said out loud rather than left to be inferred from silence. Without a
+		// version, deploying this binary changes the behaviour of every run
+		// already in flight — which is the default Temporal has always had, and
+		// is a choice an operator should know they are making.
+		log.Printf("Starting worker on task queue %s, unversioned "+
+			"(set FLOWSTATE_DEPLOYMENT_NAME and FLOWSTATE_BUILD_ID, or --deployment-name and --build-id, "+
+			"to pin in-flight runs to the interpreter they started on)", temporalTaskQueue)
+	}
 
 	// Start worker (non-blocking) such that it can run in the background
 	// while we wait for shutdown signals.
@@ -670,7 +689,10 @@ flow worker
 flow worker --address localhost:7233
 
 # Start a worker with custom namespace:
-flow worker --namespace production`,
+flow worker --namespace production
+
+# Start a versioned worker, so a deploy does not change runs already in flight:
+flow worker --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"`,
 	}
 
 	// These override Temporal's environment configuration when set; unset means
@@ -694,6 +716,12 @@ flow server --verbose`,
 		c.Flags().StringVar(&temporalProfileFlag, "profile", "", "Temporal configuration profile to use")
 	}
 	workerCmd.Flags().StringVar(&temporalTaskQueue, "task-queue", temporalTaskQueue, "task queue for Temporal workflows and activities")
+
+	workerCmd.Flags().StringVar(&workerDeploymentName, "deployment-name", workerDeploymentName,
+		"Worker Deployment this worker belongs to. With --build-id, pins every in-flight run to the "+
+			"interpreter version it started on; a run moves to the current version only at continue-as-new")
+	workerCmd.Flags().StringVar(&workerBuildID, "build-id", workerBuildID,
+		"version identifier for this worker's binary, unique per build. Required with --deployment-name")
 
 	serverCmd.Flags().StringVar(&authPolicyPath, "auth-policy", "",
 		"path to an OIDC/workload-identity trust policy (YAML) describing which issuers to accept")

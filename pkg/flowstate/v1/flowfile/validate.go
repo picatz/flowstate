@@ -56,6 +56,19 @@ type Diagnostic struct {
 	// Field names the input or property at fault, when applicable.
 	Field string
 
+	// Value is the literal at fault *inside* Field, when the field holds a list
+	// and one element of it is the problem.
+	//
+	// This validator runs against the compiled workflow, which carries no
+	// positions, so on its own it can only name the field: `libs: [json, nope]`
+	// is reported against `libs`. A surface that does have positions — the
+	// language server — can then underline `nope` rather than the whole list.
+	//
+	// Naming the element in a field rather than leaving it to be read back out of
+	// Message is the point. Deriving a range from message text is how rewording a
+	// diagnostic silently moves a squiggle somewhere else.
+	Value string
+
 	// Message states the problem and, where possible, how to fix it.
 	Message string
 }
@@ -116,6 +129,46 @@ func (ds Diagnostics) Err() error {
 // It checks that steps are addressable (present, uniquely and legally named),
 // that every task exists, and that every expression references a step whose
 // outputs will actually be available.
+// nameRune reports whether a rune is one a workflow name may contain.
+//
+// Kept in step with the pattern the schema declares on Workflow.name. Written out
+// rather than compiled from the descriptor because a diagnostic wants to name the
+// offending character, and a regular expression can only say that the whole string
+// did not match.
+func nameRune(r rune) bool {
+	switch {
+	case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+		return true
+	}
+	return false
+}
+
+// firstIllegalNameRune describes the first character a name may not contain, or
+// empty when every character is legal.
+func firstIllegalNameRune(name string) string {
+	for _, r := range name {
+		if nameRune(r) {
+			continue
+		}
+		if r == ' ' {
+			return "spaces"
+		}
+		return fmt.Sprintf("%q", string(r))
+	}
+	return ""
+}
+
+// suggestedName is the name with every illegal character replaced, so the
+// diagnostic can offer something to paste rather than a rule to apply.
+func suggestedName(name string) string {
+	return strings.Map(func(r rune) rune {
+		if nameRune(r) {
+			return r
+		}
+		return '-'
+	}, name)
+}
+
 func Validate(wf *v1.Workflow) Diagnostics {
 	var ds Diagnostics
 
@@ -124,6 +177,21 @@ func Validate(wf *v1.Workflow) Diagnostics {
 	}
 	if wf.GetName() == "" {
 		ds = append(ds, Diagnostic{Field: "name", Message: "workflow has no name"})
+	} else if bad := firstIllegalNameRune(wf.GetName()); bad != "" {
+		// The schema constrains a workflow's name and nothing checked it here, so
+		// a file with a space in its name compiled cleanly, said "ok", and was
+		// refused by the server the first time anyone ran it. Eight of the shipped
+		// examples were in that state.
+		//
+		// It is checked here because this is where a position exists. The same rule
+		// enforced only at submit names a field path in a protobuf message, which
+		// is true and useless to somebody looking at a line of YAML.
+		ds = append(ds, Diagnostic{
+			Field: "name",
+			Message: fmt.Sprintf("name may not contain %s; a workflow name is used as an "+
+				"identifier, so it takes letters, digits, - and _ (try %q)",
+				bad, suggestedName(wf.GetName())),
+		})
 	}
 	if len(wf.GetSteps()) == 0 {
 		return append(ds, Diagnostic{Field: "steps", Message: "workflow has no steps"})
@@ -242,6 +310,7 @@ func Validate(wf *v1.Workflow) Diagnostics {
 		// cannot resolve is a mistake about the workflow, and an input the task
 		// does not have is a mistake about the task.
 		ds = append(ds, validateTaskInputs(id, task)...)
+		ds = append(ds, validateTaskLibraries(id, task)...)
 
 		checkable, _ := v1.ResolvableInputs(task.GetName(), task.GetInputs())
 		for _, name := range sortedInputNames(checkable) {
