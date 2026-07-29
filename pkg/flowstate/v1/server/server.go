@@ -36,8 +36,21 @@ func New(temporalClient client.Client, opts ...Option) *FlowstateServer {
 // Option configures a [FlowstateServer].
 type Option func(*FlowstateServer)
 
-// WithNamespace records the Temporal namespace a workload runs in, which appears
-// in the identity the run acts as.
+// WithNamespace sets the Flowstate tenant a caller is treated as belonging to
+// when their own identity names none.
+//
+// It is a fallback and only a fallback: a verified caller's namespace always
+// wins, because a tenant decided by how the server was started rather than by who
+// is calling would make the boundary decorative — every caller would share one
+// tenant. See [FlowstateServer.identityFor], where that precedence lives.
+//
+// So the useful reading is "the tenant of a single-tenant deployment", whose trust
+// policy names no namespaces. It is emphatically **not** the Temporal namespace,
+// which it was previously documented as: Temporal routing is the client's own
+// configuration, or [WithNamespacePool] when tenants map to separate namespaces.
+// The distinction matters because this value ends up in
+// [flowstatev1.WorkloadIdentity.Namespace], which every authorization decision
+// about a run compares against.
 func WithNamespace(name string) Option {
 	return func(s *FlowstateServer) { s.namespace = name }
 }
