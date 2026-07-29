@@ -846,7 +846,6 @@ steps:
   - id: a
     cel:
       expr: "1 + 1"
-      libs: [math, strings]
       empty: ""
       list: [1, 2, 3]
       nested:
@@ -1331,7 +1330,6 @@ steps:
   - id: modify
     cel:
       expr: "vars.greeting"
-      libs: [strings]
       vars:
         greeting: ${greet.result}
 `))

@@ -654,62 +654,62 @@ steps:
 	require.Contains(t, reported, "my-workflow", "the diagnostic does not offer a name that works: %s", reported)
 }
 
-// TestUnknownCELLibraryIsReportedAtValidateTime covers a misspelling that used to
-// survive every check and fail during a run.
+// TestARetiredTaskInputIsReported covers `libs:`, which used to choose CEL
+// extension libraries for one step.
 //
-// The library names are a closed set the registry knows, so there was never a
-// reason for `stirngs` to be a run-time answer — the workflow started, the step was
-// scheduled, an activity ran, and only then did anyone learn. CLAUDE.md's rule is
-// that a misspelled key must be reported, because silently doing nothing gives the
-// author no reason to doubt the file.
-func TestUnknownCELLibraryIsReportedAtValidateTime(t *testing.T) {
+// It chooses nothing now — a workflow speaks one dialect, named by its profile —
+// and this is the awkward kind of retirement. `cel` binds every input it does not
+// recognise as a *variable*, so without a diagnostic the key would validate
+// cleanly, run cleanly, and quietly become a binding nobody reads. A file still
+// saying `libs: [strings]` would look like it was choosing something.
+//
+// Replaces a test asserting that a *misspelled* library was reported. That check
+// is gone with the thing it checked: there is no list of library names in a
+// Flowfile to misspell.
+func TestARetiredTaskInputIsReported(t *testing.T) {
 	t.Parallel()
 
-	const src = `name: bad-library
+	const src = `name: retired-input
 steps:
   - id: shout
     cel:
       expr: "'hi'.upperAscii()"
-      libs: [stirngs]
+      libs: [strings]
 `
 
 	diagnostics, err := flowfile.ValidateSource([]byte(src))
 	require.NoError(t, err)
-	require.NotEmpty(t, diagnostics, "a misspelled CEL library was accepted")
+	require.NotEmpty(t, diagnostics, "`libs:` was accepted silently, so it reads as though it still selects something")
 
 	reported := diagnostics.Error()
-	require.Contains(t, reported, "stirngs", "the diagnostic does not name what was misspelled: %s", reported)
-	require.Contains(t, reported, "strings", "the diagnostic does not list what is available: %s", reported)
+	require.Contains(t, reported, "libs", "the diagnostic does not name the key: %s", reported)
+	require.Contains(t, reported, "deleted", "the diagnostic does not say what to do: %s", reported)
+	require.NotContains(t, reported, "has no such input",
+		"reported as an unknown input, which sends the author hunting for a spelling rather than deleting the key")
 }
 
-// TestAComputedLibraryListIsNotReported is the other side, and the one that keeps
-// the check honest.
+// TestARetiredInputDoesNotSuppressRealChecks is the negative direction.
 //
-// A `libs:` produced by an expression is resolved at run time against a scope this
-// validator cannot see. Reporting it would be a false diagnostic, and this package
-// holds those to be worse than missing ones — they train authors to ignore the
-// tool.
-func TestAComputedLibraryListIsNotReported(t *testing.T) {
+// A retired name is marked so the required-input pass does not also complain about
+// it. A bug there could mark the wrong name and silence a genuine complaint, and
+// every assertion above would still pass.
+func TestARetiredInputDoesNotSuppressRealChecks(t *testing.T) {
 	t.Parallel()
 
-	const src = `name: computed-libraries
+	// `expr` is required and missing; `libs` is retired. Both must be reported.
+	const src = `name: still-checked
 steps:
-  - id: pick
-    echo:
-      message: strings
   - id: shout
     cel:
-      expr: "'hi'.upperAscii()"
-      libs: ${[pick.result]}
+      libs: [strings]
 `
 
 	diagnostics, err := flowfile.ValidateSource([]byte(src))
 	require.NoError(t, err)
 
-	for _, d := range diagnostics {
-		require.NotContains(t, d.Message, "extension library",
-			"a library list this validator cannot see was reported anyway: %s", d.Message)
-	}
+	reported := diagnostics.Error()
+	require.Contains(t, reported, "libs", "the retired key went unreported: %s", reported)
+	require.Contains(t, reported, "expr", "a required input went unreported beside a retired one: %s", reported)
 }
 
 // TestTheEvaluatorRefusesAnUnknownLibraryBeforeItCaches is the resource bound

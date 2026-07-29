@@ -247,44 +247,6 @@ steps:
 			exact: []string{"web"},
 		},
 		{
-			name: "cel libraries inside a flow list",
-			src: `name: c
-steps:
-  - id: a
-    cel:
-      libs: [|]
-      expr: "1"
-`,
-			exact: v1.ExtensionLibraries(),
-			detailContains: map[string]string{
-				"json": "Parse a JSON string",
-			},
-		},
-		{
-			name: "cel libraries exclude ones already enabled",
-			src: `name: c
-steps:
-  - id: a
-    cel:
-      libs: [json, |]
-      expr: "1"
-`,
-			notWant: []string{"json"},
-			want:    []string{"math", "strings"},
-		},
-		{
-			name: "cel libraries in a block list",
-			src: `name: c
-steps:
-  - id: a
-    cel:
-      expr: "1"
-      libs:
-        - ma|
-`,
-			exact: []string{"math"},
-		},
-		{
 			// In the order a file is written: the grammar it is written in, then
 			// what the workflow is, then what it does.
 			name:  "top level document keys",

@@ -291,17 +291,17 @@ See [examples/fan-out-and-parallel](examples/fan-out-and-parallel).
 
 ### Parse JSON with CEL
 
-You can keep HTTP simple (returning `status_code`, `headers`, `body`) and use the CEL task to parse JSON without a separate HTTP+JSON task. Enable the optional `json` library and use `json_parse(string)`:
+You can keep HTTP simple (returning `status_code`, `headers`, `body`) and use the CEL task to parse JSON without a separate HTTP+JSON task. `json_parse(string)` is available with nothing to enable:
 
 ```yaml
+name: json-via-cel
 steps:
-  - id: resp 
+  - id: resp
     http:
       method: GET
       url: https://httpbin.org/json
   - id: pick
     cel:
-      libs: [json]
       expr: json_parse(steps.resp.body)['slideshow']['title']
 ```
 
@@ -585,11 +585,11 @@ Each step in a `Flowfile` has named inputs and produces named outputs, which lat
 | `echo`    | `message` | `result` |
 | `printf`  | `format`, `args` | `result` |
 | `http`    | `url`, `method`, `headers`, `body`, `query`, `form`, `json`, `parse_json`, `outputs`, `expect`, `retry_on_unknown_outcome` | `status_code`, `headers`, `body`, `json` |
-| `cel`     | `expr`, `vars`, `libs` | `result` |
+| `cel`     | `expr`, `vars` | `result` |
 
 Names only, deliberately: types and constraints belong to the schema, and repeating them
 here is how the two disagree. `flow tasks` prints the same catalog with every type, which
-required input is which, and the CEL libraries the `cel` task accepts — derived from the
+required input is which, and the CEL libraries every expression reaches — derived from the
 registry, so it cannot drift from what the engine will execute.
 
 This table is checked against that registry by a test, because it *had* drifted: it was
@@ -626,7 +626,7 @@ steps:
 
 > [!TIP]
 > Use `${...}` for expressions, like referencing a previous step's output as `${steps.<id>.<output>}`.
-> The `cel` task evaluates the expression string provided in its `expr` input at runtime. Variables for the expression are provided under the `vars` input, and referenced as `vars.<name>`. Use the optional `libs` input to enable CEL extension libraries: `bindings`, `comprehensions`, `encoders`, `json`, `lists`, `math`, `optional`, `protos`, `regex`, `sets`, `strings`. `flow tasks` prints the same set, and naming one this build does not have is refused at validation rather than at run time.
+> The `cel` task evaluates the expression string provided in its `expr` input at runtime. Variables for the expression are provided under the `vars` input, and referenced as `vars.<name>`. Every expression in a workflow — this one, `if:`, `items:`, `wait_until:`, and every task input — reaches the same CEL extension libraries: `bindings`, `comprehensions`, `encoders`, `json`, `lists`, `math`, `optional`, `protos`, `regex`, `sets`, `strings`. There is nothing to enable; `flow tasks` prints the same set.
 
 ### Waiting
 
@@ -797,7 +797,7 @@ Run `flow <command> --help` for the full flags of any of these.
 | `flow signal <id> <name>` | Deliver a signal to a run that is waiting, which is how a human approval reaches a workload. |
 | `flow cancel <id>` | Ask a run to stop, letting it clean up. |
 | `flow terminate <id>` | Stop a run immediately, running none of its cleanup. |
-| `flow tasks` | List the tasks a workflow may use, and the expression libraries available to them. |
+| `flow tasks` | List the tasks a workflow may use, and the libraries every expression reaches. |
 | `flow worker` | Start a Temporal worker, which is what actually executes steps. |
 | `flow server` | Start the Flowstate API server that accepts workflows. |
 | `flow lsp` | Serve the Flowfile language server over stdin and stdout, for editor diagnostics. |

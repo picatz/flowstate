@@ -33,61 +33,6 @@ import (
 // produces no diagnostic. That matters more here than coverage does: a validator
 // that reports a mistake the author did not make teaches them to stop reading it.
 
-// validateTaskLibraries reports a CEL extension library this build does not have.
-//
-// A misspelled library used to compile cleanly and fail at run time, which is the
-// "a misspelled key must be reported" rule with the failure moved as late as it can
-// go: the workflow starts, the step is scheduled, an activity runs, and only then
-// does anyone learn that `stirngs` is not a library. The names are a closed set the
-// registry knows, so there is no reason for that to be a run-time answer.
-//
-// It also closes the front door on a resource bound. The evaluator caches an
-// environment per library set, and until recently cached the failures too — so
-// every distinct unknown name became a permanent entry in a process-wide map. That
-// is fixed where it belongs, in the evaluator; this is the half that means an
-// author never arrives there by accident.
-func validateTaskLibraries(stepID string, task *v1.Task) Diagnostics {
-	var ds Diagnostics
-
-	libs, present := task.GetInputs()["libs"]
-	if !present {
-		return ds
-	}
-
-	// Only a literal list can be checked. An expression producing the list is
-	// resolved at run time against a scope this validator cannot see, and
-	// reporting it would be a false diagnostic — which this package holds to be
-	// worse than a missing one.
-	list := libs.GetLiteral().GetListValue()
-	if list == nil {
-		return ds
-	}
-
-	known := make(map[string]bool)
-	for _, name := range v1.ExtensionLibraries() {
-		known[name] = true
-	}
-
-	for _, value := range list.GetValues() {
-		name := value.GetStringValue()
-		if name == "" || known[strings.ToLower(strings.TrimSpace(name))] {
-			continue
-		}
-
-		ds = append(ds, Diagnostic{
-			Step:  stepID,
-			Field: "libs",
-			// The element, not just the field: a surface with positions can then
-			// underline the name that is wrong rather than the whole list.
-			Value: name,
-			Message: fmt.Sprintf("unknown CEL extension library %q; available libraries are %s",
-				name, strings.Join(v1.ExtensionLibraries(), ", ")),
-		})
-	}
-
-	return ds
-}
-
 // validateTaskInputs reports what the task's own schema says is wrong with its
 // inputs: a name it does not declare, a required one left out, and a literal
 // whose type the field cannot hold.
@@ -112,10 +57,27 @@ func validateTaskInputs(stepID string, task *v1.Task) Diagnostics {
 	// `mesage: hi` is one problem, not two.
 	misspelled := make(map[string]bool)
 
+	// Retired inputs are reported first, and deliberately above the gate below.
+	//
+	// That gate is skipped for a task accepting undeclared inputs, which is exactly
+	// where a retired input hides: for `cel` an unrecognised key becomes a
+	// *variable*, so a leftover `libs:` stops selecting anything and quietly turns
+	// into a binding nobody reads. The file validates, runs, and does something
+	// other than what it says — the worst of the three outcomes, and the one no
+	// other check here can see.
+	for _, name := range sortedInputNames(task.GetInputs()) {
+		if advice, retired := retiredTaskInputs[def.Name][name]; retired {
+			// Marked so the required-input pass below does not also complain about
+			// it: one leftover key is one problem.
+			misspelled[name] = true
+			ds = append(ds, Diagnostic{Step: stepID, Field: name, Message: advice})
+		}
+	}
+
 	if !acceptsUndeclaredInputs(def) {
 		declared := fieldNames(def.Inputs)
 		for _, name := range sortedInputNames(task.GetInputs()) {
-			if findField(def.Inputs, name) != nil {
+			if findField(def.Inputs, name) != nil || misspelled[name] {
 				continue
 			}
 
@@ -310,6 +272,21 @@ func kindPhrase(kind protoreflect.Kind) string {
 		}
 		return "a different type"
 	}
+}
+
+// retiredTaskInputs are inputs a task used to accept, and what to do instead.
+//
+// Keyed by task and then by input, because a name retired from one task may be
+// perfectly good on another — this is not a list of words the language refuses.
+//
+// The advice says the key can be deleted rather than naming a replacement, since
+// there is not one: the capability did not move, it stopped being a choice.
+var retiredTaskInputs = map[string]map[string]string{
+	"cel": {
+		"libs": "`libs:` no longer selects anything and can be deleted: every expression in a workflow " +
+			"speaks one dialect now, so the libraries this named are already available — to this step, and " +
+			"to `if:`, `items:` and `wait_until:`, which never had a key to select with",
+	},
 }
 
 // acceptsUndeclaredInputs reports whether a task takes input names its schema does

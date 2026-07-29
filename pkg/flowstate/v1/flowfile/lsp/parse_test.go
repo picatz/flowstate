@@ -277,24 +277,6 @@ steps:
 			want: []outlineStep{{id: "first", taskName: "echo"}},
 		},
 		{
-			name: "libs in a flow list and a block list",
-			src: `name: x
-steps:
-  - id: a
-    cel:
-      libs: [json, math]
-  - id: b
-    cel:
-      libs:
-        - strings
-        - sets
-`,
-			want: []outlineStep{
-				{id: "a", taskName: "cel", libs: []string{"json", "math"}},
-				{id: "b", taskName: "cel", libs: []string{"strings", "sets"}},
-			},
-		},
-		{
 			name: "nested values are not mistaken for input names",
 			src: `name: x
 steps:
@@ -340,9 +322,6 @@ steps:
 			for i, want := range tt.want {
 				assert.Equal(t, want.id, got[i].id, "step %d id", i)
 				assert.Equal(t, want.taskName, got[i].taskName, "step %d task", i)
-				if want.libs != nil {
-					assert.Equal(t, want.libs, got[i].libs, "step %d libs", i)
-				}
 				if want.inputKeys != nil {
 					assert.Equal(t, want.inputKeys, got[i].inputKeys, "step %d input keys", i)
 				}

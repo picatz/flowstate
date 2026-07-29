@@ -12,7 +12,6 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/sourcegraph/go-lsp"
-	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 // Diagnostics are the reason this server exists. Everything else makes authoring
@@ -252,25 +251,24 @@ func checkExpressions(doc *document, set *diagnosticSet) []lsp.Range {
 	}
 	ev := v1.DefaultEvaluator()
 
-	// A ${...} expression is resolved by the engine in the base environment, so
-	// that is the environment it is checked in. Without one there is nothing to
-	// parse with, and silence is the only honest answer.
-	baseEnv, err := ev.Env()
+	// One environment, because a workflow speaks one dialect.
+	//
+	// This used to build two: a base environment for `${...}` values and a
+	// per-step one from that step's `libs:`, because a library can contribute
+	// macros and so changes how expression source *parses*. With the profile that
+	// distinction is gone — every expression in a file is parsed the way the engine
+	// will evaluate it, which is the property that keeps a squiggle here from
+	// disagreeing with a run.
+	//
+	// Without an environment there is nothing to parse with, and silence is the
+	// only honest answer.
+	env, err := ev.ProfileEnv(v1.CurrentProfile)
 	if err != nil {
 		return flagged
 	}
 
 	for _, s := range doc.parsed.steps {
 		def, taskKnown := v1.LookupTask(s.taskName)
-
-		// A step's libraries change how its own expression source parses, because
-		// some of them contribute macros.
-		stepEnv, libErr := ev.Env(stepLibraries(s, def, taskKnown)...)
-		if libErr != nil {
-			// Falling back keeps the expression itself checked rather than
-			// abandoning the step over a library problem reported elsewhere.
-			stepEnv = baseEnv
-		}
 
 		for _, in := range s.expressionEntries() {
 			// An input the task evaluates itself carries expression source
@@ -286,7 +284,7 @@ func checkExpressions(doc *document, set *diagnosticSet) []lsp.Range {
 				case v.fenced:
 					// Anything fenced is checked, valid or not: a broken
 					// expression is the case a precise position matters most for.
-					found = reportCELErrors(doc, set, baseEnv, v.expr, v.exprOffset, v.exprRange)
+					found = reportCELErrors(doc, set, env, v.expr, v.exprOffset, v.exprRange)
 
 				// A scalar containing a fence but not made of one — `${a} and ${b}`,
 				// or an unterminated `${` — is a mistake with no inner span to point
@@ -297,7 +295,7 @@ func checkExpressions(doc *document, set *diagnosticSet) []lsp.Range {
 					// An input the task evaluates itself is expression source
 					// directly, without a fence. The validator does not parse
 					// these, so this is the only check they get.
-					found = reportCELErrors(doc, set, stepEnv, v.text, v.textOffset, v.rng)
+					found = reportCELErrors(doc, set, env, v.text, v.textOffset, v.rng)
 				}
 				if found {
 					flagged = append(flagged, v.rng)
@@ -306,53 +304,6 @@ func checkExpressions(doc *document, set *diagnosticSet) []lsp.Range {
 		}
 	}
 	return flagged
-}
-
-// stepLibraries returns the CEL libraries a step enables, skipping any name this
-// build does not have.
-//
-// It reports nothing. An unknown name is a rule, the rule lives in the shared
-// validator, and this package's standing constraint is that the editor must never
-// disagree with `flow validate` about the same file — so what arrives here is
-// re-placed onto the offending element rather than restated. Skipping the name is
-// still necessary: handing it to the evaluator would fail environment construction
-// and cost the rest of the step its expression checks, over a mistake already
-// being reported.
-//
-// The set of legal names belongs to the evaluator, so an added library becomes
-// valid in the editor at the same moment it becomes valid in the engine.
-func stepLibraries(s *parsedStep, def v1.TaskDef, taskKnown bool) []string {
-	if !taskKnown || def.Inputs == nil {
-		return nil
-	}
-	// A libs input exists only for a task whose schema declares one as a list of
-	// strings; nothing here assumes which task that is.
-	fd := findField(def.Inputs, "libs")
-	if fd == nil || !fd.IsList() || fd.Kind() != protoreflect.StringKind {
-		return nil
-	}
-	in := s.input("libs")
-	if in == nil || in.value == nil {
-		return nil
-	}
-
-	elements := in.value.items
-	if in.value.kind == kindScalar {
-		// A single library may be written without a list.
-		elements = []*value{in.value}
-	}
-
-	var libs []string
-	for _, el := range elements {
-		if el.kind != kindScalar || el.text == "" {
-			continue
-		}
-		if _, ok := lookupCELLibrary(el.text); !ok {
-			continue
-		}
-		libs = append(libs, el.text)
-	}
-	return libs
 }
 
 // reportCELErrors parses src and reports each syntax error at its position in the

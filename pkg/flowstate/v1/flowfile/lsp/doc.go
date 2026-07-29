@@ -9,7 +9,7 @@
 // Nothing here maintains its own idea of what a Flowfile may contain. Task
 // names, input names, input and output types, required-ness, and the value
 // constraints shown on hover all come from the task registry's TaskDef
-// descriptors; the CEL extension libraries come from the evaluator. That is
+// descriptors; the language profile comes from the evaluator. That is
 // deliberate: a language server holding its own copy of the schema eventually
 // offers completion for something the engine rejects, which is worse than
 // offering nothing. Registering a new task makes it appear in completion,
@@ -30,7 +30,6 @@
 //   - parse.go      builds the positional model of a Flowfile from its YAML AST.
 //   - outline.go    a line-based scan that also works on unparseable text.
 //   - schema.go     renders protobuf descriptors and protovalidate constraints.
-//   - cellib.go     describes CEL extension libraries by diffing environments.
 //   - diagnostics.go, hover.go, completion.go, symbols.go — one feature each.
 //   - server.go     JSON-RPC dispatch and the protocol lifecycle.
 package lsp

@@ -30,7 +30,6 @@ steps:
       message: ${steps.web.body}
   - id: parsed
     cel:
-      libs: [json]
       expr: json_parse(vars.raw)
       vars:
         raw: ${steps.web.body}
@@ -108,11 +107,6 @@ func TestHover(t *testing.T) {
 			at:     "${steps.web.body}",
 			offset: 2,
 			want:   []string{"`steps.web.body`", "`string`"},
-		},
-		{
-			name: "cel library describes itself and what it provides",
-			at:   "json]",
-			want: []string{"CEL library `json`", "json_parse", "libs: [json]"},
 		},
 		{
 			name: "step id summarizes the step",
