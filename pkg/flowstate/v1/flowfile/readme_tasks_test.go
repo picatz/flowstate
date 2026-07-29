@@ -165,4 +165,20 @@ func TestREADMENamesEveryCELLibrary(t *testing.T) {
 			"the evaluator accepts CEL library %q and the README's list does not name it\n"+
 				"  a library nobody documents is one nobody enables", name)
 	}
+
+	// And the other direction, which this test was missing while the task table
+	// test above had it — an inconsistency inside one change.
+	//
+	// A library removed or renamed in the evaluator but left in this sentence keeps
+	// every assertion above green, because they only ask whether each real name is
+	// present. What the reader gets is documentation recommending a value that
+	// `flow validate` refuses, which is worse than an omission: an omission costs
+	// them a feature they never knew about, and this costs them a file that does
+	// not work and a search for why.
+	for _, match := range backtickedName.FindAllStringSubmatch(claim[1], -1) {
+		name := match[1]
+		assert.Contains(t, libraries, name,
+			"the README's list names CEL library %q, which the evaluator does not accept\n"+
+				"  an author enabling it gets a validation error, not the library", name)
+	}
 }
