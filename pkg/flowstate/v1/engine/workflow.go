@@ -3,6 +3,7 @@ package engine
 import (
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/google/cel-go/cel"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -220,6 +221,55 @@ func failedStepOutputs(err error) *v1.Node_Outputs {
 	}
 }
 
+// rootedStepRef reads a reference written under the steps root, returning the
+// step it names and the output selected on it.
+//
+// Two shapes resolve, and a third deliberately does not:
+//
+//	steps.a.result         -> step "a", output "result"
+//	steps.a.result.field   -> step "a", output "result"  (the outer select is CEL's)
+//	steps.a                -> step "a", every output
+//	steps                  -> not a reference to any one step
+//
+// The last is why this returns false rather than the whole root: an expression
+// naming `steps` bare needs all of them, and saying so is the caller's job.
+func rootedStepRef(sel *expr.Expr_Select) (step, field string, ok bool) {
+	// Walked to the base rather than matched at a fixed depth, because the depth is
+	// not fixed: `steps.a.result.code` is three selects over the root and reaching
+	// only two of them leaves the reference unrecognised — which prunes every
+	// output rather than one, silently.
+	var fields []string
+	node := sel
+	for node != nil {
+		fields = append(fields, node.GetField())
+		operand := node.GetOperand()
+		if ident := operand.GetIdentExpr(); ident != nil {
+			if ident.GetName() != v1.StepsRoot {
+				return "", "", false
+			}
+			break
+		}
+		node = operand.GetSelectExpr()
+	}
+	if node == nil {
+		return "", "", false
+	}
+
+	// Collected outermost first, so the step is last and its output second to last.
+	slices.Reverse(fields)
+	switch len(fields) {
+	case 0:
+		return "", "", false
+	case 1:
+		// `steps.a` — the whole step.
+		return fields[0], "", true
+	default:
+		// Anything deeper selects into the output, which is CEL's business. Only the
+		// output itself has to be kept.
+		return fields[0], fields[1], true
+	}
+}
+
 // collectRefsFromExpr recursively walks a CEL expression and returns a map of
 // step IDs to the set of fields referenced on that step. If a step is
 // referenced without a field (e.g., just `a`), the field set will be empty to
@@ -231,14 +281,50 @@ func collectRefsFromExpr(e *expr.Expr, prev *v1.Workflow_StepOutputs, refs map[s
 	switch kind := e.GetExprKind().(type) {
 	case *expr.Expr_IdentExpr:
 		name := kind.IdentExpr.GetName()
-		if prev != nil && prev.StepValues != nil {
-			if _, ok := prev.StepValues[name]; ok {
-				if _, exists := refs[name]; !exists {
-					refs[name] = make(map[string]struct{})
+		if prev == nil || prev.StepValues == nil {
+			return
+		}
+		if _, ok := prev.StepValues[name]; ok {
+			if _, exists := refs[name]; !exists {
+				refs[name] = make(map[string]struct{})
+			}
+			return
+		}
+		// The root named on its own — `has(steps.a)`, or handed to a macro — asks
+		// for all of them, and there is no way to narrow that from here. Kept whole
+		// rather than pruned to nothing, since being wrong in the other direction
+		// costs history size and being wrong this way costs the run.
+		if name == v1.StepsRoot {
+			for id := range prev.StepValues {
+				if _, exists := refs[id]; !exists {
+					refs[id] = make(map[string]struct{})
 				}
 			}
 		}
 	case *expr.Expr_SelectExpr:
+		// A reference rooted at `steps` names its step one level further in:
+		// `steps.a.result` is Select(Select(Ident("steps"), "a"), "result"), so the
+		// step is the *field* of the inner select rather than an ident at all.
+		//
+		// Handled before the bare form, and handled here rather than left to the
+		// walk below, because the walk cannot see it: it looks for an ident naming
+		// a step, finds `steps`, matches nothing, and records nothing — after which
+		// the caller prunes every output and the activity is handed an empty map.
+		// No error anywhere, and the run only fails after a Continue-As-New.
+		if step, field, ok := rootedStepRef(kind.SelectExpr); ok {
+			if prev != nil && prev.StepValues != nil {
+				if _, known := prev.StepValues[step]; known {
+					if _, exists := refs[step]; !exists {
+						refs[step] = make(map[string]struct{})
+					}
+					if field != "" {
+						refs[step][field] = struct{}{}
+					}
+				}
+			}
+			return
+		}
+
 		// Handle a.b[.c...] by walking the operand chain down to the root ident.
 		// We record the first field selected after the step ident.
 		// For nested selects, this still captures the top-level output field.

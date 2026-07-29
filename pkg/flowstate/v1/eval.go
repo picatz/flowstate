@@ -104,6 +104,21 @@ func (e *StepsOutputActivation) ResolveName(name string) (any, bool) {
 
 	outputs, hasVal := e.Prev.StepValues[stepName]
 	if !hasVal {
+		// Not a step. It may still be the root every step hangs from.
+		//
+		// Answered last so that nothing already resolvable changes meaning: a spec
+		// compiled before this root existed may contain a step literally called
+		// `steps`, and its own outputs still win. That matters because a worker
+		// evaluates the *stored* AST out of RunState rather than re-parsing, so a
+		// run started on an older build keeps resolving the way it always did —
+		// invariant 10, which is why this arm exists at all.
+		if name == StepsRoot {
+			root, err := e.stepsMap()
+			if err != nil {
+				return nil, false
+			}
+			return root, true
+		}
 		return nil, false
 	}
 	if !hasOutput {
@@ -138,6 +153,35 @@ func (e *StepsOutputActivation) ResolveName(name string) (any, bool) {
 		return nil, false
 	}
 	return rv, true
+}
+
+// StepsRoot is the name every step's outputs hang from in an expression, as
+// `steps.<id>.<output>`.
+//
+// Rooting the ambient half of the namespace is what makes a collision between a
+// step id and a locally bound name unrepresentable, rather than something a
+// validation rule has to forbid. See docs/DSL.md.
+const StepsRoot = "steps"
+
+// stepsMap returns every step's outputs as one CEL map, keyed by step id.
+//
+// The whole root is handed back rather than a prefix being parsed here, because
+// CEL resolves a qualified name by trying successively shorter prefixes: given
+// `steps.a.result` it asks for that, then `steps.a`, then `steps`. Answering the
+// last one and letting CEL apply `.a.result` itself means this needs no idea how
+// deep a reference goes — which is exactly the bug the bare form has to guard
+// against by refusing any name with a second dot in it.
+func (e *StepsOutputActivation) stepsMap() (ref.Val, error) {
+	values := e.Prev.GetStepValues()
+	entries := make(map[ref.Val]ref.Val, len(values))
+	for id, outputs := range values {
+		vals, err := e.outputsToMap(outputs)
+		if err != nil {
+			return nil, err
+		}
+		entries[types.String(id)] = vals
+	}
+	return types.NewRefValMap(TypeAdapter, entries), nil
 }
 
 // outputsToMap converts a step's outputs into a CEL map, resolving each value to

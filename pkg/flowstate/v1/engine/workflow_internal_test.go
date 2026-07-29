@@ -3,10 +3,12 @@ package engine
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.temporal.io/sdk/temporal"
 )
@@ -273,4 +275,108 @@ func Test_activityError_retryAfter(t *testing.T) {
 		require.Zero(t, v1.RetryAfter(errors.New("plain")))
 		require.Zero(t, v1.RetryAfter(nil))
 	})
+}
+
+// TestCompactPrevOutputsForTask_RootedReferences is the test that would have
+// caught this walker being left behind.
+//
+// It is a second, independent implementation of a job flowfile's validator also
+// does — reading which steps an expression names — and only one of the two has a
+// compiler watching it. When references gained a `steps.` root, this one saw
+// `Ident("steps")`, matched no step of that name, recorded nothing, and the
+// caller pruned every output to an empty map. No error at compile time, none at
+// submit; the run would simply find nothing where its inputs used to be, and only
+// after a Continue-As-New, which is to say only on the long runs this engine
+// exists for.
+func TestCompactPrevOutputsForTask_RootedReferences(t *testing.T) {
+	prev := &v1.Workflow_StepOutputs{
+		StepValues: map[string]*v1.Node_Outputs{
+			"a": {NamedValues: map[string]*v1.Value{
+				"result": v1.NewLiteral("hello"),
+				"other":  v1.NewLiteral("unused"),
+			}},
+			"b": {NamedValues: map[string]*v1.Value{"result": v1.NewLiteral("bye")}},
+			"c": {NamedValues: map[string]*v1.Value{"result": v1.NewLiteral("unused")}},
+		},
+	}
+
+	tests := []struct {
+		name string
+		expr string
+		// want maps each step kept to the outputs kept on it. A step absent from
+		// want must be pruned; an empty set means the whole step is kept.
+		want map[string][]string
+	}{
+		{
+			name: "a rooted reference keeps exactly its own output",
+			expr: "steps.a.result",
+			want: map[string][]string{"a": {"result"}},
+		},
+		{
+			name: "the bare form still works, for a spec compiled before the root",
+			expr: "a.result",
+			want: map[string][]string{"a": {"result"}},
+		},
+		{
+			// The shape a fixed-depth match misses. `steps.a.result.code` is three
+			// selects over the root, and reaching only two of them leaves the
+			// reference unrecognised — which prunes everything rather than one thing.
+			name: "selecting into an output keeps the output",
+			expr: "steps.a.result.startsWith('h')",
+			want: map[string][]string{"a": {"result"}},
+		},
+		{
+			name: "naming a step keeps all of it",
+			expr: "steps.a",
+			want: map[string][]string{"a": {}},
+		},
+		{
+			name: "two rooted references keep both steps and neither of the third",
+			expr: "steps.a.result + steps.b.result",
+			want: map[string][]string{"a": {"result"}, "b": {"result"}},
+		},
+		{
+			// Nothing here can narrow it, so nothing is dropped. Being wrong this way
+			// costs history size; being wrong the other way costs the run.
+			name: "the root named on its own keeps everything",
+			expr: "size(steps)",
+			want: map[string][]string{"a": {}, "b": {}, "c": {}},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			task := &v1.Task{
+				Name:   "echo",
+				Inputs: map[string]*v1.Value{"message": v1.NewExpr(tc.expr)},
+			}
+
+			trimmed := compactPrevOutputsForTask(task, prev)
+
+			require.Len(t, trimmed.GetStepValues(), len(tc.want),
+				"kept the wrong number of steps: %v", stepIDsOf(trimmed))
+			for id, outputs := range tc.want {
+				kept, ok := trimmed.GetStepValues()[id]
+				require.True(t, ok, "step %q was pruned but is referenced", id)
+				if len(outputs) == 0 {
+					continue
+				}
+				for _, name := range outputs {
+					assert.Contains(t, kept.GetNamedValues(), name,
+						"step %q lost output %q", id, name)
+				}
+				assert.Len(t, kept.GetNamedValues(), len(outputs),
+					"step %q kept outputs nothing referenced", id)
+			}
+		})
+	}
+}
+
+func stepIDsOf(o *v1.Workflow_StepOutputs) []string {
+	ids := make([]string, 0, len(o.GetStepValues()))
+	for id := range o.GetStepValues() {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	return ids
 }
