@@ -7,6 +7,7 @@ import (
 
 	"connectrpc.com/connect"
 	common "go.temporal.io/api/common/v1"
+	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
@@ -148,7 +149,7 @@ func (s *FlowstateServer) Signal(ctx context.Context, req *connect.Request[v1.Si
 	}
 
 	if err := temporal.SignalWorkflow(ctx, workflowID, runID, req.Msg.GetName(), payload); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("delivering signal %q: %w", req.Msg.GetName(), err))
+		return nil, actOnRunError("delivering a signal to", workflowID, err)
 	}
 
 	return connect.NewResponse(&v1.SignalResponse{}), nil
@@ -176,7 +177,7 @@ func (s *FlowstateServer) Cancel(ctx context.Context, req *connect.Request[v1.Ca
 	}
 
 	if err := temporal.CancelWorkflow(ctx, workflowID, runID); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("cancelling run %q: %w", workflowID, err))
+		return nil, actOnRunError("cancelling", workflowID, err)
 	}
 
 	return connect.NewResponse(&v1.CancelResponse{}), nil
@@ -202,8 +203,38 @@ func (s *FlowstateServer) Terminate(ctx context.Context, req *connect.Request[v1
 	}
 
 	if err := temporal.TerminateWorkflow(ctx, workflowID, runID, req.Msg.GetReason()); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("terminating run %q: %w", workflowID, err))
+		return nil, actOnRunError("terminating", workflowID, err)
 	}
 
 	return connect.NewResponse(&v1.TerminateResponse{}), nil
+}
+
+// actOnRunError classifies a failure to act on a run that was already authorized.
+//
+// A run id is a position in a chain, not a name for the workload. A workload that
+// continued as new is several executions sharing one workflow id, and the id a
+// listing reported is whichever segment was current when the listing ran. Act on
+// that id a moment later and Temporal answers NotFound — "workflow execution
+// already completed" — for a request that is well-formed, authorized, and about a
+// workload that plainly exists.
+//
+// Reported as FailedPrecondition rather than Internal. Internal was wrong twice
+// over: it says the server broke when nothing did, and it hands an operator who
+// copied a run id out of `flow list` a 500 with no way to tell whether retrying
+// would help. The message says what to do instead, because the fix is not obvious
+// from the failure — the run id that was accurate when it was printed is the same
+// run id that is wrong now.
+//
+// Matched on the error type rather than its text. Temporal's wording is not this
+// repo's to depend on, and a string match would fail open the day it changes,
+// which is the direction that turns a clear diagnostic back into a 500.
+func actOnRunError(verb, workflowID string, err error) error {
+	var notFound *serviceerror.NotFound
+	if errors.As(err, &notFound) {
+		return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf(
+			"%s run %q: that execution has already finished; a run id names one segment of a workload, "+
+				"so an id taken from a listing goes stale as soon as the workload continues as new — "+
+				"omit the run id to act on whichever segment is current", verb, workflowID))
+	}
+	return connect.NewError(connect.CodeInternal, fmt.Errorf("%s run %q: %w", verb, workflowID, err))
 }
