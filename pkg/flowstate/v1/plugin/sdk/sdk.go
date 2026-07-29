@@ -82,8 +82,9 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/known/durationpb"
 
+	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
+	pluginv1connect "github.com/picatz/flowstate/pkg/flowstate/plugin/v1/pluginv1connect"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/internal/protocol"
 )
 
@@ -522,11 +523,11 @@ func readEnvironment() (environment, error) {
 		return environment{}, fmt.Errorf("sdk: %s: %w", protocol.VersionsEnv, err)
 	}
 
-	version, ok := protocol.Negotiate(offered, []int{protocol.Version1})
+	version, ok := protocol.Negotiate(offered, []int{protocol.Version2})
 	if !ok {
 		return environment{}, fmt.Errorf(
 			"%w: it offered %s, this plugin speaks %d",
-			ErrProtocolVersion, protocol.FormatVersions(offered), protocol.Version1,
+			ErrProtocolVersion, protocol.FormatVersions(offered), protocol.Version2,
 		)
 	}
 
@@ -595,8 +596,8 @@ func announce(env environment) error {
 }
 
 // manifest builds what the engine is told about this plugin.
-func (p Plugin) manifest() (*flowstatev1.PluginManifest, error) {
-	manifest := &flowstatev1.PluginManifest{
+func (p Plugin) manifest() (*pluginv1.PluginManifest, error) {
+	manifest := &pluginv1.PluginManifest{
 		Name:        p.Name,
 		Version:     p.Version,
 		Description: p.Description,
@@ -609,12 +610,12 @@ func (p Plugin) manifest() (*flowstatev1.PluginManifest, error) {
 		if len(p.Secrets.Schemes) == 0 {
 			return nil, fmt.Errorf("sdk: Secrets is set but claims no schemes, so no reference would ever reach it")
 		}
-		manifest.Capabilities = append(manifest.Capabilities, flowstatev1.Capability_CAPABILITY_SECRETS)
+		manifest.Capabilities = append(manifest.Capabilities, pluginv1.Capability_CAPABILITY_SECRETS)
 		manifest.Schemes = slices.Clone(p.Secrets.Schemes)
 	}
 
 	if len(p.Tasks) > 0 {
-		manifest.Capabilities = append(manifest.Capabilities, flowstatev1.Capability_CAPABILITY_TASKS)
+		manifest.Capabilities = append(manifest.Capabilities, pluginv1.Capability_CAPABILITY_TASKS)
 		for _, task := range p.Tasks {
 			entry, err := task.manifest()
 			if err != nil {
@@ -633,7 +634,7 @@ func (p Plugin) manifest() (*flowstatev1.PluginManifest, error) {
 
 // manifest builds the engine's description of one task, including the serialized
 // descriptors that let it validate a workflow using the task.
-func (t Task) manifest() (*flowstatev1.TaskManifest, error) {
+func (t Task) manifest() (*pluginv1.TaskManifest, error) {
 	if t.Fn == nil {
 		return nil, fmt.Errorf("sdk: task %q has no Fn", t.Name)
 	}
@@ -648,7 +649,7 @@ func (t Task) manifest() (*flowstatev1.TaskManifest, error) {
 		return nil, fmt.Errorf("sdk: task %q output: %w", t.Name, err)
 	}
 
-	return &flowstatev1.TaskManifest{
+	return &pluginv1.TaskManifest{
 		Name:             t.Name,
 		Summary:          t.Summary,
 		InputDescriptor:  inputDescriptor,
@@ -737,13 +738,13 @@ var hostProvidedFiles = sync.OnceValue(func() map[string]struct{} {
 	}
 
 	walk(flowstatev1.File_flowstate_v1_flowstate_proto)
-	walk(flowstatev1.File_flowstate_v1_plugin_proto)
+	walk(pluginv1.File_flowstate_plugin_v1_plugin_proto)
 
 	return provided
 })
 
 // handler builds the HTTP handler serving this plugin's services.
-func (p Plugin) handler(manifest *flowstatev1.PluginManifest, token func() string, cfg options) (http.Handler, error) {
+func (p Plugin) handler(manifest *pluginv1.PluginManifest, token func() string, cfg options) (http.Handler, error) {
 	opts := []connect.HandlerOption{
 		connect.WithReadMaxBytes(cfg.maxRequestBytes),
 		connect.WithInterceptors(requireToken(token)),
@@ -751,14 +752,14 @@ func (p Plugin) handler(manifest *flowstatev1.PluginManifest, token func() strin
 
 	mux := http.NewServeMux()
 
-	path, handler := flowstatev1connect.NewPluginServiceHandler(&pluginService{
+	path, handler := pluginv1connect.NewPluginServiceHandler(&pluginService{
 		manifest: manifest,
 		health:   p.Health,
 	}, opts...)
 	mux.Handle(path, handler)
 
 	if p.Secrets != nil {
-		path, handler := flowstatev1connect.NewSecretServiceHandler(&secretService{
+		path, handler := pluginv1connect.NewSecretServiceHandler(&secretService{
 			schemes: p.Secrets.Schemes,
 			resolve: p.Secrets.Resolve,
 		}, opts...)
@@ -774,7 +775,7 @@ func (p Plugin) handler(manifest *flowstatev1.PluginManifest, token func() strin
 			byName[task.Name] = task
 		}
 
-		path, handler := flowstatev1connect.NewTaskServiceHandler(&taskService{tasks: byName}, opts...)
+		path, handler := pluginv1connect.NewTaskServiceHandler(&taskService{tasks: byName}, opts...)
 		mux.Handle(path, handler)
 	}
 
@@ -802,24 +803,24 @@ func requireToken(token func() string) connect.Interceptor {
 
 // pluginService implements the capability handshake every plugin must serve.
 type pluginService struct {
-	flowstatev1connect.UnimplementedPluginServiceHandler
+	pluginv1connect.UnimplementedPluginServiceHandler
 
-	manifest *flowstatev1.PluginManifest
+	manifest *pluginv1.PluginManifest
 	health   HealthFunc
 }
 
 // Describe reports what the plugin is and can do.
-func (s *pluginService) Describe(context.Context, *connect.Request[flowstatev1.DescribePluginRequest]) (*connect.Response[flowstatev1.DescribePluginResponse], error) {
-	return connect.NewResponse(&flowstatev1.DescribePluginResponse{
+func (s *pluginService) Describe(context.Context, *connect.Request[pluginv1.DescribeRequest]) (*connect.Response[pluginv1.DescribeResponse], error) {
+	return connect.NewResponse(&pluginv1.DescribeResponse{
 		Manifest: s.manifest,
 	}), nil
 }
 
 // Health reports whether the plugin can serve.
-func (s *pluginService) Health(ctx context.Context, _ *connect.Request[flowstatev1.HealthRequest]) (*connect.Response[flowstatev1.HealthResponse], error) {
+func (s *pluginService) Health(ctx context.Context, _ *connect.Request[pluginv1.HealthRequest]) (*connect.Response[pluginv1.HealthResponse], error) {
 	if s.health == nil {
-		return connect.NewResponse(&flowstatev1.HealthResponse{
-			Status: flowstatev1.HealthResponse_STATUS_SERVING,
+		return connect.NewResponse(&pluginv1.HealthResponse{
+			Status: pluginv1.HealthResponse_STATUS_SERVING,
 		}), nil
 	}
 
@@ -830,27 +831,27 @@ func (s *pluginService) Health(ctx context.Context, _ *connect.Request[flowstate
 		// is logged by the engine, so it must not carry credential material —
 		// which is the plugin author's responsibility, since only they know what
 		// their backend puts in an error.
-		return connect.NewResponse(&flowstatev1.HealthResponse{
-			Status:  flowstatev1.HealthResponse_STATUS_NOT_SERVING,
+		return connect.NewResponse(&pluginv1.HealthResponse{
+			Status:  pluginv1.HealthResponse_STATUS_NOT_SERVING,
 			Message: truncate(err.Error(), 1024),
 		}), nil
 	}
 
-	return connect.NewResponse(&flowstatev1.HealthResponse{
-		Status: flowstatev1.HealthResponse_STATUS_SERVING,
+	return connect.NewResponse(&pluginv1.HealthResponse{
+		Status: pluginv1.HealthResponse_STATUS_SERVING,
 	}), nil
 }
 
 // secretService implements secret resolution.
 type secretService struct {
-	flowstatev1connect.UnimplementedSecretServiceHandler
+	pluginv1connect.UnimplementedSecretServiceHandler
 
 	schemes []string
 	resolve ResolveFunc
 }
 
 // Resolve returns the value a reference names.
-func (s *secretService) Resolve(ctx context.Context, req *connect.Request[flowstatev1.ResolveSecretRequest]) (*connect.Response[flowstatev1.ResolveSecretResponse], error) {
+func (s *secretService) Resolve(ctx context.Context, req *connect.Request[pluginv1.ResolveRequest]) (*connect.Response[pluginv1.ResolveResponse], error) {
 	ref := req.Msg.GetRef()
 	if ref == nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("no reference"))
@@ -878,7 +879,7 @@ func (s *secretService) Resolve(ctx context.Context, req *connect.Request[flowst
 		return nil, connect.NewError(connect.CodeNotFound, errors.New("no value"))
 	}
 
-	out := &flowstatev1.ResolveSecretResponse{Value: resp.Value}
+	out := &pluginv1.ResolveResponse{Value: resp.Value}
 	if resp.ExpiresIn > 0 {
 		out.ExpiresIn = durationpb.New(resp.ExpiresIn)
 	}
@@ -888,13 +889,13 @@ func (s *secretService) Resolve(ctx context.Context, req *connect.Request[flowst
 
 // taskService implements task execution.
 type taskService struct {
-	flowstatev1connect.UnimplementedTaskServiceHandler
+	pluginv1connect.UnimplementedTaskServiceHandler
 
 	tasks map[string]Task
 }
 
 // Execute runs a task.
-func (s *taskService) Execute(ctx context.Context, req *connect.Request[flowstatev1.ExecuteTaskRequest]) (*connect.Response[flowstatev1.ExecuteTaskResponse], error) {
+func (s *taskService) Execute(ctx context.Context, req *connect.Request[pluginv1.ExecuteRequest]) (*connect.Response[pluginv1.ExecuteResponse], error) {
 	name := req.Msg.GetTask().GetName()
 
 	task, ok := s.tasks[name]
@@ -908,7 +909,7 @@ func (s *taskService) Execute(ctx context.Context, req *connect.Request[flowstat
 		return nil, asConnectError(err)
 	}
 
-	return connect.NewResponse(&flowstatev1.ExecuteTaskResponse{Outputs: outputs}), nil
+	return connect.NewResponse(&pluginv1.ExecuteResponse{Outputs: outputs}), nil
 }
 
 // truncate bounds text on its way into a response or an error.

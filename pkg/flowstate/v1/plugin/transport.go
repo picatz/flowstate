@@ -10,7 +10,7 @@ import (
 
 	"connectrpc.com/connect"
 
-	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
+	pluginv1connect "github.com/picatz/flowstate/pkg/flowstate/plugin/v1/pluginv1connect"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/internal/protocol"
 )
 
@@ -34,9 +34,9 @@ const dialTimeout = 5 * time.Second
 // clients are the Connect clients for one running plugin, all sharing one
 // connection to its socket.
 type clients struct {
-	plugin flowstatev1connect.PluginServiceClient
-	secret flowstatev1connect.SecretServiceClient
-	task   flowstatev1connect.TaskServiceClient
+	plugin pluginv1connect.PluginServiceClient
+	secret pluginv1connect.SecretServiceClient
+	task   pluginv1connect.TaskServiceClient
 
 	// transport is retained only so that its idle connections can be closed
 	// when the plugin goes away. Leaving them open would keep a file descriptor
@@ -101,9 +101,9 @@ func newClients(socketPath, token string, maxResponseBytes int) *clients {
 	}
 
 	return &clients{
-		plugin:    flowstatev1connect.NewPluginServiceClient(httpClient, pluginBaseURL, opts...),
-		secret:    flowstatev1connect.NewSecretServiceClient(httpClient, pluginBaseURL, opts...),
-		task:      flowstatev1connect.NewTaskServiceClient(httpClient, pluginBaseURL, opts...),
+		plugin:    pluginv1connect.NewPluginServiceClient(httpClient, pluginBaseURL, opts...),
+		secret:    pluginv1connect.NewSecretServiceClient(httpClient, pluginBaseURL, opts...),
+		task:      pluginv1connect.NewTaskServiceClient(httpClient, pluginBaseURL, opts...),
 		transport: transport,
 	}
 }

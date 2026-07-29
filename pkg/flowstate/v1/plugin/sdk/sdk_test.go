@@ -10,6 +10,7 @@ import (
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/proto"
 
+	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/stretchr/testify/require"
 )
@@ -30,7 +31,7 @@ func TestManifestIsDerived(t *testing.T) {
 	tests := []struct {
 		name             string
 		plugin           Plugin
-		wantCapabilities []flowstatev1.Capability
+		wantCapabilities []pluginv1.Capability
 		wantErr          string
 	}{
 		{
@@ -39,7 +40,7 @@ func TestManifestIsDerived(t *testing.T) {
 				Name:    "s",
 				Secrets: &Secrets{Schemes: []string{"s"}, Resolve: resolve},
 			},
-			wantCapabilities: []flowstatev1.Capability{flowstatev1.Capability_CAPABILITY_SECRETS},
+			wantCapabilities: []pluginv1.Capability{pluginv1.Capability_CAPABILITY_SECRETS},
 		},
 		{
 			name: "tasks only",
@@ -47,7 +48,7 @@ func TestManifestIsDerived(t *testing.T) {
 				Name:  "t",
 				Tasks: []Task{{Name: "t_do", Fn: run}},
 			},
-			wantCapabilities: []flowstatev1.Capability{flowstatev1.Capability_CAPABILITY_TASKS},
+			wantCapabilities: []pluginv1.Capability{pluginv1.Capability_CAPABILITY_TASKS},
 		},
 		{
 			name: "both",
@@ -56,9 +57,9 @@ func TestManifestIsDerived(t *testing.T) {
 				Secrets: &Secrets{Schemes: []string{"b"}, Resolve: resolve},
 				Tasks:   []Task{{Name: "b_do", Fn: run}},
 			},
-			wantCapabilities: []flowstatev1.Capability{
-				flowstatev1.Capability_CAPABILITY_SECRETS,
-				flowstatev1.Capability_CAPABILITY_TASKS,
+			wantCapabilities: []pluginv1.Capability{
+				pluginv1.Capability_CAPABILITY_SECRETS,
+				pluginv1.Capability_CAPABILITY_TASKS,
 			},
 		},
 		{
@@ -565,7 +566,7 @@ func retryableDetail(t *testing.T, err *connect.Error) (retryable, found bool) {
 		if valueErr != nil {
 			continue
 		}
-		if response, ok := value.(*flowstatev1.ExecuteTaskResponse); ok {
+		if response, ok := value.(*pluginv1.ExecuteResponse); ok {
 			return response.GetRetryable(), true
 		}
 	}

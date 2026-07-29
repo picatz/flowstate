@@ -1570,10 +1570,6 @@ type Task struct {
 	// such as "echo", "printf", or "http". The name is used to determine which
 	// task implementation to execute when the workflow is run.
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	// Tasks can have an optional description that provides additional context or
-	// information about the task itself. This can be useful for users or developers
-	// to understand what the task does and how it should be used within the workflow.
-	Description *string `protobuf:"bytes,2,opt,name=description,proto3,oneof" json:"description,omitempty"`
 	// Inputs are the parameters that the task requires to perform its operation.
 	Inputs        map[string]*Value `protobuf:"bytes,3,rep,name=inputs,proto3" json:"inputs,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
@@ -1613,13 +1609,6 @@ func (*Task) Descriptor() ([]byte, []int) {
 func (x *Task) GetName() string {
 	if x != nil {
 		return x.Name
-	}
-	return ""
-}
-
-func (x *Task) GetDescription() string {
-	if x != nil && x.Description != nil {
-		return *x.Description
 	}
 	return ""
 }
@@ -3859,11 +3848,9 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x1a\n" +
 	"\brequired\x18\x03 \x01(\bR\brequired\x12\x1a\n" +
-	"\bdeferred\x18\x04 \x01(\bR\bdeferred\"\x92\x10\n" +
+	"\bdeferred\x18\x04 \x01(\bR\bdeferred\"\xe2\x0f\n" +
 	"\x04Task\x127\n" +
-	"\x04name\x18\x01 \x01(\tB#\xe2A\x01\x02\xbaH\x1c\xc8\x01\x01r\x17\x10\x01\x18\x80\x012\x10^[A-Za-z0-9-_]+$R\x04name\x121\n" +
-	"\vdescription\x18\x02 \x01(\tB\n" +
-	"\xbaH\ar\x05\x10\x00\x18\x80\x02H\x00R\vdescription\x88\x01\x01\x12K\n" +
+	"\x04name\x18\x01 \x01(\tB#\xe2A\x01\x02\xbaH\x1c\xc8\x01\x01r\x17\x10\x01\x18\x80\x012\x10^[A-Za-z0-9-_]+$R\x04name\x12K\n" +
 	"\x06inputs\x18\x03 \x03(\v2\x1e.flowstate.v1.Task.InputsEntryB\x13\xe2A\x01\x01\xbaH\f\xc8\x01\x01\x9a\x01\x06\"\x04r\x02\x10\x01R\x06inputs\x1aa\n" +
 	"\x04Echo\x1a.\n" +
 	"\x06Inputs\x12$\n" +
@@ -3934,8 +3921,7 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"\x06result\x18\x01 \x01(\v2\x13.flowstate.v1.ValueB\x06\xbaH\x03\xc8\x01\x01R\x06result\x1aN\n" +
 	"\vInputsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12)\n" +
-	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01B\x0e\n" +
-	"\f_description\"L\n" +
+	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01J\x04\b\x02\x10\x03R\vdescription\"L\n" +
 	"\n" +
 	"RunRequest\x12>\n" +
 	"\bworkflow\x18\x01 \x01(\v2\x16.flowstate.v1.WorkflowB\n" +
@@ -4249,7 +4235,6 @@ func file_flowstate_v1_flowstate_proto_init() {
 		(*Value_Error_)(nil),
 		(*Value_SecretRef)(nil),
 	}
-	file_flowstate_v1_flowstate_proto_msgTypes[15].OneofWrappers = []any{}
 	file_flowstate_v1_flowstate_proto_msgTypes[17].OneofWrappers = []any{
 		(*RunResponse_Error_)(nil),
 		(*RunResponse_Outputs)(nil),

@@ -1,13 +1,13 @@
 syntax = "proto3";
 
-package flowstate.v1;
+package flowstate.plugin.v1;
 
 import "buf/validate/validate.proto";
 import "flowstate/v1/flowstate.proto";
 import "google/api/field_behavior.proto";
 import "google/protobuf/duration.proto";
 
-option go_package = "flowstatev1";
+option go_package = "flowstatepluginv1";
 
 // Flowstate plugins are separate processes that extend the engine, speaking the
 // services defined in this file over Connect RPC.
@@ -149,7 +149,7 @@ service PluginService {
   // Describe reports what the plugin is and can do. The engine calls it once,
   // immediately after connecting, and refuses a plugin whose manifest does not
   // validate.
-  rpc Describe(DescribePluginRequest) returns (DescribePluginResponse) {}
+  rpc Describe(DescribeRequest) returns (DescribeResponse) {}
 
   // Health reports whether the plugin is able to serve. The engine polls it to
   // decide whether to restart a plugin that has stopped answering, and a plugin
@@ -159,13 +159,13 @@ service PluginService {
   rpc Health(HealthRequest) returns (HealthResponse) {}
 }
 
-message DescribePluginRequest {
+message DescribeRequest {
   // HostVersion tells the plugin what it is talking to, so a plugin can refuse an
   // engine it knows it cannot serve.
   string host_version = 1 [(buf.validate.field).string = {max_len: 64}];
 }
 
-message DescribePluginResponse {
+message DescribeResponse {
   PluginManifest manifest = 1 [
     (buf.validate.field).required = true,
     (google.api.field_behavior) = REQUIRED
@@ -202,12 +202,12 @@ message HealthResponse {
 // only inside the activity that asked for it. It is never returned as a step
 // output and never enters workflow history.
 service SecretService {
-  rpc Resolve(ResolveSecretRequest) returns (ResolveSecretResponse) {}
+  rpc Resolve(ResolveRequest) returns (ResolveResponse) {}
 }
 
-message ResolveSecretRequest {
+message ResolveRequest {
   // Ref is the secret to resolve. Its scheme is one the plugin advertised.
-  SecretRef ref = 1 [
+  flowstate.v1.SecretRef ref = 1 [
     (buf.validate.field).required = true,
     (google.api.field_behavior) = REQUIRED
   ];
@@ -220,10 +220,10 @@ message ResolveSecretRequest {
 
   // Identity is who the requesting workload acts as, so a plugin can apply its own
   // authorization in addition to the engine's. It carries no credentials.
-  WorkloadIdentity identity = 3;
+  flowstate.v1.WorkloadIdentity identity = 3;
 }
 
-message ResolveSecretResponse {
+message ResolveResponse {
   // Value is the resolved secret. A plugin must not log it, and must not include
   // it in an error message.
   bytes value = 1;
@@ -236,30 +236,30 @@ message ResolveSecretResponse {
 
 // TaskService executes tasks, for a plugin advertising CAPABILITY_TASKS.
 service TaskService {
-  rpc Execute(ExecuteTaskRequest) returns (ExecuteTaskResponse) {}
+  rpc Execute(ExecuteRequest) returns (ExecuteResponse) {}
 }
 
-message ExecuteTaskRequest {
+message ExecuteRequest {
   // Task is the step's task, with its inputs already resolved unless the manifest
   // declared them deferred.
-  Task task = 1 [
+  flowstate.v1.Task task = 1 [
     (buf.validate.field).required = true,
     (google.api.field_behavior) = REQUIRED
   ];
 
   // Scope is what the task's own expressions evaluate against, sent only when the
   // manifest declared needs_scope.
-  Scope scope = 2;
+  flowstate.v1.Scope scope = 2;
 
   // Identity is who the workload acts as, and namespace the tenant it belongs to,
   // so a plugin task can authorize what it does on the workload's behalf.
-  WorkloadIdentity identity = 3;
+  flowstate.v1.WorkloadIdentity identity = 3;
   string namespace = 4 [(buf.validate.field).string = {max_len: 256}];
 }
 
-message ExecuteTaskResponse {
+message ExecuteResponse {
   // Outputs are the task's results, matching the manifest's output message.
-  Node.Outputs outputs = 1;
+  flowstate.v1.Node.Outputs outputs = 1;
 
   // Retryable reports whether a failure could succeed on another attempt. It is
   // meaningful only when the RPC itself fails with an application error, and

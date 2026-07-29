@@ -2,12 +2,13 @@
 // versions:
 // 	protoc-gen-go v1.36.11
 // 	protoc        (unknown)
-// source: flowstate/v1/plugin.proto
+// source: flowstate/plugin/v1/plugin.proto
 
-package flowstatev1
+package pluginv1
 
 import (
 	_ "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	_ "google.golang.org/genproto/googleapis/api/annotations"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
@@ -64,11 +65,11 @@ func (x Capability) String() string {
 }
 
 func (Capability) Descriptor() protoreflect.EnumDescriptor {
-	return file_flowstate_v1_plugin_proto_enumTypes[0].Descriptor()
+	return file_flowstate_plugin_v1_plugin_proto_enumTypes[0].Descriptor()
 }
 
 func (Capability) Type() protoreflect.EnumType {
-	return &file_flowstate_v1_plugin_proto_enumTypes[0]
+	return &file_flowstate_plugin_v1_plugin_proto_enumTypes[0]
 }
 
 func (x Capability) Number() protoreflect.EnumNumber {
@@ -77,7 +78,7 @@ func (x Capability) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use Capability.Descriptor instead.
 func (Capability) EnumDescriptor() ([]byte, []int) {
-	return file_flowstate_v1_plugin_proto_rawDescGZIP(), []int{0}
+	return file_flowstate_plugin_v1_plugin_proto_rawDescGZIP(), []int{0}
 }
 
 type HealthResponse_Status int32
@@ -118,11 +119,11 @@ func (x HealthResponse_Status) String() string {
 }
 
 func (HealthResponse_Status) Descriptor() protoreflect.EnumDescriptor {
-	return file_flowstate_v1_plugin_proto_enumTypes[1].Descriptor()
+	return file_flowstate_plugin_v1_plugin_proto_enumTypes[1].Descriptor()
 }
 
 func (HealthResponse_Status) Type() protoreflect.EnumType {
-	return &file_flowstate_v1_plugin_proto_enumTypes[1]
+	return &file_flowstate_plugin_v1_plugin_proto_enumTypes[1]
 }
 
 func (x HealthResponse_Status) Number() protoreflect.EnumNumber {
@@ -131,7 +132,7 @@ func (x HealthResponse_Status) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use HealthResponse_Status.Descriptor instead.
 func (HealthResponse_Status) EnumDescriptor() ([]byte, []int) {
-	return file_flowstate_v1_plugin_proto_rawDescGZIP(), []int{5, 0}
+	return file_flowstate_plugin_v1_plugin_proto_rawDescGZIP(), []int{5, 0}
 }
 
 // PluginManifest is what a plugin says about itself.
@@ -147,7 +148,7 @@ type PluginManifest struct {
 	Description string `protobuf:"bytes,3,opt,name=description,proto3" json:"description,omitempty"`
 	// Capabilities are what this plugin can do. A plugin advertising none is
 	// useless and is refused at startup rather than being kept alive.
-	Capabilities []Capability `protobuf:"varint,4,rep,packed,name=capabilities,proto3,enum=flowstate.v1.Capability" json:"capabilities,omitempty"`
+	Capabilities []Capability `protobuf:"varint,4,rep,packed,name=capabilities,proto3,enum=flowstate.plugin.v1.Capability" json:"capabilities,omitempty"`
 	// Schemes are the secret reference schemes this plugin resolves, meaningful
 	// only with CAPABILITY_SECRETS. A deployment refuses a plugin claiming a scheme
 	// another plugin already claims, since two answers for one scheme is a
@@ -162,7 +163,7 @@ type PluginManifest struct {
 
 func (x *PluginManifest) Reset() {
 	*x = PluginManifest{}
-	mi := &file_flowstate_v1_plugin_proto_msgTypes[0]
+	mi := &file_flowstate_plugin_v1_plugin_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -174,7 +175,7 @@ func (x *PluginManifest) String() string {
 func (*PluginManifest) ProtoMessage() {}
 
 func (x *PluginManifest) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_plugin_proto_msgTypes[0]
+	mi := &file_flowstate_plugin_v1_plugin_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -187,7 +188,7 @@ func (x *PluginManifest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PluginManifest.ProtoReflect.Descriptor instead.
 func (*PluginManifest) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_plugin_proto_rawDescGZIP(), []int{0}
+	return file_flowstate_plugin_v1_plugin_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *PluginManifest) GetName() string {
@@ -264,7 +265,7 @@ type TaskManifest struct {
 
 func (x *TaskManifest) Reset() {
 	*x = TaskManifest{}
-	mi := &file_flowstate_v1_plugin_proto_msgTypes[1]
+	mi := &file_flowstate_plugin_v1_plugin_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -276,7 +277,7 @@ func (x *TaskManifest) String() string {
 func (*TaskManifest) ProtoMessage() {}
 
 func (x *TaskManifest) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_plugin_proto_msgTypes[1]
+	mi := &file_flowstate_plugin_v1_plugin_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -289,7 +290,7 @@ func (x *TaskManifest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskManifest.ProtoReflect.Descriptor instead.
 func (*TaskManifest) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_plugin_proto_rawDescGZIP(), []int{1}
+	return file_flowstate_plugin_v1_plugin_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *TaskManifest) GetName() string {
@@ -348,7 +349,7 @@ func (x *TaskManifest) GetNeedsScope() bool {
 	return false
 }
 
-type DescribePluginRequest struct {
+type DescribeRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// HostVersion tells the plugin what it is talking to, so a plugin can refuse an
 	// engine it knows it cannot serve.
@@ -357,21 +358,21 @@ type DescribePluginRequest struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *DescribePluginRequest) Reset() {
-	*x = DescribePluginRequest{}
-	mi := &file_flowstate_v1_plugin_proto_msgTypes[2]
+func (x *DescribeRequest) Reset() {
+	*x = DescribeRequest{}
+	mi := &file_flowstate_plugin_v1_plugin_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *DescribePluginRequest) String() string {
+func (x *DescribeRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*DescribePluginRequest) ProtoMessage() {}
+func (*DescribeRequest) ProtoMessage() {}
 
-func (x *DescribePluginRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_plugin_proto_msgTypes[2]
+func (x *DescribeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_plugin_v1_plugin_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -382,40 +383,40 @@ func (x *DescribePluginRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use DescribePluginRequest.ProtoReflect.Descriptor instead.
-func (*DescribePluginRequest) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_plugin_proto_rawDescGZIP(), []int{2}
+// Deprecated: Use DescribeRequest.ProtoReflect.Descriptor instead.
+func (*DescribeRequest) Descriptor() ([]byte, []int) {
+	return file_flowstate_plugin_v1_plugin_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *DescribePluginRequest) GetHostVersion() string {
+func (x *DescribeRequest) GetHostVersion() string {
 	if x != nil {
 		return x.HostVersion
 	}
 	return ""
 }
 
-type DescribePluginResponse struct {
+type DescribeResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Manifest      *PluginManifest        `protobuf:"bytes,1,opt,name=manifest,proto3" json:"manifest,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *DescribePluginResponse) Reset() {
-	*x = DescribePluginResponse{}
-	mi := &file_flowstate_v1_plugin_proto_msgTypes[3]
+func (x *DescribeResponse) Reset() {
+	*x = DescribeResponse{}
+	mi := &file_flowstate_plugin_v1_plugin_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *DescribePluginResponse) String() string {
+func (x *DescribeResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*DescribePluginResponse) ProtoMessage() {}
+func (*DescribeResponse) ProtoMessage() {}
 
-func (x *DescribePluginResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_plugin_proto_msgTypes[3]
+func (x *DescribeResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_plugin_v1_plugin_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -426,12 +427,12 @@ func (x *DescribePluginResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use DescribePluginResponse.ProtoReflect.Descriptor instead.
-func (*DescribePluginResponse) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_plugin_proto_rawDescGZIP(), []int{3}
+// Deprecated: Use DescribeResponse.ProtoReflect.Descriptor instead.
+func (*DescribeResponse) Descriptor() ([]byte, []int) {
+	return file_flowstate_plugin_v1_plugin_proto_rawDescGZIP(), []int{3}
 }
 
-func (x *DescribePluginResponse) GetManifest() *PluginManifest {
+func (x *DescribeResponse) GetManifest() *PluginManifest {
 	if x != nil {
 		return x.Manifest
 	}
@@ -446,7 +447,7 @@ type HealthRequest struct {
 
 func (x *HealthRequest) Reset() {
 	*x = HealthRequest{}
-	mi := &file_flowstate_v1_plugin_proto_msgTypes[4]
+	mi := &file_flowstate_plugin_v1_plugin_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -458,7 +459,7 @@ func (x *HealthRequest) String() string {
 func (*HealthRequest) ProtoMessage() {}
 
 func (x *HealthRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_plugin_proto_msgTypes[4]
+	mi := &file_flowstate_plugin_v1_plugin_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -471,12 +472,12 @@ func (x *HealthRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthRequest.ProtoReflect.Descriptor instead.
 func (*HealthRequest) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_plugin_proto_rawDescGZIP(), []int{4}
+	return file_flowstate_plugin_v1_plugin_proto_rawDescGZIP(), []int{4}
 }
 
 type HealthResponse struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
-	Status HealthResponse_Status  `protobuf:"varint,1,opt,name=status,proto3,enum=flowstate.v1.HealthResponse_Status" json:"status,omitempty"`
+	Status HealthResponse_Status  `protobuf:"varint,1,opt,name=status,proto3,enum=flowstate.plugin.v1.HealthResponse_Status" json:"status,omitempty"`
 	// Message explains a non-serving status, for the operator. It must not contain
 	// credential material: this is logged.
 	Message       string `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
@@ -486,7 +487,7 @@ type HealthResponse struct {
 
 func (x *HealthResponse) Reset() {
 	*x = HealthResponse{}
-	mi := &file_flowstate_v1_plugin_proto_msgTypes[5]
+	mi := &file_flowstate_plugin_v1_plugin_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -498,7 +499,7 @@ func (x *HealthResponse) String() string {
 func (*HealthResponse) ProtoMessage() {}
 
 func (x *HealthResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_plugin_proto_msgTypes[5]
+	mi := &file_flowstate_plugin_v1_plugin_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -511,7 +512,7 @@ func (x *HealthResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthResponse.ProtoReflect.Descriptor instead.
 func (*HealthResponse) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_plugin_proto_rawDescGZIP(), []int{5}
+	return file_flowstate_plugin_v1_plugin_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *HealthResponse) GetStatus() HealthResponse_Status {
@@ -528,10 +529,10 @@ func (x *HealthResponse) GetMessage() string {
 	return ""
 }
 
-type ResolveSecretRequest struct {
+type ResolveRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Ref is the secret to resolve. Its scheme is one the plugin advertised.
-	Ref *SecretRef `protobuf:"bytes,1,opt,name=ref,proto3" json:"ref,omitempty"`
+	Ref *v1.SecretRef `protobuf:"bytes,1,opt,name=ref,proto3" json:"ref,omitempty"`
 	// Namespace is the tenant the requesting workload belongs to, established from
 	// the authenticated caller rather than declared by the workload. A plugin
 	// serving several tenants must scope resolution by it; ignoring it would let one
@@ -539,26 +540,26 @@ type ResolveSecretRequest struct {
 	Namespace string `protobuf:"bytes,2,opt,name=namespace,proto3" json:"namespace,omitempty"`
 	// Identity is who the requesting workload acts as, so a plugin can apply its own
 	// authorization in addition to the engine's. It carries no credentials.
-	Identity      *WorkloadIdentity `protobuf:"bytes,3,opt,name=identity,proto3" json:"identity,omitempty"`
+	Identity      *v1.WorkloadIdentity `protobuf:"bytes,3,opt,name=identity,proto3" json:"identity,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *ResolveSecretRequest) Reset() {
-	*x = ResolveSecretRequest{}
-	mi := &file_flowstate_v1_plugin_proto_msgTypes[6]
+func (x *ResolveRequest) Reset() {
+	*x = ResolveRequest{}
+	mi := &file_flowstate_plugin_v1_plugin_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *ResolveSecretRequest) String() string {
+func (x *ResolveRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*ResolveSecretRequest) ProtoMessage() {}
+func (*ResolveRequest) ProtoMessage() {}
 
-func (x *ResolveSecretRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_plugin_proto_msgTypes[6]
+func (x *ResolveRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_plugin_v1_plugin_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -569,33 +570,33 @@ func (x *ResolveSecretRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use ResolveSecretRequest.ProtoReflect.Descriptor instead.
-func (*ResolveSecretRequest) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_plugin_proto_rawDescGZIP(), []int{6}
+// Deprecated: Use ResolveRequest.ProtoReflect.Descriptor instead.
+func (*ResolveRequest) Descriptor() ([]byte, []int) {
+	return file_flowstate_plugin_v1_plugin_proto_rawDescGZIP(), []int{6}
 }
 
-func (x *ResolveSecretRequest) GetRef() *SecretRef {
+func (x *ResolveRequest) GetRef() *v1.SecretRef {
 	if x != nil {
 		return x.Ref
 	}
 	return nil
 }
 
-func (x *ResolveSecretRequest) GetNamespace() string {
+func (x *ResolveRequest) GetNamespace() string {
 	if x != nil {
 		return x.Namespace
 	}
 	return ""
 }
 
-func (x *ResolveSecretRequest) GetIdentity() *WorkloadIdentity {
+func (x *ResolveRequest) GetIdentity() *v1.WorkloadIdentity {
 	if x != nil {
 		return x.Identity
 	}
 	return nil
 }
 
-type ResolveSecretResponse struct {
+type ResolveResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Value is the resolved secret. A plugin must not log it, and must not include
 	// it in an error message.
@@ -608,21 +609,21 @@ type ResolveSecretResponse struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *ResolveSecretResponse) Reset() {
-	*x = ResolveSecretResponse{}
-	mi := &file_flowstate_v1_plugin_proto_msgTypes[7]
+func (x *ResolveResponse) Reset() {
+	*x = ResolveResponse{}
+	mi := &file_flowstate_plugin_v1_plugin_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *ResolveSecretResponse) String() string {
+func (x *ResolveResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*ResolveSecretResponse) ProtoMessage() {}
+func (*ResolveResponse) ProtoMessage() {}
 
-func (x *ResolveSecretResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_plugin_proto_msgTypes[7]
+func (x *ResolveResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_plugin_v1_plugin_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -633,56 +634,56 @@ func (x *ResolveSecretResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use ResolveSecretResponse.ProtoReflect.Descriptor instead.
-func (*ResolveSecretResponse) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_plugin_proto_rawDescGZIP(), []int{7}
+// Deprecated: Use ResolveResponse.ProtoReflect.Descriptor instead.
+func (*ResolveResponse) Descriptor() ([]byte, []int) {
+	return file_flowstate_plugin_v1_plugin_proto_rawDescGZIP(), []int{7}
 }
 
-func (x *ResolveSecretResponse) GetValue() []byte {
+func (x *ResolveResponse) GetValue() []byte {
 	if x != nil {
 		return x.Value
 	}
 	return nil
 }
 
-func (x *ResolveSecretResponse) GetExpiresIn() *durationpb.Duration {
+func (x *ResolveResponse) GetExpiresIn() *durationpb.Duration {
 	if x != nil {
 		return x.ExpiresIn
 	}
 	return nil
 }
 
-type ExecuteTaskRequest struct {
+type ExecuteRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Task is the step's task, with its inputs already resolved unless the manifest
 	// declared them deferred.
-	Task *Task `protobuf:"bytes,1,opt,name=task,proto3" json:"task,omitempty"`
+	Task *v1.Task `protobuf:"bytes,1,opt,name=task,proto3" json:"task,omitempty"`
 	// Scope is what the task's own expressions evaluate against, sent only when the
 	// manifest declared needs_scope.
-	Scope *Scope `protobuf:"bytes,2,opt,name=scope,proto3" json:"scope,omitempty"`
+	Scope *v1.Scope `protobuf:"bytes,2,opt,name=scope,proto3" json:"scope,omitempty"`
 	// Identity is who the workload acts as, and namespace the tenant it belongs to,
 	// so a plugin task can authorize what it does on the workload's behalf.
-	Identity      *WorkloadIdentity `protobuf:"bytes,3,opt,name=identity,proto3" json:"identity,omitempty"`
-	Namespace     string            `protobuf:"bytes,4,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	Identity      *v1.WorkloadIdentity `protobuf:"bytes,3,opt,name=identity,proto3" json:"identity,omitempty"`
+	Namespace     string               `protobuf:"bytes,4,opt,name=namespace,proto3" json:"namespace,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *ExecuteTaskRequest) Reset() {
-	*x = ExecuteTaskRequest{}
-	mi := &file_flowstate_v1_plugin_proto_msgTypes[8]
+func (x *ExecuteRequest) Reset() {
+	*x = ExecuteRequest{}
+	mi := &file_flowstate_plugin_v1_plugin_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *ExecuteTaskRequest) String() string {
+func (x *ExecuteRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*ExecuteTaskRequest) ProtoMessage() {}
+func (*ExecuteRequest) ProtoMessage() {}
 
-func (x *ExecuteTaskRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_plugin_proto_msgTypes[8]
+func (x *ExecuteRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_plugin_v1_plugin_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -693,43 +694,43 @@ func (x *ExecuteTaskRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use ExecuteTaskRequest.ProtoReflect.Descriptor instead.
-func (*ExecuteTaskRequest) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_plugin_proto_rawDescGZIP(), []int{8}
+// Deprecated: Use ExecuteRequest.ProtoReflect.Descriptor instead.
+func (*ExecuteRequest) Descriptor() ([]byte, []int) {
+	return file_flowstate_plugin_v1_plugin_proto_rawDescGZIP(), []int{8}
 }
 
-func (x *ExecuteTaskRequest) GetTask() *Task {
+func (x *ExecuteRequest) GetTask() *v1.Task {
 	if x != nil {
 		return x.Task
 	}
 	return nil
 }
 
-func (x *ExecuteTaskRequest) GetScope() *Scope {
+func (x *ExecuteRequest) GetScope() *v1.Scope {
 	if x != nil {
 		return x.Scope
 	}
 	return nil
 }
 
-func (x *ExecuteTaskRequest) GetIdentity() *WorkloadIdentity {
+func (x *ExecuteRequest) GetIdentity() *v1.WorkloadIdentity {
 	if x != nil {
 		return x.Identity
 	}
 	return nil
 }
 
-func (x *ExecuteTaskRequest) GetNamespace() string {
+func (x *ExecuteRequest) GetNamespace() string {
 	if x != nil {
 		return x.Namespace
 	}
 	return ""
 }
 
-type ExecuteTaskResponse struct {
+type ExecuteResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Outputs are the task's results, matching the manifest's output message.
-	Outputs *Node_Outputs `protobuf:"bytes,1,opt,name=outputs,proto3" json:"outputs,omitempty"`
+	Outputs *v1.Node_Outputs `protobuf:"bytes,1,opt,name=outputs,proto3" json:"outputs,omitempty"`
 	// Retryable reports whether a failure could succeed on another attempt. It is
 	// meaningful only when the RPC itself fails with an application error, and
 	// exists because only the plugin knows whether its backend failure was
@@ -740,21 +741,21 @@ type ExecuteTaskResponse struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *ExecuteTaskResponse) Reset() {
-	*x = ExecuteTaskResponse{}
-	mi := &file_flowstate_v1_plugin_proto_msgTypes[9]
+func (x *ExecuteResponse) Reset() {
+	*x = ExecuteResponse{}
+	mi := &file_flowstate_plugin_v1_plugin_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *ExecuteTaskResponse) String() string {
+func (x *ExecuteResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*ExecuteTaskResponse) ProtoMessage() {}
+func (*ExecuteResponse) ProtoMessage() {}
 
-func (x *ExecuteTaskResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_plugin_proto_msgTypes[9]
+func (x *ExecuteResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_plugin_v1_plugin_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -765,38 +766,38 @@ func (x *ExecuteTaskResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use ExecuteTaskResponse.ProtoReflect.Descriptor instead.
-func (*ExecuteTaskResponse) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_plugin_proto_rawDescGZIP(), []int{9}
+// Deprecated: Use ExecuteResponse.ProtoReflect.Descriptor instead.
+func (*ExecuteResponse) Descriptor() ([]byte, []int) {
+	return file_flowstate_plugin_v1_plugin_proto_rawDescGZIP(), []int{9}
 }
 
-func (x *ExecuteTaskResponse) GetOutputs() *Node_Outputs {
+func (x *ExecuteResponse) GetOutputs() *v1.Node_Outputs {
 	if x != nil {
 		return x.Outputs
 	}
 	return nil
 }
 
-func (x *ExecuteTaskResponse) GetRetryable() bool {
+func (x *ExecuteResponse) GetRetryable() bool {
 	if x != nil {
 		return x.Retryable
 	}
 	return false
 }
 
-var File_flowstate_v1_plugin_proto protoreflect.FileDescriptor
+var File_flowstate_plugin_v1_plugin_proto protoreflect.FileDescriptor
 
-const file_flowstate_v1_plugin_proto_rawDesc = "" +
+const file_flowstate_plugin_v1_plugin_proto_rawDesc = "" +
 	"\n" +
-	"\x19flowstate/v1/plugin.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1cflowstate/v1/flowstate.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1egoogle/protobuf/duration.proto\"\xdb\x02\n" +
+	" flowstate/plugin/v1/plugin.proto\x12\x13flowstate.plugin.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1cflowstate/v1/flowstate.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1egoogle/protobuf/duration.proto\"\xe9\x02\n" +
 	"\x0ePluginManifest\x12:\n" +
 	"\x04name\x18\x01 \x01(\tB&\xe2A\x01\x02\xbaH\x1f\xc8\x01\x01r\x1a\x10\x01\x18@2\x14^[a-z0-9][a-z0-9-]*$R\x04name\x12!\n" +
 	"\aversion\x18\x02 \x01(\tB\a\xbaH\x04r\x02\x18@R\aversion\x12*\n" +
-	"\vdescription\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\vdescription\x12H\n" +
-	"\fcapabilities\x18\x04 \x03(\x0e2\x18.flowstate.v1.CapabilityB\n" +
+	"\vdescription\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\vdescription\x12O\n" +
+	"\fcapabilities\x18\x04 \x03(\x0e2\x1f.flowstate.plugin.v1.CapabilityB\n" +
 	"\xbaH\a\x92\x01\x04\b\x01\x10\x10R\fcapabilities\x128\n" +
-	"\aschemes\x18\x05 \x03(\tB\x1e\xbaH\x1b\x92\x01\x18\x10 \"\x14r\x12\x10\x01\x18 2\f^[a-z0-9-]+$R\aschemes\x12:\n" +
-	"\x05tasks\x18\x06 \x03(\v2\x1a.flowstate.v1.TaskManifestB\b\xbaH\x05\x92\x01\x02\x10@R\x05tasks\"\xf7\x02\n" +
+	"\aschemes\x18\x05 \x03(\tB\x1e\xbaH\x1b\x92\x01\x18\x10 \"\x14r\x12\x10\x01\x18 2\f^[a-z0-9-]+$R\aschemes\x12A\n" +
+	"\x05tasks\x18\x06 \x03(\v2!.flowstate.plugin.v1.TaskManifestB\b\xbaH\x05\x92\x01\x02\x10@R\x05tasks\"\xf7\x02\n" +
 	"\fTaskManifest\x127\n" +
 	"\x04name\x18\x01 \x01(\tB#\xe2A\x01\x02\xbaH\x1c\xc8\x01\x01r\x17\x10\x01\x18@2\x11^[a-z][a-z0-9_]*$R\x04name\x12\"\n" +
 	"\asummary\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\asummary\x12)\n" +
@@ -806,106 +807,106 @@ const file_flowstate_v1_plugin_proto_rawDesc = "" +
 	"\x0eoutput_message\x18\x06 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\routputMessage\x121\n" +
 	"\x0fdeferred_inputs\x18\a \x03(\tB\b\xbaH\x05\x92\x01\x02\x10\x10R\x0edeferredInputs\x12\x1f\n" +
 	"\vneeds_scope\x18\b \x01(\bR\n" +
-	"needsScope\"C\n" +
-	"\x15DescribePluginRequest\x12*\n" +
-	"\fhost_version\x18\x01 \x01(\tB\a\xbaH\x04r\x02\x18@R\vhostVersion\"^\n" +
-	"\x16DescribePluginResponse\x12D\n" +
-	"\bmanifest\x18\x01 \x01(\v2\x1c.flowstate.v1.PluginManifestB\n" +
+	"needsScope\"=\n" +
+	"\x0fDescribeRequest\x12*\n" +
+	"\fhost_version\x18\x01 \x01(\tB\a\xbaH\x04r\x02\x18@R\vhostVersion\"_\n" +
+	"\x10DescribeResponse\x12K\n" +
+	"\bmanifest\x18\x01 \x01(\v2#.flowstate.plugin.v1.PluginManifestB\n" +
 	"\xe2A\x01\x02\xbaH\x03\xc8\x01\x01R\bmanifest\"\x0f\n" +
-	"\rHealthRequest\"\xbf\x01\n" +
-	"\x0eHealthResponse\x12;\n" +
-	"\x06status\x18\x01 \x01(\x0e2#.flowstate.v1.HealthResponse.StatusR\x06status\x12\"\n" +
+	"\rHealthRequest\"\xc6\x01\n" +
+	"\x0eHealthResponse\x12B\n" +
+	"\x06status\x18\x01 \x01(\x0e2*.flowstate.plugin.v1.HealthResponse.StatusR\x06status\x12\"\n" +
 	"\amessage\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\bR\amessage\"L\n" +
 	"\x06Status\x12\x16\n" +
 	"\x12STATUS_UNSPECIFIED\x10\x00\x12\x12\n" +
 	"\x0eSTATUS_SERVING\x10\x01\x12\x16\n" +
-	"\x12STATUS_NOT_SERVING\x10\x02\"\xb1\x01\n" +
-	"\x14ResolveSecretRequest\x125\n" +
+	"\x12STATUS_NOT_SERVING\x10\x02\"\xab\x01\n" +
+	"\x0eResolveRequest\x125\n" +
 	"\x03ref\x18\x01 \x01(\v2\x17.flowstate.v1.SecretRefB\n" +
 	"\xe2A\x01\x02\xbaH\x03\xc8\x01\x01R\x03ref\x12&\n" +
 	"\tnamespace\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\tnamespace\x12:\n" +
-	"\bidentity\x18\x03 \x01(\v2\x1e.flowstate.v1.WorkloadIdentityR\bidentity\"g\n" +
-	"\x15ResolveSecretResponse\x12\x14\n" +
+	"\bidentity\x18\x03 \x01(\v2\x1e.flowstate.v1.WorkloadIdentityR\bidentity\"a\n" +
+	"\x0fResolveResponse\x12\x14\n" +
 	"\x05value\x18\x01 \x01(\fR\x05value\x128\n" +
 	"\n" +
-	"expires_in\x18\x02 \x01(\v2\x19.google.protobuf.DurationR\texpiresIn\"\xd7\x01\n" +
-	"\x12ExecuteTaskRequest\x122\n" +
+	"expires_in\x18\x02 \x01(\v2\x19.google.protobuf.DurationR\texpiresIn\"\xd3\x01\n" +
+	"\x0eExecuteRequest\x122\n" +
 	"\x04task\x18\x01 \x01(\v2\x12.flowstate.v1.TaskB\n" +
 	"\xe2A\x01\x02\xbaH\x03\xc8\x01\x01R\x04task\x12)\n" +
 	"\x05scope\x18\x02 \x01(\v2\x13.flowstate.v1.ScopeR\x05scope\x12:\n" +
 	"\bidentity\x18\x03 \x01(\v2\x1e.flowstate.v1.WorkloadIdentityR\bidentity\x12&\n" +
-	"\tnamespace\x18\x04 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\tnamespace\"i\n" +
-	"\x13ExecuteTaskResponse\x124\n" +
+	"\tnamespace\x18\x04 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\tnamespace\"e\n" +
+	"\x0fExecuteResponse\x124\n" +
 	"\aoutputs\x18\x01 \x01(\v2\x1a.flowstate.v1.Node.OutputsR\aoutputs\x12\x1c\n" +
 	"\tretryable\x18\x02 \x01(\bR\tretryable*V\n" +
 	"\n" +
 	"Capability\x12\x1a\n" +
 	"\x16CAPABILITY_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12CAPABILITY_SECRETS\x10\x01\x12\x14\n" +
-	"\x10CAPABILITY_TASKS\x10\x022\xaf\x01\n" +
-	"\rPluginService\x12W\n" +
-	"\bDescribe\x12#.flowstate.v1.DescribePluginRequest\x1a$.flowstate.v1.DescribePluginResponse\"\x00\x12E\n" +
-	"\x06Health\x12\x1b.flowstate.v1.HealthRequest\x1a\x1c.flowstate.v1.HealthResponse\"\x002e\n" +
-	"\rSecretService\x12T\n" +
-	"\aResolve\x12\".flowstate.v1.ResolveSecretRequest\x1a#.flowstate.v1.ResolveSecretResponse\"\x002_\n" +
-	"\vTaskService\x12P\n" +
-	"\aExecute\x12 .flowstate.v1.ExecuteTaskRequest\x1a!.flowstate.v1.ExecuteTaskResponse\"\x00B\xaa\x01\n" +
-	"\x10com.flowstate.v1B\vPluginProtoP\x01Z8github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1\xa2\x02\x03FXX\xaa\x02\fFlowstate.V1\xca\x02\fFlowstate\\V1\xe2\x02\x18Flowstate\\V1\\GPBMetadata\xea\x02\rFlowstate::V1b\x06proto3"
+	"\x10CAPABILITY_TASKS\x10\x022\xbf\x01\n" +
+	"\rPluginService\x12Y\n" +
+	"\bDescribe\x12$.flowstate.plugin.v1.DescribeRequest\x1a%.flowstate.plugin.v1.DescribeResponse\"\x00\x12S\n" +
+	"\x06Health\x12\".flowstate.plugin.v1.HealthRequest\x1a#.flowstate.plugin.v1.HealthResponse\"\x002g\n" +
+	"\rSecretService\x12V\n" +
+	"\aResolve\x12#.flowstate.plugin.v1.ResolveRequest\x1a$.flowstate.plugin.v1.ResolveResponse\"\x002e\n" +
+	"\vTaskService\x12V\n" +
+	"\aExecute\x12#.flowstate.plugin.v1.ExecuteRequest\x1a$.flowstate.plugin.v1.ExecuteResponse\"\x00B\xd2\x01\n" +
+	"\x17com.flowstate.plugin.v1B\vPluginProtoP\x01Z<github.com/picatz/flowstate/pkg/flowstate/plugin/v1;pluginv1\xa2\x02\x03FPX\xaa\x02\x13Flowstate.Plugin.V1\xca\x02\x13Flowstate\\Plugin\\V1\xe2\x02\x1fFlowstate\\Plugin\\V1\\GPBMetadata\xea\x02\x15Flowstate::Plugin::V1b\x06proto3"
 
 var (
-	file_flowstate_v1_plugin_proto_rawDescOnce sync.Once
-	file_flowstate_v1_plugin_proto_rawDescData []byte
+	file_flowstate_plugin_v1_plugin_proto_rawDescOnce sync.Once
+	file_flowstate_plugin_v1_plugin_proto_rawDescData []byte
 )
 
-func file_flowstate_v1_plugin_proto_rawDescGZIP() []byte {
-	file_flowstate_v1_plugin_proto_rawDescOnce.Do(func() {
-		file_flowstate_v1_plugin_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_flowstate_v1_plugin_proto_rawDesc), len(file_flowstate_v1_plugin_proto_rawDesc)))
+func file_flowstate_plugin_v1_plugin_proto_rawDescGZIP() []byte {
+	file_flowstate_plugin_v1_plugin_proto_rawDescOnce.Do(func() {
+		file_flowstate_plugin_v1_plugin_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_flowstate_plugin_v1_plugin_proto_rawDesc), len(file_flowstate_plugin_v1_plugin_proto_rawDesc)))
 	})
-	return file_flowstate_v1_plugin_proto_rawDescData
+	return file_flowstate_plugin_v1_plugin_proto_rawDescData
 }
 
-var file_flowstate_v1_plugin_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_flowstate_v1_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
-var file_flowstate_v1_plugin_proto_goTypes = []any{
-	(Capability)(0),                // 0: flowstate.v1.Capability
-	(HealthResponse_Status)(0),     // 1: flowstate.v1.HealthResponse.Status
-	(*PluginManifest)(nil),         // 2: flowstate.v1.PluginManifest
-	(*TaskManifest)(nil),           // 3: flowstate.v1.TaskManifest
-	(*DescribePluginRequest)(nil),  // 4: flowstate.v1.DescribePluginRequest
-	(*DescribePluginResponse)(nil), // 5: flowstate.v1.DescribePluginResponse
-	(*HealthRequest)(nil),          // 6: flowstate.v1.HealthRequest
-	(*HealthResponse)(nil),         // 7: flowstate.v1.HealthResponse
-	(*ResolveSecretRequest)(nil),   // 8: flowstate.v1.ResolveSecretRequest
-	(*ResolveSecretResponse)(nil),  // 9: flowstate.v1.ResolveSecretResponse
-	(*ExecuteTaskRequest)(nil),     // 10: flowstate.v1.ExecuteTaskRequest
-	(*ExecuteTaskResponse)(nil),    // 11: flowstate.v1.ExecuteTaskResponse
-	(*SecretRef)(nil),              // 12: flowstate.v1.SecretRef
-	(*WorkloadIdentity)(nil),       // 13: flowstate.v1.WorkloadIdentity
-	(*durationpb.Duration)(nil),    // 14: google.protobuf.Duration
-	(*Task)(nil),                   // 15: flowstate.v1.Task
-	(*Scope)(nil),                  // 16: flowstate.v1.Scope
-	(*Node_Outputs)(nil),           // 17: flowstate.v1.Node.Outputs
+var file_flowstate_plugin_v1_plugin_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_flowstate_plugin_v1_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_flowstate_plugin_v1_plugin_proto_goTypes = []any{
+	(Capability)(0),             // 0: flowstate.plugin.v1.Capability
+	(HealthResponse_Status)(0),  // 1: flowstate.plugin.v1.HealthResponse.Status
+	(*PluginManifest)(nil),      // 2: flowstate.plugin.v1.PluginManifest
+	(*TaskManifest)(nil),        // 3: flowstate.plugin.v1.TaskManifest
+	(*DescribeRequest)(nil),     // 4: flowstate.plugin.v1.DescribeRequest
+	(*DescribeResponse)(nil),    // 5: flowstate.plugin.v1.DescribeResponse
+	(*HealthRequest)(nil),       // 6: flowstate.plugin.v1.HealthRequest
+	(*HealthResponse)(nil),      // 7: flowstate.plugin.v1.HealthResponse
+	(*ResolveRequest)(nil),      // 8: flowstate.plugin.v1.ResolveRequest
+	(*ResolveResponse)(nil),     // 9: flowstate.plugin.v1.ResolveResponse
+	(*ExecuteRequest)(nil),      // 10: flowstate.plugin.v1.ExecuteRequest
+	(*ExecuteResponse)(nil),     // 11: flowstate.plugin.v1.ExecuteResponse
+	(*v1.SecretRef)(nil),        // 12: flowstate.v1.SecretRef
+	(*v1.WorkloadIdentity)(nil), // 13: flowstate.v1.WorkloadIdentity
+	(*durationpb.Duration)(nil), // 14: google.protobuf.Duration
+	(*v1.Task)(nil),             // 15: flowstate.v1.Task
+	(*v1.Scope)(nil),            // 16: flowstate.v1.Scope
+	(*v1.Node_Outputs)(nil),     // 17: flowstate.v1.Node.Outputs
 }
-var file_flowstate_v1_plugin_proto_depIdxs = []int32{
-	0,  // 0: flowstate.v1.PluginManifest.capabilities:type_name -> flowstate.v1.Capability
-	3,  // 1: flowstate.v1.PluginManifest.tasks:type_name -> flowstate.v1.TaskManifest
-	2,  // 2: flowstate.v1.DescribePluginResponse.manifest:type_name -> flowstate.v1.PluginManifest
-	1,  // 3: flowstate.v1.HealthResponse.status:type_name -> flowstate.v1.HealthResponse.Status
-	12, // 4: flowstate.v1.ResolveSecretRequest.ref:type_name -> flowstate.v1.SecretRef
-	13, // 5: flowstate.v1.ResolveSecretRequest.identity:type_name -> flowstate.v1.WorkloadIdentity
-	14, // 6: flowstate.v1.ResolveSecretResponse.expires_in:type_name -> google.protobuf.Duration
-	15, // 7: flowstate.v1.ExecuteTaskRequest.task:type_name -> flowstate.v1.Task
-	16, // 8: flowstate.v1.ExecuteTaskRequest.scope:type_name -> flowstate.v1.Scope
-	13, // 9: flowstate.v1.ExecuteTaskRequest.identity:type_name -> flowstate.v1.WorkloadIdentity
-	17, // 10: flowstate.v1.ExecuteTaskResponse.outputs:type_name -> flowstate.v1.Node.Outputs
-	4,  // 11: flowstate.v1.PluginService.Describe:input_type -> flowstate.v1.DescribePluginRequest
-	6,  // 12: flowstate.v1.PluginService.Health:input_type -> flowstate.v1.HealthRequest
-	8,  // 13: flowstate.v1.SecretService.Resolve:input_type -> flowstate.v1.ResolveSecretRequest
-	10, // 14: flowstate.v1.TaskService.Execute:input_type -> flowstate.v1.ExecuteTaskRequest
-	5,  // 15: flowstate.v1.PluginService.Describe:output_type -> flowstate.v1.DescribePluginResponse
-	7,  // 16: flowstate.v1.PluginService.Health:output_type -> flowstate.v1.HealthResponse
-	9,  // 17: flowstate.v1.SecretService.Resolve:output_type -> flowstate.v1.ResolveSecretResponse
-	11, // 18: flowstate.v1.TaskService.Execute:output_type -> flowstate.v1.ExecuteTaskResponse
+var file_flowstate_plugin_v1_plugin_proto_depIdxs = []int32{
+	0,  // 0: flowstate.plugin.v1.PluginManifest.capabilities:type_name -> flowstate.plugin.v1.Capability
+	3,  // 1: flowstate.plugin.v1.PluginManifest.tasks:type_name -> flowstate.plugin.v1.TaskManifest
+	2,  // 2: flowstate.plugin.v1.DescribeResponse.manifest:type_name -> flowstate.plugin.v1.PluginManifest
+	1,  // 3: flowstate.plugin.v1.HealthResponse.status:type_name -> flowstate.plugin.v1.HealthResponse.Status
+	12, // 4: flowstate.plugin.v1.ResolveRequest.ref:type_name -> flowstate.v1.SecretRef
+	13, // 5: flowstate.plugin.v1.ResolveRequest.identity:type_name -> flowstate.v1.WorkloadIdentity
+	14, // 6: flowstate.plugin.v1.ResolveResponse.expires_in:type_name -> google.protobuf.Duration
+	15, // 7: flowstate.plugin.v1.ExecuteRequest.task:type_name -> flowstate.v1.Task
+	16, // 8: flowstate.plugin.v1.ExecuteRequest.scope:type_name -> flowstate.v1.Scope
+	13, // 9: flowstate.plugin.v1.ExecuteRequest.identity:type_name -> flowstate.v1.WorkloadIdentity
+	17, // 10: flowstate.plugin.v1.ExecuteResponse.outputs:type_name -> flowstate.v1.Node.Outputs
+	4,  // 11: flowstate.plugin.v1.PluginService.Describe:input_type -> flowstate.plugin.v1.DescribeRequest
+	6,  // 12: flowstate.plugin.v1.PluginService.Health:input_type -> flowstate.plugin.v1.HealthRequest
+	8,  // 13: flowstate.plugin.v1.SecretService.Resolve:input_type -> flowstate.plugin.v1.ResolveRequest
+	10, // 14: flowstate.plugin.v1.TaskService.Execute:input_type -> flowstate.plugin.v1.ExecuteRequest
+	5,  // 15: flowstate.plugin.v1.PluginService.Describe:output_type -> flowstate.plugin.v1.DescribeResponse
+	7,  // 16: flowstate.plugin.v1.PluginService.Health:output_type -> flowstate.plugin.v1.HealthResponse
+	9,  // 17: flowstate.plugin.v1.SecretService.Resolve:output_type -> flowstate.plugin.v1.ResolveResponse
+	11, // 18: flowstate.plugin.v1.TaskService.Execute:output_type -> flowstate.plugin.v1.ExecuteResponse
 	15, // [15:19] is the sub-list for method output_type
 	11, // [11:15] is the sub-list for method input_type
 	11, // [11:11] is the sub-list for extension type_name
@@ -913,28 +914,27 @@ var file_flowstate_v1_plugin_proto_depIdxs = []int32{
 	0,  // [0:11] is the sub-list for field type_name
 }
 
-func init() { file_flowstate_v1_plugin_proto_init() }
-func file_flowstate_v1_plugin_proto_init() {
-	if File_flowstate_v1_plugin_proto != nil {
+func init() { file_flowstate_plugin_v1_plugin_proto_init() }
+func file_flowstate_plugin_v1_plugin_proto_init() {
+	if File_flowstate_plugin_v1_plugin_proto != nil {
 		return
 	}
-	file_flowstate_v1_flowstate_proto_init()
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_plugin_proto_rawDesc), len(file_flowstate_v1_plugin_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_plugin_v1_plugin_proto_rawDesc), len(file_flowstate_plugin_v1_plugin_proto_rawDesc)),
 			NumEnums:      2,
 			NumMessages:   10,
 			NumExtensions: 0,
 			NumServices:   3,
 		},
-		GoTypes:           file_flowstate_v1_plugin_proto_goTypes,
-		DependencyIndexes: file_flowstate_v1_plugin_proto_depIdxs,
-		EnumInfos:         file_flowstate_v1_plugin_proto_enumTypes,
-		MessageInfos:      file_flowstate_v1_plugin_proto_msgTypes,
+		GoTypes:           file_flowstate_plugin_v1_plugin_proto_goTypes,
+		DependencyIndexes: file_flowstate_plugin_v1_plugin_proto_depIdxs,
+		EnumInfos:         file_flowstate_plugin_v1_plugin_proto_enumTypes,
+		MessageInfos:      file_flowstate_plugin_v1_plugin_proto_msgTypes,
 	}.Build()
-	File_flowstate_v1_plugin_proto = out.File
-	file_flowstate_v1_plugin_proto_goTypes = nil
-	file_flowstate_v1_plugin_proto_depIdxs = nil
+	File_flowstate_plugin_v1_plugin_proto = out.File
+	file_flowstate_plugin_v1_plugin_proto_goTypes = nil
+	file_flowstate_plugin_v1_plugin_proto_depIdxs = nil
 }

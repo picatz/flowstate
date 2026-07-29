@@ -7,7 +7,7 @@
 // the worker down, its dependencies cannot conflict with the engine's, and a bug
 // in it cannot read the worker's memory. Those become the operating system's
 // problem, which is where isolation actually exists. The protocol is the schema
-// in proto/flowstate/v1/plugin.proto, so a plugin may be written in any language
+// in proto/flowstate/plugin/v1/plugin.proto, so a plugin may be written in any language
 // with Connect or gRPC support and the engine loads nothing to talk to one.
 //
 // # Using it
@@ -81,7 +81,7 @@
 // cannot serve any of them. It listens on the assigned path, sets the socket to
 // mode 0600, and prints one line to stdout:
 //
-//	FLOWSTATE-PLUGIN|1|1|unix|/var/folders/.../s
+//	FLOWSTATE-PLUGIN|1|2|unix|/var/folders/.../s
 //
 // After that line the plugin never uses stdout again; everything else it says
 // goes to stderr, which the host reads line by line and logs attributed to that

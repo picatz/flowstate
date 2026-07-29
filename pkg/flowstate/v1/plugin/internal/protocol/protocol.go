@@ -15,7 +15,7 @@
 // plugin that finds any of it missing must refuse to serve:
 //
 //	FLOWSTATE_PLUGIN_MAGIC_COOKIE      must equal MagicCookieValue
-//	FLOWSTATE_PLUGIN_PROTOCOL_VERSIONS versions the host speaks, e.g. "1"
+//	FLOWSTATE_PLUGIN_PROTOCOL_VERSIONS versions the host speaks, e.g. "2"
 //	FLOWSTATE_PLUGIN_SOCKET            absolute path the plugin must listen on
 //	FLOWSTATE_PLUGIN_TOKEN             per-launch secret the host will present
 //	FLOWSTATE_PLUGIN_HOST_FD           fd that closes when the host exits
@@ -27,7 +27,7 @@
 // the host captures as that plugin's logs. Reserving stdout for one line is what
 // keeps a plugin's own logging from corrupting the protocol.
 //
-//	FLOWSTATE-PLUGIN|1|1|unix|/var/folders/.../s
+//	FLOWSTATE-PLUGIN|1|2|unix|/var/folders/.../s
 //
 // The fields are the sentinel, the version of this handshake format, the
 // negotiated protocol version, the network, and the address. The handshake
@@ -106,9 +106,29 @@ const Sentinel = "FLOWSTATE-PLUGIN"
 // distinct from the protocol version negotiated within it.
 const HandshakeVersion = 1
 
-// Version1 is the first version of the plugin protocol: the services defined in
-// proto/flowstate/v1/plugin.proto, served over Connect on a Unix socket.
+// Version1 was the first version of the plugin protocol. It is no longer served.
+//
+// Its services lived in the `flowstate.v1` package, so every Connect route was
+// `/flowstate.v1.PluginService/…`. Moving the protocol to a package of its own
+// changed all of them, and a set of routes is what a protocol version names — so
+// that move ended version 1 rather than editing it.
+//
+// Keeping the number would have been the quiet failure. A plugin built against
+// the old routes offers version 1, the host offers version 1, negotiation agrees,
+// the handshake succeeds — and then the first `Describe` goes to a route that
+// plugin does not serve. The error surfaces as a plugin that cannot be described,
+// which reads as a broken plugin rather than a version mismatch, at the far end
+// of a launch from the thing that was actually wrong.
+//
+// Retired rather than deleted, for the reason `Task.description`'s field number
+// is reserved rather than reused: a number that meant something else must never
+// come back meaning something new.
 const Version1 = 1
+
+// Version2 is the current version of the plugin protocol: the services defined
+// in proto/flowstate/plugin/v1/plugin.proto, served over Connect on a Unix
+// socket, with every route under `/flowstate.plugin.v1.`.
+const Version2 = 2
 
 // MaxHandshakeLine bounds the handshake line, because it is the first thing an
 // untrusted process gets to say and the host reads it before it knows anything
@@ -128,7 +148,12 @@ const NetworkUnix = "unix"
 // HostVersions returns the protocol versions this build of the host speaks,
 // highest preference last is not implied — [Negotiate] picks the highest common
 // version.
-func HostVersions() []int { return []int{Version1} }
+//
+// [Version1] is absent because it is not served. A plugin built against it finds
+// no version in common and refuses at startup with a message naming both sides,
+// which is the failure this list exists to produce: one clear refusal before
+// anything runs, rather than a request to a route nobody answers.
+func HostVersions() []int { return []int{Version2} }
 
 // Handshake is what a plugin announces about itself once it is listening.
 type Handshake struct {

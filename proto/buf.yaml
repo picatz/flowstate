@@ -6,32 +6,37 @@ breaking:
   use:
     - FILE
     - WIRE
+
+  # Two deliberate breaks, spent together in the commit that is about them.
+  #
+  # `flowstate/v1/plugin.proto` moved to `flowstate/plugin/v1/plugin.proto`, and
+  # `Task.description` was deleted in favour of `Node.description`. Both are FILE
+  # breaks against the previous commit and neither is a WIRE break: the plugin
+  # protocol's field numbers are untouched by a package rename, and a reserved
+  # field number is exactly the encoding promise a removal has to keep.
+  #
+  # This block is scoped to the files involved so the rest of the schema is still
+  # checked, and it comes out in the immediate follow-up — a suppression that
+  # outlives the commit it was written for is how the next break lands unnoticed.
+  #
+  # The old plugin path is listed as well as the new one, and it is the entry that
+  # actually does the work: a move reads to `buf breaking` as a deletion, and the
+  # deletion is reported against the path that no longer exists. Suppressing only
+  # the destination silences nothing.
+  ignore_only:
+    FILE:
+      - flowstate/v1/flowstate.proto
+      - flowstate/v1/plugin.proto
+      - flowstate/plugin/v1/plugin.proto
 lint:
   # STANDARD is what DEFAULT was renamed to. Same rules, current spelling.
   use:
     - STANDARD
 
-  # Two rules, suppressed for one file, and only because fixing them properly
-  # costs more than they are worth today.
-  #
-  # The plugin protocol's request and response messages are named after what they
-  # carry rather than after the method that carries them: `Describe` takes a
-  # `DescribePluginRequest`, not a `DescribeRequest`. Six violations, all this
-  # shape. The names are the better ones in a package shared with the workflow
-  # service — a bare `ResolveRequest` next to `RunRequest` and `SignalRequest`
-  # says nothing about what it resolves — and the real fix is to move the plugin
-  # protocol into a package of its own, where `DescribeRequest` is unambiguous.
-  #
-  # That move is a FILE-level break, so it is a deliberate one and belongs in a
-  # commit that is about it. What must not happen in the meantime is the other
-  # forty-one rules going unenforced: until now `buf lint` ran in CI not at all,
-  # so a genuinely bad name anywhere in the schema had nothing to catch it.
-  #
-  # Scoped to the file rather than switched off, so the same mistake made in
-  # flowstate.proto still fails — and so deleting these four lines is the whole of
-  # what the move has to do here.
-  ignore_only:
-    RPC_REQUEST_STANDARD_NAME:
-      - flowstate/v1/plugin.proto
-    RPC_RESPONSE_STANDARD_NAME:
-      - flowstate/v1/plugin.proto
+  # Nothing suppressed. The two rules that used to be — RPC_REQUEST_STANDARD_NAME
+  # and RPC_RESPONSE_STANDARD_NAME, for the plugin protocol's six request and
+  # response messages — were suppressed because `DescribeRequest` would have been
+  # ambiguous in a package shared with the workflow service, sitting next to
+  # `RunRequest` and `SignalRequest`. The plugin protocol has its own package now,
+  # so the names the rule asks for are the right ones and the suppression is gone
+  # with the reason for it.

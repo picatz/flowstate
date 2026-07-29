@@ -6,8 +6,8 @@ import (
 
 	"connectrpc.com/connect"
 
-	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
+	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
+	pluginv1connect "github.com/picatz/flowstate/pkg/flowstate/plugin/v1/pluginv1connect"
 )
 
 // The generated service is the extension contract, and these hand back an
@@ -37,8 +37,8 @@ import (
 // plugin serves what its manifest claims and nothing else, and asking it for
 // something it never offered is a mistake to surface rather than a request to
 // send.
-func (p *Plugin) SecretService() (flowstatev1connect.SecretServiceClient, error) {
-	if !p.HasCapability(flowstatev1.Capability_CAPABILITY_SECRETS) {
+func (p *Plugin) SecretService() (pluginv1connect.SecretServiceClient, error) {
+	if !p.HasCapability(pluginv1.Capability_CAPABILITY_SECRETS) {
 		return nil, pluginError(p.name, p.path, fmt.Errorf(
 			"%w: does not advertise CAPABILITY_SECRETS", ErrCapability))
 	}
@@ -48,8 +48,8 @@ func (p *Plugin) SecretService() (flowstatev1connect.SecretServiceClient, error)
 // TaskService returns this plugin's task execution as the generated service.
 //
 // It reports an error if the plugin did not advertise CAPABILITY_TASKS.
-func (p *Plugin) TaskService() (flowstatev1connect.TaskServiceClient, error) {
-	if !p.HasCapability(flowstatev1.Capability_CAPABILITY_TASKS) {
+func (p *Plugin) TaskService() (pluginv1connect.TaskServiceClient, error) {
+	if !p.HasCapability(pluginv1.Capability_CAPABILITY_TASKS) {
 		return nil, pluginError(p.name, p.path, fmt.Errorf(
 			"%w: does not advertise CAPABILITY_TASKS", ErrCapability))
 	}
@@ -60,12 +60,12 @@ func (p *Plugin) TaskService() (flowstatev1connect.TaskServiceClient, error) {
 // one of its processes.
 type secretService struct{ plugin *Plugin }
 
-// Resolve implements [flowstatev1connect.SecretServiceClient], and by having the
-// same signature also implements [flowstatev1connect.SecretServiceHandler].
+// Resolve implements [pluginv1connect.SecretServiceClient], and by having the
+// same signature also implements [pluginv1connect.SecretServiceHandler].
 func (s secretService) Resolve(
 	ctx context.Context,
-	req *connect.Request[flowstatev1.ResolveSecretRequest],
-) (*connect.Response[flowstatev1.ResolveSecretResponse], error) {
+	req *connect.Request[pluginv1.ResolveRequest],
+) (*connect.Response[pluginv1.ResolveResponse], error) {
 	inst, err := s.plugin.ready()
 	if err != nil {
 		// Unavailable rather than a bare error, because this is the wire
@@ -84,12 +84,12 @@ func (s secretService) Resolve(
 // of its processes.
 type taskService struct{ plugin *Plugin }
 
-// Execute implements [flowstatev1connect.TaskServiceClient], and by having the
-// same signature also implements [flowstatev1connect.TaskServiceHandler].
+// Execute implements [pluginv1connect.TaskServiceClient], and by having the
+// same signature also implements [pluginv1connect.TaskServiceHandler].
 func (s taskService) Execute(
 	ctx context.Context,
-	req *connect.Request[flowstatev1.ExecuteTaskRequest],
-) (*connect.Response[flowstatev1.ExecuteTaskResponse], error) {
+	req *connect.Request[pluginv1.ExecuteRequest],
+) (*connect.Response[pluginv1.ExecuteResponse], error) {
 	inst, err := s.plugin.ready()
 	if err != nil {
 		return nil, connect.NewError(connect.CodeUnavailable, err)
@@ -107,10 +107,10 @@ func (s taskService) Execute(
 // streaming method, say, whose client and handler shapes differ — it would fail
 // here rather than wherever someone first tried to substitute one for the other.
 var (
-	_ flowstatev1connect.SecretServiceClient  = secretService{}
-	_ flowstatev1connect.SecretServiceHandler = secretService{}
-	_ flowstatev1connect.TaskServiceClient    = taskService{}
-	_ flowstatev1connect.TaskServiceHandler   = taskService{}
+	_ pluginv1connect.SecretServiceClient  = secretService{}
+	_ pluginv1connect.SecretServiceHandler = secretService{}
+	_ pluginv1connect.TaskServiceClient    = taskService{}
+	_ pluginv1connect.TaskServiceHandler   = taskService{}
 )
 
 // SecretServiceForScheme returns the service resolving a secret scheme, and
@@ -119,7 +119,7 @@ var (
 // It is how the engine dispatches a reference without knowing that another
 // process is involved: the scheme selects the service, and the service is the
 // same shape whether it is backed by a plugin or by something in this process.
-func (h *Host) SecretServiceForScheme(scheme string) (flowstatev1connect.SecretServiceClient, *Plugin, bool) {
+func (h *Host) SecretServiceForScheme(scheme string) (pluginv1connect.SecretServiceClient, *Plugin, bool) {
 	h.mu.RLock()
 	p, ok := h.schemes[scheme]
 	h.mu.RUnlock()
@@ -141,7 +141,7 @@ func (h *Host) SecretServiceForScheme(scheme string) (flowstatev1connect.SecretS
 
 // TaskServiceForTask returns the service executing a task, and which plugin
 // provides it.
-func (h *Host) TaskServiceForTask(name string) (flowstatev1connect.TaskServiceClient, *Plugin, bool) {
+func (h *Host) TaskServiceForTask(name string) (pluginv1connect.TaskServiceClient, *Plugin, bool) {
 	h.mu.RLock()
 	binding, ok := h.taskDefs[name]
 	h.mu.RUnlock()

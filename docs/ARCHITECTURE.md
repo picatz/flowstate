@@ -320,7 +320,7 @@ about where a value travels, not how long it lives.
 
 The built-in task set and secret providers will never cover what people need. A
 plugin is a separate process that extends the engine, speaking the services in
-`proto/flowstate/v1/plugin.proto` over Connect RPC.
+`proto/flowstate/plugin/v1/plugin.proto` over Connect RPC.
 
 **Separate processes, because that is where isolation exists.** A plugin is someone
 else's code running inside a worker that holds credentials and can reach internal

@@ -8,6 +8,7 @@ import (
 
 	"connectrpc.com/connect"
 
+	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 )
@@ -100,7 +101,7 @@ func (s *secretProvider) Resolve(ctx context.Context, req secrets.Request) (secr
 	callCtx, cancel := s.plugin.callContext(ctx)
 	defer cancel()
 
-	resp, err := inst.clients.secret.Resolve(callCtx, connect.NewRequest(&flowstatev1.ResolveSecretRequest{
+	resp, err := inst.clients.secret.Resolve(callCtx, connect.NewRequest(&pluginv1.ResolveRequest{
 		Ref: &flowstatev1.SecretRef{
 			Scheme: ref.GetScheme(),
 			Name:   ref.GetName(),

@@ -3,6 +3,7 @@ package sdk
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -15,8 +16,9 @@ import (
 
 	"connectrpc.com/connect"
 
+	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
+	pluginv1connect "github.com/picatz/flowstate/pkg/flowstate/plugin/v1/pluginv1connect"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/internal/protocol"
 )
 
@@ -48,13 +50,13 @@ func TestReadEnvironmentRefusals(t *testing.T) {
 				protocol.VersionsEnv:    "99",
 			},
 			wantErr: ErrProtocolVersion,
-			wantMsg: "this plugin speaks 1",
+			wantMsg: fmt.Sprintf("this plugin speaks %d", protocol.Version2),
 		},
 		{
 			name: "no socket to serve on",
 			env: map[string]string{
 				protocol.MagicCookieEnv: protocol.MagicCookieValue,
-				protocol.VersionsEnv:    "1",
+				protocol.VersionsEnv:    protocol.FormatVersions(protocol.HostVersions()),
 			},
 			wantMsg: protocol.SocketEnv + " is not set",
 		},
@@ -62,7 +64,7 @@ func TestReadEnvironmentRefusals(t *testing.T) {
 			name: "no token to authenticate the host by",
 			env: map[string]string{
 				protocol.MagicCookieEnv: protocol.MagicCookieValue,
-				protocol.VersionsEnv:    "1",
+				protocol.VersionsEnv:    protocol.FormatVersions(protocol.HostVersions()),
 				protocol.SocketEnv:      "/tmp/s",
 			},
 			wantMsg: protocol.TokenEnv + " is not set",
@@ -100,7 +102,7 @@ func TestReadEnvironmentRefusals(t *testing.T) {
 // environment, where anything that can read this process can read it.
 func TestReadEnvironmentClearsTheToken(t *testing.T) {
 	t.Setenv(protocol.MagicCookieEnv, protocol.MagicCookieValue)
-	t.Setenv(protocol.VersionsEnv, "1")
+	t.Setenv(protocol.VersionsEnv, protocol.FormatVersions(protocol.HostVersions()))
 	t.Setenv(protocol.SocketEnv, "/tmp/s")
 	t.Setenv(protocol.TokenEnv, "the-token")
 
@@ -142,7 +144,7 @@ func TestServeAuthenticatesTheHost(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			client := flowstatev1connect.NewPluginServiceClient(
+			client := pluginv1connect.NewPluginServiceClient(
 				unixClient(socket), "http://plugin.invalid",
 				connect.WithInterceptors(connect.UnaryInterceptorFunc(
 					func(next connect.UnaryFunc) connect.UnaryFunc {
@@ -158,7 +160,7 @@ func TestServeAuthenticatesTheHost(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			defer cancel()
 
-			resp, err := client.Describe(ctx, connect.NewRequest(&flowstatev1.DescribePluginRequest{}))
+			resp, err := client.Describe(ctx, connect.NewRequest(&pluginv1.DescribeRequest{}))
 
 			if !test.wantOK {
 				if err == nil {
@@ -190,7 +192,7 @@ func TestServeAnnouncesOnceThenLeavesStdoutAlone(t *testing.T) {
 
 	// The plugin is serving, so the handshake has been printed. Anything it
 	// prints from now on goes to stderr instead.
-	client := flowstatev1connect.NewPluginServiceClient(
+	client := pluginv1connect.NewPluginServiceClient(
 		unixClient(socket), "http://plugin.invalid",
 		connect.WithInterceptors(connect.UnaryInterceptorFunc(
 			func(next connect.UnaryFunc) connect.UnaryFunc {
@@ -201,7 +203,7 @@ func TestServeAnnouncesOnceThenLeavesStdoutAlone(t *testing.T) {
 			})),
 	)
 
-	if _, err := client.Health(t.Context(), connect.NewRequest(&flowstatev1.HealthRequest{})); err != nil {
+	if _, err := client.Health(t.Context(), connect.NewRequest(&pluginv1.HealthRequest{})); err != nil {
 		t.Fatalf("Health: %v", err)
 	}
 
@@ -217,8 +219,8 @@ func TestServeAnnouncesOnceThenLeavesStdoutAlone(t *testing.T) {
 	if handshake.Address != socket {
 		t.Errorf("announced address = %q, want %q", handshake.Address, socket)
 	}
-	if handshake.ProtocolVersion != protocol.Version1 {
-		t.Errorf("announced protocol version = %d, want %d", handshake.ProtocolVersion, protocol.Version1)
+	if handshake.ProtocolVersion != protocol.Version2 {
+		t.Errorf("announced protocol version = %d, want %d", handshake.ProtocolVersion, protocol.Version2)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 
 	"connectrpc.com/connect"
 
+	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
@@ -107,7 +108,7 @@ func TestTaskErrorKeepsTheCause(t *testing.T) {
 
 	withDetail := func(code connect.Code, retryable bool) error {
 		err := connect.NewError(code, errors.New("from the plugin"))
-		detail, detailErr := connect.NewErrorDetail(&flowstatev1.ExecuteTaskResponse{Retryable: retryable})
+		detail, detailErr := connect.NewErrorDetail(&pluginv1.ExecuteResponse{Retryable: retryable})
 		if detailErr != nil {
 			t.Fatalf("building the detail: %v", detailErr)
 		}

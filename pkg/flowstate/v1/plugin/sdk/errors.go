@@ -6,7 +6,7 @@ import (
 
 	"connectrpc.com/connect"
 
-	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 )
 
 // Failure constructors.
@@ -119,7 +119,7 @@ func asConnectError(err error) error {
 
 	converted := connect.NewError(code, err)
 
-	detail, detailErr := connect.NewErrorDetail(&flowstatev1.ExecuteTaskResponse{Retryable: retryable})
+	detail, detailErr := connect.NewErrorDetail(&pluginv1.ExecuteResponse{Retryable: retryable})
 	if detailErr == nil {
 		converted.AddDetail(detail)
 	}

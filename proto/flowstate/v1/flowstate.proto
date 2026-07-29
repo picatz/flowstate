@@ -776,13 +776,16 @@ message Task {
     }
   ];
 
-  // Tasks can have an optional description that provides additional context or
-  // information about the task itself. This can be useful for users or developers
-  // to understand what the task does and how it should be used within the workflow.
-  optional string description = 2 [(buf.validate.field).string = {
-    min_len: 0
-    max_len: 256
-  }];
+  // Field 2 held a description of the task. Prose about a step belongs to the
+  // step — `Node.description` — because a step names its task directly now, so the
+  // value under `echo:` is that task's inputs and a `description` written there
+  // would be an input of that name. A `for_each` or a `sleep` is as worth
+  // explaining as a task is, and only the step can carry that.
+  //
+  // Reserved rather than reused: a number that meant something else in a spec some
+  // worker may still be replaying must never come back with a new meaning.
+  reserved 2;
+  reserved "description";
 
   // Inputs are the parameters that the task requires to perform its operation.
   map<string, Value> inputs = 3 [

@@ -150,9 +150,14 @@ and all three would otherwise have been discovered late:
   under `id:`. That is the better answer regardless of the break, because the step
   is what an author was describing either way — and a `for_each` or a `sleep` is as
   worth explaining as a task is, which a field on `Task` could never serve.
-  `Task.description` therefore stays in the schema, unreachable from the grammar
-  and refused by the marshaller with a message naming the step key to write
-  instead, and its removal is a FILE break still to be spent.
+
+  *Since written:* the break has been spent. `Task.description` is gone, with
+  `reserved 2` and `reserved "description"` in its place, bundled into one commit
+  with the plugin protocol's move to its own package so that a single release
+  carries both FILE breaks rather than two carrying one each. Verified as a FILE
+  break and *not* a WIRE one — a `breaking` run configured with `WIRE` alone and no
+  suppression at all passes, which is the property that matters for a spec an older
+  build wrote and a worker may still be replaying.
 
 **One language profile, pinned per run.** Per-step `libs:` means `if:` and `items:`
 speak a poorer dialect than a `cel` step, in the same file, for no reason a reader
@@ -436,9 +441,8 @@ that stops.
 `http:` is the inputs and a `description` key there would collide with an input of
 that name. Prose moved to the step instead — `Node.description`, a property every
 kind of step has — which is a schema addition rather than the removal this
-anticipated. Deleting `Task.description` is still a FILE-level break, still right,
-and still unspent; the field is now unreachable from the grammar and refused by the
-marshaller, so nothing depends on it being spent soon.
+anticipated. The removal has since been spent, together with the plugin protocol's
+move, so one release carries both FILE breaks instead of two carrying one each.
 
 **Order that keeps every step green:** parser and marshaller together (they are
 inverses and the round-trip tests cover both); then examples; then `flowfile`'s own

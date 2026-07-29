@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 )
@@ -240,7 +241,7 @@ func TestUnknownCapabilityIsIgnoredNotRefused(t *testing.T) {
 
 	// Nothing is dispatched for the capability the host does not know, which is
 	// what makes ignoring it still fail closed.
-	if p.HasCapability(flowstatev1.Capability(9999)) {
+	if p.HasCapability(pluginv1.Capability(9999)) {
 		// The manifest does list it; what matters is that it produced no
 		// adapters. Tasks are the only other adapter, and it advertised none.
 		if len(host.TaskDefs()) != 0 {
