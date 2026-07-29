@@ -10,10 +10,8 @@
 name: conditional-and-retry
 steps:
   - id: check
-    task:
-      name: echo
-      inputs:
-        message: ready
+    echo:
+      message: ready
 
   # Runs only when the previous step said so.
   - id: deploy
@@ -24,26 +22,20 @@ steps:
       interval: 1s
       backoff: 2.0
       max_interval: 10s
-    task:
-      name: echo
-      inputs:
-        message: deploying
+    echo:
+      message: deploying
 
   # Skipped, because the condition is false. A skipped step produces no outputs,
   # so nothing later may reference it.
   - id: rollback
     if: ${check.result == 'failed'}
-    task:
-      name: echo
-      inputs:
-        message: rolling back
+    echo:
+      message: rolling back
 
   # Best-effort: a failure here is recorded as ${notify.error} and the run
   # continues, because a missed notification should not abandon work that
   # succeeded.
   - id: notify
     continue_on_error: true
-    task:
-      name: echo
-      inputs:
-        message: notifying
+    echo:
+      message: notifying

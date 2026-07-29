@@ -8,21 +8,17 @@
 name: http-output-shaping
 steps:
   - id: web
-    task:
-      name: http
-      inputs:
-        method: GET
-        url: https://httpbin.org/json
-        # ${...} marks a CEL expression, as everywhere else in a Flowfile; a bare
-        # string would be a literal. Quote it because YAML would otherwise read
-        # the colons inside as mapping syntax.
-        outputs: "${ {'status': status_code, 'title': json_parse(body)['slideshow']['title']} }"
+    http:
+      method: GET
+      url: https://httpbin.org/json
+      # ${...} marks a CEL expression, as everywhere else in a Flowfile; a bare
+      # string would be a literal. Quote it because YAML would otherwise read
+      # the colons inside as mapping syntax.
+      outputs: "${ {'status': status_code, 'title': json_parse(body)['slideshow']['title']} }"
 
   - id: report
-    task:
-      name: printf
-      inputs:
-        format: "got %d for %s"
-        args:
-          - ${web.status}
-          - ${web.title}
+    printf:
+      format: "got %d for %s"
+      args:
+        - ${web.status}
+        - ${web.title}

@@ -58,11 +58,9 @@ func TestValidateTaskInputs(t *testing.T) {
 			src: `name: t
 steps:
   - id: a
-    task:
-      name: http
-      inputs:
-        url: https://example.com
-        headers: nope
+    http:
+      url: https://example.com
+      headers: nope
 `,
 			want: "expected a mapping, but this is a string",
 		},
@@ -71,11 +69,9 @@ steps:
 			src: `name: t
 steps:
   - id: a
-    task:
-      name: cel
-      inputs:
-        expr: "1 + 1"
-        libs: math
+    cel:
+      expr: "1 + 1"
+      libs: math
 `,
 			want: "expected a list, but this is a string",
 		},
@@ -84,10 +80,8 @@ steps:
 			src: `name: t
 steps:
   - id: a
-    task:
-      name: http
-      inputs:
-        method: GET
+    http:
+      method: GET
 `,
 			want: `task "http" requires input "url"`,
 		},
@@ -103,15 +97,11 @@ steps:
 			src: `name: t
 steps:
   - id: count
-    task:
-      name: echo
-      inputs:
-        message: one
+    echo:
+      message: one
   - id: a
-    task:
-      name: echo
-      inputs:
-        message: ${[count.result]}
+    echo:
+      message: ${[count.result]}
 `,
 		},
 		{
@@ -121,10 +111,8 @@ steps:
   - id: a
     retry:
       backoff: 2
-    task:
-      name: echo
-      inputs:
-        message: hi
+    echo:
+      message: hi
 `,
 		},
 		{
@@ -132,12 +120,10 @@ steps:
 			src: `name: t
 steps:
   - id: a
-    task:
-      name: cel
-      inputs:
-        expr: "vars.anything"
-        vars:
-          anything: hello
+    cel:
+      expr: "vars.anything"
+      vars:
+        anything: hello
 `,
 		},
 		{
@@ -145,11 +131,9 @@ steps:
 			src: `name: t
 steps:
   - id: a
-    task:
-      name: http
-      inputs:
-        url: https://example.com
-        outputs: "${ {'status': status_code} }"
+    http:
+      url: https://example.com
+      outputs: "${ {'status': status_code} }"
 `,
 		},
 		{
@@ -157,12 +141,10 @@ steps:
 			src: `name: t
 steps:
   - id: a
-    task:
-      name: http
-      inputs:
-        url: https://example.com
-        headers:
-          Accept: application/json
+    http:
+      url: https://example.com
+      headers:
+        Accept: application/json
 `,
 		},
 		{
@@ -170,10 +152,8 @@ steps:
 			src: `name: t
 steps:
   - id: a
-    task:
-      name: nosuchtask
-      inputs:
-        whatever: 1
+    nosuchtask:
+      whatever: 1
 `,
 			want: `unknown task "nosuchtask"`,
 		},
@@ -212,17 +192,13 @@ steps:
       items: ${[1]}
       steps:
         - id: body
-          task:
-            name: echo
-            inputs:
-              mesage: hi
+          echo:
+            mesage: hi
   - id: fan
     parallel:
       - steps:
           - id: branch
-            task:
-              name: echo
-              inputs: {}
+            echo:
 `
 	ds, err := flowfile.ValidateSource([]byte(src))
 	if err != nil {
@@ -248,10 +224,8 @@ func TestValidateTaskInputsPositions(t *testing.T) {
 	src := `name: t
 steps:
   - id: a
-    task:
-      name: echo
-      inputs:
-        mesage: hello
+    echo:
+      mesage: hello
 `
 	ds, err := flowfile.ValidateSource([]byte(src))
 	if err != nil {
@@ -260,9 +234,9 @@ steps:
 	if len(ds) != 1 {
 		t.Fatalf("expected one diagnostic, got %d:\n%s", len(ds), ds.Error())
 	}
-	// The value of the offending input begins at column 17 of line 7.
-	if ds[0].Line != 7 || ds[0].Column != 17 {
-		t.Errorf("position = %d:%d, want 7:17\nreported: %s", ds[0].Line, ds[0].Column, ds[0].Error())
+	// The value of the offending input begins at column 15 of line 5.
+	if ds[0].Line != 5 || ds[0].Column != 15 {
+		t.Errorf("position = %d:%d, want 5:15\nreported: %s", ds[0].Line, ds[0].Column, ds[0].Error())
 	}
 }
 
@@ -271,10 +245,8 @@ func echoInput(inputs string) string {
 	return `name: t
 steps:
   - id: a
-    task:
-      name: echo
-      inputs:
-        ` + inputs + "\n"
+    echo:
+      ` + inputs + "\n"
 }
 
 // printfInput returns a workflow whose single printf step has the given inputs,
@@ -283,9 +255,7 @@ func printfInput(inputs string) string {
 	return `name: t
 steps:
   - id: a
-    task:
-      name: printf
-      inputs:
-        args: [1]
-        ` + inputs + "\n"
+    printf:
+      args: [1]
+      ` + inputs + "\n"
 }

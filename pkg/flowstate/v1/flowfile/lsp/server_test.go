@@ -192,16 +192,19 @@ func TestConcurrentRequests(t *testing.T) {
 	const src = `name: concurrent
 steps:
   - id: web
-    task:
-      name: http
-      inputs:
-        url: https://example.com
+    http:
+      url: https://example.com
   - id: out
-    task:
-      name: echo
-      inputs:
-        message: ${web.body}
+    echo:
+      message: ${web.body}
 `
+	// The reads below all probe the `web` reference inside `${web.body}`, where
+	// hover, completion and definition each have real work to do — a position with
+	// nothing under it would have them all return early and race nothing. Line 7
+	// is `      message: ${web.body}`, whose expression opens at character 15, so
+	// character 18 is the second character of `web`.
+	const probeLine, probeChar = 7, 18
+
 	c := newClient(t)
 	c.initialize()
 	const uri = "file:///concurrent.yaml"
@@ -223,11 +226,11 @@ steps:
 					ContentChanges: []lsp.TextDocumentContentChangeEvent{{Text: src}},
 				})
 			case 1:
-				c.hover(uri, 11, 20)
+				c.hover(uri, probeLine, probeChar)
 			case 2:
-				c.complete(uri, 11, 20)
+				c.complete(uri, probeLine, probeChar)
 			case 3:
-				c.definition(uri, 11, 20)
+				c.definition(uri, probeLine, probeChar)
 			case 4:
 				c.symbols(uri)
 			}
@@ -300,22 +303,26 @@ func TestDocumentContentsAreNeverLogged(t *testing.T) {
 	src := `name: secrets
 steps:
   - id: a
-    task:
-      name: http
-      inputs:
-        url: https://example.com
-        headers:
-          Authorization: Bearer ` + secret + `
-        mesage: typo-to-force-a-diagnostic
+    http:
+      url: https://example.com
+      headers:
+        Authorization: Bearer ` + secret + `
+      mesage: typo-to-force-a-diagnostic
 `
+
+	// Line 6 is `        Authorization: Bearer sk-...`, whose value begins at
+	// character 23; character 28 is the last character of `Bearer`, immediately
+	// before the credential. The misspelled `mesage:` forces a diagnostic, so the
+	// document travels the reporting path as well as the request paths.
+	const probeLine, probeChar = 6, 28
 
 	log, logged := recordingLogger()
 	s := &FlowfileServer{Logger: log}
 	c := newClientFor(t, s)
 	c.initialize()
 	c.open("file:///secrets.yaml", src)
-	c.hover("file:///secrets.yaml", 8, 30)
-	c.complete("file:///secrets.yaml", 8, 30)
+	c.hover("file:///secrets.yaml", probeLine, probeChar)
+	c.complete("file:///secrets.yaml", probeLine, probeChar)
 
 	assert.NotContains(t, logged(), secret)
 	assert.NotContains(t, logged(), "Authorization")

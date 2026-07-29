@@ -14,44 +14,38 @@ steps:
   # than one value for a name expects to receive them. Parameters already present
   # in the url are kept, so a base url with a fixed parameter still works.
   - id: search
-    task:
-      name: http
-      inputs:
-        method: GET
-        url: https://httpbin.org/get?source=flowstate
-        query:
-          q: hello world & goodbye
-          page: 2
-          tag: [alpha, beta]
-        # Asking for the body to be parsed is opt-in. Parsing a response an outside
-        # party controls is work an attacker chooses, so it happens when a workflow
-        # says so rather than because a header claimed the body was JSON.
-        parse_json: true
+    http:
+      method: GET
+      url: https://httpbin.org/get?source=flowstate
+      query:
+        q: hello world & goodbye
+        page: 2
+        tag: [alpha, beta]
+      # Asking for the body to be parsed is opt-in. Parsing a response an outside
+      # party controls is work an attacker chooses, so it happens when a workflow
+      # says so rather than because a header claimed the body was JSON.
+      parse_json: true
 
   # `json` sends a structured body and sets Content-Type: application/json. No
   # hand-built JSON, and no header to remember. It is mutually exclusive with `body`
   # and `form`: a request has one body, and accepting two would make its meaning
   # depend on which field the engine happened to read first.
   - id: submit
-    task:
-      name: http
-      inputs:
-        method: POST
-        url: https://httpbin.org/post
-        json:
-          # Values can reference earlier steps, like any other input.
-          echoed_query: ${search.json.args}
-          nested:
-            works: true
-            count: 3
-        parse_json: true
+    http:
+      method: POST
+      url: https://httpbin.org/post
+      json:
+        # Values can reference earlier steps, like any other input.
+        echoed_query: ${search.json.args}
+        nested:
+          works: true
+          count: 3
+      parse_json: true
 
   - id: report
-    task:
-      name: printf
-      inputs:
-        format: "sent %s and the server echoed it back"
-        args:
-          # Quoted because the colon inside the expression would otherwise be read
-          # as YAML mapping syntax.
-          - "${submit.json.json.nested.works ? 'a nested object' : 'nothing'}"
+    printf:
+      format: "sent %s and the server echoed it back"
+      args:
+        # Quoted because the colon inside the expression would otherwise be read
+        # as YAML mapping syntax.
+        - "${submit.json.json.nested.works ? 'a nested object' : 'nothing'}"

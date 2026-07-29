@@ -11,20 +11,14 @@ import (
 const navigationSource = `name: navigation
 steps:
   - id: web
-    task:
-      name: http
-      inputs:
-        url: https://example.com
+    http:
+      url: https://example.com
   - id: status
-    task:
-      name: echo
-      inputs:
-        message: ${string(web.status_code)}
+    echo:
+      message: ${string(web.status_code)}
   - id: shout
-    task:
-      name: shell
-      inputs:
-        message: hi
+    shell:
+      message: hi
 `
 
 // TestDefinition checks that a reference jumps to the step that declares it.
@@ -61,15 +55,11 @@ func TestDefinition(t *testing.T) {
 		const src = `name: fwd
 steps:
   - id: a
-    task:
-      name: echo
-      inputs:
-        message: ${later.result}
+    echo:
+      message: ${later.result}
   - id: later
-    task:
-      name: echo
-      inputs:
-        message: hi
+    echo:
+      message: hi
 `
 		c.open("file:///fwd.yaml", src)
 		pos := positionOf(t, src, "${later.result}", 3)
@@ -90,6 +80,8 @@ func TestDocumentSymbols(t *testing.T) {
 	got := c.symbols(uri)
 	require.Len(t, got, 3)
 
+	// The step's key is the task, so the outline's second column names the task
+	// with nothing in the document having to spell it out.
 	assert.Equal(t, "web", got[0].Name)
 	assert.Equal(t, "http", got[0].ContainerName)
 	assert.Equal(t, lsp.SKFunction, got[0].Kind)
@@ -104,15 +96,32 @@ func TestDocumentSymbols(t *testing.T) {
 
 	// Each symbol's range must cover its whole step and nothing beyond it, or an
 	// editor's breadcrumb flickers as the cursor moves through the file.
+	//
+	// assignStepRanges ends a step on the line before the next step's dash, and
+	// walks the last step's end back over trailing blank lines. The dashes in
+	// navigationSource are on lines 2, 5 and 8, so the steps own 2-4, 5-7 and
+	// 8-10 — the whole file below `steps:`, partitioned with no line left over.
 	assert.Equal(t, 2, got[0].Location.Range.Start.Line)
-	assert.Equal(t, 6, got[0].Location.Range.End.Line)
-	assert.Equal(t, 7, got[1].Location.Range.Start.Line)
-	assert.Equal(t, 11, got[1].Location.Range.End.Line)
-	assert.Equal(t, 12, got[2].Location.Range.Start.Line)
+	assert.Equal(t, 4, got[0].Location.Range.End.Line)
+	assert.Equal(t, 5, got[1].Location.Range.Start.Line)
+	assert.Equal(t, 7, got[1].Location.Range.End.Line)
+	assert.Equal(t, 8, got[2].Location.Range.Start.Line)
+	// The last step is the one with no successor to bound it, so it is the only
+	// one that can run off the end of the file. It must stop at its last content
+	// line rather than at the empty line the trailing newline leaves behind.
+	assert.Equal(t, 10, got[2].Location.Range.End.Line)
 }
 
 // TestDocumentSymbolsNamesAnUnnamedStep checks that a step with no id still appears
 // in the outline, since an empty row is worse than a placeholder.
+//
+// The step was written `task:`/`name:`/`inputs:` before verb-key flattening. The
+// question it asked — what an editor shows for a step whose id is missing — is
+// unchanged, but the new grammar states it more sharply: the task key is now the
+// step's only key, so there is nothing else the outline could have fallen back to.
+// The container is asserted alongside the name for that reason, because a
+// placeholder name on its own would look identical if the step had not been
+// recognized as a step at all.
 func TestDocumentSymbolsNamesAnUnnamedStep(t *testing.T) {
 	t.Parallel()
 
@@ -120,14 +129,13 @@ func TestDocumentSymbolsNamesAnUnnamedStep(t *testing.T) {
 	c.initialize()
 	c.open("file:///noid.yaml", `name: noid
 steps:
-  - task:
-      name: echo
-      inputs:
-        message: hi
+  - echo:
+      message: hi
 `)
 	got := c.symbols("file:///noid.yaml")
 	require.Len(t, got, 1)
 	assert.Equal(t, "(step with no id)", got[0].Name)
+	assert.Equal(t, "echo", got[0].ContainerName)
 }
 
 // TestSymbolsAndDefinitionOnUnparseableDocument checks that both features return an
@@ -137,7 +145,11 @@ func TestSymbolsAndDefinitionOnUnparseableDocument(t *testing.T) {
 
 	c := newClient(t)
 	c.initialize()
-	c.open("file:///broken.yaml", "name: x\nsteps:\n  - id: a\n  \ttask: y\n")
+	// The tab in the last line's indentation is what YAML refuses; the step's key
+	// is incidental, and is spelled the way a step spells one so that the fixture
+	// stops being valid Flowfile for exactly one reason. Character 5 of that line
+	// lands inside the key either way.
+	c.open("file:///broken.yaml", "name: x\nsteps:\n  - id: a\n  \techo: y\n")
 
 	assert.Empty(t, c.symbols("file:///broken.yaml"))
 	assert.Empty(t, c.definition("file:///broken.yaml", 3, 5))

@@ -1,6 +1,7 @@
 package lsp
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -30,6 +31,21 @@ import (
 //
 // So the fixture is a workflow that uses every *kind* of step, not merely every
 // field of one kind.
+//
+// Flattening added the other direction. The table used to carry a `task` level
+// holding `name` and `inputs`, and a step key called `task`; the DSL stopped
+// emitting all three at once. Nothing here could have noticed, because every
+// assertion asked only whether an emitted key was known — a table entry for a key
+// the language no longer has is invisible to that question, and completion would
+// have gone on offering a word `flow validate` rejects. So the comparison runs both
+// ways now: every key the DSL emits is one the table knows, and every key the table
+// declares is one the DSL still emits.
+//
+// The step level also gained a second vocabulary, since a task's name is a step key
+// in its own right. That one is not written down here at all — it comes from the
+// registry, so a task registered tomorrow needs no change to this test — and it only
+// stays unambiguous while it cannot collide with a step property, which is the last
+// thing asserted.
 func TestDSLKeysMatchTheDSL(t *testing.T) {
 	t.Parallel()
 
@@ -52,9 +68,8 @@ func TestDSLKeysMatchTheDSL(t *testing.T) {
 					},
 				},
 				Kind: &v1.Node_Task{Task: &v1.Task{
-					Name:        "echo",
-					Description: ptr("a step"),
-					Inputs:      map[string]*v1.Value{"message": v1.NewValue("hi")},
+					Name:   "echo",
+					Inputs: map[string]*v1.Value{"message": v1.NewValue("hi")},
 				}},
 			},
 			{
@@ -100,31 +115,96 @@ func TestDSLKeysMatchTheDSL(t *testing.T) {
 	rendered, err := flowfile.Marshal(workflow)
 	require.NoError(t, err, "the DSL round trip must work for this test to mean anything")
 
-	// Every key the DSL emits must be one completion knows about, at some level.
-	known := map[string]bool{}
-	for _, keys := range dslKeys {
-		for _, k := range keys {
-			known[k.name] = true
+	// The keys the DSL actually writes, as a set: the same key legitimately appears
+	// at more than one level (`steps`, `name`, `timeout` all do), and it is the
+	// vocabulary that is being compared rather than any one occurrence.
+	emitted := map[string]bool{}
+	for _, line := range strings.Split(string(rendered), "\n") {
+		if m := keyLine.FindStringSubmatch(line); m != nil {
+			emitted[m[3]] = true
 		}
 	}
-	// Task input names come from the task's schema, not from the shape table.
+
+	// The keys the shape table declares, at any level.
+	shape := map[string]bool{}
+	for _, keys := range dslKeys {
+		for _, k := range keys {
+			shape[k.name] = true
+		}
+	}
+
+	// The keys the registry accounts for. A step names its task directly, so a
+	// task's name is a step key and its inputs are the keys beneath it — neither is
+	// in the shape table, and neither should be: the registry and the task's schema
+	// are where they are defined, and reading them here is what stops this test from
+	// needing an edit every time a task is added.
+	fromRegistry := map[string]bool{}
 	for _, def := range v1.DefaultRegistry().All() {
+		fromRegistry[def.Name] = true
 		for _, name := range fieldNames(def.Inputs) {
-			known[name] = true
+			fromRegistry[name] = true
 		}
 	}
 
 	var missing []string
-	for _, line := range strings.Split(string(rendered), "\n") {
-		m := keyLine.FindStringSubmatch(line)
-		if m == nil || known[m[3]] {
-			continue
+	for key := range emitted {
+		if !shape[key] && !fromRegistry[key] {
+			missing = append(missing, key)
 		}
-		missing = append(missing, m[3])
 	}
+	slices.Sort(missing)
 	assert.Empty(t, missing,
 		"the Flowfile DSL emits keys this package does not know about; add them to dslKeys "+
 			"(and to the parsed model if they carry expressions or durations).\nRendered:\n%s", rendered)
+
+	// The other direction. A key here that the DSL does not emit is either a key
+	// the language dropped — which completion would go on offering — or a gap in
+	// the fixture above, and the two are worth telling apart by hand, so the failure
+	// says so rather than picking one.
+	var stale []string
+	for key := range shape {
+		if !emitted[key] {
+			stale = append(stale, key)
+		}
+	}
+	slices.Sort(stale)
+	assert.Empty(t, stale,
+		"dslKeys declares keys the DSL does not emit; either the language dropped them and the "+
+			"entries should go, or the workflow above stopped reaching them and should be extended "+
+			"to cover them again.\nRendered:\n%s", rendered)
+
+	// A level of the table is a key of some other level: keys nest under a key. A
+	// level left behind when its key went away is the shape the `task` block had on
+	// the way out, and it is invisible to both comparisons above, which only look at
+	// key names.
+	for level := range dslKeys {
+		if level == "" || level == "steps" {
+			// The document itself, and a step, which are the two levels no key
+			// opens: `steps:` holds a list of them.
+			continue
+		}
+		found := false
+		for _, keys := range dslKeys {
+			found = found || slices.ContainsFunc(keys, func(k dslKey) bool { return k.name == level })
+		}
+		assert.True(t, found,
+			"dslKeys nests keys under %q, but no key of the DSL is called that, so nothing "+
+				"an author can write ever reaches them", level)
+	}
+
+	// A step key is either a property of the step or the name of a task, and every
+	// reader in the repo tells them apart by asking the registry. That only works
+	// while the two vocabularies are disjoint, which v1 enforces where the name is
+	// chosen: Register refuses a reserved one. This is the same rule checked from
+	// the other side — over the table completion actually offers — because a
+	// property added here and not there would reopen the ambiguity from an angle
+	// the registry cannot see.
+	for _, k := range dslKeys["steps"] {
+		assert.True(t, v1.IsReservedStepKey(k.name),
+			"completion offers %[1]q as a step key, but v1 does not reserve it, so a task could "+
+				"be registered under that name and `%[1]s:` on a step would have two legitimate "+
+				"readings", k.name)
+	}
 }
 
 // TestConditionsAreFirstClass checks that a step's `if` gets the same treatment as
@@ -136,16 +216,12 @@ func TestConditionsAreFirstClass(t *testing.T) {
 	const src = `name: conditions
 steps:
   - id: web
-    task:
-      name: http
-      inputs:
-        url: https://example.com
+    http:
+      url: https://example.com
   - id: guarded
     if: ${web.status_code == 200}
-    task:
-      name: echo
-      inputs:
-        message: ok
+    echo:
+      message: ok
 `
 	c := newClient(t)
 	c.initialize()
@@ -194,15 +270,11 @@ steps:
 steps:
   - id: a
     if: ${later.result == "x"}
-    task:
-      name: echo
-      inputs:
-        message: hi
+    echo:
+      message: hi
   - id: later
-    task:
-      name: echo
-      inputs:
-        message: hi
+    echo:
+      message: hi
 `
 		params := c.open("file:///cond-fwd.yaml", forward)
 		require.Len(t, params.Diagnostics, 1, "got %v", messages(params.Diagnostics))
@@ -215,10 +287,8 @@ steps:
 		partial, pos := splitCursor(t, `name: c
 steps:
   - id: web
-    task:
-      name: http
-      inputs:
-        url: https://example.com
+    http:
+      url: https://example.com
   - id: guarded
     if: ${|
 `)
@@ -240,28 +310,22 @@ func TestNestedStepsAreFirstClass(t *testing.T) {
 	const src = `name: nested
 steps:
   - id: targets
-    task:
-      name: cel
-      inputs:
-        expr: "['a', 'b']"
+    cel:
+      expr: "['a', 'b']"
   - id: loop
     for_each:
       items: ${targets.result}
       iterator: one
       steps:
         - id: body
-          task:
-            name: echo
-            inputs:
-              mesage: ${targets.result}
+          echo:
+            mesage: ${targets.result}
   - id: branches
     parallel:
       - steps:
           - id: left
-            task:
-              name: http
-              inputs:
-                method: GET
+            http:
+              method: GET
 `
 	c := newClient(t)
 	c.initialize()
@@ -289,9 +353,19 @@ steps:
 	})
 
 	t.Run("hover works on a nested step's task", func(t *testing.T) {
-		pos := positionOfKey(t, src, "name", 12, "")
+		// This used to point at the `name:` key of the `task:` block two levels
+		// inside the loop body, at an indent of 12. The block is gone: a nested
+		// step names its task with a key of its own, so the same question — does
+		// hover reach a step that is not at the top level? — is now asked of the
+		// `echo:` at an indent of 10. Only the loop body's task key is that deep;
+		// the branch's `http:` is deeper still, and the first step's `cel:` is at 4.
+		pos := positionOfKey(t, src, "echo", 10, "")
 		got := c.hover(uri, pos.Line, pos.Character)
 		require.NotNil(t, got, "no hover on a key inside a loop body")
+		// And it is the task that was described, rather than whatever else happens
+		// to sit at that position — which is what the old `name:` anchor could no
+		// longer distinguish.
+		assert.Contains(t, hoverText(got), "task `echo`")
 	})
 
 	t.Run("a loop's items expression resolves references", func(t *testing.T) {
@@ -344,44 +418,32 @@ func TestReferenceScoping(t *testing.T) {
 	const src = `name: scoping
 steps:
   - id: before
-    task:
-      name: echo
-      inputs:
-        message: hi
+    echo:
+      message: hi
   - id: loop
     for_each:
       items: ${before.result}
       iterator: each
       steps:
         - id: body_one
-          task:
-            name: echo
-            inputs:
-              message: hi
+          echo:
+            message: hi
         - id: body_two
-          task:
-            name: echo
-            inputs:
-              message: PLACEHOLDER_BODY
+          echo:
+            message: PLACEHOLDER_BODY
   - id: fan
     parallel:
       - steps:
           - id: left
-            task:
-              name: echo
-              inputs:
-                message: PLACEHOLDER_LEFT
+            echo:
+              message: PLACEHOLDER_LEFT
       - steps:
           - id: right
-            task:
-              name: echo
-              inputs:
-                message: hi
+            echo:
+              message: hi
   - id: after
-    task:
-      name: echo
-      inputs:
-        message: PLACEHOLDER_AFTER
+    echo:
+      message: PLACEHOLDER_AFTER
 `
 
 	tests := []struct {
@@ -473,15 +535,11 @@ steps:
       items: "${['a']}"
       steps:
         - id: inner
-          task:
-            name: echo
-            inputs:
-              message: hi
+          echo:
+            message: hi
   - id: after
-    task:
-      name: echo
-      inputs:
-        message: ${inner.result}
+    echo:
+      message: ${inner.result}
 `
 	c := newClient(t)
 	c.initialize()
@@ -511,10 +569,8 @@ steps:
       iterator: target
       steps:
         - id: body
-          task:
-            name: echo
-            inputs:
-              message: ${target}
+          echo:
+            message: ${target}
 `
 	c := newClient(t)
 	c.initialize()
@@ -543,12 +599,10 @@ func TestDeferredInputsAreNotStepReferences(t *testing.T) {
 	const src = `name: shaping
 steps:
   - id: web
-    task:
-      name: http
-      inputs:
-        method: GET
-        url: https://example.com/json
-        outputs: "${ {'status': status_code, 'title': body} }"
+    http:
+      method: GET
+      url: https://example.com/json
+      outputs: "${ {'status': status_code, 'title': body} }"
 `
 	c := newClient(t)
 	c.initialize()
@@ -607,7 +661,7 @@ func TestDurationsAreChecked(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			src := "name: durations\nsteps:\n  - id: a\n" + tt.policy +
-				"    task:\n      name: echo\n      inputs:\n        message: hi\n"
+				"    echo:\n      message: hi\n"
 			uri := "file:///duration-" + strings.ReplaceAll(tt.name, " ", "-") + ".yaml"
 			params := c.open(uri, src)
 
@@ -640,11 +694,8 @@ steps:
       interval: 1s
       backoff: 2
       max_interval: 1m
-    task:
-      name: echo
-      description: a step
-      inputs:
-        message: hi
+    echo:
+      message: hi
   - id: loop
     for_each:
       items: ${a.result}
@@ -652,18 +703,14 @@ steps:
       max_parallel: 2
       steps:
         - id: body
-          task:
-            name: echo
-            inputs:
-              message: hi
+          echo:
+            message: hi
   - id: branches
     parallel:
       - steps:
           - id: left
-            task:
-              name: echo
-              inputs:
-                message: hi
+            echo:
+              message: hi
   - id: pause
     sleep: 30s
   - id: window
@@ -698,7 +745,7 @@ steps:
 				// task's and a gate's sit at the same depth, so the search starts
 				// from the line that opens the block.
 				minIndent := map[string]int{
-					"steps": 4, "task": 6, "retry": 6, "for_each": 6, "wait_for_signal": 6,
+					"steps": 4, "retry": 6, "for_each": 6, "wait_for_signal": 6,
 				}[level]
 				pos := positionOfKey(t, src, k.name, minIndent, level+":")
 				got := c.hover(uri, pos.Line, pos.Character)

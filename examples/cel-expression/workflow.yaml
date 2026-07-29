@@ -1,16 +1,12 @@
 name: cel-demo
 steps:
   - id: greet
-    task:
-      name: echo
-      inputs:
-        message: hello
+    echo:
+      message: hello
   - id: modify
-    task:
-      name: cel
-      inputs:
-        expr: "regex.replace(vars.greeting.upperAscii(), 'HELLO', 'HI')"
-        libs: [strings, regex]
-        vars:
-          greeting: ${greet.result}
+    cel:
+      expr: "regex.replace(vars.greeting.upperAscii(), 'HELLO', 'HI')"
+      libs: [strings, regex]
+      vars:
+        greeting: ${greet.result}
 

@@ -12,10 +12,8 @@ steps:
   # Produce the list to work through. In a real workload this would come from an
   # API call or a query.
   - id: targets
-    task:
-      name: cel
-      inputs:
-        expr: "['alpha', 'beta', 'gamma']"
+    cel:
+      expr: "['alpha', 'beta', 'gamma']"
 
   # Repeat the body once per target. Inside the body, the current item is bound to
   # `name`, and body steps can reference each other within an iteration.
@@ -26,12 +24,10 @@ steps:
       max_parallel: 3
       steps:
         - id: label
-          task:
-            name: printf
-            inputs:
-              format: "processing %s"
-              args:
-                - ${name}
+          printf:
+            format: "processing %s"
+            args:
+              - ${name}
 
   # Independent work that has no reason to be sequential. Branches must not depend
   # on each other's outputs, since there is no ordering between them.
@@ -39,24 +35,18 @@ steps:
     parallel:
       - steps:
           - id: check_config
-            task:
-              name: echo
-              inputs:
-                message: config ok
+            echo:
+              message: config ok
       - steps:
           - id: check_quota
-            task:
-              name: echo
-              inputs:
-                message: quota ok
+            echo:
+              message: quota ok
 
   # Both branches' outputs are visible once the block completes.
   - id: summary
-    task:
-      name: printf
-      inputs:
-        format: "%s / %s / processed %d target(s)"
-        args:
-          - ${check_config.result}
-          - ${check_quota.result}
-          - ${size(process.results)}
+    printf:
+      format: "%s / %s / processed %d target(s)"
+      args:
+        - ${check_config.result}
+        - ${check_quota.result}
+        - ${size(process.results)}

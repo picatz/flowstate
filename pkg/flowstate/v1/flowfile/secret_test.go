@@ -139,10 +139,8 @@ steps:
       items: ${secret('env:LIST')}
       steps:
         - id: b
-          task:
-            name: echo
-            inputs:
-              message: hi
+          echo:
+            message: hi
 `,
 			want: "cannot go where the workflow evaluates the value itself",
 		},
@@ -212,11 +210,9 @@ func TestSecretReferenceReportsPosition(t *testing.T) {
 	src := `name: t
 steps:
   - id: a
-    task:
-      name: http
-      inputs:
-        url: https://example.com
-        auth: ${'Bearer ' + secret('env:TOKEN')}
+    http:
+      url: https://example.com
+      auth: ${'Bearer ' + secret('env:TOKEN')}
 `
 	_, _, err := flowfile.Parse([]byte(src))
 	if err == nil {
@@ -231,10 +227,10 @@ steps:
 		t.Fatalf("expected exactly one diagnostic, got %d:\n%s", len(ds), ds.Error())
 	}
 
-	// `secret` begins at column 29 of line 8: the expression source starts at
-	// column 17, and `'Bearer ' + ` is twelve characters.
-	if ds[0].Line != 8 || ds[0].Column != 29 {
-		t.Errorf("position = %d:%d, want 8:29\nreported: %s", ds[0].Line, ds[0].Column, ds[0].Error())
+	// `secret` begins at column 27 of line 6: the expression source starts at
+	// column 15, and `'Bearer ' + ` is twelve characters.
+	if ds[0].Line != 6 || ds[0].Column != 27 {
+		t.Errorf("position = %d:%d, want 6:27\nreported: %s", ds[0].Line, ds[0].Column, ds[0].Error())
 	}
 	if ds[0].Step != "a" || ds[0].Field != "auth" {
 		t.Errorf("diagnostic names step %q input %q, want \"a\" and \"auth\"", ds[0].Step, ds[0].Field)
@@ -248,17 +244,13 @@ func TestSecretMarkerIsOnlyACall(t *testing.T) {
 	src := `name: t
 steps:
   - id: secret
-    task:
-      name: echo
-      inputs:
-        message: hello
+    echo:
+      message: hello
   - id: user
-    task:
-      name: echo
-      inputs:
-        from_step: ${secret.result}
-        bare: ${secret}
-        nested: ${secret.result.size()}
+    echo:
+      from_step: ${secret.result}
+      bare: ${secret}
+      nested: ${secret.result.size()}
 `
 	workflow, err := flowfile.Unmarshal([]byte(src))
 	if err != nil {
@@ -282,12 +274,10 @@ func TestSecretReferenceValidates(t *testing.T) {
 	good := []byte(`name: uses-a-secret
 steps:
   - id: notify
-    task:
-      name: http
-      inputs:
-        method: POST
-        url: https://api.example.com/events
-        body: ${secret('vault:prod/api#token')}
+    http:
+      method: POST
+      url: https://api.example.com/events
+      body: ${secret('vault:prod/api#token')}
 `)
 	ds, err := flowfile.ValidateSource(good)
 	if err != nil {
@@ -300,12 +290,10 @@ steps:
 	bad := []byte(`name: broken-secret
 steps:
   - id: notify
-    task:
-      name: http
-      inputs:
-        method: POST
-        url: https://api.example.com/events
-        body: ${secret('API_KEY')}
+    http:
+      method: POST
+      url: https://api.example.com/events
+      body: ${secret('API_KEY')}
 `)
 	if _, err := flowfile.ValidateSource(bad); err == nil {
 		t.Error("ValidateSource() accepted a malformed reference; it used to say ok and fail at run time")

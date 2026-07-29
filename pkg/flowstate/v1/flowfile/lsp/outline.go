@@ -1,15 +1,16 @@
 package lsp
 
 import (
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"regexp"
 	"slices"
 	"strings"
 )
 
 // Completion cannot use the YAML parser. A document being typed is usually not
-// valid YAML — `inputs:` followed by a half-written key is a syntax error — and
-// that is exactly the moment the author wants a suggestion. So this file reads
-// the document by line, which degrades instead of failing.
+// valid YAML — a task's key followed by a half-written input is a syntax error —
+// and that is exactly the moment the author wants a suggestion. So this file
+// reads the document by line, which degrades instead of failing.
 //
 // That trade is right for completion and wrong for diagnostics: a line scan can
 // misjudge an unusual document, and a wrong diagnostic is worse than none.
@@ -116,7 +117,7 @@ func fillStep(ix *lineIndex, s *outlineStep, entryIndent int) {
 	// A step's own keys sit at the column after the dash, wherever the writer put
 	// it: `- id: a` and `-\n  id: a` are both legal.
 	contentIndent := -1
-	inTask, taskIndent := false, -1
+	inTask := false
 	inInputs, inputsIndent := false, -1
 	inLibs, libsIndent := false, -1
 
@@ -168,15 +169,17 @@ func fillStep(ix *lineIndex, s *outlineStep, entryIndent int) {
 			if s.id == "" {
 				s.id, s.idLine = unquote(rest), l
 			}
-		case indent == contentIndent && key == "task":
-			inTask, taskIndent = true, indent
-		case inTask && indent > taskIndent && key == "name":
+		case indent == contentIndent && isRegisteredTask(key):
+			// The key is the task, and everything under it is an input.
+			//
+			// A registered name only — see isRegisteredTask for why this asks a
+			// narrower question than the parsed model does, and what it costs.
 			if s.taskName == "" {
-				s.taskName = unquote(rest)
+				s.taskName = key
 			}
-		case inTask && indent > taskIndent && key == "inputs":
+			inTask = true
 			inInputs, inputsIndent = true, indent
-		case inInputs && indent > inputsIndent:
+		case inTask && inInputs && indent > inputsIndent:
 			if key == "libs" {
 				inLibs, libsIndent = true, indent
 				s.libs = append(s.libs, flowListItems(rest)...)
@@ -224,6 +227,26 @@ func unquote(s string) string {
 	return s
 }
 
+// isRegisteredTask reports whether a key names a task the registry has.
+//
+// Deliberately a narrower question than flowfile.StepTaskKeys, which the parsed
+// model and the compiler ask — and the difference is not a shortcut. Promoting an
+// *unregistered* key to a task requires knowing the step has no other kind, and
+// this scanner exists precisely for the document where that is unknowable: it
+// reads one line at a time, forwards, over a step the author is still typing. A
+// key three lines below the cursor has not been written yet.
+//
+// What that costs is bounded, because every consumer of the scanner's taskName
+// needs a registered TaskDef to say anything — completion offers a task's inputs
+// from its descriptors, and there are none for a task nobody registered. So the
+// scanner declining to name it produces the same empty answer by a shorter route.
+// A consumer that ever wants the broader rule needs the parsed model instead, not
+// a wider guess here.
+func isRegisteredTask(key string) bool {
+	_, known := v1.LookupTask(key)
+	return known
+}
+
 // keyPath returns the chain of YAML keys enclosing a line, outermost first.
 //
 // It walks backwards over lines with strictly smaller indentation, which is how
@@ -258,9 +281,10 @@ func keyPath(ix *lineIndex, line0 int) []string {
 
 // indentOf returns the column where a line's content begins.
 //
-// A leading sequence dash counts as indentation, so that a step's `- id:` and its
-// sibling `task:` are seen at the same depth — which is what makes the backwards
-// walk in keyPath skip the dash line instead of treating `id` as a parent key.
+// A leading sequence dash counts as indentation, so that a step's `- id:` and the
+// `echo:` beneath it are seen at the same depth — which is what makes the
+// backwards walk in keyPath skip the dash line instead of treating `id` as a
+// parent key.
 func indentOf(line string) int {
 	i := 0
 	for i < len(line) && (line[i] == ' ' || line[i] == '\t') {

@@ -51,13 +51,138 @@ const (
 // the author no reason to doubt it, which is the worst of both outcomes.
 var (
 	workflowKeys = []string{"name", "description", "steps"}
-	stepKeys     = []string{"id", "if", "timeout", "retry", "continue_on_error", "task", "for_each", "parallel", "sleep", "wait_until", "wait_for_signal"}
-	stepKindKeys = []string{"task", "for_each", "parallel", "sleep", "wait_until", "wait_for_signal"}
-	taskKeys     = []string{"name", "description", "inputs"}
-	retryKeys    = []string{"attempts", "interval", "backoff", "max_interval"}
-	forEachKeys  = []string{"items", "iterator", "max_parallel", "steps"}
-	branchKeys   = []string{"steps"}
+
+	// stepPropertyKeys control how a step runs, and say nothing about what it does.
+	stepPropertyKeys = []string{"id", "if", "timeout", "retry", "continue_on_error"}
+
+	// nodeKindKeys are the kinds of work that are not a task, and so name a node
+	// kind in the schema rather than anything in the registry.
+	nodeKindKeys = []string{"for_each", "parallel", "sleep", "wait_until", "wait_for_signal"}
+
+	retryKeys   = []string{"attempts", "interval", "backoff", "max_interval"}
+	forEachKeys = []string{"items", "iterator", "max_parallel", "steps"}
+	branchKeys  = []string{"steps"}
 )
+
+// A step names the work it does directly — `http:` with the request under it —
+// so the keys a step accepts are not a constant. They are the properties, plus
+// the non-task kinds, plus every task the registry has.
+//
+// Deriving it means a task added to the registry becomes writable with no change
+// here, and an unknown-key diagnostic offers task names alongside grammar
+// keywords, because from an author's position those are the same kind of thing.
+// [v1.ReservedStepKeys] keeps the two halves disjoint, so a key is never
+// ambiguous.
+func stepKeys() []string {
+	keys := make([]string, 0, len(stepPropertyKeys)+len(nodeKindKeys)+8)
+	keys = append(keys, stepPropertyKeys...)
+	keys = append(keys, nodeKindKeys...)
+	return append(keys, v1.TaskNames()...)
+}
+
+// couldBeATaskName reports whether a key is spelled the way a task name must be.
+//
+// The same pattern the schema puts on Task.name, so this package and the
+// validator agree about what a task could be called.
+func couldBeATaskName(key string) bool {
+	if key == "" {
+		return false
+	}
+	for _, r := range key {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '-' || r == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// stepKindKeys are the keys saying what a step *does*. Exactly one is required.
+func stepKindKeys() []string {
+	return append(slices.Clone(nodeKindKeys), v1.TaskNames()...)
+}
+
+// retiredStepKeys are spellings a step used to have, and what to write instead.
+//
+// A key the language no longer has is otherwise reported as an unknown task,
+// which is true and useless: it tells an author what their file is not and leaves
+// them to guess what it should be. `task:` is the one that matters, because it is
+// the shape every Flowfile written before the flattening has, and the shape a
+// model trained on them will keep producing.
+//
+// This is where a future retirement goes. A key listed here is never taken for a
+// task, so the specific message is the only one reported — see [StepTaskKeys].
+var retiredStepKeys = map[string]string{
+	"task": "a step names its task directly now: replace `task:` with the task's own name and put its inputs beneath, so `task:` / `name: echo` / `inputs:` / `message: hi` becomes `echo:` / `message: hi`",
+}
+
+// StepTaskKeys reports which of a step's keys name the task it runs, in the order
+// they were written.
+//
+// A step names its task directly, so deciding which key is the task is a question
+// with no fixed answer: any key that is not grammar might be one. Two callers ask
+// it — the compiler, deciding what to build, and the language server, deciding
+// what to underline — and they must reach the same answer, because a diagnostic
+// the editor puts on a different token than `flow validate` does is a diagnostic
+// the author has to reconcile by hand. Exported for that reason rather than for
+// general use.
+//
+// The rule:
+//
+//   - A registered task name is a task. Nothing else needs deciding.
+//   - A step property (`id`, `timeout`, ...) or a non-task kind (`for_each`, ...)
+//     is not.
+//   - Neither is a near-miss of one: `timout:` is a misspelled property and wants
+//     "did you mean timeout?", which is a better message than "unknown task".
+//   - Nor is anything spelled the way a task name cannot be — `${chosen.task}:` is
+//     somebody reaching for a task chosen at run time, which the grammar
+//     deliberately cannot express.
+//   - What is left is an unregistered name, and it counts only when the step has
+//     no other kind. A step that already loops and also has a stray key has a key
+//     problem; calling that key a task would report "this does two kinds of work",
+//     which is true of the reading and not of the file.
+//
+// The last clause is why this takes the whole step rather than one key: the answer
+// for `shell` depends on what else the step says.
+func StepTaskKeys(keys []string) []string {
+	grammar := append(slices.Clone(stepPropertyKeys), nodeKindKeys...)
+	kinds := stepKindKeys()
+
+	var out []string
+	for _, key := range keys {
+		if _, known := v1.LookupTask(key); known {
+			out = append(out, key)
+		}
+	}
+
+	// A registered name, or a `for_each:`, settles it: the step says what it does,
+	// so no other key needs promoting to say it.
+	if len(out) > 0 || slices.ContainsFunc(keys, func(k string) bool { return slices.Contains(kinds, k) }) {
+		return out
+	}
+
+	for _, key := range keys {
+		if slices.Contains(grammar, key) {
+			continue
+		}
+		if _, retired := retiredStepKeys[key]; retired {
+			// Spelled like a task and reads like one, which is exactly why it must
+			// not be taken for one: `unknown task "task"` would bury the message
+			// that says what to write.
+			continue
+		}
+		if _, near := nearest(key, grammar); near {
+			continue
+		}
+		if !couldBeATaskName(key) {
+			continue
+		}
+		out = append(out, key)
+	}
+	return out
+}
 
 // Parse compiles a Flowfile into a workflow and the source positions of
 // everything in it.
@@ -413,28 +538,94 @@ func (c *compiler) step(n ast.Node, path string) *v1.Node {
 	}
 
 	r := ref{step: step.GetId(), path: path}
-	fields := c.check(entries, r, stepKeys)
 
+	// Which key names the task is [StepTaskKeys]'s question, asked here and by the
+	// language server so that both place a diagnostic on the same token.
+	//
+	// An unregistered name it returns — `shell:` — is accepted as a key here and
+	// compiled as a task, so the *validator* reports it: "unknown task; available
+	// tasks are ..." is a better message than "unknown key", and it belongs where
+	// task names are known.
+	names := make([]string, len(entries))
+	for i, e := range entries {
+		names[i] = e.name
+	}
+	promoted := StepTaskKeys(names)
+
+	// stepKeys already holds every *registered* name, so only an unregistered one
+	// is news here. Appending the whole promoted set would list `echo` twice in
+	// "the keys here are ...", which reads like a bug in the tool.
+	known := stepKeys()
+	for _, name := range promoted {
+		if !slices.Contains(known, name) {
+			known = append(known, name)
+		}
+	}
+	kindKeys := append(slices.Clone(nodeKindKeys), promoted...)
+
+	// A retired spelling is reported here and then held back from the key check,
+	// so that the message naming its replacement is the only thing said about it.
+	//
+	// Held back rather than accepted, because the count of checked keys is what
+	// tells the kind check below that a key was already rejected — and a step
+	// written the old way has no kind, so without this it would also be told it
+	// does nothing, which is the same mistake reported a second time in worse
+	// words.
+	checkable := make([]entry, 0, len(entries))
+	for _, e := range entries {
+		if instead, retired := retiredStepKeys[e.name]; retired {
+			c.report(spanOfNode(e.key), r, "`%s:` is no longer a step key; %s", e.name, instead)
+			continue
+		}
+		checkable = append(checkable, e)
+	}
+
+	fields := c.check(checkable, r, known)
+
+	// Collected in the order they were *written*, not in the order of a canonical
+	// list. It only matters when there are two, and then it is what makes the
+	// diagnostic point at the second one — the key the author added to a step that
+	// already did something.
 	var kinds []field
-	for _, name := range stepKindKeys {
-		if f, found := fields.get(name); found {
+	for _, f := range fields.list {
+		if slices.Contains(kindKeys, f.name) {
 			kinds = append(kinds, f)
 		}
 	}
 
 	switch len(kinds) {
 	case 0:
-		c.report(span, r, "must have one of %s; a step has to do something", stepKindList())
+		// Silent when a key was already rejected, because that key is almost
+		// certainly what should have been the kind — a misspelled `htpp:`, an
+		// expression written where a key goes. Reporting "this has no kind of
+		// work" as well says the same mistake twice and buries the one that names
+		// the token at fault.
+		if len(fields.list) == len(entries) {
+			c.report(span, r, "must have one of %s; a step has to do something", stepKindList())
+		}
 	case 1:
 		kind := kinds[0]
 		kindPath := fieldPath(path, kind.name)
-		c.pos.record(kindPath, spanOfNode(kind.value))
+
+		// What `steps[N].<kind>` addresses depends on the kind.
+		//
+		// For a task it is the *key*: under the flattening the key is the task's
+		// name, so a problem with the task is a problem with that word, and
+		// `unknown task "shell"` wants to underline `shell` rather than the six
+		// inputs an author wrote correctly beneath it. For every other kind the key
+		// is a fixed grammar word nobody can get wrong and the interesting extent is
+		// what was written under it.
+		//
+		// Recorded once, here, rather than by each arm: two writes to one path leave
+		// the answer decided by call order, which is how this briefly addressed a
+		// task's inputs while appearing to address its name.
+		if slices.Contains(nodeKindKeys, kind.name) {
+			c.pos.record(kindPath, spanOfNode(kind.value))
+		} else {
+			c.pos.record(kindPath, spanOfNode(kind.key))
+		}
 
 		switch kind.name {
-		case "task":
-			if task := c.task(kind.value, kindPath, r); task != nil {
-				step.Kind = &v1.Node_Task{Task: task}
-			}
 		case "for_each":
 			if loop := c.forEach(kind.value, kindPath, r); loop != nil {
 				step.Kind = &v1.Node_ForEach{ForEach: loop}
@@ -455,6 +646,11 @@ func (c *compiler) step(n ast.Node, path string) *v1.Node {
 			if wait := c.waitForSignal(kind.value, kindPath, r); wait != nil {
 				step.Kind = &v1.Node_Wait{Wait: wait}
 			}
+		default:
+			// A task: the key is its name, the value is its inputs. That is the
+			// whole of the flattening — what used to be three levels of scaffolding
+			// is the one fact a reader wanted.
+			step.Kind = &v1.Node_Task{Task: c.task(kind.name, kind.value, kindPath, r)}
 		}
 	default:
 		c.report(spanOfNode(kinds[1].key), r,
@@ -473,30 +669,15 @@ func (c *compiler) step(n ast.Node, path string) *v1.Node {
 	return step
 }
 
-// task compiles a task step's name, description, and inputs.
-func (c *compiler) task(n ast.Node, path string, r ref) *v1.Task {
-	fields, ok := c.fields(n, path, r, taskKeys)
-	if !ok {
-		return nil
-	}
-
-	task := &v1.Task{Inputs: map[string]*v1.Value{}}
-
-	if f, found := fields.get("name"); found {
-		name, _ := c.text(f.value, fieldPath(path, "name"),
-			ref{step: r.step, path: fieldPath(path, "name"), label: "task name"})
-		task.Name = name
-	}
-	if f, found := fields.get("description"); found {
-		if description, ok := c.text(f.value, fieldPath(path, "description"),
-			ref{step: r.step, path: fieldPath(path, "description"), label: "task description"}); ok {
-			task.Description = proto.String(description)
-		}
-	}
-	if f, found := fields.get("inputs"); found {
-		c.inputs(f.value, fieldPath(path, "inputs"), r, task.GetName(), task.Inputs)
-	}
-
+// task compiles a task step: the key is the task's name, the value is its inputs.
+//
+// A task written with no value at all — `echo:` on a line by itself — is a task
+// with no inputs rather than a mistake. Whether that is *legal* is the task's
+// question, not the grammar's: the registry declares which inputs are required
+// and [Validate] answers from the schema, where a reader can see it written down.
+func (c *compiler) task(name string, n ast.Node, path string, r ref) *v1.Task {
+	task := &v1.Task{Name: name, Inputs: map[string]*v1.Value{}}
+	c.inputs(n, path, r, name, task.Inputs)
 	return task
 }
 
@@ -505,12 +686,14 @@ func (c *compiler) task(n ast.Node, path string, r ref) *v1.Task {
 // Input names are whatever the task declares, so unlike everywhere else there is
 // no set of known keys to check against; the registry's descriptors are what
 // [Validate] and the language server check names against.
+//
+// The task's own path is recorded by its caller, which knows the key, and not
+// here from the value: see the task case of [compiler.stepNode].
 func (c *compiler) inputs(n ast.Node, path string, r ref, taskName string, into map[string]*v1.Value) {
 	n = c.resolve(n, path, r)
 	if n == nil {
 		return
 	}
-	c.pos.record(path, spanOfNode(n))
 
 	if _, empty := n.(*ast.NullNode); empty {
 		return

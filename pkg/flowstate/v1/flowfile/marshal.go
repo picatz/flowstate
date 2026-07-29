@@ -88,11 +88,11 @@ func stepToYAML(node *v1.Node) (yaml.MapSlice, error) {
 
 	switch kind := node.GetKind().(type) {
 	case *v1.Node_Task:
-		task, err := taskToYAML(kind.Task)
+		inputs, err := taskInputsToYAML(kind.Task)
 		if err != nil {
 			return nil, fmt.Errorf("step %q: %w", node.GetId(), err)
 		}
-		step = append(step, yaml.MapItem{Key: "task", Value: task})
+		step = append(step, yaml.MapItem{Key: kind.Task.GetName(), Value: inputs})
 
 	case *v1.Node_ForEach:
 		loop, err := forEachToYAML(kind.ForEach)
@@ -126,11 +126,27 @@ func stepToYAML(node *v1.Node) (yaml.MapSlice, error) {
 	return step, nil
 }
 
-// taskToYAML writes a task's name, description, and inputs.
-func taskToYAML(task *v1.Task) (yaml.MapSlice, error) {
-	out := yaml.MapSlice{{Key: "name", Value: task.GetName()}}
+// taskInputsToYAML writes a task's inputs, which under the step's own name is
+// the whole of what a task step is.
+//
+// An empty mapping is written for a task with no inputs rather than nothing at
+// all. `echo:` with no value reads back as the same workflow — but `echo: {}`
+// says the inputs are empty on purpose, and a key with nothing after it reads as
+// an unfinished line. A formatter should not produce something that looks like a
+// mistake.
+func taskInputsToYAML(task *v1.Task) (yaml.MapSlice, error) {
+	// A task description has nowhere to go now that the value under the task's
+	// name is its inputs: a `description` key there would be an input called
+	// `description`, which is a different thing entirely.
+	//
+	// Refused rather than dropped, because silently discarding it would make
+	// Marshal(Unmarshal(x)) mean something other than x — the one property this
+	// file exists to hold. Nothing sets the field, so nothing reaches this; it is
+	// here so that the day something does, it says so.
 	if task.Description != nil {
-		out = append(out, yaml.MapItem{Key: "description", Value: task.GetDescription()})
+		return nil, fmt.Errorf(
+			"task %q has a description, which the DSL has no place to write now that a step "+
+				"names its task directly; use a YAML comment", task.GetName())
 	}
 
 	inputs := yaml.MapSlice{}
@@ -144,9 +160,8 @@ func taskToYAML(task *v1.Task) (yaml.MapSlice, error) {
 		}
 		inputs = append(inputs, yaml.MapItem{Key: name, Value: value})
 	}
-	out = append(out, yaml.MapItem{Key: "inputs", Value: inputs})
 
-	return out, nil
+	return inputs, nil
 }
 
 // forEachToYAML writes a loop and its body.

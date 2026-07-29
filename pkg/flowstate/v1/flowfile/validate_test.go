@@ -29,15 +29,11 @@ func TestValidateSource(t *testing.T) {
 name: valid
 steps:
   - id: a
-    task:
-      name: echo
-      inputs:
-        message: hello
+    echo:
+      message: hello
   - id: b
-    task:
-      name: echo
-      inputs:
-        message: ${a.result}
+    echo:
+      message: ${a.result}
 `,
 		},
 		{
@@ -46,27 +42,26 @@ steps:
 name: dupes
 steps:
   - id: a
-    task:
-      name: echo
-      inputs:
-        message: one
+    echo:
+      message: one
   - id: a
-    task:
-      name: echo
-      inputs:
-        message: two
+    echo:
+      message: two
 `,
 			want: "duplicate id",
 		},
 		{
+			// Written in the flattened grammar like every other fixture here, which
+			// it has to be to still test what it says: `task:` is no longer a step
+			// property, so the old spelling reported an unknown *task* named "task"
+			// as well, and this case would have passed on a diagnostic about the
+			// wrong thing.
 			name: "missing step id",
 			src: `
 name: no-id
 steps:
-  - task:
-      name: echo
-      inputs:
-        message: hello
+  - echo:
+      message: hello
 `,
 			want: "step has no id",
 		},
@@ -76,10 +71,8 @@ steps:
 name: unknown-task
 steps:
   - id: a
-    task:
-      name: shell
-      inputs:
-        command: ls
+    shell:
+      command: ls
 `,
 			want: `unknown task "shell"`,
 		},
@@ -89,10 +82,8 @@ steps:
 name: reserved
 steps:
   - id: loop
-    task:
-      name: echo
-      inputs:
-        message: hello
+    echo:
+      message: hello
 `,
 			want: "reserved word",
 		},
@@ -102,10 +93,8 @@ steps:
 name: bad-ident
 steps:
   - id: my-step
-    task:
-      name: echo
-      inputs:
-        message: hello
+    echo:
+      message: hello
 `,
 			want: "not a valid identifier",
 		},
@@ -115,10 +104,8 @@ steps:
 name: unknown-ref
 steps:
   - id: a
-    task:
-      name: echo
-      inputs:
-        message: ${nope.result}
+    echo:
+      message: ${nope.result}
 `,
 			want: `unknown step "nope"`,
 		},
@@ -128,15 +115,11 @@ steps:
 name: forward-ref
 steps:
   - id: a
-    task:
-      name: echo
-      inputs:
-        message: ${b.result}
+    echo:
+      message: ${b.result}
   - id: b
-    task:
-      name: echo
-      inputs:
-        message: hello
+    echo:
+      message: hello
 `,
 			want: "runs later",
 		},
@@ -146,10 +129,8 @@ steps:
 name: self-ref
 steps:
   - id: a
-    task:
-      name: echo
-      inputs:
-        message: ${a.result}
+    echo:
+      message: ${a.result}
 `,
 			want: "its own step",
 		},
@@ -158,10 +139,8 @@ steps:
 			src: `
 steps:
   - id: a
-    task:
-      name: echo
-      inputs:
-        message: hello
+    echo:
+      message: hello
 `,
 			want: "no name",
 		},
@@ -175,12 +154,10 @@ steps:
 name: output-shaping
 steps:
   - id: web
-    task:
-      name: http
-      inputs:
-        method: GET
-        url: https://example.com/json
-        outputs: "${ {'status': status_code, 'title': body} }"
+    http:
+      method: GET
+      url: https://example.com/json
+      outputs: "${ {'status': status_code, 'title': body} }"
 `,
 		},
 		{
@@ -194,15 +171,11 @@ name: forward-condition
 steps:
   - id: a
     if: ${later.result == 'x'}
-    task:
-      name: echo
-      inputs:
-        message: hi
+    echo:
+      message: hi
   - id: later
-    task:
-      name: echo
-      inputs:
-        message: hi
+    echo:
+      message: hi
 `,
 			want: "runs later",
 		},
@@ -213,10 +186,8 @@ name: unknown-condition
 steps:
   - id: a
     if: ${nope.result}
-    task:
-      name: echo
-      inputs:
-        message: hi
+    echo:
+      message: hi
 `,
 			want: `unknown step "nope"`,
 		},
@@ -231,10 +202,8 @@ steps:
       steps:
         - id: act
           if: ${item == 'a'}
-          task:
-            name: echo
-            inputs:
-              message: ${item}
+          echo:
+            message: ${item}
 `,
 		},
 		{
@@ -243,19 +212,15 @@ steps:
 name: collide
 steps:
   - id: item
-    task:
-      name: echo
-      inputs:
-        message: hi
+    echo:
+      message: hi
   - id: each
     for_each:
       items: "${['a']}"
       steps:
         - id: act
-          task:
-            name: echo
-            inputs:
-              message: ${item}
+          echo:
+            message: ${item}
 `,
 			want: "also a step id",
 		},
@@ -268,16 +233,12 @@ steps:
     parallel:
       - steps:
           - id: left
-            task:
-              name: echo
-              inputs:
-                message: L
+            echo:
+              message: L
       - steps:
           - id: right
-            task:
-              name: echo
-              inputs:
-                message: ${left.result}
+            echo:
+              message: ${left.result}
 `,
 			want: `unknown step "left"`,
 		},
@@ -290,24 +251,18 @@ steps:
     parallel:
       - steps:
           - id: left
-            task:
-              name: echo
-              inputs:
-                message: L
+            echo:
+              message: L
       - steps:
           - id: right
-            task:
-              name: echo
-              inputs:
-                message: R
+            echo:
+              message: R
   - id: join
-    task:
-      name: printf
-      inputs:
-        format: "%s%s"
-        args:
-          - ${left.result}
-          - ${right.result}
+    printf:
+      format: "%s%s"
+      args:
+        - ${left.result}
+        - ${right.result}
 `,
 		},
 		{
@@ -322,15 +277,11 @@ steps:
       items: "${['a']}"
       steps:
         - id: inner
-          task:
-            name: echo
-            inputs:
-              message: hi
+          echo:
+            message: hi
   - id: after
-    task:
-      name: echo
-      inputs:
-        message: ${inner.result}
+    echo:
+      message: ${inner.result}
 `,
 			want: `unknown step "inner"`,
 		},
@@ -340,15 +291,11 @@ steps:
 name: comprehension
 steps:
   - id: a
-    task:
-      name: cel
-      inputs:
-        expr: "[1, 2, 3].map(x, x * 2)"
+    cel:
+      expr: "[1, 2, 3].map(x, x * 2)"
   - id: b
-    task:
-      name: cel
-      inputs:
-        expr: "size(a.result)"
+    cel:
+      expr: "size(a.result)"
 `,
 		},
 	}
@@ -382,15 +329,11 @@ func TestValidateSourceReportsLineNumbers(t *testing.T) {
 	src := `name: positions
 steps:
   - id: first
-    task:
-      name: echo
-      inputs:
-        message: hello
+    echo:
+      message: hello
   - id: second
-    task:
-      name: nosuchtask
-      inputs:
-        message: hello
+    nosuchtask:
+      message: hello
 `
 	ds, err := flowfile.ValidateSource([]byte(src))
 	if err != nil {
@@ -399,11 +342,20 @@ steps:
 	if len(ds) != 1 {
 		t.Fatalf("expected exactly one diagnostic, got %d:\n%s", len(ds), ds.Error())
 	}
-	// "- id: second" is on line 8.
-	if ds[0].Line != 8 {
-		t.Errorf("diagnostic line = %d, want 8 (the line declaring the offending step)", ds[0].Line)
+	// "nosuchtask:" is on line 7, and the diagnostic names it rather than the step
+	// it sits in — which is the improvement the flattening buys and the reason
+	// this asserts 7 rather than 6.
+	//
+	// A task's name used to be a value inside a `task:` block, so the best a
+	// diagnostic could do was name the step and leave the reader to find which of
+	// its lines was meant. The name is now a key the author wrote, with a span of
+	// its own, so the position is the token they have to change. Line 6
+	// ("- id: second") is still findable and is still the wrong answer: nothing is
+	// wrong with the id.
+	if ds[0].Line != 7 {
+		t.Errorf("diagnostic line = %d, want 7 (the line naming the unknown task)", ds[0].Line)
 	}
-	if !strings.HasPrefix(ds[0].Error(), "8:") {
+	if !strings.HasPrefix(ds[0].Error(), "7:") {
 		t.Errorf("rendered diagnostic should start with the line number; got %q", ds[0].Error())
 	}
 }
@@ -486,10 +438,8 @@ func TestExprErrorsSurfaceFromCompilation(t *testing.T) {
 name: bad-expr
 steps:
   - id: a
-    task:
-      name: echo
-      inputs:
-        message: hello ${name}
+    echo:
+      message: hello ${name}
 `
 	if _, err := flowfile.Unmarshal([]byte(src)); err == nil {
 		t.Fatal("expected compilation to reject an interpolated string, got no error")
@@ -548,10 +498,8 @@ func TestAnIllegalWorkflowNameIsReportedBeforeItIsSubmitted(t *testing.T) {
 	const src = `name: my workflow
 steps:
   - id: a
-    task:
-      name: echo
-      inputs:
-        message: hi
+    echo:
+      message: hi
 `
 
 	diagnostics, err := flowfile.ValidateSource([]byte(src))
@@ -577,11 +525,9 @@ func TestUnknownCELLibraryIsReportedAtValidateTime(t *testing.T) {
 	const src = `name: bad-library
 steps:
   - id: shout
-    task:
-      name: cel
-      inputs:
-        expr: "'hi'.upperAscii()"
-        libs: [stirngs]
+    cel:
+      expr: "'hi'.upperAscii()"
+      libs: [stirngs]
 `
 
 	diagnostics, err := flowfile.ValidateSource([]byte(src))
@@ -606,16 +552,12 @@ func TestAComputedLibraryListIsNotReported(t *testing.T) {
 	const src = `name: computed-libraries
 steps:
   - id: pick
-    task:
-      name: echo
-      inputs:
-        message: strings
+    echo:
+      message: strings
   - id: shout
-    task:
-      name: cel
-      inputs:
-        expr: "'hi'.upperAscii()"
-        libs: ${[pick.result]}
+    cel:
+      expr: "'hi'.upperAscii()"
+      libs: ${[pick.result]}
 `
 
 	diagnostics, err := flowfile.ValidateSource([]byte(src))
@@ -671,9 +613,9 @@ func TestAWorkflowTooLargeToRunIsReportedAtValidateTime(t *testing.T) {
 	expression := "first.result" + strings.Repeat(" + first.result", 180)
 
 	var src strings.Builder
-	src.WriteString("name: expands\nsteps:\n  - id: first\n    task:\n      name: echo\n      inputs:\n        message: hello\n")
+	src.WriteString("name: expands\nsteps:\n  - id: first\n    echo:\n      message: hello\n")
 	for i := range 99 {
-		fmt.Fprintf(&src, "  - id: s%d\n    task:\n      name: echo\n      inputs:\n        message: ${%s}\n", i, expression)
+		fmt.Fprintf(&src, "  - id: s%d\n    echo:\n      message: ${%s}\n", i, expression)
 	}
 
 	require.Less(t, src.Len(), 1<<20,

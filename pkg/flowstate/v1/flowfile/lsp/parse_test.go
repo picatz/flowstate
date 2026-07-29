@@ -17,18 +17,14 @@ func TestParseRecordsExactRanges(t *testing.T) {
 	const src = `name: model
 steps:
   - id: first
-    task:
-      name: echo
-      inputs:
-        message: "quoted value"
+    echo:
+      message: "quoted value"
   - id: second
-    task:
-      name: http
-      inputs:
-        url: https://example.com
-        headers:
-          X-Trace: ${first.result}
-        outputs: "{'code': status_code}"
+    http:
+      url: https://example.com
+      headers:
+        X-Trace: ${first.result}
+      outputs: "{'code': status_code}"
 `
 	doc := newDocument("file:///model.yaml", 1, src)
 	require.NoError(t, doc.parseErr)
@@ -50,7 +46,7 @@ steps:
 		assert.Equal(t, "first", first.id)
 		assert.Equal(t, "echo", first.taskName)
 		assert.Equal(t, "first", textInRange(src, first.idEntry.valueRange()))
-		assert.Equal(t, "echo", textInRange(src, first.nameEntry.valueRange()))
+		assert.Equal(t, "echo", textInRange(src, first.taskEntry.keyRange))
 	})
 
 	t.Run("a quoted value's range includes its quotes", func(t *testing.T) {
@@ -89,10 +85,15 @@ steps:
 	})
 
 	t.Run("step ranges cover whole steps and do not overlap", func(t *testing.T) {
+		// The boundaries are each step's `- id:` line and its last written line.
+		// They are lower than they once were because the flat form spends one line
+		// on the task where the nested form spent three, not because a range now
+		// stops somewhere else: the end of `first` is still the `message:` line and
+		// the end of `second` is still the `outputs:` line.
 		assert.Equal(t, 2, first.rng.Start.Line)
-		assert.Equal(t, 6, first.rng.End.Line)
-		assert.Equal(t, 7, second.rng.Start.Line)
-		assert.Equal(t, 14, second.rng.End.Line)
+		assert.Equal(t, 4, first.rng.End.Line)
+		assert.Equal(t, 5, second.rng.Start.Line)
+		assert.Equal(t, 10, second.rng.End.Line)
 	})
 }
 
@@ -110,11 +111,9 @@ func TestParseHandlesShapesTheDSLDoesNotExpect(t *testing.T) {
 			src: `name: block
 steps:
   - id: a
-    task:
-      name: cel
-      inputs:
-        expr: |
-          1 + 1
+    cel:
+      expr: |
+        1 + 1
 `,
 			check: func(t *testing.T, doc *document) {
 				require.Len(t, doc.parsed.steps, 1)
@@ -132,14 +131,14 @@ steps:
 		{
 			name: "a single-key mapping is the same shape as a multi-key one",
 			// The parser returns a bare MappingValueNode for one key and a
-			// MappingNode for two, and the model must not care which.
+			// MappingNode for two, and the model must not care which. The flat form
+			// makes that the common case rather than a corner: a task's value is its
+			// inputs, and a one-input task is an ordinary thing to write.
 			src: `name: single
 steps:
   - id: a
-    task:
-      name: echo
-      inputs:
-        message: only
+    echo:
+      message: only
 `,
 			check: func(t *testing.T, doc *document) {
 				require.Len(t, doc.parsed.steps, 1)
@@ -148,32 +147,41 @@ steps:
 			},
 		},
 		{
-			name: "a key with no value is absent rather than empty",
+			name: "a task with no value is still a task",
 			src: `name: pending
 steps:
   - id: a
-    task:
-      name:
+    echo:
 `,
+			// `echo:` on a line by itself names the task and gives it no inputs,
+			// which is a complete step as far as the grammar is concerned — whether
+			// echo can run without a message is the registry's question, answered
+			// by the validator. The key is the name, so a half-written step still
+			// has somewhere for a diagnostic to land.
 			check: func(t *testing.T, doc *document) {
 				require.Len(t, doc.parsed.steps, 1)
 				step := doc.parsed.steps[0]
-				require.NotNil(t, step.nameEntry, "the key itself is still recorded")
-				assert.Nil(t, step.nameEntry.value)
-				assert.Equal(t, "", step.taskName)
-				// The fallback range is the key, so a diagnostic still lands
-				// somewhere sensible.
-				assert.Equal(t, step.nameEntry.keyRange, step.nameEntry.valueRange())
+				require.NotNil(t, step.taskEntry, "the key itself is still recorded")
+				assert.Nil(t, step.taskEntry.value)
+				assert.Equal(t, "echo", step.taskName)
+				assert.Empty(t, step.inputs)
+				assert.Equal(t, step.taskEntry.keyRange, step.taskEntry.valueRange())
 			},
 		},
 		{
 			name: "an alias value is recorded but not interpreted",
+			// The alias moved with the grammar rather than staying where it was: the
+			// old form could alias the whole `task:` block, and the flat form has no
+			// such block to alias. What a step can still be handed by reference is
+			// the task's *inputs*, so that is what this now aliases — the same
+			// question (a value the DSL cannot see inside), asked where it can be
+			// asked.
 			src: `name: alias
 base: &b
-  name: echo
+  message: hi
 steps:
   - id: a
-    task: *b
+    echo: *b
 `,
 			check: func(t *testing.T, doc *document) {
 				require.Len(t, doc.parsed.steps, 1)
@@ -204,7 +212,7 @@ steps:
 		},
 		{
 			name: "a flow-style step is modelled like a block one",
-			src:  "name: flow\nsteps: [{id: a, task: {name: echo, inputs: {message: hi}}}]\n",
+			src:  "name: flow\nsteps: [{id: a, echo: {message: hi}}]\n",
 			check: func(t *testing.T, doc *document) {
 				require.Len(t, doc.parsed.steps, 1)
 				step := doc.parsed.steps[0]
@@ -237,15 +245,11 @@ func TestStepLookupPrefersTheFirstDeclaration(t *testing.T) {
 	doc := newDocument("file:///dupe.yaml", 1, `name: dupe
 steps:
   - id: a
-    task:
-      name: echo
-      inputs:
-        message: one
+    echo:
+      message: one
   - id: a
-    task:
-      name: http
-      inputs:
-        url: https://example.com
+    http:
+      url: https://example.com
 `)
 	require.NoError(t, doc.parseErr)
 	step := doc.parsed.step("a")
@@ -267,10 +271,8 @@ func TestOutlineScannerTolerantOfBrokenText(t *testing.T) {
 			src: `name: x
 steps:
   - id: first
-    task:
-      name: echo
-      inputs:
-        mes
+    echo:
+      mes
 `,
 			want: []outlineStep{{id: "first", taskName: "echo"}},
 		},
@@ -279,17 +281,13 @@ steps:
 			src: `name: x
 steps:
   - id: a
-    task:
-      name: cel
-      inputs:
-        libs: [json, math]
+    cel:
+      libs: [json, math]
   - id: b
-    task:
-      name: cel
-      inputs:
-        libs:
-          - strings
-          - sets
+    cel:
+      libs:
+        - strings
+        - sets
 `,
 			want: []outlineStep{
 				{id: "a", taskName: "cel", libs: []string{"json", "math"}},
@@ -301,13 +299,11 @@ steps:
 			src: `name: x
 steps:
   - id: a
-    task:
-      name: http
-      inputs:
-        url: https://example.com
-        headers:
-          X-One: a
-          X-Two: b
+    http:
+      url: https://example.com
+      headers:
+        X-One: a
+        X-Two: b
 `,
 			want: []outlineStep{{
 				id:        "a",
@@ -317,14 +313,16 @@ steps:
 		},
 		{
 			name: "a comment does not end a step",
+			// The comment sits between the step's keys rather than between `task:`
+			// and `name:`, there being no level in between any more. It is the same
+			// hazard either way: a skipped line must not be allowed to fix the
+			// column the scanner reads a step's own keys at.
 			src: `name: x
 steps:
   - id: a
-    task:
-      # which task to run
-      name: echo
-      inputs:
-        message: hi
+    # which task to run
+    echo:
+      message: hi
 `,
 			want: []outlineStep{{id: "a", taskName: "echo", inputKeys: []string{"message"}}},
 		},
@@ -359,16 +357,20 @@ func TestKeyPath(t *testing.T) {
 	const src = `name: x
 steps:
   - id: a
-    task:
-      name: echo
-      inputs:
-        message: hi
-        headers:
-          X: y
+    echo:
+      message: hi
+      headers:
+        X: y
     retry:
       attempts: 3
 `
 	ix := newLineIndex(src)
+	// The path a task's inputs sit under is the task's own name now, because that
+	// is the key they are written under — there is no `task` or `inputs` level left
+	// to name. Two cases became one for the same reason: `inside task` and `inside
+	// inputs` asked about two levels that are now a single key. The remaining lines
+	// moved up with the levels the flat form dropped, and each still asks about the
+	// line of the fixture it always did.
 	tests := []struct {
 		name string
 		line int
@@ -376,10 +378,9 @@ steps:
 	}{
 		{name: "top level", line: 0, want: []string{}},
 		{name: "a step's own key", line: 3, want: []string{"steps"}},
-		{name: "inside task", line: 4, want: []string{"steps", "task"}},
-		{name: "inside inputs", line: 6, want: []string{"steps", "task", "inputs"}},
-		{name: "inside a nested input value", line: 8, want: []string{"steps", "task", "inputs", "headers"}},
-		{name: "inside retry", line: 10, want: []string{"steps", "retry"}},
+		{name: "inside a task's inputs", line: 4, want: []string{"steps", "echo"}},
+		{name: "inside a nested input value", line: 6, want: []string{"steps", "echo", "headers"}},
+		{name: "inside retry", line: 8, want: []string{"steps", "retry"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

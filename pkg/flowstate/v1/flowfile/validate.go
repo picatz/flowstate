@@ -56,6 +56,18 @@ type Diagnostic struct {
 	// Field names the input or property at fault, when applicable.
 	Field string
 
+	// Kind names the step's kind key — the task's name, or `for_each`, `sleep`,
+	// and so on — when the problem is with that key rather than with anything
+	// under it.
+	//
+	// Separate from Field because the two read differently and are fixed
+	// differently. `step "x" input "url"` sends an author to a value they wrote
+	// under the task; a wrong kind key sends them to the word naming the work
+	// itself, which Message already quotes. It positions the same way Field does,
+	// which is what lets `unknown task "shell"` underline `shell` instead of
+	// falling back to the whole step.
+	Kind string
+
 	// Value is the literal at fault *inside* Field, when the field holds a list
 	// and one element of it is the problem.
 	//
@@ -296,6 +308,9 @@ func Validate(wf *v1.Workflow) Diagnostics {
 		} else if _, known := v1.LookupTask(task.GetName()); !known {
 			ds = append(ds, Diagnostic{
 				Step: id,
+				// Under the flattening the task's name is a key an author wrote, so
+				// there is a token to underline rather than a whole step.
+				Kind: task.GetName(),
 				Message: fmt.Sprintf("unknown task %q; available tasks are %s",
 					task.GetName(), strings.Join(v1.TaskNames(), ", ")),
 			})
@@ -495,6 +510,7 @@ func validateNested(nodes []*v1.Node, enclosing map[string]bool, index int, wf *
 		if _, known := v1.LookupTask(task.GetName()); !known && task.GetName() != "" {
 			ds = append(ds, Diagnostic{
 				Step: id,
+				Kind: task.GetName(),
 				Message: fmt.Sprintf("unknown task %q; available tasks are %s",
 					task.GetName(), strings.Join(v1.TaskNames(), ", ")),
 			})
@@ -690,7 +706,14 @@ func ValidateSource(data []byte) (Diagnostics, error) {
 
 	ds := Validate(wf)
 	for i := range ds {
-		if span, ok := positions.Locate(ds[i].Step, ds[i].Field); ok {
+		span, ok := positions.Locate(ds[i].Step, ds[i].Field)
+		if ds[i].Kind != "" {
+			// A kind key is addressed exactly rather than by the candidate search
+			// Locate does for a field, because a kind is a key of the step and there
+			// is nowhere else it could be.
+			span, ok = positions.LocateKind(ds[i].Step, ds[i].Kind)
+		}
+		if ok {
 			ds[i].Line = span.Start.Line
 			ds[i].Column = span.Start.Column
 		}

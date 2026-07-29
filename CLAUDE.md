@@ -101,6 +101,16 @@ advisory arrived rather than the code changed, and the fix is a dependency bump 
 belongs to everyone. Say so plainly wherever you report it, because a scan naming
 your file makes it look like yours.
 
+It also has a failure that is not a finding at all. `go run …/govulncheck@v1.6.0`
+builds govulncheck using *its* `go` directive, then type-checks your tree against
+whatever toolchain `go.mod` selected — so on a machine honouring `toolchain
+go1.26.5` it reports `file requires newer Go version go1.26 (application built with
+go1.25)` on files in the module cache and exits 1. CI does not see this, because
+`go-version-file: go.mod` installs the one version it then uses for everything.
+Pin the run to match and it scans clean:
+
+    GOTOOLCHAIN=go1.26.5 go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+
 ## Both execution drivers must agree
 
 Local execution (`flow run local`) and durable execution through Temporal are two

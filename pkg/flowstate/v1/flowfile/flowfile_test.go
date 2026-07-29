@@ -51,15 +51,11 @@ func ExampleMarshal() {
 	// name: hello
 	// steps:
 	// - id: a
-	//   task:
-	//     name: echo
-	//     inputs:
-	//       message: hello world
+	//   echo:
+	//     message: hello world
 	// - id: b
-	//   task:
-	//     name: echo
-	//     inputs:
-	//       message: ${a.result}
+	//   echo:
+	//     message: ${a.result}
 }
 
 func ExampleUnmarshal() {
@@ -67,15 +63,11 @@ func ExampleUnmarshal() {
 name: hello
 steps:
   - id: a
-    task:
-      name: echo
-      inputs:
-        message: "hello world"
+    echo:
+      message: "hello world"
   - id: b
-    task:
-      name: echo
-      inputs:
-        message: ${a.result}
+    echo:
+      message: ${a.result}
 `
 
 	flow, err := flowfile.Unmarshal([]byte(inputYAML))
@@ -93,15 +85,11 @@ func TestFlowFileRoundTrip(t *testing.T) {
 name: hello
 steps:
   - id: a
-    task:
-      name: echo
-      inputs:
-        message: "hello world"
+    echo:
+      message: "hello world"
   - id: b
-    task:
-      name: echo
-      inputs:
-        message: ${a.result}
+    echo:
+      message: ${a.result}
 `
 
 	flow, err := flowfile.Unmarshal([]byte(inputYAML))
@@ -126,14 +114,12 @@ func TestFlowfile_MapWithExprValues(t *testing.T) {
 name: http-with-headers
 steps:
   - id: web
-    task:
-      name: http
-      inputs:
-        url: https://example.com
-        method: GET
-        headers:
-          A: "1"
-          B: ${string(2)}
+    http:
+      url: https://example.com
+      method: GET
+      headers:
+        A: "1"
+        B: ${string(2)}
 `)
 	wf, err := flowfile.Unmarshal(data)
 	require.NoError(t, err)
@@ -148,14 +134,12 @@ func TestFlowfile_ListWithExprValues(t *testing.T) {
 name: list-exprs
 steps:
   - id: s
-    task:
-      name: echo
-      inputs:
-        # mixed list: contains an embedded ${...} so parser should encode as CEL expr
-        lst:
-          - 1
-          - ${1 + 1}
-          - 3
+    echo:
+      # mixed list: contains an embedded ${...} so parser should encode as CEL expr
+      lst:
+        - 1
+        - ${1 + 1}
+        - 3
 `)
 	wf, err := flowfile.Unmarshal(data)
 	require.NoError(t, err)
@@ -168,13 +152,11 @@ steps:
 name: list-literals
 steps:
   - id: s
-    task:
-      name: echo
-      inputs:
-        lst:
-          - 1
-          - 2
-          - 3
+    echo:
+      lst:
+        - 1
+        - 2
+        - 3
 `)
 	wf2, err := flowfile.Unmarshal(data2)
 	require.NoError(t, err)
@@ -196,15 +178,11 @@ func FuzzRoundTrip(f *testing.F) {
 		`name: hello
 steps:
 - id: a
-  task:
-    name: echo
-    inputs:
-      message: "hello world"
+  echo:
+    message: "hello world"
 - id: b
-  task:
-    name: echo
-    inputs:
-      message: ${a.result}
+  echo:
+    message: ${a.result}
 `,
 		// Conditions and policy, in both the fenced and bare spellings.
 		`name: policy
@@ -219,17 +197,13 @@ steps:
     backoff: 2
     max_interval: 10s
   continue_on_error: true
-  task:
-    name: echo
-    inputs:
-      message: go
+  echo:
+    message: go
 - id: b
   if: a.result != ''
   retry: {}
-  task:
-    name: echo
-    inputs:
-      message: ""
+  echo:
+    message: ""
 `,
 		// Nested control flow, including a loop inside a branch.
 		`name: control
@@ -241,10 +215,8 @@ steps:
     max_parallel: 2
     steps:
     - id: body
-      task:
-        name: echo
-        inputs:
-          message: ${n}
+      echo:
+        message: ${n}
 - id: fan
   parallel:
   - steps:
@@ -253,44 +225,36 @@ steps:
         items: [1, 2]
         steps:
         - id: inner
-          task:
-            name: echo
-            inputs:
-              message: ${string(item)}
+          echo:
+            message: ${string(item)}
   - steps:
     - id: right
-      task:
-        name: echo
-        inputs:
-          message: right
+      echo:
+        message: right
 `,
 		// Structures, expressions inside them, and the zero values the engine
 		// relies on surviving.
 		`name: shapes
 steps:
 - id: a
-  task:
-    name: http
-    inputs:
-      url: https://example.com
-      headers:
-        A: "1"
-        B: ${string(2)}
-      outputs: "${ {'status': status_code, 'body': body} }"
+  http:
+    url: https://example.com
+    headers:
+      A: "1"
+      B: ${string(2)}
+    outputs: "${ {'status': status_code, 'body': body} }"
 - id: b
-  task:
-    name: printf
-    inputs:
-      format: ""
-      args:
-      - ${a.status}
-      - 0
-      - false
-      - ""
-      nested:
-        k: v
-        n: 0
-        list: [1, 2, 3]
+  printf:
+    format: ""
+    args:
+    - ${a.status}
+    - 0
+    - false
+    - ""
+    nested:
+      k: v
+      n: 0
+      list: [1, 2, 3]
 `,
 	} {
 		f.Add(seed)

@@ -1,6 +1,7 @@
 package lsp
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/goccy/go-yaml/ast"
@@ -136,10 +137,17 @@ type parsedStep struct {
 	index int
 	id    string
 
-	idEntry     *entry
-	taskEntry   *entry
-	nameEntry   *entry
-	inputsEntry *entry
+	idEntry *entry
+
+	// taskEntry is the step's task, whose *key* is the task's name and whose
+	// *value* is its inputs. There is no separate name or inputs entry, because
+	// there is no longer anything separate to point at: `http:` with the request
+	// under it is one key, and the name and the inputs are its two halves.
+	//
+	// A diagnostic about the task name therefore ranges over the key, and one
+	// about an input over an entry of the value — which is what the positional
+	// model existed to provide and is now simply where the source already is.
+	taskEntry *entry
 
 	// conditionEntry is the step's `if`, whose value is an expression deciding
 	// whether the step runs at all.
@@ -179,7 +187,8 @@ type parsedStep struct {
 	// which is the kind of wrong answer that is worse than no answer.
 	waitForSignalEntry *entry
 
-	// taskName is the task the step invokes, empty when not written.
+	// taskName is the task the step invokes, empty when not written. It is the
+	// task entry's key.
 	taskName string
 
 	// inputs are the entries of the step's inputs mapping, in source order.
@@ -189,10 +198,6 @@ type parsedStep struct {
 	// package does not interpret. Hover reads them so that a key the DSL gains
 	// tomorrow is at worst undocumented rather than unrecognized.
 	entries []*entry
-
-	// taskEntries are the keys inside the step's task mapping, for the same
-	// reason.
-	taskEntries []*entry
 
 	// rng covers the whole step, for the document outline.
 	rng lsp.Range
@@ -489,6 +494,14 @@ const loopResultsOutput = "results"
 
 // fillParsedStep reads one step's keys into the model.
 func fillParsedStep(s *parsedStep, entries []*entry) {
+	// Asked once for the whole step, because whether an unregistered key names a
+	// task depends on what else the step says — see flowfile.StepTaskKeys.
+	keys := make([]string, len(entries))
+	for i, e := range entries {
+		keys[i] = e.key
+	}
+	taskKeys := flowfile.StepTaskKeys(keys)
+
 	for _, e := range entries {
 		switch e.key {
 		case "id":
@@ -531,30 +544,26 @@ func fillParsedStep(s *parsedStep, entries []*entry) {
 					s.itemsEntry = fe
 				}
 			}
-		case "task":
+		default:
+			// A task — decided by flowfile.StepTaskKeys, the same call the compiler
+			// makes, so the editor underlines the token `flow validate` names.
+			//
+			// Asking the registry instead would be almost right and wrong exactly
+			// where it matters: an *unregistered* name is the case the unknown-task
+			// diagnostic exists for, and a model that does not hold it has nowhere
+			// to put that diagnostic but the step. A step property can never reach
+			// here — those have their own cases above — and v1.ReservedStepKeys
+			// keeps a task from ever being named like one.
 			if s.taskEntry != nil {
 				continue
 			}
-			s.taskEntry = e
-			if e.value == nil || e.value.kind != kindMapping {
+			if !slices.Contains(taskKeys, e.key) {
 				continue
 			}
-			s.taskEntries = e.value.entries
-			for _, te := range e.value.entries {
-				switch te.key {
-				case "name":
-					if s.nameEntry == nil {
-						s.nameEntry = te
-						s.taskName = te.valueText()
-					}
-				case "inputs":
-					if s.inputsEntry == nil {
-						s.inputsEntry = te
-						if te.value != nil && te.value.kind == kindMapping {
-							s.inputs = te.value.entries
-						}
-					}
-				}
+			s.taskEntry = e
+			s.taskName = e.key
+			if e.value != nil && e.value.kind == kindMapping {
+				s.inputs = e.value.entries
 			}
 		}
 	}

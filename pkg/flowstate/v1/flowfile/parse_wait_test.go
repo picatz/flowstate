@@ -259,10 +259,8 @@ func TestValidateAcceptsWaits(t *testing.T) {
 	src := []byte(`name: gated
 steps:
   - id: start
-    task:
-      name: echo
-      inputs:
-        message: starting
+    echo:
+      message: starting
   - id: settle
     sleep: 1s
   - id: approval
@@ -271,10 +269,8 @@ steps:
       timeout: 1h
   - id: after
     if: ${!approval.timed_out}
-    task:
-      name: echo
-      inputs:
-        message: ${approval.by}
+    echo:
+      message: ${approval.by}
   - id: pauses
     for_each:
       items: ${[1, 2]}
@@ -324,10 +320,8 @@ steps:
     wait_for_signal: deploy-approved
   - id: deploy
     if: ${approval.approved}
-    task:
-      name: echo
-      inputs:
-        message: deploying
+    echo:
+      message: deploying
 `)
 
 	ds, err := flowfile.ValidateSource(src)

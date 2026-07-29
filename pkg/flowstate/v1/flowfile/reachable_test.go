@@ -249,7 +249,7 @@ func TestNowInATaskInputSaysWhereItIsAvailable(t *testing.T) {
 	t.Parallel()
 
 	workflow, err := flowfile.Unmarshal([]byte(
-		"name: t\nsteps:\n  - id: report\n    task:\n      name: echo\n      inputs:\n        message: ${now}\n"))
+		"name: t\nsteps:\n  - id: report\n    echo:\n      message: ${now}\n"))
 	require.NoError(t, err)
 
 	diagnostics := flowfile.Validate(workflow)
@@ -268,7 +268,7 @@ func TestStepNamedNowIsRefused(t *testing.T) {
 	t.Parallel()
 
 	workflow, err := flowfile.Unmarshal([]byte(
-		"name: t\nsteps:\n  - id: now\n    task:\n      name: echo\n      inputs:\n        message: hi\n"))
+		"name: t\nsteps:\n  - id: now\n    echo:\n      message: hi\n"))
 	require.NoError(t, err)
 
 	diagnostics := flowfile.Validate(workflow)

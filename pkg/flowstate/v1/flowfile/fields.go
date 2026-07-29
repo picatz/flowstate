@@ -152,12 +152,19 @@ func (c *compiler) entries(n ast.Node, path string, r ref) ([]entry, bool) {
 	// Keys written here are claimed before anything is merged in, because a merged
 	// mapping must not shadow one — that is the merge semantics YAML defines, and
 	// the reason `<<:` is usable for sharing step boilerplate at all.
+	// Which names the mapping writes for itself, so a merged key does not
+	// override one written directly.
+	//
+	// Silent, because this is a first pass over keys the second pass reads again:
+	// reporting here made a bad key produce two identical diagnostics at the same
+	// position, one from each pass. An editor draws that as two squiggles on one
+	// character.
 	written := make(map[string]bool, len(values))
 	for _, v := range values {
 		if _, isMerge := v.Key.(*ast.MergeKeyNode); isMerge {
 			continue
 		}
-		if name, ok := c.keyName(v.Key, r); ok {
+		if name, ok := keyNameOf(v.Key); ok {
 			written[name] = true
 		}
 	}
@@ -192,6 +199,18 @@ func (c *compiler) entries(n ast.Node, path string, r ref) ([]entry, bool) {
 		out = append(out, entry{name: name, key: v.Key, value: v.Value})
 	}
 	return out, true
+}
+
+// keyNameOf returns the name a mapping key spells, without reporting.
+//
+// The reporting half lives in [compiler.keyName]; this is for the passes that
+// only need to know whether a key has a usable name.
+func keyNameOf(n ast.Node) (string, bool) {
+	scalar, ok := n.(*ast.StringNode)
+	if !ok {
+		return "", false
+	}
+	return scalar.Value, true
 }
 
 // keyName returns the name a mapping key spells.

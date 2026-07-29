@@ -1,7 +1,5 @@
 name: simple
 steps:
 - id: hello
-  task:
-    name: echo
-    inputs:
-      message: hello world
+  echo:
+    message: hello world
