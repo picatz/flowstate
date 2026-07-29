@@ -353,6 +353,18 @@ func ExtensionLibraries() []string {
 // engine did not honour. Backed out rather than shipped half-wired.
 const CurrentProfile = "2026.1"
 
+// OriginalProfile is what a spec compiled before profiles existed evaluates as.
+//
+// Deliberately its own constant rather than an alias for [CurrentProfile], and the
+// difference is the whole point: CurrentProfile *moves*, and this must not. Reading
+// an unrecorded profile as "whatever is current" would mean a run that predates the
+// field silently acquires each new vocabulary as it is released — losing exactly the
+// pinning this mechanism exists to provide, for the runs least able to survive it.
+//
+// It equals CurrentProfile today because there has only ever been one profile. It
+// stops equalling it the moment a second is minted, which is when this matters.
+const OriginalProfile = "2026.1"
+
 // profiles is the membership of each named profile.
 //
 // A profile is append-only in the sense that matters: once a name has been
@@ -382,10 +394,10 @@ var profiles = map[string][]string{
 // later under pressure, not because it is exercised today.
 func ProfileLibraries(profile string) ([]string, error) {
 	if profile == "" {
-		// A spec compiled before profiles existed. There is exactly one, because
-		// nothing has been released, so resolving it to the first profile restores
-		// what it meant rather than guessing at it.
-		profile = CurrentProfile
+		// A spec compiled before this field existed, which can only have come from
+		// a build whose one vocabulary was the original — so that is what it gets,
+		// permanently, rather than whatever this build happens to call current.
+		profile = OriginalProfile
 	}
 
 	libs, ok := profiles[profile]

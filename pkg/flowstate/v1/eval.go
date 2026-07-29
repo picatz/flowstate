@@ -660,7 +660,10 @@ func runParallel(ctx context.Context, parallel *Parallel, scope *Scope) error {
 			branchOutputs.StepValues[k] = v
 		}
 
-		branchScope := &Scope{Outputs: branchOutputs, Vars: scope.GetVars()}
+		// Derived rather than rebuilt. A hand-built Scope here is how the profile
+		// went missing in the first place: it names the two fields somebody was
+		// thinking about, and silently omits every other one the type grows.
+		branchScope := scope.WithOutputs(branchOutputs)
 		if err := runNodes(ctx, branch.GetSteps(), branchScope); err != nil {
 			return fmt.Errorf("branch %d: %w", i, err)
 		}
