@@ -35,6 +35,11 @@ import (
 // then the inputs cell, then the outputs cell.
 var taskTableRow = regexp.MustCompile("(?m)^\\| `([a-z_]+)`\\s*\\|([^|]*)\\|([^|]*)\\|")
 
+// celLibraryClaim isolates the README sentence that enumerates the extension
+// libraries, so the assertion is about that list rather than about the words in
+// it appearing somewhere in the file.
+var celLibraryClaim = regexp.MustCompile("CEL extension libraries: ([^.]*)\\.")
+
 // backtickedName finds each `name` inside a table cell.
 var backtickedName = regexp.MustCompile("`([a-z_]+)`")
 
@@ -112,4 +117,68 @@ func fieldNames(md protoreflect.MessageDescriptor) []string {
 		names = append(names, string(md.Fields().Get(i).Name()))
 	}
 	return names
+}
+
+// TestREADMENamesEveryCELLibrary is the same rule for the other list the README
+// keeps.
+//
+// Three places named the CEL extension libraries and two of them were wrong. The
+// evaluator accepts eleven; the README listed nine and the schema comment on
+// `libs` listed eight, both missing `json` — which `examples/http-json-via-cel`
+// uses, so the documentation omitted a library a shipped example depends on.
+//
+// The language server was the one that was right, and it is worth saying why,
+// because it is not diligence: `celLibraries` iterates `v1.ExtensionLibraries()`
+// and diffs environments to find what each provides, so it cannot name a library
+// the evaluator would refuse. Derived beats maintained, again.
+//
+// The schema comment stopped enumerating rather than being corrected — a list in
+// prose beside the thing it describes is a second source of truth, and that one
+// had already drifted. The README keeps its list, because a reader should see what
+// is available without running a command, and pays for it by being checked here.
+func TestREADMENamesEveryCELLibrary(t *testing.T) {
+	t.Parallel()
+
+	data, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "README.md"))
+	require.NoError(t, err)
+
+	libraries := v1.ExtensionLibraries()
+	require.NotEmpty(t, libraries, "the evaluator offers no libraries; this test is checking nothing")
+
+	// Scoped to the sentence making the claim, not searched across the whole file.
+	//
+	// The first version of this asserted the README *contains* each name, and it
+	// passed while `json` was missing from the list — because `json` appears in
+	// `--output json`, in `parse_json`, and in the http task's row. It was an
+	// assertion about a word that legitimately appears elsewhere, which is an
+	// assertion about that word's presence rather than about the list.
+	//
+	// Caught by deleting `json` from the list and watching the test stay green,
+	// which is the only way that class of mistake announces itself.
+	claim := celLibraryClaim.FindStringSubmatch(string(data))
+	require.NotNil(t, claim,
+		"the README no longer has a sentence listing the CEL extension libraries;\n"+
+			"  either it moved or this pattern stopped matching it, and either way this test covers nothing")
+
+	for _, name := range libraries {
+		assert.Contains(t, claim[1], "`"+name+"`",
+			"the evaluator accepts CEL library %q and the README's list does not name it\n"+
+				"  a library nobody documents is one nobody enables", name)
+	}
+
+	// And the other direction, which this test was missing while the task table
+	// test above had it — an inconsistency inside one change.
+	//
+	// A library removed or renamed in the evaluator but left in this sentence keeps
+	// every assertion above green, because they only ask whether each real name is
+	// present. What the reader gets is documentation recommending a value that
+	// `flow validate` refuses, which is worse than an omission: an omission costs
+	// them a feature they never knew about, and this costs them a file that does
+	// not work and a search for why.
+	for _, match := range backtickedName.FindAllStringSubmatch(claim[1], -1) {
+		name := match[1]
+		assert.Contains(t, libraries, name,
+			"the README's list names CEL library %q, which the evaluator does not accept\n"+
+				"  an author enabling it gets a validation error, not the library", name)
+	}
 }
