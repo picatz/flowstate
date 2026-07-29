@@ -1216,3 +1216,78 @@ steps:
 	assert.Contains(t, string(result.Source), "${steps.greeting.result}",
 		"a vars entry is rewritten rather than noted, because the compiler flattens it")
 }
+
+// TestFixDoesNotAskAboutANameTheStepBinds keeps the deferred-input note from
+// firing where the author has already answered it.
+//
+// The note is worded as a question — "if it means the step" — because the tool
+// genuinely cannot tell a task's own scope from the workflow's. That wording
+// stops being honest once the file says which: a name bound as a variable in the
+// same step is that variable, and asking anyway sends the author to root a
+// reference that would break the step if they did.
+//
+// Both spellings the cel task accepts are covered, because the compiler treats
+// them identically — under `vars:`, and beside it as an undeclared input — and a
+// check that knew only about `vars:` would still be wrong half the time.
+func TestFixDoesNotAskAboutANameTheStepBinds(t *testing.T) {
+	t.Parallel()
+
+	for name, src := range map[string]string{
+		"declared under vars": `name: t
+steps:
+  - id: total
+    echo:
+      message: a step sharing a var's name
+  - id: compute
+    cel:
+      expr: "total * 2"
+      vars:
+        total: 21
+`,
+		"declared beside vars": `name: t
+steps:
+  - id: total
+    echo:
+      message: a step sharing a var's name
+  - id: compute
+    cel:
+      expr: "total * 2"
+      total: 21
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			result, err := flowfile.Fix([]byte(src))
+			require.NoError(t, err)
+			assert.Empty(t, result.Notes,
+				"`total` is bound by the step, so there is nothing conditional to raise")
+			assert.Equal(t, src, string(result.Source), "and nothing to rewrite either")
+		})
+	}
+}
+
+// TestFixStillAsksWhenTheStepBindsNothing is the other direction of that
+// suppression.
+//
+// Reading the step's bindings is only worth doing if the note still fires when
+// there are none — otherwise the suppression could be silencing every note and
+// the test above would not notice.
+func TestFixStillAsksWhenTheStepBindsNothing(t *testing.T) {
+	t.Parallel()
+
+	src := `name: t
+steps:
+  - id: total
+    echo:
+      message: hi
+  - id: compute
+    cel:
+      expr: "total.result"
+`
+	result, err := flowfile.Fix([]byte(src))
+	require.NoError(t, err)
+
+	require.Len(t, result.Notes, 1, "nothing binds `total` here, so it is the step or a mistake")
+	assert.Contains(t, result.Notes[0].Message, "steps.total.result")
+}

@@ -846,16 +846,16 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 	if len(steps) == 0 {
 		return
 	}
-	var walk func(n ast.Node, deferred map[string]bool)
-	walk = func(n ast.Node, deferred map[string]bool) {
+	var walk func(n ast.Node, task taskScope)
+	walk = func(n ast.Node, task taskScope) {
 		switch node := unwrapAnchor(n).(type) {
 		case *ast.MappingNode:
 			for _, v := range node.Values {
-				walk(v, deferred)
+				walk(v, task)
 			}
 		case *ast.MappingValueNode:
 			name, named := keyNameOf(node.Key)
-			if named && deferred[name] {
+			if named && task.deferred[name] {
 				// Evaluated by the task, in a scope this rewriter cannot see and
 				// must not guess at — but not a scope where a step is unreachable.
 				// The http task evaluates these under an activation whose *parent*
@@ -866,27 +866,107 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 				// saying so would leave a reference that works today only because
 				// the runtime still answers the bare spelling, and stops working
 				// the day that arm is dropped.
-				f.noteDeferred(node.Value, name, steps)
+				//
+				// Except where the author already said which. A name the step binds
+				// as a variable is that variable, not a step that happens to share
+				// its spelling, and there is nothing conditional left to raise.
+				f.noteDeferred(node.Value, name, without(steps, task.bound))
 				return
 			}
 			// A task's key opens its inputs, so the names its own scope binds are
 			// known from here down and nowhere else.
 			if named {
 				if def, known := v1.LookupTask(name); known {
-					walk(node.Value, deferredInputs(def))
+					walk(node.Value, taskScope{
+						deferred: deferredInputs(def),
+						bound:    boundVarNames(node.Value, def),
+					})
 					return
 				}
 			}
-			walk(node.Value, deferred)
+			walk(node.Value, task)
 		case *ast.SequenceNode:
 			for _, v := range node.Values {
-				walk(v, deferred)
+				walk(v, task)
 			}
 		case *ast.StringNode:
 			f.rootScalar(node, steps)
 		}
 	}
-	walk(n, nil)
+	walk(n, taskScope{})
+}
+
+// taskScope is what the walk knows once it is inside a task's inputs.
+type taskScope struct {
+	// deferred names the inputs the task evaluates itself.
+	deferred map[string]bool
+	// bound names the variables the step supplies to those expressions.
+	bound map[string]bool
+}
+
+// boundVarNames returns the variables a step binds for its task to evaluate
+// against.
+//
+// Only a task that takes undeclared inputs has any: that is the shape the cel
+// task uses, where every input its schema does not recognize becomes a variable
+// its expression can name — whether written under `vars:` or beside it.
+//
+// This exists to keep the deferred-input note honest. The note is worded as a
+// question because the tool genuinely cannot tell a response field from a step,
+// but a name declared as a variable three lines above is not that case, and
+// asking about it anyway is a false diagnostic in a place the author cannot act
+// on: rooting it would break the step.
+func boundVarNames(inputs ast.Node, def v1.TaskDef) map[string]bool {
+	if !acceptsUndeclaredInputs(def) {
+		return nil
+	}
+
+	mapping, ok := unwrapAnchor(inputs).(*ast.MappingNode)
+	if !ok {
+		return nil
+	}
+
+	bound := map[string]bool{}
+	for _, entry := range mapping.Values {
+		name, named := keyNameOf(entry.Key)
+		if !named {
+			continue
+		}
+		if hoistedInput(def, name) {
+			// The mapping's own keys, which the compiler is about to hoist into
+			// the inputs around it.
+			if nested, ok := unwrapAnchor(entry.Value).(*ast.MappingNode); ok {
+				for _, v := range nested.Values {
+					if inner, ok := keyNameOf(v.Key); ok {
+						bound[inner] = true
+					}
+				}
+			}
+			continue
+		}
+		// An input the schema does not declare is bound as a variable too.
+		if findField(def.Inputs, name) == nil {
+			bound[name] = true
+		}
+	}
+	if len(bound) == 0 {
+		return nil
+	}
+	return bound
+}
+
+// without returns the names in base that are not in remove.
+func without(base, remove map[string]bool) map[string]bool {
+	if len(remove) == 0 {
+		return base
+	}
+	out := make(map[string]bool, len(base))
+	for name := range base {
+		if !remove[name] {
+			out[name] = true
+		}
+	}
+	return out
 }
 
 // deferredInputs returns the inputs a task evaluates itself, as a set.
