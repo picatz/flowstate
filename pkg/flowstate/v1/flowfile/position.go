@@ -136,6 +136,12 @@ func (p *Positions) ExprAt(path string) (Span, bool) {
 //
 // When a file declares the same id twice — which [Validate] reports — the first
 // declaration wins, so the position is the one a reader finds first.
+//
+// That rule is only ambiguous for a file [Validate] refuses. An id may not repeat
+// at the top level, and may not shadow one a step is nested inside, so in any file
+// that compiles there is exactly one step per id and this is exact rather than a
+// choice. The first-wins rule exists for the diagnostics reporting the collision
+// itself, which have to land somewhere.
 func (p *Positions) StepPath(id string) (string, bool) {
 	if p == nil {
 		return "", false
@@ -212,7 +218,19 @@ func (p *Positions) LocateKind(step, kind string) (Span, bool) {
 	if span, ok := p.At(fieldPath(base, kind)); ok {
 		return span, true
 	}
-	return p.At(base)
+
+	// No fallback to the step, unlike [Positions.Locate].
+	//
+	// A missing kind path means the step this resolved to is not the step the
+	// diagnostic is about — StepPath keeps the *first* declaration of an id, so a
+	// step inside a loop body sharing an id with one at the top level resolves to
+	// the wrong one. Falling back would then underline a step that has nothing
+	// wrong with it, and a false diagnostic is worse than an unplaced one: it sends
+	// an author to correct working code.
+	//
+	// Declining leaves the diagnostic without a position, which reads as "somewhere
+	// in this file" rather than as "here, and here is wrong".
+	return Span{}, false
 }
 
 // record stores the span of the value at path.

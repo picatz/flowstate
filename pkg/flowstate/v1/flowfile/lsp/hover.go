@@ -28,6 +28,15 @@ func hoverAt(doc *document, pos lsp.Position) *lsp.Hover {
 
 	step := doc.parsed.stepAt(pos)
 	if step == nil {
+		// Outside every step — the keys above `steps:` in a conventionally ordered
+		// file — the only thing at a position is one of the document's own keys.
+		// They are described from the same table as a step's, because from an
+		// author's position `edition:` and `timeout:` are the same kind of thing: a
+		// word the grammar defines, whose meaning is not readable off the value
+		// written beside it.
+		if k, rng, ok := documentKeyAt(doc.parsed, pos); ok {
+			return dslKeyHover(k, rng)
+		}
 		return nil
 	}
 	def, taskKnown := v1.LookupTask(step.taskName)
@@ -93,11 +102,40 @@ func hoverAt(doc *document, pos lsp.Position) *lsp.Hover {
 		return markdownHover(stepDoc(step, def, taskKnown), step.idEntry.value.rng)
 	}
 
-	// A key of the document's own shape: id, if, timeout, retry, and so on.
+	// A key of the document's own shape: id, description, if, timeout, retry, and
+	// so on.
 	if k, rng, ok := dslKeyAt(step, pos); ok {
-		return markdownHover(fmt.Sprintf("**`%s`** · `%s`\n\n%s", k.name, k.detail, k.docs), rng)
+		return dslKeyHover(k, rng)
 	}
 	return nil
+}
+
+// dslKeyHover renders one document-shape key, so that a key documented at the
+// document level and one documented inside a step read identically.
+func dslKeyHover(k dslKey, rng lsp.Range) *lsp.Hover {
+	return markdownHover(fmt.Sprintf("**`%s`** · `%s`\n\n%s", k.name, k.detail, k.docs), rng)
+}
+
+// documentKeyAt returns the top-level key whose name is at a position.
+//
+// The document's keys were unreachable until `edition:` arrived, and the gap was
+// invisible while every one of them said something an author could read off the
+// value beside it — `name: deploy` needs no popup. An edition does: the value is a
+// date, and nothing in the file says what declaring it means or that leaving it
+// out is normal.
+func documentKeyAt(file *parsedFile, pos lsp.Position) (dslKey, lsp.Range, bool) {
+	if file == nil {
+		return dslKey{}, lsp.Range{}, false
+	}
+	for _, e := range file.entries {
+		if !contains(e.keyRange, pos) {
+			continue
+		}
+		if k, ok := lookupDSLKey("", e.key); ok {
+			return k, e.keyRange, true
+		}
+	}
+	return dslKey{}, lsp.Range{}, false
 }
 
 // dslKeyAt returns the document-shape key whose name is at a position.
@@ -193,9 +231,18 @@ func inputDoc(def v1.TaskDef, name string, fd protoreflect.FieldDescriptor) stri
 }
 
 // stepDoc describes a step by the task it runs.
+//
+// The author's own prose comes first when there is any. Everything else here is
+// derived — the task, its summary, the outputs — and derived text can only say
+// what a step *does*; a description is the one sentence in the file that says why
+// it is there. It is also the only place the outline cannot show it, so hover on
+// the id is where it earns its keep.
 func stepDoc(step *parsedStep, def v1.TaskDef, taskKnown bool) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "**step `%s`** · step %d", step.id, step.index+1)
+	if prose := step.descriptionEntry.valueText(); prose != "" {
+		fmt.Fprintf(&b, "\n\n%s", prose)
+	}
 	if !taskKnown {
 		if step.taskName == "" {
 			b.WriteString("\n\nNo task named yet.")

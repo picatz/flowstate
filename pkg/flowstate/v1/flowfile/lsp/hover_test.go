@@ -100,8 +100,21 @@ func TestHover(t *testing.T) {
 			none: true,
 		},
 		{
-			name: "nothing to say about the steps key",
+			// This asserted that nothing was said about `steps:`, which recorded
+			// where hover stopped rather than a decision: it resolved a key only
+			// inside a step, so a document key produced nothing. `edition:` is the
+			// key that makes the difference matter — a date says nothing about what
+			// declaring it means — and once the document level answers at all, it
+			// answers here too, out of the same table.
+			name: "a document key describes itself",
 			at:   "steps:",
+			want: []string{"`steps`", "`list`", "The steps to run, in order"},
+		},
+		{
+			// The key, not the line. A value is the author's own text and the table
+			// has nothing to say about it.
+			name: "nothing to say about a document key's value",
+			at:   "hover\n",
 			none: true,
 		},
 	}
@@ -131,6 +144,60 @@ func TestHover(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestHoverOnAStepLeadsWithTheAuthorsProse covers a step's `description:`, which
+// is the one thing about a step that cannot be derived.
+//
+// Everything else hover says about a step — the task, its summary, its outputs —
+// is read out of the registry, and none of it can say why this step is in this
+// workflow. It is also the only place the prose is shown at all: the outline has
+// no field to put it in, which symbols.go argues at length.
+func TestHoverOnAStepLeadsWithTheAuthorsProse(t *testing.T) {
+	t.Parallel()
+
+	const src = `name: described
+steps:
+  - id: roster
+    description: Ask upstream who is on call, because the rota changes hourly.
+    http:
+      url: https://example.com/roster
+  - id: quiet
+    echo:
+      message: hi
+`
+	c := newClient(t)
+	c.initialize()
+	const uri = "file:///described.yaml"
+	require.Empty(t, messages(c.open(uri, src).Diagnostics))
+
+	t.Run("hovering the id shows it", func(t *testing.T) {
+		pos := positionOf(t, src, "roster\n", 0)
+		got := c.hover(uri, pos.Line, pos.Character)
+		require.NotNil(t, got)
+		text := hoverText(got)
+		assert.Contains(t, text, "Ask upstream who is on call")
+		// Alongside what the step does, rather than in place of it.
+		assert.Contains(t, text, "`http` task")
+	})
+
+	t.Run("hovering the key describes the key", func(t *testing.T) {
+		// A key and its value answer different questions — what `description:`
+		// means, and what this step is for — and pointing at the key asks the
+		// first one.
+		pos := positionOf(t, src, "description:", 0)
+		got := c.hover(uri, pos.Line, pos.Character)
+		require.NotNil(t, got)
+		assert.Contains(t, hoverText(got), "why it is here")
+	})
+
+	t.Run("a step without one says nothing extra", func(t *testing.T) {
+		pos := positionOf(t, src, "quiet\n", 0)
+		got := c.hover(uri, pos.Line, pos.Character)
+		require.NotNil(t, got)
+		assert.NotContains(t, hoverText(got), "Ask upstream",
+			"a step's prose must not follow the cursor to the next step")
+	})
 }
 
 // TestHoverStaysQuietOnUnresolvableReference checks that hover says nothing about a

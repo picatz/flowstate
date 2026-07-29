@@ -488,6 +488,25 @@ func validateNested(nodes []*v1.Node, enclosing map[string]bool, index int, wf *
 			ds = append(ds, Diagnostic{Message: "nested step has no id"})
 		}
 
+		// A nested id may not shadow one already in scope, for the same reason two
+		// top-level steps may not share one: expressions resolve both from one
+		// namespace, so a reference inside the body means whichever the engine
+		// happens to bind last.
+		//
+		// This was missing while the top-level rule was present, which made the
+		// hole exactly the one that is hardest to see — a body step is written far
+		// from the step it collides with, often in a different part of the file, and
+		// nothing said so. It also left a diagnostic about the body step landing on
+		// the top-level one, since a source position is looked up by id.
+		if id != "" && enclosing[id] {
+			ds = append(ds, Diagnostic{
+				Step: id,
+				Message: fmt.Sprintf(
+					"id %q is already used by a step this one is nested inside; expressions resolve both from one namespace, so a reference here would be ambiguous",
+					id),
+			})
+		}
+
 		task := node.GetTask()
 		if task == nil {
 			switch kind := node.GetKind().(type) {

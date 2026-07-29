@@ -1,0 +1,54 @@
+edition: "2026.1"
+name: edition-and-descriptions
+description: Two keys about the file itself rather than about the work it does.
+
+# A Flowfile can say two things that no step executes, and both are for whoever
+# reads it next — which, on a durable workload, is someone months from now trying
+# to work out why it does what it does.
+#
+# `edition:` names the grammar the file is written in. It is optional, and most
+# files leave it out: absent means the current edition, and a file that does not
+# care which grammar it is in should not have to say so. Writing it pins the file.
+#
+# What it buys is a refusal. Surface syntax here gets no deprecation window — a
+# spelling that is replaced is *gone*, because carrying two spellings costs the
+# parser, the validator, the language server, the formatter, and every test that
+# crosses them, for as long as the window lasts. That trade is only safe if a file
+# can say which grammar it was written in, so a later build refuses it rather than
+# quietly reading it as something else. `flow fix` rewrites files across the
+# boundary, which is what makes the strictness affordable.
+#
+# It is not a compatibility switch. A build compiles one grammar, and declaring an
+# edition it does not have is an error rather than a translation request.
+
+steps:
+  # `description:` is prose about a step: why it is here, which the mechanics
+  # under it cannot say. `url:` says what this fetches; only a person can say that
+  # the roster is the source of truth and that a stale one is worse than none.
+  - id: roster
+    description: >-
+      The roster service is the source of truth for who is on call. A stale
+      answer here pages the wrong person, so this deliberately does not retry
+      into a cached response.
+    http:
+      url: https://example.com/roster
+      expect:
+        status: [200]
+
+  # A property of the *step*, not of the task it runs — so every kind of step can
+  # carry one. A wait is often the step most in need of explaining, because what
+  # it is waiting for is nowhere in the file.
+  - id: settle
+    description: Give the roster's read replica time to catch up with the write we just read past.
+    sleep: 2s
+
+  # It belongs directly under `id:`, and not under the task's own key. The keys
+  # there are that task's inputs, so a `description` written among them would be
+  # asking for an input by that name — which is a different thing entirely, and
+  # for most tasks an error.
+  - id: report
+    description: What a human sees in the log when this workload finishes.
+    printf:
+      format: "roster fetched: %s"
+      args:
+        - ${roster.status_code}

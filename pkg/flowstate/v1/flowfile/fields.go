@@ -179,6 +179,33 @@ func (c *compiler) entries(n ast.Node, path string, r ref) ([]entry, bool) {
 			if !ok {
 				return nil, false
 			}
+
+			// Merged entries are counted against the document's value budget, which
+			// nothing here used to do.
+			//
+			// The bound that exists is [compiler.enter]'s, and it counts values the
+			// compiler *descends into*. Merging does not descend: one anchored
+			// mapping of N keys merged into D steps is N×D entries produced from a
+			// file of size N+D, so the work is quadratic in something the document
+			// does not have to be large to express. Measured, a 43 KiB file of that
+			// shape took 22 seconds and never reached the limit, because the limit
+			// counts steps.
+			//
+			// This is the shape the bound was written for — an alias may be
+			// referenced many times, so a short document expands into an enormous
+			// one — and it was being enforced on the walk rather than on the
+			// expansion. Counting here closes that, and matters most for the language
+			// server, which runs this on whatever an editor opens.
+			c.nodes += len(merged)
+			if c.nodes > maxNodes {
+				if !c.overflowed {
+					c.overflowed = true
+					c.report(spanOfToken(nodeToken(v.Key)), r,
+						"holds more than %d values once aliases are expanded, which is more than a Flowfile is meant to hold", maxNodes)
+				}
+				return nil, false
+			}
+
 			for _, e := range merged {
 				if written[e.name] || seen[e.name] {
 					continue

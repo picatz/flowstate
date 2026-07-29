@@ -976,6 +976,7 @@ flow lsp`,
 	// Add commands to root.
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(validateCmd)
+	rootCmd.AddCommand(newFixCommand())
 	rootCmd.AddCommand(tasksCmd)
 	rootCmd.AddCommand(getCmd)
 	rootCmd.AddCommand(signalCmd)

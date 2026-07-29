@@ -139,6 +139,11 @@ type parsedStep struct {
 
 	idEntry *entry
 
+	// descriptionEntry is the author's prose about the step. Nothing executes it,
+	// so the model holds it for one reason: it is the best answer there is to "what
+	// is this step?", which hover is asked whenever a cursor rests on the id.
+	descriptionEntry *entry
+
 	// taskEntry is the step's task, whose *key* is the task's name and whose
 	// *value* is its inputs. There is no separate name or inputs entry, because
 	// there is no longer anything separate to point at: `http:` with the request
@@ -276,6 +281,12 @@ type parsedFile struct {
 	nameEntry  *entry
 	stepsEntry *entry
 	steps      []*parsedStep
+
+	// entries are the document's own keys, in source order, including any this
+	// package does not interpret — the same reason parsedStep keeps its own: a key
+	// the DSL gains tomorrow is then undocumented rather than unreachable. It is
+	// what hover resolves above `steps:`, where there is no step to ask.
+	entries []*entry
 }
 
 // step returns the step with the given id, preferring the first declaration so
@@ -326,6 +337,7 @@ func parseFlowfile(text string, ix *lineIndex) (*parsedFile, error) {
 			if e == nil {
 				continue
 			}
+			p.entries = append(p.entries, e)
 			switch e.key {
 			case "name":
 				if p.nameEntry == nil {
@@ -508,6 +520,10 @@ func fillParsedStep(s *parsedStep, entries []*entry) {
 			if s.idEntry == nil {
 				s.idEntry = e
 				s.id = e.valueText()
+			}
+		case "description":
+			if s.descriptionEntry == nil {
+				s.descriptionEntry = e
 			}
 		case "if":
 			if s.conditionEntry == nil {

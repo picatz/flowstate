@@ -46,6 +46,11 @@ import (
 // registry, so a task registered tomorrow needs no change to this test — and it only
 // stays unambiguous while it cannot collide with a step property, which is the last
 // thing asserted.
+//
+// One key is outside what a round trip can see at all. `edition:` names a property
+// of a file rather than of a workflow, so Marshal has nothing to render it from; it
+// is added to the document below and proved against the compiler instead, which is
+// the same guarantee by a different route.
 func TestDSLKeysMatchTheDSL(t *testing.T) {
 	t.Parallel()
 
@@ -74,6 +79,11 @@ func TestDSLKeysMatchTheDSL(t *testing.T) {
 			},
 			{
 				Id: "loop",
+				// On a loop rather than on the task step above, because a
+				// description is a property of a *step*: writing it here is what
+				// makes the fixture reach the key at a step that runs no task at
+				// all, which is the reading the table documents.
+				Description: ptr("Do the thing once per item."),
 				Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
 					Items:       v1.NewLiteralList("a", "b"),
 					Iterator:    "each",
@@ -115,11 +125,28 @@ func TestDSLKeysMatchTheDSL(t *testing.T) {
 	rendered, err := flowfile.Marshal(workflow)
 	require.NoError(t, err, "the DSL round trip must work for this test to mean anything")
 
+	// A third case the two directions below cannot tell apart on their own: a key
+	// the grammar has that Marshal structurally cannot write.
+	//
+	// Marshal renders a *spec*, and an edition is a property of a *file* — the
+	// schema deliberately has no field for it and should not grow one, which
+	// flowfile/edition.go says at length. So no workflow value makes `edition:`
+	// appear in the rendered document, and a vocabulary derived from Marshal alone
+	// would report the key as one the language dropped when nothing was dropped.
+	//
+	// The declaration is therefore added to the document under test, and proved
+	// rather than assumed: the compiler refuses an unknown document key, so a
+	// grammar that stopped accepting `edition:` fails here, which is exactly the
+	// service the stale check performs for every other key.
+	source := "edition: " + flowfile.CurrentEdition + "\n" + string(rendered)
+	_, err = flowfile.Unmarshal([]byte(source))
+	require.NoError(t, err, "the DSL must accept the document this table is compared against:\n%s", source)
+
 	// The keys the DSL actually writes, as a set: the same key legitimately appears
-	// at more than one level (`steps`, `name`, `timeout` all do), and it is the
-	// vocabulary that is being compared rather than any one occurrence.
+	// at more than one level (`steps`, `name`, `description`, `timeout` all do), and
+	// it is the vocabulary that is being compared rather than any one occurrence.
 	emitted := map[string]bool{}
-	for _, line := range strings.Split(string(rendered), "\n") {
+	for _, line := range strings.Split(source, "\n") {
 		if m := keyLine.FindStringSubmatch(line); m != nil {
 			emitted[m[3]] = true
 		}
@@ -155,7 +182,7 @@ func TestDSLKeysMatchTheDSL(t *testing.T) {
 	slices.Sort(missing)
 	assert.Empty(t, missing,
 		"the Flowfile DSL emits keys this package does not know about; add them to dslKeys "+
-			"(and to the parsed model if they carry expressions or durations).\nRendered:\n%s", rendered)
+			"(and to the parsed model if they carry expressions or durations).\nRendered:\n%s", source)
 
 	// The other direction. A key here that the DSL does not emit is either a key
 	// the language dropped — which completion would go on offering — or a gap in
@@ -171,7 +198,7 @@ func TestDSLKeysMatchTheDSL(t *testing.T) {
 	assert.Empty(t, stale,
 		"dslKeys declares keys the DSL does not emit; either the language dropped them and the "+
 			"entries should go, or the workflow above stopped reaching them and should be extended "+
-			"to cover them again.\nRendered:\n%s", rendered)
+			"to cover them again.\nRendered:\n%s", source)
 
 	// A level of the table is a key of some other level: keys nest under a key. A
 	// level left behind when its key went away is the shape the `task` block had on
@@ -679,13 +706,22 @@ func TestDurationsAreChecked(t *testing.T) {
 
 // TestHoverDocumentsEveryDSLKey checks that every key the shape table declares is
 // reachable through hover, so the table cannot contain an entry nothing shows.
+//
+// The document's own keys used to be excluded, on the grounds that hover only ever
+// resolved a key inside a step. That was a description of the implementation rather
+// than a reason: it held while every top-level key said what it meant in the value
+// beside it, and `edition: 2026.1` does not. They are covered here now, which is
+// what keeps the exclusion from quietly returning.
 func TestHoverDocumentsEveryDSLKey(t *testing.T) {
 	t.Parallel()
 
-	const src = `name: all-keys
+	// The edition is the one this build compiles rather than a literal, so the
+	// fixture stays a document `flow validate` accepts when a new one is added.
+	src := "edition: " + flowfile.CurrentEdition + "\n" + `name: all-keys
 description: everything
 steps:
   - id: a
+    description: Say hello, so the rest of the run has something to say it about.
     if: ${true}
     timeout: 30s
     continue_on_error: true
@@ -727,12 +763,7 @@ steps:
 
 	for level, keys := range dslKeys {
 		for _, k := range keys {
-			switch {
-			case level == "":
-				// Top-level keys are not inside a step, which is where hover
-				// resolves document-shape keys; they are covered by completion.
-				continue
-			case level == "parallel":
+			if level == "parallel" {
 				// A parallel branch is a bare `- steps:` list, whose only key is
 				// the same `steps` the document already declares at the top; hover
 				// resolves it at the outer level, which says the same thing.
@@ -747,7 +778,15 @@ steps:
 				minIndent := map[string]int{
 					"steps": 4, "retry": 6, "for_each": 6, "wait_for_signal": 6,
 				}[level]
-				pos := positionOfKey(t, src, k.name, minIndent, level+":")
+				// The document's own keys sit under no key at all, so there is
+				// nothing to search past for them — and asking to start after a
+				// bare ":" would skip the first line of the file, which is where
+				// an edition is written.
+				after := ""
+				if level != "" {
+					after = level + ":"
+				}
+				pos := positionOfKey(t, src, k.name, minIndent, after)
 				got := c.hover(uri, pos.Line, pos.Character)
 				require.NotNil(t, got, "no hover for the %s key at %v", k.name, pos)
 				assert.Contains(t, hoverText(got), k.docs)

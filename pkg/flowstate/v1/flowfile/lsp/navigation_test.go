@@ -138,6 +138,51 @@ steps:
 	assert.Equal(t, "echo", got[0].ContainerName)
 }
 
+// TestDocumentSymbolsLeaveTheDescriptionOut pins the choice symbols.go argues for,
+// because a step's prose is the obvious thing to put in an outline row.
+//
+// A SymbolInformation has two fields a reader sees and no third to grow into, and
+// both are spent on facts with nowhere else to appear: the id a reference in
+// another step spells, and what kind of work the step does plus which block it is
+// inside. Prose is unbounded and author-written, so spending either on it costs a
+// fact to repeat something hover already says with room to say it.
+func TestDocumentSymbolsLeaveTheDescriptionOut(t *testing.T) {
+	t.Parallel()
+
+	c := newClient(t)
+	c.initialize()
+	const uri = "file:///described-outline.yaml"
+	c.open(uri, `name: outline
+steps:
+  - id: loop
+    description: Fan out over everyone on the rota.
+    for_each:
+      items: "${['a']}"
+      steps:
+        - id: body
+          description: Greet one person.
+          echo:
+            message: hi
+`)
+
+	got := c.symbols(uri)
+	require.Len(t, got, 2)
+
+	assert.Equal(t, "loop", got[0].Name)
+	assert.Equal(t, "for_each", got[0].ContainerName)
+	assert.Equal(t, "body", got[1].Name)
+	// The nesting is what prose would have displaced, and it is the only place a
+	// flat outline can say this step runs inside the loop.
+	assert.Equal(t, "echo in loop", got[1].ContainerName)
+
+	for _, s := range got {
+		for _, word := range []string{"rota", "Greet"} {
+			assert.NotContains(t, s.Name, word)
+			assert.NotContains(t, s.ContainerName, word)
+		}
+	}
+}
+
 // TestSymbolsAndDefinitionOnUnparseableDocument checks that both features return an
 // empty result rather than stale or invented positions.
 func TestSymbolsAndDefinitionOnUnparseableDocument(t *testing.T) {

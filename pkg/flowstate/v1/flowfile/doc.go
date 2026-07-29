@@ -49,7 +49,7 @@
 // the whole structure, which is what lets one key of a map be computed:
 //
 //	headers:
-//	  X-Trace: ${run.id}      # the map compiles to {'X-Trace': run.id}
+//	  X-Trace: ${trace.result}  # the map compiles to {'X-Trace': trace.result}
 //	  X-Env: production
 //
 // The fence has to span the whole value. There is no string interpolation, so

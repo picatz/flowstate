@@ -135,6 +135,15 @@ message Node {
   //
   // Unset means the engine's defaults apply.
   StepPolicy policy = 4;
+
+  // Description is optional prose about what this step is for.
+  //
+  // It belongs to the step rather than to the task the step runs, which is where
+  // it used to live. Once a step names its task directly, the value under `echo:`
+  // is that task's inputs, so a `description` written there would be an input of
+  // that name; and a `for_each` or a `sleep` is just as worth explaining as a
+  // task is. The step is the thing an author is describing either way.
+  optional string description = 8 [(buf.validate.field).string = {max_len: 256}];
 }
 
 // SecretRef names a secret without containing it.

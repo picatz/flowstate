@@ -1,0 +1,660 @@
+package main
+
+import (
+	"bytes"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
+)
+
+// These tests are about the one thing `flow fix` has to earn: enough trust to be
+// run over a whole repository. That trust is not that the rewrite is clever — it
+// is that a file it has nothing to say about is not touched at all, that
+// `--check` only looks, that a shape it refuses is left exactly as it was, and
+// that what it does write still compiles. Each of those is asserted on the bytes
+// on disk rather than on what the command said it did.
+
+// oldStyleGreeter is a Flowfile written before the task was flattened onto the
+// step, with a comment above a step and another between a step's own keys.
+//
+// The comments are load-bearing: both sit outside the run of lines the rewrite
+// replaces, so a rewriter that edits the source keeps them and one that
+// re-renders the document loses them.
+const oldStyleGreeter = `# A greeter written before the task was flattened onto the step.
+name: greeter
+steps:
+  # Greet whoever is listening.
+  - id: greet
+    # The task this step runs.
+    task:
+      name: echo
+      inputs:
+        message: hello world
+  - id: shout
+    task:
+      name: printf
+      inputs:
+        format: "%s!"
+        args:
+          - ${greet.result}
+`
+
+// currentGreeter is oldStyleGreeter in the current edition.
+//
+// Derived from the transformation fix.go documents rather than from a run of it:
+// `task:` and `name:` go away, `inputs:` becomes the task's own key, everything
+// under `inputs:` dedents by the two columns `inputs:` used to add, and every
+// line the edit does not cover — comments included — is copied through.
+const currentGreeter = `# A greeter written before the task was flattened onto the step.
+name: greeter
+steps:
+  # Greet whoever is listening.
+  - id: greet
+    # The task this step runs.
+    echo:
+      message: hello world
+  - id: shout
+    printf:
+      format: "%s!"
+      args:
+        - ${greet.result}
+`
+
+// The 1-based lines oldStyleGreeter writes `task:` on. A report has to name
+// them: an author reads `file:line:` and jumps there.
+const (
+	greeterFirstTaskLine  = 7
+	greeterSecondTaskLine = 12
+)
+
+// oldStyleSingle is the smallest pre-flattening file, for tests about which
+// files are picked up rather than about what the rewrite produces.
+const oldStyleSingle = `name: single
+steps:
+  - id: greet
+    task:
+      name: echo
+      inputs:
+        message: hello
+`
+
+// oldStyleNested reaches every place a task can be written: at the top level, in
+// a loop body, inside a parallel branch, and with a description that belongs to
+// the step once the task is no longer a block of its own.
+const oldStyleNested = `name: nested-example
+steps:
+  - id: targets
+    task:
+      name: cel
+      description: builds the list of targets
+      inputs:
+        expr: "['alpha', 'beta']"
+  - id: process
+    for_each:
+      items: ${targets.result}
+      iterator: target
+      max_parallel: 2
+      steps:
+        - id: label
+          task:
+            name: printf
+            inputs:
+              format: "processing %s"
+              args:
+                - ${target}
+  - id: checks
+    parallel:
+      - steps:
+          - id: check_config
+            task:
+              name: echo
+              inputs:
+                message: config ok
+      - steps:
+          - id: check_quota
+            task:
+              name: echo
+              inputs:
+                message: quota ok
+  - id: summary
+    task:
+      name: printf
+      inputs:
+        format: "%s / %s / processed %d target(s)"
+        args:
+          - ${check_config.result}
+          - ${check_quota.result}
+          - ${size(process.results)}
+`
+
+// runFixCommand runs `flow fix` the way a shell does — through the command, so
+// the flag spellings are part of what is under test — and returns everything it
+// wrote to its output stream along with the error that becomes the exit status.
+func runFixCommand(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+
+	var out, discarded bytes.Buffer
+	cmd := newFixCommand()
+	cmd.SetOut(&out)
+	cmd.SetErr(&discarded)
+	cmd.SetArgs(args)
+
+	err := cmd.Execute()
+	return out.String(), err
+}
+
+// writeFixture writes contents into dir and returns the path.
+func writeFixture(t *testing.T, dir, name, contents string) string {
+	t.Helper()
+
+	path := filepath.Join(dir, name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("making the fixture's directory: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatalf("writing the fixture: %v", err)
+	}
+	return path
+}
+
+// readFixture reads a file back as bytes, because every property here is about
+// bytes rather than about a document that happens to mean the same thing.
+func readFixture(t *testing.T, path string) []byte {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading %s back: %v", path, err)
+	}
+	return data
+}
+
+// A report is one line `flow fix` printed about a file: the position it named
+// and what it said there.
+type report struct {
+	line    int
+	column  int // zero when the report names only a line
+	message string
+}
+
+// reportsFor picks out the lines out printed about path, dropping the path
+// itself.
+//
+// Dropping it is the point. Every fixture here lives in a temporary directory
+// named after the test, so an assertion like "the refusal mentions an alias"
+// would otherwise pass by matching the directory rather than the diagnostic —
+// a test that cannot fail for the reason it was written.
+func reportsFor(t *testing.T, out, path string) []report {
+	t.Helper()
+
+	var reports []report
+	for _, text := range strings.Split(out, "\n") {
+		rest, named := strings.CutPrefix(text, path+":")
+		if !named {
+			continue
+		}
+
+		field, remainder, _ := strings.Cut(rest, ":")
+		line, err := strconv.Atoi(field)
+		if err != nil {
+			t.Errorf("a report does not begin with the line it is about, so nothing can jump to it: %q", text)
+			continue
+		}
+
+		found := report{line: line, message: strings.TrimSpace(remainder)}
+		if field, tail, hasMore := strings.Cut(remainder, ":"); hasMore {
+			if column, err := strconv.Atoi(field); err == nil {
+				found.column, found.message = column, strings.TrimSpace(tail)
+			}
+		}
+		reports = append(reports, found)
+	}
+	return reports
+}
+
+// reportAt returns the report made at a line, or fails saying what was reported
+// instead.
+func reportAt(t *testing.T, reports []report, line int, out string) report {
+	t.Helper()
+
+	for _, r := range reports {
+		if r.line == line {
+			return r
+		}
+	}
+	t.Fatalf("nothing was reported at line %d; the command said:\n%s", line, out)
+	return report{}
+}
+
+// copyExamplesInto copies the shipped examples into dir, returning what each
+// copy held so a later read can be compared to it byte for byte.
+//
+// The examples are the closest thing to a repository of current files, and CI
+// already keeps them honest — including one that ends without a trailing
+// newline, which is exactly the sort of detail a careless rewriter normalizes.
+func copyExamplesInto(t *testing.T, dir string) map[string][]byte {
+	t.Helper()
+
+	paths, err := filepath.Glob(filepath.Join("..", "..", "examples", "*", "workflow.yaml"))
+	if err != nil {
+		t.Fatalf("finding the examples: %v", err)
+	}
+	if len(paths) == 0 {
+		t.Fatal("no examples were found, so this test proves nothing")
+	}
+
+	copied := make(map[string][]byte, len(paths))
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("reading %s: %v", path, err)
+		}
+		// Named for the example it came from, so a failure says which one.
+		dest := writeFixture(t, dir, filepath.Base(filepath.Dir(path))+".yaml", string(data))
+		copied[dest] = data
+	}
+	return copied
+}
+
+// TestFixLeavesACurrentFileByteForByte is what makes running this over a
+// directory safe.
+//
+// Not "parses the same" and not "means the same": the same bytes. A rewriter
+// that reformats what it had nothing to say about turns a one-line migration
+// into a diff nobody can review, and the first person that happens to stops
+// trusting the command on everything else too.
+func TestFixLeavesACurrentFileByteForByte(t *testing.T) {
+	dir := t.TempDir()
+	before := copyExamplesInto(t, dir)
+
+	out, err := runFixCommand(t, dir)
+	if err != nil {
+		t.Fatalf("fixing a directory of current files failed: %v\n%s", err, out)
+	}
+
+	for path, want := range before {
+		if got := readFixture(t, path); !bytes.Equal(got, want) {
+			t.Errorf("%s was rewritten although it is already current:\n--- before\n%s\n--- after\n%s",
+				path, want, got)
+		}
+	}
+}
+
+// TestFixLeavesOddWhitespaceAlone covers the same property on the details a
+// formatter is most tempted by.
+func TestFixLeavesOddWhitespaceAlone(t *testing.T) {
+	// No trailing newline, a blank line carrying spaces, and a quoting style
+	// nobody would choose: all legal, none of it this command's business.
+	const odd = "name: odd\n\nsteps:\n  \n  - id: greet\n    echo:\n      message:   'hello'"
+
+	dir := t.TempDir()
+	path := writeFixture(t, dir, "odd.yaml", odd)
+
+	out, err := runFixCommand(t, path)
+	if err != nil {
+		t.Fatalf("fixing a current file failed: %v\n%s", err, out)
+	}
+
+	if got := string(readFixture(t, path)); got != odd {
+		t.Errorf("whitespace was normalized in a file with nothing to change:\n--- before\n%q\n--- after\n%q",
+			odd, got)
+	}
+}
+
+// TestFixRewritesTheStepAndKeepsEverythingElse is the transformation itself,
+// asserted on the whole file rather than on the lines that changed.
+//
+// The comments are the point. One sits above a step and one between a step's own
+// keys, and both survive because the rewrite replaces a run of lines and copies
+// the rest through — which is the difference between a migration someone reviews
+// and a reformat of their file.
+func TestFixRewritesTheStepAndKeepsEverythingElse(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFixture(t, dir, "workflow.yaml", oldStyleGreeter)
+
+	out, err := runFixCommand(t, path)
+	if err != nil {
+		t.Fatalf("fix: %v\n%s", err, out)
+	}
+
+	if got := string(readFixture(t, path)); got != currentGreeter {
+		t.Errorf("the rewrite is not what the transformation says it should be:\n--- want\n%s\n--- got\n%s",
+			currentGreeter, got)
+	}
+
+	// A report an editor can jump into, naming the task each step now runs.
+	reports := reportsFor(t, out, path)
+	for line, task := range map[int]string{
+		greeterFirstTaskLine:  "echo",
+		greeterSecondTaskLine: "printf",
+	} {
+		if got := reportAt(t, reports, line, out); !strings.Contains(got.message, task) {
+			t.Errorf("the report at line %d does not say the step now runs %q: %q", line, task, got.message)
+		}
+	}
+}
+
+// TestFixCheckReportsWithoutWriting is the form CI runs, and the property that
+// makes it usable: a --check that mutates is a --check nobody can put in a
+// pipeline.
+func TestFixCheckReportsWithoutWriting(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFixture(t, dir, "workflow.yaml", oldStyleGreeter)
+
+	out, err := runFixCommand(t, "--check", path)
+	if err == nil {
+		t.Error("--check found work to do and still exited zero, so CI would never see it")
+	}
+
+	if got := string(readFixture(t, path)); got != oldStyleGreeter {
+		t.Errorf("--check wrote to the file it was only asked to report on:\n--- before\n%s\n--- after\n%s",
+			oldStyleGreeter, got)
+	}
+
+	reports := reportsFor(t, out, path)
+	reportAt(t, reports, greeterFirstTaskLine, out)
+	reportAt(t, reports, greeterSecondTaskLine, out)
+}
+
+// TestFixCheckOnACurrentTreeExitsZero is the other direction, and the reason it
+// is worth writing separately: a --check that always failed would satisfy the
+// test above perfectly.
+func TestFixCheckOnACurrentTreeExitsZero(t *testing.T) {
+	dir := t.TempDir()
+	before := copyExamplesInto(t, dir)
+
+	out, err := runFixCommand(t, "--check", dir)
+	if err != nil {
+		t.Fatalf("--check reported work on a tree that is already current: %v\n%s", err, out)
+	}
+
+	for path, want := range before {
+		if got := readFixture(t, path); !bytes.Equal(got, want) {
+			t.Errorf("--check modified %s", path)
+		}
+	}
+}
+
+// TestFixWalksADirectoryForFlowfiles checks which files a directory hands over.
+//
+// Both extensions a Flowfile is written with are picked up, at any depth, and
+// something that merely lives in the same directory is not: walking a tree and
+// rewriting a file nobody described as a workflow is not what running `flow fix
+// examples/` asks for.
+func TestFixWalksADirectoryForFlowfiles(t *testing.T) {
+	dir := t.TempDir()
+
+	yamlPath := writeFixture(t, dir, "workflow.yaml", oldStyleSingle)
+	ymlPath := writeFixture(t, dir, "other.yml", oldStyleSingle)
+	deepPath := writeFixture(t, filepath.Join(dir, "nested"), "deep.yaml", oldStyleSingle)
+	// The same contents, so the only thing that can leave it alone is its
+	// extension.
+	notAFlowfile := writeFixture(t, dir, "notes.txt", oldStyleSingle)
+
+	out, err := runFixCommand(t, dir)
+	if err != nil {
+		t.Fatalf("fix: %v\n%s", err, out)
+	}
+
+	for _, path := range []string{yamlPath, ymlPath, deepPath} {
+		got := string(readFixture(t, path))
+		if strings.Contains(got, "task:") {
+			t.Errorf("%s was not picked up by the walk:\n%s", path, got)
+		}
+		if !strings.Contains(got, "echo:") {
+			t.Errorf("%s was changed into something other than the current spelling:\n%s", path, got)
+		}
+	}
+
+	if got := string(readFixture(t, notAFlowfile)); got != oldStyleSingle {
+		t.Errorf("a file that is not a Flowfile was rewritten by a directory walk:\n%s", got)
+	}
+}
+
+// TestFixTakesANamedFileWhateverItIsCalled is the other half of that rule.
+//
+// Naming a file is saying what you mean, so the extension stops being the
+// evidence.
+func TestFixTakesANamedFileWhateverItIsCalled(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFixture(t, dir, "workflow.flow", oldStyleSingle)
+
+	out, err := runFixCommand(t, path)
+	if err != nil {
+		t.Fatalf("fix: %v\n%s", err, out)
+	}
+
+	got := string(readFixture(t, path))
+	if strings.Contains(got, "task:") {
+		t.Errorf("a file named explicitly was skipped for its extension:\n%s", got)
+	}
+	if !strings.Contains(got, "echo:") {
+		t.Errorf("the named file was not rewritten into the current spelling:\n%s", got)
+	}
+}
+
+// TestFixWritesSomethingThatCompiles is the property a rewriter is worth nothing
+// without.
+//
+// It crosses the boundary in both directions: the fixture has to genuinely fail
+// the current language before, or the test proves nothing, and has to draw no
+// diagnostics at all after. The shapes are every place a task can be written —
+// top level, loop body, parallel branch — plus a description, which belongs to
+// the step once the task is no longer a block of its own.
+func TestFixWritesSomethingThatCompiles(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFixture(t, dir, "workflow.yaml", oldStyleNested)
+
+	// The old spelling is gone from the language rather than deprecated in it, so
+	// it has to be refused now. Without this the test would pass just as well on a
+	// fixture that was already current.
+	if diagnostics, err := flowfile.ValidateSource([]byte(oldStyleNested)); err == nil && len(diagnostics) == 0 {
+		t.Fatal("the pre-flattening fixture still compiles, so this proves nothing about the rewrite")
+	}
+
+	out, err := runFixCommand(t, path)
+	if err != nil {
+		t.Fatalf("fix: %v\n%s", err, out)
+	}
+
+	fixed := readFixture(t, path)
+	diagnostics, err := flowfile.ValidateSource(fixed)
+	if err != nil {
+		t.Fatalf("the rewritten file does not parse: %v\n%s", err, fixed)
+	}
+	if len(diagnostics) != 0 {
+		t.Fatalf("the rewritten file does not validate: %s\n--- file\n%s", diagnostics.Error(), fixed)
+	}
+
+	if strings.Contains(string(fixed), "task:") {
+		t.Errorf("a `task:` block survived the rewrite:\n%s", fixed)
+	}
+	// The description moved to the step rather than being dropped: prose about a
+	// step is the sort of loss an author only notices much later.
+	if !strings.Contains(string(fixed), "builds the list of targets") {
+		t.Errorf("the task's description was lost:\n%s", fixed)
+	}
+}
+
+// TestFixRefusesFlowStyleWithoutMangling covers the refusal that keeps the whole
+// command trustworthy.
+//
+// Flow style has no line structure to rewrite, so acting on it would mean
+// reflowing an author's file on a guess. Both halves are asserted: the position
+// is reported, and the file is exactly as it was — a file that looks fixed and is
+// not is worse than one that was never touched.
+func TestFixRefusesFlowStyleWithoutMangling(t *testing.T) {
+	const inFlowStyle = `name: flow-style
+steps:
+  - id: greet
+    task: {name: echo, inputs: {message: hi}}
+`
+	// The line the flow-style task is written on.
+	const taskLine = 4
+
+	dir := t.TempDir()
+	path := writeFixture(t, dir, "workflow.yaml", inFlowStyle)
+
+	out, _ := runFixCommand(t, path)
+
+	if got := string(readFixture(t, path)); got != inFlowStyle {
+		t.Errorf("a step the rewriter refused was edited anyway:\n--- before\n%s\n--- after\n%s",
+			inFlowStyle, got)
+	}
+
+	refusal := reportAt(t, reportsFor(t, out, path), taskLine, out)
+	if refusal.column == 0 {
+		t.Errorf("the refusal names a line but no column, so it points at a line rather than at the shape: %q",
+			refusal.message)
+	}
+	if !strings.Contains(strings.ToLower(refusal.message), "flow style") {
+		t.Errorf("the refusal does not say what it could not act on: %q", refusal.message)
+	}
+}
+
+// TestFixRefusesATaskBehindAnAliasWithoutMangling is the same refusal for a shape
+// whose contents are not written where they are used.
+//
+// An alias cannot be rewritten without knowing what it will expand to, and the
+// anchor it names is not a mapping written under `task:` either. Neither is
+// guessed at, and the file comes back untouched.
+func TestFixRefusesATaskBehindAnAliasWithoutMangling(t *testing.T) {
+	const shared = `name: shared-task
+steps:
+  - id: first
+    task: &b
+      name: echo
+      inputs:
+        message: hi
+  - id: second
+    task: *b
+`
+	// The lines the anchor and the alias standing in for it are written on.
+	const (
+		anchorLine = 4
+		aliasLine  = 9
+	)
+
+	dir := t.TempDir()
+	path := writeFixture(t, dir, "workflow.yaml", shared)
+
+	out, _ := runFixCommand(t, path)
+
+	if got := string(readFixture(t, path)); got != shared {
+		t.Errorf("a step standing behind an alias was edited anyway:\n--- before\n%s\n--- after\n%s",
+			shared, got)
+	}
+
+	reports := reportsFor(t, out, path)
+	for _, line := range []int{anchorLine, aliasLine} {
+		if refusal := reportAt(t, reports, line, out); refusal.column == 0 {
+			t.Errorf("the refusal at line %d names no column: %q", line, refusal.message)
+		}
+	}
+	if refusal := reportAt(t, reports, aliasLine, out); !strings.Contains(strings.ToLower(refusal.message), "alias") {
+		t.Errorf("the refusal does not say what it could not act on: %q", refusal.message)
+	}
+}
+
+// TestFixPreservesFileMode keeps a migration from also being a permissions
+// change.
+//
+// A rewriter run over a repository that widens a file everyone had forgotten was
+// restricted has done something nobody asked for and nobody will notice.
+func TestFixPreservesFileMode(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFixture(t, dir, "workflow.yaml", oldStyleGreeter)
+
+	const mode fs.FileMode = 0o600
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatalf("setting the fixture's mode: %v", err)
+	}
+
+	out, err := runFixCommand(t, path)
+	if err != nil {
+		t.Fatalf("fix: %v\n%s", err, out)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("reading the mode back: %v", err)
+	}
+	if got := info.Mode().Perm(); got != mode {
+		t.Errorf("mode = %v, want %v: fixing a file changed who can read it", got, mode)
+	}
+
+	// And it really was rewritten, so the mode survived a write rather than
+	// surviving because nothing happened.
+	if got := string(readFixture(t, path)); got == oldStyleGreeter {
+		t.Error("the file was not rewritten, so this says nothing about writing through its mode")
+	}
+}
+
+// TestFixStdoutWritesTheResultAndLeavesTheFile covers piping the result
+// somewhere else, which is only useful if the original stays put.
+func TestFixStdoutWritesTheResultAndLeavesTheFile(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFixture(t, dir, "workflow.yaml", oldStyleGreeter)
+
+	out, err := runFixCommand(t, "--stdout", path)
+	if err != nil {
+		t.Fatalf("fix --stdout: %v\n%s", err, out)
+	}
+
+	if out != currentGreeter {
+		t.Errorf("--stdout wrote something other than the rewritten document:\n--- want\n%s\n--- got\n%s",
+			currentGreeter, out)
+	}
+	if got := string(readFixture(t, path)); got != oldStyleGreeter {
+		t.Errorf("--stdout wrote back to the file as well:\n--- before\n%s\n--- after\n%s",
+			oldStyleGreeter, got)
+	}
+}
+
+// TestFixStdoutRefusesMoreThanOneFile keeps two documents from being run
+// together into a stream that is neither of them.
+func TestFixStdoutRefusesMoreThanOneFile(t *testing.T) {
+	dir := t.TempDir()
+	first := writeFixture(t, dir, "first.yaml", oldStyleGreeter)
+	second := writeFixture(t, dir, "second.yaml", oldStyleSingle)
+
+	out, err := runFixCommand(t, "--stdout", first, second)
+	if err == nil {
+		t.Error("--stdout ran two documents together instead of refusing")
+	}
+	if strings.Contains(out, "message:") {
+		t.Errorf("--stdout wrote a document it had refused to write:\n%s", out)
+	}
+
+	for path, want := range map[string]string{first: oldStyleGreeter, second: oldStyleSingle} {
+		if got := string(readFixture(t, path)); got != want {
+			t.Errorf("%s was rewritten by a refused invocation:\n%s", path, got)
+		}
+	}
+}
+
+// TestFixStdoutAndCheckAreRefused pins the one flag combination that cannot be
+// honoured.
+//
+// One asks for the result and the other promises to produce nothing, so serving
+// either reading silently gives the caller the opposite of what they asked for.
+func TestFixStdoutAndCheckAreRefused(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFixture(t, dir, "workflow.yaml", oldStyleGreeter)
+
+	out, err := runFixCommand(t, "--stdout", "--check", path)
+	if err == nil {
+		t.Error("--stdout and --check were accepted together")
+	}
+	if strings.Contains(out, "message:") {
+		t.Errorf("a refused invocation wrote a document anyway:\n%s", out)
+	}
+	if got := string(readFixture(t, path)); got != oldStyleGreeter {
+		t.Errorf("a refused invocation wrote to the file:\n%s", got)
+	}
+}

@@ -41,6 +41,12 @@ type dslKey struct {
 // with on the diagnostics side; this package simply had no way to reach it.
 var oneStepKind = "A step does exactly one of " + flowfile.StepKindList() + "."
 
+// editionList names the grammar versions this build compiles, derived from the
+// flowfile package for the same reason oneStepKind is: a version number copied
+// into a sentence here is a version number that will eventually describe a
+// grammar this build does not have.
+var editionList = strings.Join(flowfile.KnownEditions(), ", ")
+
 // dslKeys are the keys the Flowfile document shape defines, as opposed to those a
 // task's schema defines.
 //
@@ -53,12 +59,20 @@ var oneStepKind = "A step does exactly one of " + flowfile.StepKindList() + "."
 // proposes exporting the shape so the table can go away entirely.
 var dslKeys = map[string][]dslKey{
 	"": {
+		{name: "edition", detail: "version", docs: "Optional. Names the grammar this file is written in, as a date such as `" + flowfile.CurrentEdition + "`. " +
+			"Leave it out and the file is read as the current edition, which is why most files do not carry one.\n\n" +
+			"It exists so that a future build can *refuse* a file rather than silently reinterpret it: surface syntax here gets no deprecation window, " +
+			"and a file that says which grammar it was written in is a file `flow fix` can rewrite across that boundary.\n\n" +
+			"It is not a compatibility switch. A build compiles one grammar — this one knows " + editionList + " — and declaring anything else is refused, not translated."},
 		{name: "name", detail: "string", docs: "What this workflow is called."},
 		{name: "description", detail: "string", docs: "Optional prose about the workflow."},
 		{name: "steps", detail: "list", docs: "The steps to run, in order. Each step may reference the outputs of the steps before it."},
 	},
 	"steps": {
 		{name: "id", detail: "string", docs: "How later steps reference this one, as `${id.output}`. Must be a valid CEL identifier and unique in the workflow."},
+		{name: "description", detail: "string", docs: "Optional prose about this step: why it is here, which the mechanics under it cannot say.\n\n" +
+			"A property of the step rather than of the work it does, so every kind of step can carry one — a `for_each` or a `sleep` as readily as a task. " +
+			"It belongs here, directly under `id`, and not under the task's own key: the keys there are that task's inputs, so a `description` written among them asks for an input by that name."},
 		{name: "for_each", detail: "map", docs: "Repeat a body of steps once per item of a list. " + oneStepKind},
 		{name: "parallel", detail: "list", docs: "Run branches of steps concurrently. " + oneStepKind},
 		{name: "sleep", detail: "duration", docs: "Wait for a duration on a durable timer, written as `30s`, `5m`, `1h`, or `7d`. " +
@@ -461,18 +475,24 @@ func outputCandidates(qualifier, prefix string, replace lsp.Range, scope []refCa
 }
 
 // A completion list is ordered by the order an author writes a step in, not
-// alphabetically: `id` first, then the work the step does, then how it runs. That
-// order is the one dslKeys is written in, so a key's position in that list is its
-// position in the menu.
+// alphabetically: `id` first, then the prose saying why the step is there, then
+// the work it does, then how that work runs. That order is the one dslKeys is
+// written in, so a key's position in that list is its position in the menu.
 //
 // Positions are spaced so that a group assembled by a different function can be
 // placed *between* two of them without renumbering either. Tasks are the only
 // such group today: they are a kind of work, so they belong beside `for_each` and
 // friends rather than after `continue_on_error`, and ahead of them because a step
 // that runs a task is the common case.
+//
+// The spacing buys nothing when a key is inserted *before* the group, which is
+// what `description` did: every slot after it moves by one place, so taskSlot has
+// to move with them. It is written as a slot rather than derived because what it
+// says is a judgement about the menu — tasks come first among the kinds of work —
+// and there is no list it could be read off.
 const (
 	slotSpacing = 10
-	taskSlot    = 5 // between `id` at 0 and `for_each` at 10.
+	taskSlot    = 15 // between `description` at 10 and `for_each` at 20.
 )
 
 // sortAt renders a menu position as the string an editor sorts by.
