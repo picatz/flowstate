@@ -338,13 +338,19 @@ func ExtensionLibraries() []string {
 // names a fixed membership, the compiler records which one a spec was built for,
 // and a worker resolves that name rather than asking what it happens to have.
 
-// CurrentProfile is the language profile a Flowfile compiles to today.
+// CurrentProfile is the language profile this build evaluates against.
 //
-// Named like an edition and versioned separately on purpose: an edition is a
-// property of a *file*, read when it compiles and gone afterwards, while a profile
-// is a property of a *run* and travels in the spec. A file's grammar can be
-// retired without touching anything already executing; the vocabulary its
-// expressions were compiled against cannot.
+// Not yet recorded per run, and the distinction is the whole of what is left to
+// do. A profile *name* freezes a membership, which is what makes "pinned per run"
+// possible — but nothing stores which profile a spec was compiled against, so
+// every expression is evaluated against whatever profile the worker running it
+// calls current. Today that is safe because there is exactly one; the day a second
+// exists it stops being, and the field and the threading have to land before then.
+//
+// The first attempt at this added `Workflow.profile` and then hardcoded
+// CurrentProfile at both evaluation sites, so the value was recorded and never
+// read. That is worse than not recording it: the schema claimed a guarantee the
+// engine did not honour. Backed out rather than shipped half-wired.
 const CurrentProfile = "2026.1"
 
 // profiles is the membership of each named profile.
@@ -370,6 +376,10 @@ var profiles = map[string][]string{
 // resolve the vocabulary a spec was compiled against does not know what the
 // expressions in it mean, and guessing is how a run quietly starts computing
 // something else — the fail-closed rule, applied to the language itself.
+//
+// This refusal has no caller that can reach it yet, because nothing passes a
+// profile a spec chose. It is here because the refusal is the hard part to add
+// later under pressure, not because it is exercised today.
 func ProfileLibraries(profile string) ([]string, error) {
 	if profile == "" {
 		// A spec compiled before profiles existed. There is exactly one, because

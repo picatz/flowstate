@@ -237,27 +237,7 @@ type Workflow struct {
 	// These inputs can be used by the steps in the workflow to perform their tasks.
 	Inputs map[string]*Value `protobuf:"bytes,4,rep,name=inputs,proto3" json:"inputs,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Labels are key-value pairs that can be used to organize and categorize workflows.
-	Labels map[string]string `protobuf:"bytes,5,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	// Profile names the language vocabulary every expression in this workflow was
-	// compiled against — which CEL extension libraries are in scope.
-	//
-	// Set by the compiler rather than written by an author, and recorded here rather
-	// than resolved at execution because a run has to keep meaning what it meant. A
-	// future build that adds a library must not change how an expression already
-	// stored in `RunState` evaluates, and "whatever this worker has" is a set that
-	// changes underfoot. A named profile has frozen membership, so a worker resolves
-	// the name rather than asking what it happens to ship with.
-	//
-	// Deliberately not the same axis as `edition:`, which a Flowfile may name. An
-	// edition is a property of a *file* — read when it compiles, gone afterwards, and
-	// retiring one affects nothing already executing. A profile is a property of a
-	// *run*, and travels.
-	//
-	// Empty means a spec compiled before this field existed, which resolves to the
-	// first profile. That is a compatibility arm rather than a guess: nothing has
-	// been released, so such a spec can only have come from a build whose one
-	// vocabulary was that profile's.
-	Profile       string `protobuf:"bytes,6,opt,name=profile,proto3" json:"profile,omitempty"`
+	Labels        map[string]string `protobuf:"bytes,5,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -325,13 +305,6 @@ func (x *Workflow) GetLabels() map[string]string {
 		return x.Labels
 	}
 	return nil
-}
-
-func (x *Workflow) GetProfile() string {
-	if x != nil {
-		return x.Profile
-	}
-	return ""
 }
 
 // Node represents a step in the workflow. Each node can be a task or another type of operation.
@@ -3773,15 +3746,14 @@ var File_flowstate_v1_flowstate_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"\n" +
-	"\x1cflowstate/v1/flowstate.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a%google/api/expr/v1alpha1/syntax.proto\x1a$google/api/expr/v1alpha1/value.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xdd\x05\n" +
+	"\x1cflowstate/v1/flowstate.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a%google/api/expr/v1alpha1/syntax.proto\x1a$google/api/expr/v1alpha1/value.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xbd\x05\n" +
 	"\bWorkflow\x127\n" +
 	"\x04name\x18\x01 \x01(\tB#\xe2A\x01\x02\xbaH\x1c\xc8\x01\x01r\x17\x10\x01\x18\x80\x012\x10^[A-Za-z0-9-_]+$R\x04name\x12/\n" +
 	"\vdescription\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02H\x00R\vdescription\x88\x01\x01\x12;\n" +
 	"\x05steps\x18\x03 \x03(\v2\x12.flowstate.v1.NodeB\x11\xe2A\x01\x02\xbaH\n" +
 	"\xc8\x01\x01\x92\x01\x04\b\x01\x10dR\x05steps\x12L\n" +
 	"\x06inputs\x18\x04 \x03(\v2\".flowstate.v1.Workflow.InputsEntryB\x10\xe2A\x01\x01\xbaH\t\x9a\x01\x06\"\x04r\x02\x10\x01R\x06inputs\x12L\n" +
-	"\x06labels\x18\x05 \x03(\v2\".flowstate.v1.Workflow.LabelsEntryB\x10\xe2A\x01\x01\xbaH\t\x9a\x01\x06\"\x04r\x02\x10\x01R\x06labels\x12\x1e\n" +
-	"\aprofile\x18\x06 \x01(\tB\x04\xe2A\x01\x01R\aprofile\x1a\xd2\x01\n" +
+	"\x06labels\x18\x05 \x03(\v2\".flowstate.v1.Workflow.LabelsEntryB\x10\xe2A\x01\x01\xbaH\t\x9a\x01\x06\"\x04r\x02\x10\x01R\x06labels\x1a\xd2\x01\n" +
 	"\vStepOutputs\x12h\n" +
 	"\vstep_values\x18\x01 \x03(\v22.flowstate.v1.Workflow.StepOutputs.StepValuesEntryB\x13\xe2A\x01\x02\xbaH\f\xc8\x01\x01\x9a\x01\x06\"\x04r\x02\x10\x01R\n" +
 	"stepValues\x1aY\n" +

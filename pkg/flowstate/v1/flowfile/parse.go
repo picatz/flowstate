@@ -411,15 +411,7 @@ func (c *compiler) compile(file *ast.File) *v1.Workflow {
 	r := ref{path: "workflow"}
 	fields := c.check(c.heldForLater(entries, r), r, workflowKeys)
 
-	// The vocabulary this file's expressions are being compiled against, stamped
-	// here rather than resolved when the workflow runs.
-	//
-	// It is not authored — there is no `profile:` key and there should not be one,
-	// because an author choosing a vocabulary is how the file came to have two of
-	// them. What the compiler records is which set it checked the expressions
-	// against, so a worker evaluates them against that same set however many
-	// libraries the build it happens to be running has acquired since.
-	workflow := &v1.Workflow{Profile: v1.CurrentProfile}
+	workflow := &v1.Workflow{}
 
 	if f, found := fields.get("name"); found {
 		name, _ := c.text(f.value, "name", ref{path: "name", label: "name"})
