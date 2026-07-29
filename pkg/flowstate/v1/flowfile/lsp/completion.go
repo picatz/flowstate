@@ -336,7 +336,7 @@ func referenceScope(doc *document, pos lsp.Position, clock bool, current *outlin
 
 // waitUntilKey is the step key whose expression binds the clock.
 //
-// Written once, next to the only things that read it, because it is the join of
+// Written once, next to the only thing that reads it, because it is the join of
 // two facts that live apart: v1 owns the name `now` and the DSL owns the key. The
 // key itself is checked against the grammar by TestDSLKeysMatchTheDSL, which is
 // what keeps a renamed key from leaving this pointing at nothing.
