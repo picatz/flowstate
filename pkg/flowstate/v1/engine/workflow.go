@@ -212,7 +212,7 @@ func compactOutputsForFrames(spec *v1.Workflow, frames []*v1.Frame, outputs *v1.
 // A step allowed to continue past its own failure still has to leave something
 // behind, so that a later step can branch on whether it worked. Reporting the
 // failure under a well-known `error` output makes that expressible as
-// `${step.error}`, and its absence means the step succeeded.
+// `${steps.<id>.error}`, and its absence means the step succeeded.
 func failedStepOutputs(err error) *v1.Node_Outputs {
 	return &v1.Node_Outputs{
 		NamedValues: map[string]*v1.Value{

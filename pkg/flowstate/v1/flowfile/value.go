@@ -99,7 +99,7 @@ func ExprError(s string) error {
 }
 
 // fenceError reports a ${...} that does not span the whole value, which is the
-// mistake behind writing "hello ${name.result}" and expecting interpolation.
+// mistake behind writing "hello ${steps.name.result}" and expecting interpolation.
 func fenceError(s string) error {
 	if !containsFence(s) {
 		return nil

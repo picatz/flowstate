@@ -384,8 +384,8 @@ func tokenText(tok *token.Token) string {
 // node, or the node's own span when inner cannot be found there.
 //
 // It is how the span of an expression is narrowed to the expression: the text of
-// ${a.result} is found inside the scalar that carries it, quotes and fence and
-// all, so the reported span covers a.result alone.
+// ${steps.a.result} is found inside the scalar that carries it, quotes and fence
+// and all, so the reported span covers steps.a.result alone.
 func spanWithin(n ast.Node, inner string) Span {
 	outer := spanOfNode(n)
 	if inner == "" || !outer.IsValid() {

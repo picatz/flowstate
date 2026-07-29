@@ -319,7 +319,7 @@ func (c *compiler) resolveQuiet(n ast.Node) ast.Node {
 // text reads a value that the schema types as a plain string.
 //
 // An expression is refused rather than accepted as the literal text of one: a task
-// name of "${step.name}" is not a task, and quietly compiling it into one that
+// name of "${steps.a.name}" is not a task, and quietly compiling it into one that
 // does not exist trades a compile error for a run-time one.
 func (c *compiler) text(n ast.Node, path string, r ref) (string, bool) {
 	n = c.resolve(n, path, r)

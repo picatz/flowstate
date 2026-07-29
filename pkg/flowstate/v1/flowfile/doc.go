@@ -36,9 +36,9 @@
 // A task input can be either, since what it holds is whatever the task declares.
 // There the fence is what makes an expression, and a bare string is text:
 //
-//	message: hello world      # the string "hello world"
-//	message: ${a.result}      # the output of step a
-//	message: a.result         # the string "a.result", not a reference
+//	message: hello world          # the string "hello world"
+//	message: ${steps.a.result}    # the output of step a
+//	message: steps.a.result       # the string "steps.a.result", not a reference
 //
 // That asymmetry is deliberate. `message: hello world` has to stay a message, so an
 // input cannot read a bare string as an expression; a condition has to be a
@@ -49,12 +49,13 @@
 // the whole structure, which is what lets one key of a map be computed:
 //
 //	headers:
-//	  X-Trace: ${trace.result}  # the map compiles to {'X-Trace': trace.result}
+//	  X-Trace: ${steps.trace.result}  # compiles to {'X-Trace': steps.trace.result}
 //	  X-Env: production
 //
 // The fence has to span the whole value. There is no string interpolation, so
-// "hello ${name.result}" is reported rather than quietly shipped as literal text;
-// write it as one expression instead, as ${'hello ' + name.result}. Where the fence
+// "hello ${steps.name.result}" is reported rather than quietly shipped as literal
+// text; write it as one expression instead, as ${'hello ' + steps.name.result}.
+// Where the fence
 // ends is decided by compiling its contents, not by counting braces, so an
 // expression containing braces of its own is fine: "${ {'k': 1} }" is one
 // expression. [ExprSource] and [ExprError] answer the question directly, for tooling

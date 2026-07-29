@@ -368,7 +368,7 @@ func secretRefText(ref *SecretRef) string {
 // read the same field in `outputs`. Headers are exposed as lists here — every value
 // of a repeated header — while the default outputs flatten them to one value each,
 // because an expression asking about a header usually wants all of it and a workflow
-// referencing ${step.headers['X']} wants a string.
+// referencing ${steps.<id>.headers['X']} wants a string.
 func httpResponseVars(resp *http.Response, body []byte, parsedJSON *expr.Value) map[string]any {
 	vars := map[string]any{
 		"status_code": int64(resp.StatusCode),

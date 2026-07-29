@@ -8,10 +8,10 @@ that only ever offers things the engine will accept.
 
 | Feature | What you get |
 | --- | --- |
-| **Diagnostics** | YAML syntax errors, CEL syntax errors underlined inside the expression, unknown tasks, duplicate and unusable step ids, references to steps that do not exist or have not run yet, inputs a task does not declare (with a spelling suggestion), required inputs left out, unknown CEL libraries, malformed step timeouts and retry intervals, a step that is no kind of work or more than one, and an `edition:` this build does not compile — which is reported on its own, since every other complaint would be describing the wrong grammar. |
-| **Hover** | A task's summary and full typed signature; an input's type, whether it is required, and the value constraints the schema enforces; what a `${step.output}` reference resolves to and what type it produces; what a loop's iterator binds; what a `${secret('scheme:name')}` reference names; what a CEL library provides; what each `Flowfile` key means. |
-| **Completion** | Task names where a step's keys go, alongside `id`/`if`/`timeout` and the other kinds; input keys under the task's own name, required ones first, already-written ones omitted; the names in scope inside `${...}` (see the scoping rules below); a step's actual output names after `${step.`; CEL library names in `libs`; and the document's own keys (`id`, `if`, `timeout`, `retry`, `for_each`, `parallel`, …). |
-| **Go to definition** | Jump from a `${step.output}` reference to that step's `id:` declaration. |
+| **Diagnostics** | YAML syntax errors, CEL syntax errors underlined inside the expression, unknown tasks, duplicate and unusable step ids, references to steps that do not exist or have not run yet, inputs a task does not declare (with a spelling suggestion), required inputs left out, unknown CEL libraries, malformed step timeouts and retry intervals, a step that is no kind of work or more than one, a step named the retired bare way rather than under `steps.` — reported as a migration with the command that performs it, not as an unknown name — and an `edition:` this build does not compile, which is reported on its own since every other complaint would be describing the wrong grammar. |
+| **Hover** | A task's summary and full typed signature; an input's type, whether it is required, and the value constraints the schema enforces; what a `${steps.<id>.<output>}` reference resolves to, what type it produces, and which line declared it; what the root `steps` itself is; what a loop's iterator binds; what `now` is inside a `wait_until:`, and why it is bound only there; what a `${secret('scheme:name')}` reference names; what a CEL library provides; what each `Flowfile` key means. |
+| **Completion** | Task names where a step's keys go, alongside `id`/`if`/`timeout` and the other kinds; input keys under the task's own name, required ones first, already-written ones omitted; the names in scope inside `${...}` (see the scoping rules below); CEL library names in `libs`; and the document's own keys (`id`, `if`, `timeout`, `retry`, `for_each`, `parallel`, …). |
+| **Go to definition** | Jump from a `${steps.<id>.<output>}` reference to that step's `id:` declaration. |
 | **Document symbols** | An outline of the workflow's steps, each labelled with the task it runs, and for a nested step the block it belongs to. |
 
 Everything above is read from the task registry and the Protobuf schema at the
@@ -29,20 +29,52 @@ fault is decided from the schema, not from the wording of the message.
 All of it also works inside a `for_each` body and a `parallel` branch, not only at
 the top level.
 
+### Completion inside an expression has three levels
+
+A reference has a root, so completing one is a walk rather than a single list, and
+each level is answered from a different place:
+
+1. **Bare, at the start of an expression.** The names bound where the cursor
+   stands, then `steps`. Inside a `for_each` body that is the iterator; inside a
+   `wait_until:` it is `now`. Bindings come first because they are the nearer
+   thing, and inside a loop the item is usually what is wanted.
+2. **After `steps.`** — the ids of the steps whose outputs exist at that point,
+   labelled with what each one runs: the task's name, or `for_each` or `parallel`
+   for a block.
+3. **After `steps.<id>.`** — that step's real output names with their types, read
+   from the registry. Past the output nothing is offered, because the shape inside
+   a value is not something the schema describes and a guess would be a wrong one.
+
+Two things follow from the split that are easy to miss. `now` is offered under
+`wait_until:` and nowhere else — not in a task input, where the validator refuses
+it, because a candidate an editor suggests and the validator rejects is worse than
+no candidate at all. Hovering it says the same thing at more length: bound from the
+driver's clock, only here, because a task input is resolved inside an activity that
+has no clock surviving a retry.
+
+And a bare qualifier gets nothing: `${item.` could only be a binding, whose element
+type is not statically known, or a step reference written the retired way — and
+offering that step's outputs would keep an author writing a form `flow validate`
+refuses. The diagnostic on it names the step and says to run `flow fix`; hover stays
+silent for the same reason, rather than saying it twice in a smaller box.
+
 ### Scoping inside loops and parallel blocks
 
 Completion, hover, and go-to-definition follow the engine's scoping rules, so a
 name the editor offers is always one the workflow can resolve:
 
 - Inside a `for_each` body, the current item is in scope under the loop's
-  `iterator:` name (`item` by default), and earlier body steps are in scope within
-  the iteration.
+  `iterator:` name (`item` by default), written bare because it is a binding rather
+  than a step; earlier body steps are in scope within the iteration, under `steps.`.
+  The two are separate namespaces, so an iterator may share a step's id and the
+  editor still offers both.
 - A loop body's step outputs **do not** escape the loop. After the block, only the
   loop's own id is referenceable, and its single output is `results` — one entry
-  per iteration. Body step ids are not offered to later steps.
+  per iteration, so `${steps.<loop>.results}`. Body step ids are not offered to
+  later steps.
 - A `parallel` block's branch outputs **do** merge into the enclosing scope once
-  the block joins, so a later step can reference them directly. One branch cannot
-  reference a sibling's, because branches are unordered.
+  the block joins, so a later step can reference them as `${steps.<branch_step>.…}`.
+  One branch cannot reference a sibling's, because branches are unordered.
 - A step cannot reference the block that contains it, since that block has not
   finished while the step runs.
 
@@ -75,8 +107,11 @@ are reported by the validator with its own explanation.
 
 Inputs a task evaluates itself are not reference-checked, because they resolve
 against a scope the document does not model: the `http` task's `outputs` expression
-sees `status_code`, `body`, and `headers` from the response, not step outputs.
-Which inputs those are comes from the task's own definition, so this cannot go
+sees `status_code`, `headers`, `body`, and `json` from the response, which exist only once
+the request has been made. Those names are bare because the task binds them, the
+same way a loop binds its iterator; `steps.` is still reachable alongside them, so a
+shaping expression can combine the response with an earlier step's output. Which
+inputs are deferred this way comes from the task's own definition, so this cannot go
 stale. Note that `outputs` has to be written as a quoted whole-value expression —
 `outputs: "${ {'status': status_code} }"` — since an unquoted value would read the
 colons inside as YAML mapping syntax.
@@ -385,13 +420,14 @@ Open a Flowfile and try each of these:
 
 1. **Diagnostics.** Change a task name to something that does not exist. You should
    get an error under the name listing the tasks that do exist.
-2. **Completion.** Type `message: ${` in a step after the first. Only the ids of
-   steps *above* it should be offered. Add a `.` after one and you get that step's
-   real output names.
+2. **Completion.** Type `message: ${` in a step after the first. You should be
+   offered `steps` — plus the iterator, if you are inside a `for_each` body. Accept
+   it and only the ids of steps *above* the cursor are offered; add a `.` after one
+   and you get that step's real output names with their types.
 3. **Hover.** Put the cursor on a task name. You should see its summary and a table
    of typed inputs and outputs, with required inputs marked.
-4. **Go to definition.** With the cursor on a `${step.output}` reference, jump to
-   that step's `id:`.
+4. **Go to definition.** With the cursor on a `${steps.<id>.<output>}` reference,
+   jump to that step's `id:`.
 5. **Outline.** Open your editor's symbol list. Each step appears, labelled with
    its task.
 

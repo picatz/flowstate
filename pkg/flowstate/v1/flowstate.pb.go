@@ -3481,11 +3481,11 @@ type Task_HTTP_Outputs struct {
 	StatusCode int32                  `protobuf:"varint,1,opt,name=status_code,json=statusCode,proto3" json:"status_code,omitempty"`
 	Headers    map[string]string      `protobuf:"bytes,2,rep,name=headers,proto3" json:"headers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Response body, returned by default so a step can be referenced as
-	// ${step.body}. Large responses are better trimmed with the `outputs`
+	// ${steps.<id>.body}. Large responses are better trimmed with the `outputs`
 	// input above, which keeps workflow payloads small.
 	Body string `protobuf:"bytes,3,opt,name=body,proto3" json:"body,omitempty"`
 	// The response body parsed as JSON, present when `parse_json` asked for it,
-	// so ${step.json.items[0].id} works without a second step to parse it.
+	// so ${steps.<id>.json.items[0].id} works without a second step to parse it.
 	//
 	// Deliberately a single value rather than a repeated one, and it should stay
 	// that way. A streaming response is not a unary response with more elements —

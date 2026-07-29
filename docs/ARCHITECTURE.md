@@ -498,7 +498,18 @@ them with `${steps.<step_id>.<output_name>}`, which the compiler turns into a CE
 carried in the spec. The root is one name in the evaluation scope rather than a prefix the
 resolver parses: CEL resolves a qualified name by trying successively shorter prefixes, so
 answering `steps` with the whole map and letting CEL apply `.<id>.<output>` itself means
-nothing here needs an opinion about how deep a reference goes. Because Temporal persists everything a workflow passes to an activity, the engine
+nothing here needs an opinion about how deep a reference goes.
+
+The resolver answers step ids first and the root only when no step claims the name, which
+is invariant 10 rather than a preference: a worker evaluates the AST stored in `RunState`,
+not the source, so a run that started before the root existed — possibly on a spec with a
+step literally called `steps` — keeps resolving exactly as it did. That precedence exists
+for those runs and for nothing else, because the compiler refuses the id: a step called
+`steps` would shadow the whole root for every expression after it, so `flow validate`
+rejects it wherever an id can be written — top level, loop body, parallel branch, and a
+loop's `iterator:`. The old runs keep their meaning; no new file can acquire it.
+
+Because Temporal persists everything a workflow passes to an activity, the engine
 statically analyzes which references each remaining step actually needs and carries only
 those forward — both when scheduling a step and when performing Continue-As-New.
 
