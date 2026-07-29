@@ -237,7 +237,31 @@ type Workflow struct {
 	// These inputs can be used by the steps in the workflow to perform their tasks.
 	Inputs map[string]*Value `protobuf:"bytes,4,rep,name=inputs,proto3" json:"inputs,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Labels are key-value pairs that can be used to organize and categorize workflows.
-	Labels        map[string]string `protobuf:"bytes,5,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Labels map[string]string `protobuf:"bytes,5,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Profile names the vocabulary every expression in this workflow was compiled
+	// against — which CEL extension libraries are in scope.
+	//
+	// Set by the compiler, not written by an author. There is deliberately no
+	// `profile:` key: an author choosing a vocabulary per file is how a file came to
+	// have two of them, which is what one profile removes.
+	//
+	// Recorded rather than resolved at execution because a run has to keep meaning
+	// what it meant. A future build that adds a library must not change how an
+	// expression already stored in `RunState` evaluates — invariant 10 — and
+	// "whatever this worker has" is a set that changes underfoot. A profile name has
+	// frozen membership, so a worker resolves the name rather than asking what it
+	// ships with, and refuses a name it does not know.
+	//
+	// A different axis from `edition:`, and the distinction is load-bearing. An
+	// edition is a property of a *file*: read when it compiles, gone afterwards, and
+	// retiring one affects nothing already executing. A profile is a property of a
+	// *run*, and travels.
+	//
+	// Empty means a spec compiled before this field existed, which resolves to the
+	// first profile — a compatibility arm rather than a guess, since nothing has been
+	// released and such a spec can only have come from a build whose one vocabulary
+	// was that profile's.
+	Profile       string `protobuf:"bytes,6,opt,name=profile,proto3" json:"profile,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -305,6 +329,13 @@ func (x *Workflow) GetLabels() map[string]string {
 		return x.Labels
 	}
 	return nil
+}
+
+func (x *Workflow) GetProfile() string {
+	if x != nil {
+		return x.Profile
+	}
+	return ""
 }
 
 // Node represents a step in the workflow. Each node can be a task or another type of operation.
@@ -846,6 +877,14 @@ type Scope struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Outputs holds the outputs of steps that have already run.
 	Outputs *Workflow_StepOutputs `protobuf:"bytes,1,opt,name=outputs,proto3" json:"outputs,omitempty"`
+	// Profile is the workflow's language profile, carried here because this is what
+	// reaches the worker that evaluates a task's own expressions.
+	//
+	// Without it that worker would evaluate against whatever profile its own build
+	// calls current, which is the same run computing against two vocabularies — the
+	// failure one profile exists to remove, reintroduced at the point where the work
+	// actually happens.
+	Profile string `protobuf:"bytes,3,opt,name=profile,proto3" json:"profile,omitempty"`
 	// Vars holds variables bound by enclosing control flow. Names must not collide
 	// with step ids, since expressions resolve both from one namespace.
 	Vars          map[string]*Value `protobuf:"bytes,2,rep,name=vars,proto3" json:"vars,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
@@ -888,6 +927,13 @@ func (x *Scope) GetOutputs() *Workflow_StepOutputs {
 		return x.Outputs
 	}
 	return nil
+}
+
+func (x *Scope) GetProfile() string {
+	if x != nil {
+		return x.Profile
+	}
+	return ""
 }
 
 func (x *Scope) GetVars() map[string]*Value {
@@ -3746,14 +3792,15 @@ var File_flowstate_v1_flowstate_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"\n" +
-	"\x1cflowstate/v1/flowstate.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a%google/api/expr/v1alpha1/syntax.proto\x1a$google/api/expr/v1alpha1/value.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xbd\x05\n" +
+	"\x1cflowstate/v1/flowstate.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a%google/api/expr/v1alpha1/syntax.proto\x1a$google/api/expr/v1alpha1/value.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xdd\x05\n" +
 	"\bWorkflow\x127\n" +
 	"\x04name\x18\x01 \x01(\tB#\xe2A\x01\x02\xbaH\x1c\xc8\x01\x01r\x17\x10\x01\x18\x80\x012\x10^[A-Za-z0-9-_]+$R\x04name\x12/\n" +
 	"\vdescription\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02H\x00R\vdescription\x88\x01\x01\x12;\n" +
 	"\x05steps\x18\x03 \x03(\v2\x12.flowstate.v1.NodeB\x11\xe2A\x01\x02\xbaH\n" +
 	"\xc8\x01\x01\x92\x01\x04\b\x01\x10dR\x05steps\x12L\n" +
 	"\x06inputs\x18\x04 \x03(\v2\".flowstate.v1.Workflow.InputsEntryB\x10\xe2A\x01\x01\xbaH\t\x9a\x01\x06\"\x04r\x02\x10\x01R\x06inputs\x12L\n" +
-	"\x06labels\x18\x05 \x03(\v2\".flowstate.v1.Workflow.LabelsEntryB\x10\xe2A\x01\x01\xbaH\t\x9a\x01\x06\"\x04r\x02\x10\x01R\x06labels\x1a\xd2\x01\n" +
+	"\x06labels\x18\x05 \x03(\v2\".flowstate.v1.Workflow.LabelsEntryB\x10\xe2A\x01\x01\xbaH\t\x9a\x01\x06\"\x04r\x02\x10\x01R\x06labels\x12\x1e\n" +
+	"\aprofile\x18\x06 \x01(\tB\x04\xe2A\x01\x01R\aprofile\x1a\xd2\x01\n" +
 	"\vStepOutputs\x12h\n" +
 	"\vstep_values\x18\x01 \x03(\v22.flowstate.v1.Workflow.StepOutputs.StepValuesEntryB\x13\xe2A\x01\x02\xbaH\f\xc8\x01\x01\x9a\x01\x06\"\x04r\x02\x10\x01R\n" +
 	"stepValues\x1aY\n" +
@@ -3798,9 +3845,10 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"\rPendingSignal\x12\x1e\n" +
 	"\x04name\x18\x01 \x01(\tB\n" +
 	"\xe2A\x01\x02\xbaH\x03\xc8\x01\x01R\x04name\x124\n" +
-	"\apayload\x18\x02 \x01(\v2\x1a.flowstate.v1.Node.OutputsR\apayload\"\xd4\x01\n" +
+	"\apayload\x18\x02 \x01(\v2\x1a.flowstate.v1.Node.OutputsR\apayload\"\xee\x01\n" +
 	"\x05Scope\x12<\n" +
-	"\aoutputs\x18\x01 \x01(\v2\".flowstate.v1.Workflow.StepOutputsR\aoutputs\x12?\n" +
+	"\aoutputs\x18\x01 \x01(\v2\".flowstate.v1.Workflow.StepOutputsR\aoutputs\x12\x18\n" +
+	"\aprofile\x18\x03 \x01(\tR\aprofile\x12?\n" +
 	"\x04vars\x18\x02 \x03(\v2\x1d.flowstate.v1.Scope.VarsEntryB\f\xbaH\t\x9a\x01\x06\"\x04r\x02\x10\x01R\x04vars\x1aL\n" +
 	"\tVarsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12)\n" +

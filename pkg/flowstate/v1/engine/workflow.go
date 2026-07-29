@@ -79,9 +79,14 @@ func Run(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error
 	// Execute through the recursive executor, which handles nested control flow
 	// and records where to resume if the run has to be continued as new.
 	exec := &executor{
-		ctx:    ctx,
-		spec:   st.Workflow,
-		scope:  v1.NewScope(stepOutputs),
+		ctx:  ctx,
+		spec: st.Workflow,
+		// The profile comes from the spec in RunState, not from this build. A run
+		// that suspended and continued as new is picked up by whichever worker takes
+		// the next task, and that worker must evaluate against the vocabulary the
+		// spec was compiled with rather than its own current one — otherwise a
+		// deployment mid-rollout runs one workload against two dialects.
+		scope:  v1.NewScope(st.GetWorkflow().GetProfile(), stepOutputs),
 		budget: stepsBudget,
 		resume: resumeFrames(st),
 

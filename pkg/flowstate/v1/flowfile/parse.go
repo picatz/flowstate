@@ -411,7 +411,10 @@ func (c *compiler) compile(file *ast.File) *v1.Workflow {
 	r := ref{path: "workflow"}
 	fields := c.check(c.heldForLater(entries, r), r, workflowKeys)
 
-	workflow := &v1.Workflow{}
+	// The vocabulary this file's expressions are being checked against, stamped
+	// here so a run evaluates against the set the compiler used rather than
+	// whatever the worker executing it happens to ship with.
+	workflow := &v1.Workflow{Profile: v1.CurrentProfile}
 
 	if f, found := fields.get("name"); found {
 		name, _ := c.text(f.value, "name", ref{path: "name", label: "name"})

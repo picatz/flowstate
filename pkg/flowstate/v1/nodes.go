@@ -21,8 +21,14 @@ import (
 // expressions.
 
 // NewScope returns a scope over the given outputs, with no bound variables.
-func NewScope(outputs *Workflow_StepOutputs) *Scope {
-	return &Scope{Outputs: outputs}
+//
+// The profile is a parameter rather than a default because every caller has to
+// answer where it came from. The first attempt at profiles hardcoded the current
+// one at the two evaluation sites, so the value a spec recorded was never read;
+// making this signature demand it turns that into a compile error at each place
+// the question is actually decided.
+func NewScope(profile string, outputs *Workflow_StepOutputs) *Scope {
+	return &Scope{Outputs: outputs, Profile: profile}
 }
 
 // StepOutputs returns the scope's step outputs, tolerating a nil scope so callers
@@ -58,13 +64,13 @@ func (s *Scope) ActivationWith(ctx context.Context, extra map[string]ref.Val) ce
 		vars[name] = v
 	}
 
-	return Activation(ctx, s.StepOutputs(), vars)
+	return Activation(ctx, s.GetProfile(), s.StepOutputs(), vars)
 }
 
 // Activation returns the CEL activation for this scope.
 func (s *Scope) Activation(ctx context.Context) cel.Activation {
 	if s == nil {
-		return Activation(ctx, nil, nil)
+		return Activation(ctx, "", nil, nil)
 	}
 
 	vars := make(map[string]ref.Val, len(s.Vars))
@@ -78,7 +84,7 @@ func (s *Scope) Activation(ctx context.Context) cel.Activation {
 		}
 		vars[name] = rv
 	}
-	return Activation(ctx, s.Outputs, vars)
+	return Activation(ctx, s.Profile, s.Outputs, vars)
 }
 
 // WithVars returns a copy of the scope with the given variables bound, leaving the
@@ -87,6 +93,10 @@ func (s *Scope) WithVars(name string, item *Value) *Scope {
 	next := &Scope{Vars: make(map[string]*Value, len(s.Vars)+1)}
 	if s != nil {
 		next.Outputs = s.Outputs
+		// Carried, not re-derived. A loop body that evaluated against a different
+		// vocabulary than the step containing it is the same run speaking two
+		// dialects, one nesting level down.
+		next.Profile = s.Profile
 		for k, v := range s.Vars {
 			next.Vars[k] = v
 		}
@@ -126,7 +136,7 @@ func ResolveItems(ctx context.Context, loop *ForEach, scope *Scope) ([]*Value, e
 	switch kind := items.GetKind().(type) {
 	case *Value_Expr:
 		var err error
-		out, err = ev.EvalParsedBase(ctx, kind.Expr, scope.Activation(ctx))
+		out, err = ev.EvalParsedBase(ctx, scope.GetProfile(), kind.Expr, scope.Activation(ctx))
 		if err != nil {
 			return nil, fmt.Errorf("evaluating items: %w", err)
 		}
@@ -232,7 +242,7 @@ func ResolveTaskInputs(ctx context.Context, task *Task, scope *Scope) (*Task, er
 			continue
 		}
 
-		out, err := ev.EvalParsedBase(ctx, v.GetExpr(), scope.Activation(ctx))
+		out, err := ev.EvalParsedBase(ctx, scope.GetProfile(), v.GetExpr(), scope.Activation(ctx))
 		if err != nil {
 			return nil, fmt.Errorf("input %q: %w", name, err)
 		}
@@ -251,12 +261,13 @@ func ResolveTaskInputs(ctx context.Context, task *Task, scope *Scope) (*Task, er
 
 // Activation returns the CEL activation for evaluating an expression against step
 // outputs and any variables bound by enclosing control flow.
-func Activation(ctx context.Context, prev *Workflow_StepOutputs, vars map[string]ref.Val) cel.Activation {
+func Activation(ctx context.Context, profile string, prev *Workflow_StepOutputs, vars map[string]ref.Val) cel.Activation {
 	return cel.Activation(&StepsOutputActivation{
-		Prev: prev,
-		Vars: vars,
-		Ctx:  ctx,
-		Eval: DefaultEvaluator(),
+		Prev:    prev,
+		Vars:    vars,
+		Ctx:     ctx,
+		Eval:    DefaultEvaluator(),
+		Profile: profile,
 	})
 }
 
@@ -285,6 +296,9 @@ func MergeOutputs(base, overlay *Workflow_StepOutputs) *Workflow_StepOutputs {
 // while still seeing the variables their enclosing control flow bound.
 func (s *Scope) WithOutputs(outputs *Workflow_StepOutputs) *Scope {
 	next := &Scope{Outputs: outputs}
+	if s != nil {
+		next.Profile = s.Profile
+	}
 	if s != nil && len(s.Vars) > 0 {
 		next.Vars = make(map[string]*Value, len(s.Vars))
 		for k, v := range s.Vars {

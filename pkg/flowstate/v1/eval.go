@@ -60,6 +60,16 @@ type StepsOutputActivation struct {
 	// Eval evaluates stored expressions. Nil uses [DefaultEvaluator].
 	Eval *Evaluator
 
+	// Profile is the workflow's language profile.
+	//
+	// Carried here because resolving a stored expression re-enters evaluation with
+	// no scope in hand — see resolveValue, which builds a child activation rather
+	// than threading a scope it does not have. Without it that inner evaluation
+	// would fall back to whatever the build calls current, so one run could resolve
+	// its outer expression against the profile it recorded and an expression nested
+	// inside an output against a different one.
+	Profile string
+
 	// depth counts nested stored-expression evaluations, bounded by
 	// maxActivationDepth.
 	depth int
@@ -219,12 +229,13 @@ func (e *StepsOutputActivation) resolveValue(v *Value) (ref.Val, error) {
 			return nil, fmt.Errorf("expression nesting exceeded %d levels", maxActivationDepth)
 		}
 		child := &StepsOutputActivation{
-			Prev:  e.Prev,
-			Ctx:   e.Ctx,
-			Eval:  e.Eval,
-			depth: e.depth + 1,
+			Prev:    e.Prev,
+			Ctx:     e.Ctx,
+			Eval:    e.Eval,
+			Profile: e.Profile,
+			depth:   e.depth + 1,
 		}
-		return e.evaluator().EvalParsedBase(e.context(), v.GetExpr(), cel.Activation(child))
+		return e.evaluator().EvalParsedBase(e.context(), e.Profile, v.GetExpr(), cel.Activation(child))
 	case *Value_Literal:
 		return cel.ValueToRefValue(TypeAdapter, v.GetLiteral())
 
@@ -513,7 +524,7 @@ func eval(ctx context.Context, w *Workflow) (*Workflow_StepOutputs, error) {
 		StepValues: make(map[string]*Node_Outputs),
 	}
 
-	if err := runNodes(ctx, w.Steps, NewScope(stepOutputs)); err != nil {
+	if err := runNodes(ctx, w.Steps, NewScope(w.GetProfile(), stepOutputs)); err != nil {
 		return nil, err
 	}
 	return stepOutputs, nil
@@ -668,8 +679,12 @@ func runParallel(ctx context.Context, parallel *Parallel, scope *Scope) error {
 // A nil condition means the step always runs. A condition that does not produce a
 // boolean is an error rather than being coerced, so a mistake surfaces instead of
 // being silently interpreted.
+// The profile is empty because this signature has no workflow to read one from,
+// which resolves to the first profile — see [ProfileLibraries]. Callers executing
+// a real workflow reach [EvalConditionInScope] with a scope the engine built, and
+// that scope carries the profile its spec recorded.
 func EvalCondition(ctx context.Context, condition *Value, prev *Workflow_StepOutputs) (bool, error) {
-	return EvalConditionInScope(ctx, condition, NewScope(prev))
+	return EvalConditionInScope(ctx, condition, NewScope("", prev))
 }
 
 // EvalConditionInScope evaluates a condition against a scope, so a loop body can
@@ -689,7 +704,7 @@ func EvalConditionInScope(ctx context.Context, condition *Value, scope *Scope) (
 		return b.BoolValue, nil
 
 	case *Value_Expr:
-		out, err := ev.EvalParsedBase(ctx, kind.Expr, scope.Activation(ctx))
+		out, err := ev.EvalParsedBase(ctx, scope.GetProfile(), kind.Expr, scope.Activation(ctx))
 		if err != nil {
 			return false, fmt.Errorf("evaluating condition: %w", err)
 		}
@@ -770,8 +785,13 @@ func retryDelay(retry *RetryPolicy, attempt int) time.Duration {
 	return time.Duration(delay)
 }
 
+// Evaluates against the first profile, since this signature carries no workflow.
+// The engine reaches this only for a task that does not need previous outputs,
+// which is a task with no deferred inputs and so nothing profile-sensitive to
+// evaluate; anything that does evaluate an expression arrives through
+// [Task.EvalInScope] with the run's scope.
 func (t *Task) Eval(ctx context.Context, prevStepOutputs *Workflow_StepOutputs) (*Node_Outputs, error) {
-	return t.EvalInScope(ctx, NewScope(prevStepOutputs))
+	return t.EvalInScope(ctx, NewScope("", prevStepOutputs))
 }
 
 // EvalInScope executes the task against a scope, which is how a loop body's

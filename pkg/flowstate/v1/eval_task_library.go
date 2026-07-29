@@ -635,7 +635,7 @@ func taskFuncCEL(ctx context.Context, input map[string]*Value, scope *Scope) (*N
 	//
 	// Cost limits and environment caching are unchanged and still the evaluator's
 	// (see celenv.go); the profile decides membership and nothing else.
-	env, err := ev.ProfileEnv(CurrentProfile)
+	env, err := ev.ProfileEnv(scope.GetProfile())
 	if err != nil {
 		return nil, err
 	}
@@ -685,7 +685,7 @@ func valueToCEL(ctx context.Context, v *Value, scope *Scope) (ref.Val, error) {
 	case *Value_Literal:
 		return cel.ValueToRefValue(TypeAdapter, kind.Literal)
 	case *Value_Expr:
-		return DefaultEvaluator().EvalParsedBase(ctx, kind.Expr, scope.Activation(ctx))
+		return DefaultEvaluator().EvalParsedBase(ctx, scope.GetProfile(), kind.Expr, scope.Activation(ctx))
 	default:
 		return nil, fmt.Errorf("unsupported value kind %T", kind)
 	}

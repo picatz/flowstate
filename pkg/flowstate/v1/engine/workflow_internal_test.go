@@ -32,7 +32,7 @@ func TestResolveTaskInputs_PreResolveValueExprs(t *testing.T) {
 			task := &v1.Task{Name: "echo", Inputs: map[string]*v1.Value{
 				"message": v1.NewExpr(tc.expr),
 			}}
-			resolved, err := v1.ResolveTaskInputs(t.Context(), task, v1.NewScope(prev))
+			resolved, err := v1.ResolveTaskInputs(t.Context(), task, v1.NewScope(v1.CurrentProfile, prev))
 			require.NoError(t, err)
 			got := resolved.Inputs["message"].GetLiteral().GetStringValue()
 
@@ -76,7 +76,7 @@ func TestResolveTaskInputs_MixedTypes_Table(t *testing.T) {
 			task := &v1.Task{Name: "echo", Inputs: map[string]*v1.Value{
 				"message": v1.NewExpr(tc.expr),
 			}}
-			resolved, err := v1.ResolveTaskInputs(t.Context(), task, v1.NewScope(prev))
+			resolved, err := v1.ResolveTaskInputs(t.Context(), task, v1.NewScope(v1.CurrentProfile, prev))
 			require.NoError(t, err)
 			lit := resolved.Inputs["message"].GetLiteral()
 			if tc.wantStr != nil {

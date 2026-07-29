@@ -104,7 +104,7 @@ func TestWaitDeadlineStillTakesAMomentFromData(t *testing.T) {
 	now := time.Date(2026, 3, 1, 9, 0, 0, 0, time.UTC)
 	moment := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 
-	scope := v1.NewScope(&v1.Workflow_StepOutputs{
+	scope := v1.NewScope(v1.CurrentProfile, &v1.Workflow_StepOutputs{
 		StepValues: map[string]*v1.Node_Outputs{
 			"schedule": {NamedValues: map[string]*v1.Value{
 				"opens_at": v1.NewLiteral(moment.Format(time.RFC3339)),
@@ -143,7 +143,7 @@ func TestAStepMayBeCalledNow(t *testing.T) {
 	// Both names, in the scope a wait evaluates against: the step through the
 	// root, the clock bare.
 	clock := time.Date(2030, 6, 1, 12, 0, 0, 0, time.UTC)
-	scope := v1.NewScope(&v1.Workflow_StepOutputs{
+	scope := v1.NewScope(v1.CurrentProfile, &v1.Workflow_StepOutputs{
 		StepValues: map[string]*v1.Node_Outputs{
 			"now": {NamedValues: map[string]*v1.Value{
 				"result": v1.NewLiteral("2001-01-01T00:00:00Z"),
@@ -178,7 +178,7 @@ func TestWaitDeadlineNowDoesNotShadowALoopIterator(t *testing.T) {
 	item := "2001-01-01T00:00:00Z"
 	clock := time.Date(2030, 6, 1, 12, 0, 0, 0, time.UTC)
 
-	scope := v1.NewScope(nil).WithVars(v1.NowIdentifier, v1.NewLiteral(item))
+	scope := v1.NewScope(v1.CurrentProfile, nil).WithVars(v1.NowIdentifier, v1.NewLiteral(item))
 
 	deadline, err := v1.EvalWaitDeadline(t.Context(), waitUntil(t, "${now}"), scope, clock)
 	require.NoError(t, err)

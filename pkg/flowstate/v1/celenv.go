@@ -236,8 +236,8 @@ func (e *Evaluator) EvalParsed(ctx context.Context, env *cel.Env, parsed *expr.P
 // no extension libraries at all, so `if:`, `items:` and every task input spoke a
 // poorer dialect than the `cel` step beside them. One profile is what removes that,
 // and this is where most of the file feels it.
-func (e *Evaluator) EvalParsedBase(ctx context.Context, parsed *expr.ParsedExpr, activation any) (ref.Val, error) {
-	env, err := e.ProfileEnv(CurrentProfile)
+func (e *Evaluator) EvalParsedBase(ctx context.Context, profile string, parsed *expr.ParsedExpr, activation any) (ref.Val, error) {
+	env, err := e.ProfileEnv(profile)
 	if err != nil {
 		return nil, err
 	}
