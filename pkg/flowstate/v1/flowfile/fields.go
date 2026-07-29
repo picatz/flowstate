@@ -201,10 +201,19 @@ func (c *compiler) entries(n ast.Node, path string, r ref) ([]entry, bool) {
 	return out, true
 }
 
-// keyNameOf returns the name a mapping key spells, without reporting.
+// keyNameOf returns the name a mapping key spells, or false when it spells none.
 //
-// The reporting half lives in [compiler.keyName]; this is for the passes that
-// only need to know whether a key has a usable name.
+// The single definition of what a key is. [compiler.keyName] is this plus a
+// diagnostic, rather than a second switch, because the two answering differently
+// is a bug with no symptom at the point it is written: the merge-precedence pass
+// in [compiler.entries] uses this one to decide which names a mapping claims for
+// itself, and a name it fails to see is a name a merged mapping silently
+// overrides.
+//
+// A key is a string and nothing else. It is never a *ast.LiteralNode — a block
+// scalar cannot open a mapping key, so every `? |-` reaches the parser wrapped in
+// a *ast.MappingKeyNode — and the branch that used to claim otherwise made these
+// two look divergent while being unreachable.
 func keyNameOf(n ast.Node) (string, bool) {
 	scalar, ok := n.(*ast.StringNode)
 	if !ok {
@@ -215,15 +224,20 @@ func keyNameOf(n ast.Node) (string, bool) {
 
 // keyName returns the name a mapping key spells.
 func (c *compiler) keyName(n ast.Node, r ref) (string, bool) {
-	switch node := n.(type) {
-	case *ast.StringNode:
-		return node.Value, true
-	case *ast.LiteralNode:
-		return blockText(node), true
-	default:
-		c.report(spanOfNode(n), r, "keys must be strings, but %s was written here", describeNode(n))
+	if name, ok := keyNameOf(n); ok {
+		return name, true
+	}
+	if _, explicit := n.(*ast.MappingKeyNode); explicit {
+		// Valid YAML, and every spelling of it — `? a`, `? |-` — arrives here. The
+		// generic message would call it "a mappingkey", which is the parser's word
+		// and not the author's, and would say keys must be strings about a key that
+		// is one.
+		c.report(spanOfNode(n), r,
+			"an explicit key (`? key` on its own line) is not written here; use `key: value`")
 		return "", false
 	}
+	c.report(spanOfNode(n), r, "keys must be strings, but %s was written here", describeNode(n))
+	return "", false
 }
 
 // resolve follows anchors and aliases to the node that was actually written.
