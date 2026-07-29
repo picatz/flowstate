@@ -98,11 +98,24 @@ var defaultEgressPolicy = sync.OnceValue(func() *netpolicy.Policy {
 // local server the default policy would refuse to reach.
 func HTTPTaskDef(policy *netpolicy.Policy) TaskDef {
 	return TaskDef{
-		Name:             "http",
-		Summary:          "Perform an HTTP request and return the response.",
-		Inputs:           (&Task_HTTP_Inputs{}).ProtoReflect().Descriptor(),
-		Outputs:          (&Task_HTTP_Outputs{}).ProtoReflect().Descriptor(),
-		DeferredInputs:   []string{"outputs", "expect"},
+		Name:           "http",
+		Summary:        "Perform an HTTP request and return the response.",
+		Inputs:         (&Task_HTTP_Inputs{}).ProtoReflect().Descriptor(),
+		Outputs:        (&Task_HTTP_Outputs{}).ProtoReflect().Descriptor(),
+		DeferredInputs: []string{"outputs", "expect"},
+		// `expect` and not `outputs`, and the difference is in the task rather than
+		// in the grammar.
+		//
+		// `httpExpectSatisfied` reads `expectSpec.GetExpr()` and refuses anything
+		// else, so a literal there is a run that fails on its first request — the
+		// validator is moving that refusal to where the author can see it.
+		//
+		// `outputs` takes both. `taskFuncHTTP` handles `*Value_Literal` through
+		// `literalToValueMap` and returns those names as the step's outputs, which
+		// is a working form: a step that emits constants alongside a fetch. Listing
+		// it here would have made `flow validate` refuse a workflow the engine runs,
+		// which is this rule's own failure mode pointed the other way.
+		ExpressionInputs: []string{"expect"},
 		NeedsPrevOutputs: true,
 		Fn:               taskFuncHTTP(policy),
 	}

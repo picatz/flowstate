@@ -4,6 +4,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
@@ -258,4 +261,100 @@ steps:
     printf:
       args: [1]
       ` + inputs + "\n"
+}
+
+// An input a task evaluates still has one thing the schema can check.
+//
+// `Value expect = 9` is deliberately permissive — it has to be, because what an
+// expression evaluates to is not knowable here — so a mapping written under
+// `expect:` satisfied the descriptor, and every other check in validateTaskInputs
+// correctly declines on a deferred input because their shape is the task's
+// business. The result was a file `flow validate` called ok and the engine refused
+// on its first request, which is the worst answer the tool can give: it moves the
+// discovery from the author's terminal to production. One shipped example was in
+// exactly that state before it was rewritten.
+//
+// Whether a value carries a `${...}` fence is not the task's business. It is
+// lexical, decided by the parser before the task sees anything, and so is
+// checkable with no scope and no type system.
+
+// TestAnInputThatMustBeAnExpressionIsCheckedEvenThoughItIsDeferred is the case
+// that was missed.
+func TestAnInputThatMustBeAnExpressionIsCheckedEvenThoughItIsDeferred(t *testing.T) {
+	t.Parallel()
+
+	for name, src := range map[string]string{
+		"a mapping": "name: t\nsteps:\n  - id: f\n    http:\n      url: https://example.com\n" +
+			"      expect:\n        status_code: 200\n",
+		"a bare string": "name: t\nsteps:\n  - id: f\n    http:\n      url: https://example.com\n" +
+			"      expect: status_code == 200\n",
+		"a literal boolean": "name: t\nsteps:\n  - id: f\n    http:\n      url: https://example.com\n" +
+			"      expect: true\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			workflow, err := flowfile.Unmarshal([]byte(src))
+			require.NoError(t, err, "this parses; the question is whether it validates")
+
+			ds := flowfile.Validate(workflow)
+			require.NotEmpty(t, ds, "`expect:` written as %s validated, and the run would fail on its first request", name)
+
+			message := ds.Error()
+			assert.Contains(t, message, "has to be written as one")
+			assert.Contains(t, message, "${...}", "the diagnostic does not say what to write instead")
+		})
+	}
+}
+
+// TestAnExpressionInputWrittenAsAnExpressionIsAccepted is the direction that keeps
+// the check from being a refusal of everything.
+func TestAnExpressionInputWrittenAsAnExpressionIsAccepted(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := flowfile.Unmarshal([]byte(
+		"name: t\nsteps:\n  - id: f\n    http:\n      url: https://example.com\n" +
+			"      expect: ${status_code == 200}\n      outputs: \"${ {'code': status_code} }\"\n"))
+	require.NoError(t, err)
+	assert.Empty(t, flowfile.Validate(workflow),
+		"a correctly written expression input was refused")
+}
+
+// TestALiteralOutputsMapIsStillAccepted pins the input this rule must not reach.
+//
+// `outputs` is deferred like `expect` and was declared an expression input
+// alongside it, which read as symmetric and is not: `httpExpectSatisfied` refuses
+// a literal `expect`, while `taskFuncHTTP` converts a literal `outputs` through
+// literalToValueMap and returns those names. Declaring it made `flow validate`
+// refuse a workflow the engine runs — this rule's own failure mode pointed the
+// other way, and worse, because it breaks files that work today.
+//
+// Caught in review. Confirmed by calling the task with a literal map and watching
+// it return `note: "constant"` before the declaration was narrowed.
+func TestALiteralOutputsMapIsStillAccepted(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := flowfile.Unmarshal([]byte(
+		"name: t\nsteps:\n  - id: f\n    http:\n      url: https://example.com\n" +
+			"      outputs:\n        note: constant\n"))
+	require.NoError(t, err)
+	assert.Empty(t, flowfile.Validate(workflow),
+		"a literal outputs map was refused, and the engine accepts it")
+}
+
+// TestADeferredInputThatNeedNotBeAnExpressionIsLeftAlone keeps the new rule from
+// spreading to every deferred input.
+//
+// The cel task defers `expr`, and `expr` is a plain string the task parses itself
+// — writing `${...}` there would be wrong. Only inputs a task names in
+// ExpressionInputs are checked, so declaring one stays a decision rather than a
+// consequence of deferring it.
+func TestADeferredInputThatNeedNotBeAnExpressionIsLeftAlone(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := flowfile.Unmarshal([]byte(
+		"name: t\nsteps:\n  - id: c\n    cel:\n      expr: 1 + 1\n"))
+	require.NoError(t, err)
+	assert.Empty(t, flowfile.Validate(workflow),
+		"the cel task's `expr` was required to carry a fence, which would be wrong")
 }
