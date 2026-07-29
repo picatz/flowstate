@@ -787,3 +787,94 @@ func positionOf(t *testing.T, src, needle string, offset int) lsp.Position {
 	pos.Character += offset
 	return pos
 }
+
+// TestHoverSaysWhichInputsMustBeExpressions keeps the editor from knowing less
+// than the validator.
+//
+// `flow validate` refuses an `expect:` that is not written as an expression. An
+// editor that does not say so leaves an author to discover the rule by tripping
+// over it, which is the gap this whole surface exists to close — the diagnostic
+// is the same one either way, but hover is where someone looks *before* writing.
+//
+// Derived from the registry rather than naming http, so a task that declares an
+// expression input tomorrow is described without this test being edited.
+func TestHoverSaysWhichInputsMustBeExpressions(t *testing.T) {
+	t.Parallel()
+
+	c := newClient(t)
+	c.initialize()
+
+	var checked int
+	for _, def := range v1.DefaultRegistry().All() {
+		if len(def.ExpressionInputs) == 0 {
+			continue
+		}
+		checked++
+
+		t.Run(def.Name, func(t *testing.T) {
+			src := "name: expressive\nsteps:\n  - id: a\n    " + def.Name + ":\n"
+			uri := "file:///expressive-" + def.Name + ".yaml"
+			c.open(uri, src)
+
+			pos := positionOf(t, src, def.Name+":", 0)
+			got := c.hover(uri, pos.Line, pos.Character)
+			require.NotNil(t, got)
+
+			text := hoverText(got)
+			assert.Contains(t, text, joinNames(def.ExpressionInputs),
+				"hover does not name the inputs that have to be written as expressions")
+			assert.Contains(t, text, "written as an expression")
+			assert.Contains(t, text, "${...}", "hover does not say what writing one looks like")
+		})
+	}
+
+	require.NotZero(t, checked,
+		"no registered task declares an expression input, so this test checked nothing")
+}
+
+// TestHoverDoesNotClaimEveryDeferredInputIsAnExpression is the distinction the
+// popup has to preserve.
+//
+// The two properties travel together often enough to look like one, and the
+// change that introduced expression inputs got that wrong before review caught
+// it: http defers `outputs` *and* accepts a literal there. A hover that folded
+// the two sentences together would restate that wrong symmetry in the editor,
+// where an author meets it before the validator can correct them.
+func TestHoverDoesNotClaimEveryDeferredInputIsAnExpression(t *testing.T) {
+	t.Parallel()
+
+	c := newClient(t)
+	c.initialize()
+
+	def, found := v1.LookupTask("http")
+	require.True(t, found)
+	require.Contains(t, def.DeferredInputs, "outputs", "the premise of this test moved")
+	require.NotContains(t, def.ExpressionInputs, "outputs",
+		"`outputs` takes a literal map; declaring it an expression breaks workflows the engine runs")
+
+	src := "name: shapes\nsteps:\n  - id: a\n    http:\n"
+	c.open("file:///shapes.yaml", src)
+
+	pos := positionOf(t, src, "http:", 0)
+	text := hoverText(c.hover("file:///shapes.yaml", pos.Line, pos.Character))
+
+	// Isolated to the sentence that makes the claim, rather than searched for
+	// across the popup. `outputs` legitimately appears above, in the deferred
+	// sentence — so a whole-text assertion has to be phrased around that, and the
+	// first version of this was: it looked for the absence of "`outputs` has to be
+	// written", which a folded sentence reading "`outputs` and `expect` has to be
+	// written as an expression" does not contain. It passed on exactly the mutation
+	// it named. Found by making that change and watching it stay green.
+	var claim string
+	for _, paragraph := range strings.Split(text, "\n\n") {
+		if strings.Contains(paragraph, "written as an expression") {
+			claim = paragraph
+			break
+		}
+	}
+	require.NotEmpty(t, claim, "hover makes no claim about which inputs are expressions")
+
+	assert.Contains(t, claim, "`expect`")
+	assert.NotContains(t, claim, "`outputs`",
+		"the expression sentence names `outputs`, which takes a literal map the engine accepts")
+}

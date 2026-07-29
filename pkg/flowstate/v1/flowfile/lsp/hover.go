@@ -201,6 +201,21 @@ func taskDoc(def v1.TaskDef) string {
 		fmt.Fprintf(&b, "\n\nThe task evaluates %s itself, so %s may reference values that exist only while `%s` runs.",
 			joinNames(def.DeferredInputs), subject, def.Name)
 	}
+
+	// Said separately from the deferred sentence, because the two are separate
+	// facts and the earlier version of this change proved they do not travel
+	// together: `outputs` is evaluated by the task *and* takes a literal, while
+	// `expect` is evaluated by the task and does not. Folding this into the
+	// sentence above would restate that wrong symmetry in the editor, where an
+	// author would meet it before the validator got a chance to correct them.
+	if n := len(def.ExpressionInputs); n > 0 {
+		verb := "have"
+		if n == 1 {
+			verb = "has"
+		}
+		fmt.Fprintf(&b, "\n\n%s %s to be written as an expression: `${...}` around the whole value.",
+			joinNames(def.ExpressionInputs), verb)
+	}
 	if def.Outputs != nil && def.Outputs.Fields().Len() > 0 {
 		names := fieldNames(def.Outputs)
 		// A task is described without a step to hang the outputs off, so the id is
