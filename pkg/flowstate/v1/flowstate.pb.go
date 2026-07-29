@@ -1962,10 +1962,20 @@ type WorkloadIdentity struct {
 	// team. Only claims an operator has configured as relevant are copied here,
 	// so this does not become a dumping ground for whole tokens.
 	Claims map[string]string `protobuf:"bytes,3,rep,name=claims,proto3" json:"claims,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	// Namespace and deployment identify which Flowstate installation is running
-	// the workload, so an assertion from a staging deployment is distinguishable
-	// from a production one.
-	Namespace     string `protobuf:"bytes,4,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	// Namespace is the tenant, and it is the boundary every authorization decision
+	// about a run turns on: the caller's namespace is compared against the one
+	// recorded on the run, and a mismatch is answered "no such run".
+	//
+	// Worth stating outright, because this field used to be described alongside
+	// `deployment` as identifying "which Flowstate installation is running the
+	// workload". That is what `deployment` is for. Reading the two as a pair
+	// suggests both are labels for telling environments apart, and one of them
+	// decides who may act on what.
+	Namespace string `protobuf:"bytes,4,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	// Deployment identifies which Flowstate installation is running the workload,
+	// so an assertion from a staging deployment is distinguishable from a
+	// production one. Descriptive rather than load-bearing: nothing authorizes on
+	// it.
 	Deployment    string `protobuf:"bytes,5,opt,name=deployment,proto3" json:"deployment,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

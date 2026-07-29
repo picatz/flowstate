@@ -900,10 +900,21 @@ message WorkloadIdentity {
   // so this does not become a dumping ground for whole tokens.
   map<string, string> claims = 3;
 
-  // Namespace and deployment identify which Flowstate installation is running
-  // the workload, so an assertion from a staging deployment is distinguishable
-  // from a production one.
+  // Namespace is the tenant, and it is the boundary every authorization decision
+  // about a run turns on: the caller's namespace is compared against the one
+  // recorded on the run, and a mismatch is answered "no such run".
+  //
+  // Worth stating outright, because this field used to be described alongside
+  // `deployment` as identifying "which Flowstate installation is running the
+  // workload". That is what `deployment` is for. Reading the two as a pair
+  // suggests both are labels for telling environments apart, and one of them
+  // decides who may act on what.
   string namespace = 4;
+
+  // Deployment identifies which Flowstate installation is running the workload,
+  // so an assertion from a staging deployment is distinguishable from a
+  // production one. Descriptive rather than load-bearing: nothing authorizes on
+  // it.
   string deployment = 5;
 }
 

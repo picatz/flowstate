@@ -582,14 +582,21 @@ Each step in a `Flowfile` has named inputs and produces named outputs, which lat
 
 | Task Name | Inputs | Outputs |
 |-----------|--------|---------|
-| `echo`    | `message` (`string`) | `result` (`string`) |
-| `printf`  | `format` (`string`), `args` (`list[string]`) | `result` (`string`) |
-| `http`    | `method` (`string`), `url` (`string`), `headers` (`map[string]string`), `body` (`string`), `outputs` (optional shaping expression) | `status_code` (`int`), `body` (`string`), `headers` (`map[string]string`) |
-| `cel`     | `expr` (`string`), `vars` (`map[string]any`), `libs` (`list[string]`, e.g. `math`, `strings`, `regex`) | `result` (dynamic) |
+| `echo`    | `message` | `result` |
+| `printf`  | `format`, `args` | `result` |
+| `http`    | `url`, `method`, `headers`, `body`, `query`, `form`, `json`, `parse_json`, `outputs`, `expect`, `retry_on_unknown_outcome` | `status_code`, `headers`, `body`, `json` |
+| `cel`     | `expr`, `vars`, `libs` | `result` |
 
-Run `flow tasks` for this table generated from the engine's own task registry, along with
-the CEL libraries available to the `cel` task. Because the listing is derived from the
-registry, it cannot drift from what the engine will actually execute.
+Names only, deliberately: types and constraints belong to the schema, and repeating them
+here is how the two disagree. `flow tasks` prints the same catalog with every type, which
+required input is which, and the CEL libraries the `cel` task accepts — derived from the
+registry, so it cannot drift from what the engine will execute.
+
+This table is checked against that registry by a test, because it *had* drifted: it was
+missing six of `http`'s inputs and one of its outputs, while the sentence beneath it
+claimed a listing derived from the registry cannot drift. A hand-written table is a second
+source of truth by construction, so the only thing that keeps one honest is something that
+fails when it is wrong.
 
 `flow tasks --output json` emits the same catalog as one document, for a script or an
 agent that has to address a value rather than recognise one:
@@ -620,6 +627,52 @@ steps:
 > [!TIP]
 > Use `${...}` for expressions, like referencing a previous step's output as `${steps.<id>.<output>}`.
 > The `cel` task evaluates the expression string provided in its `expr` input at runtime. Variables for the expression are provided under the `vars` input. Use the optional `libs` input to enable CEL extension libraries such as `math`, `strings`, `lists`, `sets`, `encoders`, `protos`, `bindings`, `comprehensions`, or `regex`.
+
+### Waiting
+
+A step can wait instead of doing work. Waiting is a step kind rather than a task,
+because a wait is the engine's business: nothing runs, no worker slot is held, and a
+workload parked for a month costs the same as one parked for a second.
+
+```yaml
+name: waiting
+steps:
+  # A duration.
+  - id: settle
+    sleep: 2s
+
+  # A moment. `now` is bound here and nowhere else — it is the replay-safe clock,
+  # so the same expression yields the same instant on every replay of the run.
+  - id: hold
+    wait_until: ${now + days(1)}
+
+  # A signal from outside, with a deadline.
+  - id: approval
+    wait_for_signal:
+      name: approval
+      timeout: 72h
+
+  - id: act
+    if: ${!steps.approval.timed_out}
+    echo:
+      message: ${'approved by ' + steps.approval.payload.approver}
+```
+
+`wait_for_signal:` is how a human reaches a workload. Deliver one with
+`flow signal <id> approval`, optionally carrying a payload, and the step's outputs say
+what happened: `timed_out` is always present, so a workload branches on the deadline
+passing rather than failing on it, and `payload` carries whatever the sender sent.
+
+A signal that arrives before the step is reached is not lost — a declared channel is
+drained before the run suspends, so approving in advance works.
+
+Note the `message:` above is one expression rather than text with a `${...}` in it. The
+DSL has no string interpolation, and writing `approved by ${...}` is refused rather than
+silently shipped as literal text. That is not a hypothetical: the first draft of this
+section had exactly that mistake, and `flow validate` caught it.
+
+See [examples/approval-gate](examples/approval-gate) and
+[examples/wait-until-a-moment](examples/wait-until-a-moment).
 
 ## Getting Started
 
