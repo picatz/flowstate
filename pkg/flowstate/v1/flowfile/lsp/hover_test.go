@@ -13,6 +13,12 @@ import (
 // hoverSource is used by the hover tests. Positions are given as the text to point
 // at rather than as coordinates, so the tests stay readable and stay correct when
 // the source is edited.
+// The cel step's `expr` reaches the response through `vars`, which is the only
+// scope that input has. It said `json_parse(web.body)` while references were bare,
+// and that was already wrong — a deferred input is not resolved against step
+// outputs, so nothing would have reported it. Rooting is what made the difference
+// visible: `steps.web.body` in the vars mapping is a reference the compiler
+// checks, and `web.body` inside the expr never was one.
 const hoverSource = `name: hover
 steps:
   - id: web
@@ -21,11 +27,13 @@ steps:
       url: https://example.com
   - id: shout
     echo:
-      message: ${web.body}
+      message: ${steps.web.body}
   - id: parsed
     cel:
       libs: [json]
-      expr: json_parse(web.body)
+      expr: json_parse(vars.raw)
+      vars:
+        raw: ${steps.web.body}
 `
 
 func TestHover(t *testing.T) {
@@ -58,7 +66,10 @@ func TestHover(t *testing.T) {
 				"url", "string", "(required)",
 				"status_code", "int",
 				"headers", "map[string, string]",
-				"${step.status_code}",
+				// A task is described with no step to hang its outputs off, so the
+				// id is a placeholder — but the root is not one, and a copyable
+				// form that omitted it would be a form `flow validate` refuses.
+				"${steps.<id>.status_code}",
 			},
 		},
 		{
@@ -72,17 +83,31 @@ func TestHover(t *testing.T) {
 			want: []string{"`method`", "`string`", "optional", "matches"},
 		},
 		{
+			// The whole rooted reference is what hover names, because it is what
+			// the author wrote and what they would copy. The offsets are measured
+			// off the fixture rather than counted by hand, so the cursor keeps
+			// landing on the segment each case is about.
 			name: "expression reference names the producing step and output type",
-			at:   "${web.body}",
-			// The cursor sits on the `web` identifier inside the expression.
-			offset: 2,
-			want:   []string{"`web.body`", "`string`", "step `web`", "`http` task"},
+			at:   "${steps.web.body}",
+			// The cursor sits on the `web` segment.
+			offset: len("${steps."),
+			want:   []string{"`steps.web.body`", "`string`", "step `web`", "`http` task"},
 		},
 		{
 			name:   "expression reference on the output name",
-			at:     "${web.body}",
-			offset: 6,
-			want:   []string{"`web.body`", "`string`"},
+			at:     "${steps.web.body}",
+			offset: len("${steps.web."),
+			want:   []string{"`steps.web.body`", "`string`"},
+		},
+		{
+			// Anywhere in a rooted reference describes the reference, including on
+			// the root segment: `steps` there is one part of a name the author
+			// wrote whole, and answering about the root alone would describe
+			// something they are not pointing at.
+			name:   "the root segment still describes the reference",
+			at:     "${steps.web.body}",
+			offset: 2,
+			want:   []string{"`steps.web.body`", "`string`"},
 		},
 		{
 			name: "cel library describes itself and what it provides",
@@ -92,7 +117,7 @@ func TestHover(t *testing.T) {
 		{
 			name: "step id summarizes the step",
 			at:   "web\n",
-			want: []string{"step `web`", "step 1", "`http` task", "${web.body}"},
+			want: []string{"step `web`", "step 1", "`http` task", "${steps.web.body}"},
 		},
 		{
 			name: "nothing to say about a plain literal value",
@@ -200,6 +225,44 @@ steps:
 	})
 }
 
+// TestHoverOnTheRootItself covers the one thing rooting added that an author can
+// point at and get no answer from anywhere else: the word in front of every
+// reference.
+//
+// It is not only decoration. The root is a value in its own right — the validator
+// permits a bare `steps`, because `size(steps)` counts what has run — so a name
+// that resolves is a name hover should describe.
+func TestHoverOnTheRootItself(t *testing.T) {
+	t.Parallel()
+
+	const src = `name: root
+steps:
+  - id: a
+    echo:
+      message: hi
+  - id: b
+    echo:
+      message: ${string(size(steps))}
+`
+	c := newClient(t)
+	c.initialize()
+	const uri = "file:///root.yaml"
+	require.Empty(t, messages(c.open(uri, src).Diagnostics),
+		"premise: the root is a name the compiler accepts on its own")
+
+	pos := positionOf(t, src, "size(steps)", len("size("))
+	got := c.hover(uri, pos.Line, pos.Character)
+	require.NotNil(t, got, "no hover on the root")
+	text := hoverText(got)
+	assert.Contains(t, text, "keyed by step id")
+	// It says what the root is *for*, which is the question an author hovering it
+	// is really asking: why references gained a prefix.
+	assert.Contains(t, text, "separate namespaces")
+
+	require.NotNil(t, got.Range)
+	assert.Equal(t, "steps", textInRange(src, *got.Range))
+}
+
 // TestHoverStaysQuietOnUnresolvableReference checks that hover says nothing about a
 // reference the workflow cannot resolve. The diagnostics already explain it, and a
 // popup describing a step that does not exist would contradict them.
@@ -210,7 +273,7 @@ func TestHoverStaysQuietOnUnresolvableReference(t *testing.T) {
 steps:
   - id: a
     echo:
-      message: ${later.result}
+      message: ${steps.later.result}
   - id: later
     echo:
       message: hi
@@ -219,8 +282,43 @@ steps:
 	c.initialize()
 	c.open("file:///quiet.yaml", src)
 
-	pos := positionOf(t, src, "${later.result}", 3)
+	pos := positionOf(t, src, "${steps.later.result}", len("${steps."))
 	assert.Nil(t, c.hover("file:///quiet.yaml", pos.Line, pos.Character))
+}
+
+// TestHoverStaysQuietOnTheRetiredSpelling is the negative direction of rooting, in
+// the feature where saying something would be worst.
+//
+// A bare `${web.body}` is not a step reference in this grammar — it is a free name
+// that means nothing — and the diagnostic on it names the migration that fixes the
+// file. Describing it as though it resolved would tell an author the spelling
+// works while the compiler is telling them it does not.
+func TestHoverStaysQuietOnTheRetiredSpelling(t *testing.T) {
+	t.Parallel()
+
+	const src = `name: unmigrated
+steps:
+  - id: web
+    http:
+      url: https://example.com
+  - id: out
+    echo:
+      message: ${web.body}
+`
+	c := newClient(t)
+	c.initialize()
+	const uri = "file:///unmigrated.yaml"
+
+	// The premise: the compiler refuses this file and says what to run.
+	reported := messages(c.open(uri, src).Diagnostics)
+	require.Len(t, reported, 1)
+	require.Contains(t, reported[0], "flow fix")
+
+	for _, at := range []int{2, len("${web.")} {
+		pos := positionOf(t, src, "${web.body}", at)
+		assert.Nil(t, c.hover(uri, pos.Line, pos.Character),
+			"hover described a reference in the spelling this grammar retired")
+	}
 }
 
 // TestHoverOnQuestionableReferences checks what hover says about a reference that
@@ -240,10 +338,10 @@ steps:
       url: https://example.com
   - id: out
     echo:
-      message: ${web.stdout}
+      message: ${steps.web.stdout}
 `
 		c.open("file:///wrong-output.yaml", src)
-		pos := positionOf(t, src, "${web.stdout}", 8)
+		pos := positionOf(t, src, "${steps.web.stdout}", len("${steps.web."))
 		got := c.hover("file:///wrong-output.yaml", pos.Line, pos.Character)
 		require.NotNil(t, got)
 		// It names what the task does produce rather than inventing a type for
@@ -260,16 +358,19 @@ steps:
       command: ls
   - id: out
     echo:
-      message: ${mystery.stdout}
+      message: ${steps.mystery.stdout}
 `
 		c.open("file:///unknown-producer.yaml", src)
-		pos := positionOf(t, src, "${mystery.stdout}", 3)
+		pos := positionOf(t, src, "${steps.mystery.stdout}", len("${steps."))
 		got := c.hover("file:///unknown-producer.yaml", pos.Line, pos.Character)
 		require.NotNil(t, got)
 		assert.Contains(t, hoverText(got), "whose task `shell` is not registered")
 	})
 
-	t.Run("a bare step reference with no output", func(t *testing.T) {
+	// Named "a bare step reference" while `${web}` was how a step was addressed.
+	// The reference is rooted now and the question is unchanged: what hover says
+	// about a name that reaches a step but stops short of one of its outputs.
+	t.Run("a step reference with no output", func(t *testing.T) {
 		const src = `name: bare
 steps:
   - id: web
@@ -279,10 +380,10 @@ steps:
     cel:
       expr: "1"
       vars:
-        v: ${web}
+        v: ${steps.web}
 `
 		c.open("file:///bare.yaml", src)
-		pos := positionOf(t, src, "${web}", 3)
+		pos := positionOf(t, src, "${steps.web}", len("${steps."))
 		got := c.hover("file:///bare.yaml", pos.Line, pos.Character)
 		require.NotNil(t, got)
 		assert.Contains(t, hoverText(got), "step 1")
@@ -428,6 +529,163 @@ steps:
 	})
 }
 
+// TestReferenceAt covers the reference reader directly, because it is the whole of
+// what hover and go-to-definition know about an expression and because most of its
+// cases are ones a fixture cannot reach comfortably: a cursor on a boundary, a
+// half-typed root, a chain deeper than the schema describes.
+//
+// The span matters as much as the names. It is what an editor underlines, so a
+// span that runs one segment too far highlights a word the popup is not talking
+// about — and the two namespaces stop at different places, which is exactly the
+// kind of asymmetry a test of the names alone would not see.
+func TestReferenceAt(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		src    string
+		cursor int
+		want   reference
+		// spans is the source text the reference's span covers, checked instead of
+		// two integers so that a wrong span reads as the wrong word.
+		spans string
+	}{
+		{
+			name: "a rooted reference, cursor on the root",
+			src:  "steps.web.body", cursor: 2,
+			want: reference{step: "web", output: "body"}, spans: "steps.web.body",
+		},
+		{
+			name: "a rooted reference, cursor on the id",
+			src:  "steps.web.body", cursor: 7,
+			want: reference{step: "web", output: "body"}, spans: "steps.web.body",
+		},
+		{
+			name: "a rooted reference, cursor on the output",
+			src:  "steps.web.body", cursor: 12,
+			want: reference{step: "web", output: "body"}, spans: "steps.web.body",
+		},
+		{
+			name: "a step with no output selected",
+			src:  "steps.web", cursor: 7,
+			want: reference{step: "web"}, spans: "steps.web",
+		},
+		{
+			// Selecting into an output's own shape, which no schema here
+			// describes. The reference is the part that is described and the rest
+			// is left alone, so the popup and the underline agree.
+			name: "deeper than an output",
+			src:  "steps.web.json.title", cursor: 8,
+			want: reference{step: "web", output: "json"}, spans: "steps.web.json",
+		},
+		{
+			name: "inside a call",
+			src:  "string(steps.web.status_code)", cursor: 10,
+			want: reference{step: "web", output: "status_code"}, spans: "steps.web.status_code",
+		},
+		{
+			// A bare name is a binding, and the span stops at the name: what
+			// follows it selects into a value whose type is not statically known,
+			// so there is nothing there to describe or to underline.
+			name: "a bare binding",
+			src:  "item", cursor: 2,
+			want: reference{local: "item"}, spans: "item",
+		},
+		{
+			name: "a bare binding with a field",
+			src:  "item.name", cursor: 2,
+			want: reference{local: "item"}, spans: "item",
+		},
+		{
+			// The retired spelling. It reads as a binding rather than as a step,
+			// which is what keeps hover quiet on it while the diagnostic explains
+			// the migration.
+			name: "the retired spelling is not a step",
+			src:  "web.body", cursor: 1,
+			want: reference{local: "web"}, spans: "web",
+		},
+		{
+			name: "the root alone",
+			src:  "size(steps)", cursor: 6,
+			want: reference{local: "steps"}, spans: "steps",
+		},
+		{
+			// What an author has typed the instant completion fires. It names no
+			// step, so there is nothing to describe.
+			name: "a half-typed root", src: "steps.", cursor: 6,
+		},
+		{name: "a trailing dot after an id", src: "steps.web.", cursor: 10,
+			want: reference{step: "web"}, spans: "steps.web"},
+		{name: "not on a word", src: "1 + 2", cursor: 2},
+		{
+			// A numeric literal is a run of word bytes, so it reads as a bare name
+			// — and resolves to nothing, which is the same answer as reading it as
+			// a number would give. Pinned because it is the one place the byte rule
+			// and the grammar disagree, and the disagreement is harmless only for
+			// as long as nothing bare is answered by position rather than by name.
+			name: "a literal reads as a name that resolves to nothing",
+			src:  "1 + 2", cursor: 0,
+			want: reference{local: "1"}, spans: "1",
+		},
+		{name: "empty source", src: "", cursor: 0},
+		{name: "cursor before the source", src: "steps.web", cursor: -1},
+		{name: "cursor past the source", src: "steps.web", cursor: 100},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := referenceAt(tt.src, tt.cursor)
+
+			assert.Equal(t, tt.want.step, got.step, "step")
+			assert.Equal(t, tt.want.output, got.output, "output")
+			assert.Equal(t, tt.want.local, got.local, "local")
+			assert.Equal(t, tt.spans == "", got.empty(), "empty")
+
+			if tt.spans == "" {
+				return
+			}
+			require.LessOrEqual(t, got.span[1], len(tt.src), "span runs past the source")
+			assert.Equal(t, tt.spans, tt.src[got.span[0]:got.span[1]], "span")
+		})
+	}
+}
+
+// TestReferenceAtSurvivesEveryCursor is the bound on a function that reads
+// attacker-shaped input: an expression is whatever an author has typed, and the
+// cursor is wherever an editor says it is.
+//
+// Every offset of every source is tried, and the invariant checked at each is the
+// one every caller depends on — a span that indexes the source it came from. A
+// panic here reaches the client as a failed request on every keystroke.
+func TestReferenceAtSurvivesEveryCursor(t *testing.T) {
+	t.Parallel()
+
+	sources := []string{
+		"", ".", "..", "...", "steps", "steps.", "steps..", ".steps.a",
+		"steps.web.body", "steps.steps.steps", "item.name",
+		"string(steps.a.b) + item", "secret('env:A')", "steps.🙂.body",
+		"a.b.c.d.e.f.g", "_._._", "0.1.2",
+	}
+	for _, src := range sources {
+		for cursor := -2; cursor <= len(src)+2; cursor++ {
+			got := referenceAt(src, cursor)
+			require.GreaterOrEqual(t, got.span[0], 0, "src %q cursor %d", src, cursor)
+			require.LessOrEqual(t, got.span[0], got.span[1], "src %q cursor %d", src, cursor)
+			require.LessOrEqual(t, got.span[1], len(src), "src %q cursor %d", src, cursor)
+			if got.empty() {
+				continue
+			}
+			// A non-empty reference must name something the source contains, or
+			// the underline and the popup are describing different text.
+			named := got.local
+			if got.step != "" {
+				named = got.step
+			}
+			require.Contains(t, src[got.span[0]:got.span[1]], named, "src %q cursor %d", src, cursor)
+		}
+	}
+}
+
 func TestSecretRefAt(t *testing.T) {
 	t.Parallel()
 
@@ -478,14 +736,16 @@ func TestHoverUsesUTF16Columns(t *testing.T) {
 		"    http:\n" +
 		"      url: https://example.com\n" +
 		"      headers:\n" +
-		"        X-🙂-Trace: ${first.result}\n"
+		"        X-🙂-Trace: ${steps.first.result}\n"
 
 	// The three unit systems genuinely disagree on this line, which is the point.
 	// Flattening dropped the `task:`/`inputs:` scaffolding, so the header sits one
 	// level shallower — eight spaces of indent rather than ten — and the reference
 	// two lines earlier. The counts below are what that line measures; the gaps
-	// between them are what the test is about, and those are unchanged.
-	line := "        X-🙂-Trace: ${first.result}"
+	// between them are what the test is about, and those are unchanged. Rooting
+	// lengthens the reference and does not touch anything before the `$`, so they
+	// are unchanged again.
+	line := "        X-🙂-Trace: ${steps.first.result}"
 	dollar := strings.Index(line, "$")
 	require.Equal(t, 22, dollar, "byte column")
 	require.Equal(t, 19, len([]rune(line[:dollar])), "code point column")
@@ -497,11 +757,12 @@ func TestHoverUsesUTF16Columns(t *testing.T) {
 	c.initialize()
 	c.open("file:///unicode.yaml", src)
 
-	// Point at the `first` identifier inside the expression: two UTF-16 units
-	// past the `$`.
-	got := c.hover("file:///unicode.yaml", 9, 20+2)
+	// Point at the `first` segment inside the expression. The root is ASCII, so
+	// its width is the same in every unit system and the offset is measured off
+	// the source rather than counted a second time.
+	got := c.hover("file:///unicode.yaml", 9, 20+len("${steps.")+1)
 	require.NotNil(t, got, "hover must resolve a reference that follows non-ASCII text")
-	assert.Contains(t, hoverText(got), "`first.result`")
+	assert.Contains(t, hoverText(got), "`steps.first.result`")
 	// The declared type of the output, which only appears once the reference has
 	// resolved all the way to the echo task's schema. Hover names the reference
 	// even when it cannot resolve the producing step, so without this the fixture
@@ -509,9 +770,10 @@ func TestHoverUsesUTF16Columns(t *testing.T) {
 	assert.Contains(t, hoverText(got), "`string`")
 
 	// The range it reports must come back in UTF-16 units too, covering exactly
-	// `first.result`.
+	// the reference — which is the whole of it, root included, because that is
+	// what the author wrote and what an editor should highlight.
 	require.NotNil(t, got.Range)
-	assert.Equal(t, "first.result", textInRange(src, *got.Range))
+	assert.Equal(t, "steps.first.result", textInRange(src, *got.Range))
 }
 
 // positionOf returns the position of the needle in src, advanced by offset UTF-16

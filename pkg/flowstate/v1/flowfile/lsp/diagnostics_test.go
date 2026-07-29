@@ -41,7 +41,7 @@ steps:
       message: hello
   - id: second
     echo:
-      message: ${first.result}
+      message: ${steps.first.result}
 `,
 		},
 		{
@@ -235,7 +235,7 @@ steps:
       expr: "['a', 'b']"
   - id: each
     for_each:
-      items: ${items.result}
+      items: ${steps.items.result}
       iterator: one
       steps:
         - id: body
@@ -249,7 +249,7 @@ steps:
 steps:
   - id: a
     echo:
-      message: ${b.result}
+      message: ${steps.b.result}
   - id: b
     echo:
       message: hi
@@ -258,7 +258,7 @@ steps:
 				code:       codeFlowfile,
 				severity:   lsp.Error,
 				contains:   `references step "b", which runs later`,
-				underlines: "${b.result}",
+				underlines: "${steps.b.result}",
 			}},
 		},
 		{
@@ -293,7 +293,7 @@ steps:
     cel:
       expr: vars.greeting
       vars:
-        greeting: ${a.result}
+        greeting: ${steps.a.result}
 `,
 		},
 		{

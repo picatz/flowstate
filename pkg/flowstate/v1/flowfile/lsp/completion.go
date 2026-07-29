@@ -18,6 +18,13 @@ import (
 // The scoping that matters most is inside ${...}: only steps declared earlier in
 // the document may be referenced, because a step's outputs do not exist until it
 // has run. Offering a later step would be offering a workflow that fails.
+//
+// Inside ${...} there are two namespaces rather than one ordered list. A step is
+// reached through the root — `steps.<id>.<output>` — and a name bound where the
+// cursor stands is written bare: a loop's iterator, `now` inside a `wait_until:`.
+// Which one a position is in is decided by what has been typed, so a menu never
+// mixes them: offering a step id bare, or a loop's item under the root, is
+// offering a reference the engine cannot resolve.
 
 // A dslKey is one key of the Flowfile document shape.
 type dslKey struct {
@@ -69,7 +76,7 @@ var dslKeys = map[string][]dslKey{
 		{name: "steps", detail: "list", docs: "The steps to run, in order. Each step may reference the outputs of the steps before it."},
 	},
 	"steps": {
-		{name: "id", detail: "string", docs: "How later steps reference this one, as `${id.output}`. Must be a valid CEL identifier and unique in the workflow."},
+		{name: "id", detail: "string", docs: "How later steps reference this one, as `${" + v1.StepsRoot + ".<id>.<output>}`. Must be a valid CEL identifier and unique in the workflow."},
 		{name: "description", detail: "string", docs: "Optional prose about this step: why it is here, which the mechanics under it cannot say.\n\n" +
 			"A property of the step rather than of the work it does, so every kind of step can carry one — a `for_each` or a `sleep` as readily as a task. " +
 			"It belongs here, directly under `id`, and not under the task's own key: the keys there are that task's inputs, so a `description` written among them asks for an input by that name."},
@@ -91,7 +98,7 @@ var dslKeys = map[string][]dslKey{
 	"wait_for_signal": {
 		{name: "name", detail: "string", docs: "The signal this step waits for, and what a sender addresses with `flow signal <workflow-id> <name>`."},
 		{name: "timeout", detail: "duration", docs: "Bounds the wait. A gate that lapses is not a failure: the step produces `timed_out: true` and the run carries on, " +
-			"so an author branches on it with `if: ${!approval.timed_out}`. Omit it to wait indefinitely."},
+			"so an author branches on it with `if: ${!" + v1.StepsRoot + ".approval.timed_out}`. Omit it to wait indefinitely."},
 	},
 	"for_each": {
 		{name: "items", detail: "expression", docs: "An expression producing the list to iterate, written as `${...}`."},
@@ -138,15 +145,15 @@ func completeAt(doc *document, pos lsp.Position) *lsp.CompletionList {
 
 	steps := scanOutline(doc.index)
 	current, earlier := stepScope(steps, pos.Line)
+	path := keyPath(doc.index, pos.Line)
+	key, valuePos := keyAndPosition(line, col)
 
 	// Inside ${...} nothing else applies: the cursor is in an expression, not in
 	// YAML structure.
 	if inner, ok := openExpression(before); ok {
-		return completeInExpression(pos, inner, referenceScope(doc, pos, current, earlier))
+		return completeInExpression(pos, inner, referenceScope(doc, pos, bindsClock(key, path), current, earlier))
 	}
 
-	path := keyPath(doc.index, pos.Line)
-	key, valuePos := keyAndPosition(line, col)
 	word, replace := wordBefore(pos, before)
 
 	if valuePos {
@@ -250,6 +257,11 @@ type refCandidate struct {
 	// statically — offers nothing after the dot rather than guessing.
 	outputs []refOutput
 
+	// insert is the text an editor writes when the candidate is accepted, when
+	// that differs from the name. The root is the only one that does: it is never
+	// the whole of a reference, so the dot that continues it comes with it.
+	insert string
+
 	// kind distinguishes a step from a bound variable, for the popup's icon.
 	kind lsp.CompletionItemKind
 }
@@ -259,6 +271,23 @@ type refOutput struct {
 	name   string
 	detail string
 	docs   string
+}
+
+// A refScope is what an expression at the cursor may name, in the two namespaces
+// the grammar keeps apart.
+//
+// It mirrors the refScope flowfile's validator carries, deliberately: the editor
+// offering a name the compiler would refuse is the one failure this package must
+// not have, and a scope shaped like the compiler's cannot drift into one that
+// merges them again.
+type refScope struct {
+	// steps are the steps whose outputs exist at this point, offered after
+	// `steps.` and never bare.
+	steps []refCandidate
+
+	// locals are the names bound bare where the cursor is: a loop's iterator, and
+	// `now` where a wait binds it. Offered bare and never after the root.
+	locals []refCandidate
 }
 
 // referenceScope returns the names an expression at pos may reference.
@@ -272,31 +301,81 @@ type refOutput struct {
 // It falls back to document order from the line scan when the document does not
 // parse, which is rarer than it sounds: `message: ${` is valid YAML, so the model
 // is usually available at exactly the moment completion is asked for.
-func referenceScope(doc *document, pos lsp.Position, current *outlineStep, earlier []*outlineStep) []refCandidate {
+//
+// clock reports whether the expression at the cursor is one the engine binds the
+// moment to, which is the only thing that puts `now` in scope.
+func referenceScope(doc *document, pos lsp.Position, clock bool, current *outlineStep, earlier []*outlineStep) refScope {
 	currentIndent := 0
 	if current != nil {
 		currentIndent = current.indent
 	}
-	if doc.parsed != nil {
-		if from := doc.parsed.stepAt(pos); from != nil {
-			return scopeFromModel(doc, from)
-		}
+
+	var scope refScope
+	if from := stepAtIfParsed(doc, pos); from != nil {
+		scope = scopeFromModel(doc, from)
+	} else {
+		scope = scopeFromOutline(earlier, currentIndent)
 	}
-	return scopeFromOutline(earlier, currentIndent)
+
+	if clock {
+		// Bound by the engine for one key and nowhere else — which is why it is
+		// added here rather than living in the scope every expression gets. A task
+		// input has no clock that survives a retry, and the validator says so with
+		// a diagnostic; offering the name there would be walking an author into it.
+		scope.locals = append(scope.locals, refCandidate{
+			name:   v1.NowIdentifier,
+			kind:   lsp.CIKVariable,
+			detail: "timestamp",
+			docs: "The moment this wait is evaluated. Bound only inside wait_until, where the " +
+				"driver's own clock supplies it, so a deadline reads as ${now + days(3)}. The " +
+				"duration builders seconds, minutes, hours, days and weeks are available with it.",
+		})
+	}
+	return scope
 }
 
-// scopeFromModel builds the candidate list using the engine's scoping rules.
-func scopeFromModel(doc *document, from *parsedStep) []refCandidate {
-	var out []refCandidate
+// waitUntilKey is the step key whose expression binds the clock.
+//
+// Written once, next to the only things that read it, because it is the join of
+// two facts that live apart: v1 owns the name `now` and the DSL owns the key. The
+// key itself is checked against the grammar by TestDSLKeysMatchTheDSL, which is
+// what keeps a renamed key from leaving this pointing at nothing.
+const waitUntilKey = "wait_until"
 
-	// Iterators first: inside a loop body the current item is the name most
-	// likely to be wanted, and the innermost loop's is the nearest.
+// bindsClock reports whether an expression written after a key is a wait's, and
+// so has `now` bound in it.
+//
+// Both halves are needed. The key says which kind of value is being written, and
+// the path says at which level — a `wait_until:` directly under a step is the
+// wait the grammar defines, while the same word among a task's inputs would be
+// that task's input and is resolved somewhere with no clock in it. Asking only the
+// key would offer `now` there, and a candidate an author accepts in a place the
+// validator refuses is the failure this package exists to avoid.
+func bindsClock(key string, path []string) bool {
+	return key == waitUntilKey && endsWith(path, "steps")
+}
+
+// stepAtIfParsed returns the model's step at a position, or nil when the document
+// does not parse.
+func stepAtIfParsed(doc *document, pos lsp.Position) *parsedStep {
+	if doc.parsed == nil {
+		return nil
+	}
+	return doc.parsed.stepAt(pos)
+}
+
+// scopeFromModel builds the candidate lists using the engine's scoping rules.
+func scopeFromModel(doc *document, from *parsedStep) refScope {
+	var scope refScope
+
+	// Innermost loop first: standing in nested bodies, the nearest binding is the
+	// one most likely to be wanted.
 	for _, loop := range from.iteratorsInScope() {
 		name := loop.iteratorName()
 		if name == "" {
 			continue
 		}
-		out = append(out, refCandidate{
+		scope.locals = append(scope.locals, refCandidate{
 			name:   name,
 			kind:   lsp.CIKVariable,
 			detail: "loop item",
@@ -306,19 +385,19 @@ func scopeFromModel(doc *document, from *parsedStep) []refCandidate {
 		})
 	}
 
-	// Steps in reverse document order, so the whole list reads nearest-first: the
-	// iterator of the loop you are standing in, then the step just above you.
+	// Steps in reverse document order, so the list reads nearest-first: the step
+	// just above you is the one most often referenced.
 	for i := len(doc.parsed.steps) - 1; i >= 0; i-- {
 		s := doc.parsed.steps[i]
 		if s.id == "" || !visibleFrom(s, from) {
 			continue
 		}
-		out = append(out, stepCandidate(s))
+		scope.steps = append(scope.steps, stepCandidate(s))
 	}
-	return out
+	return scope
 }
 
-// scopeFromOutline builds the candidate list from the line scan, for a document
+// scopeFromOutline builds the candidate lists from the line scan, for a document
 // that does not parse.
 //
 // The scan cannot see the scoping rules, so it approximates them with indentation
@@ -326,7 +405,12 @@ func scopeFromModel(doc *document, from *parsedStep) []refCandidate {
 // inside a block the cursor is not in, and one of the cursor's own enclosing blocks
 // has not finished. Both are excluded. Omitting a name that would have worked is a
 // small cost; offering one that cannot resolve is the thing to avoid.
-func scopeFromOutline(earlier []*outlineStep, currentIndent int) []refCandidate {
+//
+// It finds no locals at all, which is the same judgement: an iterator is declared
+// by a key inside the block above, and a scan that guessed at one would offer a
+// bare name in the one namespace where a wrong candidate cannot be told from a
+// right one.
+func scopeFromOutline(earlier []*outlineStep, currentIndent int) refScope {
 	// The enclosing blocks are the nearest preceding step at each shallower
 	// indentation.
 	ancestors := map[*outlineStep]bool{}
@@ -338,7 +422,7 @@ func scopeFromOutline(earlier []*outlineStep, currentIndent int) []refCandidate 
 		}
 	}
 
-	out := make([]refCandidate, 0, len(earlier))
+	scope := refScope{steps: make([]refCandidate, 0, len(earlier))}
 	for i := len(earlier) - 1; i >= 0; i-- {
 		s := earlier[i]
 		if s.id == "" || s.indent > currentIndent || ancestors[s] {
@@ -350,9 +434,9 @@ func scopeFromOutline(earlier []*outlineStep, currentIndent int) []refCandidate 
 			c.docs = fmt.Sprintf("Runs the %s task.", def.Name)
 			c.outputs = taskOutputs(def)
 		}
-		out = append(out, c)
+		scope.steps = append(scope.steps, c)
 	}
-	return out
+	return scope
 }
 
 // stepCandidate describes one step as a reference candidate.
@@ -366,7 +450,7 @@ func stepCandidate(s *parsedStep) refCandidate {
 		c.detail = "for_each"
 		c.docs = fmt.Sprintf(
 			"A loop. Reports one entry per iteration in %s, each a map of body step id to that step's outputs. Body outputs do not escape the loop.",
-			loopResultsOutput)
+			rootedRef(s.id, loopResultsOutput))
 		c.outputs = []refOutput{{
 			name:   loopResultsOutput,
 			detail: "list",
@@ -375,7 +459,7 @@ func stepCandidate(s *parsedStep) refCandidate {
 
 	case s.parallelEntry != nil:
 		c.detail = "parallel"
-		c.docs = "A parallel block. Its branches' step outputs merge into this scope once it joins, so reference those step ids directly."
+		c.docs = "A parallel block. Its branches' step outputs merge into this scope once it joins, so name those steps under the root, not this one."
 
 	default:
 		if def, ok := v1.LookupTask(s.taskName); ok {
@@ -406,54 +490,116 @@ func taskOutputs(def v1.TaskDef) []refOutput {
 	return out
 }
 
-// completeInExpression offers references in scope, and after a dot, what the named
-// one exposes.
-func completeInExpression(pos lsp.Position, inner string, scope []refCandidate) *lsp.CompletionList {
+// completeInExpression offers what an expression may name at the cursor.
+//
+// Three positions, because the root has depth: bare at the start of an
+// expression, step ids after `steps.`, and one step's outputs after
+// `steps.<id>.`. Splitting on the *last* dot is what makes the middle one
+// reachable — the qualifier there is two segments, `steps.<id>`, where before
+// rooting every qualifier was one.
+func completeInExpression(pos lsp.Position, inner string, scope refScope) *lsp.CompletionList {
 	word := trailingWord(inner, func(c byte) bool {
 		return c == '_' || c == '.' ||
 			(c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
 	})
 
-	if dot := strings.LastIndex(word, "."); dot >= 0 {
-		qualifier, member := word[:dot], word[dot+1:]
-		return list(outputCandidates(qualifier, member, rangeBack(pos, member), scope))
+	dot := strings.LastIndex(word, ".")
+	if dot < 0 {
+		return list(bareCandidates(word, rangeBack(pos, word), scope))
 	}
-	return list(stepCandidates(word, rangeBack(pos, word), scope))
+
+	qualifier, member := word[:dot], word[dot+1:]
+	replace := rangeBack(pos, member)
+	switch {
+	case qualifier == v1.StepsRoot:
+		return list(offer(scope.steps, member, replace))
+	case strings.HasPrefix(qualifier, v1.StepsRoot+"."):
+		id := strings.TrimPrefix(qualifier, v1.StepsRoot+".")
+		if strings.Contains(id, ".") {
+			// Past the output: selecting into a value whose shape the schema does
+			// not describe. There is nothing to offer that would not be a guess.
+			return list(nil)
+		}
+		return list(outputCandidates(id, member, replace, scope.steps))
+	}
+	// A bare qualifier. Either a binding, whose element type is not known
+	// statically, or the retired spelling of a step reference — and offering that
+	// one's outputs would keep an author writing a form `flow validate` refuses.
+	return list(nil)
 }
 
-// stepCandidates offers the names in scope, nearest first.
-func stepCandidates(prefix string, replace lsp.Range, scope []refCandidate) []lsp.CompletionItem {
+// bareCandidates offers what may be written bare at the start of an expression:
+// the names bound where the cursor is, then the root every step hangs from.
+//
+// Bindings come first because they are the nearer thing — bound by the block the
+// cursor stands in, where the root spans the whole document — and because inside a
+// loop body the item is usually what is wanted.
+func bareCandidates(prefix string, replace lsp.Range, scope refScope) []lsp.CompletionItem {
+	return offer(append(slices.Clone(scope.locals), stepsRootCandidate(scope)), prefix, replace)
+}
+
+// stepsRootCandidate describes the root itself.
+//
+// It is offered even when no step is in scope yet, because the first step of a
+// file is written before there is anything to reference and the name is still the
+// one an author needs to learn.
+func stepsRootCandidate(scope refScope) refCandidate {
+	docs := "Every step's outputs, keyed by step id: write " + v1.StepsRoot + ".<id>.<output>. " +
+		"Only steps that have already run are in scope here."
+	if len(scope.steps) == 0 {
+		docs = "Every step's outputs, keyed by step id. No step has run at this point, so there " +
+			"is nothing to select yet."
+	}
+	return refCandidate{
+		name: v1.StepsRoot,
+		// A value with named members, which is what the root is: a map from step
+		// id to that step's outputs.
+		kind:   lsp.CIKStruct,
+		detail: "step outputs",
+		docs:   docs,
+		// The root is never the whole of a reference, so the dot that continues it
+		// is inserted too — the same reason a key is offered with its colon.
+		insert: v1.StepsRoot + ".",
+	}
+}
+
+// offer renders candidates as completion items, keeping the order they arrive in.
+func offer(candidates []refCandidate, prefix string, replace lsp.Range) []lsp.CompletionItem {
 	var items []lsp.CompletionItem
-	for i, c := range scope {
+	for i, c := range candidates {
 		if !strings.HasPrefix(c.name, prefix) {
 			continue
+		}
+		text := c.insert
+		if text == "" {
+			text = c.name
 		}
 		items = append(items, lsp.CompletionItem{
 			Label:         c.name,
 			Kind:          c.kind,
 			Detail:        c.detail,
 			Documentation: plainText(c.docs),
-			// The scope is already nearest-first, and the nearest name is usually
+			// The list is already nearest-first, and the nearest name is usually
 			// the one being referenced.
 			SortText: fmt.Sprintf("%04d", i),
-			TextEdit: &lsp.TextEdit{Range: replace, NewText: c.name},
+			TextEdit: &lsp.TextEdit{Range: replace, NewText: text},
 		})
 	}
 	return items
 }
 
-// outputCandidates offers what a named reference exposes after a dot.
-func outputCandidates(qualifier, prefix string, replace lsp.Range, scope []refCandidate) []lsp.CompletionItem {
+// outputCandidates offers what one step exposes after `steps.<id>.`.
+func outputCandidates(id, prefix string, replace lsp.Range, steps []refCandidate) []lsp.CompletionItem {
 	var target *refCandidate
-	for i := range scope {
-		if scope[i].name == qualifier {
-			target = &scope[i]
+	for i := range steps {
+		if steps[i].name == id {
+			target = &steps[i]
 			break
 		}
 	}
 	if target == nil {
-		// Not in scope. Offering its outputs would suggest a reference the engine
-		// rejects.
+		// Not a step whose outputs exist here. Offering them would suggest a
+		// reference the engine rejects.
 		return nil
 	}
 

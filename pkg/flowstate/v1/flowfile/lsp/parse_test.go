@@ -23,7 +23,7 @@ steps:
     http:
       url: https://example.com
       headers:
-        X-Trace: ${first.result}
+        X-Trace: ${steps.first.result}
       outputs: "{'code': status_code}"
 `
 	doc := newDocument("file:///model.yaml", 1, src)
@@ -69,11 +69,11 @@ steps:
 		assert.Equal(t, "X-Trace", nested.key)
 		require.NotNil(t, nested.value)
 		require.True(t, nested.value.fenced)
-		assert.Equal(t, "first.result", nested.value.expr)
-		assert.Equal(t, "${first.result}", textInRange(src, nested.value.exprRange))
+		assert.Equal(t, "steps.first.result", nested.value.expr)
+		assert.Equal(t, "${steps.first.result}", textInRange(src, nested.value.exprRange))
 		// exprOffset must point at the first character of the expression source,
 		// which is where a CEL error location is measured from.
-		assert.Equal(t, "first.result}", src[nested.value.exprOffset:nested.value.exprOffset+len("first.result}")])
+		assert.Equal(t, "steps.first.result}", src[nested.value.exprOffset:nested.value.exprOffset+len("steps.first.result}")])
 	})
 
 	t.Run("a quoted expression input reports its content offset", func(t *testing.T) {

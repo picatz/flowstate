@@ -6,9 +6,9 @@ import (
 )
 
 // A Flowfile is a list of steps, so its outline is the list of steps, and
-// go-to-definition means following a ${step.output} reference back to the step
-// that produces it. Both fall out of the positional model for free, and both are
-// what makes an editor feel like it understands a language rather than merely
+// go-to-definition means following a ${steps.<id>.<output>} reference back to the
+// step that produces it. Both fall out of the positional model for free, and both
+// are what makes an editor feel like it understands a language rather than merely
 // checking it.
 
 // A step's `description:` is deliberately not in the outline, which is worth
@@ -67,7 +67,8 @@ func documentSymbols(doc *document) []lsp.SymbolInformation {
 	return out
 }
 
-// definitionAt resolves a ${step.output} reference to the step's id declaration.
+// definitionAt resolves a ${steps.<id>.<output>} reference to the step's id
+// declaration.
 //
 // Only a reference to an earlier step resolves. A forward reference is a mistake
 // the diagnostics already report, and jumping to it would suggest it works.
@@ -87,18 +88,25 @@ func definitionAt(doc *document, pos lsp.Position) []lsp.Location {
 				return
 			}
 			cursor := doc.index.offsetOfPosition(pos) - v.exprOffset
-			ident, _, _ := referenceAt(v.expr, cursor)
+			ref := referenceAt(v.expr, cursor)
 
-			// A loop iterator resolves to the loop that binds it, which is the
-			// only declaration there is to jump to.
-			for _, loop := range from.iteratorsInScope() {
-				if loop.iteratorName() == ident && loop.idEntry != nil {
-					locations = []lsp.Location{{URI: doc.uri, Range: loop.idEntry.valueRange()}}
-					return
+			if ref.step == "" {
+				// A bare name is a binding, and the only binding with a
+				// declaration to jump to is a loop's iterator: the loop that
+				// binds it. `now` has no declaration in the file, and a bare name
+				// that used to be a step reference is not one now — the
+				// diagnostic on it names the migration, and jumping to the step
+				// anyway would say the spelling still works.
+				for _, loop := range from.iteratorsInScope() {
+					if loop.iteratorName() == ref.local && loop.idEntry != nil {
+						locations = []lsp.Location{{URI: doc.uri, Range: loop.idEntry.valueRange()}}
+						return
+					}
 				}
+				return
 			}
 
-			target := doc.parsed.step(ident)
+			target := doc.parsed.step(ref.step)
 			if !visibleFrom(target, from) || target.idEntry == nil {
 				return
 			}

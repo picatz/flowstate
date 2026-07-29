@@ -196,14 +196,25 @@ steps:
       url: https://example.com
   - id: out
     echo:
-      message: ${web.body}
+      message: ${steps.web.body}
 `
-	// The reads below all probe the `web` reference inside `${web.body}`, where
+	// The reads below all probe the `web` segment of `${steps.web.body}`, where
 	// hover, completion and definition each have real work to do — a position with
-	// nothing under it would have them all return early and race nothing. Line 7
-	// is `      message: ${web.body}`, whose expression opens at character 15, so
-	// character 18 is the second character of `web`.
-	const probeLine, probeChar = 7, 18
+	// nothing under it would have them all return early and race nothing.
+	//
+	// Both coordinates are found in the source rather than written down. They were
+	// counted by hand and commented with the arithmetic, which is the form that
+	// goes wrong silently: rooting moved the column six places, and a probe landing
+	// on `steps` instead of `web` still resolves, so nothing here would have failed
+	// while the test stopped exercising what it says it does.
+	probeLine, probeChar := -1, -1
+	for i, text := range strings.Split(src, "\n") {
+		if at := strings.Index(text, "steps.web.body"); at >= 0 {
+			probeLine, probeChar = i, at+len("steps.")+1
+			break
+		}
+	}
+	require.GreaterOrEqual(t, probeLine, 0, "the fixture no longer contains the reference this test probes")
 
 	c := newClient(t)
 	c.initialize()

@@ -15,7 +15,7 @@ steps:
       url: https://example.com
   - id: status
     echo:
-      message: ${string(web.status_code)}
+      message: ${string(steps.web.status_code)}
   - id: shout
     shell:
       message: hi
@@ -46,6 +46,16 @@ func TestDefinition(t *testing.T) {
 		assert.Equal(t, "web", textInRange(navigationSource, got[0].Range))
 	})
 
+	t.Run("the root segment also resolves to the step", func(t *testing.T) {
+		// The root is part of the reference rather than a token of its own, so
+		// landing on it navigates to the step the reference names — the same
+		// answer as from either segment after it.
+		pos := positionOf(t, navigationSource, "steps.web.status_code", 1)
+		got := c.definition(uri, pos.Line, pos.Character)
+		require.Len(t, got, 1)
+		assert.Equal(t, "web", textInRange(navigationSource, got[0].Range))
+	})
+
 	t.Run("nothing to go to outside an expression", func(t *testing.T) {
 		pos := positionOf(t, navigationSource, "https://example.com", 2)
 		assert.Empty(t, c.definition(uri, pos.Line, pos.Character))
@@ -56,15 +66,36 @@ func TestDefinition(t *testing.T) {
 steps:
   - id: a
     echo:
-      message: ${later.result}
+      message: ${steps.later.result}
   - id: later
     echo:
       message: hi
 `
 		c.open("file:///fwd.yaml", src)
-		pos := positionOf(t, src, "${later.result}", 3)
+		pos := positionOf(t, src, "${steps.later.result}", len("${steps."))
 		assert.Empty(t, c.definition("file:///fwd.yaml", pos.Line, pos.Character),
 			"jumping to a step that has not run would suggest the reference works")
+	})
+
+	t.Run("the retired spelling does not resolve", func(t *testing.T) {
+		// A bare `later.result` names no step in this grammar, so there is
+		// nowhere to jump to. Following it to the step anyway would tell an
+		// author the spelling still works while `flow validate` tells them to run
+		// `flow fix`.
+		const src = `name: bare
+steps:
+  - id: earlier
+    echo:
+      message: hi
+  - id: b
+    echo:
+      message: ${earlier.result}
+`
+		params := c.open("file:///bare-nav.yaml", src)
+		require.Len(t, params.Diagnostics, 1, "premise: the compiler refuses the bare spelling")
+
+		pos := positionOf(t, src, "${earlier.result}", 3)
+		assert.Empty(t, c.definition("file:///bare-nav.yaml", pos.Line, pos.Character))
 	})
 }
 

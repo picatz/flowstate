@@ -246,7 +246,7 @@ steps:
     http:
       url: https://example.com
   - id: guarded
-    if: ${web.status_code == 200}
+    if: ${steps.web.status_code == 200}
     echo:
       message: ok
 `
@@ -262,7 +262,7 @@ steps:
 		pos := positionOf(t, src, "web.status_code ==", 1)
 		got := c.hover(uri, pos.Line, pos.Character)
 		require.NotNil(t, got)
-		assert.Contains(t, hoverText(got), "`web.status_code`")
+		assert.Contains(t, hoverText(got), "`steps.web.status_code`")
 		assert.Contains(t, hoverText(got), "`int`")
 	})
 
@@ -281,7 +281,7 @@ steps:
 	})
 
 	t.Run("a syntax error in a condition is reported precisely", func(t *testing.T) {
-		broken := strings.Replace(src, "${web.status_code == 200}", "${web.status_code ==}", 1)
+		broken := strings.Replace(src, "${steps.web.status_code == 200}", "${steps.web.status_code ==}", 1)
 		params := c.change(uri, broken, 2)
 		require.Len(t, params.Diagnostics, 1)
 		assert.Equal(t, codeCELSyntax, params.Diagnostics[0].Code)
@@ -296,7 +296,7 @@ steps:
 		const forward = `name: fwd
 steps:
   - id: a
-    if: ${later.result == "x"}
+    if: ${steps.later.result == "x"}
     echo:
       message: hi
   - id: later
@@ -307,21 +307,35 @@ steps:
 		require.Len(t, params.Diagnostics, 1, "got %v", messages(params.Diagnostics))
 		assert.Contains(t, params.Diagnostics[0].Message, `references step "later", which runs later`)
 		// And it lands on the condition, not on the step.
-		assert.Equal(t, `${later.result == "x"}`, textInRange(forward, params.Diagnostics[0].Range))
+		assert.Equal(t, `${steps.later.result == "x"}`, textInRange(forward, params.Diagnostics[0].Range))
 	})
 
 	t.Run("completion offers earlier steps inside a condition", func(t *testing.T) {
-		partial, pos := splitCursor(t, `name: c
+		// A condition is an ordinary expression, so both namespaces behave in it
+		// exactly as they do in an input: the root bare, the step ids under it.
+		const partial = `name: c
 steps:
   - id: web
     http:
       url: https://example.com
   - id: guarded
-    if: ${|
-`)
-		c.open("file:///cond-complete.yaml", partial)
-		got := c.complete("file:///cond-complete.yaml", pos.Line, pos.Character)
-		assert.Equal(t, []string{"web"}, labels(got.Items))
+    if: ${PLACEHOLDER
+`
+		for _, tt := range []struct {
+			name  string
+			typed string
+			want  []string
+		}{
+			{name: "at the start of the expression", typed: "", want: []string{"steps"}},
+			{name: "under the root", typed: "steps.", want: []string{"web"}},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				text, pos := splitCursor(t, strings.Replace(partial, "PLACEHOLDER", tt.typed+"|", 1))
+				uri := "file:///cond-complete-" + strings.ReplaceAll(tt.name, " ", "-") + ".yaml"
+				c.open(uri, text)
+				assert.Equal(t, tt.want, labels(c.complete(uri, pos.Line, pos.Character).Items))
+			})
+		}
 	})
 }
 
@@ -341,12 +355,12 @@ steps:
       expr: "['a', 'b']"
   - id: loop
     for_each:
-      items: ${targets.result}
+      items: ${steps.targets.result}
       iterator: one
       steps:
         - id: body
           echo:
-            mesage: ${targets.result}
+            mesage: ${steps.targets.result}
   - id: branches
     parallel:
       - steps:
@@ -396,10 +410,10 @@ steps:
 	})
 
 	t.Run("a loop's items expression resolves references", func(t *testing.T) {
-		pos := positionOf(t, src, "${targets.result}", 3)
+		pos := positionOf(t, src, "${steps.targets.result}", len("${steps."))
 		got := c.hover(uri, pos.Line, pos.Character)
 		require.NotNil(t, got, "no hover on the items expression")
-		assert.Contains(t, hoverText(got), "`targets.result`")
+		assert.Contains(t, hoverText(got), "`steps.targets.result`")
 
 		def := c.definition(uri, pos.Line, pos.Character)
 		require.Len(t, def, 1)
@@ -439,6 +453,15 @@ steps:
 // The rules are the engine's, mirrored from flowfile's validator: a loop body's
 // outputs do not escape the loop, a parallel block's branch outputs do merge once
 // it joins, and one branch cannot see a sibling's.
+//
+// Rooting adds a second axis to every one of them. A position is now in one of two
+// namespaces, and each case is asked in both: the names bound bare where the
+// cursor is, and the step ids under the root. Asking only one would leave the way
+// the boundary actually breaks untested — not a name missing from a menu, but a
+// name offered in the menu next door, where it cannot resolve. So each direction
+// also asserts that the *other* namespace's names are absent, which is the
+// negative direction CLAUDE.md asks for and the reason the two lists are written
+// out separately rather than concatenated.
 func TestReferenceScoping(t *testing.T) {
 	t.Parallel()
 
@@ -449,7 +472,7 @@ steps:
       message: hi
   - id: loop
     for_each:
-      items: ${before.result}
+      items: ${steps.before.result}
       iterator: each
       steps:
         - id: body_one
@@ -477,31 +500,39 @@ steps:
 		name string
 		// at is the placeholder to put the cursor's ${ in place of.
 		at string
-		// want is the exact candidate list, nearest first.
-		want []string
-		// notWant names candidates that must never appear, with the reason.
+		// bare is the exact candidate list at the start of an expression: the
+		// names bound where the cursor is, then the root.
+		bare []string
+		// rooted is the exact candidate list after `steps.`, nearest first.
+		rooted []string
+		// notWant names candidates that must appear in neither, with the reason.
 		notWant map[string]string
 	}{
 		{
 			name: "inside a loop body",
 			at:   "PLACEHOLDER_BODY",
-			// The iterator, the earlier body step, and the step before the loop.
-			want: []string{"each", "body_one", "before"},
+			// The loop binds its item here, and the root is how everything else
+			// is reached.
+			bare: []string{"each", "steps"},
+			// The earlier body step, and the step before the loop.
+			rooted: []string{"body_one", "before"},
 			notWant: map[string]string{
 				"body_two": "a step cannot reference itself",
 				"loop":     "the enclosing loop has not finished, so it has no results yet",
 				"left":     "a parallel branch that has not run yet",
 				"after":    "a later step",
+				"now":      "the clock is bound in wait_until, not in a task input",
 			},
 		},
 		{
 			name: "after the loop, body steps are gone",
 			at:   "PLACEHOLDER_AFTER",
+			bare: []string{"steps"},
 			// The loop reports its iterations through its own results output, so
 			// only its id survives.
 			// Nearest first is strict reverse document order, so the branch steps
 			// come before the block that contains them.
-			want: []string{"right", "left", "fan", "loop", "before"},
+			rooted: []string{"right", "left", "fan", "loop", "before"},
 			notWant: map[string]string{
 				"body_one": "a loop body's outputs do not escape the loop",
 				"body_two": "a loop body's outputs do not escape the loop",
@@ -509,14 +540,16 @@ steps:
 			},
 		},
 		{
-			name: "inside a parallel branch, a sibling branch is invisible",
-			at:   "PLACEHOLDER_LEFT",
-			want: []string{"loop", "before"},
+			name:   "inside a parallel branch, a sibling branch is invisible",
+			at:     "PLACEHOLDER_LEFT",
+			bare:   []string{"steps"},
+			rooted: []string{"loop", "before"},
 			notWant: map[string]string{
 				"fan":      "the enclosing parallel block has not joined yet",
 				"right":    "branches are unordered, so a sibling may not be referenced",
 				"body_one": "a loop body's outputs do not escape the loop",
 				"after":    "a later step",
+				"each":     "a branch is not a loop body, so nothing binds an item here",
 			},
 		},
 	}
@@ -525,27 +558,50 @@ steps:
 	c.initialize()
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Only the case under test gets a cursor; the others become literals.
-			text := src
-			for _, p := range []string{"PLACEHOLDER_BODY", "PLACEHOLDER_LEFT", "PLACEHOLDER_AFTER"} {
-				if p == tt.at {
-					text = strings.Replace(text, p, "${|", 1)
-					continue
+		for _, direction := range []struct {
+			name string
+			// typed is what stands between the `${` and the cursor.
+			typed string
+			want  []string
+			// absent is the other namespace's list, which must not appear here.
+			absent []string
+		}{
+			{name: "bare", typed: "", want: tt.bare, absent: tt.rooted},
+			{name: "rooted", typed: "steps.", want: tt.rooted, absent: tt.bare},
+		} {
+			t.Run(tt.name+", "+direction.name, func(t *testing.T) {
+				// Only the case under test gets a cursor; the others become
+				// literals.
+				text := src
+				for _, p := range []string{"PLACEHOLDER_BODY", "PLACEHOLDER_LEFT", "PLACEHOLDER_AFTER"} {
+					if p == tt.at {
+						text = strings.Replace(text, p, "${"+direction.typed+"|", 1)
+						continue
+					}
+					text = strings.Replace(text, p, "hi", 1)
 				}
-				text = strings.Replace(text, p, "hi", 1)
-			}
-			clean, pos := splitCursor(t, text)
+				clean, pos := splitCursor(t, text)
 
-			uri := "file:///scope-" + strings.ReplaceAll(tt.name, " ", "-") + ".yaml"
-			c.open(uri, clean)
-			got := labels(c.complete(uri, pos.Line, pos.Character).Items)
+				uri := "file:///scope-" + strings.ReplaceAll(tt.name+"-"+direction.name, " ", "-") + ".yaml"
+				c.open(uri, clean)
+				got := labels(c.complete(uri, pos.Line, pos.Character).Items)
 
-			assert.Equal(t, tt.want, got)
-			for name, why := range tt.notWant {
-				assert.NotContains(t, got, name, why)
-			}
-		})
+				assert.Equal(t, direction.want, got)
+				for name, why := range tt.notWant {
+					assert.NotContains(t, got, name, why)
+				}
+				for _, name := range direction.absent {
+					if name == "steps" {
+						// The root is not a step id, so it is legitimately absent
+						// from the rooted menu — and it is what the bare menu is
+						// there to offer. Nothing to assert either way.
+						continue
+					}
+					assert.NotContains(t, got, name,
+						"%q belongs to the other namespace; offering it here produces a reference that cannot resolve", name)
+				}
+			})
+		}
 	}
 }
 
@@ -566,14 +622,14 @@ steps:
             message: hi
   - id: after
     echo:
-      message: ${inner.result}
+      message: ${steps.inner.result}
 `
 	c := newClient(t)
 	c.initialize()
 	const uri = "file:///leak.yaml"
 	c.open(uri, src)
 
-	pos := positionOf(t, src, "${inner.result}", 3)
+	pos := positionOf(t, src, "${steps.inner.result}", len("${steps."))
 
 	// flowfile reports this as an unknown step; hover and definition must not
 	// contradict it by resolving what the engine will not.
@@ -734,7 +790,7 @@ steps:
       message: hi
   - id: loop
     for_each:
-      items: ${a.result}
+      items: ${steps.a.result}
       iterator: one
       max_parallel: 2
       steps:
