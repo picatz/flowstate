@@ -3,31 +3,22 @@ deps:
   - buf.build/bufbuild/protovalidate
   - buf.build/googleapis/googleapis
 breaking:
+  # Nothing suppressed, which is the only state this file should ever be found in
+  # for longer than one commit.
+  #
+  # The previous commit deleted `Task.description` and moved the plugin protocol
+  # to its own package, and carried a scoped `ignore_only` to let those two land.
+  # It is removed here rather than later because a suppression measures a distance
+  # from one commit, and the moment that commit is on main the distance is zero —
+  # the check now compares against a schema that already has both changes, so the
+  # block suppresses nothing and only stands ready to hide the *next* break.
+  #
+  # That is the failure mode worth naming: a stale suppression does not announce
+  # itself. It reads as a considered exception, it keeps passing, and the break it
+  # eventually swallows belongs to whoever comes next.
   use:
     - FILE
     - WIRE
-
-  # Two deliberate breaks, spent together in the commit that is about them.
-  #
-  # `flowstate/v1/plugin.proto` moved to `flowstate/plugin/v1/plugin.proto`, and
-  # `Task.description` was deleted in favour of `Node.description`. Both are FILE
-  # breaks against the previous commit and neither is a WIRE break: the plugin
-  # protocol's field numbers are untouched by a package rename, and a reserved
-  # field number is exactly the encoding promise a removal has to keep.
-  #
-  # This block is scoped to the files involved so the rest of the schema is still
-  # checked, and it comes out in the immediate follow-up — a suppression that
-  # outlives the commit it was written for is how the next break lands unnoticed.
-  #
-  # The old plugin path is listed as well as the new one, and it is the entry that
-  # actually does the work: a move reads to `buf breaking` as a deletion, and the
-  # deletion is reported against the path that no longer exists. Suppressing only
-  # the destination silences nothing.
-  ignore_only:
-    FILE:
-      - flowstate/v1/flowstate.proto
-      - flowstate/v1/plugin.proto
-      - flowstate/plugin/v1/plugin.proto
 lint:
   # STANDARD is what DEFAULT was renamed to. Same rules, current spelling.
   use:
