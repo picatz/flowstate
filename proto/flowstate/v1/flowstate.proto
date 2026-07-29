@@ -80,6 +80,30 @@ message Workflow {
     }
   ];
 
+  // Profile names the vocabulary every expression in this workflow was compiled
+  // against — which CEL extension libraries are in scope.
+  //
+  // Set by the compiler, not written by an author. There is deliberately no
+  // `profile:` key: an author choosing a vocabulary per file is how a file came to
+  // have two of them, which is what one profile removes.
+  //
+  // Recorded rather than resolved at execution because a run has to keep meaning
+  // what it meant. A future build that adds a library must not change how an
+  // expression already stored in `RunState` evaluates — invariant 10 — and
+  // "whatever this worker has" is a set that changes underfoot. A profile name has
+  // frozen membership, so a worker resolves the name rather than asking what it
+  // ships with, and refuses a name it does not know.
+  //
+  // A different axis from `edition:`, and the distinction is load-bearing. An
+  // edition is a property of a *file*: read when it compiles, gone afterwards, and
+  // retiring one affects nothing already executing. A profile is a property of a
+  // *run*, and travels.
+  //
+  // Empty means a spec compiled before this field existed, which resolves to the
+  // first profile — a compatibility arm rather than a guess, since nothing has been
+  // released and such a spec can only have come from a build whose one vocabulary
+  // was that profile's.
+  string profile = 6 [(google.api.field_behavior) = OPTIONAL];
 }
 
 // Node represents a step in the workflow. Each node can be a task or another type of operation.
@@ -313,6 +337,15 @@ message PendingSignal {
 message Scope {
   // Outputs holds the outputs of steps that have already run.
   Workflow.StepOutputs outputs = 1;
+
+  // Profile is the workflow's language profile, carried here because this is what
+  // reaches the worker that evaluates a task's own expressions.
+  //
+  // Without it that worker would evaluate against whatever profile its own build
+  // calls current, which is the same run computing against two vocabularies — the
+  // failure one profile exists to remove, reintroduced at the point where the work
+  // actually happens.
+  string profile = 3;
 
   // Vars holds variables bound by enclosing control flow. Names must not collide
   // with step ids, since expressions resolve both from one namespace.

@@ -165,6 +165,12 @@ func (e *executor) runTask(node *v1.Node, task *v1.Task) error {
 		compact := &v1.Scope{
 			Outputs: compactPrevOutputsForTask(resolved, e.scope.GetOutputs()),
 			Vars:    e.scope.GetVars(),
+			// Carried across the wire. This scope is what an activity on some other
+			// worker evaluates a task's own expressions against, and that worker's
+			// build may know a different set of profiles than the one that compiled
+			// the spec — which is the whole reason the name travels rather than
+			// being resolved locally at each end.
+			Profile: e.scope.GetProfile(),
 		}
 		evalErr = workflow.ExecuteActivity(stepCtx, TaskInScope, resolved, compact).Get(stepCtx, &out)
 	} else {

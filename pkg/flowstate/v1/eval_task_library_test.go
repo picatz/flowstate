@@ -397,7 +397,7 @@ func Test_taskFuncCEL(t *testing.T) {
 			result, err := taskFuncCEL(
 				t.Context(),
 				NewNamedValues(test.input),
-				NewScope(test.prev),
+				NewScope(CurrentProfile, test.prev),
 			)
 			test.check(t, result, err)
 		})
@@ -429,7 +429,7 @@ func Test_populateProtoMessageFromValueMap_MapHeadersInput(t *testing.T) {
 		"headers": NewLiteralMap(map[string]any{"A": "1", "B": "2"}),
 	}
 	msg := &Task_HTTP_Inputs{}
-	err := populateProtoMessageFromValueMap(t.Context(), inputs, msg, NewScope(&Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}}))
+	err := populateProtoMessageFromValueMap(t.Context(), inputs, msg, NewScope(CurrentProfile, &Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}}))
 	require.NoError(t, err)
 	require.Equal(t, map[string]string{"A": "1", "B": "2"}, msg.GetHeaders())
 }
@@ -442,7 +442,7 @@ func Test_populateProtoMessageFromValueMap_MapHeadersExprInput(t *testing.T) {
 		"headers": NewExpr("{'A': '1', 'B': string(2)}"),
 	}
 	msg := &Task_HTTP_Inputs{}
-	err := populateProtoMessageFromValueMap(t.Context(), inputs, msg, NewScope(&Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}}))
+	err := populateProtoMessageFromValueMap(t.Context(), inputs, msg, NewScope(CurrentProfile, &Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}}))
 	require.NoError(t, err)
 	require.Equal(t, map[string]string{"A": "1", "B": "2"}, msg.GetHeaders())
 }
@@ -497,7 +497,7 @@ func Test_populateProtoMessageFromValueMap_MapNonStringExprInput(t *testing.T) {
 		"ints":  NewExpr("{'A': 1, 'B': 2}"),
 		"bools": NewExpr("{'T': true, 'F': false}"),
 	}
-	err = populateProtoMessageFromValueMap(t.Context(), inputs, msg, NewScope(&Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}}))
+	err = populateProtoMessageFromValueMap(t.Context(), inputs, msg, NewScope(CurrentProfile, &Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}}))
 	require.NoError(t, err)
 
 	// Collect map values from the dynamic message and assert

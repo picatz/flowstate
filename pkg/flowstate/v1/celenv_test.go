@@ -2,9 +2,12 @@ package flowstatev1
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )
 
 func TestEvaluatorEnvCaching(t *testing.T) {
@@ -301,5 +304,166 @@ func TestAnUnknownProfileIsRefused(t *testing.T) {
 	// be one this build compiled before the field existed.
 	if _, err := ProfileLibraries(""); err != nil {
 		t.Fatalf("a spec with no recorded profile was refused: %v", err)
+	}
+}
+
+// The engine has to honour the profile a spec recorded, and that is a different
+// claim from `ProfileLibraries` resolving a name.
+//
+// The first attempt at profiles recorded `Workflow.profile` and then hardcoded
+// `CurrentProfile` at both evaluation sites, so the field was written and never
+// read. Every test written for it passed, because every one of them called
+// `ProfileLibraries` directly — the function that was correct — rather than
+// running a workflow. These go through execution instead.
+
+// TestARunEvaluatesAgainstTheProfileItsSpecRecords is the positive direction.
+func TestARunEvaluatesAgainstTheProfileItsSpecRecords(t *testing.T) {
+	t.Parallel()
+
+	// `upperAscii` comes from the `strings` library, which the current profile
+	// includes and the bare environment does not.
+	workflow := &Workflow{
+		Name:    "profiled",
+		Profile: CurrentProfile,
+		Steps: []*Node{
+			{Id: "greet", Kind: &Node_Task{Task: &Task{
+				Name:   "echo",
+				Inputs: map[string]*Value{"message": NewLiteral(&expr.Value{Kind: &expr.Value_StringValue{StringValue: "hi"}})},
+			}}},
+		},
+	}
+
+	if _, err := Run(t.Context(), workflow); err != nil {
+		t.Fatalf("a workflow recording the current profile failed to run: %v", err)
+	}
+}
+
+// TestARunWithAnUnknownProfileIsRefused is the direction that proves the recorded
+// value is read at all.
+//
+// A spec compiled by a build this worker is older than names a profile it cannot
+// assemble. Executing it anyway means evaluating expressions against a vocabulary
+// nobody checked them with — so the run has to stop, and it has to stop because of
+// the *recorded* name rather than anything about this build.
+//
+// This is the test whose absence let a recorded-and-ignored field ship: with the
+// profile hardcoded, a spec saying "2099.9" ran perfectly.
+func TestARunWithAnUnknownProfileIsRefused(t *testing.T) {
+	t.Parallel()
+
+	workflow := &Workflow{
+		Name:    "from-the-future",
+		Profile: "2099.9",
+		Steps: []*Node{
+			{Id: "compute", Kind: &Node_Task{Task: &Task{
+				Name: "cel",
+				Inputs: map[string]*Value{
+					"expr": NewLiteral(&expr.Value{Kind: &expr.Value_StringValue{StringValue: "1 + 1"}}),
+				},
+			}}},
+		},
+	}
+
+	_, err := Run(t.Context(), workflow)
+	if err == nil {
+		t.Fatal("a spec naming a profile this build cannot assemble ran anyway;\n" +
+			"  its expressions were evaluated against a vocabulary nobody checked them with")
+	}
+	if !strings.Contains(err.Error(), "2099.9") {
+		t.Errorf("the refusal does not name the profile that caused it: %v", err)
+	}
+}
+
+// TestAScopeCarriesTheProfileThroughNesting covers the derived scopes.
+//
+// A loop body and a parallel branch build their own scopes from the enclosing
+// one. A copy that dropped the profile would leave the body evaluating against
+// the empty string — which resolves, quietly, to the first profile — so the
+// failure would appear only once a second profile existed, which is exactly when
+// nobody would be looking for it.
+func TestAScopeCarriesTheProfileThroughNesting(t *testing.T) {
+	t.Parallel()
+
+	root := NewScope("2026.1", nil)
+
+	if got := root.WithVars("item", NewLiteral(&expr.Value{Kind: &expr.Value_Int64Value{Int64Value: 1}})).GetProfile(); got != "2026.1" {
+		t.Errorf("WithVars dropped the profile: got %q", got)
+	}
+	if got := root.WithOutputs(nil).GetProfile(); got != "2026.1" {
+		t.Errorf("WithOutputs dropped the profile: got %q", got)
+	}
+}
+
+// TestAnUnrecordedProfilePinsTheOriginalVocabulary is the legacy-run guarantee.
+//
+// A spec written before the profile field existed carries the empty string, and
+// resolving that to whatever is *current* would hand it a new vocabulary on every
+// release — which is the pinning failure this mechanism exists to prevent, aimed
+// at the runs least able to survive it. It resolves to the original profile
+// instead, forever.
+//
+// Asserted against [OriginalProfile] rather than against the literal set, so it
+// keeps meaning this after CurrentProfile advances. Reported in review, where the
+// first version of this resolved an empty profile to CurrentProfile.
+func TestAnUnrecordedProfilePinsTheOriginalVocabulary(t *testing.T) {
+	t.Parallel()
+
+	unrecorded, err := ProfileLibraries("")
+	if err != nil {
+		t.Fatalf("a spec with no recorded profile was refused: %v", err)
+	}
+
+	original, err := ProfileLibraries(OriginalProfile)
+	if err != nil {
+		t.Fatalf("the original profile does not resolve: %v", err)
+	}
+
+	if !slices.Equal(unrecorded, original) {
+		t.Errorf("an unrecorded profile resolved to %v, want the original %v", unrecorded, original)
+	}
+}
+
+// TestAParallelBranchKeepsTheProfile covers the scope the local driver builds for
+// each branch.
+//
+// It was constructed by hand — `&Scope{Outputs: ..., Vars: ...}` — which named the
+// two fields somebody was thinking about and silently omitted the profile. Every
+// expression inside a parallel branch therefore resolved the empty profile: an
+// unknown recorded profile would run instead of being refused, and once a second
+// profile existed an older workflow would quietly use the current vocabulary,
+// making local execution disagree with the durable engine.
+//
+// Reported in review. My own derived-scope test did not reach it, because that
+// one exercises WithVars and WithOutputs and this site used neither.
+func TestAParallelBranchKeepsTheProfile(t *testing.T) {
+	t.Parallel()
+
+	// An unknown profile is the sharpest probe: if the branch keeps it, the run is
+	// refused; if the branch drops it, the empty string resolves and the branch
+	// runs against a vocabulary nobody checked it with.
+	workflow := &Workflow{
+		Name:    "branching",
+		Profile: "2099.9",
+		Steps: []*Node{{
+			Id: "fan",
+			Kind: &Node_Parallel{Parallel: &Parallel{
+				Branches: []*Parallel_Branch{{
+					Steps: []*Node{{
+						Id: "compute",
+						Kind: &Node_Task{Task: &Task{
+							Name: "cel",
+							Inputs: map[string]*Value{
+								"expr": NewLiteral(&expr.Value{Kind: &expr.Value_StringValue{StringValue: "1 + 1"}}),
+							},
+						}},
+					}},
+				}},
+			}},
+		}},
+	}
+
+	if _, err := Run(t.Context(), workflow); err == nil {
+		t.Fatal("a parallel branch ran against a profile this build cannot assemble;\n" +
+			"  the branch scope dropped the profile, so the empty string resolved instead")
 	}
 }

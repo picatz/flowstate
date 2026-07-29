@@ -146,7 +146,7 @@ func evalWaitExpr(ctx context.Context, v *Value, scope *Scope, now time.Time) (r
 		activation := scope.ActivationWith(ctx, map[string]ref.Val{
 			NowIdentifier: types.DefaultTypeAdapter.NativeToValue(now),
 		})
-		return DefaultEvaluator().EvalParsedBase(ctx, kind.Expr, activation)
+		return DefaultEvaluator().EvalParsedBase(ctx, scope.GetProfile(), kind.Expr, activation)
 	default:
 		return nil, fmt.Errorf("unsupported value kind %T", kind)
 	}
