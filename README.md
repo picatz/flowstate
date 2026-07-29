@@ -112,7 +112,7 @@ A `Flowfile` is a YAML file that defines a series of steps to be executed in ord
 ### Example
 
 ```yaml
-name: multi step hello world
+name: multi-step-hello-world
 steps:
   - id: hello
     echo:
@@ -241,7 +241,8 @@ steps:
         - id: label
           printf:
             format: "processing %s"
-            args: [${name}]
+            args:
+              - ${name}          # the iterator, bare: a binding, not a step
 
   # Independent work with no reason to be sequential.
   - id: checks
@@ -256,7 +257,10 @@ steps:
   - id: summary
     printf:
       format: "%s / %s / processed %d"
-      args: [${steps.check_config.result}, ${steps.check_quota.result}, ${size(steps.process.results)}]
+      args:
+        - ${steps.check_config.result}
+        - ${steps.check_quota.result}
+        - ${size(steps.process.results)}
 ```
 
 The scoping rules are worth knowing, because they are what keep results independent of
