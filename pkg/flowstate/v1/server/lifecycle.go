@@ -149,7 +149,7 @@ func (s *FlowstateServer) Signal(ctx context.Context, req *connect.Request[v1.Si
 	}
 
 	if err := temporal.SignalWorkflow(ctx, workflowID, runID, req.Msg.GetName(), payload); err != nil {
-		return nil, actOnRunError("delivering a signal to", workflowID, err)
+		return nil, actOnRunError("delivering a signal to", workflowID, runID, err)
 	}
 
 	return connect.NewResponse(&v1.SignalResponse{}), nil
@@ -177,7 +177,7 @@ func (s *FlowstateServer) Cancel(ctx context.Context, req *connect.Request[v1.Ca
 	}
 
 	if err := temporal.CancelWorkflow(ctx, workflowID, runID); err != nil {
-		return nil, actOnRunError("cancelling", workflowID, err)
+		return nil, actOnRunError("cancelling", workflowID, runID, err)
 	}
 
 	return connect.NewResponse(&v1.CancelResponse{}), nil
@@ -203,7 +203,7 @@ func (s *FlowstateServer) Terminate(ctx context.Context, req *connect.Request[v1
 	}
 
 	if err := temporal.TerminateWorkflow(ctx, workflowID, runID, req.Msg.GetReason()); err != nil {
-		return nil, actOnRunError("terminating", workflowID, err)
+		return nil, actOnRunError("terminating", workflowID, runID, err)
 	}
 
 	return connect.NewResponse(&v1.TerminateResponse{}), nil
@@ -228,13 +228,33 @@ func (s *FlowstateServer) Terminate(ctx context.Context, req *connect.Request[v1
 // Matched on the error type rather than its text. Temporal's wording is not this
 // repo's to depend on, and a string match would fail open the day it changes,
 // which is the direction that turns a clear diagnostic back into a 500.
-func actOnRunError(verb, workflowID string, err error) error {
+func actOnRunError(verb, workflowID, runID string, err error) error {
 	var notFound *serviceerror.NotFound
-	if errors.As(err, &notFound) {
-		return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf(
-			"%s run %q: that execution has already finished; a run id names one segment of a workload, "+
-				"so an id taken from a listing goes stale as soon as the workload continues as new — "+
-				"omit the run id to act on whichever segment is current", verb, workflowID))
+	if !errors.As(err, &notFound) {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("%s run %q: %w", verb, workflowID, err))
 	}
-	return connect.NewError(connect.CodeInternal, fmt.Errorf("%s run %q: %w", verb, workflowID, err))
+
+	// What to say depends on whether the caller pinned an execution, and the
+	// classifier has to be told which — it cannot read the request.
+	//
+	// Advising "omit the run id" to a caller who omitted it is telling them to do
+	// the thing they did, which is the failure this file's diagnostics are supposed
+	// to avoid rather than commit. With no id there is no staleness to explain:
+	// Temporal resolved the workload's latest execution and it has finished.
+	if runID == "" {
+		return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf(
+			"%s run %q: that workload has already finished", verb, workflowID))
+	}
+
+	// With an id, the stale-segment reading is worth naming — but offered as the
+	// next thing to try rather than promised. A finished execution is equally the
+	// answer when the whole workload is done, and this cannot tell the two apart
+	// without asking Temporal a second question whose answer would already be out
+	// of date. Saying so is cheaper than a round trip and more honest than a
+	// remedy that may not work.
+	return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf(
+		"%s run %q: the execution named by that run id has already finished; a run id addresses one "+
+			"segment of a workload, so an id taken from a listing goes stale once the workload "+
+			"continues as new — retry without it to reach whichever segment is current, and if that "+
+			"reports finished too then the workload itself is done", verb, workflowID))
 }

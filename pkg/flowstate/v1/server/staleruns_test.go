@@ -93,7 +93,7 @@ func TestActingOnAFinishedRunSaysSoRatherThanFailing(t *testing.T) {
 			// printed, so an operator has no reason to suspect it without being
 			// told, and no reason to guess that dropping it is what works.
 			assert.Contains(t, err.Error(), "already finished")
-			assert.Contains(t, err.Error(), "omit the run id",
+			assert.Contains(t, err.Error(), "retry without it",
 				"the refusal does not say what to do instead")
 		})
 	}
