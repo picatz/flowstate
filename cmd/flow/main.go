@@ -976,7 +976,13 @@ flow lsp`,
 	// Add commands to root.
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(validateCmd)
-	rootCmd.AddCommand(newFixCommand())
+
+	// Grouped with the other commands that read a Flowfile without running one.
+	// Left out, it lands under the bare "Commands" heading beside `help` and
+	// `completion`, which is where an author stops looking.
+	fixCmd := newFixCommand()
+	fixCmd.GroupID = "workflow"
+	rootCmd.AddCommand(fixCmd)
 	rootCmd.AddCommand(tasksCmd)
 	rootCmd.AddCommand(getCmd)
 	rootCmd.AddCommand(signalCmd)

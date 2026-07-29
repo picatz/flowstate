@@ -386,6 +386,38 @@ steps:
 `,
 		},
 		{
+			// An anchor is written *on* a value, so a step carrying one arrives as a
+			// shape the walkers did not recognise and was skipped entirely. The
+			// failure was silent and exactly the wrong way round: `flow fix` reported
+			// "already current" and exited zero on a file `flow validate` refuses,
+			// which is the one property the command's own comment says it holds.
+			name: "a step carrying an anchor is not skipped",
+			src: `name: t
+steps:
+  - &first
+    id: a
+    task:
+      name: echo
+      inputs:
+        message: hi
+  - id: b
+    <<: *first
+    echo:
+      message: bye
+`,
+			want: `name: t
+steps:
+  - &first
+    id: a
+    echo:
+      message: hi
+  - id: b
+    <<: *first
+    echo:
+      message: bye
+`,
+		},
+		{
 			// A block scalar's own indentation is relative to its key, and the key
 			// moved. Copying source lines and shifting them all by the same amount is
 			// what keeps this true without understanding block scalars at all.
@@ -878,4 +910,76 @@ steps:
 	require.NoError(t, err)
 	assert.Equal(t, "a # b",
 		wf.GetSteps()[0].GetTask().GetInputs()["message"].GetLiteral().GetStringValue())
+}
+
+// TestFixLeavesNothingThatDoesNotCompile is the property the command promises and
+// the one an anchored step quietly broke: after a run that reports no refusals,
+// nothing retired is left behind.
+//
+// Asserted by compiling the result rather than by looking for `task:`, because
+// the question is not whether one spelling is gone but whether what remains is a
+// file this build accepts. Every shape here is one a walker could fail to
+// recognise and skip — which is how the anchor case escaped.
+func TestFixLeavesNothingThatDoesNotCompile(t *testing.T) {
+	t.Parallel()
+
+	srcs := map[string]string{
+		"an anchored step": `name: t
+steps:
+  - &first
+    id: a
+    task:
+      name: echo
+      inputs:
+        message: hi
+`,
+		"an anchored steps sequence": `name: t
+steps: &all
+  - id: a
+    task:
+      name: echo
+      inputs:
+        message: hi
+`,
+		"an anchored loop body": `name: t
+steps:
+  - id: loop
+    for_each:
+      items: ${[1]}
+      steps: &body
+        - id: inner
+          task:
+            name: echo
+            inputs:
+              message: hi
+`,
+		"an anchored parallel branch": `name: t
+steps:
+  - id: fan
+    parallel:
+      - &branch
+        steps:
+          - id: one
+            task:
+              name: echo
+              inputs:
+                message: a
+`,
+	}
+
+	for name, src := range srcs {
+		t.Run(name, func(t *testing.T) {
+			// The premise: this is a file the compiler refuses today.
+			_, _, err := flowfile.Parse([]byte(src))
+			require.Error(t, err, "premise: the retired spelling must not compile")
+
+			result, err := flowfile.Fix([]byte(src))
+			require.NoError(t, err)
+			require.Empty(t, result.Refusals, "nothing here needs guessing")
+			require.True(t, result.Changed(), "a file that does not compile cannot be already current")
+
+			_, _, err = flowfile.Parse(result.Source)
+			assert.NoError(t, err, "what the rewriter leaves behind must compile:\n%s", result.Source)
+		})
+	}
 }

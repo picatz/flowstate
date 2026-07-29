@@ -173,8 +173,31 @@ func (f *fixer) refuse(n ast.Node, format string, args ...any) {
 	})
 }
 
+// unwrapAnchor returns the node an anchor names, or the node itself.
+//
+// An anchor is written *on* a value — `- &first` above a step's keys — so every
+// walker below has to look through one or it sees a shape it does not recognise
+// and returns. It did, and the result was the worst outcome this command can
+// produce: `flow fix` reported "already current" and exited zero on a file that
+// `flow validate` refuses, which is precisely the "`flow fix . && git commit`
+// must not succeed" property it exists to hold.
+//
+// An *alias* is deliberately not followed. It is a reference to a value written
+// elsewhere, and that value is rewritten where it was declared; following it
+// would send the rewriter at lines belonging to another step.
+func unwrapAnchor(n ast.Node) ast.Node {
+	for {
+		anchor, ok := n.(*ast.AnchorNode)
+		if !ok {
+			return n
+		}
+		n = anchor.Value
+	}
+}
+
 // workflow walks a document body, rewriting its steps and its edition marker.
 func (f *fixer) workflow(n ast.Node) {
+	n = unwrapAnchor(n)
 	mapping, ok := n.(*ast.MappingNode)
 	if !ok {
 		if single, isOne := n.(*ast.MappingValueNode); isOne {
@@ -240,7 +263,7 @@ func (f *fixer) edition(entry *ast.MappingValueNode) {
 
 // steps walks a sequence of steps, at any nesting depth.
 func (f *fixer) steps(n ast.Node) {
-	seq, ok := n.(*ast.SequenceNode)
+	seq, ok := unwrapAnchor(n).(*ast.SequenceNode)
 	if !ok {
 		return
 	}
@@ -252,7 +275,7 @@ func (f *fixer) steps(n ast.Node) {
 // step rewrites one step, and descends into any steps nested inside it.
 func (f *fixer) step(n ast.Node) {
 	var values []*ast.MappingValueNode
-	switch node := n.(type) {
+	switch node := unwrapAnchor(n).(type) {
 	case *ast.MappingNode:
 		values = node.Values
 	case *ast.MappingValueNode:
@@ -279,6 +302,7 @@ func (f *fixer) step(n ast.Node) {
 
 // nested descends into a named key holding a step sequence.
 func (f *fixer) nested(n ast.Node, key string) {
+	n = unwrapAnchor(n)
 	mapping, ok := n.(*ast.MappingNode)
 	if !ok {
 		if single, isOne := n.(*ast.MappingValueNode); isOne {
@@ -296,7 +320,7 @@ func (f *fixer) nested(n ast.Node, key string) {
 
 // branches descends into a parallel's list of branches.
 func (f *fixer) branches(n ast.Node) {
-	seq, ok := n.(*ast.SequenceNode)
+	seq, ok := unwrapAnchor(n).(*ast.SequenceNode)
 	if !ok {
 		return
 	}
