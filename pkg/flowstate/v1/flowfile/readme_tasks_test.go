@@ -182,3 +182,59 @@ func TestREADMENamesEveryCELLibrary(t *testing.T) {
 				"  an author enabling it gets a validation error, not the library", name)
 	}
 }
+
+// exampleLink matches a link to an example directory in examples/README.md.
+var exampleLink = regexp.MustCompile(`\(([a-z0-9-]+)/?\)`)
+
+// TestExamplesREADMEListsEveryExample keeps the examples index complete.
+//
+// Nothing is missing from it today. This is the unusual case where the audit item
+// was already stale — a note said two examples were absent and both are listed —
+// so there is nothing to fix, and a test is the only thing worth adding.
+//
+// It earns its place because the index is exactly the kind of file that goes
+// wrong quietly. Adding an example is a directory and a workflow; updating a
+// README is a separate act nothing forces, and the failure is invisible from
+// inside the change that causes it. An example nobody links is an example nobody
+// runs, which is the same defect as a capability with no example, one surface
+// further out.
+//
+// Both directions, per the lesson from the two tests above. A stale row survives a
+// directory being renamed or removed, and sends a reader to a 404 — which is worse
+// than an omission, because the omission merely hides something while the stale
+// link actively wastes their time.
+func TestExamplesREADMEListsEveryExample(t *testing.T) {
+	t.Parallel()
+
+	root := filepath.Join("..", "..", "..", "..")
+
+	data, err := os.ReadFile(filepath.Join(root, "examples", "README.md"))
+	require.NoError(t, err, "examples/README.md moved and this test did not")
+
+	linked := map[string]bool{}
+	for _, m := range exampleLink.FindAllStringSubmatch(string(data), -1) {
+		linked[m[1]] = true
+	}
+	require.NotEmpty(t, linked,
+		"no example links found; either the index changed shape or this pattern stopped matching it")
+
+	dirs, err := filepath.Glob(filepath.Join(root, "examples", "*", "workflow.yaml"))
+	require.NoError(t, err)
+	require.NotEmpty(t, dirs, "no examples found; the glob is wrong")
+
+	onDisk := map[string]bool{}
+	for _, path := range dirs {
+		onDisk[filepath.Base(filepath.Dir(path))] = true
+	}
+
+	for name := range onDisk {
+		assert.True(t, linked[name],
+			"examples/%s exists and examples/README.md does not link it\n"+
+				"  an example nobody links is an example nobody runs", name)
+	}
+	for name := range linked {
+		assert.True(t, onDisk[name],
+			"examples/README.md links %q, which is not an example directory\n"+
+				"  a stale link sends a reader somewhere that is not there", name)
+	}
+}

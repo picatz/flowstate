@@ -201,8 +201,8 @@ Rows marked **(done)** are implemented; the rest are the shape the surface shoul
 | Activity retry policy | per-step `retry:` **(done)** |
 | Activity timeouts | per-step `timeout:` **(done)** |
 | Error classification | retryable vs permanent, decided by the failure not a preference **(done)** |
-| Durable timer | `sleep:` / `wait_until:` step — a `wait:` node kind, not a task, since it schedules no activity |
-| Signal | `wait_for_signal:` step, `flow signal` — human-in-the-loop approval gates |
+| Durable timer | `sleep:` and `wait_until:` steps — one `Node.wait` kind in the schema rather than a task, since a wait schedules no activity **(done)** |
+| Signal | `wait_for_signal:` step, `flow signal` — human-in-the-loop approval gates **(done)** |
 | Query | `flow inspect` — read live state of a running workload |
 | Update | synchronous request/response against a running workload |
 | Child workflow | `workflow:` step — sub-workflow composition with its own history |
