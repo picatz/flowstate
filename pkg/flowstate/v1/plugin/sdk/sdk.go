@@ -523,11 +523,11 @@ func readEnvironment() (environment, error) {
 		return environment{}, fmt.Errorf("sdk: %s: %w", protocol.VersionsEnv, err)
 	}
 
-	version, ok := protocol.Negotiate(offered, []int{protocol.Version1})
+	version, ok := protocol.Negotiate(offered, []int{protocol.Version2})
 	if !ok {
 		return environment{}, fmt.Errorf(
 			"%w: it offered %s, this plugin speaks %d",
-			ErrProtocolVersion, protocol.FormatVersions(offered), protocol.Version1,
+			ErrProtocolVersion, protocol.FormatVersions(offered), protocol.Version2,
 		)
 	}
 

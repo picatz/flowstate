@@ -87,12 +87,21 @@ func runFakePlugin() int {
 		return 0
 
 	case "bad-version":
-		fmt.Printf("%s|1|99|unix|%s\n", protocol.Sentinel, os.Getenv(protocol.SocketEnv))
+		// 99 is the point of this fixture, so it stays a literal. The handshake
+		// version beside it is not, and is derived so a change to the line format
+		// does not quietly turn this into a test of something else.
+		fmt.Printf("%s|%d|99|unix|%s\n",
+			protocol.Sentinel, protocol.HandshakeVersion, os.Getenv(protocol.SocketEnv))
 		time.Sleep(10 * time.Second)
 		return 0
 
 	case "bad-address":
-		fmt.Printf("%s|1|1|unix|/tmp/somewhere-else.sock\n", protocol.Sentinel)
+		// The address is what this fixture gets wrong, so everything else about the
+		// line has to be right — including the protocol version. Announcing a
+		// retired one makes the host refuse on the version and never reach the
+		// address, which passes the test for the wrong reason.
+		fmt.Printf("%s|%d|%d|unix|/tmp/somewhere-else.sock\n",
+			protocol.Sentinel, protocol.HandshakeVersion, protocol.Version2)
 		time.Sleep(10 * time.Second)
 		return 0
 
@@ -184,7 +193,7 @@ func fakeListen() (net.Listener, error) {
 // fakeAnnounce prints the handshake line.
 func fakeAnnounce() {
 	fmt.Printf("%s|%d|%d|%s|%s\n",
-		protocol.Sentinel, protocol.HandshakeVersion, protocol.Version1,
+		protocol.Sentinel, protocol.HandshakeVersion, protocol.Version2,
 		protocol.NetworkUnix, os.Getenv(protocol.SocketEnv))
 }
 

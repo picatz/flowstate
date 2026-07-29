@@ -3,6 +3,7 @@ package sdk
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -49,13 +50,13 @@ func TestReadEnvironmentRefusals(t *testing.T) {
 				protocol.VersionsEnv:    "99",
 			},
 			wantErr: ErrProtocolVersion,
-			wantMsg: "this plugin speaks 1",
+			wantMsg: fmt.Sprintf("this plugin speaks %d", protocol.Version2),
 		},
 		{
 			name: "no socket to serve on",
 			env: map[string]string{
 				protocol.MagicCookieEnv: protocol.MagicCookieValue,
-				protocol.VersionsEnv:    "1",
+				protocol.VersionsEnv:    protocol.FormatVersions(protocol.HostVersions()),
 			},
 			wantMsg: protocol.SocketEnv + " is not set",
 		},
@@ -63,7 +64,7 @@ func TestReadEnvironmentRefusals(t *testing.T) {
 			name: "no token to authenticate the host by",
 			env: map[string]string{
 				protocol.MagicCookieEnv: protocol.MagicCookieValue,
-				protocol.VersionsEnv:    "1",
+				protocol.VersionsEnv:    protocol.FormatVersions(protocol.HostVersions()),
 				protocol.SocketEnv:      "/tmp/s",
 			},
 			wantMsg: protocol.TokenEnv + " is not set",
@@ -101,7 +102,7 @@ func TestReadEnvironmentRefusals(t *testing.T) {
 // environment, where anything that can read this process can read it.
 func TestReadEnvironmentClearsTheToken(t *testing.T) {
 	t.Setenv(protocol.MagicCookieEnv, protocol.MagicCookieValue)
-	t.Setenv(protocol.VersionsEnv, "1")
+	t.Setenv(protocol.VersionsEnv, protocol.FormatVersions(protocol.HostVersions()))
 	t.Setenv(protocol.SocketEnv, "/tmp/s")
 	t.Setenv(protocol.TokenEnv, "the-token")
 
@@ -218,8 +219,8 @@ func TestServeAnnouncesOnceThenLeavesStdoutAlone(t *testing.T) {
 	if handshake.Address != socket {
 		t.Errorf("announced address = %q, want %q", handshake.Address, socket)
 	}
-	if handshake.ProtocolVersion != protocol.Version1 {
-		t.Errorf("announced protocol version = %d, want %d", handshake.ProtocolVersion, protocol.Version1)
+	if handshake.ProtocolVersion != protocol.Version2 {
+		t.Errorf("announced protocol version = %d, want %d", handshake.ProtocolVersion, protocol.Version2)
 	}
 }
 

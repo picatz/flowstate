@@ -81,7 +81,7 @@
 // cannot serve any of them. It listens on the assigned path, sets the socket to
 // mode 0600, and prints one line to stdout:
 //
-//	FLOWSTATE-PLUGIN|1|1|unix|/var/folders/.../s
+//	FLOWSTATE-PLUGIN|1|2|unix|/var/folders/.../s
 //
 // After that line the plugin never uses stdout again; everything else it says
 // goes to stderr, which the host reads line by line and logs attributed to that
