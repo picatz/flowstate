@@ -22,16 +22,25 @@ import (
 // A step whose ID is one of these compiles, and then every ${...} referencing it
 // fails to parse. The list mirrors the parser's own; keeping a copy is necessary
 // because it is not exported.
-// celLiteralWords are the reserved words that stay refused as step ids.
+// celUnusableStepIDs are the words no step may be named even under the root.
 //
-// The rest of celReservedIdentifiers became legal when references were rooted:
-// cel-go checks reserved words in identifier position only, and `steps.<id>` is a
-// field select. These three are lexer tokens, not identifiers, so `steps.true` is
-// a syntax error in the grammar itself and no rooting can help it.
+// Seventeen of the twenty-one in celReservedIdentifiers became legal the moment
+// references were rooted: cel-go refuses a reserved word in *identifier* position
+// and nowhere else, and `steps.<id>` is a field select. These four are refused a
+// level lower, by the lexer, which no amount of qualifying can reach — `true`,
+// `false` and `null` are literals and `in` is an operator, so `steps.in` is a
+// syntax error in the grammar itself.
+//
+// `in` is the one that is easy to miss, and missing it is not harmless: the step
+// compiles, and then every reference to it fails to *parse*, so the author gets a
+// syntax error pointing at an expression instead of a diagnostic pointing at the
+// id — which is precisely the failure celReservedIdentifiers exists to prevent.
+// TestCELWordsUnusableAsStepIDs derives this set from cel-go rather than trusting
+// the reasoning above.
 //
 // The full list is still needed, because a `for_each` iterator is still written
-// bare and is still an identifier.
-var celLiteralWords = []string{"true", "false", "null"}
+// bare and so is still an identifier.
+var celUnusableStepIDs = []string{"true", "false", "null", "in"}
 
 var celReservedIdentifiers = []string{
 	"as", "break", "const", "continue", "else", "false", "for", "function",
@@ -238,22 +247,13 @@ func Validate(wf *v1.Workflow) Diagnostics {
 				Field:   fmt.Sprintf("steps[%d]", i),
 				Message: "step has no id; every step needs an id so later steps can reference its outputs",
 			})
-		case slices.Contains(celLiteralWords, id):
-			// Only three words, where there used to be twenty-one.
-			//
-			// cel-go refuses a reserved word in *identifier* position and nowhere
-			// else — its own parser says so, and excludes them post-parse because
-			// they are valid field names. A step is named `steps.<id>` now, which is
-			// field-select position, so `loop`, `in`, `for` and the other eighteen
-			// became legal step ids the moment references were rooted.
-			//
-			// These three did not, and for a different reason: `true`, `false` and
-			// `null` are lexer tokens rather than identifiers, so `steps.true` fails
-			// in the grammar before any of that applies.
+		case slices.Contains(celUnusableStepIDs, id):
+			// Four words, where there used to be twenty-one — see celUnusableStepIDs
+			// for which seventeen rooting made legal and why these did not follow.
 			ds = append(ds, Diagnostic{
 				Step: id,
 				Message: fmt.Sprintf(
-					"id %q is a literal in CEL rather than a name, so ${%s.%s} cannot be parsed; choose another id",
+					"id %q is punctuation in CEL rather than a name, so ${%s.%s} cannot be parsed at all; choose another id",
 					id, v1.StepsRoot, id),
 			})
 		case !isCELIdentifier(id):
@@ -646,17 +646,13 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 			continue
 		}
 
-		// Distinguish the two ways a reference fails, because the fixes differ.
-		declaredLater := false
-		for _, other := range wf.GetSteps()[index:] {
-			if other.GetId() == ref {
-				declaredLater = true
-				break
-			}
-		}
-
-		switch {
-		case ref == v1.NowIdentifier:
+		// Only two answers are left here, and that is worth saying because it used
+		// to be four. A self-reference and a forward reference are both references
+		// to a step that *is* declared, so both are caught above and told to run
+		// `flow fix` — after which they resolve as rooted references and get the
+		// right message from unresolvedStep. Keeping the two branches here would
+		// have been code that cannot run, which is the kind that rots unnoticed.
+		if ref == v1.NowIdentifier {
 			// Reported as what it is rather than as an unknown step. `now` does
 			// exist — an author has read about it, or copied a `wait_until:` — so
 			// "unknown step" sends them looking for a step they never wrote. The
@@ -669,23 +665,18 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 					"has no clock that survives a retry, so compute the moment in a `wait_until:` or " +
 					"pass the time in as an input",
 			})
-		case ref == stepID:
-			ds = append(ds, Diagnostic{
-				Step: stepID, Field: inputName,
-				Message: fmt.Sprintf("references its own step %q, which has no outputs yet", ref),
-			})
-		case declaredLater:
-			ds = append(ds, Diagnostic{
-				Step: stepID, Field: inputName,
-				Message: fmt.Sprintf(
-					"references step %q, which runs later; steps can only reference steps defined before them", ref),
-			})
-		default:
-			ds = append(ds, Diagnostic{
-				Step: stepID, Field: inputName,
-				Message: fmt.Sprintf("references unknown step %q", ref),
-			})
+			continue
 		}
+		// Named rather than guessed at. Bare now means a local binding, so this is
+		// not necessarily a step someone misspelled — and saying which two things a
+		// bare name can be is the difference between a diagnostic an author can act
+		// on and one that only says no.
+		ds = append(ds, Diagnostic{
+			Step: stepID, Field: inputName,
+			Message: fmt.Sprintf(
+				"references unknown name %q; a step is written `%s.%s`, and a bare name is a loop's iterator or `now`",
+				ref, v1.StepsRoot, ref),
+		})
 	}
 	return ds
 }

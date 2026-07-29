@@ -9,34 +9,23 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// celReservedIdentifiers is a copy of a list cel-go does not export, and a copy
-// with nothing checking it is a copy that goes stale on a dependency bump nobody
-// reviewed as a language change.
+// Two lists here, and they answer two different questions, which is the whole
+// reason both exist.
 //
-// The failure it exists to prevent is quiet in both directions. A word cel-go
-// adds and this list lacks means a step id compiles and then every `${id.…}`
-// referencing it fails to parse, with the diagnostic pointing at the expression
-// rather than at the id that caused it. A word cel-go drops and this list keeps
-// means an id refused for no reason the author can see.
+// celReservedIdentifiers is what cel-go will not accept as an *identifier*. It
+// still matters, because a `for_each` iterator is written bare and so is still an
+// identifier. It is a copy of a list cel-go does not export, and a copy with
+// nothing checking it goes stale on a dependency bump nobody reviewed as a
+// language change.
 //
-// Checked by asking cel-go rather than by re-copying its source, because a second
-// copy has nothing to disagree with.
+// celUnusableStepIDs is what no step may be called even under the root. Rooting
+// moved step ids into field-select position, where cel-go's reserved-word check
+// does not apply — so most of the first list became legal, and what is left is
+// refused a level lower, by the lexer.
 //
-// The probe took two tries to get right, and the wrong ones are instructive
-// because both look like they work.
-//
-// Parsing the bare word answers a different question: `false` parses perfectly as
-// a boolean *literal* while being unusable as a name. Parsing `word + ".output"`
-// — the shape a step id is actually written in — is closer and still wrong, for
-// the same reason one level up: `true.output` parses too, as a field select on
-// the literal `true`. It compiles and it does not name the step.
-//
-// The property is therefore neither "does it parse" nor "does the reference
-// parse", but *does the reference resolve to an identifier by that name*. So the
-// probe reads the AST: `word.output` must come back as a select whose operand is
-// an Ident spelling `word`. A word that fails this is a word no step can be named,
-// whether cel-go refuses it in identifier position (parser.go's VisitIdent) or the
-// lexer took it for a literal first.
+// Both are checked by asking cel-go rather than by re-copying its source, because
+// a second copy has nothing to disagree with.
+
 func TestCELReservedIdentifiersMatchTheParser(t *testing.T) {
 	t.Parallel()
 
@@ -94,23 +83,113 @@ func TestCELReservedIdentifiersMatchTheParser(t *testing.T) {
 	}
 }
 
-// TestCELReservedIdentifiersAreRefusedAsStepIDs closes the loop: the list is only
-// worth keeping current if something reads it.
+// TestCELWordsUnusableAsStepIDs derives celUnusableStepIDs from cel-go, and is
+// the test that caught the list being wrong.
 //
-// One word stands for all of them — the list membership is what the test above
-// pins — but the path from "in the list" to "reported with a usable message" has
-// to be walked at least once, or the list could be correct and unused.
-func TestCELReservedIdentifiersAreRefusedAsStepIDs(t *testing.T) {
+// The probe has to ask the question a step id actually asks, which rooting
+// changed: not "is this a legal identifier" but "does `${steps.<id>.result}`
+// parse, and resolve to a select on the root". Asking the old question said
+// eighteen words became legal. Asking this one says seventeen — `in` is an
+// operator token, so `steps.in` is a syntax error in the grammar, exactly like
+// the three literals.
+//
+// Getting that wrong is not harmless: the step compiles and every reference to it
+// then fails to *parse*, so the author gets a syntax error pointing at an
+// expression instead of a diagnostic pointing at the id — which is the failure
+// the whole check exists to prevent.
+func TestCELWordsUnusableAsStepIDs(t *testing.T) {
 	t.Parallel()
 
-	ds, err := ValidateSource([]byte("name: t\nsteps:\n  - id: in\n    echo:\n      message: hi\n"))
-	require.NoError(t, err, "the document is valid YAML and compiles; the id is a semantic problem")
-	require.NotEmpty(t, ds)
+	env, err := cel.NewEnv()
+	require.NoError(t, err)
 
-	rendered := ds.Error()
-	assert.Contains(t, rendered, "CEL reserved word")
-	assert.Contains(t, rendered, "choose another id",
-		"the diagnostic has to say what to do, not only what is wrong")
-	assert.True(t, strings.Contains(rendered, `"in"`),
-		"the diagnostic has to name the id at fault; got %q", rendered)
+	// usable reports whether a step could be named word, by asking whether the
+	// reference an author would write resolves to the root.
+	usable := func(word string) bool {
+		ast, issues := env.Parse("steps." + word + ".result")
+		if issues != nil && issues.Err() != nil {
+			return false
+		}
+		parsed, err := cel.AstToParsedExpr(ast)
+		if err != nil {
+			return false
+		}
+		inner := parsed.GetExpr().GetSelectExpr().GetOperand().GetSelectExpr()
+		return inner != nil && inner.GetOperand().GetIdentExpr().GetName() == "steps"
+	}
+
+	for _, word := range celUnusableStepIDs {
+		assert.False(t, usable(word),
+			"%q is refused as a step id but cel-go now parses ${steps.%s.result}; remove it from celUnusableStepIDs",
+			word, word)
+	}
+
+	// The other direction, over every word cel-go reserves plus the vocabulary a
+	// step id is plausibly written from. A word the lexer refuses and this list
+	// does not carry is a step that compiles and can never be referenced.
+	candidates := append([]string{}, celReservedIdentifiers...)
+	candidates = append(candidates,
+		"and", "or", "not", "is", "this", "self", "super", "new", "delete",
+		"switch", "case", "default", "do", "try", "catch", "throw", "yield",
+		"steps", "inputs", "outputs", "vars", "run", "now", "secret", "task",
+	)
+	for _, word := range candidates {
+		if usable(word) {
+			continue
+		}
+		assert.Contains(t, celUnusableStepIDs, word,
+			"cel-go cannot parse ${steps.%s.result} and celUnusableStepIDs does not list %q; "+
+				"a step with that id would compile and then every reference to it would fail to parse",
+			word, word)
+	}
+}
+
+// TestMostReservedWordsBecameLegalStepIDs states the size of what rooting bought,
+// so that a change quietly taking it back has something to fail.
+func TestMostReservedWordsBecameLegalStepIDs(t *testing.T) {
+	t.Parallel()
+
+	var legal []string
+	for _, word := range celReservedIdentifiers {
+		if !slicesContains(celUnusableStepIDs, word) {
+			legal = append(legal, word)
+		}
+	}
+	assert.Len(t, legal, 17,
+		"seventeen of cel-go's twenty-one reserved words are usable as step ids under the root; got %v", legal)
+
+	// And one of them, end to end, because a count is not a step anyone can write.
+	ds, err := ValidateSource([]byte(
+		"name: t\nsteps:\n  - id: loop\n    echo:\n      message: hi\n" +
+			"  - id: after\n    echo:\n      message: ${steps.loop.result}\n"))
+	require.NoError(t, err)
+	assert.Empty(t, ds, "a step called `loop` must be usable now")
+}
+
+// TestUnusableStepIDIsReportedOnTheID covers the diagnostic itself.
+func TestUnusableStepIDIsReportedOnTheID(t *testing.T) {
+	t.Parallel()
+
+	for _, word := range celUnusableStepIDs {
+		ds, err := ValidateSource([]byte(
+			"name: t\nsteps:\n  - id: \"" + word + "\"\n    echo:\n      message: hi\n"))
+		require.NoError(t, err)
+		require.NotEmpty(t, ds, "a step called %q must be refused", word)
+
+		rendered := ds.Error()
+		assert.Contains(t, rendered, "choose another id",
+			"the diagnostic has to say what to do, not only what is wrong")
+		assert.True(t, strings.Contains(rendered, word), "it has to name the id; got %q", rendered)
+	}
+}
+
+// slicesContains is spelled out rather than imported so this file states its own
+// membership test alongside the two lists it is about.
+func slicesContains(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
 }

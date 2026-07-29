@@ -268,9 +268,9 @@ steps:
       name: deploy-approved
       timeout: 1h
   - id: after
-    if: ${!approval.timed_out}
+    if: ${!steps.approval.timed_out}
     echo:
-      message: ${approval.by}
+      message: ${steps.approval.by}
   - id: pauses
     for_each:
       items: ${[1, 2]}
@@ -319,7 +319,7 @@ steps:
   - id: approval
     wait_for_signal: deploy-approved
   - id: deploy
-    if: ${approval.approved}
+    if: ${steps.approval.approved}
     echo:
       message: deploying
 `)

@@ -33,7 +33,7 @@ steps:
       message: hello
   - id: b
     echo:
-      message: ${a.result}
+      message: ${steps.a.result}
 `,
 		},
 		{
@@ -77,15 +77,66 @@ steps:
 			want: `unknown task "shell"`,
 		},
 		{
-			name: "step id is a CEL reserved word",
+			// The refusal that survived rooting, and the only ground it survived
+			// on. `true` is a token the lexer takes before any identifier rule
+			// applies, so `steps.true` is a syntax error in CEL's grammar rather
+			// than a name CEL declines to resolve: there is no spelling of a
+			// reference to a step called `true` that parses at all. The same is
+			// so of `false` and `null`, and of `in`, which the grammar reads as
+			// an operator.
+			name: "step id is a CEL literal",
 			src: `
-name: reserved
+name: literal-id
+steps:
+  - id: "true"
+    echo:
+      message: hello
+`,
+			want: "is punctuation in CEL",
+		},
+		{
+			// The other side of the same narrowing, and the reason it is worth a
+			// case of its own: cel-go refuses a reserved word in *identifier*
+			// position and nowhere else, and `steps.<id>` is a field select. So
+			// `loop` — refused as a step id for as long as a step was named bare —
+			// is now a name a step may have and a later step may read, and this
+			// asserts the reading rather than only the naming.
+			//
+			// Seventeen of the twenty-one words moved this way. The list is still
+			// carried for `for_each` iterators, which are written bare and are
+			// still identifiers.
+			name: "step id is a word CEL reserves only in identifier position",
+			src: `
+name: reserved-but-selectable
 steps:
   - id: loop
     echo:
       message: hello
+  - id: after
+    echo:
+      message: ${steps.loop.result}
 `,
-			want: "reserved word",
+		},
+		{
+			// A step called `now` used to be refused, because a wait binds `now`
+			// to the moment it is evaluated and a bound name wins — so the step
+			// would have meant one thing everywhere and something else inside
+			// `wait_until:`. Rooting removes the overlap rather than the binding
+			// order: the clock is bare and the step is `steps.now`, so both
+			// spellings appear here and neither can be read as the other.
+			name: "a step may be called now",
+			src: `
+name: now-and-the-clock
+steps:
+  - id: now
+    echo:
+      message: hello
+  - id: hold
+    wait_until: ${now + days(1)}
+  - id: after
+    echo:
+      message: ${steps.now.result}
+`,
 		},
 		{
 			name: "step id is not a valid identifier",
@@ -105,9 +156,42 @@ name: unknown-ref
 steps:
   - id: a
     echo:
+      message: ${steps.nope.result}
+`,
+			want: `references unknown step "nope"`,
+		},
+		// The retired spelling and a plain mistake are written identically, so
+		// the only thing that can tell them apart is the workflow around them —
+		// and they want different answers. These two fixtures differ in one
+		// character of one id, which is exactly the difference the validator has
+		// to notice.
+		{
+			name: "a bare reference to a step is the retired spelling",
+			src: `
+name: retired-spelling
+steps:
+  - id: a
+    echo:
+      message: hello
+  - id: b
+    echo:
+      message: ${a.result}
+`,
+			want: "flow fix",
+		},
+		{
+			name: "a bare reference to something that is not a step is still a mistake",
+			src: `
+name: not-a-step
+steps:
+  - id: a
+    echo:
+      message: hello
+  - id: b
+    echo:
       message: ${nope.result}
 `,
-			want: `unknown step "nope"`,
+			want: `references unknown name "nope"`,
 		},
 		{
 			name: "forward reference",
@@ -116,7 +200,7 @@ name: forward-ref
 steps:
   - id: a
     echo:
-      message: ${b.result}
+      message: ${steps.b.result}
   - id: b
     echo:
       message: hello
@@ -130,7 +214,7 @@ name: self-ref
 steps:
   - id: a
     echo:
-      message: ${a.result}
+      message: ${steps.a.result}
 `,
 			want: "its own step",
 		},
@@ -170,7 +254,7 @@ steps:
 name: forward-condition
 steps:
   - id: a
-    if: ${later.result == 'x'}
+    if: ${steps.later.result == 'x'}
     echo:
       message: hi
   - id: later
@@ -185,11 +269,11 @@ steps:
 name: unknown-condition
 steps:
   - id: a
-    if: ${nope.result}
+    if: ${steps.nope.result}
     echo:
       message: hi
 `,
-			want: `unknown step "nope"`,
+			want: `references unknown step "nope"`,
 		},
 		{
 			name: "condition inside a loop body may use the iterator",
@@ -207,9 +291,17 @@ steps:
 `,
 		},
 		{
-			name: "loop iterator colliding with a step id",
+			// This case has changed sides, and it is the one rooting was done for.
+			//
+			// An iterator sharing a step's id used to be refused, because both
+			// resolved from one namespace and a bare `${item}` inside the body
+			// could only mean whichever the engine bound last. There is no longer
+			// anything to forbid: the binding is bare and the step is
+			// `steps.item`, so this asserts not merely that the two may coexist
+			// but that one expression can name both and be understood.
+			name: "a loop iterator may share a step's id",
 			src: `
-name: collide
+name: iterator-shares-an-id
 steps:
   - id: item
     echo:
@@ -219,10 +311,33 @@ steps:
       items: "${['a']}"
       steps:
         - id: act
-          echo:
-            message: ${item}
+          printf:
+            format: "%s from %s"
+            args:
+              - ${item}
+              - ${steps.item.result}
 `,
-			want: "also a step id",
+		},
+		{
+			// The negative direction of the case above, and the half that keeps
+			// it from being a functionality test wearing a security test's
+			// clothes: the two namespaces are only separate if the root cannot
+			// reach into the local one. No step is called `item` here, so
+			// `steps.item` has to be unresolved rather than quietly finding the
+			// loop's binding.
+			name: "the steps root does not reach a loop binding",
+			src: `
+name: root-misses-the-binding
+steps:
+  - id: each
+    for_each:
+      items: "${['a']}"
+      steps:
+        - id: act
+          echo:
+            message: ${steps.item.result}
+`,
+			want: `unknown step "item"`,
 		},
 		{
 			name: "parallel branch referencing a sibling branch",
@@ -238,7 +353,7 @@ steps:
       - steps:
           - id: right
             echo:
-              message: ${left.result}
+              message: ${steps.left.result}
 `,
 			want: `unknown step "left"`,
 		},
@@ -261,13 +376,18 @@ steps:
     printf:
       format: "%s%s"
       args:
-        - ${left.result}
-        - ${right.result}
+        - ${steps.left.result}
+        - ${steps.right.result}
 `,
 		},
 		{
 			// A loop's body outputs are reported through its own results output,
 			// so referencing a body step from outside cannot resolve.
+			//
+			// It has to be written rooted to still say that. `inner` is a step
+			// somewhere in this file, so the bare spelling is answered by the
+			// migration diagnostic before scope is ever consulted — which would
+			// leave the case green and testing the rewriter instead of the rule.
 			name: "step after a loop may not reference body steps",
 			src: `
 name: loop-leak
@@ -281,21 +401,44 @@ steps:
             message: hi
   - id: after
     echo:
-      message: ${inner.result}
+      message: ${steps.inner.result}
 `,
 			want: `unknown step "inner"`,
 		},
 		{
-			name: "comprehension variables are not step references",
+			// A comprehension's variable is introduced by the expression itself,
+			// so it is neither a step nor an unresolved name, and reporting it
+			// would make every comprehension look broken.
+			//
+			// Written as a fenced `${...}` because that is the only spelling the
+			// reference checker sees. The `cel` task's `expr` is a literal string
+			// the task compiles for itself, so a comprehension written there
+			// reaches nothing here and would assert nothing — which is what this
+			// fixture used to do.
+			name: "a comprehension binds its own variable",
 			src: `
 name: comprehension
 steps:
   - id: a
-    cel:
-      expr: "[1, 2, 3].map(x, x * 2)"
+    echo:
+      message: hello
   - id: b
-    cel:
-      expr: "size(a.result)"
+    echo:
+      message: ${[steps.a.result].map(x, x + '!')[0]}
+`,
+		},
+		{
+			// The root is a name like any other, so a comprehension may bind it —
+			// and then `steps.title` is a field of the item being iterated and
+			// not a step at all. Reading it as one would report `title` as an
+			// unknown step in an expression that is entirely correct.
+			name: "a comprehension may bind the steps root",
+			src: `
+name: shadowed-root
+steps:
+  - id: a
+    echo:
+      message: "${[{'title': 'x'}].map(steps, steps.title)[0]}"
 `,
 		},
 	}
