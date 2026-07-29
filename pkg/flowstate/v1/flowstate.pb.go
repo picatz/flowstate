@@ -3586,8 +3586,16 @@ type Task_CEL_Inputs struct {
 	// to evaluating the expression.
 	Vars map[string]*Value `protobuf:"bytes,2,rep,name=vars,proto3" json:"vars,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Optional list of CEL extension libraries to enable when evaluating the
-	// expression. Supported values include "math", "strings", "lists",
-	// "sets", "encoders", "protos", "bindings", and "comprehensions".
+	// expression.
+	//
+	// Deliberately not enumerated here. This comment listed eight names and the
+	// evaluator accepted eleven, so it was quietly wrong about three — `json`
+	// among them, which a shipped example uses. A list written in prose beside
+	// the thing it describes is a second source of truth, and this one drifted
+	// the way second sources do.
+	//
+	// `flow tasks` prints the set this build accepts, and an unknown name is
+	// refused at validation with the same set named in the error.
 	Libs          []string `protobuf:"bytes,3,rep,name=libs,proto3" json:"libs,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

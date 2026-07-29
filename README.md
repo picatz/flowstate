@@ -626,7 +626,7 @@ steps:
 
 > [!TIP]
 > Use `${...}` for expressions, like referencing a previous step's output as `${steps.<id>.<output>}`.
-> The `cel` task evaluates the expression string provided in its `expr` input at runtime. Variables for the expression are provided under the `vars` input. Use the optional `libs` input to enable CEL extension libraries such as `math`, `strings`, `lists`, `sets`, `encoders`, `protos`, `bindings`, `comprehensions`, or `regex`.
+> The `cel` task evaluates the expression string provided in its `expr` input at runtime. Variables for the expression are provided under the `vars` input, and referenced as `vars.<name>`. Use the optional `libs` input to enable CEL extension libraries: `bindings`, `comprehensions`, `encoders`, `json`, `lists`, `math`, `optional`, `protos`, `regex`, `sets`, `strings`. `flow tasks` prints the same set, and naming one this build does not have is refused at validation rather than at run time.
 
 ### Waiting
 
