@@ -7,6 +7,7 @@ import (
 
 	"connectrpc.com/connect"
 
+	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
@@ -18,7 +19,7 @@ import (
 // fields rather than testing a task's name, so a task that arrived from a plugin
 // takes the same paths through resolution, validation, and dispatch as one
 // compiled in.
-func (p *Plugin) taskDef(manifest *flowstatev1.TaskManifest, cfg Config) (flowstatev1.TaskDef, error) {
+func (p *Plugin) taskDef(manifest *pluginv1.TaskManifest, cfg Config) (flowstatev1.TaskDef, error) {
 	name := manifest.GetName()
 
 	inputs, err := messageDescriptor(manifest.GetInputDescriptor(), manifest.GetInputMessage(), cfg)
@@ -47,7 +48,7 @@ func (p *Plugin) taskDef(manifest *flowstatev1.TaskManifest, cfg Config) (flowst
 }
 
 // taskFunc returns the function that executes a task by asking the plugin to.
-func (p *Plugin) taskFunc(manifest *flowstatev1.TaskManifest) flowstatev1.TaskFunc {
+func (p *Plugin) taskFunc(manifest *pluginv1.TaskManifest) flowstatev1.TaskFunc {
 	name := manifest.GetName()
 	needsScope := manifest.GetNeedsScope()
 
@@ -61,7 +62,7 @@ func (p *Plugin) taskFunc(manifest *flowstatev1.TaskManifest) flowstatev1.TaskFu
 
 		identity, _ := IdentityFromContext(ctx)
 
-		request := &flowstatev1.ExecuteTaskRequest{
+		request := &pluginv1.ExecuteRequest{
 			Task: &flowstatev1.Task{
 				Name:   name,
 				Inputs: inputs,
@@ -92,7 +93,7 @@ func (p *Plugin) taskFunc(manifest *flowstatev1.TaskManifest) flowstatev1.TaskFu
 // taskError classifies a plugin's task failure into the engine's own error
 // kinds, which is what decides whether the step is attempted again.
 //
-// A plugin can say so explicitly, by failing the RPC with an ExecuteTaskResponse
+// A plugin can say so explicitly, by failing the RPC with an ExecuteResponse
 // attached as an error detail: only the plugin knows whether its backend's
 // failure was transient, and the schema puts that answer on the response's
 // retryable field. Without one, the Connect code is mapped to the closest kind.
@@ -174,7 +175,7 @@ func kindForCode(err error) flowstatev1.ErrorKind {
 }
 
 // retryableFromDetails reads a plugin's own verdict on whether a failure could
-// succeed on another attempt, from an ExecuteTaskResponse attached to the error.
+// succeed on another attempt, from an ExecuteResponse attached to the error.
 func retryableFromDetails(err error) (retryable, found bool) {
 	var connectErr *connect.Error
 	if !errors.As(err, &connectErr) {
@@ -188,7 +189,7 @@ func retryableFromDetails(err error) (retryable, found bool) {
 			// answer, so it is skipped rather than treated as either verdict.
 			continue
 		}
-		if response, ok := value.(*flowstatev1.ExecuteTaskResponse); ok {
+		if response, ok := value.(*pluginv1.ExecuteResponse); ok {
 			return response.GetRetryable(), true
 		}
 	}

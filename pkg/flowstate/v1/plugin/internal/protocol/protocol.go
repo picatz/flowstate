@@ -107,7 +107,7 @@ const Sentinel = "FLOWSTATE-PLUGIN"
 const HandshakeVersion = 1
 
 // Version1 is the first version of the plugin protocol: the services defined in
-// proto/flowstate/v1/plugin.proto, served over Connect on a Unix socket.
+// proto/flowstate/plugin/v1/plugin.proto, served over Connect on a Unix socket.
 const Version1 = 1
 
 // MaxHandshakeLine bounds the handshake line, because it is the first thing an

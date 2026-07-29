@@ -244,9 +244,8 @@ func ResolveTaskInputs(ctx context.Context, task *Task, scope *Scope) (*Task, er
 	}
 
 	return &Task{
-		Name:        task.GetName(),
-		Description: task.Description,
-		Inputs:      inputs,
+		Name:   task.GetName(),
+		Inputs: inputs,
 	}, nil
 }
 

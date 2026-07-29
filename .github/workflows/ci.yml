@@ -105,18 +105,17 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # Forty-three rules, forty-one of them enforced everywhere.
+      # Forty-three rules, all of them enforced everywhere.
       #
       # This step was absent because six pre-existing violations would have made it
       # red on arrival, and a red build everyone learns to ignore is worse than no
-      # build. All six are one rule pair in one file — the plugin protocol's request
-      # and response messages not being named after their methods — and fixing that
-      # properly means moving the protocol into its own package, which is a
-      # FILE-level break and belongs in a commit about it.
+      # build. All six were one rule pair in one file — the plugin protocol's
+      # request and response messages not being named after their methods — so the
+      # pair was suppressed for that file and the other forty-one enforced, rather
+      # than trading forty-one rules for six known violations.
       #
-      # So the two rules are suppressed for that one file in proto/buf.yaml, which
-      # is checked in and commented, and everything else is enforced from now on.
-      # Trading forty-one rules for six known violations is the wrong way round.
+      # The protocol has its own package now, which is what made the names it asks
+      # for the right ones, so both the violations and the suppression are gone.
       - name: Lint
         run: go run github.com/bufbuild/buf/cmd/buf@${{ env.BUF_VERSION }} lint
 

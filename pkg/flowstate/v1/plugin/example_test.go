@@ -14,6 +14,7 @@ import (
 
 	"google.golang.org/protobuf/reflect/protoreflect"
 
+	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 )
@@ -115,10 +116,10 @@ func TestExamplePluginAdvertisesBothCapabilities(t *testing.T) {
 		t.Fatal("the example plugin was not launched")
 	}
 
-	if !p.HasCapability(flowstatev1.Capability_CAPABILITY_SECRETS) {
+	if !p.HasCapability(pluginv1.Capability_CAPABILITY_SECRETS) {
 		t.Error("the example does not advertise secret resolution")
 	}
-	if !p.HasCapability(flowstatev1.Capability_CAPABILITY_TASKS) {
+	if !p.HasCapability(pluginv1.Capability_CAPABILITY_TASKS) {
 		t.Error("the example does not advertise tasks")
 	}
 

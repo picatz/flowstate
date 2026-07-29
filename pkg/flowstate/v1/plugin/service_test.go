@@ -8,8 +8,9 @@ import (
 
 	"connectrpc.com/connect"
 
+	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
+	pluginv1connect "github.com/picatz/flowstate/pkg/flowstate/plugin/v1/pluginv1connect"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 )
 
 // TestServiceIsTheContract checks that a plugin is usable through the generated
@@ -36,9 +37,9 @@ func TestServiceIsTheContract(t *testing.T) {
 		// Used as a handler, which is the substitution the whole design rests
 		// on: whatever dispatches to an in-process implementation can dispatch
 		// to this without knowing the difference.
-		var handler flowstatev1connect.SecretServiceHandler = service
+		var handler pluginv1connect.SecretServiceHandler = service
 
-		resp, err := handler.Resolve(t.Context(), connect.NewRequest(&flowstatev1.ResolveSecretRequest{
+		resp, err := handler.Resolve(t.Context(), connect.NewRequest(&pluginv1.ResolveRequest{
 			Ref:       &flowstatev1.SecretRef{Scheme: "ok", Name: "api-key"},
 			Namespace: "team-a",
 		}))
@@ -57,9 +58,9 @@ func TestServiceIsTheContract(t *testing.T) {
 			t.Fatalf("TaskService: %v", err)
 		}
 
-		var handler flowstatev1connect.TaskServiceHandler = service
+		var handler pluginv1connect.TaskServiceHandler = service
 
-		resp, err := handler.Execute(t.Context(), connect.NewRequest(&flowstatev1.ExecuteTaskRequest{
+		resp, err := handler.Execute(t.Context(), connect.NewRequest(&pluginv1.ExecuteRequest{
 			Task: &flowstatev1.Task{
 				Name:   "ok_task",
 				Inputs: map[string]*flowstatev1.Value{"message": flowstatev1.NewLiteral("hi")},
@@ -157,7 +158,7 @@ func TestServiceSurvivesARestart(t *testing.T) {
 	// than being permanently attached to the old one.
 	var lastErr error
 	reached := waitFor(t, 15*time.Second, func() bool {
-		_, err := service.Execute(t.Context(), connect.NewRequest(&flowstatev1.ExecuteTaskRequest{
+		_, err := service.Execute(t.Context(), connect.NewRequest(&pluginv1.ExecuteRequest{
 			Task: &flowstatev1.Task{Name: "short_lived_task"},
 		}))
 		lastErr = err

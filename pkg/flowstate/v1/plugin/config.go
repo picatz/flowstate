@@ -140,7 +140,7 @@ type Config struct {
 	// Pointing this at something short, such as /run/flowstate, is the fix.
 	SocketDir string
 
-	// HostVersion is what the host tells a plugin it is, in DescribePluginRequest,
+	// HostVersion is what the host tells a plugin it is, in DescribeRequest,
 	// so a plugin can refuse an engine it knows it cannot serve. It is
 	// informational: compatibility is decided by the protocol version.
 	HostVersion string

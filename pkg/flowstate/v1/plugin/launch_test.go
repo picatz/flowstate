@@ -92,7 +92,7 @@ func TestOpenRefusesBadPlugins(t *testing.T) {
 			name:        "manifest that does not validate",
 			mode:        "bad-manifest",
 			wantErr:     ErrManifest,
-			wantMessage: "invalid flowstate.v1.PluginManifest",
+			wantMessage: "invalid flowstate.plugin.v1.PluginManifest",
 		},
 		{
 			// The schema's own min_items rule catches this one, which is the

@@ -142,22 +142,12 @@ func stepToYAML(node *v1.Node) (yaml.MapSlice, error) {
 // an unfinished line. A formatter should not produce something that looks like a
 // mistake.
 func taskInputsToYAML(task *v1.Task) (yaml.MapSlice, error) {
-	// A task description has nowhere to go under the task's own name: the value
-	// there is the task's inputs, so a `description` key would be an input called
-	// `description`, which is a different thing entirely. Prose about a step is
-	// written on the step now — `Node.description`, which every kind of step has
-	// and not only a task.
-	//
-	// Refused rather than dropped, because silently discarding it would make
-	// Marshal(Unmarshal(x)) mean something other than x, which is the one property
-	// this file exists to hold. `flow fix` moves it to the step when rewriting an
-	// older file; nothing in this build sets it, and the field is scheduled for
-	// removal in the change that spends the schema break it costs.
-	if task.Description != nil {
-		return nil, fmt.Errorf(
-			"task %q has a description, which belongs on the step now that a step names its "+
-				"task directly; write it as the step's `description:`", task.GetName())
-	}
+	// A task used to carry a description, and this function refused one rather than
+	// dropping it: silently discarding a field would make Marshal(Unmarshal(x))
+	// mean something other than x, which is the property this file exists to hold.
+	// The field is gone from the schema now, so there is nothing left to refuse —
+	// prose about a step is `Node.description`, and `flow fix` moves it there when
+	// it rewrites an older file.
 
 	inputs := yaml.MapSlice{}
 	// Input names come from a protobuf map, whose order is not defined, so they are

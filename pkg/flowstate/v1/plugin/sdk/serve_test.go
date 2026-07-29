@@ -15,8 +15,9 @@ import (
 
 	"connectrpc.com/connect"
 
+	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
+	pluginv1connect "github.com/picatz/flowstate/pkg/flowstate/plugin/v1/pluginv1connect"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/internal/protocol"
 )
 
@@ -142,7 +143,7 @@ func TestServeAuthenticatesTheHost(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			client := flowstatev1connect.NewPluginServiceClient(
+			client := pluginv1connect.NewPluginServiceClient(
 				unixClient(socket), "http://plugin.invalid",
 				connect.WithInterceptors(connect.UnaryInterceptorFunc(
 					func(next connect.UnaryFunc) connect.UnaryFunc {
@@ -158,7 +159,7 @@ func TestServeAuthenticatesTheHost(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			defer cancel()
 
-			resp, err := client.Describe(ctx, connect.NewRequest(&flowstatev1.DescribePluginRequest{}))
+			resp, err := client.Describe(ctx, connect.NewRequest(&pluginv1.DescribeRequest{}))
 
 			if !test.wantOK {
 				if err == nil {
@@ -190,7 +191,7 @@ func TestServeAnnouncesOnceThenLeavesStdoutAlone(t *testing.T) {
 
 	// The plugin is serving, so the handshake has been printed. Anything it
 	// prints from now on goes to stderr instead.
-	client := flowstatev1connect.NewPluginServiceClient(
+	client := pluginv1connect.NewPluginServiceClient(
 		unixClient(socket), "http://plugin.invalid",
 		connect.WithInterceptors(connect.UnaryInterceptorFunc(
 			func(next connect.UnaryFunc) connect.UnaryFunc {
@@ -201,7 +202,7 @@ func TestServeAnnouncesOnceThenLeavesStdoutAlone(t *testing.T) {
 			})),
 	)
 
-	if _, err := client.Health(t.Context(), connect.NewRequest(&flowstatev1.HealthRequest{})); err != nil {
+	if _, err := client.Health(t.Context(), connect.NewRequest(&pluginv1.HealthRequest{})); err != nil {
 		t.Fatalf("Health: %v", err)
 	}
 

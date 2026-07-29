@@ -18,8 +18,9 @@ import (
 
 	"connectrpc.com/connect"
 
+	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
+	pluginv1connect "github.com/picatz/flowstate/pkg/flowstate/plugin/v1/pluginv1connect"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/internal/protocol"
 )
 
@@ -211,24 +212,24 @@ func fakeHandler(mode string) (http.Handler, error) {
 
 	mux := http.NewServeMux()
 
-	path, handler := flowstatev1connect.NewPluginServiceHandler(&fakePluginService{
+	path, handler := pluginv1connect.NewPluginServiceHandler(&fakePluginService{
 		manifest: manifest,
 		mode:     mode,
 	}, opts...)
 	mux.Handle(path, handler)
 
-	path, handler = flowstatev1connect.NewSecretServiceHandler(&fakeSecretService{mode: mode}, opts...)
+	path, handler = pluginv1connect.NewSecretServiceHandler(&fakeSecretService{mode: mode}, opts...)
 	mux.Handle(path, handler)
 
-	path, handler = flowstatev1connect.NewTaskServiceHandler(&fakeTaskService{mode: mode}, opts...)
+	path, handler = pluginv1connect.NewTaskServiceHandler(&fakeTaskService{mode: mode}, opts...)
 	mux.Handle(path, handler)
 
 	return mux, nil
 }
 
 // fakeManifest is what each fake says about itself.
-func fakeManifest(mode string) (*flowstatev1.PluginManifest, error) {
-	base := &flowstatev1.PluginManifest{
+func fakeManifest(mode string) (*pluginv1.PluginManifest, error) {
+	base := &pluginv1.PluginManifest{
 		Name:        mode,
 		Version:     "0.0.1",
 		Description: "a fake plugin for tests",
@@ -241,59 +242,59 @@ func fakeManifest(mode string) (*flowstatev1.PluginManifest, error) {
 	case "bad-manifest":
 		// An empty name violates the schema's own rules.
 		base.Name = ""
-		base.Capabilities = []flowstatev1.Capability{flowstatev1.Capability_CAPABILITY_SECRETS}
+		base.Capabilities = []pluginv1.Capability{pluginv1.Capability_CAPABILITY_SECRETS}
 		base.Schemes = []string{"bad"}
 		return base, nil
 
 	case "unspecified-cap":
-		base.Capabilities = []flowstatev1.Capability{flowstatev1.Capability_CAPABILITY_UNSPECIFIED}
+		base.Capabilities = []pluginv1.Capability{pluginv1.Capability_CAPABILITY_UNSPECIFIED}
 		return base, nil
 
 	case "unknown-caps":
 		// Only capabilities from some newer engine. Each one is ignored, which
 		// leaves nothing this host can dispatch to it.
-		base.Capabilities = []flowstatev1.Capability{
-			flowstatev1.Capability(9998),
-			flowstatev1.Capability(9999),
+		base.Capabilities = []pluginv1.Capability{
+			pluginv1.Capability(9998),
+			pluginv1.Capability(9999),
 		}
 		return base, nil
 
 	case "future-cap":
 		// A capability from a newer engine, alongside one this host knows. The
 		// unknown one must be ignored rather than refused.
-		base.Capabilities = []flowstatev1.Capability{
-			flowstatev1.Capability_CAPABILITY_SECRETS,
-			flowstatev1.Capability(9999),
+		base.Capabilities = []pluginv1.Capability{
+			pluginv1.Capability_CAPABILITY_SECRETS,
+			pluginv1.Capability(9999),
 		}
 		base.Schemes = []string{"future"}
 		return base, nil
 
 	case "secrets-no-schemes":
-		base.Capabilities = []flowstatev1.Capability{flowstatev1.Capability_CAPABILITY_SECRETS}
+		base.Capabilities = []pluginv1.Capability{pluginv1.Capability_CAPABILITY_SECRETS}
 		return base, nil
 
 	case "tasks-no-tasks":
-		base.Capabilities = []flowstatev1.Capability{flowstatev1.Capability_CAPABILITY_TASKS}
+		base.Capabilities = []pluginv1.Capability{pluginv1.Capability_CAPABILITY_TASKS}
 		return base, nil
 
 	case "builtin-task":
-		base.Capabilities = []flowstatev1.Capability{flowstatev1.Capability_CAPABILITY_TASKS}
-		base.Tasks = []*flowstatev1.TaskManifest{{Name: "http", Summary: "shadows a built-in"}}
+		base.Capabilities = []pluginv1.Capability{pluginv1.Capability_CAPABILITY_TASKS}
+		base.Tasks = []*pluginv1.TaskManifest{{Name: "http", Summary: "shadows a built-in"}}
 		return base, nil
 
 	case "dup-one", "dup-two":
-		base.Capabilities = []flowstatev1.Capability{flowstatev1.Capability_CAPABILITY_SECRETS}
+		base.Capabilities = []pluginv1.Capability{pluginv1.Capability_CAPABILITY_SECRETS}
 		base.Schemes = []string{"shared"}
 		return base, nil
 
 	case "not-permitted":
-		base.Capabilities = []flowstatev1.Capability{flowstatev1.Capability_CAPABILITY_SECRETS}
+		base.Capabilities = []pluginv1.Capability{pluginv1.Capability_CAPABILITY_SECRETS}
 		base.Schemes = []string{"forbidden"}
 		return base, nil
 
 	case "bad-descriptor":
-		base.Capabilities = []flowstatev1.Capability{flowstatev1.Capability_CAPABILITY_TASKS}
-		base.Tasks = []*flowstatev1.TaskManifest{{
+		base.Capabilities = []pluginv1.Capability{pluginv1.Capability_CAPABILITY_TASKS}
+		base.Tasks = []*pluginv1.TaskManifest{{
 			Name:            "broken_task",
 			InputDescriptor: []byte("this is not a descriptor"),
 			InputMessage:    "nope.Nope",
@@ -303,12 +304,12 @@ func fakeManifest(mode string) (*flowstatev1.PluginManifest, error) {
 	default:
 		// The general-purpose fake: both capabilities, a scheme named after
 		// itself, and one task.
-		base.Capabilities = []flowstatev1.Capability{
-			flowstatev1.Capability_CAPABILITY_SECRETS,
-			flowstatev1.Capability_CAPABILITY_TASKS,
+		base.Capabilities = []pluginv1.Capability{
+			pluginv1.Capability_CAPABILITY_SECRETS,
+			pluginv1.Capability_CAPABILITY_TASKS,
 		}
 		base.Schemes = []string{mode}
-		base.Tasks = []*flowstatev1.TaskManifest{{
+		base.Tasks = []*pluginv1.TaskManifest{{
 			Name:    strings.ReplaceAll(mode, "-", "_") + "_task",
 			Summary: "a fake task",
 			// Reuses a message the engine already has, which exercises the
@@ -322,48 +323,48 @@ func fakeManifest(mode string) (*flowstatev1.PluginManifest, error) {
 
 // fakePluginService answers the capability handshake.
 type fakePluginService struct {
-	flowstatev1connect.UnimplementedPluginServiceHandler
+	pluginv1connect.UnimplementedPluginServiceHandler
 
-	manifest *flowstatev1.PluginManifest
+	manifest *pluginv1.PluginManifest
 	mode     string
 }
 
-func (s *fakePluginService) Describe(context.Context, *connect.Request[flowstatev1.DescribePluginRequest]) (*connect.Response[flowstatev1.DescribePluginResponse], error) {
+func (s *fakePluginService) Describe(context.Context, *connect.Request[pluginv1.DescribeRequest]) (*connect.Response[pluginv1.DescribeResponse], error) {
 	if s.mode == "describe-fails" {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("describe is broken"))
 	}
-	return connect.NewResponse(&flowstatev1.DescribePluginResponse{Manifest: s.manifest}), nil
+	return connect.NewResponse(&pluginv1.DescribeResponse{Manifest: s.manifest}), nil
 }
 
-func (s *fakePluginService) Health(context.Context, *connect.Request[flowstatev1.HealthRequest]) (*connect.Response[flowstatev1.HealthResponse], error) {
+func (s *fakePluginService) Health(context.Context, *connect.Request[pluginv1.HealthRequest]) (*connect.Response[pluginv1.HealthResponse], error) {
 	switch s.mode {
 	case "sick":
-		return connect.NewResponse(&flowstatev1.HealthResponse{
-			Status:  flowstatev1.HealthResponse_STATUS_NOT_SERVING,
+		return connect.NewResponse(&pluginv1.HealthResponse{
+			Status:  pluginv1.HealthResponse_STATUS_NOT_SERVING,
 			Message: "the backend this plugin needs is unreachable",
 		}), nil
 	case "health-fails":
 		return nil, connect.NewError(connect.CodeUnavailable, errors.New("cannot answer"))
 	default:
-		return connect.NewResponse(&flowstatev1.HealthResponse{
-			Status: flowstatev1.HealthResponse_STATUS_SERVING,
+		return connect.NewResponse(&pluginv1.HealthResponse{
+			Status: pluginv1.HealthResponse_STATUS_SERVING,
 		}), nil
 	}
 }
 
 // fakeSecretService answers secret resolutions.
 type fakeSecretService struct {
-	flowstatev1connect.UnimplementedSecretServiceHandler
+	pluginv1connect.UnimplementedSecretServiceHandler
 
 	mode string
 }
 
-func (s *fakeSecretService) Resolve(ctx context.Context, req *connect.Request[flowstatev1.ResolveSecretRequest]) (*connect.Response[flowstatev1.ResolveSecretResponse], error) {
+func (s *fakeSecretService) Resolve(ctx context.Context, req *connect.Request[pluginv1.ResolveRequest]) (*connect.Response[pluginv1.ResolveResponse], error) {
 	name := req.Msg.GetRef().GetName()
 
 	switch {
 	case s.mode == "huge":
-		return connect.NewResponse(&flowstatev1.ResolveSecretResponse{
+		return connect.NewResponse(&pluginv1.ResolveResponse{
 			Value: make([]byte, 256<<10),
 		}), nil
 
@@ -381,7 +382,7 @@ func (s *fakeSecretService) Resolve(ctx context.Context, req *connect.Request[fl
 		return nil, connect.NewError(connect.CodeUnavailable, errors.New("backend unreachable"))
 
 	case name == "empty":
-		return connect.NewResponse(&flowstatev1.ResolveSecretResponse{}), nil
+		return connect.NewResponse(&pluginv1.ResolveResponse{}), nil
 	}
 
 	// The namespace is part of the answer, so a test can prove it was carried
@@ -394,24 +395,24 @@ func (s *fakeSecretService) Resolve(ctx context.Context, req *connect.Request[fl
 		value += "-as-" + identity.GetSubject()
 	}
 
-	return connect.NewResponse(&flowstatev1.ResolveSecretResponse{Value: []byte(value)}), nil
+	return connect.NewResponse(&pluginv1.ResolveResponse{Value: []byte(value)}), nil
 }
 
 // fakeTaskService answers task executions.
 type fakeTaskService struct {
-	flowstatev1connect.UnimplementedTaskServiceHandler
+	pluginv1connect.UnimplementedTaskServiceHandler
 
 	mode string
 }
 
-func (s *fakeTaskService) Execute(ctx context.Context, req *connect.Request[flowstatev1.ExecuteTaskRequest]) (*connect.Response[flowstatev1.ExecuteTaskResponse], error) {
+func (s *fakeTaskService) Execute(ctx context.Context, req *connect.Request[pluginv1.ExecuteRequest]) (*connect.Response[pluginv1.ExecuteResponse], error) {
 	switch s.mode {
 	case "huge":
 		big := make([]byte, 256<<10)
 		for i := range big {
 			big[i] = 'a'
 		}
-		return connect.NewResponse(&flowstatev1.ExecuteTaskResponse{
+		return connect.NewResponse(&pluginv1.ExecuteResponse{
 			Outputs: &flowstatev1.Node_Outputs{
 				NamedValues: map[string]*flowstatev1.Value{
 					"result": flowstatev1.NewLiteral(string(big)),
@@ -425,14 +426,14 @@ func (s *fakeTaskService) Execute(ctx context.Context, req *connect.Request[flow
 
 	case "retryable":
 		err := connect.NewError(connect.CodeInternal, errors.New("transient trouble"))
-		if detail, dErr := connect.NewErrorDetail(&flowstatev1.ExecuteTaskResponse{Retryable: true}); dErr == nil {
+		if detail, dErr := connect.NewErrorDetail(&pluginv1.ExecuteResponse{Retryable: true}); dErr == nil {
 			err.AddDetail(detail)
 		}
 		return nil, err
 
 	case "permanent":
 		err := connect.NewError(connect.CodeInternal, errors.New("permanent trouble"))
-		if detail, dErr := connect.NewErrorDetail(&flowstatev1.ExecuteTaskResponse{Retryable: false}); dErr == nil {
+		if detail, dErr := connect.NewErrorDetail(&pluginv1.ExecuteResponse{Retryable: false}); dErr == nil {
 			err.AddDetail(detail)
 		}
 		return nil, err
@@ -441,7 +442,7 @@ func (s *fakeTaskService) Execute(ctx context.Context, req *connect.Request[flow
 		// A classified permanent failure whose cause is not bad inputs. The kind
 		// the host reports has to say permission rather than blaming the inputs.
 		err := connect.NewError(connect.CodePermissionDenied, errors.New("the backend refused"))
-		if detail, dErr := connect.NewErrorDetail(&flowstatev1.ExecuteTaskResponse{Retryable: false}); dErr == nil {
+		if detail, dErr := connect.NewErrorDetail(&pluginv1.ExecuteResponse{Retryable: false}); dErr == nil {
 			err.AddDetail(detail)
 		}
 		return nil, err
@@ -457,7 +458,7 @@ func (s *fakeTaskService) Execute(ctx context.Context, req *connect.Request[flow
 	// so a test can prove those crossed the boundary.
 	message := req.Msg.GetTask().GetInputs()["message"].GetLiteral().GetStringValue()
 
-	return connect.NewResponse(&flowstatev1.ExecuteTaskResponse{
+	return connect.NewResponse(&pluginv1.ExecuteResponse{
 		Outputs: &flowstatev1.Node_Outputs{
 			NamedValues: map[string]*flowstatev1.Value{
 				"result":    flowstatev1.NewLiteral(message),

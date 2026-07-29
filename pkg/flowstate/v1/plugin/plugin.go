@@ -14,6 +14,7 @@ import (
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/proto"
 
+	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
@@ -150,7 +151,7 @@ type Plugin struct {
 
 	mu       sync.RWMutex
 	inst     *instance
-	manifest *flowstatev1.PluginManifest
+	manifest *pluginv1.PluginManifest
 	state    State
 	lastErr  error
 	restarts int
@@ -203,7 +204,7 @@ func (p *Plugin) Path() string { return p.path }
 
 // Manifest returns what the plugin said about itself. The result is a shared
 // message and must not be modified; clone it if it needs to be.
-func (p *Plugin) Manifest() *flowstatev1.PluginManifest {
+func (p *Plugin) Manifest() *pluginv1.PluginManifest {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.manifest
@@ -248,7 +249,7 @@ func (p *Plugin) PID() int {
 }
 
 // HasCapability reports whether the plugin advertised a capability.
-func (p *Plugin) HasCapability(c flowstatev1.Capability) bool {
+func (p *Plugin) HasCapability(c pluginv1.Capability) bool {
 	return slices.Contains(p.Manifest().GetCapabilities(), c)
 }
 
@@ -257,7 +258,7 @@ func (p *Plugin) HasCapability(c flowstatev1.Capability) bool {
 // scheme listed without the capability is not a scheme this host will dispatch
 // to it.
 func (p *Plugin) Schemes() []string {
-	if !p.HasCapability(flowstatev1.Capability_CAPABILITY_SECRETS) {
+	if !p.HasCapability(pluginv1.Capability_CAPABILITY_SECRETS) {
 		return nil
 	}
 	return slices.Clone(p.Manifest().GetSchemes())
@@ -265,8 +266,8 @@ func (p *Plugin) Schemes() []string {
 
 // Tasks returns the task manifests the plugin provides, or nothing if it did not
 // advertise the tasks capability.
-func (p *Plugin) Tasks() []*flowstatev1.TaskManifest {
-	if !p.HasCapability(flowstatev1.Capability_CAPABILITY_TASKS) {
+func (p *Plugin) Tasks() []*pluginv1.TaskManifest {
+	if !p.HasCapability(pluginv1.Capability_CAPABILITY_TASKS) {
 		return nil
 	}
 	return slices.Clone(p.Manifest().GetTasks())
@@ -319,7 +320,7 @@ func (p *Plugin) CheckHealth(ctx context.Context) Health {
 	ctx, cancel := context.WithTimeout(ctx, p.cfg.HealthTimeout)
 	defer cancel()
 
-	resp, err := inst.clients.plugin.Health(ctx, connect.NewRequest(&flowstatev1.HealthRequest{}))
+	resp, err := inst.clients.plugin.Health(ctx, connect.NewRequest(&pluginv1.HealthRequest{}))
 
 	var health Health
 	switch {
@@ -329,7 +330,7 @@ func (p *Plugin) CheckHealth(ctx context.Context) Health {
 			CheckedAt: time.Now(),
 			Err:       pluginError(p.name, p.path, err),
 		}
-	case resp.Msg.GetStatus() == flowstatev1.HealthResponse_STATUS_SERVING:
+	case resp.Msg.GetStatus() == pluginv1.HealthResponse_STATUS_SERVING:
 		health = Health{Status: HealthServing, CheckedAt: time.Now()}
 	default:
 		// Anything that is not explicitly serving is treated as not serving,
@@ -356,7 +357,7 @@ func (p *Plugin) recordHealth(h Health) {
 // start launches the process, handshakes, and asks the plugin to describe
 // itself. It is the whole of what has to succeed for a plugin to be usable, and
 // it is the same on the first launch and on every relaunch.
-func (p *Plugin) start() (*instance, *flowstatev1.PluginManifest, error) {
+func (p *Plugin) start() (*instance, *pluginv1.PluginManifest, error) {
 	inst, err := launch(p.procCtx, p.cfg, Found{Name: p.name, Path: p.path})
 	if err != nil {
 		return nil, nil, err
@@ -381,11 +382,11 @@ func (p *Plugin) start() (*instance, *flowstatev1.PluginManifest, error) {
 }
 
 // describe calls Describe and refuses anything the host cannot accept.
-func (p *Plugin) describe(inst *instance) (*flowstatev1.PluginManifest, error) {
+func (p *Plugin) describe(inst *instance) (*pluginv1.PluginManifest, error) {
 	ctx, cancel := context.WithTimeout(p.procCtx, p.cfg.DescribeTimeout)
 	defer cancel()
 
-	resp, err := inst.clients.plugin.Describe(ctx, connect.NewRequest(&flowstatev1.DescribePluginRequest{
+	resp, err := inst.clients.plugin.Describe(ctx, connect.NewRequest(&pluginv1.DescribeRequest{
 		HostVersion: p.cfg.HostVersion,
 	}))
 	if err != nil {
@@ -402,7 +403,7 @@ func (p *Plugin) describe(inst *instance) (*flowstatev1.PluginManifest, error) {
 
 // checkManifest applies every rule a manifest has to satisfy before the host
 // will use anything the plugin offers.
-func (p *Plugin) checkManifest(manifest *flowstatev1.PluginManifest) error {
+func (p *Plugin) checkManifest(manifest *pluginv1.PluginManifest) error {
 	// The schema's own rules first, so that a field this code goes on to read is
 	// known to be within its declared bounds.
 	if err := flowstatev1.Validate(manifest); err != nil {
@@ -423,14 +424,14 @@ func (p *Plugin) checkManifest(manifest *flowstatev1.PluginManifest) error {
 	// working against a plugin that also serves something newer. Nothing is
 	// dispatched for it, so ignoring it is still fail-closed — the host acts
 	// only on capabilities it understands.
-	var known []flowstatev1.Capability
+	var known []pluginv1.Capability
 	for _, c := range manifest.GetCapabilities() {
 		switch c {
-		case flowstatev1.Capability_CAPABILITY_SECRETS, flowstatev1.Capability_CAPABILITY_TASKS:
+		case pluginv1.Capability_CAPABILITY_SECRETS, pluginv1.Capability_CAPABILITY_TASKS:
 			if !slices.Contains(known, c) {
 				known = append(known, c)
 			}
-		case flowstatev1.Capability_CAPABILITY_UNSPECIFIED:
+		case pluginv1.Capability_CAPABILITY_UNSPECIFIED:
 			// Not a future capability: the zero value where a real one was
 			// required, which is a malformed manifest rather than a newer plugin.
 			return fmt.Errorf("%w: advertises CAPABILITY_UNSPECIFIED", ErrManifest)
@@ -447,8 +448,8 @@ func (p *Plugin) checkManifest(manifest *flowstatev1.PluginManifest) error {
 		)
 	}
 
-	secrets := slices.Contains(known, flowstatev1.Capability_CAPABILITY_SECRETS)
-	tasks := slices.Contains(known, flowstatev1.Capability_CAPABILITY_TASKS)
+	secrets := slices.Contains(known, pluginv1.Capability_CAPABILITY_SECRETS)
+	tasks := slices.Contains(known, pluginv1.Capability_CAPABILITY_TASKS)
 
 	switch {
 	case secrets && len(manifest.GetSchemes()) == 0:
@@ -777,7 +778,7 @@ func backoffFor(attempt int, base, max time.Duration) time.Duration {
 
 // manifestUnchanged reports whether a relaunched plugin still offers exactly
 // what it offered before, naming the first difference it finds.
-func manifestUnchanged(before, after *flowstatev1.PluginManifest) error {
+func manifestUnchanged(before, after *pluginv1.PluginManifest) error {
 	if before == nil || after == nil {
 		return nil
 	}
@@ -804,7 +805,7 @@ func manifestUnchanged(before, after *flowstatev1.PluginManifest) error {
 		)
 	}
 
-	byName := make(map[string]*flowstatev1.TaskManifest, len(beforeTasks))
+	byName := make(map[string]*pluginv1.TaskManifest, len(beforeTasks))
 	for _, task := range beforeTasks {
 		byName[task.GetName()] = task
 	}
@@ -849,7 +850,7 @@ func sameSet[T comparable](a, b []T) bool {
 }
 
 // capabilityNames renders capabilities for a log line or an error.
-func capabilityNames(caps []flowstatev1.Capability) []string {
+func capabilityNames(caps []pluginv1.Capability) []string {
 	names := make([]string, 0, len(caps))
 	for _, c := range caps {
 		names = append(names, c.String())
@@ -859,7 +860,7 @@ func capabilityNames(caps []flowstatev1.Capability) []string {
 }
 
 // taskNames renders task names for a log line or an error.
-func taskNames(tasks []*flowstatev1.TaskManifest) []string {
+func taskNames(tasks []*pluginv1.TaskManifest) []string {
 	names := make([]string, 0, len(tasks))
 	for _, t := range tasks {
 		names = append(names, truncate(t.GetName(), 64))

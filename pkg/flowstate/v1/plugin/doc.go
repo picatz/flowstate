@@ -7,7 +7,7 @@
 // the worker down, its dependencies cannot conflict with the engine's, and a bug
 // in it cannot read the worker's memory. Those become the operating system's
 // problem, which is where isolation actually exists. The protocol is the schema
-// in proto/flowstate/v1/plugin.proto, so a plugin may be written in any language
+// in proto/flowstate/plugin/v1/plugin.proto, so a plugin may be written in any language
 // with Connect or gRPC support and the engine loads nothing to talk to one.
 //
 // # Using it
