@@ -961,9 +961,32 @@ func requireRoundTrip(t *testing.T, workflow *v1.Workflow) {
 		t.Fatalf("Unmarshal(Marshal()) error: %v\n%s", err, data)
 	}
 
-	if !proto.Equal(workflow, again) {
+	// The profile is not part of what a file round-trips, and cannot be.
+	//
+	// It records the vocabulary a spec was compiled against, and the compiler
+	// stamps it — there is deliberately no `profile:` key, because an author
+	// choosing a vocabulary per file is the thing one profile exists to remove. So
+	// Marshal has nothing to write it as, and Unmarshal always stamps the current
+	// one.
+	//
+	// That is correct rather than a gap. A Flowfile is the source and the spec is
+	// the artifact: recompiling a file with a build that has a newer profile
+	// *should* yield the newer profile, in the same way recompiling yields whatever
+	// else that build does. What must not change underneath a run is the profile
+	// recorded in the spec it is already executing, and nothing here touches that.
+	//
+	// Compared explicitly rather than ignored, so a round trip that dropped the
+	// stamp entirely — or wrote one the compiler did not choose — still fails.
+	if again.GetProfile() != v1.CurrentProfile {
+		t.Errorf("round trip produced profile %q, want the compiler's %q",
+			again.GetProfile(), v1.CurrentProfile)
+	}
+	normalized := proto.Clone(again).(*v1.Workflow)
+	normalized.Profile = workflow.GetProfile()
+
+	if !proto.Equal(workflow, normalized) {
 		t.Errorf("round trip changed the workflow:\n%s\nwritten as:\n%s",
-			cmp.Diff(workflow, again, protocmp.Transform()), data)
+			cmp.Diff(workflow, normalized, protocmp.Transform()), data)
 	}
 }
 

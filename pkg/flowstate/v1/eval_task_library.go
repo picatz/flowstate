@@ -579,24 +579,25 @@ func taskFuncCEL(ctx context.Context, input map[string]*Value, scope *Scope) (*N
 	}
 
 	varBindings := map[string]*Value{}
-	var libs []string
 	for k, v := range input {
 		switch k {
 		case "expr":
 			continue
 		case "libs":
+			// Read and discarded. The workflow's profile decides the vocabulary now,
+			// so this selects nothing — but it is still validated as a list of
+			// strings rather than falling through to `default`, where an unknown
+			// input becomes a *variable* the expression can name. Silently turning a
+			// retired input into a binding called `libs` is a worse answer than
+			// ignoring it, and the validator tells the author to delete the key.
 			if lit := v.GetLiteral(); lit != nil {
 				if lv := lit.GetListValue(); lv != nil {
 					for _, elem := range lv.Values {
-						if s := elem.GetStringValue(); s != "" {
-							libs = append(libs, s)
-						} else {
+						if elem.GetStringValue() == "" {
 							return nil, fmt.Errorf("libs elements must be strings")
 						}
 					}
-				} else if s := lit.GetStringValue(); s != "" {
-					libs = append(libs, s)
-				} else {
+				} else if lit.GetStringValue() == "" {
 					return nil, fmt.Errorf("libs input must be a string or list of strings")
 				}
 			} else {
@@ -623,9 +624,18 @@ func taskFuncCEL(ctx context.Context, input map[string]*Value, scope *Scope) (*N
 
 	ev := DefaultEvaluator()
 
-	// The set of available extension libraries, and the cost limits every
-	// expression runs under, are owned by the evaluator (see celenv.go).
-	env, err := ev.Env(libs...)
+	// The workflow's profile, not this step's `libs:`.
+	//
+	// A `cel` step used to choose its own vocabulary, which is what made the rest
+	// of the file speak a poorer one — `if:` and `items:` have no key to choose
+	// with. The profile is the whole workflow's, so this step gets the same
+	// vocabulary as every expression around it, and `libs:` no longer selects
+	// anything. It is still accepted, still reported as retired by the validator,
+	// and deleted from the schema in the change that follows this one.
+	//
+	// Cost limits and environment caching are unchanged and still the evaluator's
+	// (see celenv.go); the profile decides membership and nothing else.
+	env, err := ev.ProfileEnv(CurrentProfile)
 	if err != nil {
 		return nil, err
 	}

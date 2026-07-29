@@ -212,3 +212,94 @@ func TestExtensionLibrariesAreSortedAndBuildable(t *testing.T) {
 		}
 	}
 }
+
+// A profile names a frozen set, and both halves of that need checking.
+//
+// The membership below was first written from memory and was wrong in both
+// directions — it invented two libraries this build does not have and omitted two
+// it does. A list of names beside the thing it describes is a second source of
+// truth, which is the failure this repo keeps finding in documentation; a list of
+// names that decides what a stored expression *means* is the same failure with a
+// run attached.
+
+// TestEveryProfileNamesRealLibraries holds forever, for every profile.
+//
+// A profile naming a library this build does not have is a spec whose vocabulary
+// cannot be assembled, which surfaces as a run failing to evaluate an expression
+// that was checked when it was written.
+func TestEveryProfileNamesRealLibraries(t *testing.T) {
+	t.Parallel()
+
+	available := map[string]bool{}
+	for _, name := range ExtensionLibraries() {
+		available[name] = true
+	}
+
+	for profile, libs := range profiles {
+		for _, name := range libs {
+			if !available[name] {
+				t.Errorf("profile %q names CEL library %q, which this build does not have\n"+
+					"  available: %s", profile, name, strings.Join(ExtensionLibraries(), ", "))
+			}
+		}
+	}
+}
+
+// TestCurrentProfileCoversEveryLibrary is deliberately a forcing function rather
+// than an invariant.
+//
+// It is true today only because profiles were introduced when every library
+// existed, and it is *meant* to fail the day a library is added — at which point
+// the person adding it has a decision to make, and this test is where they are
+// told to make it:
+//
+//   - while nothing is released, add the library to the current profile
+//   - once a release exists, add a *new* profile, because a spec already recorded
+//     as CurrentProfile was checked against a vocabulary that did not include it
+//
+// Silently growing the current profile after a release is the failure this whole
+// mechanism exists to prevent, so the choice belongs to a human rather than to a
+// derived list.
+func TestCurrentProfileCoversEveryLibrary(t *testing.T) {
+	t.Parallel()
+
+	libs, err := ProfileLibraries(CurrentProfile)
+	if err != nil {
+		t.Fatalf("the current profile does not resolve: %v", err)
+	}
+
+	inProfile := map[string]bool{}
+	for _, name := range libs {
+		inProfile[name] = true
+	}
+
+	for _, name := range ExtensionLibraries() {
+		if !inProfile[name] {
+			t.Errorf("CEL library %q exists and profile %q does not include it\n"+
+				"  if nothing is released yet, add it to that profile\n"+
+				"  if a release exists, add a new profile instead — a spec recorded as %q was\n"+
+				"  checked against a vocabulary without %q, and must keep meaning that",
+				name, CurrentProfile, CurrentProfile, name)
+		}
+	}
+}
+
+// TestAnUnknownProfileIsRefused covers the fail-closed direction.
+//
+// A worker that cannot resolve the vocabulary a spec was compiled against does
+// not know what its expressions mean. Falling back to whatever this build has is
+// how a run quietly starts computing something else.
+func TestAnUnknownProfileIsRefused(t *testing.T) {
+	t.Parallel()
+
+	if _, err := ProfileLibraries("2099.9"); err == nil {
+		t.Fatal("an unknown profile resolved; a worker would evaluate a spec it cannot read")
+	}
+
+	// The empty profile is the one exception, and it is a compatibility arm rather
+	// than a guess: nothing has been released, so a spec without a profile can only
+	// be one this build compiled before the field existed.
+	if _, err := ProfileLibraries(""); err != nil {
+		t.Fatalf("a spec with no recorded profile was refused: %v", err)
+	}
+}

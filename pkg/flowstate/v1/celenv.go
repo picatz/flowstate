@@ -228,14 +228,33 @@ func (e *Evaluator) EvalParsed(ctx context.Context, env *cel.Env, parsed *expr.P
 	return e.Eval(ctx, env, cel.ParsedExprToAst(parsed), activation)
 }
 
-// EvalParsedBase evaluates a previously parsed expression in the base
-// environment, which is the common case for resolving step inputs.
+// EvalParsedBase evaluates a previously parsed expression in the workflow's
+// profile environment, which is the common case for resolving step inputs.
+//
+// Named "base" for what it is not — it carries no task's own scope — rather than
+// for a smaller vocabulary. It used to mean both: an expression resolved here saw
+// no extension libraries at all, so `if:`, `items:` and every task input spoke a
+// poorer dialect than the `cel` step beside them. One profile is what removes that,
+// and this is where most of the file feels it.
 func (e *Evaluator) EvalParsedBase(ctx context.Context, parsed *expr.ParsedExpr, activation any) (ref.Val, error) {
-	env, err := e.Env()
+	env, err := e.ProfileEnv(CurrentProfile)
 	if err != nil {
 		return nil, err
 	}
 	return e.EvalParsed(ctx, env, parsed, activation)
+}
+
+// ProfileEnv returns the environment a named profile describes.
+//
+// Goes through [Evaluator.Env], so a profile's environment is cached and cost-
+// limited exactly like any other — the profile decides *membership*, and nothing
+// about how an environment is built or bounded moves with it.
+func (e *Evaluator) ProfileEnv(profile string) (*cel.Env, error) {
+	libs, err := ProfileLibraries(profile)
+	if err != nil {
+		return nil, err
+	}
+	return e.Env(libs...)
 }
 
 // EvalString parses and evaluates an expression string with the named
@@ -292,6 +311,87 @@ var extensionLibraries = map[string][]cel.EnvOption{
 func ExtensionLibraries() []string {
 	names := make([]string, 0, len(extensionLibraries))
 	for name := range extensionLibraries {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
+}
+
+// A workflow speaks one dialect, and it is the same dialect everywhere in the file.
+//
+// It used to speak two. A `cel` step could name extension libraries with `libs:`,
+// and nothing else in the file could — so `if:`, `items:`, `wait_until:` and every
+// task input were evaluated in an environment without them. Two expressions one
+// line apart, in one document, with different vocabularies, and no way for a
+// reader to infer which was which.
+//
+// The workaround for that already existed, one library at a time: see
+// durationLibrary above, which is unconditional precisely because "a `wait_until:`
+// step has no `libs:` key to enable anything with". That is this problem, solved
+// for the library somebody hit first. A profile generalises it.
+//
+// # Why a named set rather than "everything this build has"
+//
+// Because a run has to keep meaning what it meant. Adding a library to a future
+// build must not change how an expression already stored in `RunState` evaluates —
+// invariant 10 — and "all of them" is a set that changes underfoot. A profile
+// names a fixed membership, the compiler records which one a spec was built for,
+// and a worker resolves that name rather than asking what it happens to have.
+
+// CurrentProfile is the language profile a Flowfile compiles to today.
+//
+// Named like an edition and versioned separately on purpose: an edition is a
+// property of a *file*, read when it compiles and gone afterwards, while a profile
+// is a property of a *run* and travels in the spec. A file's grammar can be
+// retired without touching anything already executing; the vocabulary its
+// expressions were compiled against cannot.
+const CurrentProfile = "2026.1"
+
+// profiles is the membership of each named profile.
+//
+// A profile is append-only in the sense that matters: once a name has been
+// recorded in a spec, its membership is frozen. Adding libraries means adding a
+// *new* profile, so that a run compiled against the old one keeps the vocabulary
+// it was checked against.
+var profiles = map[string][]string{
+	// The first profile is every library this build shipped with when profiles
+	// were introduced, which is also every library that existed. That is a
+	// coincidence of timing rather than a rule: the second profile will differ
+	// from "everything available" the moment a library is added.
+	CurrentProfile: {
+		"bindings", "comprehensions", "encoders", "json", "lists",
+		"math", "optional", "protos", "regex", "sets", "strings",
+	},
+}
+
+// ProfileLibraries returns the libraries a named profile includes.
+//
+// An unknown profile is an error rather than a fallback. A worker that cannot
+// resolve the vocabulary a spec was compiled against does not know what the
+// expressions in it mean, and guessing is how a run quietly starts computing
+// something else — the fail-closed rule, applied to the language itself.
+func ProfileLibraries(profile string) ([]string, error) {
+	if profile == "" {
+		// A spec compiled before profiles existed. There is exactly one, because
+		// nothing has been released, so resolving it to the first profile restores
+		// what it meant rather than guessing at it.
+		profile = CurrentProfile
+	}
+
+	libs, ok := profiles[profile]
+	if !ok {
+		return nil, fmt.Errorf(
+			"unknown language profile %q; this build knows %s — the spec was compiled by a newer "+
+				"build than this worker, which cannot evaluate it",
+			profile, strings.Join(profileNames(), ", "))
+	}
+	return slices.Clone(libs), nil
+}
+
+// profileNames returns the known profile names, sorted, for diagnostics.
+func profileNames() []string {
+	names := make([]string, 0, len(profiles))
+	for name := range profiles {
 		names = append(names, name)
 	}
 	slices.Sort(names)
