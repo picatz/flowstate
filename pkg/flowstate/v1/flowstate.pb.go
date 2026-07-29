@@ -338,7 +338,15 @@ type Node struct {
 	// how it is retried, and whether its failure ends the run.
 	//
 	// Unset means the engine's defaults apply.
-	Policy        *StepPolicy `protobuf:"bytes,4,opt,name=policy,proto3" json:"policy,omitempty"`
+	Policy *StepPolicy `protobuf:"bytes,4,opt,name=policy,proto3" json:"policy,omitempty"`
+	// Description is optional prose about what this step is for.
+	//
+	// It belongs to the step rather than to the task the step runs, which is where
+	// it used to live. Once a step names its task directly, the value under `echo:`
+	// is that task's inputs, so a `description` written there would be an input of
+	// that name; and a `for_each` or a `sleep` is just as worth explaining as a
+	// task is. The step is the thing an author is describing either way.
+	Description   *string `protobuf:"bytes,8,opt,name=description,proto3,oneof" json:"description,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -435,6 +443,13 @@ func (x *Node) GetPolicy() *StepPolicy {
 		return x.Policy
 	}
 	return nil
+}
+
+func (x *Node) GetDescription() string {
+	if x != nil && x.Description != nil {
+		return *x.Description
+	}
+	return ""
 }
 
 type isNode_Kind interface {
@@ -3735,7 +3750,7 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\x0e\n" +
-	"\f_description\"\xb3\x04\n" +
+	"\f_description\"\xf4\x04\n" +
 	"\x04Node\x123\n" +
 	"\x02id\x18\x01 \x01(\tB#\xe2A\x01\x02\xbaH\x1c\xc8\x01\x01r\x17\x10\x01\x18\x80\x012\x10^[A-Za-z0-9-_]+$R\x02id\x12(\n" +
 	"\x04task\x18\x02 \x01(\v2\x12.flowstate.v1.TaskH\x00R\x04task\x122\n" +
@@ -3743,13 +3758,15 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"\bparallel\x18\x06 \x01(\v2\x16.flowstate.v1.ParallelH\x00R\bparallel\x12(\n" +
 	"\x04wait\x18\a \x01(\v2\x12.flowstate.v1.WaitH\x00R\x04wait\x121\n" +
 	"\tcondition\x18\x03 \x01(\v2\x13.flowstate.v1.ValueR\tcondition\x120\n" +
-	"\x06policy\x18\x04 \x01(\v2\x18.flowstate.v1.StepPolicyR\x06policy\x1a\xc3\x01\n" +
+	"\x06policy\x18\x04 \x01(\v2\x18.flowstate.v1.StepPolicyR\x06policy\x12/\n" +
+	"\vdescription\x18\b \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02H\x01R\vdescription\x88\x01\x01\x1a\xc3\x01\n" +
 	"\aOutputs\x12c\n" +
 	"\fnamed_values\x18\x01 \x03(\v2+.flowstate.v1.Node.Outputs.NamedValuesEntryB\x13\xe2A\x01\x02\xbaH\f\xc8\x01\x01\x9a\x01\x06\"\x04r\x02\x10\x01R\vnamedValues\x1aS\n" +
 	"\x10NamedValuesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12)\n" +
 	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01B\r\n" +
-	"\x04kind\x12\x05\xbaH\x02\b\x01\"j\n" +
+	"\x04kind\x12\x05\xbaH\x02\b\x01B\x0e\n" +
+	"\f_description\"j\n" +
 	"\tSecretRef\x126\n" +
 	"\x06scheme\x18\x01 \x01(\tB\x1e\xe2A\x01\x02\xbaH\x17\xc8\x01\x01r\x12\x10\x01\x18 2\f^[a-z0-9-]+$R\x06scheme\x12%\n" +
 	"\x04name\x18\x02 \x01(\tB\x11\xe2A\x01\x02\xbaH\n" +

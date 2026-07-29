@@ -528,6 +528,10 @@ func describeNode(n ast.Node) string {
 		return "a tagged value"
 	case *ast.MergeKeyNode:
 		return "a merge key"
+	case *ast.AliasNode:
+		return "an alias"
+	case *ast.AnchorNode:
+		return "an anchor"
 	case *ast.InfinityNode, *ast.NanNode:
 		return "a number"
 	default:

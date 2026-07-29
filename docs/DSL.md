@@ -53,39 +53,42 @@ recover an author's intent from `timeout: 30s` when both readings are legitimate
 so the constraint belongs at the moment the name is chosen: `Registry.Register`
 refuses a reserved name and a misconfigured plugin fails at startup.
 
-The rest of the flattening is not landed. It is a single sweep across the parser,
-the marshaller, the language server's positional model and completion tables,
-fifteen examples, and roughly three hundred embedded YAML fixtures — and it must
-land in one piece, because half a grammar is not a grammar. The parser and
-marshaller changes were written and backed out rather than left half-applied; the
-work is scoped, not started.
+*Since written:* the rest of it landed, in one sweep across the parser, the
+marshaller, the language server's positional model and completion tables, every
+example, and the embedded YAML fixtures — in one piece, because half a grammar is
+not a grammar.
 
-Two findings from that attempt are worth keeping, because both would have been
-discovered late:
+Three findings from the attempt that preceded it turned out to be the whole cost,
+and all three would otherwise have been discovered late:
 
 - **Positions move.** Every diagnostic in a task step shifts two lines and two
   columns, so the position assertions are not incidental to the migration — they
   are most of it, and each one needs reading rather than resetting to whatever the
   new output says.
 - **Flow style and cursor markers do not rewrite mechanically.** `task: {name: echo,
-  inputs: {...}}` appears in the README and in one LSP fixture, and the completion
+  inputs: {...}}` appeared in the README and in one LSP fixture, and the completion
   tests place a `|` cursor marker *inside* the shape being flattened, so the marker's
   meaning changes with it. A rewriter must refuse these rather than guess, which is
-  also what `flow fix` will have to do.
-- **`Task.description` has to go somewhere, and removing it is a reviewed break.**
+  what `flow fix` does.
+- **`Task.description` had to go somewhere, and the answer was not deletion.**
   The flat form has no place to write one: the value under `http:` is the inputs,
   so a `description` key there would collide with an input of that name. Deleting
   the field is the obvious answer and `buf breaking` refuses it — the repo runs
   FILE as well as WIRE rules, and FILE covers generated Go, so `GetDescription()`
   disappearing is a break even with the number reserved.
 
-  That refusal is correct and should not be worked around by loosening the rule.
-  A `reserved 2;` keeps the *wire* safe, which is the property that matters for a
+  That refusal is correct and was not worked around by loosening the rule. A
+  `reserved 2;` keeps the *wire* safe, which is the property that matters for a
   spec written by an older build; what FILE is protecting is source compatibility
-  for embedders, and the honest way to spend it is deliberately, in the commit
-  that lands the grammar, rather than quietly in a commit about something else.
-  It was removed here as a consequence of the flattening and put back when the
-  flattening was backed out.
+  for embedders, and that is spent deliberately or not at all.
+
+  What landed instead is `Node.description`: prose about a step, written directly
+  under `id:`. That is the better answer regardless of the break, because the step
+  is what an author was describing either way — and a `for_each` or a `sleep` is as
+  worth explaining as a task is, which a field on `Task` could never serve.
+  `Task.description` therefore stays in the schema, unreachable from the grammar
+  and refused by the marshaller with a message naming the step key to write
+  instead, and its removal is a FILE break still to be spent.
 
 **One language profile, pinned per run.** Per-step `libs:` means `if:` and `items:`
 speak a poorer dialect than a `cel` step, in the same file, for no reason a reader
@@ -133,10 +136,49 @@ two spellings in the parser, the validator, the LSP table, the marshaller, and e
 test matrix that crosses them, for as long as the window lasts — and windows do not
 close on schedule.
 
-Instead: the edition boundary is the break, `flow fix --edition` rewrites files
+Instead: the edition boundary is the break, a rewriter moves files across it
 behaviour-preservingly, and the old spellings are *gone* rather than deprecated. A
 rewriter that runs in one second is a better migration story than a diagnostic that
 lives for a year.
+
+*Since written:* both halves exist — `edition:` in `flowfile/edition.go`, the rewriter
+in `flowfile/fix.go` and `cmd/flow/fix.go`, with `examples/edition-and-descriptions`
+carrying the explanation an author meets first. Building them settled four things this
+section left open:
+
+- **The edition is optional, and absent means the current one.** Requiring it would
+  put a line of ceremony at the top of every file to say the only thing it can
+  currently say, and a file that does not care which grammar it is in is the common
+  case. What writing one buys is a refusal instead of a silent reinterpretation, which
+  is worth having and not worth mandating.
+- **`flow fix` does not stamp an edition onto a file that lacks one.** A file with no
+  `edition:` has not asked to be pinned, and adding one would be the rewriter holding
+  an opinion the author did not. A marker that *is* written and is recognised does get
+  brought forward — otherwise the diagnostic saying "run `flow fix`" would name a
+  command that leaves the cause of the diagnostic in place.
+- **The command is `flow fix`, with no `--edition` flag.** The name proposed here
+  described the migration by the boundary it crosses, but a build has one grammar and
+  there is nothing else to rewrite a file *to*. A flag naming a target edition would
+  advertise a choice that cannot exist.
+- **An edition is a property of a file and stops there.** Declaring an older one does
+  not make an older grammar compile; carrying two grammars is the cost this section
+  refused. So an edition this build does not know is refused rather than translated,
+  and the schema has no field for it — no workload already running is touched by any
+  of this, because the stable contract is the compiled spec and not the source.
+
+Two implementation surprises are worth recording. A dated edition is a YAML float:
+`edition: 2026.1` arrives as a number, so the token's own source text is read rather
+than the value — converting would make `2026.10` and `2026.1` the same edition, and the
+tenth of a year would compile as the first. And the rewriter is deliberately not
+parse-then-marshal: the retired grammar no longer parses, which is the entire point, and
+a formatter would move every comment and requote every string in a diff that is supposed
+to be about one key. It edits the lines it must, copies the rest through byte for byte —
+so a file with nothing to change comes back identical, which is what makes running it
+over a directory safe — and refuses the shapes it would have to guess at: flow style,
+which has no line structure to rewrite, and a task standing behind a YAML alias, which
+has no name to rewrite it to. A refusal exits non-zero, as does `--check` finding work,
+so `flow fix . && git commit` cannot succeed over a file still written in a spelling
+nothing compiles.
 
 The general rule this repo should hold: **a deprecation is a decision deferred at
 everyone else's expense.** Carry compatibility for artifacts that outlive us — the
@@ -240,13 +282,19 @@ check that does not run.
 
 **Phase 1 — make the language smaller.** The naming model, verb-key flattening, one
 pinned profile, `vars` in its three positions, `edition:`, reserved-keyword
-diagnostics for the grammar Phase 4 will need, `flow fix --edition`.
+diagnostics for the grammar Phase 4 will need, and a rewriter across the edition
+boundary.
 
-Signal payloads under `payload` are done. Of the rest, the flattening is the item
-to take next and the one with a written execution plan below; pinning the profile
-is the only Phase 1 item that needs a schema break, so it goes last rather than
-first. Everything here
-removes a rule or a spelling.
+Done: signal payloads under `payload`; verb-key flattening, with the execution notes
+it produced kept below; `edition:`, optional and refusing rather than translating; and
+the rewriter, which is `flow fix` and takes no `--edition`. Prose about a step landed
+alongside the flattening as `description:`, since that is where the flattening left it
+with nowhere to go.
+
+Remaining: the naming model, one pinned profile, `vars` in its three positions, and the
+reserved-keyword diagnostics. Pinning the profile is the only Phase 1 item that needs a
+schema break, so it goes last rather than first. Everything here removes a rule or a
+spelling.
 
 **Phase 2 — the contract, with its checker.** `inputs`, `outputs`, `check:`,
 `env.Check` at validate and in the LSP, typed hover, the absent/null/default matrix,
@@ -264,8 +312,9 @@ publish.
 
 ## Executing the flattening
 
-Written down because it was attempted once and backed out, and the reasons were
-not the ones expected. Anyone picking it up should not have to rediscover these.
+*This landed.* It was written down when the change had been attempted once and backed
+out, because the reasons were not the ones expected; it is kept because those reasons
+held, and because the next grammar change will have the same shape.
 
 **It touches no proto.** `http:` with the request under it lowers to the same
 `Task{name, inputs}`, so `buf breaking` has nothing to say about it. That makes it
@@ -297,25 +346,35 @@ that they are not uniformly fragile:
   is the hard part; it is mostly not.
 
 **Two fixture shapes do not rewrite mechanically.** Flow style — `task: {name:
-echo, inputs: {...}}` — appears in the README and one LSP fixture. And the
+echo, inputs: {...}}` — appeared in the README and one LSP fixture. And the
 completion tests place a `|` cursor marker *inside* the shape being flattened, so
 the marker's meaning moves with it. A rewriter must refuse both rather than guess,
-which is also what `flow fix` will have to do; a script that silently mangles them
-is worse than one that stops.
+which is what `flow fix` does; a script that silently mangles them is worse than one
+that stops.
 
 **`Task.description` has nowhere to live afterwards**, since the value under
 `http:` is the inputs and a `description` key there would collide with an input of
-that name. Removing the field is right and is a FILE-level break — spend it in the
-commit that lands the grammar, with `reserved 2;` so the number can never be
-repurposed.
+that name. Prose moved to the step instead — `Node.description`, a property every
+kind of step has — which is a schema addition rather than the removal this
+anticipated. Deleting `Task.description` is still a FILE-level break, still right,
+and still unspent; the field is now unreachable from the grammar and refused by the
+marshaller, so nothing depends on it being spent soon.
 
 **Order that keeps every step green:** parser and marshaller together (they are
-inverses and the round-trip tests cover both); then examples, via the rewriter
-rather than a throwaway script, so the rewriter is exercised on real files before
-anyone depends on it; then `flowfile`'s own tests, reading each position; then the
-language server; then the README. `edition:` belongs in this same change rather
-than before it — on its own it declares a boundary that nothing crosses, which is
-scaffolding by this repo's own rule.
+inverses and the round-trip tests cover both); then examples; then `flowfile`'s own
+tests, reading each position; then the language server; then the README.
+
+The one place the plan and the outcome part company is sequencing. It said `edition:`
+belonged in the same change, on the grounds that a boundary nothing crosses is
+scaffolding, and that the examples should be migrated by the rewriter so it was
+exercised on real files first. What happened is that the grammar landed alone and the
+edition and the rewriter followed one commit later — which left the retired spelling
+uncompilable with no migration for a day, the gap the no-deprecation rule is least able
+to afford. The property the plan was reaching for was recovered a different way:
+`TestFixRoundTripsEveryExample` un-flattens every shipped example with a separately
+written, deliberately naive inverse, checks that the result no longer compiles, and
+requires the rewriter to reproduce the original byte for byte. That is stronger than
+migrating the examples once, because it re-runs on every example added since.
 
 ## The standing rule
 

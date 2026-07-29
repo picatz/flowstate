@@ -248,9 +248,11 @@ steps:
 			exact: []string{"math"},
 		},
 		{
+			// In the order a file is written: the grammar it is written in, then
+			// what the workflow is, then what it does.
 			name:  "top level document keys",
 			src:   `|`,
-			exact: []string{"name", "description", "steps"},
+			exact: []string{"edition", "name", "description", "steps"},
 		},
 		{
 			// Every kind of work a step can be is offered. The document-shape half is
@@ -270,9 +272,10 @@ steps:
   - |
 `,
 			// The order is the order a step is written in, not the alphabet: the id
-			// that names it, then the work it does, then how that work runs. Tasks sit
-			// with the other kinds of work rather than after `continue_on_error`, and
-			// ahead of them because running a task is what most steps do.
+			// that names it, the prose saying why it is there, then the work it does,
+			// then how that work runs. Tasks sit with the other kinds of work rather
+			// than after `continue_on_error`, and ahead of them because running a task
+			// is what most steps do.
 			//
 			// Asserted exactly, and with the task half derived from the registry: the
 			// document-shape half written out is what caught `sleep` and `wait_until`
@@ -280,7 +283,7 @@ steps:
 			// nothing the registry does not already say and would go stale at the next
 			// MustRegister.
 			exact: slices.Concat(
-				[]string{"id"},
+				[]string{"id", "description"},
 				v1.TaskNames(),
 				[]string{"for_each", "parallel", "sleep", "wait_until", "wait_for_signal"},
 				[]string{"if", "timeout", "retry", "continue_on_error"},
@@ -442,6 +445,191 @@ steps:
 				assert.Contains(t, item.Detail, substr)
 			}
 		})
+	}
+}
+
+// TestGrammarKeysAreOfferedOnlyWhereTheyMeanSomething writes the direction the
+// table above does not.
+//
+// Every case up there asks whether a level offers its own keys, and a key that
+// leaked into every other level would satisfy all of them — the exact shape
+// CLAUDE.md calls a functionality test wearing a security test's clothes. The two
+// keys the grammar most recently gained are where that matters:
+//
+//   - `description` is a property of the *step*. The keys under a task's name are
+//     that task's inputs, so offering it there offers an input called
+//     `description` — a different key, with a different meaning, that reads
+//     identically once written.
+//   - `edition` names the grammar the *file* is written in. It means nothing
+//     anywhere but the document's first level, so a menu offering it inside a step
+//     is a menu whose suggestion `flow validate` refuses.
+//
+// A wrong candidate is worse than a missing one, because an author accepts it.
+func TestGrammarKeysAreOfferedOnlyWhereTheyMeanSomething(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		src  string
+		// want are labels that must be offered here, notWant ones that must not.
+		want    []string
+		notWant []string
+	}{
+		{
+			name:    "the document level is where both belong",
+			src:     `|`,
+			want:    []string{"edition", "description"},
+			notWant: []string{"id", "if"},
+		},
+		{
+			name: "a step carries prose but not an edition",
+			src: `name: c
+steps:
+  - |
+`,
+			want:    []string{"description"},
+			notWant: []string{"edition", "name"},
+		},
+		{
+			// Each nested block names a key it does offer, so that a case cannot
+			// pass by reaching no menu at all — "absent from nothing" is the way a
+			// negative assertion goes quietly vacuous.
+			name: "a for_each block",
+			src: `name: c
+steps:
+  - id: a
+    for_each:
+      |
+`,
+			want:    []string{"items"},
+			notWant: []string{"description", "edition"},
+		},
+		{
+			name: "a retry block",
+			src: `name: c
+steps:
+  - id: a
+    retry:
+      |
+`,
+			want:    []string{"attempts"},
+			notWant: []string{"description", "edition"},
+		},
+		{
+			name: "a gate's own keys",
+			src: `name: c
+steps:
+  - id: a
+    wait_for_signal:
+      |
+`,
+			want:    []string{"name", "timeout"},
+			notWant: []string{"description", "edition"},
+		},
+		{
+			name: "a parallel block's branches",
+			src: `name: c
+steps:
+  - id: a
+    parallel:
+      - |
+`,
+			want:    []string{"steps"},
+			notWant: []string{"description", "edition"},
+		},
+		{
+			// A step nested in a loop body is still a step, and the level it sits
+			// at says nothing about which keys mean something there.
+			name: "a step inside a loop body",
+			src: `name: c
+steps:
+  - id: loop
+    for_each:
+      items: ${x}
+      steps:
+        - |
+`,
+			want:    []string{"description"},
+			notWant: []string{"edition"},
+		},
+		{
+			// Inside `${...}` the candidates are names in scope, which are steps
+			// and iterators; a grammar key is not a value anything can reference.
+			name: "inside an expression",
+			src: `name: c
+steps:
+  - id: first
+    echo:
+      message: hi
+  - id: second
+    echo:
+      message: ${|}
+`,
+			want:    []string{"first"},
+			notWant: []string{"description", "edition"},
+		},
+	}
+
+	c := newClient(t)
+	c.initialize()
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src, pos := splitCursor(t, tt.src)
+			uri := "file:///only-where-" + strings.ReplaceAll(tt.name, " ", "-") + ".yaml"
+			c.open(uri, src)
+
+			got := labels(c.complete(uri, pos.Line, pos.Character).Items)
+			for _, want := range tt.want {
+				assert.Contains(t, got, want)
+			}
+			for _, notWant := range tt.notWant {
+				assert.NotContains(t, got, notWant,
+					"%q is offered where it means nothing, and an author who accepts it gets a file `flow validate` rejects", notWant)
+			}
+		})
+	}
+
+	// The same question over every task rather than the two written above, because
+	// the rule is that the keys under a task's name come from that task's schema
+	// and from nowhere else. A table key leaking in would surface under whichever
+	// task nobody happened to write a case for.
+	for _, def := range v1.DefaultRegistry().All() {
+		t.Run("inputs of "+def.Name, func(t *testing.T) {
+			src, pos := splitCursor(t, "name: c\nsteps:\n  - id: a\n    "+def.Name+":\n      |\n")
+			uri := "file:///only-where-inputs-" + def.Name + ".yaml"
+			c.open(uri, src)
+
+			got := labels(c.complete(uri, pos.Line, pos.Character).Items)
+			if len(fieldNames(def.Inputs)) > 0 {
+				require.NotEmpty(t, got,
+					"premise: a task with inputs must offer them, or nothing below is being asserted about")
+			}
+			for _, key := range []string{"description", "edition"} {
+				if slices.Contains(fieldNames(def.Inputs), key) {
+					// The task declares an input spelled that way. It is the
+					// schema's key then, not the shape table's, and offering it is
+					// the whole job.
+					continue
+				}
+				assert.NotContains(t, got, key,
+					"the %s task's inputs are its schema's, but completion offers %q there", def.Name, key)
+			}
+		})
+	}
+
+	// And the table from the other side. `edition` at a second level would be a key
+	// meaning two things, which is the ambiguity the step grammar spends
+	// v1.ReservedStepKeys avoiding elsewhere; here nothing would catch it, because
+	// a level's own cases only ever ask what that level offers.
+	for level, keys := range dslKeys {
+		if level == "" {
+			continue
+		}
+		assert.False(t,
+			slices.ContainsFunc(keys, func(k dslKey) bool { return k.name == "edition" }),
+			"dslKeys offers `edition` at the %q level, but an edition is a property of a file "+
+				"rather than of anything inside one", level)
 	}
 }
 

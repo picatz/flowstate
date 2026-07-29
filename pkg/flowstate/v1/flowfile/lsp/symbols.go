@@ -11,6 +11,25 @@ import (
 // what makes an editor feel like it understands a language rather than merely
 // checking it.
 
+// A step's `description:` is deliberately not in the outline, which is worth
+// writing down because it is the obvious thing to put there.
+//
+// A SymbolInformation has two fields a reader sees — Name and ContainerName — and
+// no third one to grow into: the protocol's detail field belongs to
+// DocumentSymbol, a response shape this server does not implement and the LSP
+// types in use here cannot express. So surfacing prose means spending one of the
+// two, and both are already spent on facts with nowhere else to appear. Name is
+// the step's id, which is what a symbol picker filters on and what a reference in
+// another step spells. ContainerName carries what kind of work the step does and,
+// for a nested step, which block it is inside — the only place a flat outline can
+// say a step is inside a loop body.
+//
+// Prose is also unlike anything else in a row here: unbounded text the author
+// writes, in a column an editor truncates. A sentence would push "echo in loop"
+// out of view in order to show a fragment of itself. Hover on the step's id shows
+// it whole instead (see stepDoc), which is where a reader asks what a step is for
+// and where there is room to answer.
+
 // documentSymbols returns the outline of a Flowfile: one symbol per step, named by
 // its id and attributed to the task it runs.
 func documentSymbols(doc *document) []lsp.SymbolInformation {

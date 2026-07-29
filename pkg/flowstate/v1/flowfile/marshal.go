@@ -66,6 +66,13 @@ func stepsToYAML(nodes []*v1.Node) ([]any, error) {
 func stepToYAML(node *v1.Node) (yaml.MapSlice, error) {
 	step := yaml.MapSlice{{Key: "id", Value: node.GetId()}}
 
+	// Written second, right under the id, because prose about a step is read
+	// before the mechanics of it. Only when set, so an absent description and an
+	// empty one stay distinguishable through a round trip.
+	if node.Description != nil {
+		step = append(step, yaml.MapItem{Key: "description", Value: node.GetDescription()})
+	}
+
 	if condition := node.GetCondition(); condition != nil {
 		value, err := exprValueToYAML(condition)
 		if err != nil {
@@ -135,18 +142,21 @@ func stepToYAML(node *v1.Node) (yaml.MapSlice, error) {
 // an unfinished line. A formatter should not produce something that looks like a
 // mistake.
 func taskInputsToYAML(task *v1.Task) (yaml.MapSlice, error) {
-	// A task description has nowhere to go now that the value under the task's
-	// name is its inputs: a `description` key there would be an input called
-	// `description`, which is a different thing entirely.
+	// A task description has nowhere to go under the task's own name: the value
+	// there is the task's inputs, so a `description` key would be an input called
+	// `description`, which is a different thing entirely. Prose about a step is
+	// written on the step now — `Node.description`, which every kind of step has
+	// and not only a task.
 	//
 	// Refused rather than dropped, because silently discarding it would make
-	// Marshal(Unmarshal(x)) mean something other than x — the one property this
-	// file exists to hold. Nothing sets the field, so nothing reaches this; it is
-	// here so that the day something does, it says so.
+	// Marshal(Unmarshal(x)) mean something other than x, which is the one property
+	// this file exists to hold. `flow fix` moves it to the step when rewriting an
+	// older file; nothing in this build sets it, and the field is scheduled for
+	// removal in the change that spends the schema break it costs.
 	if task.Description != nil {
 		return nil, fmt.Errorf(
-			"task %q has a description, which the DSL has no place to write now that a step "+
-				"names its task directly; use a YAML comment", task.GetName())
+			"task %q has a description, which belongs on the step now that a step names its "+
+				"task directly; write it as the step's `description:`", task.GetName())
 	}
 
 	inputs := yaml.MapSlice{}

@@ -107,7 +107,7 @@ flowchart LR
 
 ## Flowfile Structure
 
-A `Flowfile` is a YAML file that defines a series of steps to be executed in order. Each step consists of a unique `id`, a `task` name, and a set of `inputs`. The `inputs` can be static values or dynamic expressions using CEL syntax.
+A `Flowfile` is a YAML file that defines a series of steps to be executed in order. A step has a unique `id` and then names the work it does directly: the task's own name is the key, and that task's inputs are the value beneath it. Inputs can be static values or dynamic expressions using CEL syntax.
 
 ### Example
 
@@ -126,6 +126,33 @@ The above `Flowfile` defines two steps:
 1. The first step has an `id` of `hello`, uses the built-in `echo` task, and takes a literal string value `"hello world"` for the `message` input.
 2. The second step has an `id` of `output`, also uses the built-in `echo` task, and takes a dynamic input `message` that references the output of the first step using `${hello.result}`. The `${...}` syntax indicates that it is an expression.
 3. The output of the first step is referenced by its `id` (`hello`) and the output name (`result`). Outputs and inputs are strongly typed, but depend on the task being used (see below).
+
+### Saying why a step is there
+
+A step can carry `description:` — prose the mechanics under it cannot supply, written
+directly under `id:`:
+
+```yaml
+steps:
+  - id: roster
+    description: >-
+      The roster service is the source of truth for who is on call. A stale answer
+      here pages the wrong person, so this deliberately does not retry into a cache.
+    http:
+      url: https://example.com/roster
+
+  - id: settle
+    description: Give the read replica time to catch up with the write we just read past.
+    sleep: 2s
+```
+
+It is a property of the *step* rather than of the task it runs, which is why a `sleep`
+or a `for_each` can carry one — often the steps most in need of explaining, since what a
+wait is waiting for appears nowhere else in the file. It also has to live there: the keys
+under `http:` are that task's inputs, so a `description` written among them would be
+asking for an input by that name.
+
+See [examples/edition-and-descriptions](examples/edition-and-descriptions).
 
 ## Controlling how a step runs
 
@@ -560,6 +587,26 @@ broken.yaml:8: step "out" input "message": references step "later", which runs l
 `flow run` and `flow run local` apply the same checks before executing anything, so a
 mistake is reported rather than partially performed.
 
+When a spelling in the language is replaced, it is replaced rather than deprecated, and
+the migration is a command:
+
+```console
+$ flow fix workflow.yaml
+workflow.yaml:5: `task:` naming "echo" rewritten to `echo:`
+```
+
+It rewrites only the lines it must and copies the rest through byte for byte, so
+comments and formatting survive and a file with nothing to change comes back identical —
+which is what makes pointing it at a whole directory safe. A shape it cannot rewrite
+without guessing, such as a task written in flow style or standing behind a YAML alias,
+is reported with its position and left alone rather than mangled. `flow fix --check`
+writes nothing and exits non-zero if there is work, which is the form CI runs.
+
+A file may also name the grammar it is written in with a top-level `edition:`. It is
+optional and most files leave it out, since absent means the current one. What writing it
+buys is a *refusal*: a build that does not have that grammar says so instead of reading
+the file as something else, which is what makes retiring a spelling safe to do at all.
+
 List what workflows can use:
 
 ```console
@@ -617,6 +664,7 @@ Run `flow <command> --help` for the full flags of any of these.
 | Command | What it does |
 | --- | --- |
 | `flow validate <file...>` | Check Flowfiles without executing them. Reports the line and column of each problem. |
+| `flow fix <path...>` | Rewrite Flowfiles from a retired spelling into the current one, preserving comments and formatting. `--check` reports and writes nothing, exiting non-zero if there is work. |
 | `flow run <file>` | Submit a workflow to a server, which runs it durably. |
 | `flow run local <file>` | Run a workflow in this process, with no server and no Temporal. Answers signal gates from `--signal name=json`. |
 | `flow get <id>` | Report what a run is doing, and its outputs if it finished. Status on stderr, outputs on stdout, so `flow get id \| jq` sees only the data. |

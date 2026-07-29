@@ -50,10 +50,11 @@ const (
 // misspelled `timout:` that is silently ignored does nothing at run time and gives
 // the author no reason to doubt it, which is the worst of both outcomes.
 var (
-	workflowKeys = []string{"name", "description", "steps"}
+	workflowKeys = []string{"edition", "name", "description", "steps"}
 
-	// stepPropertyKeys control how a step runs, and say nothing about what it does.
-	stepPropertyKeys = []string{"id", "if", "timeout", "retry", "continue_on_error"}
+	// stepPropertyKeys say which step this is, how it runs, and what it is for —
+	// everything except what work it does.
+	stepPropertyKeys = []string{"id", "description", "if", "timeout", "retry", "continue_on_error"}
 
 	// nodeKindKeys are the kinds of work that are not a task, and so name a node
 	// kind in the schema rather than anything in the registry.
@@ -84,8 +85,18 @@ func stepKeys() []string {
 //
 // The same pattern the schema puts on Task.name, so this package and the
 // validator agree about what a task could be called.
+//
+// The leading character is checked separately because a name may not start with
+// a digit — `TaskManifest.name` is `^[a-z][a-z0-9_]*$` — and without that, `123:`
+// reads as a plausible task. YAML gives that key to the parser as a number, which
+// the compiler refuses outright with "keys must be strings"; a promotion rule
+// looser than the schema it claims to mirror makes the language server model a
+// task where the compiler sees an error.
 func couldBeATaskName(key string) bool {
 	if key == "" {
+		return false
+	}
+	if first := key[0]; !(first >= 'a' && first <= 'z') && !(first >= 'A' && first <= 'Z') {
 		return false
 	}
 	for _, r := range key {
@@ -147,7 +158,16 @@ var retiredStepKeys = map[string]string{
 // The last clause is why this takes the whole step rather than one key: the answer
 // for `shell` depends on what else the step says.
 func StepTaskKeys(keys []string) []string {
-	grammar := append(slices.Clone(stepPropertyKeys), nodeKindKeys...)
+	// The words the step grammar speaks for, which is [v1.ReservedStepKeys] and
+	// not the subset this build happens to implement.
+	//
+	// Those two are deliberately different: `call`, `vars`, `undo` and `needs` are
+	// reserved for grammar not written yet, precisely so that adding them later is
+	// a change to one package rather than a break for anyone who registered a task
+	// under the name. Promoting them here would give that away — a `needs:` written
+	// today would compile as a task nobody registered, and the day `needs:` becomes
+	// grammar, a file that compiles would silently mean something else.
+	grammar := v1.ReservedStepKeys()
 	kinds := stepKindKeys()
 
 	var out []string
@@ -163,6 +183,16 @@ func StepTaskKeys(keys []string) []string {
 		return out
 	}
 
+	// At most one, and the first. A second unrecognised key is a *key* problem —
+	// a stray line, a misspelling — and promoting it too would report "has both
+	// run and environment; split it into two steps", which is true of the reading
+	// and not of the file, and whose advice yields two broken steps.
+	//
+	// Which one is arbitrary only in appearance: the first is the one the author
+	// most likely meant as the work, and everything after it then gets the
+	// "unknown key; the keys here are ..." message it would have got beside a
+	// registered task name. One authoring mistake should not draw two different
+	// diagnostics depending on whether the neighbouring key is in the registry.
 	for _, key := range keys {
 		if slices.Contains(grammar, key) {
 			continue
@@ -179,7 +209,7 @@ func StepTaskKeys(keys []string) []string {
 		if !couldBeATaskName(key) {
 			continue
 		}
-		out = append(out, key)
+		return append(out, key)
 	}
 	return out
 }
@@ -357,10 +387,28 @@ func (c *compiler) compile(file *ast.File) *v1.Workflow {
 	}
 
 	root := bodies[0]
-	fields, ok := c.fields(root, "", ref{path: "workflow"}, workflowKeys)
+	entries, ok := c.entries(root, "", ref{path: "workflow"})
 	if !ok {
 		return nil
 	}
+
+	// The edition is settled before any other key is judged, which is why this
+	// reads the entries itself rather than the checked field set.
+	//
+	// A file written in a grammar this build does not have will have other
+	// problems, and every one of them describes the wrong language: `nonsense:` is
+	// an unknown key *here*, and might be a perfectly good key in the edition the
+	// file claims. Reporting those alongside would bury the one diagnostic that
+	// explains all the rest.
+	//
+	// Absent means the current edition. Requiring it would put a line of ceremony
+	// at the top of every file to say the only thing it can currently say, and a
+	// file that does not care which grammar it is in is the common case.
+	if !c.checkDeclaredEdition(entries) {
+		return nil
+	}
+
+	fields := c.check(entries, ref{path: "workflow"}, workflowKeys)
 
 	workflow := &v1.Workflow{}
 
@@ -383,6 +431,34 @@ func (c *compiler) compile(file *ast.File) *v1.Workflow {
 	}
 
 	return workflow
+}
+
+// checkDeclaredEdition reads an `edition:` key if one was written and reports
+// whether the document may be compiled.
+//
+// Takes the raw entries rather than a checked field set so that it can run before
+// unknown-key reporting — see the call site.
+func (c *compiler) checkDeclaredEdition(entries []entry) bool {
+	for _, e := range entries {
+		if e.name != "edition" {
+			continue
+		}
+		r := ref{path: "edition", label: "edition"}
+		declared, ok := editionText(c.resolve(e.value, "edition", r))
+		if !ok {
+			c.report(spanOfNode(e.value), r,
+				"edition must be written as %s, but %s was written here",
+				CurrentEdition, describeNode(e.value))
+			return false
+		}
+		c.pos.record("edition", spanOfNode(e.value))
+		if err := checkEdition(declared); err != nil {
+			c.report(spanOfNode(e.value), r, "%s", err.Error())
+			return false
+		}
+		return true
+	}
+	return true
 }
 
 // collectAnchors records every anchor in the document so that an alias can be
@@ -661,6 +737,16 @@ func (c *compiler) step(n ast.Node, path string) *v1.Node {
 	if f, found := fields.get("if"); found {
 		condition := ref{step: step.GetId(), path: fieldPath(path, "if"), label: "if"}
 		step.Condition = c.exprValue(f.value, fieldPath(path, "if"), condition)
+	}
+
+	// Set only when written, so that "no description" and "an empty description"
+	// stay distinguishable — the same rule the workflow's own description follows,
+	// and what keeps Marshal an exact inverse.
+	if f, found := fields.get("description"); found {
+		descriptionPath := fieldPath(path, "description")
+		if description, ok := c.text(f.value, descriptionPath, ref{step: step.GetId(), path: descriptionPath, label: "description"}); ok {
+			step.Description = proto.String(description)
+		}
 	}
 
 	step.Policy = c.policy(fields, path, r)
