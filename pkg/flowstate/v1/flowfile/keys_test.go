@@ -153,17 +153,38 @@ func TestExplicitKeyIsReportedInTheAuthorsWords(t *testing.T) {
 // incompatible things with no way for a parser to choose. The failure lands on a
 // Flowfile author, months later, as a step that did something else.
 
+// grammarVocabulary is every word the step grammar speaks for: the keys it accepts
+// today, and the spellings it still recognizes in order to refuse them.
+//
+// The retired spellings belong here, and leaving them out was a real hole rather
+// than a tidiness point. `task` is not a key any file may use, so it looks like it
+// needs no reservation — but the parser rejects it *by name*, so a plugin
+// registering a task called `task` gets a registered task no Flowfile can reach,
+// and an author who writes `task:` is told about a retired spelling rather than
+// about the plugin they installed. Sourced from `retiredStepKeys` rather than
+// listed, so retiring a second spelling is covered the day it happens.
+func grammarVocabulary() []string {
+	words := append(slices.Clone(stepPropertyKeys), nodeKindKeys...)
+	for retired := range retiredStepKeys {
+		words = append(words, retired)
+	}
+	return words
+}
+
 // TestEveryGrammarKeyIsReserved fails if the parser learns a key the registry will
 // still hand out.
 func TestEveryGrammarKeyIsReserved(t *testing.T) {
 	t.Parallel()
 
+	require.NotEmpty(t, retiredStepKeys,
+		"grammarVocabulary draws its retired half from retiredStepKeys; empty means this checks less than it reads as")
+
 	reserved := v1.ReservedStepKeys()
-	for _, key := range append(slices.Clone(stepPropertyKeys), nodeKindKeys...) {
+	for _, key := range grammarVocabulary() {
 		assert.Contains(t, reserved, key,
-			"the step grammar accepts %q and `v1.ReservedStepKeys()` does not list it\n"+
+			"the step grammar speaks for %q and `v1.ReservedStepKeys()` does not list it\n"+
 				"  add it to grammarStepKeys in pkg/flowstate/v1/stepkeys.go\n"+
-				"  until then a task may be registered under that name, and `%s:` on a step means two things",
+				"  until then a task may be registered under that name, and `%s:` on a step is ambiguous or unreachable",
 			key, key)
 	}
 }
@@ -177,11 +198,7 @@ func TestEveryGrammarKeyIsReserved(t *testing.T) {
 func TestReservedKeysAreEitherGrammarOrFuture(t *testing.T) {
 	t.Parallel()
 
-	grammar := append(slices.Clone(stepPropertyKeys), nodeKindKeys...)
-	// `task` is spoken for without being current grammar: it is the retired
-	// spelling, and it has to stay reserved or a plugin could take the one word
-	// `flow fix` is still telling authors to stop writing.
-	grammar = append(grammar, "task")
+	grammar := grammarVocabulary()
 
 	for _, key := range v1.ReservedStepKeys() {
 		if slices.Contains(grammar, key) || v1.IsFutureStepKey(key) {
@@ -202,10 +219,10 @@ func TestReservedKeysAreEitherGrammarOrFuture(t *testing.T) {
 func TestAFutureKeyIsNotAlsoGrammar(t *testing.T) {
 	t.Parallel()
 
-	grammar := append(slices.Clone(stepPropertyKeys), nodeKindKeys...)
-	for _, key := range grammar {
+	for _, key := range grammarVocabulary() {
 		assert.False(t, v1.IsFutureStepKey(key),
-			"%q is current grammar and also reserved for later; the parser would refuse a step that uses it correctly", key)
+			"%q is spoken for by the grammar and also reserved for later; "+
+				"the parser reports a future key as unbuilt, so a step using it correctly would be refused", key)
 	}
 }
 
