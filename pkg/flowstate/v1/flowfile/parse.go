@@ -408,7 +408,8 @@ func (c *compiler) compile(file *ast.File) *v1.Workflow {
 		return nil
 	}
 
-	fields := c.check(entries, ref{path: "workflow"}, workflowKeys)
+	r := ref{path: "workflow"}
+	fields := c.check(c.heldForLater(entries, r), r, workflowKeys)
 
 	workflow := &v1.Workflow{}
 
@@ -653,19 +654,9 @@ func (c *compiler) step(n ast.Node, path string) *v1.Node {
 			c.report(spanOfNode(e.key), r, "`%s:` is no longer a step key; %s", e.name, instead)
 			continue
 		}
-		// A word held for grammar that does not exist yet, reported as that and
-		// held back for the same reason a retired spelling is: the generic key
-		// check would offer it as an unknown key beside the ones it could have
-		// been a misspelling of, which describes a mistake the author did not
-		// make and sends them looking for a typo that is not there.
-		if v1.IsFutureStepKey(e.name) {
-			c.report(spanOfNode(e.key), r,
-				"`%s:` is reserved for a later version of the grammar and is not a step key yet; "+
-					"nothing in this build reads it, so writing it here does nothing", e.name)
-			continue
-		}
 		checkable = append(checkable, e)
 	}
+	checkable = c.heldForLater(checkable, r)
 
 	fields := c.check(checkable, r, known)
 
