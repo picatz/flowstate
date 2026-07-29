@@ -653,15 +653,24 @@ steps:
       timeout: 72h
 
   - id: act
-    if: ${!steps.approval.timed_out}
+    if: ${!steps.approval.timed_out && has(steps.approval.payload.approver)}
     echo:
       message: ${'approved by ' + steps.approval.payload.approver}
 ```
 
-`wait_for_signal:` is how a human reaches a workload. Deliver one with
-`flow signal <id> approval`, optionally carrying a payload, and the step's outputs say
-what happened: `timed_out` is always present, so a workload branches on the deadline
-passing rather than failing on it, and `payload` carries whatever the sender sent.
+`wait_for_signal:` is how a human reaches a workload:
+
+```console
+$ flow signal <id> approval --data '{"approver": "someone@example.com"}'
+```
+
+The step's outputs say what happened. `timed_out` is always present, so a workload
+branches on the deadline passing rather than failing on it, and `payload` carries
+whatever the sender sent — which may be nothing, since `--data` is optional. That is why
+the step above tests `has(...)` as well as `timed_out`: a signal sent with no payload
+leaves `payload` an empty map, and reaching into it for a key nobody sent fails the step.
+Guarding both is the difference between a workload that handles a bare approval and one
+that only handles the approval you had in mind.
 
 A signal that arrives before the step is reached is not lost — a declared channel is
 drained before the run suspends, so approving in advance works.

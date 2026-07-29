@@ -913,8 +913,17 @@ message WorkloadIdentity {
 
   // Deployment identifies which Flowstate installation is running the workload,
   // so an assertion from a staging deployment is distinguishable from a
-  // production one. Descriptive rather than load-bearing: nothing authorizes on
-  // it.
+  // production one.
+  //
+  // Not the tenant, and not what run access turns on — that is `namespace`
+  // above. But not decorative either: an outbound authorization policy sees it as
+  // `workload.deployment` and may key on it, which is how a rule like
+  // `target == "internal" && workload.deployment == "prod"` keeps a staging
+  // installation from assuming a production role.
+  //
+  // So the two are load-bearing for different decisions. `namespace` decides who
+  // may act on a run; `deployment` is one of the attributes a policy may use to
+  // decide what a run may reach.
   string deployment = 5;
 }
 
