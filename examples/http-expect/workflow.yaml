@@ -17,7 +17,7 @@ steps:
     printf:
       format: "lookup answered %d, which this step accepts"
       args:
-        - ${maybe_missing.status_code}
+        - ${steps.maybe_missing.status_code}
 
   # An API that answers 200 with an error in the body. `expect` is an expression
   # over the same response variables `outputs` sees, so it can read the parsed
@@ -33,4 +33,4 @@ steps:
     printf:
       format: "response carried no error field: %s"
       args:
-        - ${string(checked.status_code)}
+        - ${string(steps.checked.status_code)}

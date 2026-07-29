@@ -36,7 +36,7 @@ steps:
       url: https://httpbin.org/post
       json:
         # Values can reference earlier steps, like any other input.
-        echoed_query: ${search.json.args}
+        echoed_query: ${steps.search.json.args}
         nested:
           works: true
           count: 3
@@ -48,4 +48,4 @@ steps:
       args:
         # Quoted because the colon inside the expression would otherwise be read
         # as YAML mapping syntax.
-        - "${submit.json.json.nested.works ? 'a nested object' : 'nothing'}"
+        - "${steps.submit.json.json.nested.works ? 'a nested object' : 'nothing'}"

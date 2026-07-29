@@ -52,10 +52,10 @@ steps:
       expr: "string(timestamp('2026-01-01T09:00:00Z'))"
 
   - id: hold
-    wait_until: ${embargo.result}
+    wait_until: ${steps.embargo.result}
 
   - id: publish
     printf:
       format: "embargo lifted at %s; publishing"
       args:
-        - ${embargo.result}
+        - ${steps.embargo.result}

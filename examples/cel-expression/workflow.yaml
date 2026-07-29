@@ -8,5 +8,5 @@ steps:
       expr: "regex.replace(vars.greeting.upperAscii(), 'HELLO', 'HI')"
       libs: [strings, regex]
       vars:
-        greeting: ${greet.result}
+        greeting: ${steps.greet.result}
 

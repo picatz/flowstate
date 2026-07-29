@@ -10,6 +10,8 @@ import (
 	"github.com/goccy/go-yaml/ast"
 	"github.com/goccy/go-yaml/parser"
 	"github.com/goccy/go-yaml/token"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
 // Fix rewrites a Flowfile written in an older edition into the current one.
@@ -57,6 +59,16 @@ type FixResult struct {
 	// mean one unrewritable step blocks the other nine — but it is not finished,
 	// and a caller must say so.
 	Refusals []Diagnostic
+
+	// Notes are places worth a human's eye that are not problems. A file with
+	// notes and no refusals is finished, and a caller must not fail on them.
+	//
+	// The distinction earns its keep with comments. A comment mentioning
+	// `${a.result}` is prose about code that has moved, so leaving it is wrong and
+	// rewriting it is guessing at what someone meant — and it is not a refusal
+	// either, because nothing about the file is broken. Saying where it is costs a
+	// line and saves a reader finding it a year later.
+	Notes []Diagnostic
 }
 
 // Changed reports whether the rewrite altered the document.
@@ -102,16 +114,34 @@ func Fix(data []byte) (FixResult, error) {
 		terminator:      lineTerminator(data),
 	}
 	for _, doc := range file.Docs {
+		// Expressions are rooted first, and written straight into the lines rather
+		// than recorded as an edit.
+		//
+		// The two rewrites are not the same shape and cannot share one mechanism.
+		// Rooting substitutes inside a line and moves nothing, so applying it up
+		// front is safe and every later pass simply reads the corrected text. The
+		// step rewrite *replaces a run of lines*, copying the ones it keeps through
+		// verbatim — so if a `${a.result}` inside a `task:` block were only recorded
+		// as a competing edit, the block replacement would step over it and the
+		// reference would come out unrooted. That is not hypothetical; it is what
+		// happened, and it showed up as a rewritten file the validator refused.
+		f.expressions(doc.Body, stepIDs(doc.Body))
+	}
+	for _, doc := range file.Docs {
 		f.workflow(doc.Body)
 	}
+	if len(f.changes) > 0 {
+		f.noteCommentsMentioningExpressions()
+	}
 
-	if len(f.edits) == 0 {
-		return FixResult{Source: data, Refusals: f.refusals}, nil
+	if len(f.edits) == 0 && !f.substituted {
+		return FixResult{Source: data, Refusals: f.refusals, Notes: f.notes}, nil
 	}
 	return FixResult{
 		Source:   f.apply(),
 		Changes:  f.changes,
 		Refusals: f.refusals,
+		Notes:    f.notes,
 	}, nil
 }
 
@@ -139,6 +169,11 @@ type fixer struct {
 	edits    map[int]lineEdit
 	changes  []FixChange
 	refusals []Diagnostic
+	notes    []Diagnostic
+
+	// substituted records that a line was rewritten in place, which the edit map
+	// does not capture and which still means the document changed.
+	substituted bool
 }
 
 // A lineEdit replaces a run of source lines with new text.
@@ -193,6 +228,15 @@ func unwrapAnchor(n ast.Node) ast.Node {
 		}
 		n = anchor.Value
 	}
+}
+
+// note records something worth looking at that is not a problem.
+func (f *fixer) note(line, column int, format string, args ...any) {
+	f.notes = append(f.notes, Diagnostic{
+		Line:    line,
+		Column:  column,
+		Message: fmt.Sprintf(format, args...),
+	})
 }
 
 // workflow walks a document body, rewriting its steps and its edition marker.
@@ -747,4 +791,152 @@ func parseYAMLNumber(s string) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+// stepIDs returns every step id written in a document, at any depth.
+//
+// Read from the YAML rather than from a compiled workflow, because a file being
+// migrated is a file that does not compile yet — which is the whole reason it is
+// here.
+func stepIDs(n ast.Node) map[string]bool {
+	ids := make(map[string]bool)
+	var walk func(ast.Node)
+	walk = func(n ast.Node) {
+		switch node := unwrapAnchor(n).(type) {
+		case *ast.MappingNode:
+			for _, v := range node.Values {
+				walk(v)
+			}
+		case *ast.MappingValueNode:
+			if name, ok := keyNameOf(node.Key); ok && name == "id" {
+				if text, ok := scalarText(node.Value); ok {
+					ids[text] = true
+				}
+			}
+			walk(node.Value)
+		case *ast.SequenceNode:
+			for _, v := range node.Values {
+				walk(v)
+			}
+		}
+	}
+	walk(n)
+	return ids
+}
+
+// expressions roots every bare step reference written in the document.
+//
+// A `${...}` is the whole of a value wherever it appears — the DSL has no string
+// interpolation — so each rewrite is bounded to one scalar on one line, and a
+// shape that is not is refused rather than guessed at.
+func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
+	if len(steps) == 0 {
+		return
+	}
+	var walk func(ast.Node)
+	walk = func(n ast.Node) {
+		switch node := unwrapAnchor(n).(type) {
+		case *ast.MappingNode:
+			for _, v := range node.Values {
+				walk(v)
+			}
+		case *ast.MappingValueNode:
+			walk(node.Value)
+		case *ast.SequenceNode:
+			for _, v := range node.Values {
+				walk(v)
+			}
+		case *ast.StringNode:
+			f.rootScalar(node, steps)
+		}
+	}
+	walk(n)
+}
+
+// rootScalar rewrites one fenced scalar in place.
+func (f *fixer) rootScalar(node *ast.StringNode, steps map[string]bool) {
+	inner, fenced := SplitFence(node.Value)
+	if !fenced {
+		return
+	}
+
+	rooted, changed, err := rootedExpr(inner, steps)
+	if err != nil {
+		f.refuse(node, "%s", err.Error())
+		return
+	}
+	if !changed {
+		return
+	}
+
+	span := spanOfNode(node)
+	if !span.IsValid() || span.Start.Line != span.End.Line {
+		f.refuse(node,
+			"this expression spans more than one line, so it cannot be rewritten by splicing; root its step references by hand")
+		return
+	}
+
+	line := f.line(span.Start.Line)
+	want, replacement := fenceOpen+inner+fenceClose, fenceOpen+rooted+fenceClose
+
+	// Located from the value's own column rather than by searching the line, so a
+	// fence written in a comment earlier on the same line cannot be the one
+	// rewritten.
+	from := span.Start.Column - 1
+	if from < 0 || from > len(line) {
+		return
+	}
+	at := strings.Index(line[from:], want)
+	if at < 0 {
+		f.refuse(node,
+			"this expression is not written on its line the way it was read, which happens with a block or folded scalar; root its step references by hand")
+		return
+	}
+	at += from
+
+	f.lines[span.Start.Line-1] = line[:at] + replacement + line[at+len(want):]
+	f.substituted = true
+	f.changes = append(f.changes, FixChange{
+		Line:    span.Start.Line,
+		Message: fmt.Sprintf("step references rooted under `%s`", v1.StepsRoot),
+	})
+}
+
+// noteCommentsMentioningExpressions points at prose that talks about code the
+// rewriter has just moved.
+//
+// A comment is not rewritten. Its `${a.result}` may be an example, a caveat, or a
+// sentence about a step that no longer exists, and a tool that edits prose to
+// match code it did not write will eventually write nonsense confidently. But a
+// comment describing the old spelling is stale the moment the file is migrated,
+// so the one useful thing is to say where it is.
+func (f *fixer) noteCommentsMentioningExpressions() {
+	for n := 1; n <= len(f.lines); n++ {
+		line := f.line(n)
+		hash := commentStart(line)
+		if hash < 0 || !strings.Contains(line[hash:], fenceOpen) {
+			continue
+		}
+		f.note(n, hash+1,
+			"this comment mentions an expression; comments are prose and are not rewritten, so check whether it still describes the file")
+	}
+}
+
+// commentStart returns the byte offset of a line's comment, or -1.
+//
+// Conservative on purpose: a `#` on a line carrying a quote may be inside a
+// string, and this exists to point somewhere useful rather than to lex YAML.
+// Missing a note costs nothing; a wrong one wastes a reader's time.
+func commentStart(line string) int {
+	trimmed := strings.TrimSpace(line)
+	if strings.HasPrefix(trimmed, "#") {
+		return strings.Index(line, "#")
+	}
+	if strings.ContainsAny(line, `"'`) {
+		return -1
+	}
+	if i := strings.Index(line, " #"); i >= 0 {
+		return i + 1
+	}
+	return -1
 }

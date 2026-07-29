@@ -20,5 +20,5 @@ steps:
     printf:
       format: "got %d for %s"
       args:
-        - ${web.status}
-        - ${web.title}
+        - ${steps.web.status}
+        - ${steps.web.title}

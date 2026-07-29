@@ -15,7 +15,7 @@ steps:
 
   # Runs only when the previous step said so.
   - id: deploy
-    if: ${check.result == 'ready'}
+    if: ${steps.check.result == 'ready'}
     timeout: 30s
     retry:
       attempts: 3
@@ -28,7 +28,7 @@ steps:
   # Skipped, because the condition is false. A skipped step produces no outputs,
   # so nothing later may reference it.
   - id: rollback
-    if: ${check.result == 'failed'}
+    if: ${steps.check.result == 'failed'}
     echo:
       message: rolling back
 

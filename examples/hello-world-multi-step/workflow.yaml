@@ -5,4 +5,4 @@ steps:
     message: hello world
 - id: b
   echo:
-    message: ${a.result}
+    message: ${steps.a.result}
