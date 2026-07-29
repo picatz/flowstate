@@ -246,7 +246,7 @@ steps:
     http:
       url: https://example.com
   - id: guarded
-    if: ${web.status_code == 200}
+    if: ${steps.web.status_code == 200}
     echo:
       message: ok
 `
@@ -262,7 +262,7 @@ steps:
 		pos := positionOf(t, src, "web.status_code ==", 1)
 		got := c.hover(uri, pos.Line, pos.Character)
 		require.NotNil(t, got)
-		assert.Contains(t, hoverText(got), "`web.status_code`")
+		assert.Contains(t, hoverText(got), "`steps.web.status_code`")
 		assert.Contains(t, hoverText(got), "`int`")
 	})
 
@@ -281,7 +281,7 @@ steps:
 	})
 
 	t.Run("a syntax error in a condition is reported precisely", func(t *testing.T) {
-		broken := strings.Replace(src, "${web.status_code == 200}", "${web.status_code ==}", 1)
+		broken := strings.Replace(src, "${steps.web.status_code == 200}", "${steps.web.status_code ==}", 1)
 		params := c.change(uri, broken, 2)
 		require.Len(t, params.Diagnostics, 1)
 		assert.Equal(t, codeCELSyntax, params.Diagnostics[0].Code)
@@ -296,7 +296,7 @@ steps:
 		const forward = `name: fwd
 steps:
   - id: a
-    if: ${later.result == "x"}
+    if: ${steps.later.result == "x"}
     echo:
       message: hi
   - id: later
@@ -307,22 +307,373 @@ steps:
 		require.Len(t, params.Diagnostics, 1, "got %v", messages(params.Diagnostics))
 		assert.Contains(t, params.Diagnostics[0].Message, `references step "later", which runs later`)
 		// And it lands on the condition, not on the step.
-		assert.Equal(t, `${later.result == "x"}`, textInRange(forward, params.Diagnostics[0].Range))
+		assert.Equal(t, `${steps.later.result == "x"}`, textInRange(forward, params.Diagnostics[0].Range))
 	})
 
 	t.Run("completion offers earlier steps inside a condition", func(t *testing.T) {
-		partial, pos := splitCursor(t, `name: c
+		// A condition is an ordinary expression, so both namespaces behave in it
+		// exactly as they do in an input: the root bare, the step ids under it.
+		const partial = `name: c
 steps:
   - id: web
     http:
       url: https://example.com
   - id: guarded
-    if: ${|
-`)
-		c.open("file:///cond-complete.yaml", partial)
-		got := c.complete("file:///cond-complete.yaml", pos.Line, pos.Character)
-		assert.Equal(t, []string{"web"}, labels(got.Items))
+    if: ${PLACEHOLDER
+`
+		for _, tt := range []struct {
+			name  string
+			typed string
+			want  []string
+		}{
+			{name: "at the start of the expression", typed: "", want: []string{"steps"}},
+			{name: "under the root", typed: "steps.", want: []string{"web"}},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				text, pos := splitCursor(t, strings.Replace(partial, "PLACEHOLDER", tt.typed+"|", 1))
+				uri := "file:///cond-complete-" + strings.ReplaceAll(tt.name, " ", "-") + ".yaml"
+				c.open(uri, text)
+				assert.Equal(t, tt.want, labels(c.complete(uri, pos.Line, pos.Character).Items))
+			})
+		}
 	})
+}
+
+// TestWaitUntilIsFirstClass checks that a wait's expression gets the same
+// treatment as an input's or a condition's.
+//
+// It did not. The positional model had no entry for `wait_until:`, so its
+// expression was invisible to every feature that reads one: hover and
+// go-to-definition stopped at the fence, and a CEL error was left to the
+// validator, which could only report it against the position it worked out —
+// landing on the closing brace rather than on the character at fault.
+//
+// Rooting is what turned that from untidy into expensive. A wait now commonly
+// holds `${steps.<id>.<output>}` — a moment that arrived as data rather than one
+// the workflow chose — so the one kind of step whose expression the editor could
+// not read is the one whose expression most often names another step. Offering
+// `now` in a place where hover then says nothing would have made it worse.
+func TestWaitUntilIsFirstClass(t *testing.T) {
+	t.Parallel()
+
+	const src = `name: waits
+steps:
+  - id: embargo
+    cel:
+      expr: "string(timestamp('2026-01-01T09:00:00Z'))"
+  - id: hold
+    wait_until: ${steps.embargo.result}
+  - id: window
+    wait_until: ${now + days(3)}
+`
+	c := newClient(t)
+	c.initialize()
+	const uri = "file:///waits.yaml"
+
+	t.Run("a valid wait is clean", func(t *testing.T) {
+		assert.Empty(t, messages(c.open(uri, src).Diagnostics))
+	})
+
+	t.Run("hover resolves a reference in a wait", func(t *testing.T) {
+		pos := positionOf(t, src, "${steps.embargo.result}", len("${steps."))
+		got := c.hover(uri, pos.Line, pos.Character)
+		require.NotNil(t, got, "no hover on a wait's expression")
+		assert.Contains(t, hoverText(got), "`steps.embargo.result`")
+		assert.Contains(t, hoverText(got), "`cel` task")
+	})
+
+	t.Run("go to definition works from a wait", func(t *testing.T) {
+		pos := positionOf(t, src, "${steps.embargo.result}", len("${steps."))
+		got := c.definition(uri, pos.Line, pos.Character)
+		require.Len(t, got, 1)
+		assert.Equal(t, "embargo", textInRange(src, got[0].Range))
+	})
+
+	t.Run("hover describes the clock", func(t *testing.T) {
+		pos := positionOf(t, src, "${now + days(3)}", 2)
+		got := c.hover(uri, pos.Line, pos.Character)
+		require.NotNil(t, got, "no hover on the one identifier whose availability depends on position")
+		text := hoverText(got)
+		assert.Contains(t, text, "the moment the wait is evaluated")
+		// The duration builders come from the evaluator rather than a list here,
+		// so a unit added to it appears without this test being touched.
+		for _, unit := range v1.DurationUnits() {
+			assert.Contains(t, text, "`"+unit+"`")
+		}
+
+		require.NotNil(t, got.Range)
+		assert.Equal(t, "now", textInRange(src, *got.Range))
+	})
+
+	t.Run("scoping applies inside a wait", func(t *testing.T) {
+		// A wait is a step like any other, so it sees what a step at its position
+		// sees. A loop body's outputs are not that.
+		const leaky = `name: leaky-wait
+steps:
+  - id: loop
+    for_each:
+      items: "${['a']}"
+      steps:
+        - id: inner
+          echo:
+            message: hi
+  - id: hold
+    wait_until: ${steps.inner.result}
+`
+		const leakyURI = "file:///leaky-wait.yaml"
+		params := c.open(leakyURI, leaky)
+		require.Len(t, params.Diagnostics, 1, "got %v", messages(params.Diagnostics))
+		assert.Contains(t, params.Diagnostics[0].Message, `references unknown step "inner"`)
+
+		pos := positionOf(t, leaky, "${steps.inner.result}", len("${steps."))
+		assert.Nil(t, c.hover(leakyURI, pos.Line, pos.Character),
+			"hover resolved a loop body step from a wait outside the loop")
+		assert.Empty(t, c.definition(leakyURI, pos.Line, pos.Character))
+	})
+
+	t.Run("a forward reference in a wait is reported on the expression", func(t *testing.T) {
+		const forward = `name: fwd-wait
+steps:
+  - id: hold
+    wait_until: ${steps.later.result}
+  - id: later
+    echo:
+      message: hi
+`
+		params := c.open("file:///fwd-wait.yaml", forward)
+		require.Len(t, params.Diagnostics, 1, "got %v", messages(params.Diagnostics))
+		assert.Contains(t, params.Diagnostics[0].Message, `references step "later", which runs later`)
+		assert.Equal(t, "${steps.later.result}", textInRange(forward, params.Diagnostics[0].Range))
+	})
+}
+
+// TestWaitUntilSyntaxErrorLandsOnTheOffendingCharacter is the whole point of
+// putting the wait's expression in the model, so it is asserted as a position
+// rather than as "something was reported".
+//
+// Before, the validator's report was the only one, and it arrived with a position
+// that resolved to the closing brace — a range that is inside the right value and
+// under the wrong character, which is the failure mode a weaker assertion cannot
+// tell from a fix. Now the expression is parsed here, where the offset of the
+// error within the source is known.
+func TestWaitUntilSyntaxErrorLandsOnTheOffendingCharacter(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		wait string
+		// underlines is the exact source text the diagnostic must cover.
+		underlines string
+	}{
+		{
+			name: "an extraneous identifier",
+			wait: "${now b}",
+			// The token at fault, not the fence and not the brace after it.
+			underlines: "b",
+		},
+		{
+			name:       "a doubled operator",
+			wait:       "${now + + days(3)}",
+			underlines: "+",
+		},
+		{
+			// An error CEL reports at the end of the input has no character to
+			// land on, so the whole expression is the tightest honest answer —
+			// still narrower than the value and still inside the fence.
+			name:       "an expression that stops early",
+			wait:       "${now + }",
+			underlines: "${now + }",
+		},
+	}
+
+	c := newClient(t)
+	c.initialize()
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src := "name: broken-wait\nsteps:\n  - id: hold\n    wait_until: " + tt.wait + "\n"
+			uri := "file:///broken-wait-" + strings.ReplaceAll(tt.name, " ", "-") + ".yaml"
+			params := c.open(uri, src)
+
+			// Exactly one. Both this package and the validator notice a wait that
+			// will not parse, and a doubled squiggle is two reports of one
+			// mistake — the tighter range is the one that survives.
+			require.Len(t, params.Diagnostics, 1, "got %v", messages(params.Diagnostics))
+			assert.Equal(t, codeCELSyntax, params.Diagnostics[0].Code)
+			assert.Contains(t, params.Diagnostics[0].Message, "Syntax error")
+			assert.Equal(t, tt.underlines, textInRange(src, params.Diagnostics[0].Range))
+
+			// The second `+` is the one at fault, and it is the second occurrence
+			// in the line. Asserting the text alone would pass on either, so the
+			// column is checked against where the fixture actually puts it.
+			if tt.name == "a doubled operator" {
+				want := strings.Index(src, "+ days")
+				assert.Equal(t, want, offsetOf(src, params.Diagnostics[0].Range.Start),
+					"underlined the first operator rather than the one at fault")
+			}
+		})
+	}
+}
+
+// TestNowIsExplainedTheSameWayTheValidatorRefusesIt guards the one duplication
+// this change could not avoid.
+//
+// `flowfile` refuses `now` in a task input with a sentence explaining why the name
+// is bound in a wait and nowhere else, and the editor now explains the same thing
+// on hover and in completion. The string is unexported, so the editor cannot show
+// the validator's own words; what it can do is fail when the two accounts diverge.
+//
+// Each clause below is asserted to appear in *both*, which is what makes this a
+// guard rather than a third copy: rewording either side turns it red and whoever
+// does the rewording sees the other.
+func TestNowIsExplainedTheSameWayTheValidatorRefusesIt(t *testing.T) {
+	t.Parallel()
+
+	const src = `name: no-clock
+steps:
+  - id: a
+    echo:
+      message: ${now}
+`
+	c := newClient(t)
+	c.initialize()
+	const uri = "file:///no-clock.yaml"
+
+	params := c.open(uri, src)
+	require.Len(t, params.Diagnostics, 1, "got %v", messages(params.Diagnostics))
+	refusal := params.Diagnostics[0].Message
+	require.Contains(t, refusal, v1.NowIdentifier,
+		"premise: the diagnostic under test must be the one about the clock")
+
+	// The three claims the refusal rests on. They are what an author needs in
+	// order to understand the rule rather than merely obey it.
+	for _, claim := range []string{
+		"the moment the wait is evaluated",
+		"resolved inside an activity",
+		"no clock that survives a retry",
+	} {
+		assert.Contains(t, refusal, claim,
+			"the validator no longer makes this claim; the editor's copy in nowDoc has drifted from it")
+		assert.Contains(t, nowDoc(), claim,
+			"the editor no longer makes this claim; it has drifted from the validator's refusal")
+	}
+
+	// And the editor stays quiet where the name is not bound. Describing it here
+	// would contradict the squiggle the author is looking at.
+	pos := positionOf(t, src, "${now}", 2)
+	assert.Nil(t, c.hover(uri, pos.Line, pos.Character),
+		"hover described the clock in a task input, where the validator refuses it")
+
+	// The editor's own two surfaces say one thing, which is the duplication it
+	// *could* avoid and therefore must: an author who accepts the candidate and
+	// then hovers what they accepted is looking at the same name twice.
+	t.Run("completion and hover show one account of it", func(t *testing.T) {
+		const bound = `name: c
+steps:
+  - id: window
+    wait_until: ${now}
+`
+		const boundURI = "file:///one-account.yaml"
+		require.Empty(t, messages(c.open(boundURI, bound).Diagnostics),
+			"premise: a wait naming the clock is a document the compiler accepts")
+
+		// Completion, at the position where the name is being typed.
+		typing := positionOf(t, bound, "${now}", len("${"))
+		item := findItem(c.complete(boundURI, typing.Line, typing.Character).Items, v1.NowIdentifier)
+		require.NotNil(t, item, "premise: the clock must be offered where it is bound")
+		assert.Equal(t, plainText(nowDoc()), item.Documentation)
+
+		// And hover, on the name once written. Trimmed because the harness joins
+		// the protocol's content blocks with a newline apiece.
+		got := c.hover(boundURI, typing.Line, typing.Character+1)
+		require.NotNil(t, got)
+		assert.Equal(t, nowDoc(), strings.TrimSpace(hoverText(got)))
+	})
+}
+
+// TestWaitKeysAreDocumentedAtTheirOwnLevel is the regression guard for the class
+// of mistake waitForSignalEntry exists to prevent, checked again now that a second
+// wait key is in the model.
+//
+// `timeout:` means two different things one level apart — the step's bounds one
+// attempt at it, a gate's bounds how long it waits before reporting `timed_out` —
+// and hovering one used to answer with the other's documentation. Adding
+// `wait_until` must not reopen that, and the way it could is by opening a level of
+// its own; it does not, because its value is one expression rather than a mapping.
+func TestWaitKeysAreDocumentedAtTheirOwnLevel(t *testing.T) {
+	t.Parallel()
+
+	// The step-level `timeout:` sits on the task step, because a waiting step may
+	// not carry one — the validator says so, and a fixture that ignored it would
+	// be testing hover against a document `flow validate` refuses.
+	const src = `name: waits
+steps:
+  - id: fetch
+    timeout: 1m
+    echo:
+      message: hi
+  - id: nap
+    sleep: 30s
+  - id: window
+    wait_until: ${now + days(3)}
+  - id: approval
+    wait_for_signal:
+      name: deploy-approved
+      timeout: 24h
+`
+	c := newClient(t)
+	c.initialize()
+	const uri = "file:///wait-keys.yaml"
+	require.Empty(t, messages(c.open(uri, src).Diagnostics))
+
+	// Each key's own documentation, taken from the table rather than quoted, so
+	// that rewording an entry cannot leave this asserting text nothing shows.
+	docFor := func(t *testing.T, level, name string) string {
+		t.Helper()
+		k, ok := lookupDSLKey(level, name)
+		require.True(t, ok, "no %q key at the %q level", name, level)
+		return k.docs
+	}
+
+	tests := []struct {
+		name string
+		// key, minIndent and after locate the declaration to hover.
+		key       string
+		minIndent int
+		after     string
+		// level is where the documentation shown must come from.
+		level string
+		// notLevel is the other level declaring the same key, whose
+		// documentation must not be what is shown.
+		notLevel string
+	}{
+		{name: "sleep", key: "sleep", minIndent: 4, level: "steps"},
+		{name: "wait_until", key: "wait_until", minIndent: 4, level: "steps"},
+		{
+			name: "a step's own timeout", key: "timeout", minIndent: 4,
+			level: "steps", notLevel: "wait_for_signal",
+		},
+		{
+			name: "a gate's timeout", key: "timeout", minIndent: 6, after: "wait_for_signal:",
+			level: "wait_for_signal", notLevel: "steps",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pos := positionOfKey(t, src, tt.key, tt.minIndent, tt.after)
+			got := c.hover(uri, pos.Line, pos.Character)
+			require.NotNil(t, got, "no hover for %q at %v", tt.key, pos)
+
+			text := hoverText(got)
+			assert.Contains(t, text, docFor(t, tt.level, tt.key))
+			if tt.notLevel != "" {
+				assert.NotContains(t, text, docFor(t, tt.notLevel, tt.key),
+					"hovering %q answered with the documentation for the %q of the other level",
+					tt.key, tt.key)
+			}
+		})
+	}
 }
 
 // TestNestedStepsAreFirstClass checks that a step inside a for_each body or a
@@ -341,12 +692,12 @@ steps:
       expr: "['a', 'b']"
   - id: loop
     for_each:
-      items: ${targets.result}
+      items: ${steps.targets.result}
       iterator: one
       steps:
         - id: body
           echo:
-            mesage: ${targets.result}
+            mesage: ${steps.targets.result}
   - id: branches
     parallel:
       - steps:
@@ -396,10 +747,10 @@ steps:
 	})
 
 	t.Run("a loop's items expression resolves references", func(t *testing.T) {
-		pos := positionOf(t, src, "${targets.result}", 3)
+		pos := positionOf(t, src, "${steps.targets.result}", len("${steps."))
 		got := c.hover(uri, pos.Line, pos.Character)
 		require.NotNil(t, got, "no hover on the items expression")
-		assert.Contains(t, hoverText(got), "`targets.result`")
+		assert.Contains(t, hoverText(got), "`steps.targets.result`")
 
 		def := c.definition(uri, pos.Line, pos.Character)
 		require.Len(t, def, 1)
@@ -439,6 +790,15 @@ steps:
 // The rules are the engine's, mirrored from flowfile's validator: a loop body's
 // outputs do not escape the loop, a parallel block's branch outputs do merge once
 // it joins, and one branch cannot see a sibling's.
+//
+// Rooting adds a second axis to every one of them. A position is now in one of two
+// namespaces, and each case is asked in both: the names bound bare where the
+// cursor is, and the step ids under the root. Asking only one would leave the way
+// the boundary actually breaks untested — not a name missing from a menu, but a
+// name offered in the menu next door, where it cannot resolve. So each direction
+// also asserts that the *other* namespace's names are absent, which is the
+// negative direction CLAUDE.md asks for and the reason the two lists are written
+// out separately rather than concatenated.
 func TestReferenceScoping(t *testing.T) {
 	t.Parallel()
 
@@ -449,7 +809,7 @@ steps:
       message: hi
   - id: loop
     for_each:
-      items: ${before.result}
+      items: ${steps.before.result}
       iterator: each
       steps:
         - id: body_one
@@ -477,31 +837,39 @@ steps:
 		name string
 		// at is the placeholder to put the cursor's ${ in place of.
 		at string
-		// want is the exact candidate list, nearest first.
-		want []string
-		// notWant names candidates that must never appear, with the reason.
+		// bare is the exact candidate list at the start of an expression: the
+		// names bound where the cursor is, then the root.
+		bare []string
+		// rooted is the exact candidate list after `steps.`, nearest first.
+		rooted []string
+		// notWant names candidates that must appear in neither, with the reason.
 		notWant map[string]string
 	}{
 		{
 			name: "inside a loop body",
 			at:   "PLACEHOLDER_BODY",
-			// The iterator, the earlier body step, and the step before the loop.
-			want: []string{"each", "body_one", "before"},
+			// The loop binds its item here, and the root is how everything else
+			// is reached.
+			bare: []string{"each", "steps"},
+			// The earlier body step, and the step before the loop.
+			rooted: []string{"body_one", "before"},
 			notWant: map[string]string{
 				"body_two": "a step cannot reference itself",
 				"loop":     "the enclosing loop has not finished, so it has no results yet",
 				"left":     "a parallel branch that has not run yet",
 				"after":    "a later step",
+				"now":      "the clock is bound in wait_until, not in a task input",
 			},
 		},
 		{
 			name: "after the loop, body steps are gone",
 			at:   "PLACEHOLDER_AFTER",
+			bare: []string{"steps"},
 			// The loop reports its iterations through its own results output, so
 			// only its id survives.
 			// Nearest first is strict reverse document order, so the branch steps
 			// come before the block that contains them.
-			want: []string{"right", "left", "fan", "loop", "before"},
+			rooted: []string{"right", "left", "fan", "loop", "before"},
 			notWant: map[string]string{
 				"body_one": "a loop body's outputs do not escape the loop",
 				"body_two": "a loop body's outputs do not escape the loop",
@@ -509,14 +877,16 @@ steps:
 			},
 		},
 		{
-			name: "inside a parallel branch, a sibling branch is invisible",
-			at:   "PLACEHOLDER_LEFT",
-			want: []string{"loop", "before"},
+			name:   "inside a parallel branch, a sibling branch is invisible",
+			at:     "PLACEHOLDER_LEFT",
+			bare:   []string{"steps"},
+			rooted: []string{"loop", "before"},
 			notWant: map[string]string{
 				"fan":      "the enclosing parallel block has not joined yet",
 				"right":    "branches are unordered, so a sibling may not be referenced",
 				"body_one": "a loop body's outputs do not escape the loop",
 				"after":    "a later step",
+				"each":     "a branch is not a loop body, so nothing binds an item here",
 			},
 		},
 	}
@@ -525,27 +895,50 @@ steps:
 	c.initialize()
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Only the case under test gets a cursor; the others become literals.
-			text := src
-			for _, p := range []string{"PLACEHOLDER_BODY", "PLACEHOLDER_LEFT", "PLACEHOLDER_AFTER"} {
-				if p == tt.at {
-					text = strings.Replace(text, p, "${|", 1)
-					continue
+		for _, direction := range []struct {
+			name string
+			// typed is what stands between the `${` and the cursor.
+			typed string
+			want  []string
+			// absent is the other namespace's list, which must not appear here.
+			absent []string
+		}{
+			{name: "bare", typed: "", want: tt.bare, absent: tt.rooted},
+			{name: "rooted", typed: "steps.", want: tt.rooted, absent: tt.bare},
+		} {
+			t.Run(tt.name+", "+direction.name, func(t *testing.T) {
+				// Only the case under test gets a cursor; the others become
+				// literals.
+				text := src
+				for _, p := range []string{"PLACEHOLDER_BODY", "PLACEHOLDER_LEFT", "PLACEHOLDER_AFTER"} {
+					if p == tt.at {
+						text = strings.Replace(text, p, "${"+direction.typed+"|", 1)
+						continue
+					}
+					text = strings.Replace(text, p, "hi", 1)
 				}
-				text = strings.Replace(text, p, "hi", 1)
-			}
-			clean, pos := splitCursor(t, text)
+				clean, pos := splitCursor(t, text)
 
-			uri := "file:///scope-" + strings.ReplaceAll(tt.name, " ", "-") + ".yaml"
-			c.open(uri, clean)
-			got := labels(c.complete(uri, pos.Line, pos.Character).Items)
+				uri := "file:///scope-" + strings.ReplaceAll(tt.name+"-"+direction.name, " ", "-") + ".yaml"
+				c.open(uri, clean)
+				got := labels(c.complete(uri, pos.Line, pos.Character).Items)
 
-			assert.Equal(t, tt.want, got)
-			for name, why := range tt.notWant {
-				assert.NotContains(t, got, name, why)
-			}
-		})
+				assert.Equal(t, direction.want, got)
+				for name, why := range tt.notWant {
+					assert.NotContains(t, got, name, why)
+				}
+				for _, name := range direction.absent {
+					if name == "steps" {
+						// The root is not a step id, so it is legitimately absent
+						// from the rooted menu — and it is what the bare menu is
+						// there to offer. Nothing to assert either way.
+						continue
+					}
+					assert.NotContains(t, got, name,
+						"%q belongs to the other namespace; offering it here produces a reference that cannot resolve", name)
+				}
+			})
+		}
 	}
 }
 
@@ -566,14 +959,14 @@ steps:
             message: hi
   - id: after
     echo:
-      message: ${inner.result}
+      message: ${steps.inner.result}
 `
 	c := newClient(t)
 	c.initialize()
 	const uri = "file:///leak.yaml"
 	c.open(uri, src)
 
-	pos := positionOf(t, src, "${inner.result}", 3)
+	pos := positionOf(t, src, "${steps.inner.result}", len("${steps."))
 
 	// flowfile reports this as an unknown step; hover and definition must not
 	// contradict it by resolving what the engine will not.
@@ -734,7 +1127,7 @@ steps:
       message: hi
   - id: loop
     for_each:
-      items: ${a.result}
+      items: ${steps.a.result}
       iterator: one
       max_parallel: 2
       steps:

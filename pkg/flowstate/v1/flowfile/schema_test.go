@@ -101,7 +101,7 @@ steps:
       message: one
   - id: a
     echo:
-      message: ${[count.result]}
+      message: ${[steps.count.result]}
 `,
 		},
 		{

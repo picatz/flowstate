@@ -19,7 +19,7 @@ steps:
   # `name`, and body steps can reference each other within an iteration.
   - id: process
     for_each:
-      items: ${targets.result}
+      items: ${steps.targets.result}
       iterator: name
       max_parallel: 3
       steps:
@@ -47,6 +47,6 @@ steps:
     printf:
       format: "%s / %s / processed %d target(s)"
       args:
-        - ${check_config.result}
-        - ${check_quota.result}
-        - ${size(process.results)}
+        - ${steps.check_config.result}
+        - ${steps.check_quota.result}
+        - ${size(steps.process.results)}

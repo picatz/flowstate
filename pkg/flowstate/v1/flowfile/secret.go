@@ -162,7 +162,7 @@ func misplacedHelp(placement secretPlacement, isWholeExpression bool) string {
 // is a mistake with a specific fix, and the alternative is compiling it into an
 // expression that fails at run time.
 //
-// Only a global call counts. `secret` as a step id (${secret.result}), a bare name
+// Only a global call counts. `secret` as a step id (${steps.secret.result}), a bare name
 // (${secret}), or a method on something (${x.secret('a')}) is not the marker, since
 // none of those is the thing a Flowfile writes to name a secret.
 func findSecretCall(e *expr.Expr) (*expr.Expr, bool) {

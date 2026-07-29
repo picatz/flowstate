@@ -161,6 +161,12 @@ func fixOne(out, reports io.Writer, path string, opts fixOptions) (fixOutcome, e
 	for _, refusal := range result.Refusals {
 		fmt.Fprintf(reports, "%s:%s\n", path, refusal.Error())
 	}
+	// Notes do not affect the outcome. They are places worth a reader's eye, not
+	// work left undone, and failing on one would let a comment nobody has to change
+	// stop `flow fix . && git commit`.
+	for _, note := range result.Notes {
+		fmt.Fprintf(reports, "%s:%s\n", path, note.Error())
+	}
 	outcome := fixOutcome{changed: result.Changed(), refused: len(result.Refusals) > 0}
 
 	if opts.stdout {

@@ -9,7 +9,7 @@ steps:
         X-Env: dev
   - id: echo_header
     echo:
-      message: ${string(web.status_code)}
+      message: ${string(steps.web.status_code)}
   - id: nested
     cel:
       # Note: CEL expressions for the cel task's `expr` input must be strings.
@@ -17,4 +17,4 @@ steps:
       expr: "{'outer': {'inner': 'value'}}"
   - id: pick
     echo:
-      message: ${nested.result['outer']['inner']}
+      message: ${steps.nested.result['outer']['inner']}

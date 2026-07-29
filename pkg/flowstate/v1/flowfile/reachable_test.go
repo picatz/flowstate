@@ -262,16 +262,27 @@ func TestNowInATaskInputSaysWhereItIsAvailable(t *testing.T) {
 		"`now` was reported as a missing step, which sends the author looking for one they never wrote")
 }
 
-// TestStepNamedNowIsRefused checks that the shadowing is prevented rather than
-// merely survived.
-func TestStepNamedNowIsRefused(t *testing.T) {
+// TestAStepNamedNowNoLongerNeedsRefusing is what that rule turned into.
+//
+// It used to be refused, because a bound name won over a step's outputs and a
+// step called `now` would have worked everywhere except inside a `wait_until:`.
+// Rooting removes the possibility rather than the permission: the step is
+// `steps.now` and the clock is `now`, so neither can be written where the other
+// was meant.
+//
+// Asserted as acceptance *plus* both names resolving in one file, because
+// dropping the refusal on its own would also pass if the two had quietly become
+// the same thing.
+func TestAStepNamedNowNoLongerNeedsRefusing(t *testing.T) {
 	t.Parallel()
 
-	workflow, err := flowfile.Unmarshal([]byte(
-		"name: t\nsteps:\n  - id: now\n    echo:\n      message: hi\n"))
-	require.NoError(t, err)
+	source := "name: t\nsteps:\n" +
+		"  - id: now\n    echo:\n      message: hi\n" +
+		"  - id: hold\n    wait_until: ${now + days(1)}\n" +
+		"  - id: read\n    echo:\n      message: ${steps.now.result}\n"
 
-	diagnostics := flowfile.Validate(workflow)
-	require.NotEmpty(t, diagnostics, "a step named `now` was accepted")
-	require.Contains(t, diagnostics.Error(), "choose another id")
+	workflow, err := flowfile.Unmarshal([]byte(source))
+	require.NoError(t, err)
+	require.Empty(t, flowfile.Validate(workflow),
+		"a step called `now` beside a wait that uses the clock must be accepted")
 }

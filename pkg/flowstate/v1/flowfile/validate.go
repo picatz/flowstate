@@ -22,6 +22,26 @@ import (
 // A step whose ID is one of these compiles, and then every ${...} referencing it
 // fails to parse. The list mirrors the parser's own; keeping a copy is necessary
 // because it is not exported.
+// celUnusableStepIDs are the words no step may be named even under the root.
+//
+// Seventeen of the twenty-one in celReservedIdentifiers became legal the moment
+// references were rooted: cel-go refuses a reserved word in *identifier* position
+// and nowhere else, and `steps.<id>` is a field select. These four are refused a
+// level lower, by the lexer, which no amount of qualifying can reach — `true`,
+// `false` and `null` are literals and `in` is an operator, so `steps.in` is a
+// syntax error in the grammar itself.
+//
+// `in` is the one that is easy to miss, and missing it is not harmless: the step
+// compiles, and then every reference to it fails to *parse*, so the author gets a
+// syntax error pointing at an expression instead of a diagnostic pointing at the
+// id — which is precisely the failure celReservedIdentifiers exists to prevent.
+// TestCELWordsUnusableAsStepIDs derives this set from cel-go rather than trusting
+// the reasoning above.
+//
+// The full list is still needed, because a `for_each` iterator is still written
+// bare and so is still an identifier.
+var celUnusableStepIDs = []string{"true", "false", "null", "in"}
+
 var celReservedIdentifiers = []string{
 	"as", "break", "const", "continue", "else", "false", "for", "function",
 	"if", "import", "in", "let", "loop", "namespace", "null", "package",
@@ -227,11 +247,33 @@ func Validate(wf *v1.Workflow) Diagnostics {
 				Field:   fmt.Sprintf("steps[%d]", i),
 				Message: "step has no id; every step needs an id so later steps can reference its outputs",
 			})
-		case slices.Contains(celReservedIdentifiers, id):
+		case id == v1.StepsRoot:
+			// The root itself. Refused as an id, and this is the one collision
+			// rooting *creates* rather than removes — worth stating, because the
+			// rest of this change is about deleting rules like it.
+			//
+			// It has to be refused here rather than left to resolve, because the
+			// runtime deliberately lets a step of this name win: a spec compiled
+			// before the root existed may contain one, and a worker replaying it
+			// must keep resolving the way it always did. That compatibility is only
+			// safe while no *new* file can create the situation — otherwise a step
+			// called `steps` shadows the root, and every rooted reference in the
+			// file resolves against that step's outputs instead. Which validates
+			// clean and fails at run time with `no such key`.
 			ds = append(ds, Diagnostic{
 				Step: id,
 				Message: fmt.Sprintf(
-					"id %q is a CEL reserved word, so ${%s.…} cannot be parsed; choose another id", id, id),
+					"id %q is the root every step is named under, so a step called that would hide all the others; choose another id",
+					id),
+			})
+		case slices.Contains(celUnusableStepIDs, id):
+			// Four words, where there used to be twenty-one — see celUnusableStepIDs
+			// for which seventeen rooting made legal and why these did not follow.
+			ds = append(ds, Diagnostic{
+				Step: id,
+				Message: fmt.Sprintf(
+					"id %q is punctuation in CEL rather than a name, so ${%s.%s} cannot be parsed at all; choose another id",
+					id, v1.StepsRoot, id),
 			})
 		case !isCELIdentifier(id):
 			ds = append(ds, Diagnostic{
@@ -239,17 +281,6 @@ func Validate(wf *v1.Workflow) Diagnostics {
 				Message: fmt.Sprintf(
 					"id %q is not a valid identifier, so ${%s.…} cannot be parsed; use letters, digits, and underscores, starting with a letter or underscore",
 					id, id),
-			})
-		case id == v1.NowIdentifier:
-			// Refused rather than shadowed. A wait expression binds `now` to the
-			// moment it is evaluated, and a bound name wins over a step's outputs
-			// — so a step called `now` would keep working everywhere except inside
-			// a `wait_until:`, where it would quietly mean something else.
-			ds = append(ds, Diagnostic{
-				Step: id,
-				Message: fmt.Sprintf(
-					"id %q is the built-in naming the moment a wait is evaluated, which a step of the same name would shadow inside `wait_until:`; choose another id",
-					id),
 			})
 		}
 
@@ -266,7 +297,7 @@ func Validate(wf *v1.Workflow) Diagnostics {
 	}
 
 	// Tasks and expression references.
-	available := make(map[string]bool, len(wf.GetSteps()))
+	scope := newRefScope()
 	for i, node := range wf.GetSteps() {
 		id := node.GetId()
 		task := node.GetTask()
@@ -278,20 +309,20 @@ func Validate(wf *v1.Workflow) Diagnostics {
 			// block it sits in.
 			switch kind := node.GetKind().(type) {
 			case *v1.Node_ForEach:
-				ds = append(ds, validateLoop(id, kind.ForEach, available, i, wf)...)
+				ds = append(ds, validateLoop(id, kind.ForEach, scope, i, wf)...)
 				// A loop's body outputs do not escape it — only its own `results`
 				// output does — so body step ids must not become referenceable.
 
 			case *v1.Node_Parallel:
-				ds = append(ds, validateParallel(id, kind.Parallel, available, i, wf)...)
+				ds = append(ds, validateParallel(id, kind.Parallel, scope, i, wf)...)
 				// Branch outputs are merged into the enclosing scope once the
 				// block completes, so a later step may reference them by id.
 				for _, branchID := range branchStepIDs(kind.Parallel) {
-					available[branchID] = true
+					scope.steps[branchID] = true
 				}
 
 			case *v1.Node_Wait:
-				ds = append(ds, validateWait(id, kind.Wait, available, i, wf)...)
+				ds = append(ds, validateWait(id, kind.Wait, scope, i, wf)...)
 
 			default:
 				ds = append(ds, Diagnostic{
@@ -299,7 +330,7 @@ func Validate(wf *v1.Workflow) Diagnostics {
 					Message: "step must have one of " + stepKindList(),
 				})
 			}
-			available[id] = true
+			scope.steps[id] = true
 			continue
 		}
 
@@ -324,7 +355,7 @@ func Validate(wf *v1.Workflow) Diagnostics {
 		// the tool. The registry declares which inputs those are.
 		// A condition is an expression like any other, and resolves against the
 		// same names, so it is checked the same way.
-		ds = append(ds, validateInputRefs(id, "if", node.GetCondition(), available, i, wf)...)
+		ds = append(ds, validateInputRefs(id, "if", node.GetCondition(), scope, i, wf)...)
 
 		// What the task declares its inputs to be is checked separately from what
 		// they reference, because the two fail differently: a reference that
@@ -335,12 +366,12 @@ func Validate(wf *v1.Workflow) Diagnostics {
 
 		checkable, _ := v1.ResolvableInputs(task.GetName(), task.GetInputs())
 		for _, name := range sortedInputNames(checkable) {
-			ds = append(ds, validateInputRefs(id, name, checkable[name], available, i, wf)...)
+			ds = append(ds, validateInputRefs(id, name, checkable[name], scope, i, wf)...)
 		}
 
 		// Only after a step's inputs are checked do its outputs become
 		// available, which is what makes a self- or forward-reference detectable.
-		available[id] = true
+		scope.steps[id] = true
 	}
 
 	return ds
@@ -373,12 +404,60 @@ func mergedStepIDs(nodes []*v1.Node) []string {
 	return ids
 }
 
+// A refScope is what the expressions in one step may name.
+//
+// Two sets, not one. Before rooting there was a single map holding step ids and
+// loop iterators together, which is precisely the flat namespace this grammar
+// removed: with both in it, a bare `${name}` inside a loop cannot be told from a
+// reference to a step called `name`, and three collision rules existed only to
+// make sure the two could never both be present.
+//
+// Keeping them apart is what deletes those rules. A step is named through the
+// root and a local is named bare, so neither can be mistaken for the other and
+// there is nothing left for a rule to forbid.
+type refScope struct {
+	// steps are the ids whose outputs exist at this point, reachable as
+	// `steps.<id>`.
+	steps map[string]bool
+
+	// locals are the names bound bare here: a loop's iterator, and `now` inside a
+	// wait expression. They are not steps and never were.
+	locals map[string]bool
+}
+
+// newRefScope returns an empty scope.
+func newRefScope() refScope {
+	return refScope{steps: map[string]bool{}, locals: map[string]bool{}}
+}
+
+// clone returns a copy that can be extended without disturbing the original,
+// which is what lets a loop body see its enclosing scope plus its own iterator
+// while the steps after the loop see neither.
+func (s refScope) clone() refScope {
+	out := refScope{
+		steps:  make(map[string]bool, len(s.steps)+1),
+		locals: make(map[string]bool, len(s.locals)+1),
+	}
+	maps.Copy(out.steps, s.steps)
+	maps.Copy(out.locals, s.locals)
+	return out
+}
+
+// withLocal returns a copy with one more bare name bound.
+func (s refScope) withLocal(name string) refScope {
+	out := s.clone()
+	if name != "" {
+		out.locals[name] = true
+	}
+	return out
+}
+
 // validateLoop checks a for_each node and its body.
 //
 // The body is checked with the enclosing steps visible, because a body step may
 // legitimately reference a step defined before the loop, plus the iterator, which
 // exists only inside the body.
-func validateLoop(stepID string, loop *v1.ForEach, enclosing map[string]bool, index int, wf *v1.Workflow) Diagnostics {
+func validateLoop(stepID string, loop *v1.ForEach, enclosing refScope, index int, wf *v1.Workflow) Diagnostics {
 	var ds Diagnostics
 
 	if loop.GetItems() == nil {
@@ -398,14 +477,23 @@ func validateLoop(stepID string, loop *v1.ForEach, enclosing map[string]bool, in
 			Message: fmt.Sprintf("%q is a CEL reserved word, so ${%s} cannot be parsed", iterator, iterator),
 		})
 	}
-	if enclosing[iterator] {
+	if iterator == v1.StepsRoot {
+		// The root, by the other route into a body's scope. A bound name wins over
+		// the scope it is bound into, so an iterator spelled `steps` hides every
+		// step from the body — and the body is exactly where rooted references are
+		// written.
 		ds = append(ds, Diagnostic{
 			Step: stepID, Field: "iterator",
 			Message: fmt.Sprintf(
-				"%q is also a step id; expressions resolve both from one namespace, so the loop variable would hide the step",
+				"%q is the root every step is named under, and a loop variable of that name would hide all of them inside the body; choose another iterator",
 				iterator),
 		})
 	}
+	// An iterator sharing a step's id used to be refused here, because both
+	// resolved from one namespace and the loop variable would hide the step. It is
+	// no longer a collision: a step is named `steps.<id>` and an iterator is named
+	// bare, so the two cannot be confused and there is nothing left to forbid.
+	// This is the rule rooting was worth doing for.
 	if iterator == v1.NowIdentifier {
 		// The same refusal a step id gets, for the same reason and by the other
 		// route into a wait's scope. A loop variable is bound into the scope's
@@ -426,17 +514,15 @@ func validateLoop(stepID string, loop *v1.ForEach, enclosing map[string]bool, in
 		})
 	}
 
-	inner := make(map[string]bool, len(enclosing)+1)
-	for k := range enclosing {
-		inner[k] = true
-	}
-	inner[iterator] = true
-
-	return append(ds, validateNested(loop.GetBody(), inner, index, wf)...)
+	// The iterator is bound as a *local*, not merged in beside the step ids. That
+	// one line is the whole of what rooting deletes: with the two apart, an
+	// iterator sharing a step's name is no longer ambiguous, so the rule that used
+	// to forbid it has nothing left to prevent.
+	return append(ds, validateNested(loop.GetBody(), enclosing.withLocal(iterator), index, wf)...)
 }
 
 // validateParallel checks a parallel node and its branches.
-func validateParallel(stepID string, parallel *v1.Parallel, enclosing map[string]bool, index int, wf *v1.Workflow) Diagnostics {
+func validateParallel(stepID string, parallel *v1.Parallel, enclosing refScope, index int, wf *v1.Workflow) Diagnostics {
 	var ds Diagnostics
 
 	if len(parallel.GetBranches()) == 0 {
@@ -446,10 +532,8 @@ func validateParallel(stepID string, parallel *v1.Parallel, enclosing map[string
 	// Branch outputs merge into one namespace after the block, so ids must not
 	// collide across branches — and a branch must not reference a sibling, since
 	// branches are unordered.
-	seen := make(map[string]bool, len(enclosing))
-	for k := range enclosing {
-		seen[k] = true
-	}
+	seen := make(map[string]bool, len(enclosing.steps))
+	maps.Copy(seen, enclosing.steps)
 
 	for i, branch := range parallel.GetBranches() {
 		for _, node := range branch.GetSteps() {
@@ -474,13 +558,10 @@ func validateParallel(stepID string, parallel *v1.Parallel, enclosing map[string
 }
 
 // validateNested checks a nested list of steps against the names visible to it.
-func validateNested(nodes []*v1.Node, enclosing map[string]bool, index int, wf *v1.Workflow) Diagnostics {
+func validateNested(nodes []*v1.Node, enclosing refScope, index int, wf *v1.Workflow) Diagnostics {
 	var ds Diagnostics
 
-	available := make(map[string]bool, len(enclosing)+len(nodes))
-	for k := range enclosing {
-		available[k] = true
-	}
+	scope := enclosing.clone()
 
 	for _, node := range nodes {
 		id := node.GetId()
@@ -498,7 +579,19 @@ func validateNested(nodes []*v1.Node, enclosing map[string]bool, index int, wf *
 		// from the step it collides with, often in a different part of the file, and
 		// nothing said so. It also left a diagnostic about the body step landing on
 		// the top-level one, since a source position is looked up by id.
-		if id != "" && enclosing[id] {
+		if id == v1.StepsRoot {
+			// The same refusal a top-level id gets, for the same reason. A nested
+			// step's outputs are named through the root too, so one called `steps`
+			// hides them from everything after it in the body.
+			ds = append(ds, Diagnostic{
+				Step: id,
+				Message: fmt.Sprintf(
+					"id %q is the root every step is named under, so a step called that would hide all the others; choose another id",
+					id),
+			})
+		}
+
+		if id != "" && enclosing.steps[id] {
 			ds = append(ds, Diagnostic{
 				Step: id,
 				Message: fmt.Sprintf(
@@ -511,18 +604,18 @@ func validateNested(nodes []*v1.Node, enclosing map[string]bool, index int, wf *
 		if task == nil {
 			switch kind := node.GetKind().(type) {
 			case *v1.Node_ForEach:
-				ds = append(ds, validateLoop(id, kind.ForEach, available, index, wf)...)
+				ds = append(ds, validateLoop(id, kind.ForEach, scope, index, wf)...)
 			case *v1.Node_Parallel:
-				ds = append(ds, validateParallel(id, kind.Parallel, available, index, wf)...)
+				ds = append(ds, validateParallel(id, kind.Parallel, scope, index, wf)...)
 			case *v1.Node_Wait:
-				ds = append(ds, validateWait(id, kind.Wait, available, index, wf)...)
+				ds = append(ds, validateWait(id, kind.Wait, scope, index, wf)...)
 			default:
 				ds = append(ds, Diagnostic{
 					Step:    id,
 					Message: "step must have one of " + stepKindList(),
 				})
 			}
-			available[id] = true
+			scope.steps[id] = true
 			continue
 		}
 
@@ -535,21 +628,21 @@ func validateNested(nodes []*v1.Node, enclosing map[string]bool, index int, wf *
 			})
 		}
 
-		ds = append(ds, validateInputRefs(id, "if", node.GetCondition(), available, index, wf)...)
+		ds = append(ds, validateInputRefs(id, "if", node.GetCondition(), scope, index, wf)...)
 		ds = append(ds, validateTaskInputs(id, task)...)
 
 		checkable, _ := v1.ResolvableInputs(task.GetName(), task.GetInputs())
 		for _, name := range sortedInputNames(checkable) {
-			ds = append(ds, validateInputRefs(id, name, checkable[name], available, index, wf)...)
+			ds = append(ds, validateInputRefs(id, name, checkable[name], scope, index, wf)...)
 		}
 
-		available[id] = true
+		scope.steps[id] = true
 	}
 	return ds
 }
 
 // validateInputRefs reports references in one input that cannot resolve.
-func validateInputRefs(stepID, inputName string, val *v1.Value, available map[string]bool, index int, wf *v1.Workflow) Diagnostics {
+func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, index int, wf *v1.Workflow) Diagnostics {
 	var ds Diagnostics
 
 	parsed := val.GetExpr()
@@ -559,22 +652,50 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, available map[st
 		return ds
 	}
 
-	for _, ref := range referencedIdentifiers(parsed) {
-		if available[ref] {
+	rooted, bare := referencedIdentifiers(parsed)
+
+	// A rooted reference names a step and can only fail by naming one that is not
+	// in scope. There is no second reading of it to rule out, which is the point of
+	// the root.
+	for _, ref := range rooted {
+		if scope.steps[ref] {
+			continue
+		}
+		ds = append(ds, unresolvedStep(stepID, inputName, ref, index, wf)...)
+	}
+
+	for _, ref := range bare {
+		// A name bound here — a loop's iterator, `now` inside a wait — is exactly
+		// what stays bare, and is not a step.
+		if scope.locals[ref] {
+			continue
+		}
+		if ref == v1.StepsRoot {
+			// The root itself, from a macro or `size(steps)`. It names every step
+			// and there is nothing to narrow.
 			continue
 		}
 
-		// Distinguish the two ways a reference fails, because the fixes differ.
-		declaredLater := false
-		for _, other := range wf.GetSteps()[index:] {
-			if other.GetId() == ref {
-				declaredLater = true
-				break
-			}
+		// Everything else written bare is either the retired spelling of a
+		// reference or a name that means nothing, and the two want different
+		// answers: one is a migration someone can run, the other is a mistake.
+		if declaredAnywhere(ref, wf) {
+			ds = append(ds, Diagnostic{
+				Step: stepID, Field: inputName,
+				Message: fmt.Sprintf(
+					"`%s` is a step, and a step is named `%s.%s` now; run `flow fix` to rewrite this file",
+					ref, v1.StepsRoot, ref),
+			})
+			continue
 		}
 
-		switch {
-		case ref == v1.NowIdentifier:
+		// Only two answers are left here, and that is worth saying because it used
+		// to be four. A self-reference and a forward reference are both references
+		// to a step that *is* declared, so both are caught above and told to run
+		// `flow fix` — after which they resolve as rooted references and get the
+		// right message from unresolvedStep. Keeping the two branches here would
+		// have been code that cannot run, which is the kind that rots unnoticed.
+		if ref == v1.NowIdentifier {
 			// Reported as what it is rather than as an unknown step. `now` does
 			// exist — an author has read about it, or copied a `wait_until:` — so
 			// "unknown step" sends them looking for a step they never wrote. The
@@ -587,23 +708,18 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, available map[st
 					"has no clock that survives a retry, so compute the moment in a `wait_until:` or " +
 					"pass the time in as an input",
 			})
-		case ref == stepID:
-			ds = append(ds, Diagnostic{
-				Step: stepID, Field: inputName,
-				Message: fmt.Sprintf("references its own step %q, which has no outputs yet", ref),
-			})
-		case declaredLater:
-			ds = append(ds, Diagnostic{
-				Step: stepID, Field: inputName,
-				Message: fmt.Sprintf(
-					"references step %q, which runs later; steps can only reference steps defined before them", ref),
-			})
-		default:
-			ds = append(ds, Diagnostic{
-				Step: stepID, Field: inputName,
-				Message: fmt.Sprintf("references unknown step %q", ref),
-			})
+			continue
 		}
+		// Named rather than guessed at. Bare now means a local binding, so this is
+		// not necessarily a step someone misspelled — and saying which two things a
+		// bare name can be is the difference between a diagnostic an author can act
+		// on and one that only says no.
+		ds = append(ds, Diagnostic{
+			Step: stepID, Field: inputName,
+			Message: fmt.Sprintf(
+				"references unknown name %q; a step is written `%s.%s`, and a bare name is a loop's iterator or `now`",
+				ref, v1.StepsRoot, ref),
+		})
 	}
 	return ds
 }
@@ -613,53 +729,70 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, available map[st
 // Identifiers bound by a comprehension are excluded: in `items.map(x, x + 1)`
 // the name `x` is introduced by the expression itself and is not a step
 // reference. Reporting those would make every use of a comprehension look broken.
-func referencedIdentifiers(parsed *expr.ParsedExpr) []string {
-	found := map[string]struct{}{}
-	collectFreeIdentifiers(parsed.GetExpr(), map[string]struct{}{}, found)
+func referencedIdentifiers(parsed *expr.ParsedExpr) (rooted, bare []string) {
+	roots, free := map[string]struct{}{}, map[string]struct{}{}
+	collectReferences(parsed.GetExpr(), map[string]struct{}{}, roots, free)
+	return sortedNames(roots), sortedNames(free)
+}
 
-	names := make([]string, 0, len(found))
-	for name := range found {
+// sortedNames returns a set's members in order, so one file always reports the
+// same diagnostics in the same sequence.
+func sortedNames(set map[string]struct{}) []string {
+	names := make([]string, 0, len(set))
+	for name := range set {
 		names = append(names, name)
 	}
 	slices.Sort(names)
 	return names
 }
 
-// collectFreeIdentifiers walks an expression, recording identifiers that are not
-// bound by an enclosing comprehension.
-func collectFreeIdentifiers(e *expr.Expr, bound, found map[string]struct{}) {
+// collectReferences separates the two ways a name can appear.
+//
+// A step is written `steps.<id>.<output>`, so it is a *field* of a select over
+// the root rather than a free identifier at all. Anything still bare is either
+// something that is legitimately bare — a loop binding, `now` — or a reference in
+// the spelling this grammar retired, and those want different diagnostics. They
+// are collected apart rather than merged and sorted out afterwards, because the
+// distinction is exactly what the caller needs and is lost by then.
+func collectReferences(e *expr.Expr, bound, rooted, free map[string]struct{}) {
 	if e == nil {
 		return
+	}
+	if sel := e.GetSelectExpr(); sel != nil {
+		if step, ok := rootedStepName(sel, bound); ok {
+			rooted[step] = struct{}{}
+			return
+		}
 	}
 	switch kind := e.GetExprKind().(type) {
 	case *expr.Expr_IdentExpr:
 		name := kind.IdentExpr.GetName()
 		if _, isBound := bound[name]; !isBound {
-			found[name] = struct{}{}
+			free[name] = struct{}{}
 		}
 	case *expr.Expr_SelectExpr:
-		collectFreeIdentifiers(kind.SelectExpr.GetOperand(), bound, found)
+		collectReferences(kind.SelectExpr.GetOperand(), bound, rooted, free)
 	case *expr.Expr_CallExpr:
-		collectFreeIdentifiers(kind.CallExpr.GetTarget(), bound, found)
+		collectReferences(kind.CallExpr.GetTarget(), bound, rooted, free)
 		for _, arg := range kind.CallExpr.GetArgs() {
-			collectFreeIdentifiers(arg, bound, found)
+			collectReferences(arg, bound, rooted, free)
 		}
 	case *expr.Expr_ListExpr:
 		for _, el := range kind.ListExpr.GetElements() {
-			collectFreeIdentifiers(el, bound, found)
+			collectReferences(el, bound, rooted, free)
 		}
 	case *expr.Expr_StructExpr:
 		for _, entry := range kind.StructExpr.GetEntries() {
-			collectFreeIdentifiers(entry.GetMapKey(), bound, found)
-			collectFreeIdentifiers(entry.GetValue(), bound, found)
+			collectReferences(entry.GetMapKey(), bound, rooted, free)
+			collectReferences(entry.GetValue(), bound, rooted, free)
 		}
 	case *expr.Expr_ComprehensionExpr:
 		c := kind.ComprehensionExpr
 
-		// The range and the accumulator's initial value are evaluated outside
-		// the comprehension's scope.
-		collectFreeIdentifiers(c.GetIterRange(), bound, found)
-		collectFreeIdentifiers(c.GetAccuInit(), bound, found)
+		// The range and the accumulator's start are evaluated outside the
+		// comprehension's own scope.
+		collectReferences(c.GetIterRange(), bound, rooted, free)
+		collectReferences(c.GetAccuInit(), bound, rooted, free)
 
 		inner := make(map[string]struct{}, len(bound)+3)
 		for name := range bound {
@@ -670,10 +803,41 @@ func collectFreeIdentifiers(e *expr.Expr, bound, found map[string]struct{}) {
 				inner[name] = struct{}{}
 			}
 		}
-		collectFreeIdentifiers(c.GetLoopCondition(), inner, found)
-		collectFreeIdentifiers(c.GetLoopStep(), inner, found)
-		collectFreeIdentifiers(c.GetResult(), inner, found)
+		collectReferences(c.GetLoopCondition(), inner, rooted, free)
+		collectReferences(c.GetLoopStep(), inner, rooted, free)
+		collectReferences(c.GetResult(), inner, rooted, free)
 	}
+}
+
+// rootedStepName reads the step a rooted reference names.
+//
+// The chain is walked to its base rather than matched at a fixed depth, because
+// the depth is whatever the author selected: `steps.a` is one select over the
+// root and `steps.a.result.code` is three.
+func rootedStepName(sel *expr.Expr_Select, bound map[string]struct{}) (string, bool) {
+	var fields []string
+	node := sel
+	for node != nil {
+		fields = append(fields, node.GetField())
+		operand := node.GetOperand()
+		if ident := operand.GetIdentExpr(); ident != nil {
+			if ident.GetName() != v1.StepsRoot {
+				return "", false
+			}
+			if _, shadowed := bound[v1.StepsRoot]; shadowed {
+				// A comprehension bound the root's name. Then it is a binding, not
+				// the root, and whatever hangs off it is not a step.
+				return "", false
+			}
+			break
+		}
+		node = operand.GetSelectExpr()
+	}
+	if node == nil || len(fields) == 0 {
+		return "", false
+	}
+	// Collected outermost first, so the step is the last one reached.
+	return fields[len(fields)-1], true
 }
 
 // isCELIdentifier reports whether s is a legal CEL identifier.
@@ -760,7 +924,7 @@ func ValidateSource(data []byte) (Diagnostics, error) {
 // references in its own expression; what cannot is whether a payload will contain a
 // given key, because that is up to whoever sends the signal and is not knowable from
 // the file.
-func validateWait(id string, wait *v1.Wait, available map[string]bool, index int, wf *v1.Workflow) Diagnostics {
+func validateWait(id string, wait *v1.Wait, scope refScope, index int, wf *v1.Workflow) Diagnostics {
 	var ds Diagnostics
 
 	if err := v1.ValidateWait(wait); err != nil {
@@ -775,12 +939,65 @@ func validateWait(id string, wait *v1.Wait, available map[string]bool, index int
 		// for this one field rather than to the workflow's scope, so that using it
 		// in a task input is still reported: there is no clock behind it there,
 		// and a name that resolves in one place and not another has to say so.
-		withNow := make(map[string]bool, len(available)+1)
-		maps.Copy(withNow, available)
-		withNow[v1.NowIdentifier] = true
-
-		ds = append(ds, validateInputRefs(id, "wait_until", until, withNow, index, wf)...)
+		ds = append(ds, validateInputRefs(id, "wait_until", until, scope.withLocal(v1.NowIdentifier), index, wf)...)
 	}
 
 	return ds
+}
+
+// declaredAnywhere reports whether a workflow has a step with this id, at any
+// depth and whatever the order.
+//
+// Used to tell a retired spelling from a name that means nothing. `${a.result}`
+// where a step is called `a` is a file someone wrote before the root existed, and
+// the answer is one command; `${a.result}` where nothing is called `a` is a
+// mistake, and the answer is to look at what they meant. Reporting the second
+// message for the first case sends an author hunting for a typo they did not
+// make.
+func declaredAnywhere(id string, wf *v1.Workflow) bool {
+	var walk func([]*v1.Node) bool
+	walk = func(nodes []*v1.Node) bool {
+		for _, node := range nodes {
+			if node.GetId() == id {
+				return true
+			}
+			switch kind := node.GetKind().(type) {
+			case *v1.Node_ForEach:
+				if walk(kind.ForEach.GetBody()) {
+					return true
+				}
+			case *v1.Node_Parallel:
+				for _, branch := range kind.Parallel.GetBranches() {
+					if walk(branch.GetSteps()) {
+						return true
+					}
+				}
+			}
+		}
+		return false
+	}
+	return walk(wf.GetSteps())
+}
+
+// unresolvedStep reports a rooted reference naming a step that is not in scope.
+func unresolvedStep(stepID, inputName, ref string, index int, wf *v1.Workflow) Diagnostics {
+	if ref == stepID {
+		return Diagnostics{{
+			Step: stepID, Field: inputName,
+			Message: fmt.Sprintf("references its own step %q, which has no outputs yet", ref),
+		}}
+	}
+	for _, other := range wf.GetSteps()[index:] {
+		if other.GetId() == ref {
+			return Diagnostics{{
+				Step: stepID, Field: inputName,
+				Message: fmt.Sprintf(
+					"references step %q, which runs later; steps can only reference steps defined before them", ref),
+			}}
+		}
+	}
+	return Diagnostics{{
+		Step: stepID, Field: inputName,
+		Message: fmt.Sprintf("references unknown step %q", ref),
+	}}
 }

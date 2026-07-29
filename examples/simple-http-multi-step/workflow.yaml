@@ -7,4 +7,4 @@ steps:
 - id: output
   echo:
     # Convert status_code (int) to string for echo
-    message: ${string(web.status_code)}
+    message: ${string(steps.web.status_code)}

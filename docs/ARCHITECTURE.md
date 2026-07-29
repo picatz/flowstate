@@ -111,6 +111,15 @@ of these is a bug, even if it passes tests.
    under an object than declared flat, which also keeps compile-time field checking so a
    typo fails at startup instead of evaluating to nothing.
 
+   The DSL's own namespace is now the worked example of that argument. Step outputs used to
+   be declared flat — `${<id>.<output>}` — which made a step id an identifier, so a step
+   could not be called `namespace`, `loop`, `if` or any of the eighteen others. Grouping
+   them under `steps` turns each id into a field selection, and cel-go refuses a reserved
+   word in identifier position only: seventeen of the twenty-one became legal ids the day
+   the root landed. The four that did not (`true`, `false`, `null`, `in`) are lexer tokens,
+   which is the one thing grouping cannot rescue — worth knowing before assuming an object
+   makes every name safe.
+
 3. **One executor.** The local driver and the Temporal driver call the same
    `StepExecutor`. Any behavior that differs between `flow run local` and a Temporal run —
    expression resolution timing, retries, timeouts, error shape — is a defect, because it
@@ -205,7 +214,7 @@ Rows marked **(done)** are implemented; the rest are the shape the surface shoul
 | Conditional execution | per-step `if:`, evaluated in workflow code so the branch is in history **(done)** |
 | Bounded concurrency | `for_each` with `max_parallel:`, fanning out over a computed list **(done)** |
 | Concurrent branches | `parallel:` branch groups, joined before dependents run **(done)** |
-| Best-effort steps | per-step `continue_on_error:`, recording the failure as `${step.error}` **(done)** |
+| Best-effort steps | per-step `continue_on_error:`, recording the failure as `${steps.<id>.error}` **(done)** |
 | Activity heartbeats | progress reporting for long-running tasks |
 | Task queues | routing steps to specialized or plugin workers |
 | Priorities and rate limits | a run is scheduled under a fairness key taken from its authenticated tenant, so one tenant's large workload cannot crowd out another's **(done)**; per-step controls still to come |
@@ -437,8 +446,10 @@ rather than prompting on a terminal. Prompting would have been easier and would 
 the two drivers disagree about the one thing local execution exists to predict.
 
 What the two drivers share is the payload and everything downstream of it: a JSON object
-whose keys become the waiting step's outputs, so `${approval.approved}` means the same
-thing either way. What differs is only how it arrives, and it differs because of what a
+whose keys become the entries of the waiting step's `payload` output, so
+`${steps.approval.payload.approved}` means the same thing either way. Under `payload`
+rather than beside `timed_out`, because a sender must not be able to name anything the
+engine reports — see [DSL.md](DSL.md). What differs is only how it arrives, and it differs because of what a
 local run *is*. A durable run is addressable, so `flow signal <workflow-id> <name>` reaches
 it whenever the person gets round to it. A local run is a process with nobody to signal it
 after it starts, so its answers are given up front with `flow run local --signal
@@ -454,13 +465,21 @@ driver's own clock (`workflow.Now` under Temporal, which replays to the same ins
 a deadline computed from it survives replay. A task input is resolved inside an activity,
 where each retry would read a different value and two steps in a run would disagree about
 what time it is; making the name resolvable only where a replay-safe clock exists keeps
-that version from being expressible at all. A step may therefore not be called `now`,
-since a bound name wins over a step's outputs and the shadowing would be silent.
+that version from being expressible at all.
+
+`now` is written bare because it is bound where the expression is, which is what a step
+reference is not: a step is `${steps.<id>.<output>}`. Two namespaces, so the clock and a
+step called `now` cannot shadow each other and a step *may* be called `now` — it could
+not be, while both resolved from one flat namespace and the binding silently won inside
+`wait_until:`. What is still refused is a loop iterator named `now`, and for the reason
+that rule always had: an iterator is bare too, so it and the clock genuinely do share a
+namespace, and a body saying `${now}` would mean the item everywhere except inside a
+wait. A collision is only unrepresentable between the two halves, not within one.
 
 One wrinkle lives in the schema rather than in either driver: `Node.Outputs.named_values`
 is required, so an empty map is not something a message can say. A signal that carries
 nothing therefore travels with its payload *absent*, and the server substitutes empty
-outputs on arrival. That is what keeps `${approval.timed_out}` resolving on a gate
+outputs on arrival. That is what keeps `${steps.approval.timed_out}` resolving on a gate
 somebody answered with nothing to add.
 
 Suspension interacts with waiting in one direction only, and the direction is not the
@@ -475,8 +494,22 @@ approving in advance works, which people will do whether or not it was designed 
 ### Data flow between steps
 
 Each step produces named, typed outputs, recorded under its step ID. Later steps reference
-them with `${step_id.output_name}`, which the compiler turns into a CEL AST carried in the
-spec. Because Temporal persists everything a workflow passes to an activity, the engine
+them with `${steps.<step_id>.<output_name>}`, which the compiler turns into a CEL AST
+carried in the spec. The root is one name in the evaluation scope rather than a prefix the
+resolver parses: CEL resolves a qualified name by trying successively shorter prefixes, so
+answering `steps` with the whole map and letting CEL apply `.<id>.<output>` itself means
+nothing here needs an opinion about how deep a reference goes.
+
+The resolver answers step ids first and the root only when no step claims the name, which
+is invariant 10 rather than a preference: a worker evaluates the AST stored in `RunState`,
+not the source, so a run that started before the root existed — possibly on a spec with a
+step literally called `steps` — keeps resolving exactly as it did. That precedence exists
+for those runs and for nothing else, because the compiler refuses the id: a step called
+`steps` would shadow the whole root for every expression after it, so `flow validate`
+rejects it wherever an id can be written — top level, loop body, parallel branch, and a
+loop's `iterator:`. The old runs keep their meaning; no new file can acquire it.
+
+Because Temporal persists everything a workflow passes to an activity, the engine
 statically analyzes which references each remaining step actually needs and carries only
 those forward — both when scheduling a step and when performing Continue-As-New.
 

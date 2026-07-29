@@ -21,4 +21,4 @@ steps:
     printf:
       format: "the endpoint received content type %s"
       args:
-        - ${token.json.headers['Content-Type']}
+        - ${steps.token.json.headers['Content-Type']}

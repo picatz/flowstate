@@ -297,8 +297,30 @@ func kindPhrase(kind protoreflect.Kind) string {
 // it is inferred from the shape that makes it possible — a `vars` mapping — which is
 // a guess standing in for a [flowstatev1.TaskDef] field that should say so outright.
 func acceptsUndeclaredInputs(def v1.TaskDef) bool {
-	field := findField(def.Inputs, "vars")
+	field := findField(def.Inputs, varsKey)
 	return field != nil && field.IsMap()
+}
+
+// varsKey is the input the compiler flattens into the inputs around it.
+const varsKey = "vars"
+
+// hoistedInput reports whether an input is emptied into its surroundings while
+// compiling, so that nothing downstream ever sees the key itself.
+//
+// It exists because "the task evaluates this input" and "the workflow resolves
+// this input" are answered by two different things — the registry's
+// [flowstatev1.TaskDef.DeferredInputs] and this compiler's hoist — and for `vars`
+// they disagree. The registry defers it, because a spec built in Go may carry a
+// `vars` map straight to the task. A Flowfile never does: the hoist runs first and
+// the entries arrive as ordinary inputs, resolved by the workflow and
+// reference-checked like any other.
+//
+// Reading only the registry is what let `flow fix` decline to rewrite a reference
+// inside `vars:` while [Validate] reported that same reference and named `flow fix`
+// as the remedy — a diagnostic pointing at a command that answered "already
+// current". So both surfaces ask here.
+func hoistedInput(def v1.TaskDef, input string) bool {
+	return input == varsKey && acceptsUndeclaredInputs(def)
 }
 
 // findField returns the field a task declares under the given input name.

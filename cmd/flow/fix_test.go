@@ -47,10 +47,17 @@ steps:
 
 // currentGreeter is oldStyleGreeter in the current edition.
 //
-// Derived from the transformation fix.go documents rather than from a run of it:
-// `task:` and `name:` go away, `inputs:` becomes the task's own key, everything
-// under `inputs:` dedents by the two columns `inputs:` used to add, and every
-// line the edit does not cover — comments included — is copied through.
+// Derived from the transformations fix.go documents rather than from a run of it.
+// Two of them apply here, which is the point of keeping this exact: `task:` and
+// `name:` go away and `inputs:` becomes the task's own key, with everything under
+// it dedenting by the two columns `inputs:` used to add — and separately, the
+// reference in the last line is rooted, because a step is named `steps.<id>` now.
+// Every line no edit covers, comments included, is copied through.
+//
+// The two together are worth a fixture of their own: they are different kinds of
+// edit — one replaces a run of lines, the other substitutes inside one — and the
+// first version of this got them in an order where the block replacement stepped
+// over the substitution and produced a file the validator refused.
 const currentGreeter = `# A greeter written before the task was flattened onto the step.
 name: greeter
 steps:
@@ -63,7 +70,7 @@ steps:
     printf:
       format: "%s!"
       args:
-        - ${greet.result}
+        - ${steps.greet.result}
 `
 
 // The 1-based lines oldStyleGreeter writes `task:` on. A report has to name

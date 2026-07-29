@@ -283,7 +283,7 @@ func Workflows(httpBaseURL string) []Case {
 			}},
 		},
 		{
-			// Exercises the default outputs — a workflow reads ${web.body}
+			// Exercises the default outputs — a workflow reads ${steps.web.body}
 			// without declaring an outputs expression — while shaping the final
 			// step so the assertion stays independent of headers net/http adds.
 			Name: "http default body output workflow",

@@ -804,8 +804,8 @@ func (c *compiler) inputs(n ast.Node, path string, r ref, taskName string, into 
 		// pointing at `greeting`, when what they wrote was `vars`. A diagnostic
 		// that names something the file does not contain is worse than none, and
 		// this file's rule is that a misspelling is reported where it was made.
-		if e.name == "vars" && c.taskAcceptsUndeclaredInputs(taskName) {
-			c.hoistVars(e.value, fieldPath(path, "vars"), r, into)
+		if c.taskHoistsInput(taskName, e.name) {
+			c.hoistVars(e.value, fieldPath(path, varsKey), r, into)
 			continue
 		}
 
@@ -822,13 +822,13 @@ func (c *compiler) inputs(n ast.Node, path string, r ref, taskName string, into 
 // An unregistered task answers false: an unknown task name is already reported by
 // [Validate], and flattening on behalf of a task nobody can run would only add a
 // second, more confusing diagnostic to the first.
-func (c *compiler) taskAcceptsUndeclaredInputs(name string) bool {
-	def, found := v1.LookupTask(name)
+func (c *compiler) taskHoistsInput(taskName, input string) bool {
+	def, found := v1.LookupTask(taskName)
 	if !found {
 		return false
 	}
 
-	return acceptsUndeclaredInputs(def)
+	return hoistedInput(def, input)
 }
 
 // hoistVars flattens a `vars` mapping into the inputs around it.

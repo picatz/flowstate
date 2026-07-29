@@ -45,11 +45,12 @@ func hoverAt(doc *document, pos lsp.Position) *lsp.Hover {
 	// position, nested inside an input's value or the step's condition.
 	for _, in := range step.expressionEntries() {
 		var found *lsp.Hover
+		clock := step.bindsNow(in)
 		walkValues(in.value, func(v *value) {
 			if found != nil || !v.fenced || !contains(v.exprRange, pos) {
 				return
 			}
-			found = hoverReference(doc, step, v, pos)
+			found = hoverReference(doc, step, v, clock, pos)
 		})
 		if found != nil {
 			return found
@@ -202,8 +203,12 @@ func taskDoc(def v1.TaskDef) string {
 	}
 	if def.Outputs != nil && def.Outputs.Fields().Len() > 0 {
 		names := fieldNames(def.Outputs)
+		// A task is described without a step to hang the outputs off, so the id is
+		// a placeholder — but the root is not. Writing the bare form here would
+		// hand the reader something `flow validate` refuses, which is the one thing
+		// documentation generated from the schema must never do.
 		fmt.Fprintf(&b, "\n\nLater steps reference its outputs as `${%s}`.",
-			strings.Join(prefixEach("step.", names), "}`, `${"))
+			strings.Join(prefixEach(v1.StepsRoot+".<id>.", names), "}`, `${"))
 	}
 	return b.String()
 }
@@ -258,55 +263,93 @@ func stepDoc(step *parsedStep, def v1.TaskDef, taskKnown bool) string {
 		b.WriteString(".")
 	}
 	if names := fieldNames(def.Outputs); len(names) > 0 {
-		fmt.Fprintf(&b, "\n\nProduces `${%s}`.", strings.Join(prefixEach(step.id+".", names), "}`, `${"))
+		fmt.Fprintf(&b, "\n\nProduces `${%s}`.",
+			strings.Join(prefixEach(v1.StepsRoot+"."+step.id+".", names), "}`, `${"))
 	}
 	return b.String()
 }
 
 // hoverReference describes a ${...} reference: which step produces the value, the
 // task that produces it, and the output's declared type.
-func hoverReference(doc *document, from *parsedStep, v *value, pos lsp.Position) *lsp.Hover {
+func hoverReference(doc *document, from *parsedStep, v *value, clock bool, pos lsp.Position) *lsp.Hover {
 	// The character offset of the cursor within the expression source.
 	cursor := doc.index.offsetOfPosition(pos) - v.exprOffset
-	ident, field, span := referenceAt(v.expr, cursor)
-	if ident == "" {
+	ref := referenceAt(v.expr, cursor)
+	if ref.empty() {
 		return nil
 	}
 
-	// A secret reference resolves to neither a step nor an iterator, so it is
+	// A secret reference resolves to neither a step nor a binding, so it is
 	// described before either lookup.
-	if ref, span, err := secretRefAt(v.expr, cursor); err == nil {
+	if name, span, err := secretRefAt(v.expr, cursor); err == nil {
 		rng := doc.index.rangeOfOffsets(v.exprOffset+span[0], v.exprOffset+span[1])
-		return markdownHover(secretDoc(ref), rng)
+		return markdownHover(secretDoc(name), rng)
 	}
 
-	// A loop iterator is a name that resolves, but to an item rather than to a
-	// step, so it is described before the step lookup that would not find it.
+	rng := doc.index.rangeOfOffsets(v.exprOffset+ref.span[0], v.exprOffset+ref.span[1])
+	if ref.step == "" {
+		return hoverBareName(from, ref.local, clock, rng)
+	}
+	return hoverStepOutput(doc, from, ref, rng)
+}
+
+// hoverBareName describes a name written without the root.
+//
+// The two namespaces are what decides the answer rather than a lookup order. A
+// bare name is a *binding*, so the only things that can be said about one are what
+// bound it; a step is not a candidate reading at all, which is why a bare
+// `${web.body}` in an unmigrated file gets silence here. The diagnostic on it says
+// what to run, and hover repeating that would be a second voice saying the same
+// thing in a smaller box.
+//
+// clock reports that the expression is a wait's, which is the only thing that puts
+// `now` in scope. It is passed in rather than derived from the name, because the
+// answer to `${now}` written in a task input is not this documentation — it is the
+// validator's diagnostic saying the name is not bound there, and describing it as
+// though it were would contradict a squiggle the author is looking at.
+func hoverBareName(from *parsedStep, name string, clock bool, rng lsp.Range) *lsp.Hover {
+	if clock && name == v1.NowIdentifier {
+		return markdownHover(nowDoc(), rng)
+	}
 	for _, loop := range from.iteratorsInScope() {
-		if loop.iteratorName() != ident {
+		if loop.iteratorName() != name {
 			continue
 		}
-		rng := doc.index.rangeOfOffsets(v.exprOffset+span[0], v.exprOffset+span[1])
 		return markdownHover(fmt.Sprintf(
 			"**`%s`** — the current item of the `%s` loop.\n\n"+
 				"Its type is whatever the loop's `items` expression yields an element of. "+
-				"The loop reports every iteration through `${%s.results}`; body outputs do "+
-				"not escape it.", ident, loop.id, loop.id), rng)
+				"The loop reports every iteration through `${%s.%s.%s}`; body outputs do "+
+				"not escape it.", name, loop.id, v1.StepsRoot, loop.id, loopResultsOutput), rng)
 	}
 
-	target := doc.parsed.step(ident)
+	if name == v1.StepsRoot {
+		// The root itself, which is a value an expression may legitimately name:
+		// `size(steps)` counts what has run. Saying so is also the answer to the
+		// question an author asks by hovering the word — what this thing in front
+		// of every reference is.
+		return markdownHover(fmt.Sprintf(
+			"**`%s`** — every step's outputs, keyed by step id.\n\n"+
+				"One step's output is `${%s.<id>.<output>}`. The root is what keeps a step id "+
+				"and a name bound here — a loop's item, `%s` inside a `wait_until:` — in "+
+				"separate namespaces, so neither can hide the other.",
+			v1.StepsRoot, v1.StepsRoot, v1.NowIdentifier), rng)
+	}
+	return nil
+}
+
+// hoverStepOutput describes a reference rooted under `steps.`.
+func hoverStepOutput(doc *document, from *parsedStep, ref reference, rng lsp.Range) *lsp.Hover {
+	target := doc.parsed.step(ref.step)
 	if !visibleFrom(target, from) {
-		// Not a step reference, or one whose outputs this step cannot see. The
-		// diagnostics say so; hover stays quiet rather than repeating it.
+		// Not a step, or one whose outputs this step cannot see. The diagnostics
+		// say so; hover stays quiet rather than repeating it.
 		return nil
 	}
-
-	rng := doc.index.rangeOfOffsets(v.exprOffset+span[0], v.exprOffset+span[1])
 	def, known := v1.LookupTask(target.taskName)
 
 	var b strings.Builder
-	if field == "" {
-		fmt.Fprintf(&b, "**`%s`** — step %d", target.id, target.index+1)
+	if ref.output == "" {
+		fmt.Fprintf(&b, "**`%s`** — step %d", rootedRef(target.id, ""), target.index+1)
 		if known {
 			fmt.Fprintf(&b, ", running the `%s` task", def.Name)
 			if names := fieldNames(def.Outputs); len(names) > 0 {
@@ -316,14 +359,14 @@ func hoverReference(doc *document, from *parsedStep, v *value, pos lsp.Position)
 		return markdownHover(b.String(), rng)
 	}
 
-	fmt.Fprintf(&b, "**`%s.%s`**", target.id, field)
+	fmt.Fprintf(&b, "**`%s`**", rootedRef(target.id, ref.output))
 	if !known {
 		fmt.Fprintf(&b, "\n\nOutput of step `%s`, whose task `%s` is not registered.", target.id, target.taskName)
 		return markdownHover(b.String(), rng)
 	}
-	fd := findField(def.Outputs, field)
+	fd := findField(def.Outputs, ref.output)
 	if fd == nil {
-		fmt.Fprintf(&b, "\n\nThe `%s` task does not declare an output named `%s`", def.Name, field)
+		fmt.Fprintf(&b, "\n\nThe `%s` task does not declare an output named `%s`", def.Name, ref.output)
 		if names := fieldNames(def.Outputs); len(names) > 0 {
 			fmt.Fprintf(&b, "; it produces `%s`", strings.Join(names, "`, `"))
 		}
@@ -336,6 +379,43 @@ func hoverReference(doc *document, from *parsedStep, v *value, pos lsp.Position)
 		fmt.Fprintf(&b, "\n\nThe task guarantees: %s.", strings.Join(cs, "; "))
 	}
 	return markdownHover(b.String(), rng)
+}
+
+// nowDoc describes the one identifier whose availability depends on where it is
+// written.
+//
+// Written once and shown by both hover and completion, the way a CEL library's
+// documentation is: an author who accepts the candidate and then hovers what they
+// accepted should not be told two different things.
+//
+// What it says is the validator's reasoning, not a second account of it. `flowfile`
+// refuses `now` in a task input with the same three claims — the moment the wait is
+// evaluated, resolved inside an activity, no clock that survives a retry — and
+// TestNowIsExplainedTheSameWayTheValidatorRefusesIt asserts both texts still make
+// them, because the string itself is unexported and cannot be shared. That is the
+// weaker guarantee of the two, and it is why the phrasing here follows the
+// diagnostic rather than improving on it.
+func nowDoc() string {
+	return fmt.Sprintf(
+		"**`%s`** · `timestamp` — the moment the wait is evaluated.\n\n"+
+			"Bound inside `%s:` and nowhere else, from the clock the driver controls, so a "+
+			"deadline computed from it survives replay and a worker restart. A task input is "+
+			"resolved inside an activity, which has no clock that survives a retry: a `%s` there "+
+			"would read differently on every attempt, so the name is not bound in one. Compute "+
+			"the moment here, or pass a time in as an input.\n\n"+
+			"Durations build from `%s`, so a deadline reads as `${%s + days(3)}`.",
+		v1.NowIdentifier, waitUntilKey, v1.NowIdentifier,
+		strings.Join(v1.DurationUnits(), "`, `"), v1.NowIdentifier)
+}
+
+// rootedRef spells a reference the way an author writes it, from the root the
+// grammar defines rather than from a literal here.
+func rootedRef(step, output string) string {
+	ref := v1.StepsRoot + "." + step
+	if output != "" {
+		ref += "." + output
+	}
+	return ref
 }
 
 // secretRefAt returns the reference text of a secret marker containing the cursor,
@@ -409,15 +489,47 @@ func secretDoc(ref string) string {
 	return b.String()
 }
 
-// referenceAt returns the identifier and optional field selected at a cursor
-// offset within an expression, along with the byte span of the whole reference.
+// A reference is what an expression names at one position.
+//
+// Two namespaces, held in two fields rather than in one name plus a flag. A step's
+// outputs hang off the root — `steps.web.body` — and everything bound where the
+// cursor stands is written bare: a loop's iterator, `now` inside a `wait_until:`,
+// the response variables an http task resolves against its own scope. Before
+// rooting the two were the same shape, `a.b`, and only a lookup could say which
+// was meant; keeping them apart here is what stops a caller having to remember
+// which reading applies.
+type reference struct {
+	// step is the id a rooted reference names, and output the step's output when
+	// one is written. Both are empty for a bare name.
+	step   string
+	output string
+
+	// local is the bare name, empty for a rooted reference.
+	local string
+
+	// span is the byte span of the reference within the expression source.
+	span [2]int
+}
+
+// empty reports that nothing at the cursor is a reference.
+func (r reference) empty() bool { return r.step == "" && r.local == "" }
+
+// referenceAt returns the reference selected at a cursor offset within an
+// expression.
 //
 // It works on the expression text rather than a CEL syntax tree because an
 // expression being edited frequently does not parse, and hover should still work
 // while it does not.
-func referenceAt(src string, cursor int) (ident, field string, span [2]int) {
+//
+// The whole word is read and then split, rather than being split at a fixed
+// depth: a rooted reference is three segments where the retired spelling was two,
+// and `steps.a.result.code` is four. What the extra segments mean is the same
+// either way — indexing into a value whose shape the schema does not describe —
+// so the reference ends at the output and the rest is left alone.
+func referenceAt(src string, cursor int) reference {
+	var ref reference
 	if cursor < 0 || cursor > len(src) {
-		return "", "", span
+		return ref
 	}
 	isWord := func(c byte) bool {
 		return c == '_' || c == '.' ||
@@ -434,18 +546,32 @@ func referenceAt(src string, cursor int) (ident, field string, span [2]int) {
 	}
 	word := src[start:end]
 	if word == "" {
-		return "", "", span
+		return ref
 	}
 
-	// A reference is `ident` or `ident.field`; anything deeper is indexing into a
-	// value whose shape the schema does not describe.
-	parts := strings.SplitN(word, ".", 3)
-	ident = parts[0]
-	if len(parts) > 1 {
-		field = parts[1]
-		end = start + len(ident) + 1 + len(field)
+	segments := strings.Split(word, ".")
+	if segments[0] != v1.StepsRoot || len(segments) == 1 {
+		// Bare. Only the first segment is named: what follows a bare name selects
+		// into a value whose type is not statically known — a loop item's fields,
+		// a signal's payload — so the reference is the name and nothing after it.
+		if segments[0] == "" {
+			return reference{}
+		}
+		return reference{local: segments[0], span: [2]int{start, start + len(segments[0])}}
 	}
-	return ident, field, [2]int{start, end}
+	if segments[1] == "" {
+		// `steps.` with nothing after it yet, which is what an author has typed the
+		// instant completion is asked for. It names no step.
+		return reference{}
+	}
+
+	ref.step = segments[1]
+	ref.span = [2]int{start, start + len(v1.StepsRoot) + 1 + len(ref.step)}
+	if len(segments) > 2 && segments[2] != "" {
+		ref.output = segments[2]
+		ref.span[1] += 1 + len(ref.output)
+	}
+	return ref
 }
 
 // markdownHover wraps content as a hover response.
@@ -462,7 +588,7 @@ func markdownHover(content string, rng lsp.Range) *lsp.Hover {
 }
 
 // prefixEach returns names with a prefix applied to each, for rendering the
-// ${step.output} forms a reader can copy.
+// ${steps.<id>.<output>} forms a reader can copy.
 func prefixEach(prefix string, names []string) []string {
 	out := make([]string, 0, len(names))
 	for _, n := range names {

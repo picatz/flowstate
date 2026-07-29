@@ -30,12 +30,76 @@ recorded below as a precondition rather than an open question.
 ## Accepted, and why
 
 **Rooted ambient names, bare local names** (`inputs.*`, `vars.*`, `steps.<id>.*`,
-`run.*`; bare loop bindings, private vars, `now`). This is the strongest idea in the
-proposal because it is a deletion. Three separate collision rules and a hand-copied
-CEL reserved-word list exist today only because step ids, iterators, and `now` share
-one flat namespace. Rooting the ambient half makes collision unrepresentable, and the
-rules that guard against it stop needing to exist. Simplifications that remove code
-outrank features that add it.
+`run.*`; bare loop bindings, private vars, `now`). Accepted, and the `steps.` half has
+landed: a step's outputs are `${steps.<id>.<output>}`, and what stays bare is what is
+bound *where the expression is written* — a `for_each` iterator, `now` inside
+`wait_until:`, and the names a task resolves against its own scope (`status_code`,
+`headers`, `body`, and — when the step asked for `parse_json` — `json`, in the `http`
+task's `expect:` and `outputs:`). `inputs.*`, `vars.*` and `run.*` do not exist; see
+[Order of work](#order-of-work).
+
+*Since written:* the reason this section gave for accepting it was checked against the
+code and was half wrong, so it is replaced here rather than left to be rediscovered.
+
+**It is not a deletion.** The claim was that three collision rules and a hand-copied CEL
+reserved-word list exist only because step ids, iterators and `now` share one flat
+namespace. There were **five** rules, and rooting deletes two:
+
+| Rule | Fate |
+| --- | --- |
+| a step id may not be a CEL reserved word | narrowed — 21 words to 4 |
+| a step id may not be `now` | deleted |
+| an iterator may not be a CEL reserved word | untouched |
+| an iterator may not be a step id | deleted |
+| an iterator may not be `now` | untouched |
+
+The two left intact are the two about the iterator, and that is not tidying left for
+later. An iterator stays bare *by this proposal's own design*, so it and `now` genuinely
+do share one namespace and the collision between them is unaffected — a loop variable
+called `now` is still refused, because a body saying `${now}` would mean the item
+everywhere except inside a `wait_until:`, where the clock is bound on top and wins.
+Rooting makes a collision unrepresentable **between** the two halves, never within one.
+
+**The reserved-word list survives in full**, for the same reason: it guards the iterator,
+which is still written as an identifier. What the change added there is a *second*,
+smaller list — `celUnusableStepIDs`, four words — so `validate.go` now carries two lists
+where it carried one. cel-go refuses a reserved word in identifier position only, and
+`steps.<id>` is a field selection, so seventeen of the twenty-one became legal step ids
+the moment references were rooted. The four that did not are refused a level lower, by
+the lexer: `true`, `false` and `null` are literals and `in` is an operator, so `steps.in`
+is a syntax error in the grammar itself. `in` is the easy one to miss, and missing it is
+not harmless — the step would compile and every reference to it would fail to *parse*,
+sending the author to an expression rather than to the id, which is exactly the failure
+the list exists to prevent.
+
+Net: five rules become three and a half, and the change is additive in code — +1166/−214
+lines of non-test Go across `validate.go`, `eval.go`, `flowfile/fix.go`, the new
+`flowfile/fixexpr.go`, and the language server. "Simplifications that remove code outrank
+features that add it" is still the right rule. This is not an instance of it.
+
+**It is still worth doing, on the argument [ARCHITECTURE.md](ARCHITECTURE.md) invariant 2
+already makes:** attributes grouped under an object beat attributes declared flat, because
+grouping is what stops a plausible name colliding with a reserved one. That was written
+about policy environments, and the DSL is now its worked example. What an author gets is
+concrete, and all of it was verified in one file: a step called `name` alongside an
+iterator called `name`, a step called `loop`, a step called `now`, and a
+`wait_until: ${now + seconds(1)}` in the same workflow that still reads the clock rather
+than the step.
+
+`flow fix` performs the migration — it roots bare references in place, in the same pass as
+the `task:` rewrite — and migrated all sixteen shipped examples itself. Until it is run,
+`flow validate` reports a bare reference as the migration it is rather than as an unknown
+name:
+
+```
+workflow.yaml:8:16: step "b" input "message": `a` is a step, and a step is named `steps.a` now; run `flow fix` to rewrite this file
+```
+
+Recording all of this is an instance of [the standing rule](#the-standing-rule) below,
+which is why the original paragraph is replaced instead of patched: a design document's
+count of what exists is a claim, and this one was short by two rules in one direction and
+a whole surviving list in the other. The decision survived the correction; the argument
+for it did not.
 
 **Verb-key flattening** (`http:` instead of `task: → name: http → inputs:`). Accepted
 because of what it *doesn't* touch: it lowers to the existing `Task{name, inputs}`
@@ -105,7 +169,7 @@ write down, and this engine will grow more wait outputs. Rooting sender data und
 
 Two things fell out of doing it that the proposal did not name. A wait with no sender
 — `sleep`, `wait_until` — gets *no* payload rather than an empty one, because
-offering an empty mapping invites `${pause.payload.x}` on a step where one can never
+offering an empty mapping invites `${steps.pause.payload.x}` on a step where one can never
 arrive, and the honest answer to that is a diagnostic. And the mapping is built in
 sorted order, because it is serialised into `RunState` and carried across every
 Continue-As-New: a protobuf map has no iteration order, so two encodings of one
@@ -291,10 +355,26 @@ the rewriter, which is `flow fix` and takes no `--edition`. Prose about a step l
 alongside the flattening as `description:`, since that is where the flattening left it
 with nowhere to go.
 
-Remaining: the naming model, one pinned profile, `vars` in its three positions, and the
+Done, of the naming model — and only this much of it: step outputs are rooted as
+`${steps.<id>.<output>}` with locals staying bare, the diagnostic names the migration and
+the command that performs it, `flow fix` roots references in place, all sixteen examples
+are migrated, and the language server completes a reference in three levels and hovers a
+rooted one.
+
+**`run.*`, `inputs.*` and `vars.*` are not started.** They do not exist anywhere: no `run`
+object in any scope, no `inputs:` block, and no `vars:` in any of its three positions —
+`flow validate` answers `unknown key "inputs"` and `references unknown name "run"`. It is
+worth stating plainly, because the naming-model item reads as one change and is not: step
+outputs were a namespace the language already had, and rooting only gave it a root. Each
+of those three is a *new* namespace with a new source of values, so they are three
+features rather than the remainder of this one, and none of them is bought by the work
+above. (The `cel` task's `vars` input is unrelated — a task input, not a scope.)
+
+Remaining in Phase 1: `vars` in its three positions, one pinned profile, and the
 reserved-keyword diagnostics. Pinning the profile is the only Phase 1 item that needs a
-schema break, so it goes last rather than first. Everything here removes a rule or a
-spelling.
+schema break, so it goes last rather than first. `inputs` is not a Phase 1 item at all; it
+is Phase 2 and lands with its checker or not at all, per
+[The type system is not a later phase](#the-type-system-is-not-a-later-phase).
 
 **Phase 2 — the contract, with its checker.** `inputs`, `outputs`, `check:`,
 `env.Check` at validate and in the LSP, typed hover, the absent/null/default matrix,

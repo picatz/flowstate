@@ -160,10 +160,27 @@ type parsedStep struct {
 
 	// forEachEntry and parallelEntry are two of the other kinds of work a step can
 	// be. Exactly one of the kinds [flowfile.StepKinds] names is present in a valid
-	// step; the three wait kinds carry no nested expressions of their own beyond
-	// wait_until's, so they need no entry of their own here.
+	// step.
 	forEachEntry  *entry
 	parallelEntry *entry
+
+	// waitUntilEntry is a wait whose value is an expression naming the moment to
+	// wait for.
+	//
+	// It is here because it carries an expression, which is the only thing this
+	// model has ever recorded an entry for. Its absence read as a decision — the
+	// comment above said the wait kinds carried no expressions of their own — and
+	// it was simply wrong: `wait_until:` is one, and leaving it out cost the
+	// feature everywhere expressions are handled. Hover and go-to-definition
+	// stopped at the fence, and a CEL error in it was reported by the validator
+	// against the position it could work out rather than at the character at
+	// fault.
+	//
+	// Rooting is what made that expensive rather than merely untidy. A wait now
+	// commonly holds `${steps.<id>.<output>}` — a moment that arrived as data —
+	// so the one kind of step whose expression the editor could not read is the
+	// one whose expression most often names another step.
+	waitUntilEntry *entry
 
 	// itemsEntry is a for_each block's `items`, whose value is an expression
 	// producing the list to iterate.
@@ -212,14 +229,33 @@ type parsedStep struct {
 // ${...} expression, so that hover, go-to-definition, and expression diagnostics
 // all cover the same places and cannot fall out of step with each other.
 func (s *parsedStep) expressionEntries() []*entry {
-	entries := make([]*entry, 0, len(s.inputs)+2)
+	entries := make([]*entry, 0, len(s.inputs)+3)
 	if s.conditionEntry != nil {
 		entries = append(entries, s.conditionEntry)
 	}
 	if s.itemsEntry != nil {
 		entries = append(entries, s.itemsEntry)
 	}
+	if s.waitUntilEntry != nil {
+		entries = append(entries, s.waitUntilEntry)
+	}
 	return append(entries, s.inputs...)
+}
+
+// bindsNow reports whether an entry is the one the engine binds the clock into.
+//
+// It is asked of the entry rather than of its key, because a key is a word and
+// two different things can be spelled the same: `wait_until:` under a step is the
+// wait the grammar defines, and the model has already resolved which entry that
+// is. Comparing entries is what keeps this from answering yes for a task input
+// that happens to share the name — the same class of mistake waitForSignalEntry
+// exists to prevent for `timeout:`.
+//
+// Completion answers the same question from the line scan instead, in bindsClock,
+// because it is asked for while a document does not parse and there is no model
+// then to ask. One rule, two readers: a change to either belongs in both.
+func (s *parsedStep) bindsNow(e *entry) bool {
+	return e != nil && e == s.waitUntilEntry
 }
 
 // kind names the kind of work a step does, for the outline and for diagnostics
@@ -542,6 +578,18 @@ func fillParsedStep(s *parsedStep, entries []*entry) {
 			// is a scalar and is documented at the step level like any other key.
 			if s.waitForSignalEntry == nil && e.value != nil && e.value.kind == kindMapping {
 				s.waitForSignalEntry = e
+			}
+		case "wait_until":
+			// A case of its own rather than falling through to the task branch
+			// below, which is where it used to land — harmlessly, because
+			// flowfile.StepTaskKeys refuses to promote a word the step grammar
+			// speaks for, but with the expression it holds going unrecorded.
+			//
+			// It opens no level of its own: the value is one expression, not a
+			// mapping with keys under it, so nothing here has a `wait_until` level
+			// to document and `dslKeyAt` is deliberately left alone.
+			if s.waitUntilEntry == nil {
+				s.waitUntilEntry = e
 			}
 		case "parallel":
 			if s.parallelEntry == nil {

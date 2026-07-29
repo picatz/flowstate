@@ -236,7 +236,7 @@ func retriableTransportFailure(method string, err error) bool {
 
 // firstHeaderValues flattens response headers to one value per name, which is
 // the shape the schema declares and the shape a workflow author expects when
-// writing ${step.headers['Content-Type']}.
+// writing ${steps.<id>.headers['Content-Type']}.
 //
 // Repeated headers keep their first value. Expressions needing every value of a
 // repeated header can reach them through the outputs input, where headers are
@@ -437,7 +437,7 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 		}
 
 		// Default outputs mirror the response so a workflow can reference
-		// ${step.status_code}, ${step.body}, and ${step.headers} without
+		// ${steps.<id>.status_code}, ${steps.<id>.body}, and ${steps.<id>.headers} without
 		// declaring an outputs expression.
 		defaultOuts := &Task_HTTP_Outputs{
 			StatusCode: int32(httpResp.StatusCode),
@@ -758,7 +758,7 @@ func nodeOutputsFromProtoMessage(msg proto.Message) (*Node_Outputs, error) {
 		// Emit the field unless the schema gives it explicit presence and it is
 		// unset. Skipping any field that merely holds a zero value would drop a
 		// legitimately empty result — an empty response body, a count of zero —
-		// leaving downstream ${step.field} references unresolvable.
+		// leaving downstream ${steps.<id>.field} references unresolvable.
 		if fieldDesc.HasPresence() && !msg.ProtoReflect().Has(fieldDesc) {
 			continue
 		}

@@ -112,7 +112,28 @@ steps:
 			exact: []string{},
 		},
 		{
-			name: "earlier step ids inside an expression",
+			// The start of an expression is the *bare* namespace, and a step is not
+			// in it: the only way to a step's outputs is through the root. Offering
+			// `second` here would be offering the spelling this grammar retired.
+			name: "an expression opens on the root, not on step ids",
+			src: `name: c
+steps:
+  - id: first
+    echo:
+      message: one
+  - id: second
+    echo:
+      message: ${|}
+`,
+			exact: []string{"steps"},
+			notWant: []string{
+				"first",  // a step, reachable only as steps.first
+				"second", // and its own step besides
+				"now",    // bound in wait_until and nowhere else
+			},
+		},
+		{
+			name: "earlier step ids under the root",
 			src: `name: c
 steps:
   - id: first
@@ -123,7 +144,7 @@ steps:
       message: two
   - id: third
     echo:
-      message: ${|}
+      message: ${steps.|}
   - id: fourth
     echo:
       message: four
@@ -145,7 +166,7 @@ steps:
       message: two
   - id: gamma
     echo:
-      message: ${|}
+      message: ${steps.|}
 `,
 			exact: []string{"beta", "alpha"},
 		},
@@ -158,7 +179,7 @@ steps:
       url: https://example.com
   - id: out
     echo:
-      message: ${web.|}
+      message: ${steps.web.|}
 `,
 			// Derived from the task's Outputs descriptor rather than listed here,
 			// so an output added to the schema appears in completion without this
@@ -179,9 +200,25 @@ steps:
       url: https://example.com
   - id: out
     echo:
-      message: ${web.st|}
+      message: ${steps.web.st|}
 `,
 			exact: []string{"status_code"},
+		},
+		{
+			// A step id is one segment of the reference, not the whole of it, so
+			// there is nothing under a *fourth* segment: what an output holds is
+			// not described by any schema this package can read.
+			name: "nothing is offered past an output",
+			src: `name: c
+steps:
+  - id: web
+    http:
+      url: https://example.com
+  - id: out
+    echo:
+      message: ${steps.web.body.|}
+`,
+			exact: []string{},
 		},
 		{
 			name: "no outputs offered for a later step",
@@ -189,7 +226,7 @@ steps:
 steps:
   - id: out
     echo:
-      message: ${web.|}
+      message: ${steps.web.|}
   - id: web
     http:
       url: https://example.com
@@ -205,7 +242,7 @@ steps:
       url: https://example.com
   - id: out
     echo:
-      message: ${string(we|)}
+      message: ${string(steps.we|)}
 `,
 			exact: []string{"web"},
 		},
@@ -332,7 +369,10 @@ steps:
 			exact: []string{"message"},
 		},
 		{
-			name: "step references inside a loop body see earlier steps",
+			// The two namespaces, in the one place an author sees both. Bare, a
+			// loop body offers the item it binds and the root — and nothing else,
+			// because a step is not a bare name here any more than anywhere else.
+			name: "a loop body offers its item and the root, bare",
 			src: `name: c
 steps:
   - id: outer
@@ -340,20 +380,131 @@ steps:
       message: hi
   - id: loop
     for_each:
-      items: ${outer.result}
+      items: ${steps.outer.result}
       steps:
         - id: body
           echo:
             message: ${|
 `,
-			// Nearest first: the loop's iterator, then the step above the loop.
-			// The enclosing loop is excluded — it has not finished, so it has no
-			// results yet — and so is the body step itself.
-			exact:   []string{"item", "outer"},
-			notWant: []string{"body", "loop"},
+			// Nearest first: the binding of the block the cursor stands in, then
+			// the root spanning the whole document.
+			exact:   []string{"item", "steps"},
+			notWant: []string{"outer", "body", "loop"},
 			detailContains: map[string]string{
 				"item": "loop item",
 			},
+		},
+		{
+			// And the other direction: under the root there are steps and only
+			// steps. `item` is a binding, so offering it here would produce
+			// `steps.item`, which resolves to nothing.
+			name: "a loop body's root offers steps, not the iterator",
+			src: `name: c
+steps:
+  - id: outer
+    echo:
+      message: hi
+  - id: loop
+    for_each:
+      items: ${steps.outer.result}
+      steps:
+        - id: body
+          echo:
+            message: ${steps.|
+`,
+			// The enclosing loop is excluded — it has not finished, so it has no
+			// results yet — and so is the body step itself.
+			exact:   []string{"outer"},
+			notWant: []string{"item", "body", "loop"},
+		},
+		{
+			// `now` is bound by the engine for this one key, so this is the one
+			// place it is offered. Separating the namespaces is what made a clean
+			// place for it: it is a bare name that is not a step, which the single
+			// ordered list had no way to say.
+			name: "wait_until offers the clock alongside the root",
+			src: `name: c
+steps:
+  - id: before
+    echo:
+      message: hi
+  - id: window
+    wait_until: ${|
+`,
+			exact: []string{"now", "steps"},
+			// Not the step ids: they are still reached through the root here like
+			// anywhere else.
+			notWant: []string{"before", "window"},
+			detailContains: map[string]string{
+				"now": "timestamp",
+			},
+		},
+		{
+			// The negative direction, and the reason `now` is not simply in every
+			// scope: a task input is resolved inside an activity, which has no
+			// clock that survives a retry. The validator refuses it there, so
+			// offering it would walk an author into a diagnostic.
+			name: "a task input does not bind the clock",
+			src: `name: c
+steps:
+  - id: before
+    echo:
+      message: hi
+  - id: after
+    echo:
+      message: ${|
+`,
+			exact:   []string{"steps"},
+			notWant: []string{"now"},
+		},
+		{
+			// And it is a bare name, so it is not under the root either.
+			name: "the clock is not a step",
+			src: `name: c
+steps:
+  - id: before
+    echo:
+      message: hi
+  - id: window
+    wait_until: ${steps.|
+`,
+			exact:   []string{"before"},
+			notWant: []string{"now"},
+		},
+		{
+			// A wait inside a loop body binds both: the loop's item because the
+			// block binds it, and the clock because the key does.
+			name: "a wait inside a loop body binds the item and the clock",
+			src: `name: c
+steps:
+  - id: loop
+    for_each:
+      items: "${['a']}"
+      iterator: each
+      steps:
+        - id: window
+          wait_until: ${|
+`,
+			exact: []string{"each", "now", "steps"},
+		},
+		{
+			// The word is not enough on its own: an input spelled the same way is
+			// that task's input, resolved where there is no clock. The task here is
+			// unregistered on purpose, since no registered one may take a name the
+			// step grammar uses — which is exactly why the level, and not the
+			// spelling, is what decides.
+			name: "an input spelled wait_until does not bind the clock",
+			src: `name: c
+steps:
+  - id: before
+    echo:
+      message: hi
+  - id: a
+    shell:
+      wait_until: ${|
+`,
+			exact:   []string{"steps"},
+			notWant: []string{"now"},
 		},
 		{
 			name: "for_each keys",
@@ -554,7 +705,9 @@ steps:
 		},
 		{
 			// Inside `${...}` the candidates are names in scope, which are steps
-			// and iterators; a grammar key is not a value anything can reference.
+			// and bindings; a grammar key is not a value anything can reference.
+			// Asked under the root, where the step ids are, so that the case
+			// cannot pass by reaching an empty menu.
 			name: "inside an expression",
 			src: `name: c
 steps:
@@ -563,7 +716,7 @@ steps:
       message: hi
   - id: second
     echo:
-      message: ${|}
+      message: ${steps.|}
 `,
 			want:    []string{"first"},
 			notWant: []string{"description", "edition"},
@@ -658,6 +811,58 @@ steps:
 	assert.Equal(t, "http: ", edit.NewText)
 }
 
+// TestAcceptingTheRootLeavesTheCursorWhereTheIdGoes pins what accepting the root
+// actually writes.
+//
+// The root is never the whole of a reference — there is nothing an author can do
+// with `${steps}` alone except count what has run — so accepting it and then
+// typing the dot by hand is friction, and the dot is what opens the next menu. The
+// label and the inserted text therefore differ, which is invisible in a list of
+// labels and is the reason this is asserted rather than left to the table above.
+func TestAcceptingTheRootLeavesTheCursorWhereTheIdGoes(t *testing.T) {
+	t.Parallel()
+
+	src, pos := splitCursor(t, `name: c
+steps:
+  - id: web
+    http:
+      url: https://example.com
+  - id: out
+    echo:
+      message: ${|}
+`)
+	c := newClient(t)
+	c.initialize()
+	const uri = "file:///accept-root.yaml"
+	c.open(uri, src)
+
+	got := c.complete(uri, pos.Line, pos.Character)
+	require.Len(t, got.Items, 1, "the start of an expression offers the root and nothing else")
+	root := got.Items[0]
+	assert.Equal(t, "steps", root.Label)
+	require.NotNil(t, root.TextEdit, "a candidate must say what it replaces")
+	assert.Equal(t, "steps.", root.TextEdit.NewText)
+
+	// And what it replaces is nothing, since nothing was typed: the edit is an
+	// insertion at the cursor. An edit that swallowed the `{` before it would
+	// break the fence.
+	assert.Equal(t, "", textInRange(src, root.TextEdit.Range))
+
+	// Applying it produces the document whose next completion is the step ids,
+	// which is the whole point of inserting the dot.
+	applied := src[:offsetOf(src, root.TextEdit.Range.Start)] + root.TextEdit.NewText +
+		src[offsetOf(src, root.TextEdit.Range.End):]
+	c.open("file:///accept-root-applied.yaml", applied)
+	after := c.complete("file:///accept-root-applied.yaml",
+		pos.Line, pos.Character+utf16Len(root.TextEdit.NewText))
+	assert.Equal(t, []string{"web"}, labels(after.Items))
+}
+
+// offsetOf returns the byte offset of a position in a source.
+func offsetOf(src string, pos lsp.Position) int {
+	return newLineIndex(src).offsetOfPosition(pos)
+}
+
 // TestCompletionWorksOnUnparseableDocument is the case that matters most in
 // practice: a half-typed key is not valid YAML, and that is when completion is
 // asked for.
@@ -688,8 +893,11 @@ func TestCompletionUsesUTF16Columns(t *testing.T) {
 	t.Parallel()
 
 	// The partial word sits after an emoji on the same line, so a server counting
-	// bytes or code points would replace the wrong span.
-	const cursorLine = "        X-🙂: ${fi"
+	// bytes or code points would replace the wrong span. The partial word is now
+	// a *segment* of a rooted reference rather than the whole of it, which is the
+	// harder case for the same reason: the replaced span has to start after the
+	// last dot, not at the start of the word.
+	const cursorLine = "        X-🙂: ${steps.fi"
 	src := "name: ünïcödé wörkflöw\n" +
 		"steps:\n" +
 		"  - id: first\n" +

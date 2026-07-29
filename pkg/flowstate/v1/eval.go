@@ -89,9 +89,20 @@ func (e *StepsOutputActivation) context() context.Context {
 // activation contract allows, so an evaluation error while resolving a stored
 // expression surfaces to the author as an unresolved reference.
 func (e *StepsOutputActivation) ResolveName(name string) (any, bool) {
-	// A variable bound by enclosing control flow shadows nothing: a step id and
-	// an iterator name may not collide, which validation enforces, so checking
-	// variables first is unambiguous rather than a precedence rule to remember.
+	// A name bound by enclosing control flow — a loop's iterator, `now` inside a
+	// wait — wins over a step of the same id, and that is now a real precedence
+	// rule rather than a case validation rules out.
+	//
+	// It used to be ruled out: an iterator was refused if it collided with a step
+	// id, so whichever was checked first gave the same answer. Rooting deleted that
+	// rule, because the two stopped sharing a namespace — a step is `steps.<id>`
+	// and a binding is bare, so a loop over `item` beside a step called `item` is
+	// an ordinary file now.
+	//
+	// Which leaves only the retired spelling to order against, and bindings have to
+	// win it. A bare `item` is the live way to say the iterator and the legacy way
+	// to say the step; resolving it to the step would break a correct loop in order
+	// to keep answering a spelling this migration exists to retire.
 	if v, ok := e.Vars[name]; ok {
 		return v, true
 	}

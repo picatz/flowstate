@@ -983,3 +983,311 @@ steps:
 		})
 	}
 }
+
+// TestFixLeavesDeferredInputsAlone is the limit of the rewriter's reach, and the
+// one place rooting everything alike is wrong.
+//
+// The http task evaluates `expect:` and `outputs:` against the *response*, so
+// `${status_code == 200}` names a field of what came back. If a step in the same
+// file happens to be called `status_code`, a rewriter that treats every fence
+// alike roots it — and a correct expression silently starts meaning that step's
+// outputs. Which is worse than failing: it compiles.
+//
+// The registry says which inputs those are, and this asks it rather than keeping
+// a list of its own, so a task added tomorrow with a deferred input is covered
+// without anyone remembering this exists.
+func TestFixLeavesDeferredInputsAlone(t *testing.T) {
+	t.Parallel()
+
+	src := `name: t
+steps:
+  - id: status_code
+    echo:
+      message: a step sharing a response field's name
+  - id: fetch
+    http:
+      url: https://example.com
+      expect: ${status_code == 200}
+      outputs: "${ {'code': status_code} }"
+  - id: after
+    echo:
+      message: ${status_code.result}
+`
+	want := `name: t
+steps:
+  - id: status_code
+    echo:
+      message: a step sharing a response field's name
+  - id: fetch
+    http:
+      url: https://example.com
+      expect: ${status_code == 200}
+      outputs: "${ {'code': status_code} }"
+  - id: after
+    echo:
+      message: ${steps.status_code.result}
+`
+	result, err := flowfile.Fix([]byte(src))
+	require.NoError(t, err)
+	assert.Empty(t, result.Refusals)
+	assert.Equal(t, want, string(result.Source),
+		"the response's own names stay bare; only the reference to the step is rooted")
+
+	_, _, err = flowfile.Parse(result.Source)
+	assert.NoError(t, err)
+}
+
+// TestFixLeavesTheCelTasksOwnScopeAlone is the same rule on the other task that
+// declares deferred inputs, so the fix is not one task's special case.
+func TestFixLeavesTheCelTasksOwnScopeAlone(t *testing.T) {
+	t.Parallel()
+
+	src := `name: t
+steps:
+  - id: total
+    echo:
+      message: a step sharing a var's name
+  - id: compute
+    cel:
+      expr: "total * 2"
+      vars:
+        total: 21
+  - id: after
+    echo:
+      message: ${total.result}
+`
+	result, err := flowfile.Fix([]byte(src))
+	require.NoError(t, err)
+	assert.Contains(t, string(result.Source), `expr: "total * 2"`,
+		"the cel task binds its own vars, so `total` there is not the step")
+	assert.Contains(t, string(result.Source), "message: ${steps.total.result}")
+}
+
+// TestFixNotesADeferredInputThatNamesAStep is the other half of leaving deferred
+// inputs alone.
+//
+// The http task evaluates `expect:` under an activation whose *parent* resolves
+// step outputs, so a bare name there may be the response's or may be a step's,
+// and only the author knows which. Rewriting it would guess; saying nothing would
+// leave the one bare step reference this migration cannot reach, working today
+// only because the runtime still answers the old spelling.
+func TestFixNotesADeferredInputThatNamesAStep(t *testing.T) {
+	t.Parallel()
+
+	src := `name: t
+steps:
+  - id: status_code
+    echo:
+      message: hi
+  - id: fetch
+    http:
+      url: https://example.com
+      expect: ${status_code == 200}
+`
+	result, err := flowfile.Fix([]byte(src))
+	require.NoError(t, err)
+
+	assert.Empty(t, result.Refusals, "nothing here is broken")
+	assert.Equal(t, src, string(result.Source), "the deferred input is left exactly as written")
+
+	require.Len(t, result.Notes, 1)
+	assert.Equal(t, 9, result.Notes[0].Line)
+	// The note has to carry the replacement, or an author is told there may be a
+	// problem and left to work out the shape of the answer.
+	assert.Contains(t, result.Notes[0].Message, "${steps.status_code == 200}")
+}
+
+// TestFixSaysNothingAboutADeferredInputWithNoStepInIt keeps the note from
+// becoming noise.
+//
+// Every http step has an `expect:`, and a note on each one is a note nobody
+// reads. It fires only when the expression names something a step is actually
+// called.
+func TestFixSaysNothingAboutADeferredInputWithNoStepInIt(t *testing.T) {
+	t.Parallel()
+
+	src := `name: t
+steps:
+  - id: fetch
+    http:
+      url: https://example.com
+      expect: ${status_code == 200}
+`
+	result, err := flowfile.Fix([]byte(src))
+	require.NoError(t, err)
+	assert.Empty(t, result.Notes, "no step is called status_code, so there is nothing to check")
+	assert.Empty(t, result.Refusals)
+}
+
+// TestFixNotesABareDeferredInputThatNamesAStep covers the deferred input that is
+// not fenced.
+//
+// A deferred input holds an expression by construction — deferring one is the
+// registry saying the task evaluates it — but the two in the library are written
+// differently. The http task's `expect:` carries a fence, because it could have
+// been a literal. The cel task's `expr:` does not, because evaluating it is the
+// whole purpose of the task.
+//
+// Only the fenced form used to be read, and the consequence was silent in the
+// worst way: `expr:` is the input most likely to hold a step reference, nothing
+// else looks at it — the rewriter never sees an unfenced value and the validator
+// does not reference-check a deferred input — so a file with a bare `expr:`
+// migrated clean while still meaning the pre-root spelling, and kept working only
+// on the runtime's compatibility arm. A shipped example was in exactly that state
+// (`examples/http-json-via-cel`), migrated by this tool and missed by it.
+func TestFixNotesABareDeferredInputThatNamesAStep(t *testing.T) {
+	t.Parallel()
+
+	src := `name: t
+steps:
+  - id: web
+    echo:
+      message: hi
+  - id: title
+    cel:
+      expr: web.result + "!"
+`
+	result, err := flowfile.Fix([]byte(src))
+	require.NoError(t, err)
+
+	assert.Empty(t, result.Refusals, "nothing here is broken")
+	assert.Equal(t, src, string(result.Source), "the deferred input is left exactly as written")
+
+	require.Len(t, result.Notes, 1)
+	assert.Equal(t, 8, result.Notes[0].Line)
+	// Suggested back unfenced, because that is how it has to be written. Handing
+	// back a `${...}` here would be telling the author to make the file invalid.
+	assert.Contains(t, result.Notes[0].Message, `steps.web.result + "!"`)
+	assert.NotContains(t, result.Notes[0].Message, "${",
+		"a bare input suggested back with a fence is a suggestion that does not compile")
+}
+
+// TestFixSaysNothingAboutADeferredInputHoldingText keeps the unfenced half from
+// inventing migrations for prose.
+//
+// Reading an unfenced value as an expression is only safe because a deferred
+// input is one. Text that does not parse as CEL is declined rather than guessed
+// at — the direction that stays quiet, since a false diagnostic costs more than a
+// missing one.
+func TestFixSaysNothingAboutADeferredInputHoldingText(t *testing.T) {
+	t.Parallel()
+
+	src := `name: t
+steps:
+  - id: web
+    echo:
+      message: hi
+  - id: title
+    cel:
+      expr: the web result please
+`
+	result, err := flowfile.Fix([]byte(src))
+	require.NoError(t, err)
+	assert.Empty(t, result.Notes, "text that is not an expression names nothing")
+	assert.Empty(t, result.Refusals)
+}
+
+// TestFixLeavesVarsToTheValidator pins the one deferred input this note skips.
+//
+// The cel task defers `vars` alongside `expr`, but the two are not alike from a
+// Flowfile: the compiler flattens `vars:` into ordinary inputs before the engine
+// sees them, so those entries are resolved by the workflow, reference-checked by
+// the validator, and rewritten by this pass like any other input. Reading the
+// mapping here as well would report each entry twice, and the second report would
+// be the vaguer of the two.
+func TestFixLeavesVarsToTheValidator(t *testing.T) {
+	t.Parallel()
+
+	src := `name: t
+steps:
+  - id: greeting
+    echo:
+      message: hi
+  - id: b
+    cel:
+      vars:
+        g: ${greeting.result}
+      expr: g
+`
+	result, err := flowfile.Fix([]byte(src))
+	require.NoError(t, err)
+
+	assert.Empty(t, result.Notes, "a vars entry is an ordinary input; the validator reports it")
+	assert.Contains(t, string(result.Source), "${steps.greeting.result}",
+		"a vars entry is rewritten rather than noted, because the compiler flattens it")
+}
+
+// TestFixDoesNotAskAboutANameTheStepBinds keeps the deferred-input note from
+// firing where the author has already answered it.
+//
+// The note is worded as a question — "if it means the step" — because the tool
+// genuinely cannot tell a task's own scope from the workflow's. That wording
+// stops being honest once the file says which: a name bound as a variable in the
+// same step is that variable, and asking anyway sends the author to root a
+// reference that would break the step if they did.
+//
+// Both spellings the cel task accepts are covered, because the compiler treats
+// them identically — under `vars:`, and beside it as an undeclared input — and a
+// check that knew only about `vars:` would still be wrong half the time.
+func TestFixDoesNotAskAboutANameTheStepBinds(t *testing.T) {
+	t.Parallel()
+
+	for name, src := range map[string]string{
+		"declared under vars": `name: t
+steps:
+  - id: total
+    echo:
+      message: a step sharing a var's name
+  - id: compute
+    cel:
+      expr: "total * 2"
+      vars:
+        total: 21
+`,
+		"declared beside vars": `name: t
+steps:
+  - id: total
+    echo:
+      message: a step sharing a var's name
+  - id: compute
+    cel:
+      expr: "total * 2"
+      total: 21
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			result, err := flowfile.Fix([]byte(src))
+			require.NoError(t, err)
+			assert.Empty(t, result.Notes,
+				"`total` is bound by the step, so there is nothing conditional to raise")
+			assert.Equal(t, src, string(result.Source), "and nothing to rewrite either")
+		})
+	}
+}
+
+// TestFixStillAsksWhenTheStepBindsNothing is the other direction of that
+// suppression.
+//
+// Reading the step's bindings is only worth doing if the note still fires when
+// there are none — otherwise the suppression could be silencing every note and
+// the test above would not notice.
+func TestFixStillAsksWhenTheStepBindsNothing(t *testing.T) {
+	t.Parallel()
+
+	src := `name: t
+steps:
+  - id: total
+    echo:
+      message: hi
+  - id: compute
+    cel:
+      expr: "total.result"
+`
+	result, err := flowfile.Fix([]byte(src))
+	require.NoError(t, err)
+
+	require.Len(t, result.Notes, 1, "nothing binds `total` here, so it is the step or a mistake")
+	assert.Contains(t, result.Notes[0].Message, "steps.total.result")
+}

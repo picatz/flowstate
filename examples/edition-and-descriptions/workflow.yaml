@@ -45,7 +45,7 @@ steps:
   - id: notify
     description: One at a time, in roster order, so the first responder is paged before the backup.
     for_each:
-      items: ${roster.result}
+      items: ${steps.roster.result}
       iterator: person
       steps:
         - id: page
@@ -63,4 +63,4 @@ steps:
     printf:
       format: "paged %d people"
       args:
-        - ${size(roster.result)}
+        - ${size(steps.roster.result)}

@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -111,28 +112,53 @@ func TestWaitDeadlineStillTakesAMomentFromData(t *testing.T) {
 		},
 	})
 
-	deadline, err := v1.EvalWaitDeadline(t.Context(), waitUntil(t, "${schedule.opens_at}"), scope, now)
+	deadline, err := v1.EvalWaitDeadline(t.Context(), waitUntil(t, "${steps.schedule.opens_at}"), scope, now)
 	require.NoError(t, err)
 	require.Equal(t, moment, deadline.UTC())
 }
 
-// TestWaitDeadlineNowDoesNotShadowAStepsOutputs guards the reason a step may not
-// be called `now`.
+// TestAStepMayBeCalledNow is what the rule above became.
 //
-// Bound names win over step outputs, so if this ever stopped being refused at
-// compile time, a workflow with a step called `now` would keep working everywhere
-// except inside a wait, where it would silently mean something else.
-func TestWaitDeadlineNowDoesNotShadowAStepsOutputs(t *testing.T) {
+// A step called `now` used to be refused, because bound names win over step
+// outputs: it would have worked everywhere except inside a `wait_until:`, where
+// it would silently have meant the clock. Rooting removes the possibility rather
+// than the permission — the step is `steps.now` and the clock is `now`, so
+// neither can be written where the other was meant, and there is nothing left for
+// a rule to forbid.
+//
+// The refusal is not merely dropped here; the two names are asserted to resolve
+// to *different things* in the one scope where both exist. That is the property
+// the old rule was protecting, and it is now structural.
+func TestAStepMayBeCalledNow(t *testing.T) {
 	t.Parallel()
 
-	source := "name: t\nsteps:\n  - id: now\n    echo:\n      message: hi\n"
+	source := "name: t\nsteps:\n" +
+		"  - id: now\n    cel:\n      expr: \"'2001-01-01T00:00:00Z'\"\n" +
+		"  - id: hold\n    wait_until: ${now}\n"
 
 	workflow, err := flowfile.Unmarshal([]byte(source))
 	require.NoError(t, err, "the workflow did not compile")
+	require.Empty(t, flowfile.Validate(workflow), "a step named `now` must be accepted now")
 
-	diagnostics := flowfile.Validate(workflow)
-	require.NotEmpty(t, diagnostics, "a step named `now` was accepted")
-	require.Contains(t, diagnostics.Error(), "choose another id")
+	// Both names, in the scope a wait evaluates against: the step through the
+	// root, the clock bare.
+	clock := time.Date(2030, 6, 1, 12, 0, 0, 0, time.UTC)
+	scope := v1.NewScope(&v1.Workflow_StepOutputs{
+		StepValues: map[string]*v1.Node_Outputs{
+			"now": {NamedValues: map[string]*v1.Value{
+				"result": v1.NewLiteral("2001-01-01T00:00:00Z"),
+			}},
+		},
+	})
+
+	fromClock, err := v1.EvalWaitDeadline(t.Context(), waitUntil(t, "${now}"), scope, clock)
+	require.NoError(t, err)
+	assert.Equal(t, clock, fromClock.UTC(), "bare `now` is the clock")
+
+	fromStep, err := v1.EvalWaitDeadline(t.Context(), waitUntil(t, "${steps.now.result}"), scope, clock)
+	require.NoError(t, err)
+	assert.Equal(t, time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC), fromStep.UTC(),
+		"the rooted name is the step, and the clock did not shadow it")
 }
 
 // A loop iterator is the other name an author picks that lands in a wait's scope,
@@ -163,7 +189,7 @@ func TestWaitDeadlineNowDoesNotShadowALoopIterator(t *testing.T) {
 	// authorable, and the only symptom is a wait that ends at the wrong moment.
 	source := "name: t\nsteps:\n" +
 		"  - id: targets\n    cel:\n      expr: \"['a']\"\n" +
-		"  - id: sweep\n    for_each:\n      items: ${targets.result}\n      iterator: now\n" +
+		"  - id: sweep\n    for_each:\n      items: ${steps.targets.result}\n      iterator: now\n" +
 		"      steps:\n        - id: hold\n          wait_until: ${now}\n"
 
 	workflow, err := flowfile.Unmarshal([]byte(source))
