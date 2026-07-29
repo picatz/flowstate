@@ -22,10 +22,18 @@ import "slices"
 // This list lives here rather than in the flowfile package because the registry
 // has to consult it and cannot import a parser. It is the grammar's vocabulary,
 // and the grammar is part of what this package describes.
-var reservedStepKeys = []string{
+// grammarStepKeys are the words a step accepts today.
+//
+// The parser has its own spelling of this set, because it needs them in the order
+// it reports them and split by what they mean. The two are held together by
+// TestEveryGrammarKeyIsReserved rather than by anyone remembering: a key added
+// there and not here is a task name a plugin may still take, which is the
+// ambiguity this whole file exists to prevent.
+var grammarStepKeys = []string{
 	// Step properties.
 	"id",
 	"task",
+	"description",
 	"if",
 	"timeout",
 	"retry",
@@ -38,19 +46,42 @@ var reservedStepKeys = []string{
 	"sleep",
 	"wait_until",
 	"wait_for_signal",
+}
 
-	// Not part of the grammar today, and reserved so that adding them later is a
-	// change to this package rather than a break for anyone who registered a task
-	// under the name in the meantime. Cheap now; a compatibility problem later.
-	"description",
+// futureStepKeys are reserved for grammar that is planned and not built.
+//
+// Reserving a word before it exists means adding it later is a change to this
+// package rather than a break for whoever registered a task under the name in the
+// meantime. Cheap now; a compatibility problem later.
+//
+// It is deliberately short. Every word here is one a plugin may not use, so
+// reserving speculatively has a real cost to somebody — `queue` and `schedule`
+// are plausible task names, and taking them on the strength of a roadmap noun
+// would be spending someone else's namespace on a guess. A word earns a place
+// here by being a *step key* in a design that named it as one, not by appearing
+// in a list of things the engine will eventually do.
+var futureStepKeys = []string{
 	"call",
 	"vars",
 	"undo",
 	"needs",
 }
 
+// reservedStepKeys is every word a task name may not take.
+var reservedStepKeys = slices.Concat(grammarStepKeys, futureStepKeys)
+
 // ReservedStepKeys returns the step keys a task name may not take.
 func ReservedStepKeys() []string { return slices.Clone(reservedStepKeys) }
 
-// IsReservedStepKey reports whether name is spoken for by the step grammar.
+// IsReservedStepKey reports whether name is spoken for by the step grammar,
+// whether it is in use today or held for later.
 func IsReservedStepKey(name string) bool { return slices.Contains(reservedStepKeys, name) }
+
+// IsFutureStepKey reports whether name is reserved for grammar that does not
+// exist yet.
+//
+// The distinction is for diagnostics. A step written with `vars:` on it is not the
+// same mistake as one written with `varz:`, and telling an author the key is
+// unknown — listing it among the keys they could have meant instead — describes a
+// typo they did not make. What they wrote is a key this version has not built.
+func IsFutureStepKey(name string) bool { return slices.Contains(futureStepKeys, name) }

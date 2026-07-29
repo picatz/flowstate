@@ -2,12 +2,15 @@ package flowfile
 
 import (
 	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/goccy/go-yaml/ast"
 	"github.com/goccy/go-yaml/parser"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
 // What a mapping key may be is a question two passes ask, and they must give one
@@ -133,4 +136,128 @@ func TestExplicitKeyIsReportedInTheAuthorsWords(t *testing.T) {
 	require.ErrorAs(t, err, &ds)
 	assert.Contains(t, ds.Error(), "an explicit key (`? key` on its own line) is not written here; use `key: value`")
 	assert.NotContains(t, ds.Error(), "mappingkey")
+}
+
+// The step grammar's vocabulary is written down twice, and this is what holds the
+// two copies together.
+//
+// `flowfile` needs the keys split by meaning and in the order it reports them;
+// `flowstatev1` needs one flat set, because [flowstatev1.Registry.Register]
+// consults it and a registry cannot import a parser. Neither list can be derived
+// from the other, so both are hand-written — and the comment on `stepKeys` already
+// claims `ReservedStepKeys` keeps the two halves disjoint, which nothing checked.
+//
+// What breaks if they drift is not the parser. It is that a key the grammar uses
+// stays available as a *task name*, so a plugin can register `handlers` on the day
+// `handlers:` becomes a step key, and `handlers:` on a step then means two
+// incompatible things with no way for a parser to choose. The failure lands on a
+// Flowfile author, months later, as a step that did something else.
+
+// grammarVocabulary is every word the step grammar speaks for: the keys it accepts
+// today, and the spellings it still recognizes in order to refuse them.
+//
+// The retired spellings belong here, and leaving them out was a real hole rather
+// than a tidiness point. `task` is not a key any file may use, so it looks like it
+// needs no reservation — but the parser rejects it *by name*, so a plugin
+// registering a task called `task` gets a registered task no Flowfile can reach,
+// and an author who writes `task:` is told about a retired spelling rather than
+// about the plugin they installed. Sourced from `retiredStepKeys` rather than
+// listed, so retiring a second spelling is covered the day it happens.
+func grammarVocabulary() []string {
+	words := append(slices.Clone(stepPropertyKeys), nodeKindKeys...)
+	for retired := range retiredStepKeys {
+		words = append(words, retired)
+	}
+	return words
+}
+
+// TestEveryGrammarKeyIsReserved fails if the parser learns a key the registry will
+// still hand out.
+func TestEveryGrammarKeyIsReserved(t *testing.T) {
+	t.Parallel()
+
+	require.NotEmpty(t, retiredStepKeys,
+		"grammarVocabulary draws its retired half from retiredStepKeys; empty means this checks less than it reads as")
+
+	reserved := v1.ReservedStepKeys()
+	for _, key := range grammarVocabulary() {
+		assert.Contains(t, reserved, key,
+			"the step grammar speaks for %q and `v1.ReservedStepKeys()` does not list it\n"+
+				"  add it to grammarStepKeys in pkg/flowstate/v1/stepkeys.go\n"+
+				"  until then a task may be registered under that name, and `%s:` on a step is ambiguous or unreachable",
+			key, key)
+	}
+}
+
+// TestReservedKeysAreEitherGrammarOrFuture is the other direction.
+//
+// A word in the reserved set that the grammar does not use and no plan claims is a
+// task name taken from a plugin author for no reason. The two groups exist so that
+// question has an answer for every entry, and this checks that none has fallen
+// outside both.
+func TestReservedKeysAreEitherGrammarOrFuture(t *testing.T) {
+	t.Parallel()
+
+	grammar := grammarVocabulary()
+
+	for _, key := range v1.ReservedStepKeys() {
+		if slices.Contains(grammar, key) || v1.IsFutureStepKey(key) {
+			continue
+		}
+		t.Errorf("%q is reserved but is neither current grammar nor held for later\n"+
+			"  every reserved word costs a plugin author a name, so each one needs a reason\n"+
+			"  either the grammar uses it, or it belongs in futureStepKeys, or it should not be reserved",
+			key)
+	}
+}
+
+// TestAFutureKeyIsNotAlsoGrammar keeps the two groups from overlapping.
+//
+// A word in both is a contradiction the diagnostics act on: the parser reports a
+// future key as unbuilt and holds it back, so a key that is genuinely grammar and
+// also listed as future would be refused on every file that uses it correctly.
+func TestAFutureKeyIsNotAlsoGrammar(t *testing.T) {
+	t.Parallel()
+
+	for _, key := range grammarVocabulary() {
+		assert.False(t, v1.IsFutureStepKey(key),
+			"%q is spoken for by the grammar and also reserved for later; "+
+				"the parser reports a future key as unbuilt, so a step using it correctly would be refused", key)
+	}
+}
+
+// TestAFutureKeyIsReportedAsUnbuiltRatherThanUnknown covers what an author reads.
+//
+// `vars:` on a step and `varz:` on a step are not the same mistake, and the
+// generic key check cannot tell them apart: it offers the nearest known key and
+// then lists the rest, which for a reserved word describes a typo the author did
+// not make and sends them looking for one that is not there.
+//
+// The word is held back from that check for the same reason a retired spelling
+// is — so the message about it is the only thing said about it.
+func TestAFutureKeyIsReportedAsUnbuiltRatherThanUnknown(t *testing.T) {
+	t.Parallel()
+
+	_, err := Unmarshal([]byte("name: t\nsteps:\n  - id: a\n    vars:\n      x: 1\n    echo:\n      message: hi\n"))
+	require.Error(t, err, "`vars:` is not a step key in this build and was accepted")
+
+	message := err.Error()
+	assert.Contains(t, message, "reserved for a later version of the grammar",
+		"a reserved word is reported without saying it is reserved")
+	assert.NotContains(t, message, "unknown key",
+		"a reserved word is reported as unknown, which reads as a misspelling")
+	assert.NotContains(t, message, "did you mean",
+		"a reserved word is offered a spelling correction it does not need")
+}
+
+// TestAMisspelledKeyStillGetsItsSuggestion is the other direction, and the reason
+// it is worth writing: holding words back from the key check could have suppressed
+// the suggestion for everything, and the test above would still pass.
+func TestAMisspelledKeyStillGetsItsSuggestion(t *testing.T) {
+	t.Parallel()
+
+	_, err := Unmarshal([]byte("name: t\nsteps:\n  - id: a\n    timeut: 5s\n    echo:\n      message: hi\n"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `did you mean "timeout"?`,
+		"a genuine misspelling lost its suggestion")
 }
