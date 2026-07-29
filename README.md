@@ -119,13 +119,33 @@ steps:
       message: hello world
   - id: output
     echo:
-      message: ${hello.result}
+      message: ${steps.hello.result}
 ```
 
 The above `Flowfile` defines two steps:
 1. The first step has an `id` of `hello`, uses the built-in `echo` task, and takes a literal string value `"hello world"` for the `message` input.
-2. The second step has an `id` of `output`, also uses the built-in `echo` task, and takes a dynamic input `message` that references the output of the first step using `${hello.result}`. The `${...}` syntax indicates that it is an expression.
-3. The output of the first step is referenced by its `id` (`hello`) and the output name (`result`). Outputs and inputs are strongly typed, but depend on the task being used (see below).
+2. The second step has an `id` of `output`, also uses the built-in `echo` task, and takes a dynamic input `message` that references the output of the first step using `${steps.hello.result}`. The `${...}` syntax indicates that it is an expression.
+3. The output of the first step is reached through `steps`: the step's `id` (`hello`) selects the step, and the output name (`result`) selects the value. Outputs and inputs are strongly typed, but depend on the task being used (see below).
+
+### Referring to a step's outputs
+
+A step is named through a root — `${steps.<id>.<output>}` — while a name bound *where the
+expression is written* stays bare: a loop's iterator, `now` inside `wait_until:`, and the
+response variables a task evaluates its own inputs against (`status_code`, `body` and
+`json` in the `http` task).
+
+Two namespaces rather than one, because a single flat one cannot tell a bare `${name}`
+inside a loop from a reference to a step called `name`. The language used to forbid the
+overlap instead: an iterator could not take a step's id, no step could be called `now`,
+and every CEL reserved word was refused as a step id, since a bare reference to one does
+not parse. Rooting makes the collision unrepresentable, so those refusals went with
+it — an iterator may share a step's id, a step may be called `now`, and of the
+twenty-one reserved words only `true`, `false`, `null` and `in` are still refused,
+because CEL's lexer rejects those before a field selection is reached at all.
+
+A file written the older, bare way is rewritten by `flow fix`, and until it is run
+`flow validate` names the step and says which command to run rather than reporting an
+unknown name.
 
 ### Saying why a step is there
 
@@ -167,7 +187,7 @@ steps:
       message: ready
 
   - id: deploy
-    if: ${check.result == 'ready'}   # only runs when this is true
+    if: ${steps.check.result == 'ready'}   # only runs when this is true
     timeout: 30s                     # bounds one attempt
     retry:
       attempts: 3                    # total attempts, so 1 disables retrying
@@ -192,8 +212,8 @@ Behavior worth knowing:
   failed because its inputs were invalid, or because a policy denied it, fails once no
   matter what `retry` says. Retrying an operation known to be unrepeatable is worse than
   failing.
-- `continue_on_error` records the failure as `${step.error}` rather than discarding it, so a
-  later step can branch on whether it worked.
+- `continue_on_error` records the failure as `${steps.<id>.error}` rather than discarding it,
+  so a later step can branch on whether it worked.
 - These behave identically under `flow run local` and durable execution. Local retries are
   in-process and therefore not durable — a crash loses them — but the observable outcome
   matches, which is what makes a local run worth trusting.
@@ -214,8 +234,8 @@ steps:
   # iterator's name; body steps can reference each other within an iteration.
   - id: process
     for_each:
-      items: ${targets.result}
-      iterator: name          # defaults to `item`
+      items: ${steps.targets.result}
+      iterator: name          # defaults to `item`; bare, so it may share a step's id
       max_parallel: 3         # omit or 1 to run one at a time
       steps:
         - id: label
@@ -236,7 +256,7 @@ steps:
   - id: summary
     printf:
       format: "%s / %s / processed %d"
-      args: [${check_config.result}, ${check_quota.result}, ${size(process.results)}]
+      args: [${steps.check_config.result}, ${steps.check_quota.result}, ${size(steps.process.results)}]
 ```
 
 The scoping rules are worth knowing, because they are what keep results independent of
@@ -246,10 +266,14 @@ timing:
   element per iteration, each a map of body step id to that step's outputs. Body outputs do
   not leak into the enclosing scope, because with more than one iteration they would
   overwrite each other and a later step would read whichever iteration happened to finish
-  last. So `${process.results}` is available afterwards; `${label.result}` is not.
-- **Parallel branch outputs do merge** once the block completes, so `${check_config.result}`
-  works afterwards. Branches must not reference each other, since there is no ordering
-  between them — `flow validate` reports it if they do.
+  last. So `${steps.process.results}` is available afterwards; `${steps.label.result}` is
+  not.
+- **The iterator is a local binding, not a step**, which is why it is written bare and why
+  it may be named after a step in the same file. `${name}` inside the body is the current
+  item; `${steps.name.result}` would be a step called `name`, if there were one.
+- **Parallel branch outputs do merge** once the block completes, so
+  `${steps.check_config.result}` works afterwards. Branches must not reference each
+  other, since there is no ordering between them — `flow validate` reports it if they do.
 - Iterations and branches each start from the outputs that existed before the block, so
   neither can observe the other's work. That is what makes concurrent and sequential
   execution produce the same result.
@@ -274,10 +298,16 @@ steps:
   - id: pick
     cel:
       libs: [json]
-      expr: json_parse(resp.body)['slideshow']['title']
+      expr: json_parse(steps.resp.body)['slideshow']['title']
 ```
 
 The CEL task’s `result` will be the selected field from the parsed JSON. This keeps activities minimal and payloads small while letting you shape data in CEL.
+
+`expr` is the expression the task exists to evaluate, so it is written as a bare
+expression rather than wrapped in `${...}` — but it resolves against the same names
+everything else does, and a step is `steps.<id>.<output>` here too. The task evaluates it
+itself, which is why `flow validate` does not reference-check it: what it may name
+depends on `vars`, which the validator cannot see.
 
 ### Shape HTTP outputs to fit limits
 
@@ -299,6 +329,11 @@ steps:
 Unlike other inputs, `outputs` is evaluated by the `http` task after the response arrives,
 so its expression sees the response rather than earlier steps. `flow validate` knows this
 and will not mistake `body` for a step reference.
+
+Those names are bare for the same reason a loop's iterator is: they are bound where the
+expression is written, by the task, rather than being another step's outputs. `steps.` is
+still reachable here — the response variables are added to the scope, not substituted for
+it — so a shaping expression may combine the response with an earlier step's output.
 
 Available variables in `outputs` evaluation:
 - `status_code` (int64)
@@ -519,7 +554,7 @@ assumes a hosted service.
 
 
 
-Each step in a `Flowfile` has named inputs and produces named outputs, which can be referenced by later steps using CEL expressions using the step `id` and output name. The outputs of a step are determined by the task being used, and can be of various types (e.g., `string`, `int`, `map`, etc.). The outputs of a step can be used as inputs to later steps, allowing for complex data flows and transformations.
+Each step in a `Flowfile` has named inputs and produces named outputs, which later steps reference in CEL expressions as `${steps.<id>.<output>}` — the step `id` selects the step and the output name selects the value. The outputs of a step are determined by the task being used, and can be of various types (e.g., `string`, `int`, `map`, etc.). The outputs of a step can be used as inputs to later steps, allowing for complex data flows and transformations.
 
 ### Available Tasks
 
@@ -557,11 +592,11 @@ steps:
       url: https://microsoft.com
   - id: output
     echo:
-      message: ${string(web.status_code)}
+      message: ${string(steps.web.status_code)}
 ```
 
 > [!TIP]
-> Use `${...}` for expressions, like referencing previous step outputs referenced by their `id` and output name.
+> Use `${...}` for expressions, like referencing a previous step's output as `${steps.<id>.<output>}`.
 > The `cel` task evaluates the expression string provided in its `expr` input at runtime. Variables for the expression are provided under the `vars` input. Use the optional `libs` input to enable CEL extension libraries such as `math`, `strings`, `lists`, `sets`, `encoders`, `protos`, `bindings`, `comprehensions`, or `regex`.
 
 ## Getting Started
@@ -576,12 +611,12 @@ $ flow validate examples/hello-world/workflow.yaml
 examples/hello-world/workflow.yaml: ok
 ```
 
-Problems are reported with the line, the step, and what to do about them:
+Problems are reported with the position, the step, and what to do about them:
 
 ```console
 $ flow validate broken.yaml
-broken.yaml:3: step "web": unknown task "htpp"; available tasks are cel, echo, http, printf
-broken.yaml:8: step "out" input "message": references step "later", which runs later; steps can only reference steps defined before them
+broken.yaml:4:5: step "web": unknown task "htpp"; available tasks are cel, echo, http, printf
+broken.yaml:8:16: step "out" input "message": references step "later", which runs later; steps can only reference steps defined before them
 ```
 
 `flow run` and `flow run local` apply the same checks before executing anything, so a
@@ -592,8 +627,14 @@ the migration is a command:
 
 ```console
 $ flow fix workflow.yaml
-workflow.yaml:5: `task:` naming "echo" rewritten to `echo:`
+workflow.yaml:10: step references rooted under `steps`
+workflow.yaml:4: `task:` naming "echo" rewritten to `echo:`
 ```
+
+That is both of the retired spellings in one pass: a step that named its task through
+`task:`/`name:`, and a reference that named a step bare. A bare reference is what
+`flow validate` reports as `` `greet` is a step, and a step is named `steps.greet` now``,
+which names the command rather than leaving an author to guess what an unknown name means.
 
 It rewrites only the lines it must and copies the rest through byte for byte, so
 comments and formatting survive and a file with nothing to change comes back identical —

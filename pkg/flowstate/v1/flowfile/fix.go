@@ -857,7 +857,16 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 			name, named := keyNameOf(node.Key)
 			if named && deferred[name] {
 				// Evaluated by the task, in a scope this rewriter cannot see and
-				// must not guess at.
+				// must not guess at — but not a scope where a step is unreachable.
+				// The http task evaluates these under an activation whose *parent*
+				// resolves step outputs, so a bare name here may be the response's
+				// or may be a step's, and only the author knows which.
+				//
+				// So: not rewritten, and not silent either. Declining without
+				// saying so would leave a reference that works today only because
+				// the runtime still answers the bare spelling, and stops working
+				// the day that arm is dropped.
+				f.noteDeferred(node, name, steps)
 				return
 			}
 			// A task's key opens its inputs, so the names its own scope binds are
@@ -978,4 +987,32 @@ func commentStart(line string) int {
 		return i + 1
 	}
 	return -1
+}
+
+// noteDeferred points at a deferred input that mentions something spelled like a
+// step.
+//
+// It cannot be rewritten — see the caller — but it is the one place a bare step
+// reference can survive this migration, so leaving it unremarked is how it gets
+// found later, by a run that stops working for no visible reason.
+func (f *fixer) noteDeferred(node *ast.MappingValueNode, input string, steps map[string]bool) {
+	text, ok := scalarText(node.Value)
+	if !ok {
+		return
+	}
+	inner, fenced := SplitFence(text)
+	if !fenced {
+		return
+	}
+
+	rooted, changed, err := rootedExpr(inner, steps)
+	if err != nil || !changed {
+		return
+	}
+
+	span := spanOfNode(node.Value)
+	f.note(span.Start.Line, span.Start.Column,
+		"`%s` is evaluated by the task against its own scope, so this was left alone — "+
+			"but it names something spelled like a step. If it means the step, write it `%s`",
+		input, fenceOpen+rooted+fenceClose)
 }

@@ -1062,3 +1062,59 @@ steps:
 		"the cel task binds its own vars, so `total` there is not the step")
 	assert.Contains(t, string(result.Source), "message: ${steps.total.result}")
 }
+
+// TestFixNotesADeferredInputThatNamesAStep is the other half of leaving deferred
+// inputs alone.
+//
+// The http task evaluates `expect:` under an activation whose *parent* resolves
+// step outputs, so a bare name there may be the response's or may be a step's,
+// and only the author knows which. Rewriting it would guess; saying nothing would
+// leave the one bare step reference this migration cannot reach, working today
+// only because the runtime still answers the old spelling.
+func TestFixNotesADeferredInputThatNamesAStep(t *testing.T) {
+	t.Parallel()
+
+	src := `name: t
+steps:
+  - id: status_code
+    echo:
+      message: hi
+  - id: fetch
+    http:
+      url: https://example.com
+      expect: ${status_code == 200}
+`
+	result, err := flowfile.Fix([]byte(src))
+	require.NoError(t, err)
+
+	assert.Empty(t, result.Refusals, "nothing here is broken")
+	assert.Equal(t, src, string(result.Source), "the deferred input is left exactly as written")
+
+	require.Len(t, result.Notes, 1)
+	assert.Equal(t, 9, result.Notes[0].Line)
+	// The note has to carry the replacement, or an author is told there may be a
+	// problem and left to work out the shape of the answer.
+	assert.Contains(t, result.Notes[0].Message, "${steps.status_code == 200}")
+}
+
+// TestFixSaysNothingAboutADeferredInputWithNoStepInIt keeps the note from
+// becoming noise.
+//
+// Every http step has an `expect:`, and a note on each one is a note nobody
+// reads. It fires only when the expression names something a step is actually
+// called.
+func TestFixSaysNothingAboutADeferredInputWithNoStepInIt(t *testing.T) {
+	t.Parallel()
+
+	src := `name: t
+steps:
+  - id: fetch
+    http:
+      url: https://example.com
+      expect: ${status_code == 200}
+`
+	result, err := flowfile.Fix([]byte(src))
+	require.NoError(t, err)
+	assert.Empty(t, result.Notes, "no step is called status_code, so there is nothing to check")
+	assert.Empty(t, result.Refusals)
+}
