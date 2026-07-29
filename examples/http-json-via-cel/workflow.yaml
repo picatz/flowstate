@@ -7,4 +7,4 @@ steps:
   - id: title
     cel:
       libs: [json]
-      expr: json_parse(web.body)['slideshow']['title']
+      expr: json_parse(steps.web.body)['slideshow']['title']

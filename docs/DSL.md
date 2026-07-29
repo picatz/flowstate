@@ -35,8 +35,8 @@ landed: a step's outputs are `${steps.<id>.<output>}`, and what stays bare is wh
 bound *where the expression is written* — a `for_each` iterator, `now` inside
 `wait_until:`, and the names a task resolves against its own scope (`status_code`,
 `headers`, `body`, and — when the step asked for `parse_json` — `json`, in the `http`
-task's `expect:` and `outputs:`). `inputs.*`, `vars.*` and
-`run.*` do not exist; see [Order of work](#order-of-work).
+task's `expect:` and `outputs:`). `inputs.*`, `vars.*` and `run.*` do not exist; see
+[Order of work](#order-of-work).
 
 *Since written:* the reason this section gave for accepting it was checked against the
 code and was half wrong, so it is replaced here rather than left to be rediscovered.

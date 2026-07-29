@@ -1118,3 +1118,101 @@ steps:
 	assert.Empty(t, result.Notes, "no step is called status_code, so there is nothing to check")
 	assert.Empty(t, result.Refusals)
 }
+
+// TestFixNotesABareDeferredInputThatNamesAStep covers the deferred input that is
+// not fenced.
+//
+// A deferred input holds an expression by construction — deferring one is the
+// registry saying the task evaluates it — but the two in the library are written
+// differently. The http task's `expect:` carries a fence, because it could have
+// been a literal. The cel task's `expr:` does not, because evaluating it is the
+// whole purpose of the task.
+//
+// Only the fenced form used to be read, and the consequence was silent in the
+// worst way: `expr:` is the input most likely to hold a step reference, nothing
+// else looks at it — the rewriter never sees an unfenced value and the validator
+// does not reference-check a deferred input — so a file with a bare `expr:`
+// migrated clean while still meaning the pre-root spelling, and kept working only
+// on the runtime's compatibility arm. A shipped example was in exactly that state
+// (`examples/http-json-via-cel`), migrated by this tool and missed by it.
+func TestFixNotesABareDeferredInputThatNamesAStep(t *testing.T) {
+	t.Parallel()
+
+	src := `name: t
+steps:
+  - id: web
+    echo:
+      message: hi
+  - id: title
+    cel:
+      expr: web.result + "!"
+`
+	result, err := flowfile.Fix([]byte(src))
+	require.NoError(t, err)
+
+	assert.Empty(t, result.Refusals, "nothing here is broken")
+	assert.Equal(t, src, string(result.Source), "the deferred input is left exactly as written")
+
+	require.Len(t, result.Notes, 1)
+	assert.Equal(t, 8, result.Notes[0].Line)
+	// Suggested back unfenced, because that is how it has to be written. Handing
+	// back a `${...}` here would be telling the author to make the file invalid.
+	assert.Contains(t, result.Notes[0].Message, `steps.web.result + "!"`)
+	assert.NotContains(t, result.Notes[0].Message, "${",
+		"a bare input suggested back with a fence is a suggestion that does not compile")
+}
+
+// TestFixSaysNothingAboutADeferredInputHoldingText keeps the unfenced half from
+// inventing migrations for prose.
+//
+// Reading an unfenced value as an expression is only safe because a deferred
+// input is one. Text that does not parse as CEL is declined rather than guessed
+// at — the direction that stays quiet, since a false diagnostic costs more than a
+// missing one.
+func TestFixSaysNothingAboutADeferredInputHoldingText(t *testing.T) {
+	t.Parallel()
+
+	src := `name: t
+steps:
+  - id: web
+    echo:
+      message: hi
+  - id: title
+    cel:
+      expr: the web result please
+`
+	result, err := flowfile.Fix([]byte(src))
+	require.NoError(t, err)
+	assert.Empty(t, result.Notes, "text that is not an expression names nothing")
+	assert.Empty(t, result.Refusals)
+}
+
+// TestFixLeavesVarsToTheValidator pins the one deferred input this note skips.
+//
+// The cel task defers `vars` alongside `expr`, but the two are not alike from a
+// Flowfile: the compiler flattens `vars:` into ordinary inputs before the engine
+// sees them, so those entries are resolved by the workflow, reference-checked by
+// the validator, and rewritten by this pass like any other input. Reading the
+// mapping here as well would report each entry twice, and the second report would
+// be the vaguer of the two.
+func TestFixLeavesVarsToTheValidator(t *testing.T) {
+	t.Parallel()
+
+	src := `name: t
+steps:
+  - id: greeting
+    echo:
+      message: hi
+  - id: b
+    cel:
+      vars:
+        g: ${greeting.result}
+      expr: g
+`
+	result, err := flowfile.Fix([]byte(src))
+	require.NoError(t, err)
+
+	assert.Empty(t, result.Notes, "a vars entry is an ordinary input; the validator reports it")
+	assert.Contains(t, string(result.Source), "${steps.greeting.result}",
+		"a vars entry is rewritten rather than noted, because the compiler flattens it")
+}

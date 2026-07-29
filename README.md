@@ -307,11 +307,18 @@ steps:
 
 The CEL task’s `result` will be the selected field from the parsed JSON. This keeps activities minimal and payloads small while letting you shape data in CEL.
 
-`expr` is the expression the task exists to evaluate, so it is written as a bare
-expression rather than wrapped in `${...}` — but it resolves against the same names
-everything else does, and a step is `steps.<id>.<output>` here too. The task evaluates it
-itself, which is why `flow validate` does not reference-check it: what it may name
-depends on `vars`, which the validator cannot see.
+`expr` is the expression the task exists to evaluate, so it is written bare rather than
+wrapped in `${...}` — but it resolves against the same names everything else does, and a
+step is `steps.<id>.<output>` here too. The task evaluates it itself, which is why
+`flow validate` does not reference-check it: what it may name also depends on `vars`,
+which the validator cannot see.
+
+It is also the reference the migration cannot reach. `flow fix` rewrites the `${...}`
+values in a file, and `expr` is not one of them — it is the expression itself, not a value
+containing one — so a `cel` step written before the root is left as it was and nothing
+reports it. It keeps working because the runtime still answers the older bare spelling,
+and stops the day that compatibility is dropped. Root `expr:` by hand when you migrate a
+file.
 
 ### Shape HTTP outputs to fit limits
 
@@ -331,13 +338,15 @@ steps:
 ```
 
 Unlike other inputs, `outputs` is evaluated by the `http` task after the response arrives,
-so its expression sees the response rather than earlier steps. `flow validate` knows this
-and will not mistake `body` for a step reference.
+so its expression sees the response. `flow validate` knows this and will not mistake
+`body` for a step reference.
 
-Those names are bare for the same reason a loop's iterator is: they are bound where the
-expression is written, by the task, rather than being another step's outputs. `steps.` is
-still reachable here — the response variables are added to the scope, not substituted for
-it — so a shaping expression may combine the response with an earlier step's output.
+Those names are bare for the same reason a loop's iterator is: the task binds them where
+the expression is written, rather than their being another step's outputs. `steps.` is
+still reachable alongside them — the response variables are added to the scope, not
+substituted for it — so a shaping expression may combine the response with an earlier
+step's output. `flow fix` therefore leaves a deferred input alone rather than rooting what
+it cannot tell apart, and says so when a name in one is spelled like a step in the file.
 
 Available variables in `outputs` evaluation:
 - `status_code` (int64)

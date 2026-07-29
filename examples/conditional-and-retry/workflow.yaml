@@ -32,7 +32,7 @@ steps:
     echo:
       message: rolling back
 
-  # Best-effort: a failure here is recorded as ${notify.error} and the run
+  # Best-effort: a failure here is recorded as ${steps.notify.error} and the run
   # continues, because a missed notification should not abandon work that
   # succeeded.
   - id: notify

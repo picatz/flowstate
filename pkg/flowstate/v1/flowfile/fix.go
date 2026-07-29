@@ -866,7 +866,7 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 				// saying so would leave a reference that works today only because
 				// the runtime still answers the bare spelling, and stops working
 				// the day that arm is dropped.
-				f.noteDeferred(node, name, steps)
+				f.noteDeferred(node.Value, name, steps)
 				return
 			}
 			// A task's key opens its inputs, so the names its own scope binds are
@@ -890,13 +890,20 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 }
 
 // deferredInputs returns the inputs a task evaluates itself, as a set.
+//
+// An input the compiler hoists is not one of them, however the registry lists it:
+// hoisting happens first, so by the time anything else looks, `vars:` is gone and
+// its entries are ordinary inputs the workflow resolves. See [hoistedInput].
 func deferredInputs(def v1.TaskDef) map[string]bool {
-	if len(def.DeferredInputs) == 0 {
-		return nil
-	}
 	out := make(map[string]bool, len(def.DeferredInputs))
 	for _, name := range def.DeferredInputs {
+		if hoistedInput(def, name) {
+			continue
+		}
 		out[name] = true
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }
@@ -995,24 +1002,57 @@ func commentStart(line string) int {
 // It cannot be rewritten — see the caller — but it is the one place a bare step
 // reference can survive this migration, so leaving it unremarked is how it gets
 // found later, by a run that stops working for no visible reason.
-func (f *fixer) noteDeferred(node *ast.MappingValueNode, input string, steps map[string]bool) {
-	text, ok := scalarText(node.Value)
+//
+// # A deferred input is read as an expression whether or not it is fenced
+//
+// Deferring an input is the registry declaring that the task evaluates it, so its
+// value is an expression by construction. Both spellings are in use and both
+// strand a reference: the http task's `expect:` carries a fence because it could
+// have been a literal, and the cel task's `expr:` is bare because evaluating it is
+// the entire purpose of the task.
+//
+// Only the fenced half used to be read, which left the bare half silent — and the
+// bare half is `expr:`, the input most likely to hold a step reference in the first
+// place. Nothing else catches it: the fence rewriter never sees an unfenced value,
+// and the validator does not reference-check a deferred input at all, so a bare
+// `expr: a.result` migrated clean while still meaning the pre-root spelling.
+//
+// It reads one scalar rather than descending, and the exception proves why. The cel
+// task also defers `vars`, which is a mapping — but the compiler flattens `vars:`
+// into ordinary inputs before the engine sees it, so those entries are resolved by
+// the workflow, reference-checked by the validator, and rewritten by this pass like
+// any other. Descending here would report them a second time, in weaker words than
+// the diagnostic they already get.
+func (f *fixer) noteDeferred(n ast.Node, input string, steps map[string]bool) {
+	text, ok := scalarText(n)
 	if !ok {
 		return
 	}
-	inner, fenced := SplitFence(text)
+
+	// SplitFence answers the empty string when there is no fence, so the bare form
+	// has to fall back to the whole value rather than to what it returned.
+	source, fenced := SplitFence(text)
 	if !fenced {
-		return
+		source = text
 	}
 
-	rooted, changed, err := rootedExpr(inner, steps)
+	// Text that does not parse as CEL is not a stranded reference, it is a string
+	// that happens to contain a word. Declining on the parse error is what keeps
+	// this from inventing a migration for ordinary prose.
+	rooted, changed, err := rootedExpr(source, steps)
 	if err != nil || !changed {
 		return
 	}
 
-	span := spanOfNode(node.Value)
+	// Suggested back in the spelling it was written in, so it can be pasted.
+	suggestion := rooted
+	if fenced {
+		suggestion = fenceOpen + rooted + fenceClose
+	}
+
+	span := spanOfNode(n)
 	f.note(span.Start.Line, span.Start.Column,
 		"`%s` is evaluated by the task against its own scope, so this was left alone — "+
 			"but it names something spelled like a step. If it means the step, write it `%s`",
-		input, fenceOpen+rooted+fenceClose)
+		input, suggestion)
 }
