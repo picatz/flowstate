@@ -27,12 +27,10 @@ description: Holds a workload until a moment it computes, rather than for a fixe
 
 steps:
   - id: request
-    task:
-      name: printf
-      inputs:
-        format: "queued at %s"
-        args:
-          - v1.4.2
+    printf:
+      format: "queued at %s"
+      args:
+        - v1.4.2
 
   # A moment computed from the clock the driver controls, so it survives replay
   # and a worker restart. Kept short so the example finishes if someone runs it;
@@ -50,18 +48,14 @@ steps:
   # after an outage reaches an open window and catches up instead of failing for
   # being late.
   - id: embargo
-    task:
-      name: cel
-      inputs:
-        expr: "string(timestamp('2026-01-01T09:00:00Z'))"
+    cel:
+      expr: "string(timestamp('2026-01-01T09:00:00Z'))"
 
   - id: hold
     wait_until: ${embargo.result}
 
   - id: publish
-    task:
-      name: printf
-      inputs:
-        format: "embargo lifted at %s; publishing"
-        args:
-          - ${embargo.result}
+    printf:
+      format: "embargo lifted at %s; publishing"
+      args:
+        - ${embargo.result}

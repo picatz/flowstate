@@ -152,12 +152,19 @@ func (c *compiler) entries(n ast.Node, path string, r ref) ([]entry, bool) {
 	// Keys written here are claimed before anything is merged in, because a merged
 	// mapping must not shadow one — that is the merge semantics YAML defines, and
 	// the reason `<<:` is usable for sharing step boilerplate at all.
+	// Which names the mapping writes for itself, so a merged key does not
+	// override one written directly.
+	//
+	// Silent, because this is a first pass over keys the second pass reads again:
+	// reporting here made a bad key produce two identical diagnostics at the same
+	// position, one from each pass. An editor draws that as two squiggles on one
+	// character.
 	written := make(map[string]bool, len(values))
 	for _, v := range values {
 		if _, isMerge := v.Key.(*ast.MergeKeyNode); isMerge {
 			continue
 		}
-		if name, ok := c.keyName(v.Key, r); ok {
+		if name, ok := keyNameOf(v.Key); ok {
 			written[name] = true
 		}
 	}
@@ -194,17 +201,43 @@ func (c *compiler) entries(n ast.Node, path string, r ref) ([]entry, bool) {
 	return out, true
 }
 
-// keyName returns the name a mapping key spells.
-func (c *compiler) keyName(n ast.Node, r ref) (string, bool) {
-	switch node := n.(type) {
-	case *ast.StringNode:
-		return node.Value, true
-	case *ast.LiteralNode:
-		return blockText(node), true
-	default:
-		c.report(spanOfNode(n), r, "keys must be strings, but %s was written here", describeNode(n))
+// keyNameOf returns the name a mapping key spells, or false when it spells none.
+//
+// The single definition of what a key is. [compiler.keyName] is this plus a
+// diagnostic, rather than a second switch, because the two answering differently
+// is a bug with no symptom at the point it is written: the merge-precedence pass
+// in [compiler.entries] uses this one to decide which names a mapping claims for
+// itself, and a name it fails to see is a name a merged mapping silently
+// overrides.
+//
+// A key is a string and nothing else. It is never a *ast.LiteralNode — a block
+// scalar cannot open a mapping key, so every `? |-` reaches the parser wrapped in
+// a *ast.MappingKeyNode — and the branch that used to claim otherwise made these
+// two look divergent while being unreachable.
+func keyNameOf(n ast.Node) (string, bool) {
+	scalar, ok := n.(*ast.StringNode)
+	if !ok {
 		return "", false
 	}
+	return scalar.Value, true
+}
+
+// keyName returns the name a mapping key spells.
+func (c *compiler) keyName(n ast.Node, r ref) (string, bool) {
+	if name, ok := keyNameOf(n); ok {
+		return name, true
+	}
+	if _, explicit := n.(*ast.MappingKeyNode); explicit {
+		// Valid YAML, and every spelling of it — `? a`, `? |-` — arrives here. The
+		// generic message would call it "a mappingkey", which is the parser's word
+		// and not the author's, and would say keys must be strings about a key that
+		// is one.
+		c.report(spanOfNode(n), r,
+			"an explicit key (`? key` on its own line) is not written here; use `key: value`")
+		return "", false
+	}
+	c.report(spanOfNode(n), r, "keys must be strings, but %s was written here", describeNode(n))
+	return "", false
 }
 
 // resolve follows anchors and aliases to the node that was actually written.

@@ -37,20 +37,20 @@ func TestDiagnosticsOverProtocol(t *testing.T) {
 			src: `name: valid
 steps:
   - id: first
-    task:
-      name: echo
-      inputs:
-        message: hello
+    echo:
+      message: hello
   - id: second
-    task:
-      name: echo
-      inputs:
-        message: ${first.result}
+    echo:
+      message: ${first.result}
 `,
 		},
 		{
 			name: "yaml syntax error lands on the offending token",
-			src:  "name: broken\nsteps:\n  - id: a\n  \ttask: echo\n",
+			// A tab where the indentation goes. Nothing after it is ever read —
+			// the document stops parsing at the tab — but it is spelled in the
+			// grammar the DSL has, so nobody reads this fixture as evidence that
+			// `task:` is still a step key.
+			src: "name: broken\nsteps:\n  - id: a\n  \techo: hi\n",
 			want: []want{{
 				code:       codeYAMLSyntax,
 				severity:   lsp.Error,
@@ -72,10 +72,8 @@ steps:
 			src: `name: badcel
 steps:
   - id: a
-    task:
-      name: echo
-      inputs:
-        message: ${a b}
+    echo:
+      message: ${a b}
 `,
 			// The compiler cannot produce a workflow from a document with an
 			// unparseable expression, so its own validation never runs. The
@@ -93,10 +91,8 @@ steps:
 			src: `name: badexpr
 steps:
   - id: a
-    task:
-      name: cel
-      inputs:
-        expr: "1 + + 2"
+    cel:
+      expr: "1 + + 2"
 `,
 			want: []want{{
 				code:       codeCELSyntax,
@@ -110,11 +106,9 @@ steps:
 			src: `name: badlib
 steps:
   - id: a
-    task:
-      name: cel
-      inputs:
-        libs: [json, nope]
-        expr: "1"
+    cel:
+      libs: [json, nope]
+      expr: "1"
 `,
 			// Reported by the shared validator, so `flow validate` refuses the file
 			// too — a misspelled library used to compile cleanly and fail once the
@@ -133,10 +127,8 @@ steps:
 			src: `name: badtask
 steps:
   - id: a
-    task:
-      name: shell
-      inputs:
-        command: ls
+    shell:
+      command: ls
 `,
 			want: []want{{
 				code:       codeFlowfile,
@@ -150,10 +142,8 @@ steps:
 			src: `name: typo
 steps:
   - id: a
-    task:
-      name: echo
-      inputs:
-        mesage: hello
+    echo:
+      mesage: hello
 `,
 			// Reported by the shared validator, so `flow validate` refuses the
 			// workflow too — a misspelled input is silently ignored at run time,
@@ -172,10 +162,8 @@ steps:
 			src: `name: missing
 steps:
   - id: a
-    task:
-      name: http
-      inputs:
-        method: GET
+    http:
+      method: GET
 `,
 			want: []want{{
 				code:     codeFlowfile,
@@ -188,10 +176,8 @@ steps:
 			src: `name: wrong-type
 steps:
   - id: a
-    task:
-      name: echo
-      inputs:
-        message: [1, 2]
+    echo:
+      message: [1, 2]
 `,
 			// Here the key is fine and the value is not, so the range moves to the
 			// value. Which of the two is at fault comes from the schema.
@@ -214,7 +200,7 @@ steps:
 			want: []want{{
 				code:       codeFlowfile,
 				severity:   lsp.Error,
-				contains:   "must have one of task, for_each, parallel, sleep, wait_until, or wait_for_signal",
+				contains:   "must have one of for_each, parallel, sleep, wait_until, wait_for_signal, cel, echo, http, or printf",
 				underlines: "a",
 			}},
 		},
@@ -223,17 +209,13 @@ steps:
 			src: `name: two-kinds
 steps:
   - id: a
-    task:
-      name: echo
-      inputs:
-        message: hi
+    echo:
+      message: hi
     parallel:
       - steps:
           - id: b
-            task:
-              name: echo
-              inputs:
-                message: hi
+            echo:
+              message: hi
 `,
 			want: []want{{
 				code:     codeFlowfile,
@@ -243,26 +225,22 @@ steps:
 		},
 		{
 			name: "a for_each step is not missing a task",
-			// A loop is a legal kind of work. Flagging it for having no task: block
+			// A loop is a legal kind of work. Flagging it for carrying no task key
 			// would put an error on a working file, which is the failure this
 			// package exists to avoid.
 			src: `name: loop
 steps:
   - id: items
-    task:
-      name: cel
-      inputs:
-        expr: "['a', 'b']"
+    cel:
+      expr: "['a', 'b']"
   - id: each
     for_each:
       items: ${items.result}
       iterator: one
       steps:
         - id: body
-          task:
-            name: echo
-            inputs:
-              message: ${one}
+          echo:
+            message: ${one}
 `,
 		},
 		{
@@ -270,15 +248,11 @@ steps:
 			src: `name: fwd
 steps:
   - id: a
-    task:
-      name: echo
-      inputs:
-        message: ${b.result}
+    echo:
+      message: ${b.result}
   - id: b
-    task:
-      name: echo
-      inputs:
-        message: hi
+    echo:
+      message: hi
 `,
 			want: []want{{
 				code:       codeFlowfile,
@@ -292,15 +266,11 @@ steps:
 			src: `name: dupes
 steps:
   - id: a
-    task:
-      name: echo
-      inputs:
-        message: one
+    echo:
+      message: one
   - id: a
-    task:
-      name: echo
-      inputs:
-        message: two
+    echo:
+      message: two
 `,
 			want: []want{{
 				code:       codeFlowfile,
@@ -317,17 +287,13 @@ steps:
 			src: `name: vars
 steps:
   - id: a
-    task:
-      name: echo
-      inputs:
-        message: hello
+    echo:
+      message: hello
   - id: b
-    task:
-      name: cel
-      inputs:
-        expr: vars.greeting
-        vars:
-          greeting: ${a.result}
+    cel:
+      expr: vars.greeting
+      vars:
+        greeting: ${a.result}
 `,
 		},
 		{
@@ -339,10 +305,8 @@ steps:
 			src: `name: literal
 steps:
   - id: a
-    task:
-      name: echo
-      inputs:
-        message: "cost is ${ ] not cel} dollars"
+    echo:
+      message: "cost is ${ ] not cel} dollars"
 `,
 			want: []want{{
 				code:       codeFlowfile,
@@ -356,38 +320,38 @@ steps:
 			src: `name: literal
 steps:
   - id: a
-    task:
-      name: echo
-      inputs:
-        message: "cost is 5 dollars"
+    echo:
+      message: "cost is 5 dollars"
 `,
 		},
 		{
 			name: "a step with no id is positioned on the step",
 			// flowfile addresses this step as steps[0], since it has no id to
 			// name it by; the range has to be recovered from the index.
+			//
+			// Underlining the step's first line is what it did before flattening,
+			// and that line is still the one the step opens on — what changed is
+			// only which key opens it. Written the old way the fixture no longer
+			// tests this at all: `task:` is now an unrecognised key, so the report
+			// gained an unknown-task diagnostic and stopped being about the id.
 			src: `name: no-id
 steps:
-  - task:
-      name: echo
-      inputs:
-        message: hello
+  - echo:
+      message: hello
 `,
 			want: []want{{
 				code:       codeFlowfile,
 				severity:   lsp.Error,
 				contains:   "step has no id",
-				underlines: "- task:",
+				underlines: "- echo:",
 			}},
 		},
 		{
 			name: "workflow with no name",
 			src: `steps:
   - id: a
-    task:
-      name: echo
-      inputs:
-        message: hello
+    echo:
+      message: hello
 `,
 			want: []want{{
 				code:     codeFlowfile,
@@ -445,18 +409,14 @@ func TestDiagnosticsClearWhenFixed(t *testing.T) {
 	const broken = `name: fix-me
 steps:
   - id: a
-    task:
-      name: shell
-      inputs:
-        message: hello
+    shell:
+      message: hello
 `
 	const fixed = `name: fix-me
 steps:
   - id: a
-    task:
-      name: echo
-      inputs:
-        message: hello
+    echo:
+      message: hello
 `
 
 	c := newClient(t)
@@ -514,18 +474,30 @@ func TestIncrementalChange(t *testing.T) {
 	const src = `name: inc
 steps:
   - id: a
-    task:
-      name: shell
-      inputs:
-        message: hello
+    shell:
+      message: hello
 `
 	c := newClient(t)
 	c.initialize()
 	require.NotEmpty(t, c.open("file:///inc.yaml", src).Diagnostics)
 
-	// Replace "shell" with "echo" in place.
-	line := 4
-	start := strings.Index(strings.Split(src, "\n")[line], "shell")
+	// Replace "shell" with "echo" in place. The task's name is the step's key
+	// now, so the word to overwrite opens the task instead of sitting on a
+	// `name:` line inside it — one line earlier than it used to be.
+	//
+	// Both coordinates are read out of the fixture rather than written down. A
+	// hard-coded line beside a searched column is what made this fail after the
+	// flattening: the search returned -1 on a line that no longer held the word,
+	// the edit spliced "echo" across the wrong characters, and the assertion that
+	// caught it could only say the document was still broken.
+	line, start := -1, -1
+	for i, text := range strings.Split(src, "\n") {
+		if at := strings.Index(text, "shell"); at >= 0 {
+			line, start = i, at
+			break
+		}
+	}
+	require.GreaterOrEqual(t, line, 0, "the fixture no longer contains the word this edit replaces")
 	params := c.changeRange("file:///inc.yaml", 2, lsp.Range{
 		Start: lsp.Position{Line: line, Character: start},
 		End:   lsp.Position{Line: line, Character: start + len("shell")},
@@ -585,20 +557,20 @@ func TestHostileDocuments(t *testing.T) {
 		"list document":         "- a\n- b\n",
 		"steps is a scalar":     "name: x\nsteps: nope\n",
 		"step is a scalar":      "name: x\nsteps:\n  - nope\n",
-		"task is a scalar":      "name: x\nsteps:\n  - id: a\n    task: echo\n",
-		"inputs is a scalar":    "name: x\nsteps:\n  - id: a\n    task:\n      name: echo\n      inputs: nope\n",
-		"inputs is a list":      "name: x\nsteps:\n  - id: a\n    task:\n      name: echo\n      inputs: [a, b]\n",
-		"deeply nested":         "name: x\nsteps:\n  - id: a\n    task:\n      name: echo\n      inputs:\n        message:\n" + strings.Repeat("          - ", 1) + "\n",
+		"task is a scalar":      "name: x\nsteps:\n  - id: a\n    echo: scalar\n",
+		"inputs is a scalar":    "name: x\nsteps:\n  - id: a\n    echo: nope\n",
+		"inputs is a list":      "name: x\nsteps:\n  - id: a\n    echo: [a, b]\n",
+		"deeply nested":         "name: x\nsteps:\n  - id: a\n    echo:\n      message:\n" + strings.Repeat("          - ", 1) + "\n",
 		"duplicate yaml keys":   "name: x\nname: y\n",
 		"tabs everywhere":       "\tname:\tx\n",
 		"unterminated quote":    "name: \"unterminated\nsteps: []\n",
-		"unclosed expression":   "name: x\nsteps:\n  - id: a\n    task:\n      name: echo\n      inputs:\n        message: ${a\n",
-		"expression is nothing": "name: x\nsteps:\n  - id: a\n    task:\n      name: echo\n      inputs:\n        message: ${}\n",
+		"unclosed expression":   "name: x\nsteps:\n  - id: a\n    echo:\n      message: ${a\n",
+		"expression is nothing": "name: x\nsteps:\n  - id: a\n    echo:\n      message: ${}\n",
 		"very long line":        "name: " + strings.Repeat("x", 100_000) + "\n",
 		"binary-ish":            "name: \x00\x01\x02\nsteps: []\n",
-		"crlf":                  "name: x\r\nsteps:\r\n  - id: a\r\n    task:\r\n      name: echo\r\n      inputs:\r\n        message: hi\r\n",
-		"anchors and aliases":   "name: x\nbase: &b\n  name: echo\nsteps:\n  - id: a\n    task: *b\n",
-		"emoji ids":             "name: x\nsteps:\n  - id: 🙂\n    task:\n      name: echo\n      inputs:\n        message: hi\n",
+		"crlf":                  "name: x\r\nsteps:\r\n  - id: a\r\n    echo:\r\n      message: hi\r\n",
+		"anchors and aliases":   "name: x\nbase: &b\n  message: hi\nsteps:\n  - id: a\n    echo: *b\n",
+		"emoji ids":             "name: x\nsteps:\n  - id: 🙂\n    echo:\n      message: hi\n",
 	}
 
 	c := newClient(t)

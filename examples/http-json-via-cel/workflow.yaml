@@ -1,14 +1,10 @@
 name: http-json-via-cel
 steps:
   - id: web
-    task:
-      name: http
-      inputs:
-        method: GET
-        url: https://httpbin.org/json
+    http:
+      method: GET
+      url: https://httpbin.org/json
   - id: title
-    task:
-      name: cel
-      inputs:
-        libs: [json]
-        expr: json_parse(web.body)['slideshow']['title']
+    cel:
+      libs: [json]
+      expr: json_parse(web.body)['slideshow']['title']

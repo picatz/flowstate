@@ -59,7 +59,6 @@ var dslKeys = map[string][]dslKey{
 	},
 	"steps": {
 		{name: "id", detail: "string", docs: "How later steps reference this one, as `${id.output}`. Must be a valid CEL identifier and unique in the workflow."},
-		{name: "task", detail: "map", docs: "Run a task. " + oneStepKind},
 		{name: "for_each", detail: "map", docs: "Repeat a body of steps once per item of a list. " + oneStepKind},
 		{name: "parallel", detail: "list", docs: "Run branches of steps concurrently. " + oneStepKind},
 		{name: "sleep", detail: "duration", docs: "Wait for a duration on a durable timer, written as `30s`, `5m`, `1h`, or `7d`. " +
@@ -88,11 +87,6 @@ var dslKeys = map[string][]dslKey{
 	},
 	"parallel": {
 		{name: "steps", detail: "list", docs: "One branch's steps. Each `- steps:` entry is a branch that runs concurrently with the others."},
-	},
-	"task": {
-		{name: "name", detail: "string", docs: "The registered task to run."},
-		{name: "description", detail: "string", docs: "Optional prose about this task."},
-		{name: "inputs", detail: "map", docs: "The task's inputs. Which ones are accepted comes from the task's schema."},
 	},
 	"retry": {
 		{name: "attempts", detail: "int", docs: "Total attempts including the first, so `1` disables retrying."},
@@ -143,8 +137,6 @@ func completeAt(doc *document, pos lsp.Position) *lsp.CompletionList {
 
 	if valuePos {
 		switch {
-		case key == "name" && endsWith(path, "task"):
-			return list(taskCandidates(word, replace))
 		case key == "libs" || endsWith(path, "libs"):
 			return list(libraryCandidates(word, replace, current))
 		}
@@ -155,10 +147,10 @@ func completeAt(doc *document, pos lsp.Position) *lsp.CompletionList {
 	switch {
 	case endsWith(path, "libs"):
 		return list(libraryCandidates(word, replace, current))
-	case endsWith(path, "task", "inputs"):
+	case insideATask(path):
+		// The keys under a task's own name are its inputs, which come from its
+		// schema rather than from this package's table.
 		return list(inputCandidates(word, replace, current))
-	case endsWith(path, "task"):
-		return list(dslCandidates("task", word, replace))
 	case endsWith(path, "retry"):
 		return list(dslCandidates("retry", word, replace))
 	case endsWith(path, "for_each"):
@@ -168,11 +160,33 @@ func completeAt(doc *document, pos lsp.Position) *lsp.CompletionList {
 	case endsWith(path, "wait_for_signal"):
 		return list(dslCandidates("wait_for_signal", word, replace))
 	case endsWith(path, "steps"):
-		return list(dslCandidates("steps", word, replace))
+		// A step key is a property or a task name, and from where the cursor is
+		// they are the same kind of thing: both are ways to finish this line. The
+		// registry supplies one half and the table the other, which is why a task
+		// added to the registry becomes completable with no change here.
+		return list(append(dslCandidates("steps", word, replace), taskCandidates(word, replace)...))
 	case len(path) == 0:
 		return list(dslCandidates("", word, replace))
 	}
 	return empty
+}
+
+// insideATask reports whether a key path ends inside a task's inputs.
+//
+// The task's own name is the innermost path element, so this asks the registry
+// rather than matching a literal.
+//
+// Deliberately a narrower question than flowfile.StepTaskKeys, which the model
+// and the compiler ask: they must recognise an *unregistered* name so that
+// "unknown task" has a token to land on, whereas there is nothing to complete
+// under a task with no schema. Suggesting the enclosing level's keys there would
+// offer `id:` as an input.
+func insideATask(path []string) bool {
+	if len(path) == 0 {
+		return false
+	}
+	_, known := v1.LookupTask(path[len(path)-1])
+	return known
 }
 
 // stepScope returns the step containing a line and the steps declared before it.
@@ -446,7 +460,37 @@ func outputCandidates(qualifier, prefix string, replace lsp.Range, scope []refCa
 	return items
 }
 
+// A completion list is ordered by the order an author writes a step in, not
+// alphabetically: `id` first, then the work the step does, then how it runs. That
+// order is the one dslKeys is written in, so a key's position in that list is its
+// position in the menu.
+//
+// Positions are spaced so that a group assembled by a different function can be
+// placed *between* two of them without renumbering either. Tasks are the only
+// such group today: they are a kind of work, so they belong beside `for_each` and
+// friends rather than after `continue_on_error`, and ahead of them because a step
+// that runs a task is the common case.
+const (
+	slotSpacing = 10
+	taskSlot    = 5 // between `id` at 0 and `for_each` at 10.
+)
+
+// sortAt renders a menu position as the string an editor sorts by.
+//
+// Zero-padded so that comparison is numeric where it looks numeric: unpadded, a
+// slot of 10 would sort before one of 5. The name is appended so that candidates
+// sharing a slot — every task does — stay in the registry's own order.
+func sortAt(slot int, name string) string {
+	return fmt.Sprintf("%04d%s", slot, name)
+}
+
 // taskCandidates offers every registered task, with its summary as the detail.
+//
+// A task's name is a key of the step like `id:` or `retry:`, so it is offered the
+// way every other key is: with its colon, and with a sort position. Both were
+// wrong when a task name was a *value* under `task:`, and neither reads as wrong
+// on its own — a missing SortText is an absent field, not a visible mistake, and
+// it sorted the whole registry above `id`.
 func taskCandidates(prefix string, replace lsp.Range) []lsp.CompletionItem {
 	var items []lsp.CompletionItem
 	for _, def := range v1.DefaultRegistry().All() {
@@ -458,7 +502,10 @@ func taskCandidates(prefix string, replace lsp.Range) []lsp.CompletionItem {
 			Kind:          lsp.CIKFunction,
 			Detail:        def.Summary,
 			Documentation: plainText(taskDoc(def)),
-			TextEdit:      &lsp.TextEdit{Range: replace, NewText: def.Name},
+			SortText:      sortAt(taskSlot, def.Name),
+			// The colon is included for the same reason an input key includes it:
+			// the key is never written without one.
+			TextEdit: &lsp.TextEdit{Range: replace, NewText: def.Name + ": "},
 		})
 	}
 	return items
@@ -546,7 +593,7 @@ func dslCandidates(level, prefix string, replace lsp.Range) []lsp.CompletionItem
 			Kind:          lsp.CIKKeyword,
 			Detail:        k.detail,
 			Documentation: plainText(k.docs),
-			SortText:      fmt.Sprintf("%04d%s", i, k.name),
+			SortText:      sortAt(i*slotSpacing, k.name),
 			TextEdit:      &lsp.TextEdit{Range: replace, NewText: k.name + ": "},
 		})
 	}

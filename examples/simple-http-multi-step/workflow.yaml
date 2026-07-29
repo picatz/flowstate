@@ -1,14 +1,10 @@
 name: simple
 steps:
 - id: web
-  task:
-    name: http
-    inputs:
-      method: GET
-      url: https://microsoft.com
+  http:
+    method: GET
+    url: https://microsoft.com
 - id: output
-  task:
-    name: echo
-    inputs:
-      # Convert status_code (int) to string for echo
-      message: ${string(web.status_code)}
+  echo:
+    # Convert status_code (int) to string for echo
+    message: ${string(web.status_code)}

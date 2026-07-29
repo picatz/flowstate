@@ -6,6 +6,8 @@ import (
 
 	"github.com/goccy/go-yaml/ast"
 	"github.com/goccy/go-yaml/token"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
 // Source positions are kept because a diagnostic without one is a diagnostic the
@@ -77,8 +79,8 @@ func (s Span) String() string {
 //	steps[0].timeout
 //	steps[0].continue_on_error
 //	steps[0].retry                  and .attempts, .interval, .backoff, .max_interval
-//	steps[0].task                   and .name, .description, .inputs
-//	steps[0].task.inputs.message    nested values continue: .headers.A, .args[1]
+//	steps[0].echo                   the task, keyed by its own name
+//	steps[0].echo.message           nested values continue: .headers.A, .args[1]
 //	steps[0].for_each               and .items, .iterator, .max_parallel, .steps
 //	steps[0].for_each.steps[1].id   body steps are addressed like any other step
 //	steps[0].parallel[0].steps[1]   as are the steps of a parallel branch
@@ -169,14 +171,46 @@ func (p *Positions) Locate(step, field string) (Span, bool) {
 	// A field is either the name of a task input or the name of a property of the
 	// step, and a Diagnostic does not distinguish them. Both are tried, most
 	// specific first.
-	for _, candidate := range []string{
-		base + ".task.inputs." + field,
-		base + "." + field,
-		base + ".for_each." + field,
-	} {
+	//
+	// A task input now sits under the task's *name* rather than under a fixed
+	// `task.inputs`, and a Diagnostic does not carry which task the step runs — so
+	// every registered name is tried. Only one of them can be a key of this step,
+	// because a step does exactly one kind of work, so there is no ambiguity to
+	// resolve: at most one candidate exists in the map.
+	candidates := make([]string, 0, len(v1.TaskNames())+2)
+	for _, task := range v1.TaskNames() {
+		candidates = append(candidates, base+"."+task+"."+field)
+	}
+	candidates = append(candidates, base+"."+field, base+".for_each."+field)
+
+	for _, candidate := range candidates {
 		if span, ok := p.At(candidate); ok {
 			return span, true
 		}
+	}
+	return p.At(base)
+}
+
+// LocateKind returns the span of a step's kind key — the token naming the work
+// the step does, whether that is a task's name or `for_each`.
+//
+// Addressed exactly rather than by the candidate search [Positions.Locate] does,
+// because a kind is a key of the step itself: there is one place it can be, and
+// guessing would let a task named like some other task's input resolve to the
+// wrong token.
+func (p *Positions) LocateKind(step, kind string) (Span, bool) {
+	if p == nil {
+		return Span{}, false
+	}
+	base, ok := p.StepPath(step)
+	if !ok {
+		return Span{}, false
+	}
+	if kind == "" {
+		return p.At(base)
+	}
+	if span, ok := p.At(fieldPath(base, kind)); ok {
+		return span, true
 	}
 	return p.At(base)
 }

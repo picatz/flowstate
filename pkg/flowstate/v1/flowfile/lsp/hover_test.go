@@ -16,22 +16,16 @@ import (
 const hoverSource = `name: hover
 steps:
   - id: web
-    task:
-      name: http
-      inputs:
-        method: GET
-        url: https://example.com
+    http:
+      method: GET
+      url: https://example.com
   - id: shout
-    task:
-      name: echo
-      inputs:
-        message: ${web.body}
+    echo:
+      message: ${web.body}
   - id: parsed
-    task:
-      name: cel
-      inputs:
-        libs: [json]
-        expr: json_parse(web.body)
+    cel:
+      libs: [json]
+      expr: json_parse(web.body)
 `
 
 func TestHover(t *testing.T) {
@@ -51,8 +45,13 @@ func TestHover(t *testing.T) {
 		none bool
 	}{
 		{
+			// A step names its task directly, so the task name is the step's key
+			// rather than the value of a `name:` under a `task:`. The token hover
+			// has to describe is the same word in the same role; only its position
+			// in the grammar moved, so the anchor moves from `http\n` (the old
+			// scalar, which ended its line) to `http:` (the key it became).
 			name: "task name shows summary and full signature",
-			at:   "http\n",
+			at:   "http:",
 			want: []string{
 				"task `http`",
 				"Perform an HTTP request",
@@ -143,15 +142,11 @@ func TestHoverStaysQuietOnUnresolvableReference(t *testing.T) {
 	const src = `name: quiet
 steps:
   - id: a
-    task:
-      name: echo
-      inputs:
-        message: ${later.result}
+    echo:
+      message: ${later.result}
   - id: later
-    task:
-      name: echo
-      inputs:
-        message: hi
+    echo:
+      message: hi
 `
 	c := newClient(t)
 	c.initialize()
@@ -174,15 +169,11 @@ func TestHoverOnQuestionableReferences(t *testing.T) {
 		const src = `name: wrong-output
 steps:
   - id: web
-    task:
-      name: http
-      inputs:
-        url: https://example.com
+    http:
+      url: https://example.com
   - id: out
-    task:
-      name: echo
-      inputs:
-        message: ${web.stdout}
+    echo:
+      message: ${web.stdout}
 `
 		c.open("file:///wrong-output.yaml", src)
 		pos := positionOf(t, src, "${web.stdout}", 8)
@@ -198,15 +189,11 @@ steps:
 		const src = `name: unknown-task
 steps:
   - id: mystery
-    task:
-      name: shell
-      inputs:
-        command: ls
+    shell:
+      command: ls
   - id: out
-    task:
-      name: echo
-      inputs:
-        message: ${mystery.stdout}
+    echo:
+      message: ${mystery.stdout}
 `
 		c.open("file:///unknown-producer.yaml", src)
 		pos := positionOf(t, src, "${mystery.stdout}", 3)
@@ -219,17 +206,13 @@ steps:
 		const src = `name: bare
 steps:
   - id: web
-    task:
-      name: http
-      inputs:
-        url: https://example.com
+    http:
+      url: https://example.com
   - id: out
-    task:
-      name: cel
-      inputs:
-        expr: "1"
-        vars:
-          v: ${web}
+    cel:
+      expr: "1"
+      vars:
+        v: ${web}
 `
 		c.open("file:///bare.yaml", src)
 		pos := positionOf(t, src, "${web}", 3)
@@ -259,11 +242,17 @@ func TestHoverDescribesDeferredInputs(t *testing.T) {
 			continue
 		}
 		t.Run(def.Name, func(t *testing.T) {
-			src := "name: deferred\nsteps:\n  - id: a\n    task:\n      name: " + def.Name + "\n"
+			// The step names the task with a key of its own, so the fixture is the
+			// step id and the task name and nothing else. The task's inputs would be
+			// the mapping under that key; this case needs none of them, and an
+			// unwritten one is what the hover has to describe anyway.
+			src := "name: deferred\nsteps:\n  - id: a\n    " + def.Name + ":\n"
 			uri := "file:///deferred-" + def.Name + ".yaml"
 			c.open(uri, src)
 
-			pos := positionOf(t, src, def.Name+"\n", 0)
+			// The name is a key, so what follows it is a colon rather than the end
+			// of the line the old `name: <task>` anchor relied on.
+			pos := positionOf(t, src, def.Name+":", 0)
 			got := c.hover(uri, pos.Line, pos.Character)
 			require.NotNil(t, got)
 			text := hoverText(got)
@@ -312,10 +301,8 @@ func TestHoverOnSecretReferences(t *testing.T) {
 		const src = `name: secrets
 steps:
   - id: a
-    task:
-      name: echo
-      inputs:
-        message: ${secret('env:API_KEY')}
+    echo:
+      message: ${secret('env:API_KEY')}
 `
 		const uri = "file:///secret-ok.yaml"
 		require.Empty(t, messages(c.open(uri, src).Diagnostics))
@@ -339,10 +326,8 @@ steps:
 		const src = `name: secrets
 steps:
   - id: a
-    task:
-      name: echo
-      inputs:
-        message: ${secret('API_KEY')}
+    echo:
+      message: ${secret('API_KEY')}
 `
 		const uri = "file:///secret-bad.yaml"
 		// The compiler reports it too; hover must agree rather than describe it as
@@ -360,10 +345,8 @@ steps:
 		const src = `name: secrets
 steps:
   - id: a
-    task:
-      name: echo
-      inputs:
-        message: ${secret('vault:prod/api#token')}
+    echo:
+      message: ${secret('vault:prod/api#token')}
 `
 		const uri = "file:///secret-vault.yaml"
 		c.open(uri, src)
@@ -422,24 +405,26 @@ func TestHoverUsesUTF16Columns(t *testing.T) {
 	const src = "name: ünïcödé\n" +
 		"steps:\n" +
 		"  - id: first\n" +
-		"    task:\n" +
-		"      name: echo\n" +
-		"      inputs:\n" +
-		"        message: \"héllo wörld\"\n" +
+		"    echo:\n" +
+		"      message: \"héllo wörld\"\n" +
 		"  - id: second\n" +
-		"    task:\n" +
-		"      name: http\n" +
-		"      inputs:\n" +
-		"        url: https://example.com\n" +
-		"        headers:\n" +
-		"          X-🙂-Trace: ${first.result}\n"
+		"    http:\n" +
+		"      url: https://example.com\n" +
+		"      headers:\n" +
+		"        X-🙂-Trace: ${first.result}\n"
 
 	// The three unit systems genuinely disagree on this line, which is the point.
-	line := "          X-🙂-Trace: ${first.result}"
+	// Flattening dropped the `task:`/`inputs:` scaffolding, so the header sits one
+	// level shallower — eight spaces of indent rather than ten — and the reference
+	// two lines earlier. The counts below are what that line measures; the gaps
+	// between them are what the test is about, and those are unchanged.
+	line := "        X-🙂-Trace: ${first.result}"
 	dollar := strings.Index(line, "$")
-	require.Equal(t, 24, dollar, "byte column")
-	require.Equal(t, 21, len([]rune(line[:dollar])), "code point column")
-	require.Equal(t, 22, utf16Len(line[:dollar]), "UTF-16 column")
+	require.Equal(t, 22, dollar, "byte column")
+	require.Equal(t, 19, len([]rune(line[:dollar])), "code point column")
+	require.Equal(t, 20, utf16Len(line[:dollar]), "UTF-16 column")
+	require.Equal(t, line, strings.Split(src, "\n")[9],
+		"the line the columns were measured on must be the line the cursor is put on")
 
 	c := newClient(t)
 	c.initialize()
@@ -447,9 +432,14 @@ func TestHoverUsesUTF16Columns(t *testing.T) {
 
 	// Point at the `first` identifier inside the expression: two UTF-16 units
 	// past the `$`.
-	got := c.hover("file:///unicode.yaml", 13, 22+2)
+	got := c.hover("file:///unicode.yaml", 9, 20+2)
 	require.NotNil(t, got, "hover must resolve a reference that follows non-ASCII text")
 	assert.Contains(t, hoverText(got), "`first.result`")
+	// The declared type of the output, which only appears once the reference has
+	// resolved all the way to the echo task's schema. Hover names the reference
+	// even when it cannot resolve the producing step, so without this the fixture
+	// could stop parsing as a task and nothing here would notice.
+	assert.Contains(t, hoverText(got), "`string`")
 
 	// The range it reports must come back in UTF-16 units too, covering exactly
 	// `first.result`.

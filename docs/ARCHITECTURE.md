@@ -180,7 +180,7 @@ Rows marked **(done)** are implemented; the rest are the shape the surface shoul
 
 | Temporal primitive | Flowstate surface |
 | --- | --- |
-| Activity | a `task:` step **(done)** |
+| Activity | a step naming the task directly — `http:` with the request under it **(done)** |
 | Activity retry policy | per-step `retry:` **(done)** |
 | Activity timeouts | per-step `timeout:` **(done)** |
 | Error classification | retryable vs permanent, decided by the failure not a preference **(done)** |

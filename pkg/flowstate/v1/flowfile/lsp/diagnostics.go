@@ -507,13 +507,10 @@ func stepProblemRange(doc *document, step *parsedStep) lsp.Range {
 	if idSuspect(doc, step) {
 		return idRange
 	}
-	if _, known := v1.LookupTask(step.taskName); !known {
-		switch {
-		case step.nameEntry != nil:
-			return step.nameEntry.valueRange()
-		case step.taskEntry != nil:
-			return step.taskEntry.keyRange
-		}
+	if _, known := v1.LookupTask(step.taskName); !known && step.taskEntry != nil {
+		// The key *is* the task name now, so the range that used to need finding
+		// is simply where the source already is.
+		return step.taskEntry.keyRange
 	}
 	return idRange
 }

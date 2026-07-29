@@ -3,16 +3,12 @@
 name: printf-formatting
 steps:
   - id: name
-    task:
-      name: echo
-      inputs:
-        message: flowstate
+    echo:
+      message: flowstate
 
   - id: greeting
-    task:
-      name: printf
-      inputs:
-        format: "hello %s, you have %d step(s) left"
-        args:
-          - ${name.result}
-          - 0
+    printf:
+      format: "hello %s, you have %d step(s) left"
+      args:
+        - ${name.result}
+        - 0

@@ -79,12 +79,12 @@ func hoverAt(doc *document, pos lsp.Position) *lsp.Hover {
 		return markdownHover(inputDoc(def, in.key, fd), in.keyRange)
 	}
 
-	// The task name.
-	if step.nameEntry != nil && step.nameEntry.value != nil && contains(step.nameEntry.value.rng, pos) {
+	// The task name, which is the step key naming it.
+	if step.taskEntry != nil && contains(step.taskEntry.keyRange, pos) {
 		if !taskKnown {
 			return nil
 		}
-		return markdownHover(taskDoc(def), step.nameEntry.value.rng)
+		return markdownHover(taskDoc(def), step.taskEntry.keyRange)
 	}
 
 	// The step's own id: the least interesting of the four, but the author is
@@ -109,9 +109,11 @@ func dslKeyAt(step *parsedStep, pos lsp.Position) (dslKey, lsp.Range, bool) {
 		name    string
 		entries []*entry
 	}
+	// One level fewer than there used to be. A task's keys were documented under
+	// a `task` level of their own; they are now the step's inputs, and an input is
+	// documented from the task's schema rather than from this package's table.
 	levels := []level{
 		{"steps", step.entries},
-		{"task", step.taskEntries},
 	}
 	// The keys of a nested block are documented at their own level.
 	for _, block := range []struct {
@@ -150,13 +152,15 @@ func taskDoc(def v1.TaskDef) string {
 	fmt.Fprintf(&b, "\n\n%s", signature(def))
 
 	if n := len(def.DeferredInputs); n > 0 {
-		subject, verb := "those inputs", "inputs"
+		// Agreeing in number matters here because the sentence has two referents —
+		// the inputs and the task — and "it ... it" makes a reader work out which
+		// is which. Naming the task in the second clause settles it either way.
+		subject := "those inputs"
 		if n == 1 {
-			subject, verb = "it", "input"
+			subject = "it"
 		}
-		_ = verb
-		fmt.Fprintf(&b, "\n\nThe task evaluates %s itself, so %s may reference values that exist only while it runs.",
-			joinNames(def.DeferredInputs), subject)
+		fmt.Fprintf(&b, "\n\nThe task evaluates %s itself, so %s may reference values that exist only while `%s` runs.",
+			joinNames(def.DeferredInputs), subject, def.Name)
 	}
 	if def.Outputs != nil && def.Outputs.Fields().Len() > 0 {
 		names := fieldNames(def.Outputs)

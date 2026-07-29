@@ -2,7 +2,6 @@ package flowfile
 
 import (
 	"fmt"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -118,7 +117,7 @@ func isDigit(b byte) bool { return b >= '0' && b <= '9' }
 // A copy is returned because the caller must not be able to edit the DSL by
 // editing a slice header.
 func StepKinds() []string {
-	return slices.Clone(stepKindKeys)
+	return stepKindKeys()
 }
 
 // StepKindList renders the kinds a step may be as prose: "a, b, or c".
@@ -126,7 +125,7 @@ func StepKinds() []string {
 // Built from [stepKindKeys] rather than written out, so that adding a kind cannot
 // leave a diagnostic — or an editor — describing the DSL as it used to be.
 func StepKindList() string {
-	kinds := stepKindKeys
+	kinds := stepKindKeys()
 	if len(kinds) < 2 {
 		return strings.Join(kinds, "")
 	}

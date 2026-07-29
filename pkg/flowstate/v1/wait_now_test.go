@@ -125,7 +125,7 @@ func TestWaitDeadlineStillTakesAMomentFromData(t *testing.T) {
 func TestWaitDeadlineNowDoesNotShadowAStepsOutputs(t *testing.T) {
 	t.Parallel()
 
-	source := "name: t\nsteps:\n  - id: now\n    task:\n      name: echo\n      inputs:\n        message: hi\n"
+	source := "name: t\nsteps:\n  - id: now\n    echo:\n      message: hi\n"
 
 	workflow, err := flowfile.Unmarshal([]byte(source))
 	require.NoError(t, err, "the workflow did not compile")
@@ -162,7 +162,7 @@ func TestWaitDeadlineNowDoesNotShadowALoopIterator(t *testing.T) {
 	// Which is why the name cannot be chosen. Without this the workflow above is
 	// authorable, and the only symptom is a wait that ends at the wrong moment.
 	source := "name: t\nsteps:\n" +
-		"  - id: targets\n    task:\n      name: cel\n      inputs:\n        expr: \"['a']\"\n" +
+		"  - id: targets\n    cel:\n      expr: \"['a']\"\n" +
 		"  - id: sweep\n    for_each:\n      items: ${targets.result}\n      iterator: now\n" +
 		"      steps:\n        - id: hold\n          wait_until: ${now}\n"
 

@@ -115,15 +115,11 @@ A `Flowfile` is a YAML file that defines a series of steps to be executed in ord
 name: multi step hello world
 steps:
   - id: hello
-    task:
-      name: echo
-      inputs:
-        message: hello world
+    echo:
+      message: hello world
   - id: output
-    task:
-      name: echo
-      inputs:
-        message: ${hello.result}
+    echo:
+      message: ${hello.result}
 ```
 
 The above `Flowfile` defines two steps:
@@ -140,10 +136,8 @@ magnitude in how long they take and how safe they are to repeat.
 ```yaml
 steps:
   - id: check
-    task:
-      name: echo
-      inputs:
-        message: ready
+    echo:
+      message: ready
 
   - id: deploy
     if: ${check.result == 'ready'}   # only runs when this is true
@@ -153,17 +147,13 @@ steps:
       interval: 1s                   # delay before the second attempt
       backoff: 2.0                   # multiplier applied after each attempt
       max_interval: 10s              # ceiling on the delay
-    task:
-      name: echo
-      inputs:
-        message: deploying
+    echo:
+      message: deploying
 
   - id: notify
     continue_on_error: true          # a failure here does not end the run
-    task:
-      name: echo
-      inputs:
-        message: notifying
+    echo:
+      message: notifying
 ```
 
 Behavior worth knowing:
@@ -190,10 +180,8 @@ A step can repeat over a computed list, or split into branches that run at the s
 ```yaml
 steps:
   - id: targets
-    task:
-      name: cel
-      inputs:
-        expr: "['alpha', 'beta']"
+    cel:
+      expr: "['alpha', 'beta']"
 
   # Repeat the body once per item. Inside it, the current item is bound to the
   # iterator's name; body steps can reference each other within an iteration.
@@ -204,28 +192,24 @@ steps:
       max_parallel: 3         # omit or 1 to run one at a time
       steps:
         - id: label
-          task:
-            name: printf
-            inputs:
-              format: "processing %s"
-              args: [${name}]
+          printf:
+            format: "processing %s"
+            args: [${name}]
 
   # Independent work with no reason to be sequential.
   - id: checks
     parallel:
       - steps:
           - id: check_config
-            task: { name: echo, inputs: { message: config ok } }
+            echo: { message: config ok }
       - steps:
           - id: check_quota
-            task: { name: echo, inputs: { message: quota ok } }
+            echo: { message: quota ok }
 
   - id: summary
-    task:
-      name: printf
-      inputs:
-        format: "%s / %s / processed %d"
-        args: [${check_config.result}, ${check_quota.result}, ${size(process.results)}]
+    printf:
+      format: "%s / %s / processed %d"
+      args: [${check_config.result}, ${check_quota.result}, ${size(process.results)}]
 ```
 
 The scoping rules are worth knowing, because they are what keep results independent of
@@ -257,17 +241,13 @@ You can keep HTTP simple (returning `status_code`, `headers`, `body`) and use th
 ```yaml
 steps:
   - id: resp 
-    task:
-      name: http
-      inputs:
-        method: GET
-        url: https://httpbin.org/json
+    http:
+      method: GET
+      url: https://httpbin.org/json
   - id: pick
-    task:
-      name: cel
-      inputs:
-        libs: [json]
-        expr: json_parse(resp.body)['slideshow']['title']
+    cel:
+      libs: [json]
+      expr: json_parse(resp.body)['slideshow']['title']
 ```
 
 The CEL task’s `result` will be the selected field from the parsed JSON. This keeps activities minimal and payloads small while letting you shape data in CEL.
@@ -281,14 +261,12 @@ Example:
 ```yaml
 steps:
   - id: web
-    task:
-      name: http
-      inputs:
-        method: GET
-        url: https://httpbin.org/json
-        # ${...} marks a CEL expression, as everywhere else in a Flowfile.
-        # Quote it so YAML does not read the colons inside as mapping syntax.
-        outputs: "${ {'status': status_code, 'title': json_parse(body)['slideshow']['title']} }"
+    http:
+      method: GET
+      url: https://httpbin.org/json
+      # ${...} marks a CEL expression, as everywhere else in a Flowfile.
+      # Quote it so YAML does not read the colons inside as mapping syntax.
+      outputs: "${ {'status': status_code, 'title': json_parse(body)['slideshow']['title']} }"
 ```
 
 Unlike other inputs, `outputs` is evaluated by the `http` task after the response arrives,
@@ -344,13 +322,11 @@ A secret never appears in a workflow. A *reference* to one does:
 ```yaml
 steps:
   - id: notify
-    task:
-      name: http
-      inputs:
-        method: POST
-        url: https://api.example.com/events
-        headers:
-          Authorization: ${secret('vault:prod/api#token')}
+    http:
+      method: POST
+      url: https://api.example.com/events
+      headers:
+        Authorization: ${secret('vault:prod/api#token')}
 ```
 
 A reference is `scheme:name`. The scheme selects which backend resolves it, and the
@@ -549,16 +525,12 @@ Tasks can be chained together as tasks. For example, the following `Flowfile` ma
 ```yaml
 steps:
   - id: web
-    task:
-      name: http
-      inputs:
-        method: GET
-        url: https://microsoft.com
+    http:
+      method: GET
+      url: https://microsoft.com
   - id: output
-    task:
-      name: echo
-      inputs:
-        message: ${string(web.status_code)}
+    echo:
+      message: ${string(web.status_code)}
 ```
 
 > [!TIP]

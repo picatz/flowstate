@@ -46,12 +46,10 @@ func TestFlowfile_MixedStructures_ExprBuildAndEval(t *testing.T) {
 name: t
 steps:
   - id: s
-    task:
-      name: echo
-      inputs:
-        headers:
-          A: "1"
-          B: ${string(2)}
+    echo:
+      headers:
+        A: "1"
+        B: ${string(2)}
 `,
 			inputKey: "headers",
 			expect:   map[string]any{"A": "1", "B": "2"},
@@ -62,13 +60,11 @@ steps:
 name: t
 steps:
   - id: s
-    task:
-      name: echo
-      inputs:
-        lst:
-          - 1
-          - ${1 + 1}
-          - 3
+    echo:
+      lst:
+        - 1
+        - ${1 + 1}
+        - 3
 `,
 			inputKey: "lst",
 			expect:   []any{int64(1), int64(2), int64(3)},
@@ -79,14 +75,12 @@ steps:
 name: t
 steps:
   - id: s
-    task:
-      name: echo
-      inputs:
-        my:
-          items:
-            - 1
-            - ${1 + 1}
-            - 3
+    echo:
+      my:
+        items:
+          - 1
+          - ${1 + 1}
+          - 3
 `,
 			inputKey: "my",
 			expect:   map[string]any{"items": []any{int64(1), int64(2), int64(3)}},
@@ -97,14 +91,12 @@ steps:
 name: t
 steps:
   - id: s
-    task:
-      name: echo
-      inputs:
-        data:
-          -
-            A: "1"
-            B: ${string(2)}
-          - ${3}
+    echo:
+      data:
+        -
+          A: "1"
+          B: ${string(2)}
+        - ${3}
 `,
 			inputKey: "data",
 			expect:   []any{map[string]any{"A": "1", "B": "2"}, int64(3)},
@@ -115,12 +107,10 @@ steps:
 name: t
 steps:
   - id: s
-    task:
-      name: echo
-      inputs:
-        headers:
-          "k'ey": ${string(2)}
-          norm: ok
+    echo:
+      headers:
+        "k'ey": ${string(2)}
+        norm: ok
 `,
 			inputKey: "headers",
 			expect:   map[string]any{"k'ey": "2", "norm": "ok"},
@@ -131,12 +121,10 @@ steps:
 name: t
 steps:
   - id: s
-    task:
-      name: echo
-      inputs:
-        headers:
-          "C:\\dir\\k'ey": ${'a' + 'b'}
-          norm: ok
+    echo:
+      headers:
+        "C:\\dir\\k'ey": ${'a' + 'b'}
+        norm: ok
 `,
 			inputKey: "headers",
 			expect:   map[string]any{"C:\\dir\\k'ey": "ab", "norm": "ok"},
@@ -147,20 +135,18 @@ steps:
 name: t
 steps:
   - id: s
-    task:
-      name: echo
-      inputs:
-        payload:
-          meta:
-            id: ${string(1)}
-            tag: release
-          data:
-            list:
-              - ${1 + 2}
-              -
-                inner: ${'x' + 'y'}
-              -
-                - ${1}
+    echo:
+      payload:
+        meta:
+          id: ${string(1)}
+          tag: release
+        data:
+          list:
+            - ${1 + 2}
+            -
+              inner: ${'x' + 'y'}
+            -
+              - ${1}
 `,
 			inputKey: "payload",
 			expect:   map[string]any{"meta": map[string]any{"id": "1", "tag": "release"}, "data": map[string]any{"list": []any{int64(3), map[string]any{"inner": "xy"}, []any{int64(1)}}}},
