@@ -352,6 +352,11 @@ const waitUntilKey = "wait_until"
 // that task's input and is resolved somewhere with no clock in it. Asking only the
 // key would offer `now` there, and a candidate an author accepts in a place the
 // validator refuses is the failure this package exists to avoid.
+//
+// It is the line scan's answer to the question [parsedStep.bindsNow] answers from
+// the model, and the two are separate on purpose: completion is asked for while a
+// document does not parse, which is exactly when there is no model to ask. The
+// rule they implement is one rule, so a change to either belongs in both.
 func bindsClock(key string, path []string) bool {
 	return key == waitUntilKey && endsWith(path, "steps")
 }

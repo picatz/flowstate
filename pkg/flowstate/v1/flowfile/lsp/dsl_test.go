@@ -563,6 +563,32 @@ steps:
 	pos := positionOf(t, src, "${now}", 2)
 	assert.Nil(t, c.hover(uri, pos.Line, pos.Character),
 		"hover described the clock in a task input, where the validator refuses it")
+
+	// The editor's own two surfaces say one thing, which is the duplication it
+	// *could* avoid and therefore must: an author who accepts the candidate and
+	// then hovers what they accepted is looking at the same name twice.
+	t.Run("completion and hover show one account of it", func(t *testing.T) {
+		const bound = `name: c
+steps:
+  - id: window
+    wait_until: ${now}
+`
+		const boundURI = "file:///one-account.yaml"
+		require.Empty(t, messages(c.open(boundURI, bound).Diagnostics),
+			"premise: a wait naming the clock is a document the compiler accepts")
+
+		// Completion, at the position where the name is being typed.
+		typing := positionOf(t, bound, "${now}", len("${"))
+		item := findItem(c.complete(boundURI, typing.Line, typing.Character).Items, v1.NowIdentifier)
+		require.NotNil(t, item, "premise: the clock must be offered where it is bound")
+		assert.Equal(t, plainText(nowDoc()), item.Documentation)
+
+		// And hover, on the name once written. Trimmed because the harness joins
+		// the protocol's content blocks with a newline apiece.
+		got := c.hover(boundURI, typing.Line, typing.Character+1)
+		require.NotNil(t, got)
+		assert.Equal(t, nowDoc(), strings.TrimSpace(hoverText(got)))
+	})
 }
 
 // TestWaitKeysAreDocumentedAtTheirOwnLevel is the regression guard for the class

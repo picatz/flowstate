@@ -250,6 +250,10 @@ func (s *parsedStep) expressionEntries() []*entry {
 // is. Comparing entries is what keeps this from answering yes for a task input
 // that happens to share the name — the same class of mistake waitForSignalEntry
 // exists to prevent for `timeout:`.
+//
+// Completion answers the same question from the line scan instead, in bindsClock,
+// because it is asked for while a document does not parse and there is no model
+// then to ask. One rule, two readers: a change to either belongs in both.
 func (s *parsedStep) bindsNow(e *entry) bool {
 	return e != nil && e == s.waitUntilEntry
 }
