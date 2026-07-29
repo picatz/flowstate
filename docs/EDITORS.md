@@ -8,9 +8,9 @@ that only ever offers things the engine will accept.
 
 | Feature | What you get |
 | --- | --- |
-| **Diagnostics** | YAML syntax errors, CEL syntax errors underlined inside the expression, unknown tasks, duplicate and unusable step ids, references to steps that do not exist or have not run yet, inputs a task does not declare (with a spelling suggestion), required inputs left out, unknown CEL libraries, malformed step timeouts and retry intervals, a step that is no kind of work or more than one, a step named the retired bare way rather than under `steps.` — reported as a migration with the command that performs it, not as an unknown name — and an `edition:` this build does not compile, which is reported on its own since every other complaint would be describing the wrong grammar. |
-| **Hover** | A task's summary and full typed signature; an input's type, whether it is required, and the value constraints the schema enforces; what a `${steps.<id>.<output>}` reference resolves to, what type it produces, and which line declared it; what the root `steps` itself is; what a loop's iterator binds; what `now` is inside a `wait_until:`, and why it is bound only there; what a `${secret('scheme:name')}` reference names; what a CEL library provides; what each `Flowfile` key means. |
-| **Completion** | Task names where a step's keys go, alongside `id`/`if`/`timeout` and the other kinds; input keys under the task's own name, required ones first, already-written ones omitted; the names in scope inside `${...}` (see the scoping rules below); CEL library names in `libs`; and the document's own keys (`id`, `if`, `timeout`, `retry`, `for_each`, `parallel`, …). |
+| **Diagnostics** | YAML syntax errors, CEL syntax errors underlined inside the expression, unknown tasks, duplicate and unusable step ids, references to steps that do not exist or have not run yet, inputs a task does not declare (with a spelling suggestion), required inputs left out, an input a task used to accept and no longer does — reported as a key that can be deleted rather than as a misspelling of something else, malformed step timeouts and retry intervals, a step that is no kind of work or more than one, a step named the retired bare way rather than under `steps.` — reported as a migration with the command that performs it, not as an unknown name — and an `edition:` this build does not compile, which is reported on its own since every other complaint would be describing the wrong grammar. |
+| **Hover** | A task's summary and full typed signature; an input's type, whether it is required, and the value constraints the schema enforces; what a `${steps.<id>.<output>}` reference resolves to, what type it produces, and which line declared it; what the root `steps` itself is; what a loop's iterator binds; what `now` is inside a `wait_until:`, and why it is bound only there; what a `${secret('scheme:name')}` reference names; what each `Flowfile` key means. |
+| **Completion** | Task names where a step's keys go, alongside `id`/`if`/`timeout` and the other kinds; input keys under the task's own name, required ones first, already-written ones omitted; the names in scope inside `${...}` (see the scoping rules below); and the document's own keys (`id`, `if`, `timeout`, `retry`, `for_each`, `parallel`, …). |
 | **Go to definition** | Jump from a `${steps.<id>.<output>}` reference to that step's `id:` declaration. |
 | **Document symbols** | An outline of the workflow's steps, each labelled with the task it runs, and for a nested step the block it belongs to. |
 
@@ -87,8 +87,9 @@ is the point: the editor and the command line cannot disagree about a file.
 The two syntax codes are the exceptions, and they earn it: a document that will not
 parse has no model for the validator to run against, so there is nothing for it to
 report and no risk of two answers. Everywhere else, the rule has one home and this
-server only improves the position — including where the validator names a list
-element it has no coordinates for, such as the wrong name in `libs: [json, nope]`.
+server only improves the position — including where the validator names an element
+of a list it has no coordinates for, so the squiggle lands on the element rather
+than on the whole value.
 
 Not implemented, and deliberately not advertised: formatting, rename, code actions,
 references, and workspace symbols. The server also never type-checks expressions —

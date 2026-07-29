@@ -30,7 +30,6 @@ steps:
       message: ${steps.web.body}
   - id: parsed
     cel:
-      libs: [json]
       expr: json_parse(vars.raw)
       vars:
         raw: ${steps.web.body}

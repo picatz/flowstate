@@ -291,7 +291,7 @@ See [examples/fan-out-and-parallel](examples/fan-out-and-parallel).
 
 ### Parse JSON with CEL
 
-You can keep HTTP simple (returning `status_code`, `headers`, `body`) and use the CEL task to parse JSON without a separate HTTP+JSON task. Enable the optional `json` library and use `json_parse(string)`:
+You can keep HTTP simple (returning `status_code`, `headers`, `body`) and use the CEL task to parse JSON without a separate HTTP+JSON task. `json_parse(string)` is available with nothing to enable:
 
 ```yaml
 name: json-via-cel
@@ -589,7 +589,7 @@ Each step in a `Flowfile` has named inputs and produces named outputs, which lat
 
 Names only, deliberately: types and constraints belong to the schema, and repeating them
 here is how the two disagree. `flow tasks` prints the same catalog with every type, which
-required input is which, and the CEL libraries the `cel` task accepts — derived from the
+required input is which, and the CEL libraries every expression reaches — derived from the
 registry, so it cannot drift from what the engine will execute.
 
 This table is checked against that registry by a test, because it *had* drifted: it was
@@ -797,7 +797,7 @@ Run `flow <command> --help` for the full flags of any of these.
 | `flow signal <id> <name>` | Deliver a signal to a run that is waiting, which is how a human approval reaches a workload. |
 | `flow cancel <id>` | Ask a run to stop, letting it clean up. |
 | `flow terminate <id>` | Stop a run immediately, running none of its cleanup. |
-| `flow tasks` | List the tasks a workflow may use, and the expression libraries available to them. |
+| `flow tasks` | List the tasks a workflow may use, and the libraries every expression reaches. |
 | `flow worker` | Start a Temporal worker, which is what actually executes steps. |
 | `flow server` | Start the Flowstate API server that accepts workflows. |
 | `flow lsp` | Serve the Flowfile language server over stdin and stdout, for editor diagnostics. |

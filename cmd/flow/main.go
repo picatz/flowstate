@@ -919,7 +919,7 @@ flow run local examples/approval-gate/workflow.yaml --signal deploy-approved='{"
 	tasksCmd := &cobra.Command{
 		Use:   "tasks",
 		Short: "List the tasks workflows can use",
-		Long:  "List the tasks available to workflow steps, along with the CEL libraries expressions can enable.",
+		Long:  "List the tasks available to workflow steps, along with the CEL libraries every expression reaches.",
 		Args:  cobra.NoArgs,
 		RunE:  runTasks,
 		Example: `# List available tasks, their inputs, and their outputs:

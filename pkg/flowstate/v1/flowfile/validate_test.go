@@ -712,36 +712,6 @@ steps:
 	require.Contains(t, reported, "expr", "a required input went unreported beside a retired one: %s", reported)
 }
 
-// TestAComputedLibraryListIsNotReported is the other side, and the one that keeps
-// the check honest.
-//
-// A `libs:` produced by an expression is resolved at run time against a scope this
-// validator cannot see. Reporting it would be a false diagnostic, and this package
-// holds those to be worse than missing ones — they train authors to ignore the
-// tool.
-func TestAComputedLibraryListIsNotReported(t *testing.T) {
-	t.Parallel()
-
-	const src = `name: computed-libraries
-steps:
-  - id: pick
-    echo:
-      message: strings
-  - id: shout
-    cel:
-      expr: "'hi'.upperAscii()"
-      libs: ${[pick.result]}
-`
-
-	diagnostics, err := flowfile.ValidateSource([]byte(src))
-	require.NoError(t, err)
-
-	for _, d := range diagnostics {
-		require.NotContains(t, d.Message, "extension library",
-			"a library list this validator cannot see was reported anyway: %s", d.Message)
-	}
-}
-
 // TestTheEvaluatorRefusesAnUnknownLibraryBeforeItCaches is the resource bound
 // underneath the diagnostic.
 //

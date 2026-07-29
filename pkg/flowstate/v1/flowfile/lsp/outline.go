@@ -32,7 +32,6 @@ type outlineStep struct {
 
 	id        string
 	taskName  string
-	libs      []string
 	inputKeys []string
 
 	// startLine is the line of the dash that opens the step and endLine the last
@@ -61,7 +60,7 @@ func (s *outlineStep) containsLine(line0 int) bool {
 // as one at the top level.
 func scanOutline(ix *lineIndex) []*outlineStep {
 	// A step entry is a dash at the indentation a `steps:` key opens. Any other
-	// dash belongs to some other list, such as a cel step's libs.
+	// dash belongs to some other list nested under an input.
 	entryIndents := map[int]bool{}
 	for l := range ix.lineCount() {
 		m := keyLine.FindStringSubmatch(ix.line(l))
@@ -112,14 +111,13 @@ func scanOutline(ix *lineIndex) []*outlineStep {
 	return steps
 }
 
-// fillStep reads one step's id, task name, libs, and input keys.
+// fillStep reads one step's id, task name, and input keys.
 func fillStep(ix *lineIndex, s *outlineStep, entryIndent int) {
 	// A step's own keys sit at the column after the dash, wherever the writer put
 	// it: `- id: a` and `-\n  id: a` are both legal.
 	contentIndent := -1
 	inTask := false
 	inInputs, inputsIndent := false, -1
-	inLibs, libsIndent := false, -1
 
 	// The column the input mapping's own keys sit at, learned from the first one.
 	inputKeyIndent := -1
@@ -132,11 +130,6 @@ func fillStep(ix *lineIndex, s *outlineStep, entryIndent int) {
 
 		// A nested list item, such as a lib on its own line.
 		if m := dashLine.FindStringSubmatch(line); m != nil && len(m[1]) > entryIndent {
-			if inLibs && len(m[1]) > libsIndent {
-				if v := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "-")); v != "" {
-					s.libs = append(s.libs, unquote(v))
-				}
-			}
 			continue
 		}
 
@@ -155,10 +148,7 @@ func fillStep(ix *lineIndex, s *outlineStep, entryIndent int) {
 			contentIndent = indent
 		}
 		if indent <= contentIndent {
-			inTask, inInputs, inLibs = false, false, false
-		}
-		if inLibs && indent <= libsIndent {
-			inLibs = false
+			inTask, inInputs = false, false
 		}
 		if inInputs && indent <= inputsIndent {
 			inInputs = false
@@ -180,10 +170,6 @@ func fillStep(ix *lineIndex, s *outlineStep, entryIndent int) {
 			inTask = true
 			inInputs, inputsIndent = true, indent
 		case inTask && inInputs && indent > inputsIndent:
-			if key == "libs" {
-				inLibs, libsIndent = true, indent
-				s.libs = append(s.libs, flowListItems(rest)...)
-			}
 			// Only the input mapping's own keys are inputs. A key at a deeper
 			// column belongs to a nested value — an http task's headers — and is
 			// not an input name.
