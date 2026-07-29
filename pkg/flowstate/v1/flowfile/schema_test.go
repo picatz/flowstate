@@ -320,6 +320,28 @@ func TestAnExpressionInputWrittenAsAnExpressionIsAccepted(t *testing.T) {
 		"a correctly written expression input was refused")
 }
 
+// TestALiteralOutputsMapIsStillAccepted pins the input this rule must not reach.
+//
+// `outputs` is deferred like `expect` and was declared an expression input
+// alongside it, which read as symmetric and is not: `httpExpectSatisfied` refuses
+// a literal `expect`, while `taskFuncHTTP` converts a literal `outputs` through
+// literalToValueMap and returns those names. Declaring it made `flow validate`
+// refuse a workflow the engine runs — this rule's own failure mode pointed the
+// other way, and worse, because it breaks files that work today.
+//
+// Caught in review. Confirmed by calling the task with a literal map and watching
+// it return `note: "constant"` before the declaration was narrowed.
+func TestALiteralOutputsMapIsStillAccepted(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := flowfile.Unmarshal([]byte(
+		"name: t\nsteps:\n  - id: f\n    http:\n      url: https://example.com\n" +
+			"      outputs:\n        note: constant\n"))
+	require.NoError(t, err)
+	assert.Empty(t, flowfile.Validate(workflow),
+		"a literal outputs map was refused, and the engine accepts it")
+}
+
 // TestADeferredInputThatNeedNotBeAnExpressionIsLeftAlone keeps the new rule from
 // spreading to every deferred input.
 //
