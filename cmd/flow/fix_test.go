@@ -15,9 +15,10 @@ import (
 // These tests are about the one thing `flow fix` has to earn: enough trust to be
 // run over a whole repository. That trust is not that the rewrite is clever — it
 // is that a file it has nothing to say about is not touched at all, that
-// `--check` only looks, that a shape it refuses is left exactly as it was, and
-// that what it does write still compiles. Each of those is asserted on the bytes
-// on disk rather than on what the command said it did.
+// `--check` only looks, that a shape it refuses is left exactly as it was and
+// said so in the exit status, and that what it does write still compiles. Each of
+// those is asserted on the bytes on disk rather than on what the command said it
+// did.
 
 // oldStyleGreeter is a Flowfile written before the task was flattened onto the
 // step, with a comment above a step and another between a step's own keys.
@@ -132,20 +133,52 @@ steps:
           - ${size(process.results)}
 `
 
+// oldStyleMixed has one step the rewriter can act on and one it must refuse, so
+// the two halves of an unfinished run can be told apart: what it could do, it
+// did, and the run still failed.
+const oldStyleMixed = `name: mixed
+steps:
+  - id: greet
+    task:
+      name: echo
+      inputs:
+        message: hello
+  - id: shout
+    task: {name: printf, inputs: {format: "%s!"}}
+`
+
+// partlyFixedMixed is oldStyleMixed after a run: the block-style step rewritten,
+// the flow-style one left exactly as it was written.
+const partlyFixedMixed = `name: mixed
+steps:
+  - id: greet
+    echo:
+      message: hello
+  - id: shout
+    task: {name: printf, inputs: {format: "%s!"}}
+`
+
+// The 1-based line oldStyleMixed writes its flow-style task on.
+const mixedRefusedLine = 9
+
 // runFixCommand runs `flow fix` the way a shell does — through the command, so
-// the flag spellings are part of what is under test — and returns everything it
-// wrote to its output stream along with the error that becomes the exit status.
-func runFixCommand(t *testing.T, args ...string) (string, error) {
+// the flag spellings are part of what is under test — and returns its two
+// streams separately along with the error that becomes the exit status.
+//
+// Separately, because which stream a report goes to is itself a property: under
+// `--stdout` the document is the output, and everything else has to go somewhere
+// a pipe will not pick it up.
+func runFixCommand(t *testing.T, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 
-	var out, discarded bytes.Buffer
+	var out, errOut bytes.Buffer
 	cmd := newFixCommand()
 	cmd.SetOut(&out)
-	cmd.SetErr(&discarded)
+	cmd.SetErr(&errOut)
 	cmd.SetArgs(args)
 
-	err := cmd.Execute()
-	return out.String(), err
+	err = cmd.Execute()
+	return out.String(), errOut.String(), err
 }
 
 // writeFixture writes contents into dir and returns the path.
@@ -272,7 +305,7 @@ func TestFixLeavesACurrentFileByteForByte(t *testing.T) {
 	dir := t.TempDir()
 	before := copyExamplesInto(t, dir)
 
-	out, err := runFixCommand(t, dir)
+	out, _, err := runFixCommand(t, dir)
 	if err != nil {
 		t.Fatalf("fixing a directory of current files failed: %v\n%s", err, out)
 	}
@@ -295,7 +328,7 @@ func TestFixLeavesOddWhitespaceAlone(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFixture(t, dir, "odd.yaml", odd)
 
-	out, err := runFixCommand(t, path)
+	out, _, err := runFixCommand(t, path)
 	if err != nil {
 		t.Fatalf("fixing a current file failed: %v\n%s", err, out)
 	}
@@ -317,9 +350,9 @@ func TestFixRewritesTheStepAndKeepsEverythingElse(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFixture(t, dir, "workflow.yaml", oldStyleGreeter)
 
-	out, err := runFixCommand(t, path)
+	out, _, err := runFixCommand(t, path)
 	if err != nil {
-		t.Fatalf("fix: %v\n%s", err, out)
+		t.Fatalf("a run that refused nothing still failed: %v\n%s", err, out)
 	}
 
 	if got := string(readFixture(t, path)); got != currentGreeter {
@@ -339,6 +372,66 @@ func TestFixRewritesTheStepAndKeepsEverythingElse(t *testing.T) {
 	}
 }
 
+// TestFixKeepsCommentsWrittenInsideTheTaskBlock covers the comments that are not
+// merely nearby but inside the run of lines being replaced.
+//
+// A comment above `name:` describes the task, and `name:` is the key going away,
+// so it is carried up to the task's new key rather than deleted along with the
+// line it annotated. Comments among the inputs travel with the inputs and dedent
+// with them. This is a migration tool: dropping an author's comment is losing
+// their work, and it is the kind of loss nobody notices until the explanation is
+// already gone.
+func TestFixKeepsCommentsWrittenInsideTheTaskBlock(t *testing.T) {
+	const commented = `name: commented
+steps:
+  - id: greet
+    task:
+      # which task this is
+      name: echo
+      inputs:
+        # what to say
+        message: hello
+        # and a note after it
+`
+
+	// Derived from the transformation: the comment about the task moves up to the
+	// key replacing `name:`, and the two among the inputs keep their place within
+	// the block as it dedents by the two columns `inputs:` used to add.
+	const want = `name: commented
+steps:
+  - id: greet
+    # which task this is
+    echo:
+      # what to say
+      message: hello
+      # and a note after it
+`
+
+	dir := t.TempDir()
+	path := writeFixture(t, dir, "workflow.yaml", commented)
+
+	out, _, err := runFixCommand(t, path)
+	if err != nil {
+		t.Fatalf("fix: %v\n%s", err, out)
+	}
+
+	fixed := readFixture(t, path)
+	if string(fixed) != want {
+		t.Errorf("comments inside the rewritten block did not survive as written:\n--- want\n%s\n--- got\n%s",
+			want, fixed)
+	}
+
+	// And what it wrote is still a Flowfile: a comment carried to the wrong
+	// indentation can change what the line after it belongs to.
+	diagnostics, err := flowfile.ValidateSource(fixed)
+	if err != nil {
+		t.Fatalf("the rewritten file does not parse: %v\n%s", err, fixed)
+	}
+	if len(diagnostics) != 0 {
+		t.Fatalf("the rewritten file does not validate: %s\n--- file\n%s", diagnostics.Error(), fixed)
+	}
+}
+
 // TestFixCheckReportsWithoutWriting is the form CI runs, and the property that
 // makes it usable: a --check that mutates is a --check nobody can put in a
 // pipeline.
@@ -346,7 +439,7 @@ func TestFixCheckReportsWithoutWriting(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFixture(t, dir, "workflow.yaml", oldStyleGreeter)
 
-	out, err := runFixCommand(t, "--check", path)
+	out, _, err := runFixCommand(t, "--check", path)
 	if err == nil {
 		t.Error("--check found work to do and still exited zero, so CI would never see it")
 	}
@@ -368,7 +461,7 @@ func TestFixCheckOnACurrentTreeExitsZero(t *testing.T) {
 	dir := t.TempDir()
 	before := copyExamplesInto(t, dir)
 
-	out, err := runFixCommand(t, "--check", dir)
+	out, _, err := runFixCommand(t, "--check", dir)
 	if err != nil {
 		t.Fatalf("--check reported work on a tree that is already current: %v\n%s", err, out)
 	}
@@ -377,6 +470,122 @@ func TestFixCheckOnACurrentTreeExitsZero(t *testing.T) {
 		if got := readFixture(t, path); !bytes.Equal(got, want) {
 			t.Errorf("--check modified %s", path)
 		}
+	}
+}
+
+// TestFixExitsNonZeroWhenAnythingWasRefused is the status a migration script
+// reads.
+//
+// `flow fix . && git commit` must not succeed while steps are still in a
+// spelling that no longer compiles, so a refusal fails the run whether or not
+// --check was asked for, and whether or not other steps in the same file were
+// rewritten successfully.
+func TestFixExitsNonZeroWhenAnythingWasRefused(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		contents string
+	}{
+		{
+			// A shape the rewriter will not guess at.
+			name: "a task written in flow style",
+			contents: `name: flow-style
+steps:
+  - id: greet
+    task: {name: echo, inputs: {message: hi}}
+`,
+		},
+		{
+			// Not YAML at all, which is certainly not the current edition either.
+			name:     "a file that does not parse",
+			contents: "name: x\n  steps: [\n",
+		},
+		{
+			// The one easiest to get wrong: something *was* rewritten, so a status
+			// derived from "did anything change" would call this a success.
+			name:     "one step rewritten and one refused",
+			contents: oldStyleMixed,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := writeFixture(t, dir, "workflow.yaml", test.contents)
+
+			out, _, err := runFixCommand(t, path)
+			if err == nil {
+				t.Errorf("a run that refused something exited zero, so `flow fix . && git commit` would commit it:\n%s", out)
+			}
+			if !strings.Contains(out, path) {
+				t.Errorf("the run failed without naming the file it could not finish:\n%s", out)
+			}
+		})
+	}
+
+	// The other direction, without which a command that always failed would pass
+	// every case above.
+	t.Run("nothing refused", func(t *testing.T) {
+		dir := t.TempDir()
+		path := writeFixture(t, dir, "workflow.yaml", oldStyleGreeter)
+
+		out, _, err := runFixCommand(t, path)
+		if err != nil {
+			t.Errorf("a run that rewrote everything it was given still failed: %v\n%s", err, out)
+		}
+	})
+}
+
+// TestFixRewritesWhatItCanBeforeGivingUp is why a refusal is a status rather
+// than a stop.
+//
+// One unrewritable step must not block the other nine: the author wants the ones
+// the tool understood done, and the one it did not left exactly as it was to fix
+// by hand — with the run still failing so that nobody mistakes it for finished.
+func TestFixRewritesWhatItCanBeforeGivingUp(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFixture(t, dir, "workflow.yaml", oldStyleMixed)
+
+	out, _, err := runFixCommand(t, path)
+	if err == nil {
+		t.Error("a file with a refused step reported success")
+	}
+
+	if got := string(readFixture(t, path)); got != partlyFixedMixed {
+		t.Errorf("either the step it could rewrite was skipped or the one it refused was touched:\n--- want\n%s\n--- got\n%s",
+			partlyFixedMixed, got)
+	}
+
+	if refusal := reportAt(t, reportsFor(t, out, path), mixedRefusedLine, out); refusal.column == 0 {
+		t.Errorf("the refusal names a line but no column: %q", refusal.message)
+	}
+}
+
+// TestFixDoesNotPrintUsageWhenAFileNeedsWork keeps the report readable.
+//
+// A file that needs fixing is not a command someone typed wrongly, and a usage
+// block after the diagnostics says it was — which sends the reader to check
+// their flags instead of the line they were just told about.
+func TestFixDoesNotPrintUsageWhenAFileNeedsWork(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		contents string
+		args     []string
+	}{
+		{name: "check finds work", contents: oldStyleGreeter, args: []string{"--check"}},
+		{name: "a step is refused", contents: oldStyleMixed},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := writeFixture(t, dir, "workflow.yaml", test.contents)
+
+			out, errOut, err := runFixCommand(t, append(test.args, path)...)
+			if err == nil {
+				t.Fatalf("the run was expected to report unfinished work:\n%s", out)
+			}
+			for stream, text := range map[string]string{"stdout": out, "stderr": errOut} {
+				if strings.Contains(text, "Usage:") {
+					t.Errorf("a file needing work drew a usage block on %s:\n%s", stream, text)
+				}
+			}
+		})
 	}
 }
 
@@ -396,7 +605,7 @@ func TestFixWalksADirectoryForFlowfiles(t *testing.T) {
 	// extension.
 	notAFlowfile := writeFixture(t, dir, "notes.txt", oldStyleSingle)
 
-	out, err := runFixCommand(t, dir)
+	out, _, err := runFixCommand(t, dir)
 	if err != nil {
 		t.Fatalf("fix: %v\n%s", err, out)
 	}
@@ -424,7 +633,7 @@ func TestFixTakesANamedFileWhateverItIsCalled(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFixture(t, dir, "workflow.flow", oldStyleSingle)
 
-	out, err := runFixCommand(t, path)
+	out, _, err := runFixCommand(t, path)
 	if err != nil {
 		t.Fatalf("fix: %v\n%s", err, out)
 	}
@@ -457,7 +666,7 @@ func TestFixWritesSomethingThatCompiles(t *testing.T) {
 		t.Fatal("the pre-flattening fixture still compiles, so this proves nothing about the rewrite")
 	}
 
-	out, err := runFixCommand(t, path)
+	out, _, err := runFixCommand(t, path)
 	if err != nil {
 		t.Fatalf("fix: %v\n%s", err, out)
 	}
@@ -485,9 +694,9 @@ func TestFixWritesSomethingThatCompiles(t *testing.T) {
 // command trustworthy.
 //
 // Flow style has no line structure to rewrite, so acting on it would mean
-// reflowing an author's file on a guess. Both halves are asserted: the position
-// is reported, and the file is exactly as it was — a file that looks fixed and is
-// not is worse than one that was never touched.
+// reflowing an author's file on a guess. All three halves are asserted: the
+// position is reported, the run fails, and the file is exactly as it was — a file
+// that looks fixed and is not is worse than one that was never touched.
 func TestFixRefusesFlowStyleWithoutMangling(t *testing.T) {
 	const inFlowStyle = `name: flow-style
 steps:
@@ -500,7 +709,10 @@ steps:
 	dir := t.TempDir()
 	path := writeFixture(t, dir, "workflow.yaml", inFlowStyle)
 
-	out, _ := runFixCommand(t, path)
+	out, _, err := runFixCommand(t, path)
+	if err == nil {
+		t.Error("a refused file reported success")
+	}
 
 	if got := string(readFixture(t, path)); got != inFlowStyle {
 		t.Errorf("a step the rewriter refused was edited anyway:\n--- before\n%s\n--- after\n%s",
@@ -543,7 +755,10 @@ steps:
 	dir := t.TempDir()
 	path := writeFixture(t, dir, "workflow.yaml", shared)
 
-	out, _ := runFixCommand(t, path)
+	out, _, err := runFixCommand(t, path)
+	if err == nil {
+		t.Error("a refused file reported success")
+	}
 
 	if got := string(readFixture(t, path)); got != shared {
 		t.Errorf("a step standing behind an alias was edited anyway:\n--- before\n%s\n--- after\n%s",
@@ -561,6 +776,126 @@ steps:
 	}
 }
 
+// TestFixRefusesAnEditionItDoesNotKnow keeps the migration honest about which
+// direction it runs in.
+//
+// A marker this build has never heard of came from a newer `flow`, and rewriting
+// it to the current edition would be this build stamping a claim to understand a
+// grammar it does not have — on a file it just failed to interpret. The fix is to
+// upgrade, so it says so and changes nothing.
+func TestFixRefusesAnEditionItDoesNotKnow(t *testing.T) {
+	const fromTheFuture = `edition: "2099.7"
+name: from-the-future
+steps:
+  - id: greet
+    echo:
+      message: hello
+`
+
+	dir := t.TempDir()
+	path := writeFixture(t, dir, "workflow.yaml", fromTheFuture)
+
+	out, _, err := runFixCommand(t, path)
+	if err == nil {
+		t.Error("an edition this build does not know was reported as finished work")
+	}
+
+	if got := string(readFixture(t, path)); got != fromTheFuture {
+		t.Errorf("an edition marker this build cannot interpret was rewritten anyway:\n--- before\n%s\n--- after\n%s",
+			fromTheFuture, got)
+	}
+
+	// Line 1 is where the marker is written.
+	refusal := reportAt(t, reportsFor(t, out, path), 1, out)
+	if refusal.column == 0 {
+		t.Errorf("the refusal names no column: %q", refusal.message)
+	}
+	if !strings.Contains(refusal.message, "edition") {
+		t.Errorf("the refusal does not say which problem fired: %q", refusal.message)
+	}
+	if !strings.Contains(refusal.message, "2099.7") {
+		t.Errorf("the refusal does not quote the marker it could not interpret: %q", refusal.message)
+	}
+}
+
+// TestFixDoesNotStampAnEditionIntoAFileWithoutOne keeps the rewriter from
+// acquiring opinions.
+//
+// An absent `edition:` means the current grammar, so a file without one is not
+// wrong and has nothing to migrate. Adding the key would pin a file whose author
+// deliberately left it unpinned, and would show up as a line nobody asked for in
+// the diff of a migration people are meant to be able to review.
+func TestFixDoesNotStampAnEditionIntoAFileWithoutOne(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFixture(t, dir, "workflow.yaml", oldStyleGreeter)
+
+	out, _, err := runFixCommand(t, path)
+	if err != nil {
+		t.Fatalf("fix: %v\n%s", err, out)
+	}
+
+	fixed := string(readFixture(t, path))
+	// A file that really was rewritten, so this is not passing because nothing was
+	// written at all.
+	if fixed == oldStyleGreeter {
+		t.Fatal("the file was not rewritten, so this says nothing about what a rewrite adds")
+	}
+	if strings.Contains(fixed, "edition") {
+		t.Errorf("an edition marker was stamped into a file that did not declare one:\n%s", fixed)
+	}
+}
+
+// TestFixBringsAStaleEditionForward is the case the edition marker exists for,
+// and the one this build cannot exercise yet.
+//
+// An older edition is refused by the compiler with "run `flow fix`", so `flow
+// fix` has to be what resolves it; answering "already current" while leaving the
+// marker that caused the refusal would be a migration tool that does not migrate
+// the thing its own diagnostic names. There is one known edition today, so this
+// waits for the second rather than asserting nothing.
+func TestFixBringsAStaleEditionForward(t *testing.T) {
+	var stale string
+	for _, edition := range flowfile.KnownEditions() {
+		if edition != flowfile.CurrentEdition {
+			stale = edition
+			break
+		}
+	}
+	if stale == "" {
+		t.Skipf("this build knows only %s, so no file can declare an older edition yet", flowfile.CurrentEdition)
+	}
+
+	dir := t.TempDir()
+	path := writeFixture(t, dir, "workflow.yaml", "edition: "+strconv.Quote(stale)+`
+name: stale-edition
+steps:
+  - id: greet
+    echo:
+      message: hello
+`)
+
+	out, _, err := runFixCommand(t, path)
+	if err != nil {
+		t.Fatalf("fix: %v\n%s", err, out)
+	}
+
+	fixed := readFixture(t, path)
+	if strings.Contains(string(fixed), stale) {
+		t.Errorf("the stale edition marker survived, so the file is still refused after being fixed:\n%s", fixed)
+	}
+	if !strings.Contains(string(fixed), flowfile.CurrentEdition) {
+		t.Errorf("the file no longer declares an edition this build knows:\n%s", fixed)
+	}
+
+	diagnostics, err := flowfile.ValidateSource(fixed)
+	if err != nil {
+		t.Fatalf("the rewritten file does not parse: %v\n%s", err, fixed)
+	}
+	if len(diagnostics) != 0 {
+		t.Fatalf("the rewritten file does not validate: %s\n--- file\n%s", diagnostics.Error(), fixed)
+	}
+}
+
 // TestFixPreservesFileMode keeps a migration from also being a permissions
 // change.
 //
@@ -575,7 +910,7 @@ func TestFixPreservesFileMode(t *testing.T) {
 		t.Fatalf("setting the fixture's mode: %v", err)
 	}
 
-	out, err := runFixCommand(t, path)
+	out, _, err := runFixCommand(t, path)
 	if err != nil {
 		t.Fatalf("fix: %v\n%s", err, out)
 	}
@@ -601,7 +936,7 @@ func TestFixStdoutWritesTheResultAndLeavesTheFile(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFixture(t, dir, "workflow.yaml", oldStyleGreeter)
 
-	out, err := runFixCommand(t, "--stdout", path)
+	out, _, err := runFixCommand(t, "--stdout", path)
 	if err != nil {
 		t.Fatalf("fix --stdout: %v\n%s", err, out)
 	}
@@ -616,6 +951,37 @@ func TestFixStdoutWritesTheResultAndLeavesTheFile(t *testing.T) {
 	}
 }
 
+// TestFixStdoutKeepsReportsOffTheDocument is what makes `flow fix --stdout
+// old.yaml > new.yaml` safe on a file that is not perfectly rewritable.
+//
+// A tool that writes its complaints into its own output cannot be piped: the
+// result is a new.yaml whose first line is a diagnostic about old.yaml — broken
+// in a way that reads as though the rewriter mangled the document. So the
+// document is the whole of stdout, and the refusal goes where a pipe will not
+// pick it up.
+func TestFixStdoutKeepsReportsOffTheDocument(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFixture(t, dir, "workflow.yaml", oldStyleMixed)
+
+	out, errOut, err := runFixCommand(t, "--stdout", path)
+	if err == nil {
+		t.Error("a refused file reported success")
+	}
+
+	if out != partlyFixedMixed {
+		t.Errorf("stdout is not exactly the document:\n--- want\n%s\n--- got\n%s", partlyFixedMixed, out)
+	}
+	if got := string(readFixture(t, path)); got != oldStyleMixed {
+		t.Errorf("--stdout wrote back to the file as well:\n--- before\n%s\n--- after\n%s", oldStyleMixed, got)
+	}
+
+	// The refusal is still made, just not into the document.
+	refusal := reportAt(t, reportsFor(t, errOut, path), mixedRefusedLine, errOut)
+	if refusal.column == 0 {
+		t.Errorf("the refusal on stderr names no column: %q", refusal.message)
+	}
+}
+
 // TestFixStdoutRefusesMoreThanOneFile keeps two documents from being run
 // together into a stream that is neither of them.
 func TestFixStdoutRefusesMoreThanOneFile(t *testing.T) {
@@ -623,7 +989,7 @@ func TestFixStdoutRefusesMoreThanOneFile(t *testing.T) {
 	first := writeFixture(t, dir, "first.yaml", oldStyleGreeter)
 	second := writeFixture(t, dir, "second.yaml", oldStyleSingle)
 
-	out, err := runFixCommand(t, "--stdout", first, second)
+	out, _, err := runFixCommand(t, "--stdout", first, second)
 	if err == nil {
 		t.Error("--stdout ran two documents together instead of refusing")
 	}
@@ -647,7 +1013,7 @@ func TestFixStdoutAndCheckAreRefused(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFixture(t, dir, "workflow.yaml", oldStyleGreeter)
 
-	out, err := runFixCommand(t, "--stdout", "--check", path)
+	out, _, err := runFixCommand(t, "--stdout", "--check", path)
 	if err == nil {
 		t.Error("--stdout and --check were accepted together")
 	}
