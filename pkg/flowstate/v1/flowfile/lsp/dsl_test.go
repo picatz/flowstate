@@ -339,6 +339,317 @@ steps:
 	})
 }
 
+// TestWaitUntilIsFirstClass checks that a wait's expression gets the same
+// treatment as an input's or a condition's.
+//
+// It did not. The positional model had no entry for `wait_until:`, so its
+// expression was invisible to every feature that reads one: hover and
+// go-to-definition stopped at the fence, and a CEL error was left to the
+// validator, which could only report it against the position it worked out —
+// landing on the closing brace rather than on the character at fault.
+//
+// Rooting is what turned that from untidy into expensive. A wait now commonly
+// holds `${steps.<id>.<output>}` — a moment that arrived as data rather than one
+// the workflow chose — so the one kind of step whose expression the editor could
+// not read is the one whose expression most often names another step. Offering
+// `now` in a place where hover then says nothing would have made it worse.
+func TestWaitUntilIsFirstClass(t *testing.T) {
+	t.Parallel()
+
+	const src = `name: waits
+steps:
+  - id: embargo
+    cel:
+      expr: "string(timestamp('2026-01-01T09:00:00Z'))"
+  - id: hold
+    wait_until: ${steps.embargo.result}
+  - id: window
+    wait_until: ${now + days(3)}
+`
+	c := newClient(t)
+	c.initialize()
+	const uri = "file:///waits.yaml"
+
+	t.Run("a valid wait is clean", func(t *testing.T) {
+		assert.Empty(t, messages(c.open(uri, src).Diagnostics))
+	})
+
+	t.Run("hover resolves a reference in a wait", func(t *testing.T) {
+		pos := positionOf(t, src, "${steps.embargo.result}", len("${steps."))
+		got := c.hover(uri, pos.Line, pos.Character)
+		require.NotNil(t, got, "no hover on a wait's expression")
+		assert.Contains(t, hoverText(got), "`steps.embargo.result`")
+		assert.Contains(t, hoverText(got), "`cel` task")
+	})
+
+	t.Run("go to definition works from a wait", func(t *testing.T) {
+		pos := positionOf(t, src, "${steps.embargo.result}", len("${steps."))
+		got := c.definition(uri, pos.Line, pos.Character)
+		require.Len(t, got, 1)
+		assert.Equal(t, "embargo", textInRange(src, got[0].Range))
+	})
+
+	t.Run("hover describes the clock", func(t *testing.T) {
+		pos := positionOf(t, src, "${now + days(3)}", 2)
+		got := c.hover(uri, pos.Line, pos.Character)
+		require.NotNil(t, got, "no hover on the one identifier whose availability depends on position")
+		text := hoverText(got)
+		assert.Contains(t, text, "the moment the wait is evaluated")
+		// The duration builders come from the evaluator rather than a list here,
+		// so a unit added to it appears without this test being touched.
+		for _, unit := range v1.DurationUnits() {
+			assert.Contains(t, text, "`"+unit+"`")
+		}
+
+		require.NotNil(t, got.Range)
+		assert.Equal(t, "now", textInRange(src, *got.Range))
+	})
+
+	t.Run("scoping applies inside a wait", func(t *testing.T) {
+		// A wait is a step like any other, so it sees what a step at its position
+		// sees. A loop body's outputs are not that.
+		const leaky = `name: leaky-wait
+steps:
+  - id: loop
+    for_each:
+      items: "${['a']}"
+      steps:
+        - id: inner
+          echo:
+            message: hi
+  - id: hold
+    wait_until: ${steps.inner.result}
+`
+		const leakyURI = "file:///leaky-wait.yaml"
+		params := c.open(leakyURI, leaky)
+		require.Len(t, params.Diagnostics, 1, "got %v", messages(params.Diagnostics))
+		assert.Contains(t, params.Diagnostics[0].Message, `references unknown step "inner"`)
+
+		pos := positionOf(t, leaky, "${steps.inner.result}", len("${steps."))
+		assert.Nil(t, c.hover(leakyURI, pos.Line, pos.Character),
+			"hover resolved a loop body step from a wait outside the loop")
+		assert.Empty(t, c.definition(leakyURI, pos.Line, pos.Character))
+	})
+
+	t.Run("a forward reference in a wait is reported on the expression", func(t *testing.T) {
+		const forward = `name: fwd-wait
+steps:
+  - id: hold
+    wait_until: ${steps.later.result}
+  - id: later
+    echo:
+      message: hi
+`
+		params := c.open("file:///fwd-wait.yaml", forward)
+		require.Len(t, params.Diagnostics, 1, "got %v", messages(params.Diagnostics))
+		assert.Contains(t, params.Diagnostics[0].Message, `references step "later", which runs later`)
+		assert.Equal(t, "${steps.later.result}", textInRange(forward, params.Diagnostics[0].Range))
+	})
+}
+
+// TestWaitUntilSyntaxErrorLandsOnTheOffendingCharacter is the whole point of
+// putting the wait's expression in the model, so it is asserted as a position
+// rather than as "something was reported".
+//
+// Before, the validator's report was the only one, and it arrived with a position
+// that resolved to the closing brace — a range that is inside the right value and
+// under the wrong character, which is the failure mode a weaker assertion cannot
+// tell from a fix. Now the expression is parsed here, where the offset of the
+// error within the source is known.
+func TestWaitUntilSyntaxErrorLandsOnTheOffendingCharacter(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		wait string
+		// underlines is the exact source text the diagnostic must cover.
+		underlines string
+	}{
+		{
+			name: "an extraneous identifier",
+			wait: "${now b}",
+			// The token at fault, not the fence and not the brace after it.
+			underlines: "b",
+		},
+		{
+			name:       "a doubled operator",
+			wait:       "${now + + days(3)}",
+			underlines: "+",
+		},
+		{
+			// An error CEL reports at the end of the input has no character to
+			// land on, so the whole expression is the tightest honest answer —
+			// still narrower than the value and still inside the fence.
+			name:       "an expression that stops early",
+			wait:       "${now + }",
+			underlines: "${now + }",
+		},
+	}
+
+	c := newClient(t)
+	c.initialize()
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src := "name: broken-wait\nsteps:\n  - id: hold\n    wait_until: " + tt.wait + "\n"
+			uri := "file:///broken-wait-" + strings.ReplaceAll(tt.name, " ", "-") + ".yaml"
+			params := c.open(uri, src)
+
+			// Exactly one. Both this package and the validator notice a wait that
+			// will not parse, and a doubled squiggle is two reports of one
+			// mistake — the tighter range is the one that survives.
+			require.Len(t, params.Diagnostics, 1, "got %v", messages(params.Diagnostics))
+			assert.Equal(t, codeCELSyntax, params.Diagnostics[0].Code)
+			assert.Contains(t, params.Diagnostics[0].Message, "Syntax error")
+			assert.Equal(t, tt.underlines, textInRange(src, params.Diagnostics[0].Range))
+
+			// The second `+` is the one at fault, and it is the second occurrence
+			// in the line. Asserting the text alone would pass on either, so the
+			// column is checked against where the fixture actually puts it.
+			if tt.name == "a doubled operator" {
+				want := strings.Index(src, "+ days")
+				assert.Equal(t, want, offsetOf(src, params.Diagnostics[0].Range.Start),
+					"underlined the first operator rather than the one at fault")
+			}
+		})
+	}
+}
+
+// TestNowIsExplainedTheSameWayTheValidatorRefusesIt guards the one duplication
+// this change could not avoid.
+//
+// `flowfile` refuses `now` in a task input with a sentence explaining why the name
+// is bound in a wait and nowhere else, and the editor now explains the same thing
+// on hover and in completion. The string is unexported, so the editor cannot show
+// the validator's own words; what it can do is fail when the two accounts diverge.
+//
+// Each clause below is asserted to appear in *both*, which is what makes this a
+// guard rather than a third copy: rewording either side turns it red and whoever
+// does the rewording sees the other.
+func TestNowIsExplainedTheSameWayTheValidatorRefusesIt(t *testing.T) {
+	t.Parallel()
+
+	const src = `name: no-clock
+steps:
+  - id: a
+    echo:
+      message: ${now}
+`
+	c := newClient(t)
+	c.initialize()
+	const uri = "file:///no-clock.yaml"
+
+	params := c.open(uri, src)
+	require.Len(t, params.Diagnostics, 1, "got %v", messages(params.Diagnostics))
+	refusal := params.Diagnostics[0].Message
+	require.Contains(t, refusal, v1.NowIdentifier,
+		"premise: the diagnostic under test must be the one about the clock")
+
+	// The three claims the refusal rests on. They are what an author needs in
+	// order to understand the rule rather than merely obey it.
+	for _, claim := range []string{
+		"the moment the wait is evaluated",
+		"resolved inside an activity",
+		"no clock that survives a retry",
+	} {
+		assert.Contains(t, refusal, claim,
+			"the validator no longer makes this claim; the editor's copy in nowDoc has drifted from it")
+		assert.Contains(t, nowDoc(), claim,
+			"the editor no longer makes this claim; it has drifted from the validator's refusal")
+	}
+
+	// And the editor stays quiet where the name is not bound. Describing it here
+	// would contradict the squiggle the author is looking at.
+	pos := positionOf(t, src, "${now}", 2)
+	assert.Nil(t, c.hover(uri, pos.Line, pos.Character),
+		"hover described the clock in a task input, where the validator refuses it")
+}
+
+// TestWaitKeysAreDocumentedAtTheirOwnLevel is the regression guard for the class
+// of mistake waitForSignalEntry exists to prevent, checked again now that a second
+// wait key is in the model.
+//
+// `timeout:` means two different things one level apart — the step's bounds one
+// attempt at it, a gate's bounds how long it waits before reporting `timed_out` —
+// and hovering one used to answer with the other's documentation. Adding
+// `wait_until` must not reopen that, and the way it could is by opening a level of
+// its own; it does not, because its value is one expression rather than a mapping.
+func TestWaitKeysAreDocumentedAtTheirOwnLevel(t *testing.T) {
+	t.Parallel()
+
+	// The step-level `timeout:` sits on the task step, because a waiting step may
+	// not carry one — the validator says so, and a fixture that ignored it would
+	// be testing hover against a document `flow validate` refuses.
+	const src = `name: waits
+steps:
+  - id: fetch
+    timeout: 1m
+    echo:
+      message: hi
+  - id: nap
+    sleep: 30s
+  - id: window
+    wait_until: ${now + days(3)}
+  - id: approval
+    wait_for_signal:
+      name: deploy-approved
+      timeout: 24h
+`
+	c := newClient(t)
+	c.initialize()
+	const uri = "file:///wait-keys.yaml"
+	require.Empty(t, messages(c.open(uri, src).Diagnostics))
+
+	// Each key's own documentation, taken from the table rather than quoted, so
+	// that rewording an entry cannot leave this asserting text nothing shows.
+	docFor := func(t *testing.T, level, name string) string {
+		t.Helper()
+		k, ok := lookupDSLKey(level, name)
+		require.True(t, ok, "no %q key at the %q level", name, level)
+		return k.docs
+	}
+
+	tests := []struct {
+		name string
+		// key, minIndent and after locate the declaration to hover.
+		key       string
+		minIndent int
+		after     string
+		// level is where the documentation shown must come from.
+		level string
+		// notLevel is the other level declaring the same key, whose
+		// documentation must not be what is shown.
+		notLevel string
+	}{
+		{name: "sleep", key: "sleep", minIndent: 4, level: "steps"},
+		{name: "wait_until", key: "wait_until", minIndent: 4, level: "steps"},
+		{
+			name: "a step's own timeout", key: "timeout", minIndent: 4,
+			level: "steps", notLevel: "wait_for_signal",
+		},
+		{
+			name: "a gate's timeout", key: "timeout", minIndent: 6, after: "wait_for_signal:",
+			level: "wait_for_signal", notLevel: "steps",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pos := positionOfKey(t, src, tt.key, tt.minIndent, tt.after)
+			got := c.hover(uri, pos.Line, pos.Character)
+			require.NotNil(t, got, "no hover for %q at %v", tt.key, pos)
+
+			text := hoverText(got)
+			assert.Contains(t, text, docFor(t, tt.level, tt.key))
+			if tt.notLevel != "" {
+				assert.NotContains(t, text, docFor(t, tt.notLevel, tt.key),
+					"hovering %q answered with the documentation for the %q of the other level",
+					tt.key, tt.key)
+			}
+		})
+	}
+}
+
 // TestNestedStepsAreFirstClass checks that a step inside a for_each body or a
 // parallel branch gets the same treatment as one at the top level.
 //

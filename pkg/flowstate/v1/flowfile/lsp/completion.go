@@ -326,9 +326,10 @@ func referenceScope(doc *document, pos lsp.Position, clock bool, current *outlin
 			name:   v1.NowIdentifier,
 			kind:   lsp.CIKVariable,
 			detail: "timestamp",
-			docs: "The moment this wait is evaluated. Bound only inside wait_until, where the " +
-				"driver's own clock supplies it, so a deadline reads as ${now + days(3)}. The " +
-				"duration builders seconds, minutes, hours, days and weeks are available with it.",
+			// The same text hover shows, for the same reason a CEL library's is
+			// shared: accepting a candidate and then hovering what was accepted
+			// must not produce two accounts of one name.
+			docs: nowDoc(),
 		})
 	}
 	return scope

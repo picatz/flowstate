@@ -983,3 +983,82 @@ steps:
 		})
 	}
 }
+
+// TestFixLeavesDeferredInputsAlone is the limit of the rewriter's reach, and the
+// one place rooting everything alike is wrong.
+//
+// The http task evaluates `expect:` and `outputs:` against the *response*, so
+// `${status_code == 200}` names a field of what came back. If a step in the same
+// file happens to be called `status_code`, a rewriter that treats every fence
+// alike roots it — and a correct expression silently starts meaning that step's
+// outputs. Which is worse than failing: it compiles.
+//
+// The registry says which inputs those are, and this asks it rather than keeping
+// a list of its own, so a task added tomorrow with a deferred input is covered
+// without anyone remembering this exists.
+func TestFixLeavesDeferredInputsAlone(t *testing.T) {
+	t.Parallel()
+
+	src := `name: t
+steps:
+  - id: status_code
+    echo:
+      message: a step sharing a response field's name
+  - id: fetch
+    http:
+      url: https://example.com
+      expect: ${status_code == 200}
+      outputs: "${ {'code': status_code} }"
+  - id: after
+    echo:
+      message: ${status_code.result}
+`
+	want := `name: t
+steps:
+  - id: status_code
+    echo:
+      message: a step sharing a response field's name
+  - id: fetch
+    http:
+      url: https://example.com
+      expect: ${status_code == 200}
+      outputs: "${ {'code': status_code} }"
+  - id: after
+    echo:
+      message: ${steps.status_code.result}
+`
+	result, err := flowfile.Fix([]byte(src))
+	require.NoError(t, err)
+	assert.Empty(t, result.Refusals)
+	assert.Equal(t, want, string(result.Source),
+		"the response's own names stay bare; only the reference to the step is rooted")
+
+	_, _, err = flowfile.Parse(result.Source)
+	assert.NoError(t, err)
+}
+
+// TestFixLeavesTheCelTasksOwnScopeAlone is the same rule on the other task that
+// declares deferred inputs, so the fix is not one task's special case.
+func TestFixLeavesTheCelTasksOwnScopeAlone(t *testing.T) {
+	t.Parallel()
+
+	src := `name: t
+steps:
+  - id: total
+    echo:
+      message: a step sharing a var's name
+  - id: compute
+    cel:
+      expr: "total * 2"
+      vars:
+        total: 21
+  - id: after
+    echo:
+      message: ${total.result}
+`
+	result, err := flowfile.Fix([]byte(src))
+	require.NoError(t, err)
+	assert.Contains(t, string(result.Source), `expr: "total * 2"`,
+		"the cel task binds its own vars, so `total` there is not the step")
+	assert.Contains(t, string(result.Source), "message: ${steps.total.result}")
+}

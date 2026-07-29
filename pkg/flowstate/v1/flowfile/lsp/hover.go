@@ -45,11 +45,12 @@ func hoverAt(doc *document, pos lsp.Position) *lsp.Hover {
 	// position, nested inside an input's value or the step's condition.
 	for _, in := range step.expressionEntries() {
 		var found *lsp.Hover
+		clock := step.bindsNow(in)
 		walkValues(in.value, func(v *value) {
 			if found != nil || !v.fenced || !contains(v.exprRange, pos) {
 				return
 			}
-			found = hoverReference(doc, step, v, pos)
+			found = hoverReference(doc, step, v, clock, pos)
 		})
 		if found != nil {
 			return found
@@ -270,7 +271,7 @@ func stepDoc(step *parsedStep, def v1.TaskDef, taskKnown bool) string {
 
 // hoverReference describes a ${...} reference: which step produces the value, the
 // task that produces it, and the output's declared type.
-func hoverReference(doc *document, from *parsedStep, v *value, pos lsp.Position) *lsp.Hover {
+func hoverReference(doc *document, from *parsedStep, v *value, clock bool, pos lsp.Position) *lsp.Hover {
 	// The character offset of the cursor within the expression source.
 	cursor := doc.index.offsetOfPosition(pos) - v.exprOffset
 	ref := referenceAt(v.expr, cursor)
@@ -287,7 +288,7 @@ func hoverReference(doc *document, from *parsedStep, v *value, pos lsp.Position)
 
 	rng := doc.index.rangeOfOffsets(v.exprOffset+ref.span[0], v.exprOffset+ref.span[1])
 	if ref.step == "" {
-		return hoverBareName(from, ref.local, rng)
+		return hoverBareName(from, ref.local, clock, rng)
 	}
 	return hoverStepOutput(doc, from, ref, rng)
 }
@@ -300,7 +301,16 @@ func hoverReference(doc *document, from *parsedStep, v *value, pos lsp.Position)
 // `${web.body}` in an unmigrated file gets silence here. The diagnostic on it says
 // what to run, and hover repeating that would be a second voice saying the same
 // thing in a smaller box.
-func hoverBareName(from *parsedStep, name string, rng lsp.Range) *lsp.Hover {
+//
+// clock reports that the expression is a wait's, which is the only thing that puts
+// `now` in scope. It is passed in rather than derived from the name, because the
+// answer to `${now}` written in a task input is not this documentation — it is the
+// validator's diagnostic saying the name is not bound there, and describing it as
+// though it were would contradict a squiggle the author is looking at.
+func hoverBareName(from *parsedStep, name string, clock bool, rng lsp.Range) *lsp.Hover {
+	if clock && name == v1.NowIdentifier {
+		return markdownHover(nowDoc(), rng)
+	}
 	for _, loop := range from.iteratorsInScope() {
 		if loop.iteratorName() != name {
 			continue
@@ -369,6 +379,33 @@ func hoverStepOutput(doc *document, from *parsedStep, ref reference, rng lsp.Ran
 		fmt.Fprintf(&b, "\n\nThe task guarantees: %s.", strings.Join(cs, "; "))
 	}
 	return markdownHover(b.String(), rng)
+}
+
+// nowDoc describes the one identifier whose availability depends on where it is
+// written.
+//
+// Written once and shown by both hover and completion, the way a CEL library's
+// documentation is: an author who accepts the candidate and then hovers what they
+// accepted should not be told two different things.
+//
+// What it says is the validator's reasoning, not a second account of it. `flowfile`
+// refuses `now` in a task input with the same three claims — the moment the wait is
+// evaluated, resolved inside an activity, no clock that survives a retry — and
+// TestNowIsExplainedTheSameWayTheValidatorRefusesIt asserts both texts still make
+// them, because the string itself is unexported and cannot be shared. That is the
+// weaker guarantee of the two, and it is why the phrasing here follows the
+// diagnostic rather than improving on it.
+func nowDoc() string {
+	return fmt.Sprintf(
+		"**`%s`** · `timestamp` — the moment the wait is evaluated.\n\n"+
+			"Bound inside `%s:` and nowhere else, from the clock the driver controls, so a "+
+			"deadline computed from it survives replay and a worker restart. A task input is "+
+			"resolved inside an activity, which has no clock that survives a retry: a `%s` there "+
+			"would read differently on every attempt, so the name is not bound in one. Compute "+
+			"the moment here, or pass a time in as an input.\n\n"+
+			"Durations build from `%s`, so a deadline reads as `${%s + days(3)}`.",
+		v1.NowIdentifier, waitUntilKey, v1.NowIdentifier,
+		strings.Join(v1.DurationUnits(), "`, `"), v1.NowIdentifier)
 }
 
 // rootedRef spells a reference the way an author writes it, from the root the

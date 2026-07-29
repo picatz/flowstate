@@ -247,6 +247,25 @@ func Validate(wf *v1.Workflow) Diagnostics {
 				Field:   fmt.Sprintf("steps[%d]", i),
 				Message: "step has no id; every step needs an id so later steps can reference its outputs",
 			})
+		case id == v1.StepsRoot:
+			// The root itself. Refused as an id, and this is the one collision
+			// rooting *creates* rather than removes — worth stating, because the
+			// rest of this change is about deleting rules like it.
+			//
+			// It has to be refused here rather than left to resolve, because the
+			// runtime deliberately lets a step of this name win: a spec compiled
+			// before the root existed may contain one, and a worker replaying it
+			// must keep resolving the way it always did. That compatibility is only
+			// safe while no *new* file can create the situation — otherwise a step
+			// called `steps` shadows the root, and every rooted reference in the
+			// file resolves against that step's outputs instead. Which validates
+			// clean and fails at run time with `no such key`.
+			ds = append(ds, Diagnostic{
+				Step: id,
+				Message: fmt.Sprintf(
+					"id %q is the root every step is named under, so a step called that would hide all the others; choose another id",
+					id),
+			})
 		case slices.Contains(celUnusableStepIDs, id):
 			// Four words, where there used to be twenty-one — see celUnusableStepIDs
 			// for which seventeen rooting made legal and why these did not follow.
@@ -458,6 +477,18 @@ func validateLoop(stepID string, loop *v1.ForEach, enclosing refScope, index int
 			Message: fmt.Sprintf("%q is a CEL reserved word, so ${%s} cannot be parsed", iterator, iterator),
 		})
 	}
+	if iterator == v1.StepsRoot {
+		// The root, by the other route into a body's scope. A bound name wins over
+		// the scope it is bound into, so an iterator spelled `steps` hides every
+		// step from the body — and the body is exactly where rooted references are
+		// written.
+		ds = append(ds, Diagnostic{
+			Step: stepID, Field: "iterator",
+			Message: fmt.Sprintf(
+				"%q is the root every step is named under, and a loop variable of that name would hide all of them inside the body; choose another iterator",
+				iterator),
+		})
+	}
 	// An iterator sharing a step's id used to be refused here, because both
 	// resolved from one namespace and the loop variable would hide the step. It is
 	// no longer a collision: a step is named `steps.<id>` and an iterator is named
@@ -548,6 +579,18 @@ func validateNested(nodes []*v1.Node, enclosing refScope, index int, wf *v1.Work
 		// from the step it collides with, often in a different part of the file, and
 		// nothing said so. It also left a diagnostic about the body step landing on
 		// the top-level one, since a source position is looked up by id.
+		if id == v1.StepsRoot {
+			// The same refusal a top-level id gets, for the same reason. A nested
+			// step's outputs are named through the root too, so one called `steps`
+			// hides them from everything after it in the body.
+			ds = append(ds, Diagnostic{
+				Step: id,
+				Message: fmt.Sprintf(
+					"id %q is the root every step is named under, so a step called that would hide all the others; choose another id",
+					id),
+			})
+		}
+
 		if id != "" && enclosing.steps[id] {
 			ds = append(ds, Diagnostic{
 				Step: id,

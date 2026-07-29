@@ -829,28 +829,67 @@ func stepIDs(n ast.Node) map[string]bool {
 // A `${...}` is the whole of a value wherever it appears — the DSL has no string
 // interpolation — so each rewrite is bounded to one scalar on one line, and a
 // shape that is not is refused rather than guessed at.
+//
+// # Deferred inputs are not this rewriter's to touch
+//
+// The walk has to know when it is inside a task, because some inputs are not
+// expressions over the workflow at all. The http task evaluates `expect:` and
+// `outputs:` against the *response*, so `${status_code == 200}` names a field of
+// what came back — and if a step in the same file happens to be called
+// `status_code`, a rewriter that treats every fence alike roots it, and a correct
+// expression silently starts meaning a step's outputs.
+//
+// That is the same reason the validator refuses to check references in these
+// inputs. The registry declares which ones they are, and both surfaces ask it
+// rather than each keeping a list.
 func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 	if len(steps) == 0 {
 		return
 	}
-	var walk func(ast.Node)
-	walk = func(n ast.Node) {
+	var walk func(n ast.Node, deferred map[string]bool)
+	walk = func(n ast.Node, deferred map[string]bool) {
 		switch node := unwrapAnchor(n).(type) {
 		case *ast.MappingNode:
 			for _, v := range node.Values {
-				walk(v)
+				walk(v, deferred)
 			}
 		case *ast.MappingValueNode:
-			walk(node.Value)
+			name, named := keyNameOf(node.Key)
+			if named && deferred[name] {
+				// Evaluated by the task, in a scope this rewriter cannot see and
+				// must not guess at.
+				return
+			}
+			// A task's key opens its inputs, so the names its own scope binds are
+			// known from here down and nowhere else.
+			if named {
+				if def, known := v1.LookupTask(name); known {
+					walk(node.Value, deferredInputs(def))
+					return
+				}
+			}
+			walk(node.Value, deferred)
 		case *ast.SequenceNode:
 			for _, v := range node.Values {
-				walk(v)
+				walk(v, deferred)
 			}
 		case *ast.StringNode:
 			f.rootScalar(node, steps)
 		}
 	}
-	walk(n)
+	walk(n, nil)
+}
+
+// deferredInputs returns the inputs a task evaluates itself, as a set.
+func deferredInputs(def v1.TaskDef) map[string]bool {
+	if len(def.DeferredInputs) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(def.DeferredInputs))
+	for _, name := range def.DeferredInputs {
+		out[name] = true
+	}
+	return out
 }
 
 // rootScalar rewrites one fenced scalar in place.
