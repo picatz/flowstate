@@ -10,10 +10,10 @@ steps:
         greeting: ${steps.greet.result}
 
 
-  # One dialect: `if:` has no `libs:` key of its own and never could, yet it
-  # reaches the same string functions the `cel` step above does. Before profiles
-  # this was `no such overload` — the condition was evaluated in an environment
-  # without extensions while the step beside it had them.
+  # One dialect: this condition reaches the same string functions the `cel` step
+  # above does, with nothing declaring them. It used to be `no such overload` —
+  # a condition was evaluated without extension libraries while a `cel` step beside
+  # it could name its own, and a condition has no key to name anything with.
   - id: shout
     if: ${steps.modify.result.startsWith('HI')}
     echo:

@@ -110,11 +110,6 @@ func TestHover(t *testing.T) {
 			want:   []string{"`steps.web.body`", "`string`"},
 		},
 		{
-			name: "cel library describes itself and what it provides",
-			at:   "json]",
-			want: []string{"CEL library `json`", "json_parse", "libs: [json]"},
-		},
-		{
 			name: "step id summarizes the step",
 			at:   "web\n",
 			want: []string{"step `web`", "step 1", "`http` task", "${steps.web.body}"},

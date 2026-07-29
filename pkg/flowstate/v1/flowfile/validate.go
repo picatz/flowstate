@@ -362,7 +362,6 @@ func Validate(wf *v1.Workflow) Diagnostics {
 		// cannot resolve is a mistake about the workflow, and an input the task
 		// does not have is a mistake about the task.
 		ds = append(ds, validateTaskInputs(id, task)...)
-		ds = append(ds, validateTaskLibraries(id, task)...)
 
 		checkable, _ := v1.ResolvableInputs(task.GetName(), task.GetInputs())
 		for _, name := range sortedInputNames(checkable) {

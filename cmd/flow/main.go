@@ -637,13 +637,14 @@ func runTasks(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintf(out, "\n* marks an input the task cannot run without.\n")
 
-	fmt.Fprintf(out, "\nCEL libraries available to the cel task via the libs input:\n  %s\n",
+	// "every expression", not "the cel task", and that is the change worth
+	// spelling out here. These used to be opt-in per `cel` step, which meant this
+	// listing was accurate for one step kind and misleading for the rest of the
+	// file — an author reading it to find out what an `if:` could say got the
+	// wrong answer.
+	fmt.Fprintf(out, "\nCEL libraries available to every expression:\n  %s\n",
 		strings.Join(v1.ExtensionLibraries(), ", "))
 
-	// Listed separately because they are not opt-in: they are in every
-	// environment, including a `wait_until:` expression, which has no libs input
-	// to enable anything with. Somebody reading this to find out what an
-	// expression can say would otherwise conclude the answer is the list above.
 	fmt.Fprintf(out, "\nDuration constructors available to every expression:\n  %s\n",
 		strings.Join(v1.DurationUnits(), ", "))
 	fmt.Fprintf(out, "\nInside wait_until, %s is the moment the wait is evaluated,\n"+

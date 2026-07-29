@@ -294,14 +294,14 @@ See [examples/fan-out-and-parallel](examples/fan-out-and-parallel).
 You can keep HTTP simple (returning `status_code`, `headers`, `body`) and use the CEL task to parse JSON without a separate HTTP+JSON task. Enable the optional `json` library and use `json_parse(string)`:
 
 ```yaml
+name: json-via-cel
 steps:
-  - id: resp 
+  - id: resp
     http:
       method: GET
       url: https://httpbin.org/json
   - id: pick
     cel:
-      libs: [json]
       expr: json_parse(steps.resp.body)['slideshow']['title']
 ```
 
@@ -585,7 +585,7 @@ Each step in a `Flowfile` has named inputs and produces named outputs, which lat
 | `echo`    | `message` | `result` |
 | `printf`  | `format`, `args` | `result` |
 | `http`    | `url`, `method`, `headers`, `body`, `query`, `form`, `json`, `parse_json`, `outputs`, `expect`, `retry_on_unknown_outcome` | `status_code`, `headers`, `body`, `json` |
-| `cel`     | `expr`, `vars`, `libs` | `result` |
+| `cel`     | `expr`, `vars` | `result` |
 
 Names only, deliberately: types and constraints belong to the schema, and repeating them
 here is how the two disagree. `flow tasks` prints the same catalog with every type, which
@@ -626,7 +626,7 @@ steps:
 
 > [!TIP]
 > Use `${...}` for expressions, like referencing a previous step's output as `${steps.<id>.<output>}`.
-> The `cel` task evaluates the expression string provided in its `expr` input at runtime. Variables for the expression are provided under the `vars` input, and referenced as `vars.<name>`. Use the optional `libs` input to enable CEL extension libraries: `bindings`, `comprehensions`, `encoders`, `json`, `lists`, `math`, `optional`, `protos`, `regex`, `sets`, `strings`. `flow tasks` prints the same set, and naming one this build does not have is refused at validation rather than at run time.
+> The `cel` task evaluates the expression string provided in its `expr` input at runtime. Variables for the expression are provided under the `vars` input, and referenced as `vars.<name>`. Every expression in a workflow — this one, `if:`, `items:`, `wait_until:`, and every task input — reaches the same CEL extension libraries: `bindings`, `comprehensions`, `encoders`, `json`, `lists`, `math`, `optional`, `protos`, `regex`, `sets`, `strings`. There is nothing to enable; `flow tasks` prints the same set.
 
 ### Waiting
 

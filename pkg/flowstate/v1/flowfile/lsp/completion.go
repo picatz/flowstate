@@ -157,17 +157,15 @@ func completeAt(doc *document, pos lsp.Position) *lsp.CompletionList {
 	word, replace := wordBefore(pos, before)
 
 	if valuePos {
-		switch {
-		case key == "libs" || endsWith(path, "libs"):
-			return list(libraryCandidates(word, replace, current))
-		}
+		// Nothing is offered in a value position any more. `libs:` was the only key
+		// whose values came from a closed set this package knew; every other value in
+		// a Flowfile is a URL, a duration, a message, or an expression, and guessing
+		// at those is how an editor starts getting in the way.
 		return empty
 	}
 
 	// The cursor is where a key goes.
 	switch {
-	case endsWith(path, "libs"):
-		return list(libraryCandidates(word, replace, current))
 	case insideATask(path):
 		// The keys under a task's own name are its inputs, which come from its
 		// schema rather than from this package's table.
@@ -722,32 +720,6 @@ func inputCandidates(prefix string, replace lsp.Range, step *outlineStep) []lsp.
 			// The colon is included because an input key is never written
 			// without one, and typing it again is friction.
 			TextEdit: &lsp.TextEdit{Range: replace, NewText: name + ": "},
-		})
-	}
-	return items
-}
-
-// libraryCandidates offers the CEL extension libraries a step may enable.
-func libraryCandidates(prefix string, replace lsp.Range, step *outlineStep) []lsp.CompletionItem {
-	enabled := map[string]bool{}
-	if step != nil {
-		for _, l := range step.libs {
-			enabled[l] = true
-		}
-	}
-
-	var items []lsp.CompletionItem
-	for _, name := range v1.ExtensionLibraries() {
-		if !strings.HasPrefix(name, prefix) || (enabled[name] && name != prefix) {
-			continue
-		}
-		lib, _ := lookupCELLibrary(name)
-		items = append(items, lsp.CompletionItem{
-			Label:         name,
-			Kind:          lsp.CIKModule,
-			Detail:        lib.Summary,
-			Documentation: plainText(lib.hover()),
-			TextEdit:      &lsp.TextEdit{Range: replace, NewText: name},
 		})
 	}
 	return items

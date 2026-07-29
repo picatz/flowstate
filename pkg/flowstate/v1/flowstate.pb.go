@@ -1384,8 +1384,9 @@ type TaskCatalog struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Tasks is every task this build can run, sorted by name.
 	Tasks []*TaskDescription `protobuf:"bytes,1,rep,name=tasks,proto3" json:"tasks,omitempty"`
-	// CelLibraries are the CEL extension libraries a `cel` step may enable through
-	// its `libs` input.
+	// CelLibraries are the CEL extension libraries every expression in a workflow
+	// reaches. Not opt-in: a workflow speaks one dialect, so this is the vocabulary
+	// of `if:`, `items:`, `wait_until:`, a task input and a `cel` step alike.
 	CelLibraries []string `protobuf:"bytes,2,rep,name=cel_libraries,json=celLibraries,proto3" json:"cel_libraries,omitempty"`
 	// DurationUnits are the duration constructors available to *every* expression
 	// — `days(3)`, `minutes(30)` — rather than only where a library is enabled.
@@ -3630,19 +3631,7 @@ type Task_CEL_Inputs struct {
 	// Additional variables that can be referenced from the CEL expression.
 	// Each key represents the variable name and the value is resolved prior
 	// to evaluating the expression.
-	Vars map[string]*Value `protobuf:"bytes,2,rep,name=vars,proto3" json:"vars,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	// Optional list of CEL extension libraries to enable when evaluating the
-	// expression.
-	//
-	// Deliberately not enumerated here. This comment listed eight names and the
-	// evaluator accepted eleven, so it was quietly wrong about three — `json`
-	// among them, which a shipped example uses. A list written in prose beside
-	// the thing it describes is a second source of truth, and this one drifted
-	// the way second sources do.
-	//
-	// `flow tasks` prints the set this build accepts, and an unknown name is
-	// refused at validation with the same set named in the error.
-	Libs          []string `protobuf:"bytes,3,rep,name=libs,proto3" json:"libs,omitempty"`
+	Vars          map[string]*Value `protobuf:"bytes,2,rep,name=vars,proto3" json:"vars,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3687,13 +3676,6 @@ func (x *Task_CEL_Inputs) GetExpr() string {
 func (x *Task_CEL_Inputs) GetVars() map[string]*Value {
 	if x != nil {
 		return x.Vars
-	}
-	return nil
-}
-
-func (x *Task_CEL_Inputs) GetLibs() []string {
-	if x != nil {
-		return x.Libs
 	}
 	return nil
 }
@@ -3923,7 +3905,7 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x1a\n" +
 	"\brequired\x18\x03 \x01(\bR\brequired\x12\x1a\n" +
-	"\bdeferred\x18\x04 \x01(\bR\bdeferred\"\xe2\x0f\n" +
+	"\bdeferred\x18\x04 \x01(\bR\bdeferred\"\xda\x0f\n" +
 	"\x04Task\x127\n" +
 	"\x04name\x18\x01 \x01(\tB#\xe2A\x01\x02\xbaH\x1c\xc8\x01\x01r\x17\x10\x01\x18\x80\x012\x10^[A-Za-z0-9-_]+$R\x04name\x12K\n" +
 	"\x06inputs\x18\x03 \x03(\v2\x1e.flowstate.v1.Task.InputsEntryB\x13\xe2A\x01\x01\xbaH\f\xc8\x01\x01\x9a\x01\x06\"\x04r\x02\x10\x01R\x06inputs\x1aa\n" +
@@ -3982,16 +3964,15 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"\x04json\x18\x04 \x01(\v2\x1f.google.api.expr.v1alpha1.ValueR\x04json\x1a:\n" +
 	"\fHeadersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a\x9d\x02\n" +
-	"\x03CEL\x1a\xd5\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a\x95\x02\n" +
+	"\x03CEL\x1a\xcd\x01\n" +
 	"\x06Inputs\x12\x1e\n" +
 	"\x04expr\x18\x01 \x01(\tB\n" +
 	"\xe2A\x01\x02\xbaH\x03\xc8\x01\x01R\x04expr\x12I\n" +
-	"\x04vars\x18\x02 \x03(\v2'.flowstate.v1.Task.CEL.Inputs.VarsEntryB\f\xbaH\t\x9a\x01\x06\"\x04r\x02\x10\x01R\x04vars\x12\x12\n" +
-	"\x04libs\x18\x03 \x03(\tR\x04libs\x1aL\n" +
+	"\x04vars\x18\x02 \x03(\v2'.flowstate.v1.Task.CEL.Inputs.VarsEntryB\f\xbaH\t\x9a\x01\x06\"\x04r\x02\x10\x01R\x04vars\x1aL\n" +
 	"\tVarsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12)\n" +
-	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\x1a>\n" +
+	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01J\x04\b\x03\x10\x04R\x04libs\x1a>\n" +
 	"\aOutputs\x123\n" +
 	"\x06result\x18\x01 \x01(\v2\x13.flowstate.v1.ValueB\x06\xbaH\x03\xc8\x01\x01R\x06result\x1aN\n" +
 	"\vInputsEntry\x12\x10\n" +

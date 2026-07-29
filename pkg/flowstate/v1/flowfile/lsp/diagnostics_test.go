@@ -102,27 +102,6 @@ steps:
 			}},
 		},
 		{
-			name: "unknown cel library underlines the library name",
-			src: `name: badlib
-steps:
-  - id: a
-    cel:
-      libs: [json, nope]
-      expr: "1"
-`,
-			// Reported by the shared validator, so `flow validate` refuses the file
-			// too — a misspelled library used to compile cleanly and fail once the
-			// activity ran. The language server's contribution is the range: the
-			// validator can only name `libs`, and underlining the whole list would
-			// leave the reader to find which of two names is the wrong one.
-			want: []want{{
-				code:       codeFlowfile,
-				severity:   lsp.Error,
-				contains:   `unknown CEL extension library "nope"`,
-				underlines: "nope",
-			}},
-		},
-		{
 			name: "unknown task underlines the task name",
 			src: `name: badtask
 steps:

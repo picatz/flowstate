@@ -159,9 +159,14 @@ and all three would otherwise have been discovered late:
   suppression at all passes, which is the property that matters for a spec an older
   build wrote and a worker may still be replaying.
 
-**One language profile, pinned per run.** Per-step `libs:` means `if:` and `items:`
-speak a poorer dialect than a `cel` step, in the same file, for no reason a reader
-could infer. One dialect, recorded in the compiled spec.
+**One language profile, pinned per run.** *(landed)* Per-step `libs:` meant `if:` and
+`items:` spoke a poorer dialect than a `cel` step, in the same file, for no reason a
+reader could infer. One dialect now, named by `Workflow.profile` and recorded in the
+compiled spec, so a worker evaluates a run against the vocabulary it was compiled with
+rather than whatever that worker calls current. `libs:` is deleted; the key is reported
+as retired, which it has to be, because `cel` binds an unrecognised input as a
+*variable* — silence there would have turned a leftover `libs:` into a binding nobody
+reads.
 
 **Signal payloads under `<id>.payload.*`.** *(landed)* The proposal files this as
 ergonomics. It is a security fix and was prioritised as one: a signal sender used to
@@ -406,6 +411,10 @@ held, and because the next grammar change will have the same shape.
 the *cheapest* break in Phase 1, not the most expensive — the one that needs a
 deliberate schema break is pinning the language profile, which deletes the `libs`
 input. Sequence accordingly.
+
+*Since written:* both landed, in that order — the profile first, then the deletion,
+because deleting `libs` before every expression reached every library would have taken
+capability away from `cel` steps rather than given it to everything else.
 
 **Its precondition is already enforced.** A step key is a property or a task name,
 told apart by asking the registry, which only works while the two sets are

@@ -559,8 +559,9 @@ message TaskCatalog {
   // Tasks is every task this build can run, sorted by name.
   repeated TaskDescription tasks = 1;
 
-  // CelLibraries are the CEL extension libraries a `cel` step may enable through
-  // its `libs` input.
+  // CelLibraries are the CEL extension libraries every expression in a workflow
+  // reaches. Not opt-in: a workflow speaks one dialect, so this is the vocabulary
+  // of `if:`, `items:`, `wait_until:`, a task input and a `cel` step alike.
   repeated string cel_libraries = 2;
 
   // DurationUnits are the duration constructors available to *every* expression
@@ -785,18 +786,18 @@ message Task {
       map<string, Value> vars = 2 [(buf.validate.field).map = {
         keys: {string: {min_len: 1}}
       }];
-      // Optional list of CEL extension libraries to enable when evaluating the
-      // expression.
+      // Field 3 held `libs`, a per-step list of CEL extension libraries to enable.
       //
-      // Deliberately not enumerated here. This comment listed eight names and the
-      // evaluator accepted eleven, so it was quietly wrong about three — `json`
-      // among them, which a shipped example uses. A list written in prose beside
-      // the thing it describes is a second source of truth, and this one drifted
-      // the way second sources do.
+      // A workflow speaks one dialect now — named by `Workflow.profile`, the same
+      // for every expression in the file — so there is nothing left for a step to
+      // select. Per-step selection was the cause of a problem rather than a
+      // feature: `if:`, `items:` and `wait_until:` have no key to select with, so
+      // they spoke a poorer dialect than the `cel` step beside them.
       //
-      // `flow tasks` prints the set this build accepts, and an unknown name is
-      // refused at validation with the same set named in the error.
-      repeated string libs = 3;
+      // Reserved rather than reused. A number that meant something else in a spec
+      // some worker may still be replaying must never come back with a new meaning.
+      reserved 3;
+      reserved "libs";
     }
     message Outputs {
       // Result of evaluating the CEL expression. The dynamic type depends on

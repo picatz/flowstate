@@ -72,9 +72,9 @@ steps:
 			src: `name: t
 steps:
   - id: a
-    cel:
-      expr: "1 + 1"
-      libs: math
+    printf:
+      format: "%s"
+      args: nope
 `,
 			want: "expected a list, but this is a string",
 		},

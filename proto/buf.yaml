@@ -3,8 +3,25 @@ deps:
   - buf.build/bufbuild/protovalidate
   - buf.build/googleapis/googleapis
 breaking:
-  # Nothing suppressed, which is the only state this file should ever be found in
-  # for longer than one commit.
+  # One deliberate break, and this block comes out in the commit after it lands.
+  #
+  # `Task.CEL.Inputs.libs` was deleted. A workflow speaks one dialect now, named by
+  # `Workflow.profile`, so there was nothing left for a step to select — and
+  # selecting per step was the cause of the problem rather than a feature, since
+  # `if:`, `items:` and `wait_until:` have no key to select with.
+  #
+  # A FILE break and not a WIRE break, verified by running `WIRE` alone with no
+  # suppression at all and getting exit 0: `reserved 3` keeps the encoding promise,
+  # which is the property that matters for a spec an older build wrote and a worker
+  # may still be replaying. What FILE protects is source compatibility for
+  # embedders, and that is spent deliberately or not at all.
+  #
+  # Scoped to the one file so the rest of the schema is still checked. A suppression
+  # that outlives the commit it was written for is how the next break lands
+  # unnoticed — see the commit that removed the last one, one commit after it landed.
+  ignore_only:
+    FILE:
+      - flowstate/v1/flowstate.proto
   #
   # The previous commit deleted `Task.description` and moved the plugin protocol
   # to its own package, and carried a scoped `ignore_only` to let those two land.

@@ -31,7 +31,6 @@ func TestTypeNamesComeFromTheSchema(t *testing.T) {
 		{task: "http", field: "headers", want: "map[string, string]"},
 		{task: "http", field: "outputs", want: "map[string, any]"},
 		{task: "http", field: "status_code", outputs: true, want: "int"},
-		{task: "cel", field: "libs", want: "list[string]"},
 		{task: "cel", field: "vars", want: "map[string, any]"},
 		{task: "cel", field: "result", outputs: true, want: "any"},
 	}
@@ -66,7 +65,6 @@ func TestRequiredComesFromProtovalidate(t *testing.T) {
 		// args is required both by the required rule and by min_items.
 		{task: "printf", field: "args", want: true},
 		{task: "cel", field: "expr", want: true},
-		{task: "cel", field: "libs", want: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.task+"."+tt.field, func(t *testing.T) {
@@ -199,45 +197,6 @@ func TestSignatureHandlesATaskWithNoSchema(t *testing.T) {
 	assert.Equal(t, "unknown", typeName(nil))
 	assert.False(t, required(nil))
 	assert.Empty(t, constraints(nil))
-}
-
-func TestCELLibrariesAreDerivedFromTheEvaluator(t *testing.T) {
-	t.Parallel()
-
-	// Every library the evaluator offers must be describable, so enabling a new
-	// one in celenv.go makes it appear here with no change to this package.
-	for _, name := range v1.ExtensionLibraries() {
-		t.Run(name, func(t *testing.T) {
-			lib, ok := lookupCELLibrary(name)
-			require.True(t, ok, "the evaluator offers %q but this package cannot describe it", name)
-			assert.Equal(t, name, lib.Name)
-			assert.NotEmpty(t, lib.Summary, "add a summary for %q to librarySummaries", name)
-			assert.Contains(t, lib.hover(), name)
-		})
-	}
-
-	t.Run("names are matched case insensitively", func(t *testing.T) {
-		_, ok := lookupCELLibrary("JSON")
-		assert.True(t, ok)
-	})
-
-	t.Run("an unknown library is not invented", func(t *testing.T) {
-		_, ok := lookupCELLibrary("definitely-not-a-library")
-		assert.False(t, ok)
-	})
-
-	t.Run("provided functions are discovered, not listed", func(t *testing.T) {
-		// json contributes exactly json_parse, which the diff against the base
-		// environment must find.
-		lib, ok := lookupCELLibrary("json")
-		require.True(t, ok)
-		assert.Equal(t, []string{"json_parse"}, lib.Provides)
-
-		// A library with several additions should report more than one.
-		lib, ok = lookupCELLibrary("math")
-		require.True(t, ok)
-		assert.Greater(t, len(lib.Provides), 1)
-	})
 }
 
 func TestAcceptsAnyInput(t *testing.T) {

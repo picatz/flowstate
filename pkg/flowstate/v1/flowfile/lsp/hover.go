@@ -57,18 +57,6 @@ func hoverAt(doc *document, pos lsp.Position) *lsp.Hover {
 		}
 	}
 
-	// A CEL library name in a libs list.
-	if in := step.input("libs"); in != nil && in.value != nil {
-		for _, el := range append([]*value{in.value}, in.value.items...) {
-			if el.kind != kindScalar || !contains(el.rng, pos) {
-				continue
-			}
-			if lib, ok := lookupCELLibrary(el.text); ok {
-				return markdownHover(lib.hover(), el.rng)
-			}
-		}
-	}
-
 	// An input key.
 	for _, in := range step.inputs {
 		if !contains(in.keyRange, pos) {
