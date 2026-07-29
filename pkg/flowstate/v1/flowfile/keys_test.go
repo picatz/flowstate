@@ -261,3 +261,53 @@ func TestAMisspelledKeyStillGetsItsSuggestion(t *testing.T) {
 	assert.Contains(t, err.Error(), `did you mean "timeout"?`,
 		"a genuine misspelling lost its suggestion")
 }
+
+// TestAFutureKeyReadsTheSameWhereverItIsWritten covers the positions, not the word.
+//
+// `vars` is reserved for a block the design places at three levels — the
+// workflow, the step, and a loop body — and the first version of this reported it
+// only on a step, because that is where the key check for steps lives. So the
+// workflow level, which is the first place an author would try it, still answered
+// `unknown key "vars"`.
+//
+// One word reported two ways depending on which line it is on is the tool
+// disagreeing with itself, and worse than either message alone: an author who
+// moves the block up one level to see if that is the trick gets told it is a
+// different kind of wrong.
+func TestAFutureKeyReadsTheSameWhereverItIsWritten(t *testing.T) {
+	t.Parallel()
+
+	for name, src := range map[string]string{
+		"workflow": "name: t\nvars:\n  x: 1\nsteps:\n  - id: a\n    echo:\n      message: hi\n",
+		"step":     "name: t\nsteps:\n  - id: a\n    vars:\n      x: 1\n    echo:\n      message: hi\n",
+		"loop body": "name: t\nsteps:\n  - id: loop\n    for_each:\n      items: [1, 2]\n      steps:\n" +
+			"        - id: inner\n          vars:\n            x: 1\n          echo:\n            message: hi\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := Unmarshal([]byte(src))
+			require.Error(t, err, "`vars:` is not grammar in this build and was accepted at the %s level", name)
+
+			message := err.Error()
+			assert.Contains(t, message, "reserved for a later version of the grammar",
+				"at the %s level a reserved word is reported without saying it is reserved", name)
+			assert.NotContains(t, message, "unknown key",
+				"at the %s level a reserved word is reported as unknown, which reads as a misspelling", name)
+		})
+	}
+}
+
+// TestAnUnknownWorkflowKeyIsStillUnknown is the other direction at the level the
+// fix reached last.
+//
+// Running the reserved check over workflow keys could have swallowed genuine
+// unknown keys there, and every test above would still pass.
+func TestAnUnknownWorkflowKeyIsStillUnknown(t *testing.T) {
+	t.Parallel()
+
+	_, err := Unmarshal([]byte("name: t\nnonsense: 1\nsteps:\n  - id: a\n    echo:\n      message: hi\n"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `unknown key "nonsense"`,
+		"a genuinely unknown workflow key stopped being reported")
+}

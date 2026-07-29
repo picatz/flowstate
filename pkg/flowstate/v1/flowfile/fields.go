@@ -8,6 +8,8 @@ import (
 	"github.com/goccy/go-yaml/ast"
 
 	"google.golang.org/protobuf/types/known/durationpb"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
 // Reading a Flowfile means reading mappings: what keys are here, which of them are
@@ -449,4 +451,32 @@ func (c *compiler) boolean(n ast.Node, path string, r ref) (bool, bool) {
 		return false, false
 	}
 	return value.Value, true
+}
+
+// heldForLater reports any entry whose key is a word the grammar is holding for a
+// version that does not exist yet, and returns the rest.
+//
+// Held back from the key check for the same reason a retired spelling is: the
+// generic check offers the nearest known key and then lists the others, which for
+// a reserved word describes a misspelling the author did not make and sends them
+// looking for a typo that is not there.
+//
+// It runs wherever a key can be written, not only on a step. `vars` is reserved
+// for a block the design places at three levels — the workflow, the step, and a
+// loop — and an author trying the workflow level first is the likeliest case of
+// all. Reporting it as reserved on a step and as an unknown key one line further
+// out would be the tool disagreeing with itself about the same word, which is
+// worse than either message alone.
+func (c *compiler) heldForLater(entries []entry, r ref) []entry {
+	kept := make([]entry, 0, len(entries))
+	for _, e := range entries {
+		if v1.IsFutureStepKey(e.name) {
+			c.report(spanOfNode(e.key), r,
+				"`%s:` is reserved for a later version of the grammar; nothing in this build reads it, "+
+					"so writing it here does nothing", e.name)
+			continue
+		}
+		kept = append(kept, e)
+	}
+	return kept
 }
