@@ -60,6 +60,23 @@ type TaskDef struct {
 	// Inputs named here are passed through untouched.
 	DeferredInputs []string
 
+	// ExpressionInputs names inputs that have to be *written* as an expression.
+	//
+	// Distinct from [TaskDef.DeferredInputs], which says who evaluates an input.
+	// This says what an input has to be, and it is the half that was missing: a
+	// schema field typed `Value` is deliberately permissive, so `expect:` accepted
+	// a mapping, `flow validate` said ok, and the run failed on its first request.
+	// A file the validator blesses and the engine refuses is the worst answer the
+	// tool can give, because it moves the discovery from the author's terminal to
+	// production.
+	//
+	// Checkable without any scope, which is why it belongs here rather than in the
+	// type system: whether a value carries a `${...}` fence is lexical, decided by
+	// the parser, and needs nothing about what the expression would evaluate to.
+	// What it cannot check is the *type* — an `expect:` that is an expression
+	// returning a string is still wrong, and that is Phase 2's problem.
+	ExpressionInputs []string
+
 	// NeedsPrevOutputs reports whether the task must receive the outputs of
 	// earlier steps.
 	//
@@ -76,6 +93,12 @@ type TaskDef struct {
 // deferred reports whether the named input is evaluated by the task itself.
 func (d TaskDef) deferred(input string) bool {
 	return slices.Contains(d.DeferredInputs, input)
+}
+
+// MustBeExpression reports whether the named input has to be written as one.
+func MustBeExpression(taskName, input string) bool {
+	def, found := LookupTask(taskName)
+	return found && slices.Contains(def.ExpressionInputs, input)
 }
 
 // A Registry holds the tasks available to workflows.

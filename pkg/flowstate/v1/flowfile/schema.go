@@ -157,6 +157,29 @@ func validateTaskInputs(stepID string, task *v1.Task) Diagnostics {
 		if field == nil {
 			continue
 		}
+		// An input that has to be written as an expression is checked before the
+		// deferred skip, and that ordering is the whole point.
+		//
+		// These two sets overlap almost entirely — an input the task evaluates is
+		// usually one that has to be an expression — so a check placed after the
+		// skip would never run on the inputs it exists for. That is how `expect:`
+		// came to accept a mapping: every other check here declines on a deferred
+		// input, correctly, because their shape is the task's business. Whether a
+		// value carries a fence is not the task's business, because it is decided
+		// by the parser before the task sees anything.
+		if v1.MustBeExpression(def.Name, name) {
+			if task.GetInputs()[name].GetExpr() == nil {
+				ds = append(ds, Diagnostic{
+					Step:  stepID,
+					Field: name,
+					Message: fmt.Sprintf(
+						"task %q evaluates input %q as an expression, so it has to be written as one: "+
+							"wrap the value in ${...}", def.Name, name),
+				})
+			}
+			continue
+		}
+
 		if _, isDeferred := deferred[name]; isDeferred {
 			continue
 		}

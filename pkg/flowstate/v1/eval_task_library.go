@@ -98,11 +98,16 @@ var defaultEgressPolicy = sync.OnceValue(func() *netpolicy.Policy {
 // local server the default policy would refuse to reach.
 func HTTPTaskDef(policy *netpolicy.Policy) TaskDef {
 	return TaskDef{
-		Name:             "http",
-		Summary:          "Perform an HTTP request and return the response.",
-		Inputs:           (&Task_HTTP_Inputs{}).ProtoReflect().Descriptor(),
-		Outputs:          (&Task_HTTP_Outputs{}).ProtoReflect().Descriptor(),
-		DeferredInputs:   []string{"outputs", "expect"},
+		Name:           "http",
+		Summary:        "Perform an HTTP request and return the response.",
+		Inputs:         (&Task_HTTP_Inputs{}).ProtoReflect().Descriptor(),
+		Outputs:        (&Task_HTTP_Outputs{}).ProtoReflect().Descriptor(),
+		DeferredInputs: []string{"outputs", "expect"},
+		// Both are expressions and neither has a literal reading. `expect:` is a
+		// condition over the response and `outputs:` shapes it, so a mapping or a
+		// bare string in either is a file that validates and then fails on its
+		// first request.
+		ExpressionInputs: []string{"outputs", "expect"},
 		NeedsPrevOutputs: true,
 		Fn:               taskFuncHTTP(policy),
 	}
