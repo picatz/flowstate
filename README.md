@@ -313,12 +313,21 @@ step is `steps.<id>.<output>` here too. The task evaluates it itself, which is w
 `flow validate` does not reference-check it: what it may name also depends on `vars`,
 which the validator cannot see.
 
-It is also the reference the migration cannot reach. `flow fix` rewrites the `${...}`
-values in a file, and `expr` is not one of them — it is the expression itself, not a value
-containing one — so a `cel` step written before the root is left as it was and nothing
-reports it. It keeps working because the runtime still answers the older bare spelling,
-and stops the day that compatibility is dropped. Root `expr:` by hand when you migrate a
-file.
+It is the one reference `flow fix` will not rewrite for you, but it will tell you about
+it. Rooting is a rewrite of `${...}` values, and `expr` is not one of them — it is the
+expression itself rather than a value containing one — so a `cel` step written before the
+root is left exactly as it was. It keeps working, because the runtime still answers the
+older bare spelling, and stops the day that compatibility is dropped. So `flow fix`
+reports it instead, with the rooted form to paste:
+
+```
+workflow.yaml:10:13: `expr` is evaluated by the task against its own scope, so this was
+left alone — but it names something spelled like a step. If it means the step, write it
+`json_parse(steps.web.body)['slideshow']['title']`
+```
+
+It stays quiet about a name the step binds as a variable, under `vars:` or beside it,
+since that name is the variable and rooting it would break the step.
 
 ### Shape HTTP outputs to fit limits
 
