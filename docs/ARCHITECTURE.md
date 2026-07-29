@@ -46,6 +46,14 @@ deliberately sugar over a real API: the compiled spec is the durable artifact Te
 persists, and it can be produced by hand, by another tool, or by a future UI without
 going through YAML at all.
 
+That split is also where the language's own versioning stops. A Flowfile may name the
+grammar it is written in with a top-level `edition:`, which is read when the file
+compiles and has no field in the schema — an edition is a property of a *file*, not of a
+workload. So the DSL can retire a spelling outright, with `flow fix` rewriting files
+across the boundary, and nothing already running is affected: what a run carries is the
+compiled spec, which the change never touched. Surface syntax is cheap to change exactly
+because it is not the contract.
+
 **Connect RPC** provides an HTTP/1.1 and HTTP/2 API that is browser-compatible and
 gRPC-compatible without gRPC's operational weight, which keeps the self-hosted story
 light.
@@ -58,7 +66,7 @@ Flowstate is six layers, each with one responsibility and a narrow contract to t
 
 | Layer | Responsibility | Key artifacts |
 | --- | --- | --- |
-| **1. Authoring** | Humans express intent | `Flowfile` (YAML+CEL), LSP, `flow validate` / `fmt` / `compile` / `tasks` |
+| **1. Authoring** | Humans express intent | `Flowfile` (YAML+CEL), LSP, `flow validate` / `fix` / `tasks` |
 | **2. Specification** | Typed, validated, versioned workload definition | `Workflow` protobuf, protovalidate constraints |
 | **3. Capability** | What a workload *can do* | Task registry: `TaskDef` with typed Protobuf input/output descriptors; built-ins and plugins |
 | **4. Execution** | Run a step, then run a workload | One `StepExecutor`; two drivers (local in-process, Temporal durable) |

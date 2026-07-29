@@ -252,6 +252,140 @@ steps:
 `,
 		},
 		{
+			// Two comments at two levels, and the level is what decides.
+			//
+			// The one at the `name:`/`inputs:` indent is *inside* the block being
+			// replaced, so it moves with the task. Scanning only above the inputs
+			// dropped it — the same class as the comments above, one shape narrower,
+			// and the reason this scans the whole block with a hole in it rather than
+			// stopping when it reaches the inputs.
+			//
+			// The one at the `task:` indent is not inside the block at all. It is a
+			// comment about the step, written after its work, and it stays exactly
+			// where the author put it.
+			name: "a comment's level decides whether it moves",
+			src: `name: t
+steps:
+  - id: a
+    task:
+      name: echo
+      inputs:
+        message: hi
+      # a note beside the inputs key
+    # a note beside the task key
+`,
+			want: `name: t
+steps:
+  - id: a
+    # a note beside the inputs key
+    echo:
+      message: hi
+    # a note beside the task key
+`,
+		},
+		{
+			// A blank line straight under `inputs:` is legal and common, and it used
+			// to be refused: the dedent was measured from whatever line came first,
+			// and a blank line's indent is zero. That is a false diagnostic on a good
+			// file, telling an author their indentation is wrong when it is not —
+			// which is worse than no diagnostic, because it teaches people to stop
+			// reading them.
+			name: "a blank line under inputs is not an indentation problem",
+			src: `name: t
+steps:
+  - id: a
+    task:
+      name: echo
+      inputs:
+
+        message: hi
+`,
+			want: `name: t
+steps:
+  - id: a
+    echo:
+
+      message: hi
+`,
+		},
+		{
+			// A comment's indentation says nothing about YAML's structure — people
+			// dedent one to the margin constantly — so it must not decide where a
+			// block ends. This was the worst-shaped defect the rewriter has had:
+			// treating the comment as the end consumed only the lines above it, left
+			// `name:` and `inputs:` where they were, and reported success on a
+			// document it had just mangled.
+			name: "a dedented comment does not end the block",
+			src: `name: t
+steps:
+  - id: a
+    task:
+# pushed to the margin
+      name: echo
+      inputs:
+        message: hi
+`,
+			want: `name: t
+steps:
+  - id: a
+    # pushed to the margin
+    echo:
+      message: hi
+`,
+		},
+		{
+			// The other half of that rule. A comment indented *past* the key is inside
+			// the block and has to extend it, or a note under the last input stops
+			// travelling with the inputs and is left behind at its old indentation.
+			name: "a comment under the last input still belongs to it",
+			src: `name: t
+steps:
+  - id: a
+    task:
+      name: echo
+      inputs:
+        message: hi
+        # a note under the last input
+  - id: b
+    echo:
+      message: bye
+`,
+			want: `name: t
+steps:
+  - id: a
+    echo:
+      message: hi
+      # a note under the last input
+  - id: b
+    echo:
+      message: bye
+`,
+		},
+		{
+			// The keys going away can carry comments at the end of them, and those
+			// comments are about the task, which is still here. `task:` and `inputs:`
+			// have no value at all and a task name cannot contain a `#`, so on these
+			// three lines a `#` is unambiguously a comment.
+			name: "comments at the end of a retired key are carried up",
+			src: `name: t
+steps:
+  - id: a
+    task: # why there is a step here
+      name: echo # the greeting one
+      inputs: # what it says
+        message: hi
+`,
+			want: `name: t
+steps:
+  - id: a
+    # why there is a step here
+    # the greeting one
+    # what it says
+    echo:
+      message: hi
+`,
+		},
+		{
 			// A block scalar's own indentation is relative to its key, and the key
 			// moved. Copying source lines and shifting them all by the same amount is
 			// what keeps this true without understanding block scalars at all.
@@ -685,4 +819,63 @@ func unflatten(t *testing.T, src string) string {
 		i = j
 	}
 	return strings.Join(out, "\n")
+}
+
+// TestFixKeepsTheLineEndingsItFound covers a file written on Windows.
+//
+// The lines this rewriter does not touch are copied through with whatever ended
+// them, so a rewritten line ending differently leaves a file with mixed endings —
+// in a tool whose whole promise is to change only what it must. Every line in a
+// diff would then be a change nobody asked for.
+func TestFixKeepsTheLineEndingsItFound(t *testing.T) {
+	t.Parallel()
+
+	crlf := "name: t\r\nsteps:\r\n  - id: a\r\n    task:\r\n      name: echo\r\n      inputs:\r\n        message: hi\r\n"
+
+	result, err := flowfile.Fix([]byte(crlf))
+	require.NoError(t, err)
+	require.True(t, result.Changed())
+
+	out := string(result.Source)
+	assert.Equal(t, "name: t\r\nsteps:\r\n  - id: a\r\n    echo:\r\n      message: hi\r\n", out)
+
+	// Stated separately, because "every line ends the same way" is the property and
+	// the exact bytes above are only one instance of it.
+	assert.Equal(t, strings.Count(out, "\n"), strings.Count(out, "\r\n"),
+		"every line must end the way the source's lines did")
+
+	// And the other direction: a plain LF document does not acquire carriage
+	// returns from anywhere.
+	lf := "name: t\nsteps:\n  - id: a\n    task:\n      name: echo\n      inputs:\n        message: hi\n"
+	plain, err := flowfile.Fix([]byte(lf))
+	require.NoError(t, err)
+	assert.NotContains(t, string(plain.Source), "\r")
+}
+
+// TestFixDoesNotMistakeAHashInAValueForAComment is the limit of the rule above.
+//
+// Deciding whether a `#` inside a string is a comment means lexing YAML, and a
+// rewriter that guesses wrong there truncates an author's value — which is worse
+// than dropping the comment it was trying to save. So a line carrying a quote is
+// left alone.
+func TestFixDoesNotMistakeAHashInAValueForAComment(t *testing.T) {
+	t.Parallel()
+
+	src := `name: t
+steps:
+  - id: a
+    task:
+      name: echo
+      inputs:
+        message: "a # b"
+`
+	result, err := flowfile.Fix([]byte(src))
+	require.NoError(t, err)
+	assert.Contains(t, string(result.Source), `message: "a # b"`,
+		"the value is copied through untouched, hash and all")
+
+	wf, _, err := flowfile.Parse(result.Source)
+	require.NoError(t, err)
+	assert.Equal(t, "a # b",
+		wf.GetSteps()[0].GetTask().GetInputs()["message"].GetLiteral().GetStringValue())
 }

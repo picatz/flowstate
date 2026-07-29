@@ -96,7 +96,11 @@ func Fix(data []byte) (FixResult, error) {
 		return FixResult{}, err
 	}
 
-	f := &fixer{lines: splitLines(data), trailingNewline: bytes.HasSuffix(data, []byte("\n"))}
+	f := &fixer{
+		lines:           splitLines(data),
+		trailingNewline: bytes.HasSuffix(data, []byte("\n")),
+		terminator:      lineTerminator(data),
+	}
 	for _, doc := range file.Docs {
 		f.workflow(doc.Body)
 	}
@@ -125,6 +129,12 @@ type fixer struct {
 	// changed, and a migration that quietly adds it puts a line in the diff of
 	// every file it touches that has nothing to do with the migration.
 	trailingNewline bool
+
+	// terminator is how this document ends its lines. A rewritten line has to end
+	// the same way the copied ones do, or a CRLF file comes back with LF on the
+	// lines that changed — mixed endings in a file the tool promised to leave
+	// alone except where it had to act.
+	terminator string
 
 	edits    map[int]lineEdit
 	changes  []FixChange
@@ -219,7 +229,11 @@ func (f *fixer) edition(entry *ast.MappingValueNode) {
 		return
 	}
 	indent := strings.Repeat(" ", keySpan.Start.Column-1)
-	f.record(keySpan.Start.Line, f.blockEnd(keySpan.Start.Line, keySpan.Start.Column-1),
+	// The key's own line and no more. An edition is a scalar written beside its
+	// key, so taking the block under it would consume anything indented on the next
+	// line — a comment, most likely — and delete it while claiming to have updated
+	// a version number.
+	f.record(keySpan.Start.Line, keySpan.Start.Line,
 		[]string{indent + "edition: " + strconv.Quote(CurrentEdition)},
 		fmt.Sprintf("edition %q updated to %q", declared, CurrentEdition))
 }
@@ -359,10 +373,11 @@ func (f *fixer) taskBlock(entry *ast.MappingValueNode) {
 
 	var replacement []string
 
-	// Comments written among the keys that are going away — above `name:`, beside
-	// `inputs:` — described the task, and the task is still here. Carried up to sit
-	// above its key rather than deleted with the lines they were on.
-	replacement = append(replacement, f.commentsAbove(keySpan.Start.Line, through, inputsKey, indent)...)
+	// Comments written among the keys that are going away — above `name:`, after
+	// the inputs, anywhere in the block that is not among the inputs themselves —
+	// described the task, and the task is still here. Carried up to sit above its
+	// key rather than deleted with the lines they were on.
+	replacement = append(replacement, f.commentsOutsideInputs(keySpan.Start.Line, through, inputsKey, indent)...)
 
 	if descriptionNode != nil {
 		text, ok := scalarText(descriptionNode)
@@ -443,7 +458,13 @@ func (f *fixer) inputLines(inputsKey, inputs ast.Node, taskIndent int) ([]string
 	// How far every line moves left. The values sat two levels in from `task:` —
 	// once for `inputs:` and once for themselves — and end up one level in from the
 	// task's own key, which is where a task's inputs go.
-	shift := indentWidth(f.line(first)) - (taskIndent + 2)
+	//
+	// Measured from the first line with something on it. A blank line straight
+	// under `inputs:` is legal and common, and its indent is zero, so measuring
+	// from whatever line came first refused a perfectly good file — telling an
+	// author their indentation was wrong when it was not, which is the kind of
+	// diagnostic that teaches people to stop reading them.
+	shift := indentWidth(f.line(f.firstContentLine(first, last))) - (taskIndent + 2)
 	if shift < 0 {
 		f.refuse(inputs,
 			"the values under `inputs:` are indented less than the key they belong to, so dedenting them would change what they nest under; fix this step by hand")
@@ -467,43 +488,112 @@ func (f *fixer) inputLines(inputsKey, inputs ast.Node, taskIndent int) ([]string
 	return out, true
 }
 
-// commentsAbove returns the comment-only lines of a `task:` block that sit above
-// its inputs, re-indented to the given level.
+// commentsOutsideInputs returns the comment-only lines of a `task:` block that do
+// not belong to its inputs, re-indented to the given level.
 //
-// They are the comments about the task itself: the ones explaining `name:`, which
-// is the key the task's own name replaces. A comment among the *inputs* travels
-// with them and is not collected here.
-func (f *fixer) commentsAbove(taskLine, through int, inputsKey ast.Node, indent string) []string {
-	end := through
+// They are the comments about the task itself: the ones explaining `name:`, and
+// any written after the inputs at the level of the keys being removed. A comment
+// among the *inputs* travels with them and is not collected here — which is why
+// this is a whole-block scan with a hole in it rather than a scan that stops at
+// the inputs. Stopping there dropped every comment written below them.
+func (f *fixer) commentsOutsideInputs(taskLine, through int, inputsKey ast.Node, indent string) []string {
+	inputsFirst, inputsLast := 0, -1
 	if span := spanOfNode(inputsKey); span.IsValid() {
-		end = span.Start.Line - 1
+		inputsFirst = span.Start.Line
+		inputsLast = f.blockEnd(span.Start.Line, span.Start.Column-1)
 	}
 
 	var out []string
-	for n := taskLine + 1; n <= end; n++ {
+	for n := taskLine; n <= through; n++ {
+		if n > taskLine && n >= inputsFirst && n <= inputsLast {
+			continue
+		}
 		text := strings.TrimSpace(f.line(n))
 		if strings.HasPrefix(text, "#") {
 			out = append(out, indent+text)
+			continue
+		}
+		// A comment written at the end of a key that is going away goes with the
+		// rest of that key's line otherwise. `name: echo # the greeting one` says
+		// something about the task, and the task is still here.
+		if comment := trailingComment(text); comment != "" {
+			out = append(out, indent+comment)
+		}
+	}
+	if inputsFirst > 0 {
+		if comment := trailingComment(strings.TrimSpace(f.line(inputsFirst))); comment != "" {
+			out = append(out, indent+comment)
 		}
 	}
 	return out
 }
 
+// trailingComment returns the comment at the end of a line, or the empty string
+// when there is none.
+//
+// Only called on the structural lines a task block is made of — `task:`,
+// `name: <task>`, `inputs:` — which is what makes a simple rule safe. Two of them
+// have no value at all, and a task name is `[A-Za-z][A-Za-z0-9_-]*`, so a `#`
+// after the colon on any of them is a comment and cannot be part of a value.
+//
+// A line carrying a quote is left alone regardless. Deciding whether a `#` inside
+// a string is a comment means lexing YAML, and a rewriter that guesses wrong there
+// truncates an author's value — which is worse than dropping the comment it was
+// trying to save.
+func trailingComment(line string) string {
+	if strings.ContainsAny(line, `"'`) {
+		return ""
+	}
+	i := strings.Index(line, " #")
+	if i < 0 {
+		return ""
+	}
+	return strings.TrimSpace(line[i+1:])
+}
+
+// firstContentLine returns the first line in a range with something other than
+// whitespace on it, or the range's start when there is none.
+func (f *fixer) firstContentLine(first, last int) int {
+	for n := first; n <= last; n++ {
+		if strings.TrimSpace(f.line(n)) != "" {
+			return n
+		}
+	}
+	return first
+}
+
 // blockEnd returns the last line belonging to the block a key opens.
 //
-// A block is its key's line plus every following line indented further, with
-// blank lines inside it counting as part of it and blank lines at its end not.
-// That is how a person reads YAML, and unlike a node's token span it takes in the
-// comments written among the values — which a rewriter must carry rather than
-// drop, since a comment is the part of a file a tool can least afford to lose.
+// A block is its key's line plus every following line indented further. Unlike a
+// node's token span it takes in the comments written among the values, which a
+// rewriter must carry rather than drop — a comment is the part of a file a tool
+// can least afford to lose.
+//
+// A comment's own indentation says nothing about YAML's structure — people dedent
+// one to the margin all the time — so a comment never *ends* the block. Only a
+// content line at or left of the key does that. A comment indented past the key is
+// still part of the block and extends it, which is what keeps a note written under
+// the last input travelling with the inputs.
+//
+// Treating a dedented comment as the end was a real defect and the worst-shaped
+// kind: the replacement consumed only the lines above it, the `name:` and
+// `inputs:` below it were left where they were, and the rewriter reported success
+// on a document it had just mangled.
 func (f *fixer) blockEnd(keyLine, indent int) int {
 	last := keyLine
 	for n := keyLine + 1; n <= len(f.lines); n++ {
 		line := f.line(n)
-		if strings.TrimSpace(line) == "" {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
 			continue
 		}
+		comment := strings.HasPrefix(trimmed, "#")
 		if indentWidth(line) <= indent {
+			if comment {
+				// Neither in the block nor the end of it. A comment at the key's own
+				// level after the block belongs to whatever comes next.
+				continue
+			}
 			break
 		}
 		last = n
@@ -526,30 +616,52 @@ func (f *fixer) apply() []byte {
 		edit, edited := f.edits[n]
 		if !edited {
 			b.WriteString(f.lines[n-1])
-			b.WriteByte('\n')
+			b.WriteString(f.terminator)
 			continue
 		}
 		for _, line := range edit.replacement {
 			b.WriteString(line)
-			b.WriteByte('\n')
+			b.WriteString(f.terminator)
 		}
 		n = edit.through
 	}
 
 	out := b.String()
 	if !f.trailingNewline {
-		out = strings.TrimSuffix(out, "\n")
+		out = strings.TrimSuffix(out, f.terminator)
 	}
 	return []byte(out)
 }
 
 // splitLines splits source into lines without their terminators.
+//
+// A carriage return is stripped with the newline rather than left on the end of
+// the line, so that every line this package measures, compares, or re-indents is
+// the line's text and nothing else. [fixer.terminator] puts it back.
 func splitLines(data []byte) []string {
 	text := strings.TrimSuffix(string(data), "\n")
+	text = strings.TrimSuffix(text, "\r")
 	if text == "" {
 		return nil
 	}
-	return strings.Split(text, "\n")
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		lines[i] = strings.TrimSuffix(line, "\r")
+	}
+	return lines
+}
+
+// lineTerminator reports how a document ends its lines.
+//
+// The first one decides, because a document with both is already inconsistent and
+// this is not the tool to normalise it: a rewriter that changed every line ending
+// in a file it was asked to fix one step of would be doing something nobody asked
+// for.
+func lineTerminator(data []byte) string {
+	if i := bytes.IndexByte(data, '\n'); i > 0 && data[i-1] == '\r' {
+		return "\r\n"
+	}
+	return "\n"
 }
 
 // indentWidth returns how many leading spaces a line has.
