@@ -3,39 +3,24 @@ deps:
   - buf.build/bufbuild/protovalidate
   - buf.build/googleapis/googleapis
 breaking:
-  # One deliberate break, and this block comes out in the commit after it lands.
+  # Nothing suppressed, which is the only state this file should be found in for
+  # longer than one commit.
   #
-  # `Task.CEL.Inputs.libs` was deleted. A workflow speaks one dialect now, named by
-  # `Workflow.profile`, so there was nothing left for a step to select — and
-  # selecting per step was the cause of the problem rather than a feature, since
-  # `if:`, `items:` and `wait_until:` have no key to select with.
+  # The previous commit deleted `Task.CEL.Inputs.libs`, and carried a scoped
+  # `ignore_only` so it could land. It is removed here because a breaking
+  # suppression measures a distance from one commit: the moment that commit is on
+  # main the distance is zero, the check compares against a schema that already has
+  # the change, and the block suppresses nothing. What it still does is stand ready
+  # to hide the *next* break in that file.
   #
-  # A FILE break and not a WIRE break, verified by running `WIRE` alone with no
-  # suppression at all and getting exit 0: `reserved 3` keeps the encoding promise,
-  # which is the property that matters for a spec an older build wrote and a worker
-  # may still be replaying. What FILE protects is source compatibility for
-  # embedders, and that is spent deliberately or not at all.
-  #
-  # Scoped to the one file so the rest of the schema is still checked. A suppression
-  # that outlives the commit it was written for is how the next break lands
-  # unnoticed — see the commit that removed the last one, one commit after it landed.
-  ignore_only:
-    FILE:
-      - flowstate/v1/flowstate.proto
-  #
-  # The previous commit deleted `Task.description` and moved the plugin protocol
-  # to its own package, and carried a scoped `ignore_only` to let those two land.
-  # It is removed here rather than later because a suppression measures a distance
-  # from one commit, and the moment that commit is on main the distance is zero —
-  # the check now compares against a schema that already has both changes, so the
-  # block suppresses nothing and only stands ready to hide the *next* break.
-  #
-  # That is the failure mode worth naming: a stale suppression does not announce
-  # itself. It reads as a considered exception, it keeps passing, and the break it
-  # eventually swallows belongs to whoever comes next.
+  # That is a quiet failure. A stale suppression reads as a considered exception,
+  # keeps passing, and the break it eventually swallows belongs to whoever comes
+  # next. This is the second time the pattern has been used deliberately — see the
+  # commit that removed the last one, also one commit after it landed.
   use:
     - FILE
     - WIRE
+
 lint:
   # STANDARD is what DEFAULT was renamed to. Same rules, current spelling.
   use:
