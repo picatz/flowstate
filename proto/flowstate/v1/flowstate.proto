@@ -79,6 +79,7 @@ message Workflow {
       keys: {string: {min_len: 1}}
     }
   ];
+
 }
 
 // Node represents a step in the workflow. Each node can be a task or another type of operation.

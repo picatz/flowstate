@@ -6,5 +6,4 @@ steps:
       url: https://httpbin.org/json
   - id: title
     cel:
-      libs: [json]
       expr: json_parse(steps.web.body)['slideshow']['title']

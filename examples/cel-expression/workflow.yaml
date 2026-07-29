@@ -6,7 +6,15 @@ steps:
   - id: modify
     cel:
       expr: "regex.replace(vars.greeting.upperAscii(), 'HELLO', 'HI')"
-      libs: [strings, regex]
       vars:
         greeting: ${steps.greet.result}
 
+
+  # One dialect: `if:` has no `libs:` key of its own and never could, yet it
+  # reaches the same string functions the `cel` step above does. Before profiles
+  # this was `no such overload` — the condition was evaluated in an environment
+  # without extensions while the step beside it had them.
+  - id: shout
+    if: ${steps.modify.result.startsWith('HI')}
+    echo:
+      message: ${steps.modify.result.lowerAscii()}
