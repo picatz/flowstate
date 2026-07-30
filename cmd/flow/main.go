@@ -748,6 +748,20 @@ func runTasks(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(out, "\nInside wait_until, %s is the moment the wait is evaluated,\n"+
 		"so a deadline can be written as ${%s + days(3)}.\n", v1.NowIdentifier, v1.NowIdentifier)
 
+	// Where a value comes from, which this listing otherwise leaves somebody to
+	// guess at.
+	//
+	// A task is an *effect*. Two are listed above and one of them produces nothing,
+	// so a reader who arrives here asking "how do I compute something" would
+	// reasonably conclude the answer is almost nothing. It is an expression, named
+	// under `vars:`, and saying so is the difference between a task list and an
+	// answer to the question people run this command to ask.
+	fmt.Fprintf(out, "\nValues come from expressions rather than from tasks. Name one with %s:\n"+
+		"  at the top of a file, read everywhere as ${%s.<name>}\n"+
+		"  on a step, read inside it as a bare ${<name>}\n"+
+		"A step's outputs are what it learned from outside, read as ${%s.<id>.<output>}.\n",
+		v1.VarsRoot, v1.VarsRoot, v1.StepsRoot)
+
 	return nil
 }
 

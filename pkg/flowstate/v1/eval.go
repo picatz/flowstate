@@ -151,7 +151,28 @@ func (e *StepsOutputActivation) ResolveName(name string) (any, bool) {
 		return types.NewRefValMap(TypeAdapter, entries), true
 	}
 
-	if e.Prev == nil || e.Prev.StepValues == nil {
+	// The root resolves whether or not anything has run, which is what makes it a
+	// root rather than a name a particular moment happens to have.
+	//
+	// This used to sit below the guard on the next line, so a scope carrying no
+	// outputs answered `steps` as *unbound* while answering `vars` as an empty map —
+	// one root that is always there and one that appears once a step has finished.
+	// `size(steps)` before the first step is zero, not a mistake.
+	//
+	// Checked before the step lookup only for the empty case: where there *are*
+	// outputs, a step literally called `steps` still wins, which is the arm below and
+	// the reason it is answered last. A spec compiled before this root existed may
+	// contain one, and a worker evaluates the stored AST rather than re-parsing it.
+	if len(e.Prev.GetStepValues()) == 0 {
+		if name == StepsRoot {
+			root, err := e.stepsMap()
+			if err != nil {
+				return nil, false
+			}
+
+			return root, true
+		}
+
 		return nil, false
 	}
 

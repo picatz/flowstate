@@ -673,6 +673,21 @@ message TaskCatalog {
   // `wait_until` expression, and nowhere else. It is the one identifier whose
   // availability depends on position, so a reader cannot infer it.
   string now_identifier = 4;
+
+  // ValueRoots are the names an expression reaches a value through: `vars` for a
+  // value the file names, `steps` for what a step produced.
+  //
+  // Here for the same reason NowIdentifier is — a reader cannot infer it from the
+  // task list — and the retirement edition made that sharper rather than softer. A
+  // consumer reading this catalog now sees two tasks, one of which produces nothing
+  // at all, and could reasonably conclude the language has almost no way to compute
+  // anything. It has one: an expression, bound under `vars:` at the workflow or on a
+  // step, read back through these roots.
+  //
+  // Roots rather than prose because this message is the machine-readable half. What
+  // the roots *mean* is `flow tasks` output and docs/DSL.md; what an agent needs in
+  // order to write a reference that resolves is the words themselves.
+  repeated string value_roots = 5;
 }
 
 // TaskDescription is one task's name and shape.

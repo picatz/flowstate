@@ -1563,6 +1563,20 @@ type TaskCatalog struct {
 	// `wait_until` expression, and nowhere else. It is the one identifier whose
 	// availability depends on position, so a reader cannot infer it.
 	NowIdentifier string `protobuf:"bytes,4,opt,name=now_identifier,json=nowIdentifier,proto3" json:"now_identifier,omitempty"`
+	// ValueRoots are the names an expression reaches a value through: `vars` for a
+	// value the file names, `steps` for what a step produced.
+	//
+	// Here for the same reason NowIdentifier is — a reader cannot infer it from the
+	// task list — and the retirement edition made that sharper rather than softer. A
+	// consumer reading this catalog now sees two tasks, one of which produces nothing
+	// at all, and could reasonably conclude the language has almost no way to compute
+	// anything. It has one: an expression, bound under `vars:` at the workflow or on a
+	// step, read back through these roots.
+	//
+	// Roots rather than prose because this message is the machine-readable half. What
+	// the roots *mean* is `flow tasks` output and docs/DSL.md; what an agent needs in
+	// order to write a reference that resolves is the words themselves.
+	ValueRoots    []string `protobuf:"bytes,5,rep,name=value_roots,json=valueRoots,proto3" json:"value_roots,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1623,6 +1637,13 @@ func (x *TaskCatalog) GetNowIdentifier() string {
 		return x.NowIdentifier
 	}
 	return ""
+}
+
+func (x *TaskCatalog) GetValueRoots() []string {
+	if x != nil {
+		return x.ValueRoots
+	}
+	return nil
 }
 
 // TaskDescription is one task's name and shape.
@@ -4139,12 +4160,14 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"\tTYPE_EXPR\x10\a\x12\x0e\n" +
 	"\n" +
 	"TYPE_ERROR\x10\bB\r\n" +
-	"\x04kind\x12\x05\xbaH\x02\b\x01\"\xb5\x01\n" +
+	"\x04kind\x12\x05\xbaH\x02\b\x01\"\xd6\x01\n" +
 	"\vTaskCatalog\x123\n" +
 	"\x05tasks\x18\x01 \x03(\v2\x1d.flowstate.v1.TaskDescriptionR\x05tasks\x12#\n" +
 	"\rcel_libraries\x18\x02 \x03(\tR\fcelLibraries\x12%\n" +
 	"\x0eduration_units\x18\x03 \x03(\tR\rdurationUnits\x12%\n" +
-	"\x0enow_identifier\x18\x04 \x01(\tR\rnowIdentifier\"\xa3\x01\n" +
+	"\x0enow_identifier\x18\x04 \x01(\tR\rnowIdentifier\x12\x1f\n" +
+	"\vvalue_roots\x18\x05 \x03(\tR\n" +
+	"valueRoots\"\xa3\x01\n" +
 	"\x0fTaskDescription\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\asummary\x18\x02 \x01(\tR\asummary\x12/\n" +
