@@ -297,7 +297,7 @@ func Validate(wf *v1.Workflow) Diagnostics {
 	}
 
 	// Tasks and expression references.
-	scope := newRefScope()
+	scope := newRefScope(wf)
 	for i, node := range wf.GetSteps() {
 		id := node.GetId()
 		task := node.GetTask()
@@ -422,11 +422,29 @@ type refScope struct {
 	// locals are the names bound bare here: a loop's iterator, and `now` inside a
 	// wait expression. They are not steps and never were.
 	locals map[string]bool
+
+	// vars are the workflow's declared vars, reachable as `vars.<name>`.
+	//
+	// Unlike steps, this set does not grow as the walk proceeds: workflow vars are
+	// evaluated before any step runs, so every step sees all of them and there is no
+	// forward-reference case to report. That is the whole difference between an
+	// ambient name and a step output, and it is why the two roots need different
+	// diagnostics even though they share a resolution rule.
+	vars map[string]bool
 }
 
-// newRefScope returns an empty scope.
-func newRefScope() refScope {
-	return refScope{steps: map[string]bool{}, locals: map[string]bool{}}
+// newRefScope returns a scope holding the workflow's declared vars and nothing else.
+//
+// The vars are in from the start rather than accumulated, because that is when they
+// exist: they are evaluated once before any step runs, so the first step sees the same
+// set as the last.
+func newRefScope(wf *v1.Workflow) refScope {
+	vars := make(map[string]bool, len(wf.GetVars()))
+	for name := range wf.GetVars() {
+		vars[name] = true
+	}
+
+	return refScope{steps: map[string]bool{}, locals: map[string]bool{}, vars: vars}
 }
 
 // clone returns a copy that can be extended without disturbing the original,
@@ -436,6 +454,9 @@ func (s refScope) clone() refScope {
 	out := refScope{
 		steps:  make(map[string]bool, len(s.steps)+1),
 		locals: make(map[string]bool, len(s.locals)+1),
+		// Shared rather than copied: nothing extends the var set after the scope is
+		// built, because workflow vars all exist before the first step runs.
+		vars: s.vars,
 	}
 	maps.Copy(out.steps, s.steps)
 	maps.Copy(out.locals, s.locals)
@@ -651,7 +672,17 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 		return ds
 	}
 
-	rooted, bare := referencedIdentifiers(parsed)
+	rooted, vars, bare := referencedIdentifiers(parsed)
+
+	// A var can only fail one way — nothing declared it — because they all exist
+	// before the first step runs. So there is no forward reference to distinguish and
+	// no scope to explain, which is what lets this be the shortest of the three.
+	for _, ref := range vars {
+		if scope.vars[ref] {
+			continue
+		}
+		ds = append(ds, unresolvedVar(stepID, inputName, ref, scope))
+	}
 
 	// A rooted reference names a step and can only fail by naming one that is not
 	// in scope. There is no second reading of it to rule out, which is the point of
@@ -723,15 +754,54 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 	return ds
 }
 
-// referencedIdentifiers returns the free identifiers an expression references.
+// unresolvedVar reports a reference to a var the workflow does not declare.
+//
+// The declared names are offered because they are few, known in full, and all in scope
+// at once — none of which is true of steps, where a listing would be long and would
+// include names not yet available at this point in the walk. Where one is close enough
+// to be a typo, it is named first: "did you mean" is the shortest path from the
+// diagnostic to the edit.
+func unresolvedVar(stepID, inputName, ref string, scope refScope) Diagnostic {
+	declared := slices.Sorted(maps.Keys(scope.vars))
+
+	message := fmt.Sprintf("references unknown var %q", ref)
+	switch {
+	case len(declared) == 0:
+		// The likeliest mistake by far when nothing is declared: `vars:` belongs at
+		// the top of the file, and an author who has not written one yet is reaching
+		// for a feature rather than misspelling a name.
+		message += "; this workflow declares no `vars:`, which is a top-level block of " +
+			"names and values that every step can read as `" + v1.VarsRoot + ".<name>`"
+	default:
+		if suggestion, ok := nearest(ref, declared); ok {
+			message += fmt.Sprintf("; did you mean %q?", suggestion)
+		} else {
+			message += fmt.Sprintf("; this workflow declares %s", strings.Join(declared, ", "))
+		}
+	}
+
+	return Diagnostic{Step: stepID, Field: inputName, Value: ref, Message: message}
+}
+
+// referencedIdentifiers returns the names an expression references, in three groups:
+// steps reached under the `steps.` root, vars reached under the `vars.` root, and
+// whatever is written bare.
+//
+// Three groups rather than one because each fails differently and so wants a different
+// diagnostic. An unknown step may be a forward reference, a typo, or a step that exists
+// outside this scope; an unknown var can only be a typo, since every var exists before
+// the first step runs; a bare name may be a local, `now`, or a reference in the spelling
+// this grammar retired. Merging them and sorting it out afterwards loses exactly the
+// distinction the caller needs.
 //
 // Identifiers bound by a comprehension are excluded: in `items.map(x, x + 1)`
 // the name `x` is introduced by the expression itself and is not a step
 // reference. Reporting those would make every use of a comprehension look broken.
-func referencedIdentifiers(parsed *expr.ParsedExpr) (rooted, bare []string) {
-	roots, free := map[string]struct{}{}, map[string]struct{}{}
-	collectReferences(parsed.GetExpr(), map[string]struct{}{}, roots, free)
-	return sortedNames(roots), sortedNames(free)
+func referencedIdentifiers(parsed *expr.ParsedExpr) (rooted, vars, bare []string) {
+	roots, varNames, free := map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}
+	collectReferences(parsed.GetExpr(), map[string]struct{}{}, roots, varNames, free)
+
+	return sortedNames(roots), sortedNames(varNames), sortedNames(free)
 }
 
 // sortedNames returns a set's members in order, so one file always reports the
@@ -753,14 +823,26 @@ func sortedNames(set map[string]struct{}) []string {
 // the spelling this grammar retired, and those want different diagnostics. They
 // are collected apart rather than merged and sorted out afterwards, because the
 // distinction is exactly what the caller needs and is lost by then.
-func collectReferences(e *expr.Expr, bound, rooted, free map[string]struct{}) {
+func collectReferences(e *expr.Expr, bound, rooted, vars, free map[string]struct{}) {
 	if e == nil {
 		return
 	}
 	if sel := e.GetSelectExpr(); sel != nil {
-		if step, ok := rootedStepName(sel, bound); ok {
-			rooted[step] = struct{}{}
-			return
+		// Both roots are recognised here, and an unrecognised root falls through to
+		// the walk below so that `foo.bar` still reports `foo` as a bare name. That
+		// fall-through is what keeps adding a root from silently swallowing the
+		// diagnostic for a name that has none.
+		if root, name, ok := rootedName(sel, bound); ok {
+			switch root {
+			case v1.StepsRoot:
+				rooted[name] = struct{}{}
+
+				return
+			case v1.VarsRoot:
+				vars[name] = struct{}{}
+
+				return
+			}
 		}
 	}
 	switch kind := e.GetExprKind().(type) {
@@ -770,28 +852,28 @@ func collectReferences(e *expr.Expr, bound, rooted, free map[string]struct{}) {
 			free[name] = struct{}{}
 		}
 	case *expr.Expr_SelectExpr:
-		collectReferences(kind.SelectExpr.GetOperand(), bound, rooted, free)
+		collectReferences(kind.SelectExpr.GetOperand(), bound, rooted, vars, free)
 	case *expr.Expr_CallExpr:
-		collectReferences(kind.CallExpr.GetTarget(), bound, rooted, free)
+		collectReferences(kind.CallExpr.GetTarget(), bound, rooted, vars, free)
 		for _, arg := range kind.CallExpr.GetArgs() {
-			collectReferences(arg, bound, rooted, free)
+			collectReferences(arg, bound, rooted, vars, free)
 		}
 	case *expr.Expr_ListExpr:
 		for _, el := range kind.ListExpr.GetElements() {
-			collectReferences(el, bound, rooted, free)
+			collectReferences(el, bound, rooted, vars, free)
 		}
 	case *expr.Expr_StructExpr:
 		for _, entry := range kind.StructExpr.GetEntries() {
-			collectReferences(entry.GetMapKey(), bound, rooted, free)
-			collectReferences(entry.GetValue(), bound, rooted, free)
+			collectReferences(entry.GetMapKey(), bound, rooted, vars, free)
+			collectReferences(entry.GetValue(), bound, rooted, vars, free)
 		}
 	case *expr.Expr_ComprehensionExpr:
 		c := kind.ComprehensionExpr
 
 		// The range and the accumulator's start are evaluated outside the
 		// comprehension's own scope.
-		collectReferences(c.GetIterRange(), bound, rooted, free)
-		collectReferences(c.GetAccuInit(), bound, rooted, free)
+		collectReferences(c.GetIterRange(), bound, rooted, vars, free)
+		collectReferences(c.GetAccuInit(), bound, rooted, vars, free)
 
 		inner := make(map[string]struct{}, len(bound)+3)
 		for name := range bound {
@@ -802,9 +884,9 @@ func collectReferences(e *expr.Expr, bound, rooted, free map[string]struct{}) {
 				inner[name] = struct{}{}
 			}
 		}
-		collectReferences(c.GetLoopCondition(), inner, rooted, free)
-		collectReferences(c.GetLoopStep(), inner, rooted, free)
-		collectReferences(c.GetResult(), inner, rooted, free)
+		collectReferences(c.GetLoopCondition(), inner, rooted, vars, free)
+		collectReferences(c.GetLoopStep(), inner, rooted, vars, free)
+		collectReferences(c.GetResult(), inner, rooted, vars, free)
 	}
 }
 
@@ -814,29 +896,42 @@ func collectReferences(e *expr.Expr, bound, rooted, free map[string]struct{}) {
 // the depth is whatever the author selected: `steps.a` is one select over the
 // root and `steps.a.result.code` is three.
 func rootedStepName(sel *expr.Expr_Select, bound map[string]struct{}) (string, bool) {
+	root, name, ok := rootedName(sel, bound)
+
+	return name, ok && root == v1.StepsRoot
+}
+
+// rootedName returns the root a select chain hangs from and the first field under it.
+//
+// One walk for both roots the language has. `steps.a.result` and `vars.region.zone`
+// have identical shapes and differ only in the word at the bottom, so deciding which
+// root it is belongs to the caller — a second copy of this walk per root is how the two
+// come to disagree about a shadowed root or a chain three deep.
+//
+// ok is false when the chain does not bottom out in a plain identifier, or when a
+// comprehension bound the root's name: then it is a binding rather than the root, and
+// whatever hangs off it is neither a step nor a var.
+func rootedName(sel *expr.Expr_Select, bound map[string]struct{}) (root, name string, ok bool) {
 	var fields []string
 	node := sel
 	for node != nil {
 		fields = append(fields, node.GetField())
 		operand := node.GetOperand()
 		if ident := operand.GetIdentExpr(); ident != nil {
-			if ident.GetName() != v1.StepsRoot {
-				return "", false
-			}
-			if _, shadowed := bound[v1.StepsRoot]; shadowed {
-				// A comprehension bound the root's name. Then it is a binding, not
-				// the root, and whatever hangs off it is not a step.
-				return "", false
+			root = ident.GetName()
+			if _, shadowed := bound[root]; shadowed {
+				return "", "", false
 			}
 			break
 		}
 		node = operand.GetSelectExpr()
 	}
 	if node == nil || len(fields) == 0 {
-		return "", false
+		return "", "", false
 	}
-	// Collected outermost first, so the step is the last one reached.
-	return fields[len(fields)-1], true
+
+	// Collected outermost first, so the name under the root is the last one reached.
+	return root, fields[len(fields)-1], true
 }
 
 // isCELIdentifier reports whether s is a legal CEL identifier.

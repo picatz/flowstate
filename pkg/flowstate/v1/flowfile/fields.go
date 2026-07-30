@@ -461,22 +461,47 @@ func (c *compiler) boolean(n ast.Node, path string, r ref) (bool, bool) {
 // a reserved word describes a misspelling the author did not make and sends them
 // looking for a typo that is not there.
 //
-// It runs wherever a key can be written, not only on a step. `vars` is reserved
-// for a block the design places at three levels — the workflow, the step, and a
-// loop — and an author trying the workflow level first is the likeliest case of
-// all. Reporting it as reserved on a step and as an unknown key one line further
-// out would be the tool disagreeing with itself about the same word, which is
-// worse than either message alone.
-func (c *compiler) heldForLater(entries []entry, r ref) []entry {
+// It runs wherever a key can be written, not only on a step. Reporting a word as
+// reserved in one position and as an unknown key one line further out would be the
+// tool disagreeing with itself about the same word, which is worse than either
+// message alone.
+//
+// live names the positions where a reserved word is already grammar, because a word
+// arrives one position at a time. `vars` is a block the design places at the workflow
+// level and on a step; the workflow level is built and the step level is not, so an
+// author who writes it there is not making a typo and is not writing something
+// permanently refused — they are one position early, and the message that helps says
+// where it does work. A word absent from this map is reserved everywhere.
+func (c *compiler) heldForLater(entries []entry, r ref, available []string) []entry {
 	kept := make([]entry, 0, len(entries))
 	for _, e := range entries {
-		if v1.IsFutureStepKey(e.name) {
-			c.report(spanOfNode(e.key), r,
-				"`%s:` is reserved for a later version of the grammar; nothing in this build reads it, "+
-					"so writing it here does nothing", e.name)
+		if !v1.IsFutureStepKey(e.name) || slices.Contains(available, e.name) {
+			kept = append(kept, e)
+
 			continue
 		}
-		kept = append(kept, e)
+
+		if where, live := liveElsewhere[e.name]; live {
+			c.report(spanOfNode(e.key), r,
+				"`%s:` is not built here yet; write it at %s, where this build reads it",
+				e.name, where)
+
+			continue
+		}
+
+		c.report(spanOfNode(e.key), r,
+			"`%s:` is reserved for a later version of the grammar; nothing in this build reads it, "+
+				"so writing it here does nothing", e.name)
 	}
 	return kept
+}
+
+// liveElsewhere maps a reserved word to the position where this build already reads
+// it, for the diagnostic above.
+//
+// Entries are removed as the remaining positions land — an entry here is a statement
+// that the word works *somewhere and not here*, so one that outlives its own build is
+// a message that sends an author to a position which no longer needs the advice.
+var liveElsewhere = map[string]string{
+	"vars": "the workflow level",
 }

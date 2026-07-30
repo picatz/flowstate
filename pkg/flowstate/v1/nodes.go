@@ -3,6 +3,8 @@ package flowstatev1
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
@@ -53,7 +55,15 @@ func (s *Scope) ActivationWith(ctx context.Context, extra map[string]ref.Val) ce
 	// The extras join the *locals*, because a name bound around an expression is what
 	// a local is. Adding them to the rooted vars would make `now` reachable as
 	// `vars.now`, which is a spelling nothing documents and nobody would guess.
-	locals := refValues(s.GetLocals())
+	//
+	// Allocated here rather than taken from refValues, which returns nil for an empty
+	// map — writing an extra into that nil is a panic, and the common case is exactly
+	// the one that hits it: a scope with no locals at all, which is every `wait_until:`
+	// outside a loop.
+	locals := make(map[string]ref.Val, len(s.GetLocals())+len(extra))
+	for name, v := range refValues(s.GetLocals()) {
+		locals[name] = v
+	}
 	for name, v := range extra {
 		locals[name] = v
 	}
@@ -294,6 +304,62 @@ func ResolveTaskInputs(ctx context.Context, task *Task, scope *Scope) (*Task, er
 		Name:   task.GetName(),
 		Inputs: inputs,
 	}, nil
+}
+
+// EvalWorkflowVars evaluates a workflow's `vars:` block once, producing the rooted
+// `vars.<name>` namespace every step then sees.
+//
+// Exported and shared because both drivers must call it. The alternative — each driver
+// evaluating vars where it happens to build its initial scope — is two implementations
+// of one rule, and invariant 3 says anything observable has to match. Here it matches
+// by construction rather than by two people remembering.
+//
+// # What a var may reference, which is nothing
+//
+// Evaluated against a scope with no step outputs and no locals, because at this point
+// there are none: no step has run, no loop is open. Nor may a var reference another var,
+// which is a deliberate refusal rather than an omission — a protobuf map has no order,
+// so "the one declared above" is not a thing the schema can express, and the honest
+// alternatives are a dependency sort with a cycle diagnostic or nothing. Nothing is the
+// smaller language, and allowing it later is additive.
+//
+// So a var is literals, operators and the profile's functions. `flow validate` reports a
+// reference here rather than leaving it to fail at run time.
+func EvalWorkflowVars(ctx context.Context, w *Workflow) (map[string]*Value, error) {
+	declared := w.GetVars()
+	if len(declared) == 0 {
+		return nil, nil
+	}
+
+	// Deliberately empty: see above. Carries the profile, because a var is evaluated
+	// against the vocabulary the file was compiled with like every other expression.
+	base := NewScope(w.GetProfile(), nil)
+
+	ev := DefaultEvaluator()
+	vars := make(map[string]*Value, len(declared))
+
+	// Sorted so that a workflow whose vars fail reports the same one first every time.
+	// A map's order would make the message depend on the run.
+	for _, name := range slices.Sorted(maps.Keys(declared)) {
+		v := declared[name]
+		if _, isExpr := v.GetKind().(*Value_Expr); !isExpr {
+			vars[name] = v
+
+			continue
+		}
+
+		out, err := ev.EvalParsedBase(ctx, w.GetProfile(), v.GetExpr(), base.Activation(ctx))
+		if err != nil {
+			return nil, fmt.Errorf("var %q: %w", name, err)
+		}
+		literal, err := cel.RefValueToValue(out)
+		if err != nil {
+			return nil, fmt.Errorf("var %q: converting result: %w", name, err)
+		}
+		vars[name] = &Value{Kind: &Value_Literal{Literal: literal}}
+	}
+
+	return vars, nil
 }
 
 // Activation returns the CEL activation for evaluating an expression against step

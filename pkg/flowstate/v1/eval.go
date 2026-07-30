@@ -568,7 +568,17 @@ func eval(ctx context.Context, w *Workflow) (*Workflow_StepOutputs, error) {
 		StepValues: make(map[string]*Node_Outputs),
 	}
 
-	if err := runNodes(ctx, w.Steps, NewScope(w.GetProfile(), stepOutputs)); err != nil {
+	// Evaluated before any step, which is what makes them ambient: every step sees
+	// the same set, so there is no ordering for an author to reason about.
+	vars, err := EvalWorkflowVars(ctx, w)
+	if err != nil {
+		return nil, err
+	}
+
+	scope := NewScope(w.GetProfile(), stepOutputs)
+	scope.Vars = vars
+
+	if err := runNodes(ctx, w.Steps, scope); err != nil {
 		return nil, err
 	}
 	return stepOutputs, nil

@@ -228,18 +228,18 @@ func TestAFutureKeyIsNotAlsoGrammar(t *testing.T) {
 
 // TestAFutureKeyIsReportedAsUnbuiltRatherThanUnknown covers what an author reads.
 //
-// `vars:` on a step and `varz:` on a step are not the same mistake, and the
-// generic key check cannot tell them apart: it offers the nearest known key and
-// then lists the rest, which for a reserved word describes a typo the author did
-// not make and sends them looking for one that is not there.
+// `undo:` on a step and `undoo:` on a step are not the same mistake, and the generic
+// key check cannot tell them apart: it offers the nearest known key and then lists the
+// rest, which for a reserved word describes a typo the author did not make and sends
+// them looking for one that is not there.
 //
-// The word is held back from that check for the same reason a retired spelling
-// is — so the message about it is the only thing said about it.
+// The word is held back from that check for the same reason a retired spelling is — so
+// the message about it is the only thing said about it.
 func TestAFutureKeyIsReportedAsUnbuiltRatherThanUnknown(t *testing.T) {
 	t.Parallel()
 
-	_, err := Unmarshal([]byte("name: t\nsteps:\n  - id: a\n    vars:\n      x: 1\n    echo:\n      message: hi\n"))
-	require.Error(t, err, "`vars:` is not a step key in this build and was accepted")
+	_, err := Unmarshal([]byte("name: t\nsteps:\n  - id: a\n    undo:\n      x: 1\n    echo:\n      message: hi\n"))
+	require.Error(t, err, "`undo:` is not a step key in this build and was accepted")
 
 	message := err.Error()
 	assert.Contains(t, message, "reserved for a later version of the grammar",
@@ -264,30 +264,29 @@ func TestAMisspelledKeyStillGetsItsSuggestion(t *testing.T) {
 
 // TestAFutureKeyReadsTheSameWhereverItIsWritten covers the positions, not the word.
 //
-// `vars` is reserved for a block the design places at three levels — the
-// workflow, the step, and a loop body — and the first version of this reported it
-// only on a step, because that is where the key check for steps lives. So the
-// workflow level, which is the first place an author would try it, still answered
-// `unknown key "vars"`.
+// A reserved word reported one way on a step and another way at the workflow level is
+// the tool disagreeing with itself, and worse than either message alone: an author who
+// moves a block up one level to see if that is the trick gets told it is a different
+// kind of wrong. The first version of this reported only on a step, because that is
+// where the key check for steps lives, so the workflow level answered `unknown key`.
 //
-// One word reported two ways depending on which line it is on is the tool
-// disagreeing with itself, and worse than either message alone: an author who
-// moves the block up one level to see if that is the trick gets told it is a
-// different kind of wrong.
+// Asserted with a word that is reserved *everywhere*, which is what the property is
+// about. `vars` used to be the example and has since landed at the workflow level, so
+// it now reads differently by design — see the test below, which is that case.
 func TestAFutureKeyReadsTheSameWhereverItIsWritten(t *testing.T) {
 	t.Parallel()
 
 	for name, src := range map[string]string{
-		"workflow": "name: t\nvars:\n  x: 1\nsteps:\n  - id: a\n    echo:\n      message: hi\n",
-		"step":     "name: t\nsteps:\n  - id: a\n    vars:\n      x: 1\n    echo:\n      message: hi\n",
+		"workflow": "name: t\nundo:\n  x: 1\nsteps:\n  - id: a\n    echo:\n      message: hi\n",
+		"step":     "name: t\nsteps:\n  - id: a\n    undo:\n      x: 1\n    echo:\n      message: hi\n",
 		"loop body": "name: t\nsteps:\n  - id: loop\n    for_each:\n      items: [1, 2]\n      steps:\n" +
-			"        - id: inner\n          vars:\n            x: 1\n          echo:\n            message: hi\n",
+			"        - id: inner\n          undo:\n            x: 1\n          echo:\n            message: hi\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
 			_, err := Unmarshal([]byte(src))
-			require.Error(t, err, "`vars:` is not grammar in this build and was accepted at the %s level", name)
+			require.Error(t, err, "`undo:` is not grammar in this build and was accepted at the %s level", name)
 
 			message := err.Error()
 			assert.Contains(t, message, "reserved for a later version of the grammar",
@@ -296,6 +295,39 @@ func TestAFutureKeyReadsTheSameWhereverItIsWritten(t *testing.T) {
 				"at the %s level a reserved word is reported as unknown, which reads as a misspelling", name)
 		})
 	}
+}
+
+// TestAPartlyLandedKeySaysWhereItWorks is the case the test above deliberately
+// excludes.
+//
+// A word arrives one position at a time, and while that is true of it there are three
+// things the tool could say on a step and only one of them helps. "Unknown key" reads
+// as a misspelling of a word spelled correctly. "Reserved for a later version" is
+// false — this build reads it, one level out. What an author can act on is where it
+// works, so that is what is said.
+//
+// The entry driving this is [liveElsewhere], and it is removed when the remaining
+// position lands. A test that outlives the entry fails here rather than leaving a
+// message that sends an author to a level which no longer needs the advice.
+func TestAPartlyLandedKeySaysWhereItWorks(t *testing.T) {
+	t.Parallel()
+
+	// Accepted where it is built, which is the half that makes the message below true.
+	_, err := Unmarshal([]byte("name: t\nvars:\n  x: 1\nsteps:\n  - id: a\n    echo:\n      message: hi\n"))
+	require.NoError(t, err, "`vars:` is grammar at the workflow level and was refused there")
+
+	// And on a step, where it is not built yet, the message points at the level that
+	// works rather than calling the word unknown or flatly reserved.
+	_, err = Unmarshal([]byte("name: t\nsteps:\n  - id: a\n    vars:\n      x: 1\n    echo:\n      message: hi\n"))
+	require.Error(t, err, "`vars:` is not a step key in this build and was accepted")
+
+	message := err.Error()
+	assert.Contains(t, message, "the workflow level",
+		"an author was not told where the key does work")
+	assert.NotContains(t, message, "unknown key",
+		"a key this build reads one level out was reported as a misspelling")
+	assert.NotContains(t, message, "reserved for a later version",
+		"a key this build reads was reported as reserved, which is false")
 }
 
 // TestAnUnknownWorkflowKeyIsStillUnknown is the other direction at the level the

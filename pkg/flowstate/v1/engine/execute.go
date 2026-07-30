@@ -162,9 +162,26 @@ func (e *executor) runTask(node *v1.Node, task *v1.Task) error {
 	var out v1.Node_Outputs
 	var evalErr error
 	if v1.TaskNeedsPrevOutputs(resolved.GetName()) {
+		// Compacted in the outputs and *whole* in every namespace. Only step outputs
+		// are pruned, because only they are large and only they are addressable by a
+		// name the task cannot have guessed; a name in scope is in scope.
+		//
+		// Every field but Outputs is therefore carried verbatim, and a field added to
+		// Scope and forgotten here does not fail to build — it silently narrows what
+		// an activity can resolve. Locals was exactly that: added for a loop binding,
+		// omitted here, and every `for_each` body whose task evaluates its own
+		// expressions stopped finding its iterator, five retries deep, saying "no such
+		// attribute". So: when Scope grows a field, it is copied here or the reason it
+		// is not belongs in this comment.
 		compact := &v1.Scope{
 			Outputs: compactPrevOutputsForTask(resolved, e.scope.GetOutputs()),
-			Vars:    e.scope.GetVars(),
+
+			// The rooted `vars.<name>` namespace, and the bare names bound where the
+			// expression is written — a loop's binding, and what a step declares for
+			// itself.
+			Vars:   e.scope.GetVars(),
+			Locals: e.scope.GetLocals(),
+
 			// Carried across the wire. This scope is what an activity on some other
 			// worker evaluates a task's own expressions against, and that worker's
 			// build may know a different set of profiles than the one that compiled
