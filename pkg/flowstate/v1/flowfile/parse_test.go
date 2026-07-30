@@ -74,7 +74,7 @@ steps:
     echo:
 `,
 			line: 4, col: 5,
-			want: `unknown key "nonsense"; the keys here are id, description, if, timeout, retry, continue_on_error, for_each, parallel, sleep, wait_until, wait_for_signal, cel, echo, http, and printf`,
+			want: `unknown key "nonsense"; the keys here are id, description, if, vars, timeout, retry, continue_on_error, for_each, parallel, sleep, wait_until, wait_for_signal, cel, echo, http, and printf`,
 		},
 		{
 			// The shape every Flowfile written before the flattening has, and the

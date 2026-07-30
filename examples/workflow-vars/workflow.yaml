@@ -1,0 +1,45 @@
+name: workflow-vars
+
+# `vars:` names values once, at the top, and every step reads them as `vars.<name>`.
+#
+# Rooted rather than bare, because a var is *ambient*: it is in scope everywhere in the
+# file rather than bound where you are reading it. That is the same reason a step's
+# outputs are `steps.<id>.<output>` — what is bound around an expression stays bare (a
+# loop's iterator below), and what is simply in the air gets a root. The root is also
+# what makes a var unable to collide with anything.
+#
+# `vars:` is a step key too, where it means the lexical opposite — see ../step-vars.
+vars:
+  # A literal. Note there is no fence: `${...}` marks an expression, and everything
+  # else is the value as written.
+  region: eu-west-1
+
+  # A list, which is worth showing because static data used to need a step to hold it.
+  targets: [alpha, beta, gamma]
+
+  # An expression, evaluated once before the first step runs. It can reach the
+  # profile's functions but no step outputs — nothing has run yet — and not another
+  # var, because a mapping has no order and "the one above" is not a thing this file
+  # can mean.
+  banner: ${'deploying to ' + 'eu-west-1'}
+
+  # The fence is required even here, so this stays the literal eleven characters and
+  # not a reference to a step. A var is exactly the place that ambiguity would bite.
+  doc_hint: steps.greet.result
+
+steps:
+  - id: announce
+    echo:
+      message: ${vars.banner}
+
+  - id: fan_out
+    description: A var reaches inside a loop, alongside the iterator bound by the loop itself.
+    for_each:
+      items: ${vars.targets}
+      iterator: target
+      steps:
+        - id: place
+          echo:
+            # `vars.region` is ambient and rooted; `target` is bound by the line above
+            # and stays bare. Both are in scope here, and they cannot be confused.
+            message: ${target + '.' + vars.region}

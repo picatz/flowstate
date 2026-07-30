@@ -21,6 +21,8 @@ $ flow validate examples/hello-world/workflow.yaml
 | [printf-formatting](printf-formatting) | The `printf` task, and referencing outputs as arguments | no |
 | [conditional-and-retry](conditional-and-retry) | `if:`, `timeout:`, `retry:`, and `continue_on_error:` per step | no |
 | [fan-out-and-parallel](fan-out-and-parallel) | `for_each` fan-out over a computed list, and concurrent `parallel:` branches | no |
+| [workflow-vars](workflow-vars) | `vars:` at the top of a file, read as `vars.<name>`, beside a loop's bare binding | no |
+| [step-vars](step-vars) | `vars:` on a step and on a loop, bare and private to what declares them | no |
 | [cel-expression](cel-expression) | The `cel` task with `vars`, and one dialect: an `if:` reaching the same string functions | no |
 | [approval-gate](approval-gate) | `wait_for_signal:` as a human approval gate, and branching on `payload` versus `timed_out` | no |
 | [wait-until-a-moment](wait-until-a-moment) | `wait_until:` a computed moment, with `now` and the duration builders | no |

@@ -84,7 +84,7 @@ func (e *executor) runNodes(nodes []*v1.Node, depth int) error {
 			continue
 		}
 
-		if err := e.runNode(node, depth, descend); err != nil {
+		if err := e.runNodeWithVars(node, depth, descend); err != nil {
 			if errors.Is(err, errContinueAsNew) {
 				return err
 			}
@@ -127,6 +127,32 @@ func (e *executor) runNodes(nodes []*v1.Node, depth int) error {
 	return nil
 }
 
+// runNodeWithVars executes a node with its own `vars:` block bound.
+//
+// The scope is swapped rather than threaded through runNode, because everything below
+// here reads e.scope and a parameter would have to reach all of it to be believed. The
+// swap is restored on every path out, including the errContinueAsNew that unwinds the
+// whole executor — a scope left behind by a node that suspended would be the next
+// segment's starting vocabulary.
+//
+// Evaluated after the condition, matching the local driver and the validator: a var
+// whose expression fails must not fail a step that was going to be skipped.
+func (e *executor) runNodeWithVars(node *v1.Node, depth int, descend bool) error {
+	inner, err := v1.EvalStepVars(context.Background(), node, e.scope)
+	if err != nil {
+		return stepFailed(err, "step %q: %v", node.GetId(), err)
+	}
+	if inner == e.scope {
+		return e.runNode(node, depth, descend)
+	}
+
+	outer := e.scope
+	e.scope = inner
+	defer func() { e.scope = outer }()
+
+	return e.runNode(node, depth, descend)
+}
+
 // runNode executes a single node.
 func (e *executor) runNode(node *v1.Node, depth int, descend bool) error {
 	switch kind := node.Kind.(type) {
@@ -162,9 +188,26 @@ func (e *executor) runTask(node *v1.Node, task *v1.Task) error {
 	var out v1.Node_Outputs
 	var evalErr error
 	if v1.TaskNeedsPrevOutputs(resolved.GetName()) {
+		// Compacted in the outputs and *whole* in every namespace. Only step outputs
+		// are pruned, because only they are large and only they are addressable by a
+		// name the task cannot have guessed; a name in scope is in scope.
+		//
+		// Every field but Outputs is therefore carried verbatim, and a field added to
+		// Scope and forgotten here does not fail to build — it silently narrows what
+		// an activity can resolve. AmbientVars was exactly that: added for the
+		// workflow's `vars:` and omitted here, so every `for_each` body whose task
+		// evaluates its own expressions stopped finding its iterator, five retries
+		// deep, saying "no such attribute". So: when Scope grows a field, it is copied
+		// here or the reason it is not belongs in this comment.
 		compact := &v1.Scope{
 			Outputs: compactPrevOutputsForTask(resolved, e.scope.GetOutputs()),
-			Vars:    e.scope.GetVars(),
+
+			// The bare names bound where the expression is written — a loop's binding,
+			// and what a step declares for itself — and the rooted `vars.<name>`
+			// namespace the workflow declares.
+			Vars:        e.scope.GetVars(),
+			AmbientVars: e.scope.GetAmbientVars(),
+
 			// Carried across the wire. This scope is what an activity on some other
 			// worker evaluates a task's own expressions against, and that worker's
 			// build may know a different set of profiles than the one that compiled
@@ -253,7 +296,7 @@ func (e *executor) runIteration(loop *v1.ForEach, iterator string, item *v1.Valu
 		spec: e.spec,
 		// The iteration's scope: outputs visible before the loop, plus the
 		// current item bound to the iterator's name.
-		scope:     e.scope.WithVars(iterator, item).WithOutputs(iterationOutputs),
+		scope:     e.scope.WithLocal(iterator, item).WithOutputs(iterationOutputs),
 		budget:    e.budget,
 		processed: e.processed,
 		frames:    e.frames,
@@ -302,7 +345,7 @@ func (e *executor) runIterationsConcurrently(loop *v1.ForEach, iterator string, 
 				worker := &executor{
 					ctx:    gctx,
 					spec:   e.spec,
-					scope:  e.scope.WithVars(iterator, items[i]).WithOutputs(cloneOutputs(e.scope.GetOutputs())),
+					scope:  e.scope.WithLocal(iterator, items[i]).WithOutputs(cloneOutputs(e.scope.GetOutputs())),
 					budget: e.budget,
 				}
 				if err := worker.runNodes(loop.GetBody(), depth); err != nil {

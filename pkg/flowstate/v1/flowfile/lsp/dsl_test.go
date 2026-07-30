@@ -58,10 +58,15 @@ func TestDSLKeysMatchTheDSL(t *testing.T) {
 	workflow := &v1.Workflow{
 		Name:        "every-field",
 		Description: ptr("described"),
+		// Both positions of `vars:`, because they are separate keys in separate
+		// tables and the table for one landed without the other. A fixture missing
+		// a key is how this test stayed green through the drift it exists to catch.
+		Vars: map[string]*v1.Value{"region": v1.NewValue("eu-west-1")},
 		Steps: []*v1.Node{
 			{
 				Id:        "only",
 				Condition: v1.NewExpr("true"),
+				Vars:      map[string]*v1.Value{"greeting": v1.NewValue("hi")},
 				Policy: &v1.StepPolicy{
 					Timeout:         durationpb.New(30_000_000_000),
 					ContinueOnError: true,
@@ -173,9 +178,28 @@ func TestDSLKeysMatchTheDSL(t *testing.T) {
 		}
 	}
 
+	// And the keys the *author* chose rather than the grammar. A `vars:` block is an
+	// open mapping, so the names under it are no more part of the vocabulary than a
+	// step id is — but they are rendered as keys and the scan above cannot tell the
+	// difference.
+	//
+	// Collected from the fixture rather than skipped by name, so exempting them
+	// cannot quietly exempt anything else: a real key that happened to be spelled
+	// like one of these would still have to appear in the fixture's vars to slip
+	// through, and it does not.
+	authored := map[string]bool{}
+	for name := range workflow.GetVars() {
+		authored[name] = true
+	}
+	for _, node := range workflow.GetSteps() {
+		for name := range node.GetVars() {
+			authored[name] = true
+		}
+	}
+
 	var missing []string
 	for key := range emitted {
-		if !shape[key] && !fromRegistry[key] {
+		if !shape[key] && !fromRegistry[key] && !authored[key] {
 			missing = append(missing, key)
 		}
 	}
@@ -1112,10 +1136,14 @@ func TestHoverDocumentsEveryDSLKey(t *testing.T) {
 	// fixture stays a document `flow validate` accepts when a new one is added.
 	src := "edition: " + flowfile.CurrentEdition + "\n" + `name: all-keys
 description: everything
+vars:
+  region: eu-west-1
 steps:
   - id: a
     description: Say hello, so the rest of the run has something to say it about.
     if: ${true}
+    vars:
+      greeting: hi
     timeout: 30s
     continue_on_error: true
     retry:

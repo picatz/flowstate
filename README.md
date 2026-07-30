@@ -147,6 +147,63 @@ A file written the older, bare way is rewritten by `flow fix`, and until it is r
 `flow validate` names the step and says which command to run rather than reporting an
 unknown name.
 
+### Naming a value: `vars:`
+
+`vars:` names values, and it is written at two positions that mean deliberately
+different things.
+
+At the top of a file it declares what is *ambient* — in scope everywhere — so it is read
+through a root, `${vars.<name>}`:
+
+```yaml
+vars:
+  region: eu-west-1
+  targets: [alpha, beta, gamma]
+  banner: ${'deploying to ' + 'eu-west-1'}
+
+steps:
+  - id: announce
+    echo:
+      message: ${vars.banner}
+```
+
+On a step it declares what is *lexical* — in scope inside that step and nowhere else —
+so it stays bare, exactly like the name a loop binds:
+
+```yaml
+steps:
+  - id: describe
+    vars:
+      subject: ${'release for ' + vars.region}
+    echo:
+      message: ${subject}
+```
+
+Same word, same syntax; how the name is spelled follows from its standing, which is the
+rule the previous section describes. On a `for_each` or a `parallel:`, a step's vars
+reach the whole body — so a loop can name what it iterates and what it decorates in one
+place.
+
+Four rules, all reported by `flow validate` rather than discovered at run time:
+
+- **The `${...}` fence is still required** for an expression. Without it the value is the
+  text as written, which is what lets a var hold the literal string `steps.greet.result`.
+- **A workflow-level var may reference nothing.** It is evaluated once, before the first
+  step, so there is no step to read and no clock to ask; it has literals, operators and
+  the profile's functions.
+- **A var may not read its siblings**, at either position. `vars:` is a mapping, and a
+  mapping has no order, so "the one above" is not something the file can mean.
+- **A name already bound is refused, not shadowed.** A step's var may not take the name
+  of an enclosing loop's binding or an enclosing step's var, and neither may be `now`.
+  Two bindings of one bare name eleven lines apart is how `${body}` comes to mean two
+  things; renaming costs a moment, once.
+
+A name declared by one step is not in scope for the next — pass a value forward through
+the step's outputs, which is what they are for.
+
+See [examples/workflow-vars](examples/workflow-vars) and
+[examples/step-vars](examples/step-vars).
+
 ### Saying why a step is there
 
 A step can carry `description:` — prose the mechanics under it cannot supply, written

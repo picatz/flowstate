@@ -104,6 +104,50 @@ message Workflow {
   // released and such a spec can only have come from a build whose one vocabulary
   // was that profile's.
   string profile = 6 [(google.api.field_behavior) = OPTIONAL];
+
+  // Vars are named expressions evaluated once at the start of the run, visible to
+  // every step as `vars.<name>`.
+  //
+  // They exist because the alternative is repetition: a value derived once and used
+  // in six places is written six times today, and the six copies drift. A `cel` step
+  // can compute one, but then it is a step — it occupies the step budget, appears in
+  // the run's outputs, and has to be ordered before everything that reads it.
+  //
+  // # Rooted, not bare
+  //
+  // `vars.<name>` rather than `<name>`, which is the same decision `steps.<id>` made
+  // and for the same reason: rooting makes a collision between a var and a step id
+  // *unrepresentable* rather than something a validation rule has to forbid. What
+  // stays bare is only what is bound where the expression is written — a `for_each`
+  // iterator, `now` inside `wait_until:`, the names a task resolves against its own
+  // scope. Those are bare bindings; see [Scope.vars].
+  //
+  // # Two sites, and only this one is rooted
+  //
+  // `vars:` is also accepted on a step, where it means something deliberately
+  // different: a step's vars are *bare* within that step (`${modified}`), because
+  // they are author-chosen and lexically local — the same standing as a loop
+  // binding. Only the workflow-level ones are ambient, so only these are rooted.
+  // See [Scope.vars] for where a step's land.
+  //
+  // # Shadowing is refused, not resolved
+  //
+  // A bare name must be unique against every bare name in scope: a step var may not
+  // collide with an enclosing loop binding, a loop binding may not collide with an
+  // enclosing step var, and neither may be `now`. `flow validate` reports the
+  // collision at the inner declaration. Silent shadowing is how `${body}` comes to
+  // mean two things eleven lines apart.
+  //
+  // Nothing needs to be refused *here*, at the workflow level, because these are
+  // rooted: `vars.region` cannot collide with anything, which is the whole reason
+  // the ambient half of the namespace is rooted at all.
+  map<string, Value> vars = 7 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).map = {
+      keys: {string: {min_len: 1}}
+      max_pairs: 64
+    }
+  ];
 }
 
 // Node represents a step in the workflow. Each node can be a task or another type of operation.
@@ -169,6 +213,35 @@ message Node {
   // that name; and a `for_each` or a `sleep` is just as worth explaining as a
   // task is. The step is the thing an author is describing either way.
   optional string description = 8 [(buf.validate.field).string = {max_len: 256}];
+
+  // Vars are names this step binds for itself, read *bare* inside it: `${modified}`.
+  //
+  // Bare rather than rooted, which is the opposite of [Workflow.vars] and deliberate.
+  // The rule is not about which block a name came from but about where it is bound:
+  // an author-chosen name bound lexically, close enough to read the binding and the
+  // use together, stays bare — the same standing a `for_each` binding has. A name
+  // that is simply in the air everywhere gets a root, because that is the only thing
+  // that keeps it from colliding with what an author chose.
+  //
+  // Evaluated after the step's condition and before its inputs, in the step's own
+  // scope: it may read `vars.<name>`, the outputs of steps already run, and any
+  // binding it sits inside. So unlike a workflow var it *can* see the run.
+  //
+  // # Collisions are refused, not resolved
+  //
+  // Every name here is bare and so can collide with another bare name — an enclosing
+  // loop's binding, a step var further out, `now`. That is refused at validation, at
+  // the inner declaration, rather than resolved by a precedence rule. Silent
+  // shadowing is how `${body}` comes to mean two things eleven lines apart, and a
+  // precedence rule is a thing every reader has to know before they can read the
+  // second one correctly.
+  //
+  // By the time a spec reaches the engine there is therefore nothing to decide, which
+  // is why [Scope.vars] holds these and a loop's binding in one map.
+  map<string, Value> vars = 9 [(buf.validate.field).map = {
+    keys: {string: {min_len: 1}}
+    max_pairs: 64
+  }];
 }
 
 // SecretRef names a secret without containing it.
@@ -347,9 +420,35 @@ message Scope {
   // actually happens.
   string profile = 3;
 
-  // Vars holds variables bound by enclosing control flow. Names must not collide
-  // with step ids, since expressions resolve both from one namespace.
+  // Vars holds the names bound *where an expression is written*, resolved bare: a
+  // `for_each` binding, a step's own `vars:`, `now` inside a wait.
+  //
+  // The name is a historical one and is kept deliberately. This field has carried
+  // bare bindings since before there was a rooted namespace, and an activity
+  // scheduled before an upgrade holds that shape in history — a retry after the
+  // upgrade replays the same payload. Redefining the field would make a new worker
+  // read an old loop's `item` as an ambient var and leave the bare name unbound, so
+  // the rooted namespace went to [Scope.ambient_vars] instead and this one did not
+  // move. A field that crosses a version boundary means what it has always meant.
+  //
+  // Because every name here is bare they can collide, and that is refused at
+  // validation rather than resolved: a step var that shadows an enclosing loop
+  // binding, or either shadowing `now`, is reported at the inner declaration. By the
+  // time a spec reaches the engine there is nothing left to decide.
   map<string, Value> vars = 2 [(buf.validate.field).map = {
+    keys: {string: {min_len: 1}}
+  }];
+
+  // AmbientVars holds the rooted `vars.<name>` namespace, which is the workflow's
+  // declared vars.
+  //
+  // Only the workflow level declares into here. A step's `vars:` are bare and land in
+  // [Scope.vars] instead, because they are author-chosen and lexically local rather
+  // than ambient — so there is exactly one source for this map and no shadowing to
+  // resolve within it.
+  //
+  // A new field rather than a new meaning for an old one: see [Scope.vars].
+  map<string, Value> ambient_vars = 4 [(buf.validate.field).map = {
     keys: {string: {min_len: 1}}
   }];
 }
@@ -1023,6 +1122,21 @@ message RunState {
   // already lost, and wait forever — the worst failure available to a feature
   // whose whole promise is that waiting is reliable.
   repeated PendingSignal pending_signals = 7;
+
+  // Vars are the workflow's `vars:` block, already evaluated.
+  //
+  // Carried rather than recomputed, so that "evaluated once at the start of the run"
+  // means once for the whole run and not once per Continue-As-New segment. The
+  // difference is not academic: invariant 10 has a continued run pick up whichever
+  // interpreter version is current, so a segment that re-evaluated its vars could
+  // compute a different answer from the one earlier steps saw — a value changing
+  // under a workload halfway through, for no cause visible in the file.
+  //
+  // Storing it also makes the evaluation happen exactly once per run rather than once
+  // per segment, which is the cheaper half of the same argument.
+  map<string, Value> vars = 8 [(buf.validate.field).map = {
+    keys: {string: {min_len: 1}}
+  }];
 }
 
 // SignalRequest delivers a signal to a waiting run.

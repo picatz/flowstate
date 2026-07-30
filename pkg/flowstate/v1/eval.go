@@ -42,14 +42,21 @@ type StepsOutputActivation struct {
 	// Prev holds the outputs of steps that have already run.
 	Prev *Workflow_StepOutputs
 
-	// Vars holds variables bound by enclosing control flow, such as a loop's
-	// current item. They are resolved before step outputs, so a loop body can
-	// refer to its iterator by name.
+	// AmbientVars holds the rooted `vars.<name>` namespace: the workflow's declared
+	// vars plus any an enclosing scope added, an inner shadowing an outer.
 	//
-	// Resolution stops at the variable itself: an expression selecting into it,
-	// like item.name, is resolved by returning the item and letting CEL apply the
+	// Answered as a whole root, the way step outputs are, so this needs no idea how
+	// deep a reference goes. See [VarsRoot].
+	AmbientVars map[string]ref.Val
+
+	// Locals holds names bound *where the expression is written* — a loop's current
+	// item, a step's own `vars:`, `now` inside a wait — resolved bare. They are
+	// resolved before step outputs, so a loop body can refer to its iterator by name.
+	//
+	// Resolution stops at the local itself: an expression selecting into it, like
+	// item.name, is resolved by returning the item and letting CEL apply the
 	// selection — the same contract step outputs follow.
-	Vars map[string]ref.Val
+	Locals map[string]ref.Val
 
 	// Ctx bounds evaluation of any stored expression encountered while
 	// resolving a name. A context is held here, rather than passed in,
@@ -113,8 +120,35 @@ func (e *StepsOutputActivation) ResolveName(name string) (any, bool) {
 	// win it. A bare `item` is the live way to say the iterator and the legacy way
 	// to say the step; resolving it to the step would break a correct loop in order
 	// to keep answering a spelling this migration exists to retire.
-	if v, ok := e.Vars[name]; ok {
+	if v, ok := e.Locals[name]; ok {
 		return v, true
+	}
+
+	// The rooted vars namespace, answered whole for the same reason [StepsRoot] is:
+	// CEL resolves `vars.a.b` by asking for that, then `vars.a`, then `vars`, so
+	// answering the shortest and letting CEL apply the rest means this needs no idea
+	// how deep a reference goes.
+	//
+	// Asked before step outputs and after locals, which is a precedence that cannot
+	// actually be observed — `vars` is a reserved name that no step may take, and a
+	// local called `vars` would have to be a loop iterator named `vars`, which
+	// validation refuses. Ordered explicitly anyway, because "unreachable" is a
+	// property of today's rules and this is cheaper than rediscovering that.
+	if name == VarsRoot {
+		if len(e.AmbientVars) == 0 {
+			// An empty root still resolves, to an empty map. Otherwise a workflow
+			// with no vars makes `vars.missing` an *unresolved reference* rather
+			// than a missing key, and the diagnostic sends the author looking for
+			// the wrong mistake.
+			return types.NewStringInterfaceMap(TypeAdapter, nil), true
+		}
+
+		entries := make(map[ref.Val]ref.Val, len(e.AmbientVars))
+		for varName, v := range e.AmbientVars {
+			entries[types.String(varName)] = v
+		}
+
+		return types.NewRefValMap(TypeAdapter, entries), true
 	}
 
 	if e.Prev == nil || e.Prev.StepValues == nil {
@@ -183,6 +217,16 @@ func (e *StepsOutputActivation) ResolveName(name string) (any, bool) {
 // step id and a locally bound name unrepresentable, rather than something a
 // validation rule has to forbid. See docs/DSL.md.
 const StepsRoot = "steps"
+
+// VarsRoot is the name declared variables hang from in an expression, as
+// `vars.<name>`.
+//
+// Rooted for the same reason [StepsRoot] is, and it buys the same thing: a var and a
+// step of one name cannot collide, so there is no rule to write and none to get wrong.
+// What is deliberately *not* rooted is a local — a loop iterator, `now` — because a
+// local's binding is visible where the expression is written and `${item.name}` reads
+// better than `${vars.item.name}`.
+const VarsRoot = "vars"
 
 // stepsMap returns every step's outputs as one CEL map, keyed by step id.
 //
@@ -524,7 +568,17 @@ func eval(ctx context.Context, w *Workflow) (*Workflow_StepOutputs, error) {
 		StepValues: make(map[string]*Node_Outputs),
 	}
 
-	if err := runNodes(ctx, w.Steps, NewScope(w.GetProfile(), stepOutputs)); err != nil {
+	// Evaluated before any step, which is what makes them ambient: every step sees
+	// the same set, so there is no ordering for an author to reason about.
+	vars, err := EvalWorkflowVars(ctx, w)
+	if err != nil {
+		return nil, err
+	}
+
+	scope := NewScope(w.GetProfile(), stepOutputs)
+	scope.AmbientVars = vars
+
+	if err := runNodes(ctx, w.Steps, scope); err != nil {
 		return nil, err
 	}
 	return stepOutputs, nil
@@ -549,7 +603,16 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope) error {
 			continue
 		}
 
-		outputs, err := runNode(ctx, node, scope)
+		// The step's own `vars:`, bound for this node and its body only. Evaluated
+		// after the condition deliberately: `if:` decides whether the step runs at
+		// all, so a var it declares does not exist yet when the question is asked —
+		// and a var whose expression would fail must not fail a step that is skipped.
+		inner, err := EvalStepVars(ctx, node, scope)
+		if err != nil {
+			return fmt.Errorf("step %q: %w", node.GetId(), err)
+		}
+
+		outputs, err := runNode(ctx, node, inner)
 		if err != nil {
 			if !node.GetPolicy().GetContinueOnError() {
 				return fmt.Errorf("step %q: %w", node.GetId(), err)
@@ -612,7 +675,9 @@ func runForEach(ctx context.Context, loop *ForEach, scope *Scope) (*Node_Outputs
 			iterationOutputs.StepValues[k] = v
 		}
 
-		iterationScope := scope.WithVars(name, item)
+		// A local, not a var: the iterator is bound right where the body's
+		// expressions are written, so it stays bare.
+		iterationScope := scope.WithLocal(name, item)
 		iterationScope.Outputs = iterationOutputs
 
 		if err := runNodes(ctx, loop.GetBody(), iterationScope); err != nil {
@@ -808,7 +873,7 @@ func (t *Task) EvalInScope(ctx context.Context, scope *Scope) (*Node_Outputs, er
 	if t == nil {
 		return nil, fmt.Errorf("task cannot be nil")
 	}
-	if len(scope.GetVars()) > 0 {
+	if scope.BindsNames() {
 		resolved, err := ResolveTaskInputs(ctx, t, scope)
 		if err != nil {
 			return nil, err

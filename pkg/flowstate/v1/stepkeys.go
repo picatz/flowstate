@@ -35,6 +35,7 @@ var grammarStepKeys = []string{
 	"task",
 	"description",
 	"if",
+	"vars",
 	"timeout",
 	"retry",
 	"continue_on_error",
@@ -62,7 +63,6 @@ var grammarStepKeys = []string{
 // in a list of things the engine will eventually do.
 var futureStepKeys = []string{
 	"call",
-	"vars",
 	"undo",
 	"needs",
 }
@@ -80,8 +80,8 @@ func IsReservedStepKey(name string) bool { return slices.Contains(reservedStepKe
 // IsFutureStepKey reports whether name is reserved for grammar that does not
 // exist yet.
 //
-// The distinction is for diagnostics. A step written with `vars:` on it is not the
-// same mistake as one written with `varz:`, and telling an author the key is
+// The distinction is for diagnostics. A step written with `undo:` on it is not the
+// same mistake as one written with `undoo:`, and telling an author the key is
 // unknown — listing it among the keys they could have meant instead — describes a
 // typo they did not make. What they wrote is a key this version has not built.
 func IsFutureStepKey(name string) bool { return slices.Contains(futureStepKeys, name) }

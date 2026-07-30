@@ -178,7 +178,7 @@ func TestWaitDeadlineNowDoesNotShadowALoopIterator(t *testing.T) {
 	item := "2001-01-01T00:00:00Z"
 	clock := time.Date(2030, 6, 1, 12, 0, 0, 0, time.UTC)
 
-	scope := v1.NewScope(v1.CurrentProfile, nil).WithVars(v1.NowIdentifier, v1.NewLiteral(item))
+	scope := v1.NewScope(v1.CurrentProfile, nil).WithLocal(v1.NowIdentifier, v1.NewLiteral(item))
 
 	deadline, err := v1.EvalWaitDeadline(t.Context(), waitUntil(t, "${now}"), scope, clock)
 	require.NoError(t, err)

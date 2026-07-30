@@ -71,6 +71,7 @@ func Register(w worker.Registry) {
 
 	w.RegisterActivity(Task)
 	w.RegisterActivity(TaskInScope)
+	w.RegisterActivity(WorkflowVars)
 
 	// Registered so a run started before scopes existed can still complete. It has
 	// no callers in current code and is not dead: history written by an older

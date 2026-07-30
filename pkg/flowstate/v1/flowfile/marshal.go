@@ -33,6 +33,16 @@ func Marshal(wf *v1.Workflow) ([]byte, error) {
 		doc = append(doc, yaml.MapItem{Key: "description", Value: wf.GetDescription()})
 	}
 
+	// Written before steps, which is where an author writes it and so where a reader
+	// looks for it: a value every step can reach belongs above the steps that reach it.
+	if len(wf.GetVars()) > 0 {
+		vars, err := varsToYAML(wf.GetVars())
+		if err != nil {
+			return nil, err
+		}
+		doc = append(doc, yaml.MapItem{Key: "vars", Value: vars})
+	}
+
 	// A workflow with no steps is not a usable one — [Validate] says so — but
 	// writing `steps: []` for it would be worse than leaving the key out: reading
 	// that back is an author asking for an empty list, which is a different
@@ -79,6 +89,17 @@ func stepToYAML(node *v1.Node) (yaml.MapSlice, error) {
 			return nil, fmt.Errorf("step %q if: %w", node.GetId(), err)
 		}
 		step = append(step, yaml.MapItem{Key: "if", Value: value})
+	}
+
+	// Above the policy and the work, because a name is read before its uses. The same
+	// order the parser accepts them in, so `flow fix` moves nothing that was already
+	// where it belongs.
+	if vars := node.GetVars(); len(vars) > 0 {
+		value, err := varsToYAML(vars)
+		if err != nil {
+			return nil, fmt.Errorf("step %q vars: %w", node.GetId(), err)
+		}
+		step = append(step, yaml.MapItem{Key: "vars", Value: value})
 	}
 
 	if policy := node.GetPolicy(); policy != nil {
@@ -162,6 +183,27 @@ func taskInputsToYAML(task *v1.Task) (yaml.MapSlice, error) {
 	}
 
 	return inputs, nil
+}
+
+// varsToYAML writes a `vars:` mapping.
+//
+// Sorted, because the names come from a protobuf map and a formatter that emitted them
+// in a different order each run would make every `flow fix` a diff.
+//
+// It exists at all because Marshal is the inverse of Unmarshal and `flow fix` rewrites
+// files through it: a block this did not write would be a block `flow fix` *deleted*.
+// TestExamplesCompile caught exactly that, on the example added with the feature.
+func varsToYAML(vars map[string]*v1.Value) (yaml.MapSlice, error) {
+	out := yaml.MapSlice{}
+	for _, name := range slices.Sorted(maps.Keys(vars)) {
+		value, err := inputValueToYAML(vars[name])
+		if err != nil {
+			return nil, fmt.Errorf("var %q: %w", name, err)
+		}
+		out = append(out, yaml.MapItem{Key: name, Value: value})
+	}
+
+	return out, nil
 }
 
 // forEachToYAML writes a loop and its body.

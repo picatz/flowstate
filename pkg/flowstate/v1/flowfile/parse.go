@@ -50,11 +50,11 @@ const (
 // misspelled `timout:` that is silently ignored does nothing at run time and gives
 // the author no reason to doubt it, which is the worst of both outcomes.
 var (
-	workflowKeys = []string{"edition", "name", "description", "steps"}
+	workflowKeys = []string{"edition", "name", "description", "vars", "steps"}
 
 	// stepPropertyKeys say which step this is, how it runs, and what it is for —
 	// everything except what work it does.
-	stepPropertyKeys = []string{"id", "description", "if", "timeout", "retry", "continue_on_error"}
+	stepPropertyKeys = []string{"id", "description", "if", "vars", "timeout", "retry", "continue_on_error"}
 
 	// nodeKindKeys are the kinds of work that are not a task, and so name a node
 	// kind in the schema rather than anything in the registry.
@@ -409,7 +409,7 @@ func (c *compiler) compile(file *ast.File) *v1.Workflow {
 	}
 
 	r := ref{path: "workflow"}
-	fields := c.check(c.heldForLater(entries, r), r, workflowKeys)
+	fields := c.check(c.heldForLater(entries, r, workflowKeys), r, workflowKeys)
 
 	// The vocabulary this file's expressions are being checked against, stamped
 	// here so a run evaluates against the set the compiler used rather than
@@ -430,11 +430,52 @@ func (c *compiler) compile(file *ast.File) *v1.Workflow {
 		}
 	}
 
+	// Read before steps, because every step's expressions may reference these and a
+	// reader follows the file in the order it is written.
+	if f, found := fields.get("vars"); found {
+		workflow.Vars = c.vars(f.value, "vars", ref{path: "vars", label: "vars"})
+	}
+
 	if f, found := fields.get("steps"); found {
 		workflow.Steps = c.steps(f.value, "steps", ref{path: "steps", label: "steps"})
 	}
 
 	return workflow
+}
+
+// vars compiles a `vars:` mapping of names to values.
+//
+// Each value is an ordinary input value, which is what keeps the fence rule uniform:
+// `${...}` is an expression and anything else is a literal, here as everywhere. The
+// fence is *required* for an expression rather than inferred, and this is exactly the
+// position that shows why — a var legitimately holds the literal string
+// "steps.greet.result", so a bare scalar that happens to look like a reference has to
+// stay a string.
+//
+// Returns nil rather than an empty map when nothing compiled, so that `vars:` written
+// with nothing under it is indistinguishable from `vars:` absent — which is what makes
+// Marshal an exact inverse.
+func (c *compiler) vars(n ast.Node, path string, r ref) map[string]*v1.Value {
+	c.pos.record(path, spanOfNode(c.resolveQuiet(n)))
+
+	entries, ok := c.entries(n, path, r)
+	if !ok {
+		return nil
+	}
+
+	compiled := make(map[string]*v1.Value, len(entries))
+	for _, e := range entries {
+		valuePath := fieldPath(path, e.name)
+		if value := c.inputValue(e.value, valuePath, ref{path: valuePath, label: "vars." + e.name}); value != nil {
+			compiled[e.name] = value
+		}
+	}
+
+	if len(compiled) == 0 {
+		return nil
+	}
+
+	return compiled
 }
 
 // checkDeclaredEdition reads an `edition:` key if one was written and reports
@@ -659,7 +700,7 @@ func (c *compiler) step(n ast.Node, path string) *v1.Node {
 		}
 		checkable = append(checkable, e)
 	}
-	checkable = c.heldForLater(checkable, r)
+	checkable = c.heldForLater(checkable, r, stepPropertyKeys)
 
 	fields := c.check(checkable, r, known)
 
@@ -752,6 +793,13 @@ func (c *compiler) step(n ast.Node, path string) *v1.Node {
 		if description, ok := c.text(f.value, descriptionPath, ref{step: step.GetId(), path: descriptionPath, label: "description"}); ok {
 			step.Description = proto.String(description)
 		}
+	}
+
+	// The step's own bare names. Read before the policy only because a reader meets
+	// them in that order; nothing here depends on the ordering.
+	if f, found := fields.get("vars"); found {
+		varsPath := fieldPath(path, "vars")
+		step.Vars = c.vars(f.value, varsPath, ref{step: step.GetId(), path: varsPath, label: "vars"})
 	}
 
 	step.Policy = c.policy(fields, path, r)

@@ -3,6 +3,8 @@ package flowstatev1
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
@@ -31,6 +33,18 @@ func NewScope(profile string, outputs *Workflow_StepOutputs) *Scope {
 	return &Scope{Outputs: outputs, Profile: profile}
 }
 
+// BindsNames reports whether the scope binds any name beyond step outputs — a bare
+// binding or an ambient var.
+//
+// Asked before pre-resolving a task's expression inputs, and it must name *every*
+// such field rather than the one that existed when it was written. It used to read
+// `len(scope.GetVars()) > 0`, which was the loop-iterator check under an older
+// spelling; when a second namespace arrived, a workflow-level var read by a step
+// outside any loop would have silently skipped resolution.
+func (s *Scope) BindsNames() bool {
+	return len(s.GetVars()) > 0 || len(s.GetAmbientVars()) > 0
+}
+
 // StepOutputs returns the scope's step outputs, tolerating a nil scope so callers
 // need not special-case it.
 func (s *Scope) StepOutputs() *Workflow_StepOutputs {
@@ -50,58 +64,139 @@ func (s *Scope) ActivationWith(ctx context.Context, extra map[string]ref.Val) ce
 		return s.Activation(ctx)
 	}
 
-	vars := make(map[string]ref.Val, len(extra))
-	if s != nil {
-		for name, v := range s.Vars {
-			rv, err := cel.ValueToRefValue(TypeAdapter, v.GetLiteral())
-			if err != nil {
-				rv = types.NewErr("variable %q: %v", name, err)
-			}
-			vars[name] = rv
-		}
+	// The extras join the *bare* names, because a name bound around an expression is
+	// what a bare binding is. Adding them to the ambient vars would make `now`
+	// reachable as `vars.now`, which is a spelling nothing documents and nobody would
+	// guess.
+	//
+	// Allocated here rather than taken from refValues, which returns nil for an empty
+	// map — writing an extra into that nil is a panic, and the common case is exactly
+	// the one that hits it: a scope with no bare bindings at all, which is every
+	// `wait_until:` outside a loop.
+	locals := make(map[string]ref.Val, len(s.GetVars())+len(extra))
+	for name, v := range refValues(s.GetVars()) {
+		locals[name] = v
 	}
 	for name, v := range extra {
-		vars[name] = v
+		locals[name] = v
 	}
 
-	return Activation(ctx, s.GetProfile(), s.StepOutputs(), vars)
+	return Activation(ctx, s.GetProfile(), s.StepOutputs(), refValues(s.GetAmbientVars()), locals)
 }
 
 // Activation returns the CEL activation for this scope.
+//
+// Note the crossing: [Scope.Vars] holds the *bare* bindings and becomes the
+// activation's locals, while [Scope.AmbientVars] becomes the activation's rooted
+// `vars` namespace. The schema names a field for the keyword an author writes; the
+// evaluator names one for how it resolves. They disagree here and only here.
 func (s *Scope) Activation(ctx context.Context) cel.Activation {
 	if s == nil {
-		return Activation(ctx, "", nil, nil)
+		return Activation(ctx, "", nil, nil, nil)
 	}
 
-	vars := make(map[string]ref.Val, len(s.Vars))
-	for name, v := range s.Vars {
-		rv, err := cel.ValueToRefValue(TypeAdapter, v.GetLiteral())
-		if err != nil {
-			// A variable that cannot be converted is reported as an error value
-			// so the expression referencing it fails, rather than the variable
-			// silently going missing and reading as an unresolved reference.
-			rv = types.NewErr("variable %q: %v", name, err)
-		}
-		vars[name] = rv
-	}
-	return Activation(ctx, s.Profile, s.Outputs, vars)
+	return Activation(ctx, s.Profile, s.Outputs, refValues(s.GetAmbientVars()), refValues(s.GetVars()))
 }
 
-// WithVars returns a copy of the scope with the given variables bound, leaving the
-// original untouched so sibling iterations cannot affect each other.
-func (s *Scope) WithVars(name string, item *Value) *Scope {
-	next := &Scope{Vars: make(map[string]*Value, len(s.Vars)+1)}
+// refValues converts a map of schema values to CEL values.
+//
+// A value that cannot be converted becomes an error value rather than being dropped,
+// so the expression referencing it fails and says why. Dropping it would leave the
+// name looking simply unbound, which sends the author looking for a typo in the one
+// case where the name is right and the value is not.
+func refValues(values map[string]*Value) map[string]ref.Val {
+	if len(values) == 0 {
+		return nil
+	}
+
+	converted := make(map[string]ref.Val, len(values))
+	for name, v := range values {
+		rv, err := cel.ValueToRefValue(TypeAdapter, v.GetLiteral())
+		if err != nil {
+			rv = types.NewErr("variable %q: %v", name, err)
+		}
+		converted[name] = rv
+	}
+
+	return converted
+}
+
+// WithLocal returns a copy of the scope with one bare name bound, leaving the original
+// untouched so sibling iterations cannot affect each other.
+//
+// Named for what it binds rather than for the field it writes. It writes [Scope.Vars],
+// which is the field a loop iterator has always been stored in — the rooted namespace
+// went to [Scope.AmbientVars] precisely so that this one could keep meaning what it
+// already meant to a worker replaying an older run.
+func (s *Scope) WithLocal(name string, item *Value) *Scope {
+	next := &Scope{Vars: make(map[string]*Value, len(s.GetVars())+1)}
 	if s != nil {
 		next.Outputs = s.Outputs
 		// Carried, not re-derived. A loop body that evaluated against a different
 		// vocabulary than the step containing it is the same run speaking two
 		// dialects, one nesting level down.
 		next.Profile = s.Profile
+		next.AmbientVars = s.AmbientVars
 		for k, v := range s.Vars {
 			next.Vars[k] = v
 		}
 	}
 	next.Vars[name] = item
+	return next
+}
+
+// WithLocals returns a copy of the scope with several bare names bound at once,
+// which is what a step's own `vars:` block produces.
+//
+// Distinct from repeated [Scope.WithLocal] calls in one way that matters: the names
+// are bound together, so a var declared later in the block cannot read one declared
+// earlier. They are siblings, not a sequence, and evaluating them against a scope
+// that already holds some of them would make the order they happen to be written in
+// part of the language.
+func (s *Scope) WithLocals(locals map[string]*Value) *Scope {
+	if len(locals) == 0 {
+		return s
+	}
+
+	next := &Scope{Vars: make(map[string]*Value, len(s.GetVars())+len(locals))}
+	if s != nil {
+		next.Outputs = s.Outputs
+		next.Profile = s.Profile
+		next.AmbientVars = s.AmbientVars
+		for k, v := range s.Vars {
+			next.Vars[k] = v
+		}
+	}
+	for k, v := range locals {
+		next.Vars[k] = v
+	}
+
+	return next
+}
+
+// WithAmbientVars returns a copy of the scope with additional rooted vars in effect,
+// shadowing any of the same name already there.
+//
+// Copying rather than mutating for the same reason [Scope.WithLocal] does: a loop body
+// or a branch that declared its own vars must not change what a sibling sees.
+func (s *Scope) WithAmbientVars(vars map[string]*Value) *Scope {
+	if len(vars) == 0 {
+		return s
+	}
+
+	next := &Scope{AmbientVars: make(map[string]*Value, len(s.GetAmbientVars())+len(vars))}
+	if s != nil {
+		next.Outputs = s.Outputs
+		next.Profile = s.Profile
+		next.Vars = s.Vars
+		for k, v := range s.AmbientVars {
+			next.AmbientVars[k] = v
+		}
+	}
+	for k, v := range vars {
+		next.AmbientVars[k] = v
+	}
+
 	return next
 }
 
@@ -259,15 +354,133 @@ func ResolveTaskInputs(ctx context.Context, task *Task, scope *Scope) (*Task, er
 	}, nil
 }
 
+// EvalWorkflowVars evaluates a workflow's `vars:` block once, producing the rooted
+// `vars.<name>` namespace every step then sees.
+//
+// Exported and shared because both drivers must call it. The alternative — each driver
+// evaluating vars where it happens to build its initial scope — is two implementations
+// of one rule, and invariant 3 says anything observable has to match. Here it matches
+// by construction rather than by two people remembering.
+//
+// # What a var may reference, which is nothing
+//
+// Evaluated against a scope with no step outputs and no locals, because at this point
+// there are none: no step has run, no loop is open. Nor may a var reference another var,
+// which is a deliberate refusal rather than an omission — a protobuf map has no order,
+// so "the one declared above" is not a thing the schema can express, and the honest
+// alternatives are a dependency sort with a cycle diagnostic or nothing. Nothing is the
+// smaller language, and allowing it later is additive.
+//
+// So a var is literals, operators and the profile's functions. `flow validate` reports a
+// reference here rather than leaving it to fail at run time.
+func EvalWorkflowVars(ctx context.Context, w *Workflow) (map[string]*Value, error) {
+	return EvalVars(ctx, w.GetProfile(), w.GetVars())
+}
+
+// EvalVars is [EvalWorkflowVars] over the two things it actually needs.
+//
+// Split out because the durable driver evaluates vars in an *activity*, and shipping
+// the whole specification to it a second time — it is already in the run's state, and
+// it is the largest value this system carries — to read two fields off it would be
+// paying history for the convenience of one signature.
+func EvalVars(ctx context.Context, profile string, declared map[string]*Value) (map[string]*Value, error) {
+	// Deliberately empty: see above. Carries the profile, because a var is evaluated
+	// against the vocabulary the file was compiled with like every other expression.
+	return evalVarsAgainst(ctx, profile, declared, NewScope(profile, nil))
+}
+
+// EvalStepVars returns the scope a node's inputs and body are evaluated in, with the
+// node's own `vars:` block bound as bare names.
+//
+// Bare rather than rooted, which is the whole difference from the workflow's block:
+// these are author-chosen and lexically local, so they have the standing of a loop's
+// iterator rather than of an ambient fact about the run. `flow validate` refuses a
+// name that collides with one already bound, so binding here cannot silently shadow.
+//
+// The scope returned is the caller's own when the node declares nothing, so the common
+// step costs an unpacked map read and no allocation.
+//
+// # What a step's var may reference
+//
+// Everything in scope where the step is written: the workflow's `vars.<name>`, the
+// outputs of steps already run, and any bare name an enclosing loop or step bound.
+// Everything except its own siblings — they are evaluated against the scope *without*
+// them, for the reason [EvalWorkflowVars] gives: a protobuf map has no order, so "the
+// one declared above" is not something the file can mean.
+func EvalStepVars(ctx context.Context, node *Node, scope *Scope) (*Scope, error) {
+	declared := node.GetVars()
+	if len(declared) == 0 {
+		return scope, nil
+	}
+
+	vars, err := evalVarsAgainst(ctx, scope.GetProfile(), declared, scope)
+	if err != nil {
+		return nil, err
+	}
+
+	return scope.WithLocals(vars), nil
+}
+
+// evalVarsAgainst evaluates a `vars:` block against a scope, returning literals.
+//
+// One implementation for both positions, because the difference between them is the
+// scope handed in and nothing else. Writing it twice is how the two would come to
+// disagree about a detail — which errors are fatal, whether a literal is passed
+// through, what order failures are reported in — that no author ever asked to differ.
+func evalVarsAgainst(ctx context.Context, profile string, declared map[string]*Value, base *Scope) (map[string]*Value, error) {
+	if len(declared) == 0 {
+		return nil, nil
+	}
+
+	ev := DefaultEvaluator()
+	vars := make(map[string]*Value, len(declared))
+
+	// Sorted so that a workflow whose vars fail reports the same one first every time.
+	// A map's order would make the message depend on the run.
+	for _, name := range slices.Sorted(maps.Keys(declared)) {
+		v := declared[name]
+		if _, isExpr := v.GetKind().(*Value_Expr); !isExpr {
+			vars[name] = v
+
+			continue
+		}
+
+		out, err := ev.EvalParsedBase(ctx, profile, v.GetExpr(), base.Activation(ctx))
+		if err != nil {
+			return nil, fmt.Errorf("var %q: %w", name, err)
+		}
+		literal, err := cel.RefValueToValue(out)
+		if err != nil {
+			return nil, fmt.Errorf("var %q: converting result: %w", name, err)
+		}
+		vars[name] = &Value{Kind: &Value_Literal{Literal: literal}}
+	}
+
+	return vars, nil
+}
+
 // Activation returns the CEL activation for evaluating an expression against step
-// outputs and any variables bound by enclosing control flow.
-func Activation(ctx context.Context, profile string, prev *Workflow_StepOutputs, vars map[string]ref.Val) cel.Activation {
+// outputs, the rooted vars in scope, and the names bound where the expression is
+// written.
+//
+// Three arguments for three namespaces, kept apart all the way down rather than
+// merged here: `steps.<id>` and `vars.<name>` are rooted, locals are bare, and which
+// one a name came from decides how it resolves. Merging them at this boundary is what
+// made "is this rooted?" answerable only by knowing which caller supplied it.
+func Activation(
+	ctx context.Context,
+	profile string,
+	prev *Workflow_StepOutputs,
+	ambientVars map[string]ref.Val,
+	locals map[string]ref.Val,
+) cel.Activation {
 	return cel.Activation(&StepsOutputActivation{
-		Prev:    prev,
-		Vars:    vars,
-		Ctx:     ctx,
-		Eval:    DefaultEvaluator(),
-		Profile: profile,
+		Prev:        prev,
+		AmbientVars: ambientVars,
+		Locals:      locals,
+		Ctx:         ctx,
+		Eval:        DefaultEvaluator(),
+		Profile:     profile,
 	})
 }
 
@@ -299,11 +512,14 @@ func (s *Scope) WithOutputs(outputs *Workflow_StepOutputs) *Scope {
 	if s != nil {
 		next.Profile = s.Profile
 	}
-	if s != nil && len(s.Vars) > 0 {
-		next.Vars = make(map[string]*Value, len(s.Vars))
-		for k, v := range s.Vars {
-			next.Vars[k] = v
-		}
+	if s != nil {
+		// Both namespaces travel, because both are "what the enclosing control flow
+		// bound" — a branch sees its loop's iterator and its workflow's vars alike.
+		// Shared rather than copied: neither map is written through after the scope
+		// carrying it is built, and the copy-on-write is in WithAmbientVars,
+		// WithLocal and WithLocals.
+		next.Vars = s.Vars
+		next.AmbientVars = s.AmbientVars
 	}
 	return next
 }
