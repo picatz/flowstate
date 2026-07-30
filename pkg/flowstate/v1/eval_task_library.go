@@ -337,13 +337,19 @@ func firstHeaderValues(h http.Header) map[string]string {
 // dedicated task per response shape. The environment is built once and shared.
 var httpOutputsEnv = sync.OnceValues(func() (*cel.Env, error) {
 	env, err := cel.NewEnv(
-		cel.Variable("status_code", cel.IntType),
-		cel.Variable("headers", cel.MapType(cel.StringType, cel.ListType(cel.StringType))),
-		cel.Variable("body", cel.StringType),
-
-		// The parsed body, present when the step asked for parse_json. Declared
-		// dynamically typed because its shape is the endpoint's, not ours.
-		cel.Variable("json", cel.DynType),
+		// One variable, and everything about the response hangs from it.
+		//
+		// These names are *system-chosen* and injected into an author's namespace,
+		// which is the shape the signal-payload fix already rooted under `payload.*`
+		// — for two reasons that apply identically here. The set will grow: a future
+		// `duration_ms` written bare would capture a binding somebody already had.
+		// And the collision is representable today: `as: body` on a loop enclosing an
+		// http step whose `expect:` says `body` reads the response, not the item, and
+		// nothing in the file says so.
+		//
+		// Dynamically typed because a root answered whole cannot be given a field-wise
+		// type here without restating the response's shape in a second place.
+		cel.Variable(ResponseRoot, cel.DynType),
 		jsonLibrary(),
 	)
 	if err != nil {

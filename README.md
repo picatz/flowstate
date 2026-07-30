@@ -130,9 +130,13 @@ The above `Flowfile` defines two steps:
 ### Referring to a step's outputs
 
 A step is named through a root — `${steps.<id>.<output>}` — while a name bound *where the
-expression is written* stays bare: a loop's iterator, `now` inside `wait_until:`, and the
-response variables a task evaluates its own inputs against (`status_code`, `body` and
-`json` in the `http` task).
+expression is written* stays bare: a loop's `as:` binding, and `now` inside `wait_until:`.
+
+Rooted or bare follows from *who chose the name*. An author's own names — a loop's
+binding, a step's `vars:` — stay bare. Names the system injects get a root: a step's
+outputs under `steps.`, the workflow's vars under `vars.`, a signal's payload under
+`payload.`, and the http response under `response.`. That rule is what lets each of
+those sets grow without the next name capturing a binding somebody already had.
 
 Two namespaces rather than one, because a single flat one cannot tell a bare `${name}`
 inside a loop from a reference to a step called `name`. The language used to forbid the
@@ -348,7 +352,7 @@ See [examples/fan-out-and-parallel](examples/fan-out-and-parallel).
 
 ### Parse JSON with CEL
 
-You can keep HTTP simple (returning `status_code`, `headers`, `body`) and use the CEL task to parse JSON without a separate HTTP+JSON task. `json_parse(string)` is available with nothing to enable:
+You can keep HTTP simple (returning `status_code`, `headers`, `body` as this step's outputs) and use the CEL task to parse JSON without a separate HTTP+JSON task. `json_parse(string)` is available with nothing to enable:
 
 ```yaml
 name: json-via-cel
@@ -400,24 +404,26 @@ steps:
       url: https://httpbin.org/json
       # ${...} marks a CEL expression, as everywhere else in a Flowfile.
       # Quote it so YAML does not read the colons inside as mapping syntax.
-      outputs: "${ {'status': status_code, 'title': json_parse(body)['slideshow']['title']} }"
+      outputs: "${ {'status': response.status_code, 'title': json_parse(response.body)['slideshow']['title']} }"
 ```
 
-Unlike other inputs, `outputs` is evaluated by the `http` task after the response arrives,
-so its expression sees the response. `flow validate` knows this and will not mistake
-`body` for a step reference.
+Unlike other inputs, `outputs` is evaluated by the `http` task after the response
+arrives, so its expression sees the response — reached through `response.*`, because
+those names are the *system's* rather than yours. `steps.` is reachable alongside it, so
+a shaping expression may combine the response with an earlier step's output.
 
-Those names are bare for the same reason a loop's iterator is: the task binds them where
-the expression is written, rather than their being another step's outputs. `steps.` is
-still reachable alongside them — the response variables are added to the scope, not
-substituted for it — so a shaping expression may combine the response with an earlier
-step's output. `flow fix` therefore leaves a deferred input alone rather than rooting what
-it cannot tell apart, and says so when a name in one is spelled like a step in the file.
+Two spellings that look alike and are not: `response.body` is this response, read here;
+`steps.web.body` is this step's output, read later.
 
-Available variables in `outputs` evaluation:
-- `status_code` (int64)
-- `body` (string)
-- `headers` (map[string]string)
+Available in `expect:` and `outputs:`:
+- `response.status_code` (int)
+- `response.body` (string)
+- `response.headers` (map[string]list[string])
+- `response.json`, when `parse_json: true`
+
+`flow fix` rewrites the older bare spelling. For a name in one of these inputs that is
+*not* the response's, it still declines and says so — there it may be a step, and only
+the author knows.
 
 Tip: prefer returning only the fields a later step actually needs. Carrying less keeps a
 workload comfortably inside Temporal's default payload limits; genuinely large data is

@@ -49,6 +49,41 @@ import (
 // The bool reports whether anything changed. An error means the expression could
 // not be rewritten safely and the caller must refuse rather than write a guess.
 func rootedExpr(src string, steps map[string]bool) (string, bool, error) {
+	return rootedUnder(src, v1.StepsRoot, steps)
+}
+
+// responseNames are the names an http task's `expect:` and `outputs:` expressions used
+// to bind bare, and now reach through [v1.ResponseRoot].
+//
+// A fixed set, because it is the set the task injects rather than anything an author
+// declares — which is the same property that made rooting them right: a name the system
+// chooses and puts in the author's namespace will grow, and a `duration_ms` added later
+// would capture a binding somebody already had.
+var responseNames = map[string]bool{
+	"status_code": true,
+	"headers":     true,
+	"body":        true,
+	"json":        true,
+}
+
+// rootedResponseExpr rewrites the bare response references in one expression's source.
+//
+// Only correct inside the two inputs the http task evaluates itself, because those are
+// the only places these four names are bound — anywhere else `body` is an ordinary
+// identifier, and rooting it would invent a reference to a response that does not exist
+// there. The caller decides; this only knows how.
+func rootedResponseExpr(src string) (string, bool, error) {
+	return rootedUnder(src, v1.ResponseRoot, responseNames)
+}
+
+// rootedUnder is the shared walk: locate the free identifiers naming something in the
+// set, and splice the root before each.
+//
+// Written once for both roots because the hard parts are identical and neither is
+// obvious — offsets are verified to hold the identifier they claim to before anything
+// is written, and splices are applied from the back so each offset still addresses the
+// text it was measured against. A second copy would have one of those subtly wrong.
+func rootedUnder(src, root string, names map[string]bool) (string, bool, error) {
 	if strings.TrimSpace(src) == "" {
 		return src, false, nil
 	}
@@ -80,7 +115,7 @@ func rootedExpr(src string, steps map[string]bool) (string, bool, error) {
 		failure error
 	)
 
-	collectStepIdents(parsed.GetExpr(), nil, steps, func(id int64, name string) error {
+	collectStepIdents(parsed.GetExpr(), nil, names, func(id int64, name string) error {
 		if seen[id] {
 			return nil
 		}
@@ -88,12 +123,12 @@ func rootedExpr(src string, steps map[string]bool) (string, bool, error) {
 
 		offset, ok := positions[id]
 		if !ok {
-			return fmt.Errorf("the reference to step %q has no recorded position, so it cannot be rooted here; write `%s.%s` by hand",
-				name, v1.StepsRoot, name)
+			return fmt.Errorf("the reference to %q has no recorded position, so it cannot be rooted here; write `%s.%s` by hand",
+				name, root, name)
 		}
 		if !identifierAt(src, int(offset), name) {
-			return fmt.Errorf("the reference to step %q is recorded at a position that does not hold it, which happens inside a macro; write `%s.%s` by hand",
-				name, v1.StepsRoot, name)
+			return fmt.Errorf("the reference to %q is recorded at a position that does not hold it, which happens inside a macro; write `%s.%s` by hand",
+				name, root, name)
 		}
 		splices = append(splices, splice{offset: int(offset), name: name})
 		return nil
@@ -111,7 +146,7 @@ func rootedExpr(src string, steps map[string]bool) (string, bool, error) {
 
 	out := src
 	for _, s := range splices {
-		out = out[:s.offset] + v1.StepsRoot + "." + out[s.offset:]
+		out = out[:s.offset] + root + "." + out[s.offset:]
 	}
 	return out, true, nil
 }

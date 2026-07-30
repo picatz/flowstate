@@ -219,7 +219,7 @@ func Workflows(httpBaseURL string) []Case {
 									"method": v1.NewLiteral(http.MethodGet),
 									// Shape the response to just the status code so the
 									// assertion does not depend on headers net/http adds.
-									"outputs": v1.NewExpr("{'status_code': status_code}"),
+									"outputs": v1.NewExpr("{'status_code': response.status_code}"),
 								},
 							},
 						},
@@ -297,7 +297,7 @@ func Workflows(httpBaseURL string) []Case {
 							Inputs: map[string]*v1.Value{
 								"url":     v1.NewLiteral(httpBaseURL + "/json"),
 								"method":  v1.NewLiteral(http.MethodGet),
-								"outputs": v1.NewExpr("{'body': body}"),
+								"outputs": v1.NewExpr("{'body': response.body}"),
 							},
 						}},
 					},

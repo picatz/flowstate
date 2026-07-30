@@ -370,7 +370,7 @@ func secretRefText(ref *SecretRef) string {
 // because an expression asking about a header usually wants all of it and a workflow
 // referencing ${steps.<id>.headers['X']} wants a string.
 func httpResponseVars(resp *http.Response, body []byte, parsedJSON *expr.Value) map[string]any {
-	vars := map[string]any{
+	fields := map[string]any{
 		"status_code": int64(resp.StatusCode),
 		"body":        string(body),
 	}
@@ -378,20 +378,22 @@ func httpResponseVars(resp *http.Response, body []byte, parsedJSON *expr.Value) 
 	if len(resp.Header) > 0 {
 		headers := make(map[string][]string, len(resp.Header))
 		maps.Copy(headers, resp.Header)
-		vars["headers"] = headers
+		fields["headers"] = headers
 	}
 
 	// Absent rather than null when parsing was not asked for, so an expression
-	// reading `json` without setting parse_json fails saying the name is unknown
-	// instead of quietly evaluating against nothing.
+	// reading `response.json` without setting parse_json fails saying the name is
+	// unknown instead of quietly evaluating against nothing.
 	if parsedJSON != nil {
 		native, err := literalToNative(parsedJSON)
 		if err == nil {
-			vars["json"] = native
+			fields["json"] = native
 		}
 	}
 
-	return vars
+	// Rooted, so exactly one name enters the author's namespace however many fields a
+	// response grows. See the comment on the environment these are declared in.
+	return map[string]any{ResponseRoot: fields}
 }
 
 // httpExpectationMet decides whether a response counts as success, returning a
@@ -459,7 +461,7 @@ func httpExpectSatisfied(
 		// A literal expect is a mistake worth naming: `expect: true` would accept
 		// every response, including the ones the default rule exists to catch.
 		return NewTaskError("http", ErrorKindInvalidInput, fmt.Errorf(
-			"expect must be an expression over the response, such as ${status_code == 200 || status_code == 404}"))
+			"expect must be an expression over the response, such as ${response.status_code == 200 || response.status_code == 404}"))
 	}
 
 	env, err := httpOutputsEnv()

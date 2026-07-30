@@ -685,7 +685,7 @@ value keeps its quoting, an inline comment keeps its column, and a comment writt
 beneath the key stays where the author put it. That is what makes `flow fix .` something
 people run on a directory rather than a file at a time.
 
-### `http:` stays; its response scope gets a root
+### `http:` stays; its response scope gets a root *(landed)*
 
 The name passes the test the others fail — it names the protocol, not an
 implementation or a vendor — and its danger is governed where principle 7 wants it,
@@ -727,6 +727,28 @@ This narrows the statement of principle 5 that the first round's naming model ma
 "bare local names" always meant the names an *author* binds. A loop's `as:` stays
 bare; what a task or the engine injects gets a root. `now` remains the single
 exception, already fenced by its own rules.
+
+*Since written:* landed as specified, and it removed an ambiguity rather than adding a
+spelling. A bare `status_code` inside `expect:` used to be genuinely undecidable — it
+could have been the response's or a step called `status_code` — which is why `flow fix`
+declined to rewrite a deferred input at all and only *noted* it. Under the rooted
+grammar a step is `steps.<id>`, so the four names the task binds can only be the
+response's, and `flow fix` rewrites them:
+
+```console
+$ flow fix workflow.yaml
+workflow.yaml:14: response references rooted under `response.`
+```
+
+The note survives for the names that are *not* the response's, which is where the
+ambiguity genuinely still lives — and is suppressed for the four, so an author is never
+told to undo the migration the same command just performed.
+
+The rewriter generalised at the same time: `rootedUnder` takes a root and a set of
+names, so the step rooting and this one share the parts that are hard and easy to get
+subtly wrong — verifying an offset holds the identifier it claims to before splicing,
+and applying splices from the back. What did *not* generalise is the permission. This
+is the one deferred scope whose shape is knowable; every other one is still left alone.
 
 Held for their own reviewed changes, in this order of need: structured `auth:` (so
 authors stop hand-building secret-bearing headers), an `idempotency_key`, and

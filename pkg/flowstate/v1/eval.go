@@ -228,6 +228,16 @@ const StepsRoot = "steps"
 // better than `${vars.item.name}`.
 const VarsRoot = "vars"
 
+// ResponseRoot is the name an http task's `expect:` and `outputs:` expressions reach the
+// response through: `${response.status_code}`.
+//
+// A third root, for the third set of system-chosen names — after `steps.<id>` and the
+// signal payload's `payload.*`. It is private to the task rather than ambient, which is
+// why it is bound by the task and not by [Scope]: only the two inputs the task evaluates
+// itself can see it, and a step's ordinary inputs cannot, because there is no response
+// yet when those are resolved.
+const ResponseRoot = "response"
+
 // stepsMap returns every step's outputs as one CEL map, keyed by step id.
 //
 // The whole root is handed back rather than a prefix being parsed here, because

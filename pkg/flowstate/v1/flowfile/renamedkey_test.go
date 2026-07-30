@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
@@ -151,4 +152,127 @@ steps:
 	require.Contains(t, string(out), "as: name", "Marshal still writes the retired spelling")
 	require.NotContains(t, string(out), "iterator:")
 	require.Empty(t, diagnose(t, string(out)))
+}
+
+// The http task's `expect:` and `outputs:` bind four names into an author's namespace —
+// `status_code`, `headers`, `body`, `json` — chosen by the system rather than declared
+// by anyone. That is the shape the signal payload was already rooted for, and it is
+// rooted here for the same two reasons: the set will grow, and a `duration_ms` added
+// later written bare would capture a binding somebody already had; and the collision is
+// representable today, because `as: body` on a loop enclosing an http step whose
+// `expect:` says `body` reads the response and nothing in the file says so.
+
+// TestFixRootsTheResponse covers the shapes these two inputs are actually written in.
+//
+// Three, and each would have needed its own bug: a fenced scalar, a quoted value whose
+// fence is inside the quotes, and a mapping whose *values* carry the fences. The last is
+// why this does not go through the fenced-scalar rewriter the step rooting uses.
+func TestFixRootsTheResponse(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name string
+		src  string
+		want string
+	}{
+		{
+			name: "a fenced expect",
+			src:  "      expect: ${status_code == 200 || status_code == 404}\n",
+			want: "      expect: ${response.status_code == 200 || response.status_code == 404}\n",
+		},
+		{
+			name: "a quoted outputs expression",
+			src:  "      outputs: \"${ {'status': status_code, 'title': json_parse(body)['t']} }\"\n",
+			want: "      outputs: \"${ {'status': response.status_code, 'title': json_parse(response.body)['t']} }\"\n",
+		},
+		{
+			name: "a name inside a macro's argument",
+			src:  "      expect: ${status_code == 200 && !has(json.error)}\n",
+			want: "      expect: ${response.status_code == 200 && !has(response.json.error)}\n",
+		},
+		{
+			name: "a mapping of fenced values",
+			src:  "      outputs:\n        code: ${status_code}\n        text: ${body}\n",
+			want: "      outputs:\n        code: ${response.status_code}\n        text: ${response.body}\n",
+		},
+		{
+			// The output *names* are the author's and stay exactly as written. Only
+			// what is read from the response moves.
+			name: "the output names are not touched",
+			src:  "      outputs:\n        body: ${body}\n",
+			want: "      outputs:\n        body: ${response.body}\n",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			src := "name: t\nsteps:\n  - id: fetch\n    http:\n      url: https://example.com\n" + test.src
+			want := "name: t\nsteps:\n  - id: fetch\n    http:\n      url: https://example.com\n" + test.want
+
+			result, err := flowfile.Fix([]byte(src))
+			require.NoError(t, err)
+			require.Empty(t, result.Refusals)
+			require.Equal(t, want, string(result.Source))
+
+			// And what it wrote still parses, which is the claim `flow fix` makes.
+			require.Empty(t, diagnose(t, string(result.Source)))
+		})
+	}
+}
+
+// TestFixLeavesResponseNamesAloneOutsideTheResponseScope is the negative direction, and
+// the one that would make this rewrite a bug rather than a migration.
+//
+// `body` is an ordinary word. Outside the two inputs the http task evaluates itself
+// there is no response to root it under, so rooting it would invent a reference to
+// something that does not exist — turning a working file into one that fails.
+func TestFixLeavesResponseNamesAloneOutsideTheResponseScope(t *testing.T) {
+	t.Parallel()
+
+	src := `name: t
+steps:
+  - id: each
+    for_each:
+      items: ${["a"]}
+      as: body
+      steps:
+        - id: inner
+          log:
+            message: ${body}
+  - id: shout
+    vars:
+      json: loud
+    log:
+      message: ${json}
+`
+
+	result, err := flowfile.Fix([]byte(src))
+	require.NoError(t, err)
+	require.Equal(t, src, string(result.Source),
+		"a response name was rooted somewhere no response exists")
+	require.Empty(t, diagnose(t, src))
+}
+
+// TestARootedResponseIsWhatTheEngineBinds closes the loop between the rewriter and the
+// task.
+//
+// `flow fix` writing `response.status_code` is worth nothing if the task still binds the
+// name bare, and the two live in different packages with no compiler relationship. This
+// runs a rewritten expression through validation and asserts the corpus example — which
+// CI executes — reads the rooted way.
+func TestARootedResponseIsWhatTheEngineBinds(t *testing.T) {
+	t.Parallel()
+
+	src := `name: t
+steps:
+  - id: fetch
+    http:
+      url: https://example.com
+      expect: ${status_code == 200}
+`
+
+	result, err := flowfile.Fix([]byte(src))
+	require.NoError(t, err)
+	require.Contains(t, string(result.Source), v1.ResponseRoot+".status_code",
+		"the rewriter and the task disagree about the root")
 }

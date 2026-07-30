@@ -1002,6 +1002,22 @@ steps:
 // The registry says which inputs those are, and this asks it rather than keeping
 // a list of its own, so a task added tomorrow with a deferred input is covered
 // without anyone remembering this exists.
+//
+// # Except the one deferred scope whose shape is known
+//
+// This used to assert that a deferred input came back *byte for byte*, and the fixture
+// makes the reason concrete: a step called `status_code` beside an http step whose
+// `expect:` says `status_code`, where the bare name could have meant either.
+//
+// Rooting the response deleted that ambiguity rather than resolving it. A step is
+// `steps.<id>` now, so a bare `status_code` inside `expect:` cannot be a step — it is
+// the response's or it is unbound — and the http task binds exactly four such names.
+// Both roots therefore apply here, each to its own names, and the fixture is the case
+// that proves they do not collide.
+//
+// No other deferred scope is knowable, and none is rewritten. What generalised is the
+// *machinery*, not the permission: `rootedUnder` takes a root and a set of names, and
+// the caller decides whether it has either.
 func TestFixLeavesDeferredInputsAlone(t *testing.T) {
 	t.Parallel()
 
@@ -1027,8 +1043,8 @@ steps:
   - id: fetch
     http:
       url: https://example.com
-      expect: ${status_code == 200}
-      outputs: "${ {'code': status_code} }"
+      expect: ${response.status_code == 200}
+      outputs: "${ {'code': response.status_code} }"
   - id: after
     echo:
       message: ${steps.status_code.result}
@@ -1037,7 +1053,7 @@ steps:
 	require.NoError(t, err)
 	assert.Empty(t, result.Refusals)
 	assert.Equal(t, want, string(result.Source),
-		"the response's own names stay bare; only the reference to the step is rooted")
+		"each name goes to its own root: the response's under `response.`, the step's under `steps.`")
 
 	_, _, err = flowfile.Parse(result.Source)
 	assert.NoError(t, err)
@@ -1077,7 +1093,45 @@ steps:
 // and only the author knows which. Rewriting it would guess; saying nothing would
 // leave the one bare step reference this migration cannot reach, working today
 // only because the runtime still answers the old spelling.
+//
+// Rooting the response narrowed this to the names that are *not* the response's. The
+// four it binds are rewritten now, because a step is `steps.<id>` and a bare `body`
+// inside `expect:` can no longer be one — so the fixture uses a step id outside that
+// set, which is where the ambiguity genuinely still lives.
 func TestFixNotesADeferredInputThatNamesAStep(t *testing.T) {
+	t.Parallel()
+
+	src := `name: t
+steps:
+  - id: threshold
+    echo:
+      message: hi
+  - id: fetch
+    http:
+      url: https://example.com
+      expect: ${threshold == 200}
+`
+	result, err := flowfile.Fix([]byte(src))
+	require.NoError(t, err)
+
+	assert.Empty(t, result.Refusals, "nothing here is broken")
+	assert.Equal(t, src, string(result.Source), "the deferred input is left exactly as written")
+
+	require.Len(t, result.Notes, 1)
+	assert.Equal(t, 9, result.Notes[0].Line)
+	// The note has to carry the replacement, or an author is told there may be a
+	// problem and left to work out the shape of the answer.
+	assert.Contains(t, result.Notes[0].Message, "${steps.threshold == 200}")
+}
+
+// TestFixDoesNotSuggestAStepForARootedResponseName keeps the two halves from
+// contradicting each other.
+//
+// A file with a step called `status_code` and an http step reading the response field
+// of that name gets the field rooted — and must not then be told "if it means the step,
+// write `steps.status_code`", which would send an author to undo the migration this
+// command just performed. One value, one answer.
+func TestFixDoesNotSuggestAStepForARootedResponseName(t *testing.T) {
 	t.Parallel()
 
 	src := `name: t
@@ -1093,14 +1147,9 @@ steps:
 	result, err := flowfile.Fix([]byte(src))
 	require.NoError(t, err)
 
-	assert.Empty(t, result.Refusals, "nothing here is broken")
-	assert.Equal(t, src, string(result.Source), "the deferred input is left exactly as written")
-
-	require.Len(t, result.Notes, 1)
-	assert.Equal(t, 9, result.Notes[0].Line)
-	// The note has to carry the replacement, or an author is told there may be a
-	// problem and left to work out the shape of the answer.
-	assert.Contains(t, result.Notes[0].Message, "${steps.status_code == 200}")
+	assert.Contains(t, string(result.Source), "${response.status_code == 200}")
+	assert.Empty(t, result.Notes,
+		"the response field was rooted and then a note suggested rooting it as a step instead")
 }
 
 // TestFixSaysNothingAboutADeferredInputWithNoStepInIt keeps the note from

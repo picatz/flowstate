@@ -205,7 +205,7 @@ func Test_taskFuncHTTP_OutputsShaping(t *testing.T) {
 		{
 			name:        "status only",
 			method:      http.MethodGet,
-			outputsExpr: "{'status': status_code}",
+			outputsExpr: "{'status': response.status_code}",
 			check: func(t *testing.T, result *Node_Outputs, err error) {
 				require.NoError(t, err)
 				require.NotNil(t, result)
@@ -225,7 +225,7 @@ func Test_taskFuncHTTP_OutputsShaping(t *testing.T) {
 		{
 			name:        "json title",
 			method:      http.MethodGet,
-			outputsExpr: "{'title': json_parse(body)['slideshow']['title']}",
+			outputsExpr: "{'title': json_parse(response.body)['slideshow']['title']}",
 			check: func(t *testing.T, result *Node_Outputs, err error) {
 				require.NoError(t, err)
 				require.NotNil(t, result)

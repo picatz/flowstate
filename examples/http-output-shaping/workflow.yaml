@@ -1,10 +1,17 @@
-# By default the http task returns status_code, body, and headers. The optional
-# `outputs` input replaces those with exactly the values this step should return,
-# which keeps only what later steps need in the workflow's payloads.
+# By default the http task returns `status_code`, `body` and `headers` as this step's
+# outputs, which later steps read as `${steps.web.status_code}`. The optional `outputs`
+# input replaces those with exactly the values this step should return, keeping only
+# what later steps need in the workflow's payloads.
 #
-# Expressions in `outputs` are evaluated after the response arrives, so they can
-# reference status_code, body, and headers directly. The json library is
-# available for picking fields out of a JSON body.
+# Expressions in `outputs` are evaluated after the response arrives, and reach it
+# through `response.*`: `${response.status_code}`, `${response.body}`. Rooted because
+# those names are the *system's* rather than yours — the set can grow without capturing
+# a name you were already using, and a loop binding called `body` around this step
+# cannot be mistaken for the response. The json library is available for picking fields
+# out of a JSON body.
+#
+# Note the two spellings are different things: `response.body` is this response, read
+# here; `steps.web.body` is this step's output, read later.
 name: http-output-shaping
 steps:
   - id: web
@@ -14,7 +21,7 @@ steps:
       # ${...} marks a CEL expression, as everywhere else in a Flowfile; a bare
       # string would be a literal. Quote it because YAML would otherwise read
       # the colons inside as mapping syntax.
-      outputs: "${ {'status': status_code, 'title': json_parse(body)['slideshow']['title']} }"
+      outputs: "${ {'status': response.status_code, 'title': json_parse(response.body)['slideshow']['title']} }"
 
   - id: report
     printf:

@@ -11,7 +11,7 @@ steps:
     http:
       method: GET
       url: https://httpbin.org/status/404
-      expect: ${status_code == 200 || status_code == 404}
+      expect: ${response.status_code == 200 || response.status_code == 404}
 
   - id: report_missing
     printf:
@@ -27,7 +27,7 @@ steps:
       method: GET
       url: https://httpbin.org/json
       parse_json: true
-      expect: ${status_code == 200 && !has(json.error)}
+      expect: ${response.status_code == 200 && !has(response.json.error)}
 
   - id: report_checked
     printf:

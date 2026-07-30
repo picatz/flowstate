@@ -282,7 +282,7 @@ func Test_httpTask_parseJSON(t *testing.T) {
 		out, err := runHTTPTask(t, map[string]any{
 			"url":        server.URL,
 			"parse_json": true,
-			"outputs":    NewExpr("{'name': json.items[0].name, 'id': json.items[0].id}"),
+			"outputs":    NewExpr("{'name': response.json.items[0].name, 'id': response.json.items[0].id}"),
 		})
 		require.NoError(t, err)
 
@@ -333,12 +333,12 @@ func Test_httpTask_expect(t *testing.T) {
 		{
 			name:   "an expected 404 succeeds",
 			status: http.StatusNotFound,
-			inputs: map[string]any{"expect": NewExpr("status_code == 200 || status_code == 404")},
+			inputs: map[string]any{"expect": NewExpr("response.status_code == 200 || response.status_code == 404")},
 		},
 		{
 			name:    "an unexpected status fails permanently",
 			status:  http.StatusOK,
-			inputs:  map[string]any{"expect": NewExpr("status_code == 201")},
+			inputs:  map[string]any{"expect": NewExpr("response.status_code == 201")},
 			wantErr: "does not accept",
 			check: func(t *testing.T, taskErr *TaskError) {
 				// The author described what success looks like; this endpoint answered
@@ -352,7 +352,7 @@ func Test_httpTask_expect(t *testing.T) {
 			body:   `{"error":"nope"}`,
 			inputs: map[string]any{
 				"parse_json": true,
-				"expect":     NewExpr("status_code == 200 && !has(json.error)"),
+				"expect":     NewExpr("response.status_code == 200 && !has(response.json.error)"),
 			},
 			wantErr: "does not accept",
 		},
@@ -362,13 +362,13 @@ func Test_httpTask_expect(t *testing.T) {
 			body:   `{"ok":true}`,
 			inputs: map[string]any{
 				"parse_json": true,
-				"expect":     NewExpr("status_code == 200 && !has(json.error)"),
+				"expect":     NewExpr("response.status_code == 200 && !has(response.json.error)"),
 			},
 		},
 		{
 			name:    "a non-boolean expect is refused",
 			status:  http.StatusOK,
-			inputs:  map[string]any{"expect": NewExpr("status_code")},
+			inputs:  map[string]any{"expect": NewExpr("response.status_code")},
 			wantErr: "must evaluate to a boolean",
 		},
 		{
