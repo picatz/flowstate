@@ -6,7 +6,6 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/colorprofile"
-	"github.com/charmbracelet/fang"
 	"github.com/charmbracelet/x/exp/charmtone"
 )
 
@@ -166,11 +165,12 @@ func (t Theme) Plain() bool { return t.plain }
 
 // Palette is each role resolved to a colour, before any style is built from it.
 //
-// Separated from [Theme] because two things need the same colours and want them
-// in different shapes: this package renders with lipgloss styles, and fang — which
-// draws the help and the error report — takes a struct of bare colours. Deriving
-// both from one palette is what keeps `flow --help` and `flow list` looking like
-// one program rather than two that happen to ship in one binary.
+// Separated from [Theme] because the colours and the styles built from them have
+// different lifetimes: a role is one decision, and the several styles that use it
+// are not. Deriving everything from one palette is what keeps `flow --help` and
+// `flow list` looking like one program rather than two that happen to ship in one
+// binary — the help page having been drawn by a library, once, and by this palette
+// only because the library was handed a translation of it.
 type Palette struct {
 	Muted   color.Color
 	Strong  color.Color
@@ -185,9 +185,8 @@ type Palette struct {
 	// that one answer serves all of them.
 	OnFill color.Color
 
-	// Surface is a filled background for a block of text rather than a token —
-	// fang's code blocks use it. Low contrast on purpose: it groups, it does not
-	// announce.
+	// Surface is a filled background for a block of text rather than a token. Low
+	// contrast on purpose: it groups, it does not announce.
 	Surface color.Color
 }
 
@@ -209,45 +208,5 @@ func NewPalette(pick lipgloss.LightDarkFunc) Palette {
 		Info:    pick(charmtone.Oceania, charmtone.Malibu),
 		OnFill:  pick(charmtone.Butter, charmtone.Pepper),
 		Surface: pick(charmtone.Salt, charmtone.Charcoal),
-	}
-}
-
-// FangColorScheme dresses fang in the same palette as everything else.
-//
-// fang renders `flow --help` and every error report, and by default it renders
-// them in Charm's own scheme. That is a good scheme and it is not this program's:
-// a binary whose help is one colour and whose output is another reads as two
-// tools. Passing this to fang.WithColorSchemeFunc makes the whole surface agree,
-// including the parts this package never draws.
-//
-// The signature is fang's, which hands over the light/dark decision it has already
-// made — so the background is read once per process rather than once per package.
-func FangColorScheme(pick lipgloss.LightDarkFunc) fang.ColorScheme {
-	p := NewPalette(pick)
-
-	return fang.ColorScheme{
-		Base:        p.Strong,
-		Title:       p.Accent,
-		Description: p.Strong,
-		Codeblock:   p.Surface,
-		Program:     p.Accent,
-		Command:     p.Accent,
-		Flag:        p.Info,
-		FlagDefault: p.Muted,
-
-		// The parts of an example that are not the command: a comment explaining
-		// it, a quoted argument, a placeholder somebody has to substitute. Muted
-		// so that the command itself is what the eye lands on.
-		Comment:        p.Muted,
-		DimmedArgument: p.Muted,
-		Argument:       p.Strong,
-		QuotedString:   p.Success,
-		Dash:           p.Muted,
-		Help:           p.Muted,
-
-		// A refusal is the one thing in the help surface that has to be found
-		// rather than read, which is what a filled background is for.
-		ErrorHeader:  [2]color.Color{p.OnFill, p.Danger},
-		ErrorDetails: p.Strong,
 	}
 }

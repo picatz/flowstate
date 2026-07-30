@@ -14,11 +14,17 @@ import (
 //
 // It is an OSC 11 sequence written to the terminal and a reply read back, and
 // lipgloss waits two seconds for one — against both the input and the output file,
-// so an unanswered question costs four. Terminals that never answer are ordinary
-// rather than exotic: screen, some multiplexer configurations, an editor's embedded
-// terminal, a pty in CI. On those, `flow` printed nothing at all for several seconds
-// and then behaved normally, which reads as a hang in the network or the server —
-// the two places somebody would look, and neither of them it.
+// so a terminal that answers nothing at all costs four. On those, `flow` printed
+// nothing for four seconds and then behaved normally, which reads as a hang in the
+// network or the server: the two places somebody would look, and neither of them
+// it.
+//
+// Narrower than it first appears, and measured rather than assumed. The query asks
+// for the background colour *and* the primary device attributes in one write, so a
+// terminal that simply does not implement background reporting still answers the
+// second and ends the wait — 0.02s against a pty doing exactly that. The four
+// seconds belong to a pty that answers neither, which is automation holding a tty
+// rather than a person's terminal.
 //
 // So the rules around the question matter more than the question does. These are
 // about the three answers that come first.
@@ -126,8 +132,8 @@ func TestAnUnsetOrMeaninglessBackgroundIsNotAnAssertion(t *testing.T) {
 // A `flow` invocation calls Detect twice — stdout and stderr are separate streams
 // with separate colour depths — and [ForCapabilities] then merges the two answers
 // into one. So the second query's result had nowhere to go but an OR with the
-// first's, while costing the same four seconds. fang asks a third time on its help
-// and error paths, which this package cannot reach; that one is its own task.
+// first's. The help and error surfaces were a third asker until this CLI took
+// them over from fang, which resolved its palette through a query no option reached.
 func TestTheTerminalIsAskedAtMostOnce(t *testing.T) {
 	t.Parallel()
 

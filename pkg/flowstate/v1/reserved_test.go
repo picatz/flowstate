@@ -5,6 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.temporal.io/sdk/converter"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -81,6 +82,41 @@ func TestNothingElseLostItsNumber(t *testing.T) {
 		assert.Equal(t, number, int32(field.Number()),
 			"%q changed number, so a stored specification no longer decodes to it", name)
 	}
+}
+
+// TestADeletedFieldCostsAHistoryThatCarriesIt is the price of every deletion in
+// this schema, measured rather than assumed.
+//
+// Temporal's ProtoJSON converter is built with `protojson.UnmarshalOptions{}`, so
+// `DiscardUnknown` is false and a stored specification carrying a field that no
+// longer exists does not decode at all — the run fails at the worker rather than
+// ignoring a value nothing reads. Reserving the name and number prevents the field
+// coming back meaning something else; it does not make an old payload readable, and
+// nothing does short of keeping the field.
+//
+// Written down as a test because the comment in the schema is where somebody
+// reading the deletion looks, and this is where somebody *proposing the next one*
+// finds out what it costs. It is a fact about the converter rather than about
+// `inputs`, so it is stated with a field name that was never real: if this ever
+// stops failing, the converter's options changed underneath every deletion here.
+func TestADeletedFieldCostsAHistoryThatCarriesIt(t *testing.T) {
+	t.Parallel()
+
+	stored := []byte(`{"workflow":{"name":"t","steps":[{"id":"a","task":{"name":"log"}}],` +
+		`"somethingDeleted":{"who":"world"}},"stepsBudget":100}`)
+
+	converter := converter.NewProtoJSONPayloadConverter()
+
+	payload, err := converter.ToPayload(&v1.RunState{})
+	require.NoError(t, err)
+	payload.Data = stored
+
+	err = converter.FromPayload(payload, &v1.RunState{})
+	require.Error(t, err,
+		"a deleted field in a stored specification decoded, so this schema's deletions "+
+			"are cheaper than they are documented to be")
+	assert.Contains(t, err.Error(), "unknown field",
+		"the decode failed for some reason other than the deleted field")
 }
 
 func reservesName(desc protoreflect.MessageDescriptor, name protoreflect.Name) bool {

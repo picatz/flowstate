@@ -78,6 +78,25 @@ message Workflow {
   // is stored with field *names*. A future `inputs` of a different shape would
   // therefore be read out of an old history by name and silently mean something
   // else — which the number alone does not prevent.
+  //
+  // The same fact has a cost, and it is worth stating once here because it applies
+  // to every deletion in this file rather than to this one. Temporal's ProtoJSON
+  // converter is built with `protojson.UnmarshalOptions{}` — `DiscardUnknown` is
+  // false — so a history whose stored specification carries a deleted field does
+  // not decode at all:
+  //
+  //   unable to decode: proto: (line 1:68): unknown field "inputs"
+  //
+  // Measured, not assumed. A run in flight when the field goes away therefore fails
+  // rather than ignoring it, and the failure is at the worker rather than at
+  // submission.
+  //
+  // Accepted here on the same terms as the two deletions already in this file —
+  // `Task.description` below, and the three retired tasks. Nothing in this
+  // repository ever set `inputs`, no release has ever been tagged, and a schema
+  // change that a run cannot survive is what an *edition* boundary is for. What
+  // would not be acceptable is doing it quietly: a deletion that costs an in-flight
+  // run has to be a decision somebody made, which is why it is written down.
   reserved 4;
   reserved "inputs";
 

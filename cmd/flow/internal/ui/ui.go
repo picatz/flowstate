@@ -46,8 +46,10 @@ const SymbolsEnv = "FLOWSTATE_SYMBOLS"
 // asking for it.
 //
 // The same escape hatch as [SymbolsEnv] and, unlike it, also a way out of a
-// *pause*: the question is asked over the terminal itself and a terminal that
-// never answers is waited on. See [terminalIsDark].
+// *pause*: the question is asked over the terminal itself, and a terminal that
+// answers nothing at all is waited on for four seconds. Setting this takes
+// `flow --help` on such a terminal from 4.02s to 0.02s, measured. See
+// [terminalIsDark].
 const BackgroundEnv = "FLOWSTATE_BACKGROUND"
 
 // Capabilities is what one output stream can do.
@@ -165,9 +167,12 @@ func settledBackground(in *os.File, environ []string, profile colorprofile.Profi
 
 	// Nothing reads this. Below ANSI every role in the palette collapses to weight,
 	// so both backgrounds resolve to the same styles and the answer cannot change a
-	// byte of output — which makes a query that can stall for seconds pure cost. It
-	// is the NO_COLOR and TERM=dumb case, and those are exactly the terminals least
-	// likely to answer.
+	// byte of output — which makes a query that can stall for seconds pure cost.
+	//
+	// This is the rule that actually pays. `NO_COLOR=1 flow --help` against a pty
+	// that answers nothing went from 4.05s to 0.02s, and `TERM=dumb` from 4.02s to
+	// 0.01s — those being both the readers who cannot use the answer and, not by
+	// coincidence, the terminals least likely to give one.
 	if profile < colorprofile.ANSI {
 		return true, true
 	}
@@ -197,20 +202,21 @@ func backgroundFromEnv(environ []string) (dark bool, settled bool) {
 	return false, false
 }
 
-// asked memoizes the one question this program asks its terminal.
+// memo holds the one question this program asks its terminal.
 //
 // A terminal's background does not change while a command runs, so the answer is a
-// property of the process rather than of a stream. It was being asked for once per
-// stream — stdout and stderr are separate [Detect] calls — and, since the two
-// answers are merged into a single decision in [ForCapabilities], the second was
-// work whose result had nowhere to go but an OR.
+// property of the process rather than of a stream. It was asked once per stream —
+// stdout and stderr are separate [Detect] calls — and since the two answers are
+// merged into a single decision in [ForCapabilities], the second had nowhere to go
+// but an OR.
 //
-// That is not a rounding error. lipgloss writes an OSC 11 query and waits two
-// seconds for a reply, against both files in turn, so one unanswered question costs
-// four seconds and the pair costs eight. Terminals that do not answer are ordinary
-// rather than exotic — screen, some multiplexer configurations, an editor's embedded
-// terminal, a pty in CI — and on those the command printed nothing at all for long
-// enough to look hung.
+// Measured rather than assumed, because the obvious claim about what that costs is
+// wrong. Against a pty that answers nothing at all, `flow --help` took 4.02s with
+// the duplicate query and 4.02s without it: the pause is lipgloss's single query
+// timing out against two files, and the second query is somehow already cheap.
+// Asking once is still right — it is one question about one terminal — but it is
+// not what makes the slow case fast. The rules in [settledBackground] are, and only
+// for the streams they cover.
 //
 // Takes the question rather than asking it, so that "asks once, and everybody after
 // gets the first answer" is a claim about this type that can be checked by counting,
