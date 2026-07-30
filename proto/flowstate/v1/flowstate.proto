@@ -63,14 +63,23 @@ message Workflow {
     }
   ];
 
-  // Inputs are key-value pairs that can be used to provide initial data to the workflow.
-  // These inputs can be used by the steps in the workflow to perform their tasks.
-  map<string, Value> inputs = 4 [
-    (google.api.field_behavior) = OPTIONAL,
-    (buf.validate.field).map = {
-      keys: {string: {min_len: 1}}
-    }
-  ];
+  // Field 4 was `map<string, Value> inputs`, meant as initial data for a workflow.
+  //
+  // Nothing ever wrote it and nothing ever read it. No Flowfile key compiled to it,
+  // no RPC carried a value for it, and no evaluation bound a name from it — the
+  // parser answers `inputs:` at this level with "unknown key", listing the keys that
+  // do exist. It was a shape held open for a feature, and the feature it is now
+  // wanted for is not this one: Phase 2's parameters are typed and declared, not a
+  // bare map, and they belong in a message that can say so.
+  //
+  // Reserved by *name* as well as by number, which is the part that matters here.
+  // There is no custom data converter, so Temporal's default composite converter
+  // reaches ProtoJSON before Proto and every specification in a workflow's history
+  // is stored with field *names*. A future `inputs` of a different shape would
+  // therefore be read out of an old history by name and silently mean something
+  // else — which the number alone does not prevent.
+  reserved 4;
+  reserved "inputs";
 
   // Labels are key-value pairs that can be used to organize and categorize workflows.
   map<string, string> labels = 5 [
