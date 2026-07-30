@@ -653,11 +653,37 @@ steps:
       as: name
 ```
 
-### `for_each` reads `as:`
+### `for_each` reads `as:` *(landed)*
 
 `iterator:` is retired for `as:` in the same edition sweep. It is shorter, names the
 binding rather than the mechanism, and reads as the sentence it is: *for each item
 as name*. `flow fix` rewrites it.
+
+*Since written:* landed as specified, and the machinery it needed is the reusable part.
+
+A retired key is not an unknown one, and the difference is the whole diagnostic. "unknown
+key `iterator`; did you mean `items`?" sends an author to correct a word they spelled
+correctly. What helps is the new spelling, the reason, and the command that writes it:
+
+```console
+$ flow validate workflow.yaml
+workflow.yaml:6:7: step "each": `iterator:` is now `as:` — it names the binding rather
+than the mechanism, and reads as the sentence it is: *for each item as name*; run
+`flow fix` to rewrite this file
+```
+
+Two properties make that table safe to grow for the rest of the sweep. Each entry is
+guarded by its *position* rather than by the word alone — `iterator:` written on a step
+is still simply an unknown key, because `as:` is not a key there, and answering "run
+`flow fix`" for a file the command will not touch is the one response worse than none.
+And an entry lives for exactly one edition: the grammar carries one spelling at a time,
+so an entry buys a good sentence for a file written before the sweep rather than a
+second spelling the parser accepts.
+
+The rewrite itself edits the key token and copies the rest of the line through, so the
+value keeps its quoting, an inline comment keeps its column, and a comment written
+beneath the key stays where the author put it. That is what makes `flow fix .` something
+people run on a directory rather than a file at a time.
 
 ### `http:` stays; its response scope gets a root
 

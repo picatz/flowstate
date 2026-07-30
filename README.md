@@ -292,7 +292,7 @@ steps:
   - id: process
     for_each:
       items: ${steps.targets.result}
-      iterator: name          # defaults to `item`; bare, so it may share a step's id
+      as: name          # defaults to `item`; bare, so it may share a step's id
       max_parallel: 3         # omit or 1 to run one at a time
       steps:
         - id: label

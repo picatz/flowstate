@@ -215,7 +215,7 @@ func forEachToYAML(loop *v1.ForEach) (yaml.MapSlice, error) {
 
 	out := yaml.MapSlice{{Key: "items", Value: items}}
 	if iterator := loop.GetIterator(); iterator != "" {
-		out = append(out, yaml.MapItem{Key: "iterator", Value: iterator})
+		out = append(out, yaml.MapItem{Key: "as", Value: iterator})
 	}
 	if maxParallel := loop.GetMaxParallel(); maxParallel != 0 {
 		out = append(out, yaml.MapItem{Key: "max_parallel", Value: maxParallel})

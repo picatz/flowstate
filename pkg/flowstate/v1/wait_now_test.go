@@ -189,7 +189,7 @@ func TestWaitDeadlineNowDoesNotShadowALoopIterator(t *testing.T) {
 	// authorable, and the only symptom is a wait that ends at the wrong moment.
 	source := "name: t\nsteps:\n" +
 		"  - id: targets\n    cel:\n      expr: \"['a']\"\n" +
-		"  - id: sweep\n    for_each:\n      items: ${steps.targets.result}\n      iterator: now\n" +
+		"  - id: sweep\n    for_each:\n      items: ${steps.targets.result}\n      as: now\n" +
 		"      steps:\n        - id: hold\n          wait_until: ${now}\n"
 
 	workflow, err := flowfile.Unmarshal([]byte(source))

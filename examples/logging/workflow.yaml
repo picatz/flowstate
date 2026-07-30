@@ -38,7 +38,7 @@ steps:
   - id: rollout
     for_each:
       items: [eu-west-1, us-east-1]
-      iterator: region
+      as: region
       steps:
         - id: report
           log:

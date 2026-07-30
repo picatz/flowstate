@@ -211,7 +211,7 @@ steps:
 - id: loop
   for_each:
     items: ${['a', 'b']}
-    iterator: n
+    as: n
     max_parallel: 2
     steps:
     - id: body

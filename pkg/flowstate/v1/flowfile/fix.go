@@ -337,10 +337,65 @@ func (f *fixer) step(n ast.Node) {
 		case "task":
 			f.taskBlock(v)
 		case "for_each":
+			f.renamedKey(v.Value, "iterator", "as")
 			f.nested(v.Value, "steps")
 		case "parallel":
 			f.branches(v.Value)
 		}
+	}
+}
+
+// renamedKey rewrites one key of a mapping, leaving its value and the rest of the line
+// exactly as written.
+//
+// The whole edit is the token before the colon, which is what makes a rename safe to do
+// on lines at all: the value keeps its quoting, an inline comment keeps its column, and
+// a multi-line value underneath is not touched because the key's own line is the only
+// one consumed. That last part matters — taking the block under the key would delete a
+// comment written beneath it while claiming to have renamed something.
+//
+// Silent when the new spelling is already there, so running this twice changes nothing
+// the first run did not.
+func (f *fixer) renamedKey(n ast.Node, was, now string) {
+	n = unwrapAnchor(n)
+	mapping, ok := n.(*ast.MappingNode)
+	if !ok {
+		if single, isOne := n.(*ast.MappingValueNode); isOne {
+			mapping = &ast.MappingNode{Values: []*ast.MappingValueNode{single}}
+		} else {
+			return
+		}
+	}
+
+	for _, v := range mapping.Values {
+		name, ok := keyNameOf(v.Key)
+		if !ok || name != was {
+			continue
+		}
+
+		span := spanOfNode(v.Key)
+		if !span.IsValid() || span.Start.Line > len(f.lines) {
+			continue
+		}
+
+		// Rewritten from the source line rather than reassembled from the parsed
+		// value, because reassembling loses whatever the author wrote after it. The
+		// key is replaced in place and the remainder of the line — the colon, the
+		// spacing, the value, any trailing comment — is copied through.
+		line := f.lines[span.Start.Line-1]
+		at := span.Start.Column - 1
+		if at < 0 || at+len(was) > len(line) || line[at:at+len(was)] != was {
+			// The key is not where the parser said it was, which means something
+			// about this line is not the shape assumed here — a quoted key, most
+			// likely. Refusing beats editing at an offset that is off by one.
+			f.refuse(v.Key, "`%s:` is now `%s:`, but this line is not shaped so it can be rewritten safely; change it by hand", was, now)
+
+			continue
+		}
+
+		f.record(span.Start.Line, span.Start.Line,
+			[]string{line[:at] + now + line[at+len(was):]},
+			fmt.Sprintf("`%s:` renamed to `%s:`", was, now))
 	}
 }
 

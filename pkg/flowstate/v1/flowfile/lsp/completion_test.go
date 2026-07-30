@@ -442,7 +442,7 @@ steps:
   - id: loop
     for_each:
       items: "${['a']}"
-      iterator: each
+      as: each
       steps:
         - id: window
           wait_until: ${|
@@ -476,7 +476,7 @@ steps:
     for_each:
       |
 `,
-			exact: []string{"items", "iterator", "max_parallel", "steps"},
+			exact: []string{"items", "as", "max_parallel", "steps"},
 		},
 		{
 			name: "retry keys",

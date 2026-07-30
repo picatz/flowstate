@@ -507,7 +507,7 @@ step literally called `steps` — keeps resolving exactly as it did. That preced
 for those runs and for nothing else, because the compiler refuses the id: a step called
 `steps` would shadow the whole root for every expression after it, so `flow validate`
 rejects it wherever an id can be written — top level, loop body, parallel branch, and a
-loop's `iterator:`. The old runs keep their meaning; no new file can acquire it.
+loop's `as:`. The old runs keep their meaning; no new file can acquire it.
 
 Because Temporal persists everything a workflow passes to an activity, the engine
 statically analyzes which references each remaining step actually needs and carries only

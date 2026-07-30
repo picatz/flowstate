@@ -592,6 +592,11 @@ steps:
 
 // TestFixIsIdempotent covers the thing a migration tool gets run twice by
 // accident, and the thing CI does when it runs --check after a fix.
+//
+// One fixture carrying every rewrite rather than one test per rule, because idempotence
+// is a property of the *rewriter* and the way it breaks is two rules interacting — one
+// producing a shape the next still wants to edit. A per-rule test cannot see that, and
+// this one only can if each new rule is added here.
 func TestFixIsIdempotent(t *testing.T) {
 	t.Parallel()
 
@@ -606,6 +611,7 @@ steps:
   - id: loop
     for_each:
       items: ${[1]}
+      iterator: n
       steps:
         - id: inner
           task:

@@ -161,7 +161,7 @@ steps:
   - id: each
     for_each:
       items: ${["a"]}
-      iterator: name
+      as: name
       steps:
         - id: inner
           echo:

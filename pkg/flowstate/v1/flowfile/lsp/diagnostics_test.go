@@ -215,7 +215,7 @@ steps:
   - id: each
     for_each:
       items: ${steps.items.result}
-      iterator: one
+      as: one
       steps:
         - id: body
           echo:

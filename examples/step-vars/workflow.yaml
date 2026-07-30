@@ -41,7 +41,7 @@ steps:
       suffix: ${'.' + vars.environment + '.internal'}
     for_each:
       items: ${hosts}
-      iterator: host
+      as: host
       steps:
         - id: address
           # A var declared *inside* the body is re-evaluated per iteration, so it can

@@ -58,7 +58,7 @@ var stepProperties = map[string]bool{
 	"continue_on_error": true,
 	"for_each":          true,
 	"parallel":          true,
-	"iterator":          true,
+	"as":                true,
 	"items":             true,
 }
 
@@ -598,13 +598,13 @@ func validateLoop(stepID string, loop *v1.ForEach, enclosing refScope, index int
 	iterator := v1.IteratorName(loop)
 	if !isCELIdentifier(iterator) {
 		ds = append(ds, Diagnostic{
-			Step: stepID, Field: "iterator",
+			Step: stepID, Field: "as",
 			Message: fmt.Sprintf("%q is not a valid identifier", iterator),
 		})
 	}
 	if slices.Contains(celReservedIdentifiers, iterator) {
 		ds = append(ds, Diagnostic{
-			Step: stepID, Field: "iterator",
+			Step: stepID, Field: "as",
 			Message: fmt.Sprintf("%q is a CEL reserved word, so ${%s} cannot be parsed", iterator, iterator),
 		})
 	}
@@ -614,7 +614,7 @@ func validateLoop(stepID string, loop *v1.ForEach, enclosing refScope, index int
 		// step from the body — and the body is exactly where rooted references are
 		// written.
 		ds = append(ds, Diagnostic{
-			Step: stepID, Field: "iterator",
+			Step: stepID, Field: "as",
 			Message: fmt.Sprintf(
 				"%q is the root every step is named under, and a loop variable of that name would hide all of them inside the body; choose another iterator",
 				iterator),
@@ -638,7 +638,7 @@ func validateLoop(stepID string, loop *v1.ForEach, enclosing refScope, index int
 		// without making a step or a loop able to hide the clock, which is the
 		// same problem pointed the other way.
 		ds = append(ds, Diagnostic{
-			Step: stepID, Field: "iterator",
+			Step: stepID, Field: "as",
 			Message: fmt.Sprintf(
 				"%q is the built-in naming the moment a wait is evaluated, which a loop variable of the same name would shadow inside `wait_until:`; choose another iterator",
 				iterator),
