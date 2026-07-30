@@ -215,6 +215,7 @@ func Catalog() *TaskCatalog {
 	catalog := &TaskCatalog{
 		Tasks:         make([]*TaskDescription, 0, len(defs)),
 		CelLibraries:  ExtensionLibraries(),
+		CelFunctions:  catalogFunctions(),
 		DurationUnits: DurationUnits(),
 		NowIdentifier: NowIdentifier,
 		ValueRoots:    []string{VarsRoot, StepsRoot},
@@ -230,6 +231,27 @@ func Catalog() *TaskCatalog {
 	}
 
 	return catalog
+}
+
+// catalogFunctions renders the profile's functions into their schema form.
+//
+// The same set `flow tasks` prints and the editor completes from, because there is
+// one [ProfileFunctions] and every surface reads it. A machine-readable catalog that
+// listed a different set from the one a person is shown would be worse than not
+// carrying them at all: the whole point of this message is that it is the contract.
+func catalogFunctions() []*CELFunction {
+	functions := ProfileFunctions(CurrentProfile)
+
+	out := make([]*CELFunction, 0, len(functions))
+	for _, fn := range functions {
+		out = append(out, &CELFunction{
+			Name:    fn.Name,
+			Library: fn.Library,
+			Macro:   fn.Macro,
+		})
+	}
+
+	return out
 }
 
 // taskFields converts the described fields into their schema form.
