@@ -19,6 +19,9 @@ import (
 // every verb the CLI has.
 func (f *fakeWorkflowService) Get(_ context.Context, req *connect.Request[v1.GetRequest]) (*connect.Response[v1.GetResponse], error) {
 	f.gotGet = req.Msg
+	if f.onGet != nil {
+		f.onGet()
+	}
 	if f.getErr != nil {
 		return nil, f.getErr
 	}

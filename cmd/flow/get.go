@@ -79,8 +79,12 @@ func runGet(cmd *cobra.Command, args []string) error {
 	// The status is the one value on this line worth finding before the line is
 	// read, which is what a filled label is for. It is the word either way: strip
 	// the styling and the sentence still says what happened.
+	//
+	// ErrTheme, because this line goes to stderr: `flow get x | jq` has a piped
+	// stdout and a terminal stderr, and the palette for one is not the palette for
+	// the other.
 	fmt.Fprintf(surface.Err, "%s workflow %s run %s\n",
-		surface.Theme.Pill(statusTone(msg.GetStatus()), statusLabel(msg.GetStatus())),
+		surface.ErrTheme.Pill(statusTone(msg.GetStatus()), statusLabel(msg.GetStatus())),
 		msg.GetWorkflowId(), msg.GetRunId())
 
 	if outputs := msg.GetOutputs(); outputs != nil {

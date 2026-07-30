@@ -56,9 +56,14 @@ var unicodeSymbols = SymbolSet{
 // asciiSymbols is what a pipe, a CI log, and a terminal that cannot be measured
 // receive.
 //
-// Every mark is one column wide here too, so switching sets never changes a
-// layout — a table rendered with one set and read with the other still lines up,
-// which matters because golden output in a test is compared against a terminal's.
+// Every mark that can appear in a column is one column wide here too, so switching
+// sets never changes a layout — a table rendered with one set and read with the other
+// still lines up, which matters because golden output in a test is compared against a
+// terminal's.
+//
+// Ellipsis is the one exception and is not a column mark: three dots cannot be one
+// column and nothing is gained by pretending, so it belongs in prose — "… 12 earlier
+// steps" — and never in a position something is aligned against.
 var asciiSymbols = SymbolSet{
 	Success:  "+",
 	Failure:  "x",

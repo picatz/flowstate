@@ -65,6 +65,15 @@ type Capabilities struct {
 	// pipes both report the fallback, so a caller never divides by nothing.
 	Width int
 
+	// Height is the rows, or zero where there are none to count.
+	//
+	// Zero rather than a fallback, deliberately, and the asymmetry with Width is the
+	// point: a caller laying out text always needs *some* measure to wrap against,
+	// so guessing 80 columns is better than nothing. Nothing needs a guessed number
+	// of rows — a stream with no height is one nobody is scrolling — and a fallback
+	// would let a full-screen view believe it had 24 rows of a pipe to fill.
+	Height int
+
 	// Unicode reports whether restrained typographic marks are safe to emit.
 	Unicode bool
 }
@@ -106,14 +115,48 @@ func Detect(in, out *os.File, environ []string) Capabilities {
 			caps.Dark = true
 		}
 
-		if w, _, err := term.GetSize(out.Fd()); err == nil && w > 0 {
-			caps.Width = min(w, maxWidth)
+		if w, h, err := term.GetSize(out.Fd()); err == nil {
+			caps.applySize(w, h)
 		}
 	}
 
 	caps.Unicode = wantsUnicode(caps, environ)
 
 	return caps
+}
+
+// applySize folds a terminal's reported size in.
+//
+// Split out of [Detect] because it is the part with rules — a clamp, two fallbacks,
+// and a deliberate asymmetry between them — and the part [Detect] itself cannot be
+// tested on, since reaching the branch needs a pty that a Go test does not have. The
+// rules are testable here; what is left in Detect is the call that measures.
+func (c *Capabilities) applySize(columns, rows int) {
+	if columns > 0 {
+		c.Width = ClampWidth(columns)
+	}
+
+	if rows > 0 {
+		// Not clamped the way Width is. maxWidth exists because long measures are
+		// harder to read, which is a fact about prose; there is no equivalent reason
+		// to refuse to use a tall terminal's rows.
+		c.Height = rows
+	}
+}
+
+// ClampWidth bounds a measured terminal width the way this package bounds every
+// other one.
+//
+// Exported because a full-screen view is told its size by its own event loop rather
+// than by [Detect], and a resize that escaped the clamp would let the one surface
+// that repaints grow to 300 columns while every surface that prints stayed at 100.
+// Two answers to "how wide is the text" in one program is one too many.
+func ClampWidth(columns int) int {
+	if columns <= 0 {
+		return fallbackWidth
+	}
+
+	return min(columns, maxWidth)
 }
 
 // wantsUnicode decides between the typographic marks and their ASCII fallbacks.
@@ -169,26 +212,55 @@ type UI struct {
 	Caps    Capabilities
 	ErrCaps Capabilities
 
-	// Theme resolves colour roles against the background, using the answer
-	// stream's reading so that one invocation never mixes two palettes.
-	Theme Theme
+	// Theme styles what goes to Out, and ErrTheme what goes to Err.
+	//
+	// Two themes rather than one for the same reason there are two Capabilities:
+	// the streams are independent, and a single theme has to be resolved against
+	// one of them. Resolved against stdout, `flow get x | jq` writes an *unstyled*
+	// status to a terminal stderr, because the palette collapsed to plain for the
+	// pipe that was never going to receive it. Resolved against stderr, the
+	// opposite: escape sequences into `jq`.
+	//
+	// So the rule is the package's own, applied one level further down than it was:
+	// the decision is made once *per stream*, and a call site picks the theme
+	// belonging to the writer it is about to write to.
+	Theme    Theme
+	ErrTheme Theme
 }
 
 // New builds the rendering surface for a pair of streams.
 func New(in, out, errOut *os.File, environ []string) *UI {
-	caps := Detect(in, out, environ)
-	errCaps := Detect(in, errOut, environ)
+	return ForCapabilities(
+		colorprofile.NewWriter(out, environ),
+		colorprofile.NewWriter(errOut, environ),
+		Detect(in, out, environ),
+		Detect(in, errOut, environ),
+	)
+}
+
+// ForCapabilities builds a surface for streams whose capabilities are already
+// known.
+//
+// The one place the wiring lives, so [New] and [Plain] differ only in where the
+// answers come from — detected from real files, or asserted. That matters for the
+// asserted case in particular: a test describing a terminal it does not have is
+// testing the same construction a terminal gets, rather than a hand-built struct
+// that will still compile after this one changes.
+func ForCapabilities(out, errOut io.Writer, caps, errCaps Capabilities) *UI {
+	// Both streams belong to one terminal in every ordinary case, so the background
+	// is read once. Where they differ — a piped stdout — the styles written to
+	// stderr still have to be legible, and the terminal's own background is the one
+	// that decides that. The colour *depth* is per stream, because that is the part
+	// that differs between a pipe and a terminal.
+	dark := caps.Dark || errCaps.Dark
 
 	return &UI{
-		Out:     colorprofile.NewWriter(out, environ),
-		Err:     colorprofile.NewWriter(errOut, environ),
-		Caps:    caps,
-		ErrCaps: errCaps,
-		// Both streams belong to one terminal in every ordinary case, so the
-		// background is read once. Where they differ — a piped stdout — the
-		// styles written to stderr still have to be legible, and the terminal's
-		// own background is the one that decides that.
-		Theme: NewTheme(caps.Dark || errCaps.Dark, caps),
+		Out:      out,
+		Err:      errOut,
+		Caps:     caps,
+		ErrCaps:  errCaps,
+		Theme:    NewTheme(dark, caps),
+		ErrTheme: NewTheme(dark, errCaps),
 	}
 }
 
@@ -200,11 +272,5 @@ func New(in, out, errOut *os.File, environ []string) *UI {
 func Plain(out, errOut io.Writer) *UI {
 	caps := Capabilities{Width: fallbackWidth}
 
-	return &UI{
-		Out:     out,
-		Err:     errOut,
-		Caps:    caps,
-		ErrCaps: caps,
-		Theme:   NewTheme(true, caps),
-	}
+	return ForCapabilities(out, errOut, caps, caps)
 }
