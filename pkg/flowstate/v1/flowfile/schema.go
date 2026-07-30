@@ -1,12 +1,14 @@
 package flowfile
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/dynamicpb"
 )
 
 // Inputs are checked against the schema the task declares, which is the only way
@@ -22,12 +24,12 @@ import (
 // Two things bound what can be checked at compile time, and both are the
 // difference between a useful diagnostic and a false one:
 //
-//   - Only a literal has a knowable type. An expression's type depends on step
-//     outputs, which do not exist yet and are not themselves typed, so an
-//     expression input is not type-checked at all.
-//   - Some tasks accept input names their schema does not declare. The cel task
-//     binds every unrecognized input as a variable, so checking names against its
-//     descriptor would report each one.
+//   - Only a literal has a knowable type, and only a literal has a knowable
+//     *value*. An expression's depends on step outputs, which do not exist yet and
+//     are not themselves typed, so an expression input is neither type-checked nor
+//     rule-checked.
+//   - An input the task evaluates itself is passed through untouched, so its shape
+//     is the task's business rather than the schema's.
 //
 // A missing descriptor, an unknown task, or anything else this cannot decide
 // produces no diagnostic. That matters more here than coverage does: a validator
@@ -51,6 +53,11 @@ func validateTaskInputs(stepID string, task *v1.Task) Diagnostics {
 	// Inputs the task evaluates itself are passed through untouched, so their
 	// shape is the task's business rather than the schema's.
 	_, deferred := v1.ResolvableInputs(task.GetName(), task.GetInputs())
+
+	// checkable names the inputs whose literal the field can hold, which is the set
+	// the schema's own rules are worth running over. Collected on the way rather
+	// than derived after, since the loop below already answers the question.
+	checkable := make(map[string]bool)
 
 	// misspelled records what a typo was probably meant to be, so that one
 	// mistake is not also reported as the required input it left unset. Writing
@@ -141,7 +148,76 @@ func validateTaskInputs(stepID string, task *v1.Task) Diagnostics {
 		}
 		if message := literalMismatch(field, literal); message != "" {
 			ds = append(ds, Diagnostic{Step: stepID, Field: name, Message: message})
+
+			continue
 		}
+		// The field can hold the value. Whether the *schema* accepts it is a
+		// separate question, and one the author would otherwise meet at run time.
+		checkable[name] = true
+	}
+
+	return append(ds, violatedRules(stepID, task, def, checkable)...)
+}
+
+// violatedRules reports what the schema's own rules say about the inputs written as
+// literals — a method that is not a method, a URL that is not a URL, a map with more
+// entries than the field allows.
+//
+// Asked of protovalidate rather than of a table here, for the reason the rest of this
+// file reads descriptors: a rule added to the schema is enforced by `flow validate`
+// the day it is added, and a rule this package had never heard of is enforced too.
+// Rendering the rules by hand — which the language server does, for hover — would be
+// a second reading of the schema to keep in step, and the two would drift in the
+// direction of the validator being wrong about a working file.
+//
+// # Only what the author wrote, and only what is knowable
+//
+// The message this builds holds the literal inputs and nothing else, so it is
+// missing every field supplied by an expression. Violations about a field being
+// absent are therefore about *this message* rather than about the file, and are
+// dropped — a required input genuinely left out is reported above, from the source,
+// where there is a position to name.
+//
+// checkable names the inputs whose literal the field can hold. One that cannot is
+// already reported, and running rules over a value the field rejected would answer a
+// question nobody asked with a second diagnostic about the same line.
+func violatedRules(stepID string, task *v1.Task, def v1.TaskDef, checkable map[string]bool) Diagnostics {
+	if len(checkable) == 0 || def.Inputs == nil {
+		return nil
+	}
+
+	inputs := dynamicpb.NewMessage(def.Inputs)
+	if err := v1.PopulateLiterals(inputs, task.GetInputs()); err != nil {
+		// The conversion refused a value the field's own type accepted, which is a
+		// disagreement between two checks rather than a fact about the file. Silence
+		// is the only honest answer: reporting it would name a rule the author
+		// cannot read in the schema.
+		return nil
+	}
+
+	var invalid *v1.ValidationError
+	if err := v1.Validate(inputs); !errors.As(err, &invalid) {
+		// Either it validated, or the validator itself is unavailable. A rule that
+		// will not compile is a defect in the schema, and refusing the author's file
+		// for it would be this package blaming them for it.
+		return nil
+	}
+
+	var ds Diagnostics
+	for _, violation := range invalid.Violations {
+		name := strings.SplitN(violation.Field, ".", 2)[0]
+		name = strings.SplitN(name, "[", 2)[0]
+		if !checkable[name] {
+			continue
+		}
+
+		ds = append(ds, Diagnostic{
+			Step:  stepID,
+			Field: name,
+			// The diagnostic's own prefix already names the step and the input, so
+			// the message says what the schema objected to and nothing else.
+			Message: fmt.Sprintf("task %q does not accept it: %s", def.Name, violation.Message),
+		})
 	}
 
 	return ds

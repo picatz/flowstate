@@ -1088,3 +1088,33 @@ func populateProtoMessageFromValueMap(ctx context.Context, input map[string]*Val
 	}
 	return nil
 }
+
+// PopulateLiterals fills msg from the inputs an author wrote as literals, ignoring
+// every other kind.
+//
+// It exists so a *compiler* can ask what the engine would say about the part of a
+// step it can already see. `flow validate` used to check an input's type against the
+// field and stop there, so a file declaring `method: FETCH` validated cleanly and
+// then failed at run time with a Protobuf-flavoured message naming no line — the
+// author learning about a rule the schema had stated all along, from the surface
+// least able to point at it.
+//
+// Literals only, and that is the whole discipline. An expression's value depends on
+// step outputs that do not exist yet, so a rule checked against it would be checked
+// against nothing; a secret is resolved in the activity that needs it and is not a
+// value here at all. Both are left out, which means the message this fills is
+// deliberately *partial* — so a caller must ignore any violation about a field being
+// absent, since absence here says nothing about the file.
+//
+// The context is unused and cannot be otherwise: resolving an expression is the one
+// thing that would need one, and there are none.
+func PopulateLiterals(msg proto.Message, inputs map[string]*Value) error {
+	literals := make(map[string]*Value, len(inputs))
+	for name, value := range inputs {
+		if _, isLiteral := value.GetKind().(*Value_Literal); isLiteral {
+			literals[name] = value
+		}
+	}
+
+	return populateProtoMessageFromValueMap(context.Background(), literals, msg, nil)
+}
