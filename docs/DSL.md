@@ -277,10 +277,18 @@ section left open:
   and the schema has no field for it — no workload already running is touched by any
   of this, because the stable contract is the compiled spec and not the source.
 
+*Since written:* the first two of those four are reversed by [explicit
+versions](#versioning-one-scheme-for-everything-that-can-break). The edition becomes
+required, and `flow fix` stamps a missing one — which stops being the rewriter
+holding an opinion the moment the language requires the line. The second two stand.
+
 Two implementation surprises are worth recording. A dated edition is a YAML float:
 `edition: 2026.1` arrives as a number, so the token's own source text is read rather
 than the value — converting would make `2026.10` and `2026.1` the same edition, and the
-tenth of a year would compile as the first. And the rewriter is deliberately not
+tenth of a year would compile as the first. (*Since written:* the `v` prefix adopted
+with [explicit versions](#versioning-one-scheme-for-everything-that-can-break) retires
+this hack structurally — `v2026.1` is a plain string to YAML, and the float reading is
+unrepresentable.) And the rewriter is deliberately not
 parse-then-marshal: the retired grammar no longer parses, which is the entire point, and
 a formatter would move every comment and requote every string in a diff that is supposed
 to be about one key. It edits the lines it must, copies the rest through byte for byte —
@@ -712,8 +720,8 @@ minimums, per [the versioning scheme](#versioning-one-scheme-for-everything-that
 
 ```yaml
 plugins:
-  slack: "2.1"     # at least 2.1, same major
-  github: "1.4"
+  slack: v2.1.0    # a minimum: at least v2.1.0, same major
+  github: v1.4.0
 ```
 
 Declared once, auditable in one place, resolved against the worker's catalog at
@@ -805,6 +813,7 @@ root. It is the deployment-with-approval corpus entry, and the acceptance target
 for the retirement edition.
 
 ```yaml
+edition: v2026.2
 name: deploy
 description: Ship a build, gate production behind a human, then page in order.
 
@@ -867,9 +876,10 @@ plugin surface and a policied `exec` — the file that makes "could be used for 
 a demonstration rather than a claim:
 
 ```yaml
+edition: v2026.2
 name: ci
 plugins:
-  github: "1.2"
+  github: v1.2.0
 
 vars:
   repo: picatz/flowstate
@@ -918,7 +928,7 @@ moment:
 
 | Layer | Declared | Binds at | May break |
 | --- | --- | --- | --- |
-| grammar | `edition:` in the file (absent = current) | parse | at any edition, with `flow fix` across the boundary |
+| grammar | `edition:` in the file (required) | parse | at any edition, with `flow fix` across the boundary |
 | expression dialect | `Workflow.profile`, stamped by the compiler | compile; honoured at run and replay | with the edition; never within one |
 | compiled spec | proto package `flowstate.v1` | forever — histories replay against it | WIRE never; FILE spent deliberately |
 | engine | worker `--deployment-name --build-id` | run start; Continue-As-New takes current | freely between runs; never within one |
@@ -926,8 +936,24 @@ moment:
 
 The coherence rules, and what each refuses:
 
-**The author sees one version: the edition.** Everything else is stamped,
-resolved, or pinned by machinery. The profile is already compiler-stamped —
+**Versions are explicit, and spelled the Go way.** Every version in a Flowfile is
+written, never inferred, and every one carries the `v` prefix: `edition: v2026.2`,
+`slack: v2.1.0`. This reverses the earlier decision that an absent `edition:` means
+the current one. That decision optimized a line of ceremony away and bought a
+latent ambiguity with it: a file without an edition means whatever the build
+reading it says, so the same bytes compile differently on two machines — which is
+`GOPATH`'s defect, the one `go.mod`'s explicit `go` directive exists to close. The
+ceremony objection also weakens to nothing in a greenfield: every file is new,
+`flow fix` stamps the line, and `flow validate` on a file without one says exactly
+what to add. The `v` prefix is not decoration either — it makes an edition a plain
+string to YAML, so `v2026.10` and `v2026.1` are distinct by construction and the
+read-the-source-token hack is deleted. Plugin requirements are canonical full
+semver, `vMAJOR.MINOR.PATCH`, no shorthand and no ranges, exactly as `go.mod`
+requires — a spelling with one form needs no normalizer and produces no
+almost-equal diffs.
+
+**The author sees one version dial: the edition.** Explicit does not mean many.
+Everything else is stamped, resolved, or pinned by machinery. The profile is already compiler-stamped —
 `profile:` is not a Flowfile key and must never become one, because two files in
 one repo speaking two dialects is the situation the one-profile decision exists
 to prevent. The edition names the grammar *and* implies the dialect; the two are
@@ -944,11 +970,13 @@ resolution against the deployment's catalog. An `engine:` key would be a second
 dial answering the same two questions worse.
 
 **Plugin versions follow the import-compatibility rule, without the solver.**
-A `plugins:` entry declares a *minimum*: `slack: "2.1"` means at least 2.1,
+A `plugins:` entry declares a *minimum*: `slack: v2.1.0` means at least v2.1.0,
 same major. There is no range syntax and no constraint solver, for Go's reason —
 a deployment installs exactly one version of a plugin, so resolution is a
 comparison, not a search. A new major is a different requirement declared
-explicitly, never satisfied silently by an installed older one. The declared
+explicitly, never satisfied silently by an installed older one; the major lives
+in the requirement, not in step keys — `slack.post:` never grows a `/v2`, because
+one deployment holds one major of a plugin and the header already says which. The declared
 minimums are the `go.mod`; the compiled spec records the *exact* versions
 resolved at submit — the lockfile — so a run is reproducible from its spec alone:
 spec + profile + worker build + resolved plugin versions is the complete answer
@@ -982,7 +1010,9 @@ transition cost.
 Phase 1 grows: `vars:` with its shadowing rules, `log:`, the retirement edition
 (`cel`, `echo`, `printf`, `iterator:`→`as:`, `response.*` rooting), the
 `retiredStepKeys` entries, and reserving `value` alongside the dotted-key shape
-rule — the last two cost sentences now and compatibility later. The `plugins:`
+rule — the last two cost sentences now and compatibility later. The same edition
+flips `edition:` itself to required with the `v`-prefixed spelling, and `flow fix`
+stamps the line into files that lack it. The `plugins:`
 header and dotted-key resolution land in Phase 3 with `call:`. `exec` lands only
 with its policy, gated the way workflow-side evaluation is gated on Worker
 Versioning: a capability that assumes a posture verifies it or stays off. The
