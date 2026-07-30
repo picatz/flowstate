@@ -1,0 +1,65 @@
+name: step-vars
+
+# `vars:` is also a step key, and it means something deliberately different there.
+#
+# A workflow's vars are *ambient* — in scope everywhere, so they are rooted and read as
+# `vars.<name>`. A step's vars are *lexical* — in scope inside that step and nowhere
+# else — so they stay bare, exactly like the name a loop binds. Same word, same syntax,
+# and the standing of the name is what decides how it is spelled.
+#
+# See ../workflow-vars for the ambient half.
+vars:
+  environment: staging
+
+steps:
+  # The plain use: name an intermediate value so the expression that needs it reads as
+  # a sentence rather than as an assembly of three others.
+  - id: describe
+    vars:
+      # A step's var may read everything in scope where the step is written — the
+      # workflow's vars, and any step that has already run.
+      subject: ${'release for ' + vars.environment}
+      stamp: ${string(2026)}
+    echo:
+      # Bare, because these are bound right here. Nothing else in the file can see
+      # them, which is what makes `subject` a safe name to use twice in one workflow.
+      message: ${subject + ' (' + stamp + ')'}
+
+  # The same name again, in a different step, meaning something else. This is legal
+  # precisely because a step's vars do not escape it.
+  - id: describe_rollback
+    vars:
+      subject: ${'rollback for ' + vars.environment}
+    echo:
+      message: ${subject}
+
+  # A block's vars are in scope for its items expression and throughout its body, so a
+  # loop can name what it is iterating and what it is decorating in one place.
+  - id: fan_out
+    vars:
+      hosts: [alpha, beta]
+      suffix: ${'.' + vars.environment + '.internal'}
+    for_each:
+      items: ${hosts}
+      iterator: host
+      steps:
+        - id: address
+          # A var declared *inside* the body is re-evaluated per iteration, so it can
+          # read the iterator.
+          vars:
+            fqdn: ${host + suffix}
+          echo:
+            message: ${fqdn}
+
+# What this file cannot do, and `flow validate` says so rather than picking a winner:
+#
+#   - A step may not declare a name already bound by an enclosing loop or step. Two
+#     bindings of one bare name eleven lines apart is how `${body}` comes to mean two
+#     things, and a precedence rule is something every reader would have to know before
+#     they could read the second one correctly. Rename one; it costs a moment, once.
+#
+#   - A var may not read its siblings. `vars:` is a mapping, and a mapping has no
+#     order, so "the one above" is not something this file can mean.
+#
+#   - A name declared by one step is not in scope for the next. Pass a value forward
+#     through the step's outputs — `steps.<id>.<output>` — which is what they are for.

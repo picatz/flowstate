@@ -296,11 +296,25 @@ func Validate(wf *v1.Workflow) Diagnostics {
 		}
 	}
 
+	ds = append(ds, validateWorkflowVars(wf)...)
+
 	// Tasks and expression references.
 	scope := newRefScope(wf)
 	for i, node := range wf.GetSteps() {
 		id := node.GetId()
 		task := node.GetTask()
+
+		// The step's own `vars:`, in scope for everything the step contains — its
+		// inputs, and for a block its items expression and its whole body. Derived
+		// before the kind is known because the rule does not depend on the kind: a
+		// name a node declares is bound throughout that node and nowhere else.
+		//
+		// It was derived inside the task branch first, which made the validator and
+		// the engine disagree about a loop: the engine binds a loop's vars for its
+		// body, and the validator did not know they were bound, so a body step
+		// redeclaring one was allowed to silently shadow it.
+		inner, varDiagnostics := scopeWithStepVars(id, node, scope, i, wf)
+		ds = append(ds, varDiagnostics...)
 
 		if task == nil {
 			// A step may be a loop or a parallel block rather than a task. Its
@@ -309,12 +323,12 @@ func Validate(wf *v1.Workflow) Diagnostics {
 			// block it sits in.
 			switch kind := node.GetKind().(type) {
 			case *v1.Node_ForEach:
-				ds = append(ds, validateLoop(id, kind.ForEach, scope, i, wf)...)
+				ds = append(ds, validateLoop(id, kind.ForEach, inner, i, wf)...)
 				// A loop's body outputs do not escape it — only its own `results`
 				// output does — so body step ids must not become referenceable.
 
 			case *v1.Node_Parallel:
-				ds = append(ds, validateParallel(id, kind.Parallel, scope, i, wf)...)
+				ds = append(ds, validateParallel(id, kind.Parallel, inner, i, wf)...)
 				// Branch outputs are merged into the enclosing scope once the
 				// block completes, so a later step may reference them by id.
 				for _, branchID := range branchStepIDs(kind.Parallel) {
@@ -322,7 +336,7 @@ func Validate(wf *v1.Workflow) Diagnostics {
 				}
 
 			case *v1.Node_Wait:
-				ds = append(ds, validateWait(id, kind.Wait, scope, i, wf)...)
+				ds = append(ds, validateWait(id, kind.Wait, inner, i, wf)...)
 
 			default:
 				ds = append(ds, Diagnostic{
@@ -334,43 +348,139 @@ func Validate(wf *v1.Workflow) Diagnostics {
 			continue
 		}
 
-		if task.GetName() == "" {
-			ds = append(ds, Diagnostic{Step: id, Message: "task has no name"})
-		} else if _, known := v1.LookupTask(task.GetName()); !known {
-			ds = append(ds, Diagnostic{
-				Step: id,
-				// Under the flattening the task's name is a key an author wrote, so
-				// there is a token to underline rather than a whole step.
-				Kind: task.GetName(),
-				Message: fmt.Sprintf("unknown task %q; available tasks are %s",
-					task.GetName(), strings.Join(v1.TaskNames(), ", ")),
-			})
-		}
-
-		// Some inputs are evaluated by the task itself, in a scope this
-		// validator does not model — the http task's `outputs` expression
-		// references the response, not earlier steps. Checking references in
-		// those would report every correct use as an unknown step, and a false
-		// diagnostic is worse than a missing one: it trains authors to ignore
-		// the tool. The registry declares which inputs those are.
-		// A condition is an expression like any other, and resolves against the
-		// same names, so it is checked the same way.
-		ds = append(ds, validateInputRefs(id, "if", node.GetCondition(), scope, i, wf)...)
-
-		// What the task declares its inputs to be is checked separately from what
-		// they reference, because the two fail differently: a reference that
-		// cannot resolve is a mistake about the workflow, and an input the task
-		// does not have is a mistake about the task.
-		ds = append(ds, validateTaskInputs(id, task)...)
-
-		checkable, _ := v1.ResolvableInputs(task.GetName(), task.GetInputs())
-		for _, name := range sortedInputNames(checkable) {
-			ds = append(ds, validateInputRefs(id, name, checkable[name], scope, i, wf)...)
-		}
+		ds = append(ds, validateTaskStep(id, node, task, scope, inner, i, wf)...)
 
 		// Only after a step's inputs are checked do its outputs become
 		// available, which is what makes a self- or forward-reference detectable.
 		scope.steps[id] = true
+	}
+
+	return ds
+}
+
+// validateWorkflowVars reports references in the workflow's own `vars:` block, where
+// the answer for every one of them is that it cannot resolve.
+//
+// The block is evaluated once, before the first step, against a scope holding nothing:
+// no step has run, no loop is open, and a var may not read a sibling because a protobuf
+// map has no order for "the one above" to mean. So the engine's rule is simply that a
+// var is literals, operators and the profile's functions — and until this ran, nothing
+// said so until run time, where the failure arrives as a workflow that starts and dies
+// before its first step with a message about an unknown name.
+//
+// Which reference it is decides the sentence, because the three are different mistakes.
+// `vars.other` is someone expecting a `let` block. `steps.x` is someone forgetting when
+// this is evaluated. A bare name is usually neither — it is a name that means nothing
+// anywhere, and the general diagnostic already says that well.
+func validateWorkflowVars(wf *v1.Workflow) Diagnostics {
+	var ds Diagnostics
+
+	for _, name := range slices.Sorted(maps.Keys(wf.GetVars())) {
+		parsed := wf.GetVars()[name].GetExpr()
+		if parsed == nil {
+			continue
+		}
+
+		field := v1.VarsRoot + "." + name
+		rooted, vars, bare := referencedIdentifiers(parsed)
+
+		for _, ref := range vars {
+			ds = append(ds, Diagnostic{
+				Field: field, Value: ref,
+				Message: fmt.Sprintf(
+					"a var may not read another var: %q is evaluated at the same moment as %q, and "+
+						"`%s:` is a mapping rather than a sequence, so there is no order that would "+
+						"make one available to the other; inline the value, or compute it in a step",
+					name, ref, v1.VarsRoot),
+			})
+		}
+
+		for _, ref := range rooted {
+			ds = append(ds, Diagnostic{
+				Field: field, Value: ref,
+				Message: fmt.Sprintf(
+					"a var may not read a step: `%s:` is evaluated once before the first step runs, "+
+						"so %q has produced nothing yet; move this into the step that needs it, or "+
+						"give the step an input",
+					v1.VarsRoot, ref),
+			})
+		}
+
+		for _, ref := range bare {
+			if ref == v1.StepsRoot || ref == v1.VarsRoot {
+				// A root as an operand, which fails here for the same reason a
+				// selection through it does — and is described by the two loops
+				// above, not by the general "unknown name" sentence.
+				ds = append(ds, Diagnostic{
+					Field: field, Value: ref,
+					Message: fmt.Sprintf(
+						"a var may not read `%s`: `%s:` is evaluated before the first step runs, "+
+							"against a scope holding literals, operators and the profile's functions "+
+							"and nothing else",
+						ref, v1.VarsRoot),
+				})
+				continue
+			}
+
+			ds = append(ds, Diagnostic{
+				Field: field, Value: ref,
+				Message: fmt.Sprintf(
+					"references unknown name %q; a var is evaluated before the first step runs, so "+
+						"it may use literals, operators and the profile's functions and nothing else",
+					ref),
+			})
+		}
+	}
+
+	return ds
+}
+
+// validateTaskStep checks everything about one task step that does not depend on
+// whether it is written at the top level or nested inside a block.
+//
+// Shared rather than written twice, which it was: the top-level walk and
+// [validateNested] each had their own copy of this sequence, and step-level `vars:`
+// was added to one of them. A file whose only step was top level then reported the
+// name it had just declared as unknown — the feature worked exactly where a test
+// happened not to look. Anything a step means regardless of nesting belongs here, and
+// what remains at each call site is what genuinely differs about the position.
+func validateTaskStep(id string, node *v1.Node, task *v1.Task, scope, inner refScope, index int, wf *v1.Workflow) Diagnostics {
+	var ds Diagnostics
+
+	if task.GetName() == "" {
+		ds = append(ds, Diagnostic{Step: id, Message: "task has no name"})
+	} else if _, known := v1.LookupTask(task.GetName()); !known {
+		ds = append(ds, Diagnostic{
+			Step: id,
+			// Under the flattening the task's name is a key an author wrote, so
+			// there is a token to underline rather than a whole step.
+			Kind: task.GetName(),
+			Message: fmt.Sprintf("unknown task %q; available tasks are %s",
+				task.GetName(), strings.Join(v1.TaskNames(), ", ")),
+		})
+	}
+
+	// Some inputs are evaluated by the task itself, in a scope this validator does
+	// not model — the http task's `outputs` expression references the response, not
+	// earlier steps. Checking references in those would report every correct use as
+	// an unknown step, and a false diagnostic is worse than a missing one: it trains
+	// authors to ignore the tool. The registry declares which inputs those are.
+	//
+	// A condition is an expression like any other and resolves against the same
+	// names, so it is checked the same way — but *before* the step's own vars are in
+	// scope, because it decides whether the step runs at all, so a var this step
+	// declares does not exist yet when the question is asked.
+	ds = append(ds, validateInputRefs(id, "if", node.GetCondition(), scope, index, wf)...)
+
+	// What the task declares its inputs to be is checked separately from what they
+	// reference, because the two fail differently: a reference that cannot resolve is
+	// a mistake about the workflow, and an input the task does not have is a mistake
+	// about the task.
+	ds = append(ds, validateTaskInputs(id, task)...)
+
+	checkable, _ := v1.ResolvableInputs(task.GetName(), task.GetInputs())
+	for _, name := range sortedInputNames(checkable) {
+		ds = append(ds, validateInputRefs(id, name, checkable[name], inner, index, wf)...)
 	}
 
 	return ds
@@ -620,15 +730,20 @@ func validateNested(nodes []*v1.Node, enclosing refScope, index int, wf *v1.Work
 			})
 		}
 
+		// See the top-level walk: a node's own vars are bound throughout it, whatever
+		// kind of work it turns out to do.
+		inner, varDiagnostics := scopeWithStepVars(id, node, scope, index, wf)
+		ds = append(ds, varDiagnostics...)
+
 		task := node.GetTask()
 		if task == nil {
 			switch kind := node.GetKind().(type) {
 			case *v1.Node_ForEach:
-				ds = append(ds, validateLoop(id, kind.ForEach, scope, index, wf)...)
+				ds = append(ds, validateLoop(id, kind.ForEach, inner, index, wf)...)
 			case *v1.Node_Parallel:
-				ds = append(ds, validateParallel(id, kind.Parallel, scope, index, wf)...)
+				ds = append(ds, validateParallel(id, kind.Parallel, inner, index, wf)...)
 			case *v1.Node_Wait:
-				ds = append(ds, validateWait(id, kind.Wait, scope, index, wf)...)
+				ds = append(ds, validateWait(id, kind.Wait, inner, index, wf)...)
 			default:
 				ds = append(ds, Diagnostic{
 					Step:    id,
@@ -639,26 +754,67 @@ func validateNested(nodes []*v1.Node, enclosing refScope, index int, wf *v1.Work
 			continue
 		}
 
-		if _, known := v1.LookupTask(task.GetName()); !known && task.GetName() != "" {
-			ds = append(ds, Diagnostic{
-				Step: id,
-				Kind: task.GetName(),
-				Message: fmt.Sprintf("unknown task %q; available tasks are %s",
-					task.GetName(), strings.Join(v1.TaskNames(), ", ")),
-			})
-		}
-
-		ds = append(ds, validateInputRefs(id, "if", node.GetCondition(), scope, index, wf)...)
-		ds = append(ds, validateTaskInputs(id, task)...)
-
-		checkable, _ := v1.ResolvableInputs(task.GetName(), task.GetInputs())
-		for _, name := range sortedInputNames(checkable) {
-			ds = append(ds, validateInputRefs(id, name, checkable[name], scope, index, wf)...)
-		}
+		ds = append(ds, validateTaskStep(id, node, task, scope, inner, index, wf)...)
 
 		scope.steps[id] = true
 	}
 	return ds
+}
+
+// scopeWithStepVars adds a step's own `vars:` to the scope its inputs are checked
+// against, and reports what is wrong with them.
+//
+// A step's vars are bare and *private*: the returned scope is used for this step's
+// inputs and thrown away, so a name one step binds is not in scope for the next. That
+// is what makes them safe to name freely — `modified` in one step has nothing to do
+// with `modified` in another.
+//
+// Two things are refused here.
+//
+// Each var's own expression is checked against the scope *without* the step's vars in
+// it, so a var cannot read a sibling. A protobuf map has no order, so "the one above"
+// is not something the file can mean; the same rule the workflow's vars follow, for
+// the same reason.
+//
+// And a name that collides with a bare name already in scope is refused rather than
+// resolved. Silent shadowing is how `${body}` comes to mean two things eleven lines
+// apart, and a precedence rule is something every reader would have to know before
+// they could read the second one correctly.
+func scopeWithStepVars(id string, node *v1.Node, scope refScope, index int, wf *v1.Workflow) (refScope, Diagnostics) {
+	vars := node.GetVars()
+	if len(vars) == 0 {
+		return scope, nil
+	}
+
+	var ds Diagnostics
+	next := scope.clone()
+
+	for _, name := range slices.Sorted(maps.Keys(vars)) {
+		ds = append(ds, validateInputRefs(id, "vars."+name, vars[name], scope, index, wf)...)
+
+		switch {
+		case scope.locals[name]:
+			ds = append(ds, Diagnostic{
+				Step: id, Field: "vars." + name, Value: name,
+				Message: fmt.Sprintf(
+					"`%s` is already bound here by an enclosing loop or step, and a bare name may "+
+						"mean one thing at a time; rename this one, or read the outer value under a "+
+						"different name", name),
+			})
+
+		case name == v1.NowIdentifier:
+			ds = append(ds, Diagnostic{
+				Step: id, Field: "vars." + name, Value: name,
+				Message: "`" + v1.NowIdentifier + "` is the moment a `wait_until:` is evaluated, so a " +
+					"var of that name would shadow it wherever both are in scope; rename this one",
+			})
+
+		default:
+			next.locals[name] = true
+		}
+	}
+
+	return next, ds
 }
 
 // validateInputRefs reports references in one input that cannot resolve.
@@ -700,9 +856,15 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 		if scope.locals[ref] {
 			continue
 		}
-		if ref == v1.StepsRoot {
-			// The root itself, from a macro or `size(steps)`. It names every step
-			// and there is nothing to narrow.
+		if ref == v1.StepsRoot || ref == v1.VarsRoot {
+			// A root written as an operand rather than selected through:
+			// `size(steps)`, or `vars["region"]` where the key is computed. Both
+			// resolve — the activation answers a root whole — so reporting either as
+			// an unknown name would be a false diagnostic about a working file.
+			//
+			// `steps` was exempted when rooting landed and `vars` was not, which is
+			// the shape a second root always takes: the rule was written where the
+			// first one needed it rather than where the *category* does.
 			continue
 		}
 
@@ -747,7 +909,8 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 		ds = append(ds, Diagnostic{
 			Step: stepID, Field: inputName,
 			Message: fmt.Sprintf(
-				"references unknown name %q; a step is written `%s.%s`, and a bare name is a loop's iterator or `now`",
+				"references unknown name %q; a step is written `%s.%s`, and a bare name is a loop's "+
+					"iterator, a name this step declares in its own `vars:`, or `now`",
 				ref, v1.StepsRoot, ref),
 		})
 	}

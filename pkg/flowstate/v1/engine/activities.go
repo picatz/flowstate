@@ -29,7 +29,7 @@ import (
 // unevaluated and come back evaluated, alongside the profile they are evaluated
 // against, and nothing else about the workflow is needed or shipped.
 func WorkflowVars(ctx context.Context, declared *v1.Scope) (*v1.Scope, error) {
-	vars, err := v1.EvalVars(ctx, declared.GetProfile(), declared.GetVars())
+	vars, err := v1.EvalVars(ctx, declared.GetProfile(), declared.GetAmbientVars())
 	if err != nil {
 		// Not retryable: a var that does not evaluate will not evaluate on the second
 		// attempt either. Its expression is fixed in the specification and it reads
@@ -40,7 +40,7 @@ func WorkflowVars(ctx context.Context, declared *v1.Scope) (*v1.Scope, error) {
 			err.Error(), "InvalidWorkflowVars", err)
 	}
 
-	return &v1.Scope{Vars: vars, Profile: declared.GetProfile()}, nil
+	return &v1.Scope{AmbientVars: vars, Profile: declared.GetProfile()}, nil
 }
 
 // Task is a Temporal activity that executes a single task.

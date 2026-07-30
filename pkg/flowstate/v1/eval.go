@@ -42,16 +42,16 @@ type StepsOutputActivation struct {
 	// Prev holds the outputs of steps that have already run.
 	Prev *Workflow_StepOutputs
 
-	// Vars holds the rooted `vars.<name>` namespace: the workflow's declared vars
-	// plus any an enclosing scope added, an inner shadowing an outer.
+	// AmbientVars holds the rooted `vars.<name>` namespace: the workflow's declared
+	// vars plus any an enclosing scope added, an inner shadowing an outer.
 	//
 	// Answered as a whole root, the way step outputs are, so this needs no idea how
 	// deep a reference goes. See [VarsRoot].
-	Vars map[string]ref.Val
+	AmbientVars map[string]ref.Val
 
 	// Locals holds names bound *where the expression is written* — a loop's current
-	// item, `now` inside a wait — resolved bare. They are resolved before step
-	// outputs, so a loop body can refer to its iterator by name.
+	// item, a step's own `vars:`, `now` inside a wait — resolved bare. They are
+	// resolved before step outputs, so a loop body can refer to its iterator by name.
 	//
 	// Resolution stops at the local itself: an expression selecting into it, like
 	// item.name, is resolved by returning the item and letting CEL apply the
@@ -135,7 +135,7 @@ func (e *StepsOutputActivation) ResolveName(name string) (any, bool) {
 	// validation refuses. Ordered explicitly anyway, because "unreachable" is a
 	// property of today's rules and this is cheaper than rediscovering that.
 	if name == VarsRoot {
-		if len(e.Vars) == 0 {
+		if len(e.AmbientVars) == 0 {
 			// An empty root still resolves, to an empty map. Otherwise a workflow
 			// with no vars makes `vars.missing` an *unresolved reference* rather
 			// than a missing key, and the diagnostic sends the author looking for
@@ -143,8 +143,8 @@ func (e *StepsOutputActivation) ResolveName(name string) (any, bool) {
 			return types.NewStringInterfaceMap(TypeAdapter, nil), true
 		}
 
-		entries := make(map[ref.Val]ref.Val, len(e.Vars))
-		for varName, v := range e.Vars {
+		entries := make(map[ref.Val]ref.Val, len(e.AmbientVars))
+		for varName, v := range e.AmbientVars {
 			entries[types.String(varName)] = v
 		}
 
@@ -576,7 +576,7 @@ func eval(ctx context.Context, w *Workflow) (*Workflow_StepOutputs, error) {
 	}
 
 	scope := NewScope(w.GetProfile(), stepOutputs)
-	scope.Vars = vars
+	scope.AmbientVars = vars
 
 	if err := runNodes(ctx, w.Steps, scope); err != nil {
 		return nil, err
@@ -603,7 +603,16 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope) error {
 			continue
 		}
 
-		outputs, err := runNode(ctx, node, scope)
+		// The step's own `vars:`, bound for this node and its body only. Evaluated
+		// after the condition deliberately: `if:` decides whether the step runs at
+		// all, so a var it declares does not exist yet when the question is asked —
+		// and a var whose expression would fail must not fail a step that is skipped.
+		inner, err := EvalStepVars(ctx, node, scope)
+		if err != nil {
+			return fmt.Errorf("step %q: %w", node.GetId(), err)
+		}
+
+		outputs, err := runNode(ctx, node, inner)
 		if err != nil {
 			if !node.GetPolicy().GetContinueOnError() {
 				return fmt.Errorf("step %q: %w", node.GetId(), err)
@@ -864,7 +873,7 @@ func (t *Task) EvalInScope(ctx context.Context, scope *Scope) (*Node_Outputs, er
 	if t == nil {
 		return nil, fmt.Errorf("task cannot be nil")
 	}
-	if len(scope.GetVars()) > 0 {
+	if scope.BindsNames() {
 		resolved, err := ResolveTaskInputs(ctx, t, scope)
 		if err != nil {
 			return nil, err

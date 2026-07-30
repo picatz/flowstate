@@ -91,6 +91,17 @@ func stepToYAML(node *v1.Node) (yaml.MapSlice, error) {
 		step = append(step, yaml.MapItem{Key: "if", Value: value})
 	}
 
+	// Above the policy and the work, because a name is read before its uses. The same
+	// order the parser accepts them in, so `flow fix` moves nothing that was already
+	// where it belongs.
+	if vars := node.GetVars(); len(vars) > 0 {
+		value, err := varsToYAML(vars)
+		if err != nil {
+			return nil, fmt.Errorf("step %q vars: %w", node.GetId(), err)
+		}
+		step = append(step, yaml.MapItem{Key: "vars", Value: value})
+	}
+
 	if policy := node.GetPolicy(); policy != nil {
 		if timeout := policy.GetTimeout(); timeout != nil {
 			step = append(step, yaml.MapItem{Key: "timeout", Value: durationToYAML(timeout)})

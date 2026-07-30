@@ -251,7 +251,7 @@ steps:
 			// what the workflow is, then what it does.
 			name:  "top level document keys",
 			src:   `|`,
-			exact: []string{"edition", "name", "description", "steps"},
+			exact: []string{"edition", "name", "description", "vars", "steps"},
 		},
 		{
 			// Every kind of work a step can be is offered. The document-shape half is
@@ -285,7 +285,7 @@ steps:
 				[]string{"id", "description"},
 				v1.TaskNames(),
 				[]string{"for_each", "parallel", "sleep", "wait_until", "wait_for_signal"},
-				[]string{"if", "timeout", "retry", "continue_on_error"},
+				[]string{"if", "vars", "timeout", "retry", "continue_on_error"},
 			),
 		},
 		{

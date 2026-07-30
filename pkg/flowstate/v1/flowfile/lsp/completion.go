@@ -73,6 +73,10 @@ var dslKeys = map[string][]dslKey{
 			"It is not a compatibility switch. A build compiles one grammar — this one knows " + editionList + " — and declaring anything else is refused, not translated."},
 		{name: "name", detail: "string", docs: "What this workflow is called."},
 		{name: "description", detail: "string", docs: "Optional prose about the workflow."},
+		{name: "vars", detail: "map", docs: "Names values once, for the whole file. Every step reads them as `${" + v1.VarsRoot + ".<name>}`.\n\n" +
+			"Rooted rather than bare because a var is *ambient*: it is in scope everywhere rather than bound where you read it, the same distinction that makes a step's outputs `" + v1.StepsRoot + ".<id>.<output>` and a loop's binding bare.\n\n" +
+			"Evaluated once, before the first step runs — so a var may use literals, operators and the profile's functions, and may not read a step, another var, or anything else that does not exist yet. " +
+			"The `${...}` fence is still required for an expression: without it the value is the text as written, which is what lets a var hold the literal string `steps.greet.result`."},
 		{name: "steps", detail: "list", docs: "The steps to run, in order. Each step may reference the outputs of the steps before it."},
 	},
 	"steps": {
@@ -91,6 +95,11 @@ var dslKeys = map[string][]dslKey{
 			"Write `wait_for_signal: deploy-approved`, or a mapping with `name:` and `timeout:`. " +
 			"What the sender sent becomes this step's outputs. " + oneStepKind},
 		{name: "if", detail: "expression", docs: "A condition deciding whether the step runs, written as `${...}`. A step that is skipped produces no outputs."},
+		{name: "vars", detail: "map", docs: "Names values for this step, read *bare*: `${modified}`.\n\n" +
+			"Bare rather than rooted because these are author-chosen and lexically local — the same standing as the name a loop binds — where the workflow's `vars:` are ambient and so are rooted. " +
+			"They are private to the step: on a `for_each` or `parallel:` they reach the whole body, and nowhere else. Pass a value to a *later* step through its outputs instead.\n\n" +
+			"A name already bound by an enclosing loop or step is refused rather than shadowed, and a var may not read its siblings — `vars:` is a mapping, so there is no order that would make one available to another. " +
+			"Everything else in scope is fair: `" + v1.VarsRoot + ".<name>`, the outputs of steps already run, and any enclosing binding."},
 		{name: "timeout", detail: "duration", docs: "Bounds one attempt at the step, written as `30s`, `5m`, or `1h`."},
 		{name: "retry", detail: "map", docs: "How a failed attempt is retried. Omit it to use the engine's defaults."},
 		{name: "continue_on_error", detail: "bool", docs: "Let the run proceed when this step fails. A cancellation is not a failure, so this does not tolerate one."},

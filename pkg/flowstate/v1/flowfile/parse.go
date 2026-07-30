@@ -54,7 +54,7 @@ var (
 
 	// stepPropertyKeys say which step this is, how it runs, and what it is for —
 	// everything except what work it does.
-	stepPropertyKeys = []string{"id", "description", "if", "timeout", "retry", "continue_on_error"}
+	stepPropertyKeys = []string{"id", "description", "if", "vars", "timeout", "retry", "continue_on_error"}
 
 	// nodeKindKeys are the kinds of work that are not a task, and so name a node
 	// kind in the schema rather than anything in the registry.
@@ -700,7 +700,7 @@ func (c *compiler) step(n ast.Node, path string) *v1.Node {
 		}
 		checkable = append(checkable, e)
 	}
-	checkable = c.heldForLater(checkable, r, nil)
+	checkable = c.heldForLater(checkable, r, stepPropertyKeys)
 
 	fields := c.check(checkable, r, known)
 
@@ -793,6 +793,13 @@ func (c *compiler) step(n ast.Node, path string) *v1.Node {
 		if description, ok := c.text(f.value, descriptionPath, ref{step: step.GetId(), path: descriptionPath, label: "description"}); ok {
 			step.Description = proto.String(description)
 		}
+	}
+
+	// The step's own bare names. Read before the policy only because a reader meets
+	// them in that order; nothing here depends on the ordering.
+	if f, found := fields.get("vars"); found {
+		varsPath := fieldPath(path, "vars")
+		step.Vars = c.vars(f.value, varsPath, ref{step: step.GetId(), path: varsPath, label: "vars"})
 	}
 
 	step.Policy = c.policy(fields, path, r)

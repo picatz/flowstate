@@ -466,12 +466,12 @@ func (c *compiler) boolean(n ast.Node, path string, r ref) (bool, bool) {
 // tool disagreeing with itself about the same word, which is worse than either
 // message alone.
 //
-// live names the positions where a reserved word is already grammar, because a word
-// arrives one position at a time. `vars` is a block the design places at the workflow
-// level and on a step; the workflow level is built and the step level is not, so an
-// author who writes it there is not making a typo and is not writing something
-// permanently refused — they are one position early, and the message that helps says
-// where it does work. A word absent from this map is reserved everywhere.
+// [liveElsewhere] names the positions where a reserved word is already grammar,
+// because a word arrives one position at a time. A block the design places at two
+// positions may have one of them built and not the other, and an author who writes it
+// at the unbuilt one is neither making a typo nor writing something permanently
+// refused — they are one position early, and the message that helps says where it does
+// work. A word absent from that map is reserved everywhere.
 func (c *compiler) heldForLater(entries []entry, r ref, available []string) []entry {
 	kept := make([]entry, 0, len(entries))
 	for _, e := range entries {
@@ -499,9 +499,14 @@ func (c *compiler) heldForLater(entries []entry, r ref, available []string) []en
 // liveElsewhere maps a reserved word to the position where this build already reads
 // it, for the diagnostic above.
 //
-// Entries are removed as the remaining positions land — an entry here is a statement
-// that the word works *somewhere and not here*, so one that outlives its own build is
-// a message that sends an author to a position which no longer needs the advice.
-var liveElsewhere = map[string]string{
-	"vars": "the workflow level",
-}
+// Empty today, which is the resting state rather than an oversight. An entry says a
+// word works *somewhere and not here*, and that is only true while a block is arriving
+// one position at a time. `vars` was the entry and is now grammar at both of its
+// positions, so the advice it carried would send an author to a level that no longer
+// needs it.
+//
+// Entries are therefore added when a multi-position block lands its first position and
+// removed when it lands its last. TestALiveElsewhereEntryIsTrue keeps the map honest in
+// between: an entry whose word is a future key nowhere is advice about a position that
+// does not exist.
+var liveElsewhere = map[string]string{}

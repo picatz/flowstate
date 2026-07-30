@@ -84,7 +84,7 @@ func (e *executor) runNodes(nodes []*v1.Node, depth int) error {
 			continue
 		}
 
-		if err := e.runNode(node, depth, descend); err != nil {
+		if err := e.runNodeWithVars(node, depth, descend); err != nil {
 			if errors.Is(err, errContinueAsNew) {
 				return err
 			}
@@ -125,6 +125,32 @@ func (e *executor) runNodes(nodes []*v1.Node, depth int) error {
 	// This level finished, so it contributes nothing to a resume path.
 	e.truncateFrames(depth)
 	return nil
+}
+
+// runNodeWithVars executes a node with its own `vars:` block bound.
+//
+// The scope is swapped rather than threaded through runNode, because everything below
+// here reads e.scope and a parameter would have to reach all of it to be believed. The
+// swap is restored on every path out, including the errContinueAsNew that unwinds the
+// whole executor — a scope left behind by a node that suspended would be the next
+// segment's starting vocabulary.
+//
+// Evaluated after the condition, matching the local driver and the validator: a var
+// whose expression fails must not fail a step that was going to be skipped.
+func (e *executor) runNodeWithVars(node *v1.Node, depth int, descend bool) error {
+	inner, err := v1.EvalStepVars(context.Background(), node, e.scope)
+	if err != nil {
+		return stepFailed(err, "step %q: %v", node.GetId(), err)
+	}
+	if inner == e.scope {
+		return e.runNode(node, depth, descend)
+	}
+
+	outer := e.scope
+	e.scope = inner
+	defer func() { e.scope = outer }()
+
+	return e.runNode(node, depth, descend)
 }
 
 // runNode executes a single node.
@@ -168,19 +194,19 @@ func (e *executor) runTask(node *v1.Node, task *v1.Task) error {
 		//
 		// Every field but Outputs is therefore carried verbatim, and a field added to
 		// Scope and forgotten here does not fail to build — it silently narrows what
-		// an activity can resolve. Locals was exactly that: added for a loop binding,
-		// omitted here, and every `for_each` body whose task evaluates its own
-		// expressions stopped finding its iterator, five retries deep, saying "no such
-		// attribute". So: when Scope grows a field, it is copied here or the reason it
-		// is not belongs in this comment.
+		// an activity can resolve. AmbientVars was exactly that: added for the
+		// workflow's `vars:` and omitted here, so every `for_each` body whose task
+		// evaluates its own expressions stopped finding its iterator, five retries
+		// deep, saying "no such attribute". So: when Scope grows a field, it is copied
+		// here or the reason it is not belongs in this comment.
 		compact := &v1.Scope{
 			Outputs: compactPrevOutputsForTask(resolved, e.scope.GetOutputs()),
 
-			// The rooted `vars.<name>` namespace, and the bare names bound where the
-			// expression is written — a loop's binding, and what a step declares for
-			// itself.
-			Vars:   e.scope.GetVars(),
-			Locals: e.scope.GetLocals(),
+			// The bare names bound where the expression is written — a loop's binding,
+			// and what a step declares for itself — and the rooted `vars.<name>`
+			// namespace the workflow declares.
+			Vars:        e.scope.GetVars(),
+			AmbientVars: e.scope.GetAmbientVars(),
 
 			// Carried across the wire. This scope is what an activity on some other
 			// worker evaluates a task's own expressions against, and that worker's

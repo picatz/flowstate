@@ -297,37 +297,42 @@ func TestAFutureKeyReadsTheSameWhereverItIsWritten(t *testing.T) {
 	}
 }
 
-// TestAPartlyLandedKeySaysWhereItWorks is the case the test above deliberately
-// excludes.
+// TestALiveElsewhereEntryIsTrue keeps the partly-landed diagnostic honest.
 //
 // A word arrives one position at a time, and while that is true of it there are three
-// things the tool could say on a step and only one of them helps. "Unknown key" reads
-// as a misspelling of a word spelled correctly. "Reserved for a later version" is
-// false — this build reads it, one level out. What an author can act on is where it
-// works, so that is what is said.
+// things the tool could say at the position that has not landed and only one of them
+// helps. "Unknown key" reads as a misspelling of a word spelled correctly. "Reserved
+// for a later version" is false — this build reads it, one level out. What an author
+// can act on is where it works, so [liveElsewhere] says that.
 //
-// The entry driving this is [liveElsewhere], and it is removed when the remaining
-// position lands. A test that outlives the entry fails here rather than leaving a
-// message that sends an author to a level which no longer needs the advice.
-func TestAPartlyLandedKeySaysWhereItWorks(t *testing.T) {
+// The map is empty at rest, and this asserts the property that makes each entry worth
+// having rather than asserting any particular entry: a word listed there must still be
+// a *future* key, because the message is advice about a position this build refuses. An
+// entry that outlives its own arrival sends an author to a level that no longer needs
+// the advice, and nothing else would notice — the refusal it describes stops happening,
+// so no diagnostic changes and no test about a message can fail.
+//
+// `vars` was the entry, is now grammar at both of its positions, and is checked below
+// as the shape a finished arrival leaves behind.
+func TestALiveElsewhereEntryIsTrue(t *testing.T) {
 	t.Parallel()
 
-	// Accepted where it is built, which is the half that makes the message below true.
+	for word, where := range liveElsewhere {
+		assert.True(t, v1.IsFutureStepKey(word),
+			"liveElsewhere says %q is not built here yet and points at %s, but it is no longer a "+
+				"future key — the position it describes has landed and the entry outlived it",
+			word, where)
+		assert.NotEmpty(t, where, "liveElsewhere entry for %q names no position to send an author to", word)
+	}
+
+	// A word that has finished arriving is refused nowhere. `vars` reached its second
+	// position, so both spellings compile — which is what makes its absence from the
+	// map above correct rather than merely untested.
 	_, err := Unmarshal([]byte("name: t\nvars:\n  x: 1\nsteps:\n  - id: a\n    echo:\n      message: hi\n"))
 	require.NoError(t, err, "`vars:` is grammar at the workflow level and was refused there")
 
-	// And on a step, where it is not built yet, the message points at the level that
-	// works rather than calling the word unknown or flatly reserved.
-	_, err = Unmarshal([]byte("name: t\nsteps:\n  - id: a\n    vars:\n      x: 1\n    echo:\n      message: hi\n"))
-	require.Error(t, err, "`vars:` is not a step key in this build and was accepted")
-
-	message := err.Error()
-	assert.Contains(t, message, "the workflow level",
-		"an author was not told where the key does work")
-	assert.NotContains(t, message, "unknown key",
-		"a key this build reads one level out was reported as a misspelling")
-	assert.NotContains(t, message, "reserved for a later version",
-		"a key this build reads was reported as reserved, which is false")
+	_, err = Unmarshal([]byte("name: t\nsteps:\n  - id: a\n    vars:\n      x: 1\n    echo:\n      message: ${x}\n"))
+	require.NoError(t, err, "`vars:` is grammar on a step and was refused there")
 }
 
 // TestAnUnknownWorkflowKeyIsStillUnknown is the other direction at the level the

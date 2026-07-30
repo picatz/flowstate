@@ -7,6 +7,8 @@ name: workflow-vars
 # outputs are `steps.<id>.<output>` — what is bound around an expression stays bare (a
 # loop's iterator below), and what is simply in the air gets a root. The root is also
 # what makes a var unable to collide with anything.
+#
+# `vars:` is a step key too, where it means the lexical opposite — see ../step-vars.
 vars:
   # A literal. Note there is no fence: `${...}` marks an expression, and everything
   # else is the value as written.

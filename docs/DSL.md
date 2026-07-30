@@ -533,7 +533,7 @@ steps:
       message: ${'hello %s, you have %d step(s) left'.format([vars.name, 0])}
 ```
 
-### `vars:`, and the shadowing rule that ships with it
+### `vars:`, and the shadowing rule that ships with it *(landed)*
 
 `vars` lands in the positions already planned, and the scope rules land in the same
 change — deciding them later is the Terraform `optional()` mistake this document
@@ -552,6 +552,43 @@ already refused once.
 - **The fence stays required inside `vars` values.** A var legitimately holds the
   literal string `"steps.greet.result"`, so this is exactly the ambiguous position
   the fence exists for. No exception.
+
+*Since written:* all of the above shipped, plus four rules the plan did not have to
+decide and the implementation did.
+
+- **A `vars:` block on a *block* step** — a `for_each` or a `parallel:` — is in scope
+  for its items expression and throughout its body. That follows from "lexically
+  local" rather than extending it, and it is where the validator and the engine first
+  disagreed: the engine bound them for the body, the validator did not know they were
+  bound, and a body step redeclaring one shadowed it silently. Both walks now derive
+  the scope before they know what kind of work the node does.
+- **A var may not read its siblings**, at either position. A protobuf map has no
+  order, so "the one declared above" is not something a file can mean; accepting it
+  would work exactly as often as the map iterated conveniently. The alternatives were
+  a dependency sort with a cycle diagnostic, or nothing. Nothing is the smaller
+  language and allowing it later is additive.
+- **A workflow-level var may reference nothing at all** — not a step (none has run),
+  not another var, not a root written bare. `flow validate` says which of those three
+  it was, because they are three different misunderstandings.
+- **`vars` written bare is a legal operand.** `${vars["region"]}` with a computed key,
+  or `size(vars)`, resolve — the activation answers a root whole. `steps` was exempted
+  from the bare-name check when rooting landed and `vars` was not, which is the shape
+  a second root always takes: the exemption goes where the first one needed it rather
+  than where the category does.
+
+Two schema notes for anyone reading `Scope`. Its `vars` field holds the *bare*
+bindings — a loop's iterator, a step's own vars, `now` — because that is what it has
+always held, and the rooted namespace went to a new `ambient_vars` field beside it. A
+field that crosses a version boundary means what it has always meant: an activity
+scheduled before a worker upgrade is retried after it, reading the payload already in
+history. And the durable driver evaluates a step's vars in workflow code, where it
+already resolves that step's expression inputs, while the *workflow's* block goes
+through an activity — the difference is that the workflow block is evaluated once per
+run and carried across Continue-As-New, so a segment must not be able to recompute a
+different answer.
+
+`examples/workflow-vars` shows the ambient half and `examples/step-vars` the lexical
+one; both run in CI.
 
 Two spellings improve for free once static data stops impersonating computation.
 Verified: `items:` already accepts a literal YAML list — the shipped example routes

@@ -389,8 +389,8 @@ func TestAScopeCarriesTheProfileThroughNesting(t *testing.T) {
 	if got := root.WithLocal("item", NewLiteral(&expr.Value{Kind: &expr.Value_Int64Value{Int64Value: 1}})).GetProfile(); got != "2026.1" {
 		t.Errorf("WithLocal dropped the profile: got %q", got)
 	}
-	if got := root.WithVars(map[string]*Value{"region": NewLiteral("eu")}).GetProfile(); got != "2026.1" {
-		t.Errorf("WithVars dropped the profile: got %q", got)
+	if got := root.WithAmbientVars(map[string]*Value{"region": NewLiteral("eu")}).GetProfile(); got != "2026.1" {
+		t.Errorf("WithAmbientVars dropped the profile: got %q", got)
 	}
 	if got := root.WithOutputs(nil).GetProfile(); got != "2026.1" {
 		t.Errorf("WithOutputs dropped the profile: got %q", got)
@@ -437,7 +437,7 @@ func TestAnUnrecordedProfilePinsTheOriginalVocabulary(t *testing.T) {
 // making local execution disagree with the durable engine.
 //
 // Reported in review. My own derived-scope test did not reach it, because that
-// one exercises WithVars and WithOutputs and this site used neither.
+// one exercises WithAmbientVars and WithOutputs and this site used neither.
 func TestAParallelBranchKeepsTheProfile(t *testing.T) {
 	t.Parallel()
 

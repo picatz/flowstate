@@ -87,12 +87,12 @@ func Run(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error
 	if len(vars) == 0 && len(st.GetWorkflow().GetVars()) > 0 {
 		var evaluated v1.Scope
 		if err := workflow.ExecuteActivity(ctx, WorkflowVars, &v1.Scope{
-			Vars:    st.GetWorkflow().GetVars(),
-			Profile: st.GetWorkflow().GetProfile(),
+			AmbientVars: st.GetWorkflow().GetVars(),
+			Profile:     st.GetWorkflow().GetProfile(),
 		}).Get(ctx, &evaluated); err != nil {
 			return nil, err
 		}
-		vars = evaluated.GetVars()
+		vars = evaluated.GetAmbientVars()
 		st.Vars = vars
 	}
 
@@ -610,7 +610,7 @@ func compactOutputsForRemainingSteps(steps []*v1.Node, from int, prev *v1.Workfl
 // one place that builds it.
 func varsScope(profile string, outputs *v1.Workflow_StepOutputs, vars map[string]*v1.Value) *v1.Scope {
 	scope := v1.NewScope(profile, outputs)
-	scope.Vars = vars
+	scope.AmbientVars = vars
 
 	return scope
 }
