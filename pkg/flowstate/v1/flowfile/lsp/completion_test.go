@@ -29,6 +29,13 @@ func TestCompletion(t *testing.T) {
 		notWant []string
 		// exact, when set, requires the labels to be exactly this list.
 		exact []string
+		// first, when set, requires this label to be offered before every other.
+		//
+		// Separate from `want`, which asserts a relative order among the labels it
+		// names and says nothing about what sits above them. Where a list is long —
+		// an expression's is, now that it carries the profile's functions — what
+		// matters to somebody typing is which name is at the top.
+		first string
 		// detailContains maps a label to a substring its detail must contain.
 		detailContains map[string]string
 	}{
@@ -124,19 +131,24 @@ edition: v2026.2
 			name: "an expression opens on the root, not on step ids",
 			src: `name: c
 steps:
-  - id: first
+  - id: alpha
     log:
       message: one
-  - id: second
+  - id: beta
     log:
       message: ${|}
 edition: v2026.2
 `,
-			exact: []string{"steps"},
+			// The root is *first*, rather than the only thing offered. The
+			// profile's functions are offered after it — an author who is stuck in
+			// an expression is usually stuck on what they can write rather than on
+			// what is in scope — and the ordering is what keeps the near thing near.
+			first: "steps",
+			want:  []string{"steps", "upperAscii", "math"},
 			notWant: []string{
-				"first",  // a step, reachable only as steps.first
-				"second", // and its own step besides
-				"now",    // bound in wait_until and nowhere else
+				"alpha", // a step, reachable only as steps.alpha
+				"beta",  // and its own step besides
+				"now",   // bound in wait_until and nowhere else
 			},
 		},
 		{
@@ -369,7 +381,8 @@ edition: v2026.2
 `,
 			// Nearest first: the binding of the block the cursor stands in, then
 			// the root spanning the whole document.
-			exact:   []string{"item", "steps"},
+			first:   "item",
+			want:    []string{"item", "steps"},
 			notWant: []string{"outer", "body", "loop"},
 			detailContains: map[string]string{
 				"item": "loop item",
@@ -414,7 +427,8 @@ steps:
     wait_until: ${|
 edition: v2026.2
 `,
-			exact: []string{"now", "steps"},
+			first: "now",
+			want:  []string{"now", "steps"},
 			// Not the step ids: they are still reached through the root here like
 			// anywhere else.
 			notWant: []string{"before", "window"},
@@ -438,7 +452,8 @@ steps:
       message: ${|
 edition: v2026.2
 `,
-			exact:   []string{"steps"},
+			first:   "steps",
+			want:    []string{"steps"},
 			notWant: []string{"now"},
 		},
 		{
@@ -471,7 +486,8 @@ steps:
           wait_until: ${|
 edition: v2026.2
 `,
-			exact: []string{"each", "now", "steps"},
+			first: "each",
+			want:  []string{"each", "now", "steps"},
 		},
 		{
 			// The word is not enough on its own: an input spelled the same way is
@@ -490,7 +506,8 @@ steps:
       wait_until: ${|
 edition: v2026.2
 `,
-			exact:   []string{"steps"},
+			first:   "steps",
+			want:    []string{"steps"},
 			notWant: []string{"now"},
 		},
 		{
@@ -571,6 +588,11 @@ edition: v2026.2
 
 			if tt.exact != nil {
 				assert.Equal(t, tt.exact, gotLabels)
+			}
+			if tt.first != "" {
+				require.NotEmpty(t, gotLabels)
+				assert.Equal(t, tt.first, gotLabels[0],
+					"the nearest name is not offered first, so an author scrolls past the rest to reach it")
 			}
 			for _, want := range tt.want {
 				assert.Contains(t, gotLabels, want)
@@ -837,10 +859,13 @@ edition: v2026.2
 	const uri = "file:///accept-root.yaml"
 	c.open(uri, src)
 
+	// The root is offered first — the profile's functions follow it, and this test
+	// is about what accepting the root does rather than about what else is on the
+	// menu.
 	got := c.complete(uri, pos.Line, pos.Character)
-	require.Len(t, got.Items, 1, "the start of an expression offers the root and nothing else")
+	require.NotEmpty(t, got.Items, "the start of an expression offers nothing at all")
 	root := got.Items[0]
-	assert.Equal(t, "steps", root.Label)
+	require.Equal(t, "steps", root.Label, "the root is not the first thing offered")
 	require.NotNil(t, root.TextEdit, "a candidate must say what it replaces")
 	assert.Equal(t, "steps.", root.TextEdit.NewText)
 

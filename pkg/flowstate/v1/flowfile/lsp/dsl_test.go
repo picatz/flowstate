@@ -375,7 +375,14 @@ edition: v2026.2
 				text, pos := splitCursor(t, strings.Replace(partial, "PLACEHOLDER", tt.typed+"|", 1))
 				uri := "file:///cond-complete-" + strings.ReplaceAll(tt.name, " ", "-") + ".yaml"
 				c.open(uri, text)
-				assert.Equal(t, tt.want, labels(c.complete(uri, pos.Line, pos.Character).Items))
+
+				// A prefix: the bare menu continues with the profile's functions,
+				// which are the same in every expression position and so say
+				// nothing about the claim here, which is that a condition is an
+				// ordinary expression.
+				got := labels(c.complete(uri, pos.Line, pos.Character).Items)
+				require.GreaterOrEqual(t, len(got), len(tt.want))
+				assert.Equal(t, tt.want, got[:len(tt.want)])
 			})
 		}
 	})
@@ -896,7 +903,8 @@ edition: v2026.2
 		name string
 		// at is the placeholder to put the cursor's ${ in place of.
 		at string
-		// bare is the exact candidate list at the start of an expression: the
+		// bare is the candidate list at the start of an expression, up to where the
+		// profile's functions begin: the
 		// names bound where the cursor is, then the root.
 		bare []string
 		// rooted is the exact candidate list after `steps.`, nearest first.
@@ -982,7 +990,14 @@ edition: v2026.2
 				c.open(uri, clean)
 				got := labels(c.complete(uri, pos.Line, pos.Character).Items)
 
-				assert.Equal(t, direction.want, got)
+				// A prefix rather than the whole list, because the bare menu
+				// continues with the profile's functions — sixty names that are
+				// the same wherever the cursor is, and so say nothing about
+				// scoping, which is what this test is about. What matters here is
+				// that the names in scope come first and in this order.
+				require.GreaterOrEqual(t, len(got), len(direction.want),
+					"fewer candidates than the names that must be in scope")
+				assert.Equal(t, direction.want, got[:len(direction.want)])
 				for name, why := range tt.notWant {
 					assert.NotContains(t, got, name, why)
 				}
