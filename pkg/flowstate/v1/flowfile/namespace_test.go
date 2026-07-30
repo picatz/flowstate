@@ -1,6 +1,7 @@
 package flowfile_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -99,27 +100,62 @@ steps:
 	}
 }
 
-// TestEveryExtensionLibraryIsExemptDerivesFromTheBuild is what keeps the exemption from
-// going stale.
+// TestAQualifierIsExemptAndALibraryNameIsNot is the distinction the first version of
+// this got wrong in both directions at once.
 //
-// The set comes off `v1.ExtensionLibraries()` rather than being listed, so a library
-// added to a profile is covered the day it is added. Asserting that here means the
-// derivation cannot quietly become a hand-written list that agrees today.
-func TestEveryExtensionLibraryIsExemptDerivesFromTheBuild(t *testing.T) {
+// The exempt set was read from `v1.ExtensionLibraries()`, which are *registration* names
+// rather than the qualifiers their functions hang from. They coincide often enough to
+// look right — `regex`, `math`, `sets` — and then do not: `encoders` declares
+// `base64.encode`, `protos` declares `proto.getExt`, `bindings` declares `cel.bind`.
+//
+// So a valid `${base64.encode(b)}` was still refused, and `${string(encoders)}` — a name
+// that means nothing anywhere — was quietly accepted. Both are asserted here, because a
+// set derived from the wrong thing passes a test that only checks one direction.
+func TestAQualifierIsExemptAndALibraryNameIsNot(t *testing.T) {
 	t.Parallel()
 
-	libraries := v1.ExtensionLibraries()
-	require.NotEmpty(t, libraries, "this build ships no extension libraries, so the test below checks nothing")
+	using := func(expr string) string {
+		return "edition: v2026.2\nname: t\nsteps:\n  - id: s\n    log:\n      message: ${" +
+			expr + "}\n"
+	}
 
-	for _, name := range libraries {
+	require.Empty(t, diagnose(t, using(`base64.encode(b"hi")`)),
+		"a real qualifier from the encoders library was reported as an unknown name")
+
+	require.Contains(t, diagnose(t, using("string(encoders)")), `references unknown name "encoders"`,
+		"the library's registration name is not a qualifier and must not be exempt")
+}
+
+// TestTheExemptSetComesFromTheProfile keeps the derivation honest.
+//
+// What makes this correct rather than lucky is that the qualifiers are read off the
+// environment's own declarations — the part of a declared function's name before its
+// last dot — rather than from a list this package maintains. A library added to a
+// profile is then covered the day it is added, and one whose qualifier differs from its
+// name cannot be wrong again.
+func TestTheExemptSetComesFromTheProfile(t *testing.T) {
+	t.Parallel()
+
+	env, err := v1.DefaultEvaluator().ProfileEnv(v1.CurrentProfile)
+	require.NoError(t, err)
+
+	qualifiers := map[string]bool{}
+	for name := range env.Functions() {
+		if at := strings.LastIndex(name, "."); at > 0 {
+			qualifiers[name[:at]] = true
+		}
+	}
+	require.NotEmpty(t, qualifiers, "the profile declares no namespaced functions, so this checks nothing")
+
+	for qualifier := range qualifiers {
 		src := "edition: v2026.2\nname: t\nsteps:\n  - id: s\n    log:\n      message: ${string(" +
-			name + ")}\n"
+			qualifier + ")}\n"
 
-		// Whether the *expression* is meaningful is CEL's business — `string(regex)`
-		// may well not type-check. What is being pinned is that the reference walk
-		// does not call the qualifier an unknown step.
+		// Whether the expression type-checks is CEL's business — `string(base64)` may
+		// well not. What is pinned is that the reference walk does not call a
+		// qualifier the profile declares an unknown step.
 		require.NotContains(t, diagnose(t, src), "references unknown name",
-			"the library %q is shipped and its namespace is reported as an unknown name", name)
+			"the profile declares functions under %q and the validator calls it an unknown name", qualifier)
 	}
 }
 
