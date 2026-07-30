@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
@@ -19,6 +20,19 @@ import (
 // than unlimited because "however much the server feels like sending" is not a
 // number a client should accept.
 const maxResponseBytes = 32 << 20 // 32 MiB
+
+// requestTimeout bounds one RPC, so a peer cannot hold a command open forever.
+//
+// Deliberately much longer than any healthy answer to a unary call, because the job
+// here is to make a hang finite rather than to police latency. A watch layers its own
+// outage allowance on top: a stall costs one of these before the allowance can start
+// noticing, so the worst case to give-up is this plus the allowance.
+//
+// A variable rather than a constant for one reason, which is worth stating so nobody
+// takes it for a knob: a test asserting that the deadline exists cannot spend thirty
+// seconds proving it. Nothing reads it from configuration and nothing should — a bound
+// a peer can talk the client out of is not a bound.
+var requestTimeout = 30 * time.Second
 
 // newWorkflowServiceClient builds the client the CLI talks to a Flowstate server
 // with.
@@ -45,6 +59,23 @@ func newWorkflowServiceClient() flowstatev1connect.WorkflowServiceClient {
 				base:    &boundedTransport{base: transport, max: maxResponseBytes},
 				baseURL: baseURL,
 			},
+
+			// Bounded in time as well as in bytes, and for the same reason: the peer
+			// decides how this goes otherwise.
+			//
+			// Every RPC here is unary and answered in milliseconds by a healthy
+			// server. A server that accepts the connection and then sends no headers
+			// at all is a different thing, and without this it blocks forever — the
+			// cloned default transport sets no ResponseHeaderTimeout, and the context
+			// belongs to the command rather than the request. `flow get` hung. Worse,
+			// `flow watch` hung *silently*: its outage allowance only advances when a
+			// poll returns, so a stall produced no failure for the allowance to
+			// count, and a bound stated in seconds never started.
+			//
+			// Set loose on purpose. Too tight manufactures a failure on a healthy but
+			// slow server, which is a false report a pipeline would act on; too loose
+			// only lengthens the worst case, which is now finite either way.
+			Timeout: requestTimeout,
 
 			// A credential must not follow a redirect. net/http strips the
 			// Authorization header when a redirect crosses to another host, which

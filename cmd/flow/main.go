@@ -163,66 +163,81 @@ func runWorker(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// runWorkflow implements the run sub-command to execute a workflow
-// using the Flowstate service. It reads a workflow definition from a file,
-// sends it to the Flowstate server, and polls for updates until completion.
+// runWorkflow starts a workload on a Flowstate server and follows it to the end.
+//
+// Starting and following are one command because that is what somebody running a
+// workload from a terminal wants, and they are two verbs underneath: `flow watch`
+// exists for the run that outlived the terminal that started it. Following therefore
+// happens through exactly the machinery that command uses, rather than through a poll
+// loop of its own.
+//
+// That is not tidiness for its own sake. The loop this replaces reported RUNNING and
+// COMPLETED and FAILED, and treated every other status as "still going" — so a
+// canceled, terminated, or timed-out run left `flow run` printing "still going"
+// forever about a run that had stopped. Anything observable about following a run is
+// now decided in one place, which is the only way the two commands can agree.
 func runWorkflow(cmd *cobra.Command, args []string) error {
-	// Check for workflow file
-	if len(args) < 1 {
-		return fmt.Errorf("workflow file path required")
-	}
-
-	workflowFilePath := args[0]
-
-	workflow, err := loadWorkflow(workflowFilePath)
+	format, err := resolveOutputFormat()
 	if err != nil {
 		return err
 	}
 
-	flowstateClient := newWorkflowServiceClient()
-
-	runResp, err := flowstateClient.Run(cmd.Context(), &connect.Request[v1.RunRequest]{
-		Msg: &v1.RunRequest{
-			Workflow: workflow,
-		},
-	})
+	workflow, err := loadWorkflow(args[0])
 	if err != nil {
-		return fmt.Errorf("error running workflow: %w", err)
+		return err
 	}
 
-	// Poll for updates every 2 seconds until completed.
-	for cmd.Context().Err() == nil {
-		time.Sleep(2 * time.Second)
-		resp, err := flowstateClient.Get(cmd.Context(), &connect.Request[v1.GetRequest]{
-			Msg: &v1.GetRequest{
-				WorkflowId: runResp.Msg.WorkflowId,
-			},
-		})
-		if err != nil {
-			return fmt.Errorf("error getting workflow run status: %w", err)
-		}
-		if resp.Msg.Status == v1.RunResponse_STATUS_COMPLETED {
-			log.Printf("run completed: workflow %s run %s", resp.Msg.GetWorkflowId(), resp.Msg.GetRunId())
+	surface := newSurface(cmd)
 
-			b, err := protojson.Marshal(resp.Msg.GetOutputs())
-			if err != nil {
-				return fmt.Errorf("error marshaling result to JSON: %w", err)
-			}
-			cmd.OutOrStdout().Write(b)
-			cmd.OutOrStdout().Write([]byte("\n"))
-
-			break
-		} else if resp.Msg.Status == v1.RunResponse_STATUS_FAILED {
-			return fmt.Errorf("workflow execution failed: %s", resp.Msg.GetError())
-		} else {
-			// statusLabel, not the raw enum: `flow get` and `flow list` both say
-			// RUNNING, and a third spelling of one status is a third thing for a
-			// reader to reconcile.
-			log.Printf("run is still going; %s", statusLabel(resp.Msg.GetStatus()))
-		}
+	started, err := newWorkflowServiceClient().Run(cmd.Context(),
+		connect.NewRequest(&v1.RunRequest{Workflow: workflow}))
+	if err != nil {
+		return fmt.Errorf("starting %s: %w", workflow.GetName(), err)
 	}
 
-	return nil
+	workflowID := started.Msg.GetWorkflowId()
+
+	// Said before the following begins, because it is the one fact somebody needs in
+	// order to come back to this run later, and following is where they might stop
+	// paying attention. Only to a person: the machine formats carry the id in every
+	// document they emit, so saying it again in prose would be something a reader has
+	// to parse past.
+	if format == FormatText {
+		fmt.Fprintf(surface.Err, "started %s; come back to it with `flow watch %s`\n",
+			workflowID, workflowID)
+	}
+
+	// Deliberately not pinned to the run just started. A workload that continues as
+	// new gets a fresh run id, and a watch pinned to the first one would report the
+	// state of a run that has already handed over — or stop finding it at all.
+	//
+	// What the run just started *is* handed over, as the state the follow begins from.
+	// That is what a machine-readable caller falls back on when it is interrupted
+	// before the first poll: without it, `flow run -o json` stopped with a durable
+	// workload running and no document naming it.
+	return watchRun(cmd.Context(), surface, format,
+		clientPoller{workflowID: workflowID},
+		clampWatchInterval(watchInterval), workflowID, startedRun(started.Msg))
+}
+
+// startedRun is what `Run` answered, in the shape a follow reports.
+//
+// RunResponse and GetResponse are the same five fields under two names — one is what
+// starting a run answers and the other what asking about one answers — so a follow that
+// begins from a start has to say which it is holding. Converted rather than the schema
+// being collapsed, because that is a wire contract and this is four lines.
+func startedRun(started *v1.RunResponse) *v1.GetResponse {
+	run := &v1.GetResponse{
+		WorkflowId: started.GetWorkflowId(),
+		RunId:      started.GetRunId(),
+		Status:     started.GetStatus(),
+	}
+
+	if failure := started.GetError(); failure != nil {
+		run.Kind = &v1.GetResponse_Error{Error: failure}
+	}
+
+	return run
 }
 
 // runServer implements the server sub-command to start a Flowstate server
@@ -685,16 +700,31 @@ flow lsp`,
 	// Run command, which executes a workflow using the Flowstate service.
 	runCmd := &cobra.Command{
 		Use:   "run [workflow-file]",
-		Short: "Run a workflow",
-		Long:  "Execute a workflow using the Flowstate service. The workflow file should be a YAML file containing step definitions.",
-		Args:  cobra.MinimumNArgs(1),
-		RunE:  runWorkflow,
-		Example: `# Run a workflow using the Flowstate server:
+		Short: "Run a workflow and follow it",
+		Long: "Start a workload on a Flowstate server and follow the run until it finishes.\n\n" +
+			"Following works exactly as `flow watch` does, because it is the same code: a " +
+			"live view where there is a terminal, one line per change where there is not, " +
+			"and the outputs on stdout when the run produced them. The exit code is the " +
+			"run's, so `flow run x && ./promote.sh` behaves the way a shell reader expects.\n\n" +
+			"Stopping watching does not stop the run. The workflow id is printed as soon as " +
+			"the run starts, so `flow watch` can pick it up again afterwards.",
+		Args: cobra.ExactArgs(1),
+		RunE: runWorkflow,
+		Example: `# Run a workflow and watch it:
 flow run examples/hello-world/workflow.yaml
+
+# Run it and pipe the outputs, with the live view still on the terminal:
+flow run examples/hello-world/workflow.yaml | jq .stepValues
+
+# In CI: one line per change, exit code reports the outcome.
+flow run examples/hello-world/workflow.yaml >/dev/null
 
 # Check a workflow without running it:
 flow validate examples/hello-world/workflow.yaml`,
 	}
+
+	addOutputFlag(runCmd)
+	addFollowFlags(runCmd)
 
 	// Run local command, which executes a workflow locally without using Temporal or the Flowstate service.
 	runLocalCmd := &cobra.Command{
@@ -895,7 +925,8 @@ flow run local examples/approval-gate/workflow.yaml --signal deploy-approved='{"
 	// Built from one list so a verb added later cannot be given a group and left
 	// without an address — the way `get` and `signal` were first written.
 	lifecycleCmds := lifecycleCommands()
-	serverCmds := append([]*cobra.Command{runCmd, getCmd, signalCmd}, lifecycleCmds...)
+	watchCmd := newWatchCommand()
+	serverCmds := append([]*cobra.Command{runCmd, getCmd, signalCmd, watchCmd}, lifecycleCmds...)
 
 	for _, c := range serverCmds {
 		c.Flags().StringVar(&flowstateAddress, "address", flowstateAddress,
@@ -966,6 +997,7 @@ flow lsp`,
 	validateCmd.GroupID = "workflow"
 	tasksCmd.GroupID = "workflow"
 	getCmd.GroupID = "workflow"
+	watchCmd.GroupID = "workflow"
 	signalCmd.GroupID = "workflow"
 	for _, c := range lifecycleCmds {
 		c.GroupID = "workflow"
@@ -986,6 +1018,7 @@ flow lsp`,
 	rootCmd.AddCommand(fixCmd)
 	rootCmd.AddCommand(tasksCmd)
 	rootCmd.AddCommand(getCmd)
+	rootCmd.AddCommand(watchCmd)
 	rootCmd.AddCommand(signalCmd)
 	for _, c := range lifecycleCmds {
 		rootCmd.AddCommand(c)
