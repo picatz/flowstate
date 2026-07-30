@@ -1164,9 +1164,11 @@ an authoring projection of the spec.
 
 What holding the rule buys, with no additional design:
 
-- **`--json` is free and cannot drift.** Machine output is the protojson of the
-  RPC response message — there is no second encoder, so there is no second
-  schema. `flow inspect <run> --json` and a Connect call return the same bytes.
+- **`--output json` is free and cannot drift.** Machine output is the protojson
+  of the RPC response message — there is no second encoder, so there is no
+  second schema. `flow inspect <run> --output json` and a Connect call return
+  the same bytes. This is already the convention `cmd/flow/output.go` holds;
+  the rule here is that it is the *only* machine shape any command may grow.
 - **The TUI is another renderer.** It draws the same messages the plain output
   prints; entering it is deliberate (per CLI.md), and it can never know
   something the pipe cannot.
@@ -1231,7 +1233,7 @@ surface, taken seriously:
   converges on the current grammar in one round trip. The retirement diagnostics
   exist for exactly this population, as the versioning round records.
 - **Pure verbs make unattended iteration safe.** `validate`, `fix --check`,
-  `migrate --check`, and every `--json` read are side-effect-free by
+  `migrate --check`, and every `--output json` read are side-effect-free by
   construction, so an agent can loop on them without supervision; the mutating
   verbs sit behind the plan/apply gate above, which is the same gate a human
   gets. One permission model, not one per kind of caller.
@@ -1327,7 +1329,9 @@ audit property, visible where the run is read.
 ### What this round adds
 
 Immediately cheap and immediately valuable: the diagnostic schema message and
-`--json` as protojson of existing responses. `--where` lands when the listing
+`--output json` as protojson of existing responses (the convention
+`cmd/flow/output.go` already holds, extended to every command with an answer).
+`--where` lands when the listing
 surfaces grow past flags. The plan/apply gate binds `terminate` now and
 `migrate`/`rerun` when Phase 5 builds them — with these transcripts as their
 golden tests. `flow mcp` follows the catalog and `Host.Register`, because an

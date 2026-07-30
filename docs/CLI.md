@@ -172,9 +172,9 @@ is one rule with consequences — the fuller reasoning lives in
 - **Every command is a projection of an RPC.** `flow` is a thin client of the
   same Connect services the API serves; a capability that cannot be expressed as
   an RPC is a missing RPC, not a CLI feature.
-- **`--json` is the protojson of the RPC response.** There is no second encoder,
-  so the JSON surface cannot drift from the API and needs no separate schema
-  documentation.
+- **`--output json` is the protojson of the RPC response.** There is no second
+  encoder, so the JSON surface cannot drift from the API and needs no separate
+  schema documentation.
 - **Exit status is a contract with three values.** `0`: the command succeeded
   and the answer is not a refusal. `1`: the command worked and the answer is a
   refusal or a finding — diagnostics found, a check failed, a run that finished
