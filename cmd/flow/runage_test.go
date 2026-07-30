@@ -1,12 +1,14 @@
 package main
 
 import (
+	"io"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
@@ -107,4 +109,44 @@ func TestRoundedDurationIsProseNotAMeasurement(t *testing.T) {
 
 	assert.Equal(t, time.Duration(0), roundedDuration(-2*time.Second),
 		"a clock skew between the server and this machine was reported as a negative age")
+}
+
+// A run reports RUNNING whether it is three seconds in or wedged since Tuesday, and
+// the age says which. Where it has got to says *what*, which is the other half of the
+// same question — and the rendering has one decision in it worth pinning.
+
+// TestRunPositionIsEmptyWhenTheServerSaidNothing is that decision.
+//
+// No position is not the same as the beginning. A run whose worker did not answer,
+// and one on an interpreter built before the query existed, both report nothing —
+// facts about the deployment rather than about the workload. Rendering either as "on
+// the first step" invents a fact on the run's behalf, and does it exactly when
+// somebody is looking because something seems stuck.
+func TestRunPositionIsEmptyWhenTheServerSaidNothing(t *testing.T) {
+	t.Parallel()
+
+	theme := ui.Plain(io.Discard, io.Discard).ErrTheme
+
+	assert.Empty(t, runPosition(theme, nil),
+		"a run with no reported position was given one anyway")
+	assert.Empty(t, runPosition(theme, &v1.RunProgress{CompletedSteps: 3}),
+		"a position with no step name still rendered something")
+}
+
+// TestRunPositionReadsAsAPathInward keeps the nested case on one line.
+//
+// Where a run actually spends its time is inside something — the body of a loop that
+// is the second step — and the whole value of this beside a status is being readable
+// at a glance. Three lines of indentation would say the same thing and be worse.
+func TestRunPositionReadsAsAPathInward(t *testing.T) {
+	t.Parallel()
+
+	theme := ui.Plain(io.Discard, io.Discard).ErrTheme
+
+	assert.Equal(t, " on deploy", runPosition(theme, &v1.RunProgress{StepId: "deploy"}),
+		"a top-level position did not render as the step it is on")
+
+	assert.Equal(t, " on each > upload",
+		runPosition(theme, &v1.RunProgress{StepId: "each", Path: []string{"upload"}}),
+		"a position inside a loop body did not say what it was inside")
 }

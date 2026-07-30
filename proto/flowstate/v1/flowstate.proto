@@ -1103,11 +1103,49 @@ message GetResponse {
   // reaches for when they care about a *particular* run.
   //
   // Both come off the same DescribeWorkflowExecution response the status does, so
-  // this costs nothing but the field. What is still missing from a running run is
-  // which step it is on, and that is genuinely expensive: it needs a query handler
-  // on the workflow, which is workflow code, and workflow code is frozen.
+  // this costs nothing but the field.
   google.protobuf.Timestamp start_time = 6;
   google.protobuf.Timestamp close_time = 7;
+
+  // Progress is where a running run has got to. Unset for any other status, since a
+  // finished run's position is its outputs.
+  //
+  // Unset does not mean "at the beginning". It also means no worker answered, or
+  // that the run is on an interpreter built before this existed — facts about the
+  // deployment rather than about the workload. A reader that rendered an unanswered
+  // query as "step 1 of 5" would be inventing one.
+  RunProgress progress = 8;
+}
+
+// RunProgress is where a run has got to, answered by the running workflow itself.
+//
+// Not derivable from outside. A listing and a Describe both know a run is RUNNING and
+// neither knows what it is running, because the position lives in the interpreter's
+// own stack rather than in anything the service records. So it comes from a Temporal
+// query, which is the one way to ask a workflow a question without changing it: a
+// query runs against the live state, writes no history event, and cannot make the run
+// do anything.
+message RunProgress {
+  // StepId is the top-level step the run is on.
+  //
+  // Top-level always, which is a floor rather than a limitation. A run inside a
+  // parallel block or a concurrent loop is on several steps at once and has no single
+  // position — the same reason the engine refuses to suspend there — so the answer
+  // that is always true is the outermost one.
+  string step_id = 1;
+
+  // Path is the position from that step inward, where there is one: the loop and the
+  // body step within it, or the branch. Empty where the run is on a top-level step,
+  // and it stops at the boundary of concurrent work for the reason above.
+  repeated string path = 2;
+
+  // CompletedSteps is how many steps have finished in this segment of the run.
+  //
+  // Per segment rather than per run, and the distinction has to survive contact with
+  // whoever renders it: a run that continued as new starts a new count, because the
+  // budget it is measured against is per segment too. It is progress against a
+  // suspend, not against the workload.
+  int32 completed_steps = 3;
 }
 
 // Diagnostic is one problem found in a Flowfile, positioned in its source.

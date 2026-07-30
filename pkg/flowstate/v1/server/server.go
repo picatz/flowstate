@@ -409,6 +409,8 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 				Status:     respStatus,
 				StartTime:  start,
 				CloseTime:  closed,
+				Progress: runProgress(ctx, temporal,
+					req.Msg.GetWorkflowId(), resp.WorkflowExecutionInfo.Execution.RunId),
 			},
 		), nil
 	case v1.RunResponse_STATUS_COMPLETED:
@@ -558,4 +560,49 @@ func runStatus(status enums.WorkflowExecutionStatus) v1.RunResponse_Status {
 	default:
 		return v1.RunResponse_STATUS_UNSPECIFIED
 	}
+}
+
+// progressQueryTimeout bounds the one part of a Get that reaches a worker.
+const progressQueryTimeout = 2 * time.Second
+
+// runProgress asks a running workload where it has got to.
+//
+// Nil on any failure, and that is the whole design of this function. A query reaches
+// a *worker*, so it fails for reasons that say nothing about the run: no worker is
+// polling the queue right now, the run is pinned to an interpreter built before the
+// handler existed, the worker is busy, the query timed out. In every one of those the
+// status, the start time and the run id are still correct and still worth returning.
+//
+// So a failed query costs the caller one optional field rather than the answer. The
+// alternative — failing Get because the position could not be fetched — would make
+// `flow get` on a healthy run start failing the moment a worker was restarted, which
+// is both wrong and the kind of wrong that looks like the run's fault.
+//
+// Deliberately not logged at error level for the same reason: on a fleet with any
+// unversioned or older workers this is an ordinary outcome, and an error line per
+// `flow get` would train whoever reads the logs to ignore them.
+func runProgress(ctx context.Context, temporal client.Client, workflowID, runID string) *v1.RunProgress {
+	// Bounded separately from the request, because the request's own deadline is the
+	// wrong bound for an optional field. Measured against a run whose worker is away:
+	// the query took 10.5s to give up, and every `flow get` on such a run wore all of
+	// it before printing a status it had already had. Waiting that long for something
+	// nice to have is worse than not having it.
+	//
+	// Generous against the normal case rather than tuned — an answering worker
+	// replies in milliseconds, so this only ever bites when nothing is going to
+	// answer at all.
+	ctx, cancel := context.WithTimeout(ctx, progressQueryTimeout)
+	defer cancel()
+
+	encoded, err := temporal.QueryWorkflow(ctx, workflowID, runID, engine.ProgressQuery)
+	if err != nil {
+		return nil
+	}
+
+	var progress v1.RunProgress
+	if err := encoded.Get(&progress); err != nil {
+		return nil
+	}
+
+	return &progress
 }
