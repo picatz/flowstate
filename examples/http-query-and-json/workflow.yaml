@@ -45,8 +45,11 @@ steps:
 
   # `fields:` are string-valued, so each one has to end up a string. `string()`
   # will not do it for a map or a list — there is no such overload, and asking for
-  # one is a run that fails on this step. `"%s".format([value])` renders either,
-  # if a whole structure is what you want in one field.
+  # one is a run that fails on this step; `flow validate` says so now. Use
+  # `json.encode(value)` when a whole structure belongs in one field, because what
+  # it writes is a document a log sink can parse back. (`"%s".format([value])`
+  # renders one too, in CEL's own unquoted debug form — that one is for putting a
+  # scalar into a sentence.)
   #
   # These name scalars instead, because that is what the example is about: which
   # value survived escaping, and which name arrived twice.

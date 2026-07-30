@@ -367,11 +367,17 @@ func TestTheDiagnosticIsWrittenForAnAuthor(t *testing.T) {
 		reported := strings.Join(diagnosticsFor(t, sayingInStep(`string({'a': 1})`)), "\n")
 
 		// The advice is here because the answer is not guessable: `string()` is the
-		// obvious spelling, it is wrong, and `format` is not something a reader
-		// arrives at from a message about overloads. It is also verified — an
-		// example was fixed with exactly this.
-		assert.Contains(t, reported, `"%s".format([value])`,
+		// obvious spelling, it is wrong, and nothing in a message about overloads
+		// points at the encoder.
+		assert.Contains(t, reported, "json.encode(value)",
 			"the one mistake here with a known answer was reported without it")
+
+		// And not the other renderer. `"%s".format([value])` also turns a map into
+		// a string, and into CEL's debug form — `{a: 1, b: [x, y]}`, unquoted, which
+		// no sink can parse back. Advice that produces something unusable is worse
+		// than none, because it looks like it worked.
+		assert.NotContains(t, reported, "format",
+			"the diagnostic recommended a renderer whose output nothing can read back")
 	})
 
 	t.Run("an ordinary overload error is left as cel-go wrote it", func(t *testing.T) {
@@ -381,7 +387,7 @@ func TestTheDiagnosticIsWrittenForAnAuthor(t *testing.T) {
 
 		assert.Contains(t, reported, "no matching overload for 'size' applied to '(int)'",
 			"an accurate message was rewritten into a vaguer one")
-		assert.NotContains(t, reported, "format",
+		assert.NotContains(t, reported, "json.encode",
 			"advice for one case was offered for another, which is how advice stops being read")
 	})
 }

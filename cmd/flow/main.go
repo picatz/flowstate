@@ -864,9 +864,56 @@ func runTasks(cmd *cobra.Command, args []string) error {
 	// listing was accurate for one step kind and misleading for the rest of the
 	// file — an author reading it to find out what an `if:` could say got the
 	// wrong answer.
-	fmt.Fprintf(out, "\n%s\n  %s\n",
-		theme.Accent.Render("CEL libraries available to every expression:"),
-		strings.Join(v1.ExtensionLibraries(), ", "))
+	// Named, rather than only counted. This printed the library names and stopped,
+	// which says what is switched on and nothing about what any of it offers — so
+	// somebody who wanted to sort a list had no way to find out that `sortBy`
+	// exists. A profile is a *membership*, and one nobody can enumerate is one
+	// nobody can write against.
+	//
+	// A macro is marked because the difference reaches an author: it is expanded
+	// when the file compiles, so it is frozen into the compiled workflow, where a
+	// function is looked up by whichever worker evaluates the run.
+	if functions := v1.ProfileFunctions(v1.CurrentProfile); len(functions) > 0 {
+		fmt.Fprintf(out, "\n%s\n",
+			theme.Accent.Render("CEL functions available to every expression:"))
+
+		width := 0
+		for _, fn := range functions {
+			width = max(width, len(fn.Library))
+		}
+
+		for _, lib := range v1.ExtensionLibraries() {
+			names := make([]string, 0, len(functions))
+			for _, fn := range functions {
+				if fn.Library != lib {
+					continue
+				}
+				if fn.Macro {
+					names = append(names, fn.Name+" (macro)")
+
+					continue
+				}
+				names = append(names, fn.Name)
+			}
+			if len(names) == 0 {
+				continue
+			}
+
+			fmt.Fprintf(out, "  %s  %s\n",
+				theme.Muted.Render(fmt.Sprintf("%-*s", width, lib)),
+				strings.Join(names, ", "))
+		}
+
+		// Said once rather than guessed at per entry. cel-go identifies a macro by
+		// the name after the dot, so `math.greatest(1, 2)` is reported as `greatest`
+		// and `[3,1,2].sortBy(v, v)` as `sortBy` — a receiver style whose receiver is
+		// a namespace in the first case and a value in the second, and its API does
+		// not say which. Printing a bare name as though it were the call form would
+		// hand somebody a spelling that does not parse.
+		fmt.Fprintf(out, "  %s\n",
+			theme.Muted.Render("a macro is written on something — math.greatest(1, 2), [3,1,2].sortBy(v, v) — "+
+				"and is expanded when the file compiles"))
+	}
 
 	fmt.Fprintf(out, "\n%s\n  %s\n",
 		theme.Accent.Render("Duration constructors available to every expression:"),

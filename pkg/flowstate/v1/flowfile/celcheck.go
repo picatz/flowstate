@@ -385,6 +385,13 @@ var unknownFunction = regexp.MustCompile(`^undeclared reference to '([^']+)'`)
 // spelling and the working one is not. Every other missing overload gets cel-go's
 // sentence unchanged, because inventing advice for a case nobody has hit is how a
 // diagnostic ends up sending somebody the wrong way.
+//
+// `json.encode` and not `"%s".format([value])`, which also renders a structure and
+// was what this said first. `format` produces CEL's own rendering —
+// `{a: 1, b: [x, y]}` — which is a debug form rather than a document: no quotes, so
+// nothing downstream can parse it back. A `fields:` value is read by a log sink, and
+// `{"a":1,"b":["x","y"]}` is the one of the two it can do something with. `format`
+// is for putting a *scalar* into a sentence.
 var stringOfAStructure = regexp.MustCompile(`^found no matching overload for 'string' applied to '\((map|list)\(`)
 
 // forAnAuthor turns one of cel-go's sentences into one written for the person who
@@ -404,7 +411,7 @@ func forAnAuthor(message string) string {
 	}
 
 	if stringOfAStructure.MatchString(message) {
-		return message + `; string() takes a scalar, so render a map or a list with "%s".format([value])`
+		return message + "; string() takes a scalar, so render a map or a list with json.encode(value)"
 	}
 
 	return message
