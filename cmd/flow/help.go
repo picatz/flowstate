@@ -387,22 +387,64 @@ func writeColumns(b *strings.Builder, theme ui.Theme, entries []column, widest, 
 // giving the description its own line instead.
 const minDescription = 20
 
-// wrap breaks text to a width without padding it out to one.
+// wrap breaks text to a width at word boundaries, without padding it out to one and
+// without splitting a word that does not fit.
 //
-// The padding is the part that matters. lipgloss will happily render a block to an
-// exact width by filling every short line with spaces, which looks identical on a
-// terminal and puts trailing whitespace on every line of `flow --help | cat`.
+// Two things the obvious implementations do that are wrong here. lipgloss's Width
+// pads every short line out to the full width, which looks identical on a terminal
+// and puts trailing whitespace on every line of `flow --help | cat`. And both it and
+// ansi.Wordwrap break at a hyphen, so a token longer than the line is cut wherever
+// the margin lands:
+//
+//	/home/kent/very/long/path/to/a/workflow-
+//	file.yaml:6:15: step "web" …
+//
+// A path, a URL and a workflow id are the things somebody most wants to copy out of
+// an error, and that is the one place a break costs something. So a long token
+// overflows the measure instead — the line is wider than it should be, which a
+// terminal reflows, and the token is still one token.
+// Breaking on whitespace and nothing else is the whole of it, and it is why neither
+// lipgloss's Width nor ansi.Wordwrap is used: both treat a hyphen as a breakpoint, so
+// both cut that path at `aae3-`. A word wider than the measure overflows instead. The
+// terminal soft-wraps it, which looks the same and leaves it one token to select.
 func wrap(text string, width int) string {
 	if width < 1 {
 		return text
 	}
 
-	wrapped := lipgloss.NewStyle().Width(width).Render(text)
-
-	lines := strings.Split(wrapped, "\n")
+	lines := strings.Split(text, "\n")
 	for i, line := range lines {
-		lines[i] = strings.TrimRight(line, " ")
+		lines[i] = wrapLine(line, width)
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+// wrapLine wraps one line, breaking only between words.
+func wrapLine(line string, width int) string {
+	words := strings.Fields(line)
+	if len(words) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+
+	b.WriteString(words[0])
+	column := lipgloss.Width(words[0])
+
+	for _, word := range words[1:] {
+		switch w := lipgloss.Width(word); {
+		case column+1+w <= width:
+			b.WriteString(" ")
+			b.WriteString(word)
+			column += 1 + w
+
+		default:
+			b.WriteString("\n")
+			b.WriteString(word)
+			column = w
+		}
+	}
+
+	return b.String()
 }

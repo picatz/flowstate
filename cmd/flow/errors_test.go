@@ -139,3 +139,38 @@ func TestNoErrorReportsNothing(t *testing.T) {
 
 	require.Empty(t, out.String(), "a command that succeeded printed an error report")
 }
+
+// TestALongPathIsNotBrokenInHalf is about the one thing somebody does with an error.
+//
+// A file path, a URL and a workflow id are what gets copied out of a report, and a
+// wrap that splits one makes it uncopyable. Both obvious implementations do exactly
+// that: lipgloss's `Width` and `ansi.Wordwrap` treat a hyphen as a breakpoint, so a
+// path under `/tmp/claude-0/-home-user-flowstate/1d2dc997-47cf-…` came out cut at
+// `aae3-`. Overflowing the measure is the right answer — the terminal soft-wraps,
+// which looks the same and leaves it selectable.
+func TestALongPathIsNotBrokenInHalf(t *testing.T) {
+	t.Parallel()
+
+	const path = "/tmp/claude-0/-home-user-flowstate/1d2dc997-47cf-5bdc-aae3-b8b1e12a824f/bad.yaml:6:15"
+
+	report := reportOf(t, errors.New(path+": step \"web\": bad method"))
+
+	assert.Contains(t, report, path,
+		"the report broke a path across lines, so it cannot be copied or searched for")
+}
+
+// TestWrappingStillHappensBetweenWords keeps the rule above from becoming "never
+// wrap".
+//
+// Overflowing is for a single word with nowhere to break. Ordinary prose still has
+// to fit the measure, or a long error runs off the side of every terminal.
+func TestWrappingStillHappensBetweenWords(t *testing.T) {
+	t.Parallel()
+
+	long := strings.Repeat("word ", 40)
+
+	for _, line := range strings.Split(wrap(long, 40), "\n") {
+		assert.LessOrEqual(t, len(line), 40,
+			"a line of ordinary words was not wrapped to the measure")
+	}
+}
