@@ -174,3 +174,50 @@ func TestBuildingTheCLIDoesNotClearTheVerboseEnvironmentVariable(t *testing.T) {
 	assert.True(t, verboseLogging,
 		"building the CLI cleared verboseLogging, so FLOWSTATE_VERBOSE_LOGGING does nothing")
 }
+
+// TestTwoCommandsCanAskForDifferentFormats is the property a package variable made
+// unrepresentable.
+//
+// `--output` was one word shared by the six commands that declare it, so a format
+// was a property of the *process* rather than of the invocation. Nothing in the
+// shipped binary noticed, because a process runs one command — but it is why every
+// test touching a format had to save and restore a global, and why building the CLI
+// wrote to shared state at all.
+//
+// pflag keeps a flag's value in the FlagSet that declared it, and every command has
+// its own. Asking the command is therefore asking about the invocation, which is
+// what was meant all along.
+func TestTwoCommandsCanAskForDifferentFormats(t *testing.T) {
+	t.Parallel()
+
+	first := &cobra.Command{Use: "first"}
+	second := &cobra.Command{Use: "second"}
+	addOutputFlag(first)
+	addOutputFlag(second)
+
+	require.NoError(t, first.Flags().Set("output", string(FormatJSON)))
+	require.NoError(t, second.Flags().Set("output", string(FormatJSONL)))
+
+	got, err := resolveOutputFormat(first)
+	require.NoError(t, err)
+	assert.Equal(t, FormatJSON, got, "one command's format was changed by another's")
+
+	got, err = resolveOutputFormat(second)
+	require.NoError(t, err)
+	assert.Equal(t, FormatJSONL, got, "one command's format was changed by another's")
+}
+
+// TestACommandWithNoOutputFlagResolvesToText keeps the read total.
+//
+// Not every verb declares `--output`: `flow cancel` reports that it asked a run to
+// stop, which is an account rather than an answer. Reading the format off such a
+// command has to answer text rather than fail, since the alternative is every caller
+// checking whether the flag exists before asking.
+func TestACommandWithNoOutputFlagResolvesToText(t *testing.T) {
+	t.Parallel()
+
+	got, err := resolveOutputFormat(&cobra.Command{Use: "cancel"})
+	require.NoError(t, err,
+		"asking a command with one rendering for its format failed instead of answering it")
+	assert.Equal(t, FormatText, got)
+}

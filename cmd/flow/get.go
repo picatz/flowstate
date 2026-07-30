@@ -24,7 +24,7 @@ var getRunID string
 // started it has to be askable about afterwards, and an approval gate is the
 // clearest example: it is waiting precisely because nobody is watching.
 func runGet(cmd *cobra.Command, args []string) error {
-	format, err := resolveOutputFormat()
+	format, err := resolveOutputFormat(cmd)
 	if err != nil {
 		return err
 	}

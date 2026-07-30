@@ -244,7 +244,7 @@ flow watch flowstate-workflow-3f7c >/dev/null && ./promote.sh`,
 }
 
 func runWatch(cmd *cobra.Command, args []string) error {
-	format, err := resolveOutputFormat()
+	format, err := resolveOutputFormat(cmd)
 	if err != nil {
 		return err
 	}
