@@ -89,6 +89,14 @@ func hoverFunction(doc *document, v *value, cursor int) *lsp.Hover {
 func functionAt(src string, cursor int) (v1.LibraryFunction, [2]int, bool) {
 	var none v1.LibraryFunction
 
+	if insideStringLiteral(src, cursor) {
+		// `${'upperAscii'}` is a string that happens to spell a function. The lookup
+		// below is lexical — it knows names, not syntax — so without this it reports
+		// the strings library for a piece of text, which is a confident answer about
+		// something that is not there at all.
+		return none, [2]int{}, false
+	}
+
 	segments, at, ok := segmentAt(src, cursor)
 	if !ok {
 		return none, [2]int{}, false
@@ -189,4 +197,37 @@ func segmentAt(src string, cursor int) ([]segment, int, bool) {
 	}
 
 	return segments, at, true
+}
+
+// insideStringLiteral reports whether the cursor sits within a quoted literal.
+//
+// Scanned rather than parsed, for the reason the rest of this file is: hover has to
+// work on an expression that does not compile, because that is when somebody is
+// asking. What it needs to know is narrow enough to be answerable lexically — CEL's
+// string literals are single- or double-quoted with backslash escapes, and a quote
+// inside the other kind is ordinary text.
+//
+// Raw strings (`r'...'`) are not treated specially. The prefix is outside the quotes
+// either way, so the region this finds is the same one.
+func insideStringLiteral(src string, cursor int) bool {
+	if cursor < 0 || cursor > len(src) {
+		return false
+	}
+
+	var quote byte
+	for i := 0; i < len(src) && i < cursor; i++ {
+		c := src[i]
+		switch {
+		case quote != 0 && c == '\\':
+			// An escape consumes the next character, so a `\'` does not close the
+			// literal it is inside.
+			i++
+		case quote != 0 && c == quote:
+			quote = 0
+		case quote == 0 && (c == '\'' || c == '"'):
+			quote = c
+		}
+	}
+
+	return quote != 0
 }

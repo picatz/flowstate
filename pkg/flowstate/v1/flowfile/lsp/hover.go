@@ -305,15 +305,22 @@ func hoverReference(doc *document, from *parsedStep, v *value, clock bool, pos l
 	}
 
 	rng := doc.index.rangeOfOffsets(v.exprOffset+ref.span[0], v.exprOffset+ref.span[1])
-	if ref.step != "" {
-		// A rooted reference. Nothing inside one is a call, so a function is not a
-		// reading to fall back on here — `${steps.web.value}` names an output, and
-		// `value` is also a function in the optional library.
+	if ref.step != "" && cursor <= ref.span[1] {
+		// A rooted reference, and the cursor is inside it. Nothing within one is a
+		// call — `${steps.web.value}` names an output, and `value` is also a function
+		// in the optional library — so the output wins.
+		//
+		// The bound is what makes that true only where it is true. `referenceAt`
+		// returns the rooted reference for the whole word regardless of which segment
+		// the cursor is in, so `${steps.web.body.upperAscii()}` answered with the
+		// output's documentation while the author pointed at the call after it.
 		return hoverStepOutput(doc, from, ref, rng)
 	}
 
-	if h := hoverBareName(from, ref.local, clock, rng); h != nil {
-		return h
+	if ref.step == "" {
+		if h := hoverBareName(from, ref.local, clock, rng); h != nil {
+			return h
+		}
 	}
 
 	// Nothing bound that name, so the cursor may be on a function. Second,
@@ -357,6 +364,11 @@ func hoverDocumentExpression(doc *document, pos lsp.Position) *lsp.Hover {
 
 			ref := referenceAt(v.expr, cursor)
 			if ref.empty() {
+				// No reference, which does not mean nothing is here — see
+				// [hoverReference] for why a receiver-style call on a literal looks
+				// like this.
+				found = hoverFunction(doc, v, cursor)
+
 				return
 			}
 			rng := doc.index.rangeOfOffsets(v.exprOffset+ref.span[0], v.exprOffset+ref.span[1])
@@ -380,6 +392,14 @@ func hoverDocumentExpression(doc *document, pos lsp.Position) *lsp.Hover {
 						"the shared part out in both, or move the value to the step that needs "+
 						"the combination.",
 					v1.VarsRoot, varsKeyword), rng)
+
+			default:
+				// Neither root, so the name is not one of the two refusals this
+				// block exists to explain. A function is valid here — the profile
+				// is the same everywhere — and completion offers them, so hover
+				// answering nothing was the two surfaces disagreeing about whether
+				// a `vars:` value is an ordinary expression.
+				found = hoverFunction(doc, v, cursor)
 			}
 		})
 		if found != nil {
