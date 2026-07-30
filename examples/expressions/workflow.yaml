@@ -25,3 +25,19 @@ steps:
     if: ${vars.greeting.startsWith('hel')}
     log:
       message: ${vars.greeting.lowerAscii()}
+
+  # Macros are part of the dialect too — `sortBy`, `filter`, `map`, `cel.bind`, and
+  # the two- and three-argument comprehensions.
+  #
+  # They differ from every other function in when they are resolved. A function is
+  # looked up while the expression evaluates, so the worker running it decides what
+  # the name means; a macro is expanded by the *parser*, so it is settled when the
+  # file compiles and what a run carries is already the expansion. That is invisible
+  # until it is not: none of these worked at all until the compiler was told which
+  # libraries the profile has, because a parser that has not heard of a macro leaves
+  # it as a call to something nothing declares.
+  - id: order
+    vars:
+      first: ${['zeta', 'alpha', 'mu'].sortBy(name, name)[0]}
+    log:
+      message: ${first}
