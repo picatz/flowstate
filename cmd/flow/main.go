@@ -20,8 +20,6 @@ import (
 	"connectrpc.com/connect"
 	"connectrpc.com/otelconnect"
 	"connectrpc.com/validate"
-	"github.com/charmbracelet/fang"
-	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
@@ -985,7 +983,7 @@ flow server --verbose`,
 		// the usage block after the diagnostics reads as though it were — sending
 		// the reader to check their flags instead of the line they were just told
 		// about. `flow fix` has said so since it was written; this said it by
-		// accident, because fang absorbs the usage on the way out.
+		// accident, because the error report absorbs the usage on the way out.
 		//
 		// Which stopped being harmless with `--output json`: cobra writes usage to
 		// the same stream, so a consumer parsing the answer got a JSON document with
@@ -1188,21 +1186,11 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
 	defer cancel()
 
-	// Execute the CLI command with Fang for enhanced styling and features.
-	// The help and every error report are drawn by fang, so they are dressed in
-	// the same palette as everything the CLI prints itself. A binary whose help is
-	// one colour and whose output is another reads as two tools.
-	//
-	// The version is handed over explicitly because fang sets root.Version for
-	// itself otherwise, which silently overwrote the value the build stamps in via
-	// -ldflags — so `flow --version` reported "unknown (built from source)" on
-	// every release binary.
-	err := fang.Execute(ctx, rootCmd,
-		fang.WithNotifySignal(os.Interrupt, os.Kill),
-		fang.WithColorSchemeFunc(ui.FangColorScheme),
-		fang.WithVersion(version),
-	)
-	if err != nil {
-		os.Exit(1)
+	// The help and every error report are drawn by this binary, in the same palette
+	// as everything else it prints. A binary whose help is one colour and whose
+	// output is another reads as two tools — and the reason it is drawn here rather
+	// than by fang is a terminal query fang's options could not reach. See execute.go.
+	if err := execute(ctx, rootCmd); err != nil {
+		os.Exit(exitCode)
 	}
 }

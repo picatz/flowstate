@@ -362,6 +362,28 @@ the workflow-side evaluation above must refuse to enable itself on a worker that
 has not opted in. A capability that assumes a deployment posture and does not
 verify it is the same defect as one that assumes a bound and does not enforce it.
 
+*Correction, on reading the executor rather than this page:* the precondition is
+already unmet, and has been since before it was written. This section reads as
+though workflow-side evaluation is a proposal to be gated, and only the workflow's
+own `vars:` is actually gated — it is the one thing that goes through an activity.
+Everything else already evaluates CEL inline in workflow code: step conditions, a
+loop's `items:`, a step's own `vars:`, and every task input that does not declare
+`needs_prev_outputs`. The executor holds a `workflow.Context` and calls the
+evaluator directly (`engine/execute.go`).
+
+And Worker Versioning is off unless an operator sets both `--deployment-name` and
+`--build-id`; a worker that has not opted in is unversioned, which is Temporal's
+default. So the deployment posture this section says the language depends on is not
+one the shipped default has, and nothing refuses to run without it.
+
+That is stated here rather than quietly fixed because the fix is a real decision and
+not an obvious one. Refusing to start an unversioned worker would make the
+self-hosted `temporal server start-dev` path (invariant 8) require versioning
+configuration to run anything at all. Routing every condition through an activity
+would be a round trip per condition. Warning at worker start is what `flow worker`
+does today for the *absence* of versioning, and a warning is not a gate. Whichever
+is chosen, the gap is between this page and the code, and the page was the wrong one.
+
 **`flow test` mocks must not see resolved secrets.** The proposal matches mocks with
 `where: ${...}`, a CEL predicate over the task's *resolved* inputs. Resolved inputs
 are exactly where a `SecretRef` has become a real value. That makes a test file a

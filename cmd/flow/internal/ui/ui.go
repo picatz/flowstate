@@ -31,6 +31,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/colorprofile"
@@ -41,10 +42,23 @@ import (
 // where the detection below guesses wrong on somebody's terminal.
 const SymbolsEnv = "FLOWSTATE_SYMBOLS"
 
+// BackgroundEnv names the variable that settles the terminal background without
+// asking for it.
+//
+// The same escape hatch as [SymbolsEnv] and, unlike it, also a way out of a
+// *pause*: the question is asked over the terminal itself, and a terminal that
+// answers nothing at all is waited on for four seconds. Setting this takes
+// `flow --help` on such a terminal from 4.02s to 0.02s, measured. See
+// [terminalIsDark].
+const BackgroundEnv = "FLOWSTATE_BACKGROUND"
+
 // Capabilities is what one output stream can do.
 //
-// Every field is derived, never configured: a person does not tell us their
-// terminal supports 256 colours, they have a terminal that does or does not.
+// Every field is derived rather than configured: a person does not tell us their
+// terminal supports 256 colours, they have a terminal that does or does not. Two
+// carry an override anyway ([SymbolsEnv], [BackgroundEnv]), and both are for the
+// case where the derivation is wrong on somebody's terminal and only they can see
+// that — which is a different thing from asking them to describe it.
 type Capabilities struct {
 	// Profile is how much colour the stream carries, and it is the value the
 	// writer degrades against. colorprofile resolves NO_COLOR, CLICOLOR_FORCE,
@@ -58,7 +72,8 @@ type Capabilities struct {
 	TTY bool
 
 	// Dark reports whether the terminal background is dark, deciding which half
-	// of every colour pair is used.
+	// of every colour pair is used. See [darkBackground] for what it costs to
+	// find out and the three cheaper answers that come first.
 	Dark bool
 
 	// Width is the usable columns, already bounded. Zero-width terminals and
@@ -106,14 +121,7 @@ func Detect(in, out *os.File, environ []string) Capabilities {
 	}
 
 	if caps.TTY {
-		if in != nil {
-			caps.Dark = lipgloss.HasDarkBackground(in, out)
-		} else {
-			// Unknowable without a channel to ask on. Dark is the safer guess:
-			// most terminals default to it, and light-on-dark misread is a dim
-			// line rather than an invisible one.
-			caps.Dark = true
-		}
+		caps.Dark = darkBackground(in, out, environ, caps.Profile)
 
 		if w, h, err := term.GetSize(out.Fd()); err == nil {
 			caps.applySize(w, h)
@@ -123,6 +131,119 @@ func Detect(in, out *os.File, environ []string) Capabilities {
 	caps.Unicode = wantsUnicode(caps, environ)
 
 	return caps
+}
+
+// darkBackground decides which half of every colour pair a terminal gets.
+//
+// Split out of [Detect] for the same reason [Capabilities.applySize] is: it is the
+// part with rules rather than the part that measures, and the rules are what get
+// this wrong. Two of the three answers here cost nothing, and the whole point is to
+// reach one of them before the third.
+//
+// Assuming dark is the safe direction when nothing is known. Most terminals default
+// to it, and the palette's light-background halves are the darker colours — so a
+// light terminal misread as dark is legible-but-dim, where the reverse is pale text
+// on white.
+func darkBackground(in, out *os.File, environ []string, profile colorprofile.Profile) bool {
+	if dark, settled := settledBackground(in, environ, profile); settled {
+		return dark
+	}
+
+	return terminalIsDark(in, out)
+}
+
+// settledBackground answers where an answer is already available, and says whether
+// it was.
+//
+// Separate from [darkBackground] so that "this case does not ask the terminal" is a
+// value a test can assert rather than a duration it has to time. Timing it would not
+// work anyway: the query fails fast against anything that is not a terminal, so a
+// test without a pty cannot tell a rule that skipped it from one that tried it and
+// got an error — and would pass either way.
+func settledBackground(in *os.File, environ []string, profile colorprofile.Profile) (dark, settled bool) {
+	if dark, settled := backgroundFromEnv(environ); settled {
+		return dark, true
+	}
+
+	// Nothing reads this. Below ANSI every role in the palette collapses to weight,
+	// so both backgrounds resolve to the same styles and the answer cannot change a
+	// byte of output — which makes a query that can stall for seconds pure cost.
+	//
+	// This is the rule that actually pays. `NO_COLOR=1 flow --help` against a pty
+	// that answers nothing went from 4.05s to 0.02s, and `TERM=dumb` from 4.02s to
+	// 0.01s — those being both the readers who cannot use the answer and, not by
+	// coincidence, the terminals least likely to give one.
+	if profile < colorprofile.ANSI {
+		return true, true
+	}
+
+	// Unknowable without a channel to ask on.
+	if in == nil {
+		return true, true
+	}
+
+	return false, false
+}
+
+// backgroundFromEnv reports a background settled by configuration, and whether one
+// was.
+//
+// Anything else is ignored rather than guessed at, including the empty string: a
+// variable somebody exported and left blank is not an assertion about their
+// terminal, and treating it as one would silence the detection for a whole session.
+func backgroundFromEnv(environ []string) (dark bool, settled bool) {
+	switch strings.ToLower(lookup(environ, BackgroundEnv)) {
+	case "dark":
+		return true, true
+	case "light":
+		return false, true
+	}
+
+	return false, false
+}
+
+// memo holds the one question this program asks its terminal.
+//
+// A terminal's background does not change while a command runs, so the answer is a
+// property of the process rather than of a stream. It was asked once per stream —
+// stdout and stderr are separate [Detect] calls — and since the two answers are
+// merged into a single decision in [ForCapabilities], the second had nowhere to go
+// but an OR.
+//
+// Measured rather than assumed, because the obvious claim about what that costs is
+// wrong. Against a pty that answers nothing at all, `flow --help` took 4.02s with
+// the duplicate query and 4.02s without it: the pause is lipgloss's single query
+// timing out against two files, and the second query is somehow already cheap.
+// Asking once is still right — it is one question about one terminal — but it is
+// not what makes the slow case fast. The rules in [settledBackground] are, and only
+// for the streams they cover.
+//
+// Takes the question rather than asking it, so that "asks once, and everybody after
+// gets the first answer" is a claim about this type that can be checked by counting,
+// instead of a property of a package variable that a test would have to reach into.
+type memo struct {
+	once sync.Once
+	dark bool
+}
+
+func (m *memo) get(ask func() bool) bool {
+	m.once.Do(func() { m.dark = ask() })
+
+	return m.dark
+}
+
+// background is the process's answer, filled in by whichever stream asks first.
+var background memo
+
+// terminalIsDark asks the terminal, at most once per process.
+//
+// The timeout belongs to lipgloss and is not configurable, and it must not be worked
+// around by abandoning the call: the query puts the terminal into raw mode and
+// restores it on the way out, so a caller that walked away from a slow one would
+// leave the terminal raw for whatever ran next. [BackgroundEnv] is the way out, and
+// it is documented for exactly this.
+func terminalIsDark(in, out *os.File) bool {
+	return background.get(func() bool { return lipgloss.HasDarkBackground(in, out) })
 }
 
 // applySize folds a terminal's reported size in.

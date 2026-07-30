@@ -427,7 +427,7 @@ func TestValidateSchemaRulesCompile(t *testing.T) {
 // down and never ran.
 //
 // The schema said `keys: {required: true}` on every string-keyed map — task
-// inputs, workflow inputs, labels, step outputs, named values, scope vars. It
+// inputs, labels, step outputs, named values, scope vars. It
 // reads like a constraint and it is not one: `required` cannot apply to a map key,
 // because a key is never absent. protovalidate ignores it and `buf lint` reports
 // it as unenforceable, which is why lint was not in CI.
@@ -473,17 +473,10 @@ func TestValidateRefusesEmptyMapKeys(t *testing.T) {
 				}},
 			},
 		},
-		{
-			name: "an empty workflow input name",
-			workflow: &v1.Workflow{
-				Name:   "empty-workflow-input",
-				Inputs: map[string]*v1.Value{"": v1.NewLiteral("hi")},
-				Steps: []*v1.Node{{
-					Id:   "a",
-					Kind: &v1.Node_Task{Task: &v1.Task{Name: "log"}},
-				}},
-			},
-		},
+		// A third case covered `Workflow.inputs`, which is gone: the field was a
+		// map nothing wrote and nothing read, and its number and name are reserved.
+		// The rule it exercised is the same one the two cases above check, on the
+		// two string-keyed maps that a workflow still has.
 	}
 
 	for _, test := range tests {

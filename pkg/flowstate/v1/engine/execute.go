@@ -300,6 +300,11 @@ func (e *executor) runIteration(loop *v1.ForEach, iterator string, item *v1.Valu
 		budget:    e.budget,
 		processed: e.processed,
 		frames:    e.frames,
+
+		// The run's carry, by pointer. A wait in a loop body consumes from the
+		// same place a top-level one does, and consuming it here has to remove it
+		// for the whole run.
+		signals: e.signals,
 	}
 	if descend {
 		nested.resume = e.resume
@@ -343,10 +348,11 @@ func (e *executor) runIterationsConcurrently(loop *v1.ForEach, iterator string, 
 				next++
 
 				worker := &executor{
-					ctx:    gctx,
-					spec:   e.spec,
-					scope:  e.scope.WithLocal(iterator, items[i]).WithOutputs(cloneOutputs(e.scope.GetOutputs())),
-					budget: e.budget,
+					ctx:     gctx,
+					spec:    e.spec,
+					scope:   e.scope.WithLocal(iterator, items[i]).WithOutputs(cloneOutputs(e.scope.GetOutputs())),
+					budget:  e.budget,
+					signals: e.signals,
 				}
 				if err := worker.runNodes(loop.GetBody(), depth); err != nil {
 					errs[i] = err
@@ -386,10 +392,11 @@ func (e *executor) runParallel(parallel *v1.Parallel, depth int) error {
 			// make the result depend on scheduling.
 			branchOutputs := cloneOutputs(e.scope.GetOutputs())
 			worker := &executor{
-				ctx:    gctx,
-				spec:   e.spec,
-				scope:  e.scope.WithOutputs(branchOutputs),
-				budget: e.budget,
+				ctx:     gctx,
+				spec:    e.spec,
+				scope:   e.scope.WithOutputs(branchOutputs),
+				budget:  e.budget,
+				signals: e.signals,
 			}
 			if err := worker.runNodes(branch.GetSteps(), depth+1); err != nil {
 				errs[i] = err

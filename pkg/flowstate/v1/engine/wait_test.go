@@ -590,3 +590,149 @@ func payloadField(t *testing.T, outputs *v1.Node_Outputs, name string) *expr.Val
 	t.Fatalf("the payload has no %q; it holds %d entries", name, len(payload.GetEntries()))
 	return nil
 }
+
+// TestACarriedSignalReachesAWaitInsideALoop is the join of two features that were
+// each tested alone.
+//
+// The carry has two halves and only one of them was covered. Draining is tested by
+// TestSignalNames, which enumerates the signal names nested anywhere in a spec so a
+// loop body's channel is drained before a suspend — and says so, naming exactly this
+// case as the one that would get lost. Consuming is the other half, and it happens in
+// [executor.takePendingSignal], which reads `e.signals`.
+//
+// `signals` is documented as "shared by pointer with every nested executor", and a
+// nested executor is built in three places — runIteration, runIterationsConcurrently
+// and runParallel — none of which pass it. So a wait in a loop body finds a nil carry,
+// blocks on a channel the previous run already drained, and waits for a signal the run
+// is holding. That is the exact failure the carry exists to prevent, one level down,
+// and both existing tests stay green through it because both waits are top-level.
+func TestACarriedSignalReachesAWaitInsideALoop(t *testing.T) {
+	t.Parallel()
+
+	spec := &v1.Workflow{
+		Name: "approval-inside-a-loop",
+		Steps: []*v1.Node{
+			logStep("one", "1"),
+			{
+				Id: "each",
+				Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+					Items:    v1.NewLiteralList("only"),
+					Iterator: "item",
+					Body:     []*v1.Node{signalStep("approval", "deploy-approved", 0)},
+				}},
+			},
+		},
+	}
+
+	// One step of budget, so the run suspends after `one` and before the loop.
+	first := newWaitEnv(t)
+	first.RegisterDelayedCallback(func() {
+		first.SignalWorkflow("deploy-approved", &v1.Node_Outputs{
+			NamedValues: map[string]*v1.Value{"approved": v1.NewLiteral(true)},
+		})
+	}, 0)
+
+	first.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: spec, StepsBudget: 1})
+	require.True(t, first.IsWorkflowCompleted())
+
+	err := first.GetWorkflowError()
+	require.Error(t, err, "the run did not suspend, so this test proves nothing")
+
+	var continueAsNew *workflow.ContinueAsNewError
+	require.ErrorAs(t, err, &continueAsNew)
+
+	var carried v1.RunState
+	require.NoError(t,
+		converter.GetDefaultDataConverter().FromPayloads(continueAsNew.Input, &carried))
+
+	require.Len(t, carried.GetPendingSignals(), 1,
+		"the approval was not carried across the suspend, so the consuming half is untested")
+
+	// Nothing signals the resumed run. It is holding the approval already, and the
+	// only question is whether a wait one level down can see it.
+	//
+	// Reaching this line at all is most of the assertion: before the carry was
+	// threaded into nested executors, the resumed run blocked on a channel the
+	// previous run had already drained, and the test environment fired the wait's
+	// ten-year timer instead of completing.
+	outputs, _ := resumeToCompletion(t, &carried)
+
+	// Read through the loop rather than at the top level. A body step's outputs
+	// belong to the iteration that produced them — `each` holds a result per item —
+	// so `approval` is not a top-level name and asserting there would pass for a run
+	// that never entered the loop.
+	loop := outputs.GetStepValues()["each"]
+	require.NotNil(t, loop, "the loop never produced results, so the body did not finish")
+
+	results := loop.GetNamedValues()["results"].GetLiteral().GetListValue().GetValues()
+	require.Len(t, results, 1,
+		"the loop did not run its one iteration to completion")
+
+	var reached bool
+	for _, entry := range results[0].GetMapValue().GetEntries() {
+		if entry.GetKey().GetStringValue() == "approval" {
+			reached = true
+		}
+	}
+	require.True(t, reached,
+		"a wait inside a loop body never saw the approval the run was carrying")
+}
+
+// TestACarriedSignalReachesAWaitInsideAParallelBranch is the other nesting the same
+// fix covers, and it is worth its own test because it reaches the carry by a
+// different path.
+//
+// A loop body runs on the workflow's own coroutine; a parallel branch runs on one
+// started by workflow.Go, with its own executor and its own context. Sharing the
+// carry by pointer is what makes a signal consumed in a branch consumed for the run
+// — a copy per branch would let one approval satisfy two gates, which is the failure
+// on the other side of this one and is why the field is a pointer rather than a
+// slice.
+func TestACarriedSignalReachesAWaitInsideAParallelBranch(t *testing.T) {
+	t.Parallel()
+
+	spec := &v1.Workflow{
+		Name: "approval-inside-a-branch",
+		Steps: []*v1.Node{
+			logStep("one", "1"),
+			{
+				Id: "branches",
+				Kind: &v1.Node_Parallel{Parallel: &v1.Parallel{
+					Branches: []*v1.Parallel_Branch{
+						{Steps: []*v1.Node{signalStep("approval", "deploy-approved", 0)}},
+						{Steps: []*v1.Node{logStep("other", "other")}},
+					},
+				}},
+			},
+		},
+	}
+
+	first := newWaitEnv(t)
+	first.RegisterDelayedCallback(func() {
+		first.SignalWorkflow("deploy-approved", &v1.Node_Outputs{
+			NamedValues: map[string]*v1.Value{"approved": v1.NewLiteral(true)},
+		})
+	}, 0)
+
+	first.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: spec, StepsBudget: 1})
+	require.True(t, first.IsWorkflowCompleted())
+
+	err := first.GetWorkflowError()
+	require.Error(t, err, "the run did not suspend, so this test proves nothing")
+
+	var continueAsNew *workflow.ContinueAsNewError
+	require.ErrorAs(t, err, &continueAsNew)
+
+	var carried v1.RunState
+	require.NoError(t,
+		converter.GetDefaultDataConverter().FromPayloads(continueAsNew.Input, &carried))
+	require.Len(t, carried.GetPendingSignals(), 1,
+		"the approval was not carried across the suspend")
+
+	outputs, _ := resumeToCompletion(t, &carried)
+
+	// A branch writes its steps into the run's outputs, unlike a loop body, so the
+	// gate is a top-level name here.
+	require.NotNil(t, outputs.GetStepValues()["approval"],
+		"a wait inside a parallel branch never saw the approval the run was carrying")
+}

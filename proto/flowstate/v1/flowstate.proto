@@ -63,14 +63,42 @@ message Workflow {
     }
   ];
 
-  // Inputs are key-value pairs that can be used to provide initial data to the workflow.
-  // These inputs can be used by the steps in the workflow to perform their tasks.
-  map<string, Value> inputs = 4 [
-    (google.api.field_behavior) = OPTIONAL,
-    (buf.validate.field).map = {
-      keys: {string: {min_len: 1}}
-    }
-  ];
+  // Field 4 was `map<string, Value> inputs`, meant as initial data for a workflow.
+  //
+  // Nothing ever wrote it and nothing ever read it. No Flowfile key compiled to it,
+  // no RPC carried a value for it, and no evaluation bound a name from it — the
+  // parser answers `inputs:` at this level with "unknown key", listing the keys that
+  // do exist. It was a shape held open for a feature, and the feature it is now
+  // wanted for is not this one: Phase 2's parameters are typed and declared, not a
+  // bare map, and they belong in a message that can say so.
+  //
+  // Reserved by *name* as well as by number, which is the part that matters here.
+  // There is no custom data converter, so Temporal's default composite converter
+  // reaches ProtoJSON before Proto and every specification in a workflow's history
+  // is stored with field *names*. A future `inputs` of a different shape would
+  // therefore be read out of an old history by name and silently mean something
+  // else — which the number alone does not prevent.
+  //
+  // The same fact has a cost, and it is worth stating once here because it applies
+  // to every deletion in this file rather than to this one. Temporal's ProtoJSON
+  // converter is built with `protojson.UnmarshalOptions{}` — `DiscardUnknown` is
+  // false — so a history whose stored specification carries a deleted field does
+  // not decode at all:
+  //
+  //   unable to decode: proto: (line 1:68): unknown field "inputs"
+  //
+  // Measured, not assumed. A run in flight when the field goes away therefore fails
+  // rather than ignoring it, and the failure is at the worker rather than at
+  // submission.
+  //
+  // Accepted here on the same terms as the two deletions already in this file —
+  // `Task.description` below, and the three retired tasks. Nothing in this
+  // repository ever set `inputs`, no release has ever been tagged, and a schema
+  // change that a run cannot survive is what an *edition* boundary is for. What
+  // would not be acceptable is doing it quietly: a deletion that costs an in-flight
+  // run has to be a decision somebody made, which is why it is written down.
+  reserved 4;
+  reserved "inputs";
 
   // Labels are key-value pairs that can be used to organize and categorize workflows.
   map<string, string> labels = 5 [

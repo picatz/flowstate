@@ -75,6 +75,33 @@ Where the depth is lower than the palette assumes, colour degrades to the neares
 of what is available and then to weight — bold and dim — and then to nothing. Each
 step down loses emphasis and no information.
 
+Which half of each pair to use is a question asked *of the terminal*, in the one
+place the CLI does that: an OSC 11 query written out, and a reply read back. Two
+things follow, and both are load-bearing.
+
+It is asked at most once per process, and only when the answer can change a byte.
+Below ANSI both halves resolve to the same styles, so a `NO_COLOR` reader and a
+`TERM=dumb` terminal are never asked — which matters because those are among the
+terminals least likely to reply.
+
+And a terminal that replies to *nothing* is waited on for two seconds per file,
+which is four seconds of a command printing nothing before it behaves normally.
+That reads as a hung network or a wedged server, the two places somebody would look
+and neither of them it.
+
+That is narrower than it sounds, and worth stating precisely because the obvious
+guess is wrong. The query asks two things at once — the background colour, and the
+primary device attributes every terminal answers — so a terminal that simply does
+not implement background reporting still ends the wait immediately. Measured
+against a pty answering only the second: 0.02s. The four seconds belong to a pty
+answering neither, which is automation holding a tty rather than a terminal
+somebody is sitting at.
+
+`FLOWSTATE_BACKGROUND=dark` or `=light` settles it without asking, for exactly that
+case: 4.02s to 0.02s. Anything else in that variable — including empty — is ignored
+rather than guessed at, since a variable somebody exported and left blank is not an
+assertion about their terminal.
+
 ## Symbols, not emoji
 
 The CLI uses no emoji. They render at inconsistent widths, break column alignment,
@@ -85,6 +112,10 @@ What it does use is a small set of restrained typographic marks, and each one ha
 plain ASCII fallback selected by the same capability detection that decides colour.
 A symbol is decoration for a label, never a replacement: a status is `RUNNING`, and
 the mark beside it helps the eye find the row.
+
+`FLOWSTATE_SYMBOLS=unicode` or `=ascii` overrides that detection, on the same
+principle as `FLOWSTATE_BACKGROUND`: the derivation can be wrong about a terminal,
+and the person sitting at it is the only one who can see that.
 
 ## One vocabulary, everywhere
 
