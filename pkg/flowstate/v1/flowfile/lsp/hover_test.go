@@ -881,3 +881,159 @@ func TestHoverDoesNotClaimEveryDeferredInputIsAnExpression(t *testing.T) {
 	assert.NotContains(t, claim, "`outputs`",
 		"the expression sentence names `outputs`, which takes a literal map the engine accepts")
 }
+
+// TestHoverDescribesAProfileFunction is the other half of offering them.
+//
+// Completion shows an author `sortBy` while they type; hover is where they ask what
+// it is afterwards, or what a name means in a file they did not write. Offering a
+// name and then having nothing to say about it is the worse of the two halves to
+// have alone.
+func TestHoverDescribesAProfileFunction(t *testing.T) {
+	const src = `edition: v2026.2
+name: c
+vars:
+  greeting: hello
+steps:
+  - id: web
+    http:
+      url: https://example.com
+  - id: out
+    log:
+      message: ${PLACEHOLDER}
+`
+
+	c := newClient(t)
+	c.initialize()
+
+	for _, test := range []struct {
+		name    string
+		expr    string
+		on      string
+		want    []string
+		notWant []string
+	}{
+		{
+			name: "a bare function",
+			expr: `vars.greeting.upperAscii()`,
+			on:   "upperAscii",
+			want: []string{"upperAscii", "strings"},
+		},
+		{
+			// The ambiguity that decides the lookup order. `replace` is a function
+			// in the strings library and also the tail of `regex.replace`, so a
+			// bare-first lookup would name the wrong library here.
+			name:    "a qualified function beats the bare one it ends with",
+			expr:    `regex.replace('a', 'b', 'c')`,
+			on:      "replace",
+			want:    []string{"regex.replace", "regex"},
+			notWant: []string{"strings"},
+		},
+		{
+			// Pointing at the qualifier of a *call* describes the call, not the
+			// namespace: `regex` in `regex.replace(...)` is part of one name, and
+			// the generic answer would be the less useful of the two available.
+			name: "the qualifier of a call describes the call",
+			expr: `regex.replace('a', 'b', 'c')`,
+			on:   "regex",
+			want: []string{"regex.replace"},
+		},
+		{
+			// The namespace answer, which is only reachable while a name is
+			// unfinished — once `regex.replace` is written, pointing anywhere in it
+			// describes the call. Worth its own case rather than left as a branch
+			// nothing reaches: mid-edit is when somebody hovers.
+			name: "a qualifier with nothing after it yet",
+			expr: `regex.`,
+			on:   "regex",
+			want: []string{"namespace", "regex"},
+		},
+		{
+			// A macro says the thing about it that is not guessable: it is settled
+			// when the file compiles, not when the run evaluates.
+			name: "a macro",
+			expr: `[3, 1, 2].sortBy(v, v)`,
+			on:   "sortBy",
+			want: []string{"sortBy", "lists", "macro", "compiles"},
+		},
+		{
+			name: "a macro written on a namespace",
+			expr: `math.greatest(1, 2)`,
+			on:   "greatest",
+			want: []string{"greatest", "math", "macro"},
+		},
+		{
+			// The rule that keeps this a fallback. `value` is a function in the
+			// optional library; here it is a step output, and the output is what an
+			// author pointing at it means.
+			name:    "a step output that shares a function's name",
+			expr:    `steps.web.value`,
+			on:      "value",
+			notWant: []string{"optional library"},
+		},
+		{
+			// And a binding wins too, for the same reason: `first` is a function in
+			// the optional library and the loop bound it.
+			name:    "a binding that shares a function's name",
+			expr:    `first`,
+			on:      "first",
+			notWant: []string{"optional"},
+		},
+		{
+			name:    "a name that is neither",
+			expr:    `nosuchthing`,
+			on:      "nosuchthing",
+			notWant: []string{"library", "namespace"},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			text := strings.Replace(src, "PLACEHOLDER", test.expr, 1)
+
+			// A loop binding `first`, so the binding-wins case has something to
+			// win against. Added for every case so the document is one shape.
+			text = strings.Replace(text,
+				"  - id: out\n",
+				"  - id: each\n    for_each:\n      items: ${['a']}\n      as: first\n      steps:\n"+
+					"        - id: inner\n          log:\n            message: hi\n  - id: out\n", 1)
+
+			uri := "file:///hover-fn-" + strings.ReplaceAll(test.name, " ", "-") + ".yaml"
+			c.open(uri, text)
+
+			line, col := findWord(t, text, test.expr, test.on)
+			got := c.hover(uri, line, col)
+
+			rendered := ""
+			if got != nil {
+				rendered = hoverText(got)
+			}
+			for _, want := range test.want {
+				assert.Contains(t, rendered, want)
+			}
+			for _, notWant := range test.notWant {
+				assert.NotContains(t, rendered, notWant)
+			}
+		})
+	}
+}
+
+// findWord locates a word inside an expression that appears once in the document,
+// and returns a position in the middle of it.
+//
+// The middle rather than the start, because the start of a segment is also the
+// position just past the dot before it, and a test that only ever asked about
+// boundaries would not notice a lookup that was off by one segment.
+func findWord(t *testing.T, text, expr, word string) (int, int) {
+	t.Helper()
+
+	exprAt := strings.Index(text, expr)
+	require.GreaterOrEqual(t, exprAt, 0, "the expression is not in the document")
+
+	within := strings.Index(expr, word)
+	require.GreaterOrEqual(t, within, 0, "the word is not in the expression")
+
+	offset := exprAt + within + len(word)/2
+
+	line := strings.Count(text[:offset], "\n")
+	lineStart := strings.LastIndex(text[:offset], "\n") + 1
+
+	return line, offset - lineStart
+}

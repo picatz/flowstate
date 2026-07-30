@@ -290,7 +290,11 @@ func hoverReference(doc *document, from *parsedStep, v *value, clock bool, pos l
 	cursor := doc.index.offsetOfPosition(pos) - v.exprOffset
 	ref := referenceAt(v.expr, cursor)
 	if ref.empty() {
-		return nil
+		// No reference here, which does not mean nothing is here. `referenceAt`
+		// treats a dot as part of a word, so the name in `[3,1,2].sortBy(v, v)`
+		// comes back as `.sortBy` — a first segment that is empty, and no
+		// reference. A function is still the thing under the cursor.
+		return hoverFunction(doc, v, cursor)
 	}
 
 	// A secret reference resolves to neither a step nor a binding, so it is
@@ -301,10 +305,21 @@ func hoverReference(doc *document, from *parsedStep, v *value, clock bool, pos l
 	}
 
 	rng := doc.index.rangeOfOffsets(v.exprOffset+ref.span[0], v.exprOffset+ref.span[1])
-	if ref.step == "" {
-		return hoverBareName(from, ref.local, clock, rng)
+	if ref.step != "" {
+		// A rooted reference. Nothing inside one is a call, so a function is not a
+		// reading to fall back on here — `${steps.web.value}` names an output, and
+		// `value` is also a function in the optional library.
+		return hoverStepOutput(doc, from, ref, rng)
 	}
-	return hoverStepOutput(doc, from, ref, rng)
+
+	if h := hoverBareName(from, ref.local, clock, rng); h != nil {
+		return h
+	}
+
+	// Nothing bound that name, so the cursor may be on a function. Second,
+	// deliberately: a binding is what the author wrote and a function of the same
+	// spelling is a coincidence.
+	return hoverFunction(doc, v, cursor)
 }
 
 // hoverDocumentExpression describes a reference inside one of the document's own
