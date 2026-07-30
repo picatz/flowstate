@@ -76,6 +76,26 @@ func Run(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error
 		stepsBudget = defaultMaxStepsPerRun
 	}
 
+	// The workflow's `vars:`, evaluated once for the run.
+	//
+	// Through an activity, and only when this segment does not already carry them:
+	// evaluating CEL in workflow code is not replay-safe, because a profile pins which
+	// functions exist and not how cel-go implements them. See [WorkflowVars]. A run
+	// that continued as new arrives holding the answer, so this is one round trip per
+	// *run* rather than per segment.
+	vars := st.GetVars()
+	if len(vars) == 0 && len(st.GetWorkflow().GetVars()) > 0 {
+		var evaluated v1.Scope
+		if err := workflow.ExecuteActivity(ctx, WorkflowVars, &v1.Scope{
+			Vars:    st.GetWorkflow().GetVars(),
+			Profile: st.GetWorkflow().GetProfile(),
+		}).Get(ctx, &evaluated); err != nil {
+			return nil, err
+		}
+		vars = evaluated.GetVars()
+		st.Vars = vars
+	}
+
 	// Execute through the recursive executor, which handles nested control flow
 	// and records where to resume if the run has to be continued as new.
 	exec := &executor{
@@ -86,7 +106,7 @@ func Run(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error
 		// the next task, and that worker must evaluate against the vocabulary the
 		// spec was compiled with rather than its own current one — otherwise a
 		// deployment mid-rollout runs one workload against two dialects.
-		scope:  v1.NewScope(st.GetWorkflow().GetProfile(), stepOutputs),
+		scope:  varsScope(st.GetWorkflow().GetProfile(), stepOutputs, vars),
 		budget: stepsBudget,
 		resume: resumeFrames(st),
 
@@ -117,6 +137,13 @@ func Run(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error
 			Frames:      exec.frames,
 
 			PendingSignals: pending,
+
+			// Evaluated once for the whole run, not once per segment. A continued
+			// run takes whichever interpreter version is current (invariant 10), so
+			// re-evaluating here could hand later steps a different answer than
+			// earlier ones saw — a value changing under a workload halfway through,
+			// for no cause visible in the file.
+			Vars: st.GetVars(),
 			// Identity must survive Continue-As-New. A long workload spans
 			// several runs, and a step in the last one acts on behalf of the
 			// same caller as a step in the first; dropping it would silently
@@ -572,4 +599,18 @@ func compactOutputsForRemainingSteps(steps []*v1.Node, from int, prev *v1.Workfl
 		}
 	}
 	return trimmed
+}
+
+// varsScope builds the run's initial scope with its evaluated vars in place.
+//
+// A named function rather than two lines at the call site, so that "the scope every
+// step starts from" is one thing with one definition. The local driver reaches the
+// same state through v1.EvalWorkflowVars; what must not differ between them is the
+// scope a first step sees, and that is easier to compare when each driver has exactly
+// one place that builds it.
+func varsScope(profile string, outputs *v1.Workflow_StepOutputs, vars map[string]*v1.Value) *v1.Scope {
+	scope := v1.NewScope(profile, outputs)
+	scope.Vars = vars
+
+	return scope
 }

@@ -1096,6 +1096,21 @@ message RunState {
   // already lost, and wait forever — the worst failure available to a feature
   // whose whole promise is that waiting is reliable.
   repeated PendingSignal pending_signals = 7;
+
+  // Vars are the workflow's `vars:` block, already evaluated.
+  //
+  // Carried rather than recomputed, so that "evaluated once at the start of the run"
+  // means once for the whole run and not once per Continue-As-New segment. The
+  // difference is not academic: invariant 10 has a continued run pick up whichever
+  // interpreter version is current, so a segment that re-evaluated its vars could
+  // compute a different answer from the one earlier steps saw — a value changing
+  // under a workload halfway through, for no cause visible in the file.
+  //
+  // Storing it also makes the evaluation happen exactly once per run rather than once
+  // per segment, which is the cheaper half of the same argument.
+  map<string, Value> vars = 8 [(buf.validate.field).map = {
+    keys: {string: {min_len: 1}}
+  }];
 }
 
 // SignalRequest delivers a signal to a waiting run.

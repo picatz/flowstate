@@ -125,3 +125,20 @@ func Test_CELNestedOutputsReference(t *testing.T) {
 	}}
 	require.True(t, proto.Equal(expected, out))
 }
+
+// TestRunWorkflowVars covers the workflow's `vars:` block in the local driver.
+//
+// The same cases run against the Temporal driver in the engine package. That matters
+// more here than for most features, because the two drivers reach this state by
+// different routes: locally the vars are evaluated in process before the first step,
+// durably they are evaluated in an activity and then carried across Continue-As-New.
+// Two routes to one observable is the shape that drifts.
+func TestRunWorkflowVars(t *testing.T) {
+	for _, test := range tests.VarsCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			out, err := v1.Run(t.Context(), test.Workflow)
+			require.NoError(t, err)
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, out, protocmp.Transform()))
+		})
+	}
+}

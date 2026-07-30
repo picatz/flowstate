@@ -81,7 +81,12 @@ func TestRegisterInstallsEverythingHistoryCanName(t *testing.T) {
 
 	require.Equal(t, []string{"Run"}, registry.workflows,
 		"the interpreter is the one workflow type, and it must be registered exactly once")
-	require.ElementsMatch(t, []string{"Task", "TaskInScope", "TaskWithPrev"}, registry.activities)
+	// WorkflowVars joins the list because a run whose file declares `vars:` names it
+	// in history before its first step. An activity added and left unregistered is
+	// not a build error and not a test failure anywhere else — it is a run that
+	// cannot finish on a worker that does not answer to the name.
+	require.ElementsMatch(t,
+		[]string{"Task", "TaskInScope", "TaskWithPrev", "WorkflowVars"}, registry.activities)
 }
 
 // TestRegisterPinsTheInterpreter is the assertion the whole versioning posture

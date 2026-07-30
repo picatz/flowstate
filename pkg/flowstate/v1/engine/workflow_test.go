@@ -199,3 +199,31 @@ func TestRunWorkflow_StateBudget(t *testing.T) {
 		cmp.Diff(expected, &output, protocmp.Transform()),
 	)
 }
+
+// TestRunWorkflowVars covers the workflow's `vars:` block in the durable driver.
+//
+// The same cases the local driver runs. Here they exercise a route the local driver
+// does not have: the vars are evaluated by the WorkflowVars activity rather than in
+// workflow code, because a profile pins which functions exist and not how cel-go
+// implements them — so evaluating them inline would be a replay divergence waiting on
+// a dependency bump.
+func TestRunWorkflowVars(t *testing.T) {
+	for _, test := range tests.VarsCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			testSuite := &testsuite.WorkflowTestSuite{}
+			env := testSuite.NewTestWorkflowEnvironment()
+			env.RegisterWorkflow(engine.Run)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
+
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow})
+			require.True(t, env.IsWorkflowCompleted())
+			require.NoError(t, env.GetWorkflowError())
+
+			var out v1.Workflow_StepOutputs
+			require.NoError(t, env.GetWorkflowResult(&out))
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, &out, protocmp.Transform()))
+		})
+	}
+}

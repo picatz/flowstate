@@ -7,6 +7,42 @@ import (
 	"go.temporal.io/sdk/temporal"
 )
 
+// WorkflowVars is a Temporal activity that evaluates a workflow's `vars:` block.
+//
+// # Why an activity, for expressions with no side effects at all
+//
+// Because evaluating CEL in workflow code is not deterministic in the sense replay
+// needs. A language profile pins which *functions* exist; it does not pin how cel-go
+// implements them, so an upstream bug fix changes a result under an unchanged profile
+// — and a workflow that computed one value before a worker upgrade and another after
+// is invariant 4 violated by a dependency bump nobody reviewed as one. Inside an
+// activity the result is written to history once and replayed thereafter, which is the
+// same reason a task's own inputs resolve through TaskInScope rather than in the
+// workflow.
+//
+// docs/DSL.md holds open the faster path — workflow-side evaluation where Worker
+// Versioning pins the interpreter — but that is a deployment posture this activity
+// does not have to verify, and one round trip per run is not the cost worth taking a
+// posture on trust for.
+//
+// Takes and returns a [v1.Scope] rather than the specification: the vars go in
+// unevaluated and come back evaluated, alongside the profile they are evaluated
+// against, and nothing else about the workflow is needed or shipped.
+func WorkflowVars(ctx context.Context, declared *v1.Scope) (*v1.Scope, error) {
+	vars, err := v1.EvalVars(ctx, declared.GetProfile(), declared.GetVars())
+	if err != nil {
+		// Not retryable: a var that does not evaluate will not evaluate on the second
+		// attempt either. Its expression is fixed in the specification and it reads
+		// nothing that changes — no step outputs, no clock, no network. Retrying would
+		// turn an author's mistake into a run that takes its whole retry budget to
+		// report the same sentence.
+		return nil, temporal.NewNonRetryableApplicationError(
+			err.Error(), "InvalidWorkflowVars", err)
+	}
+
+	return &v1.Scope{Vars: vars, Profile: declared.GetProfile()}, nil
+}
+
 // Task is a Temporal activity that executes a single task.
 //
 // The workflow pre-resolves expression inputs to literals before scheduling this

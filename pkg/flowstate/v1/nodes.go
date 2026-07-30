@@ -326,14 +326,23 @@ func ResolveTaskInputs(ctx context.Context, task *Task, scope *Scope) (*Task, er
 // So a var is literals, operators and the profile's functions. `flow validate` reports a
 // reference here rather than leaving it to fail at run time.
 func EvalWorkflowVars(ctx context.Context, w *Workflow) (map[string]*Value, error) {
-	declared := w.GetVars()
+	return EvalVars(ctx, w.GetProfile(), w.GetVars())
+}
+
+// EvalVars is [EvalWorkflowVars] over the two things it actually needs.
+//
+// Split out because the durable driver evaluates vars in an *activity*, and shipping
+// the whole specification to it a second time — it is already in the run's state, and
+// it is the largest value this system carries — to read two fields off it would be
+// paying history for the convenience of one signature.
+func EvalVars(ctx context.Context, profile string, declared map[string]*Value) (map[string]*Value, error) {
 	if len(declared) == 0 {
 		return nil, nil
 	}
 
 	// Deliberately empty: see above. Carries the profile, because a var is evaluated
 	// against the vocabulary the file was compiled with like every other expression.
-	base := NewScope(w.GetProfile(), nil)
+	base := NewScope(profile, nil)
 
 	ev := DefaultEvaluator()
 	vars := make(map[string]*Value, len(declared))
@@ -348,7 +357,7 @@ func EvalWorkflowVars(ctx context.Context, w *Workflow) (map[string]*Value, erro
 			continue
 		}
 
-		out, err := ev.EvalParsedBase(ctx, w.GetProfile(), v.GetExpr(), base.Activation(ctx))
+		out, err := ev.EvalParsedBase(ctx, profile, v.GetExpr(), base.Activation(ctx))
 		if err != nil {
 			return nil, fmt.Errorf("var %q: %w", name, err)
 		}
