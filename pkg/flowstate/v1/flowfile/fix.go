@@ -1554,23 +1554,26 @@ func commentStart(line string) int {
 // # A deferred input is read as an expression whether or not it is fenced
 //
 // Deferring an input is the registry declaring that the task evaluates it, so its
-// value is an expression by construction. Both spellings are in use and both
-// strand a reference: the http task's `expect:` carries a fence because it could
-// have been a literal, and the cel task's `expr:` is bare because evaluating it is
-// the entire purpose of the task.
+// value is an expression by construction — and it may be written with a fence or
+// without one. `http`'s `expect:` carries a fence because it could have been a
+// literal; an input that *is* expression source, where a fence would be a fence
+// around a fence, is written bare.
 //
-// Only the fenced half used to be read, which left the bare half silent — and the
-// bare half is `expr:`, the input most likely to hold a step reference in the first
-// place. Nothing else catches it: the fence rewriter never sees an unfenced value,
-// and the validator does not reference-check a deferred input at all, so a bare
-// `expr: a.result` migrated clean while still meaning the pre-root spelling.
+// Only the fenced half used to be read, which left the bare half silent. Nothing else
+// catches it: the fence rewriter never sees an unfenced value, and the validator does
+// not reference-check a deferred input at all, so a bare `expr: a.result` migrated
+// clean while still meaning the pre-root spelling.
 //
-// It reads one scalar rather than descending, and the exception proves why. The cel
-// task also defers `vars`, which is a mapping — but the compiler flattens `vars:`
-// into ordinary inputs before the engine sees it, so those entries are resolved by
-// the workflow, reference-checked by the validator, and rewritten by this pass like
-// any other. Descending here would report them a second time, in weaker words than
-// the diagnostic they already get.
+// No built-in is written bare any more — the one that was, `cel`'s `expr:`, retired at
+// edition v2026.2 — so the branch is exercised by a registered task in the tests
+// instead. It stays because a plugin may declare one, and removing a capability from
+// plugins to tidy the built-ins is the wrong trade.
+//
+// It reads one scalar rather than descending, which is what a deferred input is: one
+// expression the task evaluates. A deferred input holding a *mapping* used to exist —
+// `cel`'s `vars:`, which the compiler flattened into ordinary inputs before the engine
+// saw it — and descending into it here would have reported entries the validator
+// already reports, in weaker words than the diagnostic they already get.
 func (f *fixer) noteDeferred(n ast.Node, input string, steps map[string]bool) {
 	text, ok := scalarText(n)
 	if !ok {

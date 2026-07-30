@@ -75,9 +75,15 @@ func TaskWithPrev(ctx context.Context, task *v1.Task, prev *v1.Workflow_StepOutp
 // those expressions resolve against.
 //
 // The scope carries both earlier step outputs and any variables bound by enclosing
-// control flow. Sending it is what lets the cel task inside a loop body evaluate an
-// expression referring to the loop's current item, since that evaluation happens
-// here on the worker rather than in workflow code.
+// control flow — a loop's current item, a name a step's own `vars:` block declared.
+// Sending it is what lets a task inside a loop body evaluate an expression naming one
+// of those, since that evaluation happens here on the worker rather than in workflow
+// code.
+//
+// The `http` task is the one that needs it today: `expect:` and `outputs:` are checked
+// against a response that does not exist until the request has been made, so they
+// cannot be resolved before the activity is scheduled — and they may still name a
+// binding from the loop the step sits in.
 func TaskInScope(ctx context.Context, task *v1.Task, scope *v1.Scope) (*v1.Node_Outputs, error) {
 	out, err := task.EvalInScope(withActivityLogger(ctx), scope)
 	return out, activityError(task.GetName(), err)

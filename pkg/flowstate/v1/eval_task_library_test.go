@@ -37,7 +37,16 @@ func checkProtoEqual(t *testing.T, expected, actual proto.Message) {
 // whether a malformed URL is refused. None of that is a claim about a remote
 // host, so none of it needs one. The egress policy already allows loopback for
 // exactly this reason.
-func Test_httpFuncPrintf(t *testing.T) {
+// The name is Test_taskFuncHTTP because that is what it tests. It was
+// Test_httpFuncPrintf, which named neither the task under test nor a task that
+// exists: the file once held a printf test above this one, the two names were
+// transposed, and the printf half retired without anyone noticing the other half
+// was wearing its name.
+//
+// Worth the rename rather than leaving it. A test's name is what somebody greps for
+// when they change the thing it covers, and a name pointing at the wrong subject is
+// coverage nobody finds.
+func Test_taskFuncHTTP(t *testing.T) {
 	server, _ := httpTaskServer(t, http.StatusOK, `{"ok": true}`, http.Header{
 		"Content-Type": []string{"application/json"},
 	})
