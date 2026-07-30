@@ -80,6 +80,11 @@ type watchPoller interface {
 type clientPoller struct {
 	workflowID string
 	runID      string
+
+	// server is carried rather than read at poll time, because a poller runs
+	// after its command has returned control to the follow loop and has no
+	// command to ask.
+	server serverFlags
 }
 
 func (p clientPoller) Poll(ctx context.Context) (*v1.GetResponse, error) {
@@ -88,9 +93,9 @@ func (p clientPoller) Poll(ctx context.Context) (*v1.GetResponse, error) {
 		request.RunId = &p.runID
 	}
 
-	response, err := newWorkflowServiceClient().Get(ctx, connect.NewRequest(request))
+	response, err := newWorkflowServiceClient(p.server).Get(ctx, connect.NewRequest(request))
 	if err != nil {
-		return nil, classifyPollError(p.workflowID, err)
+		return nil, classifyPollError(p.workflowID, p.server, err)
 	}
 
 	return response.Msg, nil
@@ -107,8 +112,8 @@ type transientError struct{ error }
 // so the code cannot be recovered from what it returns. A watch that could not tell
 // the difference would sit out its whole outage allowance on a mistyped id, saying
 // nothing useful.
-func classifyPollError(workflowID string, err error) error {
-	refused := refusedRun("reading", workflowID, err)
+func classifyPollError(workflowID string, server serverFlags, err error) error {
+	refused := refusedRun("reading", workflowID, server, err)
 	if worthAskingAgain(connect.CodeOf(err)) {
 		return transientError{refused}
 	}
@@ -264,7 +269,7 @@ func runWatch(cmd *cobra.Command, args []string) error {
 	// Nothing known yet: `flow watch` is asked about a run it did not start, so the
 	// first poll is the first thing it learns.
 	return watchRun(cmd.Context(), newSurface(cmd), format,
-		clientPoller{workflowID: workflowID, runID: runID},
+		clientPoller{workflowID: workflowID, runID: runID, server: serverFlagsOf(cmd)},
 		clampWatchInterval(interval), plain, workflowID, nil)
 }
 

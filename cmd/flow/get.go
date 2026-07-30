@@ -34,6 +34,8 @@ func runGet(cmd *cobra.Command, args []string) error {
 	// Left absent rather than empty when unset. The schema requires a run id to be
 	// a UUID when present, so sending "" would be refused for not looking like one
 	// instead of meaning "whichever run is current".
+	server := serverFlagsOf(cmd)
+
 	if runID, _ := cmd.Flags().GetString("run-id"); runID != "" {
 		request.RunId = &runID
 	}
@@ -43,9 +45,9 @@ func runGet(cmd *cobra.Command, args []string) error {
 			"omit it to ask about whichever attempt is current", err)
 	}
 
-	response, err := newWorkflowServiceClient().Get(cmd.Context(), connect.NewRequest(request))
+	response, err := newWorkflowServiceClient(server).Get(cmd.Context(), connect.NewRequest(request))
 	if err != nil {
-		return refusedRun("reading", workflowID, err)
+		return refusedRun("reading", workflowID, server, err)
 	}
 
 	msg := response.Msg

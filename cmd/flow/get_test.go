@@ -40,6 +40,7 @@ func getCommand(t *testing.T) (*cobra.Command, *strings.Builder, *strings.Builde
 	cmd := &cobra.Command{}
 	cmd.Flags().String("run-id", "", "")
 	addOutputFlag(cmd)
+	addServerFlags(cmd)
 	cmd.SetContext(t.Context())
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)

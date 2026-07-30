@@ -34,8 +34,6 @@ import (
 
 // Credential configuration, resolved from flags and the environment.
 var (
-	tokenFilePath = os.Getenv("FLOWSTATE_TOKEN_FILE")
-
 	// allowPlaintextCredential permits sending a token over plain HTTP to
 	// somewhere that is not this machine. Off by default; see [tokenFor].
 	allowPlaintextCredential = os.Getenv("FLOWSTATE_INSECURE_PLAINTEXT_TOKEN") == "true"
@@ -62,8 +60,8 @@ const maxTokenBytes = 64 << 10
 // packets do not leave the machine. FLOWSTATE_INSECURE_PLAINTEXT_TOKEN overrides
 // the rest, for the person terminating TLS at a sidecar who knows what their
 // network is; it is named so that finding it in a shell profile is alarming.
-func tokenFor(baseURL string) (string, error) {
-	token, err := readToken()
+func tokenFor(baseURL, tokenFile string) (string, error) {
+	token, err := readToken(tokenFile)
 	if err != nil || token == "" {
 		return "", err
 	}
@@ -89,14 +87,14 @@ func tokenFor(baseURL string) (string, error) {
 // reason the file form is the important one. A projected service account token is
 // rewritten in place as it rotates, and a long-running command that cached the
 // first one would start failing partway through for no reason its user could see.
-func readToken() (string, error) {
-	if tokenFilePath == "" {
+func readToken(tokenFile string) (string, error) {
+	if tokenFile == "" {
 		return strings.TrimSpace(os.Getenv("FLOWSTATE_TOKEN")), nil
 	}
 
-	file, err := os.Open(tokenFilePath)
+	file, err := os.Open(tokenFile)
 	if err != nil {
-		return "", fmt.Errorf("reading the credential from %s: %w", tokenFilePath, err)
+		return "", fmt.Errorf("reading the credential from %s: %w", tokenFile, err)
 	}
 	defer file.Close()
 
@@ -105,11 +103,11 @@ func readToken() (string, error) {
 	// rejected for a reason nobody could diagnose.
 	contents, err := io.ReadAll(io.LimitReader(file, maxTokenBytes+1))
 	if err != nil {
-		return "", fmt.Errorf("reading the credential from %s: %w", tokenFilePath, err)
+		return "", fmt.Errorf("reading the credential from %s: %w", tokenFile, err)
 	}
 	if len(contents) > maxTokenBytes {
 		return "", fmt.Errorf("the credential in %s is larger than %d bytes, which is not a token; "+
-			"check the path", tokenFilePath, maxTokenBytes)
+			"check the path", tokenFile, maxTokenBytes)
 	}
 
 	// Trimmed because a file almost always ends in a newline, and a newline in a
@@ -127,11 +125,15 @@ func readToken() (string, error) {
 type authorizingTransport struct {
 	base    http.RoundTripper
 	baseURL string
+
+	// tokenFile is where the credential is read from, carried rather than looked
+	// up globally. Re-read per request, so a rotating file keeps working.
+	tokenFile string
 }
 
 // RoundTrip implements [http.RoundTripper].
 func (t *authorizingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	token, err := tokenFor(t.baseURL)
+	token, err := tokenFor(t.baseURL, t.tokenFile)
 	if err != nil {
 		return nil, err
 	}

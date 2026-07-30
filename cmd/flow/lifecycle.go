@@ -16,6 +16,7 @@ import (
 func runCancel(cmd *cobra.Command, args []string) error {
 	workflowID := args[0]
 
+	server := serverFlagsOf(cmd)
 	runID, _ := cmd.Flags().GetString("run-id")
 
 	request := &v1.CancelRequest{WorkflowId: workflowID, RunId: runID}
@@ -23,8 +24,8 @@ func runCancel(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if _, err := newWorkflowServiceClient().Cancel(cmd.Context(), connect.NewRequest(request)); err != nil {
-		return refusedRun("cancelling", workflowID, err)
+	if _, err := newWorkflowServiceClient(server).Cancel(cmd.Context(), connect.NewRequest(request)); err != nil {
+		return refusedRun("cancelling", workflowID, server, err)
 	}
 
 	// Reported as a request rather than as a result, because that is what it is.
@@ -42,6 +43,7 @@ func runCancel(cmd *cobra.Command, args []string) error {
 func runTerminate(cmd *cobra.Command, args []string) error {
 	workflowID := args[0]
 
+	server := serverFlagsOf(cmd)
 	runID, _ := cmd.Flags().GetString("run-id")
 	reason, _ := cmd.Flags().GetString("reason")
 
@@ -54,8 +56,8 @@ func runTerminate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if _, err := newWorkflowServiceClient().Terminate(cmd.Context(), connect.NewRequest(request)); err != nil {
-		return refusedRun("terminating", workflowID, err)
+	if _, err := newWorkflowServiceClient(server).Terminate(cmd.Context(), connect.NewRequest(request)); err != nil {
+		return refusedRun("terminating", workflowID, server, err)
 	}
 
 	fmt.Fprintf(cmd.ErrOrStderr(), "terminated %s; no cleanup ran\n", workflowID)
@@ -78,7 +80,8 @@ func runList(cmd *cobra.Command, args []string) error {
 	}
 
 	surface := newSurface(cmd)
-	client := newWorkflowServiceClient()
+	server := serverFlagsOf(cmd)
+	client := newWorkflowServiceClient(server)
 	rendering := newListRendering(surface, format)
 
 	pageSize, _ := cmd.Flags().GetInt32("page-size")
@@ -104,7 +107,7 @@ func runList(cmd *cobra.Command, args []string) error {
 
 			response, err := client.List(cmd.Context(), connect.NewRequest(request))
 			if err != nil {
-				return refusedList(err)
+				return refusedList(server, err)
 			}
 
 			if err := rendering.add(response.Msg.GetRuns()); err != nil {
@@ -267,13 +270,13 @@ func formatRunTime(t time.Time, present bool) string {
 //
 // Separate from [refusedRun] because a listing names no run, so the "check the
 // id" advice that helps there would be answering a question nobody asked.
-func refusedList(err error) error {
+func refusedList(server serverFlags, err error) error {
 	switch connect.CodeOf(err) {
 	case connect.CodeUnauthenticated, connect.CodePermissionDenied:
 		return fmt.Errorf("refused while listing runs: %w", err)
 	case connect.CodeUnavailable:
 		return fmt.Errorf("no Flowstate server answered at %s (set --address or FLOWSTATE_ADDRESS "+
-			"to point somewhere else): %w", flowstateAddress, err)
+			"to point somewhere else): %w", server.address, err)
 	default:
 		return fmt.Errorf("listing runs: %w", err)
 	}

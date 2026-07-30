@@ -91,12 +91,12 @@ func failedResponse(status v1.RunResponse_Status, message string) *v1.GetRespons
 // classification clientPoller applies — so a test cannot accidentally describe a
 // refusal as transient that the real poller would call permanent.
 func transientRefusal() error {
-	return classifyPollError("flowstate-workflow-3f7c",
+	return classifyPollError("flowstate-workflow-3f7c", serverFlags{},
 		connect.NewError(connect.CodeUnavailable, errors.New("connection refused")))
 }
 
 func permanentRefusal() error {
-	return classifyPollError("flowstate-workflow-3f7c",
+	return classifyPollError("flowstate-workflow-3f7c", serverFlags{},
 		connect.NewError(connect.CodeNotFound, errors.New("no such run")))
 }
 
@@ -122,6 +122,7 @@ func watchCommandForTest(t *testing.T) (*cobra.Command, *strings.Builder, *strin
 	addFollowFlags(cmd)
 	addOutputFlag(cmd)
 	cmd.Flags().String("run-id", "", "")
+	addServerFlags(cmd)
 	require.NoError(t, cmd.Flags().Set("interval", minWatchInterval.String()))
 	cmd.SetContext(t.Context())
 	cmd.SetOut(&out)
@@ -574,7 +575,7 @@ func (p *interruptedPoller) Poll(ctx context.Context) (*v1.GetResponse, error) {
 
 	if p.refuse {
 		// What connect returns for a request whose context went away underneath it.
-		return nil, classifyPollError("flowstate-workflow-3f7c",
+		return nil, classifyPollError("flowstate-workflow-3f7c", serverFlags{},
 			connect.NewError(connect.CodeCanceled, ctx.Err()))
 	}
 
@@ -881,10 +882,14 @@ func TestClientPollerAsksWhatGetAsks(t *testing.T) {
 	fake := &fakeWorkflowService{
 		getResponse: response(v1.RunResponse_STATUS_RUNNING, "checkout"),
 	}
-	serveFake(t, fake)
+	address := serveFake(t, fake)
 
 	runID := "0198f1e2-0000-7000-8000-000000000000"
-	poller := clientPoller{workflowID: "flowstate-workflow-3f7c", runID: runID}
+	poller := clientPoller{
+		workflowID: "flowstate-workflow-3f7c",
+		runID:      runID,
+		server:     serverFlags{address: address},
+	}
 
 	got, err := poller.Poll(t.Context())
 	require.NoError(t, err)
@@ -900,9 +905,12 @@ func TestClientPollerAsksWhatGetAsks(t *testing.T) {
 // UUID.
 func TestClientPollerLeavesAnUnsetRunIDAbsent(t *testing.T) {
 	fake := &fakeWorkflowService{getResponse: response(v1.RunResponse_STATUS_RUNNING)}
-	serveFake(t, fake)
+	address := serveFake(t, fake)
 
-	_, err := clientPoller{workflowID: "flowstate-workflow-3f7c"}.Poll(t.Context())
+	_, err := clientPoller{
+		workflowID: "flowstate-workflow-3f7c",
+		server:     serverFlags{address: address},
+	}.Poll(t.Context())
 	require.NoError(t, err)
 	require.Nil(t, fake.gotGet.RunId, "an empty run id was sent instead of none at all")
 }
@@ -943,12 +951,18 @@ func TestClientPollerDoesNotWaitForeverOnAStalledServer(t *testing.T) {
 	t.Cleanup(server.Close)
 	t.Cleanup(func() { close(stalled) })
 
-	previousAddress, previousTimeout := flowstateAddress, requestTimeout
-	t.Cleanup(func() { flowstateAddress, requestTimeout = previousAddress, previousTimeout })
-	flowstateAddress, requestTimeout = server.URL, 200*time.Millisecond
+	previousTimeout := requestTimeout
+	t.Cleanup(func() { requestTimeout = previousTimeout })
+	requestTimeout = 200 * time.Millisecond
 
+	// The address is carried on the poller now rather than read from a package
+	// variable, so it is given here — which is also how a poller gets one in the
+	// command, since it outlives the command that built it.
 	start := time.Now()
-	_, err := clientPoller{workflowID: "flowstate-workflow-3f7c"}.Poll(t.Context())
+	_, err := clientPoller{
+		workflowID: "flowstate-workflow-3f7c",
+		server:     serverFlags{address: server.URL},
+	}.Poll(t.Context())
 	elapsed := time.Since(start)
 
 	require.Error(t, err, "a stalled server was waited on indefinitely")
@@ -980,9 +994,12 @@ func TestClientPollerClassifiesRefusals(t *testing.T) {
 			fake := &fakeWorkflowService{
 				getErr: connect.NewError(tc.code, errors.New("refused")),
 			}
-			serveFake(t, fake)
+			address := serveFake(t, fake)
 
-			_, err := clientPoller{workflowID: "flowstate-workflow-3f7c"}.Poll(t.Context())
+			_, err := clientPoller{
+				workflowID: "flowstate-workflow-3f7c",
+				server:     serverFlags{address: address},
+			}.Poll(t.Context())
 			require.Error(t, err)
 
 			var transient transientError

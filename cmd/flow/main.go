@@ -44,7 +44,6 @@ var version = "dev"
 // TODO(kent): consider refactoring to avoid global state, e.g. by passing
 // configuration structs to command handlers or using a context-based approach.
 var (
-	flowstateAddress  string = cmp.Or(os.Getenv("FLOWSTATE_ADDRESS"), "localhost:9233")
 	temporalTaskQueue string = cmp.Or(os.Getenv("TEMPORAL_TASK_QUEUE"), engine.RunTaskQueueName)
 	verboseLogging    bool   = os.Getenv("FLOWSTATE_VERBOSE_LOGGING") == "true"
 
@@ -188,7 +187,7 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 
 	surface := newSurface(cmd)
 
-	started, err := newWorkflowServiceClient().Run(cmd.Context(),
+	started, err := newWorkflowServiceClient(serverFlagsOf(cmd)).Run(cmd.Context(),
 		connect.NewRequest(&v1.RunRequest{Workflow: workflow}))
 	if err != nil {
 		return fmt.Errorf("starting %s: %w", workflow.GetName(), err)
@@ -218,7 +217,7 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 	plain, _ := cmd.Flags().GetBool("plain")
 
 	return watchRun(cmd.Context(), surface, format,
-		clientPoller{workflowID: workflowID},
+		clientPoller{workflowID: workflowID, server: serverFlagsOf(cmd)},
 		clampWatchInterval(interval), plain, workflowID, startedRun(started.Msg))
 }
 
@@ -291,7 +290,12 @@ func runServer(cmd *cobra.Command, args []string) error {
 	)
 
 	httpServer := &http.Server{
-		Addr:    flowstateAddress,
+		// Where this server *listens*, which was the same package variable a client
+		// used to decide where to *connect*. One default served both, so nothing
+		// broke — but they are different facts, and `flow server` never declared an
+		// --address flag, so the variable it shared could only ever hold the
+		// environment's value anyway. Read directly, which is what it meant.
+		Addr:    cmp.Or(os.Getenv("FLOWSTATE_ADDRESS"), defaultServerAddress),
 		Handler: serverHandler(verifier, broker, rpcMux),
 
 		// Without these a client that opens a connection and sends bytes
@@ -1094,18 +1098,7 @@ flow run local examples/approval-gate/workflow.yaml --signal deploy-approved='{"
 	serverCmds := append([]*cobra.Command{runCmd, getCmd, signalCmd, watchCmd}, lifecycleCmds...)
 
 	for _, c := range serverCmds {
-		c.Flags().StringVar(&flowstateAddress, "address", flowstateAddress,
-			"address of the Flowstate server (overrides FLOWSTATE_ADDRESS); "+
-				"an explicit https:// scheme is honored")
-
-		// A path, never the token. A credential in argv is a credential in `ps`
-		// and in shell history — and the file form is the one federated identity
-		// arrives in anyway, since Kubernetes projects a service account token to
-		// a path and rotates it there. Read per request for that reason.
-		c.Flags().StringVar(&tokenFilePath, "token-file", tokenFilePath,
-			"file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); "+
-				"re-read per request, so a rotating token keeps working. "+
-				"Without it, FLOWSTATE_TOKEN is used, and neither means anonymous")
+		addServerFlags(c)
 	}
 	signalCmd.Flags().String("run-id", "",
 		"pin the signal to one run of the workload; unset addresses whichever run is current, "+
