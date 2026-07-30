@@ -83,12 +83,37 @@ func rootedResponseExpr(src string) (string, bool, error) {
 // obvious — offsets are verified to hold the identifier they claim to before anything
 // is written, and splices are applied from the back so each offset still addresses the
 // text it was measured against. A second copy would have one of those subtly wrong.
+//
+// # Free, and what decides that
+//
+// "Free" is the load-bearing word, and it is decided entirely by which macros the
+// parser knows. A macro's bound variable is an identifier in the source and *not* a
+// free one — `[3,1,2].sortBy(name, name)` binds `name` — and the only thing that
+// tells this walk so is the expansion, which turns it into a comprehension variable
+// the walk does not reach.
+//
+// So a parser missing a macro makes this rewriter wrong rather than merely limited.
+// It parsed against a bare environment, which knows cel-go's standard macros and
+// none of the profile's, so `filter` was safe and `sortBy` was not: a file with a
+// step called `name` and `sortBy(name, name)` beside it was rewritten to
+// `sortBy(steps.name, steps.name)`, which is not a macro invocation at all. `flow
+// fix` corrupting a valid file is the worst thing in this package, because the whole
+// promise of the command is that it is safe to run on anything.
+//
+// The profile's environment, therefore — the same one the compiler parses with. The
+// two have to agree about what a macro is, or one of them is rewriting a language
+// the other does not have.
 func rootedUnder(src, root string, names map[string]bool) (string, bool, error) {
 	if strings.TrimSpace(src) == "" {
 		return src, false, nil
 	}
 
-	env, err := cel.NewEnv()
+	libs, err := v1.ProfileLibraries(v1.CurrentProfile)
+	if err != nil {
+		return "", false, err
+	}
+
+	env, err := v1.DefaultEvaluator().Env(libs...)
 	if err != nil {
 		return "", false, err
 	}

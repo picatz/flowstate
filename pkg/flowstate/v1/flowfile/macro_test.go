@@ -221,6 +221,76 @@ func TestAMacroSurvivesBeingWrittenBackToSource(t *testing.T) {
 	}
 }
 
+// TestFixLeavesAMacrosBoundVariableAlone is the case that made this a corruption bug
+// rather than a missing feature.
+//
+// `flow fix` roots a bare step reference under `steps.`, and it decides what is a
+// *free* identifier by parsing the expression. A macro's bound variable is not free —
+// `[3,1,2].sortBy(name, name)` binds `name` — but only a parser that knows the macro
+// can tell, because knowing means expanding it into a comprehension whose variable
+// the rewriter's walk never reaches.
+//
+// The rewriter parsed against a bare environment, so it knew cel-go's standard macros
+// and none of the profile's. With a step called `name` beside it, `sortBy(name, name)`
+// was rewritten to `sortBy(steps.name, steps.name)` — which is not a macro invocation
+// at all, so a command whose entire promise is that it is safe to run turned a valid
+// file into one that does not compile.
+//
+// `filter` is here as the control. It was always safe, because it is a standard macro,
+// and that difference is the whole shape of the bug: the two behaved differently for
+// no reason visible in either expression.
+//
+// Found by review on the change that made profile macros work — which is what made it
+// reachable, since until then nobody could write one that ran.
+func TestFixLeavesAMacrosBoundVariableAlone(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name string
+		expr string
+	}{
+		{name: "a profile macro", expr: `['zeta', 'alpha'].sortBy(name, name)[0]`},
+		{name: "a standard macro", expr: `['zeta', 'alpha'].filter(name, name > 'a')[0]`},
+		{name: "a two-variable comprehension", expr: `['zeta'].transformList(i, name, name)[0]`},
+		{name: "a binding", expr: `cel.bind(name, 'x', name)`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			// A step whose id is exactly the name the macro binds. That collision is
+			// legal — a step is `steps.<id>` and a bound name is bare, so the two do
+			// not share a namespace — and it is what the rewriter has to get right.
+			src := strings.Join([]string{
+				"edition: v2026.2",
+				"name: collide",
+				"steps:",
+				"  - id: name",
+				"    log:",
+				"      message: placeholder",
+				"  - id: pick",
+				"    log:",
+				`      message: "${` + test.expr + `}"`,
+				"",
+			}, "\n")
+
+			fixed, err := flowfile.Fix([]byte(src))
+			require.NoError(t, err)
+
+			assert.Equal(t, src, string(fixed.Source),
+				"`flow fix` rewrote a macro's bound variable into a step reference")
+
+			// And the result is still a file, which is the claim the command makes.
+			// Asserted separately because a rewrite that produced something merely
+			// different from the source would fail the check above without saying
+			// whether it had broken anything.
+			wf, err := flowfile.Unmarshal(fixed.Source)
+			require.NoError(t, err, "what `flow fix` wrote no longer compiles:\n%s", fixed.Source)
+			require.Empty(t, flowfile.Validate(wf).Err(),
+				"what `flow fix` wrote no longer validates:\n%s", fixed.Source)
+		})
+	}
+}
+
 // flowfileAsserting wraps an expression in the smallest file whose *outcome* says
 // what the expression evaluated to.
 //
