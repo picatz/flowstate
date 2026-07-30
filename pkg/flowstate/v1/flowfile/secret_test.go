@@ -132,7 +132,8 @@ func TestSecretReferenceRejected(t *testing.T) {
 		},
 		{
 			name: "in a loop's items",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     for_each:
@@ -207,7 +208,8 @@ steps:
 // expression is reported at the call rather than at the start of the value, since
 // the whole point of catching this at compile time is being able to point at it.
 func TestSecretReferenceReportsPosition(t *testing.T) {
-	src := `name: t
+	src := `edition: v2026.2
+name: t
 steps:
   - id: a
     http:
@@ -229,8 +231,8 @@ steps:
 
 	// `secret` begins at column 27 of line 6: the expression source starts at
 	// column 15, and `'Bearer ' + ` is twelve characters.
-	if ds[0].Line != 6 || ds[0].Column != 27 {
-		t.Errorf("position = %d:%d, want 6:27\nreported: %s", ds[0].Line, ds[0].Column, ds[0].Error())
+	if ds[0].Line != 7 || ds[0].Column != 27 {
+		t.Errorf("position = %d:%d, want 7:27\nreported: %s", ds[0].Line, ds[0].Column, ds[0].Error())
 	}
 	if ds[0].Step != "a" || ds[0].Field != "auth" {
 		t.Errorf("diagnostic names step %q input %q, want \"a\" and \"auth\"", ds[0].Step, ds[0].Field)
@@ -241,7 +243,8 @@ steps:
 // TestSecretMarkerIsOnlyACall pins that the marker is a call and nothing else, so a
 // step or an output named `secret` keeps working.
 func TestSecretMarkerIsOnlyACall(t *testing.T) {
-	src := `name: t
+	src := `edition: v2026.2
+name: t
 steps:
   - id: secret
     echo:
@@ -271,7 +274,8 @@ steps:
 // TestSecretReferenceValidates covers the whole authoring path, which is what the
 // bug was really about: `flow validate` reported "ok" and the run failed.
 func TestSecretReferenceValidates(t *testing.T) {
-	good := []byte(`name: uses-a-secret
+	good := []byte(`edition: v2026.2
+name: uses-a-secret
 steps:
   - id: notify
     http:
@@ -287,7 +291,8 @@ steps:
 		t.Fatalf("expected no diagnostics, got:\n%s", ds.Error())
 	}
 
-	bad := []byte(`name: broken-secret
+	bad := []byte(`edition: v2026.2
+name: broken-secret
 steps:
   - id: notify
     http:

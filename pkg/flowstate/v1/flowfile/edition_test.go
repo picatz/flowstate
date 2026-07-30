@@ -47,7 +47,7 @@ func TestEditionAcceptsTheCurrentGrammar(t *testing.T) {
 func TestEditionIsOptional(t *testing.T) {
 	t.Parallel()
 
-	ds, err := flowfile.ValidateSource([]byte("name: t\nsteps:\n  - id: a\n    echo:\n      message: hi\n"))
+	ds, err := flowfile.ValidateSource([]byte("edition: v2026.2\nname: t\nsteps:\n  - id: a\n    echo:\n      message: hi\n"))
 	require.NoError(t, err)
 	assert.Empty(t, ds)
 }

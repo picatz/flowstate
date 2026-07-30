@@ -48,6 +48,7 @@ func ExampleMarshal() {
 
 	fmt.Println(string(b))
 	// Output:
+	// edition: v2026.2
 	// name: hello
 	// steps:
 	// - id: a
@@ -60,6 +61,7 @@ func ExampleMarshal() {
 
 func ExampleUnmarshal() {
 	inputYAML := `
+edition: v2026.2
 name: hello
 steps:
   - id: a
@@ -82,6 +84,7 @@ steps:
 
 func TestFlowFileRoundTrip(t *testing.T) {
 	inputYAML := `
+edition: v2026.2
 name: hello
 steps:
   - id: a
@@ -111,6 +114,7 @@ steps:
 
 func TestFlowfile_MapWithExprValues(t *testing.T) {
 	data := []byte(`
+edition: v2026.2
 name: http-with-headers
 steps:
   - id: web
@@ -131,6 +135,7 @@ steps:
 
 func TestFlowfile_ListWithExprValues(t *testing.T) {
 	data := []byte(`
+edition: v2026.2
 name: list-exprs
 steps:
   - id: s
@@ -149,6 +154,7 @@ steps:
 
 	// all-literal list remains literal
 	data2 := []byte(`
+edition: v2026.2
 name: list-literals
 steps:
   - id: s
@@ -175,7 +181,8 @@ steps:
 func FuzzRoundTrip(f *testing.F) {
 	for _, seed := range []string{
 		// A basic case to start with.
-		`name: hello
+		`edition: v2026.2
+name: hello
 steps:
 - id: a
   echo:
@@ -185,7 +192,8 @@ steps:
     message: ${a.result}
 `,
 		// Conditions and policy, in both the fenced and bare spellings.
-		`name: policy
+		`edition: v2026.2
+name: policy
 description: ""
 steps:
 - id: a
@@ -206,7 +214,8 @@ steps:
     message: ""
 `,
 		// Nested control flow, including a loop inside a branch.
-		`name: control
+		`edition: v2026.2
+name: control
 steps:
 - id: loop
   for_each:
@@ -234,7 +243,8 @@ steps:
 `,
 		// Structures, expressions inside them, and the zero values the engine
 		// relies on surviving.
-		`name: shapes
+		`edition: v2026.2
+name: shapes
 steps:
 - id: a
   http:

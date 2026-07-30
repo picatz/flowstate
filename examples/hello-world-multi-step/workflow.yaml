@@ -1,3 +1,4 @@
+edition: v2026.2
 name: simple-multi-step
 steps:
 - id: a

@@ -40,7 +40,7 @@ func TestMergeExpansionIsBounded(t *testing.T) {
 	const keys, steps = 800, 800
 
 	var b strings.Builder
-	b.WriteString("name: bomb\nsteps:\n")
+	b.WriteString("edition: v2026.2\nname: bomb\nsteps:\n")
 	for d := range steps {
 		b.WriteString("  - id: s" + strconv.Itoa(d) + "\n")
 		b.WriteString("    <<: *base\n")
@@ -92,7 +92,8 @@ func TestMergeExpansionWithinTheBoundStillWorks(t *testing.T) {
 	// The anchor is on a step, because a Flowfile has nowhere else to put one: a
 	// top-level key added purely to hold an anchor is an unknown key, and reported
 	// as one. So boilerplate is shared by anchoring the first step that carries it.
-	src := `name: shared
+	src := `edition: v2026.2
+name: shared
 steps:
   - &policy
     id: a
@@ -131,7 +132,8 @@ steps:
 func TestWrittenKeysWinOverMergedOnes(t *testing.T) {
 	t.Parallel()
 
-	src := `name: shared
+	src := `edition: v2026.2
+name: shared
 steps:
   - &policy
     id: base
@@ -178,13 +180,15 @@ func TestNothingMayBeCalledSteps(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]string{
-		"a top-level step": `name: t
+		"a top-level step": `edition: v2026.2
+name: t
 steps:
   - id: steps
     echo:
       message: hi
 `,
-		"a step inside a loop body": `name: t
+		"a step inside a loop body": `edition: v2026.2
+name: t
 steps:
   - id: a
     for_each:
@@ -194,7 +198,8 @@ steps:
           echo:
             message: hi
 `,
-		"a step inside a parallel branch": `name: t
+		"a step inside a parallel branch": `edition: v2026.2
+name: t
 steps:
   - id: a
     parallel:
@@ -206,7 +211,8 @@ steps:
 		// The other route into a body's scope. A bound name wins over the scope it
 		// is bound into, so this hides every step from exactly the place rooted
 		// references are written.
-		"a loop iterator": `name: t
+		"a loop iterator": `edition: v2026.2
+name: t
 steps:
   - id: a
     for_each:
@@ -241,7 +247,8 @@ steps:
 func TestAStepCalledStepsWouldHaveFailedAtRunTime(t *testing.T) {
 	t.Parallel()
 
-	src := `name: shadowed-root
+	src := `edition: v2026.2
+name: shadowed-root
 steps:
   - id: steps
     echo:

@@ -401,9 +401,8 @@ func (c *compiler) compile(file *ast.File) *v1.Workflow {
 	// file claims. Reporting those alongside would bury the one diagnostic that
 	// explains all the rest.
 	//
-	// Absent means the current edition. Requiring it would put a line of ceremony
-	// at the top of every file to say the only thing it can currently say, and a
-	// file that does not care which grammar it is in is the common case.
+	// Required, because absent is not a default but a promise to reinterpret — see
+	// [missingEdition]. `flow fix` writes it, so the ceremony is not an author's.
 	if !c.checkDeclaredEdition(entries) {
 		return nil
 	}
@@ -503,6 +502,21 @@ func (c *compiler) checkDeclaredEdition(entries []entry) bool {
 		}
 		return true
 	}
+
+	// Reported against the document rather than against a position, because there is
+	// nothing in the source to point at: the key was never written. The message says
+	// where it goes and what to write there.
+	c.report(Span{}, ref{path: "edition", label: "edition"}, "%s", missingEdition())
+
+	// Reported, and then compiled anyway — unlike a *declared* edition this build does
+	// not know.
+	//
+	// The abort exists because a file claiming another grammar makes every other
+	// diagnostic describe the wrong language: `nonsense:` is an unknown key here and
+	// might be a perfectly good key there. A file that declares nothing is not that. It
+	// is almost always this grammar with a line missing, so the rest of what is wrong
+	// with it is worth reading — and stopping would answer "you forgot a line" to
+	// someone whose file has four other problems, one ceremonial diagnostic at a time.
 	return true
 }
 

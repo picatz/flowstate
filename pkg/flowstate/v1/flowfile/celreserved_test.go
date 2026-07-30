@@ -160,7 +160,7 @@ func TestMostReservedWordsBecameLegalStepIDs(t *testing.T) {
 
 	// And one of them, end to end, because a count is not a step anyone can write.
 	ds, err := ValidateSource([]byte(
-		"name: t\nsteps:\n  - id: loop\n    echo:\n      message: hi\n" +
+		"edition: v2026.2\nname: t\nsteps:\n  - id: loop\n    echo:\n      message: hi\n" +
 			"  - id: after\n    echo:\n      message: ${steps.loop.result}\n"))
 	require.NoError(t, err)
 	assert.Empty(t, ds, "a step called `loop` must be usable now")
@@ -172,7 +172,7 @@ func TestUnusableStepIDIsReportedOnTheID(t *testing.T) {
 
 	for _, word := range celUnusableStepIDs {
 		ds, err := ValidateSource([]byte(
-			"name: t\nsteps:\n  - id: \"" + word + "\"\n    echo:\n      message: hi\n"))
+			"edition: v2026.2\nname: t\nsteps:\n  - id: \"" + word + "\"\n    echo:\n      message: hi\n"))
 		require.NoError(t, err)
 		require.NotEmpty(t, ds, "a step called %q must be refused", word)
 

@@ -569,6 +569,49 @@ steps:
       message: ${'hello %s, you have %d step(s) left'.format([vars.name, 0])}
 ```
 
+### `edition:` is required, and v-prefixed *(landed)*
+
+Both halves reverse a decision this document recorded, and both were reversed by
+evidence rather than by taste.
+
+**Optional became required.** The reasoning for optional was good: a line of ceremony at
+the top of every file to say the only thing it could say, when a file that does not care
+which grammar it is in is the common case. What it missed is that "absent means current"
+is not a default — it is a promise to *reinterpret*. This edition renamed `iterator:` to
+`as:` and rooted the http response. A file written last month with no marker is not a
+file that does not care; it is a file written in the older grammar, and reading it as
+this one is precisely the silent reinterpretation `edition:` was introduced to prevent.
+The optional spelling made the mechanism unable to do its job for exactly the files most
+likely to need it.
+
+The ceremony is not an author's problem, because `flow fix` writes the line — below any
+header comment, since a comment block at the top is about the file and a key inserted
+above it would read as describing the edition.
+
+**Unprefixed became v-prefixed.** A date with one dot is a YAML *float*, so `2026.1`
+arrives as a number. The workaround — reading the token's source text rather than
+converting — exists because converting is quietly wrong (2026.10 and 2026.1 are the same
+float, so the tenth edition of a year would compile as the first) and refusing teaches an
+author to quote a value for a reason no other key has. A `v` makes it a string in every
+YAML parser. The workaround stays only for reading `2026.1`, and goes when that edition
+does.
+
+Two consequences worth stating.
+
+A *missing* marker is reported and then the file is compiled anyway, unlike a *declared*
+edition this build does not know. The abort exists because a file claiming another
+grammar makes every other diagnostic describe the wrong language; a file that declares
+nothing is not that. It is almost always this grammar with a line missing, so the rest of
+what is wrong with it is worth reading rather than being hidden behind one ceremonial
+sentence.
+
+And `Marshal` writes the marker. The schema has no field for an edition and should not
+grow one — it is a property of a *file* — but a document without one is a document this
+build refuses, and Marshal's contract is that its output reads back as the same workflow.
+It writes the current edition, which is not a guess: this build compiles one grammar.
+Omitting it would leave whoever writes `flow fmt` with a formatter that quietly
+invalidates every file it touches.
+
 ### `vars:`, and the shadowing rule that ships with it *(landed)*
 
 `vars` lands in the positions already planned, and the scope rules land in the same

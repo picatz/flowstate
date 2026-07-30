@@ -13,6 +13,20 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 )
 
+// editionSuffix is the `edition:` marker these fixtures carry, written *last*.
+//
+// Unique to this package, and deliberate. A real file writes the marker first, and the
+// examples in `examples/` do — but these tests assert (line, character) coordinates
+// against their own fixtures, and a key added at the top renumbers every one of them.
+// YAML does not care where a top-level key sits, so putting it at the end keeps each
+// fixture's own geometry while still making it a document this build compiles.
+//
+// One exception, and it is not a matter of taste. A step's range runs to the line before
+// the next step's dash, and the last step's end is walked back over *blank* lines only —
+// so a top-level key written after the steps extends the last step past its own content.
+// A fixture that asserts where the last step ends must write the marker above instead.
+const editionSuffix = "edition: v2026.2\n"
+
 // TestDSLKeysMatchTheDSL is the guard on the one list in this package that is not
 // derived from a central definition.
 //
@@ -139,11 +153,12 @@ func TestDSLKeysMatchTheDSL(t *testing.T) {
 	// appear in the rendered document, and a vocabulary derived from Marshal alone
 	// would report the key as one the language dropped when nothing was dropped.
 	//
-	// The declaration is therefore added to the document under test, and proved
-	// rather than assumed: the compiler refuses an unknown document key, so a
-	// grammar that stopped accepting `edition:` fails here, which is exactly the
-	// service the stale check performs for every other key.
-	source := "edition: " + flowfile.CurrentEdition + "\n" + string(rendered)
+	// Marshal writes the declaration itself now that one is required, so the document
+	// under test already carries it — and that is proved rather than assumed below:
+	// the compiler refuses an unknown document key, so a grammar that stopped
+	// accepting `edition:` fails here, which is exactly the service the stale check
+	// performs for every other key.
+	source := string(rendered)
 	_, err = flowfile.Unmarshal([]byte(source))
 	require.NoError(t, err, "the DSL must accept the document this table is compared against:\n%s", source)
 
@@ -273,6 +288,7 @@ steps:
     if: ${steps.web.status_code == 200}
     echo:
       message: ok
+edition: v2026.2
 `
 	c := newClient(t)
 	c.initialize()
@@ -326,6 +342,7 @@ steps:
   - id: later
     echo:
       message: hi
+edition: v2026.2
 `
 		params := c.open("file:///cond-fwd.yaml", forward)
 		require.Len(t, params.Diagnostics, 1, "got %v", messages(params.Diagnostics))
@@ -344,6 +361,7 @@ steps:
       url: https://example.com
   - id: guarded
     if: ${PLACEHOLDER
+edition: v2026.2
 `
 		for _, tt := range []struct {
 			name  string
@@ -380,7 +398,8 @@ steps:
 func TestWaitUntilIsFirstClass(t *testing.T) {
 	t.Parallel()
 
-	const src = `name: waits
+	const src = `edition: v2026.2
+name: waits
 steps:
   - id: embargo
     cel:
@@ -443,6 +462,7 @@ steps:
             message: hi
   - id: hold
     wait_until: ${steps.inner.result}
+edition: v2026.2
 `
 		const leakyURI = "file:///leaky-wait.yaml"
 		params := c.open(leakyURI, leaky)
@@ -463,6 +483,7 @@ steps:
   - id: later
     echo:
       message: hi
+edition: v2026.2
 `
 		params := c.open("file:///fwd-wait.yaml", forward)
 		require.Len(t, params.Diagnostics, 1, "got %v", messages(params.Diagnostics))
@@ -515,7 +536,7 @@ func TestWaitUntilSyntaxErrorLandsOnTheOffendingCharacter(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			src := "name: broken-wait\nsteps:\n  - id: hold\n    wait_until: " + tt.wait + "\n"
+			src := "name: broken-wait\nsteps:\n  - id: hold\n    wait_until: " + tt.wait + "\n" + editionSuffix
 			uri := "file:///broken-wait-" + strings.ReplaceAll(tt.name, " ", "-") + ".yaml"
 			params := c.open(uri, src)
 
@@ -558,6 +579,7 @@ steps:
   - id: a
     echo:
       message: ${now}
+edition: v2026.2
 `
 	c := newClient(t)
 	c.initialize()
@@ -596,6 +618,7 @@ steps:
 steps:
   - id: window
     wait_until: ${now}
+edition: v2026.2
 `
 		const boundURI = "file:///one-account.yaml"
 		require.Empty(t, messages(c.open(boundURI, bound).Diagnostics),
@@ -630,7 +653,8 @@ func TestWaitKeysAreDocumentedAtTheirOwnLevel(t *testing.T) {
 	// The step-level `timeout:` sits on the task step, because a waiting step may
 	// not carry one — the validator says so, and a fixture that ignored it would
 	// be testing hover against a document `flow validate` refuses.
-	const src = `name: waits
+	const src = `edition: v2026.2
+name: waits
 steps:
   - id: fetch
     timeout: 1m
@@ -728,6 +752,7 @@ steps:
           - id: left
             http:
               method: GET
+edition: v2026.2
 `
 	c := newClient(t)
 	c.initialize()
@@ -855,6 +880,7 @@ steps:
   - id: after
     echo:
       message: PLACEHOLDER_AFTER
+edition: v2026.2
 `
 
 	tests := []struct {
@@ -984,6 +1010,7 @@ steps:
   - id: after
     echo:
       message: ${steps.inner.result}
+edition: v2026.2
 `
 	c := newClient(t)
 	c.initialize()
@@ -1015,6 +1042,7 @@ steps:
         - id: body
           echo:
             message: ${target}
+edition: v2026.2
 `
 	c := newClient(t)
 	c.initialize()
@@ -1047,6 +1075,7 @@ steps:
       method: GET
       url: https://example.com/json
       outputs: "${ {'status': status_code, 'title': body} }"
+edition: v2026.2
 `
 	c := newClient(t)
 	c.initialize()
@@ -1105,7 +1134,7 @@ func TestDurationsAreChecked(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			src := "name: durations\nsteps:\n  - id: a\n" + tt.policy +
-				"    echo:\n      message: hi\n"
+				"    echo:\n      message: hi\n" + editionSuffix
 			uri := "file:///duration-" + strings.ReplaceAll(tt.name, " ", "-") + ".yaml"
 			params := c.open(uri, src)
 

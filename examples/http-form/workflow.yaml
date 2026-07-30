@@ -4,6 +4,7 @@
 #
 # Like `json`, it is mutually exclusive with the other two body inputs. Unlike
 # `body`, the encoding and the header are handled rather than left to the author.
+edition: v2026.2
 name: http-form
 steps:
   - id: token

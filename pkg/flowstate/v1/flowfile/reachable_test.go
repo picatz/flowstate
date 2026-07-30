@@ -237,7 +237,7 @@ func TestNowResolvesInAWaitUntil(t *testing.T) {
 	t.Parallel()
 
 	workflow, err := flowfile.Unmarshal([]byte(
-		"name: t\nsteps:\n  - id: hold\n    wait_until: ${now + days(1)}\n"))
+		"edition: v2026.2\nname: t\nsteps:\n  - id: hold\n    wait_until: ${now + days(1)}\n"))
 	require.NoError(t, err)
 
 	require.Empty(t, flowfile.Validate(workflow),
@@ -249,7 +249,7 @@ func TestNowInATaskInputSaysWhereItIsAvailable(t *testing.T) {
 	t.Parallel()
 
 	workflow, err := flowfile.Unmarshal([]byte(
-		"name: t\nsteps:\n  - id: report\n    echo:\n      message: ${now}\n"))
+		"edition: v2026.2\nname: t\nsteps:\n  - id: report\n    echo:\n      message: ${now}\n"))
 	require.NoError(t, err)
 
 	diagnostics := flowfile.Validate(workflow)
@@ -276,7 +276,7 @@ func TestNowInATaskInputSaysWhereItIsAvailable(t *testing.T) {
 func TestAStepNamedNowNoLongerNeedsRefusing(t *testing.T) {
 	t.Parallel()
 
-	source := "name: t\nsteps:\n" +
+	source := "edition: v2026.2\nname: t\nsteps:\n" +
 		"  - id: now\n    echo:\n      message: hi\n" +
 		"  - id: hold\n    wait_until: ${now + days(1)}\n" +
 		"  - id: read\n    echo:\n      message: ${steps.now.result}\n"

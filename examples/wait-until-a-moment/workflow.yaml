@@ -1,3 +1,4 @@
+edition: v2026.2
 name: wait-until-a-moment
 description: Holds a workload until a moment it computes, rather than for a fixed delay.
 

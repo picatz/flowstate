@@ -830,10 +830,23 @@ without guessing, such as a task written in flow style or standing behind a YAML
 is reported with its position and left alone rather than mangled. `flow fix --check`
 writes nothing and exits non-zero if there is work, which is the form CI runs.
 
-A file may also name the grammar it is written in with a top-level `edition:`. It is
-optional and most files leave it out, since absent means the current one. What writing it
-buys is a *refusal*: a build that does not have that grammar says so instead of reading
-the file as something else, which is what makes retiring a spelling safe to do at all.
+Every file names the grammar it is written in with a top-level `edition:`:
+
+```yaml
+edition: v2026.2
+name: deploy
+```
+
+What it buys is a *refusal*: a build that does not have that grammar says so instead of
+reading the file as something else, which is what makes retiring a spelling safe to do at
+all. It used to be optional, and that turned out to be the one thing it could not afford
+to be — "absent means current" is not a default but a promise to reinterpret, so a file
+written before a sweep would silently change meaning rather than be refused. `flow fix`
+writes the line, below any header comment, so the ceremony is not yours.
+
+It is not a compatibility switch. A build compiles one grammar; declaring an older
+edition is a file `flow fix` can bring forward, and declaring a newer one means upgrading
+`flow` rather than editing the file.
 
 List what workflows can use:
 

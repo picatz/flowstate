@@ -26,7 +26,7 @@ import (
 func waitUntil(t *testing.T, expression string) *v1.Value {
 	t.Helper()
 
-	source := "name: t\nsteps:\n  - id: hold\n    wait_until: " + expression + "\n"
+	source := "edition: v2026.2\nname: t\nsteps:\n  - id: hold\n    wait_until: " + expression + "\n"
 
 	workflow, err := flowfile.Unmarshal([]byte(source))
 	require.NoError(t, err, "the expression did not compile")
@@ -132,7 +132,7 @@ func TestWaitDeadlineStillTakesAMomentFromData(t *testing.T) {
 func TestAStepMayBeCalledNow(t *testing.T) {
 	t.Parallel()
 
-	source := "name: t\nsteps:\n" +
+	source := "edition: v2026.2\nname: t\nsteps:\n" +
 		"  - id: now\n    cel:\n      expr: \"'2001-01-01T00:00:00Z'\"\n" +
 		"  - id: hold\n    wait_until: ${now}\n"
 
@@ -187,7 +187,7 @@ func TestWaitDeadlineNowDoesNotShadowALoopIterator(t *testing.T) {
 
 	// Which is why the name cannot be chosen. Without this the workflow above is
 	// authorable, and the only symptom is a wait that ends at the wrong moment.
-	source := "name: t\nsteps:\n" +
+	source := "edition: v2026.2\nname: t\nsteps:\n" +
 		"  - id: targets\n    cel:\n      expr: \"['a']\"\n" +
 		"  - id: sweep\n    for_each:\n      items: ${steps.targets.result}\n      as: now\n" +
 		"      steps:\n        - id: hold\n          wait_until: ${now}\n"

@@ -42,6 +42,7 @@ steps:
   - id: second
     echo:
       message: ${steps.first.result}
+edition: v2026.2
 `,
 		},
 		{
@@ -50,7 +51,7 @@ steps:
 			// the document stops parsing at the tab — but it is spelled in the
 			// grammar the DSL has, so nobody reads this fixture as evidence that
 			// `task:` is still a step key.
-			src: "name: broken\nsteps:\n  - id: a\n  \techo: hi\n",
+			src: "name: broken\nsteps:\n  - id: a\n  \techo: hi\n" + editionSuffix,
 			want: []want{{
 				code:       codeYAMLSyntax,
 				severity:   lsp.Error,
@@ -60,7 +61,7 @@ steps:
 		},
 		{
 			name: "unterminated flow sequence",
-			src:  "name: broken\nsteps: [\n",
+			src:  "name: broken\nsteps: [\n" + editionSuffix,
 			want: []want{{
 				code:     codeYAMLSyntax,
 				severity: lsp.Error,
@@ -74,6 +75,7 @@ steps:
   - id: a
     echo:
       message: ${a b}
+edition: v2026.2
 `,
 			// The compiler cannot produce a workflow from a document with an
 			// unparseable expression, so its own validation never runs. The
@@ -93,6 +95,7 @@ steps:
   - id: a
     cel:
       expr: "1 + + 2"
+edition: v2026.2
 `,
 			want: []want{{
 				code:       codeCELSyntax,
@@ -108,6 +111,7 @@ steps:
   - id: a
     shell:
       command: ls
+edition: v2026.2
 `,
 			want: []want{{
 				code:       codeFlowfile,
@@ -123,6 +127,7 @@ steps:
   - id: a
     echo:
       mesage: hello
+edition: v2026.2
 `,
 			// Reported by the shared validator, so `flow validate` refuses the
 			// workflow too — a misspelled input is silently ignored at run time,
@@ -143,6 +148,7 @@ steps:
   - id: a
     http:
       method: GET
+edition: v2026.2
 `,
 			want: []want{{
 				code:     codeFlowfile,
@@ -157,6 +163,7 @@ steps:
   - id: a
     echo:
       message: [1, 2]
+edition: v2026.2
 `,
 			// Here the key is fine and the value is not, so the range moves to the
 			// value. Which of the two is at fault comes from the schema.
@@ -172,6 +179,7 @@ steps:
 			src: `name: notask
 steps:
   - id: a
+edition: v2026.2
 `,
 			// Reported by the shared validator, not here: a rule about what a
 			// step must be belongs with the compiler that enforces it. Only the
@@ -195,6 +203,7 @@ steps:
           - id: b
             echo:
               message: hi
+edition: v2026.2
 `,
 			want: []want{{
 				code:     codeFlowfile,
@@ -220,6 +229,7 @@ steps:
         - id: body
           echo:
             message: ${one}
+edition: v2026.2
 `,
 		},
 		{
@@ -232,6 +242,7 @@ steps:
   - id: b
     echo:
       message: hi
+edition: v2026.2
 `,
 			want: []want{{
 				code:       codeFlowfile,
@@ -250,6 +261,7 @@ steps:
   - id: a
     echo:
       message: two
+edition: v2026.2
 `,
 			want: []want{{
 				code:       codeFlowfile,
@@ -273,6 +285,7 @@ steps:
       expr: vars.greeting
       vars:
         greeting: ${steps.a.result}
+edition: v2026.2
 `,
 		},
 		{
@@ -286,6 +299,7 @@ steps:
   - id: a
     echo:
       message: "cost is ${ ] not cel} dollars"
+edition: v2026.2
 `,
 			want: []want{{
 				code:       codeFlowfile,
@@ -301,6 +315,7 @@ steps:
   - id: a
     echo:
       message: "cost is 5 dollars"
+edition: v2026.2
 `,
 		},
 		{
@@ -317,6 +332,7 @@ steps:
 steps:
   - echo:
       message: hello
+edition: v2026.2
 `,
 			want: []want{{
 				code:       codeFlowfile,
@@ -327,7 +343,8 @@ steps:
 		},
 		{
 			name: "workflow with no name",
-			src: `steps:
+			src: `edition: v2026.2
+steps:
   - id: a
     echo:
       message: hello
@@ -340,7 +357,7 @@ steps:
 		},
 		{
 			name: "workflow with no steps",
-			src:  "name: empty\n",
+			src:  "name: empty\n" + editionSuffix,
 			want: []want{{
 				code:     codeFlowfile,
 				severity: lsp.Error,
@@ -390,12 +407,14 @@ steps:
   - id: a
     shell:
       message: hello
+edition: v2026.2
 `
 	const fixed = `name: fix-me
 steps:
   - id: a
     echo:
       message: hello
+edition: v2026.2
 `
 
 	c := newClient(t)
@@ -455,6 +474,7 @@ steps:
   - id: a
     shell:
       message: hello
+edition: v2026.2
 `
 	c := newClient(t)
 	c.initialize()

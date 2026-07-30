@@ -128,6 +128,7 @@ func Fix(data []byte) (FixResult, error) {
 		f.expressions(doc.Body, stepIDs(doc.Body))
 	}
 	for _, doc := range file.Docs {
+		f.collectAnchors(doc.Body)
 		f.workflow(doc.Body)
 	}
 	if len(f.changes) > 0 {
@@ -174,6 +175,10 @@ type fixer struct {
 	// substituted records that a line was rewritten in place, which the edit map
 	// does not capture and which still means the document changed.
 	substituted bool
+
+	// anchors maps an anchor's name to what it holds, so a merge key's alias can be
+	// followed. See [fixer.mergedDeclaresEdition].
+	anchors map[string]ast.Node
 }
 
 // A lineEdit replaces a run of source lines with new text.
@@ -250,18 +255,153 @@ func (f *fixer) workflow(n ast.Node) {
 			return
 		}
 	}
+	declared := false
 	for _, v := range mapping.Values {
 		name, ok := keyNameOf(v.Key)
 		if !ok {
+			// A merge key names nothing itself and brings in whatever it points at —
+			// which may include an edition. Not looking was a way to *downgrade* a
+			// file: with no direct `edition:` this stamped the current one in, and a
+			// direct key beats a merged one, so a document declaring a grammar this
+			// build refuses came back declaring one it compiles. Fail-closed, undone
+			// by the command that exists to keep files honest.
+			if f.mergedDeclaresEdition(v) {
+				declared = true
+			}
+
 			continue
 		}
 		switch name {
 		case "steps":
 			f.steps(v.Value)
 		case "edition":
+			declared = true
 			f.edition(v)
 		}
 	}
+
+	if !declared {
+		f.stampEdition(mapping)
+	}
+}
+
+// mergedDeclaresEdition reports whether a `<<:` entry brings an `edition:` with it.
+//
+// Only *whether*, not which. Bringing a merged edition forward would mean editing the
+// anchor it came from, which may be shared with other keys or other documents — so the
+// answer to finding one is to leave the file alone and let `flow validate` say what is
+// wrong with it. What this prevents is the rewriter deciding an edition is absent when
+// it is merely written somewhere this walk does not look.
+//
+// Every "cannot tell" answers *yes*. An alias it cannot read, an anchor it cannot find,
+// a merge of something that is not a mapping: each means the edition might be in there,
+// and the cost of being wrong runs one way only. Saying yes leaves a file unstamped and
+// an author told to write the line; saying no silently rewrites what a file declares.
+func (f *fixer) mergedDeclaresEdition(entry *ast.MappingValueNode) bool {
+	if _, isMerge := entry.Key.(*ast.MergeKeyNode); !isMerge {
+		return false
+	}
+
+	merged := unwrapAnchor(entry.Value)
+	if alias, isAlias := merged.(*ast.AliasNode); isAlias {
+		// An alias names an anchor; its own Value is that *name* rather than what the
+		// anchor holds, so it has to be resolved through the document.
+		name, ok := scalarText(alias.Value)
+		if !ok {
+			return true
+		}
+		anchored, known := f.anchors[name]
+		if !known {
+			return true
+		}
+		merged = unwrapAnchor(anchored)
+	}
+
+	mapping, ok := merged.(*ast.MappingNode)
+	if !ok {
+		return true
+	}
+	for _, v := range mapping.Values {
+		if name, ok := keyNameOf(v.Key); ok && name == "edition" {
+			return true
+		}
+	}
+
+	return false
+}
+
+// collectAnchors records every anchor in a document, so an alias can be resolved
+// wherever it appears.
+//
+// The compiler keeps its own map for the same reason; this one exists because the
+// rewriter walks the raw AST rather than the compiler's entries, and an alias is a
+// reference the raw AST does not follow.
+func (f *fixer) collectAnchors(n ast.Node) {
+	switch node := n.(type) {
+	case nil:
+		return
+	case *ast.AnchorNode:
+		if name, ok := scalarText(node.Name); ok {
+			if f.anchors == nil {
+				f.anchors = map[string]ast.Node{}
+			}
+			f.anchors[name] = node.Value
+		}
+		f.collectAnchors(node.Value)
+	case *ast.MappingNode:
+		for _, v := range node.Values {
+			f.collectAnchors(v)
+		}
+	case *ast.MappingValueNode:
+		f.collectAnchors(node.Key)
+		f.collectAnchors(node.Value)
+	case *ast.SequenceNode:
+		for _, v := range node.Values {
+			f.collectAnchors(v)
+		}
+	}
+}
+
+// stampEdition writes an `edition:` into a file that has none.
+//
+// # This reverses what the comment below used to say
+//
+// It used to be that only a written marker was updated, because "a file with no
+// `edition:` is a file that has not asked to be pinned, and stamping one in would be
+// the rewriter adding an opinion the author did not have."
+//
+// The opinion turned out to be the *absence*. Making the key required — see
+// [missingEdition] — means an unmarked file no longer says "any grammar"; it says
+// nothing, and this build refuses it. Declining to stamp would leave `flow fix` unable
+// to fix the one thing every pre-sweep file now needs, which is the failure the comment
+// above [fixer.edition] describes: a migration tool that does not migrate the thing
+// whose diagnostic names it.
+//
+// Written at the very top, above `name:`, because that is where an author writes it and
+// where a reader looks for it — a statement about the whole document belongs before the
+// document.
+func (f *fixer) stampEdition(mapping *ast.MappingNode) {
+	// Anchored on the first key rather than on line 1, so a file opening with a
+	// comment block keeps it above the marker. Prepending blindly would put the
+	// edition above a header comment that reads as being about the file.
+	if len(mapping.Values) == 0 {
+		return
+	}
+	span := spanOfNode(mapping.Values[0].Key)
+	if !span.IsValid() {
+		return
+	}
+
+	line := span.Start.Line
+	indent := strings.Repeat(" ", span.Start.Column-1)
+
+	// The first key's own line is replaced by two: the marker, then the line as it
+	// was. Inserting is not something the edit map can express — it replaces runs —
+	// and expressing it this way means the rest of the file is still copied through
+	// untouched.
+	f.record(line, line,
+		[]string{indent + "edition: " + CurrentEdition, f.line(line)},
+		"`edition: "+CurrentEdition+"` added, which is now required")
 }
 
 // edition brings a declared edition marker up to the current one.
@@ -295,13 +435,34 @@ func (f *fixer) edition(entry *ast.MappingValueNode) {
 	if !keySpan.IsValid() {
 		return
 	}
-	indent := strings.Repeat(" ", keySpan.Start.Column-1)
 	// The key's own line and no more. An edition is a scalar written beside its
 	// key, so taking the block under it would consume anything indented on the next
 	// line — a comment, most likely — and delete it while claiming to have updated
 	// a version number.
+	//
+	// And within that line, only the *scalar* is replaced: everything after it is
+	// copied through. Rebuilding the line from the key and the new value was losing a
+	// trailing comment — `edition: 2026.1 # pinned deliberately, see RFC-14` came back
+	// without the sentence explaining it. That path became reachable the moment
+	// `2026.1` turned into an edition this build actually upgrades, which is now.
+	//
+	// Written unquoted, matching what [fixer.stampEdition] writes. The quotes were
+	// there because an unprefixed `2026.1` is a YAML float and had to be forced to a
+	// string; a v-prefixed edition is a string already, so quoting it buys nothing and
+	// makes one command produce two spellings of the same value.
+	valueSpan := spanOfNode(entry.Value)
+	line := f.line(keySpan.Start.Line)
+	if !valueSpan.IsValid() || valueSpan.Start.Line != keySpan.Start.Line {
+		return
+	}
+
+	from, through := valueSpan.Start.Column-1, valueSpan.End.Column-1
+	if from < 0 || through > len(line) || from > through {
+		return
+	}
+
 	f.record(keySpan.Start.Line, keySpan.Start.Line,
-		[]string{indent + "edition: " + strconv.Quote(CurrentEdition)},
+		[]string{line[:from] + CurrentEdition + line[through:]},
 		fmt.Sprintf("edition %q updated to %q", declared, CurrentEdition))
 }
 
