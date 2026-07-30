@@ -7,6 +7,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"log/slog"
 	"net/http"
@@ -14,12 +15,13 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
-	"text/tabwriter"
 	"time"
 
+	"charm.land/lipgloss/v2"
 	"connectrpc.com/connect"
 	"connectrpc.com/otelconnect"
 	"connectrpc.com/validate"
+	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
@@ -705,36 +707,107 @@ func loadWorkflow(path string) (*v1.Workflow, error) {
 //
 // Required inputs are marked with `*` rather than only sorted first, because a
 // mark survives being piped, logged, and read by somebody who cannot see colour.
-func writeFields(tw *tabwriter.Writer, label string, fields []v1.InputField) {
-	for i, field := range fields {
-		name := field.Name
-		if field.Required {
-			name += "*"
-		}
+// Errors are returned rather than discarded, which the tabwriter this replaced did
+// by way of Flush. A full disk or a pipe that has gone away makes every write fail,
+// and a listing that stopped halfway while reporting success is worse than one that
+// says it could not finish.
+func writeFields(w io.Writer, theme ui.Theme, groups []fieldGroup) error {
+	// Laid out here rather than by tabwriter, which measures the bytes it is given.
+	// A styled cell is mostly escape sequences, so tabwriter counted them as width
+	// and every column after the first shifted — the terminal rendering came out
+	// visibly ragged while the piped one, being unstyled, looked fine. Widths are
+	// measured with lipgloss, which counts displayed columns, the same way the help
+	// page's own two-column lists are laid out.
+	const gutter = 2
 
-		// The label sits beside the first row and the rest align under it, so the
-		// eye reads down a column rather than hunting for where one list ends.
-		heading := ""
-		if i == 0 {
-			heading = label
+	var labels, names int
+	for _, group := range groups {
+		if len(group.fields) > 0 {
+			labels = max(labels, lipgloss.Width(group.label))
 		}
-
-		note := ""
-		if field.Deferred {
-			// Worth saying, because it changes what an author may write here. The
-			// engine resolves an expression before scheduling the step; these the
-			// task evaluates itself, against a scope the workflow does not have —
-			// which is why `http`'s `outputs` can name `status_code` and an
-			// ordinary input cannot.
-			note = "\tthe task evaluates this itself, in its own scope"
+		for _, field := range group.fields {
+			names = max(names, lipgloss.Width(fieldName(field)))
 		}
-
-		fmt.Fprintf(tw, "  %s\t%s\t%s%s\n", heading, name, field.Type, note)
 	}
+
+	for _, group := range groups {
+		for i, field := range group.fields {
+			// The label sits beside the first row and the rest align under it, so
+			// the eye reads down a column rather than hunting for where one list
+			// ends.
+			// Only the first row of a group carries the label, and an empty one is
+			// left unstyled: rendering "" through a style emits escape sequences
+			// around nothing, which a terminal ignores and a reader of the raw
+			// bytes has to skip past.
+			label, styledLabel := "", ""
+			if i == 0 {
+				label = group.label
+				styledLabel = theme.Header.Render(label)
+			}
+
+			name := fieldName(field)
+
+			if _, err := fmt.Fprintf(w, "  %s%s%s%s%s",
+				styledLabel, pad(labels-lipgloss.Width(label)+gutter),
+				theme.Strong.Render(name), pad(names-lipgloss.Width(name)+gutter),
+				theme.Muted.Render(field.Type)); err != nil {
+				return err
+			}
+
+			if field.Deferred {
+				// Worth saying, because it changes what an author may write here.
+				// The engine resolves an expression before scheduling the step;
+				// these the task evaluates itself, against a scope the workflow
+				// does not have — which is why `http`'s `outputs` can name
+				// `status_code` and an ordinary input cannot.
+				if _, err := fmt.Fprintf(w, "  %s",
+					theme.Muted.Render("the task evaluates this itself, in its own scope")); err != nil {
+					return err
+				}
+			}
+
+			if _, err := fmt.Fprintln(w); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// fieldGroup is one labelled list of a task's fields.
+type fieldGroup struct {
+	label  string
+	fields []v1.InputField
+}
+
+// fieldName is how a field is written, with the marker a required one carries.
+func fieldName(field v1.InputField) string {
+	if field.Required {
+		return field.Name + "*"
+	}
+
+	return field.Name
+}
+
+// pad returns n spaces, never fewer than none.
+func pad(n int) string {
+	if n < 0 {
+		return ""
+	}
+
+	return strings.Repeat(" ", n)
 }
 
 func runTasks(cmd *cobra.Command, args []string) error {
-	out := cmd.OutOrStdout()
+	surface := newSurface(cmd)
+
+	// Through the surface rather than cmd.OutOrStdout(), which matters now that
+	// this is styled. A theme resolves to the palette's own colours, and it is
+	// [ui.New]'s colorprofile writer that degrades those to what the stream can
+	// carry — 24-bit down to 256, to 16, to none. Writing styled text past it sent
+	// truecolor sequences to a terminal that had told us it has 256 colours.
+	out := surface.Out
 
 	format, err := resolveOutputFormat(cmd)
 	if err != nil {
@@ -750,7 +823,7 @@ func runTasks(cmd *cobra.Command, args []string) error {
 	// one answer — a consumer wants `.tasks[] | select(.name=="http")`, not a
 	// stream it has to reassemble before it can index into it.
 	if format.Machine() {
-		return writeJSON(newSurface(cmd), FormatJSON, v1.Catalog())
+		return writeJSON(surface, FormatJSON, v1.Catalog())
 	}
 
 	// What a task takes, not just that it exists.
@@ -760,31 +833,35 @@ func runTasks(cmd *cobra.Command, args []string) error {
 	// README's hand-maintained table, which is exactly the drift the registry
 	// exists to prevent. The schema knows; printing it here means the answer
 	// cannot go stale.
+	theme := surface.Theme
+
 	for i, def := range v1.DefaultRegistry().All() {
 		if i > 0 {
 			fmt.Fprintln(out)
 		}
-		fmt.Fprintf(out, "%s\n  %s\n", def.Name, def.Summary)
+		fmt.Fprintf(out, "%s\n  %s\n", theme.Accent.Render(def.Name), def.Summary)
 
-		tw := tabwriter.NewWriter(out, 0, 8, 2, ' ', 0)
-		writeFields(tw, "inputs", v1.Inputs(def))
-		writeFields(tw, "outputs", v1.Outputs(def))
-		if err := tw.Flush(); err != nil {
-			return err
+		if err := writeFields(out, theme, []fieldGroup{
+			{label: "inputs", fields: v1.Inputs(def)},
+			{label: "outputs", fields: v1.Outputs(def)},
+		}); err != nil {
+			return fmt.Errorf("writing the task catalog: %w", err)
 		}
 	}
 
-	fmt.Fprintf(out, "\n* marks an input the task cannot run without.\n")
+	fmt.Fprintf(out, "\n%s\n", theme.Muted.Render("* marks an input the task cannot run without."))
 
 	// "every expression", not "the cel task", and that is the change worth
 	// spelling out here. These used to be opt-in per `cel` step, which meant this
 	// listing was accurate for one step kind and misleading for the rest of the
 	// file — an author reading it to find out what an `if:` could say got the
 	// wrong answer.
-	fmt.Fprintf(out, "\nCEL libraries available to every expression:\n  %s\n",
+	fmt.Fprintf(out, "\n%s\n  %s\n",
+		theme.Accent.Render("CEL libraries available to every expression:"),
 		strings.Join(v1.ExtensionLibraries(), ", "))
 
-	fmt.Fprintf(out, "\nDuration constructors available to every expression:\n  %s\n",
+	fmt.Fprintf(out, "\n%s\n  %s\n",
+		theme.Accent.Render("Duration constructors available to every expression:"),
 		strings.Join(v1.DurationUnits(), ", "))
 	fmt.Fprintf(out, "\nInside wait_until, %s is the moment the wait is evaluated,\n"+
 		"so a deadline can be written as ${%s + days(3)}.\n", v1.NowIdentifier, v1.NowIdentifier)
@@ -797,11 +874,13 @@ func runTasks(cmd *cobra.Command, args []string) error {
 	// reasonably conclude the answer is almost nothing. It is an expression, named
 	// under `vars:`, and saying so is the difference between a task list and an
 	// answer to the question people run this command to ask.
-	fmt.Fprintf(out, "\nValues come from expressions rather than from tasks. Name one with %s:\n"+
+	fmt.Fprintf(out, "\n%s\n"+
 		"  at the top of a file, read everywhere as ${%s.<name>}\n"+
 		"  on a step, read inside it as a bare ${<name>}\n"+
 		"A step's outputs are what it learned from outside, read as ${%s.<id>.<output>}.\n",
-		v1.VarsRoot, v1.VarsRoot, v1.StepsRoot)
+		theme.Accent.Render(fmt.Sprintf(
+			"Values come from expressions rather than from tasks. Name one with %s:", v1.VarsRoot)),
+		v1.VarsRoot, v1.StepsRoot)
 
 	return nil
 }

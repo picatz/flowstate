@@ -3,10 +3,16 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/colorprofile"
 	"github.com/spf13/cobra"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -156,3 +162,131 @@ func TestTasksRefusesAFormatItDoesNotHave(t *testing.T) {
 		t.Errorf("a refused format still wrote to stdout: %q", out.String())
 	}
 }
+
+// TestTasksColumnsAlignOnATerminal is the bug styling introduced, which a piped
+// test cannot see.
+//
+// `flow tasks` was the one reference surface with no theme while help, errors, get
+// and list were all styled. Adding one broke the layout: it was built with
+// text/tabwriter, which measures the *bytes* it is given, and a styled cell is
+// mostly escape sequences — so every column after the first shifted by however long
+// the colour codes were. Piped output stayed correct, because piped output is
+// unstyled, which is exactly why this asserts on a styled render.
+//
+// Measured with lipgloss, which counts displayed columns rather than bytes, the way
+// the help page's own two-column lists are.
+func TestTasksColumnsAlignOnATerminal(t *testing.T) {
+	t.Parallel()
+
+	var out strings.Builder
+	surface := ui.ForCapabilities(&out, &out,
+		ui.Capabilities{Profile: colorprofile.TrueColor, TTY: true, Width: 120},
+		ui.Capabilities{Profile: colorprofile.TrueColor, TTY: true, Width: 120})
+
+	writeFields(&out, surface.Theme, []fieldGroup{
+		{label: "inputs", fields: []v1.InputField{
+			{Name: "url", Type: "string", Required: true},
+			{Name: "retry_on_unknown_outcome", Type: "bool"},
+		}},
+		{label: "outputs", fields: []v1.InputField{
+			{Name: "status_code", Type: "int"},
+		}},
+	})
+
+	// The type column starts in the same place on every row, which is the whole
+	// point of a column. Measured on the rendered text with the styling stripped,
+	// since that is what a reader sees laid out.
+	var starts []int
+	for _, line := range strings.Split(strings.TrimRight(out.String(), "\n"), "\n") {
+		plain := stripANSI(line)
+		for _, kind := range []string{"string", "bool", "int"} {
+			if i := strings.LastIndex(plain, kind); i > 0 {
+				starts = append(starts, i)
+
+				break
+			}
+		}
+	}
+
+	require.Len(t, starts, 3, "not every row was rendered:\n%s", out.String())
+	for _, start := range starts[1:] {
+		assert.Equal(t, starts[0], start,
+			"the type column starts in a different place on each row, so the styling "+
+				"was counted as width:\n%s", out.String())
+	}
+}
+
+// stripANSI removes escape sequences, so a rendered line can be measured the way it
+// is seen rather than the way it is stored.
+func stripANSI(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == 0x1b {
+			for i < len(s) && s[i] != 'm' {
+				i++
+			}
+
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+
+	return b.String()
+}
+
+// TestTasksDegradesToWhatTheStreamCarries is the half of styling that is not about
+// choosing a colour.
+//
+// A theme resolves to the palette's own values, which are 24-bit. It is the
+// colorprofile writer that turns those into what the stream actually supports — 256
+// colours, then 16, then none. `runTasks` built a profile-aware surface and then
+// wrote past it to cmd.OutOrStdout(), so a terminal that had told us it has 256
+// colours received truecolor sequences it cannot render.
+//
+// Invisible through a pipe, like the alignment bug: an unstyled stream degrades to
+// nothing either way.
+func TestTasksDegradesToWhatTheStreamCarries(t *testing.T) {
+	t.Parallel()
+
+	// The profile is set rather than detected. colorprofile.NewWriter asks the
+	// writer what it is, and a strings.Builder is not a terminal — so detection
+	// answers NoTTY and the writer strips every sequence, which made the first
+	// version of this test pass while proving nothing. Its own guard caught that.
+	var raw strings.Builder
+	styled := &colorprofile.Writer{Forward: &raw, Profile: colorprofile.ANSI256}
+
+	surface := ui.ForCapabilities(styled, styled,
+		ui.Capabilities{Profile: colorprofile.ANSI256, TTY: true, Width: 120},
+		ui.Capabilities{Profile: colorprofile.ANSI256, TTY: true, Width: 120})
+
+	require.NoError(t, writeFields(surface.Out, surface.Theme, []fieldGroup{
+		{label: "inputs", fields: []v1.InputField{{Name: "url", Type: "string", Required: true}}},
+	}))
+
+	rendered := raw.String()
+	require.Contains(t, rendered, "\x1b[", "nothing was styled, so this proves nothing")
+	assert.NotContains(t, rendered, "38;2;",
+		"a 24-bit colour reached a stream that carries 256, so the degrading writer was bypassed")
+}
+
+// TestTasksReportsAWriteItCouldNotFinish keeps a truncated listing from reporting
+// success.
+//
+// The tabwriter this replaced returned the error from Flush. Writing directly makes
+// every Fprintf a place the failure can be dropped instead — a full disk, or a pipe
+// that has gone away — and a listing that stopped halfway while exiting zero is
+// worse than one that says it could not finish.
+func TestTasksReportsAWriteItCouldNotFinish(t *testing.T) {
+	t.Parallel()
+
+	err := writeFields(failingWriter{}, ui.Plain(io.Discard, io.Discard).Theme, []fieldGroup{
+		{label: "inputs", fields: []v1.InputField{{Name: "url", Type: "string"}}},
+	})
+
+	require.Error(t, err, "a listing that could not be written reported success")
+}
+
+// failingWriter is a stdout that has gone away.
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
