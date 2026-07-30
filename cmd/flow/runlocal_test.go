@@ -63,6 +63,8 @@ steps:
 // narrates itself — which is what `log:` is for — must not be able to break that by
 // existing, and neither may the command's own status line.
 func TestALocalRunWritesOneDocumentToStdout(t *testing.T) {
+	t.Parallel()
+
 	stdout, _, err := runLocal(t, narratingWorkflow)
 	require.NoError(t, err)
 
@@ -88,6 +90,8 @@ func TestALocalRunWritesOneDocumentToStdout(t *testing.T) {
 // rule applied to the two drivers: a run that finished is COMPLETED whichever one
 // executed it.
 func TestALocalRunSaysHowItWentOnStderr(t *testing.T) {
+	t.Parallel()
+
 	_, stderr, err := runLocal(t, narratingWorkflow)
 	require.NoError(t, err)
 
@@ -110,6 +114,8 @@ func TestALocalRunSaysHowItWentOnStderr(t *testing.T) {
 // program. A half-written or partial document would be worse than nothing, because
 // a reader would parse it.
 func TestALocalRunThatFailsWritesNothingToStdout(t *testing.T) {
+	t.Parallel()
+
 	stdout, _, err := runLocal(t, `edition: v2026.2
 name: refuses
 steps:

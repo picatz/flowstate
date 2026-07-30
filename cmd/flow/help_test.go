@@ -52,6 +52,8 @@ func helpOf(t *testing.T, args ...string) string {
 // `flow --help | cat`, in a diff, and in anything that stores the output. The
 // renderer this replaced did exactly that.
 func TestHelpWritesNoTrailingWhitespace(t *testing.T) {
+	t.Parallel()
+
 	for i, line := range strings.Split(helpOf(t), "\n") {
 		assert.Equal(t, strings.TrimRight(line, " \t"), line,
 			"line %d of the help page is padded out to a width", i+1)
@@ -65,6 +67,8 @@ func TestHelpWritesNoTrailingWhitespace(t *testing.T) {
 // with subcommands reads `flow [flags] [command]` — which is not a line anybody
 // types and, read literally, says the flags come first.
 func TestTheUsageLineIsInTheOrderSomebodyTypes(t *testing.T) {
+	t.Parallel()
+
 	assert.Contains(t, helpOf(t), "flow [command] [flags]",
 		"the root usage line puts the flags before the command")
 
@@ -79,6 +83,8 @@ func TestTheUsageLineIsInTheOrderSomebodyTypes(t *testing.T) {
 // or for a reader who cannot see it. The case is what carries it here; the colour
 // only makes it faster to find.
 func TestEveryHeadingSurvivesLosingItsColour(t *testing.T) {
+	t.Parallel()
+
 	help := helpOf(t)
 
 	for _, heading := range []string{"USAGE", "EXAMPLES", "WORKFLOW COMMANDS", "FLAGS"} {
@@ -93,6 +99,8 @@ func TestEveryHeadingSurvivesLosingItsColour(t *testing.T) {
 // renderer this replaced listed them first because they are the ones with no group.
 // That put every command somebody was actually looking for below them.
 func TestUngroupedCommandsComeLast(t *testing.T) {
+	t.Parallel()
+
 	help := helpOf(t)
 
 	workflow := strings.Index(help, "WORKFLOW COMMANDS")
@@ -112,6 +120,8 @@ func TestUngroupedCommandsComeLast(t *testing.T) {
 // two a flag gets is an accident of whether somebody gave it a letter — not a
 // distinction a reader is scanning for.
 func TestAFlagWithNoShorthandStillLinesUp(t *testing.T) {
+	t.Parallel()
+
 	var short, long int
 	for _, line := range strings.Split(helpOf(t), "\n") {
 		switch {
@@ -154,6 +164,8 @@ func TestExamplesKeepTheirParagraphs(t *testing.T) {
 // `signal [workflow-id] [signal-name]` the longest, so if the columns are computed
 // per section these two land in different places.
 func TestTheHelpPageHasOneNameColumn(t *testing.T) {
+	t.Parallel()
+
 	var lsp, signal int
 	for _, line := range strings.Split(helpOf(t), "\n") {
 		switch {

@@ -144,12 +144,14 @@ func TestEveryCommandSaysWhatItIsFor(t *testing.T) {
 // to a package variable made construction a write to shared state: two parallel tests
 // building a CLI raced on one word.
 //
-// The flag is bound to a local now and copied across in PersistentPreRun, so
-// construction writes nothing shared. These tests still run serially, because "nothing
-// shared *today*" is a property of the current flags rather than a guarantee — the next
-// persistent flag someone adds could reintroduce it, and a test suite that would go red
-// for the right reason is worth more than one that would go green for a stale one.
+// No flag is bound to a package variable any more — every one of the twenty-eight
+// lives in the FlagSet of the command that declares it — so construction writes
+// nothing shared and these can run in parallel. That is the property, not a
+// coincidence: a `Var(&…)` reintroduced anywhere in cmd/flow makes this file race
+// under -race, which is the failure being red for the right reason.
 func TestBuildingTheCLITwiceBuildsTheSameCLI(t *testing.T) {
+	t.Parallel()
+
 	assert.Equal(t, realCommands(newRootCommand()), realCommands(newRootCommand()),
 		"building the CLI twice produced two different sets of commands")
 }
@@ -164,15 +166,20 @@ func TestBuildingTheCLITwiceBuildsTheSameCLI(t *testing.T) {
 //
 // A silent no-op is the worst shape a setting can have: it is indistinguishable from
 // one that works and is simply not taking effect for some other reason.
+// There is no package variable left to clear, so the test asks the question the
+// user actually has: does the environment reach the flag? The default is read at
+// declaration, which is why this sets the variable before building.
 func TestBuildingTheCLIDoesNotClearTheVerboseEnvironmentVariable(t *testing.T) {
-	was := verboseLogging
-	t.Cleanup(func() { verboseLogging = was })
+	// Not parallel, and this one genuinely cannot be: t.Setenv forbids it, because
+	// the process environment is shared however tidy the flags are. That is a
+	// property of what is being tested rather than of the code under it.
+	t.Setenv("FLOWSTATE_VERBOSE_LOGGING", "true")
 
-	verboseLogging = true
-	_ = newRootCommand()
+	verbose, err := newRootCommand().PersistentFlags().GetBool("verbose")
+	require.NoError(t, err)
 
-	assert.True(t, verboseLogging,
-		"building the CLI cleared verboseLogging, so FLOWSTATE_VERBOSE_LOGGING does nothing")
+	assert.True(t, verbose,
+		"FLOWSTATE_VERBOSE_LOGGING did not reach --verbose, so the setting does nothing")
 }
 
 // TestTwoCommandsCanAskForDifferentFormats is the property a package variable made

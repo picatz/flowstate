@@ -38,48 +38,88 @@ import (
 // Set by the build system, e.g. using -ldflags="-X main.version=1.0.0"
 var version = "dev"
 
-// Configuration for the Flowstate CLI, resolved from the environment at startup
-// and overridable by flags.
+// temporalFlags is what a command needs in order to reach Temporal, and what a
+// worker needs in order to identify itself.
 //
-// TODO(kent): consider refactoring to avoid global state, e.g. by passing
-// configuration structs to command handlers or using a context-based approach.
-var (
-	temporalTaskQueue string = cmp.Or(os.Getenv("TEMPORAL_TASK_QUEUE"), engine.RunTaskQueueName)
-	verboseLogging    bool   = os.Getenv("FLOWSTATE_VERBOSE_LOGGING") == "true"
-
-	// Temporal connection settings are deliberately empty by default. Unset
-	// means "use Temporal's own environment configuration" — the standard
-	// TEMPORAL_* variables and the TOML profile the `temporal` CLI reads — so
-	// these flags override that configuration rather than replacing it.
-	temporalAddressFlag   string
-	temporalNamespaceFlag string
-	temporalProfileFlag   string
+// Read off the command being run rather than held in package variables, which is
+// what these were — and what main.go's own TODO asked to be rid of. pflag writes a
+// flag's default into its bound pointer at declaration, so building the CLI wrote
+// every one of them.
+//
+// The Temporal connection settings are deliberately empty when unset, which is not
+// the same as absent: empty means "use Temporal's own environment configuration" —
+// the standard TEMPORAL_* variables and the TOML profile the `temporal` CLI reads —
+// so these override that configuration rather than replacing it.
+type temporalFlags struct {
+	address   string
+	namespace string
+	profile   string
+	taskQueue string
 
 	// Worker Deployment Versioning, off unless both halves are configured.
 	//
 	// A version is the pair, so honouring one without the other would produce a
-	// worker claiming a version nothing can address. Defaulted from the
-	// environment because the build id is a property of the artifact and belongs
-	// in whatever built it — a CI job knows the commit; a person typing `flow
-	// worker` does not.
+	// worker claiming a version nothing can address. Defaulted from the environment
+	// because the build id is a property of the artifact and belongs in whatever
+	// built it — a CI job knows the commit; a person typing `flow worker` does not.
 	//
 	// See pkg/flowstate/v1/engine/versioning.go for what turning this on buys.
-	workerDeploymentName = os.Getenv("FLOWSTATE_DEPLOYMENT_NAME")
-	workerBuildID        = os.Getenv("FLOWSTATE_BUILD_ID")
+	deploymentName string
+	buildID        string
 
-	// Authentication settings for `flow server`. There is no default that
-	// accepts callers: either a trust policy is configured, or anonymous access
-	// is requested explicitly.
-	authPolicyPath string
-	insecureNoAuth bool
+	// verbose says whether to describe the connection that was resolved, which is
+	// the one thing that makes a misconfigured TEMPORAL_* variable findable.
+	verbose bool
+}
+
+// temporalFlagsOf reads them off the command being run.
+func temporalFlagsOf(cmd *cobra.Command) temporalFlags {
+	// "address" rather than "temporal-address": on `worker` and `server` that flag
+	// means Temporal's address, while on the verbs that talk to Flowstate it means
+	// the Flowstate server's. Two meanings for one spelling, split by which command
+	// declares it — pre-existing, and renaming either would break a command line
+	// somebody has written down.
+	address, _ := cmd.Flags().GetString("address")
+	namespace, _ := cmd.Flags().GetString("namespace")
+	profile, _ := cmd.Flags().GetString("profile")
+	taskQueue, _ := cmd.Flags().GetString("task-queue")
+	deploymentName, _ := cmd.Flags().GetString("deployment-name")
+	buildID, _ := cmd.Flags().GetString("build-id")
+	verbose, _ := cmd.Flags().GetBool("verbose")
+
+	return temporalFlags{
+		address:        address,
+		namespace:      namespace,
+		profile:        profile,
+		taskQueue:      taskQueue,
+		deploymentName: deploymentName,
+		buildID:        buildID,
+		verbose:        verbose,
+	}
+}
+
+// authFlags is how `flow server` decides who it will accept.
+//
+// There is no default that accepts callers: either a trust policy is configured, or
+// anonymous access is requested explicitly.
+type authFlags struct {
+	policyPath string
+	insecure   bool
 
 	// identityKeyPath holds the private key Flowstate signs its own assertions
 	// with, when the trust policy configures federation. Unset means the server
 	// verifies callers but issues nothing, which is the inbound-only deployment.
 	identityKeyPath string
+}
 
-	temporalClient client.Client = nil
-)
+// authFlagsOf reads them off the command being run.
+func authFlagsOf(cmd *cobra.Command) authFlags {
+	policyPath, _ := cmd.Flags().GetString("auth-policy")
+	insecure, _ := cmd.Flags().GetBool("insecure-no-auth")
+	identityKeyPath, _ := cmd.Flags().GetString("identity-key")
+
+	return authFlags{policyPath: policyPath, insecure: insecure, identityKeyPath: identityKeyPath}
+}
 
 // initTemporalClient connects to Temporal.
 //
@@ -87,46 +127,40 @@ var (
 // standard TEMPORAL_* variables and the same TOML profile file the `temporal` CLI
 // reads — so a self-hosted cluster, Temporal Cloud, and a local development
 // server differ only in configuration. Flags override whatever that resolves to.
-func initTemporalClient(ctx context.Context) (client.Client, error) {
-	if temporalClient != nil {
-		return temporalClient, nil
-	}
-
+// Takes its configuration rather than reading it, and no longer memoizes the
+// client. The memo was a package variable guarding a second call that cannot
+// happen: the two callers are `flow worker` and `flow server`, and a process runs
+// one command. What it did do was outlive whatever set it.
+func initTemporalClient(ctx context.Context, flags temporalFlags) (client.Client, error) {
 	cfg := temporalclient.Config{
-		Address:   temporalAddressFlag,
-		Namespace: temporalNamespaceFlag,
-		Profile:   temporalProfileFlag,
+		Address:   flags.address,
+		Namespace: flags.namespace,
+		Profile:   flags.profile,
 	}
 
-	if verboseLogging {
+	if flags.verbose {
 		if opts, err := cfg.Options(); err == nil {
 			log.Printf("Temporal: %s", temporalclient.Describe(opts))
 		}
 	}
 
-	c, err := temporalclient.Dial(ctx, cfg)
-	if err != nil {
-		return nil, err
-	}
-
-	temporalClient = c
-	return c, nil
+	return temporalclient.Dial(ctx, cfg)
 }
 
 // runWorker implements the worker sub-command to start a Temporal worker
 // to process Flowstate workflows and activities.
 func runWorker(cmd *cobra.Command, args []string) error {
-	// Initialize a Temporal client using the configured address
-	// and namespace global variables (yuck, amiright).
-	c, err := initTemporalClient(cmd.Context())
+	flags := temporalFlagsOf(cmd)
+
+	c, err := initTemporalClient(cmd.Context(), flags)
 	if err != nil {
 		return err
 	}
 	defer c.Close()
 
-	deployment := engine.DeploymentOptions(workerDeploymentName, workerBuildID)
+	deployment := engine.DeploymentOptions(flags.deploymentName, flags.buildID)
 
-	w := worker.New(c, temporalTaskQueue, worker.Options{
+	w := worker.New(c, flags.taskQueue, worker.Options{
 		DeploymentOptions: deployment,
 	})
 
@@ -134,7 +168,7 @@ func runWorker(cmd *cobra.Command, args []string) error {
 
 	if deployment.UseVersioning {
 		log.Printf("Starting worker on task queue %s as %s/%s",
-			temporalTaskQueue, deployment.Version.DeploymentName, deployment.Version.BuildID)
+			flags.taskQueue, deployment.Version.DeploymentName, deployment.Version.BuildID)
 	} else {
 		// Said out loud rather than left to be inferred from silence. Without a
 		// version, deploying this binary changes the behaviour of every run
@@ -142,7 +176,7 @@ func runWorker(cmd *cobra.Command, args []string) error {
 		// is a choice an operator should know they are making.
 		log.Printf("Starting worker on task queue %s, unversioned "+
 			"(set FLOWSTATE_DEPLOYMENT_NAME and FLOWSTATE_BUILD_ID, or --deployment-name and --build-id, "+
-			"to pin in-flight runs to the interpreter they started on)", temporalTaskQueue)
+			"to pin in-flight runs to the interpreter they started on)", flags.taskQueue)
 	}
 
 	// Start worker (non-blocking) such that it can run in the background
@@ -247,17 +281,19 @@ func startedRun(started *v1.RunResponse) *v1.GetResponse {
 func runServer(cmd *cobra.Command, args []string) error {
 	// Resolve configuration before doing any I/O, so a misconfiguration is
 	// reported immediately rather than after waiting on a connection attempt.
-	verifier, policy, err := authVerifier()
+	authCfg := authFlagsOf(cmd)
+
+	verifier, policy, err := authVerifier(authCfg)
 	if err != nil {
 		return err
 	}
 
-	broker, err := identityBroker(policy)
+	broker, err := identityBroker(authCfg, policy)
 	if err != nil {
 		return err
 	}
 
-	c, err := initTemporalClient(cmd.Context())
+	c, err := initTemporalClient(cmd.Context(), temporalFlagsOf(cmd))
 	if err != nil {
 		return err
 	}
@@ -309,7 +345,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	}
 
 	log.Printf("Starting Flowstate server on %s", httpServer.Addr)
-	if insecureNoAuth {
+	if authCfg.insecure {
 		log.Printf("WARNING: authentication is disabled; every caller is anonymous " +
 			"and can start workflows. Do not use this outside local development.")
 	}
@@ -362,23 +398,23 @@ const maxRequestBytes = 4 << 20 // 4 MiB
 // missing or unreadable policy: a server that cannot load its trust policy must
 // refuse to start rather than quietly begin accepting everyone, which is exactly
 // the failure this replaces.
-func authVerifier() (auth.Verifier, *auth.Policy, error) {
-	if insecureNoAuth {
+func authVerifier(flags authFlags) (auth.Verifier, *auth.Policy, error) {
+	if flags.insecure {
 		return auth.InsecureAnonymousVerifier(), nil, nil
 	}
 
-	if authPolicyPath == "" {
+	if flags.policyPath == "" {
 		return nil, nil, fmt.Errorf("no authentication configured: pass --auth-policy with a trust policy, " +
 			"or --insecure-no-auth to allow anonymous access for local development")
 	}
 
-	data, err := os.ReadFile(authPolicyPath)
+	data, err := os.ReadFile(flags.policyPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("reading auth policy: %w", err)
 	}
 	policy, err := auth.ParsePolicy(data)
 	if err != nil {
-		return nil, nil, fmt.Errorf("parsing auth policy %s: %w", authPolicyPath, err)
+		return nil, nil, fmt.Errorf("parsing auth policy %s: %w", flags.policyPath, err)
 	}
 	verifier, err := auth.NewOIDCVerifier(policy)
 	if err != nil {
@@ -395,26 +431,26 @@ func authVerifier() (auth.Verifier, *auth.Policy, error) {
 // id is published in the JWKS and named in every assertion, so a date makes
 // rotation self-documenting: a verifier that has cached "2026-07" can be handed
 // "2026-08" without a coordinated restart.
-func identityBroker(policy *auth.Policy) (*auth.Broker, error) {
+func identityBroker(flags authFlags, policy *auth.Policy) (*auth.Broker, error) {
 	if policy == nil || policy.Federation == nil {
-		if identityKeyPath != "" {
+		if flags.identityKeyPath != "" {
 			return nil, fmt.Errorf("--identity-key was given but the trust policy configures no federation: " +
 				"add a federation section, or drop the key")
 		}
 		return nil, nil
 	}
 
-	if identityKeyPath == "" {
+	if flags.identityKeyPath == "" {
 		return nil, fmt.Errorf("the trust policy configures federation but no signing key was given: " +
 			"pass --identity-key with a PKCS#8 PEM private key, since Flowstate cannot issue an " +
 			"assertion it cannot sign")
 	}
 
-	pem, err := os.ReadFile(identityKeyPath)
+	pem, err := os.ReadFile(flags.identityKeyPath)
 	if err != nil {
 		return nil, fmt.Errorf("reading identity key: %w", err)
 	}
-	key, err := parseSigningKey(identityKeyPath, pem)
+	key, err := parseSigningKey(flags.identityKeyPath, pem)
 	if err != nil {
 		return nil, err
 	}
@@ -820,13 +856,13 @@ flow lsp`,
 	// And the default it wrote was `false`, over the top of the value
 	// `FLOWSTATE_VERBOSE_LOGGING` had just put there. That variable is documented in
 	// the README and did nothing: the environment set it, construction cleared it,
-	// and nothing in between read it. The default is now the environment's own value,
+	// and nothing in between read it. The default is the environment's own value now,
 	// so the flag overrides the variable rather than erasing it.
-	verbose := verboseLogging
-	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", verboseLogging, "enable verbose logging")
-	rootCmd.PersistentPreRun = func(*cobra.Command, []string) {
-		verboseLogging = verbose
-	}
+	//
+	// Bound to nothing at all, and read off the command by whoever needs it — which
+	// is what finally removes the copy-in-PersistentPreRun that stood in for a fix.
+	rootCmd.PersistentFlags().BoolP("verbose", "v",
+		os.Getenv("FLOWSTATE_VERBOSE_LOGGING") == "true", "enable verbose logging")
 
 	// Run command, which executes a workflow using the Flowstate service.
 	runCmd := &cobra.Command{
@@ -968,23 +1004,24 @@ flow server --verbose`,
 
 	// use whatever TEMPORAL_* variables or the temporal.toml profile resolve to.
 	for _, c := range []*cobra.Command{workerCmd, serverCmd} {
-		c.Flags().StringVar(&temporalAddressFlag, "address", "", "Temporal server address (overrides environment configuration)")
-		c.Flags().StringVar(&temporalNamespaceFlag, "namespace", "", "Temporal namespace (overrides environment configuration)")
-		c.Flags().StringVar(&temporalProfileFlag, "profile", "", "Temporal configuration profile to use")
+		c.Flags().String("address", "", "Temporal server address (overrides environment configuration)")
+		c.Flags().String("namespace", "", "Temporal namespace (overrides environment configuration)")
+		c.Flags().String("profile", "", "Temporal configuration profile to use")
 	}
-	workerCmd.Flags().StringVar(&temporalTaskQueue, "task-queue", temporalTaskQueue, "task queue for Temporal workflows and activities")
+	workerCmd.Flags().String("task-queue", cmp.Or(os.Getenv("TEMPORAL_TASK_QUEUE"), engine.RunTaskQueueName),
+		"task queue for Temporal workflows and activities")
 
-	workerCmd.Flags().StringVar(&workerDeploymentName, "deployment-name", workerDeploymentName,
+	workerCmd.Flags().String("deployment-name", os.Getenv("FLOWSTATE_DEPLOYMENT_NAME"),
 		"Worker Deployment this worker belongs to. With --build-id, pins every in-flight run to the "+
 			"interpreter version it started on; a run moves to the current version only at continue-as-new")
-	workerCmd.Flags().StringVar(&workerBuildID, "build-id", workerBuildID,
+	workerCmd.Flags().String("build-id", os.Getenv("FLOWSTATE_BUILD_ID"),
 		"version identifier for this worker's binary, unique per build. Required with --deployment-name")
 
-	serverCmd.Flags().StringVar(&authPolicyPath, "auth-policy", "",
+	serverCmd.Flags().String("auth-policy", "",
 		"path to an OIDC/workload-identity trust policy (YAML) describing which issuers to accept")
-	serverCmd.Flags().BoolVar(&insecureNoAuth, "insecure-no-auth", false,
+	serverCmd.Flags().Bool("insecure-no-auth", false,
 		"allow unauthenticated access; for local development only")
-	serverCmd.Flags().StringVar(&identityKeyPath, "identity-key",
+	serverCmd.Flags().String("identity-key",
 		os.Getenv("FLOWSTATE_IDENTITY_KEY"),
 		"path to a PKCS#8 PEM private key Flowstate signs its own assertions with, "+
 			"required when the trust policy configures federation; the file's base name "+
