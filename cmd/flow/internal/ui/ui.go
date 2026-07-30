@@ -31,6 +31,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/colorprofile"
@@ -41,10 +42,21 @@ import (
 // where the detection below guesses wrong on somebody's terminal.
 const SymbolsEnv = "FLOWSTATE_SYMBOLS"
 
+// BackgroundEnv names the variable that settles the terminal background without
+// asking for it.
+//
+// The same escape hatch as [SymbolsEnv] and, unlike it, also a way out of a
+// *pause*: the question is asked over the terminal itself and a terminal that
+// never answers is waited on. See [terminalIsDark].
+const BackgroundEnv = "FLOWSTATE_BACKGROUND"
+
 // Capabilities is what one output stream can do.
 //
-// Every field is derived, never configured: a person does not tell us their
-// terminal supports 256 colours, they have a terminal that does or does not.
+// Every field is derived rather than configured: a person does not tell us their
+// terminal supports 256 colours, they have a terminal that does or does not. Two
+// carry an override anyway ([SymbolsEnv], [BackgroundEnv]), and both are for the
+// case where the derivation is wrong on somebody's terminal and only they can see
+// that — which is a different thing from asking them to describe it.
 type Capabilities struct {
 	// Profile is how much colour the stream carries, and it is the value the
 	// writer degrades against. colorprofile resolves NO_COLOR, CLICOLOR_FORCE,
@@ -58,7 +70,8 @@ type Capabilities struct {
 	TTY bool
 
 	// Dark reports whether the terminal background is dark, deciding which half
-	// of every colour pair is used.
+	// of every colour pair is used. See [darkBackground] for what it costs to
+	// find out and the three cheaper answers that come first.
 	Dark bool
 
 	// Width is the usable columns, already bounded. Zero-width terminals and
@@ -106,14 +119,7 @@ func Detect(in, out *os.File, environ []string) Capabilities {
 	}
 
 	if caps.TTY {
-		if in != nil {
-			caps.Dark = lipgloss.HasDarkBackground(in, out)
-		} else {
-			// Unknowable without a channel to ask on. Dark is the safer guess:
-			// most terminals default to it, and light-on-dark misread is a dim
-			// line rather than an invisible one.
-			caps.Dark = true
-		}
+		caps.Dark = darkBackground(in, out, environ, caps.Profile)
 
 		if w, h, err := term.GetSize(out.Fd()); err == nil {
 			caps.applySize(w, h)
@@ -123,6 +129,115 @@ func Detect(in, out *os.File, environ []string) Capabilities {
 	caps.Unicode = wantsUnicode(caps, environ)
 
 	return caps
+}
+
+// darkBackground decides which half of every colour pair a terminal gets.
+//
+// Split out of [Detect] for the same reason [Capabilities.applySize] is: it is the
+// part with rules rather than the part that measures, and the rules are what get
+// this wrong. Two of the three answers here cost nothing, and the whole point is to
+// reach one of them before the third.
+//
+// Assuming dark is the safe direction when nothing is known. Most terminals default
+// to it, and the palette's light-background halves are the darker colours — so a
+// light terminal misread as dark is legible-but-dim, where the reverse is pale text
+// on white.
+func darkBackground(in, out *os.File, environ []string, profile colorprofile.Profile) bool {
+	if dark, settled := settledBackground(in, environ, profile); settled {
+		return dark
+	}
+
+	return terminalIsDark(in, out)
+}
+
+// settledBackground answers where an answer is already available, and says whether
+// it was.
+//
+// Separate from [darkBackground] so that "this case does not ask the terminal" is a
+// value a test can assert rather than a duration it has to time. Timing it would not
+// work anyway: the query fails fast against anything that is not a terminal, so a
+// test without a pty cannot tell a rule that skipped it from one that tried it and
+// got an error — and would pass either way.
+func settledBackground(in *os.File, environ []string, profile colorprofile.Profile) (dark, settled bool) {
+	if dark, settled := backgroundFromEnv(environ); settled {
+		return dark, true
+	}
+
+	// Nothing reads this. Below ANSI every role in the palette collapses to weight,
+	// so both backgrounds resolve to the same styles and the answer cannot change a
+	// byte of output — which makes a query that can stall for seconds pure cost. It
+	// is the NO_COLOR and TERM=dumb case, and those are exactly the terminals least
+	// likely to answer.
+	if profile < colorprofile.ANSI {
+		return true, true
+	}
+
+	// Unknowable without a channel to ask on.
+	if in == nil {
+		return true, true
+	}
+
+	return false, false
+}
+
+// backgroundFromEnv reports a background settled by configuration, and whether one
+// was.
+//
+// Anything else is ignored rather than guessed at, including the empty string: a
+// variable somebody exported and left blank is not an assertion about their
+// terminal, and treating it as one would silence the detection for a whole session.
+func backgroundFromEnv(environ []string) (dark bool, settled bool) {
+	switch strings.ToLower(lookup(environ, BackgroundEnv)) {
+	case "dark":
+		return true, true
+	case "light":
+		return false, true
+	}
+
+	return false, false
+}
+
+// asked memoizes the one question this program asks its terminal.
+//
+// A terminal's background does not change while a command runs, so the answer is a
+// property of the process rather than of a stream. It was being asked for once per
+// stream — stdout and stderr are separate [Detect] calls — and, since the two
+// answers are merged into a single decision in [ForCapabilities], the second was
+// work whose result had nowhere to go but an OR.
+//
+// That is not a rounding error. lipgloss writes an OSC 11 query and waits two
+// seconds for a reply, against both files in turn, so one unanswered question costs
+// four seconds and the pair costs eight. Terminals that do not answer are ordinary
+// rather than exotic — screen, some multiplexer configurations, an editor's embedded
+// terminal, a pty in CI — and on those the command printed nothing at all for long
+// enough to look hung.
+//
+// Takes the question rather than asking it, so that "asks once, and everybody after
+// gets the first answer" is a claim about this type that can be checked by counting,
+// instead of a property of a package variable that a test would have to reach into.
+type memo struct {
+	once sync.Once
+	dark bool
+}
+
+func (m *memo) get(ask func() bool) bool {
+	m.once.Do(func() { m.dark = ask() })
+
+	return m.dark
+}
+
+// background is the process's answer, filled in by whichever stream asks first.
+var background memo
+
+// terminalIsDark asks the terminal, at most once per process.
+//
+// The timeout belongs to lipgloss and is not configurable, and it must not be worked
+// around by abandoning the call: the query puts the terminal into raw mode and
+// restores it on the way out, so a caller that walked away from a slow one would
+// leave the terminal raw for whatever ran next. [BackgroundEnv] is the way out, and
+// it is documented for exactly this.
+func terminalIsDark(in, out *os.File) bool {
+	return background.get(func() bool { return lipgloss.HasDarkBackground(in, out) })
 }
 
 // applySize folds a terminal's reported size in.
