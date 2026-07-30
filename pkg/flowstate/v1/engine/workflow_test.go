@@ -226,7 +226,15 @@ func TestRunWorkflowLog(t *testing.T) {
 	}
 }
 
-// TestRunWorkflowVars covers the workflow's `vars:` block in the durable driver.
+// TestRunWorkflowVars covers `vars:` in the durable driver.
+//
+// The same cases the local driver runs. Here they exercise a route the local driver
+// does not have: the workflow's block is evaluated by the WorkflowVars activity rather
+// than in workflow code, because a profile pins which functions exist and not how
+// cel-go implements them — so evaluating it inline would be a replay divergence waiting
+// on a dependency bump. A step's block is evaluated in workflow code, alongside that
+// step's expression inputs, by swapping the executor's scope; a nested executor built
+// from the wrong one is a divergence only these can see.
 func TestRunWorkflowVars(t *testing.T) {
 	for _, test := range tests.VarsCases() {
 		t.Run(test.Name, func(t *testing.T) {
