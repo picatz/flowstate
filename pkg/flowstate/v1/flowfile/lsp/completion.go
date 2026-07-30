@@ -111,7 +111,8 @@ var dslKeys = map[string][]dslKey{
 	},
 	"for_each": {
 		{name: "items", detail: "expression", docs: "An expression producing the list to iterate, written as `${...}`."},
-		{name: "iterator", detail: "string", docs: "Names the variable bound to the current item. Defaults to `item`."},
+		{name: "as", detail: "string", docs: "Names the variable bound to the current item, read bare inside the body: `${name}`. Defaults to `item`.\n\n" +
+			"Reads as the sentence it is — *for each item as name* — and names the binding rather than the mechanism. It was `iterator:`; `flow fix` rewrites that."},
 		{name: "max_parallel", detail: "int", docs: "How many iterations may run at once. Omitted or `1` runs them one at a time."},
 		{name: "steps", detail: "list", docs: "The body run once per item."},
 	},

@@ -179,7 +179,7 @@ steps:
 			want: []want{{
 				code:       codeFlowfile,
 				severity:   lsp.Error,
-				contains:   "must have one of for_each, parallel, sleep, wait_until, wait_for_signal, cel, echo, http, or printf",
+				contains:   "must have one of for_each, parallel, sleep, wait_until, wait_for_signal, cel, echo, http, log, or printf",
 				underlines: "a",
 			}},
 		},
@@ -215,7 +215,7 @@ steps:
   - id: each
     for_each:
       items: ${steps.items.result}
-      iterator: one
+      as: one
       steps:
         - id: body
           echo:

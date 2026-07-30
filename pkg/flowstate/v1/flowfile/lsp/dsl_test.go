@@ -717,7 +717,7 @@ steps:
   - id: loop
     for_each:
       items: ${steps.targets.result}
-      iterator: one
+      as: one
       steps:
         - id: body
           echo:
@@ -834,7 +834,7 @@ steps:
   - id: loop
     for_each:
       items: ${steps.before.result}
-      iterator: each
+      as: each
       steps:
         - id: body_one
           echo:
@@ -1010,7 +1010,7 @@ steps:
   - id: repeat
     for_each:
       items: "${['a', 'b']}"
-      iterator: target
+      as: target
       steps:
         - id: body
           echo:
@@ -1156,7 +1156,7 @@ steps:
   - id: loop
     for_each:
       items: ${steps.a.result}
-      iterator: one
+      as: one
       max_parallel: 2
       steps:
         - id: body

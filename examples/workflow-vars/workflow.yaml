@@ -36,7 +36,7 @@ steps:
     description: A var reaches inside a loop, alongside the iterator bound by the loop itself.
     for_each:
       items: ${vars.targets}
-      iterator: target
+      as: target
       steps:
         - id: place
           echo:

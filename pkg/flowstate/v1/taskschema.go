@@ -3,6 +3,7 @@ package flowstatev1
 import (
 	"fmt"
 	"slices"
+	"strings"
 
 	validate "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
 	"google.golang.org/protobuf/proto"
@@ -112,7 +113,10 @@ func scalarTypeName(fd protoreflect.FieldDescriptor) string {
 	case protoreflect.FloatKind, protoreflect.DoubleKind:
 		return "double"
 	case protoreflect.EnumKind:
-		return string(fd.Enum().Name())
+		// The choices, not the type's name. `Level` tells an author which Go type
+		// they will never see; `info | warn | error` tells them what to type, and it
+		// is short enough that a list beats a name.
+		return strings.Join(EnumValueNames(fd.Enum()), " | ")
 	case protoreflect.MessageKind, protoreflect.GroupKind:
 		if slices.Contains(dynamicValueMessages, fd.Message().FullName()) {
 			// A CEL value: the concrete type is whatever the expression produces,
@@ -239,4 +243,90 @@ func taskFields(fields []InputField) []*TaskField {
 		})
 	}
 	return out
+}
+
+// Enum-valued inputs, spelled the way a Flowfile writes them.
+//
+// A schema enum is written `LEVEL_WARN`, because a proto enum's values share a
+// namespace with its siblings and buf's lint rules require the prefix. A Flowfile is
+// not proto: an author writes `level: warn`, which is the name without the noise the
+// namespace forced. These two functions are the only place that correspondence lives,
+// so a task gaining an enum input gets the spelling, the diagnostic and the printed
+// type without deciding any of it again.
+
+// EnumValueNames returns the spellings a Flowfile may use for an enum, in declaration
+// order.
+//
+// The zero value is omitted. Every proto3 enum must have one and buf requires it be
+// named `_UNSPECIFIED`, which makes it the encoding of *absent* rather than a choice —
+// offering it would invite `level: unspecified`, a way of writing nothing that reads
+// like writing something.
+func EnumValueNames(enum protoreflect.EnumDescriptor) []string {
+	values := enum.Values()
+	names := make([]string, 0, values.Len())
+	for i := range values.Len() {
+		value := values.Get(i)
+		if value.Number() == 0 {
+			continue
+		}
+		names = append(names, enumValueSpelling(enum, value))
+	}
+
+	return names
+}
+
+// EnumValueNumber resolves what an author wrote to an enum value, reporting whether it
+// named one.
+//
+// Both spellings are accepted — `warn` and `LEVEL_WARN` — because the second is what a
+// reader of the schema, or of a protojson payload, has in front of them, and refusing
+// it would be the language pretending its own storage does not exist. Matching is
+// case-insensitive for the same reason `flow` accepts `GET` and `get` from the http
+// task: the case carries no meaning here, so enforcing one is a diagnostic that teaches
+// nothing.
+//
+// The zero value is not resolvable by name, matching [EnumValueNames]: an input left
+// out is how a Flowfile says "unspecified".
+func EnumValueNumber(enum protoreflect.EnumDescriptor, written string) (protoreflect.EnumNumber, bool) {
+	values := enum.Values()
+	for i := range values.Len() {
+		value := values.Get(i)
+		if value.Number() == 0 {
+			continue
+		}
+		if strings.EqualFold(written, enumValueSpelling(enum, value)) ||
+			strings.EqualFold(written, string(value.Name())) {
+			return value.Number(), true
+		}
+	}
+
+	return 0, false
+}
+
+// enumValueSpelling strips the prefix proto requires from an enum value's name.
+//
+// Derived from the enum's own name rather than from a convention this file asserts:
+// `Level` yields the prefix `LEVEL_`, so `LEVEL_WARN` becomes `warn`. A value not
+// carrying the prefix is returned lowercased and otherwise untouched, which keeps this
+// total — an enum that breaks the convention gets a worse spelling rather than a panic
+// or an empty string.
+func enumValueSpelling(enum protoreflect.EnumDescriptor, value protoreflect.EnumValueDescriptor) string {
+	prefix := screamingSnake(string(enum.Name())) + "_"
+	name := string(value.Name())
+
+	return strings.ToLower(strings.TrimPrefix(name, prefix))
+}
+
+// screamingSnake converts a CamelCase proto identifier to the SCREAMING_SNAKE form its
+// enum values are prefixed with.
+func screamingSnake(name string) string {
+	var b strings.Builder
+	for i, r := range name {
+		if i > 0 && r >= 'A' && r <= 'Z' {
+			b.WriteByte('_')
+		}
+		b.WriteRune(r)
+	}
+
+	return strings.ToUpper(b.String())
 }

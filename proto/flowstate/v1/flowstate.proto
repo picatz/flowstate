@@ -711,6 +711,89 @@ message TaskField {
 }
 
 message Task {
+  // Log is a task that emits a message for a person to read.
+  //
+  // It exists because `echo` was doing this job under a name that describes the
+  // wrong thing: echo *returns* a value, and the two uses that survived `vars:` —
+  // hello-world scaffolding and "this branch ran" markers — were never about the
+  // return. They were about someone seeing it. Naming the capability after what it
+  // is for is what lets the surfaces that show it (a `flow run` transcript, the
+  // watch view, the run record) treat it as a message rather than as a value that
+  // happens to be printed.
+  //
+  // # It has no outputs, deliberately
+  //
+  // A log line is an effect on a reader, not a value for a later step. Offering
+  // `result` would make `${steps.announce.result}` legal, which is the `vars:` use
+  // case sneaking back in through the one task that has no business carrying data —
+  // and it would give a step two reasons to exist, so the file could no longer say
+  // which one was meant. A capability that emits nothing is how this language says
+  // "this produces nothing you can read".
+  message Log {
+    message Inputs {
+      // Message is the line a person reads. It is the whole point, so it is the
+      // only required input.
+      string message = 1 [
+        (buf.validate.field).required = true,
+        (google.api.field_behavior) = REQUIRED
+      ];
+
+      // Level says how much it matters, and defaults to LEVEL_INFO.
+      //
+      // An enum rather than a free string, because a sink has to map it onto
+      // something — a terminal colour, a severity field, a filter — and a set that
+      // an author can extend by typo is a set nothing downstream can switch on.
+      Level level = 2 [(buf.validate.field).enum = {defined_only: true}];
+
+      // Fields carry structure for a sink that has somewhere to put it, and are
+      // ignored by one that does not.
+      //
+      // String-valued rather than Value-valued, and that is a real limit rather
+      // than an oversight: every sink this can reach — a terminal line, a logging
+      // backend's attributes, a run record — renders to text in the end, and a
+      // nested value would render differently at each of them. Compose the string
+      // in the expression, where the author can see what it will say.
+      //
+      // Bounded because a workflow chooses both the count and the size, and a log
+      // line is written to durable history.
+      map<string, string> fields = 3 [(buf.validate.field).map = {
+        max_pairs: 32
+        keys: {
+          string: {
+            min_len: 1
+            max_len: 64
+          }
+        }
+        values: {
+          string: {max_len: 1024}
+        }
+      }];
+    }
+
+    // Level is how much a message matters.
+    //
+    // Three, and no more without a reason: `debug` is a *deployment* concern rather
+    // than an authoring one — a workflow author cannot know what a given operator
+    // wants filtered — and `fatal` is a claim about control flow that a task has no
+    // way to honour, since emitting a line does not stop the run.
+    enum Level {
+      // Unspecified reads as LEVEL_INFO, so a `log:` that says nothing about level
+      // is the ordinary case rather than an error.
+      LEVEL_UNSPECIFIED = 0;
+      LEVEL_INFO = 1;
+      LEVEL_WARN = 2;
+      LEVEL_ERROR = 3;
+    }
+
+    // Outputs is empty and stays empty.
+    //
+    // Present rather than absent because every task's shape is described from a
+    // descriptor — `flow tasks` and the language server both read one — and a task
+    // with no message at all would have to be a special case in each of them. An
+    // empty message says "nothing" in the same vocabulary everything else uses.
+    message Outputs {}
+  }
+
   // Echo is a simple task that echoes back the input message.
   message Echo {
     message Inputs {

@@ -208,9 +208,9 @@ func TestHTTPOutputsAreCostBounded(t *testing.T) {
 
 	// Nested comprehensions over ten elements: 10^5 iterations, which is far past
 	// the cost limit and far too fast to be caught by any timeout.
-	const explosive = `{"boom": json_parse(body).n.map(a, json_parse(body).n.map(b, ` +
-		`json_parse(body).n.map(c, json_parse(body).n.map(d, ` +
-		`json_parse(body).n.map(e, a + b + c + d + e)))))}`
+	const explosive = `{"boom": json_parse(response.body).n.map(a, json_parse(response.body).n.map(b, ` +
+		`json_parse(response.body).n.map(c, json_parse(response.body).n.map(d, ` +
+		`json_parse(response.body).n.map(e, a + b + c + d + e)))))}`
 
 	_, err := runHTTPTask(t, map[string]any{
 		"url":     server.URL,
@@ -247,7 +247,7 @@ func TestHTTPOutputsAreCancellable(t *testing.T) {
 	_, err = taskFuncHTTP(policy)(ctx, NewNamedValues(map[string]any{
 		"url":     server.URL,
 		"method":  http.MethodGet,
-		"outputs": NewExpr(`{"n": json_parse(body).n}`),
+		"outputs": NewExpr(`{"n": json_parse(response.body).n}`),
 	}), nil)
 
 	require.Error(t, err, "a cancelled run still evaluated an outputs expression")

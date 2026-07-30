@@ -130,9 +130,13 @@ The above `Flowfile` defines two steps:
 ### Referring to a step's outputs
 
 A step is named through a root — `${steps.<id>.<output>}` — while a name bound *where the
-expression is written* stays bare: a loop's iterator, `now` inside `wait_until:`, and the
-response variables a task evaluates its own inputs against (`status_code`, `body` and
-`json` in the `http` task).
+expression is written* stays bare: a loop's `as:` binding, and `now` inside `wait_until:`.
+
+Rooted or bare follows from *who chose the name*. An author's own names — a loop's
+binding, a step's `vars:` — stay bare. Names the system injects get a root: a step's
+outputs under `steps.`, the workflow's vars under `vars.`, a signal's payload under
+`payload.`, and the http response under `response.`. That rule is what lets each of
+those sets grow without the next name capturing a binding somebody already had.
 
 Two namespaces rather than one, because a single flat one cannot tell a bare `${name}`
 inside a loop from a reference to a step called `name`. The language used to forbid the
@@ -292,7 +296,7 @@ steps:
   - id: process
     for_each:
       items: ${steps.targets.result}
-      iterator: name          # defaults to `item`; bare, so it may share a step's id
+      as: name          # defaults to `item`; bare, so it may share a step's id
       max_parallel: 3         # omit or 1 to run one at a time
       steps:
         - id: label
@@ -348,7 +352,7 @@ See [examples/fan-out-and-parallel](examples/fan-out-and-parallel).
 
 ### Parse JSON with CEL
 
-You can keep HTTP simple (returning `status_code`, `headers`, `body`) and use the CEL task to parse JSON without a separate HTTP+JSON task. `json_parse(string)` is available with nothing to enable:
+You can keep HTTP simple (returning `status_code`, `headers`, `body` as this step's outputs) and use the CEL task to parse JSON without a separate HTTP+JSON task. `json_parse(string)` is available with nothing to enable:
 
 ```yaml
 name: json-via-cel
@@ -400,24 +404,26 @@ steps:
       url: https://httpbin.org/json
       # ${...} marks a CEL expression, as everywhere else in a Flowfile.
       # Quote it so YAML does not read the colons inside as mapping syntax.
-      outputs: "${ {'status': status_code, 'title': json_parse(body)['slideshow']['title']} }"
+      outputs: "${ {'status': response.status_code, 'title': json_parse(response.body)['slideshow']['title']} }"
 ```
 
-Unlike other inputs, `outputs` is evaluated by the `http` task after the response arrives,
-so its expression sees the response. `flow validate` knows this and will not mistake
-`body` for a step reference.
+Unlike other inputs, `outputs` is evaluated by the `http` task after the response
+arrives, so its expression sees the response — reached through `response.*`, because
+those names are the *system's* rather than yours. `steps.` is reachable alongside it, so
+a shaping expression may combine the response with an earlier step's output.
 
-Those names are bare for the same reason a loop's iterator is: the task binds them where
-the expression is written, rather than their being another step's outputs. `steps.` is
-still reachable alongside them — the response variables are added to the scope, not
-substituted for it — so a shaping expression may combine the response with an earlier
-step's output. `flow fix` therefore leaves a deferred input alone rather than rooting what
-it cannot tell apart, and says so when a name in one is spelled like a step in the file.
+Two spellings that look alike and are not: `response.body` is this response, read here;
+`steps.web.body` is this step's output, read later.
 
-Available variables in `outputs` evaluation:
-- `status_code` (int64)
-- `body` (string)
-- `headers` (map[string]string)
+Available in `expect:` and `outputs:`:
+- `response.status_code` (int)
+- `response.body` (string)
+- `response.headers` (map[string]list[string])
+- `response.json`, when `parse_json: true`
+
+`flow fix` rewrites the older bare spelling. For a name in one of these inputs that is
+*not* the response's, it still declines and says so — there it may be a step, and only
+the author knows.
 
 Tip: prefer returning only the fields a later step actually needs. Carrying less keeps a
 workload comfortably inside Temporal's default payload limits; genuinely large data is
@@ -635,14 +641,54 @@ assumes a hosted service.
 
 Each step in a `Flowfile` has named inputs and produces named outputs, which later steps reference in CEL expressions as `${steps.<id>.<output>}` — the step `id` selects the step and the output name selects the value. The outputs of a step are determined by the task being used, and can be of various types (e.g., `string`, `int`, `map`, etc.). The outputs of a step can be used as inputs to later steps, allowing for complex data flows and transformations.
 
+### Saying what happened: `log:`
+
+`log:` emits a message for a person to read. It is the one task whose purpose is to be
+*seen* rather than to produce a value, and where the message goes depends on who is
+watching — `flow run local` renders it to your terminal, and on a worker it reaches the
+same logs everything else there does, tagged with the run that emitted it.
+
+```yaml
+steps:
+  - id: canary
+    log:
+      level: warn
+      message: canary is taking 10% of traffic; watch the error rate
+      fields:
+        service: ${vars.service}
+        stage: canary
+```
+
+`level:` is one of `info`, `warn` or `error`, defaulting to `info` — written the way you
+would say it rather than the way a protocol stores it, and `flow validate` names the
+three if you write a fourth. There is no `debug`, because what an operator wants
+filtered is a property of a deployment rather than something a workflow author can know;
+and no `fatal`, because emitting a line does not stop a run, so a level claiming
+otherwise would be a promise the engine cannot keep.
+
+`fields:` carry structure for a sink that has somewhere to put it, and are ignored by
+one that does not. They are string-valued: everything this reaches renders to text in
+the end, so compose the string in the expression where you can see what it will say.
+
+Log lines go to stderr, so `flow run local ... | jq` still reads a single JSON document
+from stdout.
+
+See [examples/logging](examples/logging).
+
 ### Available Tasks
 
 | Task Name | Inputs | Outputs |
 |-----------|--------|---------|
+| `log`     | `message`, `level`, `fields` | *(none)* |
 | `echo`    | `message` | `result` |
 | `printf`  | `format`, `args` | `result` |
 | `http`    | `url`, `method`, `headers`, `body`, `query`, `form`, `json`, `parse_json`, `outputs`, `expect`, `retry_on_unknown_outcome` | `status_code`, `headers`, `body`, `json` |
 | `cel`     | `expr`, `vars` | `result` |
+
+`log` has no outputs, which is the design rather than a gap: a log line is an effect on a
+reader, not a value for a later step. Naming one — `${steps.announce.result}` — would give
+a step two reasons to exist, so the file could no longer say which one was meant. To carry
+a value, name it with `vars:`.
 
 Names only, deliberately: types and constraints belong to the schema, and repeating them
 here is how the two disagree. `flow tasks` prints the same catalog with every type, which

@@ -159,6 +159,20 @@ func ClampWidth(columns int) int {
 	return min(columns, maxWidth)
 }
 
+// Trim cuts a rendered string to a width, measuring what will be displayed.
+//
+// Display width rather than bytes, which is the whole reason this exists rather than
+// slicing: a styled string carries escape sequences that occupy no columns, and a line
+// that has been through a theme is mostly them. lipgloss measures correctly underneath;
+// naming it once keeps every surface trimming the same way.
+//
+// Trim the *whole* line, once, at the end. A line is usually several parts — a pill, a
+// message, some fields — and trimming each to the full width puts the line over it by
+// however wide the other parts are.
+func Trim(text string, width int) string {
+	return lipgloss.NewStyle().MaxWidth(width).Render(text)
+}
+
 // wantsUnicode decides between the typographic marks and their ASCII fallbacks.
 //
 // The conservative direction is deliberate. A mark that does not render is a

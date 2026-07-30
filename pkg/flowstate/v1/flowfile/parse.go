@@ -61,7 +61,7 @@ var (
 	nodeKindKeys = []string{"for_each", "parallel", "sleep", "wait_until", "wait_for_signal"}
 
 	retryKeys   = []string{"attempts", "interval", "backoff", "max_interval"}
-	forEachKeys = []string{"items", "iterator", "max_parallel", "steps"}
+	forEachKeys = []string{"items", "as", "max_parallel", "steps"}
 	branchKeys  = []string{"steps"}
 )
 
@@ -917,9 +917,9 @@ func (c *compiler) forEach(n ast.Node, path string, r ref) *v1.ForEach {
 		c.report(spanOfNode(n), r, "for_each requires items, an expression producing the list to iterate over")
 	}
 
-	if f, found := fields.get("iterator"); found {
-		iterator, _ := c.text(f.value, fieldPath(path, "iterator"),
-			ref{step: r.step, path: fieldPath(path, "iterator"), label: "for_each iterator"})
+	if f, found := fields.get("as"); found {
+		iterator, _ := c.text(f.value, fieldPath(path, "as"),
+			ref{step: r.step, path: fieldPath(path, "as"), label: "for_each as"})
 		loop.Iterator = iterator
 	}
 

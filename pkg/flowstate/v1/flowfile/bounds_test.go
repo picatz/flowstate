@@ -211,7 +211,7 @@ steps:
   - id: a
     for_each:
       items: ${[1]}
-      iterator: steps
+      as: steps
       steps:
         - id: b
           echo:

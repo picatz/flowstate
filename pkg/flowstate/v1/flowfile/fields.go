@@ -61,6 +61,16 @@ func (c *compiler) check(entries []entry, r ref, known []string) *fieldSet {
 	fs := &fieldSet{index: make(map[string]int, len(entries))}
 	for _, e := range entries {
 		if !slices.Contains(known, e.name) {
+			// A key that used to be grammar is a different mistake from one that never
+			// was, and gets a different sentence. "unknown key" with a nearest-match
+			// suggestion describes a typo an author did not make, and sends them
+			// looking for one — while the thing they actually need is the new spelling
+			// and the command that writes it for them.
+			if advice, retired := retiredKeys[e.name]; retired && slices.Contains(known, advice.now) {
+				c.report(spanOfNode(e.key), r, "%s", advice.message(e.name))
+
+				continue
+			}
 			c.report(spanOfNode(e.key), r, "unknown key %q; %s", e.name, expectedKeys(e.name, known))
 			continue
 		}
@@ -510,3 +520,38 @@ func (c *compiler) heldForLater(entries []entry, r ref, available []string) []en
 // between: an entry whose word is a future key nowhere is advice about a position that
 // does not exist.
 var liveElsewhere = map[string]string{}
+
+// retiredKeys are spellings the grammar has replaced, and what replaced them.
+//
+// Guarded by the *position*, not only the word: an entry fires where its replacement is
+// a key, so `iterator:` written on a step rather than inside a `for_each` still reads as
+// an unknown key there — which it is. A table keyed on the word alone would answer "run
+// `flow fix`" for a file `flow fix` will not touch, which is the one answer worse than
+// no answer.
+//
+// An entry lives for exactly one edition. The grammar carries one spelling at a time and
+// `flow fix` rewrites the other, so what an entry buys is a good sentence for a file
+// written before the sweep — not a second spelling the parser accepts.
+var retiredKeys = map[string]retiredKey{
+	"iterator": {
+		now:  "as",
+		note: "it names the binding rather than the mechanism, and reads as the sentence it is: *for each item as name*",
+	},
+}
+
+// A retiredKey is one replaced spelling.
+type retiredKey struct {
+	// now is the key that replaced it, and the position guard: the advice is only
+	// given where this is a legal key.
+	now string
+
+	// note says why, in one clause. Worth carrying because a rename with no reason
+	// reads as churn, and an author who understands the reason writes the new
+	// spelling from memory next time instead of looking it up.
+	note string
+}
+
+// message renders the advice for one retired key.
+func (k retiredKey) message(was string) string {
+	return fmt.Sprintf("`%s:` is now `%s:` — %s; run `flow fix` to rewrite this file", was, k.now, k.note)
+}

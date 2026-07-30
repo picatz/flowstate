@@ -74,7 +74,7 @@ steps:
     echo:
 `,
 			line: 4, col: 5,
-			want: `unknown key "nonsense"; the keys here are id, description, if, vars, timeout, retry, continue_on_error, for_each, parallel, sleep, wait_until, wait_for_signal, cel, echo, http, and printf`,
+			want: `unknown key "nonsense"; the keys here are id, description, if, vars, timeout, retry, continue_on_error, for_each, parallel, sleep, wait_until, wait_for_signal, cel, echo, http, log, and printf`,
 		},
 		{
 			// The shape every Flowfile written before the flattening has, and the
@@ -133,7 +133,7 @@ steps:
     timeout: 5s
 `,
 			line: 3, col: 5,
-			want: "must have one of for_each, parallel, sleep, wait_until, wait_for_signal, cel, echo, http, or printf",
+			want: "must have one of for_each, parallel, sleep, wait_until, wait_for_signal, cel, echo, http, log, or printf",
 		},
 		{
 			name: "a step key that is not a string",
@@ -214,7 +214,7 @@ steps:
 steps:
   - id: a
     for_each:
-      iterator: x
+      as: x
       steps:
         - id: b
           echo:
@@ -360,7 +360,7 @@ steps:
   - id: second
     for_each:
       items: ${[1, 2]}
-      iterator: n
+      as: n
       steps:
         - id: inner
           echo:
@@ -381,7 +381,7 @@ steps:
 		{path: "steps[0].timeout", start: flowfile.Position{Line: 4, Column: 14}, end: flowfile.Position{Line: 4, Column: 17}},
 		{path: "steps[0].echo.message", start: flowfile.Position{Line: 6, Column: 16}, end: flowfile.Position{Line: 6, Column: 34}},
 		{path: "steps[1].for_each.items", start: flowfile.Position{Line: 9, Column: 14}, end: flowfile.Position{Line: 9, Column: 23}},
-		{path: "steps[1].for_each.iterator", start: flowfile.Position{Line: 10, Column: 17}, end: flowfile.Position{Line: 10, Column: 18}},
+		{path: "steps[1].for_each.as", start: flowfile.Position{Line: 10, Column: 11}, end: flowfile.Position{Line: 10, Column: 12}},
 		{path: "steps[1].for_each.steps[0].echo.message", start: flowfile.Position{Line: 14, Column: 22}, end: flowfile.Position{Line: 14, Column: 27}},
 	}
 
@@ -432,7 +432,7 @@ steps:
 	if span, ok := positions.Locate("second", ""); !ok || span.Start.Line != 7 {
 		t.Errorf("Locate(second, \"\") = %s, %v; want line 7", span, ok)
 	}
-	if span, ok := positions.Locate("second", "iterator"); !ok || span.Start.Line != 10 {
+	if span, ok := positions.Locate("second", "as"); !ok || span.Start.Line != 10 {
 		t.Errorf("Locate(second, iterator) = %s, %v; want line 10", span, ok)
 	}
 
@@ -750,7 +750,7 @@ steps:
   - id: outer
     for_each:
       items: ${[1, 2]}
-      iterator: n
+      as: n
       max_parallel: 4
       steps:
         - id: inner
@@ -1044,7 +1044,7 @@ func TestParseRejects(t *testing.T) {
 		{
 			name: "iterator that is not a name",
 			src: forEachWith(`items: ${[1]}
-      iterator: 5`),
+      as: 5`),
 			want: "must be a string",
 		},
 		{

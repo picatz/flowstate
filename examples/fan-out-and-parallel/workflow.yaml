@@ -20,7 +20,7 @@ steps:
   - id: process
     for_each:
       items: ${steps.targets.result}
-      iterator: name
+      as: name
       max_parallel: 3
       steps:
         - id: label

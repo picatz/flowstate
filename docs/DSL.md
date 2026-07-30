@@ -468,7 +468,7 @@ Three steps and two activity round trips become one step and one; the `cel` task
 private `vars` input — a compatibility shim the parser already documents as one —
 disappears along with the confusion of two things named `vars`.
 
-### `echo:` is retired; `log:` is the capability it was imitating
+### `echo:` is retired; `log:` is the capability it was imitating *(`log:` landed)*
 
 `echo` is an identity function registered as an activity. Its shipped uses are (a) a
 poor author's `vars:`, (b) hello-world scaffolding, and (c) "this branch ran"
@@ -496,6 +496,42 @@ legitimate job `echo` was doing.
 - id: hello
   log:
     message: hello world
+```
+
+*Since written:* `log:` shipped as specified — `message` required, `level` defaulting to
+info, `fields` a bounded string map, and no outputs. `echo` is still registered and is
+retired at the edition boundary, alongside `cel:` and `printf:`, so a file has one
+change to make rather than three.
+
+Three details the plan did not have to settle and the implementation did.
+
+**Where the message goes is the caller's, not the task's.** The task emits through an
+`slog.Logger` taken from its context. That is what lets one workflow render to a
+person's terminal under `flow run local` and reach a worker's log aggregator in
+production — through Temporal's activity logger, so every line is tagged with the run
+that emitted it rather than being the one line in a worker's output nobody can trace. A
+package-level destination would have been one place per *process*, which is wrong for a
+worker serving several tenants and wrong for two tests running at once.
+
+**`level:` is the language's first enum-typed input,** and an author writes the choice
+rather than the storage: `level: warn`, not `LEVEL_WARN` and certainly not `2`. Both the
+spelling and the diagnostic are derived from the enum descriptor, so the next enum input
+on any task inherits them. `flow validate` names the three choices when a fourth is
+written, and suggests `warn` for `warning` — three edits apart, which no edit-distance
+threshold tight enough to be useful will reach, and the single likeliest mistake here.
+
+**A task declaring no outputs made an old gap total.** `${steps.web.nonsense}` used to
+validate cleanly and resolve to nothing at run time: the output name was discarded where
+the reference was parsed, so only the step id was ever checked. With `log` producing
+nothing, *every* reference to a log step is that mistake. References now carry the
+output name and are checked against the task's declared outputs — silently, wherever the
+set is not knowable in full: an `http` step naming its own `outputs:`, a `for_each`, a
+`parallel`, a gate, or a plugin that describes none.
+
+```console
+$ flow validate workflow.yaml
+workflow.yaml:11:16: step "use" input "message": step "say" has no output "result";
+the log task produces no outputs, because a log step is an effect rather than a value
 ```
 
 ### `printf:` is retired — the replacement already exists
@@ -617,13 +653,39 @@ steps:
       as: name
 ```
 
-### `for_each` reads `as:`
+### `for_each` reads `as:` *(landed)*
 
 `iterator:` is retired for `as:` in the same edition sweep. It is shorter, names the
 binding rather than the mechanism, and reads as the sentence it is: *for each item
 as name*. `flow fix` rewrites it.
 
-### `http:` stays; its response scope gets a root
+*Since written:* landed as specified, and the machinery it needed is the reusable part.
+
+A retired key is not an unknown one, and the difference is the whole diagnostic. "unknown
+key `iterator`; did you mean `items`?" sends an author to correct a word they spelled
+correctly. What helps is the new spelling, the reason, and the command that writes it:
+
+```console
+$ flow validate workflow.yaml
+workflow.yaml:6:7: step "each": `iterator:` is now `as:` — it names the binding rather
+than the mechanism, and reads as the sentence it is: *for each item as name*; run
+`flow fix` to rewrite this file
+```
+
+Two properties make that table safe to grow for the rest of the sweep. Each entry is
+guarded by its *position* rather than by the word alone — `iterator:` written on a step
+is still simply an unknown key, because `as:` is not a key there, and answering "run
+`flow fix`" for a file the command will not touch is the one response worse than none.
+And an entry lives for exactly one edition: the grammar carries one spelling at a time,
+so an entry buys a good sentence for a file written before the sweep rather than a
+second spelling the parser accepts.
+
+The rewrite itself edits the key token and copies the rest of the line through, so the
+value keeps its quoting, an inline comment keeps its column, and a comment written
+beneath the key stays where the author put it. That is what makes `flow fix .` something
+people run on a directory rather than a file at a time.
+
+### `http:` stays; its response scope gets a root *(landed)*
 
 The name passes the test the others fail — it names the protocol, not an
 implementation or a vendor — and its danger is governed where principle 7 wants it,
@@ -665,6 +727,28 @@ This narrows the statement of principle 5 that the first round's naming model ma
 "bare local names" always meant the names an *author* binds. A loop's `as:` stays
 bare; what a task or the engine injects gets a root. `now` remains the single
 exception, already fenced by its own rules.
+
+*Since written:* landed as specified, and it removed an ambiguity rather than adding a
+spelling. A bare `status_code` inside `expect:` used to be genuinely undecidable — it
+could have been the response's or a step called `status_code` — which is why `flow fix`
+declined to rewrite a deferred input at all and only *noted* it. Under the rooted
+grammar a step is `steps.<id>`, so the four names the task binds can only be the
+response's, and `flow fix` rewrites them:
+
+```console
+$ flow fix workflow.yaml
+workflow.yaml:14: response references rooted under `response.`
+```
+
+The note survives for the names that are *not* the response's, which is where the
+ambiguity genuinely still lives — and is suppressed for the four, so an author is never
+told to undo the migration the same command just performed.
+
+The rewriter generalised at the same time: `rootedUnder` takes a root and a set of
+names, so the step rooting and this one share the parts that are hard and easy to get
+subtly wrong — verifying an offset holds the identifier it claims to before splicing,
+and applying splices from the back. What did *not* generalise is the permission. This
+is the one deferred scope whose shape is knowable; every other one is still left alone.
 
 Held for their own reviewed changes, in this order of need: structured `auth:` (so
 authors stop hand-building secret-bearing headers), an `idempotency_key`, and

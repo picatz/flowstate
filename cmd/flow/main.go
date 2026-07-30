@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -745,6 +746,13 @@ flow validate examples/hello-world/workflow.yaml`,
 				return err
 			}
 			reportUnansweredGates(cmd.ErrOrStderr(), workflow, localSignals)
+
+			// `log:` steps go to stderr, where the run's own commentary already goes,
+			// so the result on stdout stays a single JSON document a pipe can read.
+			// A workflow that narrates itself must not break `flow run local ... | jq`.
+			surface := newSurface(cmd)
+			ctx = v1.ContextWithLogger(ctx,
+				slog.New(newRunLogHandler(surface.Err, surface.ErrTheme)))
 
 			result, err := v1.Run(ctx, workflow)
 			if err != nil {

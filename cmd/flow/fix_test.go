@@ -105,7 +105,7 @@ steps:
   - id: process
     for_each:
       items: ${targets.result}
-      iterator: target
+      as: target
       max_parallel: 2
       steps:
         - id: label

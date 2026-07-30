@@ -305,7 +305,7 @@ func (m watchModel) View() tea.View {
 	// escape sequences cost nothing against the margin — and the wrapped notes are
 	// already inside it, which makes this a no-op on them rather than a second
 	// opinion.
-	return tea.NewView(lipgloss.NewStyle().MaxWidth(m.viewWidth()).Render(b.String()))
+	return tea.NewView(ui.Trim(b.String(), m.viewWidth()))
 }
 
 // note renders a marked block of prose, wrapped to the terminal.

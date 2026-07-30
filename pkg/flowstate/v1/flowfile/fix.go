@@ -337,10 +337,65 @@ func (f *fixer) step(n ast.Node) {
 		case "task":
 			f.taskBlock(v)
 		case "for_each":
+			f.renamedKey(v.Value, "iterator", "as")
 			f.nested(v.Value, "steps")
 		case "parallel":
 			f.branches(v.Value)
 		}
+	}
+}
+
+// renamedKey rewrites one key of a mapping, leaving its value and the rest of the line
+// exactly as written.
+//
+// The whole edit is the token before the colon, which is what makes a rename safe to do
+// on lines at all: the value keeps its quoting, an inline comment keeps its column, and
+// a multi-line value underneath is not touched because the key's own line is the only
+// one consumed. That last part matters — taking the block under the key would delete a
+// comment written beneath it while claiming to have renamed something.
+//
+// Silent when the new spelling is already there, so running this twice changes nothing
+// the first run did not.
+func (f *fixer) renamedKey(n ast.Node, was, now string) {
+	n = unwrapAnchor(n)
+	mapping, ok := n.(*ast.MappingNode)
+	if !ok {
+		if single, isOne := n.(*ast.MappingValueNode); isOne {
+			mapping = &ast.MappingNode{Values: []*ast.MappingValueNode{single}}
+		} else {
+			return
+		}
+	}
+
+	for _, v := range mapping.Values {
+		name, ok := keyNameOf(v.Key)
+		if !ok || name != was {
+			continue
+		}
+
+		span := spanOfNode(v.Key)
+		if !span.IsValid() || span.Start.Line > len(f.lines) {
+			continue
+		}
+
+		// Rewritten from the source line rather than reassembled from the parsed
+		// value, because reassembling loses whatever the author wrote after it. The
+		// key is replaced in place and the remainder of the line — the colon, the
+		// spacing, the value, any trailing comment — is copied through.
+		line := f.lines[span.Start.Line-1]
+		at := span.Start.Column - 1
+		if at < 0 || at+len(was) > len(line) || line[at:at+len(was)] != was {
+			// The key is not where the parser said it was, which means something
+			// about this line is not the shape assumed here — a quoted key, most
+			// likely. Refusing beats editing at an offset that is off by one.
+			f.refuse(v.Key, "`%s:` is now `%s:`, but this line is not shaped so it can be rewritten safely; change it by hand", was, now)
+
+			continue
+		}
+
+		f.record(span.Start.Line, span.Start.Line,
+			[]string{line[:at] + now + line[at+len(was):]},
+			fmt.Sprintf("`%s:` renamed to `%s:`", was, now))
 	}
 }
 
@@ -856,6 +911,15 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 		case *ast.MappingValueNode:
 			name, named := keyNameOf(node.Key)
 			if named && task.deferred[name] {
+				// One deferred scope this rewriter *can* see. The http task binds
+				// exactly four names into its `expect:` and `outputs:` expressions,
+				// and under the rooted grammar none of them can be anything else
+				// there — a step is `steps.<id>` now, so a bare `body` is the
+				// response's or it is unbound.
+				if task.name == httpTaskName {
+					f.rootResponse(node.Value)
+				}
+
 				// Evaluated by the task, in a scope this rewriter cannot see and
 				// must not guess at — but not a scope where a step is unreachable.
 				// The http task evaluates these under an activation whose *parent*
@@ -870,7 +934,15 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 				// Except where the author already said which. A name the step binds
 				// as a variable is that variable, not a step that happens to share
 				// its spelling, and there is nothing conditional left to raise.
-				f.noteDeferred(node.Value, name, without(steps, task.bound))
+				candidates := without(steps, task.bound)
+				if task.name == httpTaskName {
+					// Rewritten above, so there is nothing conditional left to raise
+					// — and a note suggesting the *step* spelling for a name that is
+					// now the response's would send an author to undo a migration
+					// this command just performed.
+					candidates = without(candidates, responseNames)
+				}
+				f.noteDeferred(node.Value, name, candidates)
 				return
 			}
 			// A task's key opens its inputs, so the names its own scope binds are
@@ -878,6 +950,7 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 			if named {
 				if def, known := v1.LookupTask(name); known {
 					walk(node.Value, taskScope{
+						name:     name,
 						deferred: deferredInputs(def),
 						bound:    boundVarNames(node.Value, def),
 					})
@@ -898,6 +971,14 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 
 // taskScope is what the walk knows once it is inside a task's inputs.
 type taskScope struct {
+	// name is the task whose inputs these are, or empty outside one.
+	//
+	// Carried because one task's private scope has a *known* shape: the http task
+	// binds four response names, so a bare one of those inside `expect:` or
+	// `outputs:` is unambiguous and can be rewritten rather than only reported. No
+	// other deferred scope is knowable, which is why this is a name and not a flag.
+	name string
+
 	// deferred names the inputs the task evaluates itself.
 	deferred map[string]bool
 	// bound names the variables the step supplies to those expressions.
@@ -986,6 +1067,99 @@ func deferredInputs(def v1.TaskDef) map[string]bool {
 		return nil
 	}
 	return out
+}
+
+// httpTaskName is the one task whose private scope this rewriter knows the shape of.
+const httpTaskName = "http"
+
+// rootResponse rewrites the bare response names in an `expect:` or `outputs:` value.
+//
+// Deliberately not going through [fixer.rootScalar]: that one requires a fence, and an
+// `outputs:` mapping is written as ordinary keys whose *values* are fenced, while an
+// `expect:` is a fenced scalar. Both shapes reach here, and the recursion handles the
+// mapping by descending into it.
+func (f *fixer) rootResponse(n ast.Node) {
+	switch node := unwrapAnchor(n).(type) {
+	case *ast.MappingNode:
+		for _, v := range node.Values {
+			f.rootResponse(v.Value)
+		}
+
+		return
+	case *ast.MappingValueNode:
+		f.rootResponse(node.Value)
+
+		return
+	case *ast.SequenceNode:
+		for _, v := range node.Values {
+			f.rootResponse(v)
+		}
+
+		return
+	case *ast.StringNode:
+		f.rootResponseScalar(node)
+
+		return
+	}
+}
+
+// rootResponseScalar rewrites one scalar holding a response expression.
+//
+// The fence is optional here and that is not an oversight: `expect:` is *always* an
+// expression, fenced or not, so a file written either way has to migrate. The rewritten
+// text goes back in the spelling it was found in.
+func (f *fixer) rootResponseScalar(node *ast.StringNode) {
+	source, fenced := SplitFence(node.Value)
+	if !fenced {
+		source = node.Value
+	}
+
+	rooted, changed, err := rootedResponseExpr(source)
+	if err != nil {
+		f.refuse(node, "%s", err.Error())
+
+		return
+	}
+	if !changed {
+		return
+	}
+
+	span := spanOfNode(node)
+	if !span.IsValid() || span.Start.Line != span.End.Line {
+		f.refuse(node,
+			"this expression spans more than one line, so it cannot be rewritten by splicing; root its response references by hand")
+
+		return
+	}
+
+	want, replacement := source, rooted
+	if fenced {
+		want, replacement = fenceOpen+source+fenceClose, fenceOpen+rooted+fenceClose
+	}
+
+	line := f.line(span.Start.Line)
+	from := span.Start.Column - 1
+	if from < 0 || from+len(want) > len(line) || line[from:from+len(want)] != want {
+		// Quoted, most likely: `outputs: "${ … }"` puts the value one column right of
+		// where the scalar's own span starts. Searching for it is safe here because
+		// the text being replaced is the whole expression rather than a token that
+		// could appear twice.
+		at := strings.Index(line, want)
+		if at < 0 {
+			f.refuse(node,
+				"this value is not shaped so its response references can be rewritten safely; root them by hand")
+
+			return
+		}
+		from = at
+	}
+
+	f.lines[span.Start.Line-1] = line[:from] + replacement + line[from+len(want):]
+	f.substituted = true
+	f.changes = append(f.changes, FixChange{
+		Line:    span.Start.Line,
+		Message: "response references rooted under `" + v1.ResponseRoot + ".`",
+	})
 }
 
 // rootScalar rewrites one fenced scalar in place.

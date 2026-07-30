@@ -8,6 +8,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 // Validation exists so that authoring mistakes are reported before a workflow
@@ -57,7 +58,7 @@ var stepProperties = map[string]bool{
 	"continue_on_error": true,
 	"for_each":          true,
 	"parallel":          true,
-	"iterator":          true,
+	"as":                true,
 	"items":             true,
 }
 
@@ -397,12 +398,12 @@ func validateWorkflowVars(wf *v1.Workflow) Diagnostics {
 
 		for _, ref := range rooted {
 			ds = append(ds, Diagnostic{
-				Field: field, Value: ref,
+				Field: field, Value: ref.ID,
 				Message: fmt.Sprintf(
 					"a var may not read a step: `%s:` is evaluated once before the first step runs, "+
 						"so %q has produced nothing yet; move this into the step that needs it, or "+
 						"give the step an input",
-					v1.VarsRoot, ref),
+					v1.VarsRoot, ref.ID),
 			})
 		}
 
@@ -597,13 +598,13 @@ func validateLoop(stepID string, loop *v1.ForEach, enclosing refScope, index int
 	iterator := v1.IteratorName(loop)
 	if !isCELIdentifier(iterator) {
 		ds = append(ds, Diagnostic{
-			Step: stepID, Field: "iterator",
+			Step: stepID, Field: "as",
 			Message: fmt.Sprintf("%q is not a valid identifier", iterator),
 		})
 	}
 	if slices.Contains(celReservedIdentifiers, iterator) {
 		ds = append(ds, Diagnostic{
-			Step: stepID, Field: "iterator",
+			Step: stepID, Field: "as",
 			Message: fmt.Sprintf("%q is a CEL reserved word, so ${%s} cannot be parsed", iterator, iterator),
 		})
 	}
@@ -613,7 +614,7 @@ func validateLoop(stepID string, loop *v1.ForEach, enclosing refScope, index int
 		// step from the body — and the body is exactly where rooted references are
 		// written.
 		ds = append(ds, Diagnostic{
-			Step: stepID, Field: "iterator",
+			Step: stepID, Field: "as",
 			Message: fmt.Sprintf(
 				"%q is the root every step is named under, and a loop variable of that name would hide all of them inside the body; choose another iterator",
 				iterator),
@@ -637,7 +638,7 @@ func validateLoop(stepID string, loop *v1.ForEach, enclosing refScope, index int
 		// without making a step or a loop able to hide the clock, which is the
 		// same problem pointed the other way.
 		ds = append(ds, Diagnostic{
-			Step: stepID, Field: "iterator",
+			Step: stepID, Field: "as",
 			Message: fmt.Sprintf(
 				"%q is the built-in naming the moment a wait is evaluated, which a loop variable of the same name would shadow inside `wait_until:`; choose another iterator",
 				iterator),
@@ -844,10 +845,14 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 	// in scope. There is no second reading of it to rule out, which is the point of
 	// the root.
 	for _, ref := range rooted {
-		if scope.steps[ref] {
+		if !scope.steps[ref.ID] {
+			ds = append(ds, unresolvedStep(stepID, inputName, ref.ID, index, wf)...)
+
 			continue
 		}
-		ds = append(ds, unresolvedStep(stepID, inputName, ref, index, wf)...)
+		if d, wrong := unknownStepOutput(stepID, inputName, ref, wf); wrong {
+			ds = append(ds, d)
+		}
 	}
 
 	for _, ref := range bare {
@@ -960,11 +965,46 @@ func unresolvedVar(stepID, inputName, ref string, scope refScope) Diagnostic {
 // Identifiers bound by a comprehension are excluded: in `items.map(x, x + 1)`
 // the name `x` is introduced by the expression itself and is not a step
 // reference. Reporting those would make every use of a comprehension look broken.
-func referencedIdentifiers(parsed *expr.ParsedExpr) (rooted, vars, bare []string) {
-	roots, varNames, free := map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}
+func referencedIdentifiers(parsed *expr.ParsedExpr) (rooted []stepRef, vars, bare []string) {
+	roots := map[stepRef]struct{}{}
+	varNames, free := map[string]struct{}{}, map[string]struct{}{}
 	collectReferences(parsed.GetExpr(), map[string]struct{}{}, roots, varNames, free)
 
-	return sortedNames(roots), sortedNames(varNames), sortedNames(free)
+	return sortedStepRefs(roots), sortedNames(varNames), sortedNames(free)
+}
+
+// A stepRef is one reference to a step: which step, and which of its outputs.
+//
+// The output name used to be discarded at the point it was parsed, which is why
+// `${steps.web.nonsense}` validated cleanly and then resolved to nothing at run time.
+// Carrying it costs one field and is the difference between "that step exists" — which
+// is all the tool could say — and "that step has no such output, it has these".
+type stepRef struct {
+	// ID is the step named under the root.
+	ID string
+
+	// Output is the name selected from it, or empty when the reference is to the
+	// step's whole outputs mapping. Empty is legal: `${steps.web}` is the mapping,
+	// which is a thing an expression may pass around.
+	Output string
+}
+
+// sortedStepRefs orders references so one file reports the same diagnostics in the same
+// sequence.
+func sortedStepRefs(set map[stepRef]struct{}) []stepRef {
+	refs := make([]stepRef, 0, len(set))
+	for ref := range set {
+		refs = append(refs, ref)
+	}
+	slices.SortFunc(refs, func(a, b stepRef) int {
+		if a.ID != b.ID {
+			return strings.Compare(a.ID, b.ID)
+		}
+
+		return strings.Compare(a.Output, b.Output)
+	})
+
+	return refs
 }
 
 // sortedNames returns a set's members in order, so one file always reports the
@@ -986,7 +1026,7 @@ func sortedNames(set map[string]struct{}) []string {
 // the spelling this grammar retired, and those want different diagnostics. They
 // are collected apart rather than merged and sorted out afterwards, because the
 // distinction is exactly what the caller needs and is lost by then.
-func collectReferences(e *expr.Expr, bound, rooted, vars, free map[string]struct{}) {
+func collectReferences(e *expr.Expr, bound map[string]struct{}, rooted map[stepRef]struct{}, vars, free map[string]struct{}) {
 	if e == nil {
 		return
 	}
@@ -995,10 +1035,10 @@ func collectReferences(e *expr.Expr, bound, rooted, vars, free map[string]struct
 		// the walk below so that `foo.bar` still reports `foo` as a bare name. That
 		// fall-through is what keeps adding a root from silently swallowing the
 		// diagnostic for a name that has none.
-		if root, name, ok := rootedName(sel, bound); ok {
+		if root, name, under, ok := rootedName(sel, bound); ok {
 			switch root {
 			case v1.StepsRoot:
-				rooted[name] = struct{}{}
+				rooted[stepRef{ID: name, Output: under}] = struct{}{}
 
 				return
 			case v1.VarsRoot:
@@ -1059,7 +1099,7 @@ func collectReferences(e *expr.Expr, bound, rooted, vars, free map[string]struct
 // the depth is whatever the author selected: `steps.a` is one select over the
 // root and `steps.a.result.code` is three.
 func rootedStepName(sel *expr.Expr_Select, bound map[string]struct{}) (string, bool) {
-	root, name, ok := rootedName(sel, bound)
+	root, name, _, ok := rootedName(sel, bound)
 
 	return name, ok && root == v1.StepsRoot
 }
@@ -1074,7 +1114,7 @@ func rootedStepName(sel *expr.Expr_Select, bound map[string]struct{}) (string, b
 // ok is false when the chain does not bottom out in a plain identifier, or when a
 // comprehension bound the root's name: then it is a binding rather than the root, and
 // whatever hangs off it is neither a step nor a var.
-func rootedName(sel *expr.Expr_Select, bound map[string]struct{}) (root, name string, ok bool) {
+func rootedName(sel *expr.Expr_Select, bound map[string]struct{}) (root, name, under string, ok bool) {
 	var fields []string
 	node := sel
 	for node != nil {
@@ -1083,18 +1123,28 @@ func rootedName(sel *expr.Expr_Select, bound map[string]struct{}) (root, name st
 		if ident := operand.GetIdentExpr(); ident != nil {
 			root = ident.GetName()
 			if _, shadowed := bound[root]; shadowed {
-				return "", "", false
+				return "", "", "", false
 			}
 			break
 		}
 		node = operand.GetSelectExpr()
 	}
 	if node == nil || len(fields) == 0 {
-		return "", "", false
+		return "", "", "", false
 	}
 
-	// Collected outermost first, so the name under the root is the last one reached.
-	return root, fields[len(fields)-1], true
+	// Collected outermost first, so the name under the root is the last one reached
+	// and what is selected *from* it is the one before that.
+	//
+	// Only one level down is returned, because only one level is the language's:
+	// `steps.web.body` names an output and `steps.web.body.items` selects into that
+	// output's value, which is CEL's business and not something this can check.
+	name = fields[len(fields)-1]
+	if len(fields) >= 2 {
+		under = fields[len(fields)-2]
+	}
+
+	return root, name, under, true
 }
 
 // isCELIdentifier reports whether s is a legal CEL identifier.
@@ -1257,4 +1307,132 @@ func unresolvedStep(stepID, inputName, ref string, index int, wf *v1.Workflow) D
 		Step: stepID, Field: inputName,
 		Message: fmt.Sprintf("references unknown step %q", ref),
 	}}
+}
+
+// toleratedErrorOutput is the output a step gains by being allowed to fail.
+//
+// Written by both drivers in place of a failed task's own outputs when
+// `continue_on_error:` is set, which is what a later step branches on. Named here
+// because the validator has to know about it and does not otherwise: it is the one
+// output that comes from the *policy* rather than from the task.
+const toleratedErrorOutput = "error"
+
+// unknownStepOutput reports a reference to an output a step does not produce.
+//
+// Silent unless it is sure, which is most of the time and deliberately so. It answers
+// only for a step running a *task* whose outputs are declared as a message, which is
+// where the set is known in full — every other shape produces names this cannot
+// enumerate:
+//
+//   - `http` with an `outputs:` input replaces its declared outputs with names the
+//     author chose, and the whole point of that input is that they are not fixed;
+//   - a `for_each` reports `results`, a `parallel` merges its branches, and a
+//     `wait_for_signal` carries whatever a sender sent — none of them a task, and each
+//     wanting knowledge this does not have yet;
+//   - a plugin may decline to describe its outputs at all.
+//
+// A false diagnostic is worse than a missing one, so every one of those is silence. The
+// case this does cover is the one that is never right: a step whose task declares a
+// fixed set, referenced by a name outside it — which `log`, declaring none, makes total
+// rather than occasional.
+func unknownStepOutput(stepID, inputName string, ref stepRef, wf *v1.Workflow) (Diagnostic, bool) {
+	if ref.Output == "" {
+		// The whole outputs mapping. Legal for any step, including one with nothing
+		// in it.
+		return Diagnostic{}, false
+	}
+
+	node := nodeWithID(ref.ID, wf)
+	task := node.GetTask()
+	if task == nil {
+		return Diagnostic{}, false
+	}
+
+	// A tolerated step gains an output no task declares.
+	//
+	// When `continue_on_error:` is set and the step fails, both drivers synthesise
+	// `error` in place of the task's own outputs — which is the whole point of the
+	// policy: a later step branches on it. So the set of outputs is the descriptor's
+	// *plus* that one, and checking the descriptor alone reports a documented pattern
+	// as a mistake. Precisely the failure this check's own comment warns about, and it
+	// shipped that way for one review cycle.
+	if ref.Output == toleratedErrorOutput && node.GetPolicy().GetContinueOnError() {
+		return Diagnostic{}, false
+	}
+
+	def, known := v1.LookupTask(task.GetName())
+	if !known || def.Outputs == nil {
+		return Diagnostic{}, false
+	}
+
+	// A task that names its own outputs answers for them. Checked by presence of the
+	// input rather than by task name, so a plugin adopting the same shape inherits the
+	// exemption rather than being reported against a set it replaced.
+	if _, replaced := task.GetInputs()["outputs"]; replaced {
+		return Diagnostic{}, false
+	}
+
+	if def.Outputs.Fields().ByName(protoreflect.Name(ref.Output)) != nil {
+		return Diagnostic{}, false
+	}
+
+	produced := fieldNames(def.Outputs)
+	if node.GetPolicy().GetContinueOnError() {
+		// Listed because it is available here, and a list that omits a name the very
+		// next edit might need sends the author to the docs for something the tool
+		// already knew.
+		produced = append(produced, toleratedErrorOutput)
+	}
+
+	message := fmt.Sprintf("step %q has no output %q", ref.ID, ref.Output)
+	switch {
+	case len(produced) == 0:
+		// The whole point of `log`, and worth saying rather than listing an empty set:
+		// an author reading "it produces: " learns nothing about why.
+		message += fmt.Sprintf("; the %s task produces no outputs, because a %s step is an effect rather than a value",
+			task.GetName(), task.GetName())
+
+		// Except that a tolerated step always has one, whatever its task produces —
+		// so the sentence above would be false where the policy is set, and this is
+		// the one case where "produces nothing" needs a qualifier.
+		if node.GetPolicy().GetContinueOnError() {
+			message += fmt.Sprintf(" (it does produce %q, since it may be tolerated)", toleratedErrorOutput)
+		}
+	default:
+		if suggestion, ok := nearest(ref.Output, produced); ok {
+			message += fmt.Sprintf("; did you mean %q?", suggestion)
+		} else {
+			message += fmt.Sprintf("; it produces %s", strings.Join(produced, ", "))
+		}
+	}
+
+	return Diagnostic{Step: stepID, Field: inputName, Value: ref.Output, Message: message}, true
+}
+
+// nodeWithID returns the node an id names, anywhere in the workflow, or nil.
+func nodeWithID(id string, wf *v1.Workflow) *v1.Node {
+	var walk func([]*v1.Node) *v1.Node
+	walk = func(nodes []*v1.Node) *v1.Node {
+		for _, node := range nodes {
+			if node.GetId() == id {
+				return node
+			}
+			switch kind := node.GetKind().(type) {
+			case *v1.Node_ForEach:
+				if found := walk(kind.ForEach.GetBody()); found != nil {
+					return found
+				}
+			case *v1.Node_Parallel:
+				for _, branch := range kind.Parallel.GetBranches() {
+					if found := walk(branch.GetSteps()); found != nil {
+						return found
+					}
+				}
+			}
+		}
+
+		return nil
+	}
+
+	return walk(wf.GetSteps())
 }

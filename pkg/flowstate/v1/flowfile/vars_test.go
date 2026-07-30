@@ -215,7 +215,7 @@ steps:
   - id: each
     for_each:
       items: ${["a"]}
-      iterator: name
+      as: name
       steps:
         - id: inner
           vars:
@@ -235,7 +235,7 @@ steps:
       shared: a
     for_each:
       items: ${["x"]}
-      iterator: item
+      as: item
       steps:
         - id: inner
           vars:
@@ -266,7 +266,7 @@ steps:
   - id: each
     for_each:
       items: ${["a"]}
-      iterator: name
+      as: name
       steps:
         - id: inner
           vars:

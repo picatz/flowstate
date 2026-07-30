@@ -46,7 +46,7 @@ steps:
     description: One at a time, in roster order, so the first responder is paged before the backup.
     for_each:
       items: ${steps.roster.result}
-      iterator: person
+      as: person
       steps:
         - id: page
           printf:

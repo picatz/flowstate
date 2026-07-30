@@ -18,6 +18,7 @@ $ flow validate examples/hello-world/workflow.yaml
 | --- | --- | --- |
 | [hello-world](hello-world) | The smallest possible workflow: one `echo` step | no |
 | [hello-world-multi-step](hello-world-multi-step) | Passing a step's output to the next with `${steps.a.result}` | no |
+| [logging](logging) | `log:` — a message for a person to read, with `level:` and `fields:`, and no outputs | no |
 | [printf-formatting](printf-formatting) | The `printf` task, and referencing outputs as arguments | no |
 | [conditional-and-retry](conditional-and-retry) | `if:`, `timeout:`, `retry:`, and `continue_on_error:` per step | no |
 | [fan-out-and-parallel](fan-out-and-parallel) | `for_each` fan-out over a computed list, and concurrent `parallel:` branches | no |

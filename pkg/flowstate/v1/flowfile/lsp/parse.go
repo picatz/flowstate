@@ -524,7 +524,7 @@ func (s *parsedStep) iteratorName() string {
 		return ""
 	}
 	for _, e := range s.forEachEntry.value.entries {
-		if e.key == "iterator" {
+		if e.key == "as" {
 			if name := e.valueText(); name != "" {
 				return name
 			}
