@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"strings"
 
 	mango "github.com/muesli/mango-cobra"
@@ -34,15 +33,14 @@ func execute(ctx context.Context, root *cobra.Command) error {
 	root.Version = version
 
 	root.SetHelpFunc(func(c *cobra.Command, _ []string) {
-		surface := newSurface(c)
-		renderHelp(c.OutOrStdout(), surface, surface.Theme, surface.Caps.Width, c)
+		renderHelp(newSurface(c), c)
 	})
 
 	root.AddCommand(manCommand())
 
 	if err := root.ExecuteContext(ctx); err != nil {
 		surface := newSurface(root)
-		renderError(surface.Err, surface.ErrTheme, surface.ErrCaps.Width, err)
+		renderError(surface, err)
 
 		return err
 	}
@@ -90,7 +88,15 @@ func manCommand() *cobra.Command {
 // position became `Workflow.yaml:3:1`, which is not a file anybody can search for.
 // No heuristic separates the two: the guard tried, and the test that caught it was
 // the one asserting the text survives. An author who wants a capital writes one.
-func renderError(w io.Writer, theme ui.Theme, width int, err error) {
+// Takes the surface for the same reason [renderHelp] does: there is no writer to
+// pass, so there is no wrong one to pass. This path was correct throughout while the
+// help path a few lines above was not, which is the argument — nothing about the
+// code made the right answer obvious.
+func renderError(surface *ui.UI, err error) {
+	w := surface.Err
+	theme := surface.ErrTheme
+	width := surface.ErrCaps.Width
+
 	if err == nil {
 		return
 	}

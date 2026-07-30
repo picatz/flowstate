@@ -3,7 +3,6 @@ package main
 import (
 	"cmp"
 	"fmt"
-	"io"
 	"slices"
 	"strings"
 
@@ -39,7 +38,20 @@ import (
 // Named rather than inlined because the order is the design: what this command is,
 // how to say it, what saying it looks like, and only then the full enumeration. A
 // reader who stops after the examples should already be able to use the command.
-func renderHelp(w io.Writer, surface *ui.UI, theme ui.Theme, width int, c *cobra.Command) {
+// Takes the surface rather than a writer, which is the whole of the fix for a
+// mistake made twice: `flow tasks` and this renderer both wrote past the surface to
+// cmd.OutOrStdout(), sending 24-bit colour to terminals that carry 256. A writer
+// parameter is an invitation to pass the wrong one, and a test cannot catch it —
+// calling this with the right writer proves nothing about what the caller passes,
+// and the caller only misbehaves against a real terminal.
+//
+// So there is no writer to pass. The surface knows which stream it is and which
+// writer degrades it.
+func renderHelp(surface *ui.UI, c *cobra.Command) {
+	w := surface.Out
+	theme := surface.Theme
+	width := surface.Caps.Width
+
 	var b strings.Builder
 
 	if summary := cmp.Or(c.Long, c.Short); summary != "" {
@@ -86,7 +98,6 @@ func renderHelp(w io.Writer, surface *ui.UI, theme ui.Theme, width int, c *cobra
 	}
 
 	fmt.Fprint(w, b.String())
-	_ = surface
 }
 
 // columnWidth is the width of the name column, across every list on the page.

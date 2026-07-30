@@ -26,8 +26,7 @@ func reportOf(t *testing.T, err error) string {
 	t.Helper()
 
 	var out strings.Builder
-	surface := ui.Plain(&out, &out)
-	renderError(&out, surface.ErrTheme, 80, err)
+	renderError(ui.Plain(&out, &out), err)
 
 	return out.String()
 }
@@ -134,8 +133,7 @@ func TestNoErrorReportsNothing(t *testing.T) {
 	t.Parallel()
 
 	var out strings.Builder
-	surface := ui.Plain(&out, &out)
-	renderError(&out, surface.ErrTheme, 80, nil)
+	renderError(ui.Plain(&out, &out), nil)
 
 	require.Empty(t, out.String(), "a command that succeeded printed an error report")
 }
