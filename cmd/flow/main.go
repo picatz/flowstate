@@ -544,7 +544,12 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		return validateMachine(cmd, args, format)
 	}
 
-	out := cmd.OutOrStdout()
+	// Through the surface, and with its theme, for the reason renderHelp and
+	// renderError no longer take a writer at all: a styled byte written past the
+	// surface skips the layer that degrades the palette to what the stream carries.
+	surface := newSurface(cmd)
+	out, theme := surface.Out, surface.Theme
+
 	var failed bool
 
 	for _, path := range args {
@@ -557,17 +562,20 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			// A parse failure already carries its own line and column.
 			failed = true
-			fmt.Fprintf(out, "%s: %v\n", path, err)
+			fmt.Fprintf(out, "%s: %v\n", theme.Muted.Render(path), err)
 			continue
 		}
 		if len(diagnostics) == 0 {
-			fmt.Fprintf(out, "%s: ok\n", path)
+			// The one word worth finding in a run over nineteen files: everything
+			// else on the line is the path, and a reader scanning for the failure
+			// among them is scanning for this.
+			fmt.Fprintf(out, "%s: %s\n", theme.Muted.Render(path), theme.Success.Render("ok"))
 			continue
 		}
 
 		failed = true
 		for _, d := range diagnostics {
-			fmt.Fprintf(out, "%s:%s\n", path, d.Error())
+			fmt.Fprintf(out, "%s:%s\n", theme.Muted.Render(path), d.Error())
 		}
 	}
 

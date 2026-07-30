@@ -10,6 +10,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/picatz/flowstate/cmd/flow/internal/ui"
+
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
@@ -105,9 +107,16 @@ func runFix(cmd *cobra.Command, paths []string, opts fixOptions) error {
 	// `flow fix --stdout old.yaml > new.yaml` cannot produce a new.yaml whose first
 	// line is a diagnostic about old.yaml. A tool that writes its own complaints
 	// into its output is a tool that cannot be piped.
-	out, reports := cmd.OutOrStdout(), cmd.ErrOrStderr()
+	// Through the surface rather than the raw writers, and carrying the theme that
+	// belongs to whichever stream the reports land on — they go to stderr only when
+	// stdout is carrying a document, so the two cases have different palettes for
+	// the same reason `flow get x | jq` does.
+	surface := newSurface(cmd)
+
+	out := surface.Out
+	reports, reportTheme := surface.Err, surface.ErrTheme
 	if !opts.stdout {
-		reports = out
+		reports, reportTheme = surface.Out, surface.Theme
 	}
 
 	var (
@@ -115,7 +124,7 @@ func runFix(cmd *cobra.Command, paths []string, opts fixOptions) error {
 		pending bool
 	)
 	for _, path := range files {
-		result, err := fixOne(out, reports, path, opts)
+		result, err := fixOne(out, reports, reportTheme, path, opts)
 		if err != nil {
 			return err
 		}
@@ -143,7 +152,7 @@ type fixOutcome struct {
 }
 
 // fixOne rewrites a single file.
-func fixOne(out, reports io.Writer, path string, opts fixOptions) (fixOutcome, error) {
+func fixOne(out, reports io.Writer, theme ui.Theme, path string, opts fixOptions) (fixOutcome, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fixOutcome{}, fmt.Errorf("error reading %s: %w", path, err)
@@ -154,18 +163,18 @@ func fixOne(out, reports io.Writer, path string, opts fixOptions) (fixOutcome, e
 		// Not YAML at all. Reported rather than returned, so one unparseable file
 		// does not stop the rest of a directory — but counted as a refusal, because
 		// the file is certainly not in the current edition.
-		fmt.Fprintf(reports, "%s: %v\n", path, err)
+		fmt.Fprintf(reports, "%s: %v\n", theme.Muted.Render(path), err)
 		return fixOutcome{refused: true}, nil
 	}
 
 	for _, refusal := range result.Refusals {
-		fmt.Fprintf(reports, "%s:%s\n", path, refusal.Error())
+		fmt.Fprintf(reports, "%s:%s\n", theme.Muted.Render(path), refusal.Error())
 	}
 	// Notes do not affect the outcome. They are places worth a reader's eye, not
 	// work left undone, and failing on one would let a comment nobody has to change
 	// stop `flow fix . && git commit`.
 	for _, note := range result.Notes {
-		fmt.Fprintf(reports, "%s:%s\n", path, note.Error())
+		fmt.Fprintf(reports, "%s:%s\n", theme.Muted.Render(path), note.Error())
 	}
 	outcome := fixOutcome{changed: result.Changed(), refused: len(result.Refusals) > 0}
 
@@ -176,13 +185,15 @@ func fixOne(out, reports io.Writer, path string, opts fixOptions) (fixOutcome, e
 
 	if !result.Changed() {
 		if !outcome.refused {
-			fmt.Fprintf(reports, "%s: already current\n", path)
+			fmt.Fprintf(reports, "%s: %s\n",
+				theme.Muted.Render(path), theme.Muted.Render("already current"))
 		}
 		return outcome, nil
 	}
 
 	for _, change := range result.Changes {
-		fmt.Fprintf(reports, "%s:%d: %s\n", path, change.Line, change.Message)
+		fmt.Fprintf(reports, "%s:%d: %s\n",
+			theme.Muted.Render(path), change.Line, change.Message)
 	}
 
 	if opts.check {
