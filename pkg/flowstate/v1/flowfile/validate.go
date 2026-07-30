@@ -423,6 +423,12 @@ func validateWorkflowVars(wf *v1.Workflow) Diagnostics {
 				continue
 			}
 
+			if functionNamespaces[ref] {
+				// The profile's own functions, which a var may absolutely use — the
+				// sentence below says so and this used to refuse them anyway.
+				continue
+			}
+
 			ds = append(ds, Diagnostic{
 				Field: field, Value: ref,
 				Message: fmt.Sprintf(
@@ -870,6 +876,15 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 			// `steps` was exempted when rooting landed and `vars` was not, which is
 			// the shape a second root always takes: the rule was written where the
 			// first one needed it rather than where the *category* does.
+			continue
+		}
+		if functionNamespaces[ref] {
+			// A namespaced function from the profile — `regex.replace(...)`,
+			// `math.greatest(...)`. cel-go parses the qualifier as an identifier, so
+			// it arrives here looking exactly like a name nobody bound, and every one
+			// of them was reported as an unknown step in every expression position in
+			// the language. A false diagnostic about a documented function, which is
+			// how a tool teaches people to stop reading it.
 			continue
 		}
 
@@ -1436,3 +1451,49 @@ func nodeWithID(id string, wf *v1.Workflow) *v1.Node {
 
 	return walk(wf.GetSteps())
 }
+
+// functionNamespaces are the qualifiers a profile's namespaced functions hang from.
+//
+// cel-go parses `regex.replace(s, a, b)` as a select over the identifier `regex`, so the
+// qualifier reaches the reference walk looking exactly like a name nobody bound — and
+// every use of one was reported as an unknown step, in every expression position the
+// language has. The functions are documented, `flow tasks` prints them, and the
+// validator refused them.
+//
+// # Derived from the declarations, not from the library names
+//
+// The first version of this read [v1.ExtensionLibraries], and those are *registration*
+// names rather than qualifiers. They coincide often enough to look right — `regex`,
+// `math`, `sets` — and then do not: `encoders` declares `base64.encode`, `protos`
+// declares `proto.getExt`, `bindings` declares `cel.bind`. So `${base64.encode(b)}` was
+// still refused, and `${string(encoders)}` — a name that means nothing anywhere — was
+// quietly accepted. A set that is wrong in both directions at once is the mark of
+// having asked the wrong thing.
+//
+// Asking the environment removes the guess entirely. A qualifier is exactly the part of
+// a declared function's name before its last dot, which is a fact about the profile
+// rather than a naming convention this file hopes holds.
+var functionNamespaces = func() map[string]bool {
+	out := map[string]bool{}
+
+	env, err := v1.DefaultEvaluator().ProfileEnv(v1.CurrentProfile)
+	if err != nil {
+		// A profile this build cannot build an environment for is a defect rather
+		// than something a workflow can cause, and it will be reported far more
+		// clearly the moment anything evaluates. Answering with an empty set here
+		// costs a false diagnostic; panicking would cost every command.
+		return out
+	}
+
+	for name := range env.Functions() {
+		at := strings.LastIndex(name, ".")
+		if at <= 0 {
+			// A bare function — `size`, `has` — hangs from nothing and is never
+			// written as a qualifier.
+			continue
+		}
+		out[name[:at]] = true
+	}
+
+	return out
+}()
