@@ -669,8 +669,19 @@ func runTasks(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// TODO(kent): consider making the commands their own package with additional tests.
-func main() {
+// newRootCommand builds the whole CLI: every command, its flags, and the groups the
+// help sorts them into.
+//
+// Extracted from main so a test can *have* it. Everything below used to be built
+// inline, which meant nothing could ask the CLI what commands it has — and the
+// README's table of them was therefore checked by nobody. A table of commands that
+// drifts is worse than no table: it is the page a newcomer reads to find out what
+// this tool does.
+//
+// It takes no arguments and reads no state, so the answer is the same one main gets.
+// A constructor that needed a live server or a terminal to build would be a
+// constructor a test was asserting something else about.
+func newRootCommand() *cobra.Command {
 	// Root command for the Flowstate CLI application (flow).
 	rootCmd := &cobra.Command{
 		Use:   "flow",
@@ -1035,6 +1046,12 @@ flow lsp`,
 	rootCmd.AddCommand(serverCmd)
 	runCmd.AddCommand(runLocalCmd)
 	rootCmd.AddCommand(lspCmd)
+
+	return rootCmd
+}
+
+func main() {
+	rootCmd := newRootCommand()
 
 	// We can use a context to handle OS signals like Ctrl+C gracefully.
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
