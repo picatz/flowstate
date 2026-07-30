@@ -13,15 +13,9 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
-// localSignals holds the --signal flags of `flow run local`.
-var localSignals []string
-
 // The flags of `flow signal`, which addresses a durable run rather than a local
 // one.
-var (
-	signalData  string
-	signalRunID string
-)
+var ()
 
 // withLocalSignals attaches a signal source to a local run, seeded with whatever
 // the caller supplied.
@@ -148,7 +142,10 @@ func parseSignalPayload(source, raw string) (*v1.Node_Outputs, error) {
 func runSignal(cmd *cobra.Command, args []string) error {
 	workflowID, name := args[0], args[1]
 
-	payload, err := parseSignalPayload("--data", signalData)
+	data, _ := cmd.Flags().GetString("data")
+	runID, _ := cmd.Flags().GetString("run-id")
+
+	payload, err := parseSignalPayload("--data", data)
 	if err != nil {
 		return err
 	}
@@ -165,7 +162,7 @@ func runSignal(cmd *cobra.Command, args []string) error {
 
 	request := &v1.SignalRequest{
 		WorkflowId: workflowID,
-		RunId:      signalRunID,
+		RunId:      runID,
 		Name:       name,
 		Payload:    payload,
 	}

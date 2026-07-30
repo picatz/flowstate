@@ -214,9 +214,12 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 	// That is what a machine-readable caller falls back on when it is interrupted
 	// before the first poll: without it, `flow run -o json` stopped with a durable
 	// workload running and no document naming it.
+	interval, _ := cmd.Flags().GetDuration("interval")
+	plain, _ := cmd.Flags().GetBool("plain")
+
 	return watchRun(cmd.Context(), surface, format,
 		clientPoller{workflowID: workflowID},
-		clampWatchInterval(watchInterval), workflowID, startedRun(started.Msg))
+		clampWatchInterval(interval), plain, workflowID, startedRun(started.Msg))
 }
 
 // startedRun is what `Run` answered, in the shape a follow reports.
@@ -864,6 +867,8 @@ flow validate examples/hello-world/workflow.yaml`,
 			}
 			// A workload that waits for a signal needs something able to deliver
 			// one, or it blocks with nothing that could ever release it.
+			localSignals, _ := cmd.Flags().GetStringArray("signal")
+
 			ctx, err := withLocalSignals(cmd.Context(), localSignals)
 			if err != nil {
 				return err
@@ -921,7 +926,7 @@ flow run local examples/approval-gate/workflow.yaml --signal deploy-approved='{"
 	// waiter buffers what is given here, so a gate reached later still finds its
 	// answer waiting — the same behavior the durable driver has because Temporal
 	// buffers signals for a run.
-	runLocalCmd.Flags().StringArrayVar(&localSignals, "signal", nil,
+	runLocalCmd.Flags().StringArray("signal", nil,
 		`answer a wait_for_signal step, as name=json (repeatable), e.g. --signal deploy-approved='{"approved": true}'`)
 
 	// Worker command, which starts a Temporal worker to process workflows and activities.
@@ -1040,7 +1045,7 @@ flow get flowstate-workflow-3f7c --run-id 0198f1e2-...`,
 
 	addOutputFlag(getCmd)
 
-	getCmd.Flags().StringVar(&getRunID, "run-id", "",
+	getCmd.Flags().String("run-id", "",
 		"ask about one attempt of the workload; unset asks about whichever is current")
 
 	// Signal command, which answers a gate on a run that is already waiting.
@@ -1070,7 +1075,7 @@ flow signal deploy-abc123 deploy-approved
 flow run local examples/approval-gate/workflow.yaml --signal deploy-approved='{"approved": true}'`,
 	}
 
-	signalCmd.Flags().StringVar(&signalData, "data", "",
+	signalCmd.Flags().String("data", "",
 		`signal payload as a JSON object, whose keys become the waiting step's outputs, e.g. --data '{"approved": true}'`)
 
 	// The commands that talk to a Flowstate server can say which one.
@@ -1102,7 +1107,7 @@ flow run local examples/approval-gate/workflow.yaml --signal deploy-approved='{"
 				"re-read per request, so a rotating token keeps working. "+
 				"Without it, FLOWSTATE_TOKEN is used, and neither means anonymous")
 	}
-	signalCmd.Flags().StringVar(&signalRunID, "run-id", "",
+	signalCmd.Flags().String("run-id", "",
 		"pin the signal to one run of the workload; unset addresses whichever run is current, "+
 			"which is what approving a workload means")
 

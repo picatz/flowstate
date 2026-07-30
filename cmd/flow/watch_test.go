@@ -117,15 +117,12 @@ func plainSurface() (*ui.UI, *strings.Builder, *strings.Builder) {
 func watchCommandForTest(t *testing.T) (*cobra.Command, *strings.Builder, *strings.Builder) {
 	t.Helper()
 
-	previousRunID, previousInterval := watchRunID, watchInterval
-	t.Cleanup(func() {
-		watchRunID, watchInterval = previousRunID, previousInterval
-	})
-	watchRunID, watchInterval = "", minWatchInterval
-
 	var out, errOut strings.Builder
 	cmd := &cobra.Command{}
+	addFollowFlags(cmd)
 	addOutputFlag(cmd)
+	cmd.Flags().String("run-id", "", "")
+	require.NoError(t, cmd.Flags().Set("interval", minWatchInterval.String()))
 	cmd.SetContext(t.Context())
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)
@@ -646,7 +643,7 @@ func TestRunNamesTheStartedRunToAMachine(t *testing.T) {
 	serveFake(t, fake)
 
 	cmd, out, _ := watchCommandForTest(t)
-	watchInterval = time.Millisecond
+	require.NoError(t, cmd.Flags().Set("interval", "1ms"))
 	require.NoError(t, cmd.Flags().Set("output", string(FormatJSON)))
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -730,7 +727,7 @@ func TestWatchDrawsNoViewWhenAFormatWasAskedFor(t *testing.T) {
 			surface, out, _ := plainSurface()
 			surface.ErrCaps.TTY = true
 
-			require.NoError(t, watchRun(t.Context(), surface, format, poller, time.Millisecond,
+			require.NoError(t, watchRun(t.Context(), surface, format, poller, time.Millisecond, false,
 				"flowstate-workflow-3f7c", nil))
 
 			require.Contains(t, out.String(), "stepValues")
@@ -761,15 +758,11 @@ func (f *fakeWorkflowService) Run(_ context.Context, req *connect.Request[v1.Run
 // that, a terminal is a trap — and it can only be checked with the surface claiming
 // one, because that is the configuration where the flag changes the answer.
 func TestWatchPlainForcesLinesOnATerminal(t *testing.T) {
-	previous := watchPlain
-	t.Cleanup(func() { watchPlain = previous })
-	watchPlain = true
-
 	poller := &scriptedPoller{answers: []pollAnswer{runningPoll(), finishedPoll("greet")}}
 	surface, out, errOut := plainSurface()
 	surface.ErrCaps.TTY = true
 
-	require.NoError(t, watchRun(t.Context(), surface, FormatText, poller, time.Millisecond,
+	require.NoError(t, watchRun(t.Context(), surface, FormatText, poller, time.Millisecond, true,
 		"flowstate-workflow-3f7c", nil))
 
 	require.Len(t, reportedLines(errOut.String()), 2,
@@ -808,7 +801,7 @@ func TestRunFollowsToAnyTerminalStatus(t *testing.T) {
 			}
 			serveFake(t, fake)
 			cmd, out, errOut := watchCommandForTest(t)
-			watchInterval = time.Millisecond
+			require.NoError(t, cmd.Flags().Set("interval", "1ms"))
 
 			err := runWorkflow(cmd, []string{"../../examples/hello-world/workflow.yaml"})
 
@@ -873,7 +866,7 @@ func TestWatchRefusesARunIDThatIsNotAUUIDBeforeWatching(t *testing.T) {
 	serveFake(t, fake)
 	cmd, _, _ := watchCommandForTest(t)
 
-	watchRunID = "the-latest-one"
+	require.NoError(t, cmd.Flags().Set("run-id", "the-latest-one"))
 
 	require.Error(t, runWatch(cmd, []string{"flowstate-workflow-3f7c"}))
 	require.Nil(t, fake.gotGet, "an invalid run id was sent anyway")

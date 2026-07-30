@@ -12,22 +12,13 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
-// The flags of the verbs that stop a run, and of `flow list`.
-var (
-	cancelRunID    string
-	terminateRunID string
-	terminateWhy   string
-
-	listPageSize  int32
-	listPageToken string
-	listAll       bool
-)
-
 // runCancel asks a run to stop, letting it clean up on the way out.
 func runCancel(cmd *cobra.Command, args []string) error {
 	workflowID := args[0]
 
-	request := &v1.CancelRequest{WorkflowId: workflowID, RunId: cancelRunID}
+	runID, _ := cmd.Flags().GetString("run-id")
+
+	request := &v1.CancelRequest{WorkflowId: workflowID, RunId: runID}
 	if err := v1.Validate(request); err != nil {
 		return err
 	}
@@ -51,10 +42,13 @@ func runCancel(cmd *cobra.Command, args []string) error {
 func runTerminate(cmd *cobra.Command, args []string) error {
 	workflowID := args[0]
 
+	runID, _ := cmd.Flags().GetString("run-id")
+	reason, _ := cmd.Flags().GetString("reason")
+
 	request := &v1.TerminateRequest{
 		WorkflowId: workflowID,
-		RunId:      terminateRunID,
-		Reason:     terminateWhy,
+		RunId:      runID,
+		Reason:     reason,
 	}
 	if err := v1.Validate(request); err != nil {
 		return err
@@ -87,7 +81,9 @@ func runList(cmd *cobra.Command, args []string) error {
 	client := newWorkflowServiceClient()
 	rendering := newListRendering(surface, format)
 
-	token := listPageToken
+	pageSize, _ := cmd.Flags().GetInt32("page-size")
+	all, _ := cmd.Flags().GetBool("all")
+	token, _ := cmd.Flags().GetString("page-token")
 
 	// The walk is its own function so that every way out of it — success, a
 	// refused page, a token that stopped moving — passes through the one flush
@@ -101,7 +97,7 @@ func runList(cmd *cobra.Command, args []string) error {
 	// forms, so they are flushed through the same path.
 	walk := func() error {
 		for {
-			request := &v1.ListRequest{PageSize: listPageSize, PageToken: token}
+			request := &v1.ListRequest{PageSize: pageSize, PageToken: token}
 			if err := v1.Validate(request); err != nil {
 				return err
 			}
@@ -121,7 +117,7 @@ func runList(cmd *cobra.Command, args []string) error {
 			// An empty token is the only end of the listing. A short page is not:
 			// the scan may have spent its budget among runs belonging to somebody
 			// else.
-			if token == "" || !listAll {
+			if token == "" || !all {
 				return nil
 			}
 
@@ -312,11 +308,11 @@ flow list --all -o json | jq '.runs[] | select(.status == "STATUS_RUNNING")'`,
 
 	addOutputFlag(listCmd)
 
-	listCmd.Flags().Int32Var(&listPageSize, "page-size", 0,
+	listCmd.Flags().Int32("page-size", 0,
 		"how many runs to return per page; unset takes the server's default")
-	listCmd.Flags().StringVar(&listPageToken, "page-token", "",
+	listCmd.Flags().String("page-token", "",
 		"continue a previous listing from where it stopped")
-	listCmd.Flags().BoolVar(&listAll, "all", false,
+	listCmd.Flags().Bool("all", false,
 		"keep asking until the listing is exhausted, rather than returning one page")
 
 	// Cancel and terminate are separate verbs rather than one with a flag,
@@ -339,7 +335,7 @@ flow cancel flowstate-workflow-3f7c
 flow get flowstate-workflow-3f7c`,
 	}
 
-	cancelCmd.Flags().StringVar(&cancelRunID, "run-id", "",
+	cancelCmd.Flags().String("run-id", "",
 		"pin the request to one run of the workload; unset addresses whichever run is current")
 
 	terminateCmd := &cobra.Command{
@@ -355,9 +351,9 @@ flow get flowstate-workflow-3f7c`,
 flow terminate flowstate-workflow-3f7c --reason "stuck on a dependency that is never coming back"`,
 	}
 
-	terminateCmd.Flags().StringVar(&terminateRunID, "run-id", "",
+	terminateCmd.Flags().String("run-id", "",
 		"pin the request to one run of the workload; unset addresses whichever run is current")
-	terminateCmd.Flags().StringVar(&terminateWhy, "reason", "",
+	terminateCmd.Flags().String("reason", "",
 		"recorded on the terminated run; a terminated run leaves no account of itself, "+
 			"so this is the only explanation anyone will find")
 

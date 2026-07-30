@@ -13,9 +13,6 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
-// getRunID holds the --run-id flag of `flow get`.
-var getRunID string
-
 // runGet reports what a run is doing, and what it produced if it is finished.
 //
 // `flow run` already polls this while it waits, which covered the case where the
@@ -37,8 +34,8 @@ func runGet(cmd *cobra.Command, args []string) error {
 	// Left absent rather than empty when unset. The schema requires a run id to be
 	// a UUID when present, so sending "" would be refused for not looking like one
 	// instead of meaning "whichever run is current".
-	if getRunID != "" {
-		request.RunId = &getRunID
+	if runID, _ := cmd.Flags().GetString("run-id"); runID != "" {
+		request.RunId = &runID
 	}
 
 	if err := v1.Validate(request); err != nil {

@@ -29,22 +29,13 @@ import (
 func lifecycleCommand(t *testing.T) (*cobra.Command, *strings.Builder, *strings.Builder) {
 	t.Helper()
 
-	previous := struct {
-		cancelRunID, terminateRunID, terminateWhy, listPageToken string
-		listPageSize                                             int32
-		listAll                                                  bool
-	}{cancelRunID, terminateRunID, terminateWhy, listPageToken, listPageSize, listAll}
-
-	t.Cleanup(func() {
-		cancelRunID, terminateRunID, terminateWhy = previous.cancelRunID, previous.terminateRunID, previous.terminateWhy
-		listPageToken, listPageSize, listAll = previous.listPageToken, previous.listPageSize, previous.listAll
-	})
-
-	cancelRunID, terminateRunID, terminateWhy = "", "", ""
-	listPageToken, listPageSize, listAll = "", 0, false
-
 	var out, errOut strings.Builder
 	cmd := &cobra.Command{}
+	cmd.Flags().String("run-id", "", "")
+	cmd.Flags().String("reason", "", "")
+	cmd.Flags().String("page-token", "", "")
+	cmd.Flags().Int32("page-size", 0, "")
+	cmd.Flags().Bool("all", false, "")
 	addOutputFlag(cmd)
 	cmd.SetContext(t.Context())
 	cmd.SetOut(&out)
@@ -58,7 +49,7 @@ func TestCancelReachesTheServer(t *testing.T) {
 	serveFake(t, fake)
 	cmd, _, errOut := lifecycleCommand(t)
 
-	cancelRunID = "run-1"
+	require.NoError(t, cmd.Flags().Set("run-id", "run-1"))
 
 	require.NoError(t, runCancel(cmd, []string{"deploy-abc123"}))
 
@@ -84,7 +75,7 @@ func TestTerminateReachesTheServerWithItsReason(t *testing.T) {
 	serveFake(t, fake)
 	cmd, _, _ := lifecycleCommand(t)
 
-	terminateWhy = "stuck on a dependency that is never coming back"
+	require.NoError(t, cmd.Flags().Set("reason", "stuck on a dependency that is never coming back"))
 
 	require.NoError(t, runTerminate(cmd, []string{"deploy-abc123"}))
 
@@ -163,7 +154,7 @@ func TestListAllWalksEveryPage(t *testing.T) {
 	serveFake(t, fake)
 	cmd, out, errOut := lifecycleCommand(t)
 
-	listAll = true
+	require.NoError(t, cmd.Flags().Set("all", "true"))
 	require.NoError(t, runList(cmd, nil))
 
 	require.Equal(t, 2, fake.listCalls, "--all stopped before the listing was exhausted")
@@ -249,7 +240,7 @@ func TestListAllStopsIfTheTokenDoesNotAdvance(t *testing.T) {
 	serveFake(t, fake)
 	cmd, out, _ := lifecycleCommand(t)
 
-	listAll = true
+	require.NoError(t, cmd.Flags().Set("all", "true"))
 
 	err := runList(cmd, nil)
 	require.Error(t, err, "a non-advancing page token was followed indefinitely")
@@ -304,7 +295,7 @@ func TestListAllKeepsRowsWhenALaterPageFails(t *testing.T) {
 	serveFake(t, fake)
 	cmd, out, _ := lifecycleCommand(t)
 
-	listAll = true
+	require.NoError(t, cmd.Flags().Set("all", "true"))
 
 	err := runList(cmd, nil)
 	require.Error(t, err, "a failed page was reported as success")
@@ -397,7 +388,7 @@ func TestListJSONLIsOneRunPerLine(t *testing.T) {
 	cmd, out, _ := lifecycleCommand(t)
 
 	require.NoError(t, cmd.Flags().Set("output", string(FormatJSONL)))
-	listAll = true
+	require.NoError(t, cmd.Flags().Set("all", "true"))
 
 	require.NoError(t, runList(cmd, nil))
 

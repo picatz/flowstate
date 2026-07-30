@@ -28,16 +28,18 @@ func (f *fakeWorkflowService) Get(_ context.Context, req *connect.Request[v1.Get
 	return connect.NewResponse(f.getResponse), nil
 }
 
-// getCommand builds the command runGet expects, with its flag reset.
+// getCommand builds the command runGet expects, with the flags it declares.
+//
+// Declared here rather than reset, because they are no longer package variables: a
+// flag lives in the FlagSet of the command that declared it, so a fresh command is a
+// fresh set of flags and there is nothing to leak into the next test.
 func getCommand(t *testing.T) (*cobra.Command, *strings.Builder, *strings.Builder) {
 	t.Helper()
 
-	previous := getRunID
-	t.Cleanup(func() { getRunID = previous })
-	getRunID = ""
-
 	var out, errOut strings.Builder
 	cmd := &cobra.Command{}
+	cmd.Flags().String("run-id", "", "")
+	addOutputFlag(cmd)
 	cmd.SetContext(t.Context())
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)
@@ -128,7 +130,7 @@ func TestGetRefusesARunIDThatIsNotAUUIDBeforeSending(t *testing.T) {
 	serveFake(t, fake)
 	cmd, _, _ := getCommand(t)
 
-	getRunID = "the-latest-one"
+	require.NoError(t, cmd.Flags().Set("run-id", "the-latest-one"))
 
 	err := runGet(cmd, []string{"flowstate-workflow-3f7c"})
 	require.Error(t, err, "a run id the schema forbids was accepted")
