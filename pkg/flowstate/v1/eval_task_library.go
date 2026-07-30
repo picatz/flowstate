@@ -244,33 +244,64 @@ func firstHeaderValues(h http.Header) map[string]string {
 	return out
 }
 
-// httpOutputsEnv returns the CEL environment used to shape HTTP task outputs.
+// httpResponseEnv returns the CEL environment the http task's own expressions —
+// `outputs:` and `expect:` — are evaluated in.
 //
-// It declares the response variables an expression may reference and enables the
-// json library, so a workflow can pick fields out of a JSON body without a
-// dedicated task per response shape. The environment is built once and shared.
-var httpOutputsEnv = sync.OnceValues(func() (*cel.Env, error) {
-	env, err := cel.NewEnv(
-		// One variable, and everything about the response hangs from it.
-		//
-		// These names are *system-chosen* and injected into an author's namespace,
-		// which is the shape the signal-payload fix already rooted under `payload.*`
-		// — for two reasons that apply identically here. The set will grow: a future
-		// `duration_ms` written bare would capture a binding somebody already had.
-		// And the collision is representable today: `as: body` on a loop enclosing an
-		// http step whose `expect:` says `body` reads the response, not the item, and
-		// nothing in the file says so.
-		//
-		// Dynamically typed because a root answered whole cannot be given a field-wise
-		// type here without restating the response's shape in a second place.
-		cel.Variable(ResponseRoot, cel.DynType),
-		jsonLibrary(),
-	)
+// The profile's environment plus the response root, and the profile part is a fix
+// rather than a flourish. This used to be `cel.NewEnv(response, jsonLibrary())`: the
+// json library and nothing else. So `${vars.greeting.upperAscii()}` worked in a
+// `vars:` binding, in an `if:`, in `items:`, in `wait_until:` and in every other task
+// input, and failed inside `outputs:` — after the request had already been made,
+// since that is when the expression runs.
+//
+// That is the exact defect `libs:` was retired to end. A step could once name its own
+// extension libraries and nothing else in the file could, so one step spoke a richer
+// dialect than the rest; the profile replaced it with a single membership. This was
+// the same split from the other side — one position speaking a *poorer* dialect than
+// the rest — and it survived the retirement because it is not spelled anywhere in the
+// grammar. One dialect means these two positions as well.
+//
+// Found by a type checker disagreeing with the runtime: the validator judged these
+// expressions against the profile, which was right, against a runtime that was not.
+//
+// # The profile is the run's, not the build's
+//
+// Taken from the scope rather than from [CurrentProfile], because this evaluates on
+// whichever worker picked the activity up, and that worker's build may know a
+// different set of libraries than the one that compiled the spec. The whole point of
+// recording a profile is that the run's vocabulary travels with it — resolving it
+// here from a package constant would be the bug invariant 10 exists to prevent, in
+// the one place the scope is already carrying the answer.
+func httpResponseEnv(profile string) (*cel.Env, error) {
+	libs, err := ProfileLibraries(profile)
+	if err != nil {
+		return nil, err
+	}
+
+	base, err := DefaultEvaluator().Env(libs...)
+	if err != nil {
+		return nil, err
+	}
+
+	// One variable, and everything about the response hangs from it.
+	//
+	// These names are *system-chosen* and injected into an author's namespace,
+	// which is the shape the signal-payload fix already rooted under `payload.*`
+	// — for two reasons that apply identically here. The set will grow: a future
+	// `duration_ms` written bare would capture a binding somebody already had.
+	// And the collision is representable today: `as: body` on a loop enclosing an
+	// http step whose `expect:` says `body` reads the response, not the item, and
+	// nothing in the file says so.
+	//
+	// Dynamically typed because a root answered whole cannot be given a field-wise
+	// type here without restating the response's shape in a second place.
+	env, err := base.Extend(cel.Variable(ResponseRoot, cel.DynType))
 	if err != nil {
 		return nil, fmt.Errorf("create HTTP outputs CEL environment: %w", err)
 	}
+
 	return env, nil
-})
+}
 
 func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 	return func(ctx context.Context, input map[string]*Value, scope *Scope) (*Node_Outputs, error) {
@@ -445,7 +476,7 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 		// If typed outputs provided (either as explicit map entries or via a CEL map expression),
 		// evaluate them using the response variables and return only those named values.
 		if len(taskInputs.Outputs) > 0 || outputsExpr != nil {
-			env, err := httpOutputsEnv()
+			env, err := httpResponseEnv(scope.GetProfile())
 			if err != nil {
 				return nil, err
 			}
