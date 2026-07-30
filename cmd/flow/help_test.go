@@ -1,12 +1,16 @@
 package main
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/colorprofile"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 )
 
 // The help page and the error report are what somebody reads when they have not got
@@ -181,4 +185,57 @@ func TestTheHelpPageHasOneNameColumn(t *testing.T) {
 
 	assert.Equal(t, signal, lsp,
 		"two command groups aligned their descriptions to different columns")
+}
+
+// TestHelpDegradesToWhatTheStreamCarries is the same defect Codex found in
+// `flow tasks`, which this renderer also had.
+//
+// A theme resolves to the palette's own 24-bit colours, and it is the surface's
+// colorprofile writer that degrades them to what the stream supports. Writing to
+// `cmd.OutOrStdout()` goes past that layer, so a terminal advertising 256 colours
+// received truecolor sequences it cannot render.
+//
+// It was found by sweeping every command against a pty rather than by review, and
+// the error path — which had always used surface.Err — was correct throughout. That
+// asymmetry is the argument for testing the property rather than the file: the
+// mistake is available anywhere a renderer takes a writer.
+func TestHelpDegradesToWhatTheStreamCarries(t *testing.T) {
+	t.Parallel()
+
+	var raw strings.Builder
+	styled := &colorprofile.Writer{Forward: &raw, Profile: colorprofile.ANSI256}
+
+	surface := ui.ForCapabilities(styled, styled,
+		ui.Capabilities{Profile: colorprofile.ANSI256, TTY: true, Width: 100},
+		ui.Capabilities{Profile: colorprofile.ANSI256, TTY: true, Width: 100})
+
+	renderHelp(surface, newRootCommand())
+
+	rendered := raw.String()
+	require.Contains(t, rendered, "\x1b[", "nothing was styled, so this proves nothing")
+	assert.NotContains(t, rendered, "38;2;",
+		"a 24-bit colour reached a stream that carries 256, so the degrading writer was bypassed")
+}
+
+// TestTheErrorReportDegradesToo covers the other surface this binary draws itself.
+//
+// It was already correct, which is exactly why it is worth pinning: the two paths
+// are written a few lines apart and only one of them was wrong, so nothing about
+// the code made the right answer obvious.
+func TestTheErrorReportDegradesToo(t *testing.T) {
+	t.Parallel()
+
+	var raw strings.Builder
+	styled := &colorprofile.Writer{Forward: &raw, Profile: colorprofile.ANSI256}
+
+	surface := ui.ForCapabilities(styled, styled,
+		ui.Capabilities{Profile: colorprofile.ANSI256, TTY: true, Width: 100},
+		ui.Capabilities{Profile: colorprofile.ANSI256, TTY: true, Width: 100})
+
+	renderError(surface, errors.New("unknown flag: --nope"))
+
+	rendered := raw.String()
+	require.Contains(t, rendered, "\x1b[", "nothing was styled, so this proves nothing")
+	assert.NotContains(t, rendered, "38;2;",
+		"a 24-bit colour reached a stream that carries 256")
 }
