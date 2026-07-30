@@ -673,6 +673,21 @@ message TaskCatalog {
   // `wait_until` expression, and nowhere else. It is the one identifier whose
   // availability depends on position, so a reader cannot infer it.
   string now_identifier = 4;
+
+  // ValueRoots are the names an expression reaches a value through: `vars` for a
+  // value the file names, `steps` for what a step produced.
+  //
+  // Here for the same reason NowIdentifier is — a reader cannot infer it from the
+  // task list — and the retirement edition made that sharper rather than softer. A
+  // consumer reading this catalog now sees two tasks, one of which produces nothing
+  // at all, and could reasonably conclude the language has almost no way to compute
+  // anything. It has one: an expression, bound under `vars:` at the workflow or on a
+  // step, read back through these roots.
+  //
+  // Roots rather than prose because this message is the machine-readable half. What
+  // the roots *mean* is `flow tasks` output and docs/DSL.md; what an agent needs in
+  // order to write a reference that resolves is the words themselves.
+  repeated string value_roots = 5;
 }
 
 // TaskDescription is one task's name and shape.
@@ -1047,6 +1062,106 @@ message GetResponse {
     RunResponse.Error error = 4;
     Workflow.StepOutputs outputs = 5;
   }
+
+  // StartTime is when the workload began, and CloseTime when it finished — unset
+  // while it is still running, so "has not finished" and "finished at the epoch"
+  // stay distinct.
+  //
+  // Same two fields a listing reports, with the same names and the same meaning,
+  // because a listing already answered them and a Get did not: `flow list` could
+  // tell you a run had been going for an hour and `flow get <id>` on the same run
+  // could only tell you it was running. One verb knowing less about a run than the
+  // verb that enumerates it is the wrong way round — Get is the one a person
+  // reaches for when they care about a *particular* run.
+  //
+  // Both come off the same DescribeWorkflowExecution response the status does, so
+  // this costs nothing but the field. What is still missing from a running run is
+  // which step it is on, and that is genuinely expensive: it needs a query handler
+  // on the workflow, which is workflow code, and workflow code is frozen.
+  google.protobuf.Timestamp start_time = 6;
+  google.protobuf.Timestamp close_time = 7;
+}
+
+// Diagnostic is one problem found in a Flowfile, positioned in its source.
+//
+// A schema type rather than a shape the CLI invents, because it already has three
+// readers and they must agree: `flow validate --output json` hands it to whatever is
+// driving the CLI, the language server converts it into an editor's own diagnostic,
+// and a future `Validate` RPC would return it unchanged. Three hand-written
+// projections of one idea is how the editor and the command line come to disagree
+// about what is wrong with a file.
+//
+// It is also what keeps `--output json` meaning one thing. On `get` and `list` that
+// flag is documented as carrying the server's own schema, so a field is addressable by
+// name; a `validate` that answered with an object the CLI made up would give one flag
+// two meanings in one binary.
+//
+// # Positions are 1-based, and zero means unknown
+//
+// Zero rather than an omitted field, because a diagnostic with no position is a real
+// answer — some problems are about a file rather than about a line in one — and a
+// consumer that saw `line: 1` for those would send a reader to the wrong place with
+// confidence.
+message Diagnostic {
+  // Line is the 1-based source line, or zero when the position is unknown.
+  uint32 line = 1;
+
+  // Column is the 1-based column within Line, counting characters rather than
+  // bytes, or zero when only the line is known.
+  uint32 column = 2;
+
+  // Message states the problem and, where possible, what to do instead.
+  string message = 3 [(buf.validate.field).required = true];
+
+  // Step is the id of the step the problem was found in, when there is one.
+  string step = 4;
+
+  // Field names the input or property at fault, when there is one.
+  string field = 5;
+
+  // Kind names the step's kind key — the task's name, or `for_each`, `sleep` — when
+  // the problem is with that key rather than with anything under it.
+  //
+  // Separate from Field because the two read differently and are fixed differently:
+  // one sends a reader to a value they wrote under a task, the other to the word
+  // naming the work itself.
+  string kind = 6;
+
+  // Value is the literal at fault *inside* Field, when the field holds a list and one
+  // element of it is the problem.
+  string value = 7;
+}
+
+// DiagnosticReport is what one file's check produced.
+//
+// Per file rather than per invocation, because `flow validate a.yaml b.yaml` is two
+// answers and a consumer wants to know which file each belongs to. It is also what
+// makes the JSONL form useful: one report per line, one file per report.
+//
+// A file with no diagnostics still gets a report. "Checked and clean" and "not checked"
+// are different facts, and a consumer that saw only failures could not tell them apart.
+message DiagnosticReport {
+  // File is the path as it was given on the command line, so a reader can find it
+  // again without resolving anything.
+  string file = 1 [(buf.validate.field).required = true];
+
+  // Diagnostics is every problem found, in source order. Empty means the file is
+  // valid.
+  repeated Diagnostic diagnostics = 2;
+}
+
+// ValidationReport is what one check produced, across every file it was given.
+//
+// It exists because `json` and `jsonl` are different shapes rather than different
+// spellings, and this CLI is consistent about which: `json` is one document per
+// invocation, `jsonl` is one per line. Checking three files produces three
+// [DiagnosticReport]s, which is three lines of `jsonl` and — without something to hold
+// them — three documents where `json` promises one. A bare JSON array would do it and
+// is not a proto message, so the thing that holds them is a message.
+message ValidationReport {
+  // Files is one report per file checked, in the order they were given, including the
+  // files that were clean.
+  repeated DiagnosticReport files = 1;
 }
 
 // RunState is the durable workflow state used by the Temporal Run entrypoint.

@@ -982,7 +982,7 @@ Run `flow <command> --help` for the full flags of any of these.
 
 | Command | What it does |
 | --- | --- |
-| `flow validate <file...>` | Check Flowfiles without executing them. Reports the line and column of each problem. |
+| `flow validate <file...>` | Check Flowfiles without executing them. Reports the line and column of each problem. `--output json` or `jsonl` carries the diagnostics as data. |
 | `flow fix <path...>` | Rewrite Flowfiles from a retired spelling into the current one, preserving comments and formatting. `--check` reports and writes nothing, exiting non-zero if there is work. |
 | `flow run <file>` | Submit a workflow to a server, which runs it durably, and follow the run until it finishes. |
 | `flow run local <file>` | Run a workflow in this process, with no server and no Temporal. Answers signal gates from `--signal name=json`. |

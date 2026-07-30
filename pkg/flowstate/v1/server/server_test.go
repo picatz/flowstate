@@ -25,7 +25,6 @@ import (
 	"github.com/picatz/jose/pkg/jwk"
 	"github.com/picatz/jose/pkg/jwt"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/testing/protocmp"
 )
 
@@ -259,17 +258,16 @@ func TestFlowstateServer(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NotNil(t, getResp)
-	require.True(
-		t,
-		proto.Equal(
-			getResp.Msg,
-			expResp,
-		),
-		"Expected and actual responses differ:\n%s",
-		cmp.Diff(
-			getResp.Msg,
-			expResp,
-			protocmp.Transform(),
-		),
-	)
+
+	// Everything but the clock. A response now carries when the run started and
+	// finished, which are facts about the moment this test ran and cannot be written
+	// into an expected value — but they are also not nothing, so they are asserted
+	// just below rather than dropped. What stays exact is the part that is a claim
+	// about the *server*: the ids, the status, and the outputs.
+	require.Empty(t, cmp.Diff(expResp, getResp.Msg, protocmp.Transform(),
+		protocmp.IgnoreFields(&v1.GetResponse{}, "start_time", "close_time")),
+		"the response differs from what this run should have produced")
+
+	require.NotNil(t, getResp.Msg.GetStartTime(), "a finished run does not say when it began")
+	require.NotNil(t, getResp.Msg.GetCloseTime(), "a finished run does not say when it finished")
 }

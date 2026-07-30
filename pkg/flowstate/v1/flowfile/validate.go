@@ -1497,3 +1497,42 @@ var functionNamespaces = func() map[string]bool {
 
 	return out
 }()
+
+// Proto renders a diagnostic as the schema message every surface reads.
+//
+// The Go struct stays the working type inside this package — it is what the checks
+// build and what [Diagnostic.Error] renders — and this is the projection of it that
+// leaves. Constitution point 6, applied to a diagnostic: the compiled proto is the
+// contract, and anything this package can say, another surface says by reading the
+// same message.
+//
+// Positions are widened to uint32 unchanged, zero and all. A diagnostic with no
+// position is a real answer, so it must not be turned into line 1.
+func (d Diagnostic) Proto() *v1.Diagnostic {
+	return &v1.Diagnostic{
+		Line:    uint32(max(d.Line, 0)),
+		Column:  uint32(max(d.Column, 0)),
+		Message: d.Message,
+		Step:    d.Step,
+		Field:   d.Field,
+		Kind:    d.Kind,
+		Value:   d.Value,
+	}
+}
+
+// Report renders a file's diagnostics as the schema message.
+//
+// A file with no diagnostics still produces a report, with an empty list. "Checked and
+// clean" and "not checked" are different facts, and a consumer that only ever saw
+// failures could not tell them apart.
+func (ds Diagnostics) Report(file string) *v1.DiagnosticReport {
+	report := &v1.DiagnosticReport{
+		File:        file,
+		Diagnostics: make([]*v1.Diagnostic, 0, len(ds)),
+	}
+	for _, d := range ds {
+		report.Diagnostics = append(report.Diagnostics, d.Proto())
+	}
+
+	return report
+}

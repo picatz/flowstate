@@ -641,3 +641,80 @@ steps:
 
 	assert.Contains(t, got, `greet: ${"hello"}`, "a genuinely read step stopped migrating")
 }
+
+// TestFixNotesAnUnfencedDeferredInputThatNamesAStep keeps a branch alive that lost its
+// only example.
+//
+// An input the registry defers is evaluated by the task against a scope this rewriter
+// cannot see, so a step reference inside one is left alone — and *noted*, since it is
+// the one place a bare pre-rooting reference survives the migration, and a value that
+// silently keeps meaning the old spelling is how a run stops working for no visible
+// reason.
+//
+// Both spellings reach it. `http`'s `expect:` carries a fence because it could have
+// been a literal; the unfenced half was `cel`'s `expr:`, bare because evaluating it was
+// the entire purpose of that task — and it retired, taking the only built-in written
+// that way with it.
+//
+// So the example here is `expect:` written *without* its fence. That is a mistake the
+// validator reports separately, and it is exactly the file this branch exists for: the
+// author has stranded a reference in an input nothing else reference-checks, and `flow
+// fix` is the only thing that will mention it.
+func TestFixNotesAnUnfencedDeferredInputThatNamesAStep(t *testing.T) {
+	t.Parallel()
+
+	result, err := flowfile.Fix([]byte(`edition: v2026.2
+name: t
+steps:
+  - id: a
+    http:
+      method: GET
+      url: https://example.com
+  - id: b
+    http:
+      method: GET
+      url: https://example.com
+      expect: a.status_code == 200
+`))
+	require.NoError(t, err)
+
+	notes := make([]string, 0, len(result.Notes))
+	for _, note := range result.Notes {
+		notes = append(notes, note.Message)
+	}
+	joined := strings.Join(notes, "\n")
+
+	assert.Contains(t, joined, "evaluated by the task against its own scope",
+		"an unfenced deferred input naming a step was ignored rather than noted:\n%s", joined)
+	assert.Contains(t, joined, "steps.a.status_code",
+		"the note does not offer the rooted spelling, which is the part that can be pasted")
+}
+
+// TestFixLeavesAnUnfencedDeferredInputAlone is the other half, and the one that keeps
+// the note from becoming a rewrite.
+//
+// The value belongs to the task. Rooting it would change an expression evaluated
+// against a scope this rewriter does not have, so it is reported rather than fixed —
+// which means the bytes have to come back identical.
+func TestFixLeavesAnUnfencedDeferredInputAlone(t *testing.T) {
+	t.Parallel()
+
+	src := `edition: v2026.2
+name: t
+steps:
+  - id: a
+    http:
+      method: GET
+      url: https://example.com
+  - id: b
+    http:
+      method: GET
+      url: https://example.com
+      expect: a.status_code == 200
+`
+
+	result, err := flowfile.Fix([]byte(src))
+	require.NoError(t, err)
+	assert.Equal(t, src, string(result.Source),
+		"a deferred input was rewritten, changing an expression the task evaluates in its own scope")
+}

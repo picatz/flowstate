@@ -249,3 +249,52 @@ steps:
 	assert.Contains(t, text, "status_code", "the hover does not name the output")
 	assert.Contains(t, text, "http", "the hover does not say which task produces it")
 }
+
+// TestTheEditorShowsARuleTheSchemaStates is the join of two features that were built
+// separately and have to meet.
+//
+// `flow validate` learned to check the rules a task's inputs declare — a `method` that
+// matches a pattern, a `url` that is a URI — by asking protovalidate over the
+// descriptor the registry carries. This package converts what the validator reports
+// into an editor's diagnostic, positioning it from its own model.
+//
+// Neither half knows about the other, which is exactly why this is worth a test: the
+// new check produces diagnostics carrying a step and a *field*, and whether this
+// package can turn that into a range over the offending token is a claim about the two
+// together. A range that fell back to the whole step would still "work" and would be
+// noticeably worse to read.
+func TestTheEditorShowsARuleTheSchemaStates(t *testing.T) {
+	t.Parallel()
+
+	src := `edition: v2026.2
+name: t
+steps:
+  - id: web
+    http:
+      method: FETCH
+      url: https://example.com
+`
+
+	c := newClient(t)
+	c.initialize()
+	params := c.open("file:///schema-rule.yaml", src)
+
+	require.NotEmpty(t, params.Diagnostics,
+		"the editor is silent about a value the validator refuses")
+
+	var found bool
+	for _, d := range params.Diagnostics {
+		if !strings.Contains(d.Message, "regex pattern") {
+			continue
+		}
+		found = true
+
+		// The value at fault, not the line and not the step. This is the part the
+		// join buys: the validator names a field, and this package turns that into
+		// the token an author has to change.
+		assert.Equal(t, "FETCH", textInRange(src, d.Range),
+			"the diagnostic does not underline the value the schema refused")
+	}
+	require.True(t, found,
+		"no diagnostic about the declared pattern reached the editor: %v", messages(params.Diagnostics))
+}

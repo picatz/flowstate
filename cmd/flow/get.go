@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
@@ -83,9 +84,9 @@ func runGet(cmd *cobra.Command, args []string) error {
 	// ErrTheme, because this line goes to stderr: `flow get x | jq` has a piped
 	// stdout and a terminal stderr, and the palette for one is not the palette for
 	// the other.
-	fmt.Fprintf(surface.Err, "%s workflow %s run %s\n",
+	fmt.Fprintf(surface.Err, "%s workflow %s run %s%s\n",
 		surface.ErrTheme.Pill(statusTone(msg.GetStatus()), statusLabel(msg.GetStatus())),
-		msg.GetWorkflowId(), msg.GetRunId())
+		msg.GetWorkflowId(), msg.GetRunId(), runAge(msg))
 
 	if outputs := msg.GetOutputs(); outputs != nil {
 		encoded, err := protojson.Marshal(outputs)
@@ -104,6 +105,47 @@ func runGet(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// runAge renders how long a run has been going, or how long it took.
+//
+// It is the answer to the question a status alone cannot reach. `RUNNING` is the same
+// word for a workload three seconds in and one wedged since Tuesday, and telling those
+// apart is the whole reason somebody runs `flow get` on a particular run rather than
+// listing everything.
+//
+// Elapsed rather than an instant, because the reader is asking about *this* run rather
+// than about the calendar. The machine-readable output carries the timestamps
+// themselves, where a consumer can do its own arithmetic.
+//
+// Empty when there is no start time, which is what an older server answers. A CLI that
+// printed "0s" there would be inventing a fact about a run it was told nothing about.
+func runAge(msg *v1.GetResponse) string {
+	if msg.GetStartTime() == nil {
+		return ""
+	}
+
+	started := msg.GetStartTime().AsTime()
+	if closed := msg.GetCloseTime(); closed != nil {
+		return fmt.Sprintf(" (took %s)", roundedDuration(closed.AsTime().Sub(started)))
+	}
+
+	return fmt.Sprintf(" (running for %s)", roundedDuration(time.Since(started)))
+}
+
+// roundedDuration renders a duration at a precision somebody reads rather than
+// computes: whole seconds, and no more than that.
+//
+// A run's age is prose. `1m23.4917s` is a measurement of the clock this command
+// happened to be run at, and the extra digits say nothing about the workload.
+func roundedDuration(d time.Duration) time.Duration {
+	if d < 0 {
+		// A clock skew between the server and this machine, which is not something
+		// to report as a negative age.
+		return 0
+	}
+
+	return d.Round(time.Second)
 }
 
 // statusLabel renders a run status the way a person would say it.

@@ -676,11 +676,15 @@ func outcomeError(status v1.RunResponse_Status, workflowID, failure string) erro
 
 	// Appended only when it says something the status has not.
 	//
-	// The server currently answers a terminal run's failure message with the status
-	// name itself (`server.go` builds `Error{Message: respStatus.String()}`), so
-	// appending it unguarded reads `run "x" failed: STATUS_FAILED` — a sentence that
-	// restates its own subject and looks like the reason was retrieved. Better to say
-	// less than to look like more was learned than was.
+	// The guard used to be a workaround: the server answered a terminal run's failure
+	// message with the status name itself, so appending it unguarded read
+	// `run "x" failed: STATUS_FAILED` — a sentence restating its own subject while
+	// looking like the reason had been retrieved. The server reads the run's actual
+	// failure now, so the ordinary case says something.
+	//
+	// The check stays, because the fallback stays: a terminal run whose error cannot
+	// be read is still answered with its status, which is the honest answer and the
+	// one this must not print twice.
 	if failure != "" && !restatesStatus(failure, status) {
 		return fmt.Errorf("run %q %s: %s", workflowID, statusWord(status), failure)
 	}

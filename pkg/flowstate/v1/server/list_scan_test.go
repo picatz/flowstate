@@ -515,3 +515,124 @@ func TestContinuedAsNewReadsAsRunning(t *testing.T) {
 		runStatus(enums.WORKFLOW_EXECUTION_STATUS_CONTINUED_AS_NEW),
 		"a continued-as-new segment has no status of its own")
 }
+
+// TestListPagingSurvivesANamespaceThatGrowsUnderIt pins the property that makes this
+// cursor safe, and that a faster one would give away.
+//
+// # The optimisation this refuses
+//
+// Every request asks Temporal for at most the page's remaining capacity, so a caller
+// using a small page size makes a round trip per few executions: `page_size=1` against
+// a namespace full of somebody else's runs walks it one execution at a time. The
+// obvious fix is a composite page token — Temporal's own cursor plus a count of how far
+// into the batch it returned we had got — so the server could always ask for a full
+// batch and remember where it stopped inside one.
+//
+// It cannot be done, and the reason is what this test holds down. Temporal's page token
+// is a *key*: it addresses a position in a sort order, so a run appearing after it was
+// issued does not move it. A count is not a key. Resuming "the batch that token C
+// returned, skipping the first k" assumes that re-asking C returns the same batch — and
+// a visibility store is ordered newest-first, so anything started in between arrives at
+// the *front*. The skip of k then lands k runs too late, and the ones it steps over are
+// runs the caller owns, gone from every later page.
+//
+// So a batch is either consumed entirely or not advanced past, which is why the request
+// is bounded by the page's remaining room. The cost is round trips; the thing bought is
+// that no run can be skipped.
+//
+// # What this models
+//
+// A namespace that behaves the way Temporal's does — a keyed cursor over a
+// newest-first order — and that *grows while the walk is in progress*. Every run
+// present when the walk started must be reached exactly once. The new arrivals may or
+// may not appear, which is the honest guarantee for a listing of a live system and is
+// deliberately not asserted.
+func TestListPagingSurvivesANamespaceThatGrowsUnderIt(t *testing.T) {
+	t.Parallel()
+
+	// A small page against a much larger namespace, so the walk takes many pages and
+	// there are many boundaries for a run to fall through.
+	const existing, pageSize = 23, 3
+
+	// Newest first, which is the order a visibility store answers in. Keys descend, so
+	// a newly started run gets a key above every existing one and lands at the front.
+	ordered := make([]*workflow.WorkflowExecutionInfo, 0, existing)
+	for i := existing - 1; i >= 0; i-- {
+		ordered = append(ordered, &workflow.WorkflowExecutionInfo{
+			Execution: &common.WorkflowExecution{WorkflowId: fmt.Sprintf("run-%02d", i)},
+		})
+	}
+
+	// The cursor is the id to resume *after*, which is what makes it a key rather than
+	// an offset: inserting at the front does not move it.
+	requests := 0
+	temporal := &mocks.Client{}
+	temporal.On("ListWorkflow", mock.Anything, mock.Anything).Return(
+		func(_ context.Context, request *workflowservice.ListWorkflowExecutionsRequest) *workflowservice.ListWorkflowExecutionsResponse {
+			from := 0
+			if token := request.GetNextPageToken(); len(token) > 0 {
+				for i, execution := range ordered {
+					if execution.GetExecution().GetWorkflowId() == string(token) {
+						from = i + 1
+
+						break
+					}
+				}
+			}
+
+			end := min(from+int(request.GetPageSize()), len(ordered))
+			page := ordered[from:end]
+
+			resp := &workflowservice.ListWorkflowExecutionsResponse{Executions: page}
+			if end < len(ordered) && len(page) > 0 {
+				resp.NextPageToken = []byte(page[len(page)-1].GetExecution().GetWorkflowId())
+			}
+
+			// A run starts between requests, at the front, exactly where an
+			// offset-based cursor would be shifted by it.
+			requests++
+			if requests%2 == 0 {
+				ordered = append([]*workflow.WorkflowExecutionInfo{{
+					Execution: &common.WorkflowExecution{
+						WorkflowId: fmt.Sprintf("arrived-%02d", requests),
+					},
+				}}, ordered...)
+			}
+
+			return resp
+		},
+		nil,
+	)
+
+	server := New(temporal)
+
+	seen := map[string]int{}
+	token := ""
+	pages := 0
+
+	for {
+		response, err := server.List(t.Context(), connect.NewRequest(&v1types.ListRequest{
+			PageSize:  pageSize,
+			PageToken: token,
+		}))
+		require.NoError(t, err)
+
+		for _, run := range response.Msg.GetRuns() {
+			seen[run.GetWorkflowId()]++
+		}
+
+		pages++
+		require.Less(t, pages, 60, "the listing never terminated")
+
+		token = response.Msg.GetNextPageToken()
+		if token == "" {
+			break
+		}
+	}
+
+	for i := range existing {
+		id := fmt.Sprintf("run-%02d", i)
+		require.Equal(t, 1, seen[id],
+			"run %q was skipped or returned twice while the namespace grew under the walk", id)
+	}
+}
