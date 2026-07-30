@@ -183,6 +183,14 @@ type parsedStep struct {
 	// one whose expression most often names another step.
 	waitUntilEntry *entry
 
+	// varsEntry is the step's own `vars:` block, whose *values* are expressions and
+	// whose *keys* are the bare names those values are bound to.
+	//
+	// It is the step's, whatever kind of step it is: a `vars:` on a `for_each` binds
+	// names for the loop's `items:` and its whole body, and one on a task step binds
+	// them for that step's inputs. Same key, same level, one entry.
+	varsEntry *entry
+
 	// itemsEntry is a for_each block's `items`, whose value is an expression
 	// producing the list to iterate.
 	itemsEntry *entry
@@ -240,6 +248,14 @@ func (s *parsedStep) expressionEntries() []*entry {
 	if s.waitUntilEntry != nil {
 		entries = append(entries, s.waitUntilEntry)
 	}
+
+	// A step's `vars:` bindings, which are expressions like any other value here and
+	// were missing from this list until the retirement edition made them the place
+	// most expressions are written. An author who moved a value out of a `cel:` step
+	// — which this list did cover, through the task inputs — lost hover, go to
+	// definition, and the syntax squiggle in the same edit.
+	entries = append(entries, nestedEntries(s.varsEntry)...)
+
 	return append(entries, s.inputs...)
 }
 
@@ -319,11 +335,32 @@ type parsedFile struct {
 	stepsEntry *entry
 	steps      []*parsedStep
 
+	// varsEntry is the document's own `vars:` block. Its values are expressions
+	// evaluated before the first step runs, so they belong to the file rather than
+	// to any step — which is why they are held here and not reachable through
+	// [parsedFile.stepAt].
+	varsEntry *entry
+
 	// entries are the document's own keys, in source order, including any this
 	// package does not interpret — the same reason parsedStep keeps its own: a key
 	// the DSL gains tomorrow is then undocumented rather than unreachable. It is
 	// what hover resolves above `steps:`, where there is no step to ask.
 	entries []*entry
+}
+
+// expressionEntries returns the document's own entries whose values may contain a
+// ${...} expression.
+//
+// One entry today, and a method rather than a field read for the same reason the
+// step has one: everything that walks expressions asks the model where they are,
+// so a position the DSL gains tomorrow reaches hover, definition and diagnostics
+// together or not at all.
+func (p *parsedFile) expressionEntries() []*entry {
+	if p == nil {
+		return nil
+	}
+
+	return nestedEntries(p.varsEntry)
 }
 
 // step returns the step with the given id, preferring the first declaration so
@@ -379,6 +416,10 @@ func parseFlowfile(text string, ix *lineIndex) (*parsedFile, error) {
 			case "name":
 				if p.nameEntry == nil {
 					p.nameEntry = e
+				}
+			case "vars":
+				if p.varsEntry == nil && e.value != nil && e.value.kind == kindMapping {
+					p.varsEntry = e
 				}
 			case "steps":
 				if p.stepsEntry == nil {
@@ -565,6 +606,13 @@ func fillParsedStep(s *parsedStep, entries []*entry) {
 		case "if":
 			if s.conditionEntry == nil {
 				s.conditionEntry = e
+			}
+		case "vars":
+			// Only the mapping form has anything under it. `vars: something` is a
+			// mistake the validator reports, and a model holding it as a block would
+			// have nothing to put in the block.
+			if s.varsEntry == nil && e.value != nil && e.value.kind == kindMapping {
+				s.varsEntry = e
 			}
 		case "timeout":
 			if s.timeoutEntry == nil {

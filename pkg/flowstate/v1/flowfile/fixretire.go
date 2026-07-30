@@ -57,7 +57,7 @@ var varReference = regexp.MustCompile(`\bvars\.([A-Za-z_][A-Za-z0-9_]*)\b`)
 //
 // Returns whether it acted, so the caller knows not to look for anything else on a step
 // that no longer exists.
-func (f *fixer) retiredStep(step *ast.MappingNode, entry *ast.MappingValueNode, key string, alone bool) bool {
+func (f *fixer) retiredStep(step *ast.MappingNode, entry *ast.MappingValueNode, key string, scope stepScope) bool {
 	read, ok := retiredTasks[key]
 	if !ok {
 		return false
@@ -82,7 +82,28 @@ func (f *fixer) retiredStep(step *ast.MappingNode, entry *ast.MappingValueNode, 
 		return true
 	}
 
-	if alone {
+	// A guarded step does not always run, and a workflow var always evaluates.
+	//
+	// Lifting the value out drops the guard: an expression that never ran when the
+	// condition was false now runs every time, before the first step. A step guarded
+	// by `${vars.enabled}` computing something that fails when the feature is off is
+	// the ordinary shape of that, and it turns a workflow that succeeded into one that
+	// cannot start.
+	//
+	// Refused rather than carried, because there is nothing to carry it to: `vars:`
+	// has no `if:`, and inventing one would be a grammar this build does not have.
+	if condition, guarded := stepCondition(step); guarded {
+		f.refuse(entry.Key,
+			"`%s:` is retired and this step's value could move to `%s:` — but the step is guarded by "+
+				"`if: %s`, and a `%s:` block has no condition: it is evaluated before the first step "+
+				"runs, every time. Moving the value would run an expression that used to be skipped. "+
+				"Write it under `%s:` on the step that uses it, which keeps the guard",
+			key, varsKey, condition, varsKey, varsKey)
+
+		return true
+	}
+
+	if scope.alone {
 		f.refuse(entry.Key,
 			"`%s:` is retired and this step's value could move to `%s:` — but it is the only step in its "+
 				"list, and removing it would leave a loop body or a branch with nothing in it. Move the "+
@@ -116,6 +137,26 @@ func (f *fixer) retiredStep(step *ast.MappingNode, entry *ast.MappingValueNode, 
 	// Checked against what is left after the other moves are folded in, below, since a
 	// reference to a step that is itself moving is not a reference to a step.
 	folded := f.foldMovedInto(source)
+
+	// A bare name bound where the step is written — a loop's iterator, a name an
+	// enclosing block declared — exists nowhere at the top of the file.
+	//
+	// Nothing about the source gives this away: `${person}` is a word, and the two
+	// checks below look for roots. So the walk carries the scope down (see stepScope),
+	// and a value mentioning any of it stays where the name is.
+	//
+	// Matched textually, which can only be wrong in the safe direction: the name
+	// appearing inside a string literal produces a refusal rather than a move.
+	if name, mentioned := mentionsAny(folded, scope.bound); mentioned {
+		f.refuse(entry.Key,
+			"`%s:` is retired and this step's value reads `%s`, which is bound where the step is "+
+				"written — by an enclosing loop or block — and means nothing at the top of the file. "+
+				"Write the expression where it is used, or under `%s:` on the step that uses it",
+			key, name, varsKey)
+
+		return true
+	}
+
 	if reads := stepReference.FindStringSubmatch(folded); reads != nil {
 		f.refuse(entry.Key,
 			"`%s:` is retired and this step's value reads `%s.%s`, which a workflow var cannot — "+
@@ -178,13 +219,58 @@ func (f *fixer) retiredCEL(entry *ast.MappingValueNode) (string, bool) {
 		return "", false
 	}
 
-	// `expr` is the expression itself rather than a value containing one, so it is
-	// already the source — unlike every other input, which carries a fence.
-	if inner, fenced := SplitFence(text); fenced {
-		return inner, true
+	// A fenced `expr:` is evaluated *twice*, and only one of those survives a move.
+	//
+	// The fence produced a string, and the task then parsed and evaluated that string
+	// as CEL: `expr: ${'1 + 2'}` was the integer 3. A var holds one expression and
+	// evaluates it once, so the same text there is the string "1 + 2" — a rewritten
+	// file that validates, runs, and quietly answers something else. That is the one
+	// outcome a migration may not have.
+	//
+	// Refused rather than approximated. Computing expression source at run time has no
+	// spelling in this language now, deliberately: an expression whose *text* is chosen
+	// while the workload runs is the nondeterminism the whole design is arranged to
+	// make inexpressible.
+	if _, fenced := SplitFence(text); fenced {
+		f.refuse(entry.Key,
+			"`cel:` is retired and this step's `expr:` is itself an expression, so it was evaluated "+
+				"twice — once to produce the source, once to run it. A `%s:` binding evaluates once, so "+
+				"there is no rewrite that keeps the meaning. Write out the expression it was computing",
+			varsKey)
+
+		return "", false
 	}
 
+	// `expr` is the expression itself rather than a value containing one, so it is
+	// already the source — unlike every other input, which carries a fence.
 	return text, true
+}
+
+// stepCondition returns a step's `if:` as written.
+func stepCondition(step *ast.MappingNode) (string, bool) {
+	for _, v := range step.Values {
+		if name, ok := keyNameOf(v.Key); ok && name == "if" {
+			text, _ := scalarText(v.Value)
+
+			return text, true
+		}
+	}
+
+	return "", false
+}
+
+// mentionsAny reports the first of names that source uses as a whole word.
+func mentionsAny(source string, names []string) (string, bool) {
+	for _, name := range names {
+		if name == "" {
+			continue
+		}
+		if regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `\b`).MatchString(source) {
+			return name, true
+		}
+	}
+
+	return "", false
 }
 
 // retiredPrintf reads the value a `printf:` step produced, as a `format()` call.
@@ -425,8 +511,21 @@ func (f *fixer) collectRetirementContext(n ast.Node) {
 	f.referenced = map[string]bool{}
 	f.declaredVars = map[string]bool{}
 
-	for _, match := range stepReference.FindAllStringSubmatch(strings.Join(f.lines, "\n"), -1) {
-		f.referenced[match[1]] = true
+	// Code only. A comment mentioning `steps.greet.result` is prose *about* a
+	// reference and not one — and reading it as one flips the decision that matters
+	// most here: a step nothing reads is the case this must refuse, so a sentence in
+	// the margin was enough to delete an `echo` an author meant a person to see.
+	//
+	// The other direction was already harmless, which is why the tolerance looked
+	// symmetric and is not: over-reading produces an unused `vars:` entry, and
+	// under-reading produces a refusal. Only this one loses work.
+	for _, line := range f.lines {
+		if at := commentStart(line); at >= 0 {
+			line = line[:at]
+		}
+		for _, match := range stepReference.FindAllStringSubmatch(line, -1) {
+			f.referenced[match[1]] = true
+		}
 	}
 
 	mapping, ok := unwrapAnchor(n).(*ast.MappingNode)

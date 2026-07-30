@@ -267,6 +267,19 @@ func checkExpressions(doc *document, set *diagnosticSet) []lsp.Range {
 		return flagged
 	}
 
+	// The document's own expressions — its `vars:` block — before the steps'.
+	//
+	// They belong to no step, which is exactly why they were missed: everything here
+	// walked `doc.parsed.steps`, and a workflow var is evaluated before the first
+	// step runs. Nothing about them is deferred, since there is no task to defer to.
+	for _, in := range doc.parsed.expressionEntries() {
+		walkValues(in.value, func(v *value) {
+			if v.fenced && reportCELErrors(doc, set, env, v.expr, v.exprOffset, v.exprRange) {
+				flagged = append(flagged, v.rng)
+			}
+		})
+	}
+
 	for _, s := range doc.parsed.steps {
 		def, taskKnown := v1.LookupTask(s.taskName)
 
@@ -276,7 +289,14 @@ func checkExpressions(doc *document, set *diagnosticSet) []lsp.Range {
 			// it is checked against a response that does not exist yet. Which
 			// inputs those are is declared on the task definition, so this cannot
 			// go stale when a task changes.
-			deferred := taskKnown && in != s.conditionEntry &&
+			//
+			// Asked of the *entry* and not only of its key, which is the same rule
+			// bindsNow is written to. A key is a word and two things can be spelled
+			// the same: since a step's `vars:` bindings joined this list, a var named
+			// `expect` on an `http` step would otherwise have its plain text read as
+			// CEL and squiggled — a false diagnostic on a perfectly good file, in the
+			// position that most needs to be trusted.
+			deferred := taskKnown && slices.Contains(s.inputs, in) &&
 				slices.Contains(def.DeferredInputs, in.key)
 
 			walkValues(in.value, func(v *value) {

@@ -355,7 +355,10 @@ func (f *fixer) workflow(n ast.Node) {
 		}
 		switch name {
 		case "steps":
-			f.steps(v.Value)
+			// The top of the file binds nothing: a workflow `vars:` value is not a
+			// bare name anywhere, it is `vars.<name>`, and the rewriter's refusal for
+			// reading one is separate.
+			f.steps(v.Value, stepScope{})
 		case "edition":
 			declared = true
 			f.edition(v)
@@ -554,23 +557,52 @@ func (f *fixer) edition(entry *ast.MappingValueNode) {
 		fmt.Sprintf("edition %q updated to %q", declared, CurrentEdition))
 }
 
+// A stepScope is what the walk knows about a step that the step itself cannot see.
+//
+// Both fields exist for the retirement rewriter, and both are about whether a step's
+// value can be *lifted out* of where it was written. Neither is discoverable from the
+// step: one is a property of the list holding it and the other of every block above it.
+type stepScope struct {
+	// alone reports that the step is the only one in its list, so deleting it would
+	// leave `- steps:` with nothing under it — a branch or a loop body that is no
+	// longer a document.
+	alone bool
+
+	// bound are the bare names in scope where the step is written: an enclosing
+	// loop's iterator, and the keys of any `vars:` block above it or on it.
+	//
+	// A workflow `vars:` block sees none of them, so a value mentioning one cannot be
+	// lifted there. Nothing rooted gives this away — `${person}` is just a word — so
+	// without carrying the scope down the rewriter reads it as a constant and moves a
+	// loop-local expression to the top of the file.
+	bound []string
+}
+
+// with returns the scope extended by the names a block binds for what is inside it.
+func (s stepScope) with(names ...string) stepScope {
+	if len(names) == 0 {
+		return s
+	}
+
+	return stepScope{alone: s.alone, bound: append(slices.Clone(s.bound), names...)}
+}
+
 // steps walks a sequence of steps, at any nesting depth.
-func (f *fixer) steps(n ast.Node) {
+func (f *fixer) steps(n ast.Node, scope stepScope) {
 	seq, ok := unwrapAnchor(n).(*ast.SequenceNode)
 	if !ok {
 		return
 	}
-	// A step that is alone in its list cannot be *moved* out of it: deleting it would
-	// leave `- steps:` with nothing under it, which is a branch or a loop body that is
-	// no longer a document. Passed down rather than discovered below, because only the
-	// list knows how many it holds.
+	// Whether a step is alone is a property of the list, so it is set here rather
+	// than discovered below.
+	scope.alone = len(seq.Values) == 1
 	for _, step := range seq.Values {
-		f.step(step, len(seq.Values) == 1)
+		f.step(step, scope)
 	}
 }
 
 // step rewrites one step, and descends into any steps nested inside it.
-func (f *fixer) step(n ast.Node, alone bool) {
+func (f *fixer) step(n ast.Node, scope stepScope) {
 	var (
 		step   *ast.MappingNode
 		values []*ast.MappingValueNode
@@ -585,6 +617,11 @@ func (f *fixer) step(n ast.Node, alone bool) {
 		return
 	}
 
+	// A step's own `vars:` bind names for its inputs and for anything nested inside
+	// it, so they are in scope before any key is looked at — including for the step
+	// itself, whose value may name one.
+	inner := scope.with(mappingKeys(blockOf(step, varsKey))...)
+
 	for _, v := range values {
 		name, ok := keyNameOf(v.Key)
 		if !ok {
@@ -593,7 +630,7 @@ func (f *fixer) step(n ast.Node, alone bool) {
 
 		// A step running a retired task is either migrated whole or refused whole, so
 		// nothing else on it is worth looking at either way.
-		if f.retiredStep(step, v, name, alone) {
+		if f.retiredStep(step, v, name, inner) {
 			return
 		}
 
@@ -602,11 +639,59 @@ func (f *fixer) step(n ast.Node, alone bool) {
 			f.taskBlock(v)
 		case "for_each":
 			f.renamedKey(v.Value, "iterator", "as")
-			f.nested(v.Value, "steps")
+			f.nested(v.Value, "steps", inner.with(iteratorOf(v.Value)))
 		case "parallel":
-			f.branches(v.Value)
+			f.branches(v.Value, inner)
 		}
 	}
+}
+
+// blockOf returns the mapping written under one of a step's keys.
+func blockOf(step *ast.MappingNode, key string) *ast.MappingNode {
+	for _, v := range step.Values {
+		if name, ok := keyNameOf(v.Key); ok && name == key {
+			if mapping, isMapping := unwrapAnchor(v.Value).(*ast.MappingNode); isMapping {
+				return mapping
+			}
+		}
+	}
+
+	return nil
+}
+
+// mappingKeys returns a mapping's keys, skipping any this package cannot read as a
+// name.
+func mappingKeys(mapping *ast.MappingNode) []string {
+	if mapping == nil {
+		return nil
+	}
+
+	names := make([]string, 0, len(mapping.Values))
+	for _, v := range mapping.Values {
+		if name, ok := keyNameOf(v.Key); ok {
+			names = append(names, name)
+		}
+	}
+
+	return names
+}
+
+// iteratorOf returns the name a loop binds each item to, falling back to the engine's
+// own default rather than a copy of it.
+func iteratorOf(forEach ast.Node) string {
+	mapping, ok := unwrapAnchor(forEach).(*ast.MappingNode)
+	if !ok {
+		return v1.DefaultIterator
+	}
+	for _, v := range mapping.Values {
+		if name, keyed := keyNameOf(v.Key); keyed && name == "as" {
+			if text, scalar := scalarText(v.Value); scalar && text != "" {
+				return text
+			}
+		}
+	}
+
+	return v1.DefaultIterator
 }
 
 // renamedKey rewrites one key of a mapping, leaving its value and the rest of the line
@@ -664,7 +749,7 @@ func (f *fixer) renamedKey(n ast.Node, was, now string) {
 }
 
 // nested descends into a named key holding a step sequence.
-func (f *fixer) nested(n ast.Node, key string) {
+func (f *fixer) nested(n ast.Node, key string, scope stepScope) {
 	n = unwrapAnchor(n)
 	mapping, ok := n.(*ast.MappingNode)
 	if !ok {
@@ -676,19 +761,19 @@ func (f *fixer) nested(n ast.Node, key string) {
 	}
 	for _, v := range mapping.Values {
 		if name, ok := keyNameOf(v.Key); ok && name == key {
-			f.steps(v.Value)
+			f.steps(v.Value, scope)
 		}
 	}
 }
 
 // branches descends into a parallel's list of branches.
-func (f *fixer) branches(n ast.Node) {
+func (f *fixer) branches(n ast.Node, scope stepScope) {
 	seq, ok := unwrapAnchor(n).(*ast.SequenceNode)
 	if !ok {
 		return
 	}
 	for _, branch := range seq.Values {
-		f.nested(branch, "steps")
+		f.nested(branch, "steps", scope)
 	}
 }
 

@@ -451,3 +451,193 @@ steps:
       message: ${vars.greet}
 `, got)
 }
+
+// The four below are one mistake in four costumes: the rewriter deciding from less
+// context than the decision needs.
+//
+// Three of them wrote a file that validates and means something else, which is the only
+// outcome a migration may never have — an author reviewing the diff sees a plausible
+// rewrite, and the workflow answers differently in production. The fourth deleted work.
+// None was reachable from the corpus, which is exactly why they are written down here:
+// the corpus is what the migration was developed against, so it is the last place a gap
+// in it will show.
+
+// TestAValueReadingALoopLocalNameStaysWhereItIs is the one nothing in the source gives
+// away.
+//
+// `${person}` is a word. It is not rooted, so neither the step check nor the var check
+// sees it, and the rewriter read a loop-local expression as a constant and moved it to
+// the top of the file — where the loop's iterator does not exist. The rewritten file
+// failed validation, and `flow fix` exited 0 because the *last* round had nothing left
+// to refuse.
+//
+// So the walk carries the scope down rather than the value carrying it up: only the
+// blocks above a step know what they bound for it.
+func TestAValueReadingALoopLocalNameStaysWhereItIs(t *testing.T) {
+	t.Parallel()
+
+	messages := strings.Join(refusals(t, `edition: v2026.2
+name: t
+steps:
+  - id: each
+    for_each:
+      items: ${['ada']}
+      as: person
+      steps:
+        - id: greet
+          echo:
+            message: ${person}
+        - id: show
+          log:
+            message: ${steps.greet.result}
+`), "\n")
+
+	assert.Contains(t, messages, "`person`", "the refusal does not name the binding that would be lost")
+	assert.Contains(t, messages, "bound where the step is written",
+		"the refusal does not say why the name means nothing at the top of the file")
+}
+
+// TestANameBoundByAnEnclosingBlocksVarsIsAlsoLocal is the same rule reached by the
+// other spelling.
+//
+// A loop's `as:` is not the only thing that binds a bare name — a `vars:` block on any
+// enclosing step binds them too, and for the same lexical extent. Testing only the
+// iterator would leave this half free to regress on its own.
+func TestANameBoundByAnEnclosingBlocksVarsIsAlsoLocal(t *testing.T) {
+	t.Parallel()
+
+	messages := strings.Join(refusals(t, `edition: v2026.2
+name: t
+steps:
+  - id: each
+    vars:
+      suffix: "!"
+    for_each:
+      items: ${['ada']}
+      as: person
+      steps:
+        - id: greet
+          echo:
+            message: ${suffix}
+        - id: show
+          log:
+            message: ${steps.greet.result}
+`), "\n")
+
+	assert.Contains(t, messages, "`suffix`", "a name bound by an enclosing block's vars was treated as free")
+}
+
+// TestAGuardedStepKeepsItsGuard is the difference between "sometimes" and "always".
+//
+// A workflow var is evaluated before the first step runs, every time. A step guarded by
+// `if:` is not, and lifting its value out silently drops the guard: an expression that
+// used to be skipped now runs on every start. Where the guarded thing is guarded
+// *because* it would fail otherwise — a feature that is off, a credential that is not
+// set — a workflow that succeeded stops starting at all.
+//
+// `vars:` has no `if:` and inventing one would be a grammar this build does not have,
+// so the honest answer is to say where the value can go instead.
+func TestAGuardedStepKeepsItsGuard(t *testing.T) {
+	t.Parallel()
+
+	messages := strings.Join(refusals(t, `edition: v2026.2
+name: t
+vars:
+  enabled: ${false}
+steps:
+  - id: risky
+    if: ${vars.enabled}
+    cel:
+      expr: 1 / 0
+  - id: use
+    if: ${vars.enabled}
+    log:
+      message: ${string(steps.risky.result)}
+`), "\n")
+
+	assert.Contains(t, messages, "guarded by", "the refusal does not say that the step has a condition")
+	assert.Contains(t, messages, "before the first step",
+		"the refusal does not say why a var cannot carry the guard")
+}
+
+// TestAnExpressionThatComputedAnExpressionIsRefused is the one that would have been
+// silent.
+//
+// A fenced `expr:` was evaluated twice: the fence produced a string, and the task then
+// parsed and ran that string as CEL. `expr: ${'1 + 2'}` was the integer 3. A var holds
+// one expression and evaluates it once, so the same text there is the *string*
+// `1 + 2` — a file that validates, runs, and answers something else.
+//
+// There is no rewrite that keeps it, and that is not a gap: an expression whose source
+// is chosen while the workload runs is the nondeterminism this language is arranged to
+// make inexpressible, so there is deliberately nowhere for it to go.
+func TestAnExpressionThatComputedAnExpressionIsRefused(t *testing.T) {
+	t.Parallel()
+
+	messages := strings.Join(refusals(t, `edition: v2026.2
+name: t
+steps:
+  - id: total
+    cel:
+      expr: ${'1 + 2'}
+  - id: show
+    log:
+      message: ${string(steps.total.result)}
+`), "\n")
+
+	assert.Contains(t, messages, "evaluated", "the refusal does not explain the two stages")
+	assert.Contains(t, messages, "evaluates once",
+		"the refusal does not say what a var does instead")
+}
+
+// TestACommentIsNotAReference is the tolerance that was asymmetric and did not look it.
+//
+// Whether anything reads a step's result is what decides which of the two cases it is,
+// and that question was answered by scanning the raw document — comments included. So
+// `# formerly read as steps.greet.result` was enough to make an unread step look read,
+// and the rewriter deleted an `echo` an author had written for a person to see.
+//
+// The reading in the other direction really is harmless — an over-read produces an
+// unused `vars:` entry — which is what made the tolerance look symmetric. Only one
+// direction loses work.
+func TestACommentIsNotAReference(t *testing.T) {
+	t.Parallel()
+
+	messages := strings.Join(refusals(t, `edition: v2026.2
+name: t
+steps:
+  # formerly read as steps.greet.result
+  - id: greet
+    echo:
+      message: hello there
+  - id: other
+    log:
+      message: still here
+`), "\n")
+
+	assert.Contains(t, messages, "nothing reads",
+		"prose mentioning a reference was counted as one, so the step was deleted rather than reported")
+}
+
+// TestACommentStillDoesNotHideARealReference is the negative direction.
+//
+// Ignoring comments must not also ignore the line the comment is about. A step whose
+// result is genuinely read still migrates, comment or no comment — otherwise the fix
+// for one wrong answer is a tool that refuses everything.
+func TestACommentStillDoesNotHideARealReference(t *testing.T) {
+	t.Parallel()
+
+	got := fixed(t, `edition: v2026.2
+name: t
+steps:
+  # this one really is read, just below
+  - id: greet
+    echo:
+      message: hello
+  - id: show
+    log:
+      message: ${steps.greet.result}
+`)
+
+	assert.Contains(t, got, `greet: ${"hello"}`, "a genuinely read step stopped migrating")
+}
