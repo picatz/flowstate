@@ -997,3 +997,106 @@ func taskOutputNames(t *testing.T, task string) []string {
 	require.NotEmpty(t, names, "task %q declares no outputs", task)
 	return names
 }
+
+// TestAnExpressionCompletesTheProfilesFunctions covers what the editor gained when
+// it stopped offering only what an expression can reference.
+//
+// Written as its own test rather than as rows in the table above because the table
+// asserts whole menus and this is about two branches: what is offered bare, and what
+// a namespace offers after its dot. The second did not exist — an unknown qualifier
+// was treated as a binding and offered nothing, which was right when the only
+// qualifiers were bindings and `steps`.
+func TestAnExpressionCompletesTheProfilesFunctions(t *testing.T) {
+	t.Parallel()
+
+	const src = `name: c
+steps:
+  - id: web
+    http:
+      url: https://example.com
+  - id: out
+    log:
+      message: ${PLACEHOLDER
+edition: v2026.2
+`
+
+	c := newClient(t)
+	c.initialize()
+
+	for _, test := range []struct {
+		name    string
+		typed   string
+		want    []string
+		notWant []string
+	}{
+		{
+			// Bare, with nothing typed: the names in scope come first and the
+			// functions follow. Both halves asserted, because offering functions
+			// *instead* of the scope would be the same mistake pointed the other way.
+			name:  "bare offers the scope and then the functions",
+			typed: "",
+			want:  []string{"steps", "upperAscii", "json_parse", "math", "regex"},
+		},
+		{
+			// A prefix an author is part-way through. This is the case the whole
+			// feature is for: `up` means nothing without knowing `upperAscii` exists.
+			name:  "a prefix narrows to the function",
+			typed: "up",
+			want:  []string{"upperAscii"},
+			// A namespace whose *members* start with the prefix must not surface
+			// here, because `up` is not the front of `math.abs`.
+			notWant: []string{"math", "steps"},
+		},
+		{
+			name:  "a namespace offers its members after the dot",
+			typed: "math.",
+			want:  []string{"abs", "ceil", "floor", "round", "sqrt"},
+			// The qualifier itself is not repeated inside its own list, and step
+			// ids are a different namespace entirely.
+			notWant: []string{"math", "web"},
+		},
+		{
+			name:    "another namespace offers only its own",
+			typed:   "regex.",
+			want:    []string{"extract", "extractAll", "replace"},
+			notWant: []string{"abs", "upperAscii"},
+		},
+		{
+			// The root still wins its own name. A namespace check that ran first
+			// would have to be wrong about `steps` for this to fail, but the two
+			// branches sit next to each other and the order between them is a
+			// decision rather than an accident.
+			name:    "the steps root still offers step ids",
+			typed:   "steps.",
+			want:    []string{"web"},
+			notWant: []string{"abs", "upperAscii"},
+		},
+		{
+			// A bare binding is not a namespace, and offering a function list for
+			// one would be inventing members for a value whose type is unknown.
+			name:    "a name that is not a namespace offers nothing",
+			typed:   "web.",
+			notWant: []string{"abs", "upperAscii", "extract"},
+		},
+	} {
+		// Not parallel, and the rest of this file is not either. The harness wraps
+		// the server in a jsonrpc2.AsyncHandler, so a request and the notification
+		// it depends on are handled concurrently: a completion can reach the server
+		// before the didOpen that put the document there, and the answer is an empty
+		// list. Which is how this was found — one subtest failed once, on a document
+		// it had opened a line earlier, and passed on the next run.
+		t.Run(test.name, func(t *testing.T) {
+			text, pos := splitCursor(t, strings.Replace(src, "PLACEHOLDER", test.typed+"|", 1))
+			uri := "file:///fn-complete-" + strings.ReplaceAll(test.name, " ", "-") + ".yaml"
+			c.open(uri, text)
+
+			got := labels(c.complete(uri, pos.Line, pos.Character).Items)
+			for _, want := range test.want {
+				assert.Contains(t, got, want)
+			}
+			for _, notWant := range test.notWant {
+				assert.NotContains(t, got, notWant)
+			}
+		})
+	}
+}
