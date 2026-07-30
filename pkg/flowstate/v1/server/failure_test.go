@@ -133,3 +133,133 @@ func TestACompletedRunReportsNoFailure(t *testing.T) {
 	assert.Nil(t, got.GetError(), "a run that succeeded reported a failure")
 	assert.NotNil(t, got.GetOutputs(), "a run that succeeded reported no outputs")
 }
+
+// TestGetReportsWhenARunStartedAndFinished closes the other half of the same gap.
+//
+// A listing already answered both — `RunSummary` has carried `start_time` and
+// `close_time` from the beginning — while `Get` on the same run answered three
+// scalars. So `flow list` could tell you a run had been going for an hour and
+// `flow get <id>` could only tell you it was running, which is the wrong way round:
+// Get is the verb somebody reaches for when they care about a *particular* run.
+//
+// Both branches are asserted because they are different code paths and the running
+// one is the one that used to say nothing at all.
+func TestGetReportsWhenARunStartedAndFinished(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTenantFixture(t)
+
+	// Parked at a gate, so there is a genuinely running run to ask about rather than
+	// a race against one that finishes first.
+	started, err := fixture.teamA.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+		Workflow: gatedWorkflow(),
+	}))
+	require.NoError(t, err)
+
+	workflowID := started.Msg.GetWorkflowId()
+	startWorker(t, fixture.temporal)
+	waitUntilParkedAtTheGate(t, fixture.temporal, workflowID)
+
+	running, err := fixture.teamA.Get(t.Context(), connect.NewRequest(&v1.GetRequest{
+		WorkflowId: workflowID,
+	}))
+	require.NoError(t, err)
+	require.Equal(t, v1.RunResponse_STATUS_RUNNING, running.Msg.GetStatus())
+
+	require.NotNil(t, running.Msg.GetStartTime(), "a running run does not say when it began")
+	assert.False(t, running.Msg.GetStartTime().AsTime().IsZero(),
+		"the start time is the zero instant, which reports the run as having begun in 1970")
+
+	// Unset rather than zero, so "has not finished" and "finished at the epoch" stay
+	// distinct — the same rule the listing follows, which is why both read it from
+	// one place.
+	assert.Nil(t, running.Msg.GetCloseTime(), "a run still going reported a close time")
+
+	_, err = fixture.teamA.Cancel(t.Context(), connect.NewRequest(&v1.CancelRequest{
+		WorkflowId: workflowID,
+	}))
+	require.NoError(t, err)
+
+	var finished *v1.GetResponse
+	require.Eventually(t, func() bool {
+		resp, gerr := fixture.teamA.Get(t.Context(), connect.NewRequest(&v1.GetRequest{
+			WorkflowId: workflowID,
+		}))
+		if gerr != nil {
+			return false
+		}
+		finished = resp.Msg
+
+		return finished.GetStatus() != v1.RunResponse_STATUS_RUNNING
+	}, 60*time.Second, 200*time.Millisecond, "the run never reached a terminal state")
+
+	require.NotNil(t, finished.GetStartTime(), "a finished run lost the time it began")
+	require.NotNil(t, finished.GetCloseTime(), "a finished run does not say when it finished")
+	assert.False(t, finished.GetCloseTime().AsTime().Before(finished.GetStartTime().AsTime()),
+		"the run finished before it started")
+}
+
+// TestGetAndListAgreeAboutWhenARunStarted is the join, and the reason the mapping is
+// shared rather than written twice.
+//
+// Two readings of one response eventually disagree. A run reported as having started
+// at one time by `flow list` and another by `flow get` is a bug nobody can reproduce,
+// and what stops it is that both verbs ask the same function.
+//
+// # Why this is not exact equality
+//
+// The two verbs read two different Temporal APIs — a listing comes from the visibility
+// store and a Get from DescribeWorkflowExecution — and the visibility store keeps
+// microseconds where Describe keeps nanoseconds. Measured, not assumed: this test
+// first asserted exact equality and found 17:55:40.563523000 against
+// 17:55:40.563523120, a difference of 120 nanoseconds.
+//
+// A microsecond is therefore the tightest claim that is about *this server* rather
+// than about Temporal's storage precision. Rounding one side to make an exact
+// assertion pass would be inventing agreement, and asserting nothing at all would let
+// a genuinely different field — a close time read as a start time, say — slip through.
+const listVisibilityPrecision = time.Microsecond
+
+func TestGetAndListAgreeAboutWhenARunStarted(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTenantFixture(t)
+	startWorker(t, fixture.temporal)
+
+	started, err := fixture.teamA.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+		Workflow: &v1.Workflow{
+			Name:  "agrees",
+			Steps: []*v1.Node{bulky("only", 8)},
+		},
+	}))
+	require.NoError(t, err)
+
+	workflowID := started.Msg.GetWorkflowId()
+
+	var listed *v1.RunSummary
+	require.Eventually(t, func() bool {
+		resp, lerr := fixture.teamA.List(t.Context(), connect.NewRequest(&v1.ListRequest{}))
+		if lerr != nil {
+			return false
+		}
+		for _, run := range resp.Msg.GetRuns() {
+			if run.GetWorkflowId() == workflowID && run.GetStatus() != v1.RunResponse_STATUS_RUNNING {
+				listed = run
+
+				return true
+			}
+		}
+
+		return false
+	}, 60*time.Second, 200*time.Millisecond, "the run never appeared in a listing as finished")
+
+	got, err := fixture.teamA.Get(t.Context(), connect.NewRequest(&v1.GetRequest{
+		WorkflowId: workflowID,
+	}))
+	require.NoError(t, err)
+
+	assert.WithinDuration(t, listed.GetStartTime().AsTime(), got.Msg.GetStartTime().AsTime(),
+		listVisibilityPrecision, "a listing and a Get disagree about when the run started")
+	assert.WithinDuration(t, listed.GetCloseTime().AsTime(), got.Msg.GetCloseTime().AsTime(),
+		listVisibilityPrecision, "a listing and a Get disagree about when the run finished")
+}

@@ -1047,6 +1047,24 @@ message GetResponse {
     RunResponse.Error error = 4;
     Workflow.StepOutputs outputs = 5;
   }
+
+  // StartTime is when the workload began, and CloseTime when it finished — unset
+  // while it is still running, so "has not finished" and "finished at the epoch"
+  // stay distinct.
+  //
+  // Same two fields a listing reports, with the same names and the same meaning,
+  // because a listing already answered them and a Get did not: `flow list` could
+  // tell you a run had been going for an hour and `flow get <id>` on the same run
+  // could only tell you it was running. One verb knowing less about a run than the
+  // verb that enumerates it is the wrong way round — Get is the one a person
+  // reaches for when they care about a *particular* run.
+  //
+  // Both come off the same DescribeWorkflowExecution response the status does, so
+  // this costs nothing but the field. What is still missing from a running run is
+  // which step it is on, and that is genuinely expensive: it needs a query handler
+  // on the workflow, which is workflow code, and workflow code is frozen.
+  google.protobuf.Timestamp start_time = 6;
+  google.protobuf.Timestamp close_time = 7;
 }
 
 // RunState is the durable workflow state used by the Temporal Run entrypoint.

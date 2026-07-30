@@ -400,11 +400,15 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 	}
 	switch respStatus := getWorkflowExecutionStatus(resp); respStatus {
 	case v1.RunResponse_STATUS_RUNNING:
+		start, closed := runTimes(resp.GetWorkflowExecutionInfo())
+
 		return connect.NewResponse(
 			&v1.GetResponse{
 				WorkflowId: req.Msg.GetWorkflowId(),
 				RunId:      resp.WorkflowExecutionInfo.Execution.RunId,
 				Status:     respStatus,
+				StartTime:  start,
+				CloseTime:  closed,
 			},
 		), nil
 	case v1.RunResponse_STATUS_COMPLETED:
@@ -415,22 +419,30 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 		if err := temporal.GetWorkflow(ctx, req.Msg.GetWorkflowId(), req.Msg.GetRunId()).Get(ctx, &result); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("error getting workflow result: %w", err))
 		}
+		start, closed := runTimes(resp.GetWorkflowExecutionInfo())
+
 		return connect.NewResponse(
 			&v1.GetResponse{
 				WorkflowId: req.Msg.GetWorkflowId(),
 				RunId:      resp.WorkflowExecutionInfo.Execution.RunId,
 				Status:     respStatus,
+				StartTime:  start,
+				CloseTime:  closed,
 				Kind: &v1.GetResponse_Outputs{
 					Outputs: &result,
 				},
 			},
 		), nil
 	case v1.RunResponse_STATUS_FAILED, v1.RunResponse_STATUS_CANCELED, v1.RunResponse_STATUS_TERMINATED, v1.RunResponse_STATUS_TIMED_OUT:
+		start, closed := runTimes(resp.GetWorkflowExecutionInfo())
+
 		return connect.NewResponse(
 			&v1.GetResponse{
 				WorkflowId: req.Msg.GetWorkflowId(),
 				RunId:      resp.WorkflowExecutionInfo.Execution.RunId,
 				Status:     respStatus,
+				StartTime:  start,
+				CloseTime:  closed,
 				Kind: &v1.GetResponse_Error{
 					Error: &v1.RunResponse_Error{
 						Message: failureMessage(ctx, temporal, req.Msg.GetWorkflowId(), req.Msg.GetRunId(), respStatus),

@@ -12,6 +12,7 @@ import (
 	"go.temporal.io/api/workflowservice/v1"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Listing a tenant's runs is a scan, and the scan is what has to be bounded.
@@ -217,20 +218,32 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 // decision at a time. A list that carried outputs would make "show me my runs"
 // the cheapest way to read every workload's data at once.
 func summarize(execution *workflow.WorkflowExecutionInfo) *v1.RunSummary {
-	summary := &v1.RunSummary{
+	start, close := runTimes(execution)
+
+	return &v1.RunSummary{
 		WorkflowId: execution.GetExecution().GetWorkflowId(),
 		RunId:      execution.GetExecution().GetRunId(),
 		Status:     runStatus(execution.GetStatus()),
-		StartTime:  execution.GetStartTime(),
+		StartTime:  start,
+		CloseTime:  close,
+	}
+}
+
+// runTimes returns when a run began and when it finished.
+//
+// Split out of [summarize] so a listing and a Get answer it the same way, which is
+// the rule runStatus is written to for the same reason: two mappings of one Temporal
+// response eventually disagree, and a run reported as started at one time by `flow
+// list` and another by `flow get` is a bug nobody can reproduce.
+//
+// The close time is left unset while a run is still going, rather than reported as
+// the zero time, so "has not finished" and "finished at the epoch" stay distinct.
+func runTimes(execution *workflow.WorkflowExecutionInfo) (start, close *timestamppb.Timestamp) {
+	if execution.GetStatus() == enums.WORKFLOW_EXECUTION_STATUS_RUNNING {
+		return execution.GetStartTime(), nil
 	}
 
-	// Left unset while a run is still going, rather than reported as the zero
-	// time, so "has not finished" and "finished at the epoch" stay distinct.
-	if execution.GetStatus() != enums.WORKFLOW_EXECUTION_STATUS_RUNNING {
-		summary.CloseTime = execution.GetCloseTime()
-	}
-
-	return summary
+	return execution.GetStartTime(), execution.GetCloseTime()
 }
 
 // decodePageToken parses the opaque cursor a caller returns.
