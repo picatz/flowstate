@@ -132,6 +132,12 @@ func TestEveryOfflineExampleRuns(t *testing.T) {
 // still what the bodies below were copied from. That second one is the real limit
 // and it is why they are copies of a recorded response rather than something
 // invented to make the assertions pass.
+//
+// Nothing runs until every one of its requests is pointed at the stand-in. An
+// example this cannot point is refused rather than run, because running it would
+// reach the real host — which makes the suite depend on somebody else's service
+// and fails outright with no egress. See [rewriteURL] for why that is a refusal
+// and not a fallback.
 func TestEveryNetworkedExampleRuns(t *testing.T) {
 	// Not parallel: the loopback exemption swaps a process-global registry entry
 	// and restores it on cleanup, so two top-level tests holding one at once would
@@ -161,7 +167,13 @@ func TestEveryNetworkedExampleRuns(t *testing.T) {
 		}
 		ran++
 
-		pointAtStandIn(wf.GetSteps(), base)
+		// Every request has to be pointed somewhere this test controls before the
+		// example runs. A step it cannot point is not a step to run anyway: it would
+		// reach the real host, which makes the suite depend on somebody else's
+		// service being up and fails outright on a machine with no egress.
+		require.Empty(t, pointAtStandIn(wf.GetSteps(), base),
+			"%s has an http step this test cannot point at the stand-in, so running it would "+
+				"reach the real host; give the step a literal url, or teach rewriteURL the shape it uses", name)
 
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -373,50 +385,96 @@ func allowLoopbackEgress(tb testing.TB) {
 // A loopback URL is left alone. `conditional-and-retry` points one at a port
 // nothing listens on, deliberately, to show a tolerated failure; sending it
 // somewhere that answers would delete the only thing that example demonstrates.
-func pointAtStandIn(nodes []*v1.Node, base string) {
+// It returns the ids of steps it could not point anywhere, which the caller
+// refuses to run. Silence there was the first version's mistake — see [rewriteURL].
+func pointAtStandIn(nodes []*v1.Node, base string) []string {
 	standIn, err := url.Parse(base)
 	if err != nil {
-		return
+		// Not a stand-in at all, so nothing can be pointed at it. Naming every http
+		// step is the honest answer: the caller then refuses to run any of them.
+		return httpStepIDs(nodes)
 	}
 
+	var unpointable []string
 	for _, node := range nodes {
 		if task := node.GetTask(); task.GetName() == "http" {
-			rewriteURL(task, standIn)
+			if !rewriteURL(task, standIn) {
+				unpointable = append(unpointable, node.GetId())
+			}
 		}
 		switch kind := node.GetKind().(type) {
 		case *v1.Node_ForEach:
-			pointAtStandIn(kind.ForEach.GetBody(), base)
+			unpointable = append(unpointable, pointAtStandIn(kind.ForEach.GetBody(), base)...)
 		case *v1.Node_Parallel:
 			for _, branch := range kind.Parallel.GetBranches() {
-				pointAtStandIn(branch.GetSteps(), base)
+				unpointable = append(unpointable, pointAtStandIn(branch.GetSteps(), base)...)
 			}
 		}
 	}
+
+	return unpointable
 }
 
-// rewriteURL moves one http task's literal url onto the stand-in's host.
+// httpStepIDs names every http step, at any depth.
+func httpStepIDs(nodes []*v1.Node) []string {
+	var ids []string
+	for _, node := range nodes {
+		if node.GetTask().GetName() == "http" {
+			ids = append(ids, node.GetId())
+		}
+		switch kind := node.GetKind().(type) {
+		case *v1.Node_ForEach:
+			ids = append(ids, httpStepIDs(kind.ForEach.GetBody())...)
+		case *v1.Node_Parallel:
+			for _, branch := range kind.Parallel.GetBranches() {
+				ids = append(ids, httpStepIDs(branch.GetSteps())...)
+			}
+		}
+	}
+
+	return ids
+}
+
+// rewriteURL moves one http task's literal url onto the stand-in's host, and
+// reports whether the step is now pointed somewhere this test controls.
 //
-// A url built by an expression is left as written: there is no host to rewrite
-// until it is evaluated, and an example doing that is one this test cannot point
-// anywhere — which the unserved-path check would then report, rather than this
-// failing silently.
-func rewriteURL(task *v1.Task, standIn *url.URL) {
+// The false return is the whole point, and the first version of this did not have
+// one. A url built by an expression has no host to rewrite until it is evaluated,
+// so this left it as written — and the comment claimed the unserved-path check
+// would catch that. It could not: `unserved` records requests that reach the
+// stand-in's mux, and a url pointed at a real host never reaches it. So the case
+// the comment said was covered was precisely the one that would have made the
+// suite fetch httpbin.org for real, or fail on a machine with no egress. A guard
+// that cannot see the path it names is worse than no guard, because it stops
+// anyone looking. Reported instead, and the caller refuses to run the example.
+//
+// Only the scheme and host move. The path selects the response shape and the
+// query is what `http-query-and-json` is *about*, so a rewrite dropping either
+// would turn the example into a different one.
+//
+// A loopback url is deliberately left alone and counts as pointed:
+// `conditional-and-retry` aims one at a port nothing listens on to show a
+// tolerated failure, and sending it somewhere that answers would delete the only
+// thing that example demonstrates.
+func rewriteURL(task *v1.Task, standIn *url.URL) bool {
 	literal := task.GetInputs()["url"].GetLiteral().GetStringValue()
 	if literal == "" {
-		return
+		return false
 	}
 
 	target, err := url.Parse(literal)
 	if err != nil || target.Hostname() == "" {
-		return
+		return false
 	}
 	if host := target.Hostname(); host == "localhost" || host == "127.0.0.1" || host == "::1" {
-		return
+		return true
 	}
 
 	target.Scheme = standIn.Scheme
 	target.Host = standIn.Host
 	task.Inputs["url"] = v1.NewLiteral(target.String())
+
+	return true
 }
 
 // waitsForASignal reports whether any step, at any depth, waits to be told
