@@ -64,6 +64,29 @@ var editionList = strings.Join(flowfile.KnownEditions(), ", ")
 // and nothing failed to tell us. TestDSLKeysMatchTheDSL closes that gap by deriving
 // the real key set from flowfile.Marshal, and the report accompanying this package
 // proposes exporting the shape so the table can go away entirely.
+//
+// # The prose stays hand-written, and that is a decision rather than an omission
+//
+// The obvious next step is to derive these strings from the schema, which does
+// document every field it has. It would make the hover worse, because the two are
+// written for different readers. Compare what each says about the same thing:
+//
+//	schema  Iterator names the variable bound to the current item inside the body.
+//	hover   Names the variable bound to the current item, read bare inside the body:
+//	        `${name}`. Defaults to `item`.
+//
+// The hover gives the spelling, gives the default, and calls the key `as:` — which
+// is what an author types. The schema calls it `iterator`, which is the field's
+// name and not the key's, and says nothing about how to write a reference to it
+// because a reader of the schema is not writing one. `max_parallel` diverges the
+// same way: the schema says "Zero or one", the hover says "Omitted or `1`", and
+// only one of those is a thing a YAML author can write.
+//
+// So what is worth deriving is the key *set*, not the sentences — and that is what
+// TestDSLKeysMatchTheDSL already checks, in both directions, together with
+// TestHoverDocumentsEveryDSLKey for entries nothing shows. The failure that
+// actually bites is a key the language gains or renames while the editor goes on
+// describing the old one, and both directions of it are covered.
 var dslKeys = map[string][]dslKey{
 	"": {
 		{name: "edition", detail: "version", docs: "Required. Names the grammar this file is written in, as a v-prefixed date: `" + flowfile.CurrentEdition + "`.\n\n" +
