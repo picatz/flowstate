@@ -1144,6 +1144,195 @@ it is. Catalog immutability lands with Phase 3's `call:`; `flow migrate` and
 export is engine work that touches no grammar and can land whenever it earns its
 place in a phase.
 
+## The fourth round: the tool is a product surface
+
+The rounds above decide what an author writes. This one decides what a person and
+a *program* meet when they operate the result — the CLI, the TUI, the API, the
+language server, and the agent are one system or they are five systems that
+drift. [CLI.md](CLI.md) holds the presentation contract (streams, colour,
+symbols, vocabulary, error voice); these are the architectural decisions above
+it, and they are mostly one decision applied five times.
+
+### Every command is a projection of an RPC
+
+`flow` is a thin client of the same Connect services everything else speaks —
+`WorkflowService` today, the catalog and plugin services as they land. The rule:
+**a capability is an RPC before it is a command, and a command that cannot be
+expressed as one names a missing RPC.** This is principle 6 turned on the
+tooling: the CLI is an authoring and operations *projection*, exactly as YAML is
+an authoring projection of the spec.
+
+What holding the rule buys, with no additional design:
+
+- **`--json` is free and cannot drift.** Machine output is the protojson of the
+  RPC response message — there is no second encoder, so there is no second
+  schema. `flow inspect <run> --json` and a Connect call return the same bytes.
+- **The TUI is another renderer.** It draws the same messages the plain output
+  prints; entering it is deliberate (per CLI.md), and it can never know
+  something the pipe cannot.
+- **MCP is generated, not written.** `flow mcp` serves the same services as MCP
+  tools with schemas derived from the protos — proto-first applied to the agent
+  surface, so there is no hand-maintained tool list to fall behind the engine.
+- **API parity is structural.** Anything a person can do from a terminal, a
+  program can do from any language with a Connect client, because they are the
+  same call.
+
+Diagnostics complete the loop. They are already a typed shape — line, column,
+step, field, message — and they become a schema message, so *one* diagnostic
+object renders as `path:line:col:` on a terminal, a squiggle in the editor, an
+annotation in CI, and a structured MCP tool result. One diagnostic, four
+renderings, zero translations.
+
+### One dialect, including for questions
+
+Operational queries speak the language the workflows speak. `flow runs --where`
+takes a CEL expression in the pinned profile, over typed, rooted run metadata —
+the same rooted-name discipline as the DSL (`run.*`, `steps.*`), the same cost
+bounds, no second query mini-language to learn, document, or secure:
+
+```
+$ flow runs --workflow vendor-onboarding --since 90d \
+    --where 'steps.reviews.duration > duration("30d")' --count
+14
+```
+
+Filters push down to the visibility store where the store can answer them and
+evaluate engine-side where it cannot, under the scan and request bounds the
+listing already enforces — a query surface is a paged listing wearing a
+predicate, and inherits its rules.
+
+### Plan and apply: anything that touches a run checks first
+
+Every mutating operation against a run — `migrate`, `rerun`, `terminate` — has a
+`--check` form that is pure, free, and safe to run forever; the mutating form
+runs the *same* check, refuses on failure, and in a non-interactive stream
+requires its explicit confirmation flag. This is Terraform's plan/apply lesson
+applied where it matters most: the objects being mutated have been running for
+months and belong to someone.
+
+And the apply is *recorded into the run it changed*. A migration or a rerun
+appears in the run's own history with the actor's authenticated identity and the
+before/after spec digests, so provenance is a chain rather than a snapshot, and
+the answer to "who moved this run, from what, to what, and when" is `flow trace`
+— not an expedition through a SIEM. For an enterprise this is the difference
+between an audit feature and an audit *property*.
+
+### The agent is a first-class operator
+
+Nothing here is a bolted-on "AI feature"; the agent surface is the machine
+surface, taken seriously:
+
+- **Schemas from the source of truth.** An agent discovers tasks, plugins, and
+  their typed inputs from the catalog RPC — the same registry-derived
+  descriptors that drive completion and docs (principle 12). A model never needs
+  a prose cheat-sheet that can go stale.
+- **Diagnostics are the training loop.** The teaching messages — position, what
+  is wrong, what to write instead, with the fix pasteable — are how a model
+  converges on the current grammar in one round trip. The retirement diagnostics
+  exist for exactly this population, as the versioning round records.
+- **Pure verbs make unattended iteration safe.** `validate`, `fix --check`,
+  `migrate --check`, and every `--json` read are side-effect-free by
+  construction, so an agent can loop on them without supervision; the mutating
+  verbs sit behind the plan/apply gate above, which is the same gate a human
+  gets. One permission model, not one per kind of caller.
+
+### The transcripts are the acceptance bar
+
+Output format is API — a person greps it, a pipe parses it, and a golden test
+freezes it. So the operational corpus below follows the Flowfile corpus rule:
+each transcript is the acceptance target for the feature that produces it, and
+graduates into a golden test the day the feature lands. Live today: the edition
+refusal, `flow fix`'s contract, and worker pinning. Decided, with phases in
+[the third round](#the-third-round-versions-in-flight-and-what-the-engine-already-knows):
+provenance, the fleet view, `migrate`, `rerun`, schedules, `trace`. Stream
+discipline per CLI.md applies throughout: answers on stdout, accounts on stderr.
+
+The compiler teaching the current grammar (machinery live; the vocabulary rides
+the retirement edition):
+
+```
+$ flow validate old-style.yaml
+old-style.yaml:1:1: a Flowfile declares its edition; add `edition: v2026.2`, or run `flow fix` to stamp it
+old-style.yaml:9:5: step "targets": `cel:` is no longer a step key; a computed value is a `vars:` binding now, and a static list needs no expression at all
+old-style.yaml:15:7: step "process" for_each: `iterator:` is now `as:`; run `flow fix` to rewrite this file
+old-style.yaml:30:15: step "check" input "expect": references bare `status_code`, and the response is named `response.status_code` now; run `flow fix` to rewrite this file
+
+$ flow fix old-style.yaml
+old-style.yaml: stamped edition v2026.2; rewrote cel: to vars:, iterator: to as:; rooted 3 response references
+old-style.yaml:18:5: step "announce": `echo:` result is never referenced; it may have meant `log:` — this tool does not guess intent, rewrite it yourself
+$ echo $?
+1
+```
+
+A run explaining itself, forever (spec-in-run live; plugin resolution Phase 3):
+
+```
+$ flow inspect 018f3c2e --provenance
+spec digest:      sha256:9f41c07a…
+compiled from:    edition v2026.2
+profile:          cel-2026-07
+plugins resolved: slack v2.3.1 (declared minimum v2.1.0, same major)
+pinned build:     bld-2026-07-28.1  (deployment: prod)
+```
+
+The fleet, and the seam (pinning live; the view is decided tooling over
+visibility):
+
+```
+$ flow runs --pinned-before bld-2026-09-03.1
+RUN        WORKFLOW           PINNED BUILD      AGE   STATE
+018f3c2e   vendor-onboarding  bld-2026-07-28.1  61d   waiting: security-review
+0190aa17   cert-rotation      bld-2026-08-15.2  9d    running: renew
+```
+
+Migration, checked and refused (Phase 5; this output format is decided now):
+
+```
+$ flow migrate 018f3c2e --to vendor-onboarding.yaml --check
+frame check against RunState:
+  create    ok    completed; present in target, outputs unchanged (vendor)
+  reviews   ok    in flight; wait_for_signal shapes identical, carried signals preserved
+  activate  --    not reached; replaced by target definition
+  outcome   --    not reached
+would migrate at the next Continue-As-New seam: sha256:9f41c07a… -> sha256:2bb8d1e4…
+
+$ flow migrate 018f3c2e --to renamed.yaml
+frame check failed:
+  create    REFUSED   RunState records completed step "create"; target has no step
+                      with that id (found "register" — if this is a rename, an
+                      in-flight run cannot know that)
+nothing was changed
+$ echo $?
+1
+```
+
+The run as its own audit trail (Phase 5, with the third round's derived
+observability):
+
+```
+$ flow trace 018f3c2e
+vendor-onboarding 018f3c2e ------------------------------------ 63d 4h
+  create                 http        1.2s    attempts=2
+  reviews                for_each    63d 4h
+    [legal] decision     wait        2d 1h   signal=legal-review
+    [security] decision  wait        61d 3h  signal=security-review
+  migrate                operator    kent@…  9f41c07a… -> 2bb8d1e4…
+  activate               http        800ms
+  outcome                log         "vendor v-7731 onboarding finished"
+```
+
+The migration is a row in the trace because it is an event in the history — the
+audit property, visible where the run is read.
+
+### What this round adds
+
+Immediately cheap and immediately valuable: the diagnostic schema message and
+`--json` as protojson of existing responses. `--where` lands when the listing
+surfaces grow past flags. The plan/apply gate binds `terminate` now and
+`migrate`/`rerun` when Phase 5 builds them — with these transcripts as their
+golden tests. `flow mcp` follows the catalog and `Host.Register`, because an
+agent surface generated from services is only as complete as the services.
+
 ## Order of work
 
 Each phase lands green and reachable from a Flowfile.
