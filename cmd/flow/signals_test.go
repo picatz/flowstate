@@ -305,16 +305,18 @@ func serveFake(t *testing.T, fake *fakeWorkflowService) {
 	t.Cleanup(func() { flowstateAddress = previous })
 }
 
-// signalCommand builds the command runSignal expects, with its flags reset.
+// signalCommand builds the command runSignal expects, with the flags it declares.
+//
+// Declared rather than reset: a flag lives in the FlagSet of the command that
+// declared it, so a fresh command is a fresh set and nothing leaks into the next
+// test.
 func signalCommand(t *testing.T) (*cobra.Command, *strings.Builder) {
 	t.Helper()
 
-	previousData, previousRunID := signalData, signalRunID
-	t.Cleanup(func() { signalData, signalRunID = previousData, previousRunID })
-	signalData, signalRunID = "", ""
-
 	var out strings.Builder
 	cmd := &cobra.Command{}
+	cmd.Flags().String("data", "", "")
+	cmd.Flags().String("run-id", "", "")
 	cmd.SetContext(t.Context())
 	cmd.SetOut(&out)
 
@@ -328,8 +330,8 @@ func TestSignalReachesTheServer(t *testing.T) {
 	serveFake(t, fake)
 	cmd, out := signalCommand(t)
 
-	signalData = `{"approved": true, "by": "someone@example.com"}`
-	signalRunID = "run-1"
+	require.NoError(t, cmd.Flags().Set("data", `{"approved": true, "by": "someone@example.com"}`))
+	require.NoError(t, cmd.Flags().Set("run-id", "run-1"))
 
 	require.NoError(t, runSignal(cmd, []string{"deploy-abc123", "deploy-approved"}))
 
@@ -377,7 +379,7 @@ func TestSignalRefusesAMalformedPayloadBeforeSending(t *testing.T) {
 
 	// The shell-quoting mistake this is most likely to be: a bare list rather
 	// than an object.
-	signalData = `[1, 2]`
+	require.NoError(t, cmd.Flags().Set("data", `[1, 2]`))
 
 	err := runSignal(cmd, []string{"deploy-abc123", "deploy-approved"})
 	require.ErrorContains(t, err, "not a JSON object")

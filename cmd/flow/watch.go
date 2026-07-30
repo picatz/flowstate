@@ -173,19 +173,13 @@ const (
 	outageAllowance = 30 * time.Second
 )
 
-var (
-	watchRunID    string
-	watchInterval time.Duration
-	watchPlain    bool
-)
-
 // addFollowFlags declares the flags of a command that follows a run.
 //
 // Shared between `flow watch` and `flow run`, which follow the same way for the same
 // reasons — and which would otherwise drift into two spellings of one idea, the way
 // `--address` did before it was declared from one list.
 func addFollowFlags(cmd *cobra.Command) {
-	cmd.Flags().DurationVar(&watchInterval, "interval", defaultWatchInterval,
+	cmd.Flags().Duration("interval", defaultWatchInterval,
 		"how often to ask the server, clamped to a floor of "+minWatchInterval.String())
 
 	// The escape hatch that makes following a terminal safe.
@@ -195,7 +189,7 @@ func addFollowFlags(cmd *cobra.Command) {
 	// with a screen reader that a repainting view fights. Without a way to ask, a
 	// terminal is a trap — and the answer "pipe it to cat" is a worse interface than
 	// a flag.
-	cmd.Flags().BoolVar(&watchPlain, "plain", false,
+	cmd.Flags().Bool("plain", false,
 		"print one line per change instead of drawing a live view, even on a terminal")
 }
 
@@ -237,13 +231,17 @@ flow watch flowstate-workflow-3f7c >/dev/null && ./promote.sh`,
 	addOutputFlag(cmd)
 	addFollowFlags(cmd)
 
-	cmd.Flags().StringVar(&watchRunID, "run-id", "",
+	cmd.Flags().String("run-id", "",
 		"pin the watch to one run of the workload; unset follows whichever run is current")
 
 	return cmd
 }
 
 func runWatch(cmd *cobra.Command, args []string) error {
+	runID, _ := cmd.Flags().GetString("run-id")
+	interval, _ := cmd.Flags().GetDuration("interval")
+	plain, _ := cmd.Flags().GetBool("plain")
+
 	format, err := resolveOutputFormat(cmd)
 	if err != nil {
 		return err
@@ -255,8 +253,8 @@ func runWatch(cmd *cobra.Command, args []string) error {
 	// the same breath as `flow get` refuses it rather than on the first poll,
 	// several hundred milliseconds into a live view.
 	request := &v1.GetRequest{WorkflowId: workflowID}
-	if watchRunID != "" {
-		request.RunId = &watchRunID
+	if runID != "" {
+		request.RunId = &runID
 	}
 	if err := v1.Validate(request); err != nil {
 		return fmt.Errorf("%w\n  a run id is the UUID Temporal gave one attempt at the workload; "+
@@ -266,8 +264,8 @@ func runWatch(cmd *cobra.Command, args []string) error {
 	// Nothing known yet: `flow watch` is asked about a run it did not start, so the
 	// first poll is the first thing it learns.
 	return watchRun(cmd.Context(), newSurface(cmd), format,
-		clientPoller{workflowID: workflowID, runID: watchRunID},
-		clampWatchInterval(watchInterval), workflowID, nil)
+		clientPoller{workflowID: workflowID, runID: runID},
+		clampWatchInterval(interval), plain, workflowID, nil)
 }
 
 // clampWatchInterval enforces the floor.
@@ -287,6 +285,7 @@ func watchRun(
 	format OutputFormat,
 	poller watchPoller,
 	interval time.Duration,
+	plain bool,
 	workflowID string,
 	known *v1.GetResponse,
 ) error {
@@ -294,7 +293,7 @@ func watchRun(
 	// explicitly and a terminal was not, so drawing a view over somebody's requested
 	// JSON would be this command guessing against a flag — which is the mistake
 	// --output exists to prevent, and --plain is the same rule said out loud.
-	if watchPlain || format.Machine() || !surface.ErrCaps.TTY {
+	if plain || format.Machine() || !surface.ErrCaps.TTY {
 		return followPlainly(ctx, surface, format, poller, interval, workflowID, known)
 	}
 
