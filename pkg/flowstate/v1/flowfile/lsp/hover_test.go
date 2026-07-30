@@ -33,6 +33,7 @@ steps:
       expr: json_parse(vars.raw)
       vars:
         raw: ${steps.web.body}
+edition: v2026.2
 `
 
 func TestHover(t *testing.T) {
@@ -184,6 +185,7 @@ steps:
   - id: quiet
     echo:
       message: hi
+edition: v2026.2
 `
 	c := newClient(t)
 	c.initialize()
@@ -237,6 +239,7 @@ steps:
   - id: b
     echo:
       message: ${string(size(steps))}
+edition: v2026.2
 `
 	c := newClient(t)
 	c.initialize()
@@ -271,6 +274,7 @@ steps:
   - id: later
     echo:
       message: hi
+edition: v2026.2
 `
 	c := newClient(t)
 	c.initialize()
@@ -298,6 +302,7 @@ steps:
   - id: out
     echo:
       message: ${web.body}
+edition: v2026.2
 `
 	c := newClient(t)
 	c.initialize()
@@ -333,6 +338,7 @@ steps:
   - id: out
     echo:
       message: ${steps.web.stdout}
+edition: v2026.2
 `
 		c.open("file:///wrong-output.yaml", src)
 		pos := positionOf(t, src, "${steps.web.stdout}", len("${steps.web."))
@@ -353,6 +359,7 @@ steps:
   - id: out
     echo:
       message: ${steps.mystery.stdout}
+edition: v2026.2
 `
 		c.open("file:///unknown-producer.yaml", src)
 		pos := positionOf(t, src, "${steps.mystery.stdout}", len("${steps."))
@@ -375,6 +382,7 @@ steps:
       expr: "1"
       vars:
         v: ${steps.web}
+edition: v2026.2
 `
 		c.open("file:///bare.yaml", src)
 		pos := positionOf(t, src, "${steps.web}", len("${steps."))
@@ -465,6 +473,7 @@ steps:
   - id: a
     echo:
       message: ${secret('env:API_KEY')}
+edition: v2026.2
 `
 		const uri = "file:///secret-ok.yaml"
 		require.Empty(t, messages(c.open(uri, src).Diagnostics))
@@ -490,6 +499,7 @@ steps:
   - id: a
     echo:
       message: ${secret('API_KEY')}
+edition: v2026.2
 `
 		const uri = "file:///secret-bad.yaml"
 		// The compiler reports it too; hover must agree rather than describe it as
@@ -509,6 +519,7 @@ steps:
   - id: a
     echo:
       message: ${secret('vault:prod/api#token')}
+edition: v2026.2
 `
 		const uri = "file:///secret-vault.yaml"
 		c.open(uri, src)

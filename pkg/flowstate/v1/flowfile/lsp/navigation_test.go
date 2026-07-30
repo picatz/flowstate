@@ -8,7 +8,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const navigationSource = `name: navigation
+const navigationSource = `edition: v2026.2
+name: navigation
 steps:
   - id: web
     http:
@@ -36,7 +37,7 @@ func TestDefinition(t *testing.T) {
 		require.Len(t, got, 1)
 		assert.Equal(t, lsp.DocumentURI(uri), got[0].URI)
 		assert.Equal(t, "web", textInRange(navigationSource, got[0].Range))
-		assert.Equal(t, 2, got[0].Range.Start.Line, "should point at the id declaration")
+		assert.Equal(t, 3, got[0].Range.Start.Line, "should point at the id declaration")
 	})
 
 	t.Run("the output name also resolves to the step", func(t *testing.T) {
@@ -90,6 +91,7 @@ steps:
   - id: b
     echo:
       message: ${earlier.result}
+edition: v2026.2
 `
 		params := c.open("file:///bare-nav.yaml", src)
 		require.Len(t, params.Diagnostics, 1, "premise: the compiler refuses the bare spelling")
@@ -130,17 +132,22 @@ func TestDocumentSymbols(t *testing.T) {
 	//
 	// assignStepRanges ends a step on the line before the next step's dash, and
 	// walks the last step's end back over trailing blank lines. The dashes in
-	// navigationSource are on lines 2, 5 and 8, so the steps own 2-4, 5-7 and
-	// 8-10 — the whole file below `steps:`, partitioned with no line left over.
-	assert.Equal(t, 2, got[0].Location.Range.Start.Line)
-	assert.Equal(t, 4, got[0].Location.Range.End.Line)
-	assert.Equal(t, 5, got[1].Location.Range.Start.Line)
-	assert.Equal(t, 7, got[1].Location.Range.End.Line)
-	assert.Equal(t, 8, got[2].Location.Range.Start.Line)
+	// navigationSource are on lines 3, 6 and 9, so the steps own 3-5, 6-8 and
+	// 9-11 — the whole file below `steps:`, partitioned with no line left over.
+	//
+	// One more than they read before the `edition:` marker was required, which is
+	// also why that marker is written *first* in this fixture where the rest of the
+	// package appends it: a top-level key written after the steps would extend the
+	// last step's range past its own content.
+	assert.Equal(t, 3, got[0].Location.Range.Start.Line)
+	assert.Equal(t, 5, got[0].Location.Range.End.Line)
+	assert.Equal(t, 6, got[1].Location.Range.Start.Line)
+	assert.Equal(t, 8, got[1].Location.Range.End.Line)
+	assert.Equal(t, 9, got[2].Location.Range.Start.Line)
 	// The last step is the one with no successor to bound it, so it is the only
 	// one that can run off the end of the file. It must stop at its last content
 	// line rather than at the empty line the trailing newline leaves behind.
-	assert.Equal(t, 10, got[2].Location.Range.End.Line)
+	assert.Equal(t, 11, got[2].Location.Range.End.Line)
 }
 
 // TestDocumentSymbolsNamesAnUnnamedStep checks that a step with no id still appears

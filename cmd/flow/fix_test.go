@@ -26,7 +26,8 @@ import (
 // The comments are load-bearing: both sit outside the run of lines the rewrite
 // replaces, so a rewriter that edits the source keeps them and one that
 // re-renders the document loses them.
-const oldStyleGreeter = `# A greeter written before the task was flattened onto the step.
+const oldStyleGreeter = `edition: v2026.2
+# A greeter written before the task was flattened onto the step.
 name: greeter
 steps:
   # Greet whoever is listening.
@@ -58,7 +59,8 @@ steps:
 // edit — one replaces a run of lines, the other substitutes inside one — and the
 // first version of this got them in an order where the block replacement stepped
 // over the substitution and produced a file the validator refused.
-const currentGreeter = `# A greeter written before the task was flattened onto the step.
+const currentGreeter = `edition: v2026.2
+# A greeter written before the task was flattened onto the step.
 name: greeter
 steps:
   # Greet whoever is listening.
@@ -76,13 +78,14 @@ steps:
 // The 1-based lines oldStyleGreeter writes `task:` on. A report has to name
 // them: an author reads `file:line:` and jumps there.
 const (
-	greeterFirstTaskLine  = 7
-	greeterSecondTaskLine = 12
+	greeterFirstTaskLine  = 8
+	greeterSecondTaskLine = 13
 )
 
 // oldStyleSingle is the smallest pre-flattening file, for tests about which
 // files are picked up rather than about what the rewrite produces.
-const oldStyleSingle = `name: single
+const oldStyleSingle = `edition: v2026.2
+name: single
 steps:
   - id: greet
     task:
@@ -94,7 +97,8 @@ steps:
 // oldStyleNested reaches every place a task can be written: at the top level, in
 // a loop body, inside a parallel branch, and with a description that belongs to
 // the step once the task is no longer a block of its own.
-const oldStyleNested = `name: nested-example
+const oldStyleNested = `edition: v2026.2
+name: nested-example
 steps:
   - id: targets
     task:
@@ -143,7 +147,8 @@ steps:
 // oldStyleMixed has one step the rewriter can act on and one it must refuse, so
 // the two halves of an unfinished run can be told apart: what it could do, it
 // did, and the run still failed.
-const oldStyleMixed = `name: mixed
+const oldStyleMixed = `edition: v2026.2
+name: mixed
 steps:
   - id: greet
     task:
@@ -156,7 +161,8 @@ steps:
 
 // partlyFixedMixed is oldStyleMixed after a run: the block-style step rewritten,
 // the flow-style one left exactly as it was written.
-const partlyFixedMixed = `name: mixed
+const partlyFixedMixed = `edition: v2026.2
+name: mixed
 steps:
   - id: greet
     echo:
@@ -166,7 +172,7 @@ steps:
 `
 
 // The 1-based line oldStyleMixed writes its flow-style task on.
-const mixedRefusedLine = 9
+const mixedRefusedLine = 10
 
 // runFixCommand runs `flow fix` the way a shell does — through the command, so
 // the flag spellings are part of what is under test — and returns its two
@@ -330,7 +336,7 @@ func TestFixLeavesACurrentFileByteForByte(t *testing.T) {
 func TestFixLeavesOddWhitespaceAlone(t *testing.T) {
 	// No trailing newline, a blank line carrying spaces, and a quoting style
 	// nobody would choose: all legal, none of it this command's business.
-	const odd = "name: odd\n\nsteps:\n  \n  - id: greet\n    echo:\n      message:   'hello'"
+	const odd = "edition: v2026.2\nname: odd\n\nsteps:\n  \n  - id: greet\n    echo:\n      message:   'hello'"
 
 	dir := t.TempDir()
 	path := writeFixture(t, dir, "odd.yaml", odd)
@@ -389,7 +395,8 @@ func TestFixRewritesTheStepAndKeepsEverythingElse(t *testing.T) {
 // their work, and it is the kind of loss nobody notices until the explanation is
 // already gone.
 func TestFixKeepsCommentsWrittenInsideTheTaskBlock(t *testing.T) {
-	const commented = `name: commented
+	const commented = `edition: v2026.2
+name: commented
 steps:
   - id: greet
     task:
@@ -404,7 +411,8 @@ steps:
 	// Derived from the transformation: the comment about the task moves up to the
 	// key replacing `name:`, and the two among the inputs keep their place within
 	// the block as it dedents by the two columns `inputs:` used to add.
-	const want = `name: commented
+	const want = `edition: v2026.2
+name: commented
 steps:
   - id: greet
     # which task this is
@@ -495,7 +503,8 @@ func TestFixExitsNonZeroWhenAnythingWasRefused(t *testing.T) {
 		{
 			// A shape the rewriter will not guess at.
 			name: "a task written in flow style",
-			contents: `name: flow-style
+			contents: `edition: v2026.2
+name: flow-style
 steps:
   - id: greet
     task: {name: echo, inputs: {message: hi}}
@@ -504,7 +513,7 @@ steps:
 		{
 			// Not YAML at all, which is certainly not the current edition either.
 			name:     "a file that does not parse",
-			contents: "name: x\n  steps: [\n",
+			contents: "edition: v2026.2\nname: x\n  steps: [\n",
 		},
 		{
 			// The one easiest to get wrong: something *was* rewritten, so a status
@@ -705,13 +714,14 @@ func TestFixWritesSomethingThatCompiles(t *testing.T) {
 // position is reported, the run fails, and the file is exactly as it was — a file
 // that looks fixed and is not is worse than one that was never touched.
 func TestFixRefusesFlowStyleWithoutMangling(t *testing.T) {
-	const inFlowStyle = `name: flow-style
+	const inFlowStyle = `edition: v2026.2
+name: flow-style
 steps:
   - id: greet
     task: {name: echo, inputs: {message: hi}}
 `
 	// The line the flow-style task is written on.
-	const taskLine = 4
+	const taskLine = 5
 
 	dir := t.TempDir()
 	path := writeFixture(t, dir, "workflow.yaml", inFlowStyle)
@@ -743,7 +753,8 @@ steps:
 // anchor it names is not a mapping written under `task:` either. Neither is
 // guessed at, and the file comes back untouched.
 func TestFixRefusesATaskBehindAnAliasWithoutMangling(t *testing.T) {
-	const shared = `name: shared-task
+	const shared = `edition: v2026.2
+name: shared-task
 steps:
   - id: first
     task: &b
@@ -755,8 +766,8 @@ steps:
 `
 	// The lines the anchor and the alias standing in for it are written on.
 	const (
-		anchorLine = 4
-		aliasLine  = 9
+		anchorLine = 5
+		aliasLine  = 10
 	)
 
 	dir := t.TempDir()
@@ -832,7 +843,7 @@ steps:
 // wrong and has nothing to migrate. Adding the key would pin a file whose author
 // deliberately left it unpinned, and would show up as a line nobody asked for in
 // the diff of a migration people are meant to be able to review.
-func TestFixDoesNotStampAnEditionIntoAFileWithoutOne(t *testing.T) {
+func TestFixStampsAnEditionIntoAFileWithoutOne(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFixture(t, dir, "workflow.yaml", oldStyleGreeter)
 
@@ -847,8 +858,15 @@ func TestFixDoesNotStampAnEditionIntoAFileWithoutOne(t *testing.T) {
 	if fixed == oldStyleGreeter {
 		t.Fatal("the file was not rewritten, so this says nothing about what a rewrite adds")
 	}
-	if strings.Contains(fixed, "edition") {
-		t.Errorf("an edition marker was stamped into a file that did not declare one:\n%s", fixed)
+	if !strings.Contains(fixed, "edition: "+flowfile.CurrentEdition) {
+		t.Errorf("no edition marker was stamped into a file that declares none:\n%s", fixed)
+	}
+
+	// And the file the command left behind is one this build accepts, which is the
+	// whole reason the stamp exists: the marker is required now, so `flow fix` has to
+	// supply the one thing every pre-edition file needs.
+	if _, _, err := flowfile.Parse([]byte(fixed)); err != nil {
+		t.Errorf("the rewritten file does not compile: %v\n%s", err, fixed)
 	}
 }
 

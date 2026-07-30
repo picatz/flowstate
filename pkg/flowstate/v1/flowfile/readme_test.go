@@ -52,6 +52,18 @@ func TestREADMEWorkflowsCompile(t *testing.T) {
 				// failure says which example rather than which position.
 				name := "block " + strings.TrimSpace(strings.SplitN(source, "\n", 2)[0])
 				t.Run(name, func(t *testing.T) {
+					// The edition is supplied here rather than written into every
+					// fenced block, because a snippet in prose is a *fragment*: it is
+					// shown to illustrate one thing, and the paragraph around it does
+					// the job a file's header does. Requiring the marker in each would
+					// put a ceremonial line at the top of every example in the
+					// documentation, which is exactly where the language is judged.
+					//
+					// What the block still has to be is a workflow this build compiles
+					// — the marker changes nothing about that, since it declares the
+					// grammar the block is already written in.
+					source := "edition: " + flowfile.CurrentEdition + "\n" + source
+
 					ds, err := flowfile.ValidateSource([]byte(source))
 					require.NoError(t, err, "%s example %d does not parse:\n%s", doc, i+1, source)
 					assert.Empty(t, ds, "%s example %d does not validate:\n%s\n%s", doc, i+1, ds.Error(), source)

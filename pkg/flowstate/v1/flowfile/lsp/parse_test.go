@@ -14,7 +14,8 @@ import (
 func TestParseRecordsExactRanges(t *testing.T) {
 	t.Parallel()
 
-	const src = `name: model
+	const src = `edition: v2026.2
+name: model
 steps:
   - id: first
     echo:
@@ -90,10 +91,17 @@ steps:
 		// on the task where the nested form spent three, not because a range now
 		// stops somewhere else: the end of `first` is still the `message:` line and
 		// the end of `second` is still the `outputs:` line.
-		assert.Equal(t, 2, first.rng.Start.Line)
-		assert.Equal(t, 4, first.rng.End.Line)
-		assert.Equal(t, 5, second.rng.Start.Line)
-		assert.Equal(t, 10, second.rng.End.Line)
+		//
+		// Each is one greater than it reads in the flat-form commit, because this
+		// fixture carries the `edition:` marker *first*. Most fixtures in this package
+		// append it instead — see [editionSuffix] — but a step's range runs to the line
+		// before the next step's dash, and the last step's end is walked back over
+		// trailing blank lines only, so a top-level key written after the steps extends
+		// it. Any fixture asserting the last step's end has to write the marker above.
+		assert.Equal(t, 3, first.rng.Start.Line)
+		assert.Equal(t, 5, first.rng.End.Line)
+		assert.Equal(t, 6, second.rng.Start.Line)
+		assert.Equal(t, 11, second.rng.End.Line)
 	})
 }
 
@@ -114,6 +122,7 @@ steps:
     cel:
       expr: |
         1 + 1
+edition: v2026.2
 `,
 			check: func(t *testing.T, doc *document) {
 				require.Len(t, doc.parsed.steps, 1)
@@ -139,6 +148,7 @@ steps:
   - id: a
     echo:
       message: only
+edition: v2026.2
 `,
 			check: func(t *testing.T, doc *document) {
 				require.Len(t, doc.parsed.steps, 1)
@@ -152,6 +162,7 @@ steps:
 steps:
   - id: a
     echo:
+edition: v2026.2
 `,
 			// `echo:` on a line by itself names the task and gives it no inputs,
 			// which is a complete step as far as the grammar is concerned — whether
@@ -182,6 +193,7 @@ base: &b
 steps:
   - id: a
     echo: *b
+edition: v2026.2
 `,
 			check: func(t *testing.T, doc *document) {
 				require.Len(t, doc.parsed.steps, 1)
@@ -195,7 +207,7 @@ steps:
 		},
 		{
 			name: "steps that is not a sequence yields no steps",
-			src:  "name: x\nsteps: nope\n",
+			src:  "name: x\nsteps: nope\n" + editionSuffix,
 			check: func(t *testing.T, doc *document) {
 				assert.Empty(t, doc.parsed.steps)
 				assert.NotNil(t, doc.parsed.stepsEntry)
@@ -212,7 +224,7 @@ steps:
 		},
 		{
 			name: "a flow-style step is modelled like a block one",
-			src:  "name: flow\nsteps: [{id: a, echo: {message: hi}}]\n",
+			src:  "name: flow\nsteps: [{id: a, echo: {message: hi}}]\n" + editionSuffix,
 			check: func(t *testing.T, doc *document) {
 				require.Len(t, doc.parsed.steps, 1)
 				step := doc.parsed.steps[0]
@@ -250,6 +262,7 @@ steps:
   - id: a
     http:
       url: https://example.com
+edition: v2026.2
 `)
 	require.NoError(t, doc.parseErr)
 	step := doc.parsed.step("a")
@@ -273,6 +286,7 @@ steps:
   - id: first
     echo:
       mes
+edition: v2026.2
 `,
 			want: []outlineStep{{id: "first", taskName: "echo"}},
 		},
@@ -286,6 +300,7 @@ steps:
       headers:
         X-One: a
         X-Two: b
+edition: v2026.2
 `,
 			want: []outlineStep{{
 				id:        "a",
@@ -305,12 +320,13 @@ steps:
     # which task to run
     echo:
       message: hi
+edition: v2026.2
 `,
 			want: []outlineStep{{id: "a", taskName: "echo", inputKeys: []string{"message"}}},
 		},
 		{
 			name: "no steps key at all",
-			src:  "name: x\n",
+			src:  "name: x\n" + editionSuffix,
 			want: nil,
 		},
 	}
@@ -342,6 +358,7 @@ steps:
         X: y
     retry:
       attempts: 3
+edition: v2026.2
 `
 	ix := newLineIndex(src)
 	// The path a task's inputs sit under is the task's own name now, because that

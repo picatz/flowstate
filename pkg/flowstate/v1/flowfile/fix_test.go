@@ -37,7 +37,8 @@ func TestFixRewritesTheRetiredTaskBlock(t *testing.T) {
 	}{
 		{
 			name: "a task becomes its own key",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     task:
@@ -45,7 +46,8 @@ steps:
       inputs:
         message: hello
 `,
-			want: `name: t
+			want: `edition: v2026.2
+name: t
 steps:
   - id: a
     echo:
@@ -57,7 +59,8 @@ steps:
 			// written. A rewriter that reorders keys produces a diff about
 			// everything, and this one is about one thing.
 			name: "step properties are left alone and keep their order",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     timeout: 30s
@@ -68,7 +71,8 @@ steps:
         message: hello
     continue_on_error: true
 `,
-			want: `name: t
+			want: `edition: v2026.2
+name: t
 steps:
   - id: a
     timeout: 30s
@@ -83,7 +87,8 @@ steps:
 			// put. Moved rather than dropped: a rewriter that silently discards prose
 			// is a rewriter that loses work.
 			name: "a task description moves to the step",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     task:
@@ -92,7 +97,8 @@ steps:
       inputs:
         message: hello
 `,
-			want: `name: t
+			want: `edition: v2026.2
+name: t
 steps:
   - id: a
     description: greets the world
@@ -102,7 +108,8 @@ steps:
 		},
 		{
 			name: "nested inputs keep their shape",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     task:
@@ -113,7 +120,8 @@ steps:
           X-A: one
           X-B: two
 `,
-			want: `name: t
+			want: `edition: v2026.2
+name: t
 steps:
   - id: a
     http:
@@ -128,13 +136,15 @@ steps:
 			// no inputs is written as an empty mapping — and on the same line, since a
 			// lone `{}` beneath the key reads as unfinished too.
 			name: "a task with no inputs becomes an empty mapping",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     task:
       name: echo
 `,
-			want: `name: t
+			want: `edition: v2026.2
+name: t
 steps:
   - id: a
     echo: {}
@@ -142,7 +152,8 @@ steps:
 		},
 		{
 			name: "steps inside a loop are rewritten too",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: loop
     for_each:
@@ -154,7 +165,8 @@ steps:
             inputs:
               message: hi
 `,
-			want: `name: t
+			want: `edition: v2026.2
+name: t
 steps:
   - id: loop
     for_each:
@@ -167,7 +179,8 @@ steps:
 		},
 		{
 			name: "steps inside every parallel branch are rewritten",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: fan
     parallel:
@@ -184,7 +197,8 @@ steps:
               inputs:
                 message: b
 `,
-			want: `name: t
+			want: `edition: v2026.2
+name: t
 steps:
   - id: fan
     parallel:
@@ -203,7 +217,8 @@ steps:
 			// renders a workflow, and a workflow does not carry the sentence someone
 			// wrote to explain a step.
 			name: "comments survive, wherever they sit",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   # why this step is here
   - id: a
@@ -212,7 +227,8 @@ steps:
       inputs:
         message: hello # and a trailing one
 `,
-			want: `name: t
+			want: `edition: v2026.2
+name: t
 steps:
   # why this step is here
   - id: a
@@ -230,7 +246,8 @@ steps:
 			// here — it moves up to sit above the key that now names it, rather than
 			// being deleted along with the line it was on.
 			name: "comments inside the block travel with it",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     task:
@@ -241,7 +258,8 @@ steps:
         message: hello
         # and a note after it
 `,
-			want: `name: t
+			want: `edition: v2026.2
+name: t
 steps:
   - id: a
     # which task this is
@@ -264,7 +282,8 @@ steps:
 			// comment about the step, written after its work, and it stays exactly
 			// where the author put it.
 			name: "a comment's level decides whether it moves",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     task:
@@ -274,7 +293,8 @@ steps:
       # a note beside the inputs key
     # a note beside the task key
 `,
-			want: `name: t
+			want: `edition: v2026.2
+name: t
 steps:
   - id: a
     # a note beside the inputs key
@@ -291,7 +311,8 @@ steps:
 			// which is worse than no diagnostic, because it teaches people to stop
 			// reading them.
 			name: "a blank line under inputs is not an indentation problem",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     task:
@@ -300,7 +321,8 @@ steps:
 
         message: hi
 `,
-			want: `name: t
+			want: `edition: v2026.2
+name: t
 steps:
   - id: a
     echo:
@@ -316,7 +338,8 @@ steps:
 			// `name:` and `inputs:` where they were, and reported success on a
 			// document it had just mangled.
 			name: "a dedented comment does not end the block",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     task:
@@ -325,7 +348,8 @@ steps:
       inputs:
         message: hi
 `,
-			want: `name: t
+			want: `edition: v2026.2
+name: t
 steps:
   - id: a
     # pushed to the margin
@@ -338,7 +362,8 @@ steps:
 			// the block and has to extend it, or a note under the last input stops
 			// travelling with the inputs and is left behind at its old indentation.
 			name: "a comment under the last input still belongs to it",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     task:
@@ -350,7 +375,8 @@ steps:
     echo:
       message: bye
 `,
-			want: `name: t
+			want: `edition: v2026.2
+name: t
 steps:
   - id: a
     echo:
@@ -367,7 +393,8 @@ steps:
 			// have no value at all and a task name cannot contain a `#`, so on these
 			// three lines a `#` is unambiguously a comment.
 			name: "comments at the end of a retired key are carried up",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     task: # why there is a step here
@@ -375,7 +402,8 @@ steps:
       inputs: # what it says
         message: hi
 `,
-			want: `name: t
+			want: `edition: v2026.2
+name: t
 steps:
   - id: a
     # why there is a step here
@@ -392,7 +420,8 @@ steps:
 			// "already current" and exited zero on a file `flow validate` refuses,
 			// which is the one property the command's own comment says it holds.
 			name: "a step carrying an anchor is not skipped",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - &first
     id: a
@@ -405,7 +434,8 @@ steps:
     echo:
       message: bye
 `,
-			want: `name: t
+			want: `edition: v2026.2
+name: t
 steps:
   - &first
     id: a
@@ -422,7 +452,8 @@ steps:
 			// moved. Copying source lines and shifting them all by the same amount is
 			// what keeps this true without understanding block scalars at all.
 			name: "a block scalar keeps its shape",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     task:
@@ -433,7 +464,8 @@ steps:
             indented
           last
 `,
-			want: `name: t
+			want: `edition: v2026.2
+name: t
 steps:
   - id: a
     echo:
@@ -470,15 +502,15 @@ func TestFixLeavesACurrentFileByteForByte(t *testing.T) {
 	t.Parallel()
 
 	srcs := []string{
-		"name: t\nsteps:\n  - id: a\n    echo:\n      message: hi\n",
+		"edition: v2026.2\nname: t\nsteps:\n  - id: a\n    echo:\n      message: hi\n",
 		// Odd but legal spacing, blank lines, comments, and a trailing newline that
 		// a naive round trip would normalise away.
-		"# leading comment\nname:    t\n\nsteps:\n\n  - id: a\n\n    echo:\n      message:   hi\n\n",
+		"# leading comment\nedition: v2026.2\nname:    t\n\nsteps:\n\n  - id: a\n\n    echo:\n      message:   hi\n\n",
 		// Flow style that is already current, which the refusal path must not catch:
 		// there is no `task:` here to refuse.
-		"name: t\nsteps: [{id: a, echo: {message: hi}}]\n",
+		"edition: v2026.2\nname: t\nsteps: [{id: a, echo: {message: hi}}]\n",
 		// A document with no steps at all.
-		"name: t\n",
+		"edition: v2026.2\nname: t\n",
 	}
 
 	for _, src := range srcs {
@@ -508,29 +540,29 @@ func TestFixRefusesRatherThanGuesses(t *testing.T) {
 	}{
 		{
 			name: "a task written in flow style",
-			src:  "name: t\nsteps:\n  - id: a\n    task: {name: echo, inputs: {message: hi}}\n",
+			src:  "edition: v2026.2\nname: t\nsteps:\n  - id: a\n    task: {name: echo, inputs: {message: hi}}\n",
 			says: "flow style",
 		},
 		{
 			name: "inputs written in flow style",
-			src:  "name: t\nsteps:\n  - id: a\n    task:\n      name: echo\n      inputs: {message: hi}\n",
+			src:  "edition: v2026.2\nname: t\nsteps:\n  - id: a\n    task:\n      name: echo\n      inputs: {message: hi}\n",
 			says: "flow style",
 		},
 		{
 			// There is no way to know what the alias will contain, and guessing
 			// produces a file that looks right and names the wrong task.
 			name: "a task standing behind an alias",
-			src:  "name: t\nbase: &b\n  name: echo\n  inputs:\n    message: hi\nsteps:\n  - id: a\n    task: *b\n",
+			src:  "edition: v2026.2\nname: t\nbase: &b\n  name: echo\n  inputs:\n    message: hi\nsteps:\n  - id: a\n    task: *b\n",
 			says: "alias",
 		},
 		{
 			name: "a task with no name to rewrite to",
-			src:  "name: t\nsteps:\n  - id: a\n    task:\n      inputs:\n        message: hi\n",
+			src:  "edition: v2026.2\nname: t\nsteps:\n  - id: a\n    task:\n      inputs:\n        message: hi\n",
 			says: "no `name:`",
 		},
 		{
 			name: "a task whose name is not a plain value",
-			src:  "name: t\nsteps:\n  - id: a\n    task:\n      name: [echo]\n      inputs:\n        message: hi\n",
+			src:  "edition: v2026.2\nname: t\nsteps:\n  - id: a\n    task:\n      name: [echo]\n      inputs:\n        message: hi\n",
 			says: "no `name:`",
 		},
 	}
@@ -561,7 +593,8 @@ func TestFixRefusesRatherThanGuesses(t *testing.T) {
 func TestFixRewritesWhatItCanBesideWhatItCannot(t *testing.T) {
 	t.Parallel()
 
-	src := `name: t
+	src := `edition: v2026.2
+name: t
 steps:
   - id: fine
     task:
@@ -600,7 +633,8 @@ steps:
 func TestFixIsIdempotent(t *testing.T) {
 	t.Parallel()
 
-	src := `name: t
+	src := `edition: v2026.2
+name: t
 steps:
   - id: a
     task:
@@ -636,7 +670,8 @@ steps:
 func TestFixReportsWhereAndWhat(t *testing.T) {
 	t.Parallel()
 
-	src := `name: t
+	src := `edition: v2026.2
+name: t
 steps:
   - id: a
     task:
@@ -649,7 +684,7 @@ steps:
 	require.Len(t, result.Changes, 1)
 
 	// Line 4 is `task:`, the key that went away.
-	assert.Equal(t, 4, result.Changes[0].Line)
+	assert.Equal(t, 5, result.Changes[0].Line)
 	assert.Contains(t, result.Changes[0].Message, "echo")
 }
 
@@ -659,7 +694,7 @@ steps:
 func TestFixRefusesADocumentThatIsNotYAML(t *testing.T) {
 	t.Parallel()
 
-	_, err := flowfile.Fix([]byte("name: t\n\tsteps:\n"))
+	_, err := flowfile.Fix([]byte("edition: v2026.2\nname: t\n\tsteps:\n"))
 	require.Error(t, err)
 }
 
@@ -670,7 +705,7 @@ func TestFixRefusesADocumentThatIsNotYAML(t *testing.T) {
 func TestFixBoundsItsInput(t *testing.T) {
 	t.Parallel()
 
-	huge := "name: t\nsteps:\n" + strings.Repeat("  - id: a\n    echo: {}\n", 200_000)
+	huge := "edition: v2026.2\nname: t\nsteps:\n" + strings.Repeat("  - id: a\n    echo: {}\n", 200_000)
 	require.Greater(t, len(huge), 1<<20, "premise: the input is over the limit")
 
 	_, err := flowfile.Fix([]byte(huge))
@@ -717,7 +752,7 @@ steps:
 // the current edition. Writing one in would be the rewriter adding an opinion the
 // author did not have — and would put a line of churn in the diff of every file a
 // migration touches.
-func TestFixDoesNotStampAnEditionOntoAFileWithoutOne(t *testing.T) {
+func TestFixStampsAnEditionOntoAFileWithoutOne(t *testing.T) {
 	t.Parallel()
 
 	src := `name: t
@@ -730,8 +765,45 @@ steps:
 `
 	result, err := flowfile.Fix([]byte(src))
 	require.NoError(t, err)
-	require.True(t, result.Changed(), "the task block is still rewritten")
-	assert.NotContains(t, string(result.Source), "edition:")
+	require.True(t, result.Changed())
+
+	rewritten := string(result.Source)
+	assert.True(t, strings.HasPrefix(rewritten, "edition: "+flowfile.CurrentEdition+"\n"),
+		"the marker is written first, where a statement about the whole document belongs:\n%s", rewritten)
+	assert.Contains(t, rewritten, "    echo:\n      message: hi",
+		"the task block is still rewritten")
+
+	// And the result is a file this build accepts, which is the whole reason the
+	// stamp exists: without it `flow fix` could not fix the one thing every file
+	// written before this edition now needs.
+	_, _, err = flowfile.Parse(result.Source)
+	assert.NoError(t, err)
+}
+
+// TestFixStampsBelowAHeaderComment keeps the marker from splitting prose off its file.
+//
+// A comment block at the top of a Flowfile is about the file, and inserting a key above
+// it would leave the comment reading as though it described the edition. The stamp is
+// therefore anchored on the first *key* rather than on line 1.
+func TestFixStampsBelowAHeaderComment(t *testing.T) {
+	t.Parallel()
+
+	src := `# What this workflow is for.
+#
+# And why it is written this way.
+name: t
+steps:
+  - id: a
+    echo:
+      message: hi
+`
+	result, err := flowfile.Fix([]byte(src))
+	require.NoError(t, err)
+
+	rewritten := string(result.Source)
+	assert.True(t, strings.HasPrefix(rewritten, "# What this workflow is for.\n"),
+		"the header comment was moved or split:\n%s", rewritten)
+	assert.Contains(t, rewritten, "# And why it is written this way.\nedition: "+flowfile.CurrentEdition+"\nname: t")
 }
 
 // TestFixKeepsACurrentEditionMarkerAsWritten covers the no-op case, including the
@@ -868,14 +940,14 @@ func unflatten(t *testing.T, src string) string {
 func TestFixKeepsTheLineEndingsItFound(t *testing.T) {
 	t.Parallel()
 
-	crlf := "name: t\r\nsteps:\r\n  - id: a\r\n    task:\r\n      name: echo\r\n      inputs:\r\n        message: hi\r\n"
+	crlf := "edition: v2026.2\r\nname: t\r\nsteps:\r\n  - id: a\r\n    task:\r\n      name: echo\r\n      inputs:\r\n        message: hi\r\n"
 
 	result, err := flowfile.Fix([]byte(crlf))
 	require.NoError(t, err)
 	require.True(t, result.Changed())
 
 	out := string(result.Source)
-	assert.Equal(t, "name: t\r\nsteps:\r\n  - id: a\r\n    echo:\r\n      message: hi\r\n", out)
+	assert.Equal(t, "edition: v2026.2\r\nname: t\r\nsteps:\r\n  - id: a\r\n    echo:\r\n      message: hi\r\n", out)
 
 	// Stated separately, because "every line ends the same way" is the property and
 	// the exact bytes above are only one instance of it.
@@ -884,7 +956,7 @@ func TestFixKeepsTheLineEndingsItFound(t *testing.T) {
 
 	// And the other direction: a plain LF document does not acquire carriage
 	// returns from anywhere.
-	lf := "name: t\nsteps:\n  - id: a\n    task:\n      name: echo\n      inputs:\n        message: hi\n"
+	lf := "edition: v2026.2\nname: t\nsteps:\n  - id: a\n    task:\n      name: echo\n      inputs:\n        message: hi\n"
 	plain, err := flowfile.Fix([]byte(lf))
 	require.NoError(t, err)
 	assert.NotContains(t, string(plain.Source), "\r")
@@ -899,7 +971,8 @@ func TestFixKeepsTheLineEndingsItFound(t *testing.T) {
 func TestFixDoesNotMistakeAHashInAValueForAComment(t *testing.T) {
 	t.Parallel()
 
-	src := `name: t
+	src := `edition: v2026.2
+name: t
 steps:
   - id: a
     task:
@@ -930,7 +1003,8 @@ func TestFixLeavesNothingThatDoesNotCompile(t *testing.T) {
 	t.Parallel()
 
 	srcs := map[string]string{
-		"an anchored step": `name: t
+		"an anchored step": `edition: v2026.2
+name: t
 steps:
   - &first
     id: a
@@ -939,7 +1013,8 @@ steps:
       inputs:
         message: hi
 `,
-		"an anchored steps sequence": `name: t
+		"an anchored steps sequence": `edition: v2026.2
+name: t
 steps: &all
   - id: a
     task:
@@ -947,7 +1022,8 @@ steps: &all
       inputs:
         message: hi
 `,
-		"an anchored loop body": `name: t
+		"an anchored loop body": `edition: v2026.2
+name: t
 steps:
   - id: loop
     for_each:
@@ -959,7 +1035,8 @@ steps:
             inputs:
               message: hi
 `,
-		"an anchored parallel branch": `name: t
+		"an anchored parallel branch": `edition: v2026.2
+name: t
 steps:
   - id: fan
     parallel:
@@ -1021,7 +1098,8 @@ steps:
 func TestFixLeavesDeferredInputsAlone(t *testing.T) {
 	t.Parallel()
 
-	src := `name: t
+	src := `edition: v2026.2
+name: t
 steps:
   - id: status_code
     echo:
@@ -1035,7 +1113,8 @@ steps:
     echo:
       message: ${status_code.result}
 `
-	want := `name: t
+	want := `edition: v2026.2
+name: t
 steps:
   - id: status_code
     echo:
@@ -1064,7 +1143,8 @@ steps:
 func TestFixLeavesTheCelTasksOwnScopeAlone(t *testing.T) {
 	t.Parallel()
 
-	src := `name: t
+	src := `edition: v2026.2
+name: t
 steps:
   - id: total
     echo:
@@ -1101,7 +1181,8 @@ steps:
 func TestFixNotesADeferredInputThatNamesAStep(t *testing.T) {
 	t.Parallel()
 
-	src := `name: t
+	src := `edition: v2026.2
+name: t
 steps:
   - id: threshold
     echo:
@@ -1118,7 +1199,7 @@ steps:
 	assert.Equal(t, src, string(result.Source), "the deferred input is left exactly as written")
 
 	require.Len(t, result.Notes, 1)
-	assert.Equal(t, 9, result.Notes[0].Line)
+	assert.Equal(t, 10, result.Notes[0].Line)
 	// The note has to carry the replacement, or an author is told there may be a
 	// problem and left to work out the shape of the answer.
 	assert.Contains(t, result.Notes[0].Message, "${steps.threshold == 200}")
@@ -1134,7 +1215,8 @@ steps:
 func TestFixDoesNotSuggestAStepForARootedResponseName(t *testing.T) {
 	t.Parallel()
 
-	src := `name: t
+	src := `edition: v2026.2
+name: t
 steps:
   - id: status_code
     echo:
@@ -1161,7 +1243,8 @@ steps:
 func TestFixSaysNothingAboutADeferredInputWithNoStepInIt(t *testing.T) {
 	t.Parallel()
 
-	src := `name: t
+	src := `edition: v2026.2
+name: t
 steps:
   - id: fetch
     http:
@@ -1193,7 +1276,8 @@ steps:
 func TestFixNotesABareDeferredInputThatNamesAStep(t *testing.T) {
 	t.Parallel()
 
-	src := `name: t
+	src := `edition: v2026.2
+name: t
 steps:
   - id: web
     echo:
@@ -1209,7 +1293,7 @@ steps:
 	assert.Equal(t, src, string(result.Source), "the deferred input is left exactly as written")
 
 	require.Len(t, result.Notes, 1)
-	assert.Equal(t, 8, result.Notes[0].Line)
+	assert.Equal(t, 9, result.Notes[0].Line)
 	// Suggested back unfenced, because that is how it has to be written. Handing
 	// back a `${...}` here would be telling the author to make the file invalid.
 	assert.Contains(t, result.Notes[0].Message, `steps.web.result + "!"`)
@@ -1227,7 +1311,8 @@ steps:
 func TestFixSaysNothingAboutADeferredInputHoldingText(t *testing.T) {
 	t.Parallel()
 
-	src := `name: t
+	src := `edition: v2026.2
+name: t
 steps:
   - id: web
     echo:
@@ -1253,7 +1338,8 @@ steps:
 func TestFixLeavesVarsToTheValidator(t *testing.T) {
 	t.Parallel()
 
-	src := `name: t
+	src := `edition: v2026.2
+name: t
 steps:
   - id: greeting
     echo:
@@ -1288,7 +1374,8 @@ func TestFixDoesNotAskAboutANameTheStepBinds(t *testing.T) {
 	t.Parallel()
 
 	for name, src := range map[string]string{
-		"declared under vars": `name: t
+		"declared under vars": `edition: v2026.2
+name: t
 steps:
   - id: total
     echo:
@@ -1299,7 +1386,8 @@ steps:
       vars:
         total: 21
 `,
-		"declared beside vars": `name: t
+		"declared beside vars": `edition: v2026.2
+name: t
 steps:
   - id: total
     echo:
@@ -1331,7 +1419,8 @@ steps:
 func TestFixStillAsksWhenTheStepBindsNothing(t *testing.T) {
 	t.Parallel()
 
-	src := `name: t
+	src := `edition: v2026.2
+name: t
 steps:
   - id: total
     echo:

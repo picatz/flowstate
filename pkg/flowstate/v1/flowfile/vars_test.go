@@ -61,6 +61,7 @@ func TestWorkflowVarsMayReferenceNothing(t *testing.T) {
 		{
 			name: "a var reading another var",
 			src: `
+edition: v2026.2
 name: t
 vars:
   a: ${vars.b}
@@ -75,6 +76,7 @@ steps:
 		{
 			name: "a var reading a step",
 			src: `
+edition: v2026.2
 name: t
 vars:
   a: ${steps.s.result}
@@ -88,6 +90,7 @@ steps:
 		{
 			name: "a var reading a root as an operand",
 			src: `
+edition: v2026.2
 name: t
 vars:
   a: ${size(vars)}
@@ -101,6 +104,7 @@ steps:
 		{
 			name: "a var reading a name that means nothing",
 			src: `
+edition: v2026.2
 name: t
 vars:
   a: ${nope}
@@ -114,6 +118,7 @@ steps:
 		{
 			name: "a var of literals and functions is fine",
 			src: `
+edition: v2026.2
 name: t
 vars:
   a: ${"x".upperAscii() + string(1 + 1)}
@@ -152,14 +157,14 @@ steps:
 func TestWorkflowVarDiagnosticsCarryAPosition(t *testing.T) {
 	t.Parallel()
 
-	src := "name: t\nvars:\n  a: ${nope}\nsteps:\n  - id: s\n    echo:\n      message: hi\n"
+	src := "edition: v2026.2\nname: t\nvars:\n  a: ${nope}\nsteps:\n  - id: s\n    echo:\n      message: hi\n"
 
 	reported := diagnose(t, src)
 	require.NotEmpty(t, reported)
 
 	// The var is on line 3, and the expression is what is wrong rather than the
 	// `vars:` key two lines above it.
-	require.Contains(t, reported, "3:", "a workflow var diagnostic was reported without a position")
+	require.Contains(t, reported, "4:", "a workflow var diagnostic was reported without a position")
 }
 
 // TestAStepVarIsPrivateToItsStep is the negative direction.
@@ -171,6 +176,7 @@ func TestAStepVarIsPrivateToItsStep(t *testing.T) {
 	t.Parallel()
 
 	src := `
+edition: v2026.2
 name: t
 steps:
   - id: first
@@ -210,6 +216,7 @@ func TestAStepVarIsRefusedRatherThanShadowing(t *testing.T) {
 		{
 			name: "shadowing a loop's iterator",
 			src: `
+edition: v2026.2
 name: t
 steps:
   - id: each
@@ -228,6 +235,7 @@ steps:
 		{
 			name: "shadowing an enclosing step's var",
 			src: `
+edition: v2026.2
 name: t
 steps:
   - id: outer
@@ -248,6 +256,7 @@ steps:
 		{
 			name: "taking the name now",
 			src: `
+edition: v2026.2
 name: t
 steps:
   - id: s
@@ -261,6 +270,7 @@ steps:
 		{
 			name: "a name of its own is fine",
 			src: `
+edition: v2026.2
 name: t
 steps:
   - id: each
@@ -303,6 +313,7 @@ func TestAStepVarMayNotReadItsSiblings(t *testing.T) {
 	t.Parallel()
 
 	src := `
+edition: v2026.2
 name: t
 steps:
   - id: s
@@ -329,6 +340,7 @@ func TestAVarsRootIsUsableAsAnOperand(t *testing.T) {
 	t.Parallel()
 
 	src := `
+edition: v2026.2
 name: t
 vars:
   region: eu-west-1
@@ -352,7 +364,7 @@ steps:
 func TestStepVarsSurviveARoundTrip(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: 2026.1
+	src := `edition: v2026.2
 name: t
 vars:
   region: eu-west-1
@@ -392,6 +404,7 @@ func TestAStepVarNamesItselfInADiagnostic(t *testing.T) {
 	t.Parallel()
 
 	src := `
+edition: v2026.2
 name: t
 steps:
   - id: s

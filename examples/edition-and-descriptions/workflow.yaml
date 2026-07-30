@@ -1,4 +1,4 @@
-edition: "2026.1"
+edition: v2026.2
 name: edition-and-descriptions
 description: Two keys about the file itself rather than about the work it does.
 

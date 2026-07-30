@@ -29,16 +29,34 @@ import (
 // CurrentEdition is the grammar this build compiles.
 //
 // Dated rather than numbered, because an edition answers "when was this written"
-// rather than "how many have there been", and because a reader seeing 2026.1 in
+// rather than "how many have there been", and because a reader seeing v2026.2 in
 // a file knows immediately whether it is old.
-const CurrentEdition = "2026.1"
+//
+// # The `v` reverses a recorded decision, and the reason is one line below
+//
+// The first edition was written `2026.1`, unprefixed. A date with one dot is a YAML
+// *float*, so the value arrives as a number and [editionText] exists entirely to read
+// the token's source text instead — because converting the float is quietly wrong
+// (2026.10 and 2026.1 are the same float, so the tenth edition of a year would compile
+// as the first) and refusing it teaches an author to quote a value for a reason no other
+// key has.
+//
+// A `v` makes it a string in every YAML parser, which deletes that whole problem for
+// every edition after the first. The workaround stays for reading `2026.1`, and can go
+// when that edition does.
+const CurrentEdition = "v2026.2"
+
+// firstEdition is the unprefixed spelling, kept so a file written in it can be read far
+// enough to be rewritten.
+//
+// It is the only edition this build knows and does not compile. That asymmetry is the
+// point of an edition: recognising a grammar is what lets `flow fix` bring a file
+// forward, and compiling it would be carrying two grammars — the cost the
+// no-deprecation decision was made to avoid.
+const firstEdition = "2026.1"
 
 // knownEditions are every edition this build recognises, oldest first.
-//
-// One entry today. It is a list rather than a constant comparison so that the
-// day there are two, the code that must change is this line and not a condition
-// spelled out somewhere else.
-var knownEditions = []string{CurrentEdition}
+var knownEditions = []string{firstEdition, CurrentEdition}
 
 // KnownEditions returns the editions this build recognises, oldest first.
 func KnownEditions() []string {
@@ -50,7 +68,7 @@ func KnownEditions() []string {
 // Fails closed, and the two ways it can fail want different answers. An edition
 // this build has never heard of is a file from the future — a newer `flow` wrote
 // it — and the fix is to upgrade, not to edit the file. A known-but-older
-// edition would be a file this build could rewrite, and says so.
+// edition is a file this build can rewrite, and says so.
 func checkEdition(declared string) error {
 	if declared == CurrentEdition {
 		return nil
@@ -88,4 +106,29 @@ func editionText(n ast.Node) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+// missingEdition is what an author is told when no `edition:` is written.
+//
+// # Requiring it reverses a recorded decision, and this sweep is why
+//
+// It used to be optional, and the reasoning was good: a line of ceremony at the top of
+// every file to say the only thing it could say, when a file that does not care which
+// grammar it is in is the common case.
+//
+// What that missed is that "absent means current" is not a default — it is a promise to
+// *reinterpret*. This edition renamed `iterator:` to `as:` and rooted the http response.
+// A file written last month with no marker is not a file that does not care; it is a
+// file written in the older grammar, and reading it as this one is precisely the silent
+// reinterpretation `edition:` was introduced to prevent. The optional spelling made the
+// mechanism unable to do its own job for exactly the files most likely to need it.
+//
+// So it is required, and `flow fix` writes it — which is what keeps the ceremony from
+// being an author's problem. The cost is one line per file; the thing it buys is that no
+// future sweep can change what an existing file means without saying so.
+func missingEdition() string {
+	return fmt.Sprintf(
+		"no `edition:` is declared, and one is required: without it a file written in an older "+
+			"grammar is silently read as this one. Write `edition: %s` at the top, or run "+
+			"`flow fix` to add it", CurrentEdition)
 }

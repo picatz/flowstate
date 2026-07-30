@@ -27,7 +27,19 @@ import (
 // string containing ${, which would be read as an expression, and an expression
 // whose source used a macro, which cel-go cannot write back.
 func Marshal(wf *v1.Workflow) ([]byte, error) {
-	doc := yaml.MapSlice{{Key: "name", Value: wf.GetName()}}
+	// The edition is a property of a *file* and the schema deliberately has no field
+	// for it, so there is nothing to round-trip — but a document without one is a
+	// document this build refuses, and Marshal's whole contract is that its output
+	// reads back as the same workflow.
+	//
+	// So it is written as the current edition, which is not a guess: this build
+	// compiles one grammar, and anything it writes is in that grammar by construction.
+	// Omitting it would leave whoever writes `flow fmt` with a formatter that quietly
+	// invalidates every file it touches.
+	doc := yaml.MapSlice{
+		{Key: "edition", Value: CurrentEdition},
+		{Key: "name", Value: wf.GetName()},
+	}
 
 	if wf.Description != nil {
 		doc = append(doc, yaml.MapItem{Key: "description", Value: wf.GetDescription()})

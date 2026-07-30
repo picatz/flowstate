@@ -26,7 +26,8 @@ func TestParseWait(t *testing.T) {
 	}{
 		{
 			name: "a sleep",
-			src: `name: w
+			src: `edition: v2026.2
+name: w
 steps:
   - id: pause
     sleep: 30s
@@ -41,7 +42,8 @@ steps:
 			// would have been rejected with "not a duration" — for the exact thing
 			// the feature is advertised as doing.
 			name: "a sleep of a week",
-			src: `name: w
+			src: `edition: v2026.2
+name: w
 steps:
   - id: pause
     sleep: 7d
@@ -52,7 +54,8 @@ steps:
 		},
 		{
 			name: "a sleep mixing days and hours",
-			src: `name: w
+			src: `edition: v2026.2
+name: w
 steps:
   - id: pause
     sleep: 1d12h
@@ -63,7 +66,8 @@ steps:
 		},
 		{
 			name: "a wait_until expression",
-			src: `name: w
+			src: `edition: v2026.2
+name: w
 steps:
   - id: window
     wait_until: ${"2030-01-01T00:00:00Z"}
@@ -76,7 +80,8 @@ steps:
 		{
 			// The form someone writes first, and the one that has to be short.
 			name: "a signal, written as a scalar",
-			src: `name: w
+			src: `edition: v2026.2
+name: w
 steps:
   - id: approval
     wait_for_signal: deploy-approved
@@ -88,7 +93,8 @@ steps:
 		},
 		{
 			name: "a signal with a timeout",
-			src: `name: w
+			src: `edition: v2026.2
+name: w
 steps:
   - id: approval
     wait_for_signal:
@@ -102,7 +108,8 @@ steps:
 		},
 		{
 			name: "a signal with an underscore in its name",
-			src: `name: w
+			src: `edition: v2026.2
+name: w
 steps:
   - id: approval
     wait_for_signal: deploy_approved_2
@@ -149,7 +156,8 @@ func TestParseWaitDiagnostics(t *testing.T) {
 	}{
 		{
 			name: "a sleep that is not a duration",
-			src: `name: w
+			src: `edition: v2026.2
+name: w
 steps:
   - id: pause
     sleep: soon
@@ -158,7 +166,8 @@ steps:
 		},
 		{
 			name: "a sleep of no time at all",
-			src: `name: w
+			src: `edition: v2026.2
+name: w
 steps:
   - id: pause
     sleep: 0s
@@ -167,7 +176,8 @@ steps:
 		},
 		{
 			name: "a signal with no name",
-			src: `name: w
+			src: `edition: v2026.2
+name: w
 steps:
   - id: approval
     wait_for_signal:
@@ -177,7 +187,8 @@ steps:
 		},
 		{
 			name: "a signal name with a space in it",
-			src: `name: w
+			src: `edition: v2026.2
+name: w
 steps:
   - id: approval
     wait_for_signal: deploy approved
@@ -188,7 +199,8 @@ steps:
 			// A step timeout does nothing to a wait, and an author who wrote one
 			// believed it bounded something.
 			name: "a step timeout on a wait",
-			src: `name: w
+			src: `edition: v2026.2
+name: w
 steps:
   - id: pause
     sleep: 1h
@@ -198,7 +210,8 @@ steps:
 		},
 		{
 			name: "a retry on a wait",
-			src: `name: w
+			src: `edition: v2026.2
+name: w
 steps:
   - id: approval
     wait_for_signal: deploy-approved
@@ -209,7 +222,8 @@ steps:
 		},
 		{
 			name: "two kinds of work at once",
-			src: `name: w
+			src: `edition: v2026.2
+name: w
 steps:
   - id: confused
     sleep: 1h
@@ -219,7 +233,8 @@ steps:
 		},
 		{
 			name: "an unknown key inside a signal",
-			src: `name: w
+			src: `edition: v2026.2
+name: w
 steps:
   - id: approval
     wait_for_signal:
@@ -256,7 +271,8 @@ steps:
 func TestValidateAcceptsWaits(t *testing.T) {
 	t.Parallel()
 
-	src := []byte(`name: gated
+	src := []byte(`edition: v2026.2
+name: gated
 steps:
   - id: start
     echo:
@@ -289,7 +305,8 @@ steps:
 func TestValidateReportsUnresolvableWaitUntil(t *testing.T) {
 	t.Parallel()
 
-	src := []byte(`name: w
+	src := []byte(`edition: v2026.2
+name: w
 steps:
   - id: window
     wait_until: ${nonexistent.deadline}
@@ -314,7 +331,8 @@ func cmpWorkflows(a, b *v1.Workflow) string {
 func TestWaitOutputsAreReferenceable(t *testing.T) {
 	t.Parallel()
 
-	src := []byte(`name: w
+	src := []byte(`edition: v2026.2
+name: w
 steps:
   - id: approval
     wait_for_signal: deploy-approved

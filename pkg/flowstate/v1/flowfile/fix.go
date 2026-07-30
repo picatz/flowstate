@@ -250,6 +250,7 @@ func (f *fixer) workflow(n ast.Node) {
 			return
 		}
 	}
+	declared := false
 	for _, v := range mapping.Values {
 		name, ok := keyNameOf(v.Key)
 		if !ok {
@@ -259,9 +260,56 @@ func (f *fixer) workflow(n ast.Node) {
 		case "steps":
 			f.steps(v.Value)
 		case "edition":
+			declared = true
 			f.edition(v)
 		}
 	}
+
+	if !declared {
+		f.stampEdition(mapping)
+	}
+}
+
+// stampEdition writes an `edition:` into a file that has none.
+//
+// # This reverses what the comment below used to say
+//
+// It used to be that only a written marker was updated, because "a file with no
+// `edition:` is a file that has not asked to be pinned, and stamping one in would be
+// the rewriter adding an opinion the author did not have."
+//
+// The opinion turned out to be the *absence*. Making the key required — see
+// [missingEdition] — means an unmarked file no longer says "any grammar"; it says
+// nothing, and this build refuses it. Declining to stamp would leave `flow fix` unable
+// to fix the one thing every pre-sweep file now needs, which is the failure the comment
+// above [fixer.edition] describes: a migration tool that does not migrate the thing
+// whose diagnostic names it.
+//
+// Written at the very top, above `name:`, because that is where an author writes it and
+// where a reader looks for it — a statement about the whole document belongs before the
+// document.
+func (f *fixer) stampEdition(mapping *ast.MappingNode) {
+	// Anchored on the first key rather than on line 1, so a file opening with a
+	// comment block keeps it above the marker. Prepending blindly would put the
+	// edition above a header comment that reads as being about the file.
+	if len(mapping.Values) == 0 {
+		return
+	}
+	span := spanOfNode(mapping.Values[0].Key)
+	if !span.IsValid() {
+		return
+	}
+
+	line := span.Start.Line
+	indent := strings.Repeat(" ", span.Start.Column-1)
+
+	// The first key's own line is replaced by two: the marker, then the line as it
+	// was. Inserting is not something the edit map can express — it replaces runs —
+	// and expressing it this way means the rest of the file is still copied through
+	// untouched.
+	f.record(line, line,
+		[]string{indent + "edition: " + CurrentEdition, f.line(line)},
+		"`edition: "+CurrentEdition+"` added, which is now required")
 }
 
 // edition brings a declared edition marker up to the current one.
@@ -300,8 +348,12 @@ func (f *fixer) edition(entry *ast.MappingValueNode) {
 	// key, so taking the block under it would consume anything indented on the next
 	// line — a comment, most likely — and delete it while claiming to have updated
 	// a version number.
+	// Unquoted, matching what [fixer.stampEdition] writes. The quotes were there
+	// because an unprefixed `2026.1` is a YAML float and had to be forced to a string;
+	// a v-prefixed edition is a string already, so quoting it now buys nothing and
+	// makes one command produce two spellings of the same value.
 	f.record(keySpan.Start.Line, keySpan.Start.Line,
-		[]string{indent + "edition: " + strconv.Quote(CurrentEdition)},
+		[]string{indent + "edition: " + CurrentEdition},
 		fmt.Sprintf("edition %q updated to %q", declared, CurrentEdition))
 }
 

@@ -1,3 +1,4 @@
+edition: v2026.2
 name: step-vars
 
 # `vars:` is also a step key, and it means something deliberately different there.

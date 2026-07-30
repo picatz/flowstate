@@ -3,6 +3,7 @@
 # The default needs no expression and has not changed: 2xx succeeds, 4xx fails
 # permanently, 5xx is retried. `expect` is for the cases that default cannot
 # express, and it replaces the default judgement entirely for that step.
+edition: v2026.2
 name: http-expect
 steps:
   # A 404 that means "not there, and that is fine". Without `expect` this step

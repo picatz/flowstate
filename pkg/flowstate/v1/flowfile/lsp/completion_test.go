@@ -42,6 +42,7 @@ func TestCompletion(t *testing.T) {
 			src: `name: c
 steps:
   - |
+edition: v2026.2
 `,
 			want: v1.TaskNames(),
 			detailContains: map[string]string{
@@ -56,6 +57,7 @@ steps:
 			src: `name: c
 steps:
   - ht|
+edition: v2026.2
 `,
 			exact: []string{"http"},
 		},
@@ -66,6 +68,7 @@ steps:
   - id: a
     http:
       |
+edition: v2026.2
 `,
 			// url is the only required input, so it sorts ahead of the rest.
 			want: []string{"url", "method", "headers", "body", "outputs"},
@@ -84,6 +87,7 @@ steps:
       url: https://example.com
       method: GET
       |
+edition: v2026.2
 `,
 			want:    []string{"headers", "body", "outputs"},
 			notWant: []string{"url", "method"},
@@ -95,6 +99,7 @@ steps:
   - id: a
     echo:
       |
+edition: v2026.2
 `,
 			exact: []string{"message"},
 		},
@@ -108,6 +113,7 @@ steps:
   - id: a
     shell:
       |
+edition: v2026.2
 `,
 			exact: []string{},
 		},
@@ -124,6 +130,7 @@ steps:
   - id: second
     echo:
       message: ${|}
+edition: v2026.2
 `,
 			exact: []string{"steps"},
 			notWant: []string{
@@ -148,6 +155,7 @@ steps:
   - id: fourth
     echo:
       message: four
+edition: v2026.2
 `,
 			// Only steps that will have run. Offering `third` or `fourth` would
 			// be offering a workflow the engine refuses.
@@ -167,6 +175,7 @@ steps:
   - id: gamma
     echo:
       message: ${steps.|}
+edition: v2026.2
 `,
 			exact: []string{"beta", "alpha"},
 		},
@@ -180,6 +189,7 @@ steps:
   - id: out
     echo:
       message: ${steps.web.|}
+edition: v2026.2
 `,
 			// Derived from the task's Outputs descriptor rather than listed here,
 			// so an output added to the schema appears in completion without this
@@ -201,6 +211,7 @@ steps:
   - id: out
     echo:
       message: ${steps.web.st|}
+edition: v2026.2
 `,
 			exact: []string{"status_code"},
 		},
@@ -217,6 +228,7 @@ steps:
   - id: out
     echo:
       message: ${steps.web.body.|}
+edition: v2026.2
 `,
 			exact: []string{},
 		},
@@ -230,6 +242,7 @@ steps:
   - id: web
     http:
       url: https://example.com
+edition: v2026.2
 `,
 			exact: []string{},
 		},
@@ -243,6 +256,7 @@ steps:
   - id: out
     echo:
       message: ${string(steps.we|)}
+edition: v2026.2
 `,
 			exact: []string{"web"},
 		},
@@ -269,6 +283,7 @@ steps:
 			src: `name: c
 steps:
   - |
+edition: v2026.2
 `,
 			// The order is the order a step is written in, not the alphabet: the id
 			// that names it, the prose saying why it is there, then the work it does,
@@ -298,6 +313,7 @@ steps:
   - id: approval
     wait_for_signal:
       |
+edition: v2026.2
 `,
 			exact: []string{"name", "timeout"},
 		},
@@ -314,6 +330,7 @@ steps:
         - id: body
           http:
             |
+edition: v2026.2
 `,
 			want: []string{"url", "method", "headers"},
 		},
@@ -327,6 +344,7 @@ steps:
           - id: left
             echo:
               |
+edition: v2026.2
 `,
 			exact: []string{"message"},
 		},
@@ -347,6 +365,7 @@ steps:
         - id: body
           echo:
             message: ${|
+edition: v2026.2
 `,
 			// Nearest first: the binding of the block the cursor stands in, then
 			// the root spanning the whole document.
@@ -373,6 +392,7 @@ steps:
         - id: body
           echo:
             message: ${steps.|
+edition: v2026.2
 `,
 			// The enclosing loop is excluded — it has not finished, so it has no
 			// results yet — and so is the body step itself.
@@ -392,6 +412,7 @@ steps:
       message: hi
   - id: window
     wait_until: ${|
+edition: v2026.2
 `,
 			exact: []string{"now", "steps"},
 			// Not the step ids: they are still reached through the root here like
@@ -415,6 +436,7 @@ steps:
   - id: after
     echo:
       message: ${|
+edition: v2026.2
 `,
 			exact:   []string{"steps"},
 			notWant: []string{"now"},
@@ -429,6 +451,7 @@ steps:
       message: hi
   - id: window
     wait_until: ${steps.|
+edition: v2026.2
 `,
 			exact:   []string{"before"},
 			notWant: []string{"now"},
@@ -446,6 +469,7 @@ steps:
       steps:
         - id: window
           wait_until: ${|
+edition: v2026.2
 `,
 			exact: []string{"each", "now", "steps"},
 		},
@@ -464,6 +488,7 @@ steps:
   - id: a
     shell:
       wait_until: ${|
+edition: v2026.2
 `,
 			exact:   []string{"steps"},
 			notWant: []string{"now"},
@@ -475,6 +500,7 @@ steps:
   - id: a
     for_each:
       |
+edition: v2026.2
 `,
 			exact: []string{"items", "as", "max_parallel", "steps"},
 		},
@@ -485,6 +511,7 @@ steps:
   - id: a
     retry:
       |
+edition: v2026.2
 `,
 			exact: []string{"attempts", "interval", "backoff", "max_interval"},
 		},
@@ -502,6 +529,7 @@ steps:
   - id: a
     echo:
       |
+edition: v2026.2
 `,
 			exact:   []string{"message"},
 			notWant: []string{"name", "description", "inputs"},
@@ -513,6 +541,7 @@ steps:
   - id: a
     echo:
       message: hello |
+edition: v2026.2
 `,
 			exact: []string{},
 		},
@@ -521,6 +550,7 @@ steps:
 			src: `name: c
 steps:
   - id: |
+edition: v2026.2
 `,
 			exact: []string{},
 		},
@@ -599,6 +629,7 @@ func TestGrammarKeysAreOfferedOnlyWhereTheyMeanSomething(t *testing.T) {
 			src: `name: c
 steps:
   - |
+edition: v2026.2
 `,
 			want:    []string{"description"},
 			notWant: []string{"edition", "name"},
@@ -613,6 +644,7 @@ steps:
   - id: a
     for_each:
       |
+edition: v2026.2
 `,
 			want:    []string{"items"},
 			notWant: []string{"description", "edition"},
@@ -624,6 +656,7 @@ steps:
   - id: a
     retry:
       |
+edition: v2026.2
 `,
 			want:    []string{"attempts"},
 			notWant: []string{"description", "edition"},
@@ -635,6 +668,7 @@ steps:
   - id: a
     wait_for_signal:
       |
+edition: v2026.2
 `,
 			want:    []string{"name", "timeout"},
 			notWant: []string{"description", "edition"},
@@ -646,6 +680,7 @@ steps:
   - id: a
     parallel:
       - |
+edition: v2026.2
 `,
 			want:    []string{"steps"},
 			notWant: []string{"description", "edition"},
@@ -661,6 +696,7 @@ steps:
       items: ${x}
       steps:
         - |
+edition: v2026.2
 `,
 			want:    []string{"description"},
 			notWant: []string{"edition"},
@@ -679,6 +715,7 @@ steps:
   - id: second
     echo:
       message: ${steps.|}
+edition: v2026.2
 `,
 			want:    []string{"first"},
 			notWant: []string{"description", "edition"},
@@ -757,6 +794,7 @@ func TestCompletionReplacesThePartialWord(t *testing.T) {
 	src, pos := splitCursor(t, `name: c
 steps:
   - ht|
+edition: v2026.2
 `)
 	c := newClient(t)
 	c.initialize()
@@ -792,6 +830,7 @@ steps:
   - id: out
     echo:
       message: ${|}
+edition: v2026.2
 `)
 	c := newClient(t)
 	c.initialize()
@@ -836,6 +875,7 @@ steps:
   - id: a
     echo:
       mes|
+edition: v2026.2
 `)
 	// Confirm the premise: this document does not compile.
 	require.NotEmpty(t, diagnose(newDocument("file:///x", 1, src)),

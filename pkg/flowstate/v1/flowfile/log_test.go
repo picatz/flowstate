@@ -50,7 +50,7 @@ func TestALogLevelIsWrittenAsTheChoice(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			src := "name: t\nsteps:\n  - id: a\n    log:\n      level: " + test.level +
+			src := "edition: v2026.2\nname: t\nsteps:\n  - id: a\n    log:\n      level: " + test.level +
 				"\n      message: hi\n"
 
 			reported := diagnose(t, src)
@@ -73,9 +73,9 @@ func TestALogLevelIsWrittenAsTheChoice(t *testing.T) {
 func TestALogLevelDiagnosticPointsAtTheLevel(t *testing.T) {
 	t.Parallel()
 
-	src := "name: t\nsteps:\n  - id: a\n    log:\n      message: hi\n      level: nope\n"
+	src := "edition: v2026.2\nname: t\nsteps:\n  - id: a\n    log:\n      message: hi\n      level: nope\n"
 
-	require.Contains(t, diagnose(t, src), "6:",
+	require.Contains(t, diagnose(t, src), "7:",
 		"a bad level was not reported on the line it was written")
 }
 
@@ -87,7 +87,7 @@ func TestALogLevelDiagnosticPointsAtTheLevel(t *testing.T) {
 func TestALogStepNeedsAMessage(t *testing.T) {
 	t.Parallel()
 
-	src := "name: t\nsteps:\n  - id: a\n    log:\n      level: warn\n"
+	src := "edition: v2026.2\nname: t\nsteps:\n  - id: a\n    log:\n      level: warn\n"
 
 	require.Contains(t, diagnose(t, src), `task "log" requires input "message"`)
 }
@@ -101,6 +101,7 @@ func TestALogStepHasNoOutputToReference(t *testing.T) {
 	t.Parallel()
 
 	src := `
+edition: v2026.2
 name: t
 steps:
   - id: say
@@ -124,7 +125,7 @@ steps:
 func TestALogStepSurvivesARoundTrip(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: 2026.1
+	src := `edition: v2026.2
 name: t
 steps:
   - id: say

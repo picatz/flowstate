@@ -58,7 +58,8 @@ func TestValidateTaskInputs(t *testing.T) {
 		},
 		{
 			name: "a string where a mapping belongs",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     http:
@@ -69,7 +70,8 @@ steps:
 		},
 		{
 			name: "a string where a list belongs",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     printf:
@@ -80,7 +82,8 @@ steps:
 		},
 		{
 			name: "http without a url",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     http:
@@ -97,7 +100,8 @@ steps:
 			// literal — and it is still not reported, because an expression's type
 			// is not knowable when the workflow is compiled.
 			name: "an expression is not type-checked",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: count
     echo:
@@ -109,7 +113,8 @@ steps:
 		},
 		{
 			name: "a whole number satisfies a floating-point field",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     retry:
@@ -120,7 +125,8 @@ steps:
 		},
 		{
 			name: "the cel task accepts inputs its schema does not declare",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     cel:
@@ -131,7 +137,8 @@ steps:
 		},
 		{
 			name: "an input the task evaluates itself is not checked",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     http:
@@ -141,7 +148,8 @@ steps:
 		},
 		{
 			name: "a literal mapping for a declared mapping",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     http:
@@ -152,7 +160,8 @@ steps:
 		},
 		{
 			name: "an unknown task is reported once, not input by input",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     nosuchtask:
@@ -188,7 +197,8 @@ steps:
 // TestValidateTaskInputsInNestedSteps pins that a body step and a branch step are
 // checked too, since a loop body is where a workflow does most of its work.
 func TestValidateTaskInputsInNestedSteps(t *testing.T) {
-	src := `name: t
+	src := `edition: v2026.2
+name: t
 steps:
   - id: loop
     for_each:
@@ -224,7 +234,8 @@ steps:
 // the input at fault, which is the whole reason they are worth having over a runtime
 // failure.
 func TestValidateTaskInputsPositions(t *testing.T) {
-	src := `name: t
+	src := `edition: v2026.2
+name: t
 steps:
   - id: a
     echo:
@@ -238,14 +249,15 @@ steps:
 		t.Fatalf("expected one diagnostic, got %d:\n%s", len(ds), ds.Error())
 	}
 	// The value of the offending input begins at column 15 of line 5.
-	if ds[0].Line != 5 || ds[0].Column != 15 {
-		t.Errorf("position = %d:%d, want 5:15\nreported: %s", ds[0].Line, ds[0].Column, ds[0].Error())
+	if ds[0].Line != 6 || ds[0].Column != 15 {
+		t.Errorf("position = %d:%d, want 6:15\nreported: %s", ds[0].Line, ds[0].Column, ds[0].Error())
 	}
 }
 
 // echoInput returns a workflow whose single echo step has the given inputs body.
 func echoInput(inputs string) string {
-	return `name: t
+	return `edition: v2026.2
+name: t
 steps:
   - id: a
     echo:
@@ -255,7 +267,8 @@ steps:
 // printfInput returns a workflow whose single printf step has the given inputs,
 // plus the args printf requires.
 func printfInput(inputs string) string {
-	return `name: t
+	return `edition: v2026.2
+name: t
 steps:
   - id: a
     printf:
@@ -284,11 +297,11 @@ func TestAnInputThatMustBeAnExpressionIsCheckedEvenThoughItIsDeferred(t *testing
 	t.Parallel()
 
 	for name, src := range map[string]string{
-		"a mapping": "name: t\nsteps:\n  - id: f\n    http:\n      url: https://example.com\n" +
+		"a mapping": "edition: v2026.2\nname: t\nsteps:\n  - id: f\n    http:\n      url: https://example.com\n" +
 			"      expect:\n        status_code: 200\n",
-		"a bare string": "name: t\nsteps:\n  - id: f\n    http:\n      url: https://example.com\n" +
+		"a bare string": "edition: v2026.2\nname: t\nsteps:\n  - id: f\n    http:\n      url: https://example.com\n" +
 			"      expect: status_code == 200\n",
-		"a literal boolean": "name: t\nsteps:\n  - id: f\n    http:\n      url: https://example.com\n" +
+		"a literal boolean": "edition: v2026.2\nname: t\nsteps:\n  - id: f\n    http:\n      url: https://example.com\n" +
 			"      expect: true\n",
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -313,7 +326,7 @@ func TestAnExpressionInputWrittenAsAnExpressionIsAccepted(t *testing.T) {
 	t.Parallel()
 
 	workflow, err := flowfile.Unmarshal([]byte(
-		"name: t\nsteps:\n  - id: f\n    http:\n      url: https://example.com\n" +
+		"edition: v2026.2\nname: t\nsteps:\n  - id: f\n    http:\n      url: https://example.com\n" +
 			"      expect: ${status_code == 200}\n      outputs: \"${ {'code': status_code} }\"\n"))
 	require.NoError(t, err)
 	assert.Empty(t, flowfile.Validate(workflow),
@@ -335,7 +348,7 @@ func TestALiteralOutputsMapIsStillAccepted(t *testing.T) {
 	t.Parallel()
 
 	workflow, err := flowfile.Unmarshal([]byte(
-		"name: t\nsteps:\n  - id: f\n    http:\n      url: https://example.com\n" +
+		"edition: v2026.2\nname: t\nsteps:\n  - id: f\n    http:\n      url: https://example.com\n" +
 			"      outputs:\n        note: constant\n"))
 	require.NoError(t, err)
 	assert.Empty(t, flowfile.Validate(workflow),
@@ -353,7 +366,7 @@ func TestADeferredInputThatNeedNotBeAnExpressionIsLeftAlone(t *testing.T) {
 	t.Parallel()
 
 	workflow, err := flowfile.Unmarshal([]byte(
-		"name: t\nsteps:\n  - id: c\n    cel:\n      expr: 1 + 1\n"))
+		"edition: v2026.2\nname: t\nsteps:\n  - id: c\n    cel:\n      expr: 1 + 1\n"))
 	require.NoError(t, err)
 	assert.Empty(t, flowfile.Validate(workflow),
 		"the cel task's `expr` was required to carry a fence, which would be wrong")

@@ -34,46 +34,50 @@ func TestParseReportsPositions(t *testing.T) {
 	}{
 		{
 			name: "malformed duration",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     timeout: 30 seconds
     echo:
 `,
-			line: 4, col: 14,
+			line: 5, col: 14,
 			want: `timeout "30 seconds" is not a duration; write it as 30s, 5m, 1h, or 7d`,
 		},
 		{
 			name: "duration written as a number",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     timeout: 30
     echo:
 `,
-			line: 4, col: 14,
+			line: 5, col: 14,
 			want: "must be a duration written as a string",
 		},
 		{
 			name: "misspelled step key",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     timout: 30s
     echo:
 `,
-			line: 4, col: 5,
+			line: 5, col: 5,
 			want: `unknown key "timout"; did you mean "timeout"?`,
 		},
 		{
 			name: "unknown key with no near match",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     nonsense: 1
     echo:
 `,
-			line: 4, col: 5,
+			line: 5, col: 5,
 			want: `unknown key "nonsense"; the keys here are id, description, if, vars, timeout, retry, continue_on_error, for_each, parallel, sleep, wait_until, wait_for_signal, cel, echo, http, log, and printf`,
 		},
 		{
@@ -87,7 +91,8 @@ steps:
 			// obvious implementation reports the mistake a second time in words that
 			// do not name the fix.
 			name: "the retired task block says what to write instead",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     task:
@@ -95,24 +100,26 @@ steps:
       inputs:
         message: hi
 `,
-			line: 4, col: 5,
+			line: 5, col: 5,
 			want: "`task:` is no longer a step key; a step names its task directly now",
 		},
 		{
 			name: "unknown workflow key",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 labels:
   env: dev
 steps:
   - id: a
     echo:
 `,
-			line: 2, col: 1,
+			line: 3, col: 1,
 			want: `unknown key "labels"`,
 		},
 		{
 			name: "two kinds of work in one step",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     echo:
@@ -122,27 +129,29 @@ steps:
         - id: b
           echo:
 `,
-			line: 5, col: 5,
+			line: 6, col: 5,
 			want: "has both echo and for_each; a step does exactly one kind of work",
 		},
 		{
 			name: "no kind of work at all",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     timeout: 5s
 `,
-			line: 3, col: 5,
+			line: 4, col: 5,
 			want: "must have one of for_each, parallel, sleep, wait_until, wait_for_signal, cel, echo, http, log, or printf",
 		},
 		{
 			name: "a step key that is not a string",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     42:
 `,
-			line: 4, col: 5,
+			line: 5, col: 5,
 			want: "keys must be strings, but a number was written here",
 		},
 		{
@@ -151,28 +160,31 @@ steps:
 			// run time is not something the grammar can express — which is the
 			// point, since a workload whose *shape* depends on its data cannot be
 			// checked before it runs. It is reported as the unknown key it is.
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     ${chosen.task}:
 `,
-			line: 4, col: 5,
+			line: 5, col: 5,
 			want: `unknown key "${chosen.task}"`,
 		},
 		{
 			name: "interpolated input",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     echo:
       message: hello ${who.result}
 `,
-			line: 5, col: 16,
+			line: 6, col: 16,
 			want: "must be the whole value",
 		},
 		{
 			name: "expression syntax error points inside the expression",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     echo:
@@ -181,36 +193,39 @@ steps:
 			// CEL reports the fault at the end of `a +`, which is the `}` in
 			// column 23 — not the start of the step, and not the start of the
 			// fence.
-			line: 5, col: 21,
+			line: 6, col: 21,
 			want: "not a valid expression",
 		},
 		{
 			name: "input with no value",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     echo:
       message:
 `,
 			// The span is empty and sits where the value would have gone.
-			line: 5, col: 16,
+			line: 6, col: 16,
 			want: "has no value; give it one or remove the key",
 		},
 		{
 			name: "retry field out of place",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     retry:
       attemps: 3
     echo:
 `,
-			line: 5, col: 7,
+			line: 6, col: 7,
 			want: `unknown key "attemps"; did you mean "attempts"?`,
 		},
 		{
 			name: "for_each without items",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     for_each:
@@ -219,12 +234,13 @@ steps:
         - id: b
           echo:
 `,
-			line: 5, col: 7,
+			line: 6, col: 7,
 			want: "for_each requires items",
 		},
 		{
 			name: "parallel that is not a list",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     parallel:
@@ -232,12 +248,13 @@ steps:
         - id: b
           echo:
 `,
-			line: 5, col: 7,
+			line: 6, col: 7,
 			want: "parallel must be a list of branches",
 		},
 		{
 			name: "problem inside a loop body names the body step",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: outer
     for_each:
@@ -247,12 +264,13 @@ steps:
           timeout: soon
           echo:
 `,
-			line: 8, col: 20,
+			line: 9, col: 20,
 			want: `step "inner": timeout "soon" is not a duration`,
 		},
 		{
 			name: "problem inside a parallel branch names the branch step",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: outer
     parallel:
@@ -261,12 +279,13 @@ steps:
             echo:
               message: hi ${there}
 `,
-			line: 8, col: 24,
+			line: 9, col: 24,
 			want: `step "inner" input "message"`,
 		},
 		{
 			name: "nested input value inside a map",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     http:
@@ -275,7 +294,7 @@ steps:
         X-A: fine
         X-B: broken ${x}
 `,
-			line: 8, col: 14,
+			line: 9, col: 14,
 			want: `step "a" input "headers"`,
 		},
 		{
@@ -286,7 +305,8 @@ steps:
 		},
 		{
 			name: "more than one document",
-			src: `name: a
+			src: `edition: v2026.2
+name: a
 steps:
   - id: a
     echo:
@@ -296,26 +316,28 @@ steps:
   - id: b
     echo:
 `,
-			line: 6, col: 1,
+			line: 7, col: 1,
 			want: "a Flowfile holds one workflow",
 		},
 		{
 			name: "steps is not a list",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   a: 1
 `,
-			line: 3, col: 3,
+			line: 4, col: 3,
 			want: "must be a list of steps",
 		},
 		{
 			name: "unknown alias",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     echo: *base
 `,
-			line: 4, col: 11,
+			line: 5, col: 11,
 			want: "unknown alias *base",
 		},
 	}
@@ -351,7 +373,8 @@ steps:
 // TestParsePositionPaths covers the positional model directly: a caller with a
 // workflow in hand has to be able to ask where any part of it was written.
 func TestParsePositionPaths(t *testing.T) {
-	src := `name: positions
+	src := `edition: v2026.2
+name: positions
 steps:
   - id: first
     timeout: 30s
@@ -376,13 +399,13 @@ steps:
 		start flowfile.Position
 		end   flowfile.Position
 	}{
-		{path: "name", start: flowfile.Position{Line: 1, Column: 7}, end: flowfile.Position{Line: 1, Column: 16}},
-		{path: "steps[0].id", start: flowfile.Position{Line: 3, Column: 9}, end: flowfile.Position{Line: 3, Column: 14}},
-		{path: "steps[0].timeout", start: flowfile.Position{Line: 4, Column: 14}, end: flowfile.Position{Line: 4, Column: 17}},
-		{path: "steps[0].echo.message", start: flowfile.Position{Line: 6, Column: 16}, end: flowfile.Position{Line: 6, Column: 34}},
-		{path: "steps[1].for_each.items", start: flowfile.Position{Line: 9, Column: 14}, end: flowfile.Position{Line: 9, Column: 23}},
-		{path: "steps[1].for_each.as", start: flowfile.Position{Line: 10, Column: 11}, end: flowfile.Position{Line: 10, Column: 12}},
-		{path: "steps[1].for_each.steps[0].echo.message", start: flowfile.Position{Line: 14, Column: 22}, end: flowfile.Position{Line: 14, Column: 27}},
+		{path: "name", start: flowfile.Position{Line: 2, Column: 7}, end: flowfile.Position{Line: 2, Column: 16}},
+		{path: "steps[0].id", start: flowfile.Position{Line: 4, Column: 9}, end: flowfile.Position{Line: 4, Column: 14}},
+		{path: "steps[0].timeout", start: flowfile.Position{Line: 5, Column: 14}, end: flowfile.Position{Line: 5, Column: 17}},
+		{path: "steps[0].echo.message", start: flowfile.Position{Line: 7, Column: 16}, end: flowfile.Position{Line: 7, Column: 34}},
+		{path: "steps[1].for_each.items", start: flowfile.Position{Line: 10, Column: 14}, end: flowfile.Position{Line: 10, Column: 23}},
+		{path: "steps[1].for_each.as", start: flowfile.Position{Line: 11, Column: 11}, end: flowfile.Position{Line: 11, Column: 12}},
+		{path: "steps[1].for_each.steps[0].echo.message", start: flowfile.Position{Line: 15, Column: 22}, end: flowfile.Position{Line: 15, Column: 27}},
 	}
 
 	for _, tt := range tests {
@@ -404,8 +427,8 @@ steps:
 		t.Fatal("ExprAt() not recorded for a fenced expression")
 	}
 	want := flowfile.Span{
-		Start: flowfile.Position{Line: 6, Column: 18},
-		End:   flowfile.Position{Line: 6, Column: 33},
+		Start: flowfile.Position{Line: 7, Column: 18},
+		End:   flowfile.Position{Line: 7, Column: 33},
 	}
 	if span != want {
 		t.Errorf("ExprAt() = %s, want %s", span, want)
@@ -426,14 +449,14 @@ steps:
 
 	// Locate is what ValidateSource uses: narrow to the input when it names one,
 	// and fall back to the step when it does not.
-	if span, ok := positions.Locate("first", "message"); !ok || span.Start.Line != 6 {
-		t.Errorf("Locate(first, message) = %s, %v; want line 6", span, ok)
+	if span, ok := positions.Locate("first", "message"); !ok || span.Start.Line != 7 {
+		t.Errorf("Locate(first, message) = %s, %v; want line 7", span, ok)
 	}
-	if span, ok := positions.Locate("second", ""); !ok || span.Start.Line != 7 {
-		t.Errorf("Locate(second, \"\") = %s, %v; want line 7", span, ok)
+	if span, ok := positions.Locate("second", ""); !ok || span.Start.Line != 8 {
+		t.Errorf("Locate(second, \"\") = %s, %v; want line 8", span, ok)
 	}
-	if span, ok := positions.Locate("second", "as"); !ok || span.Start.Line != 10 {
-		t.Errorf("Locate(second, iterator) = %s, %v; want line 10", span, ok)
+	if span, ok := positions.Locate("second", "as"); !ok || span.Start.Line != 11 {
+		t.Errorf("Locate(second, iterator) = %s, %v; want line 11", span, ok)
 	}
 
 	var none *flowfile.Positions
@@ -497,7 +520,8 @@ func TestParseExpressionContexts(t *testing.T) {
 		},
 		{
 			name: "a bare items is an expression",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     for_each:
@@ -513,7 +537,8 @@ steps:
 		},
 		{
 			name: "a list items is a literal list",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     for_each:
@@ -532,7 +557,8 @@ steps:
 		},
 		{
 			name: "a structure with a nested expression becomes one expression",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     http:
@@ -547,7 +573,8 @@ steps:
 		},
 		{
 			name: "a structure of literals stays a literal",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     http:
@@ -591,7 +618,8 @@ steps:
 // engine relies on them: an empty message is a message, and a step that spells out
 // the default must compile to the same workflow as one that leaves it unsaid.
 func TestParseZeroValues(t *testing.T) {
-	src := `name: zero
+	src := `edition: v2026.2
+name: zero
 steps:
   - id: a
     continue_on_error: false
@@ -641,7 +669,8 @@ steps:
 // TestParseAnchorsAndMerge covers the YAML features a Flowfile inherits, which
 // decoding into structs used to provide and a hand-written walk has to keep.
 func TestParseAnchorsAndMerge(t *testing.T) {
-	src := `name: anchors
+	src := `edition: v2026.2
+name: anchors
 steps:
   - id: a
     retry: &policy
@@ -680,7 +709,8 @@ steps:
 // TestParseRejectsSelfReferentialAlias pins that a cyclic alias is reported rather
 // than followed forever.
 func TestParseRejectsSelfReferentialAlias(t *testing.T) {
-	src := `name: t
+	src := `edition: v2026.2
+name: t
 steps: &loop
   - id: a
     echo:
@@ -745,7 +775,8 @@ func TestRoundTripNestedControlFlow(t *testing.T) {
 	}{
 		{
 			name: "loop with a body",
-			src: `name: loop
+			src: `edition: v2026.2
+name: loop
 steps:
   - id: outer
     for_each:
@@ -762,7 +793,8 @@ steps:
 		},
 		{
 			name: "parallel branches",
-			src: `name: parallel
+			src: `edition: v2026.2
+name: parallel
 steps:
   - id: fan
     parallel:
@@ -779,7 +811,8 @@ steps:
 		},
 		{
 			name: "a loop inside a branch",
-			src: `name: nested
+			src: `edition: v2026.2
+name: nested
 steps:
   - id: fan
     parallel:
@@ -795,7 +828,8 @@ steps:
 		},
 		{
 			name: "policy in full",
-			src: `name: policy
+			src: `edition: v2026.2
+name: policy
 steps:
   - id: a
     if: ${gate.result == 'go'}
@@ -812,7 +846,8 @@ steps:
 		},
 		{
 			name: "retry asking only for the defaults",
-			src: `name: defaults
+			src: `edition: v2026.2
+name: defaults
 steps:
   - id: a
     retry: {}
@@ -822,7 +857,8 @@ steps:
 		},
 		{
 			name: "structures with nested expressions",
-			src: `name: shapes
+			src: `edition: v2026.2
+name: shapes
 steps:
   - id: a
     http:
@@ -841,7 +877,8 @@ steps:
 		},
 		{
 			name: "literal structures and zero values",
-			src: `name: literals
+			src: `edition: v2026.2
+name: literals
 steps:
   - id: a
     cel:
@@ -855,7 +892,8 @@ steps:
 		},
 		{
 			name: "description present but empty",
-			src: `name: described
+			src: `edition: v2026.2
+name: described
 description: ""
 steps:
   - id: a
@@ -885,7 +923,8 @@ steps:
 // test passes either way — once that lands, the expression round-trips instead.
 func TestMarshalReportsWhatItCannotWrite(t *testing.T) {
 	t.Run("comprehension", func(t *testing.T) {
-		workflow, err := flowfile.Unmarshal([]byte(`name: t
+		workflow, err := flowfile.Unmarshal([]byte(`edition: v2026.2
+name: t
 steps:
   - id: a
     echo:
@@ -1009,7 +1048,7 @@ func requireExpr(t *testing.T, value *v1.Value, want string) {
 
 // stepWith returns a workflow whose single step carries the given property line.
 func stepWith(property string) string {
-	return "name: t\nsteps:\n  - id: a\n    " + property + `
+	return "edition: v2026.2\nname: t\nsteps:\n  - id: a\n    " + property + `
     echo:
       message: hi
 `
@@ -1017,7 +1056,8 @@ func stepWith(property string) string {
 
 // taskInput returns a workflow whose single step has the given task input line.
 func taskInput(input string) string {
-	return `name: t
+	return `edition: v2026.2
+name: t
 steps:
   - id: a
     echo:
@@ -1061,7 +1101,8 @@ func TestParseRejects(t *testing.T) {
 		},
 		{
 			name: "for_each with no body",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     for_each:
@@ -1071,7 +1112,8 @@ steps:
 		},
 		{
 			name: "backoff that is not a number",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     retry:
@@ -1082,7 +1124,8 @@ steps:
 		},
 		{
 			name: "continue_on_error that is not a bool",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     continue_on_error: sometimes
@@ -1092,7 +1135,8 @@ steps:
 		},
 		{
 			name: "timeout of zero",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     timeout: 0s
@@ -1102,7 +1146,8 @@ steps:
 		},
 		{
 			name: "parallel branch with no steps",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     parallel:
@@ -1112,7 +1157,8 @@ steps:
 		},
 		{
 			name: "parallel with no branches",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     parallel: []
@@ -1121,7 +1167,8 @@ steps:
 		},
 		{
 			name: "unknown key in a parallel branch",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     parallel:
@@ -1132,7 +1179,8 @@ steps:
 		},
 		{
 			name: "a task whose inputs are not a mapping",
-			src: `name: t
+			src: `edition: v2026.2
+name: t
 steps:
   - id: a
     echo: hello
@@ -1159,7 +1207,8 @@ steps:
 		},
 		{
 			name: "expression in a workflow name",
-			src: `name: ${chosen}
+			src: `edition: v2026.2
+name: ${chosen}
 steps:
   - id: a
     echo:
@@ -1213,7 +1262,8 @@ steps:
 // expression. The two paths build values separately, so a type handled by one and
 // not the other is exactly the kind of gap that survives review.
 func TestParseValueKinds(t *testing.T) {
-	literals := `name: t
+	literals := `edition: v2026.2
+name: t
 steps:
   - id: a
     cel:
@@ -1256,7 +1306,8 @@ steps:
 	requireRoundTrip(t, workflow)
 
 	// The same values, in a structure that one expression makes an expression.
-	computed := `name: t
+	computed := `edition: v2026.2
+name: t
 steps:
   - id: a
     cel:
@@ -1303,7 +1354,8 @@ func literalText(literal *expr.Value) string {
 // forEachWith returns a workflow whose single step is a loop with the given body of
 // for_each keys.
 func forEachWith(keys string) string {
-	return `name: t
+	return `edition: v2026.2
+name: t
 steps:
   - id: a
     for_each:
@@ -1322,7 +1374,8 @@ steps:
 // one expression the task cannot resolve. Compiling `vars` as written would break
 // every workflow that passes a step output through it.
 func TestParseHoistsCelVars(t *testing.T) {
-	workflow, err := flowfile.Unmarshal([]byte(`name: t
+	workflow, err := flowfile.Unmarshal([]byte(`edition: v2026.2
+name: t
 steps:
   - id: greet
     echo:
@@ -1365,7 +1418,8 @@ steps:
 func TestVarsUnderATaskThatHasNoVarsIsReportedWhereItWasWritten(t *testing.T) {
 	t.Parallel()
 
-	const src = `name: misplaced-vars
+	const src = `edition: v2026.2
+name: misplaced-vars
 steps:
   - id: a
     echo:

@@ -66,10 +66,11 @@ var editionList = strings.Join(flowfile.KnownEditions(), ", ")
 // proposes exporting the shape so the table can go away entirely.
 var dslKeys = map[string][]dslKey{
 	"": {
-		{name: "edition", detail: "version", docs: "Optional. Names the grammar this file is written in, as a date such as `" + flowfile.CurrentEdition + "`. " +
-			"Leave it out and the file is read as the current edition, which is why most files do not carry one.\n\n" +
-			"It exists so that a future build can *refuse* a file rather than silently reinterpret it: surface syntax here gets no deprecation window, " +
-			"and a file that says which grammar it was written in is a file `flow fix` can rewrite across that boundary.\n\n" +
+		{name: "edition", detail: "version", docs: "Required. Names the grammar this file is written in, as a v-prefixed date: `" + flowfile.CurrentEdition + "`.\n\n" +
+			"It exists so that a build can *refuse* a file rather than silently reinterpret it: surface syntax here gets no deprecation window, " +
+			"and a file that says which grammar it was written in is a file `flow fix` can rewrite across that boundary. " +
+			"It was optional once, which was the one thing it could not afford to be — leaving it out did not mean \"any grammar\", it meant being read as whichever grammar came next.\n\n" +
+			"`flow fix` writes it, below any header comment, so no one has to type it.\n\n" +
 			"It is not a compatibility switch. A build compiles one grammar — this one knows " + editionList + " — and declaring anything else is refused, not translated."},
 		{name: "name", detail: "string", docs: "What this workflow is called."},
 		{name: "description", detail: "string", docs: "Optional prose about the workflow."},
