@@ -2,6 +2,7 @@ package flowstatev1_test
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -287,5 +288,119 @@ func TestEnumInputSpellings(t *testing.T) {
 	for _, name := range names {
 		_, ok := v1.EnumValueNumber(field.Enum(), name)
 		require.True(t, ok, "%q is offered as a choice and does not resolve", name)
+	}
+}
+
+// TestLogEnforcesItsDeclaredBounds checks the bounds are real rather than decorative.
+//
+// A `log:` step's fields are chosen by the workflow — how many, how long the keys, how
+// long the values — and they are written to a worker's logs and into durable history.
+// The schema declares limits on all three; nothing enforced them, which made them a
+// comment. Bounding the resource an *outside party* controls is this repo's stated rule,
+// and the party here is whoever wrote the workflow.
+func TestLogEnforcesItsDeclaredBounds(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name   string
+		fields map[string]any
+	}{
+		{
+			name:   "a value longer than the limit",
+			fields: map[string]any{"k": strings.Repeat("x", 1025)},
+		},
+		{
+			name:   "a key longer than the limit",
+			fields: map[string]any{strings.Repeat("k", 65): "v"},
+		},
+		{
+			name:   "more pairs than the limit",
+			fields: manyFields(33),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := v1.Run(t.Context(), logStep(map[string]*v1.Value{
+				"message": v1.NewLiteral("hi"),
+				"fields":  v1.NewLiteralMap(test.fields),
+			}))
+
+			require.Error(t, err, "a `log:` step exceeded a declared bound and was emitted anyway")
+		})
+	}
+
+	// And the shapes just inside each limit still run.
+	//
+	// Not decoration: without it the three cases above passed for the wrong reason. The
+	// fixture built its map with the wrong constructor, every run failed on the
+	// conversion rather than on the bound, and three green subtests said the bounds
+	// worked. A bound is only demonstrated by a pair — the value it refuses and the
+	// value it admits.
+	_, err := v1.Run(t.Context(), logStep(map[string]*v1.Value{
+		"message": v1.NewLiteral("hi"),
+		"fields":  v1.NewLiteralMap(map[string]any{strings.Repeat("k", 64): strings.Repeat("x", 1024)}),
+	}))
+	require.NoError(t, err, "a `log:` step at the limit was refused")
+}
+
+// manyFields builds a fields map of n entries.
+func manyFields(n int) map[string]any {
+	out := make(map[string]any, n)
+	for i := range n {
+		out[fmt.Sprintf("k%02d", i)] = "v"
+	}
+
+	return out
+}
+
+// TestAMapInputRefusesAValueItCannotHold is the silent-corruption fix, tested where it
+// is general rather than only through `log:`.
+//
+// Every string-valued map input shared one conversion path that called the protobuf
+// getter for the field's kind directly — and a getter answers the *zero value* for a
+// value of some other kind rather than failing. So `fields: {code: 500}` logged `code=`
+// and `headers: {X-Count: 5}` sent an empty header: the wrong thing, silently, in a
+// durable record and in a request to somebody else's server.
+//
+// Both are checked here because the fix is one path and a test through one task would
+// leave the other free to regress on its own.
+func TestAMapInputRefusesAValueItCannotHold(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name string
+		task *v1.Task
+	}{
+		{
+			name: "a log field",
+			task: &v1.Task{Name: "log", Inputs: map[string]*v1.Value{
+				"message": v1.NewLiteral("hi"),
+				"fields":  v1.NewExpr(`{"code": 500}`),
+			}},
+		},
+		{
+			name: "an http header",
+			task: &v1.Task{Name: "http", Inputs: map[string]*v1.Value{
+				"url":     v1.NewLiteral("https://example.com"),
+				"headers": v1.NewExpr(`{"X-Count": 5}`),
+			}},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := v1.Run(t.Context(), &v1.Workflow{
+				Name:    "map-input",
+				Profile: v1.CurrentProfile,
+				Steps:   []*v1.Node{{Id: "a", Kind: &v1.Node_Task{Task: test.task}}},
+			})
+
+			require.Error(t, err, "a non-string was written into a string map and silently became empty")
+
+			// Naming both the key and what was wrong with it, because "expected a
+			// string" against a mapping of eight entries is a search.
+			require.Contains(t, err.Error(), "expected a string")
+		})
 	}
 }

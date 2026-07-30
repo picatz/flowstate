@@ -1309,6 +1309,14 @@ func unresolvedStep(stepID, inputName, ref string, index int, wf *v1.Workflow) D
 	}}
 }
 
+// toleratedErrorOutput is the output a step gains by being allowed to fail.
+//
+// Written by both drivers in place of a failed task's own outputs when
+// `continue_on_error:` is set, which is what a later step branches on. Named here
+// because the validator has to know about it and does not otherwise: it is the one
+// output that comes from the *policy* rather than from the task.
+const toleratedErrorOutput = "error"
+
 // unknownStepOutput reports a reference to an output a step does not produce.
 //
 // Silent unless it is sure, which is most of the time and deliberately so. It answers
@@ -1340,6 +1348,18 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, wf *v1.Workflow) (
 		return Diagnostic{}, false
 	}
 
+	// A tolerated step gains an output no task declares.
+	//
+	// When `continue_on_error:` is set and the step fails, both drivers synthesise
+	// `error` in place of the task's own outputs — which is the whole point of the
+	// policy: a later step branches on it. So the set of outputs is the descriptor's
+	// *plus* that one, and checking the descriptor alone reports a documented pattern
+	// as a mistake. Precisely the failure this check's own comment warns about, and it
+	// shipped that way for one review cycle.
+	if ref.Output == toleratedErrorOutput && node.GetPolicy().GetContinueOnError() {
+		return Diagnostic{}, false
+	}
+
 	def, known := v1.LookupTask(task.GetName())
 	if !known || def.Outputs == nil {
 		return Diagnostic{}, false
@@ -1357,6 +1377,13 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, wf *v1.Workflow) (
 	}
 
 	produced := fieldNames(def.Outputs)
+	if node.GetPolicy().GetContinueOnError() {
+		// Listed because it is available here, and a list that omits a name the very
+		// next edit might need sends the author to the docs for something the tool
+		// already knew.
+		produced = append(produced, toleratedErrorOutput)
+	}
+
 	message := fmt.Sprintf("step %q has no output %q", ref.ID, ref.Output)
 	switch {
 	case len(produced) == 0:
@@ -1364,6 +1391,13 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, wf *v1.Workflow) (
 		// an author reading "it produces: " learns nothing about why.
 		message += fmt.Sprintf("; the %s task produces no outputs, because a %s step is an effect rather than a value",
 			task.GetName(), task.GetName())
+
+		// Except that a tolerated step always has one, whatever its task produces —
+		// so the sentence above would be false where the policy is set, and this is
+		// the one case where "produces nothing" needs a qualifier.
+		if node.GetPolicy().GetContinueOnError() {
+			message += fmt.Sprintf(" (it does produce %q, since it may be tolerated)", toleratedErrorOutput)
+		}
 	default:
 		if suggestion, ok := nearest(ref.Output, produced); ok {
 			message += fmt.Sprintf("; did you mean %q?", suggestion)

@@ -143,6 +143,17 @@ func taskFuncLog(ctx context.Context, input map[string]*Value, scope *Scope) (*N
 		return nil, NewTaskError("log", ErrorKindInvalidInput, err)
 	}
 
+	// The declared bounds, enforced rather than decorative.
+	//
+	// A `log:` step's fields are chosen by the workflow — count, key length and value
+	// length all — and they are written to a worker's logs and into durable history.
+	// Bounding the resource an author controls is the rule this repo states; a bound
+	// nothing checks is a comment. This is also where a level outside the enum is
+	// caught for a specification that reached a worker without passing `flow validate`.
+	if err := Validate(taskInputs); err != nil {
+		return nil, NewTaskError("log", ErrorKindInvalidInput, err)
+	}
+
 	// Sorted, because a map's order is not one and a log line whose fields shuffle
 	// between two runs of the same workflow is a diff nobody can read.
 	attrs := make([]any, 0, len(taskInputs.GetFields()))
@@ -1008,6 +1019,47 @@ func listMessageElement(
 // "wrong type" with "legitimately empty", which rejected every zero value a
 // workflow could supply: an empty string message, a count of 0, a flag set to
 // false.
+// setMapEntries writes a CEL map's entries into a protobuf map field.
+//
+// One implementation for the literal and the expression paths, and — more to the point
+// — the *same* conversion a scalar field uses. Each map path used to have its own
+// switch calling the typed getter for the field's kind directly, and a protobuf getter
+// answers the zero value for a value of some other kind rather than failing. So
+// `headers: {X-Count: 5}` sent the header as an empty string, and `fields: {code: 500}`
+// logged `code=`: the wrong thing, silently, in a request and a durable record.
+//
+// A key that cannot hold its value is now an error naming both, which is what the
+// equivalent scalar field has always done. There was never a reason for a value inside
+// a mapping to follow looser rules than the same value written beside a key.
+func setMapEntries(entries []*expr.MapValue_Entry, fieldDesc protoreflect.FieldDescriptor, m protoreflect.Map) error {
+	valueDesc := fieldDesc.MapValue()
+
+	for _, e := range entries {
+		key := e.GetKey().GetStringValue()
+
+		// A flowstate.v1.Value map carries whatever the author wrote, unconverted —
+		// the shape is the point, so there is nothing to check it against. Handled
+		// before the scalar path, which has no case for it.
+		if valueDesc.Kind() == protoreflect.MessageKind {
+			if e.GetValue().GetKind() == nil {
+				continue
+			}
+			held := &Value{Kind: &Value_Literal{Literal: e.GetValue()}}
+			m.Set(protoreflect.ValueOfString(key).MapKey(), protoreflect.ValueOfMessage(held.ProtoReflect()))
+
+			continue
+		}
+
+		converted, err := scalarFromLiteral(e.GetValue(), valueDesc)
+		if err != nil {
+			return fmt.Errorf("key %q: %w", key, err)
+		}
+		m.Set(protoreflect.ValueOfString(key).MapKey(), converted)
+	}
+
+	return nil
+}
+
 func scalarFromLiteral(lit *expr.Value, fieldDesc protoreflect.FieldDescriptor) (protoreflect.Value, error) {
 	switch fieldDesc.Kind() {
 	case protoreflect.StringKind:
@@ -1116,23 +1168,10 @@ func populateProtoMessageFromValueMap(ctx context.Context, input map[string]*Val
 			switch v := val.GetKind().(type) {
 			case *Value_Literal:
 				if mv, ok := v.Literal.GetKind().(*expr.Value_MapValue); ok {
-					for _, e := range mv.MapValue.Entries {
-						k := e.Key.GetStringValue()
-						switch fieldDesc.MapValue().Kind() {
-						case protoreflect.StringKind:
-							m.Set(protoreflect.ValueOfString(k).MapKey(), protoreflect.ValueOfString(e.Value.GetStringValue()))
-						case protoreflect.Int32Kind, protoreflect.Int64Kind:
-							m.Set(protoreflect.ValueOfString(k).MapKey(), protoreflect.ValueOfInt64(e.Value.GetInt64Value()))
-						case protoreflect.BoolKind:
-							m.Set(protoreflect.ValueOfString(k).MapKey(), protoreflect.ValueOfBool(e.Value.GetBoolValue()))
-						case protoreflect.MessageKind:
-							// Accept flowstate.v1.Value only.
-							if e.Value.GetKind() != nil {
-								vv := &Value{Kind: &Value_Literal{Literal: e.Value}}
-								m.Set(protoreflect.ValueOfString(k).MapKey(), protoreflect.ValueOfMessage(vv.ProtoReflect()))
-							}
-						}
+					if err := setMapEntries(mv.MapValue.GetEntries(), fieldDesc, m); err != nil {
+						return fmt.Errorf("field %q: %w", fieldName, err)
 					}
+
 					continue
 				}
 				return fmt.Errorf("expected map literal for field %q", fieldName)
@@ -1147,20 +1186,8 @@ func populateProtoMessageFromValueMap(ctx context.Context, input map[string]*Val
 					return fmt.Errorf("failed to convert CEL value: %w", err)
 				}
 				if mv, ok := pv.GetKind().(*expr.Value_MapValue); ok {
-					for _, e := range mv.MapValue.Entries {
-						k := e.Key.GetStringValue()
-						switch fieldDesc.MapValue().Kind() {
-						case protoreflect.StringKind:
-							m.Set(protoreflect.ValueOfString(k).MapKey(), protoreflect.ValueOfString(e.Value.GetStringValue()))
-						case protoreflect.Int32Kind, protoreflect.Int64Kind:
-							m.Set(protoreflect.ValueOfString(k).MapKey(), protoreflect.ValueOfInt64(e.Value.GetInt64Value()))
-						case protoreflect.BoolKind:
-							m.Set(protoreflect.ValueOfString(k).MapKey(), protoreflect.ValueOfBool(e.Value.GetBoolValue()))
-						case protoreflect.MessageKind:
-							// Allow flowstate.v1.Value as a map value in inputs if needed.
-							vv := &Value{Kind: &Value_Literal{Literal: e.Value}}
-							m.Set(protoreflect.ValueOfString(k).MapKey(), protoreflect.ValueOfMessage(vv.ProtoReflect()))
-						}
+					if err := setMapEntries(mv.MapValue.GetEntries(), fieldDesc, m); err != nil {
+						return fmt.Errorf("field %q: %w", fieldName, err)
 					}
 					continue
 				}

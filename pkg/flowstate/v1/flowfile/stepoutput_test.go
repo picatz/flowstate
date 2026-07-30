@@ -178,3 +178,74 @@ steps:
 	require.Empty(t, diagnose(t, src),
 		"a block step's outputs were checked against a task's descriptor, which it does not have")
 }
+
+// TestAToleratedStepsErrorOutputIsAllowed is the case this check refused for a whole
+// review cycle, and the reason is worth more than the fix.
+//
+// `error` comes from the step's *policy*, not from its task: when `continue_on_error:`
+// is set and the step fails, both drivers synthesise it in place of the task's outputs,
+// which is the whole point — a later step branches on it. Checking the task's
+// descriptor alone therefore reported a documented, working pattern as a mistake.
+//
+// Every exemption above was one this check's author designed and then tested. This one
+// belongs to a feature written by someone else, years apart, and only shows up where
+// the two *join*. Testing each half of a join and not the join is how a validator comes
+// to refuse files the engine runs.
+func TestAToleratedStepsErrorOutputIsAllowed(t *testing.T) {
+	t.Parallel()
+
+	tolerated := `
+name: t
+steps:
+  - id: risky
+    continue_on_error: true
+    http:
+      url: https://example.com
+  - id: report
+    echo:
+      message: ${steps.risky.error}
+`
+
+	require.Empty(t, diagnose(t, tolerated),
+		"a step read `error` from a step allowed to fail, which is what the policy is for")
+
+	// And without the policy it is still an unknown output, because then nothing
+	// produces it. The exemption is the policy's, not the name's.
+	untolerated := `
+name: t
+steps:
+  - id: risky
+    http:
+      url: https://example.com
+  - id: report
+    echo:
+      message: ${steps.risky.error}
+`
+
+	require.Contains(t, diagnose(t, untolerated), `step "risky" has no output "error"`,
+		"`error` was allowed on a step that cannot produce it")
+}
+
+// TestAToleratedStepListsTheErrorOutput checks the message, not only the verdict.
+//
+// An author who wrote `${steps.risky.reslt}` on a tolerated step and is shown a list
+// without `error` in it has been told something false about what is available — and the
+// next thing they need is often exactly that name.
+func TestAToleratedStepListsTheErrorOutput(t *testing.T) {
+	t.Parallel()
+
+	src := `
+name: t
+steps:
+  - id: risky
+    continue_on_error: true
+    log:
+      message: hi
+  - id: report
+    echo:
+      message: ${steps.risky.nonsense}
+`
+
+	require.Contains(t, diagnose(t, src), "error",
+		"a tolerated step's diagnostic did not mention the output its policy gives it")
+}
