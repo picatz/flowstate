@@ -78,7 +78,7 @@ func runTerminate(cmd *cobra.Command, args []string) error {
 // silently misses their own runs, which is why --all exists and why a partial
 // listing says so on stderr.
 func runList(cmd *cobra.Command, args []string) error {
-	format, err := resolveOutputFormat()
+	format, err := resolveOutputFormat(cmd)
 	if err != nil {
 		return err
 	}

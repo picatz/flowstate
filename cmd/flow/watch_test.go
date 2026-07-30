@@ -111,18 +111,21 @@ func plainSurface() (*ui.UI, *strings.Builder, *strings.Builder) {
 // watchCommandForTest builds the command runWatch expects, with its flags reset.
 //
 // The flags are package-level because cobra binds them there, so they are restored
-// rather than left set for whichever test runs next.
+// rather than left set for whichever test runs next. `--output` is not among them any
+// more: it is declared on the command and read back off it, so a test asks for a
+// format the way a caller does.
 func watchCommandForTest(t *testing.T) (*cobra.Command, *strings.Builder, *strings.Builder) {
 	t.Helper()
 
-	previousRunID, previousInterval, previousFormat := watchRunID, watchInterval, outputFormat
+	previousRunID, previousInterval := watchRunID, watchInterval
 	t.Cleanup(func() {
-		watchRunID, watchInterval, outputFormat = previousRunID, previousInterval, previousFormat
+		watchRunID, watchInterval = previousRunID, previousInterval
 	})
-	watchRunID, watchInterval, outputFormat = "", minWatchInterval, string(FormatText)
+	watchRunID, watchInterval = "", minWatchInterval
 
 	var out, errOut strings.Builder
 	cmd := &cobra.Command{}
+	addOutputFlag(cmd)
 	cmd.SetContext(t.Context())
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)
@@ -644,7 +647,7 @@ func TestRunNamesTheStartedRunToAMachine(t *testing.T) {
 
 	cmd, out, _ := watchCommandForTest(t)
 	watchInterval = time.Millisecond
-	outputFormat = string(FormatJSON)
+	require.NoError(t, cmd.Flags().Set("output", string(FormatJSON)))
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cmd.SetContext(ctx)

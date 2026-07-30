@@ -176,7 +176,7 @@ func runWorker(cmd *cobra.Command, args []string) error {
 // forever about a run that had stopped. Anything observable about following a run is
 // now decided in one place, which is the only way the two commands can agree.
 func runWorkflow(cmd *cobra.Command, args []string) error {
-	format, err := resolveOutputFormat()
+	format, err := resolveOutputFormat(cmd)
 	if err != nil {
 		return err
 	}
@@ -491,7 +491,7 @@ func runLSP(cmd *cobra.Command, args []string) error {
 // steps have side effects. This is the command that makes a Flowfile safe to
 // check.
 func runValidate(cmd *cobra.Command, args []string) error {
-	format, err := resolveOutputFormat()
+	format, err := resolveOutputFormat(cmd)
 	if err != nil {
 		return err
 	}
@@ -693,7 +693,7 @@ func writeFields(tw *tabwriter.Writer, label string, fields []v1.InputField) {
 func runTasks(cmd *cobra.Command, args []string) error {
 	out := cmd.OutOrStdout()
 
-	format, err := resolveOutputFormat()
+	format, err := resolveOutputFormat(cmd)
 	if err != nil {
 		return err
 	}

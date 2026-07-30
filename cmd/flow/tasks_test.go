@@ -15,12 +15,12 @@ import (
 func runTasksInto(t *testing.T, format string) string {
 	t.Helper()
 
-	old := outputFormat
-	t.Cleanup(func() { outputFormat = old })
-	outputFormat = format
-
 	var out bytes.Buffer
 	cmd := &cobra.Command{}
+	addOutputFlag(cmd)
+	if err := cmd.Flags().Set("output", format); err != nil {
+		t.Fatal(err)
+	}
 	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})
 
@@ -139,12 +139,12 @@ func TestTasksTextShowsWhatATaskTakes(t *testing.T) {
 // A caller who wrote --output yaml wants YAML, and quietly handing them a table
 // is a worse answer than saying no.
 func TestTasksRefusesAFormatItDoesNotHave(t *testing.T) {
-	old := outputFormat
-	t.Cleanup(func() { outputFormat = old })
-	outputFormat = "yaml"
-
 	var out bytes.Buffer
 	cmd := &cobra.Command{}
+	addOutputFlag(cmd)
+	if err := cmd.Flags().Set("output", "yaml"); err != nil {
+		t.Fatal(err)
+	}
 	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})
 

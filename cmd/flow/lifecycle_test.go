@@ -21,6 +21,11 @@ import (
 
 // lifecycleCommand builds the command the lifecycle verbs expect, with the
 // process-wide flags reset and restored.
+//
+// `--output` is no longer among them: it is declared on the command by
+// [addOutputFlag] and read back off it, so a test asks for a format the way a caller
+// does rather than by assigning to a package variable. The rest still are, and this
+// helper is what keeps them from leaking between tests until they follow.
 func lifecycleCommand(t *testing.T) (*cobra.Command, *strings.Builder, *strings.Builder) {
 	t.Helper()
 
@@ -28,21 +33,19 @@ func lifecycleCommand(t *testing.T) (*cobra.Command, *strings.Builder, *strings.
 		cancelRunID, terminateRunID, terminateWhy, listPageToken string
 		listPageSize                                             int32
 		listAll                                                  bool
-		outputFormat                                             string
-	}{cancelRunID, terminateRunID, terminateWhy, listPageToken, listPageSize, listAll, outputFormat}
+	}{cancelRunID, terminateRunID, terminateWhy, listPageToken, listPageSize, listAll}
 
 	t.Cleanup(func() {
 		cancelRunID, terminateRunID, terminateWhy = previous.cancelRunID, previous.terminateRunID, previous.terminateWhy
 		listPageToken, listPageSize, listAll = previous.listPageToken, previous.listPageSize, previous.listAll
-		outputFormat = previous.outputFormat
 	})
 
 	cancelRunID, terminateRunID, terminateWhy = "", "", ""
 	listPageToken, listPageSize, listAll = "", 0, false
-	outputFormat = string(FormatText)
 
 	var out, errOut strings.Builder
 	cmd := &cobra.Command{}
+	addOutputFlag(cmd)
 	cmd.SetContext(t.Context())
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)
@@ -340,7 +343,7 @@ func TestListJSONIsOneDocumentAConsumerCanIndex(t *testing.T) {
 	serveFake(t, fake)
 	cmd, out, errOut := lifecycleCommand(t)
 
-	outputFormat = string(FormatJSON)
+	require.NoError(t, cmd.Flags().Set("output", string(FormatJSON)))
 
 	require.NoError(t, runList(cmd, nil))
 
@@ -393,7 +396,7 @@ func TestListJSONLIsOneRunPerLine(t *testing.T) {
 	serveFake(t, fake)
 	cmd, out, _ := lifecycleCommand(t)
 
-	outputFormat = string(FormatJSONL)
+	require.NoError(t, cmd.Flags().Set("output", string(FormatJSONL)))
 	listAll = true
 
 	require.NoError(t, runList(cmd, nil))
@@ -437,7 +440,7 @@ func TestListRefusesAFormatItDoesNotHave(t *testing.T) {
 	serveFake(t, fake)
 	cmd, _, _ := lifecycleCommand(t)
 
-	outputFormat = "yaml"
+	require.NoError(t, cmd.Flags().Set("output", "yaml"))
 
 	err := runList(cmd, nil)
 	require.Error(t, err, "an unknown --output was accepted and something else was rendered")

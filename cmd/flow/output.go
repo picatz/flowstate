@@ -51,19 +51,35 @@ const (
 	FormatJSONL OutputFormat = "jsonl"
 )
 
-// outputFormat is the resolved --output flag.
-var outputFormat = string(FormatText)
-
 // outputFormats are the accepted values, in the order help lists them.
 var outputFormats = []OutputFormat{FormatText, FormatJSON, FormatJSONL}
 
-// resolveOutputFormat validates the flag.
+// resolveOutputFormat reads and validates the flag on the command being run.
+//
+// Read off the command rather than out of a package variable, which is what
+// `--output` used to be. pflag stores a flag's value in the FlagSet that declared
+// it, and every command gets its own from [newRootCommand] — so asking the command
+// is asking per-invocation state, while a package variable is one word shared by
+// six commands and written by *building* any of them.
+//
+// That write is not hypothetical: pflag stores a flag's default into its bound
+// pointer at declaration, so constructing the CLI mutated shared state. It has
+// already produced one data race under -race and hidden one silent bug, where a
+// declared default overwrote the value an environment variable had supplied.
 //
 // Refused rather than defaulted, because a caller who wrote --output yaml wants
 // YAML, and quietly handing them a table is a worse answer than saying no. The
 // message lists what is accepted, since that is the question they are about to ask.
-func resolveOutputFormat() (OutputFormat, error) {
-	format := OutputFormat(strings.ToLower(strings.TrimSpace(outputFormat)))
+func resolveOutputFormat(cmd *cobra.Command) (OutputFormat, error) {
+	// Empty where the command does not declare one, which resolves to text below
+	// rather than erroring: a verb with no `--output` has one rendering, and asking
+	// it for its format should answer that rather than fail.
+	requested, _ := cmd.Flags().GetString("output")
+	if strings.TrimSpace(requested) == "" {
+		requested = string(FormatText)
+	}
+
+	format := OutputFormat(strings.ToLower(strings.TrimSpace(requested)))
 	for _, accepted := range outputFormats {
 		if format == accepted {
 			return format, nil
@@ -76,7 +92,7 @@ func resolveOutputFormat() (OutputFormat, error) {
 	}
 
 	return "", fmt.Errorf("--output %q is not a format this understands; use one of %s",
-		outputFormat, strings.Join(names, ", "))
+		requested, strings.Join(names, ", "))
 }
 
 // Machine reports whether the format is for a program rather than a person.
@@ -93,7 +109,7 @@ func addOutputFlag(cmd *cobra.Command) {
 		names = append(names, string(accepted))
 	}
 
-	cmd.Flags().StringVarP(&outputFormat, "output", "o", string(FormatText),
+	cmd.Flags().StringP("output", "o", string(FormatText),
 		"how to render the answer: "+strings.Join(names, ", ")+". "+
 			"json and jsonl carry the server's own schema, so a field is addressable by name")
 
