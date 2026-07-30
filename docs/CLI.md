@@ -129,13 +129,39 @@ query succeeded, and what it reports is a failure.
 
 Anything the CLI can do interactively it can also do non-interactively, because the
 same task is done from a laptop and from a CI job. A terminal UI is an alternative
-presentation of a capability that already exists as plain output and flags, and it
-is entered deliberately, not by detecting that someone happens to have a TTY.
+presentation of a capability that already exists as plain output and flags — never
+the only way to reach one.
+
+Whether a terminal may be *detected* depends on what the surface changes:
+
+- A surface that changes **what a command does** — a picker that chooses the
+  argument, a form that supplies input, a prompt that decides — is entered
+  deliberately, by a flag or a subcommand. Detection there means the same invocation
+  does two different things depending on where it ran, which is the defect the
+  `--output` flag exists to avoid.
+- A surface that changes only **how the same information is presented** may follow
+  the terminal, on three conditions. The non-terminal shape has to be the same
+  command carrying the same information; a flag has to be able to ask for the plain
+  shape *on* a terminal, because a person reading with a screen reader or capturing
+  under `script(1)` must not be trapped by having a TTY; and an explicitly requested
+  `--output` format must win, since a document was asked for and a terminal was not.
+
+`flow watch` is the second kind, and the way it splits the streams is what makes the
+two shapes compose rather than compete: the live view is drawn on stderr and the
+outputs go to stdout, so one invocation shows progress on the terminal and pipes its
+answer to `jq`.
 
 Animation follows from the same reasoning. It exists to say "still working" during a
 wait whose length is not known, it stops the moment there is something to report,
 and it never appears where output is not a terminal. Nothing that is only decorative
-is worth a repaint.
+is worth a repaint — which is why a live view moves a number that answers a question
+(how long has this been going) rather than a spinner that answers none.
+
+Two rules about what such a view may claim, both of them the no-silent-caps rule
+from `CLAUDE.md` applied to a screen. A list cut to fit says how many it cut and how
+many there are, because a window that looks like a whole list is one a reader counts
+wrongly. And a view that stopped being able to reach the server says so, rather than
+becoming a still screen that cannot be told apart from a wedged one.
 
 ## What this means for a change
 

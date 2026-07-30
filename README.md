@@ -790,9 +790,10 @@ Run `flow <command> --help` for the full flags of any of these.
 | --- | --- |
 | `flow validate <file...>` | Check Flowfiles without executing them. Reports the line and column of each problem. |
 | `flow fix <path...>` | Rewrite Flowfiles from a retired spelling into the current one, preserving comments and formatting. `--check` reports and writes nothing, exiting non-zero if there is work. |
-| `flow run <file>` | Submit a workflow to a server, which runs it durably. |
+| `flow run <file>` | Submit a workflow to a server, which runs it durably, and follow the run until it finishes. |
 | `flow run local <file>` | Run a workflow in this process, with no server and no Temporal. Answers signal gates from `--signal name=json`. |
 | `flow get <id>` | Report what a run is doing, and its outputs if it finished. Status on stderr, outputs on stdout, so `flow get id \| jq` sees only the data. |
+| `flow watch <id>` | Follow a run until it finishes: a live view on a terminal, one line per change without one. Exits with the run's outcome. |
 | `flow list` | List your runs. |
 | `flow signal <id> <name>` | Deliver a signal to a run that is waiting, which is how a human approval reaches a workload. |
 | `flow cancel <id>` | Ask a run to stop, letting it clean up. |
@@ -802,9 +803,54 @@ Run `flow <command> --help` for the full flags of any of these.
 | `flow server` | Start the Flowstate API server that accepts workflows. |
 | `flow lsp` | Serve the Flowfile language server over stdin and stdout, for editor diagnostics. |
 
-`run`, `get`, `list`, `signal`, `cancel` and `terminate` talk to a server, and
-take `--address` (or `FLOWSTATE_ADDRESS`) to say which one. `run local` does not:
-it contacts nothing.
+`run`, `get`, `watch`, `list`, `signal`, `cancel` and `terminate` talk to a server,
+and take `--address` (or `FLOWSTATE_ADDRESS`) to say which one. `run local` does
+not: it contacts nothing.
+
+### Following a run
+
+`flow get` answers once. `flow watch` keeps answering until the run stops, which is
+the difference between asking what a workload is doing and watching it do it —
+`flow run` follows the same way, because it is the same code.
+
+Following adapts to where its output goes, and the two shapes are the same
+information rather than two features:
+
+- **On a terminal** it draws a live view that updates in place: the status, how long
+  it has been watched, and the steps that have finished, newest last.
+- **Without one** — a pipe, a redirect, a CI job — it prints one line per *change*.
+  Not per poll: a run that sits on one step for four minutes says nothing for four
+  minutes, rather than repeating itself 240 times.
+
+The live view is drawn on **stderr**, and the outputs go to stdout exactly as
+`flow get` writes them. So one invocation does both:
+
+```console
+$ flow watch flowstate-workflow-3f7c | jq .stepValues
+```
+
+`--output jsonl` turns it into an event stream — one document per change, the
+server's own schema, readable as it arrives, which is the shape a script or an agent
+wants:
+
+```console
+$ flow watch flowstate-workflow-3f7c -o jsonl \
+    | jq -c '{status, done: (.outputs.stepValues // {} | keys | length)}'
+```
+
+`--output json` writes the final state as one document instead. `--plain` asks for
+the line-per-change shape on a terminal, for a scrollable transcript or a screen
+reader.
+
+The exit code is the run's: zero when it completed, non-zero when it failed, was
+canceled, terminated, or timed out. So `flow watch id >/dev/null && ./promote.sh`
+behaves the way a shell reader expects. Stopping watching — `q`, `esc`, `ctrl+c` —
+does not stop the run, and exits zero, because an interrupted watch is not a failed
+workload.
+
+A brief outage is survived rather than fatal: a watch lasts as long as the run, and
+over an hour a server restart is close to certain. It says so on screen while the
+server is quiet, and gives up after 30 seconds of it.
 
 ### Stopping a run
 

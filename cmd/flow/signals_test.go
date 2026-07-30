@@ -216,6 +216,12 @@ type fakeWorkflowService struct {
 	getResponse *v1.GetResponse
 	getErr      error
 
+	// Starting a run, whose handler lives in watch_test.go beside the tests for
+	// following one.
+	gotRun      *v1.RunRequest
+	runResponse *v1.RunResponse
+	runErr      error
+
 	// The lifecycle verbs, whose handlers live in lifecycle_test.go.
 	gotCancel    *v1.CancelRequest
 	gotTerminate *v1.TerminateRequest

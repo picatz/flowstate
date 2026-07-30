@@ -1,0 +1,766 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"connectrpc.com/connect"
+	"github.com/spf13/cobra"
+	"github.com/stretchr/testify/require"
+
+	"github.com/picatz/flowstate/cmd/flow/internal/ui"
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+)
+
+// pollAnswer is one prepared reply.
+type pollAnswer struct {
+	response *v1.GetResponse
+	err      error
+}
+
+// scriptedPoller answers a prepared sequence and then repeats its last answer.
+//
+// Repeating rather than running out, because "the run is still RUNNING and stays
+// that way" is a real case — it is what a long workload looks like — and a poller
+// that panicked at the end of its script could not describe it.
+type scriptedPoller struct {
+	answers []pollAnswer
+	calls   int
+}
+
+func (p *scriptedPoller) Poll(context.Context) (*v1.GetResponse, error) {
+	answer := p.answers[min(p.calls, len(p.answers)-1)]
+	p.calls++
+
+	return answer.response, answer.err
+}
+
+// runningPoll and finishedPoll are the two answers most of these tests need.
+func runningPoll(steps ...string) pollAnswer {
+	return pollAnswer{response: response(v1.RunResponse_STATUS_RUNNING, steps...)}
+}
+
+func finishedPoll(steps ...string) pollAnswer {
+	return pollAnswer{response: response(v1.RunResponse_STATUS_COMPLETED, steps...)}
+}
+
+// response builds a GetResponse with the given status and completed steps.
+func response(status v1.RunResponse_Status, steps ...string) *v1.GetResponse {
+	msg := &v1.GetResponse{
+		WorkflowId: "flowstate-workflow-3f7c",
+		RunId:      "0198f1e2-0000-7000-8000-000000000000",
+		Status:     status,
+	}
+
+	if len(steps) > 0 {
+		values := make(map[string]*v1.Node_Outputs, len(steps))
+		for _, id := range steps {
+			values[id] = &v1.Node_Outputs{
+				NamedValues: map[string]*v1.Value{"result": v1.NewLiteral("ok")},
+			}
+		}
+		msg.Kind = &v1.GetResponse_Outputs{Outputs: &v1.Workflow_StepOutputs{StepValues: values}}
+	}
+
+	return msg
+}
+
+// failedResponse builds a run that ended badly, carrying its message.
+func failedResponse(status v1.RunResponse_Status, message string) *v1.GetResponse {
+	msg := response(status)
+	msg.Kind = &v1.GetResponse_Error{Error: &v1.RunResponse_Error{Message: message}}
+
+	return msg
+}
+
+// transientRefusal and permanentRefusal build the two classes, through the same
+// classification clientPoller applies — so a test cannot accidentally describe a
+// refusal as transient that the real poller would call permanent.
+func transientRefusal() error {
+	return classifyPollError("flowstate-workflow-3f7c",
+		connect.NewError(connect.CodeUnavailable, errors.New("connection refused")))
+}
+
+func permanentRefusal() error {
+	return classifyPollError("flowstate-workflow-3f7c",
+		connect.NewError(connect.CodeNotFound, errors.New("no such run")))
+}
+
+// plainSurface is a watch surface writing into buffers, which is the non-terminal
+// shape.
+func plainSurface() (*ui.UI, *strings.Builder, *strings.Builder) {
+	var out, errOut strings.Builder
+
+	return ui.Plain(&out, &errOut), &out, &errOut
+}
+
+// watchCommandForTest builds the command runWatch expects, with its flags reset.
+//
+// The flags are package-level because cobra binds them there, so they are restored
+// rather than left set for whichever test runs next.
+func watchCommandForTest(t *testing.T) (*cobra.Command, *strings.Builder, *strings.Builder) {
+	t.Helper()
+
+	previousRunID, previousInterval, previousFormat := watchRunID, watchInterval, outputFormat
+	t.Cleanup(func() {
+		watchRunID, watchInterval, outputFormat = previousRunID, previousInterval, previousFormat
+	})
+	watchRunID, watchInterval, outputFormat = "", minWatchInterval, string(FormatText)
+
+	var out, errOut strings.Builder
+	cmd := &cobra.Command{}
+	cmd.SetContext(t.Context())
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+
+	return cmd, &out, &errOut
+}
+
+// TestWatchReportsOnlyChanges is the whole difference from a `flow get` loop.
+//
+// A run that sits on one step for four minutes should produce four minutes of
+// silence, not 240 identical lines. Asserted by counting the lines a stable run
+// produces rather than by inspecting one of them.
+func TestWatchReportsOnlyChanges(t *testing.T) {
+	poller := &scriptedPoller{answers: []pollAnswer{
+		runningPoll(),
+		runningPoll(),
+		runningPoll(),
+		runningPoll("checkout"),
+		runningPoll("checkout"),
+		runningPoll("checkout"),
+		finishedPoll("checkout", "build"),
+	}}
+	surface, _, errOut := plainSurface()
+
+	require.NoError(t, followPlainly(t.Context(), surface, FormatText, poller, time.Millisecond,
+		"flowstate-workflow-3f7c"))
+
+	lines := reportedLines(errOut.String())
+	require.Len(t, lines, 3,
+		"one line per change is the point; got one per poll, or missed a change:\n%s", errOut.String())
+
+	require.Contains(t, lines[0], "RUNNING")
+	require.NotContains(t, lines[0], "checkout", "a step reported before it had produced anything")
+	require.Contains(t, lines[1], "checkout")
+	require.Contains(t, lines[2], "COMPLETED")
+	require.Contains(t, lines[2], "build")
+}
+
+// reportedLines splits the progress account into lines, dropping the trailing empty
+// one.
+func reportedLines(s string) []string {
+	trimmed := strings.TrimSuffix(s, "\n")
+	if trimmed == "" {
+		return nil
+	}
+
+	return strings.Split(trimmed, "\n")
+}
+
+// TestWatchReportsTheFirstAnswerAsAChange holds honest the reasoning that lets absorb
+// do without a flag saying which answer is the first.
+//
+// The claim is that the first answer to get past the UNSPECIFIED guard necessarily
+// differs from the zero state, because the zero value of status *is* UNSPECIFIED. So
+// both halves are asserted: that the premise is still true of the generated enum, and
+// that an answer carrying nothing but a status — no run id, no outputs, everything
+// else at the zero value — is reported as a change on the strength of the status
+// alone.
+//
+// A mutation removing the status comparison passes every other test here, because
+// every response they build carries a run id too.
+func TestWatchReportsTheFirstAnswerAsAChange(t *testing.T) {
+	require.Equal(t, v1.RunResponse_STATUS_UNSPECIFIED, v1.RunResponse_Status(0),
+		"the zero status is no longer UNSPECIFIED, so a first answer can now match the zero state "+
+			"and absorb needs to know which answer is the first after all")
+
+	state := newWatchState("flowstate-workflow-3f7c", time.Second)
+
+	bare := &v1.GetResponse{Status: v1.RunResponse_STATUS_RUNNING}
+	require.True(t, state.absorb(bare, nil).Changed,
+		"the first answer went unreported, so a reader was told nothing until a step finished")
+
+	// And the same answer again is not news.
+	require.False(t, state.absorb(bare, nil).Changed)
+}
+
+// TestWatchStopsOnEveryTerminalStatusAndKeepsGoingOtherwise covers the table rather
+// than one row of it.
+//
+// A status added to the schema and not added to terminalStatus makes a watch hang
+// forever on a run that has finished, which reads as a slow workload rather than a
+// bug. Enumerating the generated enum means a new status fails this test rather than
+// shipping.
+func TestWatchStopsOnEveryTerminalStatusAndKeepsGoingOtherwise(t *testing.T) {
+	terminal := map[v1.RunResponse_Status]bool{
+		v1.RunResponse_STATUS_COMPLETED:  true,
+		v1.RunResponse_STATUS_FAILED:     true,
+		v1.RunResponse_STATUS_CANCELED:   true,
+		v1.RunResponse_STATUS_TERMINATED: true,
+		v1.RunResponse_STATUS_TIMED_OUT:  true,
+	}
+
+	names := v1.RunResponse_Status(0).Descriptor().Values()
+	for i := range names.Len() {
+		status := v1.RunResponse_Status(names.Get(i).Number())
+
+		t.Run(statusLabel(status), func(t *testing.T) {
+			state := newWatchState("flowstate-workflow-3f7c", time.Second)
+			progress := state.absorb(response(status), nil)
+
+			switch {
+			case status == v1.RunResponse_STATUS_UNSPECIFIED:
+				// Not "still running": a status the schema forbids is a server that
+				// has not answered the question, and waiting on it waits forever.
+				require.True(t, progress.Done, "a watch waited on a status the schema forbids")
+				require.Error(t, progress.Err)
+				require.True(t, state.gaveUp)
+
+			case terminal[status]:
+				require.True(t, progress.Done, "a watch kept polling a run that had finished")
+				require.NoError(t, progress.Err)
+
+			default:
+				require.False(t, progress.Done, "a watch stopped on a run that was still going")
+			}
+		})
+	}
+}
+
+// TestWatchOutcomeIsTheRunsOutcome is what makes `flow watch x && ./promote.sh`
+// safe.
+func TestWatchOutcomeIsTheRunsOutcome(t *testing.T) {
+	for _, tc := range []struct {
+		status v1.RunResponse_Status
+		fails  bool
+		word   string
+	}{
+		{status: v1.RunResponse_STATUS_COMPLETED, fails: false},
+		{status: v1.RunResponse_STATUS_FAILED, fails: true, word: "failed"},
+		{status: v1.RunResponse_STATUS_CANCELED, fails: true, word: "canceled"},
+		{status: v1.RunResponse_STATUS_TERMINATED, fails: true, word: "terminated"},
+		{status: v1.RunResponse_STATUS_TIMED_OUT, fails: true, word: "timed out"},
+		// Watching stopped before the run did, so there is no outcome to report.
+		{status: v1.RunResponse_STATUS_RUNNING, fails: false},
+	} {
+		t.Run(statusLabel(tc.status), func(t *testing.T) {
+			err := outcomeError(tc.status, "flowstate-workflow-3f7c", "")
+			if !tc.fails {
+				require.NoError(t, err)
+
+				return
+			}
+
+			require.Error(t, err)
+			// The word rather than "failed" for everything: "terminated" and "timed
+			// out" are different things to go and look at.
+			require.ErrorContains(t, err, tc.word)
+			require.ErrorContains(t, err, "flowstate-workflow-3f7c")
+		})
+	}
+}
+
+// TestWatchOutcomeCarriesTheFailureMessage checks that the reason travels with the
+// exit code, so a CI log has it without a second command.
+func TestWatchOutcomeCarriesTheFailureMessage(t *testing.T) {
+	poller := &scriptedPoller{answers: []pollAnswer{
+		{response: failedResponse(v1.RunResponse_STATUS_FAILED, `step "deploy" could not reach the registry`)},
+	}}
+	surface, out, _ := plainSurface()
+
+	err := followPlainly(t.Context(), surface, FormatText, poller, time.Millisecond,
+		"flowstate-workflow-3f7c")
+
+	require.ErrorContains(t, err, "failed")
+	require.ErrorContains(t, err, "could not reach the registry")
+	require.Empty(t, out.String(), "a failed run wrote outputs it does not have")
+}
+
+// TestWatchSurvivesAnOutageAndSaysSo is why a watch is worth having over a shell
+// loop: it lasts as long as the run, and over an hour a dropped connection is close
+// to certain.
+func TestWatchSurvivesAnOutageAndSaysSo(t *testing.T) {
+	poller := &scriptedPoller{answers: []pollAnswer{
+		runningPoll(),
+		{err: transientRefusal()},
+		{err: transientRefusal()},
+		finishedPoll("checkout"),
+	}}
+	surface, _, errOut := plainSurface()
+
+	require.NoError(t, followPlainly(t.Context(), surface, FormatText, poller, time.Millisecond,
+		"flowstate-workflow-3f7c"),
+		"a watch died on a transient refusal it should have survived")
+
+	account := errOut.String()
+	require.Contains(t, account, "UNREACHABLE",
+		"the server went quiet and the reader was left watching a still screen")
+	require.Contains(t, account, "connection refused",
+		"the outage was announced without saying what went wrong")
+	require.Contains(t, account, "COMPLETED", "the recovery was not reported")
+
+	lines := reportedLines(account)
+	require.Len(t, lines, 3,
+		"an outage that persists is not news each second:\n%s", account)
+}
+
+// TestWatchGivesUpAfterTheOutageAllowance is the other half: tolerating a blip must
+// not mean tolerating an outage forever.
+//
+// The bound is asserted as *reached* as well as not exceeded. `calls <= attempts` is
+// also satisfied by a watch that gave up on the first refusal, which is the bug this
+// tolerance exists to prevent.
+func TestWatchGivesUpAfterTheOutageAllowance(t *testing.T) {
+	const interval = time.Second
+
+	state := newWatchState("flowstate-workflow-3f7c", interval)
+	attempts := state.attempts()
+	require.Equal(t, int(outageAllowance/interval), attempts)
+
+	var progress watchProgress
+	calls := 0
+	for !progress.Done {
+		progress = state.absorb(nil, transientRefusal())
+		calls++
+		require.LessOrEqual(t, calls, attempts+1, "a watch never gave up on an unreachable server")
+	}
+
+	require.Equal(t, attempts, calls, "a watch gave up before spending its allowance")
+	require.ErrorContains(t, progress.Err, "gave up")
+	require.ErrorContains(t, progress.Err, outageAllowance.String(),
+		"the allowance was reported as an attempt count rather than as the time somebody acts on")
+	require.True(t, state.gaveUp)
+}
+
+// TestWatchDoesNotRetryAPermanentRefusal writes the negative direction of the
+// tolerance above.
+//
+// Asserting only that a transient refusal is survived is a functionality test in a
+// robustness test's clothes: a poller that retried *everything* would pass it. What
+// matters is that a mistyped id is refused at once rather than after thirty seconds
+// of a watch saying nothing useful.
+func TestWatchDoesNotRetryAPermanentRefusal(t *testing.T) {
+	poller := &scriptedPoller{answers: []pollAnswer{{err: permanentRefusal()}}}
+	surface, _, _ := plainSurface()
+
+	err := followPlainly(t.Context(), surface, FormatText, poller, time.Millisecond,
+		"flowstate-workflow-3f7c")
+
+	require.ErrorContains(t, err, "check the id")
+	require.Equal(t, 1, poller.calls,
+		"a refusal that will not become acceptable was asked about %d times", poller.calls)
+}
+
+// TestWatchAttemptsAreDerivedFromTheInterval checks that choosing a faster interval
+// buys more attempts rather than a shorter fuse.
+//
+// The allowance is the promise — thirty seconds of an unreachable server — and it
+// has to hold across the whole range of intervals somebody can ask for, including
+// one so long that the allowance would otherwise permit no second try at all.
+func TestWatchAttemptsAreDerivedFromTheInterval(t *testing.T) {
+	for _, tc := range []struct {
+		interval time.Duration
+		want     int
+	}{
+		{interval: minWatchInterval, want: int(outageAllowance / minWatchInterval)},
+		{interval: time.Second, want: int(outageAllowance / time.Second)},
+		{interval: 10 * time.Second, want: minWatchAttempts},
+		// An interval longer than the whole allowance still gets a retry, because
+		// one refusal is not evidence of an outage at any interval.
+		{interval: time.Hour, want: minWatchAttempts},
+		// Nothing sets this — clampWatchInterval forbids it — but a state machine
+		// that divides by its interval must not divide by zero.
+		{interval: 0, want: minWatchAttempts},
+	} {
+		t.Run(tc.interval.String(), func(t *testing.T) {
+			require.Equal(t, tc.want, newWatchState("w", tc.interval).attempts())
+		})
+	}
+}
+
+// TestWatchSeparatesOutputsFromProgress is the property that makes
+// `flow watch x | jq` work, and it is the same one `flow get` holds.
+func TestWatchSeparatesOutputsFromProgress(t *testing.T) {
+	poller := &scriptedPoller{answers: []pollAnswer{runningPoll(), finishedPoll("greet")}}
+	surface, out, errOut := plainSurface()
+
+	require.NoError(t, followPlainly(t.Context(), surface, FormatText, poller, time.Millisecond,
+		"flowstate-workflow-3f7c"))
+
+	// Everything on stdout has to parse, or a pipe into jq breaks.
+	var outputs map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out.String()), &outputs),
+		"stdout was not one JSON document: %q", out.String())
+	require.Contains(t, outputs, "stepValues")
+
+	require.NotContains(t, out.String(), "COMPLETED",
+		"the progress account was written to stdout, which corrupts anything piping the outputs")
+	require.Contains(t, errOut.String(), "COMPLETED")
+}
+
+// TestWatchJSONLIsOneDocumentPerChange checks the event-stream shape a program or an
+// agent reads as it arrives.
+func TestWatchJSONLIsOneDocumentPerChange(t *testing.T) {
+	poller := &scriptedPoller{answers: []pollAnswer{
+		runningPoll(),
+		runningPoll(),
+		runningPoll("checkout"),
+		finishedPoll("checkout", "build"),
+	}}
+	surface, out, errOut := plainSurface()
+
+	require.NoError(t, followPlainly(t.Context(), surface, FormatJSONL, poller, time.Millisecond,
+		"flowstate-workflow-3f7c"))
+
+	lines := reportedLines(out.String())
+	require.Len(t, lines, 3, "one document per change:\n%s", out.String())
+
+	for _, line := range lines {
+		var document map[string]any
+		require.NoError(t, json.Unmarshal([]byte(line), &document), "not a document: %q", line)
+		// The server's own field names, so a reader indexes a documented schema
+		// rather than a shape invented for the occasion.
+		require.Contains(t, document, "workflowId")
+		require.Contains(t, document, "status")
+	}
+
+	require.Empty(t, errOut.String(),
+		"prose was written alongside a machine format, which a reader would have to parse")
+}
+
+// TestWatchJSONIsOneDocumentAtTheEnd checks that the single-document form writes
+// nothing until the last change is known.
+func TestWatchJSONIsOneDocumentAtTheEnd(t *testing.T) {
+	poller := &scriptedPoller{answers: []pollAnswer{
+		runningPoll(),
+		runningPoll("checkout"),
+		finishedPoll("checkout", "build"),
+	}}
+	surface, out, _ := plainSurface()
+
+	require.NoError(t, followPlainly(t.Context(), surface, FormatJSON, poller, time.Millisecond,
+		"flowstate-workflow-3f7c"))
+
+	var document map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out.String()), &document),
+		"stdout was not one document: %q", out.String())
+	require.Equal(t, "STATUS_COMPLETED", document["status"])
+}
+
+// TestWatchWritesNothingFinalWhenItGaveUp checks that a watch which lost the server
+// does not present the last state it happened to see as the answer.
+//
+// A program reading --output json would otherwise conclude from a document saying
+// STATUS_RUNNING that the run was still going, when what actually happened is that
+// nobody knows.
+func TestWatchWritesNothingFinalWhenItGaveUp(t *testing.T) {
+	// One attempt's worth of allowance is impossible to ask for, so the state is
+	// driven directly and the shape's ending is what is under test.
+	state := newWatchState("flowstate-workflow-3f7c", time.Second)
+	state.absorb(response(v1.RunResponse_STATUS_RUNNING), nil)
+	state.stop(errors.New("the server stopped answering"))
+
+	for _, format := range []OutputFormat{FormatText, FormatJSON, FormatJSONL} {
+		t.Run(string(format), func(t *testing.T) {
+			surface, out, _ := plainSurface()
+
+			require.ErrorContains(t, finishWatch(surface, format, state), "stopped answering")
+			require.Empty(t, out.String(),
+				"a watch that lost the server wrote %q as though it were the answer", out.String())
+		})
+	}
+}
+
+// interruptedPoller stops the watch from inside a poll, which is what ctrl+c does to
+// one waiting on a run that is still going.
+//
+// Two shapes of that, because they take different paths through the loop: cancelled
+// between polls, and cancelled *during* one — where the request fails with a
+// cancelled context and connect reports it as a refusal like any other.
+type interruptedPoller struct {
+	cancel context.CancelFunc
+
+	// refuse makes the interrupted poll fail, rather than answering and leaving the
+	// cancellation to be noticed afterwards.
+	refuse bool
+
+	calls int
+}
+
+func (p *interruptedPoller) Poll(ctx context.Context) (*v1.GetResponse, error) {
+	p.calls++
+	if p.calls < 2 {
+		return response(v1.RunResponse_STATUS_RUNNING), nil
+	}
+
+	p.cancel()
+
+	if p.refuse {
+		// What connect returns for a request whose context went away underneath it.
+		return nil, classifyPollError("flowstate-workflow-3f7c",
+			connect.NewError(connect.CodeCanceled, ctx.Err()))
+	}
+
+	return response(v1.RunResponse_STATUS_RUNNING), nil
+}
+
+// TestWatchStopsWhenTheWatcherDoesRatherThanWhenTheRunDoes checks that ctrl+c on a
+// run that is still going is not reported as the run's outcome.
+//
+// A pipeline that treats an interrupted watch as a failed workload has a false
+// negative it will act on — and the interrupted-mid-poll case is the one that gets
+// there by accident, because CodeCanceled is a refusal and a refusal is how a watch
+// learns the server has stopped answering.
+func TestWatchStopsWhenTheWatcherDoesRatherThanWhenTheRunDoes(t *testing.T) {
+	for name, refuse := range map[string]bool{
+		"cancelled between polls": false,
+		"cancelled during a poll": true,
+	} {
+		t.Run(name, func(t *testing.T) {
+			surface, out, _ := plainSurface()
+
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			poller := &interruptedPoller{cancel: cancel, refuse: refuse}
+
+			require.NoError(t, followPlainly(ctx, surface, FormatText, poller, time.Millisecond,
+				"flowstate-workflow-3f7c"),
+				"an interrupted watch was reported as a failed run")
+			require.Empty(t, out.String(), "a run still going wrote outputs it does not have")
+		})
+	}
+}
+
+// TestWatchDrawsNoViewWhenAFormatWasAskedFor checks the precedence between the flag
+// and the terminal.
+//
+// A view drawn over somebody's requested JSON is this command guessing against a
+// flag, which is the mistake --output exists to prevent. Asserted with the surface
+// claiming a terminal, because that is the only configuration where the two answers
+// differ.
+func TestWatchDrawsNoViewWhenAFormatWasAskedFor(t *testing.T) {
+	for _, format := range []OutputFormat{FormatJSON, FormatJSONL} {
+		t.Run(string(format), func(t *testing.T) {
+			poller := &scriptedPoller{answers: []pollAnswer{finishedPoll("greet")}}
+			surface, out, _ := plainSurface()
+			surface.ErrCaps.TTY = true
+
+			require.NoError(t, watchRun(t.Context(), surface, format, poller, time.Millisecond,
+				"flowstate-workflow-3f7c"))
+
+			require.Contains(t, out.String(), "stepValues")
+			require.NotContains(t, out.String(), "\x1b",
+				"a live view was drawn over a requested document")
+		})
+	}
+}
+
+// Run implements [flowstatev1connect.WorkflowServiceHandler].
+//
+// Defined on the same fake as every other verb, whose fields live in signals_test.go:
+// one stand-in server covers the whole service.
+func (f *fakeWorkflowService) Run(_ context.Context, req *connect.Request[v1.RunRequest]) (*connect.Response[v1.RunResponse], error) {
+	f.gotRun = req.Msg
+	if f.runErr != nil {
+		return nil, f.runErr
+	}
+
+	return connect.NewResponse(f.runResponse), nil
+}
+
+// TestWatchPlainForcesLinesOnATerminal checks the escape hatch that makes detecting a
+// terminal safe.
+//
+// Somebody who wants a scrollable transcript, is capturing under `script(1)`, or is
+// reading with a screen reader a repainting view fights has to be able to ask. Without
+// that, a terminal is a trap — and it can only be checked with the surface claiming
+// one, because that is the configuration where the flag changes the answer.
+func TestWatchPlainForcesLinesOnATerminal(t *testing.T) {
+	previous := watchPlain
+	t.Cleanup(func() { watchPlain = previous })
+	watchPlain = true
+
+	poller := &scriptedPoller{answers: []pollAnswer{runningPoll(), finishedPoll("greet")}}
+	surface, out, errOut := plainSurface()
+	surface.ErrCaps.TTY = true
+
+	require.NoError(t, watchRun(t.Context(), surface, FormatText, poller, time.Millisecond,
+		"flowstate-workflow-3f7c"))
+
+	require.Len(t, reportedLines(errOut.String()), 2,
+		"--plain did not produce one line per change:\n%s", errOut.String())
+	require.NotContains(t, errOut.String(), "q stops watching",
+		"a live view was drawn despite --plain")
+	require.Contains(t, out.String(), "stepValues")
+}
+
+// TestRunFollowsToAnyTerminalStatus is a regression test for a loop that could not
+// end.
+//
+// `flow run` used to poll for COMPLETED and FAILED and treat everything else as
+// "still going", so a canceled, terminated, or timed-out run left it printing "still
+// going" forever about a run that had stopped. It follows through the same code
+// `flow watch` uses now, and this asserts the statuses that used to be invisible.
+func TestRunFollowsToAnyTerminalStatus(t *testing.T) {
+	for _, tc := range []struct {
+		status v1.RunResponse_Status
+		fails  bool
+		word   string
+	}{
+		{status: v1.RunResponse_STATUS_COMPLETED, fails: false},
+		{status: v1.RunResponse_STATUS_CANCELED, fails: true, word: "canceled"},
+		{status: v1.RunResponse_STATUS_TERMINATED, fails: true, word: "terminated"},
+		{status: v1.RunResponse_STATUS_TIMED_OUT, fails: true, word: "timed out"},
+	} {
+		t.Run(statusLabel(tc.status), func(t *testing.T) {
+			fake := &fakeWorkflowService{
+				runResponse: &v1.RunResponse{
+					WorkflowId: "flowstate-workflow-3f7c",
+					RunId:      "0198f1e2-0000-7000-8000-000000000000",
+					Status:     v1.RunResponse_STATUS_RUNNING,
+				},
+				getResponse: response(tc.status, "hello"),
+			}
+			serveFake(t, fake)
+			cmd, out, errOut := watchCommandForTest(t)
+			watchInterval = time.Millisecond
+
+			err := runWorkflow(cmd, []string{"../../examples/hello-world/workflow.yaml"})
+
+			require.NotNil(t, fake.gotRun, "the workload was never started")
+
+			// Following is deliberately not pinned to the attempt just started: a
+			// workload that continues as new gets a fresh run id, and a watch pinned
+			// to the first would report a run that has already handed over.
+			require.Nil(t, fake.gotGet.RunId,
+				"the follow-up was pinned to the first attempt, which a continue-as-new leaves behind")
+
+			// Said as soon as the run starts, because following is where somebody
+			// might stop paying attention, and the id is how they come back.
+			require.Contains(t, errOut.String(), "flow watch flowstate-workflow-3f7c")
+
+			if !tc.fails {
+				require.NoError(t, err)
+				require.Contains(t, out.String(), "hello",
+					"a completed run did not write its outputs to stdout")
+
+				return
+			}
+
+			require.Error(t, err, "a run that stopped was followed forever")
+			require.ErrorContains(t, err, tc.word)
+		})
+	}
+}
+
+// itself on every redraw.
+//
+// Protobuf maps have no iteration order and Go randomizes its own, so an unsorted
+// list reads as though the run were going backwards. Repeated because a single call
+// on an unsorted implementation is right by luck often enough to pass.
+func TestCompletedStepsIsOrderedTheSameEveryTime(t *testing.T) {
+	msg := response(v1.RunResponse_STATUS_RUNNING,
+		"checkout", "build", "test", "package", "sign", "deploy", "verify")
+	want := []string{"build", "checkout", "deploy", "package", "sign", "test", "verify"}
+
+	for range 200 {
+		require.Equal(t, want, completedSteps(msg))
+	}
+}
+
+// TestClampWatchIntervalRaisesRatherThanRefuses checks that a smaller number is
+// honoured up to the floor rather than rejected.
+//
+// Refusing `--interval 10ms` teaches nothing; asking a server forty times a second
+// is the outcome that matters.
+func TestClampWatchIntervalRaisesRatherThanRefuses(t *testing.T) {
+	require.Equal(t, minWatchInterval, clampWatchInterval(10*time.Millisecond))
+	require.Equal(t, minWatchInterval, clampWatchInterval(0))
+	require.Equal(t, minWatchInterval, clampWatchInterval(-time.Second))
+	require.Equal(t, 5*time.Second, clampWatchInterval(5*time.Second))
+}
+
+// TestWatchRefusesARunIDThatIsNotAUUIDBeforeWatching checks that a malformed flag is
+// refused in the same breath `flow get` refuses it, rather than on the first poll
+// several hundred milliseconds into a live view.
+func TestWatchRefusesARunIDThatIsNotAUUIDBeforeWatching(t *testing.T) {
+	fake := &fakeWorkflowService{}
+	serveFake(t, fake)
+	cmd, _, _ := watchCommandForTest(t)
+
+	watchRunID = "the-latest-one"
+
+	require.Error(t, runWatch(cmd, []string{"flowstate-workflow-3f7c"}))
+	require.Nil(t, fake.gotGet, "an invalid run id was sent anyway")
+}
+
+// TestClientPollerAsksWhatGetAsks is the one thing a fake poller cannot check.
+//
+// Everything above establishes that the state machine and both shapes behave; none
+// of it establishes that `Poll` sends the request `flow get` sends, which is the
+// only reason to believe the fake describes the real thing.
+func TestClientPollerAsksWhatGetAsks(t *testing.T) {
+	fake := &fakeWorkflowService{
+		getResponse: response(v1.RunResponse_STATUS_RUNNING, "checkout"),
+	}
+	serveFake(t, fake)
+
+	runID := "0198f1e2-0000-7000-8000-000000000000"
+	poller := clientPoller{workflowID: "flowstate-workflow-3f7c", runID: runID}
+
+	got, err := poller.Poll(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, v1.RunResponse_STATUS_RUNNING, got.GetStatus())
+	require.Equal(t, []string{"checkout"}, completedSteps(got))
+
+	require.Equal(t, "flowstate-workflow-3f7c", fake.gotGet.GetWorkflowId())
+	require.Equal(t, runID, fake.gotGet.GetRunId())
+}
+
+// TestClientPollerLeavesAnUnsetRunIDAbsent checks that unset means "whichever
+// attempt is current" rather than an empty string the schema refuses for not being a
+// UUID.
+func TestClientPollerLeavesAnUnsetRunIDAbsent(t *testing.T) {
+	fake := &fakeWorkflowService{getResponse: response(v1.RunResponse_STATUS_RUNNING)}
+	serveFake(t, fake)
+
+	_, err := clientPoller{workflowID: "flowstate-workflow-3f7c"}.Poll(t.Context())
+	require.NoError(t, err)
+	require.Nil(t, fake.gotGet.RunId, "an empty run id was sent instead of none at all")
+}
+
+// TestClientPollerClassifiesRefusals checks the classification against the real
+// transport, because it is what decides whether a watch waits out its allowance or
+// reports at once.
+func TestClientPollerClassifiesRefusals(t *testing.T) {
+	for _, tc := range []struct {
+		code      connect.Code
+		transient bool
+	}{
+		{code: connect.CodeUnavailable, transient: true},
+		{code: connect.CodeInternal, transient: true},
+		{code: connect.CodeNotFound, transient: false},
+		{code: connect.CodeUnauthenticated, transient: false},
+		{code: connect.CodePermissionDenied, transient: false},
+		{code: connect.CodeInvalidArgument, transient: false},
+	} {
+		t.Run(tc.code.String(), func(t *testing.T) {
+			fake := &fakeWorkflowService{
+				getErr: connect.NewError(tc.code, errors.New("refused")),
+			}
+			serveFake(t, fake)
+
+			_, err := clientPoller{workflowID: "flowstate-workflow-3f7c"}.Poll(t.Context())
+			require.Error(t, err)
+
+			var transient transientError
+			require.Equal(t, tc.transient, errors.As(err, &transient),
+				"%s was classified as transient=%v", tc.code, !tc.transient)
+		})
+	}
+}
