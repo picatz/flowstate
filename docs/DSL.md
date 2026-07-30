@@ -1117,14 +1117,22 @@ step is a span with start, end, attempts, outcome, tenant, and queue — that *i
 the history. So traces and metrics are **projections of recorded truth**, emitted
 by the engine and worker — OTel spans per step, engine metrics for durations,
 outcomes, retries, queue latency — ambient, requiring nothing in any file, and
-correct by construction: derived data cannot double-count a retry and can even be
-computed retroactively for runs that finished before the exporter existed.
+honest about retries by construction: a step that ran three times is one span
+with `attempts=3`, because the projection reads what happened rather than firing
+when it happens. Every derived point also carries a stable identity — run id,
+step id, attempt — so an exporter that crashes and re-reads history re-emits
+*the same point*, deduplicable by key at any sink; its delivery is at-least-once
+like every exporter's, but nothing about the data is lost or doubled by saying
+it twice. And it can be computed retroactively, for runs that finished before
+the exporter existed.
 
 A `metric:` task is **refused**, and the reason is load-bearing rather than
 taste: activities are at-least-once, so a counter incremented inside a step
-double-counts on every retry, and metrics backends have no idempotency to lean
-on. An imperative emission from inside a run is the one shape that *cannot* be
-made exactly-once; a projection from history is exactly-once by construction.
+fires again on every retry — and an imperative increment carries no identity, so
+no sink can tell the retry from a real second event. A projected point can
+always be deduplicated, because history gives it a key; an emitted increment can
+never be, because nothing does. That asymmetry, not a preference, is the
+refusal.
 Business dimensions ride the planned label/search-attribute surface and Phase 2's
 typed outputs — any metric someone wants is then a query over visibility and
 history, not a side effect an author remembered to fire.
@@ -1156,19 +1164,33 @@ it, and they are mostly one decision applied five times.
 ### Every command is a projection of an RPC
 
 `flow` is a thin client of the same Connect services everything else speaks —
-`WorkflowService` today, the catalog and plugin services as they land. The rule:
-**a capability is an RPC before it is a command, and a command that cannot be
-expressed as one names a missing RPC.** This is principle 6 turned on the
-tooling: the CLI is an authoring and operations *projection*, exactly as YAML is
-an authoring projection of the spec.
+`WorkflowService` today, the catalog and plugin services as they land. The rule,
+scoped to where it means something: **a command whose answer comes from the
+running system is a projection of an RPC, and one that cannot be expressed as an
+RPC names a missing RPC.** This is principle 6 turned on the tooling: the CLI is
+an operations *projection*, exactly as YAML is an authoring projection of the
+spec.
+
+The scoping matters, because the rule read literally would demand RPCs of
+commands that deliberately need no server. `validate`, `fix`, and `run local`
+operate on local files and must keep working offline — that is invariant 8 —
+and `worker` and `server` do not *call* the services, they *are* them. What
+those commands share with the remote ones is the other half of the rule: the
+**message types**. A diagnostic from an offline `validate` is the same schema
+message the hosted validation RPC returns, so one object still renders
+everywhere, and no capability exists only as CLI code.
 
 What holding the rule buys, with no additional design:
 
 - **`--output json` is free and cannot drift.** Machine output is the protojson
   of the RPC response message — there is no second encoder, so there is no
   second schema. `flow inspect <run> --output json` and a Connect call return
-  the same bytes. This is already the convention `cmd/flow/output.go` holds;
-  the rule here is that it is the *only* machine shape any command may grow.
+  the *same message*: identical field names, enum spellings, and presence
+  semantics, from one schema. Not identical bytes — the CLI deliberately emits
+  unpopulated fields and indentation as presentation (`cmd/flow/output.go` says
+  why: `.closeTime` on an unfinished run should be null, not missing) — and the
+  parity promised is the schema, which is the one a program depends on. The
+  rule here is that this is the *only* machine shape any command may grow.
 - **The TUI is another renderer.** It draws the same messages the plain output
   prints; entering it is deliberate (per CLI.md), and it can never know
   something the pipe cannot.
@@ -1194,7 +1216,7 @@ bounds, no second query mini-language to learn, document, or secure:
 
 ```
 $ flow runs --workflow vendor-onboarding --since 90d \
-    --where 'steps.reviews.duration > duration("30d")' --count
+    --where 'steps.reviews.duration > days(30)' --count
 14
 ```
 

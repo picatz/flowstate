@@ -179,7 +179,10 @@ is one rule with consequences — the fuller reasoning lives in
   and the answer is not a refusal. `1`: the command worked and the answer is a
   refusal or a finding — diagnostics found, a check failed, a run that finished
   as a failure. `2`: the invocation itself was wrong. A program branches on
-  these; prose never replaces them.
+  these; prose never replaces them. The `2` branch is contract and not yet
+  binary: today `cmd/flow/main.go` exits 1 for invocation errors too, so until
+  the classification lands — with a golden test on each branch — automation
+  should treat nonzero as one value.
 - **Pure verbs stay pure.** `validate`, every `--check`, and every read are
   side-effect-free so a program — or an agent — can loop on them unattended.
   Mutations sit behind explicit confirmation in non-interactive streams.
