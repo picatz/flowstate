@@ -163,6 +163,30 @@ many there are, because a window that looks like a whole list is one a reader co
 wrongly. And a view that stopped being able to reach the server says so, rather than
 becoming a still screen that cannot be told apart from a wedged one.
 
+## The machine surface
+
+Everything above serves a person; this names the contract for a program, and it
+is one rule with consequences — the fuller reasoning lives in
+[DSL.md](DSL.md#the-fourth-round-the-tool-is-a-product-surface):
+
+- **Every command is a projection of an RPC.** `flow` is a thin client of the
+  same Connect services the API serves; a capability that cannot be expressed as
+  an RPC is a missing RPC, not a CLI feature.
+- **`--output json` is the protojson of the RPC response.** There is no second
+  encoder, so the JSON surface cannot drift from the API and needs no separate
+  schema documentation.
+- **Exit status is a contract with three values.** `0`: the command succeeded
+  and the answer is not a refusal. `1`: the command worked and the answer is a
+  refusal or a finding — diagnostics found, a check failed, a run that finished
+  as a failure. `2`: the invocation itself was wrong. A program branches on
+  these; prose never replaces them. The `2` branch is contract and not yet
+  binary: today `cmd/flow/main.go` exits 1 for invocation errors too, so until
+  the classification lands — with a golden test on each branch — automation
+  should treat nonzero as one value.
+- **Pure verbs stay pure.** `validate`, every `--check`, and every read are
+  side-effect-free so a program — or an agent — can loop on them unattended.
+  Mutations sit behind explicit confirmation in non-interactive streams.
+
 ## What this means for a change
 
 A change to this surface is finished when:

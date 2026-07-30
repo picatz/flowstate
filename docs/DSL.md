@@ -27,6 +27,43 @@ That is the sentence the product is: *your least careful author cannot break rep
 It is also fragile in a specific way, which the proposal does not state and which is
 recorded below as a precondition rather than an open question.
 
+## The constitution
+
+The bet is the first principle of a set this document had been carrying implicitly,
+one decision at a time. They are hoisted here so a proposal can be checked against
+them before it is argued on its merits — most of what [the second
+round](#the-second-round-vocabulary-expressions-extension) refuses is refused by one
+of these.
+
+1. **The language cannot express nondeterminism.** Every effect is an activity by
+   grammar; expressions are pure and I/O-free.
+2. **A value is not an effect.** Literals and expressions produce data. Anything
+   that touches the world outside evaluation is a node kind or a task, and nothing
+   that stays inside it is either.
+3. **Expressions are explicit.** A reader tells data from code without consulting a
+   registry: where a field can hold either, the `${...}` fence decides, and nothing
+   is ever evaluated because it happens to parse.
+4. **One dialect per file, pinned per run.**
+5. **Author-chosen names stay bare; system-chosen names are rooted.** An author can
+   see every name they bound; nobody can see the names a future engine will inject.
+   `now` is the single blessed exception and pays for itself in standing guard
+   rules.
+6. **YAML is an authoring projection.** The compiled proto is the contract, and
+   anything a Flowfile can say, another surface — a form, an API, an agent — says by
+   producing the same proto.
+7. **Fail closed.** Deny beats allow, an errored rule denies, and capability is
+   granted by deployment posture rather than assumed by vocabulary.
+8. **Secrets are references until the activity that needs the value.**
+9. **Anything an outside party can grow has an explicit bound**, matched to the
+   resource that party controls.
+10. **Fewer orthogonal primitives beat many convenient ones.** A capability earns a
+    word by being inexpressible without one.
+11. **Surface syntax breaks at editions, with a rewriter.** Compiled specs and
+    running histories never break.
+12. **Built-ins and plugins describe themselves through one metadata contract**, and
+    every surface — validator, language server, CLI, UI, agent — derives from it
+    rather than keeping a copy.
+
 ## Accepted, and why
 
 **Rooted ambient names, bare local names** (`inputs.*`, `vars.*`, `steps.<id>.*`,
@@ -240,10 +277,18 @@ section left open:
   and the schema has no field for it — no workload already running is touched by any
   of this, because the stable contract is the compiled spec and not the source.
 
+*Since written:* the first two of those four are reversed by [explicit
+versions](#versioning-one-scheme-for-everything-that-can-break). The edition becomes
+required, and `flow fix` stamps a missing one — which stops being the rewriter
+holding an opinion the moment the language requires the line. The second two stand.
+
 Two implementation surprises are worth recording. A dated edition is a YAML float:
 `edition: 2026.1` arrives as a number, so the token's own source text is read rather
 than the value — converting would make `2026.10` and `2026.1` the same edition, and the
-tenth of a year would compile as the first. And the rewriter is deliberately not
+tenth of a year would compile as the first. (*Since written:* the `v` prefix adopted
+with [explicit versions](#versioning-one-scheme-for-everything-that-can-break) retires
+this hack structurally — `v2026.1` is a plain string to YAML, and the float reading is
+unrepresentable.) And the rewriter is deliberately not
 parse-then-marshal: the retired grammar no longer parses, which is the entire point, and
 a formatter would move every comment and requote every string in a diff that is supposed
 to be about one key. It edits the lines it must, copies the rest through byte for byte —
@@ -332,6 +377,988 @@ not a detail of implementation.
 because it will be asked for repeatedly: an IPC call inside a cost-bounded,
 replay-sensitive evaluator breaks both properties at once. Complex logic is a task.
 
+## The second round: vocabulary, expressions, extension
+
+A second proposal arrived — two, in fact, from different reviewers, converging
+independently on the same complaints — about the task vocabulary (`cel`, `echo`,
+`printf`), the expression marker, and how plugins should appear in the grammar. This
+section is the response, in the same shape as the first: accepted, changed, refused,
+with reasoning. Claims about current behaviour below were verified against the code
+and by running Flowfiles through `flow validate` and `flow run local`, per [the
+standing rule](#the-standing-rule).
+
+### The admission test for a built-in
+
+The roster was being decided task by task, which is how it came to hold an identity
+function. A step's key belongs to one of three categories, and the category decides
+where a capability lives:
+
+- **Values** — literals and expressions. Pure, replay-safe, engine-evaluated. Never
+  a task, because a task is an activity and evaluating a pure expression as an
+  effect is a category error against principles 1 and 2.
+- **Control flow** — `if:`, `for_each`, `parallel`, `sleep`, `wait_until`,
+  `wait_for_signal`, later `call:`. Node kinds in the schema. Some evaluate
+  expressions; that does not make them tasks either.
+- **Effects** — the registry. A task earns a place in the *built-in* registry only
+  by passing all four of:
+
+  1. **Vendor-free and credential-free.** Nothing that names a product.
+  2. **Its danger is governed by engine policy.** `http` qualifies *because of*
+     `netpolicy`. A task whose risk the engine cannot govern does not belong inside
+     the trust boundary.
+  3. **Universally reimplemented otherwise.** If every second plugin would ship its
+     own copy, centralize it; if only some would, don't.
+  4. **It is actually an effect.**
+
+Everything people will ask for that is really control — retries, gates, timeouts,
+fan-out — stays grammar, which is the moat: elsewhere retry logic is a marketplace
+action, here it is a property of every step because the engine owns it.
+
+### `cel:` is retired — not renamed
+
+The name is wrong the way `re2:` would be wrong where `regexp` is meant: it answers
+"which evaluator?" when the author is asking "what role does this value play?". But
+renaming it to `expr:` or `eval:` would treat the symptom. The task fails the
+admission test's fourth condition: evaluating a pure expression is not an effect,
+and paying an activity round trip plus a history entry to compute what replay could
+recompute for free is the grammar miscategorizing its own bet.
+
+What the task actually serves is three needs, each with a better home:
+
+| Need | Home |
+| --- | --- |
+| name an intermediate value | `vars:` — workflow-level and step-level |
+| derive data at the point of use | inline `${...}`, which works everywhere today |
+| shape a final result | the workflow `outputs:` contract (Phase 2) |
+
+So `cel:` is deleted at the same edition boundary that lands `vars:`, and not
+before — retiring it first would take capability away. Before and after:
+
+```yaml
+# before
+steps:
+  - id: greet
+    echo:
+      message: hello
+  - id: modify
+    cel:
+      expr: "regex.replace(vars.greeting.upperAscii(), 'HELLO', 'HI')"
+      vars:
+        greeting: ${steps.greet.result}
+  - id: shout
+    if: ${steps.modify.result.startsWith('HI')}
+    echo:
+      message: ${steps.modify.result.lowerAscii()}
+```
+
+```yaml
+# after
+vars:
+  greeting: hello
+steps:
+  - id: shout
+    vars:
+      modified: ${regex.replace(vars.greeting.upperAscii(), 'HELLO', 'HI')}
+    if: ${modified.startsWith('HI')}
+    log:
+      message: ${modified.lowerAscii()}
+```
+
+Three steps and two activity round trips become one step and one; the `cel` task's
+private `vars` input — a compatibility shim the parser already documents as one —
+disappears along with the confusion of two things named `vars`.
+
+### `echo:` is retired; `log:` is the capability it was imitating
+
+`echo` is an identity function registered as an activity. Its shipped uses are (a) a
+poor author's `vars:`, (b) hello-world scaffolding, and (c) "this branch ran"
+markers. Use (a) dies with `vars:`. Uses (b) and (c) were always a *logging* need
+served under a misleading name — echo returns; it does not emit.
+
+`log:` is a real product surface: a message a human sees in `flow run` output, the
+TUI, and the run record, durable and honest about its purpose. Its inputs are
+`message` (required), `level` (optional: `info`, `warn`, `error`; default `info`),
+and `fields` (optional string-keyed map for structured sinks). It has **no
+outputs** — referencing `${steps.announce.result}` off a log line is the `vars:`
+use case sneaking back in, and offering nothing is how the language says so. It is
+also the trivial effect the shared driver-agreement tests need, which is the one
+legitimate job `echo` was doing.
+
+```yaml
+# before
+- id: hello
+  echo:
+    message: hello world
+```
+
+```yaml
+# after
+- id: hello
+  log:
+    message: hello world
+```
+
+### `printf:` is retired — the replacement already exists
+
+Verified: `${'hello %s, you have %d step(s) left'.format([vars.name, 0])}` compiles
+and runs today, because the pinned profile ships CEL's strings extension. The
+`format` function is specified at the CEL level — cross-language, versioned, pinned
+by the profile and by Worker Versioning — which is precisely the determinism story a
+formatting facility needs, and which a task wrapping Go's `fmt` can never have,
+because that leaks the implementation language into the DSL contract. The task also
+duplicates conversion logic the expression layer owns, and rejects doubles, which
+`format` handles.
+
+```yaml
+# before
+steps:
+  - id: name
+    echo:
+      message: flowstate
+  - id: greeting
+    printf:
+      format: "hello %s, you have %d step(s) left"
+      args:
+        - ${steps.name.result}
+        - 0
+```
+
+```yaml
+# after
+vars:
+  name: flowstate
+steps:
+  - id: greeting
+    log:
+      message: ${'hello %s, you have %d step(s) left'.format([vars.name, 0])}
+```
+
+### `vars:`, and the shadowing rule that ships with it
+
+`vars` lands in the positions already planned, and the scope rules land in the same
+change — deciding them later is the Terraform `optional()` mistake this document
+already refused once.
+
+- **Workflow-level `vars:`** — constants and start-time derivations, referenced
+  rooted: `${vars.region}`. Rooted because ambient, per principle 5.
+- **Step-level `vars:`** — private bindings, referenced bare within the step:
+  `${modified}`. Bare because author-chosen and lexically local, the same standing
+  as a loop binding.
+- **Shadowing is refused, not resolved.** A bare name must be unique against every
+  bare name in scope: a step var may not collide with an enclosing loop binding, a
+  loop binding may not collide with an enclosing step var, and neither may be
+  `now`. `flow validate` reports the collision at the inner declaration. Silent
+  shadowing is how `${body}` comes to mean two things eleven lines apart.
+- **The fence stays required inside `vars` values.** A var legitimately holds the
+  literal string `"steps.greet.result"`, so this is exactly the ambiguous position
+  the fence exists for. No exception.
+
+Two spellings improve for free once static data stops impersonating computation.
+Verified: `items:` already accepts a literal YAML list — the shipped example routes
+one through a `cel` step for no reason the language imposes.
+
+```yaml
+# before (the shipped example)
+steps:
+  - id: targets
+    cel:
+      expr: "['alpha', 'beta', 'gamma']"
+  - id: process
+    for_each:
+      items: ${steps.targets.result}
+      iterator: name
+```
+
+```yaml
+# after
+vars:
+  targets: [alpha, beta, gamma]
+steps:
+  - id: process
+    for_each:
+      items: ${vars.targets}
+      as: name
+```
+
+### `for_each` reads `as:`
+
+`iterator:` is retired for `as:` in the same edition sweep. It is shorter, names the
+binding rather than the mechanism, and reads as the sentence it is: *for each item
+as name*. `flow fix` rewrites it.
+
+### `http:` stays; its response scope gets a root
+
+The name passes the test the others fail — it names the protocol, not an
+implementation or a vendor — and its danger is governed where principle 7 wants it,
+in `netpolicy`. What changes is the private scope its `expect:` and `outputs:`
+expressions evaluate in. Today those bind bare `status_code`, `headers`, `body`,
+`json`. Those are *system-chosen* names injected into an author's namespace, exactly
+the shape the signal-payload fix already rooted under `payload.*`, and for the same
+two reasons: the set will grow (a future `duration_ms` must not capture anyone's
+binding), and collisions are already representable — `as: body` on a loop enclosing
+an `http` step whose `expect:` says `body` silently reads the response, not the
+item. Every bare system name costs a guard rule forever; a root costs one spelling.
+
+So the response scope becomes `response.*`, keeping the existing field names, and
+`flow fix` roots existing expressions mechanically:
+
+```yaml
+# before
+- id: web
+  http:
+    url: https://httpbin.org/json
+    parse_json: true
+    expect: ${status_code == 200}
+    outputs:
+      title: ${json.slideshow.title}
+```
+
+```yaml
+# after
+- id: web
+  http:
+    url: https://httpbin.org/json
+    parse_json: true
+    expect: ${response.status_code == 200}
+    outputs:
+      title: ${response.json.slideshow.title}
+```
+
+This narrows the statement of principle 5 that the first round's naming model made:
+"bare local names" always meant the names an *author* binds. A loop's `as:` stays
+bare; what a task or the engine injects gets a root. `now` remains the single
+exception, already fenced by its own rules.
+
+Held for their own reviewed changes, in this order of need: structured `auth:` (so
+authors stop hand-building secret-bearing headers), an `idempotency_key`, and
+declared egress capabilities. Each interacts with policy or secrets and none blocks
+the vocabulary work.
+
+### `${...}` stays; `!expr` is refused
+
+The fence survives two challenges on its merits.
+
+**Interpolation stays refused.** `"deployed ${a} to ${b}"` is two languages in one
+scalar — a template language containing CEL fragments — and it is the direct
+mechanism of the injection class that string-splicing CI systems keep shipping.
+A value is one literal or one expression, never a string with holes; `format()` and
+concatenation are the answer, and the diagnostic already teaches them.
+
+**A YAML `!expr` tag is refused.** It looks structurally cleaner — the AST would
+know literal from expression without delimiter scanning — but it fails on the case
+that decides it: a tag changes how YAML parses the node beneath it. Write the
+natural thing,
+
+```yaml
+json: !expr {'service': vars.service}
+```
+
+and YAML reads `{...}` as a flow *mapping* with a tag on it; the expression is
+destroyed by the host syntax before CEL sees the text. It must be quoted anyway, and
+a tag plus quotes is a worse-spelled fence. The fence's whole virtue is that
+expression text always travels inside a plain string, immune to YAML's own syntax —
+`${ {'k': 1} }` works today for exactly this reason. Add that generic YAML emitters
+(the form builders and agents principle 6 exists for) handle custom tags poorly
+while `${...}` is what every model has seen, and that the fence's load-bearing
+surface *shrinks* every time the schema types another position as
+expression-known — churn on a contracting surface buys nothing. Refused, and
+recorded so the next proposal engages the flow-mapping counterexample rather than
+the aesthetics.
+
+### `value:` is refused, for now
+
+If a pure result-producing step existed, `value:` would be its right name — it says
+what the step contributes, accepts literals and expressions equally, and avoids the
+false implications of `set:`, `eval:`, `compute:`, and `run:`. But everything it
+does is `vars:` wearing a step id, and it drags real debt behind it: whether
+`${steps.roster}` should then mean the value directly, which breaks the uniform
+named-outputs model every tool reads. Adding it later is additive and cheap;
+removing it later will never happen. So: refused until a corpus file hurts without
+it, and the word joins the reserved list so no plugin takes it in the meantime.
+`assert:` is held on the same terms — it is pure, so it would be a node kind, and
+`if:` plus a failing step nearly covers it; whichever of it and Phase 2's `check:`
+lands first must be designed knowing the other is coming, because two spellings of
+"refuse to proceed" is one too many.
+
+### Plugins appear in the syntax, deliberately distinguishable
+
+ARCHITECTURE.md says a plugin task should be "indistinguishable from a built-in."
+Half of that survives contact with this round: indistinguishable in *tooling* —
+validation, completion, hover, docs, all derived from the descriptors the manifest
+already ships — yes, that is the registry invariant across a process boundary.
+Indistinguishable in *spelling*, no, for three reasons: provenance is a fact a
+reviewer needs at the step ("this line leaves the engine's code and enters code
+somebody installed"); a flat namespace makes installation order load-bearing the
+day two plugins want `deploy`; and a file using a missing plugin deserves "plugin
+`slack` is not installed on this worker," not "unknown task." That sentence in
+ARCHITECTURE.md gets amended when this lands.
+
+The spelling is **`<plugin>.<task>:`** — dotted, two segments:
+
+```yaml
+steps:
+  - id: notify
+    slack.post:
+      channel: "#deploys"
+      text: ${'released %s'.format([steps.build.version])}
+```
+
+The grammar slot is already vacant, verified twice over: `TaskManifest.name` is
+validated `^[a-z][a-z0-9_]*$`, so no task can contain a dot, and the parser's
+`couldBeATaskName` rejects dots, so a dotted key today is an unknown key rather than
+a task. A dotted key is therefore *unambiguously* a plugin reference — the
+disjointness guarantee extends without a new rule, the first segment is the name
+discovery already establishes (`flowstate-plugin-<name>`), and the language server
+gets a two-level completion tree. The dot also rhymes with the language's one idiom:
+`steps.build.version` on the read side, `slack.post` on the write side — selection,
+both times. What is refused alongside: `uses:`-style indirection (the `task:` /
+`name:` nesting this document spent an edition deleting) and distribution metadata
+in the step key (`owner/repo@ref` welds deployment concerns into every call site).
+
+Version requirements belong to the file's header, not the step — declared as
+minimums, per [the versioning scheme](#versioning-one-scheme-for-everything-that-can-break):
+
+```yaml
+plugins:
+  slack: v2.1.0    # a minimum: at least v2.1.0, same major
+  github: v1.4.0
+```
+
+Declared once, auditable in one place, resolved against the worker's catalog at
+submit and refused closed — "this deployment cannot run this file" at the terminal,
+not a failing step forty minutes in. It is also what gives `flow validate` and the
+language server a schema source for `slack.post` on a machine that has the plugin,
+and the compiled spec a place to record what a run was compiled against — the
+profile-pinning logic, extended to the task surface, which replay will eventually
+demand. It lands with Phase 3, where `call:` forces the cross-file question anyway;
+the dotted-key *shape rule* is reserved now, while it costs one sentence. Task-queue
+routing — a plugin task running on a specialized worker — stays a deployment
+concern and never becomes a Flowfile spelling.
+
+### `exec:` will be built-in, denied by default
+
+Competitiveness with CI systems needs process execution; the admission test's second
+condition says it cannot ship before its policy exists, because today the engine has
+no exec analog to `netpolicy`. Both facts are honoured: `exec` is built-in, **denied
+by default**, enabled per deployment — the loopback-egress posture, applied to a
+sharper knife. And it takes **`argv` as a list, never a shell string**:
+
+```yaml
+- id: test
+  exec:
+    argv: [go, test, -count=1, ./...]
+    dir: ${steps.checkout.dir}
+```
+
+A shell-string form with expressions producing pieces of it is command injection by
+construction — the same reasoning that refused `${...}` interpolation, with higher
+stakes. An author who wants shell semantics writes `argv: [bash, -c, "..."]` and
+owns it visibly. There is no `shell:` task. Outputs are `exit_code` and
+byte-bounded `stdout`/`stderr` (principle 9: the process, not the worker, decides
+what it prints, so the worker bounds what it keeps). The full input surface —
+environment, working directory, what a nonzero exit means — is settled when the
+policy is, in its own reviewed change.
+
+### The disposition table
+
+| Today | Fate | Replaced by |
+| --- | --- | --- |
+| `cel:` | retired at the `vars:` edition | `vars:`, inline `${...}`, Phase 2 `outputs:` |
+| `echo:` | retired at the same edition | `vars:` for data, `log:` for visibility |
+| `printf:` | retired at the same edition | `format()` in the profile (already present) |
+| `iterator:` | retired at the same edition | `as:` |
+| bare `status_code`/`body`/`headers`/`json` | rerooted | `response.*` |
+| `http:` | kept | — (auth, idempotency key, egress declarations held) |
+| `log:` | new | — |
+| `exec:` | new, gated on its policy | — |
+| `value:` | refused for now, name reserved | `vars:` until a corpus file proves otherwise |
+| `assert:` | held | `if:` + failure, pending Phase 2 `check:` |
+| `!expr` | refused | whole-value `${...}`, fence-optional where the schema knows |
+| plugin tasks | dotted keys, `plugins:` header in Phase 3 | — |
+
+End state of the built-in registry: **`log`, `http`, `exec`**. Small enough to
+memorize, which is the property worth copying from the standard library this
+vocabulary keeps being compared to.
+
+### One edition, one sweep, and what the rewriter may not guess
+
+All of the retirements ride one edition boundary — `cel`, `echo`, `printf`,
+`iterator:`, and the response rooting together — because each boundary is a whole
+migration story and five small ones would be five of them. `flow fix` rewrites the
+mechanical cases: rooting response names, `iterator:` to `as:`, `printf` to a
+`format()` call, `cel`/`echo` steps whose results feed later steps into the
+equivalent `vars:` bindings with references rewritten, the same way it rooted step
+outputs. What it must refuse rather than guess is intent it cannot see — an `echo`
+whose result nothing references might have meant "show a human this line" (`log:`)
+or nothing at all; the fixer says so and stops, which is already its contract for
+flow style and aliases. Every retired spelling gets a `retiredStepKeys` entry
+naming its replacement, so the diagnostic teaches the migration instead of
+reporting an unknown task.
+
+### The corpus is the acceptance list
+
+Designing from hello-world is how `echo` happened. The fix is a corpus of
+representative workloads — CI pipeline, deployment with approval, ETL, incident
+runbook, fan-out matrix, agent loop with a gate, saga/compensation, scheduled
+maintenance — but held to this repo's reachability rule, which "design fixtures"
+would otherwise erode: each corpus file is written down as the *acceptance target*
+for the phase that makes it compile, and graduates into `examples/` (and so into
+CI) the day it runs. A corpus file that never graduates is a design that never
+landed, kept visible. The two below are the first two entries.
+
+### What the language looks like when this round lands
+
+Everything in this file is decided surface: Phase 1 vocabulary plus the response
+root. It is the deployment-with-approval corpus entry, and the acceptance target
+for the retirement edition.
+
+```yaml
+edition: v2026.2
+name: deploy
+description: Ship a build, gate production behind a human, then page in order.
+
+vars:
+  service: billing
+  version: 2026.07.30-r1
+  api: https://deploys.internal.example.com
+  oncall: [ada, grace, katherine]
+
+steps:
+  - id: submit
+    description: Ask the deployment API to roll the service.
+    http:
+      method: POST
+      url: ${vars.api + '/deployments'}
+      json:
+        service: ${vars.service}
+        version: ${vars.version}
+      parse_json: true
+      expect: ${response.status_code == 202}
+      outputs:
+        deployment: ${response.json.id}
+    retry:
+      attempts: 3
+
+  - id: approval
+    description: A human approves the roll, or the day ends without one.
+    wait_for_signal:
+      name: approve
+      timeout: 24h
+
+  - id: halt
+    if: ${steps.approval.timed_out || !steps.approval.payload.approved}
+    log:
+      level: warn
+      message: ${'deployment %s not approved; stopping'.format([steps.submit.deployment])}
+
+  - id: page
+    if: ${!steps.approval.timed_out && steps.approval.payload.approved}
+    for_each:
+      items: ${vars.oncall}
+      as: person
+      max_parallel: 1
+      steps:
+        - id: notify
+          log:
+            message: ${'paging %s: %s %s is rolling'.format([person, vars.service, vars.version])}
+            fields:
+              deployment: ${steps.submit.deployment}
+              approved_by: ${steps.approval.payload.by}
+```
+
+Worth noticing what is absent: no `cel:`, no `expr:` nested inside anything, no
+`echo:`, no `printf:`, no template sublanguage, no hand-built JSON string, no bare
+response names, and no evaluator branding anywhere an author looks. CEL is doing
+all of the work and none of the talking.
+
+And the CI-pipeline corpus entry, which is the same language plus the Phase 3
+plugin surface and a policied `exec` — the file that makes "could be used for CI"
+a demonstration rather than a claim:
+
+```yaml
+edition: v2026.2
+name: ci
+plugins:
+  github: v1.2.0
+
+vars:
+  repo: picatz/flowstate
+  ref: main
+
+steps:
+  - id: checkout
+    github.clone:
+      repo: ${vars.repo}
+      ref: ${vars.ref}
+
+  - id: test
+    exec:
+      argv: [go, test, -count=1, ./...]
+      dir: ${steps.checkout.dir}
+    timeout: 15m
+
+  - id: report
+    if: ${steps.test.exit_code != 0}
+    github.create_issue:
+      repo: ${vars.repo}
+      title: ${'CI failed on %s'.format([vars.ref])}
+      body: ${steps.test.stderr}
+```
+
+Nothing in the *language* says CI — the same shapes serve the runbook above — which
+is the positioning: one execution model, with CI as one workload it happens to beat
+incumbents at by owning durability, retries, gates, and policy in the grammar.
+
+### Versioning: one scheme for everything that can break
+
+This is a greenfield project with one user. Nothing pre-1.0 is kept for
+compatibility — old spellings are deleted, not carried, and the question "may we
+break this?" is always yes. What that freedom does **not** buy is the right to
+break *carelessly*: histories replay for months, and an agent trained on last
+quarter's examples will keep writing last quarter's grammar forever. So the
+mechanics of breaking are the product surface here, and they should be one
+coherent scheme rather than five dials invented separately. The model is Go
+modules, because it is the one versioning design whose choices have survived
+contact with a decade of ecosystems: a language version in the file, a toolchain
+that refuses what it cannot honour, minimum-version dependency selection with no
+solver, major versions as part of identity, and a lockfile of exact resolutions.
+
+Mapped onto this system, five things version, and each binds at a different
+moment:
+
+| Layer | Declared | Binds at | May break |
+| --- | --- | --- | --- |
+| grammar | `edition:` in the file (required) | parse | at any edition, with `flow fix` across the boundary |
+| expression dialect | `Workflow.profile`, stamped by the compiler | compile; honoured at run and replay | with the edition; never within one |
+| compiled spec | proto package `flowstate.v1` | forever — histories replay against it | WIRE never; FILE spent deliberately |
+| engine | worker `--deployment-name --build-id` | run start; Continue-As-New takes current | freely between runs; never within one |
+| plugins | `plugins:` minimums in the file; exact resolutions recorded in the compiled spec | resolve at submit, pin for the run | majors freely; a major is a different requirement |
+
+The coherence rules, and what each refuses:
+
+**Versions are explicit, and spelled the Go way.** Every version in a Flowfile is
+written, never inferred, and every one carries the `v` prefix: `edition: v2026.2`,
+`slack: v2.1.0`. This reverses the earlier decision that an absent `edition:` means
+the current one. That decision optimized a line of ceremony away and bought a
+latent ambiguity with it: a file without an edition means whatever the build
+reading it says, so the same bytes compile differently on two machines — which is
+`GOPATH`'s defect, the one `go.mod`'s explicit `go` directive exists to close. The
+ceremony objection also weakens to nothing in a greenfield: every file is new,
+`flow fix` stamps the line, and `flow validate` on a file without one says exactly
+what to add. The `v` prefix is not decoration either — it makes an edition a plain
+string to YAML, so `v2026.10` and `v2026.1` are distinct by construction and the
+read-the-source-token hack is deleted. Plugin requirements are canonical full
+semver, `vMAJOR.MINOR.PATCH`, no shorthand and no ranges, exactly as `go.mod`
+requires — a spelling with one form needs no normalizer and produces no
+almost-equal diffs.
+
+**The key is `edition:`, and `version:` is refused for it — twice over.** A
+top-level `version:` is ambiguous about whose version it names, and the ambiguity
+has a track record: Docker Compose's schema `version:` was universally misread as
+the author's own and was deprecated for it. Worse, the word is *needed*: Phase 3
+makes a workflow a callable module with its own contract semver, and `version:` is
+the only natural spelling for that — spending it on the grammar dial gives the
+actually-versioned artifact a second-choice name forever. `edition` also names the
+mechanism precisely, because this *is* Rust's editions down to the rewriter
+(`flow fix` ≈ `cargo fix --edition`): dated boundaries, breaks only at them,
+unknown ones refused. Go's own spelling of this dial — the language name, as in
+`go 1.22` — is refused too: `flowstate: v2026.2` puts branding in every file to
+say what `edition:` says generically.
+
+**The author sees one version dial: the edition.** Explicit does not mean many.
+Everything else is stamped, resolved, or pinned by machinery. The profile is already compiler-stamped —
+`profile:` is not a Flowfile key and must never become one, because two files in
+one repo speaking two dialects is the situation the one-profile decision exists
+to prevent. The edition names the grammar *and* implies the dialect; the two are
+recorded separately because they die at different times — the edition at compile
+(the schema deliberately has no field for it), the profile at the end of the last
+run that replays against it.
+
+**There is no toolchain directive, because its two halves already exist.** Go
+needs `toolchain` because old toolchains must build new modules. Here, an edition
+this build does not know is *refused rather than translated* — that is the
+toolchain check, fail-closed — and every capability question beyond grammar
+("does this worker have `slack.post` at ≥2.1?") is answered by submit-time
+resolution against the deployment's catalog. An `engine:` key would be a second
+dial answering the same two questions worse.
+
+**Plugin versions follow the import-compatibility rule, without the solver.**
+A `plugins:` entry declares a *minimum*: `slack: v2.1.0` means at least v2.1.0,
+same major. There is no range syntax and no constraint solver, for Go's reason —
+a deployment installs exactly one version of a plugin, so resolution is a
+comparison, not a search. A new major is a different requirement declared
+explicitly, never satisfied silently by an installed older one; the major lives
+in the requirement, not in step keys — `slack.post:` never grows a `/v2`, because
+one deployment holds one major of a plugin and the header already says which. The declared
+minimums are the `go.mod`; the compiled spec records the *exact* versions
+resolved at submit — the lockfile — so a run is reproducible from its spec alone:
+spec + profile + worker build + resolved plugin versions is the complete answer
+to "what exactly did this run mean?".
+
+**Workflows themselves become modules in Phase 3, not before.** The day `call:`
+lands, a workflow is a dependency and needs an identity and a version. The shape
+to hold: name plus major as identity (the import-compatibility rule again), and
+the version speaks about the workflow's *contract* — its typed `inputs:` and
+`outputs:` — which is why it cannot precede Phase 2: a semver promise over an
+untyped surface is decoration, by the same rule that keeps `type:` out until its
+checker exists.
+
+**Feature flags are refused.** No `experiments:`, no opt-in grammar, no
+per-file switches. A file compiles under its edition or it does not; flags make
+2ⁿ dialects out of one, which principle 4 exists to prevent. The one legitimate
+shape that looks like a flag — `exec` enabled, loopback egress allowed — is
+deployment *posture*, deliberately not expressible in the file, per principle 7.
+
+**And the retirement machinery is for models, not for users.** With one user
+there is nobody to deprecate for, so `retiredStepKeys` and the `flow fix`
+refusal-not-guess contract might look like baggage. They are the opposite: agents
+generating Flowfiles are trained on every example that ever existed, so the old
+spellings keep arriving *forever*, from authors who were never using the old
+version at all. A diagnostic that names the replacement is how the language
+teaches the training-data gap away; that is a permanent product feature, not a
+transition cost.
+
+### What this round adds to the order of work
+
+Phase 1 grows: `vars:` with its shadowing rules, `log:`, the retirement edition
+(`cel`, `echo`, `printf`, `iterator:`→`as:`, `response.*` rooting), the
+`retiredStepKeys` entries, and reserving `value` alongside the dotted-key shape
+rule — the last two cost sentences now and compatibility later. The same edition
+flips `edition:` itself to required with the `v`-prefixed spelling, and `flow fix`
+stamps the line into files that lack it. The `plugins:`
+header and dotted-key resolution land in Phase 3 with `call:`. `exec` lands only
+with its policy, gated the way workflow-side evaluation is gated on Worker
+Versioning: a capability that assumes a posture verifies it or stays off. The
+`Host.Register` seam — one call wide — is the highest-leverage unbuilt item in this
+document, because the catalog it populates is what every surface in principle 12
+reads.
+
+## The third round: versions in flight, and what the engine already knows
+
+The question this round answers: where does a version *live* once a workload is
+running, what may move underneath a run that takes a year, and what the language
+owes to observability. The answers fall out of one structural fact worth naming
+before any of them.
+
+### The interpreter dividend
+
+In hand-written Temporal, the workflow definition *is* code, so evolving it while
+runs are in flight is the hardest problem in the ecosystem: `GetVersion` patches,
+per-workflow-type worker versioning, and team-wide discipline, forever. Flowstate
+split that atom without saying so: the definition is **data** — a compiled spec
+carried in `RunState` — and the only workflow-side *code* is the interpreter.
+Two consequences, and they are the product's second-best sentence after the bet:
+
+- **A definition change cannot touch a run in flight.** Every run carries its own
+  spec; editing a Flowfile and resubmitting creates new runs and strands nothing.
+  No author will ever write a patch, call `GetVersion`, or reason about which
+  branch of their own workflow history took. The bet extends: the least careful
+  author cannot break replay, *and no author can break an in-flight run by
+  editing a file.*
+- **The only code with a versioning problem is the interpreter**, and that
+  problem is already solved and landed: pinned per run, auto-upgrade at
+  Continue-As-New, with `RunState` obeying published-message rules across the
+  seam (ARCHITECTURE.md invariants 4 and 10). Rollout mechanics — ramping a new
+  build id, draining an old one, finding the runs still pinned to it through
+  visibility — are deployment posture and `flow deployments` tooling, and are
+  never spelled in a Flowfile.
+
+So "where are versions stored" has a layered answer with nothing implicit in it.
+Source lives in git with its `edition:` — the authoring artifact, owned like Go
+source. The compiled spec lives *in the run* — self-contained, with the stamped
+profile, the resolved plugin versions, and the build-id pin forming the complete
+reproducibility record; a run can be explained forever from what it carries.
+And when Phase 3 makes workflows callable, published definitions live in a
+catalog as **immutable** `name@vMAJOR.MINOR.PATCH` entries with content digests —
+the module-proxy posture: a published version never changes, and a caller's spec
+records the digest it resolved, which is `go.sum` for workflows.
+
+### Migration is explicit, at the seam, and checked
+
+The default is that nothing migrates: a run finishes on the spec and interpreter
+it started with, and a deploy touches nothing in flight. Explicit beats implicit
+here more than anywhere — a silently migrated year-long run is an integrity
+failure with a calendar.
+
+When an operator must move a run — the definition of a long workload has a bug
+ahead of where it is — the only sound seam is the one the engine already uses:
+Continue-As-New, where the next iteration starts from `RunState` rather than
+replaying history. And because both specs and the state are typed data, legality
+is *mechanical*, which is what Phase 5's "frame-checked proofs" should mean: the
+completed prefix recorded in `RunState` — which steps ran, by id, with what
+output shapes — must remain meaningful under the new spec, and the check is a
+comparison, not a judgment call. `flow migrate` performs it or refuses with the
+step that fails it. Raw Temporal cannot offer this to arbitrary code; an
+interpreter over data can, and it is the single most powerful thing this
+abstraction adds on top of the substrate rather than merely surfacing from it.
+
+Two things follow, and one binds **now**:
+
+- **Step ids are the migration contract.** The frame check compares by id, so
+  renaming an id is a breaking change to every in-flight run of that workflow —
+  which is why this is recorded in the present even though `flow migrate` is
+  Phase 5: `flow fix` must never rename a step id, and a future rename needs the
+  same deliberateness as a schema break. Ids joined "diagnostics anchor" and
+  "reference root" as load-bearing roles today; "migration frame" is the third.
+- **Reset becomes step-shaped.** Temporal's native repair is reset-by-event-id,
+  which is archaeology. Here the unit is a step, so the ergonomic spelling is
+  exact: `flow rerun <run> --from steps.deploy` — truncate state to the frame
+  before that id and continue on the current (or a named) spec version. Held to
+  Phase 5 with `flow migrate`, shape recorded now.
+
+Schedules, when they land, pin an exact catalog version; updating the schedule
+*is* the deploy action, and there is no `@latest` — a schedule that follows a
+moving name is the implicit-edition defect with a timer attached.
+
+### Observability is derived, not authored
+
+The engine durably records everything observability wants: a run is a trace, a
+step is a span with start, end, attempts, outcome, tenant, and queue — that *is*
+the history. So traces and metrics are **projections of recorded truth**, emitted
+by the engine and worker — OTel spans per step, engine metrics for durations,
+outcomes, retries, queue latency — ambient, requiring nothing in any file, and
+honest about retries by construction: a step that ran three times is one span
+with `attempts=3`, because the projection reads what happened rather than firing
+when it happens. Every derived point also carries a stable identity — run id,
+step id, attempt — so an exporter that crashes and re-reads history re-emits
+*the same point*, deduplicable by key at any sink; its delivery is at-least-once
+like every exporter's, but nothing about the data is lost or doubled by saying
+it twice. And it can be computed retroactively, for runs that finished before
+the exporter existed.
+
+A `metric:` task is **refused**, and the reason is load-bearing rather than
+taste: activities are at-least-once, so a counter incremented inside a step
+fires again on every retry — and an imperative increment carries no identity, so
+no sink can tell the retry from a real second event. A projected point can
+always be deduplicated, because history gives it a key; an emitted increment can
+never be, because nothing does. That asymmetry, not a preference, is the
+refusal.
+Business dimensions ride the planned label/search-attribute surface and Phase 2's
+typed outputs — any metric someone wants is then a query over visibility and
+history, not a side effect an author remembered to fire.
+
+`log:` stays the only *authored* observability surface, because it carries the
+one thing the engine cannot derive: intent, written for the human reading the
+run. Heartbeats — progress inside a long `exec` or plugin task — are task-side
+(the plugin protocol and `exec` report progress; a policy key can surface a
+deadline later) and are not vocabulary.
+
+### What this round adds
+
+One obligation binds immediately: the id-stability rule for `flow fix` and the
+sentence in `validate.go`'s orbit that treats an id rename as the breaking change
+it is. Catalog immutability lands with Phase 3's `call:`; `flow migrate` and
+`flow rerun --from` stay Phase 5 with their shapes now recorded; ambient OTel
+export is engine work that touches no grammar and can land whenever it earns its
+place in a phase.
+
+## The fourth round: the tool is a product surface
+
+The rounds above decide what an author writes. This one decides what a person and
+a *program* meet when they operate the result — the CLI, the TUI, the API, the
+language server, and the agent are one system or they are five systems that
+drift. [CLI.md](CLI.md) holds the presentation contract (streams, colour,
+symbols, vocabulary, error voice); these are the architectural decisions above
+it, and they are mostly one decision applied five times.
+
+### Every command is a projection of an RPC
+
+`flow` is a thin client of the same Connect services everything else speaks —
+`WorkflowService` today, the catalog and plugin services as they land. The rule,
+scoped to where it means something: **a command whose answer comes from the
+running system is a projection of an RPC, and one that cannot be expressed as an
+RPC names a missing RPC.** This is principle 6 turned on the tooling: the CLI is
+an operations *projection*, exactly as YAML is an authoring projection of the
+spec.
+
+The scoping matters, because the rule read literally would demand RPCs of
+commands that deliberately need no server. `validate`, `fix`, and `run local`
+operate on local files and must keep working offline — that is invariant 8 —
+and `worker` and `server` do not *call* the services, they *are* them. What
+those commands share with the remote ones is the other half of the rule: the
+**message types**. A diagnostic from an offline `validate` is the same schema
+message the hosted validation RPC returns, so one object still renders
+everywhere, and no capability exists only as CLI code.
+
+What holding the rule buys, with no additional design:
+
+- **`--output json` is free and cannot drift.** Machine output is the protojson
+  of the RPC response message — there is no second encoder, so there is no
+  second schema. `flow inspect <run> --output json` and a Connect call return
+  the *same message*: identical field names, enum spellings, and presence
+  semantics, from one schema. Not identical bytes — the CLI deliberately emits
+  unpopulated fields and indentation as presentation (`cmd/flow/output.go` says
+  why: `.closeTime` on an unfinished run should be null, not missing) — and the
+  parity promised is the schema, which is the one a program depends on. The
+  rule here is that this is the *only* machine shape any command may grow.
+- **The TUI is another renderer.** It draws the same messages the plain output
+  prints; entering it is deliberate (per CLI.md), and it can never know
+  something the pipe cannot.
+- **MCP is generated, not written.** `flow mcp` serves the same services as MCP
+  tools with schemas derived from the protos — proto-first applied to the agent
+  surface, so there is no hand-maintained tool list to fall behind the engine.
+- **API parity is structural.** Anything a person can do from a terminal, a
+  program can do from any language with a Connect client, because they are the
+  same call.
+
+Diagnostics complete the loop. They are already a typed shape — line, column,
+step, field, message — and they become a schema message, so *one* diagnostic
+object renders as `path:line:col:` on a terminal, a squiggle in the editor, an
+annotation in CI, and a structured MCP tool result. One diagnostic, four
+renderings, zero translations.
+
+### One dialect, including for questions
+
+Operational queries speak the language the workflows speak. `flow runs --where`
+takes a CEL expression in the pinned profile, over typed, rooted run metadata —
+the same rooted-name discipline as the DSL (`run.*`, `steps.*`), the same cost
+bounds, no second query mini-language to learn, document, or secure:
+
+```
+$ flow runs --workflow vendor-onboarding --since 90d \
+    --where 'steps.reviews.duration > days(30)' --count
+14
+```
+
+Filters push down to the visibility store where the store can answer them and
+evaluate engine-side where it cannot, under the scan and request bounds the
+listing already enforces — a query surface is a paged listing wearing a
+predicate, and inherits its rules.
+
+### Plan and apply: anything that touches a run checks first
+
+Every mutating operation against a run — `migrate`, `rerun`, `terminate` — has a
+`--check` form that is pure, free, and safe to run forever; the mutating form
+runs the *same* check, refuses on failure, and in a non-interactive stream
+requires its explicit confirmation flag. This is Terraform's plan/apply lesson
+applied where it matters most: the objects being mutated have been running for
+months and belong to someone.
+
+And the apply is *recorded into the run it changed*. A migration or a rerun
+appears in the run's own history with the actor's authenticated identity and the
+before/after spec digests, so provenance is a chain rather than a snapshot, and
+the answer to "who moved this run, from what, to what, and when" is `flow trace`
+— not an expedition through a SIEM. For an enterprise this is the difference
+between an audit feature and an audit *property*.
+
+### The agent is a first-class operator
+
+Nothing here is a bolted-on "AI feature"; the agent surface is the machine
+surface, taken seriously:
+
+- **Schemas from the source of truth.** An agent discovers tasks, plugins, and
+  their typed inputs from the catalog RPC — the same registry-derived
+  descriptors that drive completion and docs (principle 12). A model never needs
+  a prose cheat-sheet that can go stale.
+- **Diagnostics are the training loop.** The teaching messages — position, what
+  is wrong, what to write instead, with the fix pasteable — are how a model
+  converges on the current grammar in one round trip. The retirement diagnostics
+  exist for exactly this population, as the versioning round records.
+- **Pure verbs make unattended iteration safe.** `validate`, `fix --check`,
+  `migrate --check`, and every `--output json` read are side-effect-free by
+  construction, so an agent can loop on them without supervision; the mutating
+  verbs sit behind the plan/apply gate above, which is the same gate a human
+  gets. One permission model, not one per kind of caller.
+
+### The transcripts are the acceptance bar
+
+Output format is API — a person greps it, a pipe parses it, and a golden test
+freezes it. So the operational corpus below follows the Flowfile corpus rule:
+each transcript is the acceptance target for the feature that produces it, and
+graduates into a golden test the day the feature lands. Live today: the edition
+refusal, `flow fix`'s contract, and worker pinning. Decided, with phases in
+[the third round](#the-third-round-versions-in-flight-and-what-the-engine-already-knows):
+provenance, the fleet view, `migrate`, `rerun`, schedules, `trace`. Stream
+discipline per CLI.md applies throughout: answers on stdout, accounts on stderr.
+
+The compiler teaching the current grammar (machinery live; the vocabulary rides
+the retirement edition):
+
+```
+$ flow validate old-style.yaml
+old-style.yaml:1:1: a Flowfile declares its edition; add `edition: v2026.2`, or run `flow fix` to stamp it
+old-style.yaml:9:5: step "targets": `cel:` is no longer a step key; a computed value is a `vars:` binding now, and a static list needs no expression at all
+old-style.yaml:15:7: step "process" for_each: `iterator:` is now `as:`; run `flow fix` to rewrite this file
+old-style.yaml:30:15: step "check" input "expect": references bare `status_code`, and the response is named `response.status_code` now; run `flow fix` to rewrite this file
+
+$ flow fix old-style.yaml
+old-style.yaml: stamped edition v2026.2; rewrote cel: to vars:, iterator: to as:; rooted 3 response references
+old-style.yaml:18:5: step "announce": `echo:` result is never referenced; it may have meant `log:` — this tool does not guess intent, rewrite it yourself
+$ echo $?
+1
+```
+
+A run explaining itself, forever (spec-in-run live; plugin resolution Phase 3):
+
+```
+$ flow inspect 018f3c2e --provenance
+spec digest:      sha256:9f41c07a…
+compiled from:    edition v2026.2
+profile:          cel-2026-07
+plugins resolved: slack v2.3.1 (declared minimum v2.1.0, same major)
+pinned build:     bld-2026-07-28.1  (deployment: prod)
+```
+
+The fleet, and the seam (pinning live; the view is decided tooling over
+visibility):
+
+```
+$ flow runs --pinned-before bld-2026-09-03.1
+RUN        WORKFLOW           PINNED BUILD      AGE   STATE
+018f3c2e   vendor-onboarding  bld-2026-07-28.1  61d   waiting: security-review
+0190aa17   cert-rotation      bld-2026-08-15.2  9d    running: renew
+```
+
+Migration, checked and refused (Phase 5; this output format is decided now):
+
+```
+$ flow migrate 018f3c2e --to vendor-onboarding.yaml --check
+frame check against RunState:
+  create    ok    completed; present in target, outputs unchanged (vendor)
+  reviews   ok    in flight; wait_for_signal shapes identical, carried signals preserved
+  activate  --    not reached; replaced by target definition
+  outcome   --    not reached
+would migrate at the next Continue-As-New seam: sha256:9f41c07a… -> sha256:2bb8d1e4…
+
+$ flow migrate 018f3c2e --to renamed.yaml
+frame check failed:
+  create    REFUSED   RunState records completed step "create"; target has no step
+                      with that id (found "register" — if this is a rename, an
+                      in-flight run cannot know that)
+nothing was changed
+$ echo $?
+1
+```
+
+The run as its own audit trail (Phase 5, with the third round's derived
+observability):
+
+```
+$ flow trace 018f3c2e
+vendor-onboarding 018f3c2e ------------------------------------ 63d 4h
+  create                 http        1.2s    attempts=2
+  reviews                for_each    63d 4h
+    [legal] decision     wait        2d 1h   signal=legal-review
+    [security] decision  wait        61d 3h  signal=security-review
+  migrate                operator    kent@…  9f41c07a… -> 2bb8d1e4…
+  activate               http        800ms
+  outcome                log         "vendor v-7731 onboarding finished"
+```
+
+The migration is a row in the trace because it is an event in the history — the
+audit property, visible where the run is read.
+
+### What this round adds
+
+Immediately cheap and immediately valuable: the diagnostic schema message and
+`--output json` as protojson of existing responses (the convention
+`cmd/flow/output.go` already holds, extended to every command with an answer).
+`--where` lands when the listing
+surfaces grow past flags. The plan/apply gate binds `terminate` now and
+`migrate`/`rerun` when Phase 5 builds them — with these transcripts as their
+golden tests. `flow mcp` follows the catalog and `Host.Register`, because an
+agent surface generated from services is only as complete as the services.
+
 ## Order of work
 
 Each phase lands green and reachable from a Flowfile.
@@ -385,6 +1412,12 @@ reserved-keyword diagnostics. Pinning the profile is the only Phase 1 item that 
 schema break, so it goes last rather than first. `inputs` is not a Phase 1 item at all; it
 is Phase 2 and lands with its checker or not at all, per
 [The type system is not a later phase](#the-type-system-is-not-a-later-phase).
+
+*Since written:* [the second round](#the-second-round-vocabulary-expressions-extension)
+grows this phase — `log:`, the retirement edition (`cel`, `echo`, `printf`,
+`iterator:`→`as:`, `response.*` rooting), and two reservations (`value`, the dotted
+plugin-key shape). The vars shadowing rules are part of `vars` landing, not a
+separate item.
 
 **Phase 2 — the contract, with its checker.** `inputs`, `outputs`, `check:`,
 `env.Check` at validate and in the LSP, typed hover, the absent/null/default matrix,
