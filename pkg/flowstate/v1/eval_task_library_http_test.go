@@ -281,10 +281,6 @@ func TestHTTPOutputsAreCancellable(t *testing.T) {
 func TestTheHTTPTaskSpeaksTheProfilesDialect(t *testing.T) {
 	t.Parallel()
 
-	server, _ := httpTaskServer(t, http.StatusOK, `{"n": [3, 1, 2]}`, http.Header{
-		"Content-Type": []string{"application/json"},
-	})
-
 	for _, test := range []struct {
 		library string
 		expr    string
@@ -303,6 +299,17 @@ func TestTheHTTPTaskSpeaksTheProfilesDialect(t *testing.T) {
 	} {
 		t.Run(test.library, func(t *testing.T) {
 			t.Parallel()
+
+			// One server per subtest, not one for the table. `httpTaskServer`
+			// records the request it received into a struct with no
+			// synchronisation, which is right for a test making one request and a
+			// data race the moment two of these run at once — as they do, since
+			// they are parallel. Found by CI rather than locally: two handler
+			// goroutines have to overlap for the detector to see it, and on this
+			// machine they did not.
+			server, _ := httpTaskServer(t, http.StatusOK, `{"n": [3, 1, 2]}`, http.Header{
+				"Content-Type": []string{"application/json"},
+			})
 
 			// Through `outputs:`, which is the position that runs after the request
 			// and so is the one where the old failure was most expensive.
