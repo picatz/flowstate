@@ -28,9 +28,22 @@ import (
 // toward completeness over clarity, which is the wrong trade for a README. What
 // is checked is every block that presents itself as a whole workflow.
 
-// completeWorkflow matches a fenced yaml block that opens with `name:` at the
+// completeWorkflow matches a fenced yaml block that opens with `edition:` at the
 // margin, which is what a whole Flowfile looks like and what a fragment does not.
-var completeWorkflow = regexp.MustCompile("(?s)```yaml\n(name:.*?)```")
+//
+// It used to anchor on `name:`, and that stopped being the rule when `edition:`
+// became required: a block opening with `name:` is now a *fragment* by the
+// language's own definition, and one opening with `edition:` is the whole thing.
+// Anchoring on the required key means the pattern says what a Flowfile is rather
+// than approximating it — and it is why the block is compiled as written, with no
+// edition supplied on its behalf.
+//
+// The info string must be exactly `yaml`. A block a reader should see but this
+// build cannot compile — a design sketch for a phase that has not landed — is
+// fenced ```yaml (proposed) instead: renderers highlight on the first word, so it
+// still reads as YAML, and it is visibly marked for a human rather than silently
+// skipped for a machine.
+var completeWorkflow = regexp.MustCompile("(?s)```yaml\n(edition:.*?)```")
 
 // TestREADMEWorkflowsCompile checks the documented Flowfiles against the compiler.
 func TestREADMEWorkflowsCompile(t *testing.T) {
@@ -52,18 +65,13 @@ func TestREADMEWorkflowsCompile(t *testing.T) {
 				// failure says which example rather than which position.
 				name := "block " + strings.TrimSpace(strings.SplitN(source, "\n", 2)[0])
 				t.Run(name, func(t *testing.T) {
-					// The edition is supplied here rather than written into every
-					// fenced block, because a snippet in prose is a *fragment*: it is
-					// shown to illustrate one thing, and the paragraph around it does
-					// the job a file's header does. Requiring the marker in each would
-					// put a ceremonial line at the top of every example in the
-					// documentation, which is exactly where the language is judged.
-					//
-					// What the block still has to be is a workflow this build compiles
-					// — the marker changes nothing about that, since it declares the
-					// grammar the block is already written in.
-					source := "edition: " + flowfile.CurrentEdition + "\n" + source
-
+					// Compiled exactly as written. The edition used to be supplied
+					// here, on the theory that a ceremonial first line in every
+					// example costs more than it buys — which was true while the key
+					// was optional, and stopped being true when it became required.
+					// A reader who copies a block out of the README gets a file, and
+					// a test that quietly adds the one line the compiler insists on
+					// is a test that cannot tell them otherwise.
 					ds, err := flowfile.ValidateSource([]byte(source))
 					require.NoError(t, err, "%s example %d does not parse:\n%s", doc, i+1, source)
 					assert.Empty(t, ds, "%s example %d does not validate:\n%s\n%s", doc, i+1, ds.Error(), source)

@@ -21,7 +21,7 @@ steps:
       # workflow's vars, and any step that has already run.
       subject: ${'release for ' + vars.environment}
       stamp: ${string(2026)}
-    echo:
+    log:
       # Bare, because these are bound right here. Nothing else in the file can see
       # them, which is what makes `subject` a safe name to use twice in one workflow.
       message: ${subject + ' (' + stamp + ')'}
@@ -31,7 +31,7 @@ steps:
   - id: describe_rollback
     vars:
       subject: ${'rollback for ' + vars.environment}
-    echo:
+    log:
       message: ${subject}
 
   # A block's vars are in scope for its items expression and throughout its body, so a
@@ -49,7 +49,7 @@ steps:
           # read the iterator.
           vars:
             fqdn: ${host + suffix}
-          echo:
+          log:
             message: ${fqdn}
 
 # What this file cannot do, and `flow validate` says so rather than picking a winner:

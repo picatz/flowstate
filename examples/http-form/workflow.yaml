@@ -19,7 +19,5 @@ steps:
       parse_json: true
 
   - id: report
-    printf:
-      format: "the endpoint received content type %s"
-      args:
-        - ${steps.token.json.headers['Content-Type']}
+    log:
+      message: ${"the endpoint received content type %s".format([steps.token.json.headers['Content-Type']])}

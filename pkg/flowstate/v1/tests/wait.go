@@ -32,35 +32,23 @@ func WaitCases() []Case {
 			Workflow: &v1.Workflow{
 				Name: "sleep",
 				Steps: []*v1.Node{
-					{
-						Id: "before",
-						Kind: &v1.Node_Task{Task: &v1.Task{
-							Name:   "echo",
-							Inputs: map[string]*v1.Value{"message": v1.NewLiteral("starting")},
-						}},
-					},
+					says("before", "starting"),
 					{
 						Id: "pause",
 						Kind: &v1.Node_Wait{Wait: &v1.Wait{
 							Kind: &v1.Wait_Duration{Duration: durationpb.New(10 * time.Millisecond)},
 						}},
 					},
-					{
-						Id: "after",
-						Kind: &v1.Node_Task{Task: &v1.Task{
-							Name:   "echo",
-							Inputs: map[string]*v1.Value{"message": v1.NewLiteral("resumed")},
-						}},
-					},
+					says("after", "resumed"),
 				},
 			},
 			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-				"before": {NamedValues: map[string]*v1.Value{"result": v1.NewLiteral("starting")}},
+				"before": {},
 				// A wait reports how it ended, so an author can branch on it.
 				"pause": {NamedValues: map[string]*v1.Value{
 					v1.TimedOutOutput: v1.NewLiteral(false),
 				}},
-				"after": {NamedValues: map[string]*v1.Value{"result": v1.NewLiteral("resumed")}},
+				"after": {},
 			}},
 		},
 		{
@@ -94,20 +82,14 @@ func WaitCases() []Case {
 							Kind: &v1.Wait_Until{Until: v1.NewLiteral("2000-01-01T00:00:00Z")},
 						}},
 					},
-					{
-						Id: "after",
-						Kind: &v1.Node_Task{Task: &v1.Task{
-							Name:   "echo",
-							Inputs: map[string]*v1.Value{"message": v1.NewLiteral("caught up")},
-						}},
-					},
+					says("after", "caught up"),
 				},
 			},
 			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
 				"pause": {NamedValues: map[string]*v1.Value{
 					v1.TimedOutOutput: v1.NewLiteral(false),
 				}},
-				"after": {NamedValues: map[string]*v1.Value{"result": v1.NewLiteral("caught up")}},
+				"after": {},
 			}},
 		},
 		{
@@ -115,16 +97,10 @@ func WaitCases() []Case {
 			Workflow: &v1.Workflow{
 				Name: "wait-skipped",
 				Steps: []*v1.Node{
-					{
-						Id: "gate",
-						Kind: &v1.Node_Task{Task: &v1.Task{
-							Name:   "echo",
-							Inputs: map[string]*v1.Value{"message": v1.NewLiteral("no")},
-						}},
-					},
+					counter("gate", "no"),
 					{
 						Id:        "pause",
-						Condition: v1.NewExpr("gate.result == 'yes'"),
+						Condition: v1.NewExpr("size(gate.results) == 99"),
 						Kind: &v1.Node_Wait{Wait: &v1.Wait{
 							// An hour, so that a driver which ignored the
 							// condition is caught twice over: it would record
@@ -136,7 +112,9 @@ func WaitCases() []Case {
 				},
 			},
 			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-				"gate": {NamedValues: map[string]*v1.Value{"result": v1.NewLiteral("no")}},
+				"gate": {NamedValues: map[string]*v1.Value{
+					"results": v1.NewLiteralList(map[string]any{"gate_body": map[string]any{}}),
+				}},
 			}},
 		},
 	}

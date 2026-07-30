@@ -14,30 +14,22 @@ import (
 func PolicyCases() []Case {
 	return []Case{
 		{
+			// The gate is a loop because `results` is the only step output a case can
+			// produce without a server since `echo` retired, and a condition reading a
+			// *step* rather than a var is the path worth keeping under test.
 			Name: "condition true runs the step",
 			Workflow: &v1.Workflow{
 				Name: "condition-true",
 				Steps: []*v1.Node{
-					{
-						Id: "gate",
-						Kind: &v1.Node_Task{Task: &v1.Task{
-							Name:   "echo",
-							Inputs: map[string]*v1.Value{"message": v1.NewLiteral("go")},
-						}},
-					},
-					{
-						Id:        "guarded",
-						Condition: v1.NewExpr("gate.result == 'go'"),
-						Kind: &v1.Node_Task{Task: &v1.Task{
-							Name:   "echo",
-							Inputs: map[string]*v1.Value{"message": v1.NewLiteral("ran")},
-						}},
-					},
+					counter("gate", "go"),
+					guarded("guarded", "size(gate.results) == 1", "ran"),
 				},
 			},
 			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-				"gate":    {NamedValues: map[string]*v1.Value{"result": v1.NewLiteral("go")}},
-				"guarded": {NamedValues: map[string]*v1.Value{"result": v1.NewLiteral("ran")}},
+				"gate": {NamedValues: map[string]*v1.Value{
+					"results": v1.NewLiteralList(map[string]any{"gate_body": map[string]any{}}),
+				}},
+				"guarded": {},
 			}},
 		},
 		{
@@ -45,29 +37,21 @@ func PolicyCases() []Case {
 			// entry. Recording it as present-but-empty would let a later
 			// reference resolve to nothing instead of failing, which hides the
 			// mistake of depending on a step that did not run.
+			//
+			// It is also what every `pins` pair in this package rests on, so this case
+			// is load-bearing for the rest of them rather than only for itself.
 			Name: "condition false skips the step",
 			Workflow: &v1.Workflow{
 				Name: "condition-false",
 				Steps: []*v1.Node{
-					{
-						Id: "gate",
-						Kind: &v1.Node_Task{Task: &v1.Task{
-							Name:   "echo",
-							Inputs: map[string]*v1.Value{"message": v1.NewLiteral("stop")},
-						}},
-					},
-					{
-						Id:        "guarded",
-						Condition: v1.NewExpr("gate.result == 'go'"),
-						Kind: &v1.Node_Task{Task: &v1.Task{
-							Name:   "echo",
-							Inputs: map[string]*v1.Value{"message": v1.NewLiteral("ran")},
-						}},
-					},
+					counter("gate", "stop"),
+					guarded("guarded", "size(gate.results) == 99", "ran"),
 				},
 			},
 			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-				"gate": {NamedValues: map[string]*v1.Value{"result": v1.NewLiteral("stop")}},
+				"gate": {NamedValues: map[string]*v1.Value{
+					"results": v1.NewLiteralList(map[string]any{"gate_body": map[string]any{}}),
+				}},
 			}},
 		},
 		{
@@ -75,26 +59,18 @@ func PolicyCases() []Case {
 			Workflow: &v1.Workflow{
 				Name: "condition-literal",
 				Steps: []*v1.Node{
-					{
-						Id: "always",
-						Kind: &v1.Node_Task{Task: &v1.Task{
-							Name:   "echo",
-							Inputs: map[string]*v1.Value{"message": v1.NewLiteral("hi")},
-						}},
-					},
+					says("always", "hi"),
 					{
 						Id:        "never",
 						Condition: v1.NewLiteral(false),
 						Kind: &v1.Node_Task{Task: &v1.Task{
-							Name:   "echo",
+							Name:   "log",
 							Inputs: map[string]*v1.Value{"message": v1.NewLiteral("nope")},
 						}},
 					},
 				},
 			},
-			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-				"always": {NamedValues: map[string]*v1.Value{"result": v1.NewLiteral("hi")}},
-			}},
+			ExpectedOutputs: held("always"),
 		},
 		{
 			// An unknown task is a permanent failure, so this also pins that
@@ -112,13 +88,7 @@ func PolicyCases() []Case {
 							Inputs: map[string]*v1.Value{},
 						}},
 					},
-					{
-						Id: "after",
-						Kind: &v1.Node_Task{Task: &v1.Task{
-							Name:   "echo",
-							Inputs: map[string]*v1.Value{"message": v1.NewLiteral("still here")},
-						}},
-					},
+					says("after", "still here"),
 				},
 			},
 			// The failure text is engine-specific, so only the surviving step is
@@ -142,15 +112,13 @@ func PolicyCases() []Case {
 							},
 						},
 						Kind: &v1.Node_Task{Task: &v1.Task{
-							Name:   "echo",
+							Name:   "log",
 							Inputs: map[string]*v1.Value{"message": v1.NewLiteral("done")},
 						}},
 					},
 				},
 			},
-			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-				"quick": {NamedValues: map[string]*v1.Value{"result": v1.NewLiteral("done")}},
-			}},
+			ExpectedOutputs: held("quick"),
 		},
 	}
 }
@@ -161,7 +129,10 @@ func PolicyCases() []Case {
 // differ most — one schedules concurrent activities, the other calls functions in
 // order — so agreeing on the observable result is exactly the property worth
 // pinning.
-func ControlFlowCases() []Case {
+//
+// The base URL should come from [NewHTTPServer]; it is what lets a branch produce a
+// value another step can join, now that no local task returns one.
+func ControlFlowCases(httpBaseURL string) []Case {
 	return []Case{
 		{
 			// A loop's results are a list, one element per iteration, each a map
@@ -170,24 +141,14 @@ func ControlFlowCases() []Case {
 			// would overwrite each other.
 			Name: "for_each over a literal list",
 			Workflow: &v1.Workflow{
-				Name: "loop-literal",
+				Name:    "loop-literal",
+				Profile: v1.CurrentProfile,
 				Steps: []*v1.Node{
 					{
 						Id: "loop",
 						Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
 							Items: v1.NewExpr("['a', 'b']"),
-							Body: []*v1.Node{
-								{
-									Id: "shout",
-									Kind: &v1.Node_Task{Task: &v1.Task{
-										Name: "printf",
-										Inputs: map[string]*v1.Value{
-											"format": v1.NewLiteral("<%s>"),
-											"args":   v1.NewExpr("[item]"),
-										},
-									}},
-								},
-							},
+							Body:  pins("shout", `"<%s>".format([item]) in ["<a>", "<b>"]`),
 						}},
 					},
 				},
@@ -195,49 +156,41 @@ func ControlFlowCases() []Case {
 			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
 				"loop": {NamedValues: map[string]*v1.Value{
 					"results": v1.NewLiteralList(
-						map[string]any{"shout": map[string]any{"result": "<a>"}},
-						map[string]any{"shout": map[string]any{"result": "<b>"}},
+						map[string]any{"shout": map[string]any{}},
+						map[string]any{"shout": map[string]any{}},
 					),
 				}},
 			}},
 		},
 		{
+			// The list comes from a step rather than from the file, which is the
+			// ordinary shape: something is fetched, then worked through.
 			Name: "for_each over a previous step's output",
 			Workflow: &v1.Workflow{
-				Name: "loop-referenced",
+				Name:    "loop-referenced",
+				Profile: v1.CurrentProfile,
 				Steps: []*v1.Node{
-					{
-						Id: "src",
-						Kind: &v1.Node_Task{Task: &v1.Task{
-							Name:   "cel",
-							Inputs: map[string]*v1.Value{"expr": v1.NewLiteral("[1, 2, 3]")},
-						}},
-					},
+					echoes("src", httpBaseURL, `"[1, 2, 3]"`),
 					{
 						Id: "double",
 						Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
-							Items:    v1.NewExpr("src.result"),
+							Items:    v1.NewExpr("json_parse(src.said)"),
 							Iterator: "n",
-							Body: []*v1.Node{
-								{
-									Id: "calc",
-									Kind: &v1.Node_Task{Task: &v1.Task{
-										Name:   "cel",
-										Inputs: map[string]*v1.Value{"expr": v1.NewLiteral("n * 2")},
-									}},
-								},
-							},
+							// Doubled as a double: a JSON number arrives as one, and CEL
+							// has no int/double promotion — `n * 2` is `no such overload`
+							// rather than 2, 4, 6.
+							Body: pins("calc", `(n * 2.0) in [2.0, 4.0, 6.0]`),
 						}},
 					},
 				},
 			},
 			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-				"src": {NamedValues: map[string]*v1.Value{"result": v1.NewLiteralList(1, 2, 3)}},
+				"src": said("[1, 2, 3]"),
 				"double": {NamedValues: map[string]*v1.Value{
 					"results": v1.NewLiteralList(
-						map[string]any{"calc": map[string]any{"result": 2}},
-						map[string]any{"calc": map[string]any{"result": 4}},
-						map[string]any{"calc": map[string]any{"result": 6}},
+						map[string]any{"calc": map[string]any{}},
+						map[string]any{"calc": map[string]any{}},
+						map[string]any{"calc": map[string]any{}},
 					),
 				}},
 			}},
@@ -253,15 +206,7 @@ func ControlFlowCases() []Case {
 						Id: "loop",
 						Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
 							Items: v1.NewExpr("[]"),
-							Body: []*v1.Node{
-								{
-									Id: "never",
-									Kind: &v1.Node_Task{Task: &v1.Task{
-										Name:   "echo",
-										Inputs: map[string]*v1.Value{"message": v1.NewLiteral("x")},
-									}},
-								},
-							},
+							Body:  []*v1.Node{says("never", "x")},
 						}},
 					},
 				},
@@ -277,44 +222,22 @@ func ControlFlowCases() []Case {
 			Name: "parallel branches join afterwards",
 			Workflow: &v1.Workflow{
 				Name: "parallel-join",
-				Steps: []*v1.Node{
+				Steps: append([]*v1.Node{
 					{
 						Id: "fan",
 						Kind: &v1.Node_Parallel{Parallel: &v1.Parallel{
 							Branches: []*v1.Parallel_Branch{
-								{Steps: []*v1.Node{{
-									Id: "left",
-									Kind: &v1.Node_Task{Task: &v1.Task{
-										Name:   "echo",
-										Inputs: map[string]*v1.Value{"message": v1.NewLiteral("L")},
-									}},
-								}}},
-								{Steps: []*v1.Node{{
-									Id: "right",
-									Kind: &v1.Node_Task{Task: &v1.Task{
-										Name:   "echo",
-										Inputs: map[string]*v1.Value{"message": v1.NewLiteral("R")},
-									}},
-								}}},
+								{Steps: []*v1.Node{echoes("left", httpBaseURL, `"L"`)}},
+								{Steps: []*v1.Node{echoes("right", httpBaseURL, `"R"`)}},
 							},
 						}},
 					},
-					{
-						Id: "join",
-						Kind: &v1.Node_Task{Task: &v1.Task{
-							Name: "printf",
-							Inputs: map[string]*v1.Value{
-								"format": v1.NewLiteral("%s%s"),
-								"args":   v1.NewExpr("[left.result, right.result]"),
-							},
-						}},
-					},
-				},
+				}, pins("join", `left.said + right.said == "LR"`)...),
 			},
 			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-				"left":  {NamedValues: map[string]*v1.Value{"result": v1.NewLiteral("L")}},
-				"right": {NamedValues: map[string]*v1.Value{"result": v1.NewLiteral("R")}},
-				"join":  {NamedValues: map[string]*v1.Value{"result": v1.NewLiteral("LR")}},
+				"left":  said("L"),
+				"right": said("R"),
+				"join":  {},
 			}},
 		},
 		{
@@ -326,16 +249,7 @@ func ControlFlowCases() []Case {
 						Id: "loop",
 						Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
 							Items: v1.NewExpr("['keep', 'skip']"),
-							Body: []*v1.Node{
-								{
-									Id:        "act",
-									Condition: v1.NewExpr("item == 'keep'"),
-									Kind: &v1.Node_Task{Task: &v1.Task{
-										Name:   "echo",
-										Inputs: map[string]*v1.Value{"message": v1.NewExpr("item")},
-									}},
-								},
-							},
+							Body:  []*v1.Node{guarded("act", "item == 'keep'", "kept")},
 						}},
 					},
 				},
@@ -345,7 +259,7 @@ func ControlFlowCases() []Case {
 			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
 				"loop": {NamedValues: map[string]*v1.Value{
 					"results": v1.NewLiteralList(
-						map[string]any{"act": map[string]any{"result": "keep"}},
+						map[string]any{"act": map[string]any{}},
 						map[string]any{},
 					),
 				}},

@@ -51,7 +51,8 @@ type value struct {
 
 	// textOffset is the byte offset in the document where text begins, which is
 	// past the opening quote of a quoted scalar. An input whose whole value is
-	// expression source — a cel step's expr — is reported against this, so the
+	// expression source — an input the task evaluates itself, such as `http:`'s
+	// `expect:` — is reported against this, so the
 	// squiggle lands inside the quotes rather than on them.
 	textOffset int
 

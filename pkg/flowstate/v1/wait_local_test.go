@@ -14,6 +14,11 @@ import (
 )
 
 // gatedLocalWorkflow waits for an approval and then acts on what it carried.
+//
+// The two acting steps are `log:` steps, which produce no values on purpose, so what
+// the assertions below read is presence rather than a result: a step that ran has an
+// empty outputs entry and a step the gate held back has none at all. That is the
+// distinction the gate exists to make, and it is the one the run record keeps.
 func gatedLocalWorkflow(timeout time.Duration) *v1.Workflow {
 	wait := &v1.Wait{Kind: &v1.Wait_Signal{Signal: &v1.Signal{Name: "deploy-approved"}}}
 	if timeout > 0 {
@@ -26,7 +31,7 @@ func gatedLocalWorkflow(timeout time.Duration) *v1.Workflow {
 			{
 				Id: "request",
 				Kind: &v1.Node_Task{Task: &v1.Task{
-					Name:   "echo",
+					Name:   "log",
 					Inputs: map[string]*v1.Value{"message": v1.NewLiteral("requesting approval")},
 				}},
 			},
@@ -35,7 +40,7 @@ func gatedLocalWorkflow(timeout time.Duration) *v1.Workflow {
 				Id:        "deploy",
 				Condition: v1.NewExpr("approval.payload.approved"),
 				Kind: &v1.Node_Task{Task: &v1.Task{
-					Name:   "echo",
+					Name:   "log",
 					Inputs: map[string]*v1.Value{"message": v1.NewLiteral("deploying")},
 				}},
 			},

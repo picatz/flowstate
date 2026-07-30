@@ -29,7 +29,7 @@ func TestResolveTaskInputs_PreResolveValueExprs(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			task := &v1.Task{Name: "echo", Inputs: map[string]*v1.Value{
+			task := &v1.Task{Name: "log", Inputs: map[string]*v1.Value{
 				"message": v1.NewExpr(tc.expr),
 			}}
 			resolved, err := v1.ResolveTaskInputs(t.Context(), task, v1.NewScope(v1.CurrentProfile, prev))
@@ -73,7 +73,7 @@ func TestResolveTaskInputs_MixedTypes_Table(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			task := &v1.Task{Name: "echo", Inputs: map[string]*v1.Value{
+			task := &v1.Task{Name: "log", Inputs: map[string]*v1.Value{
 				"message": v1.NewExpr(tc.expr),
 			}}
 			resolved, err := v1.ResolveTaskInputs(t.Context(), task, v1.NewScope(v1.CurrentProfile, prev))
@@ -113,20 +113,33 @@ func TestCompactPrevOutputsForTask_MinimalSubset(t *testing.T) {
 		want map[string][]string // step -> fields (empty list => whole step)
 	}{
 		{
-			name: "cel task string expr references a.result",
-			task: &v1.Task{Name: "cel", Inputs: map[string]*v1.Value{
-				"expr": v1.NewLiteral("a.result + '!'")}},
-			want: map[string][]string{"a": {"result"}},
+			// A literal carries no references, whatever it happens to spell.
+			//
+			// This case used to be the opposite claim: the retired `cel` task took its
+			// expression as a literal string, so compaction special-cased that one task
+			// name and parsed the string looking for step references. `cel` retired at
+			// edition v2026.2 and the special case went with it, which makes the rule
+			// uniform — an expression is a `Value_Expr` and nothing else is one.
+			//
+			// Worth a case rather than a deletion, because the failure it guards is
+			// silent and expensive in the other direction: something that reads like an
+			// expression being *treated* as one would drag steps into the carryover that
+			// nothing names, and the cost is history size on exactly the long runs this
+			// engine exists for.
+			name: "a literal that looks like an expression references nothing",
+			task: &v1.Task{Name: "log", Inputs: map[string]*v1.Value{
+				"message": v1.NewLiteral("a.result + '!'")}},
+			want: map[string][]string{},
 		},
 		{
 			name: "non-cel expr inputs reference a.result and b.foo",
-			task: &v1.Task{Name: "echo", Inputs: map[string]*v1.Value{
+			task: &v1.Task{Name: "log", Inputs: map[string]*v1.Value{
 				"message": v1.NewExpr("a.result + string(b.foo)")}},
 			want: map[string][]string{"a": {"result"}, "b": {"foo"}},
 		},
 		{
 			name: "reference whole step ident",
-			task: &v1.Task{Name: "echo", Inputs: map[string]*v1.Value{
+			task: &v1.Task{Name: "log", Inputs: map[string]*v1.Value{
 				"message": v1.NewExpr("a")}},
 			want: map[string][]string{"a": {}},
 		},
@@ -136,6 +149,12 @@ func TestCompactPrevOutputsForTask_MinimalSubset(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			trimmed := compactPrevOutputsForTask(tc.task, prev)
 			require.NotNil(t, trimmed)
+			// Nothing beyond what is referenced, as well as nothing missing. Checking
+			// only the steps named below is satisfied by a compaction that trims
+			// nothing at all, which is the direction that costs history rather than
+			// the run — and so the direction nobody notices.
+			require.Len(t, trimmed.GetStepValues(), len(tc.want),
+				"kept the wrong number of steps: %v", stepIDsOf(trimmed))
 			// Validate steps present
 			for step, fields := range tc.want {
 				outs, ok := trimmed.StepValues[step]
@@ -160,7 +179,7 @@ func TestCompactPrevOutputsForTask_MissingRefs(t *testing.T) {
 		"a": {NamedValues: map[string]*v1.Value{"result": v1.NewLiteral("hi")}},
 	}}
 	// Reference non-existent step "x"; expect empty subset
-	task := &v1.Task{Name: "echo", Inputs: map[string]*v1.Value{
+	task := &v1.Task{Name: "log", Inputs: map[string]*v1.Value{
 		"message": v1.NewExpr("x.result"),
 	}}
 	trimmed := compactPrevOutputsForTask(task, prev)
@@ -176,12 +195,17 @@ func TestCompactOutputsForRemainingSteps_Table(t *testing.T) {
 	}}
 
 	steps := []*v1.Node{
-		{Id: "s1", Kind: &v1.Node_Task{Task: &v1.Task{Name: "echo", Inputs: map[string]*v1.Value{
+		{Id: "s1", Kind: &v1.Node_Task{Task: &v1.Task{Name: "log", Inputs: map[string]*v1.Value{
 			"message": v1.NewExpr("a.result")}}}},
-		{Id: "s2", Kind: &v1.Node_Task{Task: &v1.Task{Name: "echo", Inputs: map[string]*v1.Value{
+		{Id: "s2", Kind: &v1.Node_Task{Task: &v1.Task{Name: "log", Inputs: map[string]*v1.Value{
 			"message": v1.NewExpr("string(b.foo)")}}}},
-		{Id: "s3", Kind: &v1.Node_Task{Task: &v1.Task{Name: "cel", Inputs: map[string]*v1.Value{
-			"expr": v1.NewLiteral("c.bar + '!'")}}}},
+		// Was a `cel` step, whose expression arrived as a literal string and needed a
+		// special case in collectValueRefs to be seen at all. Both retired at edition
+		// v2026.2; an expression input is now the only thing that carries a reference,
+		// and what this step is here for — a third distinct step, referenced only from
+		// the tail of the walk — is unchanged.
+		{Id: "s3", Kind: &v1.Node_Task{Task: &v1.Task{Name: "log", Inputs: map[string]*v1.Value{
+			"message": v1.NewExpr("c.bar + '!'")}}}},
 	}
 
 	tests := []struct {
@@ -347,7 +371,7 @@ func TestCompactPrevOutputsForTask_RootedReferences(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			task := &v1.Task{
-				Name:   "echo",
+				Name:   "log",
 				Inputs: map[string]*v1.Value{"message": v1.NewExpr(tc.expr)},
 			}
 

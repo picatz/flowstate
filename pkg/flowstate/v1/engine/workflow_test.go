@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"fmt"
+	"net/http"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -27,6 +28,11 @@ func runWorkflow(t *testing.T, input *v1.Workflow, expected *v1.Workflow_StepOut
 	env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
 	env.OnActivity(engine.TaskWithPrev, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskWithPrev)
 	env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+	// Registered here rather than only in the `vars:` tests: a workflow's block is
+	// evaluated in an activity, so any shared case that declares one needs it, and a
+	// missing registration surfaces as ActivityNotRegistered rather than as anything
+	// about vars.
+	env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
 
 	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: input})
 	require.True(t, env.IsWorkflowCompleted())
@@ -104,14 +110,67 @@ func TestRunWorkflowPolicy(t *testing.T) {
 // TestRunWorkflowControlFlow runs the shared loop and parallel cases against the
 // durable driver, where iterations and branches are genuinely concurrent.
 func TestRunWorkflowControlFlow(t *testing.T) {
-	for _, test := range tests.ControlFlowCases() {
+	baseURL := tests.NewHTTPServer(t)
+	for _, test := range tests.ControlFlowCases(baseURL) {
 		t.Run(test.Name, func(t *testing.T) {
 			runWorkflow(t, test.Workflow, test.ExpectedOutputs)
 		})
 	}
 }
 
+// chained returns three steps where each reads the value the one before produced.
+//
+// A chain rather than three independent steps because what the budget tests are
+// about is *carryover*: a step's output has to still be there for the step that
+// names it, whether or not the run suspended in between. Three steps that ignore
+// each other would pass with the carryover removed entirely.
+//
+// The steps are `http` against the loopback echo server because a value now has to
+// come from somewhere. `echo` retired at edition v2026.2 and nothing that remains
+// produces a value locally — `log` deliberately returns none, so a chain built from
+// it would have nothing to chain. The server hands each request's body back, which
+// makes `<step>.said` a real recorded output the next step's expression can read.
+func chained(httpBaseURL string) []*v1.Node {
+	echoes := func(id, body string) *v1.Node {
+		return &v1.Node{
+			Id: id,
+			Kind: &v1.Node_Task{Task: &v1.Task{
+				Name: "http",
+				Inputs: map[string]*v1.Value{
+					"method":  v1.NewLiteral(http.MethodPost),
+					"url":     v1.NewLiteral(httpBaseURL + "/echo"),
+					"body":    v1.NewExpr(body),
+					"outputs": v1.NewExpr(`{"said": response.body}`),
+				},
+			}},
+		}
+	}
+
+	return []*v1.Node{
+		echoes("a", `"hi"`),
+		echoes("b", "a.said"),
+		echoes("c", "b.said"),
+	}
+}
+
+// saidHi is what [chained] produces when every link of the chain held.
+//
+// Every step carries the same string deliberately: `a`'s literal reaching `c`
+// unchanged is the claim, so any link that lost its predecessor's value shows up
+// as a missing or empty `said` rather than as a plausible-looking different one.
+func saidHi() *v1.Workflow_StepOutputs {
+	said := func() *v1.Node_Outputs {
+		return &v1.Node_Outputs{NamedValues: map[string]*v1.Value{"said": v1.NewLiteral("hi")}}
+	}
+
+	return &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+		"a": said(), "b": said(), "c": said(),
+	}}
+}
+
 func TestRunWorkflow_ContinueAsNewBudget(t *testing.T) {
+	baseURL := tests.NewHTTPServer(t)
+
 	testSuite := &testsuite.WorkflowTestSuite{}
 	env := testSuite.NewTestWorkflowEnvironment()
 
@@ -123,14 +182,10 @@ func TestRunWorkflow_ContinueAsNewBudget(t *testing.T) {
 	env.OnActivity(engine.TaskWithPrev, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskWithPrev)
 	env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 
-	// Workflow with 3 dependent echo steps to ensure carryover works across continues
+	// Three dependent steps, so carryover has something to carry.
 	wf := &v1.Workflow{
-		Name: "continue-as-new",
-		Steps: []*v1.Node{
-			{Id: "a", Kind: &v1.Node_Task{Task: &v1.Task{Name: "echo", Inputs: map[string]*v1.Value{"message": v1.NewLiteral("hi")}}}},
-			{Id: "b", Kind: &v1.Node_Task{Task: &v1.Task{Name: "echo", Inputs: map[string]*v1.Value{"message": v1.NewExpr("a.result")}}}},
-			{Id: "c", Kind: &v1.Node_Task{Task: &v1.Task{Name: "echo", Inputs: map[string]*v1.Value{"message": v1.NewExpr("b.result")}}}},
-		},
+		Name:  "continue-as-new",
+		Steps: chained(baseURL),
 	}
 
 	// Use injected budget equal to number of steps to avoid Continue-As-New
@@ -141,11 +196,7 @@ func TestRunWorkflow_ContinueAsNewBudget(t *testing.T) {
 	var output v1.Workflow_StepOutputs
 	require.NoError(t, env.GetWorkflowResult(&output))
 
-	expected := &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-		"a": {NamedValues: map[string]*v1.Value{"result": v1.NewLiteral("hi")}},
-		"b": {NamedValues: map[string]*v1.Value{"result": v1.NewLiteral("hi")}},
-		"c": {NamedValues: map[string]*v1.Value{"result": v1.NewLiteral("hi")}},
-	}}
+	expected := saidHi()
 	require.True(
 		t,
 		proto.Equal(expected, &output),
@@ -155,6 +206,8 @@ func TestRunWorkflow_ContinueAsNewBudget(t *testing.T) {
 }
 
 func TestRunWorkflow_StateBudget(t *testing.T) {
+	baseURL := tests.NewHTTPServer(t)
+
 	testSuite := &testsuite.WorkflowTestSuite{}
 	env := testSuite.NewTestWorkflowEnvironment()
 
@@ -173,11 +226,7 @@ func TestRunWorkflow_StateBudget(t *testing.T) {
 		// RunState.StepsBudget, which this test sets below and always did. An inert
 		// field that reads like a live one is worse than an absent feature: the next
 		// person to want a per-workflow budget would have found it and believed it.
-		Steps: []*v1.Node{
-			{Id: "a", Kind: &v1.Node_Task{Task: &v1.Task{Name: "echo", Inputs: map[string]*v1.Value{"message": v1.NewLiteral("hi")}}}},
-			{Id: "b", Kind: &v1.Node_Task{Task: &v1.Task{Name: "echo", Inputs: map[string]*v1.Value{"message": v1.NewExpr("a.result")}}}},
-			{Id: "c", Kind: &v1.Node_Task{Task: &v1.Task{Name: "echo", Inputs: map[string]*v1.Value{"message": v1.NewExpr("b.result")}}}},
-		},
+		Steps: chained(baseURL),
 	}
 
 	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: wf, StepsBudget: 3})
@@ -187,11 +236,7 @@ func TestRunWorkflow_StateBudget(t *testing.T) {
 	var output v1.Workflow_StepOutputs
 	require.NoError(t, env.GetWorkflowResult(&output))
 
-	expected := &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-		"a": {NamedValues: map[string]*v1.Value{"result": v1.NewLiteral("hi")}},
-		"b": {NamedValues: map[string]*v1.Value{"result": v1.NewLiteral("hi")}},
-		"c": {NamedValues: map[string]*v1.Value{"result": v1.NewLiteral("hi")}},
-	}}
+	expected := saidHi()
 	require.True(
 		t,
 		proto.Equal(expected, &output),
@@ -236,7 +281,8 @@ func TestRunWorkflowLog(t *testing.T) {
 // step's expression inputs, by swapping the executor's scope; a nested executor built
 // from the wrong one is a divergence only these can see.
 func TestRunWorkflowVars(t *testing.T) {
-	for _, test := range tests.VarsCases() {
+	baseURL := tests.NewHTTPServer(t)
+	for _, test := range tests.VarsCases(baseURL) {
 		t.Run(test.Name, func(t *testing.T) {
 			testSuite := &testsuite.WorkflowTestSuite{}
 			env := testSuite.NewTestWorkflowEnvironment()

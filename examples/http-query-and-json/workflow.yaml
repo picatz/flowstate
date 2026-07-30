@@ -44,9 +44,8 @@ steps:
       parse_json: true
 
   - id: report
-    printf:
-      format: "sent %s and the server echoed it back"
-      args:
-        # Quoted because the colon inside the expression would otherwise be read
-        # as YAML mapping syntax.
-        - "${steps.submit.json.json.nested.works ? 'a nested object' : 'nothing'}"
+    log:
+      message: the server echoed the request back
+      fields:
+        query: ${string(steps.search.json.args)}
+        sent: ${string(steps.submit.json.json['nested']['count'])}

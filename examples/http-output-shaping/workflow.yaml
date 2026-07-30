@@ -25,8 +25,5 @@ steps:
       outputs: "${ {'status': response.status_code, 'title': json_parse(response.body)['slideshow']['title']} }"
 
   - id: report
-    printf:
-      format: "got %d for %s"
-      args:
-        - ${steps.web.status}
-        - ${steps.web.title}
+    log:
+      message: ${"got %d for %s".format([steps.web.status, steps.web.title])}

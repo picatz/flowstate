@@ -45,7 +45,7 @@ func validWorkflow() *v1.Workflow {
 		Steps: []*v1.Node{{
 			Id: "step-1",
 			Kind: &v1.Node_Task{Task: &v1.Task{
-				Name:   "echo",
+				Name:   "log",
 				Inputs: map[string]*v1.Value{"message": v1.NewLiteral("hi")},
 			}},
 		}},
@@ -149,7 +149,7 @@ func TestValidate(t *testing.T) {
 		},
 		{
 			name: "task inputs empty",
-			msg:  &v1.Task{Name: "echo"},
+			msg:  &v1.Task{Name: "log"},
 			want: []failure{{"inputs", "required"}},
 		},
 
@@ -219,7 +219,7 @@ func TestValidate(t *testing.T) {
 			name: "run request nested step violations",
 			msg: &v1.RunRequest{Workflow: &v1.Workflow{
 				Name:  "example",
-				Steps: []*v1.Node{{Id: "step-1", Kind: &v1.Node_Task{Task: &v1.Task{Name: "echo"}}}},
+				Steps: []*v1.Node{{Id: "step-1", Kind: &v1.Node_Task{Task: &v1.Task{Name: "log"}}}},
 			}},
 			want: []failure{{"workflow.steps[0].task.inputs", "required"}},
 		},
@@ -407,10 +407,8 @@ func TestValidateSchemaRulesCompile(t *testing.T) {
 	for _, msg := range []proto.Message{
 		&v1.Workflow{}, &v1.Workflow_StepOutputs{}, &v1.Node{}, &v1.Node_Outputs{},
 		&v1.Value{}, &v1.Value_Error{}, &v1.Task{},
-		&v1.Task_Echo_Inputs{}, &v1.Task_Echo_Outputs{},
-		&v1.Task_Printf_Inputs{}, &v1.Task_Printf_Outputs{},
+		&v1.Task_Log_Inputs{}, &v1.Task_Log_Outputs{},
 		&v1.Task_HTTP_Inputs{}, &v1.Task_HTTP_Outputs{},
-		&v1.Task_CEL_Inputs{}, &v1.Task_CEL_Outputs{},
 		&v1.RunRequest{}, &v1.RunResponse{}, &v1.RunResponse_Error{},
 		&v1.GetRequest{}, &v1.GetResponse{}, &v1.RunState{},
 	} {
@@ -458,7 +456,7 @@ func TestValidateRefusesEmptyMapKeys(t *testing.T) {
 				Steps: []*v1.Node{{
 					Id: "a",
 					Kind: &v1.Node_Task{Task: &v1.Task{
-						Name:   "echo",
+						Name:   "log",
 						Inputs: map[string]*v1.Value{"": v1.NewLiteral("hi")},
 					}},
 				}},
@@ -471,7 +469,7 @@ func TestValidateRefusesEmptyMapKeys(t *testing.T) {
 				Labels: map[string]string{"": "value"},
 				Steps: []*v1.Node{{
 					Id:   "a",
-					Kind: &v1.Node_Task{Task: &v1.Task{Name: "echo"}},
+					Kind: &v1.Node_Task{Task: &v1.Task{Name: "log"}},
 				}},
 			},
 		},
@@ -482,7 +480,7 @@ func TestValidateRefusesEmptyMapKeys(t *testing.T) {
 				Inputs: map[string]*v1.Value{"": v1.NewLiteral("hi")},
 				Steps: []*v1.Node{{
 					Id:   "a",
-					Kind: &v1.Node_Task{Task: &v1.Task{Name: "echo"}},
+					Kind: &v1.Node_Task{Task: &v1.Task{Name: "log"}},
 				}},
 			},
 		},
@@ -513,7 +511,7 @@ func TestValidateStillRefusesAnAbsentMapValue(t *testing.T) {
 		Steps: []*v1.Node{{
 			Id: "a",
 			Kind: &v1.Node_Task{Task: &v1.Task{
-				Name:   "echo",
+				Name:   "log",
 				Inputs: map[string]*v1.Value{"message": nil},
 			}},
 		}},

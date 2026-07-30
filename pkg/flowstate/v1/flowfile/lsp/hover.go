@@ -67,11 +67,15 @@ func hoverAt(doc *document, pos lsp.Position) *lsp.Hover {
 		}
 		fd := findField(def.Inputs, in.key)
 		if fd == nil {
-			if acceptsAnyInput(def) {
-				return markdownHover(fmt.Sprintf(
-					"`%s` — a variable bound for the `%s` task's expression to reference.",
-					in.key, def.Name), in.keyRange)
-			}
+			// An input the task does not declare. There is nothing true to say about
+			// it, and the validator is already reporting it as unknown.
+			//
+			// One task used to take names beyond its schema — the compiler emptied its
+			// `vars:` mapping into the input map, so every name under it was a legal
+			// input — and this described one. That task retired at edition v2026.2 and
+			// the hoist went with it, so an undeclared input is a mistake again; a
+			// hover explaining it as a binding would contradict the diagnostic sitting
+			// on the same key.
 			return nil
 		}
 		return markdownHover(inputDoc(def, in.key, fd), in.keyRange)

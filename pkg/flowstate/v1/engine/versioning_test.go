@@ -156,7 +156,7 @@ func TestAPinnedRunTakesTheCurrentVersionAtContinueAsNew(t *testing.T) {
 		Steps: []*v1.Node{
 			signalStep("first-gate", "one", 0),
 			signalStep("second-gate", "two", 0),
-			echoStep("done", "finished"),
+			logStep("done", "finished"),
 		},
 	}
 

@@ -44,7 +44,7 @@ func TestMergeExpansionIsBounded(t *testing.T) {
 	for d := range steps {
 		b.WriteString("  - id: s" + strconv.Itoa(d) + "\n")
 		b.WriteString("    <<: *base\n")
-		b.WriteString("    echo:\n      message: hi\n")
+		b.WriteString("    log:\n      message: hi\n")
 	}
 	// The anchor is written last so that nothing depends on declaration order
 	// being what makes this terminate.
@@ -99,11 +99,11 @@ steps:
     id: a
     timeout: 30s
     continue_on_error: true
-    echo:
+    log:
       message: one
   - id: b
     <<: *policy
-    echo:
+    log:
       message: two
 `
 	wf, _, err := flowfile.Parse([]byte(src))
@@ -138,17 +138,17 @@ steps:
   - &policy
     id: base
     timeout: 30s
-    echo:
+    log:
       message: base
   - id: overrides
     <<: *policy
     timeout: 5s
-    echo:
+    log:
       message: one
   - id: written-first
     timeout: 5s
     <<: *policy
-    echo:
+    log:
       message: two
 `
 	wf, _, err := flowfile.Parse([]byte(src))
@@ -184,7 +184,7 @@ func TestNothingMayBeCalledSteps(t *testing.T) {
 name: t
 steps:
   - id: steps
-    echo:
+    log:
       message: hi
 `,
 		"a step inside a loop body": `edition: v2026.2
@@ -195,7 +195,7 @@ steps:
       items: ${[1]}
       steps:
         - id: steps
-          echo:
+          log:
             message: hi
 `,
 		"a step inside a parallel branch": `edition: v2026.2
@@ -205,7 +205,7 @@ steps:
     parallel:
       - steps:
           - id: steps
-            echo:
+            log:
               message: hi
 `,
 		// The other route into a body's scope. A bound name wins over the scope it
@@ -220,7 +220,7 @@ steps:
       as: steps
       steps:
         - id: b
-          echo:
+          log:
             message: hi
 `,
 	}
@@ -251,14 +251,14 @@ func TestAStepCalledStepsWouldHaveFailedAtRunTime(t *testing.T) {
 name: shadowed-root
 steps:
   - id: steps
-    echo:
+    log:
       message: i am a step called steps
   - id: other
-    echo:
-      message: hello
+    http:
+      url: https://example.com
   - id: read
-    echo:
-      message: ${steps.other.result}
+    log:
+      message: ${steps.other.body}
 `
 	ds, err := flowfile.ValidateSource([]byte(src))
 	require.NoError(t, err)

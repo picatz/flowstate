@@ -34,14 +34,20 @@ func TestDiagnosticsOverProtocol(t *testing.T) {
 	}{
 		{
 			name: "valid workflow has no diagnostics",
+			// The value a second step used to read out of the first is a `vars:`
+			// binding now: `echo` produced a value *and* showed it, and only the
+			// showing is a step. What is left of each step is the line a person sees,
+			// which is what `log:` is for.
 			src: `name: valid
+vars:
+  greeting: hello
 steps:
   - id: first
-    echo:
-      message: hello
+    log:
+      message: ${vars.greeting}
   - id: second
-    echo:
-      message: ${steps.first.result}
+    log:
+      message: ${vars.greeting + '!'}
 edition: v2026.2
 `,
 		},
@@ -50,8 +56,8 @@ edition: v2026.2
 			// A tab where the indentation goes. Nothing after it is ever read —
 			// the document stops parsing at the tab — but it is spelled in the
 			// grammar the DSL has, so nobody reads this fixture as evidence that
-			// `task:` is still a step key.
-			src: "name: broken\nsteps:\n  - id: a\n  \techo: hi\n" + editionSuffix,
+			// `echo:` is still a step key.
+			src: "name: broken\nsteps:\n  - id: a\n  \tlog: hi\n" + editionSuffix,
 			want: []want{{
 				code:       codeYAMLSyntax,
 				severity:   lsp.Error,
@@ -73,7 +79,7 @@ edition: v2026.2
 			src: `name: badcel
 steps:
   - id: a
-    echo:
+    log:
       message: ${a b}
 edition: v2026.2
 `,
@@ -89,12 +95,19 @@ edition: v2026.2
 			}},
 		},
 		{
-			name: "cel syntax error in a cel step's expr input",
+			name: "cel syntax error in an input the task evaluates itself",
+			// An input listed in the task's DeferredInputs carries expression source
+			// with no fence around it, and the validator does not parse those, so this
+			// check is the only one they get. `cel:`'s `expr:` was the original case
+			// and is retired; `http:`'s `expect:` is the same shape and still here,
+			// which is the point — the rule reads DeferredInputs rather than a task
+			// name, so it survived the task that motivated it.
 			src: `name: badexpr
 steps:
   - id: a
-    cel:
-      expr: "1 + + 2"
+    http:
+      url: https://example.com
+      expect: "1 + + 2"
 edition: v2026.2
 `,
 			want: []want{{
@@ -125,7 +138,7 @@ edition: v2026.2
 			src: `name: typo
 steps:
   - id: a
-    echo:
+    log:
       mesage: hello
 edition: v2026.2
 `,
@@ -161,7 +174,7 @@ edition: v2026.2
 			src: `name: wrong-type
 steps:
   - id: a
-    echo:
+    log:
       message: [1, 2]
 edition: v2026.2
 `,
@@ -187,7 +200,7 @@ edition: v2026.2
 			want: []want{{
 				code:       codeFlowfile,
 				severity:   lsp.Error,
-				contains:   "must have one of for_each, parallel, sleep, wait_until, wait_for_signal, cel, echo, http, log, or printf",
+				contains:   "must have one of for_each, parallel, sleep, wait_until, wait_for_signal, http, or log",
 				underlines: "a",
 			}},
 		},
@@ -196,12 +209,12 @@ edition: v2026.2
 			src: `name: two-kinds
 steps:
   - id: a
-    echo:
+    log:
       message: hi
     parallel:
       - steps:
           - id: b
-            echo:
+            log:
               message: hi
 edition: v2026.2
 `,
@@ -216,39 +229,47 @@ edition: v2026.2
 			// A loop is a legal kind of work. Flagging it for carrying no task key
 			// would put an error on a working file, which is the failure this
 			// package exists to avoid.
+			//
+			// The list the loop walks is a step-level `vars:` binding rather than a
+			// `cel:` step whose result the loop read: a block's vars are in scope for
+			// its own `items:` expression, so the value stays beside the loop that
+			// needs it instead of becoming a step of its own.
 			src: `name: loop
 steps:
-  - id: items
-    cel:
-      expr: "['a', 'b']"
   - id: each
+    vars:
+      things: ['a', 'b']
     for_each:
-      items: ${steps.items.result}
+      items: ${things}
       as: one
       steps:
         - id: body
-          echo:
+          log:
             message: ${one}
 edition: v2026.2
 `,
 		},
 		{
 			name: "forward reference underlines the expression",
+			// The step being referenced is an `http:` one, because the reference has
+			// to name an output that exists: `log:` has none, so `${steps.b.…}` on a
+			// log step would be reported for the output rather than for the order,
+			// and this case is about the order.
 			src: `name: fwd
 steps:
   - id: a
-    echo:
-      message: ${steps.b.result}
+    log:
+      message: ${steps.b.status_code}
   - id: b
-    echo:
-      message: hi
+    http:
+      url: https://example.com
 edition: v2026.2
 `,
 			want: []want{{
 				code:       codeFlowfile,
 				severity:   lsp.Error,
 				contains:   `references step "b", which runs later`,
-				underlines: "${steps.b.result}",
+				underlines: "${steps.b.status_code}",
 			}},
 		},
 		{
@@ -256,10 +277,10 @@ edition: v2026.2
 			src: `name: dupes
 steps:
   - id: a
-    echo:
+    log:
       message: one
   - id: a
-    echo:
+    log:
       message: two
 edition: v2026.2
 `,
@@ -270,24 +291,12 @@ edition: v2026.2
 				underlines: "a",
 			}},
 		},
-		{
-			name: "cel task accepts input names its schema does not declare",
-			// The compiler flattens vars into the input map, so anything under
-			// vars is a legal variable name. Flagging these would make every cel
-			// step look broken.
-			src: `name: vars
-steps:
-  - id: a
-    echo:
-      message: hello
-  - id: b
-    cel:
-      expr: vars.greeting
-      vars:
-        greeting: ${steps.a.result}
-edition: v2026.2
-`,
-		},
+		// "cel task accepts input names its schema does not declare" was here, and
+		// the exemption it covered is gone rather than merely unreachable. One task
+		// took input names its schema did not list, because the compiler emptied its
+		// `vars:` mapping into the input map; that task retired at edition v2026.2
+		// and the hoist retired with it. An undeclared input is an undeclared input,
+		// for every task, which is what the case above this one now asserts.
 		{
 			name: "an expression surrounded by other text is reported",
 			// The compiler refuses a partial fence rather than silently keeping it
@@ -297,7 +306,7 @@ edition: v2026.2
 			src: `name: literal
 steps:
   - id: a
-    echo:
+    log:
       message: "cost is ${ ] not cel} dollars"
 edition: v2026.2
 `,
@@ -313,7 +322,7 @@ edition: v2026.2
 			src: `name: literal
 steps:
   - id: a
-    echo:
+    log:
       message: "cost is 5 dollars"
 edition: v2026.2
 `,
@@ -325,12 +334,12 @@ edition: v2026.2
 			//
 			// Underlining the step's first line is what it did before flattening,
 			// and that line is still the one the step opens on — what changed is
-			// only which key opens it. Written the old way the fixture no longer
-			// tests this at all: `task:` is now an unrecognised key, so the report
-			// gained an unknown-task diagnostic and stopped being about the id.
+			// only which key opens it. Written with a retired key the fixture no
+			// longer tests this at all: `echo:` names no task now, so the report
+			// gains a retirement diagnostic and stops being about the id.
 			src: `name: no-id
 steps:
-  - echo:
+  - log:
       message: hello
 edition: v2026.2
 `,
@@ -338,7 +347,7 @@ edition: v2026.2
 				code:       codeFlowfile,
 				severity:   lsp.Error,
 				contains:   "step has no id",
-				underlines: "- echo:",
+				underlines: "- log:",
 			}},
 		},
 		{
@@ -346,7 +355,7 @@ edition: v2026.2
 			src: `edition: v2026.2
 steps:
   - id: a
-    echo:
+    log:
       message: hello
 `,
 			want: []want{{
@@ -412,7 +421,7 @@ edition: v2026.2
 	const fixed = `name: fix-me
 steps:
   - id: a
-    echo:
+    log:
       message: hello
 edition: v2026.2
 `
@@ -480,14 +489,14 @@ edition: v2026.2
 	c.initialize()
 	require.NotEmpty(t, c.open("file:///inc.yaml", src).Diagnostics)
 
-	// Replace "shell" with "echo" in place. The task's name is the step's key
+	// Replace "shell" with "log" in place. The task's name is the step's key
 	// now, so the word to overwrite opens the task instead of sitting on a
 	// `name:` line inside it — one line earlier than it used to be.
 	//
 	// Both coordinates are read out of the fixture rather than written down. A
 	// hard-coded line beside a searched column is what made this fail after the
 	// flattening: the search returned -1 on a line that no longer held the word,
-	// the edit spliced "echo" across the wrong characters, and the assertion that
+	// the edit spliced the replacement across the wrong characters, and the assertion that
 	// caught it could only say the document was still broken.
 	line, start := -1, -1
 	for i, text := range strings.Split(src, "\n") {
@@ -500,7 +509,7 @@ edition: v2026.2
 	params := c.changeRange("file:///inc.yaml", 2, lsp.Range{
 		Start: lsp.Position{Line: line, Character: start},
 		End:   lsp.Position{Line: line, Character: start + len("shell")},
-	}, "echo")
+	}, "log")
 	assert.Empty(t, params.Diagnostics, "the edit should have fixed the document: %v", messages(params.Diagnostics))
 }
 
@@ -556,20 +565,20 @@ func TestHostileDocuments(t *testing.T) {
 		"list document":         "- a\n- b\n",
 		"steps is a scalar":     "name: x\nsteps: nope\n",
 		"step is a scalar":      "name: x\nsteps:\n  - nope\n",
-		"task is a scalar":      "name: x\nsteps:\n  - id: a\n    echo: scalar\n",
-		"inputs is a scalar":    "name: x\nsteps:\n  - id: a\n    echo: nope\n",
-		"inputs is a list":      "name: x\nsteps:\n  - id: a\n    echo: [a, b]\n",
-		"deeply nested":         "name: x\nsteps:\n  - id: a\n    echo:\n      message:\n" + strings.Repeat("          - ", 1) + "\n",
+		"task is a scalar":      "name: x\nsteps:\n  - id: a\n    log: scalar\n",
+		"inputs is a scalar":    "name: x\nsteps:\n  - id: a\n    log: nope\n",
+		"inputs is a list":      "name: x\nsteps:\n  - id: a\n    log: [a, b]\n",
+		"deeply nested":         "name: x\nsteps:\n  - id: a\n    log:\n      message:\n" + strings.Repeat("          - ", 1) + "\n",
 		"duplicate yaml keys":   "name: x\nname: y\n",
 		"tabs everywhere":       "\tname:\tx\n",
 		"unterminated quote":    "name: \"unterminated\nsteps: []\n",
-		"unclosed expression":   "name: x\nsteps:\n  - id: a\n    echo:\n      message: ${a\n",
-		"expression is nothing": "name: x\nsteps:\n  - id: a\n    echo:\n      message: ${}\n",
+		"unclosed expression":   "name: x\nsteps:\n  - id: a\n    log:\n      message: ${a\n",
+		"expression is nothing": "name: x\nsteps:\n  - id: a\n    log:\n      message: ${}\n",
 		"very long line":        "name: " + strings.Repeat("x", 100_000) + "\n",
 		"binary-ish":            "name: \x00\x01\x02\nsteps: []\n",
-		"crlf":                  "name: x\r\nsteps:\r\n  - id: a\r\n    echo:\r\n      message: hi\r\n",
-		"anchors and aliases":   "name: x\nbase: &b\n  message: hi\nsteps:\n  - id: a\n    echo: *b\n",
-		"emoji ids":             "name: x\nsteps:\n  - id: 🙂\n    echo:\n      message: hi\n",
+		"crlf":                  "name: x\r\nsteps:\r\n  - id: a\r\n    log:\r\n      message: hi\r\n",
+		"anchors and aliases":   "name: x\nbase: &b\n  message: hi\nsteps:\n  - id: a\n    log: *b\n",
+		"emoji ids":             "name: x\nsteps:\n  - id: 🙂\n    log:\n      message: hi\n",
 	}
 
 	c := newClient(t)

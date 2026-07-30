@@ -272,9 +272,10 @@ func checkExpressions(doc *document, set *diagnosticSet) []lsp.Range {
 
 		for _, in := range s.expressionEntries() {
 			// An input the task evaluates itself carries expression source
-			// directly, without ${...} — the cel task's expr is the whole point
-			// of the task. Which inputs those are is declared on the task
-			// definition, so this cannot go stale when a task changes.
+			// directly, without ${...} — the http task's `expect` is one, since
+			// it is checked against a response that does not exist yet. Which
+			// inputs those are is declared on the task definition, so this cannot
+			// go stale when a task changes.
 			deferred := taskKnown && in != s.conditionEntry &&
 				slices.Contains(def.DeferredInputs, in.key)
 
@@ -354,21 +355,6 @@ func tokenWidth(s string) int {
 		return 1
 	}
 	return i
-}
-
-// acceptsAnyInput reports whether a task takes input names beyond those its
-// schema declares.
-//
-// The cel task does: the compiler flattens a step's `vars` mapping into the input
-// map, so every variable an expression uses arrives as an input under its own
-// name. That behavior is keyed on a field named `vars` in flowfile's compiler, so
-// the same test is used here — any future task declaring a vars mapping gets the
-// same treatment the compiler will give it. Guessing wrong in this direction is
-// what produces false positives on a perfectly good file, so the test is
-// deliberately generous.
-func acceptsAnyInput(def v1.TaskDef) bool {
-	fd := findField(def.Inputs, "vars")
-	return fd != nil && fd.IsMap()
 }
 
 // rangeOfFlowfileDiagnostic finds the tightest range for a diagnostic that

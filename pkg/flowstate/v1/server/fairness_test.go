@@ -42,7 +42,7 @@ func TestARunIsScheduledUnderItsOwnTenant(t *testing.T) {
 
 	spec := &v1.Workflow{
 		Name:  "fairness",
-		Steps: []*v1.Node{echoing("only", 8)},
+		Steps: []*v1.Node{bulky("only", 8)},
 	}
 
 	for _, tenant := range []string{"team-a", "team-b"} {
@@ -70,7 +70,7 @@ func TestAnUntenantedRunCarriesNoFairnessKey(t *testing.T) {
 	flowstate := server.New(temporal)
 
 	response, err := flowstate.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
-		Workflow: &v1.Workflow{Name: "untenanted", Steps: []*v1.Node{echoing("only", 8)}},
+		Workflow: &v1.Workflow{Name: "untenanted", Steps: []*v1.Node{bulky("only", 8)}},
 	}))
 	require.NoError(t, err)
 
@@ -98,7 +98,7 @@ func TestAFairnessKeySurvivesContinueAsNew(t *testing.T) {
 	response, err := flowstate.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
 		Workflow: &v1.Workflow{
 			Name:  "suspends",
-			Steps: []*v1.Node{echoing("a", 8), echoing("b", 8), echoing("c", 8)},
+			Steps: []*v1.Node{bulky("a", 8), bulky("b", 8), bulky("c", 8)},
 		},
 	}))
 	require.NoError(t, err)

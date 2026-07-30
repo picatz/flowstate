@@ -220,7 +220,7 @@ func TestFlowstateServer(t *testing.T) {
 						Id: "a",
 						Kind: &v1.Node_Task{
 							Task: &v1.Task{
-								Name: "echo",
+								Name: "log",
 								Inputs: map[string]*v1.Value{
 									"message": v1.NewLiteral("hello world"),
 								},
@@ -244,11 +244,9 @@ func TestFlowstateServer(t *testing.T) {
 		Kind: &v1.GetResponse_Outputs{
 			Outputs: &v1.Workflow_StepOutputs{
 				StepValues: map[string]*v1.Node_Outputs{
-					"a": {
-						NamedValues: map[string]*v1.Value{
-							"result": v1.NewLiteral("hello world"),
-						},
-					},
+					// Present and empty: the step ran and produced nothing, which is
+					// what a `log` step does. Absent would mean it never ran.
+					"a": {},
 				},
 			},
 		},

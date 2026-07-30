@@ -3,8 +3,26 @@ deps:
   - buf.build/bufbuild/protovalidate
   - buf.build/googleapis/googleapis
 breaking:
-  # Nothing suppressed, which is the only state this file should be found in for
-  # longer than one commit.
+  # Scoped for exactly one commit, and removed by the next one. See the note below
+  # about why a suppression that outlives its commit is worse than no check.
+  #
+  # This commit deletes `Task.Echo`, `Task.Printf` and `Task.CEL`, the three tasks
+  # retired at edition v2026.2. All three produced a value from a time when a step
+  # was the only thing that could hold one; `vars:` is that thing now, so they had
+  # become a step whose only job was to name an expression.
+  #
+  # A deletion is the honest shape of a retirement. Keeping the descriptors so the
+  # check stays quiet would leave three tasks the schema still describes, the
+  # language server still completes, and nothing can run — which is the state this
+  # repo calls scaffolding.
+  ignore_only:
+    FILE:
+      - flowstate/v1/flowstate.proto
+    WIRE:
+      - flowstate/v1/flowstate.proto
+
+  # Otherwise nothing suppressed, which is the only state this file should be found
+  # in for longer than one commit.
   #
   # The previous commit deleted `Task.CEL.Inputs.libs`, and carried a scoped
   # `ignore_only` so it could land. It is removed here because a breaking

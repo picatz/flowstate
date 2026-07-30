@@ -92,7 +92,7 @@ func TestDSLKeysMatchTheDSL(t *testing.T) {
 					},
 				},
 				Kind: &v1.Node_Task{Task: &v1.Task{
-					Name:   "echo",
+					Name:   "log",
 					Inputs: map[string]*v1.Value{"message": v1.NewValue("hi")},
 				}},
 			},
@@ -107,14 +107,14 @@ func TestDSLKeysMatchTheDSL(t *testing.T) {
 					Items:       v1.NewLiteralList("a", "b"),
 					Iterator:    "each",
 					MaxParallel: 2,
-					Body:        []*v1.Node{{Id: "inner", Kind: &v1.Node_Task{Task: &v1.Task{Name: "echo"}}}},
+					Body:        []*v1.Node{{Id: "inner", Kind: &v1.Node_Task{Task: &v1.Task{Name: "log"}}}},
 				}},
 			},
 			{
 				Id: "branches",
 				Kind: &v1.Node_Parallel{Parallel: &v1.Parallel{
 					Branches: []*v1.Parallel_Branch{
-						{Steps: []*v1.Node{{Id: "left", Kind: &v1.Node_Task{Task: &v1.Task{Name: "echo"}}}}},
+						{Steps: []*v1.Node{{Id: "left", Kind: &v1.Node_Task{Task: &v1.Task{Name: "log"}}}}},
 					},
 				}},
 			},
@@ -286,7 +286,7 @@ steps:
       url: https://example.com
   - id: guarded
     if: ${steps.web.status_code == 200}
-    echo:
+    log:
       message: ok
 edition: v2026.2
 `
@@ -336,19 +336,19 @@ edition: v2026.2
 		const forward = `name: fwd
 steps:
   - id: a
-    if: ${steps.later.result == "x"}
-    echo:
+    if: ${steps.later.body == "x"}
+    log:
       message: hi
   - id: later
-    echo:
-      message: hi
+    http:
+      url: https://example.com
 edition: v2026.2
 `
 		params := c.open("file:///cond-fwd.yaml", forward)
 		require.Len(t, params.Diagnostics, 1, "got %v", messages(params.Diagnostics))
 		assert.Contains(t, params.Diagnostics[0].Message, `references step "later", which runs later`)
 		// And it lands on the condition, not on the step.
-		assert.Equal(t, `${steps.later.result == "x"}`, textInRange(forward, params.Diagnostics[0].Range))
+		assert.Equal(t, `${steps.later.body == "x"}`, textInRange(forward, params.Diagnostics[0].Range))
 	})
 
 	t.Run("completion offers earlier steps inside a condition", func(t *testing.T) {
@@ -398,14 +398,19 @@ edition: v2026.2
 func TestWaitUntilIsFirstClass(t *testing.T) {
 	t.Parallel()
 
+	// The moment waited for arrives as data — an http step's body — which is the
+	// case the commentary above is about. It used to be a `cel:` step whose result
+	// the wait read; that task is retired, and an expression on its own no longer
+	// needs a step, so the only shape left where a wait names another step is one
+	// that fetches.
 	const src = `edition: v2026.2
 name: waits
 steps:
   - id: embargo
-    cel:
-      expr: "string(timestamp('2026-01-01T09:00:00Z'))"
+    http:
+      url: https://example.com
   - id: hold
-    wait_until: ${steps.embargo.result}
+    wait_until: ${timestamp(steps.embargo.body)}
   - id: window
     wait_until: ${now + days(3)}
 `
@@ -418,15 +423,15 @@ steps:
 	})
 
 	t.Run("hover resolves a reference in a wait", func(t *testing.T) {
-		pos := positionOf(t, src, "${steps.embargo.result}", len("${steps."))
+		pos := positionOf(t, src, "steps.embargo.body", len("steps."))
 		got := c.hover(uri, pos.Line, pos.Character)
 		require.NotNil(t, got, "no hover on a wait's expression")
-		assert.Contains(t, hoverText(got), "`steps.embargo.result`")
-		assert.Contains(t, hoverText(got), "`cel` task")
+		assert.Contains(t, hoverText(got), "`steps.embargo.body`")
+		assert.Contains(t, hoverText(got), "`http` task")
 	})
 
 	t.Run("go to definition works from a wait", func(t *testing.T) {
-		pos := positionOf(t, src, "${steps.embargo.result}", len("${steps."))
+		pos := positionOf(t, src, "steps.embargo.body", len("steps."))
 		got := c.definition(uri, pos.Line, pos.Character)
 		require.Len(t, got, 1)
 		assert.Equal(t, "embargo", textInRange(src, got[0].Range))
@@ -458,10 +463,10 @@ steps:
       items: "${['a']}"
       steps:
         - id: inner
-          echo:
-            message: hi
+          http:
+            url: https://example.com
   - id: hold
-    wait_until: ${steps.inner.result}
+    wait_until: ${timestamp(steps.inner.body)}
 edition: v2026.2
 `
 		const leakyURI = "file:///leaky-wait.yaml"
@@ -469,7 +474,7 @@ edition: v2026.2
 		require.Len(t, params.Diagnostics, 1, "got %v", messages(params.Diagnostics))
 		assert.Contains(t, params.Diagnostics[0].Message, `references unknown step "inner"`)
 
-		pos := positionOf(t, leaky, "${steps.inner.result}", len("${steps."))
+		pos := positionOf(t, leaky, "steps.inner.body", len("steps."))
 		assert.Nil(t, c.hover(leakyURI, pos.Line, pos.Character),
 			"hover resolved a loop body step from a wait outside the loop")
 		assert.Empty(t, c.definition(leakyURI, pos.Line, pos.Character))
@@ -479,16 +484,16 @@ edition: v2026.2
 		const forward = `name: fwd-wait
 steps:
   - id: hold
-    wait_until: ${steps.later.result}
+    wait_until: ${timestamp(steps.later.body)}
   - id: later
-    echo:
-      message: hi
+    http:
+      url: https://example.com
 edition: v2026.2
 `
 		params := c.open("file:///fwd-wait.yaml", forward)
 		require.Len(t, params.Diagnostics, 1, "got %v", messages(params.Diagnostics))
 		assert.Contains(t, params.Diagnostics[0].Message, `references step "later", which runs later`)
-		assert.Equal(t, "${steps.later.result}", textInRange(forward, params.Diagnostics[0].Range))
+		assert.Equal(t, "${timestamp(steps.later.body)}", textInRange(forward, params.Diagnostics[0].Range))
 	})
 }
 
@@ -577,7 +582,7 @@ func TestNowIsExplainedTheSameWayTheValidatorRefusesIt(t *testing.T) {
 	const src = `name: no-clock
 steps:
   - id: a
-    echo:
+    log:
       message: ${now}
 edition: v2026.2
 `
@@ -658,7 +663,7 @@ name: waits
 steps:
   - id: fetch
     timeout: 1m
-    echo:
+    log:
       message: hi
   - id: nap
     sleep: 30s
@@ -733,19 +738,23 @@ steps:
 func TestNestedStepsAreFirstClass(t *testing.T) {
 	t.Parallel()
 
+	// The list the loop walks arrives from a fetch. It was a `cel:` step holding a
+	// literal list, which is a `vars:` binding now — but the cases below need a
+	// reference that *resolves to a step*, in the items expression and in a nested
+	// input, so the producer has to remain a step.
 	const src = `name: nested
 steps:
   - id: targets
-    cel:
-      expr: "['a', 'b']"
+    http:
+      url: https://example.com
   - id: loop
     for_each:
-      items: ${steps.targets.result}
+      items: ${steps.targets.json}
       as: one
       steps:
         - id: body
-          echo:
-            mesage: ${steps.targets.result}
+          log:
+            mesage: ${steps.targets.json}
   - id: branches
     parallel:
       - steps:
@@ -784,22 +793,22 @@ edition: v2026.2
 		// inside the loop body, at an indent of 12. The block is gone: a nested
 		// step names its task with a key of its own, so the same question — does
 		// hover reach a step that is not at the top level? — is now asked of the
-		// `echo:` at an indent of 10. Only the loop body's task key is that deep;
-		// the branch's `http:` is deeper still, and the first step's `cel:` is at 4.
-		pos := positionOfKey(t, src, "echo", 10, "")
+		// `log:` at an indent of 10. Only the loop body's task key is that deep;
+		// the branch's `http:` is deeper still, and the first step's is at 4.
+		pos := positionOfKey(t, src, "log", 10, "")
 		got := c.hover(uri, pos.Line, pos.Character)
 		require.NotNil(t, got, "no hover on a key inside a loop body")
 		// And it is the task that was described, rather than whatever else happens
 		// to sit at that position — which is what the old `name:` anchor could no
 		// longer distinguish.
-		assert.Contains(t, hoverText(got), "task `echo`")
+		assert.Contains(t, hoverText(got), "task `log`")
 	})
 
 	t.Run("a loop's items expression resolves references", func(t *testing.T) {
-		pos := positionOf(t, src, "${steps.targets.result}", len("${steps."))
+		pos := positionOf(t, src, "${steps.targets.json}", len("${steps."))
 		got := c.hover(uri, pos.Line, pos.Character)
 		require.NotNil(t, got, "no hover on the items expression")
-		assert.Contains(t, hoverText(got), "`steps.targets.result`")
+		assert.Contains(t, hoverText(got), "`steps.targets.json`")
 
 		def := c.definition(uri, pos.Line, pos.Character)
 		require.Len(t, def, 1)
@@ -812,11 +821,11 @@ edition: v2026.2
 		for _, s := range got {
 			byName[s.Name] = s.ContainerName
 		}
-		assert.Equal(t, "cel", byName["targets"])
+		assert.Equal(t, "http", byName["targets"])
 		assert.Equal(t, "for_each", byName["loop"])
 		assert.Equal(t, "parallel", byName["branches"])
 		// Nesting is otherwise invisible in a flat outline.
-		assert.Equal(t, "echo in loop", byName["body"])
+		assert.Equal(t, "log in loop", byName["body"])
 		assert.Equal(t, "http in branches", byName["left"])
 	})
 
@@ -854,31 +863,31 @@ func TestReferenceScoping(t *testing.T) {
 	const src = `name: scoping
 steps:
   - id: before
-    echo:
+    log:
       message: hi
   - id: loop
     for_each:
-      items: ${steps.before.result}
+      items: ${['a', 'b']}
       as: each
       steps:
         - id: body_one
-          echo:
+          log:
             message: hi
         - id: body_two
-          echo:
+          log:
             message: PLACEHOLDER_BODY
   - id: fan
     parallel:
       - steps:
           - id: left
-            echo:
+            log:
               message: PLACEHOLDER_LEFT
       - steps:
           - id: right
-            echo:
+            log:
               message: hi
   - id: after
-    echo:
+    log:
       message: PLACEHOLDER_AFTER
 edition: v2026.2
 `
@@ -1005,11 +1014,11 @@ steps:
       items: "${['a']}"
       steps:
         - id: inner
-          echo:
-            message: hi
+          http:
+            url: https://example.com
   - id: after
-    echo:
-      message: ${steps.inner.result}
+    log:
+      message: ${steps.inner.body}
 edition: v2026.2
 `
 	c := newClient(t)
@@ -1017,7 +1026,7 @@ edition: v2026.2
 	const uri = "file:///leak.yaml"
 	c.open(uri, src)
 
-	pos := positionOf(t, src, "${steps.inner.result}", len("${steps."))
+	pos := positionOf(t, src, "${steps.inner.body}", len("${steps."))
 
 	// flowfile reports this as an unknown step; hover and definition must not
 	// contradict it by resolving what the engine will not.
@@ -1040,7 +1049,7 @@ steps:
       as: target
       steps:
         - id: body
-          echo:
+          log:
             message: ${target}
 edition: v2026.2
 `
@@ -1134,7 +1143,7 @@ func TestDurationsAreChecked(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			src := "name: durations\nsteps:\n  - id: a\n" + tt.policy +
-				"    echo:\n      message: hi\n" + editionSuffix
+				"    log:\n      message: hi\n" + editionSuffix
 			uri := "file:///duration-" + strings.ReplaceAll(tt.name, " ", "-") + ".yaml"
 			params := c.open(uri, src)
 
@@ -1180,22 +1189,22 @@ steps:
       interval: 1s
       backoff: 2
       max_interval: 1m
-    echo:
+    log:
       message: hi
   - id: loop
     for_each:
-      items: ${steps.a.result}
+      items: ${['a', 'b']}
       as: one
       max_parallel: 2
       steps:
         - id: body
-          echo:
+          log:
             message: hi
   - id: branches
     parallel:
       - steps:
           - id: left
-            echo:
+            log:
               message: hi
   - id: pause
     sleep: 30s

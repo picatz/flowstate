@@ -6,9 +6,11 @@ description: Two keys about the file itself rather than about the work it does.
 # reads it next — which, on a durable workload, is someone months from now trying
 # to work out why it does what it does.
 #
-# `edition:` names the grammar the file is written in. It is optional, and most
-# files leave it out: absent means the current edition, and a file that does not
-# care which grammar it is in should not have to say so. Writing it pins the file.
+# `edition:` names the grammar the file is written in, and every Flowfile carries
+# one. It used to be optional, with absent meaning "the current edition" — which
+# made a file's grammar depend on which build read it, and quietly re-read an old
+# file as a new one. Required, a file says what it is, and a build either has that
+# grammar or refuses.
 #
 # What it buys is a refusal. Surface syntax here gets no deprecation window — a
 # spelling that is replaced is *gone*, because carrying two spellings costs the
@@ -21,17 +23,13 @@ description: Two keys about the file itself rather than about the work it does.
 # It is not a compatibility switch. A build compiles one grammar, and declaring an
 # edition it does not have is an error rather than a translation request.
 
+vars:
+  roster: ${['ada', 'grace', 'katherine']}
 steps:
   # `description:` is prose about a step: why it is here, which the mechanics
   # under it cannot say. The expression below says what this computes; only a
   # person can say that the roster is the source of truth and that being wrong
   # here pages someone who is not on call.
-  - id: roster
-    description: >-
-      The roster is the source of truth for who is on call. Getting it wrong
-      pages the wrong person, so nothing downstream is allowed to guess at it.
-    cel:
-      expr: "['ada', 'grace', 'katherine']"
 
   # A property of the *step*, not of the task it runs — so every kind of step can
   # carry one. A wait is often the step most in need of explaining, because what
@@ -45,14 +43,12 @@ steps:
   - id: notify
     description: One at a time, in roster order, so the first responder is paged before the backup.
     for_each:
-      items: ${steps.roster.result}
+      items: ${vars.roster}
       as: person
       steps:
         - id: page
-          printf:
-            format: "paging %s"
-            args:
-              - ${person}
+          log:
+            message: ${"paging %s".format([person])}
 
   # It belongs directly under `id:`, and not under the task's own key. The keys
   # there are that task's inputs, so a `description` written among them would be
@@ -60,7 +56,5 @@ steps:
   # for most tasks an error.
   - id: report
     description: What a human sees in the log when this workload finishes.
-    printf:
-      format: "paged %d people"
-      args:
-        - ${size(steps.roster.result)}
+    log:
+      message: ${"paged %d people".format([size(vars.roster)])}

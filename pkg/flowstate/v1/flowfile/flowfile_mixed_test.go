@@ -33,6 +33,11 @@ func evalCELOrLiteral(t *testing.T, v *v1.Value) *exprpb.Value {
 	return nil
 }
 
+// The step key here is only a container: these cases are about the value compiler,
+// which builds a literal or an expression from whatever shape was written, and it
+// does that before anything consults a task's schema. So the input names below are
+// chosen to exercise nesting rather than to be inputs `log:` declares — the fixtures
+// are compiled with [flowfile.Unmarshal] and never validated.
 func TestFlowfile_MixedStructures_ExprBuildAndEval(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -47,7 +52,7 @@ edition: v2026.2
 name: t
 steps:
   - id: s
-    echo:
+    log:
       headers:
         A: "1"
         B: ${string(2)}
@@ -62,7 +67,7 @@ edition: v2026.2
 name: t
 steps:
   - id: s
-    echo:
+    log:
       lst:
         - 1
         - ${1 + 1}
@@ -78,7 +83,7 @@ edition: v2026.2
 name: t
 steps:
   - id: s
-    echo:
+    log:
       my:
         items:
           - 1
@@ -95,7 +100,7 @@ edition: v2026.2
 name: t
 steps:
   - id: s
-    echo:
+    log:
       data:
         -
           A: "1"
@@ -112,7 +117,7 @@ edition: v2026.2
 name: t
 steps:
   - id: s
-    echo:
+    log:
       headers:
         "k'ey": ${string(2)}
         norm: ok
@@ -127,7 +132,7 @@ edition: v2026.2
 name: t
 steps:
   - id: s
-    echo:
+    log:
       headers:
         "C:\\dir\\k'ey": ${'a' + 'b'}
         norm: ok
@@ -142,7 +147,7 @@ edition: v2026.2
 name: t
 steps:
   - id: s
-    echo:
+    log:
       payload:
         meta:
           id: ${string(1)}

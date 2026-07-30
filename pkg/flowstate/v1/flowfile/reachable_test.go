@@ -249,7 +249,7 @@ func TestNowInATaskInputSaysWhereItIsAvailable(t *testing.T) {
 	t.Parallel()
 
 	workflow, err := flowfile.Unmarshal([]byte(
-		"edition: v2026.2\nname: t\nsteps:\n  - id: report\n    echo:\n      message: ${now}\n"))
+		"edition: v2026.2\nname: t\nsteps:\n  - id: report\n    log:\n      message: ${now}\n"))
 	require.NoError(t, err)
 
 	diagnostics := flowfile.Validate(workflow)
@@ -277,9 +277,9 @@ func TestAStepNamedNowNoLongerNeedsRefusing(t *testing.T) {
 	t.Parallel()
 
 	source := "edition: v2026.2\nname: t\nsteps:\n" +
-		"  - id: now\n    echo:\n      message: hi\n" +
+		"  - id: now\n    http:\n      url: https://example.com\n" +
 		"  - id: hold\n    wait_until: ${now + days(1)}\n" +
-		"  - id: read\n    echo:\n      message: ${steps.now.result}\n"
+		"  - id: read\n    log:\n      message: ${steps.now.body}\n"
 
 	workflow, err := flowfile.Unmarshal([]byte(source))
 	require.NoError(t, err)

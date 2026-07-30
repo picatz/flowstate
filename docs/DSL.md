@@ -72,8 +72,8 @@ landed: a step's outputs are `${steps.<id>.<output>}`, and what stays bare is wh
 bound *where the expression is written* — a `for_each` iterator, `now` inside
 `wait_until:`, and the names a task resolves against its own scope (`status_code`,
 `headers`, `body`, and — when the step asked for `parse_json` — `json`, in the `http`
-task's `expect:` and `outputs:`). `inputs.*`, `vars.*` and `run.*` do not exist; see
-[Order of work](#order-of-work).
+task's `expect:` and `outputs:`). `vars.*` has since landed too, in both of its
+positions; `inputs.*` and `run.*` do not exist; see [Order of work](#order-of-work).
 
 *Since written:* the reason this section gave for accepting it was checked against the
 code and was half wrong, so it is replaced here rather than left to be rediscovered.
@@ -414,7 +414,7 @@ Everything people will ask for that is really control — retries, gates, timeou
 fan-out — stays grammar, which is the moat: elsewhere retry logic is a marketplace
 action, here it is a property of every step because the engine owns it.
 
-### `cel:` is retired — not renamed
+### `cel:` is retired — not renamed *(landed)*
 
 The name is wrong the way `re2:` would be wrong where `regexp` is meant: it answers
 "which evaluator?" when the author is asking "what role does this value play?". But
@@ -468,7 +468,32 @@ Three steps and two activity round trips become one step and one; the `cel` task
 private `vars` input — a compatibility shim the parser already documents as one —
 disappears along with the confusion of two things named `vars`.
 
-### `echo:` is retired; `log:` is the capability it was imitating *(`log:` landed)*
+*Since written:* landed at v2026.2, and the "after" block above is one line wrong, which
+is worth leaving visible rather than quietly correcting. **A step's own `vars:` are not in
+scope for that step's `if:`.** The condition decides whether the step runs, so at the
+moment it is asked the step's bindings do not exist yet — `flow validate` says
+`references unknown name "modified"` and names the three things a bare name can be. The
+shape that compiles either lifts the binding to the workflow, or writes the condition
+against what the binding was derived from:
+
+```yaml
+vars:
+  greeting: hello
+steps:
+  - id: shout
+    if: ${vars.greeting == 'hello'}
+    vars:
+      modified: ${regex.replace(vars.greeting.upperAscii(), 'HELLO', 'HI')}
+    log:
+      message: ${modified.lowerAscii()}
+```
+
+That is a smaller language than the one proposed and it is the right one: a scope whose
+members can be read by the test deciding whether the scope exists is a scope that has to
+be evaluated twice, or evaluated before it is known to be wanted. Neither is worth a line
+saved.
+
+### `echo:` is retired; `log:` is the capability it was imitating *(landed)*
 
 `echo` is an identity function registered as an activity. Its shipped uses are (a) a
 poor author's `vars:`, (b) hello-world scaffolding, and (c) "this branch ran"
@@ -499,9 +524,9 @@ legitimate job `echo` was doing.
 ```
 
 *Since written:* `log:` shipped as specified — `message` required, `level` defaulting to
-info, `fields` a bounded string map, and no outputs. `echo` is still registered and is
-retired at the edition boundary, alongside `cel:` and `printf:`, so a file has one
-change to make rather than three.
+info, `fields` a bounded string map, and no outputs. `echo` has since gone with `cel:`
+and `printf:` at the v2026.2 boundary, in one sweep, so a file had one change to make
+rather than three.
 
 Three details the plan did not have to settle and the implementation did.
 
@@ -534,7 +559,7 @@ workflow.yaml:11:16: step "use" input "message": step "say" has no output "resul
 the log task produces no outputs, because a log step is an effect rather than a value
 ```
 
-### `printf:` is retired — the replacement already exists
+### `printf:` is retired — the replacement already exists *(landed)*
 
 Verified: `${'hello %s, you have %d step(s) left'.format([vars.name, 0])}` compiles
 and runs today, because the pinned profile ships CEL's strings extension. The
@@ -568,6 +593,18 @@ steps:
     log:
       message: ${'hello %s, you have %d step(s) left'.format([vars.name, 0])}
 ```
+
+*Since written:* landed at v2026.2. `format` needed nothing built for it, which was the
+argument; what the sweep did need was the diagnostic, since a `printf:` key now has to
+teach the expression rather than report an unknown task — `flow validate` prints the
+`format()` call, and `flow fix` performs the rewrite where the step's result is read.
+
+One thing the shape above hides, worth naming because it now applies wherever a message
+is composed: a format string containing `: ` is YAML mapping syntax, so a `${...}`
+holding one has to be quoted. The corpus entry below was written with an unquoted
+`'paging %s: %s %s is rolling'` and did not parse — an acceptance target that was not
+accepted, which is the exact failure the corpus rule exists to prevent, and which was
+invisible until the documented workflows were run through the compiler.
 
 ### `edition:` is required, and v-prefixed *(landed)*
 
@@ -927,22 +964,22 @@ policy is, in its own reviewed change.
 
 | Today | Fate | Replaced by |
 | --- | --- | --- |
-| `cel:` | retired at the `vars:` edition | `vars:`, inline `${...}`, Phase 2 `outputs:` |
-| `echo:` | retired at the same edition | `vars:` for data, `log:` for visibility |
-| `printf:` | retired at the same edition | `format()` in the profile (already present) |
-| `iterator:` | retired at the same edition | `as:` |
-| bare `status_code`/`body`/`headers`/`json` | rerooted | `response.*` |
+| `cel:` | **retired at v2026.2 (landed)** | `vars:`, inline `${...}`, Phase 2 `outputs:` |
+| `echo:` | **retired at v2026.2 (landed)** | `vars:` for data, `log:` for visibility |
+| `printf:` | **retired at v2026.2 (landed)** | `format()` in the profile (already present) |
+| `iterator:` | **retired at v2026.2 (landed)** | `as:` |
+| bare `status_code`/`body`/`headers`/`json` | **rerooted (landed)** | `response.*` |
 | `http:` | kept | — (auth, idempotency key, egress declarations held) |
-| `log:` | new | — |
+| `log:` | **new (landed)** | — |
 | `exec:` | new, gated on its policy | — |
 | `value:` | refused for now, name reserved | `vars:` until a corpus file proves otherwise |
 | `assert:` | held | `if:` + failure, pending Phase 2 `check:` |
 | `!expr` | refused | whole-value `${...}`, fence-optional where the schema knows |
 | plugin tasks | dotted keys, `plugins:` header in Phase 3 | — |
 
-End state of the built-in registry: **`log`, `http`, `exec`**. Small enough to
-memorize, which is the property worth copying from the standard library this
-vocabulary keeps being compared to.
+Registry today: **`log`, `http`**. End state, once `exec` has its policy: **`log`,
+`http`, `exec`** — small enough to memorize, which is the property worth copying from
+the standard library this vocabulary keeps being compared to.
 
 ### One edition, one sweep, and what the rewriter may not guess
 
@@ -959,6 +996,33 @@ flow style and aliases. Every retired spelling gets a `retiredStepKeys` entry
 naming its replacement, so the diagnostic teaches the migration instead of
 reporting an unknown task.
 
+*Since written:* the sweep landed as one edition, and two things about the shape that
+shipped differ from what this section describes. Both are recorded here rather than
+edited into the text above, because a design document that quietly matches the outcome
+stops being a record of a decision.
+
+**The tasks were deleted, not kept and refused.** The plan reads as though a retired
+spelling stays known — a `retiredStepKeys` entry, a diagnostic, a task still registered
+under a refusal. What shipped removes `echo`, `printf` and `cel` from the schema and
+from the task registry outright; what remains of them is the *key* entry the parser
+consults to write a good sentence, and nothing an author writes can reach an
+implementation. That is the stronger reading of "one dialect per file, pinned per run":
+a build does not merely decline to compile the old grammar, it does not contain it. The
+diagnostic is documentation with a position attached, not a gate in front of a
+still-present task.
+
+**With no local task returning a value, `http` and `for_each` are the only steps that
+produce outputs at all.** `log` declares none by design, and the other node kinds are
+control flow or waits. That is a bigger consequence than the vocabulary argument
+implies, and it lands on the type system: every remaining producer of a value is
+something the *outside world* handed back, so a workflow currently has no supported way
+to name a computed result as an output of the run. Inside a file `vars:` covers it, and
+the moment the question is what the run *returns* — to a caller, to a schedule, to
+Phase 3's `call:` — the answer is the `outputs:` contract, which is not built. Phase 2
+was already scheduled as the phase that ships the contract with its checker. It is now
+also the phase that restores a capability the sweep removed, and it should be sequenced
+knowing that rather than as the type system arriving on its own timetable.
+
 ### The corpus is the acceptance list
 
 Designing from hello-world is how `echo` happened. The fix is a corpus of
@@ -973,8 +1037,9 @@ landed, kept visible. The two below are the first two entries.
 ### What the language looks like when this round lands
 
 Everything in this file is decided surface: Phase 1 vocabulary plus the response
-root. It is the deployment-with-approval corpus entry, and the acceptance target
-for the retirement edition.
+root. It is the deployment-with-approval corpus entry, and it was the acceptance
+target for the retirement edition — which it now meets: `flow validate` accepts it
+exactly as written below.
 
 ```yaml
 edition: v2026.2
@@ -1024,7 +1089,8 @@ steps:
       steps:
         - id: notify
           log:
-            message: ${'paging %s: %s %s is rolling'.format([person, vars.service, vars.version])}
+            # Quoted, because the `: ` inside the format string is YAML mapping syntax.
+            message: "${'paging %s: %s %s is rolling'.format([person, vars.service, vars.version])}"
             fields:
               deployment: ${steps.submit.deployment}
               approved_by: ${steps.approval.payload.by}
@@ -1037,9 +1103,19 @@ all of the work and none of the talking.
 
 And the CI-pipeline corpus entry, which is the same language plus the Phase 3
 plugin surface and a policied `exec` — the file that makes "could be used for CI"
-a demonstration rather than a claim:
+a demonstration rather than a claim. **It does not compile today, deliberately:** it is
+the acceptance target for Phase 3, and this build answers it with `unknown key
+"plugins"`, `unknown key "github.clone"`, and `unknown task "exec"`. That is the corpus
+rule working as intended — a design that has not landed, kept visible — rather than a
+file that has gone stale.
 
-```yaml
+The fence says `(proposed)` rather than plain `yaml`, which is how the corpus check
+tells a design sketch from a documented file: every plain `yaml` block opening with
+`edition:` is compiled by `TestREADMEWorkflowsCompile`, and this one would fail that
+for the reasons just given. A renderer still highlights it as YAML — the mark is for
+the reader as much as for the test.
+
+```yaml (proposed)
 edition: v2026.2
 name: ci
 plugins:
@@ -1189,7 +1265,18 @@ Phase 1 grows: `vars:` with its shadowing rules, `log:`, the retirement edition
 `retiredStepKeys` entries, and reserving `value` alongside the dotted-key shape
 rule — the last two cost sentences now and compatibility later. The same edition
 flips `edition:` itself to required with the `v`-prefixed spelling, and `flow fix`
-stamps the line into files that lack it. The `plugins:`
+stamps the line into files that lack it.
+
+*Since written:* all of that has landed as v2026.2. What Phase 1 has left is the
+reserved-keyword diagnostics for the grammar Phase 4 will need; `vars:` is in both of
+its positions, the profile is pinned, and the three tasks are gone from the schema.
+Phase 2 is what the sweep leaves load-bearing, per [the
+sweep](#one-edition-one-sweep-and-what-the-rewriter-may-not-guess): with no local task
+returning a value, `http` and `for_each` are the only steps that produce outputs, so
+the `outputs:` contract is now the only route by which a run can report a computed
+result at all.
+
+The `plugins:`
 header and dotted-key resolution land in Phase 3 with `call:`. `exec` lands only
 with its policy, gated the way workflow-side evaluation is gated on Worker
 Versioning: a capability that assumes a posture verifies it or stays off. The
@@ -1435,8 +1522,10 @@ refusal, `flow fix`'s contract, and worker pinning. Decided, with phases in
 provenance, the fleet view, `migrate`, `rerun`, schedules, `trace`. Stream
 discipline per CLI.md applies throughout: answers on stdout, accounts on stderr.
 
-The compiler teaching the current grammar (machinery live; the vocabulary rides
-the retirement edition):
+The compiler teaching the current grammar (live; the vocabulary landed with the
+retirement edition, and the wording of each sentence below is the design target
+rather than a transcript — the shipped diagnostics say the same things at greater
+length, because a retirement has to teach the replacement and not merely name it):
 
 ```
 $ flow validate old-style.yaml
@@ -1583,9 +1672,25 @@ grows this phase — `log:`, the retirement edition (`cel`, `echo`, `printf`,
 plugin-key shape). The vars shadowing rules are part of `vars` landing, not a
 separate item.
 
+*Since written, again:* every item above except the reserved-keyword diagnostics has
+landed. `vars:` is in both of its Flowfile positions — `inputs.*` and `run.*` are still
+unstarted and are separate features rather than the tail of this one — the profile is
+pinned and `libs:` is deleted, `edition:` is required and `v`-prefixed, and `echo`,
+`printf` and `cel` are gone from the schema and the registry rather than registered and
+refused. **Phase 1 shrank the language further than this section planned**, which is the
+paragraph below's problem: the sweep left `http` and `for_each` as the only steps that
+produce outputs, so a run has no way to report a value it computed rather than fetched.
+
 **Phase 2 — the contract, with its checker.** `inputs`, `outputs`, `check:`,
 `env.Check` at validate and in the LSP, typed hover, the absent/null/default matrix,
 `secret:` taint. One phase, because half of it is decoration without the other half.
+
+It is also, since the retirement edition, the phase that restores something. `outputs:`
+was filed here as the third home for what `cel:` used to do — shape a final result —
+and with `cel:` gone it is the *only* one: `vars:` names a value inside a file and
+nothing carries one out of the run. That does not change the rule this phase exists to
+hold, which is that a declared type without a checker is decoration. It changes the
+cost of the phase slipping, which is worth knowing before it does.
 
 **Phase 3 — composition and the dev loop.** `call:` to child workflows, cross-file
 signature checking, `flow dev`, `flow test` (after the taint work above).

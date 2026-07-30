@@ -36,15 +36,34 @@ func newWaitEnv(t *testing.T) *testsuite.TestWorkflowEnvironment {
 	return env
 }
 
-// echoStep is a task step, for putting something either side of a wait.
-func echoStep(id, message string) *v1.Node {
+// logStep is a task step, for putting something either side of a wait.
+//
+// `log` rather than the `echo` this used to build: echo retired at edition v2026.2,
+// and nothing here ever read what it produced. What every caller wants is a step that
+// exists and runs, which is exactly what a log step is — present in the outputs with
+// an empty entry when it ran, and absent when it did not. The message is kept because
+// the cancellation tests identify a step by it (see newCancelEnv).
+func logStep(id, message string) *v1.Node {
 	return &v1.Node{
 		Id: id,
 		Kind: &v1.Node_Task{Task: &v1.Task{
-			Name:   "echo",
+			Name:   "log",
 			Inputs: map[string]*v1.Value{"message": v1.NewLiteral(message)},
 		}},
 	}
+}
+
+// gatedOn attaches a condition to a step, so a test can say what has to hold for
+// the step to run at all.
+//
+// Presence in the run's outputs is what these tests read the condition's answer
+// from: a step whose condition is false is absent rather than present and empty,
+// which is the one bit a workflow can set from an expression now that no task
+// returns a value of its own.
+func gatedOn(node *v1.Node, condition string) *v1.Node {
+	node.Condition = v1.NewExpr(condition)
+
+	return node
 }
 
 // sleepStep waits for a duration.
@@ -121,9 +140,9 @@ func TestWaitSleep(t *testing.T) {
 			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: &v1.Workflow{
 				Name: "sleeping",
 				Steps: []*v1.Node{
-					echoStep("before", "starting"),
+					logStep("before", "starting"),
 					sleepStep("pause", test.sleep),
-					echoStep("after", "done"),
+					logStep("after", "done"),
 				},
 			}})
 
@@ -168,9 +187,9 @@ func TestWaitForSignal(t *testing.T) {
 	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: &v1.Workflow{
 		Name: "gated",
 		Steps: []*v1.Node{
-			echoStep("request", "requesting approval"),
+			logStep("request", "requesting approval"),
 			signalStep("approval", "deploy-approved", 0),
-			echoStep("deploy", "deploying"),
+			logStep("deploy", "deploying"),
 		},
 	}})
 
@@ -208,18 +227,11 @@ func TestWaitForSignalTimeout(t *testing.T) {
 	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: &v1.Workflow{
 		Name: "gate-lapses",
 		Steps: []*v1.Node{
-			echoStep("request", "requesting approval"),
+			logStep("request", "requesting approval"),
 			signalStep("approval", "deploy-approved", 24*time.Hour),
 			// Runs only if the approval did not lapse, which is the whole point
 			// of the outcome being an output rather than an error.
-			{
-				Id:        "deploy",
-				Condition: v1.NewExpr("!approval.timed_out"),
-				Kind: &v1.Node_Task{Task: &v1.Task{
-					Name:   "echo",
-					Inputs: map[string]*v1.Value{"message": v1.NewLiteral("deploying")},
-				}},
-			},
+			gatedOn(logStep("deploy", "deploying"), "!approval.timed_out"),
 		},
 	}})
 
@@ -257,15 +269,8 @@ func TestWaitTimeoutLeavesPayloadKeysAbsent(t *testing.T) {
 		Name: "lapsed-then-referenced",
 		Steps: []*v1.Node{
 			signalStep("approval", "deploy-approved", time.Hour),
-			{
-				Id: "deploy",
-				// The obvious thing to write, and the thing that fails.
-				Condition: v1.NewExpr("approval.payload.approved"),
-				Kind: &v1.Node_Task{Task: &v1.Task{
-					Name:   "echo",
-					Inputs: map[string]*v1.Value{"message": v1.NewLiteral("deploying")},
-				}},
-			},
+			// The obvious thing to write, and the thing that fails.
+			gatedOn(logStep("deploy", "deploying"), "approval.payload.approved"),
 		},
 	}})
 
@@ -297,10 +302,10 @@ func TestWaitForSignalArrivingEarly(t *testing.T) {
 	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: &v1.Workflow{
 		Name: "approved-in-advance",
 		Steps: []*v1.Node{
-			echoStep("one", "1"),
-			echoStep("two", "2"),
+			logStep("one", "1"),
+			logStep("two", "2"),
 			signalStep("approval", "deploy-approved", 0),
-			echoStep("deploy", "deploying"),
+			logStep("deploy", "deploying"),
 		},
 	}})
 
@@ -328,21 +333,14 @@ func TestWaitForSignalSurvivesContinueAsNew(t *testing.T) {
 	spec := &v1.Workflow{
 		Name: "approved-then-suspended",
 		Steps: []*v1.Node{
-			echoStep("one", "1"),
-			echoStep("two", "2"),
+			logStep("one", "1"),
+			logStep("two", "2"),
 			signalStep("approval", "deploy-approved", 0),
 			// Gated on what the approval carried, which is the user-visible
 			// requirement: not merely that the gate opened, but that what the
 			// approver sent is still readable by a later step several suspends
 			// away.
-			{
-				Id:        "deploy",
-				Condition: v1.NewExpr("approval.payload.approved"),
-				Kind: &v1.Node_Task{Task: &v1.Task{
-					Name:   "echo",
-					Inputs: map[string]*v1.Value{"message": v1.NewLiteral("deploying")},
-				}},
-			},
+			gatedOn(logStep("deploy", "deploying"), "approval.payload.approved"),
 		},
 	}
 
@@ -482,11 +480,11 @@ func TestWaitUntil(t *testing.T) {
 			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: &v1.Workflow{
 				Name: "until",
 				Steps: []*v1.Node{
-					echoStep("before", "starting"),
+					logStep("before", "starting"),
 					{Id: "pause", Kind: &v1.Node_Wait{Wait: &v1.Wait{
 						Kind: &v1.Wait_Until{Until: test.until},
 					}}},
-					echoStep("after", "done"),
+					logStep("after", "done"),
 				},
 			}})
 
@@ -545,7 +543,7 @@ func TestSignalNames(t *testing.T) {
 
 	spec := &v1.Workflow{
 		Steps: []*v1.Node{
-			echoStep("a", "a"),
+			logStep("a", "a"),
 			signalStep("top", "top-level", 0),
 			{
 				Id: "loop",

@@ -30,11 +30,11 @@ edition: v2026.2
 name: valid
 steps:
   - id: a
-    echo:
-      message: hello
+    http:
+      url: https://example.com
   - id: b
-    echo:
-      message: ${steps.a.result}
+    log:
+      message: ${steps.a.body}
 `,
 		},
 		{
@@ -44,10 +44,10 @@ edition: v2026.2
 name: dupes
 steps:
   - id: a
-    echo:
+    log:
       message: one
   - id: a
-    echo:
+    log:
       message: two
 `,
 			want: "duplicate id",
@@ -63,7 +63,7 @@ steps:
 edition: v2026.2
 name: no-id
 steps:
-  - echo:
+  - log:
       message: hello
 `,
 			want: "step has no id",
@@ -94,7 +94,7 @@ edition: v2026.2
 name: literal-id
 steps:
   - id: "true"
-    echo:
+    log:
       message: hello
 `,
 			want: "is punctuation in CEL",
@@ -116,11 +116,11 @@ edition: v2026.2
 name: reserved-but-selectable
 steps:
   - id: loop
-    echo:
-      message: hello
+    http:
+      url: https://example.com
   - id: after
-    echo:
-      message: ${steps.loop.result}
+    log:
+      message: ${steps.loop.body}
 `,
 		},
 		{
@@ -136,13 +136,13 @@ edition: v2026.2
 name: now-and-the-clock
 steps:
   - id: now
-    echo:
-      message: hello
+    http:
+      url: https://example.com
   - id: hold
     wait_until: ${now + days(1)}
   - id: after
-    echo:
-      message: ${steps.now.result}
+    log:
+      message: ${steps.now.body}
 `,
 		},
 		{
@@ -152,7 +152,7 @@ edition: v2026.2
 name: bad-ident
 steps:
   - id: my-step
-    echo:
+    log:
       message: hello
 `,
 			want: "not a valid identifier",
@@ -164,7 +164,7 @@ edition: v2026.2
 name: unknown-ref
 steps:
   - id: a
-    echo:
+    log:
       message: ${steps.nope.result}
 `,
 			want: `references unknown step "nope"`,
@@ -181,11 +181,11 @@ edition: v2026.2
 name: retired-spelling
 steps:
   - id: a
-    echo:
-      message: hello
+    http:
+      url: https://example.com
   - id: b
-    echo:
-      message: ${a.result}
+    log:
+      message: ${a.body}
 `,
 			want: "flow fix",
 		},
@@ -196,10 +196,10 @@ edition: v2026.2
 name: not-a-step
 steps:
   - id: a
-    echo:
+    log:
       message: hello
   - id: b
-    echo:
+    log:
       message: ${nope.result}
 `,
 			want: `references unknown name "nope"`,
@@ -211,11 +211,11 @@ edition: v2026.2
 name: forward-ref
 steps:
   - id: a
-    echo:
-      message: ${steps.b.result}
+    log:
+      message: ${steps.b.body}
   - id: b
-    echo:
-      message: hello
+    http:
+      url: https://example.com
 `,
 			want: "runs later",
 		},
@@ -226,8 +226,8 @@ edition: v2026.2
 name: self-ref
 steps:
   - id: a
-    echo:
-      message: ${steps.a.result}
+    http:
+      url: ${steps.a.body}
 `,
 			want: "its own step",
 		},
@@ -237,7 +237,7 @@ steps:
 edition: v2026.2
 steps:
   - id: a
-    echo:
+    log:
       message: hello
 `,
 			want: "no name",
@@ -270,12 +270,12 @@ edition: v2026.2
 name: forward-condition
 steps:
   - id: a
-    if: ${steps.later.result == 'x'}
-    echo:
+    if: ${steps.later.status_code == 200}
+    log:
       message: hi
   - id: later
-    echo:
-      message: hi
+    http:
+      url: https://example.com
 `,
 			want: "runs later",
 		},
@@ -287,7 +287,7 @@ name: unknown-condition
 steps:
   - id: a
     if: ${steps.nope.result}
-    echo:
+    log:
       message: hi
 `,
 			want: `references unknown step "nope"`,
@@ -304,7 +304,7 @@ steps:
       steps:
         - id: act
           if: ${item == 'a'}
-          echo:
+          log:
             message: ${item}
 `,
 		},
@@ -323,18 +323,15 @@ edition: v2026.2
 name: iterator-shares-an-id
 steps:
   - id: item
-    echo:
-      message: hi
+    http:
+      url: https://example.com
   - id: each
     for_each:
       items: "${['a']}"
       steps:
         - id: act
-          printf:
-            format: "%s from %s"
-            args:
-              - ${item}
-              - ${steps.item.result}
+          log:
+            message: ${'%s from %s'.format([item, steps.item.body])}
 `,
 		},
 		{
@@ -354,7 +351,7 @@ steps:
       items: "${['a']}"
       steps:
         - id: act
-          echo:
+          log:
             message: ${steps.item.result}
 `,
 			want: `unknown step "item"`,
@@ -369,11 +366,11 @@ steps:
     parallel:
       - steps:
           - id: left
-            echo:
+            log:
               message: L
       - steps:
           - id: right
-            echo:
+            log:
               message: ${steps.left.result}
 `,
 			want: `unknown step "left"`,
@@ -388,18 +385,15 @@ steps:
     parallel:
       - steps:
           - id: left
-            echo:
-              message: L
+            http:
+              url: https://example.com/left
       - steps:
           - id: right
-            echo:
-              message: R
+            http:
+              url: https://example.com/right
   - id: join
-    printf:
-      format: "%s%s"
-      args:
-        - ${steps.left.result}
-        - ${steps.right.result}
+    log:
+      message: ${'%s%s'.format([steps.left.body, steps.right.body])}
 `,
 		},
 		{
@@ -420,10 +414,10 @@ steps:
       items: "${['a']}"
       steps:
         - id: inner
-          echo:
+          log:
             message: hi
   - id: after
-    echo:
+    log:
       message: ${steps.inner.result}
 `,
 			want: `unknown step "inner"`,
@@ -434,9 +428,8 @@ steps:
 			// would make every comprehension look broken.
 			//
 			// Written as a fenced `${...}` because that is the only spelling the
-			// reference checker sees. The `cel` task's `expr` is a literal string
-			// the task compiles for itself, so a comprehension written there
-			// reaches nothing here and would assert nothing — which is what this
+			// reference checker sees — an expression a task compiled for itself
+			// would reach nothing here and assert nothing, which is what this
 			// fixture used to do.
 			name: "a comprehension binds its own variable",
 			src: `
@@ -444,11 +437,11 @@ edition: v2026.2
 name: comprehension
 steps:
   - id: a
-    echo:
-      message: hello
+    http:
+      url: https://example.com
   - id: b
-    echo:
-      message: ${[steps.a.result].map(x, x + '!')[0]}
+    log:
+      message: ${[steps.a.body].map(x, x + '!')[0]}
 `,
 		},
 		{
@@ -462,7 +455,7 @@ edition: v2026.2
 name: shadowed-root
 steps:
   - id: a
-    echo:
+    log:
       message: "${[{'title': 'x'}].map(steps, steps.title)[0]}"
 `,
 		},
@@ -498,7 +491,7 @@ func TestValidateSourceReportsLineNumbers(t *testing.T) {
 name: positions
 steps:
   - id: first
-    echo:
+    log:
       message: hello
   - id: second
     nosuchtask:
@@ -608,7 +601,7 @@ edition: v2026.2
 name: bad-expr
 steps:
   - id: a
-    echo:
+    log:
       message: hello ${name}
 `
 	if _, err := flowfile.Unmarshal([]byte(src)); err == nil {
@@ -669,7 +662,7 @@ func TestAnIllegalWorkflowNameIsReportedBeforeItIsSubmitted(t *testing.T) {
 name: my workflow
 steps:
   - id: a
-    echo:
+    log:
       message: hi
 `
 
@@ -680,66 +673,6 @@ steps:
 	reported := diagnostics.Error()
 	require.Contains(t, reported, "spaces", "the diagnostic does not say what is wrong: %s", reported)
 	require.Contains(t, reported, "my-workflow", "the diagnostic does not offer a name that works: %s", reported)
-}
-
-// TestARetiredTaskInputIsReported covers `libs:`, which used to choose CEL
-// extension libraries for one step.
-//
-// It chooses nothing now — a workflow speaks one dialect, named by its profile —
-// and this is the awkward kind of retirement. `cel` binds every input it does not
-// recognise as a *variable*, so without a diagnostic the key would validate
-// cleanly, run cleanly, and quietly become a binding nobody reads. A file still
-// saying `libs: [strings]` would look like it was choosing something.
-//
-// Replaces a test asserting that a *misspelled* library was reported. That check
-// is gone with the thing it checked: there is no list of library names in a
-// Flowfile to misspell.
-func TestARetiredTaskInputIsReported(t *testing.T) {
-	t.Parallel()
-
-	const src = `edition: v2026.2
-name: retired-input
-steps:
-  - id: shout
-    cel:
-      expr: "'hi'.upperAscii()"
-      libs: [strings]
-`
-
-	diagnostics, err := flowfile.ValidateSource([]byte(src))
-	require.NoError(t, err)
-	require.NotEmpty(t, diagnostics, "`libs:` was accepted silently, so it reads as though it still selects something")
-
-	reported := diagnostics.Error()
-	require.Contains(t, reported, "libs", "the diagnostic does not name the key: %s", reported)
-	require.Contains(t, reported, "deleted", "the diagnostic does not say what to do: %s", reported)
-	require.NotContains(t, reported, "has no such input",
-		"reported as an unknown input, which sends the author hunting for a spelling rather than deleting the key")
-}
-
-// TestARetiredInputDoesNotSuppressRealChecks is the negative direction.
-//
-// A retired name is marked so the required-input pass does not also complain about
-// it. A bug there could mark the wrong name and silence a genuine complaint, and
-// every assertion above would still pass.
-func TestARetiredInputDoesNotSuppressRealChecks(t *testing.T) {
-	t.Parallel()
-
-	// `expr` is required and missing; `libs` is retired. Both must be reported.
-	const src = `edition: v2026.2
-name: still-checked
-steps:
-  - id: shout
-    cel:
-      libs: [strings]
-`
-
-	diagnostics, err := flowfile.ValidateSource([]byte(src))
-	require.NoError(t, err)
-
-	reported := diagnostics.Error()
-	require.Contains(t, reported, "libs", "the retired key went unreported: %s", reported)
-	require.Contains(t, reported, "expr", "a required input went unreported beside a retired one: %s", reported)
 }
 
 // TestTheEvaluatorRefusesAnUnknownLibraryBeforeItCaches is the resource bound
@@ -786,9 +719,9 @@ func TestAWorkflowTooLargeToRunIsReportedAtValidateTime(t *testing.T) {
 	expression := "first.result" + strings.Repeat(" + first.result", 180)
 
 	var src strings.Builder
-	src.WriteString("edition: v2026.2\nname: expands\nsteps:\n  - id: first\n    echo:\n      message: hello\n")
+	src.WriteString("edition: v2026.2\nname: expands\nsteps:\n  - id: first\n    log:\n      message: hello\n")
 	for i := range 99 {
-		fmt.Fprintf(&src, "  - id: s%d\n    echo:\n      message: ${%s}\n", i, expression)
+		fmt.Fprintf(&src, "  - id: s%d\n    log:\n      message: ${%s}\n", i, expression)
 	}
 
 	require.Less(t, src.Len(), 1<<20,

@@ -68,7 +68,7 @@ vars:
   b: two
 steps:
   - id: s
-    echo:
+    log:
       message: ${vars.a}
 `,
 			want: "a var may not read another var",
@@ -82,7 +82,7 @@ vars:
   a: ${steps.s.result}
 steps:
   - id: s
-    echo:
+    log:
       message: hi
 `,
 			want: "a var may not read a step",
@@ -96,7 +96,7 @@ vars:
   a: ${size(vars)}
 steps:
   - id: s
-    echo:
+    log:
       message: ${vars.a}
 `,
 			want: "a var may not read `vars`",
@@ -110,7 +110,7 @@ vars:
   a: ${nope}
 steps:
   - id: s
-    echo:
+    log:
       message: ${vars.a}
 `,
 			want: "references unknown name",
@@ -124,7 +124,7 @@ vars:
   a: ${"x".upperAscii() + string(1 + 1)}
 steps:
   - id: s
-    echo:
+    log:
       message: ${vars.a}
 `,
 		},
@@ -157,7 +157,7 @@ steps:
 func TestWorkflowVarDiagnosticsCarryAPosition(t *testing.T) {
 	t.Parallel()
 
-	src := "edition: v2026.2\nname: t\nvars:\n  a: ${nope}\nsteps:\n  - id: s\n    echo:\n      message: hi\n"
+	src := "edition: v2026.2\nname: t\nvars:\n  a: ${nope}\nsteps:\n  - id: s\n    log:\n      message: hi\n"
 
 	reported := diagnose(t, src)
 	require.NotEmpty(t, reported)
@@ -182,10 +182,10 @@ steps:
   - id: first
     vars:
       tag: one
-    echo:
+    log:
       message: ${tag}
   - id: second
-    echo:
+    log:
       message: ${tag}
 `
 
@@ -227,7 +227,7 @@ steps:
         - id: inner
           vars:
             name: other
-          echo:
+          log:
             message: ${name}
 `,
 			want: "already bound here by an enclosing loop or step",
@@ -248,7 +248,7 @@ steps:
         - id: inner
           vars:
             shared: b
-          echo:
+          log:
             message: ${shared}
 `,
 			want: "already bound here by an enclosing loop or step",
@@ -262,7 +262,7 @@ steps:
   - id: s
     vars:
       now: x
-    echo:
+    log:
       message: ${now}
 `,
 			want: "is the moment a `wait_until:` is evaluated",
@@ -281,7 +281,7 @@ steps:
         - id: inner
           vars:
             loud: ${name.upperAscii()}
-          echo:
+          log:
             message: ${loud}
 `,
 		},
@@ -320,7 +320,7 @@ steps:
     vars:
       a: one
       b: ${a}
-    echo:
+    log:
       message: ${b}
 `
 
@@ -346,7 +346,7 @@ vars:
   region: eu-west-1
 steps:
   - id: s
-    echo:
+    log:
       message: ${vars["region"] + string(size(vars))}
 `
 
@@ -372,7 +372,7 @@ steps:
   - id: s
     vars:
       target: ${vars.region + "-a"}
-    echo:
+    log:
       message: ${target}
 `
 
@@ -411,7 +411,7 @@ steps:
     vars:
       first: a
       second: ${nope}
-    echo:
+    log:
       message: ${first}
 `
 

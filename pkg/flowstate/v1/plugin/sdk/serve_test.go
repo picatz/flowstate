@@ -310,8 +310,8 @@ func startTestPluginCapturing(t *testing.T, token string, stdout *syncBuffer) st
 			Version: "0.0.1",
 			Tasks: []Task{{
 				Name:   "testplug_noop",
-				Input:  &flowstatev1.Task_Echo_Inputs{},
-				Output: &flowstatev1.Task_Echo_Outputs{},
+				Input:  &flowstatev1.Task_Log_Inputs{},
+				Output: &flowstatev1.Task_Log_Outputs{},
 				Fn: func(context.Context, map[string]*flowstatev1.Value, *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
 					return &flowstatev1.Node_Outputs{}, nil
 				},

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/google/cel-go/cel"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
@@ -426,46 +425,25 @@ func collectRefsFromParsedExpr(pe *expr.ParsedExpr, prev *v1.Workflow_StepOutput
 	collectRefsFromExpr(pe.GetExpr(), prev, refs)
 }
 
-// parseCELString parses a CEL expression string to a ParsedExpr for static analysis.
-func parseCELString(s string) (*expr.ParsedExpr, error) {
-	env, err := cel.NewEnv()
-	if err != nil {
-		return nil, err
-	}
-	ast, issues := env.Parse(s)
-	if issues != nil && issues.Err() != nil {
-		return nil, issues.Err()
-	}
-	return cel.AstToParsedExpr(ast)
-}
-
 // compactPrevOutputsForTask returns a reduced view of prev outputs that includes
-// only the step outputs and fields referenced by the given task's inputs. For
-// non-CEL tasks where inputs are pre-resolved, this typically results in an
-// empty set. For CEL tasks, this minimizes the payload we pass to the activity.
+// only the step outputs and fields referenced by the given task's inputs.
+//
+// A task's inputs are resolved before the activity is scheduled, so what reaches here
+// is usually already values and the reduced view is empty — which is the point: the
+// activity is handed what the step names and not the whole run.
+//
+// It used to also parse a literal string as CEL, for the one task whose main input was
+// an expression carried as text rather than as a parsed one. That task retired at
+// edition v2026.2, and with it the only reason a *literal* could hold a reference.
 func compactPrevOutputsForTask(task *v1.Task, prev *v1.Workflow_StepOutputs) *v1.Workflow_StepOutputs {
 	if prev == nil || task == nil || len(task.Inputs) == 0 {
 		return prev
 	}
 	refs := map[string]map[string]struct{}{}
 
-	// Walk all inputs.
-	for k, v := range task.Inputs {
-		switch kind := v.GetKind().(type) {
-		case *v1.Value_Expr:
+	for _, v := range task.Inputs {
+		if kind, isExpr := v.GetKind().(*v1.Value_Expr); isExpr {
 			collectRefsFromParsedExpr(kind.Expr, prev, refs)
-		case *v1.Value_Literal:
-			// Special-case CEL task main `expr` which is a literal string containing CEL.
-			if task.GetName() == "cel" && k == "expr" {
-				if s := kind.Literal.GetStringValue(); s != "" {
-					if pe, err := parseCELString(s); err == nil {
-						collectRefsFromParsedExpr(pe, prev, refs)
-					}
-				}
-			}
-			// Other literals don't carry references.
-		default:
-			// ignore
 		}
 	}
 
@@ -513,17 +491,17 @@ func collectNodeRefs(node *v1.Node, prev *v1.Workflow_StepOutputs, refs map[stri
 
 	// A condition decides whether the step runs at all, so it is evaluated before
 	// anything else and its references are needed just as much.
-	collectValueRefs(node.GetCondition(), "", "", prev, refs)
+	collectValueRefs(node.GetCondition(), prev, refs)
 
 	switch kind := node.GetKind().(type) {
 	case *v1.Node_Task:
 		task := kind.Task
-		for name, value := range task.GetInputs() {
-			collectValueRefs(value, task.GetName(), name, prev, refs)
+		for _, value := range task.GetInputs() {
+			collectValueRefs(value, prev, refs)
 		}
 
 	case *v1.Node_ForEach:
-		collectValueRefs(kind.ForEach.GetItems(), "", "", prev, refs)
+		collectValueRefs(kind.ForEach.GetItems(), prev, refs)
 		for _, inner := range kind.ForEach.GetBody() {
 			collectNodeRefs(inner, prev, refs)
 		}
@@ -539,28 +517,19 @@ func collectNodeRefs(node *v1.Node, prev *v1.Workflow_StepOutputs, refs map[stri
 		// A `wait_until` expression can name a step's output — "wait until the
 		// deadline the previous step computed" — and a run that suspended before
 		// the wait needs that output to still be there when it resumes.
-		collectValueRefs(kind.Wait.GetUntil(), "", "", prev, refs)
+		collectValueRefs(kind.Wait.GetUntil(), prev, refs)
 	}
 }
 
 // collectValueRefs records the step outputs one value references.
 //
-// taskName and inputName are only needed for the cel task, whose expression
-// arrives as a literal string rather than a parsed expression, and so has to be
-// parsed here to be seen at all.
-func collectValueRefs(value *v1.Value, taskName, inputName string, prev *v1.Workflow_StepOutputs, refs map[string]map[string]struct{}) {
-	switch kind := value.GetKind().(type) {
-	case *v1.Value_Expr:
+// Only an expression can reference anything. It used to take the task and input name
+// too, because one task carried its expression as a literal string and had to be
+// parsed here to be seen at all; that task retired at edition v2026.2, and a literal
+// is now a literal everywhere.
+func collectValueRefs(value *v1.Value, prev *v1.Workflow_StepOutputs, refs map[string]map[string]struct{}) {
+	if kind, isExpr := value.GetKind().(*v1.Value_Expr); isExpr {
 		collectRefsFromParsedExpr(kind.Expr, prev, refs)
-
-	case *v1.Value_Literal:
-		if taskName == "cel" && inputName == "expr" {
-			if s := kind.Literal.GetStringValue(); s != "" {
-				if parsed, err := parseCELString(s); err == nil {
-					collectRefsFromParsedExpr(parsed, prev, refs)
-				}
-			}
-		}
 	}
 }
 

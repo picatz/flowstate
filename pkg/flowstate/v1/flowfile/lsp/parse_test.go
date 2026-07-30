@@ -14,11 +14,15 @@ import (
 func TestParseRecordsExactRanges(t *testing.T) {
 	t.Parallel()
 
+	// A positional fixture rather than a workflow: nothing here is compiled, and
+	// `outputs:` is written as a scalar on purpose. The `${steps.first.result}`
+	// below is read for its span and never resolved — `log:` declares no outputs,
+	// so it names nothing, which is exactly why it is safe to measure against.
 	const src = `edition: v2026.2
 name: model
 steps:
   - id: first
-    echo:
+    log:
       message: "quoted value"
   - id: second
     http:
@@ -45,9 +49,9 @@ steps:
 
 	t.Run("step identity", func(t *testing.T) {
 		assert.Equal(t, "first", first.id)
-		assert.Equal(t, "echo", first.taskName)
+		assert.Equal(t, "log", first.taskName)
 		assert.Equal(t, "first", textInRange(src, first.idEntry.valueRange()))
-		assert.Equal(t, "echo", textInRange(src, first.taskEntry.keyRange))
+		assert.Equal(t, "log", textInRange(src, first.taskEntry.keyRange))
 	})
 
 	t.Run("a quoted value's range includes its quotes", func(t *testing.T) {
@@ -119,14 +123,14 @@ func TestParseHandlesShapesTheDSLDoesNotExpect(t *testing.T) {
 			src: `name: block
 steps:
   - id: a
-    cel:
-      expr: |
+    log:
+      message: |
         1 + 1
 edition: v2026.2
 `,
 			check: func(t *testing.T, doc *document) {
 				require.Len(t, doc.parsed.steps, 1)
-				expr := doc.parsed.steps[0].input("expr")
+				expr := doc.parsed.steps[0].input("message")
 				require.NotNil(t, expr)
 				require.NotNil(t, expr.value)
 				// The range stays on one line: a folded reconstruction cannot be
@@ -146,7 +150,7 @@ edition: v2026.2
 			src: `name: single
 steps:
   - id: a
-    echo:
+    log:
       message: only
 edition: v2026.2
 `,
@@ -161,12 +165,12 @@ edition: v2026.2
 			src: `name: pending
 steps:
   - id: a
-    echo:
+    log:
 edition: v2026.2
 `,
-			// `echo:` on a line by itself names the task and gives it no inputs,
+			// `log:` on a line by itself names the task and gives it no inputs,
 			// which is a complete step as far as the grammar is concerned — whether
-			// echo can run without a message is the registry's question, answered
+			// log can run without a message is the registry's question, answered
 			// by the validator. The key is the name, so a half-written step still
 			// has somewhere for a diagnostic to land.
 			check: func(t *testing.T, doc *document) {
@@ -174,7 +178,7 @@ edition: v2026.2
 				step := doc.parsed.steps[0]
 				require.NotNil(t, step.taskEntry, "the key itself is still recorded")
 				assert.Nil(t, step.taskEntry.value)
-				assert.Equal(t, "echo", step.taskName)
+				assert.Equal(t, "log", step.taskName)
 				assert.Empty(t, step.inputs)
 				assert.Equal(t, step.taskEntry.keyRange, step.taskEntry.valueRange())
 			},
@@ -192,7 +196,7 @@ base: &b
   message: hi
 steps:
   - id: a
-    echo: *b
+    log: *b
 edition: v2026.2
 `,
 			check: func(t *testing.T, doc *document) {
@@ -224,12 +228,12 @@ edition: v2026.2
 		},
 		{
 			name: "a flow-style step is modelled like a block one",
-			src:  "name: flow\nsteps: [{id: a, echo: {message: hi}}]\n" + editionSuffix,
+			src:  "name: flow\nsteps: [{id: a, log: {message: hi}}]\n" + editionSuffix,
 			check: func(t *testing.T, doc *document) {
 				require.Len(t, doc.parsed.steps, 1)
 				step := doc.parsed.steps[0]
 				assert.Equal(t, "a", step.id)
-				assert.Equal(t, "echo", step.taskName)
+				assert.Equal(t, "log", step.taskName)
 				assert.Equal(t, "hi", step.input("message").valueText())
 			},
 		},
@@ -257,7 +261,7 @@ func TestStepLookupPrefersTheFirstDeclaration(t *testing.T) {
 	doc := newDocument("file:///dupe.yaml", 1, `name: dupe
 steps:
   - id: a
-    echo:
+    log:
       message: one
   - id: a
     http:
@@ -268,7 +272,7 @@ edition: v2026.2
 	step := doc.parsed.step("a")
 	require.NotNil(t, step)
 	assert.Equal(t, 0, step.index)
-	assert.Equal(t, "echo", step.taskName)
+	assert.Equal(t, "log", step.taskName)
 }
 
 func TestOutlineScannerTolerantOfBrokenText(t *testing.T) {
@@ -284,11 +288,11 @@ func TestOutlineScannerTolerantOfBrokenText(t *testing.T) {
 			src: `name: x
 steps:
   - id: first
-    echo:
+    log:
       mes
 edition: v2026.2
 `,
-			want: []outlineStep{{id: "first", taskName: "echo"}},
+			want: []outlineStep{{id: "first", taskName: "log"}},
 		},
 		{
 			name: "nested values are not mistaken for input names",
@@ -318,11 +322,11 @@ edition: v2026.2
 steps:
   - id: a
     # which task to run
-    echo:
+    log:
       message: hi
 edition: v2026.2
 `,
-			want: []outlineStep{{id: "a", taskName: "echo", inputKeys: []string{"message"}}},
+			want: []outlineStep{{id: "a", taskName: "log", inputKeys: []string{"message"}}},
 		},
 		{
 			name: "no steps key at all",
@@ -352,7 +356,7 @@ func TestKeyPath(t *testing.T) {
 	const src = `name: x
 steps:
   - id: a
-    echo:
+    log:
       message: hi
       headers:
         X: y
@@ -374,8 +378,8 @@ edition: v2026.2
 	}{
 		{name: "top level", line: 0, want: []string{}},
 		{name: "a step's own key", line: 3, want: []string{"steps"}},
-		{name: "inside a task's inputs", line: 4, want: []string{"steps", "echo"}},
-		{name: "inside a nested input value", line: 6, want: []string{"steps", "echo", "headers"}},
+		{name: "inside a task's inputs", line: 4, want: []string{"steps", "log"}},
+		{name: "inside a nested input value", line: 6, want: []string{"steps", "log", "headers"}},
 		{name: "inside retry", line: 8, want: []string{"steps", "retry"}},
 	}
 	for _, tt := range tests {

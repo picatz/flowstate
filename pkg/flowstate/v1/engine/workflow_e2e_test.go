@@ -1,11 +1,13 @@
 package engine_test
 
 import (
+	"net/http"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
 	"github.com/stretchr/testify/require"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/testsuite"
@@ -14,13 +16,27 @@ import (
 	"google.golang.org/protobuf/testing/protocmp"
 )
 
-// TestRun_E2E_CEL_ContinueAsNew spins up a Temporal dev server + worker and
-// verifies that CEL tasks evaluate correctly across Continue-As-New boundaries.
-// It also demonstrates that only the minimal previous outputs are required for
-// CEL evaluation by successfully evaluating expressions that reference prior
-// step outputs after multiple continues.
-func TestRun_E2E_CEL_ContinueAsNew(t *testing.T) {
+// TestRun_E2E_ExpressionsAcrossContinueAsNew spins up a Temporal dev server and a
+// worker, and checks that an expression naming an earlier step still resolves after
+// the run has suspended and resumed — repeatedly, and against the *trimmed* carryover
+// rather than the whole history.
+//
+// It used to be named for the `cel` task, which it was never really about: `cel`
+// retired at edition v2026.2 and the property survives it unchanged, because what is
+// under test is the compaction that decides which prior outputs a suspending run
+// carries forward. Carry too little and the resumed run cannot resolve an input it
+// needs; carry everything and the point of suspending is lost. The budgets below walk
+// the boundary from both sides.
+//
+// A step's value comes from the loopback echo server now that no task produces one:
+// `http` posts a body and gets it back, so each step records a real `said` output the
+// next step's expression reads. That the chain is four steps long is what makes the
+// trimming visible — the expected sets differ per budget precisely because a step's
+// output is dropped once nothing left to run still names it.
+func TestRun_E2E_ExpressionsAcrossContinueAsNew(t *testing.T) {
 	t.Parallel()
+
+	baseURL := tests.NewHTTPServer(t)
 
 	devServer, err := testsuite.StartDevServer(t.Context(), testsuite.DevServerOptions{
 		ClientOptions: &client.Options{},
@@ -34,27 +50,31 @@ func TestRun_E2E_CEL_ContinueAsNew(t *testing.T) {
 	require.NoError(t, w.Start())
 	t.Cleanup(w.Stop)
 
-	// Build a workflow with alternating CEL and echo steps referencing previous
-	// outputs so we exercise TaskWithPrev multiple times across continues.
+	echoes := func(id, body string) *v1.Node {
+		return &v1.Node{
+			Id: id,
+			Kind: &v1.Node_Task{Task: &v1.Task{
+				Name: "http",
+				Inputs: map[string]*v1.Value{
+					"method":  v1.NewLiteral(http.MethodPost),
+					"url":     v1.NewLiteral(baseURL + "/echo"),
+					"body":    v1.NewExpr(body),
+					"outputs": v1.NewExpr(`{"said": response.body}`),
+				},
+			}},
+		}
+	}
+
+	// Each step names the one before it, so every suspend has a reference that has to
+	// survive it. The two that append a suffix make a lost carry visible as a wrong
+	// string rather than only as a missing one.
 	wf := &v1.Workflow{
-		Name: "e2e-cel-continue",
+		Name: "e2e-expressions-continue",
 		Steps: []*v1.Node{
-			// a: literal echo
-			{Id: "a", Kind: &v1.Node_Task{Task: &v1.Task{Name: "echo", Inputs: map[string]*v1.Value{
-				"message": v1.NewLiteral("hi"),
-			}}}},
-			// b: CEL references a.result
-			{Id: "b", Kind: &v1.Node_Task{Task: &v1.Task{Name: "cel", Inputs: map[string]*v1.Value{
-				"expr": v1.NewLiteral("a.result + '!'"),
-			}}}},
-			// c: echo references b.result via ${}
-			{Id: "c", Kind: &v1.Node_Task{Task: &v1.Task{Name: "echo", Inputs: map[string]*v1.Value{
-				"message": v1.NewExpr("b.result"),
-			}}}},
-			// d: CEL references c.result
-			{Id: "d", Kind: &v1.Node_Task{Task: &v1.Task{Name: "cel", Inputs: map[string]*v1.Value{
-				"expr": v1.NewLiteral("c.result + '!again'"),
-			}}}},
+			echoes("a", `"hi"`),
+			echoes("b", `a.said + "!"`),
+			echoes("c", "b.said"),
+			echoes("d", `c.said + "!again"`),
 		},
 	}
 
@@ -73,7 +93,7 @@ func TestRun_E2E_CEL_ContinueAsNew(t *testing.T) {
 			run, err := devServer.Client().ExecuteWorkflow(
 				t.Context(),
 				client.StartWorkflowOptions{
-					ID:        "e2e-cel-continue-" + tc.name,
+					ID:        "e2e-expressions-continue-" + tc.name,
 					TaskQueue: engine.RunTaskQueueName,
 				},
 				engine.Run,
@@ -84,6 +104,10 @@ func TestRun_E2E_CEL_ContinueAsNew(t *testing.T) {
 			var got v1.Workflow_StepOutputs
 			require.NoError(t, run.Get(t.Context(), &got))
 
+			said := func(value string) *v1.Node_Outputs {
+				return &v1.Node_Outputs{NamedValues: map[string]*v1.Value{"said": v1.NewLiteral(value)}}
+			}
+
 			// Expected outputs depend on whether Continue-As-New trimmed prior
 			// steps from the final carryover:
 			// - budget=1 => final outputs include steps {c, d}
@@ -91,14 +115,14 @@ func TestRun_E2E_CEL_ContinueAsNew(t *testing.T) {
 			// - budget>=4 => final outputs include steps {a, b, c, d}
 			wantValues := map[string]*v1.Node_Outputs{}
 			if tc.budget >= 4 {
-				wantValues["a"] = &v1.Node_Outputs{NamedValues: map[string]*v1.Value{"result": v1.NewLiteral("hi")}}
+				wantValues["a"] = said("hi")
 			}
 			if tc.budget >= 2 {
-				wantValues["b"] = &v1.Node_Outputs{NamedValues: map[string]*v1.Value{"result": v1.NewLiteral("hi!")}}
+				wantValues["b"] = said("hi!")
 			}
 			// c and d are always present in the final run
-			wantValues["c"] = &v1.Node_Outputs{NamedValues: map[string]*v1.Value{"result": v1.NewLiteral("hi!")}}
-			wantValues["d"] = &v1.Node_Outputs{NamedValues: map[string]*v1.Value{"result": v1.NewLiteral("hi!!again")}}
+			wantValues["c"] = said("hi!")
+			wantValues["d"] = said("hi!!again")
 			want := &v1.Workflow_StepOutputs{StepValues: wantValues}
 
 			if !proto.Equal(&got, want) {

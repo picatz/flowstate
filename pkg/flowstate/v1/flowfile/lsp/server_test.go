@@ -195,7 +195,7 @@ steps:
     http:
       url: https://example.com
   - id: out
-    echo:
+    log:
       message: ${steps.web.body}
 edition: v2026.2
 `

@@ -44,7 +44,8 @@ func TestRunWorkflow(t *testing.T) {
 // TestRunWorkflowZeroValues pins that legitimately empty values survive a round
 // trip through the task input and output conversion layer.
 func TestRunWorkflowZeroValues(t *testing.T) {
-	for _, test := range tests.ZeroValueCases() {
+	baseURL := tests.NewHTTPServer(t)
+	for _, test := range tests.ZeroValueCases(baseURL) {
 		t.Run(test.Name, func(t *testing.T) {
 			runWorkflow(t, test.Workflow, test.ExpectedOutputs)
 		})
@@ -54,7 +55,8 @@ func TestRunWorkflowZeroValues(t *testing.T) {
 // TestRunWorkflowControlFlow covers loops and parallel branches in the local
 // driver. The engine package runs the same cases against the durable driver.
 func TestRunWorkflowControlFlow(t *testing.T) {
-	for _, test := range tests.ControlFlowCases() {
+	baseURL := tests.NewHTTPServer(t)
+	for _, test := range tests.ControlFlowCases(baseURL) {
 		t.Run(test.Name, func(t *testing.T) {
 			runWorkflow(t, test.Workflow, test.ExpectedOutputs)
 		})
@@ -101,29 +103,42 @@ func TestRunWorkflowWait(t *testing.T) {
 	}
 }
 
-func Test_CELNestedOutputsReference(t *testing.T) {
+// TestNestedValueIsReachableByIndex pins that a nested map survives being carried as a
+// value and can still be indexed where it is read.
+//
+// It used to hold a `cel` step's result. The value now comes from a `vars:` binding,
+// which is where a computed one lives since that task retired — same conversion layer,
+// same indexing, one fewer step.
+func TestNestedValueIsReachableByIndex(t *testing.T) {
 	wf := &v1.Workflow{
-		Name: "nested",
+		Name:    "nested",
+		Profile: v1.CurrentProfile,
+		Vars: map[string]*v1.Value{
+			"nested": v1.NewExpr("{'outer': {'inner': 'val'}}"),
+		},
 		Steps: []*v1.Node{
-			{Id: "nested", Kind: &v1.Node_Task{Task: &v1.Task{Name: "cel", Inputs: map[string]*v1.Value{
-				"expr": v1.NewLiteral("{'outer': {'inner': 'val'}}"),
-			}}}},
-			{Id: "pick", Kind: &v1.Node_Task{Task: &v1.Task{Name: "echo", Inputs: map[string]*v1.Value{
-				"message": v1.NewExpr("nested.result['outer']['inner']"),
-			}}}},
+			{
+				Id:        "pick",
+				Condition: v1.NewExpr("vars.nested['outer']['inner'] == 'val'"),
+				Kind: &v1.Node_Task{Task: &v1.Task{Name: "log", Inputs: map[string]*v1.Value{
+					"message": v1.NewLiteral("found it"),
+				}}},
+			},
+			{
+				Id:        "pick_else",
+				Condition: v1.NewExpr("vars.nested['outer']['inner'] != 'val'"),
+				Kind: &v1.Node_Task{Task: &v1.Task{Name: "log", Inputs: map[string]*v1.Value{
+					"message": v1.NewLiteral("wrong value"),
+				}}},
+			},
 		},
 	}
 	out, err := v1.Run(t.Context(), wf)
 	require.NoError(t, err)
 	expected := &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-		"nested": {NamedValues: map[string]*v1.Value{
-			"result": v1.NewLiteralMap(map[string]any{"outer": map[string]any{"inner": "val"}}),
-		}},
-		"pick": {NamedValues: map[string]*v1.Value{
-			"result": v1.NewLiteral("val"),
-		}},
+		"pick": {},
 	}}
-	require.True(t, proto.Equal(expected, out))
+	require.Empty(t, cmp.Diff(expected, out, protocmp.Transform()))
 }
 
 // TestRunWorkflowVars covers the workflow's `vars:` block in the local driver.
@@ -134,7 +149,8 @@ func Test_CELNestedOutputsReference(t *testing.T) {
 // durably they are evaluated in an activity and then carried across Continue-As-New.
 // Two routes to one observable is the shape that drifts.
 func TestRunWorkflowVars(t *testing.T) {
-	for _, test := range tests.VarsCases() {
+	baseURL := tests.NewHTTPServer(t)
+	for _, test := range tests.VarsCases(baseURL) {
 		t.Run(test.Name, func(t *testing.T) {
 			out, err := v1.Run(t.Context(), test.Workflow)
 			require.NoError(t, err)

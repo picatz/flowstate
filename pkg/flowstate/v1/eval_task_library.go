@@ -37,35 +37,10 @@ func builtinTasks() []TaskDef {
 			Outputs: (&Task_Log_Outputs{}).ProtoReflect().Descriptor(),
 			Fn:      taskFuncLog,
 		},
-		{
-			Name:    "echo",
-			Summary: "Return the given message unchanged.",
-			Inputs:  (&Task_Echo_Inputs{}).ProtoReflect().Descriptor(),
-			Outputs: (&Task_Echo_Outputs{}).ProtoReflect().Descriptor(),
-			Fn:      taskFuncEcho,
-		},
-		{
-			Name:    "printf",
-			Summary: "Format a string from a format specifier and arguments.",
-			Inputs:  (&Task_Printf_Inputs{}).ProtoReflect().Descriptor(),
-			Outputs: (&Task_Printf_Outputs{}).ProtoReflect().Descriptor(),
-			Fn:      taskFuncPrintf,
-		},
 		// `outputs` expressions reference the response (status_code, body,
 		// headers), which exists only after the request completes, so the http
 		// task evaluates them itself rather than the workflow resolving them.
 		HTTPTaskDef(defaultEgressPolicy()),
-		{
-			Name:    "cel",
-			Summary: "Evaluate a CEL expression and return its result.",
-			Inputs:  (&Task_CEL_Inputs{}).ProtoReflect().Descriptor(),
-			Outputs: (&Task_CEL_Outputs{}).ProtoReflect().Descriptor(),
-			// The `expr` input is the expression this task exists to evaluate,
-			// and `vars` supplies its scope; both belong to the task.
-			DeferredInputs:   []string{"expr", "vars"},
-			NeedsPrevOutputs: true,
-			Fn:               taskFuncCEL,
-		},
 	}
 }
 
@@ -182,67 +157,6 @@ func attrsOf(values []any) []slog.Attr {
 	}
 
 	return attrs
-}
-
-func taskFuncEcho(ctx context.Context, input map[string]*Value, scope *Scope) (*Node_Outputs, error) {
-	taskInputs := &Task_Echo_Inputs{}
-	if err := populateProtoMessageFromValueMap(ctx, input, taskInputs, scope); err != nil {
-		return nil, NewTaskError("echo", ErrorKindInvalidInput, err)
-	}
-
-	return nodeOutputsFromProtoMessage(&Task_Echo_Outputs{
-		Result: taskInputs.Message,
-	})
-}
-
-func taskFuncPrintf(ctx context.Context, input map[string]*Value, scope *Scope) (*Node_Outputs, error) {
-	taskInputs := &Task_Printf_Inputs{}
-	if err := populateProtoMessageFromValueMap(ctx, input, taskInputs, scope); err != nil {
-		return nil, NewTaskError("printf", ErrorKindInvalidInput, err)
-	}
-
-	args := make([]any, len(taskInputs.Args))
-	for i, arg := range taskInputs.Args {
-		switch kind := arg.GetKind().(type) {
-		case *Value_Expr:
-			out, err := valueToCEL(ctx, arg, scope)
-			if err != nil {
-				return nil, fmt.Errorf("printf argument %d: %w", i, err)
-			}
-			value, err := cel.RefValueToValue(out)
-			if err != nil {
-				return nil, fmt.Errorf("failed to convert CEL reference to value: %w", err)
-			}
-			switch v := value.GetKind().(type) {
-			case *expr.Value_StringValue:
-				args[i] = v.StringValue
-			case *expr.Value_Int64Value:
-				args[i] = v.Int64Value
-			case *expr.Value_BoolValue:
-				args[i] = v.BoolValue
-			default:
-				return nil, fmt.Errorf("unsupported printf argument type: %T", v)
-			}
-		case *Value_Literal:
-			lit := kind.Literal
-			switch v := lit.GetKind().(type) {
-			case *expr.Value_StringValue:
-				args[i] = v.StringValue
-			case *expr.Value_Int64Value:
-				args[i] = v.Int64Value
-			case *expr.Value_BoolValue:
-				args[i] = v.BoolValue
-			default:
-				return nil, fmt.Errorf("unsupported printf argument type: %T", v)
-			}
-		default:
-			return nil, fmt.Errorf("unsupported value type: %T", arg)
-		}
-	}
-
-	return nodeOutputsFromProtoMessage(&Task_Printf_Outputs{
-		Result: fmt.Sprintf(taskInputs.Format, args...),
-	})
 }
 
 // maxHTTPResponseBytes bounds how much of an HTTP response body the http task
@@ -624,126 +538,6 @@ func literalToValueMap(lit *expr.Value) (map[string]*Value, error) {
 		}
 	}
 	return out, nil
-}
-
-func taskFuncCEL(ctx context.Context, input map[string]*Value, scope *Scope) (*Node_Outputs, error) {
-	exprInput, ok := input["expr"]
-	if !ok {
-		return nil, NewTaskError("cel", ErrorKindInvalidInput, fmt.Errorf("missing expr input"))
-	}
-
-	var exprStr string
-	if lit := exprInput.GetLiteral(); lit != nil {
-		exprStr = lit.GetStringValue()
-	} else {
-		val, err := valueToCEL(ctx, exprInput, scope)
-		if err != nil {
-			return nil, fmt.Errorf("failed to resolve expr input: %w", err)
-		}
-		if s, ok := val.Value().(string); ok {
-			exprStr = s
-		} else {
-			return nil, fmt.Errorf("expr input must resolve to string, got %T", val.Value())
-		}
-	}
-
-	varBindings := map[string]*Value{}
-	for k, v := range input {
-		switch k {
-		case "expr":
-			continue
-		case "libs":
-			// Read and discarded. The workflow's profile decides the vocabulary now,
-			// so this selects nothing — but it is still validated as a list of
-			// strings rather than falling through to `default`, where an unknown
-			// input becomes a *variable* the expression can name. Silently turning a
-			// retired input into a binding called `libs` is a worse answer than
-			// ignoring it, and the validator tells the author to delete the key.
-			if lit := v.GetLiteral(); lit != nil {
-				if lv := lit.GetListValue(); lv != nil {
-					for _, elem := range lv.Values {
-						if elem.GetStringValue() == "" {
-							return nil, fmt.Errorf("libs elements must be strings")
-						}
-					}
-				} else if lit.GetStringValue() == "" {
-					return nil, fmt.Errorf("libs input must be a string or list of strings")
-				}
-			} else {
-				return nil, fmt.Errorf("libs input must be literal")
-			}
-			continue
-		case "vars":
-			lit := v.GetLiteral()
-			if lit == nil {
-				return nil, fmt.Errorf("vars input must be literal")
-			}
-			mv, ok := lit.GetKind().(*expr.Value_MapValue)
-			if !ok {
-				return nil, fmt.Errorf("vars input must be a map")
-			}
-			for _, entry := range mv.MapValue.Entries {
-				key := entry.GetKey().GetStringValue()
-				varBindings[key] = &Value{Kind: &Value_Literal{Literal: entry.Value}}
-			}
-		default:
-			varBindings[k] = v
-		}
-	}
-
-	ev := DefaultEvaluator()
-
-	// The workflow's profile, not this step's `libs:`.
-	//
-	// A `cel` step used to choose its own vocabulary, which is what made the rest
-	// of the file speak a poorer one — `if:` and `items:` have no key to choose
-	// with. The profile is the whole workflow's, so this step gets the same
-	// vocabulary as every expression around it, and `libs:` no longer selects
-	// anything. It is still accepted, still reported as retired by the validator,
-	// and deleted from the schema in the change that follows this one.
-	//
-	// Cost limits and environment caching are unchanged and still the evaluator's
-	// (see celenv.go); the profile decides membership and nothing else.
-	env, err := ev.ProfileEnv(scope.GetProfile())
-	if err != nil {
-		return nil, err
-	}
-
-	ast, issues := env.Parse(exprStr)
-	if issues != nil && issues.Err() != nil {
-		return nil, NewTaskError("cel", ErrorKindExpression, fmt.Errorf("parse expression: %w", issues.Err()))
-	}
-
-	celVars := make(map[string]any, len(varBindings))
-	for name, val := range varBindings {
-		cval, err := valueToCEL(ctx, val, scope)
-		if err != nil {
-			return nil, fmt.Errorf("failed to resolve var %s: %w", name, err)
-		}
-		celVars[name] = cval
-	}
-	bindings := map[string]any{"vars": celVars}
-
-	// Create an activation containing the user-provided variables.
-	varAct, err := interpreter.NewActivation(bindings)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create activation: %w", err)
-	}
-	// Combine the step outputs with the variable activation so expressions
-	// can reference both previous steps and local variables.
-	act := interpreter.NewHierarchicalActivation(scope.Activation(ctx), varAct)
-
-	out, err := ev.Eval(ctx, env, ast, act)
-	if err != nil {
-		return nil, err
-	}
-
-	resultVal, err := cel.RefValueToValue(out)
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert CEL value: %w", err)
-	}
-
-	return nodeOutputsFromProtoMessage(&Task_CEL_Outputs{Result: NewLiteral(resultVal)})
 }
 
 // valueToCEL resolves the given Value into a CEL value. Literals are converted

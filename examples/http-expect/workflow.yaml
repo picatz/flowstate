@@ -15,10 +15,8 @@ steps:
       expect: ${response.status_code == 200 || response.status_code == 404}
 
   - id: report_missing
-    printf:
-      format: "lookup answered %d, which this step accepts"
-      args:
-        - ${steps.maybe_missing.status_code}
+    log:
+      message: ${"lookup answered %d, which this step accepts".format([steps.maybe_missing.status_code])}
 
   # An API that answers 200 with an error in the body. `expect` is an expression
   # over the same response variables `outputs` sees, so it can read the parsed
@@ -31,7 +29,5 @@ steps:
       expect: ${response.status_code == 200 && !has(response.json.error)}
 
   - id: report_checked
-    printf:
-      format: "response carried no error field: %s"
-      args:
-        - ${string(steps.checked.status_code)}
+    log:
+      message: '${"response carried no error field: %s".format([string(steps.checked.status_code)])}'

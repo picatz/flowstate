@@ -1,5 +1,7 @@
 edition: v2026.2
 name: headers-and-nested-outputs
+vars:
+  nested: "${{'outer': {'inner': 'value'}}}"
 steps:
   - id: web
     http:
@@ -8,14 +10,9 @@ steps:
       headers:
         X-From: Flowstate
         X-Env: dev
-  - id: echo_header
-    echo:
+  - id: report_status
+    log:
       message: ${string(steps.web.status_code)}
-  - id: nested
-    cel:
-      # Note: CEL expressions for the cel task's `expr` input must be strings.
-      # Quote the whole expression so it is treated as a string value.
-      expr: "{'outer': {'inner': 'value'}}"
   - id: pick
-    echo:
-      message: ${steps.nested.result['outer']['inner']}
+    log:
+      message: ${vars.nested['outer']['inner']}
