@@ -334,10 +334,6 @@ func (e *executor) runIteration(loop *v1.ForEach, iterator string, item *v1.Valu
 // Results keep the order of the input list rather than the order iterations
 // finished, so a loop's results do not depend on scheduling.
 func (e *executor) runIterationsConcurrently(loop *v1.ForEach, iterator string, items []*v1.Value, depth int) ([]*v1.Workflow_StepOutputs, error) {
-	// Several iterations are current at once from here, so there is no one position
-	// inside the loop to report. The loop step itself is still true.
-	e.progress.concurrent()
-
 	limit := int(loop.GetMaxParallel())
 	if limit > len(items) {
 		limit = len(items)
@@ -398,10 +394,6 @@ func (e *executor) runIterationsConcurrently(loop *v1.ForEach, iterator string, 
 
 // runParallel runs branches concurrently and merges their outputs.
 func (e *executor) runParallel(parallel *v1.Parallel, depth int) error {
-	// Same as a concurrently-iterated loop: several branches are current at once and
-	// none of them is *the* position.
-	e.progress.concurrent()
-
 	branches := parallel.GetBranches()
 	scopes := make([]*v1.Workflow_StepOutputs, len(branches))
 	errs := make([]error, len(branches))

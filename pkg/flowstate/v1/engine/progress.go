@@ -73,6 +73,10 @@ func (p *progress) snapshot() *v1.RunProgress {
 // top-level step means whatever was inside the last one is over. Deeper levels append
 // — a body step under its loop — and re-entering the same depth replaces rather than
 // stacks, which is what makes the second iteration of a loop overwrite the first.
+//
+// Truncating to the entered depth is also what keeps the path honest without any
+// separate bookkeeping: arriving at a step one level up drops whatever was recorded
+// below it, so a stale deeper entry cannot survive into a later query.
 func (p *progress) enter(depth int, stepID string) {
 	if p == nil {
 		return
@@ -100,20 +104,6 @@ func (p *progress) finished() {
 	}
 
 	p.completed++
-}
-
-// concurrent marks that the run has entered work with no single position.
-//
-// A parallel block and a concurrently-iterated loop run several steps at once, so
-// there is no path to report and any one branch's would be a lie by omission. The
-// engine already refuses to *suspend* inside these for the same reason — a position
-// it cannot represent — so this reports the outermost step that is true and stops.
-func (p *progress) concurrent() {
-	if p == nil {
-		return
-	}
-
-	p.path = p.path[:0]
 }
 
 // setProgressQuery installs the handler that answers [ProgressQuery].

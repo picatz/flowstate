@@ -409,8 +409,7 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 				Status:     respStatus,
 				StartTime:  start,
 				CloseTime:  closed,
-				Progress: runProgress(ctx, temporal,
-					req.Msg.GetWorkflowId(), resp.WorkflowExecutionInfo.Execution.RunId),
+				Progress:   runProgress(ctx, temporal, resp),
 			},
 		), nil
 	case v1.RunResponse_STATUS_COMPLETED:
@@ -581,7 +580,26 @@ const progressQueryTimeout = 2 * time.Second
 // Deliberately not logged at error level for the same reason: on a fleet with any
 // unversioned or older workers this is an ordinary outcome, and an error line per
 // `flow get` would train whoever reads the logs to ignore them.
-func runProgress(ctx context.Context, temporal client.Client, workflowID, runID string) *v1.RunProgress {
+func runProgress(ctx context.Context, temporal client.Client, resp *workflowservice.DescribeWorkflowExecutionResponse) *v1.RunProgress {
+	// Only where Temporal itself says the execution is running.
+	//
+	// STATUS_RUNNING covers one case where it does not: a segment that continued as
+	// new is *closed*, and is reported running because the workload is — the run id
+	// somebody holds still names the workload they asked about. Temporal will answer
+	// a query against a closed execution by replaying its history, so asking here
+	// returns the position that segment finished at, presented as where the workload
+	// is now. That is worse than saying nothing: it is a real step id, from the right
+	// workload, that the run left behind possibly hours ago.
+	//
+	// Unset instead. A caller holding a superseded run id is asking about an attempt
+	// that has handed off, and "no current position" is the true answer for it.
+	if resp.GetWorkflowExecutionInfo().GetStatus() != enums.WORKFLOW_EXECUTION_STATUS_RUNNING {
+		return nil
+	}
+
+	workflowID := resp.GetWorkflowExecutionInfo().GetExecution().GetWorkflowId()
+	runID := resp.GetWorkflowExecutionInfo().GetExecution().GetRunId()
+
 	// Bounded separately from the request, because the request's own deadline is the
 	// wrong bound for an optional field. Measured against a run whose worker is away:
 	// the query took 10.5s to give up, and every `flow get` on such a run wore all of

@@ -188,3 +188,51 @@ func TestProgressStopsAtConcurrentWork(t *testing.T) {
 		"a parallel block reported one branch as though it were the run's position, "+
 			"which two identical queries could disagree about")
 }
+
+// TestProgressKeepsTheStepThatContainsConcurrentWork is the case that showed the
+// first version of this clearing too much.
+//
+// A parallel block nested in a sequential loop body has an unambiguous path down to
+// it — every branch is inside `fanout`, whichever one is running — and an earlier
+// version reset the whole path on entering concurrent work, so a query reported only
+// `outer` and lost the step actually holding the work. That is the one part of the
+// position somebody looking at a stuck run most needs.
+//
+// Nothing has to be cleared: the branch executors are given a nil progress, so no
+// deeper entry can be written, and [progress.enter] truncates to the depth it is
+// entering, so a stale one cannot survive either.
+func TestProgressKeepsTheStepThatContainsConcurrentWork(t *testing.T) {
+	t.Parallel()
+
+	env := newWaitEnv(t)
+	during, queryErr := askDuring(t, env, 30*time.Second)
+
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: &v1.Workflow{
+		Name: "fanout-inside-a-loop",
+		Steps: []*v1.Node{{
+			Id: "outer",
+			Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+				Items:    v1.NewLiteralList("only"),
+				Iterator: "item",
+				Body: []*v1.Node{{
+					Id: "fanout",
+					Kind: &v1.Node_Parallel{Parallel: &v1.Parallel{
+						Branches: []*v1.Parallel_Branch{
+							{Steps: []*v1.Node{sleepStep("left", time.Hour)}},
+							{Steps: []*v1.Node{sleepStep("right", time.Hour)}},
+						},
+					}},
+				}},
+			}},
+		}},
+	}})
+
+	require.True(t, env.IsWorkflowCompleted())
+	require.NoError(t, env.GetWorkflowError())
+	require.NoError(t, *queryErr, "the run did not answer where it had got to")
+
+	assert.Equal(t, "outer", during.GetStepId())
+	assert.Equal(t, []string{"fanout"}, during.GetPath(),
+		"the step containing the concurrent work was dropped from the position, "+
+			"leaving only the loop around it")
+}
