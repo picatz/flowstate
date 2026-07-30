@@ -6,7 +6,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/colorprofile"
 	"github.com/spf13/cobra"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -155,4 +160,75 @@ func TestTasksRefusesAFormatItDoesNotHave(t *testing.T) {
 	if out.Len() != 0 {
 		t.Errorf("a refused format still wrote to stdout: %q", out.String())
 	}
+}
+
+// TestTasksColumnsAlignOnATerminal is the bug styling introduced, which a piped
+// test cannot see.
+//
+// `flow tasks` was the one reference surface with no theme while help, errors, get
+// and list were all styled. Adding one broke the layout: it was built with
+// text/tabwriter, which measures the *bytes* it is given, and a styled cell is
+// mostly escape sequences — so every column after the first shifted by however long
+// the colour codes were. Piped output stayed correct, because piped output is
+// unstyled, which is exactly why this asserts on a styled render.
+//
+// Measured with lipgloss, which counts displayed columns rather than bytes, the way
+// the help page's own two-column lists are.
+func TestTasksColumnsAlignOnATerminal(t *testing.T) {
+	t.Parallel()
+
+	var out strings.Builder
+	surface := ui.ForCapabilities(&out, &out,
+		ui.Capabilities{Profile: colorprofile.TrueColor, TTY: true, Width: 120},
+		ui.Capabilities{Profile: colorprofile.TrueColor, TTY: true, Width: 120})
+
+	writeFields(&out, surface.Theme, []fieldGroup{
+		{label: "inputs", fields: []v1.InputField{
+			{Name: "url", Type: "string", Required: true},
+			{Name: "retry_on_unknown_outcome", Type: "bool"},
+		}},
+		{label: "outputs", fields: []v1.InputField{
+			{Name: "status_code", Type: "int"},
+		}},
+	})
+
+	// The type column starts in the same place on every row, which is the whole
+	// point of a column. Measured on the rendered text with the styling stripped,
+	// since that is what a reader sees laid out.
+	var starts []int
+	for _, line := range strings.Split(strings.TrimRight(out.String(), "\n"), "\n") {
+		plain := stripANSI(line)
+		for _, kind := range []string{"string", "bool", "int"} {
+			if i := strings.LastIndex(plain, kind); i > 0 {
+				starts = append(starts, i)
+
+				break
+			}
+		}
+	}
+
+	require.Len(t, starts, 3, "not every row was rendered:\n%s", out.String())
+	for _, start := range starts[1:] {
+		assert.Equal(t, starts[0], start,
+			"the type column starts in a different place on each row, so the styling "+
+				"was counted as width:\n%s", out.String())
+	}
+}
+
+// stripANSI removes escape sequences, so a rendered line can be measured the way it
+// is seen rather than the way it is stored.
+func stripANSI(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == 0x1b {
+			for i < len(s) && s[i] != 'm' {
+				i++
+			}
+
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+
+	return b.String()
 }
