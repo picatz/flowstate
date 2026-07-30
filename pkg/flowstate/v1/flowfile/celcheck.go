@@ -52,6 +52,20 @@ import (
 // Measured over the shipped corpus before it was written: 60 expressions across 19
 // examples, zero reported. `TestTypeCheckingIsQuietOnTheCorpus` keeps that true.
 //
+// # Why only here
+//
+// The other two CEL surfaces already do this. An egress rule and an auth policy are
+// both `env.Compile`d — parsed *and* checked — when the configuration loads, which is
+// what "rules compile and type-check when configuration loads rather than when a
+// request arrives" means in CLAUDE.md. Each has its own environment, deliberately:
+// they are separate languages over their own variables, and giving a policy the
+// workflow libraries would widen a surface whose whole point is to be narrow.
+//
+// So the Flowfile was the one place that parsed without checking, and it was the one
+// place an author writes the most. Swept for rather than assumed: `cel.NewEnv` and
+// `Evaluator.Env` between them have no other caller that evaluates an expression
+// somebody wrote in a workflow.
+//
 // # What it therefore does not cover
 //
 // A deferred input is checked like any other, because scope is irrelevant here:

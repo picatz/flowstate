@@ -235,6 +235,27 @@ That recording costs about 25% of an expression's encoded size where a macro is 
 and 1.7% across the shipped corpus; it also repaired `flow fix`, which until now
 refused outright to write back any file containing `filter` or `map`.
 
+*A second correction, on the one position that spoke a different dialect.* Retiring
+`libs:` removed the case where one step spoke a **richer** dialect than the rest of
+the file. It did not remove the mirror image: the http task evaluated its own two
+deferred inputs, `outputs:` and `expect:`, against an environment holding the response
+root and the json library and nothing else. So `${response.body.upperAscii()}` — a
+function that works in a `vars:` binding, an `if:`, `items:`, `wait_until:` and every
+other task input — failed inside `outputs:`, after the request had been made, since
+that is when the expression runs.
+
+It survived the retirement because nothing in the grammar mentions it: `libs:` was a
+key an author could see, and this was a `cel.NewEnv` call in a task. One dialect means
+these two positions as well, and it is the profile's environment now, resolved from
+the scope rather than from what the running build calls current.
+
+Both of these were found by consequences rather than by review of the section they
+belong to: the macro gap by an evaluation count taken for something else, the dialect
+split by a type checker disagreeing with the runtime. The pattern is worth naming — a
+claim about "one language" is not verified by any test that only ever writes the
+language one way, and the positions this page kept getting wrong are exactly the ones
+no example happened to exercise.
+
 **Signal payloads under `<id>.payload.*`.** *(landed)* The proposal files this as
 ergonomics. It is a security fix and was prioritised as one: a signal sender used to
 inject arbitrary names into a step's output namespace, which is the namespace later
