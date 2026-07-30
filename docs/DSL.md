@@ -379,10 +379,41 @@ one the shipped default has, and nothing refuses to run without it.
 That is stated here rather than quietly fixed because the fix is a real decision and
 not an obvious one. Refusing to start an unversioned worker would make the
 self-hosted `temporal server start-dev` path (invariant 8) require versioning
-configuration to run anything at all. Routing every condition through an activity
-would be a round trip per condition. Warning at worker start is what `flow worker`
-does today for the *absence* of versioning, and a warning is not a gate. Whichever
-is chosen, the gap is between this page and the code, and the page was the wrong one.
+configuration to run anything at all. Warning at worker start is what `flow worker`
+does today for the *absence* of versioning, and a warning is not a gate. Whichever is
+chosen, the gap is between this page and the code, and the page was the wrong one.
+
+The remaining option — routing every evaluation through an activity — has a cost
+worth having a number for, since "a round trip per condition" is the kind of estimate
+that gets repeated without being checked. Counted by instrumenting the three inline
+entry points (`EvalConditionInScope`, `EvalStepVars`, `ResolveTaskInputs`) and running
+the shipped corpus:
+
+| workflow | inline evaluations per run |
+|---|---|
+| `hello-world` | 2 |
+| `http-json` | 5 |
+| `logging`, `step-vars`, `workflow-vars` | 14 |
+| `edition-and-descriptions` | 16 |
+| `fan-out-and-parallel` | 22 |
+
+Small, and it is not the corpus that decides this. A loop is, because the body is
+evaluated once per item. Measured over a one-step body with a condition and a
+`vars:` entry:
+
+| items | evaluations | per item |
+|---|---|---|
+| 1 | 5 | 5.0 |
+| 10 | 32 | 3.2 |
+| 50 | 152 | 3.0 |
+| 200 | 602 | 3.0 |
+
+Three per iteration — the condition, the step's `vars:`, and the task's inputs — so a
+200-item loop over a one-step body is 602 activities where there are today 200. That
+is the real shape of the cost, and it lands on history size rather than only on
+latency: Temporal records every activity, and history size is what forces
+Continue-As-New in the first place. The option that looks safest for determinism is
+the one that most increases how often a run has to suspend.
 
 **`flow test` mocks must not see resolved secrets.** The proposal matches mocks with
 `where: ${...}`, a CEL predicate over the task's *resolved* inputs. Resolved inputs
