@@ -64,6 +64,35 @@ var editionList = strings.Join(flowfile.KnownEditions(), ", ")
 // and nothing failed to tell us. TestDSLKeysMatchTheDSL closes that gap by deriving
 // the real key set from flowfile.Marshal, and the report accompanying this package
 // proposes exporting the shape so the table can go away entirely.
+//
+// # The prose stays hand-written, and that is a decision rather than an omission
+//
+// The obvious next step is to derive these strings from the schema, which does
+// document every field it has. The reason not to is narrower than it first looks,
+// and worth stating exactly, because the wide version of the argument does not
+// survive checking: the schema's prose is *good*, and mostly says what the hover
+// says. It gives `iterator`'s default and its collision rule, both of which an
+// earlier draft of this comment claimed were unique to the hover. They are not.
+//
+// What does not survive derivation is the name. The schema documents `iterator`,
+// and an author writes `as:`. A hover built from the field would call the key by a
+// name the parser rejects, and would do it on the surface whose whole job is to
+// tell somebody what to type. The same holds for the reference spelling: the schema
+// has no reason to mention `${name}`, because a reader of the schema is not writing
+// a reference.
+//
+// So: a key whose DSL spelling matches its field name could take the schema's text
+// today and lose nothing. Deriving them all could not, and the machinery to tell
+// those two cases apart is larger than the table.
+//
+// What is worth deriving is the key *set* rather than the sentences, and
+// TestDSLKeysMatchTheDSL does that — with one bound worth knowing. It compares
+// against a document rendered by flowfile.Marshal from a hand-built workflow, so it
+// sees a key only if the fixture populates the field behind it. A field added
+// without touching that fixture is invisible to both directions of the comparison;
+// the test says so itself, having once been green while the three keys that spell a
+// wait were missing. TestHoverDocumentsEveryDSLKey covers the other way, an entry
+// nothing shows.
 var dslKeys = map[string][]dslKey{
 	"": {
 		{name: "edition", detail: "version", docs: "Required. Names the grammar this file is written in, as a v-prefixed date: `" + flowfile.CurrentEdition + "`.\n\n" +
@@ -114,7 +143,9 @@ var dslKeys = map[string][]dslKey{
 		{name: "items", detail: "expression", docs: "An expression producing the list to iterate, written as `${...}`."},
 		{name: "as", detail: "string", docs: "Names the variable bound to the current item, read bare inside the body: `${name}`. Defaults to `item`.\n\n" +
 			"Reads as the sentence it is — *for each item as name* — and names the binding rather than the mechanism. It was `iterator:`; `flow fix` rewrites that."},
-		{name: "max_parallel", detail: "int", docs: "How many iterations may run at once. Omitted or `1` runs them one at a time."},
+		{name: "max_parallel", detail: "int", docs: "How many iterations may run at once. Omitted, `0` or `1` runs them one at a time.\n\n" +
+			"Zero is accepted rather than refused because it is the field's own zero value: a spec built " +
+			"without it and one that sets it to nothing mean the same thing, and the schema says so with `gte: 0`."},
 		{name: "steps", detail: "list", docs: "The body run once per item."},
 	},
 	"parallel": {
