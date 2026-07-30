@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -432,7 +433,7 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 				Status:     respStatus,
 				Kind: &v1.GetResponse_Error{
 					Error: &v1.RunResponse_Error{
-						Message: respStatus.String(),
+						Message: failureMessage(ctx, temporal, req.Msg.GetWorkflowId(), req.Msg.GetRunId(), respStatus),
 					},
 				},
 			},
@@ -440,6 +441,66 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 	default:
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("unknown workflow status: %d", respStatus))
 	}
+}
+
+// failureMessage answers why a run ended the way it did.
+//
+// It used to answer with the status again — `Error{Message: respStatus.String()}` —
+// so a caller was told a run failed and, asked why, told that it failed. The reason
+// was never missing: Temporal had it the whole time, and the run had already been
+// authorized to read outputs far more sensitive than an error string.
+//
+// The cost of that was not only silence. `flow watch` grew a `restatesStatus` helper
+// whose only job was to notice this answer and drop it, so the terminal did not print
+// `run "x" failed: STATUS_FAILED` — a workaround, in another package, for a sentence
+// this function was choosing to produce.
+//
+// # Read through the authorized client
+//
+// Same client the authorization check used, for the reason the completed branch gives:
+// the run whose failure is read has to be the run that was checked.
+//
+// # The application error, not Temporal's envelope and not the deepest cause
+//
+// Temporal wraps a workflow's error in a `WorkflowExecutionError` naming the workflow
+// type, the id and the run id — all of which the caller already has and none of which
+// is a reason. Unwrapping past it reaches the *application* error, which is the
+// engine's own sentence: `engine: flowstate run failed: step "boom": ...`.
+//
+// The outermost application error rather than the deepest, deliberately. The deepest
+// is the most specific — `unknown task "nosuchtask" (available: http, log)` — and it
+// has lost the one thing an author needs first, which is *which step*. Going deeper
+// trades the question "where do I look" for the question "what exactly went wrong",
+// and the first is the one somebody reading a failure asks.
+//
+// Falling back to the status name is deliberate rather than lazy. A terminal run whose
+// error cannot be read is a run this cannot describe, and inventing a description
+// would be worse than repeating what is known — which is exactly what the old answer
+// did in every case, and is now the answer only when there is nothing else.
+func failureMessage(
+	ctx context.Context,
+	temporalClient client.Client,
+	workflowID, runID string,
+	status v1.RunResponse_Status,
+) string {
+	err := temporalClient.GetWorkflow(ctx, workflowID, runID).Get(ctx, nil)
+	if err == nil {
+		return status.String()
+	}
+
+	var app *temporal.ApplicationError
+	if errors.As(err, &app) && app.Message() != "" {
+		return app.Message()
+	}
+
+	// No application error in the chain, which is what a cancellation or a timeout
+	// looks like: the run ended for a reason Temporal knows and the workload never
+	// said anything about. Its own text is then the best there is.
+	if text := err.Error(); text != "" {
+		return text
+	}
+
+	return status.String()
 }
 
 // getWorkflowExecutionStatus maps the Temporal workflow execution status to Flowstate's run response status.
