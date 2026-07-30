@@ -12,7 +12,9 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/workflow"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/testing/protocmp"
 )
@@ -168,30 +170,50 @@ func saidHi() *v1.Workflow_StepOutputs {
 	}}
 }
 
-func TestRunWorkflow_ContinueAsNewBudget(t *testing.T) {
-	baseURL := tests.NewHTTPServer(t)
+// A budget decides whether a run finishes in one segment or suspends, and there used to
+// be two tests about it that were byte-for-byte the same.
+//
+// Both set a budget of three against three steps, and the one named
+// TestRunWorkflow_ContinueAsNewBudget said so in its own comment — "equal to number of
+// steps to avoid Continue-As-New". So the suite carried two copies of a test that
+// exercised the machinery its name is about *not at all*, which is the most expensive
+// kind of coverage: it reads as tested.
+//
+// They are one test per outcome now, named for the outcome.
+
+// budgetEnv builds a test environment able to run a workflow and continue it.
+//
+// The workflow is registered because Continue-As-New dispatches the next run through
+// the registry rather than by calling the function again.
+func budgetEnv(t *testing.T) *testsuite.TestWorkflowEnvironment {
+	t.Helper()
 
 	testSuite := &testsuite.WorkflowTestSuite{}
 	env := testSuite.NewTestWorkflowEnvironment()
 
-	// Register the workflow so Continue-As-New can dispatch the next run.
 	env.RegisterWorkflow(engine.Run)
-
-	// Register activities (mock passthrough to real funcs)
 	env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
 	env.OnActivity(engine.TaskWithPrev, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskWithPrev)
 	env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 
-	// Three dependent steps, so carryover has something to carry.
-	wf := &v1.Workflow{
-		Name:  "continue-as-new",
-		Steps: chained(baseURL),
-	}
+	return env
+}
 
-	// Use injected budget equal to number of steps to avoid Continue-As-New
+// TestABudgetThatFitsRunsInOneSegment is the boundary case: exactly enough budget for
+// the steps there are.
+//
+// Worth having on its own, because off-by-one here is a run that suspends when it did
+// not need to — correct, invisible, and paying for a Continue-As-New every time.
+func TestABudgetThatFitsRunsInOneSegment(t *testing.T) {
+	baseURL := tests.NewHTTPServer(t)
+	env := budgetEnv(t)
+
+	wf := &v1.Workflow{Name: "budget-fits", Steps: chained(baseURL)}
+
 	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: wf, StepsBudget: 3})
 	require.True(t, env.IsWorkflowCompleted())
-	require.NoError(t, env.GetWorkflowError())
+	require.NoError(t, env.GetWorkflowError(),
+		"a run with exactly enough budget suspended instead of finishing")
 
 	var output v1.Workflow_StepOutputs
 	require.NoError(t, env.GetWorkflowResult(&output))
@@ -205,44 +227,72 @@ func TestRunWorkflow_ContinueAsNewBudget(t *testing.T) {
 	)
 }
 
-func TestRunWorkflow_StateBudget(t *testing.T) {
+// TestABudgetSmallerThanTheWorkflowContinuesAsNew is the case neither old test reached.
+//
+// A run out of budget does not fail and does not finish: it suspends, carrying forward
+// where it had got to and the outputs the remaining steps still need. In the test
+// environment that surfaces as a ContinueAsNewError rather than as a second segment
+// running, which is what makes the *carried state* inspectable — and the carried state
+// is the whole of what these tests are about.
+//
+// What is asserted is that it advanced and that it carried: a suspension that resumed
+// from the beginning, or one that arrived with nothing for `b` to read `a.said` out of,
+// are the two ways this goes wrong and neither shows up as an error.
+func TestABudgetSmallerThanTheWorkflowContinuesAsNew(t *testing.T) {
 	baseURL := tests.NewHTTPServer(t)
+	env := budgetEnv(t)
 
-	testSuite := &testsuite.WorkflowTestSuite{}
-	env := testSuite.NewTestWorkflowEnvironment()
+	wf := &v1.Workflow{Name: "budget-exhausted", Steps: chained(baseURL)}
 
-	// Register the workflow so Continue-As-New can dispatch the next run.
-	env.RegisterWorkflow(engine.Run)
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: wf, StepsBudget: 1})
+	require.True(t, env.IsWorkflowCompleted())
 
-	env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
-	env.OnActivity(engine.TaskWithPrev, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskWithPrev)
-	env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+	err := env.GetWorkflowError()
+	require.Error(t, err, "a run with one step of budget and three steps finished in one segment")
 
-	wf := &v1.Workflow{
-		Name: "state-budget",
-		// No Labels here. A label reading `flowstate/max-steps-per-run` used to sit
-		// on this workflow with a comment claiming it set the budget, and nothing
-		// reads Workflow.labels anywhere in the tree — the budget comes from
-		// RunState.StepsBudget, which this test sets below and always did. An inert
-		// field that reads like a live one is worse than an absent feature: the next
-		// person to want a per-workflow budget would have found it and believed it.
-		Steps: chained(baseURL),
+	var continued *workflow.ContinueAsNewError
+	require.ErrorAs(t, err, &continued,
+		"a run out of budget failed instead of continuing as new: %v", err)
+
+	// The state the next segment starts from, read back out of what was handed to it.
+	require.Len(t, continued.Input.GetPayloads(), 1, "the next segment was passed no state")
+
+	var next v1.RunState
+	require.NoError(t, converter.GetDefaultDataConverter().
+		FromPayload(continued.Input.GetPayloads()[0], &next))
+
+	// It moved. A suspension that carried a position of zero would resume from the
+	// first step and run the whole workflow again, once per segment, forever.
+	require.NotEmpty(t, resumedPosition(&next),
+		"the next segment resumes from the beginning, so the run would never end")
+
+	// And it carried what is still needed. `b` reads `a.said`, so a segment arriving
+	// without `a`'s outputs fails on an unresolved reference — the failure mode the
+	// carryover exists to prevent, and one that only appears on the *second* segment.
+	require.Contains(t, next.GetOutputs().GetStepValues(), "a",
+		"the outputs a later step reads were not carried into the next segment")
+}
+
+// resumedPosition returns where a carried state says the run continues from, in
+// whichever of the two spellings it uses.
+//
+// A run started before frames existed carries only next_step, and resumeFrames
+// translates one into the other; a test that read only frames would report a correctly
+// carried older state as a run resuming from the beginning.
+func resumedPosition(st *v1.RunState) []int32 {
+	if frames := st.GetFrames(); len(frames) > 0 {
+		out := make([]int32, 0, len(frames))
+		for _, frame := range frames {
+			out = append(out, frame.GetNextNode())
+		}
+
+		return out
+	}
+	if st.GetNextStep() > 0 {
+		return []int32{st.GetNextStep()}
 	}
 
-	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: wf, StepsBudget: 3})
-	require.True(t, env.IsWorkflowCompleted())
-	require.NoError(t, env.GetWorkflowError())
-
-	var output v1.Workflow_StepOutputs
-	require.NoError(t, env.GetWorkflowResult(&output))
-
-	expected := saidHi()
-	require.True(
-		t,
-		proto.Equal(expected, &output),
-		"Expected output does not match actual output:\n%s",
-		cmp.Diff(expected, &output, protocmp.Transform()),
-	)
+	return nil
 }
 
 // TestRunWorkflowLog covers the `log` task in the durable driver.
