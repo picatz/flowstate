@@ -881,3 +881,322 @@ func TestHoverDoesNotClaimEveryDeferredInputIsAnExpression(t *testing.T) {
 	assert.NotContains(t, claim, "`outputs`",
 		"the expression sentence names `outputs`, which takes a literal map the engine accepts")
 }
+
+// TestHoverDescribesAProfileFunction is the other half of offering them.
+//
+// Completion shows an author `sortBy` while they type; hover is where they ask what
+// it is afterwards, or what a name means in a file they did not write. Offering a
+// name and then having nothing to say about it is the worse of the two halves to
+// have alone.
+func TestHoverDescribesAProfileFunction(t *testing.T) {
+	const src = `edition: v2026.2
+name: c
+vars:
+  greeting: hello
+steps:
+  - id: web
+    http:
+      url: https://example.com
+  - id: out
+    log:
+      message: ${PLACEHOLDER}
+`
+
+	c := newClient(t)
+	c.initialize()
+
+	for _, test := range []struct {
+		name    string
+		expr    string
+		on      string
+		want    []string
+		notWant []string
+	}{
+		{
+			name: "a bare function",
+			expr: `vars.greeting.upperAscii()`,
+			on:   "upperAscii",
+			want: []string{"upperAscii", "strings"},
+		},
+		{
+			// The ambiguity that decides the lookup order. `replace` is a function
+			// in the strings library and also the tail of `regex.replace`, so a
+			// bare-first lookup would name the wrong library here.
+			name:    "a qualified function beats the bare one it ends with",
+			expr:    `regex.replace('a', 'b', 'c')`,
+			on:      "replace",
+			want:    []string{"regex.replace", "regex"},
+			notWant: []string{"strings"},
+		},
+		{
+			// Pointing at the qualifier of a *call* describes the call, not the
+			// namespace: `regex` in `regex.replace(...)` is part of one name, and
+			// the generic answer would be the less useful of the two available.
+			name: "the qualifier of a call describes the call",
+			expr: `regex.replace('a', 'b', 'c')`,
+			on:   "regex",
+			want: []string{"regex.replace"},
+		},
+		{
+			// The namespace answer, which is only reachable while a name is
+			// unfinished — once `regex.replace` is written, pointing anywhere in it
+			// describes the call. Worth its own case rather than left as a branch
+			// nothing reaches: mid-edit is when somebody hovers.
+			name: "a qualifier with nothing after it yet",
+			expr: `regex.`,
+			on:   "regex",
+			want: []string{"namespace", "regex"},
+		},
+		{
+			// A macro says the thing about it that is not guessable: it is settled
+			// when the file compiles, not when the run evaluates.
+			name: "a macro",
+			expr: `[3, 1, 2].sortBy(v, v)`,
+			on:   "sortBy",
+			want: []string{"sortBy", "lists", "macro", "compiles"},
+		},
+		{
+			name: "a macro written on a namespace",
+			expr: `math.greatest(1, 2)`,
+			on:   "greatest",
+			want: []string{"greatest", "math", "macro"},
+		},
+		{
+			// The rule that keeps this a fallback. `value` is a function in the
+			// optional library; here it is a step output, and the output is what an
+			// author pointing at it means.
+			name:    "a step output that shares a function's name",
+			expr:    `steps.web.value`,
+			on:      "value",
+			notWant: []string{"optional library"},
+		},
+		{
+			// And a binding wins too, for the same reason: `first` is a function in
+			// the optional library and the loop bound it.
+			name:    "a binding that shares a function's name",
+			expr:    `first`,
+			on:      "first",
+			notWant: []string{"optional"},
+		},
+		{
+			name:    "a name that is neither",
+			expr:    `nosuchthing`,
+			on:      "nosuchthing",
+			notWant: []string{"library", "namespace"},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			text := strings.Replace(src, "PLACEHOLDER", test.expr, 1)
+
+			// A loop binding `first`, so the binding-wins case has something to
+			// win against. Added for every case so the document is one shape.
+			text = strings.Replace(text,
+				"  - id: out\n",
+				"  - id: each\n    for_each:\n      items: ${['a']}\n      as: first\n      steps:\n"+
+					"        - id: inner\n          log:\n            message: hi\n  - id: out\n", 1)
+
+			uri := "file:///hover-fn-" + strings.ReplaceAll(test.name, " ", "-") + ".yaml"
+			c.open(uri, text)
+
+			line, col := findWord(t, text, test.expr, test.on)
+			got := c.hover(uri, line, col)
+
+			rendered := ""
+			if got != nil {
+				rendered = hoverText(got)
+			}
+			for _, want := range test.want {
+				assert.Contains(t, rendered, want)
+			}
+			for _, notWant := range test.notWant {
+				assert.NotContains(t, rendered, notWant)
+			}
+		})
+	}
+}
+
+// findWord locates a word inside an expression that appears once in the document,
+// and returns a position in the middle of it.
+//
+// The middle rather than the start, because the start of a segment is also the
+// position just past the dot before it, and a test that only ever asked about
+// boundaries would not notice a lookup that was off by one segment.
+func findWord(t *testing.T, text, expr, word string) (int, int) {
+	t.Helper()
+
+	exprAt := strings.Index(text, expr)
+	require.GreaterOrEqual(t, exprAt, 0, "the expression is not in the document")
+
+	within := strings.Index(expr, word)
+	require.GreaterOrEqual(t, within, 0, "the word is not in the expression")
+
+	offset := exprAt + within + len(word)/2
+
+	line := strings.Count(text[:offset], "\n")
+	lineStart := strings.LastIndex(text[:offset], "\n") + 1
+
+	return line, offset - lineStart
+}
+
+// TestHoverKnowsWhereAFunctionIsNot is the three cases review found, and they are all
+// the same mistake: a lexical lookup answering confidently about a position it had
+// not actually checked.
+func TestHoverKnowsWhereAFunctionIsNot(t *testing.T) {
+	const src = `edition: v2026.2
+name: c
+vars:
+  greeting: ${PLACEHOLDER_VARS}
+steps:
+  - id: web
+    http:
+      url: https://example.com
+      outputs: "${ {'body': response.body} }"
+  - id: out
+    log:
+      message: ${PLACEHOLDER_STEP}
+`
+
+	c := newClient(t)
+	c.initialize()
+
+	for _, test := range []struct {
+		name    string
+		vars    string
+		step    string
+		expr    string
+		on      string
+		want    []string
+		notWant []string
+	}{
+		{
+			// A quoted literal that happens to spell a function. The lookup knows
+			// names, not syntax, so without a check it reports the strings library
+			// for a piece of text — a confident answer about something not there.
+			name: "a function's name inside a string literal",
+			step: `'upperAscii'`,
+			expr: `'upperAscii'`,
+			on:   "upperAscii",
+			// "library" rather than "the strings library": the rendered text says
+			// "from the `strings` library" with backticks, and a notWant that spells
+			// it without them matches nothing and asserts nothing. Which is what the
+			// first version of this line did — it passed with the guard removed.
+			notWant: []string{"library", "namespace"},
+		},
+		{
+			name:    "a namespace's name inside a string literal",
+			step:    `'regex'`,
+			expr:    `'regex'`,
+			on:      "regex",
+			notWant: []string{"namespace", "library"},
+		},
+		{
+			// The other side of it, so the guard cannot be "never answer": the same
+			// name outside quotes is still a function.
+			name: "the same name outside the quotes",
+			step: `'x'.upperAscii()`,
+			expr: `'x'.upperAscii()`,
+			on:   "upperAscii",
+			want: []string{"upperAscii", "strings"},
+		},
+		{
+			// `referenceAt` returns the rooted reference for the whole word however
+			// far past it the cursor is, so this answered with the output's
+			// documentation while the author pointed at the call after it.
+			name: "a call written after a step output",
+			step: `steps.web.body.upperAscii()`,
+			expr: `steps.web.body.upperAscii()`,
+			on:   "upperAscii",
+			want: []string{"upperAscii", "strings"},
+		},
+		{
+			// And the output still wins where the cursor is actually in it, which is
+			// the rule the bound exists to keep.
+			name:    "the output it was written on",
+			step:    `steps.web.body.upperAscii()`,
+			expr:    `steps.web.body.upperAscii()`,
+			on:      "body",
+			notWant: []string{"strings"},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			text := strings.Replace(src, "PLACEHOLDER_VARS", "hello", 1)
+			text = strings.Replace(text, "PLACEHOLDER_STEP", test.step, 1)
+
+			uri := "file:///hover-not-" + strings.ReplaceAll(test.name, " ", "-") + ".yaml"
+			c.open(uri, text)
+
+			line, col := findWord(t, text, test.expr, test.on)
+			got := c.hover(uri, line, col)
+
+			rendered := ""
+			if got != nil {
+				rendered = hoverText(got)
+			}
+			for _, want := range test.want {
+				assert.Contains(t, rendered, want)
+			}
+			for _, notWant := range test.notWant {
+				assert.NotContains(t, rendered, notWant)
+			}
+		})
+	}
+}
+
+// TestHoverDescribesAFunctionInAWorkflowVar covers the position the first version
+// missed entirely.
+//
+// A workflow-level `vars:` value is routed through its own walker — it has no step,
+// and its interesting answers are refusals about what cannot be referenced there —
+// and that walker never reached the function lookup. Completion offers functions in
+// that position, and the profile is the same everywhere, so hover saying nothing was
+// two surfaces disagreeing about whether a `vars:` value is an ordinary expression.
+func TestHoverDescribesAFunctionInAWorkflowVar(t *testing.T) {
+	const src = `edition: v2026.2
+name: c
+vars:
+  shout: ${PLACEHOLDER}
+steps:
+  - id: out
+    log:
+      message: ${vars.shout}
+`
+
+	c := newClient(t)
+	c.initialize()
+
+	for _, test := range []struct {
+		name string
+		expr string
+		on   string
+		want []string
+	}{
+		{name: "a bare function", expr: `'hello'.upperAscii()`, on: "upperAscii", want: []string{"upperAscii", "strings"}},
+		{name: "a qualified one", expr: `regex.replace('a', 'b', 'c')`, on: "replace", want: []string{"regex.replace", "regex"}},
+		{name: "a macro", expr: `math.greatest(1, 2)`, on: "greatest", want: []string{"greatest", "math", "macro"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			text := strings.Replace(src, "PLACEHOLDER", test.expr, 1)
+
+			uri := "file:///hover-var-" + strings.ReplaceAll(test.name, " ", "-") + ".yaml"
+			c.open(uri, text)
+
+			line, col := findWord(t, text, test.expr, test.on)
+			got := c.hover(uri, line, col)
+			require.NotNil(t, got, "a function in a workflow `vars:` value has no hover")
+
+			for _, want := range test.want {
+				assert.Contains(t, hoverText(got), want)
+			}
+		})
+	}
+
+	// And the refusals that walker exists for still come first, since they are the
+	// more useful answer where they apply: a var may not read a step.
+	text := strings.Replace(src, "PLACEHOLDER", `steps.out.result`, 1)
+	c.open("file:///hover-var-refusal.yaml", text)
+
+	line, col := findWord(t, text, `steps.out.result`, "steps")
+	got := c.hover("file:///hover-var-refusal.yaml", line, col)
+	require.NotNil(t, got, "the refusal about reading a step from `vars:` is gone")
+	assert.Contains(t, hoverText(got), "not readable here")
+}
