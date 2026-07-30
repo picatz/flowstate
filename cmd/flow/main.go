@@ -885,12 +885,24 @@ flow validate examples/hello-world/workflow.yaml`,
 			if err != nil {
 				return fmt.Errorf("error marshaling result to JSON: %w", err)
 			}
-			// The result itself goes to stdout below. Logging it here as well
-			// meant a person read it twice and a pipe read it once, and the two
-			// copies were free to drift.
-			log.Println("run completed")
-			cmd.OutOrStdout().Write(b)
-			cmd.OutOrStdout().Write([]byte("\n"))
+			// The same word `flow get` uses for the same outcome, through the same
+			// pill, on the same stream. This was `log.Println("run completed")` —
+			// the one user-facing line in the CLI that went through the standard
+			// logger, so it arrived timestamped and unstyled directly beneath the
+			// themed lines a `log:` step had just written. Two renderings of one
+			// program's output, a line apart.
+			//
+			// To stderr, because the result itself goes to stdout below and a pipe
+			// must receive one JSON document and nothing else.
+			fmt.Fprintf(surface.Err, "%s workflow %s\n",
+				surface.ErrTheme.Pill(statusTone(v1.RunResponse_STATUS_COMPLETED),
+					statusLabel(v1.RunResponse_STATUS_COMPLETED)),
+				workflow.GetName())
+
+			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "%s\n", b); err != nil {
+				return fmt.Errorf("writing the outputs of %s: %w", workflow.GetName(), err)
+			}
+
 			return nil
 		},
 		Example: `# Run a workflow locally:
