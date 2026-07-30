@@ -43,9 +43,21 @@ steps:
           count: 3
       parse_json: true
 
+  # `fields:` are string-valued, so each one has to end up a string. `string()`
+  # will not do it for a map or a list — there is no such overload, and asking for
+  # one is a run that fails on this step. `"%s".format([value])` renders either,
+  # if a whole structure is what you want in one field.
+  #
+  # These name scalars instead, because that is what the example is about: which
+  # value survived escaping, and which name arrived twice.
   - id: report
     log:
       message: the server echoed the request back
       fields:
-        query: ${string(steps.search.json.args)}
+        # It went out containing a space and an ampersand and came back exactly as
+        # written, which is what escaping it once, here, is worth.
+        q: ${steps.search.json.args['q']}
+        # And the list arrived as two values under one name rather than one value
+        # with a comma in it.
+        tags: ${steps.search.json.args['tag'].join(", ")}
         sent: ${string(steps.submit.json.json['nested']['count'])}
