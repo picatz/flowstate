@@ -493,6 +493,14 @@ func runLSP(cmd *cobra.Command, args []string) error {
 // steps have side effects. This is the command that makes a Flowfile safe to
 // check.
 func runValidate(cmd *cobra.Command, args []string) error {
+	format, err := resolveOutputFormat()
+	if err != nil {
+		return err
+	}
+	if format.Machine() {
+		return validateMachine(cmd, args, format)
+	}
+
 	out := cmd.OutOrStdout()
 	var failed bool
 
@@ -523,6 +531,80 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	if failed {
 		return errValidationFailed
 	}
+	return nil
+}
+
+// validateMachine writes the same answer as a schema message, for whatever is driving
+// the CLI rather than reading it.
+//
+// One [v1.DiagnosticReport] per file, which is what makes `jsonl` the useful shape
+// here: a line per file, so `flow validate examples/*/workflow.yaml -o jsonl | jq
+// 'select(.diagnostics | length > 0)'` is the whole of "show me the broken ones".
+//
+// A clean file still gets a report, with no diagnostics in it. "Checked and clean" and
+// "not checked" are different facts and a consumer that only saw failures could not
+// tell them apart — which is the same reason a `log` step is present-and-empty in a run
+// record rather than absent.
+//
+// # A file that cannot be read is not a diagnostic
+//
+// A missing file or an unreadable one stops the command, as it does in the text form.
+// It is a fact about the invocation rather than about a workflow, and reporting it as a
+// diagnostic would put "you typed the wrong path" in the same list as "this step
+// references a step that does not exist" — one is fixed in the shell and the other in
+// the file.
+//
+// A file that *parses* badly is the opposite: that is a fact about the workflow, so it
+// becomes a diagnostic like any other.
+func validateMachine(cmd *cobra.Command, args []string, format OutputFormat) error {
+	surface := newSurface(cmd)
+
+	reports := make([]*v1.DiagnosticReport, 0, len(args))
+	for _, path := range args {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("error reading workflow file: %w", err)
+		}
+
+		diagnostics, err := flowfile.ValidateSource(data)
+		if err != nil {
+			var parsed flowfile.Diagnostics
+			if !errors.As(err, &parsed) {
+				// Not a shape this can position — a document that is not YAML at
+				// all. It is still the file's problem rather than the caller's, so
+				// it is reported as an unpositioned diagnostic rather than dropped.
+				parsed = flowfile.Diagnostics{{Message: err.Error()}}
+			}
+			diagnostics = parsed
+		}
+		reports = append(reports, diagnostics.Report(path))
+	}
+
+	var failed bool
+	for _, report := range reports {
+		if len(report.GetDiagnostics()) > 0 {
+			failed = true
+		}
+	}
+
+	if format == FormatJSONL {
+		// One line per file, which is what makes the shape worth having: a reader
+		// consumes them as they arrive and each line names its own file.
+		for _, report := range reports {
+			if err := writeJSON(surface, format, report); err != nil {
+				return err
+			}
+		}
+	} else if err := writeJSON(surface, format, &v1.ValidationReport{Files: reports}); err != nil {
+		// One document per invocation, which is what `json` means everywhere else in
+		// this CLI. Checking three files is still one answer.
+		return err
+	}
+
+	if failed {
+		return errValidationFailed
+	}
+
 	return nil
 }
 
@@ -885,12 +967,29 @@ flow server --verbose`,
 		Args:          cobra.MinimumNArgs(1),
 		RunE:          runValidate,
 		SilenceErrors: true,
+		// A file with a problem in it is not a command someone invoked wrongly, and
+		// the usage block after the diagnostics reads as though it were — sending
+		// the reader to check their flags instead of the line they were just told
+		// about. `flow fix` has said so since it was written; this said it by
+		// accident, because fang absorbs the usage on the way out.
+		//
+		// Which stopped being harmless with `--output json`: cobra writes usage to
+		// the same stream, so a consumer parsing the answer got a JSON document with
+		// a usage block appended to it.
+		SilenceUsage: true,
 		Example: `# Check a single workflow:
 flow validate examples/hello-world/workflow.yaml
 
 # Check every example:
-flow validate examples/*/workflow.yaml`,
+flow validate examples/*/workflow.yaml
+
+# Ask for the diagnostics as data, one line per file:
+flow validate examples/*/workflow.yaml -o jsonl | jq 'select(.diagnostics | length > 0)'`,
 	}
+
+	// Diagnostics are a schema message, so `-o json` means here what it means on
+	// `get` and `list`: the fields are the schema's and addressable by name.
+	addOutputFlag(validateCmd)
 
 	// Get command, which asks a server what a run is doing.
 	//
