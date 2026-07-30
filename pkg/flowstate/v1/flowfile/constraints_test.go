@@ -5,8 +5,10 @@ import (
 	"strings"
 	"testing"
 
+	"buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -229,4 +231,85 @@ func TestPopulateLiteralsIgnoresEverythingElse(t *testing.T) {
 	assert.True(t, inputs.Has(fields.ByName("method")), "a literal input was not carried")
 	assert.False(t, inputs.Has(fields.ByName("url")),
 		"an expression was filled in, so a rule would be checked against a value nobody knows yet")
+}
+
+// TestOneBadInputDoesNotSilenceTheOthers is the failure that made this check worse
+// than not having one.
+//
+// The rules ran over a message holding every literal input at once, so a value the
+// conversion refused took the whole message with it — and with it every violation the
+// other inputs had. An `http` step written with both `method: FETCH` and
+// `headers: {X-Count: 5}` validated *clean*: the method's mistake is plainly visible,
+// and it went silent because of an unrelated key three lines below.
+//
+// That is worse than no check, because the file now looks examined.
+func TestOneBadInputDoesNotSilenceTheOthers(t *testing.T) {
+	t.Parallel()
+
+	got := diagnose(t, `edition: v2026.2
+name: t
+steps:
+  - id: web
+    http:
+      method: FETCH
+      url: https://example.com
+      headers:
+        X-Count: 5
+`)
+
+	assert.Contains(t, got, `input "method"`,
+		"a visible mistake went unreported because a different input could not be converted:\n%s", got)
+	assert.Contains(t, got, `input "headers"`,
+		"the value that could not be converted was not reported either:\n%s", got)
+}
+
+// TestAValueInsideAMapIsChecked is what the split turned from a silence into a
+// diagnostic.
+//
+// The type check asks whether a map is a map; it does not look inside one. So a
+// numeric value in a `map<string, string>` passed every compile-time check and failed
+// at run time — and the conversion that refuses it is the only thing that knows.
+// Since a conversion failure is now reported per input rather than dropped, it lands
+// where the author can act on it, naming the key.
+func TestAValueInsideAMapIsChecked(t *testing.T) {
+	t.Parallel()
+
+	got := diagnose(t, `edition: v2026.2
+name: t
+steps:
+  - id: web
+    http:
+      method: GET
+      url: https://example.com
+      headers:
+        X-Count: 5
+`)
+
+	assert.Contains(t, got, `input "headers"`, "a bad value inside a map was not reported")
+	assert.Contains(t, got, `key "X-Count"`, "the diagnostic does not name the key at fault")
+}
+
+// TestNoTaskInputsMessageDeclaresACrossFieldRule checks the limitation the split
+// creates, rather than leaving it as a sentence someone has to remember.
+//
+// Each input is validated in a message holding only that input, so a rule spanning two
+// fields — protovalidate's message-level CEL — could not fire: neither message would
+// hold both. No task's inputs declare one today. The day one does, this fails, and
+// whoever adds it learns that the per-input pass needs a whole-message companion
+// rather than discovering later that their rule never ran.
+func TestNoTaskInputsMessageDeclaresACrossFieldRule(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range v1.TaskNames() {
+		def, known := v1.LookupTask(name)
+		require.True(t, known)
+		if def.Inputs == nil {
+			continue
+		}
+
+		rules, _ := proto.GetExtension(def.Inputs.Options(), validate.E_Message).(*validate.MessageRules)
+		assert.Empty(t, rules.GetCel(),
+			"task %q declares a message-level rule, which the per-input check cannot evaluate; "+
+				"it needs a whole-message pass alongside the per-input one", name)
+	}
 }

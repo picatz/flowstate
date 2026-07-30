@@ -186,13 +186,46 @@ func violatedRules(stepID string, task *v1.Task, def v1.TaskDef, checkable map[s
 		return nil
 	}
 
+	var ds Diagnostics
+	for _, name := range sortedInputNames(task.GetInputs()) {
+		if !checkable[name] {
+			continue
+		}
+		ds = append(ds, violatedRulesFor(stepID, name, task.GetInputs()[name], def)...)
+	}
+
+	return ds
+}
+
+// violatedRulesFor checks one input, in a message holding only that input.
+//
+// One field at a time rather than all of them together, because a conversion that
+// fails takes the whole message with it. An `http` step written with both
+// `method: FETCH` and `headers: {X-Count: 5}` reported *neither*: the header's value
+// is a number where the field holds strings, the conversion refused it, and the
+// method's perfectly visible mistake went with it. One bad input silencing the check
+// for the others is worse than not having the check, because the file now looks
+// examined.
+//
+// The cost of the split is that a rule spanning two fields could not fire, since
+// neither message would hold both. No task input declares one today and
+// TestNoTaskInputsMessageDeclaresACrossFieldRule fails when one does — a limitation
+// that is checked rather than remembered.
+func violatedRulesFor(stepID, name string, value *v1.Value, def v1.TaskDef) Diagnostics {
 	inputs := dynamicpb.NewMessage(def.Inputs)
-	if err := v1.PopulateLiterals(inputs, task.GetInputs()); err != nil {
-		// The conversion refused a value the field's own type accepted, which is a
-		// disagreement between two checks rather than a fact about the file. Silence
-		// is the only honest answer: reporting it would name a rule the author
-		// cannot read in the schema.
-		return nil
+	if err := v1.PopulateLiterals(inputs, map[string]*v1.Value{name: value}); err != nil {
+		// The field's own type accepted the shape and the conversion refused
+		// something inside it — a map's value, a list's element. [literalMismatch]
+		// cannot see that far: it asks whether a map is a map, not what is in one.
+		//
+		// So this is a real mistake in the file rather than a disagreement between
+		// checks, and reporting it is the only way an author hears about it before
+		// the run. The message says which key, which is the part they need.
+		return Diagnostics{{
+			Step:    stepID,
+			Field:   name,
+			Message: fmt.Sprintf("task %q does not accept it: %s", def.Name, trimFieldPrefix(err.Error(), name)),
+		}}
 	}
 
 	var invalid *v1.ValidationError
@@ -205,22 +238,42 @@ func violatedRules(stepID string, task *v1.Task, def v1.TaskDef, checkable map[s
 
 	var ds Diagnostics
 	for _, violation := range invalid.Violations {
-		name := strings.SplitN(violation.Field, ".", 2)[0]
-		name = strings.SplitN(name, "[", 2)[0]
-		if !checkable[name] {
+		// Only this field. The message holds one input, so every *other* required
+		// field is absent from it and reported as missing — which is a fact about
+		// this message rather than about the file. The real case is reported from
+		// the source above, where there is a position to name.
+		if violationField(violation) != name {
 			continue
 		}
 
 		ds = append(ds, Diagnostic{
-			Step:  stepID,
-			Field: name,
+			Step: stepID,
 			// The diagnostic's own prefix already names the step and the input, so
 			// the message says what the schema objected to and nothing else.
+			Field:   name,
 			Message: fmt.Sprintf("task %q does not accept it: %s", def.Name, violation.Message),
 		})
 	}
 
 	return ds
+}
+
+// violationField returns the input a violation is about, dropping any path beneath
+// it: protovalidate addresses a map entry as `headers[X-Count]` and a list element as
+// `args[0]`, and the input is the part before either.
+func violationField(violation v1.Violation) string {
+	name := violation.Field
+	if at := strings.IndexAny(name, ".["); at >= 0 {
+		name = name[:at]
+	}
+
+	return name
+}
+
+// trimFieldPrefix drops the conversion error's own `field "x": ` opening, which the
+// diagnostic has already said.
+func trimFieldPrefix(message, name string) string {
+	return strings.TrimPrefix(message, fmt.Sprintf("field %q: ", name))
 }
 
 // literalMismatch reports why a field cannot hold a literal, or empty when it can
