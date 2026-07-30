@@ -952,6 +952,19 @@ semver, `vMAJOR.MINOR.PATCH`, no shorthand and no ranges, exactly as `go.mod`
 requires — a spelling with one form needs no normalizer and produces no
 almost-equal diffs.
 
+**The key is `edition:`, and `version:` is refused for it — twice over.** A
+top-level `version:` is ambiguous about whose version it names, and the ambiguity
+has a track record: Docker Compose's schema `version:` was universally misread as
+the author's own and was deprecated for it. Worse, the word is *needed*: Phase 3
+makes a workflow a callable module with its own contract semver, and `version:` is
+the only natural spelling for that — spending it on the grammar dial gives the
+actually-versioned artifact a second-choice name forever. `edition` also names the
+mechanism precisely, because this *is* Rust's editions down to the rewriter
+(`flow fix` ≈ `cargo fix --edition`): dated boundaries, breaks only at them,
+unknown ones refused. Go's own spelling of this dial — the language name, as in
+`go 1.22` — is refused too: `flowstate: v2026.2` puts branding in every file to
+say what `edition:` says generically.
+
 **The author sees one version dial: the edition.** Explicit does not mean many.
 Everything else is stamped, resolved, or pinned by machinery. The profile is already compiler-stamped —
 `profile:` is not a Flowfile key and must never become one, because two files in
