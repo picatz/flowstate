@@ -1033,6 +1033,117 @@ Versioning: a capability that assumes a posture verifies it or stays off. The
 document, because the catalog it populates is what every surface in principle 12
 reads.
 
+## The third round: versions in flight, and what the engine already knows
+
+The question this round answers: where does a version *live* once a workload is
+running, what may move underneath a run that takes a year, and what the language
+owes to observability. The answers fall out of one structural fact worth naming
+before any of them.
+
+### The interpreter dividend
+
+In hand-written Temporal, the workflow definition *is* code, so evolving it while
+runs are in flight is the hardest problem in the ecosystem: `GetVersion` patches,
+per-workflow-type worker versioning, and team-wide discipline, forever. Flowstate
+split that atom without saying so: the definition is **data** — a compiled spec
+carried in `RunState` — and the only workflow-side *code* is the interpreter.
+Two consequences, and they are the product's second-best sentence after the bet:
+
+- **A definition change cannot touch a run in flight.** Every run carries its own
+  spec; editing a Flowfile and resubmitting creates new runs and strands nothing.
+  No author will ever write a patch, call `GetVersion`, or reason about which
+  branch of their own workflow history took. The bet extends: the least careful
+  author cannot break replay, *and no author can break an in-flight run by
+  editing a file.*
+- **The only code with a versioning problem is the interpreter**, and that
+  problem is already solved and landed: pinned per run, auto-upgrade at
+  Continue-As-New, with `RunState` obeying published-message rules across the
+  seam (ARCHITECTURE.md invariants 4 and 10). Rollout mechanics — ramping a new
+  build id, draining an old one, finding the runs still pinned to it through
+  visibility — are deployment posture and `flow deployments` tooling, and are
+  never spelled in a Flowfile.
+
+So "where are versions stored" has a layered answer with nothing implicit in it.
+Source lives in git with its `edition:` — the authoring artifact, owned like Go
+source. The compiled spec lives *in the run* — self-contained, with the stamped
+profile, the resolved plugin versions, and the build-id pin forming the complete
+reproducibility record; a run can be explained forever from what it carries.
+And when Phase 3 makes workflows callable, published definitions live in a
+catalog as **immutable** `name@vMAJOR.MINOR.PATCH` entries with content digests —
+the module-proxy posture: a published version never changes, and a caller's spec
+records the digest it resolved, which is `go.sum` for workflows.
+
+### Migration is explicit, at the seam, and checked
+
+The default is that nothing migrates: a run finishes on the spec and interpreter
+it started with, and a deploy touches nothing in flight. Explicit beats implicit
+here more than anywhere — a silently migrated year-long run is an integrity
+failure with a calendar.
+
+When an operator must move a run — the definition of a long workload has a bug
+ahead of where it is — the only sound seam is the one the engine already uses:
+Continue-As-New, where the next iteration starts from `RunState` rather than
+replaying history. And because both specs and the state are typed data, legality
+is *mechanical*, which is what Phase 5's "frame-checked proofs" should mean: the
+completed prefix recorded in `RunState` — which steps ran, by id, with what
+output shapes — must remain meaningful under the new spec, and the check is a
+comparison, not a judgment call. `flow migrate` performs it or refuses with the
+step that fails it. Raw Temporal cannot offer this to arbitrary code; an
+interpreter over data can, and it is the single most powerful thing this
+abstraction adds on top of the substrate rather than merely surfacing from it.
+
+Two things follow, and one binds **now**:
+
+- **Step ids are the migration contract.** The frame check compares by id, so
+  renaming an id is a breaking change to every in-flight run of that workflow —
+  which is why this is recorded in the present even though `flow migrate` is
+  Phase 5: `flow fix` must never rename a step id, and a future rename needs the
+  same deliberateness as a schema break. Ids joined "diagnostics anchor" and
+  "reference root" as load-bearing roles today; "migration frame" is the third.
+- **Reset becomes step-shaped.** Temporal's native repair is reset-by-event-id,
+  which is archaeology. Here the unit is a step, so the ergonomic spelling is
+  exact: `flow rerun <run> --from steps.deploy` — truncate state to the frame
+  before that id and continue on the current (or a named) spec version. Held to
+  Phase 5 with `flow migrate`, shape recorded now.
+
+Schedules, when they land, pin an exact catalog version; updating the schedule
+*is* the deploy action, and there is no `@latest` — a schedule that follows a
+moving name is the implicit-edition defect with a timer attached.
+
+### Observability is derived, not authored
+
+The engine durably records everything observability wants: a run is a trace, a
+step is a span with start, end, attempts, outcome, tenant, and queue — that *is*
+the history. So traces and metrics are **projections of recorded truth**, emitted
+by the engine and worker — OTel spans per step, engine metrics for durations,
+outcomes, retries, queue latency — ambient, requiring nothing in any file, and
+correct by construction: derived data cannot double-count a retry and can even be
+computed retroactively for runs that finished before the exporter existed.
+
+A `metric:` task is **refused**, and the reason is load-bearing rather than
+taste: activities are at-least-once, so a counter incremented inside a step
+double-counts on every retry, and metrics backends have no idempotency to lean
+on. An imperative emission from inside a run is the one shape that *cannot* be
+made exactly-once; a projection from history is exactly-once by construction.
+Business dimensions ride the planned label/search-attribute surface and Phase 2's
+typed outputs — any metric someone wants is then a query over visibility and
+history, not a side effect an author remembered to fire.
+
+`log:` stays the only *authored* observability surface, because it carries the
+one thing the engine cannot derive: intent, written for the human reading the
+run. Heartbeats — progress inside a long `exec` or plugin task — are task-side
+(the plugin protocol and `exec` report progress; a policy key can surface a
+deadline later) and are not vocabulary.
+
+### What this round adds
+
+One obligation binds immediately: the id-stability rule for `flow fix` and the
+sentence in `validate.go`'s orbit that treats an id rename as the breaking change
+it is. Catalog immutability lands with Phase 3's `call:`; `flow migrate` and
+`flow rerun --from` stay Phase 5 with their shapes now recorded; ambient OTel
+export is engine work that touches no grammar and can land whenever it earns its
+place in a phase.
+
 ## Order of work
 
 Each phase lands green and reachable from a Flowfile.
