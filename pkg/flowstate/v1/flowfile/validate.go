@@ -299,6 +299,13 @@ func Validate(wf *v1.Workflow) Diagnostics {
 
 	ds = append(ds, validateWorkflowVars(wf)...)
 
+	// What is wrong with an expression regardless of what the file means — a
+	// function nobody declared, an operator with no overload for the types written
+	// beside it. Separate from the reference checks below and deliberately unaware
+	// of scope; see celcheck.go for why that is what keeps it from reporting the
+	// same mistake twice in two voices.
+	ds = append(ds, checkExpressionTypes(wf)...)
+
 	// Tasks and expression references.
 	scope := newRefScope(wf)
 	for i, node := range wf.GetSteps() {

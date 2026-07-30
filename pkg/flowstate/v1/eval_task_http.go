@@ -464,7 +464,7 @@ func httpExpectSatisfied(
 			"expect must be an expression over the response, such as ${response.status_code == 200 || response.status_code == 404}"))
 	}
 
-	env, err := httpOutputsEnv()
+	env, err := httpResponseEnv(scope.GetProfile())
 	if err != nil {
 		return NewTaskError("http", ErrorKindInternal, err)
 	}

@@ -252,3 +252,101 @@ func TestHTTPOutputsAreCancellable(t *testing.T) {
 
 	require.Error(t, err, "a cancelled run still evaluated an outputs expression")
 }
+
+// TestTheHTTPTaskSpeaksTheProfilesDialect is the last surviving instance of the
+// split that retiring `libs:` was supposed to end.
+//
+// A step could once name its own extension libraries and nothing else in the file
+// could, so one step spoke a richer dialect than the rest. The profile replaced that
+// with a single membership. This was the same split from the other side: the http
+// task's own two expressions were evaluated against `cel.NewEnv(response, json)` —
+// the json library and nothing else — so a *poorer* dialect than every other
+// position in the language, and one nothing in the grammar mentions.
+//
+// The cost of that is paid in the worst place. These expressions run *after* the
+// request, so `${response.body.upperAscii()}` made the call, got its answer, and then
+// failed on a function that works in a `vars:` binding, an `if:`, `items:`,
+// `wait_until:` and every other task input.
+//
+// One case per library rather than one for the whole set, because the failure this
+// guards against is a library missing from an environment — which is a per-library
+// fact, and a single `upperAscii` would keep passing while the other ten went.
+//
+// It does not discriminate evenly, and that is worth writing down rather than
+// leaving to be discovered. Reintroducing the old environment fails seven of these
+// ten; `bindings`, `comprehensions` and `json` still pass, the first two because
+// their macros expand into core comprehensions that need no library at run time, and
+// `json` because it was the one library the old environment had. So those three
+// cases are documentation of the membership rather than a guard on it.
+func TestTheHTTPTaskSpeaksTheProfilesDialect(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		library string
+		expr    string
+		want    string
+	}{
+		{library: "strings", expr: `'ok'.upperAscii()`, want: "OK"},
+		{library: "encoders", expr: `base64.encode(b'hi')`, want: "aGk="},
+		{library: "regex", expr: `regex.replace('a-b', '-', '+')`, want: "a+b"},
+		{library: "lists", expr: `string(json_parse(response.body).n.sort()[0])`, want: "1"},
+		{library: "math", expr: `string(math.greatest(1, 2))`, want: "2"},
+		{library: "sets", expr: `string(sets.contains([1, 2], [1]))`, want: "true"},
+		{library: "bindings", expr: `cel.bind(x, 'y', x)`, want: "y"},
+		{library: "comprehensions", expr: `string([1, 2].transformList(i, v, v * 2)[1])`, want: "4"},
+		{library: "optional", expr: `optional.of('v').value()`, want: "v"},
+		{library: "json", expr: `string(json_parse(response.body).n[0])`, want: "3"},
+	} {
+		t.Run(test.library, func(t *testing.T) {
+			t.Parallel()
+
+			// One server per subtest, not one for the table. `httpTaskServer`
+			// records the request it received into a struct with no
+			// synchronisation, which is right for a test making one request and a
+			// data race the moment two of these run at once — as they do, since
+			// they are parallel. Found by CI rather than locally: two handler
+			// goroutines have to overlap for the detector to see it, and on this
+			// machine they did not.
+			server, _ := httpTaskServer(t, http.StatusOK, `{"n": [3, 1, 2]}`, http.Header{
+				"Content-Type": []string{"application/json"},
+			})
+
+			// Through `outputs:`, which is the position that runs after the request
+			// and so is the one where the old failure was most expensive.
+			out, err := runHTTPTask(t, map[string]any{
+				"url":     server.URL,
+				"method":  http.MethodGet,
+				"outputs": NewExpr(`{"v": ` + test.expr + `}`),
+			})
+			require.NoError(t, err,
+				"a function from the %q library does not exist inside an http `outputs:` expression, "+
+					"though it does everywhere else in the language", test.library)
+
+			require.Contains(t, out.GetNamedValues(), "v")
+			require.Equal(t, test.want, out.GetNamedValues()["v"].GetLiteral().GetStringValue(),
+				"the expression evaluated to the wrong value, so the library is present but not behaving")
+		})
+	}
+}
+
+// TestTheHTTPTasksExpectSpeaksItToo covers the other deferred input.
+//
+// Written separately rather than folded into the table above because the two reach
+// the environment through different functions — `taskFuncHTTP` and
+// `httpExpectSatisfied` — and only one of them was fixed by the first attempt.
+func TestTheHTTPTasksExpectSpeaksItToo(t *testing.T) {
+	t.Parallel()
+
+	server, _ := httpTaskServer(t, http.StatusOK, `{"ok": true}`, http.Header{
+		"Content-Type": []string{"application/json"},
+	})
+
+	_, err := runHTTPTask(t, map[string]any{
+		"url":    server.URL,
+		"method": http.MethodGet,
+		"expect": NewExpr(`string(response.status_code).startsWith('2') && math.greatest(1, 2) == 2`),
+	})
+
+	require.NoError(t, err,
+		"an `expect:` expression could not use the profile's functions, though every other position can")
+}

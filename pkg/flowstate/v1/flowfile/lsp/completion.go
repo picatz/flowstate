@@ -559,6 +559,11 @@ func completeInExpression(pos lsp.Position, inner string, scope refScope) *lsp.C
 	switch {
 	case qualifier == v1.StepsRoot:
 		return list(offer(scope.steps, member, replace))
+	case functionsAfter(qualifier) != nil:
+		// A namespace the profile declares — `math.`, `regex.`, `json.`. Checked
+		// after the root and before the bare-qualifier fallthrough below, which
+		// treats an unknown qualifier as a binding and offers nothing.
+		return list(offer(functionsAfter(qualifier), member, replace))
 	case strings.HasPrefix(qualifier, v1.StepsRoot+"."):
 		id := strings.TrimPrefix(qualifier, v1.StepsRoot+".")
 		if strings.Contains(id, ".") {
@@ -575,13 +580,23 @@ func completeInExpression(pos lsp.Position, inner string, scope refScope) *lsp.C
 }
 
 // bareCandidates offers what may be written bare at the start of an expression:
-// the names bound where the cursor is, then the root every step hangs from.
+// the names bound where the cursor is, the root every step hangs from, and then the
+// profile's functions.
 //
 // Bindings come first because they are the nearer thing — bound by the block the
 // cursor stands in, where the root spans the whole document — and because inside a
 // loop body the item is usually what is wanted.
+//
+// Functions come last, and there are a lot of them. That ordering is the whole of
+// the design decision: an author who knows the name they want types it and the
+// prefix filter does the work, while one who does not gets the names in scope first
+// rather than having to scroll past sixty functions to find the loop variable they
+// bound two lines up.
 func bareCandidates(prefix string, replace lsp.Range, scope refScope) []lsp.CompletionItem {
-	return offer(append(slices.Clone(scope.locals), stepsRootCandidate(scope)), prefix, replace)
+	candidates := slices.Clone(scope.locals)
+	candidates = append(candidates, stepsRootCandidate(scope))
+
+	return offer(append(candidates, functionCandidates()...), prefix, replace)
 }
 
 // stepsRootCandidate describes the root itself.

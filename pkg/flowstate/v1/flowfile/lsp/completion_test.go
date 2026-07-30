@@ -29,6 +29,13 @@ func TestCompletion(t *testing.T) {
 		notWant []string
 		// exact, when set, requires the labels to be exactly this list.
 		exact []string
+		// first, when set, requires this label to be offered before every other.
+		//
+		// Separate from `want`, which asserts a relative order among the labels it
+		// names and says nothing about what sits above them. Where a list is long —
+		// an expression's is, now that it carries the profile's functions — what
+		// matters to somebody typing is which name is at the top.
+		first string
 		// detailContains maps a label to a substring its detail must contain.
 		detailContains map[string]string
 	}{
@@ -124,19 +131,24 @@ edition: v2026.2
 			name: "an expression opens on the root, not on step ids",
 			src: `name: c
 steps:
-  - id: first
+  - id: alpha
     log:
       message: one
-  - id: second
+  - id: beta
     log:
       message: ${|}
 edition: v2026.2
 `,
-			exact: []string{"steps"},
+			// The root is *first*, rather than the only thing offered. The
+			// profile's functions are offered after it — an author who is stuck in
+			// an expression is usually stuck on what they can write rather than on
+			// what is in scope — and the ordering is what keeps the near thing near.
+			first: "steps",
+			want:  []string{"steps", "upperAscii", "math"},
 			notWant: []string{
-				"first",  // a step, reachable only as steps.first
-				"second", // and its own step besides
-				"now",    // bound in wait_until and nowhere else
+				"alpha", // a step, reachable only as steps.alpha
+				"beta",  // and its own step besides
+				"now",   // bound in wait_until and nowhere else
 			},
 		},
 		{
@@ -369,7 +381,8 @@ edition: v2026.2
 `,
 			// Nearest first: the binding of the block the cursor stands in, then
 			// the root spanning the whole document.
-			exact:   []string{"item", "steps"},
+			first:   "item",
+			want:    []string{"item", "steps"},
 			notWant: []string{"outer", "body", "loop"},
 			detailContains: map[string]string{
 				"item": "loop item",
@@ -414,7 +427,8 @@ steps:
     wait_until: ${|
 edition: v2026.2
 `,
-			exact: []string{"now", "steps"},
+			first: "now",
+			want:  []string{"now", "steps"},
 			// Not the step ids: they are still reached through the root here like
 			// anywhere else.
 			notWant: []string{"before", "window"},
@@ -438,7 +452,8 @@ steps:
       message: ${|
 edition: v2026.2
 `,
-			exact:   []string{"steps"},
+			first:   "steps",
+			want:    []string{"steps"},
 			notWant: []string{"now"},
 		},
 		{
@@ -471,7 +486,8 @@ steps:
           wait_until: ${|
 edition: v2026.2
 `,
-			exact: []string{"each", "now", "steps"},
+			first: "each",
+			want:  []string{"each", "now", "steps"},
 		},
 		{
 			// The word is not enough on its own: an input spelled the same way is
@@ -490,7 +506,8 @@ steps:
       wait_until: ${|
 edition: v2026.2
 `,
-			exact:   []string{"steps"},
+			first:   "steps",
+			want:    []string{"steps"},
 			notWant: []string{"now"},
 		},
 		{
@@ -571,6 +588,11 @@ edition: v2026.2
 
 			if tt.exact != nil {
 				assert.Equal(t, tt.exact, gotLabels)
+			}
+			if tt.first != "" {
+				require.NotEmpty(t, gotLabels)
+				assert.Equal(t, tt.first, gotLabels[0],
+					"the nearest name is not offered first, so an author scrolls past the rest to reach it")
 			}
 			for _, want := range tt.want {
 				assert.Contains(t, gotLabels, want)
@@ -837,10 +859,13 @@ edition: v2026.2
 	const uri = "file:///accept-root.yaml"
 	c.open(uri, src)
 
+	// The root is offered first — the profile's functions follow it, and this test
+	// is about what accepting the root does rather than about what else is on the
+	// menu.
 	got := c.complete(uri, pos.Line, pos.Character)
-	require.Len(t, got.Items, 1, "the start of an expression offers the root and nothing else")
+	require.NotEmpty(t, got.Items, "the start of an expression offers nothing at all")
 	root := got.Items[0]
-	assert.Equal(t, "steps", root.Label)
+	require.Equal(t, "steps", root.Label, "the root is not the first thing offered")
 	require.NotNil(t, root.TextEdit, "a candidate must say what it replaces")
 	assert.Equal(t, "steps.", root.TextEdit.NewText)
 
@@ -971,4 +996,107 @@ func taskOutputNames(t *testing.T, task string) []string {
 	names := fieldNames(def.Outputs)
 	require.NotEmpty(t, names, "task %q declares no outputs", task)
 	return names
+}
+
+// TestAnExpressionCompletesTheProfilesFunctions covers what the editor gained when
+// it stopped offering only what an expression can reference.
+//
+// Written as its own test rather than as rows in the table above because the table
+// asserts whole menus and this is about two branches: what is offered bare, and what
+// a namespace offers after its dot. The second did not exist — an unknown qualifier
+// was treated as a binding and offered nothing, which was right when the only
+// qualifiers were bindings and `steps`.
+func TestAnExpressionCompletesTheProfilesFunctions(t *testing.T) {
+	t.Parallel()
+
+	const src = `name: c
+steps:
+  - id: web
+    http:
+      url: https://example.com
+  - id: out
+    log:
+      message: ${PLACEHOLDER
+edition: v2026.2
+`
+
+	c := newClient(t)
+	c.initialize()
+
+	for _, test := range []struct {
+		name    string
+		typed   string
+		want    []string
+		notWant []string
+	}{
+		{
+			// Bare, with nothing typed: the names in scope come first and the
+			// functions follow. Both halves asserted, because offering functions
+			// *instead* of the scope would be the same mistake pointed the other way.
+			name:  "bare offers the scope and then the functions",
+			typed: "",
+			want:  []string{"steps", "upperAscii", "json_parse", "math", "regex"},
+		},
+		{
+			// A prefix an author is part-way through. This is the case the whole
+			// feature is for: `up` means nothing without knowing `upperAscii` exists.
+			name:  "a prefix narrows to the function",
+			typed: "up",
+			want:  []string{"upperAscii"},
+			// A namespace whose *members* start with the prefix must not surface
+			// here, because `up` is not the front of `math.abs`.
+			notWant: []string{"math", "steps"},
+		},
+		{
+			name:  "a namespace offers its members after the dot",
+			typed: "math.",
+			want:  []string{"abs", "ceil", "floor", "round", "sqrt"},
+			// The qualifier itself is not repeated inside its own list, and step
+			// ids are a different namespace entirely.
+			notWant: []string{"math", "web"},
+		},
+		{
+			name:    "another namespace offers only its own",
+			typed:   "regex.",
+			want:    []string{"extract", "extractAll", "replace"},
+			notWant: []string{"abs", "upperAscii"},
+		},
+		{
+			// The root still wins its own name. A namespace check that ran first
+			// would have to be wrong about `steps` for this to fail, but the two
+			// branches sit next to each other and the order between them is a
+			// decision rather than an accident.
+			name:    "the steps root still offers step ids",
+			typed:   "steps.",
+			want:    []string{"web"},
+			notWant: []string{"abs", "upperAscii"},
+		},
+		{
+			// A bare binding is not a namespace, and offering a function list for
+			// one would be inventing members for a value whose type is unknown.
+			name:    "a name that is not a namespace offers nothing",
+			typed:   "web.",
+			notWant: []string{"abs", "upperAscii", "extract"},
+		},
+	} {
+		// Not parallel, and the rest of this file is not either. The harness wraps
+		// the server in a jsonrpc2.AsyncHandler, so a request and the notification
+		// it depends on are handled concurrently: a completion can reach the server
+		// before the didOpen that put the document there, and the answer is an empty
+		// list. Which is how this was found — one subtest failed once, on a document
+		// it had opened a line earlier, and passed on the next run.
+		t.Run(test.name, func(t *testing.T) {
+			text, pos := splitCursor(t, strings.Replace(src, "PLACEHOLDER", test.typed+"|", 1))
+			uri := "file:///fn-complete-" + strings.ReplaceAll(test.name, " ", "-") + ".yaml"
+			c.open(uri, text)
+
+			got := labels(c.complete(uri, pos.Line, pos.Character).Items)
+			for _, want := range test.want {
+				assert.Contains(t, got, want)
+			}
+			for _, notWant := range test.notWant {
+				assert.NotContains(t, got, notWant)
+			}
+		})
+	}
 }

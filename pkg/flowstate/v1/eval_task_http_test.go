@@ -24,6 +24,11 @@ type recordedRequest struct {
 
 // httpTaskServer starts a server that records the request it received and answers
 // with the given status and body.
+//
+// One request at a time. The recording is a plain assignment from the handler
+// goroutine, so two requests in flight against one of these is a data race — give
+// each parallel subtest its own rather than sharing one across a table. That is not
+// hypothetical: it is how it was found.
 func httpTaskServer(t *testing.T, status int, respBody string, header http.Header) (*httptest.Server, *recordedRequest) {
 	t.Helper()
 
