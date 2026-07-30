@@ -51,7 +51,13 @@ func WorkflowVars(ctx context.Context, declared *v1.Scope) (*v1.Scope, error) {
 func Task(ctx context.Context, task *v1.Task) (*v1.Node_Outputs, error) {
 	// Inputs are pre-resolved by the workflow, so no scope is needed; task
 	// implementations read the supplied literals.
-	out, err := task.Eval(ctx, nil)
+	//
+	// Installed on all three entry points rather than on the one task that reads it
+	// today, because which activity carries a `log:` step is decided by whether the
+	// task evaluates its own inputs — a property of the task, not of logging — and a
+	// bridge present on two of three paths is a message that vanishes for a reason
+	// nobody would connect to it.
+	out, err := task.Eval(withActivityLogger(ctx), nil)
 	return out, activityError(task.GetName(), err)
 }
 
@@ -61,7 +67,7 @@ func Task(ctx context.Context, task *v1.Task) (*v1.Node_Outputs, error) {
 // Retained so that a workflow started before scopes existed continues to run; new
 // runs schedule TaskInScope instead.
 func TaskWithPrev(ctx context.Context, task *v1.Task, prev *v1.Workflow_StepOutputs) (*v1.Node_Outputs, error) {
-	out, err := task.Eval(ctx, prev)
+	out, err := task.Eval(withActivityLogger(ctx), prev)
 	return out, activityError(task.GetName(), err)
 }
 
@@ -73,7 +79,7 @@ func TaskWithPrev(ctx context.Context, task *v1.Task, prev *v1.Workflow_StepOutp
 // expression referring to the loop's current item, since that evaluation happens
 // here on the worker rather than in workflow code.
 func TaskInScope(ctx context.Context, task *v1.Task, scope *v1.Scope) (*v1.Node_Outputs, error) {
-	out, err := task.EvalInScope(ctx, scope)
+	out, err := task.EvalInScope(withActivityLogger(ctx), scope)
 	return out, activityError(task.GetName(), err)
 }
 

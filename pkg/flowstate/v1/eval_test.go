@@ -142,3 +142,18 @@ func TestRunWorkflowVars(t *testing.T) {
 		})
 	}
 }
+
+// TestRunWorkflowLog covers the `log` task in the local driver.
+//
+// What a workflow's *result* can see of a log step is that it ran and produced nothing,
+// which is the claim these pin. Where the message went is decided elsewhere and tested
+// against a captured logger there.
+func TestRunWorkflowLog(t *testing.T) {
+	for _, test := range tests.LogCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			out, err := v1.Run(t.Context(), test.Workflow)
+			require.NoError(t, err)
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, out, protocmp.Transform()))
+		})
+	}
+}

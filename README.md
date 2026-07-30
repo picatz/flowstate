@@ -635,14 +635,54 @@ assumes a hosted service.
 
 Each step in a `Flowfile` has named inputs and produces named outputs, which later steps reference in CEL expressions as `${steps.<id>.<output>}` — the step `id` selects the step and the output name selects the value. The outputs of a step are determined by the task being used, and can be of various types (e.g., `string`, `int`, `map`, etc.). The outputs of a step can be used as inputs to later steps, allowing for complex data flows and transformations.
 
+### Saying what happened: `log:`
+
+`log:` emits a message for a person to read. It is the one task whose purpose is to be
+*seen* rather than to produce a value, and where the message goes depends on who is
+watching — `flow run local` renders it to your terminal, and on a worker it reaches the
+same logs everything else there does, tagged with the run that emitted it.
+
+```yaml
+steps:
+  - id: canary
+    log:
+      level: warn
+      message: canary is taking 10% of traffic; watch the error rate
+      fields:
+        service: ${vars.service}
+        stage: canary
+```
+
+`level:` is one of `info`, `warn` or `error`, defaulting to `info` — written the way you
+would say it rather than the way a protocol stores it, and `flow validate` names the
+three if you write a fourth. There is no `debug`, because what an operator wants
+filtered is a property of a deployment rather than something a workflow author can know;
+and no `fatal`, because emitting a line does not stop a run, so a level claiming
+otherwise would be a promise the engine cannot keep.
+
+`fields:` carry structure for a sink that has somewhere to put it, and are ignored by
+one that does not. They are string-valued: everything this reaches renders to text in
+the end, so compose the string in the expression where you can see what it will say.
+
+Log lines go to stderr, so `flow run local ... | jq` still reads a single JSON document
+from stdout.
+
+See [examples/logging](examples/logging).
+
 ### Available Tasks
 
 | Task Name | Inputs | Outputs |
 |-----------|--------|---------|
+| `log`     | `message`, `level`, `fields` | *(none)* |
 | `echo`    | `message` | `result` |
 | `printf`  | `format`, `args` | `result` |
 | `http`    | `url`, `method`, `headers`, `body`, `query`, `form`, `json`, `parse_json`, `outputs`, `expect`, `retry_on_unknown_outcome` | `status_code`, `headers`, `body`, `json` |
 | `cel`     | `expr`, `vars` | `result` |
+
+`log` has no outputs, which is the design rather than a gap: a log line is an effect on a
+reader, not a value for a later step. Naming one — `${steps.announce.result}` — would give
+a step two reasons to exist, so the file could no longer say which one was meant. To carry
+a value, name it with `vars:`.
 
 Names only, deliberately: types and constraints belong to the schema, and repeating them
 here is how the two disagree. `flow tasks` prints the same catalog with every type, which

@@ -184,6 +184,25 @@ func literalMismatch(field protoreflect.FieldDescriptor, literal *expr.Value) st
 		// A singular message field — a Value, a Duration — accepts shapes this
 		// cannot usefully narrow, and the task converts it.
 		return ""
+
+	case field.Kind() == protoreflect.EnumKind:
+		// The one field kind where the *set* of acceptable values is known in full
+		// and short enough to print, so this can say what to write instead of only
+		// what is wrong. Checked here rather than left to the engine because the
+		// engine's answer arrives after the run has started.
+		choices := strings.Join(v1.EnumValueNames(field.Enum()), ", ")
+		written, isString := literal.GetKind().(*expr.Value_StringValue)
+		if !isString {
+			return fmt.Sprintf("expected one of %s, but this is %s", choices, literalKind(literal))
+		}
+		if _, known := v1.EnumValueNumber(field.Enum(), written.StringValue); !known {
+			message := fmt.Sprintf("%q is not one of %s", written.StringValue, choices)
+			if suggestion, ok := nearestChoice(written.StringValue, v1.EnumValueNames(field.Enum())); ok {
+				message += fmt.Sprintf("; did you mean %q?", suggestion)
+			}
+			return message
+		}
+		return ""
 	}
 
 	if holds(field.Kind(), literal) {
@@ -351,4 +370,33 @@ func fieldNames(md protoreflect.MessageDescriptor) []string {
 // so that marking a field required in the schema is all it takes.
 func requiredField(field protoreflect.FieldDescriptor) bool {
 	return v1.RequiredInput(field)
+}
+
+// nearestChoice suggests a value from a small closed set, more willingly than [nearest]
+// does.
+//
+// [nearest] is tuned for a name typed against a large open vocabulary — step ids, task
+// inputs — where a loose match suggests something the author never heard of. A set of
+// three words is the opposite situation: everything in it is on the author's screen in
+// the same message, so a wrong suggestion costs a glance and a missing one costs a
+// lookup.
+//
+// The extra rule is a shared prefix in either direction, which is what an author's
+// mistakes here actually look like: `warning` for `warn`, `err` for `error`. Both are
+// three edits away and neither is a typo — they are the *other* common spelling of the
+// same word, which no edit-distance threshold tight enough to be useful will ever
+// reach.
+func nearestChoice(got string, choices []string) (string, bool) {
+	if suggestion, ok := nearest(got, choices); ok {
+		return suggestion, true
+	}
+
+	lower := strings.ToLower(got)
+	for _, choice := range choices {
+		if strings.HasPrefix(lower, choice) || strings.HasPrefix(choice, lower) {
+			return choice, true
+		}
+	}
+
+	return "", false
 }

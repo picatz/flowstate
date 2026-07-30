@@ -74,7 +74,7 @@ steps:
     echo:
 `,
 			line: 4, col: 5,
-			want: `unknown key "nonsense"; the keys here are id, description, if, vars, timeout, retry, continue_on_error, for_each, parallel, sleep, wait_until, wait_for_signal, cel, echo, http, and printf`,
+			want: `unknown key "nonsense"; the keys here are id, description, if, vars, timeout, retry, continue_on_error, for_each, parallel, sleep, wait_until, wait_for_signal, cel, echo, http, log, and printf`,
 		},
 		{
 			// The shape every Flowfile written before the flattening has, and the
@@ -133,7 +133,7 @@ steps:
     timeout: 5s
 `,
 			line: 3, col: 5,
-			want: "must have one of for_each, parallel, sleep, wait_until, wait_for_signal, cel, echo, http, or printf",
+			want: "must have one of for_each, parallel, sleep, wait_until, wait_for_signal, cel, echo, http, log, or printf",
 		},
 		{
 			name: "a step key that is not a string",

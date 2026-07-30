@@ -468,7 +468,7 @@ Three steps and two activity round trips become one step and one; the `cel` task
 private `vars` input — a compatibility shim the parser already documents as one —
 disappears along with the confusion of two things named `vars`.
 
-### `echo:` is retired; `log:` is the capability it was imitating
+### `echo:` is retired; `log:` is the capability it was imitating *(`log:` landed)*
 
 `echo` is an identity function registered as an activity. Its shipped uses are (a) a
 poor author's `vars:`, (b) hello-world scaffolding, and (c) "this branch ran"
@@ -496,6 +496,42 @@ legitimate job `echo` was doing.
 - id: hello
   log:
     message: hello world
+```
+
+*Since written:* `log:` shipped as specified — `message` required, `level` defaulting to
+info, `fields` a bounded string map, and no outputs. `echo` is still registered and is
+retired at the edition boundary, alongside `cel:` and `printf:`, so a file has one
+change to make rather than three.
+
+Three details the plan did not have to settle and the implementation did.
+
+**Where the message goes is the caller's, not the task's.** The task emits through an
+`slog.Logger` taken from its context. That is what lets one workflow render to a
+person's terminal under `flow run local` and reach a worker's log aggregator in
+production — through Temporal's activity logger, so every line is tagged with the run
+that emitted it rather than being the one line in a worker's output nobody can trace. A
+package-level destination would have been one place per *process*, which is wrong for a
+worker serving several tenants and wrong for two tests running at once.
+
+**`level:` is the language's first enum-typed input,** and an author writes the choice
+rather than the storage: `level: warn`, not `LEVEL_WARN` and certainly not `2`. Both the
+spelling and the diagnostic are derived from the enum descriptor, so the next enum input
+on any task inherits them. `flow validate` names the three choices when a fourth is
+written, and suggests `warn` for `warning` — three edits apart, which no edit-distance
+threshold tight enough to be useful will reach, and the single likeliest mistake here.
+
+**A task declaring no outputs made an old gap total.** `${steps.web.nonsense}` used to
+validate cleanly and resolve to nothing at run time: the output name was discarded where
+the reference was parsed, so only the step id was ever checked. With `log` producing
+nothing, *every* reference to a log step is that mistake. References now carry the
+output name and are checked against the task's declared outputs — silently, wherever the
+set is not knowable in full: an `http` step naming its own `outputs:`, a `for_each`, a
+`parallel`, a gate, or a plugin that describes none.
+
+```console
+$ flow validate workflow.yaml
+workflow.yaml:11:16: step "use" input "message": step "say" has no output "result";
+the log task produces no outputs, because a log step is an effect rather than a value
 ```
 
 ### `printf:` is retired — the replacement already exists

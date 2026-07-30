@@ -5,9 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 
@@ -27,6 +30,13 @@ import (
 // part of the engine needs to know a task's name to execute it correctly.
 func builtinTasks() []TaskDef {
 	return []TaskDef{
+		{
+			Name:    "log",
+			Summary: "Emit a message for a person to read.",
+			Inputs:  (&Task_Log_Inputs{}).ProtoReflect().Descriptor(),
+			Outputs: (&Task_Log_Outputs{}).ProtoReflect().Descriptor(),
+			Fn:      taskFuncLog,
+		},
 		{
 			Name:    "echo",
 			Summary: "Return the given message unchanged.",
@@ -119,6 +129,48 @@ func HTTPTaskDef(policy *netpolicy.Policy) TaskDef {
 		NeedsPrevOutputs: true,
 		Fn:               taskFuncHTTP(policy),
 	}
+}
+
+// taskFuncLog emits a message and returns nothing.
+//
+// Returning an empty outputs message rather than nil, because nil means "this step
+// contributed no entry" to the executors and an empty one means "this step ran and
+// produced nothing". A `log:` step did run, and a run record that cannot tell the two
+// apart cannot show that it did.
+func taskFuncLog(ctx context.Context, input map[string]*Value, scope *Scope) (*Node_Outputs, error) {
+	taskInputs := &Task_Log_Inputs{}
+	if err := populateProtoMessageFromValueMap(ctx, input, taskInputs, scope); err != nil {
+		return nil, NewTaskError("log", ErrorKindInvalidInput, err)
+	}
+
+	// Sorted, because a map's order is not one and a log line whose fields shuffle
+	// between two runs of the same workflow is a diff nobody can read.
+	attrs := make([]any, 0, len(taskInputs.GetFields()))
+	for _, name := range slices.Sorted(maps.Keys(taskInputs.GetFields())) {
+		attrs = append(attrs, slog.String(name, taskInputs.GetFields()[name]))
+	}
+
+	LoggerFrom(ctx).LogAttrs(ctx, slogLevel(taskInputs.GetLevel()), taskInputs.GetMessage(),
+		attrsOf(attrs)...)
+
+	return nodeOutputsFromProtoMessage(&Task_Log_Outputs{})
+}
+
+// attrsOf narrows a slice built as []any back to the attribute type LogAttrs wants.
+//
+// LogAttrs is the allocation-free entry point and takes []slog.Attr; the slice is
+// assembled as []any only because that is what reads naturally above. Anything that is
+// not an Attr is dropped rather than coerced — there is nothing else in it, and a
+// silent drop beats a panic in the one task whose whole job is to be visible.
+func attrsOf(values []any) []slog.Attr {
+	attrs := make([]slog.Attr, 0, len(values))
+	for _, v := range values {
+		if attr, ok := v.(slog.Attr); ok {
+			attrs = append(attrs, attr)
+		}
+	}
+
+	return attrs
 }
 
 func taskFuncEcho(ctx context.Context, input map[string]*Value, scope *Scope) (*Node_Outputs, error) {
@@ -1000,6 +1052,21 @@ func scalarFromLiteral(lit *expr.Value, fieldDesc protoreflect.FieldDescriptor) 
 			return protoreflect.Value{}, fmt.Errorf("expected bytes, got %s", literalKindName(lit))
 		}
 		return protoreflect.ValueOfBytes(v.BytesValue), nil
+	case protoreflect.EnumKind:
+		// Written as the choice, not as a number. `level: warn` is what a Flowfile
+		// says; the number is storage, and a language whose author has to know the
+		// storage has failed at being one.
+		v, ok := lit.GetKind().(*expr.Value_StringValue)
+		if !ok {
+			return protoreflect.Value{}, fmt.Errorf("expected one of %s, got %s",
+				strings.Join(EnumValueNames(fieldDesc.Enum()), ", "), literalKindName(lit))
+		}
+		number, known := EnumValueNumber(fieldDesc.Enum(), v.StringValue)
+		if !known {
+			return protoreflect.Value{}, fmt.Errorf("%q is not one of %s",
+				v.StringValue, strings.Join(EnumValueNames(fieldDesc.Enum()), ", "))
+		}
+		return protoreflect.ValueOfEnum(number), nil
 	default:
 		return protoreflect.Value{}, fmt.Errorf("unsupported field type %s", fieldDesc.Kind())
 	}
