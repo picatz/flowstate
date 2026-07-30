@@ -222,6 +222,11 @@ type fakeWorkflowService struct {
 	runResponse *v1.RunResponse
 	runErr      error
 
+	// onGet runs at the top of Get, for a test that needs something to happen
+	// *between* starting a run and following it — interrupting the follow, say. A
+	// hook rather than a sleep, so the ordering is stated rather than raced for.
+	onGet func()
+
 	// The lifecycle verbs, whose handlers live in lifecycle_test.go.
 	gotCancel    *v1.CancelRequest
 	gotTerminate *v1.TerminateRequest

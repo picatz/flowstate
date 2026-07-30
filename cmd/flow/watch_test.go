@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +17,14 @@ import (
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
+
+// observed is the moment a poll result is folded in, for the tests that state the
+// clock rather than read it.
+//
+// absorb takes the time as a parameter precisely so that the outage allowance — the
+// one bound here measured in seconds — can be asserted in seconds without a test
+// spending them.
+var observed = time.Date(2026, 7, 30, 9, 0, 0, 0, time.UTC)
 
 // pollAnswer is one prepared reply.
 type pollAnswer struct {
@@ -138,7 +148,7 @@ func TestWatchReportsOnlyChanges(t *testing.T) {
 	surface, _, errOut := plainSurface()
 
 	require.NoError(t, followPlainly(t.Context(), surface, FormatText, poller, time.Millisecond,
-		"flowstate-workflow-3f7c"))
+		"flowstate-workflow-3f7c", nil))
 
 	lines := reportedLines(errOut.String())
 	require.Len(t, lines, 3,
@@ -179,14 +189,14 @@ func TestWatchReportsTheFirstAnswerAsAChange(t *testing.T) {
 		"the zero status is no longer UNSPECIFIED, so a first answer can now match the zero state "+
 			"and absorb needs to know which answer is the first after all")
 
-	state := newWatchState("flowstate-workflow-3f7c", time.Second)
+	state := newWatchState("flowstate-workflow-3f7c", nil)
 
 	bare := &v1.GetResponse{Status: v1.RunResponse_STATUS_RUNNING}
-	require.True(t, state.absorb(bare, nil).Changed,
+	require.True(t, state.absorb(observed, bare, nil).Changed,
 		"the first answer went unreported, so a reader was told nothing until a step finished")
 
 	// And the same answer again is not news.
-	require.False(t, state.absorb(bare, nil).Changed)
+	require.False(t, state.absorb(observed, bare, nil).Changed)
 }
 
 // TestWatchStopsOnEveryTerminalStatusAndKeepsGoingOtherwise covers the table rather
@@ -210,8 +220,8 @@ func TestWatchStopsOnEveryTerminalStatusAndKeepsGoingOtherwise(t *testing.T) {
 		status := v1.RunResponse_Status(names.Get(i).Number())
 
 		t.Run(statusLabel(status), func(t *testing.T) {
-			state := newWatchState("flowstate-workflow-3f7c", time.Second)
-			progress := state.absorb(response(status), nil)
+			state := newWatchState("flowstate-workflow-3f7c", nil)
+			progress := state.absorb(observed, response(status), nil)
 
 			switch {
 			case status == v1.RunResponse_STATUS_UNSPECIFIED:
@@ -274,7 +284,7 @@ func TestWatchOutcomeCarriesTheFailureMessage(t *testing.T) {
 	surface, out, _ := plainSurface()
 
 	err := followPlainly(t.Context(), surface, FormatText, poller, time.Millisecond,
-		"flowstate-workflow-3f7c")
+		"flowstate-workflow-3f7c", nil)
 
 	require.ErrorContains(t, err, "failed")
 	require.ErrorContains(t, err, "could not reach the registry")
@@ -294,7 +304,7 @@ func TestWatchSurvivesAnOutageAndSaysSo(t *testing.T) {
 	surface, _, errOut := plainSurface()
 
 	require.NoError(t, followPlainly(t.Context(), surface, FormatText, poller, time.Millisecond,
-		"flowstate-workflow-3f7c"),
+		"flowstate-workflow-3f7c", nil),
 		"a watch died on a transient refusal it should have survived")
 
 	account := errOut.String()
@@ -312,29 +322,97 @@ func TestWatchSurvivesAnOutageAndSaysSo(t *testing.T) {
 // TestWatchGivesUpAfterTheOutageAllowance is the other half: tolerating a blip must
 // not mean tolerating an outage forever.
 //
-// The bound is asserted as *reached* as well as not exceeded. `calls <= attempts` is
-// also satisfied by a watch that gave up on the first refusal, which is the bug this
+// Asserted as *reached* as well as not exceeded. "gave up no later than the allowance"
+// is also satisfied by a watch that gave up on the first refusal, which is the bug the
 // tolerance exists to prevent.
 func TestWatchGivesUpAfterTheOutageAllowance(t *testing.T) {
-	const interval = time.Second
+	state := newWatchState("flowstate-workflow-3f7c", nil)
 
-	state := newWatchState("flowstate-workflow-3f7c", interval)
-	attempts := state.attempts()
-	require.Equal(t, int(outageAllowance/interval), attempts)
-
+	// A refusal every second, driven by a stated clock rather than a real one, so the
+	// assertion is about the allowance and not about how fast the test machine is.
 	var progress watchProgress
-	calls := 0
-	for !progress.Done {
-		progress = state.absorb(nil, transientRefusal())
-		calls++
-		require.LessOrEqual(t, calls, attempts+1, "a watch never gave up on an unreachable server")
+	var elapsed time.Duration
+	for step := time.Duration(0); !progress.Done; step += time.Second {
+		progress = state.absorb(observed.Add(step), nil, transientRefusal())
+		elapsed = step
+
+		require.LessOrEqual(t, step, outageAllowance,
+			"a watch never gave up on a server that had been unreachable for %s", step)
 	}
 
-	require.Equal(t, attempts, calls, "a watch gave up before spending its allowance")
+	require.Equal(t, outageAllowance, elapsed,
+		"a watch gave up after %s of an allowance that promises %s", elapsed, outageAllowance)
 	require.ErrorContains(t, progress.Err, "gave up")
 	require.ErrorContains(t, progress.Err, outageAllowance.String(),
-		"the allowance was reported as an attempt count rather than as the time somebody acts on")
+		"the elapsed time reported is not the time actually spent")
 	require.True(t, state.gaveUp)
+}
+
+// TestWatchAllowanceIsTheSameSpanAtEveryInterval is the regression test for a bound
+// stated in one unit and enforced in another.
+//
+// The allowance used to be `outageAllowance / interval` failures. At a ten-second
+// interval that is three, and with the first poll happening immediately the failures
+// land at 0, 10 and 20 seconds — so a watch gave up after twenty while reporting
+// thirty, and an outage that recovered at twenty-five was killed by a promise that
+// said it would not be. Nothing about the number of attempts is asserted here, because
+// the number of attempts is not the promise.
+func TestWatchAllowanceIsTheSameSpanAtEveryInterval(t *testing.T) {
+	for _, interval := range []time.Duration{
+		minWatchInterval, time.Second, 10 * time.Second, time.Hour,
+	} {
+		t.Run(interval.String(), func(t *testing.T) {
+			state := newWatchState("w", nil)
+
+			// One failure short of the allowance must not end the watch, whatever the
+			// interval and however few attempts that took.
+			for step := time.Duration(0); step < outageAllowance; step += interval {
+				require.False(t, state.absorb(observed.Add(step), nil, transientRefusal()).Done,
+					"gave up %s into a %s allowance", step, outageAllowance)
+			}
+
+			require.True(t, state.absorb(observed.Add(outageAllowance), nil, transientRefusal()).Done,
+				"did not give up after the whole allowance had passed")
+		})
+	}
+}
+
+// TestWatchReportsTheTimeItActuallySpent checks that the elapsed span in the message is
+// measured rather than recited.
+//
+// Every other test here uses an interval that divides the allowance, so the measured
+// span lands exactly on the constant and an assertion against it passes whether the
+// number was computed or copied. Seven seconds does not divide thirty, so the two
+// differ — and the message has to say the one that happened.
+func TestWatchReportsTheTimeItActuallySpent(t *testing.T) {
+	state := newWatchState("w", nil)
+
+	for _, second := range []int{0, 7, 14, 21, 28} {
+		require.False(t,
+			state.absorb(observed.Add(time.Duration(second)*time.Second), nil, transientRefusal()).Done,
+			"gave up %ds into a %s allowance", second, outageAllowance)
+	}
+
+	progress := state.absorb(observed.Add(35*time.Second), nil, transientRefusal())
+	require.True(t, progress.Done)
+	require.ErrorContains(t, progress.Err, "35s",
+		"the message did not report the span actually spent unreachable")
+	require.NotContains(t, progress.Err.Error(), outageAllowance.String(),
+		"the message recited the allowance instead of the measurement")
+}
+
+// TestWatchNeverGivesUpOnOneFailure checks the property that used to need a floor on
+// attempts to state, and now falls out of measuring time.
+//
+// One refusal is not evidence of an outage at any interval: a watch that treats it as
+// one is the shell loop people were already using, with fewer features.
+func TestWatchNeverGivesUpOnOneFailure(t *testing.T) {
+	state := newWatchState("w", nil)
+
+	progress := state.absorb(observed, nil, transientRefusal())
+	require.False(t, progress.Done, "a single transient refusal ended a watch")
+	require.True(t, progress.Changed, "the reader was not told the server had gone quiet")
+	require.False(t, state.gaveUp)
 }
 
 // TestWatchDoesNotRetryAPermanentRefusal writes the negative direction of the
@@ -349,38 +427,32 @@ func TestWatchDoesNotRetryAPermanentRefusal(t *testing.T) {
 	surface, _, _ := plainSurface()
 
 	err := followPlainly(t.Context(), surface, FormatText, poller, time.Millisecond,
-		"flowstate-workflow-3f7c")
+		"flowstate-workflow-3f7c", nil)
 
 	require.ErrorContains(t, err, "check the id")
 	require.Equal(t, 1, poller.calls,
 		"a refusal that will not become acceptable was asked about %d times", poller.calls)
 }
 
-// TestWatchAttemptsAreDerivedFromTheInterval checks that choosing a faster interval
-// buys more attempts rather than a shorter fuse.
-//
-// The allowance is the promise — thirty seconds of an unreachable server — and it
-// has to hold across the whole range of intervals somebody can ask for, including
-// one so long that the allowance would otherwise permit no second try at all.
-func TestWatchAttemptsAreDerivedFromTheInterval(t *testing.T) {
-	for _, tc := range []struct {
-		interval time.Duration
-		want     int
-	}{
-		{interval: minWatchInterval, want: int(outageAllowance / minWatchInterval)},
-		{interval: time.Second, want: int(outageAllowance / time.Second)},
-		{interval: 10 * time.Second, want: minWatchAttempts},
-		// An interval longer than the whole allowance still gets a retry, because
-		// one refusal is not evidence of an outage at any interval.
-		{interval: time.Hour, want: minWatchAttempts},
-		// Nothing sets this — clampWatchInterval forbids it — but a state machine
-		// that divides by its interval must not divide by zero.
-		{interval: 0, want: minWatchAttempts},
-	} {
-		t.Run(tc.interval.String(), func(t *testing.T) {
-			require.Equal(t, tc.want, newWatchState("w", tc.interval).attempts())
-		})
-	}
+// TestWatchOutageClockRestartsOnRecovery checks that a second blip an hour later gets
+// its own allowance rather than inheriting a spent one.
+func TestWatchOutageClockRestartsOnRecovery(t *testing.T) {
+	state := newWatchState("w", nil)
+
+	// Most of an allowance spent, then an answer.
+	require.False(t, state.absorb(observed, nil, transientRefusal()).Done)
+	require.False(t, state.absorb(observed.Add(outageAllowance-time.Second), nil, transientRefusal()).Done)
+
+	recovery := state.absorb(observed.Add(outageAllowance), response(v1.RunResponse_STATUS_RUNNING), nil)
+	require.True(t, recovery.Changed, "the recovery was not reported")
+	require.Zero(t, state.outageSince, "the outage clock kept running after the server answered")
+
+	// A later failure starts over, so it does not immediately exceed an allowance
+	// measured from an outage that ended.
+	later := observed.Add(time.Hour)
+	require.False(t, state.absorb(later, nil, transientRefusal()).Done,
+		"a fresh outage inherited a spent allowance")
+	require.False(t, state.absorb(later.Add(time.Second), nil, transientRefusal()).Done)
 }
 
 // TestWatchSeparatesOutputsFromProgress is the property that makes
@@ -390,7 +462,7 @@ func TestWatchSeparatesOutputsFromProgress(t *testing.T) {
 	surface, out, errOut := plainSurface()
 
 	require.NoError(t, followPlainly(t.Context(), surface, FormatText, poller, time.Millisecond,
-		"flowstate-workflow-3f7c"))
+		"flowstate-workflow-3f7c", nil))
 
 	// Everything on stdout has to parse, or a pipe into jq breaks.
 	var outputs map[string]any
@@ -415,7 +487,7 @@ func TestWatchJSONLIsOneDocumentPerChange(t *testing.T) {
 	surface, out, errOut := plainSurface()
 
 	require.NoError(t, followPlainly(t.Context(), surface, FormatJSONL, poller, time.Millisecond,
-		"flowstate-workflow-3f7c"))
+		"flowstate-workflow-3f7c", nil))
 
 	lines := reportedLines(out.String())
 	require.Len(t, lines, 3, "one document per change:\n%s", out.String())
@@ -444,7 +516,7 @@ func TestWatchJSONIsOneDocumentAtTheEnd(t *testing.T) {
 	surface, out, _ := plainSurface()
 
 	require.NoError(t, followPlainly(t.Context(), surface, FormatJSON, poller, time.Millisecond,
-		"flowstate-workflow-3f7c"))
+		"flowstate-workflow-3f7c", nil))
 
 	var document map[string]any
 	require.NoError(t, json.Unmarshal([]byte(out.String()), &document),
@@ -461,8 +533,8 @@ func TestWatchJSONIsOneDocumentAtTheEnd(t *testing.T) {
 func TestWatchWritesNothingFinalWhenItGaveUp(t *testing.T) {
 	// One attempt's worth of allowance is impossible to ask for, so the state is
 	// driven directly and the shape's ending is what is under test.
-	state := newWatchState("flowstate-workflow-3f7c", time.Second)
-	state.absorb(response(v1.RunResponse_STATUS_RUNNING), nil)
+	state := newWatchState("flowstate-workflow-3f7c", nil)
+	state.absorb(observed, response(v1.RunResponse_STATUS_RUNNING), nil)
 	state.stop(errors.New("the server stopped answering"))
 
 	for _, format := range []OutputFormat{FormatText, FormatJSON, FormatJSONL} {
@@ -509,6 +581,111 @@ func (p *interruptedPoller) Poll(ctx context.Context) (*v1.GetResponse, error) {
 	return response(v1.RunResponse_STATUS_RUNNING), nil
 }
 
+// TestWatchInterruptedStillNamesTheRunForAMachine is why an interrupted follow is not
+// simply silent.
+//
+// `flow run -o json` starts a durable workload and then follows it. Interrupted before
+// the run finishes, it used to write nothing at all — leaving a caller holding no
+// machine-readable name for something that is still running, and therefore unable to
+// watch, cancel, or terminate it without a human reading stderr. The document it gets
+// now is the last state known, which is at worst the run as it was started.
+func TestWatchInterruptedStillNamesTheRunForAMachine(t *testing.T) {
+	t.Run("interrupted before any poll succeeded", func(t *testing.T) {
+		surface, out, _ := plainSurface()
+
+		// Cancelled before the first poll returns, so the seed is the only thing the
+		// follow ever knows — the case a caller most needs covered and the one least
+		// likely to be exercised by accident.
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+
+		started := response(v1.RunResponse_STATUS_RUNNING)
+		require.NoError(t, followPlainly(ctx, surface, FormatJSON,
+			&scriptedPoller{answers: []pollAnswer{{err: transientRefusal()}}},
+			time.Millisecond, "flowstate-workflow-3f7c", started))
+
+		var document map[string]any
+		require.NoError(t, json.Unmarshal([]byte(out.String()), &document),
+			"an interrupted machine-readable follow wrote %q, which names no run", out.String())
+		require.Equal(t, "flowstate-workflow-3f7c", document["workflowId"])
+		require.Equal(t, "STATUS_RUNNING", document["status"])
+	})
+
+	t.Run("the text shapes have already said it", func(t *testing.T) {
+		// Nothing on stdout, because a person was told on stderr as it happened and
+		// stdout carries the outputs — which a run still going has not produced.
+		surface, out, _ := plainSurface()
+
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+
+		require.NoError(t, followPlainly(ctx, surface, FormatText,
+			&scriptedPoller{answers: []pollAnswer{runningPoll()}},
+			time.Millisecond, "flowstate-workflow-3f7c", response(v1.RunResponse_STATUS_RUNNING)))
+
+		require.Empty(t, out.String(), "a run still going wrote outputs it does not have")
+	})
+}
+
+// TestRunNamesTheStartedRunToAMachine is the same property through the command that
+// makes it matter: `flow run` is the one that creates something whose identity a caller
+// cannot recover if it is lost.
+func TestRunNamesTheStartedRunToAMachine(t *testing.T) {
+	fake := &fakeWorkflowService{
+		runResponse: &v1.RunResponse{
+			WorkflowId: "flowstate-workflow-3f7c",
+			RunId:      "0198f1e2-0000-7000-8000-000000000000",
+			Status:     v1.RunResponse_STATUS_RUNNING,
+		},
+		// Never answers, so following learns nothing beyond the seed.
+		getErr: connect.NewError(connect.CodeUnavailable, errors.New("connection refused")),
+	}
+	serveFake(t, fake)
+
+	cmd, out, _ := watchCommandForTest(t)
+	watchInterval = time.Millisecond
+	outputFormat = string(FormatJSON)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cmd.SetContext(ctx)
+
+	// Interrupted between starting the run and learning anything about it, which is
+	// the window that leaves a caller holding nothing. Cancelled from inside the first
+	// Get rather than on a timer, so the ordering is stated rather than raced for —
+	// cancelling before the call would have failed `Run` itself and tested nothing.
+	fake.onGet = cancel
+
+	require.NoError(t, runWorkflow(cmd, []string{"../../examples/hello-world/workflow.yaml"}))
+
+	var document map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out.String()), &document),
+		"a durable workload was started and its id was never written where a program could read it: %q",
+		out.String())
+	require.Equal(t, "flowstate-workflow-3f7c", document["workflowId"])
+	require.Equal(t, "0198f1e2-0000-7000-8000-000000000000", document["runId"])
+}
+
+// TestWatchDoesNotRestateTheStatusAsAReason checks that a failure message which only
+// names the status again is left off.
+//
+// The server answers a terminal run's failure with the status name itself, so appending
+// it unguarded reads `run "x" failed: STATUS_FAILED` — a sentence restating its own
+// subject, which looks like a reason was retrieved when none was.
+func TestWatchDoesNotRestateTheStatusAsAReason(t *testing.T) {
+	for _, failure := range []string{"STATUS_FAILED", "FAILED", "failed", "  failed  "} {
+		err := outcomeError(v1.RunResponse_STATUS_FAILED, "flowstate-workflow-3f7c", failure)
+
+		require.EqualError(t, err, `run "flowstate-workflow-3f7c" failed`,
+			"a message that only restates the status was appended as though it explained something")
+	}
+
+	// A real reason is still carried, which is the direction that matters once the
+	// server has one to give.
+	require.ErrorContains(t,
+		outcomeError(v1.RunResponse_STATUS_FAILED, "flowstate-workflow-3f7c", "the registry refused the push"),
+		"the registry refused the push")
+}
+
 // TestWatchStopsWhenTheWatcherDoesRatherThanWhenTheRunDoes checks that ctrl+c on a
 // run that is still going is not reported as the run's outcome.
 //
@@ -529,7 +706,7 @@ func TestWatchStopsWhenTheWatcherDoesRatherThanWhenTheRunDoes(t *testing.T) {
 			poller := &interruptedPoller{cancel: cancel, refuse: refuse}
 
 			require.NoError(t, followPlainly(ctx, surface, FormatText, poller, time.Millisecond,
-				"flowstate-workflow-3f7c"),
+				"flowstate-workflow-3f7c", nil),
 				"an interrupted watch was reported as a failed run")
 			require.Empty(t, out.String(), "a run still going wrote outputs it does not have")
 		})
@@ -551,7 +728,7 @@ func TestWatchDrawsNoViewWhenAFormatWasAskedFor(t *testing.T) {
 			surface.ErrCaps.TTY = true
 
 			require.NoError(t, watchRun(t.Context(), surface, format, poller, time.Millisecond,
-				"flowstate-workflow-3f7c"))
+				"flowstate-workflow-3f7c", nil))
 
 			require.Contains(t, out.String(), "stepValues")
 			require.NotContains(t, out.String(), "\x1b",
@@ -590,7 +767,7 @@ func TestWatchPlainForcesLinesOnATerminal(t *testing.T) {
 	surface.ErrCaps.TTY = true
 
 	require.NoError(t, watchRun(t.Context(), surface, FormatText, poller, time.Millisecond,
-		"flowstate-workflow-3f7c"))
+		"flowstate-workflow-3f7c", nil))
 
 	require.Len(t, reportedLines(errOut.String()), 2,
 		"--plain did not produce one line per change:\n%s", errOut.String())
@@ -732,6 +909,60 @@ func TestClientPollerLeavesAnUnsetRunIDAbsent(t *testing.T) {
 	_, err := clientPoller{workflowID: "flowstate-workflow-3f7c"}.Poll(t.Context())
 	require.NoError(t, err)
 	require.Nil(t, fake.gotGet.RunId, "an empty run id was sent instead of none at all")
+}
+
+// TestClientPollerDoesNotWaitForeverOnAStalledServer is the regression test for a
+// bound that could never start.
+//
+// A server that accepts the connection and then sends nothing produces no error, so a
+// watch whose outage allowance advances only when a poll *returns* had nothing to
+// count: the advertised thirty seconds never began and the command hung until somebody
+// killed it. The fix is a deadline below the RPC layer, and what this asserts is that a
+// stall becomes a failure the allowance can see — classified transient, so the watch
+// tolerates a blip and gives up on an outage, rather than sitting there.
+//
+// The real timeout is far too long to wait for, so the test shortens it and restores
+// it. What is under test is that the deadline exists and where its failure lands, not
+// its value.
+func TestClientPollerDoesNotWaitForeverOnAStalledServer(t *testing.T) {
+	stalled := make(chan struct{})
+
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		// Accepted, and then nothing: no status, no headers, no body.
+		//
+		// Bounded anyway, and generously, so that a handler still parked here cannot
+		// wedge the package for the whole test timeout however the cleanups run. A
+		// test whose failure mode is a three-hundred-second hang is a test that
+		// stops people running the suite.
+		select {
+		case <-stalled:
+		case <-time.After(30 * time.Second):
+		}
+	}))
+
+	// Registered in this order because cleanups run last-registered-first, and
+	// httptest's Close *waits* for outstanding requests. Releasing the handler has to
+	// happen before the server is asked to shut down, or the two wait on each other —
+	// which is exactly what the first version of this test did.
+	t.Cleanup(server.Close)
+	t.Cleanup(func() { close(stalled) })
+
+	previousAddress, previousTimeout := flowstateAddress, requestTimeout
+	t.Cleanup(func() { flowstateAddress, requestTimeout = previousAddress, previousTimeout })
+	flowstateAddress, requestTimeout = server.URL, 200*time.Millisecond
+
+	start := time.Now()
+	_, err := clientPoller{workflowID: "flowstate-workflow-3f7c"}.Poll(t.Context())
+	elapsed := time.Since(start)
+
+	require.Error(t, err, "a stalled server was waited on indefinitely")
+	require.Less(t, elapsed, 10*time.Second, "the poll took %s, so no deadline applied", elapsed)
+
+	// Transient, so the outage allowance counts it and eventually gives up — rather
+	// than permanent, which would abandon a watch over one slow moment.
+	var transient transientError
+	require.True(t, errors.As(err, &transient),
+		"a stalled server was treated as a permanent refusal, so one slow moment ends a watch")
 }
 
 // TestClientPollerClassifiesRefusals checks the classification against the real

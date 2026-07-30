@@ -210,9 +210,34 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 	// Deliberately not pinned to the run just started. A workload that continues as
 	// new gets a fresh run id, and a watch pinned to the first one would report the
 	// state of a run that has already handed over — or stop finding it at all.
+	//
+	// What the run just started *is* handed over, as the state the follow begins from.
+	// That is what a machine-readable caller falls back on when it is interrupted
+	// before the first poll: without it, `flow run -o json` stopped with a durable
+	// workload running and no document naming it.
 	return watchRun(cmd.Context(), surface, format,
 		clientPoller{workflowID: workflowID},
-		clampWatchInterval(watchInterval), workflowID)
+		clampWatchInterval(watchInterval), workflowID, startedRun(started.Msg))
+}
+
+// startedRun is what `Run` answered, in the shape a follow reports.
+//
+// RunResponse and GetResponse are the same five fields under two names — one is what
+// starting a run answers and the other what asking about one answers — so a follow that
+// begins from a start has to say which it is holding. Converted rather than the schema
+// being collapsed, because that is a wire contract and this is four lines.
+func startedRun(started *v1.RunResponse) *v1.GetResponse {
+	run := &v1.GetResponse{
+		WorkflowId: started.GetWorkflowId(),
+		RunId:      started.GetRunId(),
+		Status:     started.GetStatus(),
+	}
+
+	if failure := started.GetError(); failure != nil {
+		run.Kind = &v1.GetResponse_Error{Error: failure}
+	}
+
+	return run
 }
 
 // runServer implements the server sub-command to start a Flowstate server

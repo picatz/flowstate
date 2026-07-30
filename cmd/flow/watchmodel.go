@@ -23,6 +23,10 @@ import (
 // difference between a run that is working and a watch that has frozen. A still
 // screen with a number moving on it is legible; a still screen is not.
 //
+// That elapsed number is carrying more weight than it looks like it is, because the
+// server reports no step progress while a run is going — see the package comment in
+// watch.go. For most of a run this view is a status, a run id, and that number.
+//
 // What it deliberately does not do is own the outcome. The model reaches a terminal
 // status and quits; the exit code, the outputs, and the failure message are all
 // decided by the same code the plain shape uses, from the state the model carries
@@ -66,6 +70,11 @@ type watchPollMsg struct{ at time.Time }
 
 // watchStateMsg is one answer from the server, or one refusal.
 type watchStateMsg struct {
+	// at is when the answer was observed, so the outage allowance is measured against
+	// the clock rather than against a number of polls. Carried on the message rather
+	// than read inside Update, so a test states the time and does not wait for it.
+	at time.Time
+
 	response *v1.GetResponse
 	err      error
 }
@@ -77,11 +86,12 @@ func newWatchModel(
 	poller watchPoller,
 	interval time.Duration,
 	workflowID string,
+	known *v1.GetResponse,
 ) watchModel {
 	return watchModel{
 		surface:  surface,
 		poller:   poller,
-		state:    newWatchState(workflowID, interval),
+		state:    newWatchState(workflowID, known),
 		ctx:      ctx,
 		interval: interval,
 		width:    surface.ErrCaps.Width,
@@ -96,8 +106,9 @@ func followLive(
 	poller watchPoller,
 	interval time.Duration,
 	workflowID string,
+	known *v1.GetResponse,
 ) error {
-	model := newWatchModel(ctx, surface, poller, interval, workflowID)
+	model := newWatchModel(ctx, surface, poller, interval, workflowID, known)
 
 	// Drawn to stderr, so stdout carries the outputs and nothing else — which is
 	// what lets one invocation show a live view and pipe its answer. The colour
@@ -163,7 +174,10 @@ func (m watchModel) fetch() tea.Cmd {
 	return func() tea.Msg {
 		response, err := m.poller.Poll(m.ctx)
 
-		return watchStateMsg{response: response, err: err}
+		// After the call, not before: the allowance measures how long the server has
+		// been observed unable to answer, and a request that took thirty seconds to
+		// fail was thirty seconds during which nothing was known.
+		return watchStateMsg{at: time.Now(), response: response, err: err}
 	}
 }
 
@@ -204,7 +218,7 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// program: a bubbletea error means the *rendering* failed, and a server that
 		// stopped answering is not that. followLive reads the reason back off the
 		// model it gets returned.
-		if m.state.absorb(msg.response, msg.err).Done {
+		if m.state.absorb(msg.at, msg.response, msg.err).Done {
 			return m, tea.Quit
 		}
 
@@ -369,6 +383,11 @@ func (m watchModel) visibleSteps() int {
 const maxVisibleSteps = 12
 
 // stepLines renders the steps that have produced outputs.
+//
+// Which, today, means it renders on the final frame and not before: the server sends
+// outputs only once the run has finished, so this is a summary rather than progress.
+// It is written as progress because that is what it becomes the day the server can
+// answer a running execution, and because a summary is the degenerate case of one.
 //
 // The tail rather than the head, because the useful question is what just finished.
 // When the list is cut, the number cut is *stated*: a list that silently shows a

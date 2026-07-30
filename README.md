@@ -816,11 +816,20 @@ the difference between asking what a workload is doing and watching it do it —
 Following adapts to where its output goes, and the two shapes are the same
 information rather than two features:
 
-- **On a terminal** it draws a live view that updates in place: the status, how long
-  it has been watched, and the steps that have finished, newest last.
+- **On a terminal** it draws a live view that updates in place: the status, and how
+  long it has been watched — the moving number being what distinguishes a run that is
+  working from a watch that has frozen. When the run ends, the steps that produced
+  outputs are listed as a summary.
 - **Without one** — a pipe, a redirect, a CI job — it prints one line per *change*.
   Not per poll: a run that sits on one step for four minutes says nothing for four
   minutes, rather than repeating itself 240 times.
+
+It is not step-by-step progress, and the reason is worth stating plainly: the server
+answers a *running* execution with the two ids and a status, and reports outputs only
+once the run has finished. There is nothing per-step to show while it would matter. The
+missing piece is the server's, and until it lands, what a follow adds over `flow get` in
+a loop is that it exits by itself, exits with the run's outcome, does not repeat itself,
+and shows time passing.
 
 The live view is drawn on **stderr**, and the outputs go to stdout exactly as
 `flow get` writes them. So one invocation does both:

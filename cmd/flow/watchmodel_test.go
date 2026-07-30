@@ -86,7 +86,7 @@ func TestWatchViewShowsProgressAsItArrives(t *testing.T) {
 	// end inside one frame — which would leave the progression untestable rather than
 	// absent.
 	tm := teatest.NewTestModel(t,
-		newWatchModel(t.Context(), surface, poller, 20*time.Millisecond, "flowstate-workflow-3f7c"),
+		newWatchModel(t.Context(), surface, poller, 20*time.Millisecond, "flowstate-workflow-3f7c", nil),
 		teatest.WithInitialTermSize(80, 24))
 
 	// No key is pressed: a run reaching a terminal status has to stop the program by
@@ -167,7 +167,7 @@ func TestWatchViewStopsOnEveryKeyThatMeansStop(t *testing.T) {
 			poller := &scriptedPoller{answers: []pollAnswer{runningPoll()}}
 
 			tm := teatest.NewTestModel(t,
-				newWatchModel(t.Context(), surface, poller, time.Millisecond, "flowstate-workflow-3f7c"),
+				newWatchModel(t.Context(), surface, poller, time.Millisecond, "flowstate-workflow-3f7c", nil),
 				teatest.WithInitialTermSize(80, 24))
 
 			teatest.WaitFor(t, tm.Output(), func(b []byte) bool {
@@ -193,7 +193,7 @@ func TestWatchViewStopsOnEveryKeyThatMeansStop(t *testing.T) {
 // somebody wanted to keep.
 func TestWatchViewIgnoresKeysThatMeanNothing(t *testing.T) {
 	surface, _, _ := terminalSurface(80, 24, colorprofile.NoTTY)
-	model := newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second, "w")
+	model := newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second, "w", nil)
 
 	for _, key := range []tea.KeyPressMsg{
 		{Code: 'x', Text: "x"},
@@ -220,7 +220,7 @@ func TestWatchViewIgnoresKeysThatMeanNothing(t *testing.T) {
 // state exactly what the screen should say.
 func TestWatchViewMeasuresElapsedFromItsOwnMessages(t *testing.T) {
 	surface, _, _ := terminalSurface(80, 24, colorprofile.NoTTY)
-	model := newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second, "flowstate-workflow-3f7c")
+	model := newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second, "flowstate-workflow-3f7c", nil)
 
 	// Before any poll there is nothing to measure, and claiming "0s" would be a
 	// measurement rather than the absence of one.
@@ -241,7 +241,7 @@ func TestWatchViewMeasuresElapsedFromItsOwnMessages(t *testing.T) {
 // left to be inferred from a screen that has stopped changing.
 func TestWatchViewSaysWhyNothingIsMoving(t *testing.T) {
 	surface, _, _ := terminalSurface(80, 24, colorprofile.NoTTY)
-	model := newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second, "flowstate-workflow-3f7c")
+	model := newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second, "flowstate-workflow-3f7c", nil)
 
 	folded := fold(t, model,
 		tea.WindowSizeMsg{Width: 80, Height: 24},
@@ -265,7 +265,7 @@ func TestWatchViewSaysWhyNothingIsMoving(t *testing.T) {
 // screen and not only in the exit status.
 func TestWatchViewShowsAFailureMessage(t *testing.T) {
 	surface, _, _ := terminalSurface(80, 24, colorprofile.NoTTY)
-	model := newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second, "flowstate-workflow-3f7c")
+	model := newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second, "flowstate-workflow-3f7c", nil)
 
 	folded := fold(t, model, watchStateMsg{
 		response: failedResponse(v1.RunResponse_STATUS_FAILED, `step "deploy" could not reach the registry`),
@@ -289,7 +289,7 @@ func TestWatchViewCapsTheStepListAndSaysHowMany(t *testing.T) {
 	}
 
 	surface, _, _ := terminalSurface(80, 24, colorprofile.NoTTY)
-	model := newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second, "flowstate-workflow-3f7c")
+	model := newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second, "flowstate-workflow-3f7c", nil)
 
 	folded := fold(t, model,
 		tea.WindowSizeMsg{Width: 80, Height: 24},
@@ -315,7 +315,7 @@ func TestWatchViewCapsTheStepListAndSaysHowMany(t *testing.T) {
 // progress at all.
 func TestWatchViewFitsAShortTerminal(t *testing.T) {
 	surface, _, _ := terminalSurface(80, 24, colorprofile.NoTTY)
-	model := newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second, "flowstate-workflow-3f7c")
+	model := newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second, "flowstate-workflow-3f7c", nil)
 
 	folded := fold(t, model,
 		tea.WindowSizeMsg{Width: 80, Height: 4},
@@ -333,7 +333,7 @@ func TestWatchViewFitsTheTerminal(t *testing.T) {
 
 	long := strings.Repeat("very-long-workflow-id-", 6)
 	surface, _, _ := terminalSurface(width, 24, colorprofile.NoTTY)
-	model := newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second, long)
+	model := newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second, long, nil)
 
 	folded := fold(t, model,
 		tea.WindowSizeMsg{Width: width, Height: 24},
@@ -355,7 +355,7 @@ func TestWatchViewFitsTheTerminal(t *testing.T) {
 func TestWatchViewFollowsTheTerminalItIsToldAbout(t *testing.T) {
 	surface, _, _ := terminalSurface(80, 24, colorprofile.NoTTY)
 	model := newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second,
-		strings.Repeat("long-workflow-id-", 6))
+		strings.Repeat("long-workflow-id-", 6), nil)
 
 	narrowed := fold(t, model,
 		tea.WindowSizeMsg{Width: 30, Height: 24},
@@ -403,7 +403,7 @@ func TestWatchViewTrimsIdentifiersAndWrapsProse(t *testing.T) {
 	id := strings.Repeat("long-workflow-id-", 5)
 	surface, _, _ := terminalSurface(width, 40, colorprofile.NoTTY)
 
-	folded := fold(t, newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second, id),
+	folded := fold(t, newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second, id, nil),
 		tea.WindowSizeMsg{Width: width, Height: 40},
 		watchStateMsg{response: failedResponse(v1.RunResponse_STATUS_FAILED,
 			"the registry refused the push because the tag already exists")},
@@ -435,10 +435,10 @@ func TestWatchViewSurvivesItsOwnStyling(t *testing.T) {
 	}
 
 	plainSurf, _, _ := terminalSurface(100, 40, colorprofile.NoTTY)
-	plainDrawn := viewOf(fold(t, newWatchModel(t.Context(), plainSurf, &scriptedPoller{}, time.Second, "w"), msgs...))
+	plainDrawn := viewOf(fold(t, newWatchModel(t.Context(), plainSurf, &scriptedPoller{}, time.Second, "w", nil), msgs...))
 
 	styledSurf, _, _ := terminalSurface(100, 40, colorprofile.TrueColor)
-	styledDrawn := viewOf(fold(t, newWatchModel(t.Context(), styledSurf, &scriptedPoller{}, time.Second, "w"), msgs...))
+	styledDrawn := viewOf(fold(t, newWatchModel(t.Context(), styledSurf, &scriptedPoller{}, time.Second, "w", nil), msgs...))
 
 	require.Contains(t, styledDrawn, "\x1b[", "the styled surface emitted no styling, so nothing is under test")
 	require.NotContains(t, plainDrawn, "\x1b[", "the plain surface emitted styling")
@@ -466,7 +466,7 @@ func TestWatchViewIsStyledForTheStreamItDrawsOn(t *testing.T) {
 	}
 	surface := ui.ForCapabilities(&out, &errOut, piped, terminal)
 
-	folded := fold(t, newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second, "w"),
+	folded := fold(t, newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second, "w", nil),
 		watchStateMsg{response: response(v1.RunResponse_STATUS_RUNNING, "checkout")})
 
 	require.Contains(t, viewOf(folded), "\x1b[",
@@ -487,13 +487,43 @@ func TestWatchViewUsesASCIIWhereMarksAreNotSafe(t *testing.T) {
 	ascii := ui.Capabilities{TTY: true, Dark: true, Width: 80, Height: 24, Unicode: false}
 	surface := ui.ForCapabilities(&out, &errOut, ascii, ascii)
 
-	folded := fold(t, newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second, "w"),
+	folded := fold(t, newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second, "w", nil),
 		watchStateMsg{response: response(v1.RunResponse_STATUS_RUNNING, "checkout")})
 
 	drawn := viewOf(folded)
 	require.Contains(t, drawn, ascii.Symbols().Success)
 	require.NotContains(t, drawn, "✓", "a mark was written into the view instead of taken from the symbol set")
 	require.Contains(t, drawn, "checkout", "the step is named, not only marked")
+}
+
+// TestWatchViewTimesEveryPollItPerforms is the live shape's half of the outage
+// allowance.
+//
+// The allowance is enforced against the clock, and the state machine reads that clock
+// from the message rather than for itself — which means an answer arriving with no
+// observation time silently makes the allowance unreachable: every elapsed span
+// computes as zero and the live view waits on an unreachable server forever, exactly
+// the bug the allowance exists to prevent. Nothing else here notices, because every
+// other test states the time itself.
+func TestWatchViewTimesEveryPollItPerforms(t *testing.T) {
+	surface, _, _ := terminalSurface(80, 24, colorprofile.NoTTY)
+	model := newWatchModel(t.Context(), surface,
+		&scriptedPoller{answers: []pollAnswer{{err: transientRefusal()}}},
+		time.Second, "flowstate-workflow-3f7c", nil)
+
+	msg, ok := model.fetch()().(watchStateMsg)
+	require.True(t, ok, "a poll produced a %T", msg)
+	require.False(t, msg.at.IsZero(),
+		"a poll result carried no observation time, so the outage allowance can never advance")
+
+	// And it reaches the state machine, rather than being carried and dropped.
+	folded := fold(t, model,
+		watchStateMsg{at: observed, err: transientRefusal()},
+		watchStateMsg{at: observed.Add(outageAllowance), err: transientRefusal()})
+
+	require.True(t, folded.state.gaveUp,
+		"the live view did not give up after the whole allowance had passed")
+	require.ErrorContains(t, watchEnding(surface, folded), "gave up")
 }
 
 // TestWatchViewTreatsAnInterruptedPollAsStopping is the live shape's half of the same
@@ -506,7 +536,7 @@ func TestWatchViewTreatsAnInterruptedPollAsStopping(t *testing.T) {
 	surface, _, _ := terminalSurface(80, 24, colorprofile.NoTTY)
 
 	ctx, cancel := context.WithCancel(t.Context())
-	model := newWatchModel(ctx, surface, &scriptedPoller{}, time.Second, "flowstate-workflow-3f7c")
+	model := newWatchModel(ctx, surface, &scriptedPoller{}, time.Second, "flowstate-workflow-3f7c", nil)
 	model = fold(t, model, watchStateMsg{response: response(v1.RunResponse_STATUS_RUNNING, "checkout")})
 
 	cancel()
@@ -527,7 +557,7 @@ func TestWatchViewTreatsAnInterruptedPollAsStopping(t *testing.T) {
 func TestWatchEndingReportsTheRunUnlessTheWatcherStopped(t *testing.T) {
 	t.Run("the watcher stopped", func(t *testing.T) {
 		surface, out, _ := plainSurface()
-		model := newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second, "flowstate-workflow-3f7c")
+		model := newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second, "flowstate-workflow-3f7c", nil)
 		folded := fold(t, model, watchStateMsg{response: response(v1.RunResponse_STATUS_RUNNING, "checkout")})
 		folded.quit = true
 
@@ -538,7 +568,7 @@ func TestWatchEndingReportsTheRunUnlessTheWatcherStopped(t *testing.T) {
 
 	t.Run("the run finished", func(t *testing.T) {
 		surface, out, _ := plainSurface()
-		model := newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second, "flowstate-workflow-3f7c")
+		model := newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second, "flowstate-workflow-3f7c", nil)
 		folded := fold(t, model, watchStateMsg{response: response(v1.RunResponse_STATUS_COMPLETED, "greet")})
 
 		require.NoError(t, watchEnding(surface, folded))
@@ -548,7 +578,7 @@ func TestWatchEndingReportsTheRunUnlessTheWatcherStopped(t *testing.T) {
 
 	t.Run("the run failed", func(t *testing.T) {
 		surface, out, _ := plainSurface()
-		model := newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second, "flowstate-workflow-3f7c")
+		model := newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second, "flowstate-workflow-3f7c", nil)
 		folded := fold(t, model, watchStateMsg{
 			response: failedResponse(v1.RunResponse_STATUS_TIMED_OUT, "the deploy never returned"),
 		})

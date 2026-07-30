@@ -18,11 +18,28 @@ import (
 // Watching a run is the one place this CLI has a reason to hold the terminal.
 //
 // Every other command answers a question and exits, which is what makes them
-// scriptable. A workload is different: it takes as long as the work takes, and the
-// useful thing during that time is seeing which step it is on. `flow get` in a
-// shell loop is what people do instead, and it is worse in ways worth naming — it
-// reprints the whole answer, so the eye has to diff two screens to find what
-// changed, and it cannot say "nothing has changed yet" without saying it again.
+// scriptable. A workload is different: it takes as long as the work takes, and
+// `flow get` in a shell loop is what people do instead. That is worse in ways worth
+// naming — it reprints the whole answer, so the eye has to diff two screens to find
+// what changed; it cannot say "nothing has changed yet" without saying it again; and
+// it cannot stop by itself when the run stops.
+//
+// # What it can actually show, which is less than it should be
+//
+// Not which step the run is on. `Get` answers a running execution with three
+// scalars — the two ids and the status — and reports outputs only once the run has
+// finished, so there is no per-step progress to display while it matters. See
+// `pkg/flowstate/v1/server/server.go`, the STATUS_RUNNING case.
+//
+// So what a follow reports while a run is going is the status, how long it has been
+// watched, and — the moment the run ends — the steps that produced outputs. That is
+// worth having: the elapsed time is what distinguishes a run that is working from a
+// watch that has frozen, the exit is automatic, and the step list is a summary on the
+// final frame. It is not the live step-by-step this ought to be, and the missing piece
+// is the server's, not this file's. Anything here that renders steps is written to be
+// right the day the server can answer, and is exercised meanwhile by tests that supply
+// a response shape the server does not yet produce — which is stated rather than left
+// for somebody to discover.
 //
 // # It must not become the only way to watch
 //
@@ -145,16 +162,15 @@ const (
 	// on the first one sends people back to the shell loop, which retries by
 	// construction.
 	//
-	// Bounded in *time* rather than in attempts because time is what the person
-	// cares about and attempts are not: the same three failures mean thirty seconds
-	// at a ten-second interval and three-quarters of a second at the floor. The
-	// count is derived from the interval below, so choosing a faster interval buys
-	// more attempts rather than a shorter fuse.
+	// Measured as elapsed time, from the clock, and not as a number of attempts.
+	// Attempts were the first attempt at this and they were wrong twice over. They
+	// are only equal to time if every attempt returns promptly — so an interval of
+	// ten seconds gave up after twenty while reporting thirty, and a server that
+	// accepted a connection and then said nothing produced no attempt at all, which
+	// left the allowance never starting and the watch hanging until somebody killed
+	// it. Whenever a bound is stated in one unit and enforced in another, the
+	// difference is where the peer gets to live.
 	outageAllowance = 30 * time.Second
-
-	// minWatchAttempts is the floor on that derivation, for an interval long enough
-	// that the allowance would otherwise permit no second try at all.
-	minWatchAttempts = 3
 )
 
 var (
@@ -247,9 +263,11 @@ func runWatch(cmd *cobra.Command, args []string) error {
 			"omit it to follow whichever attempt is current", err)
 	}
 
+	// Nothing known yet: `flow watch` is asked about a run it did not start, so the
+	// first poll is the first thing it learns.
 	return watchRun(cmd.Context(), newSurface(cmd), format,
 		clientPoller{workflowID: workflowID, runID: watchRunID},
-		clampWatchInterval(watchInterval), workflowID)
+		clampWatchInterval(watchInterval), workflowID, nil)
 }
 
 // clampWatchInterval enforces the floor.
@@ -270,16 +288,17 @@ func watchRun(
 	poller watchPoller,
 	interval time.Duration,
 	workflowID string,
+	known *v1.GetResponse,
 ) error {
 	// Both flags decide before the terminal does. A document was asked for
 	// explicitly and a terminal was not, so drawing a view over somebody's requested
 	// JSON would be this command guessing against a flag — which is the mistake
 	// --output exists to prevent, and --plain is the same rule said out loud.
 	if watchPlain || format.Machine() || !surface.ErrCaps.TTY {
-		return followPlainly(ctx, surface, format, poller, interval, workflowID)
+		return followPlainly(ctx, surface, format, poller, interval, workflowID, known)
 	}
 
-	return followLive(ctx, surface, poller, interval, workflowID)
+	return followLive(ctx, surface, poller, interval, workflowID, known)
 }
 
 // followPlainly is the shape a script, a CI job, and a program each receive.
@@ -294,8 +313,9 @@ func followPlainly(
 	poller watchPoller,
 	interval time.Duration,
 	workflowID string,
+	known *v1.GetResponse,
 ) error {
-	state := newWatchState(workflowID, interval)
+	state := newWatchState(workflowID, known)
 
 	// A ticker rather than a sleep so the interval is the period between requests
 	// rather than the period plus however long the server took to answer — which is
@@ -312,10 +332,15 @@ func followPlainly(
 		// The exit code would then say a run failed when what actually happened is
 		// that somebody stopped watching it.
 		if ctx.Err() != nil {
-			return nil
+			return interrupted(surface, format, state)
 		}
 
-		progress := state.absorb(response, err)
+		// The clock is read here rather than inside absorb, so the state machine is a
+		// function of what it is handed. Read after the poll returns, because what the
+		// allowance measures is how long the server has been *observed* unable to
+		// answer, and an answer that took twenty seconds to fail was twenty seconds
+		// nobody knew about.
+		progress := state.absorb(time.Now(), response, err)
 
 		if progress.Changed {
 			if err := reportChange(surface, format, state, response); err != nil {
@@ -329,14 +354,32 @@ func followPlainly(
 
 		select {
 		case <-ctx.Done():
-			// A cancelled context is the person pressing ctrl+c or a CI job being
-			// stopped. Nothing about the run went wrong, and reporting the run as
-			// failed because watching it was interrupted would be a lie a pipeline
-			// would act on.
-			return nil
+			return interrupted(surface, format, state)
 		case <-ticker.C:
 		}
 	}
+}
+
+// interrupted ends a follow that stopped before the run did.
+//
+// Nothing about the run went wrong — this is ctrl+c, or a CI job being stopped — so it
+// is not an error and the exit status stays zero. Reporting the run as failed because
+// watching it was interrupted would be a lie a pipeline would act on.
+//
+// The single-document form still owes its reader a document, and this is the case that
+// makes it matter rather than a nicety. `flow run -o json` starts a durable workload
+// and then follows it; interrupted before the first change, it used to write nothing
+// at all, leaving a caller with no machine-readable name for a run that is still
+// going — unwatchable, uncancellable, and unterminatable except by hand. What it gets
+// now is the last state known, which is at worst the run as it was started.
+func interrupted(surface *ui.UI, format OutputFormat, state *watchState) error {
+	if format != FormatJSON || state.response == nil {
+		// jsonl has already emitted every change including the last, and the text
+		// shapes have said what they knew on stderr as they went.
+		return nil
+	}
+
+	return writeJSON(surface, format, state.response)
 }
 
 // reportChange writes one change, in the shape the format asks for.
@@ -425,9 +468,6 @@ func writeStepOutputs(surface *ui.UI, response *v1.GetResponse) error {
 type watchState struct {
 	workflowID string
 
-	// interval is held to turn the outage allowance into a number of attempts.
-	interval time.Duration
-
 	runID  string
 	status v1.RunResponse_Status
 
@@ -441,8 +481,13 @@ type watchState struct {
 	// the server's own message rather than prose about it.
 	response *v1.GetResponse
 
-	// outage counts consecutive failed polls, reset by any answer.
-	outage int
+	// outageSince is when the server was first observed unable to answer, zero once
+	// it answers again.
+	//
+	// A time rather than a count, because the allowance is stated in seconds and has
+	// to be enforced in seconds. See [outageAllowance] for the two ways a count got
+	// it wrong.
+	outageSince time.Time
 
 	// lastError is the most recent failure, so a live view can say why nothing is
 	// moving instead of appearing to have frozen.
@@ -454,8 +499,21 @@ type watchState struct {
 	gaveUp bool
 }
 
-func newWatchState(workflowID string, interval time.Duration) *watchState {
-	return &watchState{workflowID: workflowID, interval: interval}
+// newWatchState begins a walk, optionally already knowing something about the run.
+//
+// `flow run` knows the run exists and what its ids are before it starts following,
+// and seeding that matters for a reason that is not cosmetic: a machine-readable
+// caller interrupted before the first poll would otherwise be given nothing at all,
+// while a durable workload it can no longer name goes on running. See [finishWatch].
+func newWatchState(workflowID string, known *v1.GetResponse) *watchState {
+	state := &watchState{workflowID: workflowID}
+	if known != nil {
+		state.response = known
+		state.runID = known.GetRunId()
+		state.status = known.GetStatus()
+	}
+
+	return state
 }
 
 // watchProgress is what one poll means for a reader.
@@ -473,19 +531,16 @@ type watchProgress struct {
 	Err error
 }
 
-// attempts is how many consecutive failures the allowance permits.
-func (s *watchState) attempts() int {
-	if s.interval <= 0 {
-		return minWatchAttempts
-	}
-
-	return max(minWatchAttempts, int(outageAllowance/s.interval))
-}
-
 // absorb folds one poll result into the state.
-func (s *watchState) absorb(response *v1.GetResponse, err error) watchProgress {
+//
+// at is when the result was observed, taken by the caller rather than read here. Both
+// shapes already have it — the plain loop reads the clock, the live view has the time
+// on the tick that scheduled the poll — and taking it makes the whole state machine a
+// function of its inputs, so a test can state exactly when it should give up rather
+// than wait to find out.
+func (s *watchState) absorb(at time.Time, response *v1.GetResponse, err error) watchProgress {
 	if err != nil {
-		return s.absorbError(err)
+		return s.absorbError(at, err)
 	}
 
 	// A status the schema forbids is a peer that is not answering the question.
@@ -497,8 +552,8 @@ func (s *watchState) absorb(response *v1.GetResponse, err error) watchProgress {
 				"ask `flow get %s` and report it if it persists", s.workflowID, s.workflowID))
 	}
 
-	recovered := s.outage > 0
-	s.outage, s.lastError = 0, nil
+	recovered := !s.outageSince.IsZero()
+	s.outageSince, s.lastError = time.Time{}, nil
 
 	steps := completedSteps(response)
 
@@ -525,29 +580,33 @@ func (s *watchState) absorb(response *v1.GetResponse, err error) watchProgress {
 }
 
 // absorbError folds a refused poll in, deciding whether to keep asking.
-func (s *watchState) absorbError(err error) watchProgress {
+func (s *watchState) absorbError(at time.Time, err error) watchProgress {
 	var transient transientError
 	if !errors.As(err, &transient) {
 		return s.stop(err)
 	}
 
-	s.outage++
+	first := s.outageSince.IsZero()
+	if first {
+		s.outageSince = at
+	}
 	s.lastError = err
 
-	if attempts := s.attempts(); s.outage >= attempts {
-		// The elapsed time rather than the attempt count, because "unreachable for
-		// 30s" is the fact somebody acts on and "3 attempts" is an implementation
-		// detail of how this noticed.
+	// The measured elapsed time, and the allowance therefore always gets its full
+	// span whatever the interval and however long a request took to fail. A first
+	// failure never ends a watch, because no time has passed since itself — so there
+	// is always a second attempt, without a floor on attempts to say so.
+	if elapsed := at.Sub(s.outageSince); elapsed >= outageAllowance {
 		return s.stop(fmt.Errorf(
 			"gave up watching %q after %s of the server being unable to answer: %w",
-			s.workflowID, (time.Duration(attempts) * s.interval).Round(time.Second), err))
+			s.workflowID, elapsed.Round(time.Second), err))
 	}
 
 	// A change, so the reader is told the server went quiet rather than watching a
 	// still screen and guessing. Only the first one: an outage that persists is not
 	// news each second. The recovery is a change too, which is why absorb reports
 	// one when the outage ends.
-	return watchProgress{Changed: s.outage == 1}
+	return watchProgress{Changed: first}
 }
 
 // stop records why the walk ended and reports it.
@@ -615,11 +674,27 @@ func outcomeError(status v1.RunResponse_Status, workflowID, failure string) erro
 		return nil
 	}
 
-	if failure != "" {
+	// Appended only when it says something the status has not.
+	//
+	// The server currently answers a terminal run's failure message with the status
+	// name itself (`server.go` builds `Error{Message: respStatus.String()}`), so
+	// appending it unguarded reads `run "x" failed: STATUS_FAILED` — a sentence that
+	// restates its own subject and looks like the reason was retrieved. Better to say
+	// less than to look like more was learned than was.
+	if failure != "" && !restatesStatus(failure, status) {
 		return fmt.Errorf("run %q %s: %s", workflowID, statusWord(status), failure)
 	}
 
 	return fmt.Errorf("run %q %s", workflowID, statusWord(status))
+}
+
+// restatesStatus reports whether a failure message only names the status again.
+func restatesStatus(failure string, status v1.RunResponse_Status) bool {
+	failure = strings.TrimSpace(failure)
+
+	return strings.EqualFold(failure, status.String()) ||
+		strings.EqualFold(failure, statusLabel(status)) ||
+		strings.EqualFold(failure, statusWord(status))
 }
 
 // statusWord renders a status the way prose wants it.
