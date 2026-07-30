@@ -11,19 +11,38 @@ import (
 //
 // # Why an activity, for expressions with no side effects at all
 //
-// Because evaluating CEL in workflow code is not deterministic in the sense replay
-// needs. A language profile pins which *functions* exist; it does not pin how cel-go
-// implements them, so an upstream bug fix changes a result under an unchanged profile
-// — and a workflow that computed one value before a worker upgrade and another after
-// is invariant 4 violated by a dependency bump nobody reviewed as one. Inside an
-// activity the result is written to history once and replayed thereafter, which is the
-// same reason a task's own inputs resolve through TaskInScope rather than in the
-// workflow.
+// The reason usually given is that evaluating CEL in workflow code is not deterministic
+// in the sense replay needs: a language profile pins which *functions* exist and not how
+// cel-go implements them, so an upstream bug fix changes a result under an unchanged
+// profile. That is true, and it is not the reason — because the executor evaluates CEL
+// in workflow code all over the place and always has. A step's condition, a loop's
+// `items:`, a step's own `vars:` block, and the inputs of every task that does not
+// declare NeedsPrevOutputs are all resolved inline, in workflow code, and their results
+// reach history as the arguments of the activities they schedule.
+//
+// So that exposure is accepted rather than avoided, mitigated where Worker Versioning
+// pins the interpreter and named here so nobody concludes from this activity that it
+// was solved. Routing each of those through an activity would be a round trip per
+// condition.
+//
+// What makes the workflow's `vars:` different is Continue-As-New, which versioning does
+// not reach. A later segment *replays nothing* — it starts from RunState rather than
+// from history, which is exactly what makes suspending cheap — so a `vars:` block
+// evaluated inline would be evaluated again at the top of every segment, against
+// whatever cel-go that worker has. A value that changed halfway through a run is a
+// worse failure than a replay mismatch, because nothing detects it. Evaluated once in
+// an activity and carried in RunState, it cannot.
+//
+// Not the same reason TaskInScope exists, which is easy to assume from the two sitting
+// side by side. That activity carries a *scope* to the worker because the expressions it
+// evaluates name things the workflow does not have — a loop's binding, and the
+// `response.*` of a request that has not been made yet — and it is reached only by tasks
+// declaring NeedsPrevOutputs, which today is `http` and plugins asking for a scope. See
+// its own doc.
 //
 // docs/DSL.md holds open the faster path — workflow-side evaluation where Worker
-// Versioning pins the interpreter — but that is a deployment posture this activity
-// does not have to verify, and one round trip per run is not the cost worth taking a
-// posture on trust for.
+// Versioning pins the interpreter — but that would not help here: versioning pins the
+// interpreter within a run's *history*, and the next segment has none.
 //
 // Takes and returns a [v1.Scope] rather than the specification: the vars go in
 // unevaluated and come back evaluated, alongside the profile they are evaluated
