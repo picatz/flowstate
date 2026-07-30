@@ -46,7 +46,7 @@ edition: v2026.2
 `,
 			want: v1.TaskNames(),
 			detailContains: map[string]string{
-				"echo": "Return the given message unchanged.",
+				"log":  "Emit a message for a person to read.",
 				"http": "Perform an HTTP request",
 			},
 		},
@@ -97,11 +97,11 @@ edition: v2026.2
 			src: `name: c
 steps:
   - id: a
-    echo:
+    log:
       |
 edition: v2026.2
 `,
-			exact: []string{"message"},
+			exact: []string{"message", "level", "fields"},
 		},
 		{
 			// An unregistered key still looks like a task from the outside, so the
@@ -125,10 +125,10 @@ edition: v2026.2
 			src: `name: c
 steps:
   - id: first
-    echo:
+    log:
       message: one
   - id: second
-    echo:
+    log:
       message: ${|}
 edition: v2026.2
 `,
@@ -144,16 +144,16 @@ edition: v2026.2
 			src: `name: c
 steps:
   - id: first
-    echo:
+    log:
       message: one
   - id: second
-    echo:
+    log:
       message: two
   - id: third
-    echo:
+    log:
       message: ${steps.|}
   - id: fourth
-    echo:
+    log:
       message: four
 edition: v2026.2
 `,
@@ -167,13 +167,13 @@ edition: v2026.2
 			src: `name: c
 steps:
   - id: alpha
-    echo:
+    log:
       message: one
   - id: beta
-    echo:
+    log:
       message: two
   - id: gamma
-    echo:
+    log:
       message: ${steps.|}
 edition: v2026.2
 `,
@@ -187,7 +187,7 @@ steps:
     http:
       url: https://example.com
   - id: out
-    echo:
+    log:
       message: ${steps.web.|}
 edition: v2026.2
 `,
@@ -209,7 +209,7 @@ steps:
     http:
       url: https://example.com
   - id: out
-    echo:
+    log:
       message: ${steps.web.st|}
 edition: v2026.2
 `,
@@ -226,7 +226,7 @@ steps:
     http:
       url: https://example.com
   - id: out
-    echo:
+    log:
       message: ${steps.web.body.|}
 edition: v2026.2
 `,
@@ -237,7 +237,7 @@ edition: v2026.2
 			src: `name: c
 steps:
   - id: out
-    echo:
+    log:
       message: ${steps.web.|}
   - id: web
     http:
@@ -254,7 +254,7 @@ steps:
     http:
       url: https://example.com
   - id: out
-    echo:
+    log:
       message: ${string(steps.we|)}
 edition: v2026.2
 `,
@@ -342,11 +342,11 @@ steps:
     parallel:
       - steps:
           - id: left
-            echo:
+            log:
               |
 edition: v2026.2
 `,
-			exact: []string{"message"},
+			exact: []string{"message", "level", "fields"},
 		},
 		{
 			// The two namespaces, in the one place an author sees both. Bare, a
@@ -356,14 +356,14 @@ edition: v2026.2
 			src: `name: c
 steps:
   - id: outer
-    echo:
+    log:
       message: hi
   - id: loop
     for_each:
-      items: ${steps.outer.result}
+      items: ${['a', 'b']}
       steps:
         - id: body
-          echo:
+          log:
             message: ${|
 edition: v2026.2
 `,
@@ -383,14 +383,14 @@ edition: v2026.2
 			src: `name: c
 steps:
   - id: outer
-    echo:
+    log:
       message: hi
   - id: loop
     for_each:
-      items: ${steps.outer.result}
+      items: ${['a', 'b']}
       steps:
         - id: body
-          echo:
+          log:
             message: ${steps.|
 edition: v2026.2
 `,
@@ -408,7 +408,7 @@ edition: v2026.2
 			src: `name: c
 steps:
   - id: before
-    echo:
+    log:
       message: hi
   - id: window
     wait_until: ${|
@@ -431,10 +431,10 @@ edition: v2026.2
 			src: `name: c
 steps:
   - id: before
-    echo:
+    log:
       message: hi
   - id: after
-    echo:
+    log:
       message: ${|
 edition: v2026.2
 `,
@@ -447,7 +447,7 @@ edition: v2026.2
 			src: `name: c
 steps:
   - id: before
-    echo:
+    log:
       message: hi
   - id: window
     wait_until: ${steps.|
@@ -483,7 +483,7 @@ edition: v2026.2
 			src: `name: c
 steps:
   - id: before
-    echo:
+    log:
       message: hi
   - id: a
     shell:
@@ -527,11 +527,11 @@ edition: v2026.2
 			src: `name: c
 steps:
   - id: a
-    echo:
+    log:
       |
 edition: v2026.2
 `,
-			exact:   []string{"message"},
+			exact:   []string{"message", "level", "fields"},
 			notWant: []string{"name", "description", "inputs"},
 		},
 		{
@@ -539,7 +539,7 @@ edition: v2026.2
 			src: `name: c
 steps:
   - id: a
-    echo:
+    log:
       message: hello |
 edition: v2026.2
 `,
@@ -710,10 +710,10 @@ edition: v2026.2
 			src: `name: c
 steps:
   - id: first
-    echo:
+    log:
       message: hi
   - id: second
-    echo:
+    log:
       message: ${steps.|}
 edition: v2026.2
 `,
@@ -828,7 +828,7 @@ steps:
     http:
       url: https://example.com
   - id: out
-    echo:
+    log:
       message: ${|}
 edition: v2026.2
 `)
@@ -873,7 +873,7 @@ func TestCompletionWorksOnUnparseableDocument(t *testing.T) {
 	src, pos := splitCursor(t, `name: c
 steps:
   - id: a
-    echo:
+    log:
       mes|
 edition: v2026.2
 `)
@@ -903,7 +903,7 @@ func TestCompletionUsesUTF16Columns(t *testing.T) {
 	src := "name: ünïcödé wörkflöw\n" +
 		"steps:\n" +
 		"  - id: first\n" +
-		"    echo:\n" +
+		"    log:\n" +
 		"      message: hi\n" +
 		"  - id: second\n" +
 		"    http:\n" +

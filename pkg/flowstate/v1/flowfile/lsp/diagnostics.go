@@ -267,15 +267,36 @@ func checkExpressions(doc *document, set *diagnosticSet) []lsp.Range {
 		return flagged
 	}
 
+	// The document's own expressions — its `vars:` block — before the steps'.
+	//
+	// They belong to no step, which is exactly why they were missed: everything here
+	// walked `doc.parsed.steps`, and a workflow var is evaluated before the first
+	// step runs. Nothing about them is deferred, since there is no task to defer to.
+	for _, in := range doc.parsed.expressionEntries() {
+		walkValues(in.value, func(v *value) {
+			if v.fenced && reportCELErrors(doc, set, env, v.expr, v.exprOffset, v.exprRange) {
+				flagged = append(flagged, v.rng)
+			}
+		})
+	}
+
 	for _, s := range doc.parsed.steps {
 		def, taskKnown := v1.LookupTask(s.taskName)
 
 		for _, in := range s.expressionEntries() {
 			// An input the task evaluates itself carries expression source
-			// directly, without ${...} — the cel task's expr is the whole point
-			// of the task. Which inputs those are is declared on the task
-			// definition, so this cannot go stale when a task changes.
-			deferred := taskKnown && in != s.conditionEntry &&
+			// directly, without ${...} — the http task's `expect` is one, since
+			// it is checked against a response that does not exist yet. Which
+			// inputs those are is declared on the task definition, so this cannot
+			// go stale when a task changes.
+			//
+			// Asked of the *entry* and not only of its key, which is the same rule
+			// bindsNow is written to. A key is a word and two things can be spelled
+			// the same: since a step's `vars:` bindings joined this list, a var named
+			// `expect` on an `http` step would otherwise have its plain text read as
+			// CEL and squiggled — a false diagnostic on a perfectly good file, in the
+			// position that most needs to be trusted.
+			deferred := taskKnown && slices.Contains(s.inputs, in) &&
 				slices.Contains(def.DeferredInputs, in.key)
 
 			walkValues(in.value, func(v *value) {
@@ -354,21 +375,6 @@ func tokenWidth(s string) int {
 		return 1
 	}
 	return i
-}
-
-// acceptsAnyInput reports whether a task takes input names beyond those its
-// schema declares.
-//
-// The cel task does: the compiler flattens a step's `vars` mapping into the input
-// map, so every variable an expression uses arrives as an input under its own
-// name. That behavior is keyed on a field named `vars` in flowfile's compiler, so
-// the same test is used here — any future task declaring a vars mapping gets the
-// same treatment the compiler will give it. Guessing wrong in this direction is
-// what produces false positives on a perfectly good file, so the test is
-// deliberately generous.
-func acceptsAnyInput(def v1.TaskDef) bool {
-	fd := findField(def.Inputs, "vars")
-	return fd != nil && fd.IsMap()
 }
 
 // rangeOfFlowfileDiagnostic finds the tightest range for a diagnostic that

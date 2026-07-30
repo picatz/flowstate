@@ -30,7 +30,7 @@ vars:
 
 steps:
   - id: announce
-    echo:
+    log:
       message: ${vars.banner}
 
   - id: fan_out
@@ -40,7 +40,7 @@ steps:
       as: target
       steps:
         - id: place
-          echo:
+          log:
             # `vars.region` is ambient and rooted; `target` is bound by the line above
             # and stays bare. Both are in scope here, and they cannot be confused.
             message: ${target + '.' + vars.region}

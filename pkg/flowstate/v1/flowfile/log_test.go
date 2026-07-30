@@ -108,7 +108,7 @@ steps:
     log:
       message: hi
   - id: use
-    echo:
+    log:
       message: ${steps.say.result}
 `
 

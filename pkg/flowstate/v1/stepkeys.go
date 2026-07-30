@@ -47,6 +47,22 @@ var grammarStepKeys = []string{
 	"sleep",
 	"wait_until",
 	"wait_for_signal",
+
+	// Retired at edition v2026.2, and reserved rather than released.
+	//
+	// A retired name is still a word the grammar has an opinion about: the parser
+	// answers `echo:` with what replaced it and why. Leaving the names free would
+	// let a plugin register one, and then the two claims collide — a build where
+	// `echo` is both a retired spelling and a registered task, with an author told
+	// their working step is retired, or told nothing and quietly getting a
+	// different capability than the one the diagnostic describes.
+	//
+	// So a retirement does not free the word. It costs a plugin author three names
+	// they might plausibly have wanted, which is the same trade `timeout` and
+	// `retry` already make, and buys a file whose keys mean one thing each.
+	"echo",
+	"printf",
+	"cel",
 }
 
 // futureStepKeys are reserved for grammar that is planned and not built.

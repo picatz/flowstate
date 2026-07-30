@@ -16,6 +16,11 @@ import (
 func TestTypeNamesComeFromTheSchema(t *testing.T) {
 	t.Parallel()
 
+	// `list[any]` — a repeated Value, whose elements are whatever the expression
+	// yields — was covered by `printf`'s `args`, and no built-in task declares a
+	// repeated input since printf was retired. The rendering stays in [typeName]
+	// because a plugin task's descriptor can declare one at any time; there is
+	// simply nothing in the registry to point this table at.
 	tests := []struct {
 		task  string
 		field string
@@ -23,16 +28,16 @@ func TestTypeNamesComeFromTheSchema(t *testing.T) {
 		outputs bool
 		want    string
 	}{
-		{task: "echo", field: "message", want: "string"},
-		{task: "echo", field: "result", outputs: true, want: "string"},
-		{task: "printf", field: "format", want: "string"},
-		// repeated Value: a list whose elements are whatever the expression yields.
-		{task: "printf", field: "args", want: "list[any]"},
+		{task: "log", field: "message", want: "string"},
+		{task: "log", field: "fields", want: "map[string, string]"},
+		// An enum renders as the values an author may write, not as its type name.
+		{task: "log", field: "level", want: "info | warn | error"},
 		{task: "http", field: "headers", want: "map[string, string]"},
 		{task: "http", field: "outputs", want: "map[string, any]"},
 		{task: "http", field: "status_code", outputs: true, want: "int"},
-		{task: "cel", field: "vars", want: "map[string, any]"},
-		{task: "cel", field: "result", outputs: true, want: "any"},
+		// A CEL value: whatever the expression yields.
+		{task: "http", field: "expect", want: "any"},
+		{task: "http", field: "json", outputs: true, want: "any"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.task+"."+tt.field, func(t *testing.T) {
@@ -57,14 +62,12 @@ func TestRequiredComesFromProtovalidate(t *testing.T) {
 		field string
 		want  bool
 	}{
-		{task: "echo", field: "message", want: true},
+		{task: "log", field: "message", want: true},
+		{task: "log", field: "level", want: false},
+		{task: "log", field: "fields", want: false},
 		{task: "http", field: "url", want: true},
 		{task: "http", field: "method", want: false},
 		{task: "http", field: "headers", want: false},
-		{task: "printf", field: "format", want: true},
-		// args is required both by the required rule and by min_items.
-		{task: "printf", field: "args", want: true},
-		{task: "cel", field: "expr", want: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.task+"."+tt.field, func(t *testing.T) {
@@ -81,8 +84,13 @@ func TestConstraintsAreRendered(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name    string
+		name string
+		// task names where the field lives, or md points straight at a message when
+		// no registered task declares a field of the shape being rendered. A task's
+		// descriptor is not special to [constraints] — a plugin registers whatever
+		// its manifest describes — so the two are interchangeable here.
 		task    string
+		md      protoreflect.MessageDescriptor
 		field   string
 		outputs bool
 		want    []string
@@ -101,9 +109,13 @@ func TestConstraintsAreRendered(t *testing.T) {
 			want:  []string{"at least 3 characters", "at most 6 characters", "matches"},
 		},
 		{
+			// `printf`'s `args` was the input this was read from, and it retired with
+			// the task. The rule it rendered did not go anywhere — the schema still
+			// bounds repeated fields, and a plugin task may declare one — so the case
+			// is asked of a message that has such a field rather than dropped.
 			name:  "repeated item counts",
-			task:  "printf",
-			field: "args",
+			md:    (&v1.Workflow{}).ProtoReflect().Descriptor(),
+			field: "steps",
 			want:  []string{"at least 1 item(s)", "at most 100 item(s)"},
 		},
 		{
@@ -122,11 +134,14 @@ func TestConstraintsAreRendered(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			def, ok := v1.LookupTask(tt.task)
-			require.True(t, ok)
-			md := def.Inputs
-			if tt.outputs {
-				md = def.Outputs
+			md := tt.md
+			if md == nil {
+				def, ok := v1.LookupTask(tt.task)
+				require.True(t, ok)
+				md = def.Inputs
+				if tt.outputs {
+					md = def.Outputs
+				}
 			}
 			fd := findField(md, tt.field)
 			require.NotNil(t, fd)
@@ -197,26 +212,6 @@ func TestSignatureHandlesATaskWithNoSchema(t *testing.T) {
 	assert.Equal(t, "unknown", typeName(nil))
 	assert.False(t, required(nil))
 	assert.Empty(t, constraints(nil))
-}
-
-func TestAcceptsAnyInput(t *testing.T) {
-	t.Parallel()
-
-	// Only a task declaring a vars mapping takes input names beyond its schema,
-	// because that is the field the compiler flattens into the input map.
-	for _, tt := range []struct {
-		task string
-		want bool
-	}{
-		{"cel", true},
-		{"echo", false},
-		{"http", false},
-		{"printf", false},
-	} {
-		def, ok := v1.LookupTask(tt.task)
-		require.True(t, ok)
-		assert.Equal(t, tt.want, acceptsAnyInput(def), tt.task)
-	}
 }
 
 // TestScalarTypeNameCoversEveryKind guards the type table against a schema that

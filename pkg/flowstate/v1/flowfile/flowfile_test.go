@@ -20,9 +20,9 @@ func ExampleMarshal() {
 				Id: "a",
 				Kind: &v1.Node_Task{
 					Task: &v1.Task{
-						Name: "echo",
+						Name: "http",
 						Inputs: map[string]*v1.Value{
-							"message": v1.NewLiteral("hello world"),
+							"url": v1.NewLiteral("https://example.com"),
 						},
 					},
 				},
@@ -31,9 +31,9 @@ func ExampleMarshal() {
 				Id: "b",
 				Kind: &v1.Node_Task{
 					Task: &v1.Task{
-						Name: "echo",
+						Name: "log",
 						Inputs: map[string]*v1.Value{
-							"message": v1.NewExpr("a.result"),
+							"message": v1.NewExpr("steps.a.body"),
 						},
 					},
 				},
@@ -52,11 +52,11 @@ func ExampleMarshal() {
 	// name: hello
 	// steps:
 	// - id: a
-	//   echo:
-	//     message: hello world
+	//   http:
+	//     url: https://example.com
 	// - id: b
-	//   echo:
-	//     message: ${a.result}
+	//   log:
+	//     message: ${steps.a.body}
 }
 
 func ExampleUnmarshal() {
@@ -65,11 +65,11 @@ edition: v2026.2
 name: hello
 steps:
   - id: a
-    echo:
-      message: "hello world"
+    http:
+      url: https://example.com
   - id: b
-    echo:
-      message: ${a.result}
+    log:
+      message: ${steps.a.body}
 `
 
 	flow, err := flowfile.Unmarshal([]byte(inputYAML))
@@ -88,11 +88,11 @@ edition: v2026.2
 name: hello
 steps:
   - id: a
-    echo:
-      message: "hello world"
+    http:
+      url: https://example.com
   - id: b
-    echo:
-      message: ${a.result}
+    log:
+      message: ${steps.a.body}
 `
 
 	flow, err := flowfile.Unmarshal([]byte(inputYAML))
@@ -139,7 +139,7 @@ edition: v2026.2
 name: list-exprs
 steps:
   - id: s
-    echo:
+    log:
       # mixed list: contains an embedded ${...} so parser should encode as CEL expr
       lst:
         - 1
@@ -158,7 +158,7 @@ edition: v2026.2
 name: list-literals
 steps:
   - id: s
-    echo:
+    log:
       lst:
         - 1
         - 2
@@ -185,11 +185,11 @@ func FuzzRoundTrip(f *testing.F) {
 name: hello
 steps:
 - id: a
-  echo:
-    message: "hello world"
+  http:
+    url: https://example.com
 - id: b
-  echo:
-    message: ${a.result}
+  log:
+    message: ${steps.a.body}
 `,
 		// Conditions and policy, in both the fenced and bare spellings.
 		`edition: v2026.2
@@ -205,12 +205,12 @@ steps:
     backoff: 2
     max_interval: 10s
   continue_on_error: true
-  echo:
+  log:
     message: go
 - id: b
   if: a.result != ''
   retry: {}
-  echo:
+  log:
     message: ""
 `,
 		// Nested control flow, including a loop inside a branch.
@@ -224,7 +224,7 @@ steps:
     max_parallel: 2
     steps:
     - id: body
-      echo:
+      log:
         message: ${n}
 - id: fan
   parallel:
@@ -234,11 +234,11 @@ steps:
         items: [1, 2]
         steps:
         - id: inner
-          echo:
+          log:
             message: ${string(item)}
   - steps:
     - id: right
-      echo:
+      log:
         message: right
 `,
 		// Structures, expressions inside them, and the zero values the engine
@@ -254,10 +254,9 @@ steps:
       B: ${string(2)}
     outputs: "${ {'status': status_code, 'body': body} }"
 - id: b
-  printf:
-    format: ""
+  vars:
     args:
-    - ${a.status}
+    - ${steps.a.status}
     - 0
     - false
     - ""
@@ -265,6 +264,8 @@ steps:
       k: v
       n: 0
       list: [1, 2, 3]
+  log:
+    message: ""
 `,
 	} {
 		f.Add(seed)

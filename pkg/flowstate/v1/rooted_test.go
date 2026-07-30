@@ -2,12 +2,14 @@ package flowstatev1_test
 
 import (
 	"context"
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
 )
 
 // Rooting the ambient half of the namespace — `steps.<id>.<output>` rather than a
@@ -23,55 +25,65 @@ import (
 // workflow already carries is not, which is exactly the line docs/DSL.md draws
 // when it exempts "the wire format, compiled specs, running histories" from the
 // no-deprecation rule.
+//
+// What these need that nothing else here does is a step with an *output* to point
+// a name at. `echo` retired at v2026.2 and `log:` produces no values on purpose, so
+// the steps below reach the loopback server instead: a request whose body comes
+// back unchanged is the shortest way to a real step output, and shaping it to a
+// single `result` keeps the reference spellings under test exactly as an older spec
+// holds them.
 
 // TestRootedAndBareReferencesBothResolve is the compatibility arm.
+//
+// Each claim is pinned from both directions — a step that runs when it holds beside
+// one that runs when it does not — so a failure says whether the reference resolved
+// to the wrong value or stopped resolving at all.
 func TestRootedAndBareReferencesBothResolve(t *testing.T) {
-	t.Parallel()
+	// Not parallel: the loopback exemption below swaps a process-global registry
+	// entry and restores it when the test ends, so two top-level tests holding one
+	// at once would have the first one's restore land while the second still runs.
+	baseURL := tests.NewHTTPServer(t)
 
-	tests := map[string]string{
-		"rooted":                          "steps.a.result",
-		"bare, as an older spec holds it": "a.result",
-		"rooted, selecting deeper":        "steps.a.result.size()",
-		"bare and rooted in one":          "a.result + steps.a.result",
+	cases := map[string]string{
+		"rooted":                          `steps.a.result == "hello"`,
+		"bare, as an older spec holds it": `a.result == "hello"`,
+		"rooted, selecting deeper":        `steps.a.result.size() == 5`,
+		"bare and rooted in one":          `a.result + steps.a.result == "hellohello"`,
 	}
 
-	for name, expression := range tests {
+	for name, claim := range cases {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
 			wf := &v1.Workflow{
 				Name: "rooted",
-				Steps: []*v1.Node{
-					echoStep("a", v1.NewLiteral("hello")),
-					{Id: "b", Kind: &v1.Node_Task{Task: &v1.Task{
-						Name:   "cel",
-						Inputs: map[string]*v1.Value{"expr": v1.NewLiteral(expression)},
-					}}},
-				},
+				Steps: append(
+					[]*v1.Node{echoStep("a", baseURL, v1.NewLiteral("hello"))},
+					pins("b", claim)...,
+				),
 			}
 
 			out, err := v1.Run(context.Background(), wf)
-			require.NoError(t, err, "%s must resolve", expression)
-			require.Contains(t, out.GetStepValues(), "b")
+			require.NoError(t, err, "%s must resolve", claim)
+			assert.Contains(t, out.GetStepValues(), "b", "%s did not hold", claim)
+			assert.NotContains(t, out.GetStepValues(), "b_else",
+				"%s resolved to something other than the value the step produced", claim)
 		})
 	}
 }
 
 // TestStepsRootReachesEveryStep covers the shape a prefix match would miss.
 func TestStepsRootReachesEveryStep(t *testing.T) {
-	t.Parallel()
+	// Not parallel, for the reason given above.
+	baseURL := tests.NewHTTPServer(t)
 
 	wf := &v1.Workflow{
 		Name: "rooted",
 		Steps: []*v1.Node{
-			echoStep("first", v1.NewLiteral("one")),
-			echoStep("second", v1.NewLiteral("two")),
-			{Id: "joined", Kind: &v1.Node_Task{Task: &v1.Task{
-				Name: "echo",
-				Inputs: map[string]*v1.Value{
-					"message": v1.NewExpr("steps.first.result + ' ' + steps.second.result"),
-				},
-			}}},
+			echoStep("first", baseURL, v1.NewLiteral("one")),
+			echoStep("second", baseURL, v1.NewLiteral("two")),
+			echoStep("joined", baseURL,
+				v1.NewExpr("steps.first.result + ' ' + steps.second.result")),
 		},
 	}
 
@@ -88,16 +100,14 @@ func TestStepsRootReachesEveryStep(t *testing.T) {
 // `steps.result` to that step's output rather than to a map of every step. The
 // root is answered only when no step claims the name.
 func TestAStepNamedStepsStillWins(t *testing.T) {
-	t.Parallel()
+	// Not parallel, for the reason given above.
+	baseURL := tests.NewHTTPServer(t)
 
 	wf := &v1.Workflow{
 		Name: "shadowed",
 		Steps: []*v1.Node{
-			echoStep("steps", v1.NewLiteral("i am a step")),
-			{Id: "reader", Kind: &v1.Node_Task{Task: &v1.Task{
-				Name:   "echo",
-				Inputs: map[string]*v1.Value{"message": v1.NewExpr("steps.result")},
-			}}},
+			echoStep("steps", baseURL, v1.NewLiteral("i am a step")),
+			echoStep("reader", baseURL, v1.NewExpr("steps.result")),
 		},
 	}
 
@@ -119,11 +129,8 @@ func TestUnknownRootedReferenceStaysUnresolved(t *testing.T) {
 	wf := &v1.Workflow{
 		Name: "missing",
 		Steps: []*v1.Node{
-			echoStep("a", v1.NewLiteral("hello")),
-			{Id: "b", Kind: &v1.Node_Task{Task: &v1.Task{
-				Name:   "echo",
-				Inputs: map[string]*v1.Value{"message": v1.NewExpr("steps.nope.result")},
-			}}},
+			logNode("a", v1.NewLiteral("hello")),
+			logNode("b", v1.NewExpr("steps.nope.result")),
 		},
 	}
 
@@ -147,12 +154,7 @@ func TestALoopBindingIsNotReachableThroughTheRoot(t *testing.T) {
 			{Id: "each", Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
 				Items:    v1.NewExpr("['x']"),
 				Iterator: "item",
-				Body: []*v1.Node{
-					{Id: "inner", Kind: &v1.Node_Task{Task: &v1.Task{
-						Name:   "echo",
-						Inputs: map[string]*v1.Value{"message": v1.NewExpr("steps.item")},
-					}}},
-				},
+				Body:     []*v1.Node{logNode("inner", v1.NewExpr("steps.item"))},
 			}}},
 		},
 	}
@@ -161,11 +163,59 @@ func TestALoopBindingIsNotReachableThroughTheRoot(t *testing.T) {
 	require.Error(t, err, "a loop binding must not be reachable under the steps root")
 }
 
-func echoStep(id string, message *v1.Value) *v1.Node {
+// echoStep returns a step that hands body to the loopback server and records what
+// came back under `result`.
+//
+// The output keeps the name an older spec would have written, because that name is
+// the second half of every reference these tests exercise.
+func echoStep(id, baseURL string, body *v1.Value) *v1.Node {
 	return &v1.Node{Id: id, Kind: &v1.Node_Task{Task: &v1.Task{
-		Name:   "echo",
+		Name: "http",
+		Inputs: map[string]*v1.Value{
+			"method":  v1.NewLiteral(http.MethodPost),
+			"url":     v1.NewLiteral(baseURL + "/echo"),
+			"body":    body,
+			"outputs": v1.NewExpr(`{"result": response.body}`),
+		},
+	}}}
+}
+
+// logNode returns a step that evaluates message and produces nothing.
+//
+// Used where what is under test is whether a reference resolves at all, so no
+// output is needed and no server has to be reached to get one.
+func logNode(id string, message *v1.Value) *v1.Node {
+	return &v1.Node{Id: id, Kind: &v1.Node_Task{Task: &v1.Task{
+		Name:   "log",
 		Inputs: map[string]*v1.Value{"message": message},
 	}}}
+}
+
+// pins returns a pair of steps that together observe what claim evaluates to.
+//
+// The negative arm is the point: absence alone has two causes that matter
+// differently — the claim was false, or conditions stopped being evaluated — and
+// only the pair tells them apart. Same shape as the shared cases use, spelled here
+// because that package's version is unexported.
+func pins(id, claim string) []*v1.Node {
+	return []*v1.Node{
+		{
+			Id:        id,
+			Condition: v1.NewExpr(claim),
+			Kind: &v1.Node_Task{Task: &v1.Task{
+				Name:   "log",
+				Inputs: map[string]*v1.Value{"message": v1.NewLiteral("held: " + claim)},
+			}},
+		},
+		{
+			Id:        id + "_else",
+			Condition: v1.NewExpr("!(" + claim + ")"),
+			Kind: &v1.Node_Task{Task: &v1.Task{
+				Name:   "log",
+				Inputs: map[string]*v1.Value{"message": v1.NewLiteral("failed: " + claim)},
+			}},
+		},
+	}
 }
 
 func resultOf(t *testing.T, out *v1.Workflow_StepOutputs, id string) string {

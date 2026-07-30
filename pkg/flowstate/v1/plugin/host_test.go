@@ -500,8 +500,8 @@ func TestTaskDefExecutes(t *testing.T) {
 
 	// A plugin task carries descriptors like a built-in one, which is what lets
 	// validation and tooling read it the same way.
-	if def.Inputs == nil || def.Inputs.FullName() != "flowstate.v1.Task.Echo.Inputs" {
-		t.Errorf("input descriptor = %v, want flowstate.v1.Task.Echo.Inputs", def.Inputs)
+	if def.Inputs == nil || def.Inputs.FullName() != "flowstate.v1.Task.Log.Inputs" {
+		t.Errorf("input descriptor = %v, want flowstate.v1.Task.Log.Inputs", def.Inputs)
 	}
 	if def.Outputs == nil {
 		t.Error("task has no output descriptor")

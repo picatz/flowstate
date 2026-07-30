@@ -89,7 +89,7 @@ func TestLineIndexConversions(t *testing.T) {
 func TestPositionRoundTrip(t *testing.T) {
 	t.Parallel()
 
-	const text = "name: ünïcödé\nsteps:\n  - id: 🙂first\n    echo: échö\n"
+	const text = "name: ünïcödé\nsteps:\n  - id: 🙂first\n    log: échö\n"
 	ix := newLineIndex(text)
 
 	// Every byte offset that begins a rune must survive the trip to an LSP

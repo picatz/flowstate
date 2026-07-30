@@ -99,9 +99,9 @@ func TestCancellingAGateWithNoTimeoutStopsTheRun(t *testing.T) {
 	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: &v1.Workflow{
 		Name: "gate-with-no-deadline",
 		Steps: []*v1.Node{
-			echoStep("request", "request"),
+			logStep("request", "request"),
 			signalStep("approval", "deploy-approved", 0),
-			echoStep("deploy", "deploy"),
+			logStep("deploy", "deploy"),
 		},
 	}})
 
@@ -149,8 +149,8 @@ func TestContinueOnErrorDoesNotTolerateCancellation(t *testing.T) {
 		Name: "best-effort-throughout",
 		Steps: []*v1.Node{
 			bestEffort(sleepStep("hold", time.Hour)),
-			bestEffort(echoStep("after", "after")),
-			bestEffort(echoStep("later", "later")),
+			bestEffort(logStep("after", "after")),
+			bestEffort(logStep("later", "later")),
 		},
 	}})
 
@@ -190,7 +190,7 @@ func TestContinueOnErrorStillToleratesAFailure(t *testing.T) {
 					Inputs: map[string]*v1.Value{"message": v1.NewLiteral("flaky")},
 				}},
 			}),
-			echoStep("after", "after"),
+			logStep("after", "after"),
 		},
 	}})
 

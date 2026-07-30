@@ -26,60 +26,67 @@ import (
 // The comments are load-bearing: both sit outside the run of lines the rewrite
 // replaces, so a rewriter that edits the source keeps them and one that
 // re-renders the document loses them.
-const oldStyleGreeter = `edition: v2026.2
-# A greeter written before the task was flattened onto the step.
+//
+// It declares no `edition:`, which is the same age showing from another side: the
+// marker became required in the sweep that flattened the task onto the step, so a
+// file written before one was written before the other. That makes this fixture
+// the pre-edition case as well as the pre-flattening one, and every test using it
+// covers the stamp `flow fix` now has to supply.
+//
+// The tasks are the two that still exist. A retired name here would pin `flow fix`
+// to producing a spelling the language refuses, which is a migration test asserting
+// the migration is not finished.
+const oldStyleGreeter = `# A greeter written before the task was flattened onto the step.
 name: greeter
 steps:
-  # Greet whoever is listening.
+  # Fetch the line to greet whoever is listening with.
   - id: greet
     # The task this step runs.
     task:
-      name: echo
+      name: http
       inputs:
-        message: hello world
+        url: https://example.com/greeting
   - id: shout
     task:
-      name: printf
+      name: log
       inputs:
-        format: "%s!"
-        args:
-          - ${greet.result}
+        message: ${greet.body}
 `
 
 // currentGreeter is oldStyleGreeter in the current edition.
 //
 // Derived from the transformations fix.go documents rather than from a run of it.
-// Two of them apply here, which is the point of keeping this exact: `task:` and
+// Three of them apply here, which is the point of keeping this exact: `task:` and
 // `name:` go away and `inputs:` becomes the task's own key, with everything under
-// it dedenting by the two columns `inputs:` used to add — and separately, the
-// reference in the last line is rooted, because a step is named `steps.<id>` now.
-// Every line no edit covers, comments included, is copied through.
+// it dedenting by the two columns `inputs:` used to add; the reference in the last
+// line is rooted, because a step is named `steps.<id>` now; and an `edition:` is
+// stamped in, because a file that declares none is a file this build refuses.
+// Every line no edit covers, comments included, is copied through — including the
+// header comment, which the stamp goes *under* rather than above.
 //
-// The two together are worth a fixture of their own: they are different kinds of
-// edit — one replaces a run of lines, the other substitutes inside one — and the
-// first version of this got them in an order where the block replacement stepped
-// over the substitution and produced a file the validator refused.
-const currentGreeter = `edition: v2026.2
-# A greeter written before the task was flattened onto the step.
+// The first two together are worth a fixture of their own: they are different
+// kinds of edit — one replaces a run of lines, the other substitutes inside one —
+// and the first version of this got them in an order where the block replacement
+// stepped over the substitution and produced a file the validator refused.
+const currentGreeter = `# A greeter written before the task was flattened onto the step.
+edition: v2026.2
 name: greeter
 steps:
-  # Greet whoever is listening.
+  # Fetch the line to greet whoever is listening with.
   - id: greet
     # The task this step runs.
-    echo:
-      message: hello world
+    http:
+      url: https://example.com/greeting
   - id: shout
-    printf:
-      format: "%s!"
-      args:
-        - ${steps.greet.result}
+    log:
+      message: ${steps.greet.body}
 `
 
 // The 1-based lines oldStyleGreeter writes `task:` on. A report has to name
 // them: an author reads `file:line:` and jumps there.
 const (
-	greeterFirstTaskLine  = 8
-	greeterSecondTaskLine = 13
+	greeterFirstTaskLine  = 7
+	greeterSecondTaskLine = 12
 )
 
 // oldStyleSingle is the smallest pre-flattening file, for tests about which
@@ -89,7 +96,7 @@ name: single
 steps:
   - id: greet
     task:
-      name: echo
+      name: log
       inputs:
         message: hello
 `
@@ -97,51 +104,51 @@ steps:
 // oldStyleNested reaches every place a task can be written: at the top level, in
 // a loop body, inside a parallel branch, and with a description that belongs to
 // the step once the task is no longer a block of its own.
+//
+// The last step reads a step bare, inside a block the rewrite replaces whole, so
+// the two kinds of edit have to compose here at every depth rather than only at
+// the top of a file.
 const oldStyleNested = `edition: v2026.2
 name: nested-example
+vars:
+  targets: [alpha, beta]
 steps:
-  - id: targets
+  - id: announce
     task:
-      name: cel
-      description: builds the list of targets
+      name: log
+      description: says what the run is about to do
       inputs:
-        expr: "['alpha', 'beta']"
+        message: processing every target
   - id: process
     for_each:
-      items: ${targets.result}
+      items: ${vars.targets}
       as: target
       max_parallel: 2
       steps:
         - id: label
           task:
-            name: printf
+            name: log
             inputs:
-              format: "processing %s"
-              args:
-                - ${target}
+              message: ${'processing %s'.format([target])}
   - id: checks
     parallel:
       - steps:
           - id: check_config
             task:
-              name: echo
+              name: log
               inputs:
                 message: config ok
       - steps:
           - id: check_quota
             task:
-              name: echo
+              name: log
               inputs:
                 message: quota ok
   - id: summary
     task:
-      name: printf
+      name: log
       inputs:
-        format: "%s / %s / processed %d target(s)"
-        args:
-          - ${check_config.result}
-          - ${check_quota.result}
-          - ${size(process.results)}
+        message: ${'processed %d target(s)'.format([size(process.results)])}
 `
 
 // oldStyleMixed has one step the rewriter can act on and one it must refuse, so
@@ -152,11 +159,11 @@ name: mixed
 steps:
   - id: greet
     task:
-      name: echo
+      name: log
       inputs:
         message: hello
   - id: shout
-    task: {name: printf, inputs: {format: "%s!"}}
+    task: {name: log, inputs: {message: "hi!"}}
 `
 
 // partlyFixedMixed is oldStyleMixed after a run: the block-style step rewritten,
@@ -165,14 +172,23 @@ const partlyFixedMixed = `edition: v2026.2
 name: mixed
 steps:
   - id: greet
-    echo:
+    log:
       message: hello
   - id: shout
-    task: {name: printf, inputs: {format: "%s!"}}
+    task: {name: log, inputs: {message: "hi!"}}
 `
 
-// The 1-based line oldStyleMixed writes its flow-style task on.
-const mixedRefusedLine = 10
+// The 1-based line the refused step is on *after* the run — line 8 of
+// partlyFixedMixed, not line 10 of oldStyleMixed.
+//
+// Which is the line worth naming, and it used to be the other one. `flow fix`
+// rewrites until nothing changes and reports the last round's refusals, so a
+// diagnostic describes the file as it now sits on disk. Before that it described
+// the file as read: the rewrite above it removed two lines, and the author was
+// sent to line 10 of a file whose refused step had moved to line 8.
+//
+// Nobody had noticed, because the number was only ever compared against itself.
+const mixedRefusedLine = 8
 
 // runFixCommand runs `flow fix` the way a shell does — through the command, so
 // the flag spellings are part of what is under test — and returns its two
@@ -336,7 +352,12 @@ func TestFixLeavesACurrentFileByteForByte(t *testing.T) {
 func TestFixLeavesOddWhitespaceAlone(t *testing.T) {
 	// No trailing newline, a blank line carrying spaces, and a quoting style
 	// nobody would choose: all legal, none of it this command's business.
-	const odd = "edition: v2026.2\nname: odd\n\nsteps:\n  \n  - id: greet\n    echo:\n      message:   'hello'"
+	//
+	// Current in every other way, which is what leaves the whitespace as the only
+	// thing a run could touch. A step spelled in a retirement's old key would have
+	// this asserting that a refusal writes nothing, which is a different property
+	// and one already covered.
+	const odd = "edition: v2026.2\nname: odd\n\nsteps:\n  \n  - id: greet\n    log:\n      message:   'hello'"
 
 	dir := t.TempDir()
 	path := writeFixture(t, dir, "odd.yaml", odd)
@@ -376,8 +397,8 @@ func TestFixRewritesTheStepAndKeepsEverythingElse(t *testing.T) {
 	// A report an editor can jump into, naming the task each step now runs.
 	reports := reportsFor(t, out, path)
 	for line, task := range map[int]string{
-		greeterFirstTaskLine:  "echo",
-		greeterSecondTaskLine: "printf",
+		greeterFirstTaskLine:  "http",
+		greeterSecondTaskLine: "log",
 	} {
 		if got := reportAt(t, reports, line, out); !strings.Contains(got.message, task) {
 			t.Errorf("the report at line %d does not say the step now runs %q: %q", line, task, got.message)
@@ -401,7 +422,7 @@ steps:
   - id: greet
     task:
       # which task this is
-      name: echo
+      name: log
       inputs:
         # what to say
         message: hello
@@ -416,7 +437,7 @@ name: commented
 steps:
   - id: greet
     # which task this is
-    echo:
+    log:
       # what to say
       message: hello
       # and a note after it
@@ -507,7 +528,7 @@ func TestFixExitsNonZeroWhenAnythingWasRefused(t *testing.T) {
 name: flow-style
 steps:
   - id: greet
-    task: {name: echo, inputs: {message: hi}}
+    task: {name: log, inputs: {message: hi}}
 `,
 		},
 		{
@@ -631,7 +652,7 @@ func TestFixWalksADirectoryForFlowfiles(t *testing.T) {
 		if strings.Contains(got, "task:") {
 			t.Errorf("%s was not picked up by the walk:\n%s", path, got)
 		}
-		if !strings.Contains(got, "echo:") {
+		if !strings.Contains(got, "log:") {
 			t.Errorf("%s was changed into something other than the current spelling:\n%s", path, got)
 		}
 	}
@@ -658,7 +679,7 @@ func TestFixTakesANamedFileWhateverItIsCalled(t *testing.T) {
 	if strings.Contains(got, "task:") {
 		t.Errorf("a file named explicitly was skipped for its extension:\n%s", got)
 	}
-	if !strings.Contains(got, "echo:") {
+	if !strings.Contains(got, "log:") {
 		t.Errorf("the named file was not rewritten into the current spelling:\n%s", got)
 	}
 }
@@ -701,7 +722,7 @@ func TestFixWritesSomethingThatCompiles(t *testing.T) {
 	}
 	// The description moved to the step rather than being dropped: prose about a
 	// step is the sort of loss an author only notices much later.
-	if !strings.Contains(string(fixed), "builds the list of targets") {
+	if !strings.Contains(string(fixed), "says what the run is about to do") {
 		t.Errorf("the task's description was lost:\n%s", fixed)
 	}
 }
@@ -718,7 +739,7 @@ func TestFixRefusesFlowStyleWithoutMangling(t *testing.T) {
 name: flow-style
 steps:
   - id: greet
-    task: {name: echo, inputs: {message: hi}}
+    task: {name: log, inputs: {message: hi}}
 `
 	// The line the flow-style task is written on.
 	const taskLine = 5
@@ -758,7 +779,7 @@ name: shared-task
 steps:
   - id: first
     task: &b
-      name: echo
+      name: log
       inputs:
         message: hi
   - id: second
@@ -806,7 +827,7 @@ func TestFixRefusesAnEditionItDoesNotKnow(t *testing.T) {
 name: from-the-future
 steps:
   - id: greet
-    echo:
+    log:
       message: hello
 `
 
@@ -836,14 +857,25 @@ steps:
 	}
 }
 
-// TestFixDoesNotStampAnEditionIntoAFileWithoutOne keeps the rewriter from
-// acquiring opinions.
+// TestFixStampsAnEditionIntoAFileWithoutOne covers the one repair every file
+// written before the sweep needs.
 //
-// An absent `edition:` means the current grammar, so a file without one is not
-// wrong and has nothing to migrate. Adding the key would pin a file whose author
-// deliberately left it unpinned, and would show up as a line nobody asked for in
-// the diff of a migration people are meant to be able to review.
+// The rule here reversed, and which way round it runs is the whole test. An absent
+// `edition:` used to mean "the current grammar, unpinned", so writing one in would
+// have been the rewriter acquiring an opinion the author did not have. Making the
+// marker required turned the absence into the opinion instead: a file declaring
+// none is refused now, so a `flow fix` that declined to stamp would leave the one
+// defect it alone can repair — a migration tool that does not migrate the thing
+// its own diagnostic names.
 func TestFixStampsAnEditionIntoAFileWithoutOne(t *testing.T) {
+	// Guarded, because this is a test that can go quiet without failing: an
+	// `edition:` added to the shared fixture for some other test's sake would leave
+	// the assertion below passing on a marker the author wrote rather than on one
+	// this command supplied.
+	if strings.Contains(oldStyleGreeter, "edition:") {
+		t.Fatal("the fixture already declares an edition, so nothing here would be about stamping one in")
+	}
+
 	dir := t.TempDir()
 	path := writeFixture(t, dir, "workflow.yaml", oldStyleGreeter)
 
@@ -895,7 +927,7 @@ func TestFixBringsAStaleEditionForward(t *testing.T) {
 name: stale-edition
 steps:
   - id: greet
-    echo:
+    log:
       message: hello
 `)
 

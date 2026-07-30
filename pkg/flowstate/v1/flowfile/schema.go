@@ -57,41 +57,29 @@ func validateTaskInputs(stepID string, task *v1.Task) Diagnostics {
 	// `mesage: hi` is one problem, not two.
 	misspelled := make(map[string]bool)
 
-	// Retired inputs are reported first, and deliberately above the gate below.
+	// Every input a task takes is one its schema declares.
 	//
-	// That gate is skipped for a task accepting undeclared inputs, which is exactly
-	// where a retired input hides: for `cel` an unrecognised key becomes a
-	// *variable*, so a leftover `libs:` stops selecting anything and quietly turns
-	// into a binding nobody reads. The file validates, runs, and does something
-	// other than what it says — the worst of the three outcomes, and the one no
-	// other check here can see.
+	// This used to be gated: one task bound every unrecognised key as a *variable*
+	// its expression could name, so an undeclared input there was legitimate rather
+	// than a mistake, and the check had to be skipped for it. That task retired at
+	// edition v2026.2, and with it the only shape in which an unknown key meant
+	// something. An unknown key is a misspelling again, everywhere.
+	declared := fieldNames(def.Inputs)
 	for _, name := range sortedInputNames(task.GetInputs()) {
-		if advice, retired := retiredTaskInputs[def.Name][name]; retired {
-			// Marked so the required-input pass below does not also complain about
-			// it: one leftover key is one problem.
-			misspelled[name] = true
-			ds = append(ds, Diagnostic{Step: stepID, Field: name, Message: advice})
+		if findField(def.Inputs, name) != nil || misspelled[name] {
+			continue
 		}
-	}
 
-	if !acceptsUndeclaredInputs(def) {
-		declared := fieldNames(def.Inputs)
-		for _, name := range sortedInputNames(task.GetInputs()) {
-			if findField(def.Inputs, name) != nil || misspelled[name] {
-				continue
-			}
-
-			// The diagnostic already names the step and the input, so the
-			// message says what is wrong with it rather than repeating both.
-			message := fmt.Sprintf("task %q has no such input", def.Name)
-			if suggestion, ok := nearest(name, declared); ok {
-				misspelled[suggestion] = true
-				message += fmt.Sprintf("; did you mean %q?", suggestion)
-			} else if len(declared) > 0 {
-				message += fmt.Sprintf("; it accepts %s", strings.Join(declared, ", "))
-			}
-			ds = append(ds, Diagnostic{Step: stepID, Field: name, Message: message})
+		// The diagnostic already names the step and the input, so the
+		// message says what is wrong with it rather than repeating both.
+		message := fmt.Sprintf("task %q has no such input", def.Name)
+		if suggestion, ok := nearest(name, declared); ok {
+			misspelled[suggestion] = true
+			message += fmt.Sprintf("; did you mean %q?", suggestion)
+		} else if len(declared) > 0 {
+			message += fmt.Sprintf("; it accepts %s", strings.Join(declared, ", "))
 		}
+		ds = append(ds, Diagnostic{Step: stepID, Field: name, Message: message})
 	}
 
 	for i := range fields.Len() {
@@ -293,54 +281,15 @@ func kindPhrase(kind protoreflect.Kind) string {
 	}
 }
 
-// retiredTaskInputs are inputs a task used to accept, and what to do instead.
+// varsKey is the `vars:` key, at every position the grammar has one.
 //
-// Keyed by task and then by input, because a name retired from one task may be
-// perfectly good on another — this is not a list of words the language refuses.
-//
-// The advice says the key can be deleted rather than naming a replacement, since
-// there is not one: the capability did not move, it stopped being a choice.
-var retiredTaskInputs = map[string]map[string]string{
-	"cel": {
-		"libs": "`libs:` no longer selects anything and can be deleted: every expression in a workflow " +
-			"speaks one dialect now, so the libraries this named are already available — to this step, and " +
-			"to `if:`, `items:` and `wait_until:`, which never had a key to select with",
-	},
-}
-
-// acceptsUndeclaredInputs reports whether a task takes input names its schema does
-// not declare.
-//
-// The cel task does: every input it does not recognize becomes a variable its
-// expression can reference. That is task behavior the registry does not declare, so
-// it is inferred from the shape that makes it possible — a `vars` mapping — which is
-// a guess standing in for a [flowstatev1.TaskDef] field that should say so outright.
-func acceptsUndeclaredInputs(def v1.TaskDef) bool {
-	field := findField(def.Inputs, varsKey)
-	return field != nil && field.IsMap()
-}
-
-// varsKey is the input the compiler flattens into the inputs around it.
+// A table of retired task *inputs* used to sit here, alongside a hoist that emptied
+// one task's `vars:` mapping into the inputs around it and the two predicates that
+// decided when to do so. All four served the same retired task, and all four are
+// gone with it. The surviving shape for retiring a spelling is `retiredStepKeys` in
+// parse.go, which retires a step key rather than an input; an input needs the same
+// treatment again the day one is retired, and not before.
 const varsKey = "vars"
-
-// hoistedInput reports whether an input is emptied into its surroundings while
-// compiling, so that nothing downstream ever sees the key itself.
-//
-// It exists because "the task evaluates this input" and "the workflow resolves
-// this input" are answered by two different things — the registry's
-// [flowstatev1.TaskDef.DeferredInputs] and this compiler's hoist — and for `vars`
-// they disagree. The registry defers it, because a spec built in Go may carry a
-// `vars` map straight to the task. A Flowfile never does: the hoist runs first and
-// the entries arrive as ordinary inputs, resolved by the workflow and
-// reference-checked like any other.
-//
-// Reading only the registry is what let `flow fix` decline to rewrite a reference
-// inside `vars:` while [Validate] reported that same reference and named `flow fix`
-// as the remedy — a diagnostic pointing at a command that answered "already
-// current". So both surfaces ask here.
-func hoistedInput(def v1.TaskDef, input string) bool {
-	return input == varsKey && acceptsUndeclaredInputs(def)
-}
 
 // findField returns the field a task declares under the given input name.
 func findField(md protoreflect.MessageDescriptor, name string) protoreflect.FieldDescriptor {

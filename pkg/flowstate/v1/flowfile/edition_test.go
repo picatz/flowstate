@@ -19,7 +19,7 @@ import (
 func TestEditionAcceptsTheCurrentGrammar(t *testing.T) {
 	t.Parallel()
 
-	body := "\nname: t\nsteps:\n  - id: a\n    echo:\n      message: hi\n"
+	body := "\nname: t\nsteps:\n  - id: a\n    log:\n      message: hi\n"
 
 	tests := []struct {
 		name string
@@ -47,7 +47,7 @@ func TestEditionAcceptsTheCurrentGrammar(t *testing.T) {
 func TestEditionIsOptional(t *testing.T) {
 	t.Parallel()
 
-	ds, err := flowfile.ValidateSource([]byte("edition: v2026.2\nname: t\nsteps:\n  - id: a\n    echo:\n      message: hi\n"))
+	ds, err := flowfile.ValidateSource([]byte("edition: v2026.2\nname: t\nsteps:\n  - id: a\n    log:\n      message: hi\n"))
 	require.NoError(t, err)
 	assert.Empty(t, ds)
 }
@@ -56,7 +56,7 @@ func TestEditionIsOptional(t *testing.T) {
 func TestEditionFailsClosed(t *testing.T) {
 	t.Parallel()
 
-	body := "\nname: t\nsteps:\n  - id: a\n    echo:\n      message: hi\n"
+	body := "\nname: t\nsteps:\n  - id: a\n    log:\n      message: hi\n"
 
 	tests := []struct {
 		name string

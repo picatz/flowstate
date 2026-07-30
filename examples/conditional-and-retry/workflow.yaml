@@ -9,34 +9,47 @@
 # step that failed because its inputs were invalid fails once regardless of retry.
 edition: v2026.2
 name: conditional-and-retry
+vars:
+  check: ready
 steps:
-  - id: check
-    echo:
-      message: ready
 
-  # Runs only when the previous step said so.
+  # Runs, because the condition holds.
   - id: deploy
-    if: ${steps.check.result == 'ready'}
+    if: ${vars.check == 'ready'}
     timeout: 30s
     retry:
       attempts: 3
       interval: 1s
       backoff: 2.0
       max_interval: 10s
-    echo:
+    log:
       message: deploying
 
   # Skipped, because the condition is false. A skipped step produces no outputs,
   # so nothing later may reference it.
   - id: rollback
-    if: ${steps.check.result == 'failed'}
-    echo:
+    if: ${vars.check == 'failed'}
+    log:
       message: rolling back
 
-  # Best-effort: a failure here is recorded as ${steps.notify.error} and the run
-  # continues, because a missed notification should not abandon work that
-  # succeeded.
+  # Best-effort: a failure here is recorded as `${steps.notify.error}` and the run
+  # continues, because a missed notification should not abandon work that succeeded.
+  #
+  # This one fails every time, and without a network: the egress policy denies
+  # loopback by default, so a workload cannot reach the worker's own internal
+  # endpoints. A step that always fails is what makes the tolerance visible — a
+  # `continue_on_error` on something that cannot fail teaches nothing.
   - id: notify
     continue_on_error: true
-    echo:
-      message: notifying
+    http:
+      method: POST
+      url: http://localhost:1/hook
+
+  # Reached only because the failure above was tolerated. The error text is a value
+  # like any other, so it can be carried into whatever comes next.
+  - id: carry_on
+    log:
+      message: notification failed, continuing anyway
+      level: warn
+      fields:
+        why: ${steps.notify.error}

@@ -83,6 +83,16 @@ type FixChange struct {
 	Message string
 }
 
+// maxFixRounds bounds how many times [Fix] rewrites a document.
+//
+// A bound rather than a `for {}`, for the reason everything else here is bounded: the
+// loop's termination argument rests on every rule making progress toward a document it
+// no longer changes, and a rule that ever rewrites A to B while another rewrites B to A
+// would spin forever on a file someone else wrote. Eight is far more rounds than any
+// chain of rules has needed — the longest today is two — so reaching it means a cycle
+// rather than a deep file, which is why it is reported rather than silently accepted.
+const maxFixRounds = 8
+
 // Fix rewrites data into the current edition.
 //
 // A document that already compiles is returned unchanged with no changes
@@ -92,7 +102,62 @@ type FixChange struct {
 // else — a shape that cannot be rewritten, a key that means nothing — is
 // reported through [FixResult] so that a caller can rewrite what it can and say
 // what it could not.
+//
+// # Why this runs to a fixed point
+//
+// One pass is not enough, and the reason generalises. The walk dispatches on the key it
+// *found*, so a rule that rewrites a step into a key another rule owns hands that key to
+// a walk which has already gone past: `task:` / `name: echo` becomes `echo:`, and the
+// retirement rewriter never sees it. The file came out changed, exit 0, and refused by
+// `flow validate` — with a diagnostic saying "run `flow fix`", which had just run.
+//
+// Chaining the second rule onto the first would fix that pair and leave the next one to
+// be discovered the same way. Rewriting until nothing changes is the rule that does not
+// need revisiting when a rule is added, and it costs a re-parse of a file that was
+// already rewritten once.
+//
+// Changes accumulate across rounds because each is an edit genuinely made. Refusals and
+// notes come from the final round alone: they describe the document as it now stands,
+// and an earlier round's refusal may be about a step a later round went on to rewrite.
 func Fix(data []byte) (FixResult, error) {
+	out := FixResult{Source: data}
+
+	source := data
+	for round := 1; ; round++ {
+		result, err := fixOnce(source)
+		if err != nil {
+			return FixResult{}, err
+		}
+
+		out.Source = result.Source
+		out.Changes = append(out.Changes, result.Changes...)
+		out.Refusals, out.Notes = result.Refusals, result.Notes
+
+		if !result.Changed() {
+			return out, nil
+		}
+		source = result.Source
+
+		if round == maxFixRounds {
+			out.Refusals = append(out.Refusals, Diagnostic{
+				Line:   1,
+				Column: 1,
+				Message: fmt.Sprintf(
+					"this file was still changing after %d rewrites, which means two rules are undoing "+
+						"each other rather than that the file is large; what is written out is the "+
+						"last round's result, and the difference between it and the round before is "+
+						"the pair at fault",
+					maxFixRounds),
+			})
+
+			return out, nil
+		}
+	}
+}
+
+// fixOnce is one rewriting pass over a document. See [Fix], which runs it to a fixed
+// point.
+func fixOnce(data []byte) (FixResult, error) {
 	if len(data) > maxBytes {
 		return FixResult{}, Diagnostics{{
 			Line:   1,
@@ -129,8 +194,11 @@ func Fix(data []byte) (FixResult, error) {
 	}
 	for _, doc := range file.Docs {
 		f.collectAnchors(doc.Body)
+		f.collectRetirementContext(doc.Body)
 		f.workflow(doc.Body)
 	}
+	f.rewriteMovedReferences()
+
 	if len(f.changes) > 0 {
 		f.noteCommentsMentioningExpressions()
 	}
@@ -179,6 +247,20 @@ type fixer struct {
 	// anchors maps an anchor's name to what it holds, so a merge key's alias can be
 	// followed. See [fixer.mergedDeclaresEdition].
 	anchors map[string]ast.Node
+
+	// referenced holds the step ids something in the document reads a result from.
+	//
+	// Collected before the walk, because whether a retired step can be migrated is a
+	// question about the *rest* of the file: a value someone reads has a name to move
+	// it to, and a value nobody reads is intent this cannot see.
+	referenced map[string]bool
+
+	// declaredVars are the names the workflow's `vars:` block already holds, so a
+	// step moving into it cannot land on one.
+	declaredVars map[string]bool
+
+	// movedVars are the retired steps whose values are on their way into `vars:`.
+	movedVars []movedVar
 }
 
 // A lineEdit replaces a run of source lines with new text.
@@ -273,7 +355,10 @@ func (f *fixer) workflow(n ast.Node) {
 		}
 		switch name {
 		case "steps":
-			f.steps(v.Value)
+			// The top of the file binds nothing: a workflow `vars:` value is not a
+			// bare name anywhere, it is `vars.<name>`, and the rewriter's refusal for
+			// reading one is separate.
+			f.steps(v.Value, stepScope{})
 		case "edition":
 			declared = true
 			f.edition(v)
@@ -283,6 +368,12 @@ func (f *fixer) workflow(n ast.Node) {
 	if !declared {
 		f.stampEdition(mapping)
 	}
+
+	// Last, because it collects what the step walk found. Several steps may move into
+	// one block, and the block is one place in the document — writing each as it was
+	// found would mean several edits recorded at one line, of which the map keeps only
+	// the first.
+	f.writeMovedVars(mapping)
 }
 
 // mergedDeclaresEdition reports whether a `<<:` entry brings an `edition:` with it.
@@ -466,44 +557,141 @@ func (f *fixer) edition(entry *ast.MappingValueNode) {
 		fmt.Sprintf("edition %q updated to %q", declared, CurrentEdition))
 }
 
+// A stepScope is what the walk knows about a step that the step itself cannot see.
+//
+// Both fields exist for the retirement rewriter, and both are about whether a step's
+// value can be *lifted out* of where it was written. Neither is discoverable from the
+// step: one is a property of the list holding it and the other of every block above it.
+type stepScope struct {
+	// alone reports that the step is the only one in its list, so deleting it would
+	// leave `- steps:` with nothing under it — a branch or a loop body that is no
+	// longer a document.
+	alone bool
+
+	// bound are the bare names in scope where the step is written: an enclosing
+	// loop's iterator, and the keys of any `vars:` block above it or on it.
+	//
+	// A workflow `vars:` block sees none of them, so a value mentioning one cannot be
+	// lifted there. Nothing rooted gives this away — `${person}` is just a word — so
+	// without carrying the scope down the rewriter reads it as a constant and moves a
+	// loop-local expression to the top of the file.
+	bound []string
+}
+
+// with returns the scope extended by the names a block binds for what is inside it.
+func (s stepScope) with(names ...string) stepScope {
+	if len(names) == 0 {
+		return s
+	}
+
+	return stepScope{alone: s.alone, bound: append(slices.Clone(s.bound), names...)}
+}
+
 // steps walks a sequence of steps, at any nesting depth.
-func (f *fixer) steps(n ast.Node) {
+func (f *fixer) steps(n ast.Node, scope stepScope) {
 	seq, ok := unwrapAnchor(n).(*ast.SequenceNode)
 	if !ok {
 		return
 	}
+	// Whether a step is alone is a property of the list, so it is set here rather
+	// than discovered below.
+	scope.alone = len(seq.Values) == 1
 	for _, step := range seq.Values {
-		f.step(step)
+		f.step(step, scope)
 	}
 }
 
 // step rewrites one step, and descends into any steps nested inside it.
-func (f *fixer) step(n ast.Node) {
-	var values []*ast.MappingValueNode
+func (f *fixer) step(n ast.Node, scope stepScope) {
+	var (
+		step   *ast.MappingNode
+		values []*ast.MappingValueNode
+	)
 	switch node := unwrapAnchor(n).(type) {
 	case *ast.MappingNode:
-		values = node.Values
+		step, values = node, node.Values
 	case *ast.MappingValueNode:
-		values = []*ast.MappingValueNode{node}
+		step = &ast.MappingNode{Values: []*ast.MappingValueNode{node}}
+		values = step.Values
 	default:
 		return
 	}
+
+	// A step's own `vars:` bind names for its inputs and for anything nested inside
+	// it, so they are in scope before any key is looked at — including for the step
+	// itself, whose value may name one.
+	inner := scope.with(mappingKeys(blockOf(step, varsKey))...)
 
 	for _, v := range values {
 		name, ok := keyNameOf(v.Key)
 		if !ok {
 			continue
 		}
+
+		// A step running a retired task is either migrated whole or refused whole, so
+		// nothing else on it is worth looking at either way.
+		if f.retiredStep(step, v, name, inner) {
+			return
+		}
+
 		switch name {
 		case "task":
 			f.taskBlock(v)
 		case "for_each":
 			f.renamedKey(v.Value, "iterator", "as")
-			f.nested(v.Value, "steps")
+			f.nested(v.Value, "steps", inner.with(iteratorOf(v.Value)))
 		case "parallel":
-			f.branches(v.Value)
+			f.branches(v.Value, inner)
 		}
 	}
+}
+
+// blockOf returns the mapping written under one of a step's keys.
+func blockOf(step *ast.MappingNode, key string) *ast.MappingNode {
+	for _, v := range step.Values {
+		if name, ok := keyNameOf(v.Key); ok && name == key {
+			if mapping, isMapping := unwrapAnchor(v.Value).(*ast.MappingNode); isMapping {
+				return mapping
+			}
+		}
+	}
+
+	return nil
+}
+
+// mappingKeys returns a mapping's keys, skipping any this package cannot read as a
+// name.
+func mappingKeys(mapping *ast.MappingNode) []string {
+	if mapping == nil {
+		return nil
+	}
+
+	names := make([]string, 0, len(mapping.Values))
+	for _, v := range mapping.Values {
+		if name, ok := keyNameOf(v.Key); ok {
+			names = append(names, name)
+		}
+	}
+
+	return names
+}
+
+// iteratorOf returns the name a loop binds each item to, falling back to the engine's
+// own default rather than a copy of it.
+func iteratorOf(forEach ast.Node) string {
+	mapping, ok := unwrapAnchor(forEach).(*ast.MappingNode)
+	if !ok {
+		return v1.DefaultIterator
+	}
+	for _, v := range mapping.Values {
+		if name, keyed := keyNameOf(v.Key); keyed && name == "as" {
+			if text, scalar := scalarText(v.Value); scalar && text != "" {
+				return text
+			}
+		}
+	}
+
+	return v1.DefaultIterator
 }
 
 // renamedKey rewrites one key of a mapping, leaving its value and the rest of the line
@@ -561,7 +749,7 @@ func (f *fixer) renamedKey(n ast.Node, was, now string) {
 }
 
 // nested descends into a named key holding a step sequence.
-func (f *fixer) nested(n ast.Node, key string) {
+func (f *fixer) nested(n ast.Node, key string, scope stepScope) {
 	n = unwrapAnchor(n)
 	mapping, ok := n.(*ast.MappingNode)
 	if !ok {
@@ -573,19 +761,19 @@ func (f *fixer) nested(n ast.Node, key string) {
 	}
 	for _, v := range mapping.Values {
 		if name, ok := keyNameOf(v.Key); ok && name == key {
-			f.steps(v.Value)
+			f.steps(v.Value, scope)
 		}
 	}
 }
 
 // branches descends into a parallel's list of branches.
-func (f *fixer) branches(n ast.Node) {
+func (f *fixer) branches(n ast.Node, scope stepScope) {
 	seq, ok := unwrapAnchor(n).(*ast.SequenceNode)
 	if !ok {
 		return
 	}
 	for _, branch := range seq.Values {
-		f.nested(branch, "steps")
+		f.nested(branch, "steps", scope)
 	}
 }
 
@@ -1095,7 +1283,7 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 				// Except where the author already said which. A name the step binds
 				// as a variable is that variable, not a step that happens to share
 				// its spelling, and there is nothing conditional left to raise.
-				candidates := without(steps, task.bound)
+				candidates := steps
 				if task.name == httpTaskName {
 					// Rewritten above, so there is nothing conditional left to raise
 					// — and a note suggesting the *step* spelling for a name that is
@@ -1113,7 +1301,6 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 					walk(node.Value, taskScope{
 						name:     name,
 						deferred: deferredInputs(def),
-						bound:    boundVarNames(node.Value, def),
 					})
 					return
 				}
@@ -1142,59 +1329,6 @@ type taskScope struct {
 
 	// deferred names the inputs the task evaluates itself.
 	deferred map[string]bool
-	// bound names the variables the step supplies to those expressions.
-	bound map[string]bool
-}
-
-// boundVarNames returns the variables a step binds for its task to evaluate
-// against.
-//
-// Only a task that takes undeclared inputs has any: that is the shape the cel
-// task uses, where every input its schema does not recognize becomes a variable
-// its expression can name — whether written under `vars:` or beside it.
-//
-// This exists to keep the deferred-input note honest. The note is worded as a
-// question because the tool genuinely cannot tell a response field from a step,
-// but a name declared as a variable three lines above is not that case, and
-// asking about it anyway is a false diagnostic in a place the author cannot act
-// on: rooting it would break the step.
-func boundVarNames(inputs ast.Node, def v1.TaskDef) map[string]bool {
-	if !acceptsUndeclaredInputs(def) {
-		return nil
-	}
-
-	mapping, ok := unwrapAnchor(inputs).(*ast.MappingNode)
-	if !ok {
-		return nil
-	}
-
-	bound := map[string]bool{}
-	for _, entry := range mapping.Values {
-		name, named := keyNameOf(entry.Key)
-		if !named {
-			continue
-		}
-		if hoistedInput(def, name) {
-			// The mapping's own keys, which the compiler is about to hoist into
-			// the inputs around it.
-			if nested, ok := unwrapAnchor(entry.Value).(*ast.MappingNode); ok {
-				for _, v := range nested.Values {
-					if inner, ok := keyNameOf(v.Key); ok {
-						bound[inner] = true
-					}
-				}
-			}
-			continue
-		}
-		// An input the schema does not declare is bound as a variable too.
-		if findField(def.Inputs, name) == nil {
-			bound[name] = true
-		}
-	}
-	if len(bound) == 0 {
-		return nil
-	}
-	return bound
 }
 
 // without returns the names in base that are not in remove.
@@ -1213,20 +1347,19 @@ func without(base, remove map[string]bool) map[string]bool {
 
 // deferredInputs returns the inputs a task evaluates itself, as a set.
 //
-// An input the compiler hoists is not one of them, however the registry lists it:
-// hoisting happens first, so by the time anything else looks, `vars:` is gone and
-// its entries are ordinary inputs the workflow resolves. See [hoistedInput].
+// It used to subtract the one input the compiler emptied into the inputs around it,
+// because the registry deferred that input and the compiler had already dissolved it
+// by the time anything else looked. Both the hoist and the task that needed it retired
+// at edition v2026.2, so the registry's list is the whole answer again.
 func deferredInputs(def v1.TaskDef) map[string]bool {
 	out := make(map[string]bool, len(def.DeferredInputs))
 	for _, name := range def.DeferredInputs {
-		if hoistedInput(def, name) {
-			continue
-		}
 		out[name] = true
 	}
 	if len(out) == 0 {
 		return nil
 	}
+
 	return out
 }
 

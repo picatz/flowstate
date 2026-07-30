@@ -28,6 +28,13 @@ func hoverAt(doc *document, pos lsp.Position) *lsp.Hover {
 
 	step := doc.parsed.stepAt(pos)
 	if step == nil {
+		// An expression written above `steps:` — a workflow `vars:` value — before
+		// the keys, because it is the innermost thing at a position for the same
+		// reason a step's expressions are checked before the step's keys.
+		if h := hoverDocumentExpression(doc, pos); h != nil {
+			return h
+		}
+
 		// Outside every step — the keys above `steps:` in a conventionally ordered
 		// file — the only thing at a position is one of the document's own keys.
 		// They are described from the same table as a step's, because from an
@@ -67,11 +74,15 @@ func hoverAt(doc *document, pos lsp.Position) *lsp.Hover {
 		}
 		fd := findField(def.Inputs, in.key)
 		if fd == nil {
-			if acceptsAnyInput(def) {
-				return markdownHover(fmt.Sprintf(
-					"`%s` — a variable bound for the `%s` task's expression to reference.",
-					in.key, def.Name), in.keyRange)
-			}
+			// An input the task does not declare. There is nothing true to say about
+			// it, and the validator is already reporting it as unknown.
+			//
+			// One task used to take names beyond its schema — the compiler emptied its
+			// `vars:` mapping into the input map, so every name under it was a legal
+			// input — and this described one. That task retired at edition v2026.2 and
+			// the hoist went with it, so an undeclared input is a mistake again; a
+			// hover explaining it as a binding would contradict the diagnostic sitting
+			// on the same key.
 			return nil
 		}
 		return markdownHover(inputDoc(def, in.key, fd), in.keyRange)
@@ -295,6 +306,77 @@ func hoverReference(doc *document, from *parsedStep, v *value, clock bool, pos l
 	}
 	return hoverStepOutput(doc, from, ref, rng)
 }
+
+// hoverDocumentExpression describes a reference inside one of the document's own
+// expressions, which today means a workflow `vars:` value.
+//
+// The answers here are refusals, and that is the useful part. This block is
+// evaluated before the first step runs and it is a mapping with no order, so a
+// value in it can reference neither a step nor another var — the two things an
+// author most naturally reaches for. Saying which, at the moment they point at it,
+// is worth more than the silence hover gives a name it cannot describe: the
+// validator's diagnostic says the same thing, and an author who has not run it yet
+// has no other way to find out.
+//
+// It cannot go through [hoverReference]: that describes a reference *from a step*,
+// and there is no step here — `visibleFrom` would answer no and say nothing, which
+// reads as "this is fine" rather than "this cannot be written here".
+func hoverDocumentExpression(doc *document, pos lsp.Position) *lsp.Hover {
+	for _, in := range doc.parsed.expressionEntries() {
+		var found *lsp.Hover
+		walkValues(in.value, func(v *value) {
+			if found != nil || !v.fenced || !contains(v.exprRange, pos) {
+				return
+			}
+
+			cursor := doc.index.offsetOfPosition(pos) - v.exprOffset
+
+			// A secret is the one reference that resolves here, because it is
+			// resolved by the worker rather than out of the run's state.
+			if name, span, err := secretRefAt(v.expr, cursor); err == nil {
+				rng := doc.index.rangeOfOffsets(v.exprOffset+span[0], v.exprOffset+span[1])
+				found = markdownHover(secretDoc(name), rng)
+
+				return
+			}
+
+			ref := referenceAt(v.expr, cursor)
+			if ref.empty() {
+				return
+			}
+			rng := doc.index.rangeOfOffsets(v.exprOffset+ref.span[0], v.exprOffset+ref.span[1])
+
+			switch {
+			case ref.step != "" || ref.local == v1.StepsRoot:
+				found = markdownHover(fmt.Sprintf(
+					"**`%s`** — not readable here.\n\n"+
+						"A `%s:` block at the top of a file is evaluated *before the first step "+
+						"runs*, so no step has produced anything for it to read. Write the "+
+						"expression where the value is wanted, or under `%s:` on the step that "+
+						"uses it — a step's own block is evaluated just before that step, and "+
+						"can read whatever has happened by then.",
+					v1.StepsRoot, varsKeyword, varsKeyword), rng)
+
+			case ref.local == v1.VarsRoot:
+				found = markdownHover(fmt.Sprintf(
+					"**`%s`** — not readable here.\n\n"+
+						"One var cannot read another. `%s:` is a mapping, and a mapping has no "+
+						"order, so \"the one above\" is not something this file can mean. Write "+
+						"the shared part out in both, or move the value to the step that needs "+
+						"the combination.",
+					v1.VarsRoot, varsKeyword), rng)
+			}
+		})
+		if found != nil {
+			return found
+		}
+	}
+
+	return nil
+}
+
+// varsKeyword is the `vars:` key as an author writes it, for prose that names it.
+const varsKeyword = "vars"
 
 // hoverBareName describes a name written without the root.
 //

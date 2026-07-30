@@ -25,7 +25,7 @@ import (
 // say a step is inside a loop body.
 //
 // Prose is also unlike anything else in a row here: unbounded text the author
-// writes, in a column an editor truncates. A sentence would push "echo in loop"
+// writes, in a column an editor truncates. A sentence would push "log in loop"
 // out of view in order to show a fragment of itself. Hover on the step's id shows
 // it whole instead (see stepDoc), which is where a reader asks what a step is for
 // and where there is room to answer.

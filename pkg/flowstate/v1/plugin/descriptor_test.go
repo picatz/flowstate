@@ -123,8 +123,8 @@ func TestMessageDescriptorReconstruction(t *testing.T) {
 		{
 			// No descriptor at all: a plugin reusing a type the engine has.
 			name:       "a message the engine already knows",
-			message:    "flowstate.v1.Task.Echo.Inputs",
-			wantFields: []string{"message"},
+			message:    "flowstate.v1.Task.Log.Inputs",
+			wantFields: []string{"message", "level", "fields"},
 		},
 		{
 			name:        "a message the engine does not know, with no descriptor",

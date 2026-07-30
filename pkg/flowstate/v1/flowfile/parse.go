@@ -126,7 +126,35 @@ func stepKindKeys() []string {
 // This is where a future retirement goes. A key listed here is never taken for a
 // task, so the specific message is the only one reported — see [StepTaskKeys].
 var retiredStepKeys = map[string]string{
-	"task": "a step names its task directly now: replace `task:` with the task's own name and put its inputs beneath, so `task:` / `name: echo` / `inputs:` / `message: hi` becomes `echo:` / `message: hi`",
+	// The example names `log:` rather than `echo:` deliberately. Advice is followed
+	// literally, and `echo` is retired — a diagnostic whose worked example produces a
+	// file the next diagnostic rejects has sent the author one step sideways.
+	"task": "a step names its task directly now: replace `task:` with the task's own name and put its inputs beneath, so `task:` / `name: log` / `inputs:` / `message: hi` becomes `log:` / `message: hi`",
+
+	// The three the registry no longer holds. Each says what replaced it *and* which
+	// of the two things the author was doing with it — because that is the question
+	// the replacement depends on, and the one `flow fix` cannot answer for them.
+	//
+	// Without an entry here each of these would be reported as an unknown task, with
+	// a nearest-match suggestion among the tasks that remain. That reads as "you
+	// misspelled something" to an author who spelled a real capability correctly and
+	// is now looking for where it went.
+	"echo": "`echo:` is retired, and which replaces it depends on what the step was for: " +
+		"a value later steps read is `vars:` at the top of the file, read as `${vars.<name>}`; " +
+		"a line for a person to see is `log:`. `echo` was doing both under a name that means neither — " +
+		"it returned a value, which is not what a message is for. Run `flow fix`: it rewrites the first " +
+		"and reports the second, since only you know which was meant",
+
+	"printf": "`printf:` is retired: the profile ships CEL's strings extension, so a format is an " +
+		"expression like any other — `${'hello %s, %d left'.format([vars.name, 0])}`. `format` is " +
+		"specified at the CEL level, which is the determinism story a task wrapping Go's `fmt` could " +
+		"never have. Run `flow fix` to rewrite it",
+
+	"cel": "`cel:` is retired: an expression is a *value* now rather than a step that produces one, " +
+		"so write it where the value is wanted — inline as `${...}`, or once at the top under `vars:` " +
+		"if more than one step needs it. The name answered \"which evaluator?\" when the question was " +
+		"\"what does this value do?\". Run `flow fix`: it rewrites a step whose result is read into a " +
+		"`vars:` binding and reports one whose result is not",
 }
 
 // StepTaskKeys reports which of a step's keys name the task it runs, in the order
@@ -857,45 +885,19 @@ func (c *compiler) inputs(n ast.Node, path string, r ref, taskName string, into 
 		return
 	}
 
+	// A task's inputs are its inputs, with nothing flattened on the way through.
+	//
+	// One task used to have a `vars:` input emptied into the inputs around it here,
+	// because it bound every key it did not recognise as a variable and needed each
+	// resolved separately. It retired at edition v2026.2. `vars:` is a *step* key
+	// now, at a level above this one, and a `vars:` written among a task's inputs is
+	// an input by that name — reported as unknown, where it was written.
 	for _, e := range entries {
-		// `vars` is flattened into the surrounding inputs, because the cel task
-		// binds every input it does not recognize as a variable and needs each one
-		// resolved individually: a nested map containing an expression would
-		// arrive as one expression the task cannot resolve. This is a
-		// compatibility shim for that task's input shape, not a general rule.
-		//
-		// Which is why it is gated on the task. It used to fire on the key name
-		// alone, for every task, so writing `vars:` under `echo` silently emptied
-		// it into the surrounding inputs and produced a diagnostic naming a key at
-		// a level the author never wrote it at — `task "echo" has no such input`
-		// pointing at `greeting`, when what they wrote was `vars`. A diagnostic
-		// that names something the file does not contain is worse than none, and
-		// this file's rule is that a misspelling is reported where it was made.
-		if c.taskHoistsInput(taskName, e.name) {
-			c.hoistVars(e.value, fieldPath(path, varsKey), r, into)
-			continue
-		}
-
 		valuePath := fieldPath(path, e.name)
 		if value := c.inputValue(e.value, valuePath, ref{step: r.step, input: e.name, path: valuePath}); value != nil {
 			into[e.name] = value
 		}
 	}
-}
-
-// taskAcceptsUndeclaredInputs reports whether a task binds input names its schema
-// does not declare, which is the only shape the `vars` hoist above is for.
-//
-// An unregistered task answers false: an unknown task name is already reported by
-// [Validate], and flattening on behalf of a task nobody can run would only add a
-// second, more confusing diagnostic to the first.
-func (c *compiler) taskHoistsInput(taskName, input string) bool {
-	def, found := v1.LookupTask(taskName)
-	if !found {
-		return false
-	}
-
-	return hoistedInput(def, input)
 }
 
 // hoistVars flattens a `vars` mapping into the inputs around it.

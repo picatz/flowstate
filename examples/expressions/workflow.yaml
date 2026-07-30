@@ -1,0 +1,27 @@
+# Expressions are values, not a task.
+#
+# There is no step that "runs CEL". An expression is written wherever a value
+# belongs — a `vars:` binding, a task input, an `if:` — and the same dialect
+# reaches all of them.
+edition: v2026.2
+name: expressions
+vars:
+  greeting: hello
+steps:
+  # A step's own `vars:` are bare names, bound just for that step. This is where
+  # an intermediate value goes now: named once, read below without repeating the
+  # expression that produced it.
+  - id: shout
+    vars:
+      loud: ${regex.replace(vars.greeting.upperAscii(), 'HELLO', 'HI')}
+    log:
+      message: ${loud}
+
+  # One dialect: this condition reaches the same string functions the binding
+  # above does, with nothing declaring them. It used to be `no such overload` —
+  # a condition was evaluated without extension libraries while a step could
+  # name its own, and a condition has no key to name anything with.
+  - id: confirm
+    if: ${vars.greeting.startsWith('hel')}
+    log:
+      message: ${vars.greeting.lowerAscii()}

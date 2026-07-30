@@ -321,14 +321,16 @@ func TestARunEvaluatesAgainstTheProfileItsSpecRecords(t *testing.T) {
 	t.Parallel()
 
 	// `upperAscii` comes from the `strings` library, which the current profile
-	// includes and the bare environment does not.
+	// includes and the bare environment does not. It has to be an *expression* for
+	// this to mean anything: a literal input is carried rather than evaluated, so a
+	// step holding one never asks which vocabulary it was compiled against.
 	workflow := &Workflow{
 		Name:    "profiled",
 		Profile: CurrentProfile,
 		Steps: []*Node{
 			{Id: "greet", Kind: &Node_Task{Task: &Task{
-				Name:   "echo",
-				Inputs: map[string]*Value{"message": NewLiteral(&expr.Value{Kind: &expr.Value_StringValue{StringValue: "hi"}})},
+				Name:   "log",
+				Inputs: map[string]*Value{"message": NewExpr(`"hi".upperAscii()`)},
 			}}},
 		},
 	}
@@ -356,9 +358,9 @@ func TestARunWithAnUnknownProfileIsRefused(t *testing.T) {
 		Profile: "2099.9",
 		Steps: []*Node{
 			{Id: "compute", Kind: &Node_Task{Task: &Task{
-				Name: "cel",
+				Name: "log",
 				Inputs: map[string]*Value{
-					"expr": NewLiteral(&expr.Value{Kind: &expr.Value_StringValue{StringValue: "1 + 1"}}),
+					"message": NewExpr(`"the sum is " + string(1 + 1)`),
 				},
 			}}},
 		},
@@ -454,9 +456,9 @@ func TestAParallelBranchKeepsTheProfile(t *testing.T) {
 					Steps: []*Node{{
 						Id: "compute",
 						Kind: &Node_Task{Task: &Task{
-							Name: "cel",
+							Name: "log",
 							Inputs: map[string]*Value{
-								"expr": NewLiteral(&expr.Value{Kind: &expr.Value_StringValue{StringValue: "1 + 1"}}),
+								"message": NewExpr(`"the sum is " + string(1 + 1)`),
 							},
 						}},
 					}},

@@ -275,7 +275,7 @@ func TestValidateAcceptsWaits(t *testing.T) {
 name: gated
 steps:
   - id: start
-    echo:
+    log:
       message: starting
   - id: settle
     sleep: 1s
@@ -285,7 +285,7 @@ steps:
       timeout: 1h
   - id: after
     if: ${!steps.approval.timed_out}
-    echo:
+    log:
       message: ${steps.approval.by}
   - id: pauses
     for_each:
@@ -338,7 +338,7 @@ steps:
     wait_for_signal: deploy-approved
   - id: deploy
     if: ${steps.approval.approved}
-    echo:
+    log:
       message: deploying
 `)
 

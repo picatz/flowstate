@@ -138,12 +138,12 @@ func TestManifestIsDerived(t *testing.T) {
 func TestDescribeMessageOmitsWhatTheEngineHas(t *testing.T) {
 	t.Parallel()
 
-	raw, name, err := describeMessage(&flowstatev1.Task_Echo_Inputs{})
+	raw, name, err := describeMessage(&flowstatev1.Task_Log_Inputs{})
 	if err != nil {
 		t.Fatalf("describeMessage: %v", err)
 	}
 
-	if name != "flowstate.v1.Task.Echo.Inputs" {
+	if name != "flowstate.v1.Task.Log.Inputs" {
 		t.Errorf("name = %q, want the message's full name", name)
 	}
 	if len(raw) != 0 {
@@ -582,8 +582,8 @@ func TestTaskManifestCarriesDeclarations(t *testing.T) {
 	task := Task{
 		Name:           "x_do",
 		Summary:        "does x",
-		Input:          &flowstatev1.Task_Echo_Inputs{},
-		Output:         &flowstatev1.Task_Echo_Outputs{},
+		Input:          &flowstatev1.Task_Log_Inputs{},
+		Output:         &flowstatev1.Task_Log_Outputs{},
 		DeferredInputs: []string{"expr"},
 		NeedsScope:     true,
 		Fn: func(context.Context, map[string]*flowstatev1.Value, *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
@@ -605,7 +605,7 @@ func TestTaskManifestCarriesDeclarations(t *testing.T) {
 	if got := manifest.GetDeferredInputs(); len(got) != 1 || got[0] != "expr" {
 		t.Errorf("deferred_inputs = %v, want [expr]", got)
 	}
-	if manifest.GetInputMessage() != "flowstate.v1.Task.Echo.Inputs" {
+	if manifest.GetInputMessage() != "flowstate.v1.Task.Log.Inputs" {
 		t.Errorf("input_message = %q", manifest.GetInputMessage())
 	}
 

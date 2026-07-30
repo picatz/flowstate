@@ -24,36 +24,36 @@ func TestValidateTaskInputs(t *testing.T) {
 	}{
 		{
 			name: "misspelled input",
-			src:  echoInput("mesage: hello"),
-			want: `task "echo" has no such input; did you mean "message"?`,
+			src:  logInput("mesage: hello"),
+			want: `task "log" has no such input; did you mean "message"?`,
 		},
 		{
 			name: "input no task declares, with nothing close",
-			src:  echoInput("shout: hello"),
-			want: `task "echo" has no such input; it accepts message`,
+			src:  logInput("shout: hello"),
+			want: `task "log" has no such input; it accepts message`,
 		},
 		{
 			name: "required input left out",
-			src:  echoInput("{}"),
-			want: `task "echo" requires input "message"`,
+			src:  logInput("{}"),
+			want: `task "log" requires input "message"`,
 		},
 		{
 			// One mistake, one diagnostic: a typo is not also reported as the
 			// required input it left unset.
 			name: "a typo is not also a missing input",
-			src:  echoInput("mesage: hello"),
+			src:  logInput("mesage: hello"),
 			want: `did you mean "message"?`,
 		},
 		{
 			name: "a list where a string belongs",
-			src: echoInput(`message:
+			src: logInput(`message:
           - one
           - two`),
 			want: "expected a string, but this is a list",
 		},
 		{
 			name: "a number where a string belongs",
-			src:  printfInput(`format: 42`),
+			src:  logInput(`message: 42`),
 			want: "expected a string, but this is a whole number",
 		},
 		{
@@ -67,18 +67,6 @@ steps:
       headers: nope
 `,
 			want: "expected a mapping, but this is a string",
-		},
-		{
-			name: "a string where a list belongs",
-			src: `edition: v2026.2
-name: t
-steps:
-  - id: a
-    printf:
-      format: "%s"
-      args: nope
-`,
-			want: "expected a list, but this is a string",
 		},
 		{
 			name: "http without a url",
@@ -102,13 +90,12 @@ steps:
 			name: "an expression is not type-checked",
 			src: `edition: v2026.2
 name: t
+vars:
+  count: one
 steps:
-  - id: count
-    echo:
-      message: one
   - id: a
-    echo:
-      message: ${[steps.count.result]}
+    log:
+      message: ${[vars.count]}
 `,
 		},
 		{
@@ -119,20 +106,8 @@ steps:
   - id: a
     retry:
       backoff: 2
-    echo:
+    log:
       message: hi
-`,
-		},
-		{
-			name: "the cel task accepts inputs its schema does not declare",
-			src: `edition: v2026.2
-name: t
-steps:
-  - id: a
-    cel:
-      expr: "vars.anything"
-      vars:
-        anything: hello
 `,
 		},
 		{
@@ -205,13 +180,13 @@ steps:
       items: ${[1]}
       steps:
         - id: body
-          echo:
+          log:
             mesage: hi
   - id: fan
     parallel:
       - steps:
           - id: branch
-            echo:
+            log:
 `
 	ds, err := flowfile.ValidateSource([]byte(src))
 	if err != nil {
@@ -221,7 +196,7 @@ steps:
 	got := ds.Error()
 	for _, want := range []string{
 		`step "body" input "mesage"`,
-		`step "branch": task "echo" requires input "message"`,
+		`step "branch": task "log" requires input "message"`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("diagnostics do not mention %q; got:\n%s", want, got)
@@ -238,7 +213,7 @@ func TestValidateTaskInputsPositions(t *testing.T) {
 name: t
 steps:
   - id: a
-    echo:
+    log:
       mesage: hello
 `
 	ds, err := flowfile.ValidateSource([]byte(src))
@@ -254,25 +229,13 @@ steps:
 	}
 }
 
-// echoInput returns a workflow whose single echo step has the given inputs body.
-func echoInput(inputs string) string {
+// logInput returns a workflow whose single log step has the given inputs body.
+func logInput(inputs string) string {
 	return `edition: v2026.2
 name: t
 steps:
   - id: a
-    echo:
-      ` + inputs + "\n"
-}
-
-// printfInput returns a workflow whose single printf step has the given inputs,
-// plus the args printf requires.
-func printfInput(inputs string) string {
-	return `edition: v2026.2
-name: t
-steps:
-  - id: a
-    printf:
-      args: [1]
+    log:
       ` + inputs + "\n"
 }
 
@@ -344,6 +307,11 @@ func TestAnExpressionInputWrittenAsAnExpressionIsAccepted(t *testing.T) {
 //
 // Caught in review. Confirmed by calling the task with a literal map and watching
 // it return `note: "constant"` before the declaration was narrowed.
+//
+// It carries the general claim too, now that the cel task is retired: only inputs a
+// task names in ExpressionInputs are checked for a fence, so declaring one stays a
+// decision rather than a consequence of deferring it. `outputs` is the deferred
+// input that is not one.
 func TestALiteralOutputsMapIsStillAccepted(t *testing.T) {
 	t.Parallel()
 
@@ -353,21 +321,4 @@ func TestALiteralOutputsMapIsStillAccepted(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, flowfile.Validate(workflow),
 		"a literal outputs map was refused, and the engine accepts it")
-}
-
-// TestADeferredInputThatNeedNotBeAnExpressionIsLeftAlone keeps the new rule from
-// spreading to every deferred input.
-//
-// The cel task defers `expr`, and `expr` is a plain string the task parses itself
-// — writing `${...}` there would be wrong. Only inputs a task names in
-// ExpressionInputs are checked, so declaring one stays a decision rather than a
-// consequence of deferring it.
-func TestADeferredInputThatNeedNotBeAnExpressionIsLeftAlone(t *testing.T) {
-	t.Parallel()
-
-	workflow, err := flowfile.Unmarshal([]byte(
-		"edition: v2026.2\nname: t\nsteps:\n  - id: c\n    cel:\n      expr: 1 + 1\n"))
-	require.NoError(t, err)
-	assert.Empty(t, flowfile.Validate(workflow),
-		"the cel task's `expr` was required to carry a fence, which would be wrong")
 }

@@ -140,7 +140,7 @@ steps:
       items: ${secret('env:LIST')}
       steps:
         - id: b
-          echo:
+          log:
             message: hi
 `,
 			want: "cannot go where the workflow evaluates the value itself",
@@ -247,10 +247,10 @@ func TestSecretMarkerIsOnlyACall(t *testing.T) {
 name: t
 steps:
   - id: secret
-    echo:
+    log:
       message: hello
   - id: user
-    echo:
+    log:
       from_step: ${secret.result}
       bare: ${secret}
       nested: ${secret.result.size()}
@@ -344,7 +344,7 @@ func TestSecretReferenceMarshal(t *testing.T) {
 			Id:        "a",
 			Condition: reference,
 			Kind: &v1.Node_Task{Task: &v1.Task{
-				Name:   "echo",
+				Name:   "log",
 				Inputs: map[string]*v1.Value{"message": v1.NewLiteral("hi")},
 			}},
 		}},

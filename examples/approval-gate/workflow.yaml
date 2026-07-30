@@ -14,10 +14,8 @@ description: Waits for a human to approve a deploy, then acts on what they said.
 
 steps:
   - id: request
-    printf:
-      format: "requesting approval to deploy %s"
-      args:
-        - v1.4.2
+    log:
+      message: ${"requesting approval to deploy %s".format(["v1.4.2"])}
 
   # A short pause, so a notification has landed before anyone is asked to act on
   # it. A durable timer, not a sleeping worker.
@@ -45,17 +43,15 @@ steps:
   # than nothing, so there is still something to look inside.
   - id: deploy
     if: ${has(steps.approval.payload.approved) && steps.approval.payload.approved}
-    printf:
-      format: "deploying, approved by %s"
-      args:
-        - ${steps.approval.payload.by}
+    log:
+      message: ${"deploying, approved by %s".format([steps.approval.payload.by])}
 
   - id: rejected
     if: ${has(steps.approval.payload.approved) && !steps.approval.payload.approved}
-    echo:
+    log:
       message: someone declined the deploy
 
   - id: expired
     if: ${steps.approval.timed_out}
-    echo:
+    log:
       message: nobody approved the deploy in time

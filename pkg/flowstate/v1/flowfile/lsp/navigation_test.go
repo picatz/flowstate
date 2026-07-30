@@ -15,7 +15,7 @@ steps:
     http:
       url: https://example.com
   - id: status
-    echo:
+    log:
       message: ${string(steps.web.status_code)}
   - id: shout
     shell:
@@ -66,14 +66,14 @@ func TestDefinition(t *testing.T) {
 		const src = `name: fwd
 steps:
   - id: a
-    echo:
-      message: ${steps.later.result}
+    log:
+      message: ${steps.later.status_code}
   - id: later
-    echo:
-      message: hi
+    http:
+      url: https://example.com
 `
 		c.open("file:///fwd.yaml", src)
-		pos := positionOf(t, src, "${steps.later.result}", len("${steps."))
+		pos := positionOf(t, src, "${steps.later.status_code}", len("${steps."))
 		assert.Empty(t, c.definition("file:///fwd.yaml", pos.Line, pos.Character),
 			"jumping to a step that has not run would suggest the reference works")
 	})
@@ -86,17 +86,17 @@ steps:
 		const src = `name: bare
 steps:
   - id: earlier
-    echo:
-      message: hi
+    http:
+      url: https://example.com
   - id: b
-    echo:
-      message: ${earlier.result}
+    log:
+      message: ${earlier.status_code}
 edition: v2026.2
 `
 		params := c.open("file:///bare-nav.yaml", src)
 		require.Len(t, params.Diagnostics, 1, "premise: the compiler refuses the bare spelling")
 
-		pos := positionOf(t, src, "${earlier.result}", 3)
+		pos := positionOf(t, src, "${earlier.status_code}", 3)
 		assert.Empty(t, c.definition("file:///bare-nav.yaml", pos.Line, pos.Character))
 	})
 }
@@ -121,7 +121,7 @@ func TestDocumentSymbols(t *testing.T) {
 	assert.Equal(t, lsp.DocumentURI(uri), got[0].Location.URI)
 
 	assert.Equal(t, "status", got[1].Name)
-	assert.Equal(t, "echo", got[1].ContainerName)
+	assert.Equal(t, "log", got[1].ContainerName)
 
 	// An unregistered task is labelled as such rather than presented as real.
 	assert.Equal(t, "shout", got[2].Name)
@@ -167,13 +167,13 @@ func TestDocumentSymbolsNamesAnUnnamedStep(t *testing.T) {
 	c.initialize()
 	c.open("file:///noid.yaml", `name: noid
 steps:
-  - echo:
+  - log:
       message: hi
 `)
 	got := c.symbols("file:///noid.yaml")
 	require.Len(t, got, 1)
 	assert.Equal(t, "(step with no id)", got[0].Name)
-	assert.Equal(t, "echo", got[0].ContainerName)
+	assert.Equal(t, "log", got[0].ContainerName)
 }
 
 // TestDocumentSymbolsLeaveTheDescriptionOut pins the choice symbols.go argues for,
@@ -199,7 +199,7 @@ steps:
       steps:
         - id: body
           description: Greet one person.
-          echo:
+          log:
             message: hi
 `)
 
@@ -211,7 +211,7 @@ steps:
 	assert.Equal(t, "body", got[1].Name)
 	// The nesting is what prose would have displaced, and it is the only place a
 	// flat outline can say this step runs inside the loop.
-	assert.Equal(t, "echo in loop", got[1].ContainerName)
+	assert.Equal(t, "log in loop", got[1].ContainerName)
 
 	for _, s := range got {
 		for _, word := range []string{"rota", "Greet"} {
@@ -232,7 +232,7 @@ func TestSymbolsAndDefinitionOnUnparseableDocument(t *testing.T) {
 	// is incidental, and is spelled the way a step spells one so that the fixture
 	// stops being valid Flowfile for exactly one reason. Character 5 of that line
 	// lands inside the key either way.
-	c.open("file:///broken.yaml", "name: x\nsteps:\n  - id: a\n  \techo: y\n")
+	c.open("file:///broken.yaml", "name: x\nsteps:\n  - id: a\n  \tlog: y\n")
 
 	assert.Empty(t, c.symbols("file:///broken.yaml"))
 	assert.Empty(t, c.definition("file:///broken.yaml", 3, 5))

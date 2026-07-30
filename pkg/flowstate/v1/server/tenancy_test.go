@@ -65,7 +65,7 @@ func gatedWorkflow() *v1.Workflow {
 			{
 				Id: "request",
 				Kind: &v1.Node_Task{Task: &v1.Task{
-					Name:   "echo",
+					Name:   "log",
 					Inputs: map[string]*v1.Value{"message": v1.NewLiteral("requesting approval")},
 				}},
 			},
@@ -80,7 +80,7 @@ func gatedWorkflow() *v1.Workflow {
 				Id:        "deploy",
 				Condition: v1.NewExpr("approval.payload.approved"),
 				Kind: &v1.Node_Task{Task: &v1.Task{
-					Name:   "echo",
+					Name:   "log",
 					Inputs: map[string]*v1.Value{"message": v1.NewLiteral("deploying")},
 				}},
 			},

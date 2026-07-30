@@ -268,7 +268,7 @@ func keyPath(ix *lineIndex, line0 int) []string {
 // indentOf returns the column where a line's content begins.
 //
 // A leading sequence dash counts as indentation, so that a step's `- id:` and the
-// `echo:` beneath it are seen at the same depth — which is what makes the
+// `log:` beneath it are seen at the same depth — which is what makes the
 // backwards walk in keyPath skip the dash line instead of treating `id` as a
 // parent key.
 func indentOf(line string) int {

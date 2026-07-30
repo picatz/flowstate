@@ -1,13 +1,15 @@
 package tests
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
-	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )
 
 // Case is a workflow paired with the outputs it must produce.
@@ -40,6 +42,34 @@ func NewHTTPServer(tb testing.TB) string {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"slideshow":{"title":"Sample Slide Show"}}`))
+	})
+	// Returns a body of the requested size, for a case about how much a run carries
+	// rather than about what it says. Generated rather than echoed so the request
+	// stays small: the interesting asymmetry is a tiny specification producing a
+	// large run state, and a case that had to *send* the bytes could not show it.
+	mux.HandleFunc("/bytes/", func(w http.ResponseWriter, r *http.Request) {
+		size, err := strconv.Atoi(strings.TrimPrefix(r.URL.Path, "/bytes/"))
+		if err != nil || size < 0 {
+			w.WriteHeader(http.StatusBadRequest)
+
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, strings.Repeat("x", size))
+	})
+	// Returns the request body unchanged, which is the only way a case can watch a
+	// value travel *into* a task's inputs and come back out as an output.
+	//
+	// Nothing local produces a value since `echo` retired, and the shapes observe.go
+	// offers reach a value through a condition — which sees the scope a step is
+	// written in and not the inputs the step was handed. The distinction matters
+	// exactly once, for a step's own `vars:`: they are deliberately out of scope for
+	// that step's own `if:` (see runNodes), so a condition cannot see one at all.
+	mux.HandleFunc("/echo", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.Copy(w, r.Body)
 	})
 
 	srv := httptest.NewServer(mux)
@@ -77,6 +107,32 @@ func allowLoopback(tb testing.TB) {
 	})
 }
 
+// echoes returns an http step that posts body to the loopback server and records
+// what came back under `said`.
+//
+// It is how a case observes a value that a condition cannot reach — see observe.go.
+// Shaping the outputs down to one name keeps the assertion independent of the headers
+// net/http adds.
+func echoes(id, httpBaseURL, body string) *v1.Node {
+	return &v1.Node{
+		Id: id,
+		Kind: &v1.Node_Task{Task: &v1.Task{
+			Name: "http",
+			Inputs: map[string]*v1.Value{
+				"method":  v1.NewLiteral(http.MethodPost),
+				"url":     v1.NewLiteral(httpBaseURL + "/echo"),
+				"body":    v1.NewExpr(body),
+				"outputs": v1.NewExpr(`{"said": response.body}`),
+			},
+		}},
+	}
+}
+
+// said is the outputs entry [echoes] produces.
+func said(value string) *v1.Node_Outputs {
+	return &v1.Node_Outputs{NamedValues: map[string]*v1.Value{"said": v1.NewLiteral(value)}}
+}
+
 // Workflows returns the workflows shared between the local and Temporal
 // execution tests, so both drivers are held to identical expectations. The
 // httpBaseURL should come from [NewHTTPServer].
@@ -87,128 +143,52 @@ func allowLoopback(tb testing.TB) {
 func Workflows(httpBaseURL string) []Case {
 	return []Case{
 		{
-			Name: "simple echo workflow",
+			// The smallest thing this system can do: one step, which runs.
+			Name: "a single step runs",
 			Workflow: &v1.Workflow{
-				Name: "simple",
-				Steps: []*v1.Node{
-					{
-						Id: "a",
-						Kind: &v1.Node_Task{
-							Task: &v1.Task{
-								Name: "echo",
-								Inputs: map[string]*v1.Value{
-									"message": v1.NewLiteral("hello world"),
-								},
-							},
-						},
-					},
-				},
+				Name:  "simple",
+				Steps: []*v1.Node{says("a", "hello world")},
 			},
-			ExpectedOutputs: &v1.Workflow_StepOutputs{
-				StepValues: map[string]*v1.Node_Outputs{
-					"a": {
-						NamedValues: map[string]*v1.Value{
-							"result": v1.NewLiteral("hello world"),
-						},
-					},
-				},
-			},
+			ExpectedOutputs: held("a"),
 		},
 		{
-			Name: "simple multi-step echo workflow",
+			// A step reading the step before it, which is the join that makes a
+			// workflow more than a list. Bare `a.said` rather than `steps.a.said`
+			// deliberately: both spellings resolve and only one of them is tested
+			// elsewhere.
+			Name: "a step reads the step before it",
 			Workflow: &v1.Workflow{
 				Name: "simple",
-				Steps: []*v1.Node{
-					{
-						Id: "a",
-						Kind: &v1.Node_Task{
-							Task: &v1.Task{
-								Name: "echo",
-								Inputs: map[string]*v1.Value{
-									"message": v1.NewLiteral("hello world"),
-								},
-							},
-						},
-					},
-					{
-						Id: "b",
-						Kind: &v1.Node_Task{
-							Task: &v1.Task{
-								Name: "echo",
-								Inputs: map[string]*v1.Value{
-									"message": v1.NewExpr("a.result"),
-								},
-							},
-						},
-					},
-				},
+				Steps: append(
+					[]*v1.Node{echoes("a", httpBaseURL, `"hello world"`)},
+					pins("b", `a.said == "hello world"`)...,
+				),
 			},
-			ExpectedOutputs: &v1.Workflow_StepOutputs{
-				StepValues: map[string]*v1.Node_Outputs{
-					"a": {
-						NamedValues: map[string]*v1.Value{
-							"result": v1.NewLiteral("hello world"),
-						},
-					},
-					"b": {
-						NamedValues: map[string]*v1.Value{
-							"result": v1.NewLiteral("hello world"),
-						},
-					},
-				},
-			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"a": said("hello world"),
+				"b": {},
+			}},
 		},
 		{
-			Name: "simple printf workflow",
+			// What `printf:` was for, in the spelling that replaced it. `format` is
+			// specified at the CEL level rather than by Go's fmt, which is the
+			// determinism story a task wrapping fmt could never tell.
+			Name: "a formatted string is an expression",
 			Workflow: &v1.Workflow{
-				Name: "simple",
-				Steps: []*v1.Node{
-					{
-						Id: "a",
-						Kind: &v1.Node_Task{
-							Task: &v1.Task{
-								Name: "printf",
-								Inputs: map[string]*v1.Value{
-									"format": v1.NewLiteral("%s %s"),
-									"args": v1.NewLiteralList(
-										"hello",
-										"world",
-									),
-									// "args": {
-									// 	Kind: &v1.Value_Literal{
-									// 		Literal: &expr.Value{
-									// 			Kind: &expr.Value_ListValue{
-									// 				ListValue: &expr.ListValue{
-									// 					Values: []*expr.Value{
-									// 						{Kind: &expr.Value_StringValue{StringValue: "hello"}},
-									// 						{Kind: &expr.Value_StringValue{StringValue: "world"}},
-									// 					},
-									// 				},
-									// 			},
-									// 		},
-									// 	},
-									// },
-								},
-							},
-						},
-					},
+				Name:    "simple",
+				Profile: v1.CurrentProfile,
+				Vars: map[string]*v1.Value{
+					"greeting": v1.NewExpr(`"%s %s".format(["hello", "world"])`),
 				},
+				Steps: pins("a", `vars.greeting == "hello world"`),
 			},
-			ExpectedOutputs: &v1.Workflow_StepOutputs{
-				StepValues: map[string]*v1.Node_Outputs{
-					"a": {
-						NamedValues: map[string]*v1.Value{
-							"result": v1.NewLiteral("hello world"),
-						},
-					},
-				},
-			},
+			ExpectedOutputs: held("a"),
 		},
 		{
 			Name: "simple http workflow",
 			Workflow: &v1.Workflow{
 				Name: "simple",
-				Steps: []*v1.Node{
+				Steps: append([]*v1.Node{
 					{
 						Id: "web",
 						Kind: &v1.Node_Task{
@@ -224,18 +204,7 @@ func Workflows(httpBaseURL string) []Case {
 							},
 						},
 					},
-					{
-						Id: "output",
-						Kind: &v1.Node_Task{
-							Task: &v1.Task{
-								Name: "echo",
-								Inputs: map[string]*v1.Value{
-									"message": v1.NewExpr("string(web.status_code)"),
-								},
-							},
-						},
-					},
-				},
+				}, pins("output", `string(web.status_code) == "200"`)...),
 			},
 			ExpectedOutputs: &v1.Workflow_StepOutputs{
 				StepValues: map[string]*v1.Node_Outputs{
@@ -244,42 +213,25 @@ func Workflows(httpBaseURL string) []Case {
 							"status_code": v1.NewLiteral(int64(200)),
 						},
 					},
-					"output": {
-						NamedValues: map[string]*v1.Value{
-							"result": v1.NewLiteral("200"),
-						},
-					},
+					"output": {},
 				},
 			},
 		},
 		{
-			Name: "cel expression workflow",
+			// What `cel:` was for: composing a step's output into a new value. It is
+			// written where the value is wanted now, rather than as a step whose only
+			// job was to hold it.
+			Name: "an expression composes a step's output",
 			Workflow: &v1.Workflow{
 				Name: "simple",
-				Steps: []*v1.Node{
-					{
-						Id: "a",
-						Kind: &v1.Node_Task{Task: &v1.Task{
-							Name: "echo",
-							Inputs: map[string]*v1.Value{
-								"message": v1.NewLiteral("hello"),
-							},
-						}},
-					},
-					{
-						Id: "b",
-						Kind: &v1.Node_Task{Task: &v1.Task{
-							Name: "cel",
-							Inputs: map[string]*v1.Value{
-								"expr": v1.NewLiteral("a.result + '!'"),
-							},
-						}},
-					},
-				},
+				Steps: append(
+					[]*v1.Node{echoes("a", httpBaseURL, `"hello"`)},
+					pins("b", `a.said + "!" == "hello!"`)...,
+				),
 			},
 			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-				"a": {NamedValues: map[string]*v1.Value{"result": v1.NewLiteral("hello")}},
-				"b": {NamedValues: map[string]*v1.Value{"result": {Kind: &v1.Value_Literal{Literal: &expr.Value{Kind: &expr.Value_StringValue{StringValue: "hello!"}}}}}},
+				"a": said("hello"),
+				"b": {},
 			}},
 		},
 		{
@@ -289,7 +241,7 @@ func Workflows(httpBaseURL string) []Case {
 			Name: "http default body output workflow",
 			Workflow: &v1.Workflow{
 				Name: "http-defaults",
-				Steps: []*v1.Node{
+				Steps: append([]*v1.Node{
 					{
 						Id: "web",
 						Kind: &v1.Node_Task{Task: &v1.Task{
@@ -301,105 +253,87 @@ func Workflows(httpBaseURL string) []Case {
 							},
 						}},
 					},
-					{
-						Id: "title",
-						Kind: &v1.Node_Task{Task: &v1.Task{
-							Name: "cel",
-							Inputs: map[string]*v1.Value{
-								"libs": v1.NewLiteralList("json"),
-								"expr": v1.NewLiteral("json_parse(web.body)['slideshow']['title']"),
-							},
-						}},
-					},
-				},
+				}, pins("title", `json_parse(web.body)['slideshow']['title'] == "Sample Slide Show"`)...),
 			},
 			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
 				"web": {NamedValues: map[string]*v1.Value{
 					"body": v1.NewLiteral(`{"slideshow":{"title":"Sample Slide Show"}}`),
 				}},
-				"title": {NamedValues: map[string]*v1.Value{
-					"result": v1.NewLiteral("Sample Slide Show"),
-				}},
+				"title": {},
 			}},
 		},
 	}
 }
 
-// zeroValueCases exercise inputs and outputs that are legitimately empty.
+// ZeroValueCases exercise inputs and outputs that are legitimately empty.
 //
 // These are separated from [Workflows] because they assert a property rather
 // than a fixed output: a zero value must survive a round trip. Empty strings,
 // zero integers, and false booleans were previously rejected as invalid input
 // and dropped from outputs, because the conversion layer tested whether an
 // extracted value was non-zero instead of which kind it held.
-func ZeroValueCases() []Case {
+//
+// The round trip goes through the loopback server rather than through a local task,
+// since no local task returns a value any more. That makes the trip longer and the
+// property stronger: the empty string now survives a task input, a request, a
+// response, an outputs expression and the run record.
+func ZeroValueCases(httpBaseURL string) []Case {
 	return []Case{
 		{
 			Name: "empty string message",
 			Workflow: &v1.Workflow{
-				Name: "empty-string",
-				Steps: []*v1.Node{
-					{
-						Id: "a",
-						Kind: &v1.Node_Task{Task: &v1.Task{
-							Name: "echo",
-							Inputs: map[string]*v1.Value{
-								"message": v1.NewLiteral(""),
-							},
-						}},
-					},
-				},
+				Name:  "empty-string",
+				Steps: []*v1.Node{echoes("a", httpBaseURL, `""`)},
 			},
 			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-				"a": {NamedValues: map[string]*v1.Value{"result": v1.NewLiteral("")}},
+				"a": said(""),
 			}},
 		},
 		{
+			// The empty string having come from somewhere rather than been written
+			// where it is used, which is the shape that used to drop it: a var is
+			// evaluated, carried, and only then handed to a task.
 			Name: "empty string through an expression",
 			Workflow: &v1.Workflow{
-				Name: "empty-string-expr",
-				Steps: []*v1.Node{
-					{
-						Id: "a",
-						Kind: &v1.Node_Task{Task: &v1.Task{
-							Name:   "echo",
-							Inputs: map[string]*v1.Value{"message": v1.NewLiteral("")},
-						}},
-					},
-					{
-						Id: "b",
-						Kind: &v1.Node_Task{Task: &v1.Task{
-							Name:   "echo",
-							Inputs: map[string]*v1.Value{"message": v1.NewExpr("a.result")},
-						}},
-					},
-				},
+				Name:    "empty-string-expr",
+				Profile: v1.CurrentProfile,
+				Vars:    map[string]*v1.Value{"blank": v1.NewExpr(`""`)},
+				Steps: append(
+					[]*v1.Node{echoes("a", httpBaseURL, "vars.blank")},
+					pins("b", `a.said == "" && vars.blank == ""`)...,
+				),
 			},
 			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-				"a": {NamedValues: map[string]*v1.Value{"result": v1.NewLiteral("")}},
-				"b": {NamedValues: map[string]*v1.Value{"result": v1.NewLiteral("")}},
+				"a": said(""),
+				"b": {},
 			}},
 		},
 		{
-			Name: "printf with an empty argument",
+			// An empty argument to a format, which is where an empty value is easiest
+			// to lose: it is inside a list, inside an expression, and the result is a
+			// string that looks the same whether the argument arrived or not.
+			Name: "an empty format argument",
 			Workflow: &v1.Workflow{
-				Name: "empty-printf",
-				Steps: []*v1.Node{
-					{
-						Id: "a",
-						Kind: &v1.Node_Task{Task: &v1.Task{
-							Name: "printf",
-							Inputs: map[string]*v1.Value{
-								"format": v1.NewLiteral("[%s]"),
-								"args":   v1.NewLiteralList(""),
-							},
-						}},
-					},
-				},
+				Name:    "empty-format",
+				Profile: v1.CurrentProfile,
+				Steps:   pins("a", `"[%s]".format([""]) == "[]"`),
 			},
-			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-				"a": {NamedValues: map[string]*v1.Value{"result": v1.NewLiteral("[]")}},
-			}},
+			ExpectedOutputs: held("a"),
+		},
+		{
+			// Zero and false, which the conversion layer used to drop for the same
+			// reason it dropped the empty string.
+			Name: "zero and false survive",
+			Workflow: &v1.Workflow{
+				Name:    "zero-and-false",
+				Profile: v1.CurrentProfile,
+				Vars: map[string]*v1.Value{
+					"count":   v1.NewLiteral(int64(0)),
+					"enabled": v1.NewLiteral(false),
+				},
+				Steps: pins("a", `vars.count == 0 && vars.enabled == false`),
+			},
+			ExpectedOutputs: held("a"),
 		},
 	}
 }

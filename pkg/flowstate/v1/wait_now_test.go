@@ -132,9 +132,13 @@ func TestWaitDeadlineStillTakesAMomentFromData(t *testing.T) {
 func TestAStepMayBeCalledNow(t *testing.T) {
 	t.Parallel()
 
+	// A step named `now` that produces an output to point the rooted name at. It is
+	// an `http:` step because a step's outputs are the thing under test here and
+	// `log:` deliberately has none; this workflow is compiled and validated rather
+	// than run, so nothing reaches the host.
 	source := "edition: v2026.2\nname: t\nsteps:\n" +
-		"  - id: now\n    cel:\n      expr: \"'2001-01-01T00:00:00Z'\"\n" +
-		"  - id: hold\n    wait_until: ${now}\n"
+		"  - id: now\n    http:\n      method: GET\n      url: https://example.test/opens-at\n" +
+		"  - id: hold\n    wait_until: ${steps.now.body}\n"
 
 	workflow, err := flowfile.Unmarshal([]byte(source))
 	require.NoError(t, err, "the workflow did not compile")
@@ -146,7 +150,7 @@ func TestAStepMayBeCalledNow(t *testing.T) {
 	scope := v1.NewScope(v1.CurrentProfile, &v1.Workflow_StepOutputs{
 		StepValues: map[string]*v1.Node_Outputs{
 			"now": {NamedValues: map[string]*v1.Value{
-				"result": v1.NewLiteral("2001-01-01T00:00:00Z"),
+				"body": v1.NewLiteral("2001-01-01T00:00:00Z"),
 			}},
 		},
 	})
@@ -155,7 +159,7 @@ func TestAStepMayBeCalledNow(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, clock, fromClock.UTC(), "bare `now` is the clock")
 
-	fromStep, err := v1.EvalWaitDeadline(t.Context(), waitUntil(t, "${steps.now.result}"), scope, clock)
+	fromStep, err := v1.EvalWaitDeadline(t.Context(), waitUntil(t, "${steps.now.body}"), scope, clock)
 	require.NoError(t, err)
 	assert.Equal(t, time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC), fromStep.UTC(),
 		"the rooted name is the step, and the clock did not shadow it")
@@ -187,9 +191,9 @@ func TestWaitDeadlineNowDoesNotShadowALoopIterator(t *testing.T) {
 
 	// Which is why the name cannot be chosen. Without this the workflow above is
 	// authorable, and the only symptom is a wait that ends at the wrong moment.
-	source := "edition: v2026.2\nname: t\nsteps:\n" +
-		"  - id: targets\n    cel:\n      expr: \"['a']\"\n" +
-		"  - id: sweep\n    for_each:\n      items: ${steps.targets.result}\n      as: now\n" +
+	source := "edition: v2026.2\nname: t\nvars:\n  targets: ${['a']}\n" +
+		"steps:\n" +
+		"  - id: sweep\n    for_each:\n      items: ${vars.targets}\n      as: now\n" +
 		"      steps:\n        - id: hold\n          wait_until: ${now}\n"
 
 	workflow, err := flowfile.Unmarshal([]byte(source))

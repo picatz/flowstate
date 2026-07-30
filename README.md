@@ -62,7 +62,7 @@ flowchart LR
     Worker["Flowstate Worker<br/><code>$ flow worker</code>"]
     
     subgraph TaskExecution [Task Execution]
-      TaskLib["<strong>Go Task Library</strong><br/>(echo, http, etc.)<br/><i>Tasks implemented in Go</i>"]
+      TaskLib["<strong>Go Task Library</strong><br/>(log, http, etc.)<br/><i>Tasks implemented in Go</i>"]
       CELEngine["CEL Engine<br/><i>Only for expression evaluation<br/>in workflow input/outputs</i>"]
     end
     
@@ -109,23 +109,45 @@ flowchart LR
 
 A `Flowfile` is a YAML file that defines a series of steps to be executed in order. A step has a unique `id` and then names the work it does directly: the task's own name is the key, and that task's inputs are the value beneath it. Inputs can be static values or dynamic expressions using CEL syntax.
 
+A value, though, never comes from a task. Tasks do things — emit a line somebody reads,
+make a request — and what a file computes comes from expressions and from `vars:`. That
+split is deliberate and it is what the rest of this section is arranged around.
+
 ### Example
 
 ```yaml
+edition: v2026.2
 name: multi-step-hello-world
+vars:
+  service: billing
 steps:
   - id: hello
-    echo:
-      message: hello world
-  - id: output
-    echo:
-      message: ${steps.hello.result}
+    log:
+      message: ${'checking ' + vars.service}
+  - id: probe
+    http:
+      url: https://example.com/healthz
+  - id: report
+    log:
+      message: ${'%s returned %d'.format([vars.service, steps.probe.status_code])}
 ```
 
-The above `Flowfile` defines two steps:
-1. The first step has an `id` of `hello`, uses the built-in `echo` task, and takes a literal string value `"hello world"` for the `message` input.
-2. The second step has an `id` of `output`, also uses the built-in `echo` task, and takes a dynamic input `message` that references the output of the first step using `${steps.hello.result}`. The `${...}` syntax indicates that it is an expression.
-3. The output of the first step is reached through `steps`: the step's `id` (`hello`) selects the step, and the output name (`result`) selects the value. Outputs and inputs are strongly typed, but depend on the task being used (see below).
+Six things in it are worth reading in order:
+1. `edition:` names the grammar the file is written in. It is required, and it is what lets
+   a spelling be retired without a file written last month quietly changing meaning.
+2. `vars:` names a value. `service` is declared once and read anywhere as
+   `${vars.service}` — there is no task that exists to hand a string to the next step,
+   because computing a value is not something the outside world needs to be asked for.
+3. The first step has an `id` of `hello` and uses the built-in `log` task, whose `message`
+   input is what a person reading the run will see.
+4. `${...}` marks an expression. Without the fence the value is the text exactly as
+   written, which is what lets an input hold the literal string `vars.service`.
+5. The `probe` step uses the built-in `http` task, which *does* produce outputs — a
+   response is something the world handed back rather than a value the file computed.
+6. The last step reads one of them. A step's output is reached through `steps`: the step's
+   `id` (`probe`) selects the step, and the output name (`status_code`) selects the value.
+   Inputs and outputs are strongly typed, and which ones exist depends on the task being
+   used (see below).
 
 ### Referring to a step's outputs
 
@@ -160,6 +182,8 @@ At the top of a file it declares what is *ambient* — in scope everywhere — s
 through a root, `${vars.<name>}`:
 
 ```yaml
+edition: v2026.2
+name: ambient-vars
 vars:
   region: eu-west-1
   targets: [alpha, beta, gamma]
@@ -167,7 +191,7 @@ vars:
 
 steps:
   - id: announce
-    echo:
+    log:
       message: ${vars.banner}
 ```
 
@@ -175,11 +199,16 @@ On a step it declares what is *lexical* — in scope inside that step and nowher
 so it stays bare, exactly like the name a loop binds:
 
 ```yaml
+edition: v2026.2
+name: lexical-vars
+vars:
+  region: eu-west-1
+
 steps:
   - id: describe
     vars:
       subject: ${'release for ' + vars.region}
-    echo:
+    log:
       message: ${subject}
 ```
 
@@ -188,22 +217,27 @@ rule the previous section describes. On a `for_each` or a `parallel:`, a step's 
 reach the whole body — so a loop can name what it iterates and what it decorates in one
 place.
 
-Four rules, all reported by `flow validate` rather than discovered at run time:
+Five rules, all reported by `flow validate` rather than discovered at run time:
 
 - **The `${...}` fence is still required** for an expression. Without it the value is the
   text as written, which is what lets a var hold the literal string `steps.greet.result`.
 - **A workflow-level var may reference nothing.** It is evaluated once, before the first
   step, so there is no step to read and no clock to ask; it has literals, operators and
-  the profile's functions.
+  the profile's functions. A step's var is under no such restriction: it may read a step
+  that has already run and any `${vars.<name>}`.
 - **A var may not read its siblings**, at either position. `vars:` is a mapping, and a
   mapping has no order, so "the one above" is not something the file can mean.
+- **A step's own vars are not in scope for its `if:`.** The condition decides whether the
+  step runs at all, so at the moment it is asked the step's bindings do not exist yet.
+  Write the condition against `${vars.<name>}` or an earlier step, or lift the binding to
+  the workflow.
 - **A name already bound is refused, not shadowed.** A step's var may not take the name
   of an enclosing loop's binding or an enclosing step's var, and neither may be `now`.
   Two bindings of one bare name eleven lines apart is how `${body}` comes to mean two
   things; renaming costs a moment, once.
 
-A name declared by one step is not in scope for the next — pass a value forward through
-the step's outputs, which is what they are for.
+A name declared by one step is not in scope for the next. If two steps need the same
+value, declare it at the top of the file — that is what the ambient position is for.
 
 See [examples/workflow-vars](examples/workflow-vars) and
 [examples/step-vars](examples/step-vars).
@@ -214,6 +248,9 @@ A step can carry `description:` — prose the mechanics under it cannot supply, 
 directly under `id:`:
 
 ```yaml
+edition: v2026.2
+name: describing
+
 steps:
   - id: roster
     description: >-
@@ -242,26 +279,31 @@ fit every step: reading a config file and provisioning a cluster differ by order
 magnitude in how long they take and how safe they are to repeat.
 
 ```yaml
+edition: v2026.2
+name: step-policy
+
 steps:
   - id: check
-    echo:
-      message: ready
+    http:
+      url: https://example.com/readyz
 
   - id: deploy
-    if: ${steps.check.result == 'ready'}   # only runs when this is true
+    if: ${steps.check.status_code == 200}   # only runs when this is true
     timeout: 30s                     # bounds one attempt
     retry:
       attempts: 3                    # total attempts, so 1 disables retrying
       interval: 1s                   # delay before the second attempt
       backoff: 2.0                   # multiplier applied after each attempt
       max_interval: 10s              # ceiling on the delay
-    echo:
-      message: deploying
+    http:
+      method: POST
+      url: https://example.com/deployments
 
   - id: notify
     continue_on_error: true          # a failure here does not end the run
-    echo:
-      message: notifying
+    http:
+      method: POST
+      url: https://example.com/notify
 ```
 
 Behavior worth knowing:
@@ -283,45 +325,47 @@ See [examples/conditional-and-retry](examples/conditional-and-retry).
 
 ## Workloads that are not a straight line
 
-A step can repeat over a computed list, or split into branches that run at the same time.
+A step can repeat over a list, or split into branches that run at the same time.
 
 ```yaml
-steps:
-  - id: targets
-    cel:
-      expr: "['alpha', 'beta']"
+edition: v2026.2
+name: fan-out
 
+vars:
+  targets: [alpha, beta]   # a list is a list; nothing needs to compute one
+
+steps:
   # Repeat the body once per item. Inside it, the current item is bound to the
   # iterator's name; body steps can reference each other within an iteration.
   - id: process
     for_each:
-      items: ${steps.targets.result}
+      items: ${vars.targets}
       as: name          # defaults to `item`; bare, so it may share a step's id
       max_parallel: 3         # omit or 1 to run one at a time
       steps:
         - id: label
-          printf:
-            format: "processing %s"
-            args:
-              - ${name}          # the iterator, bare: a binding, not a step
+          http:
+            method: POST
+            # the iterator, bare: a binding, not a step
+            url: ${'https://example.com/process/' + name}
 
   # Independent work with no reason to be sequential.
   - id: checks
     parallel:
       - steps:
           - id: check_config
-            echo: { message: config ok }
+            http: { url: https://example.com/config }
       - steps:
           - id: check_quota
-            echo: { message: quota ok }
+            http: { url: https://example.com/quota }
 
   - id: summary
-    printf:
-      format: "%s / %s / processed %d"
-      args:
-        - ${steps.check_config.result}
-        - ${steps.check_quota.result}
-        - ${size(steps.process.results)}
+    log:
+      message: >-
+        ${'config %d / quota %d / processed %d'.format([
+          steps.check_config.status_code,
+          steps.check_quota.status_code,
+          size(steps.process.results)])}
 ```
 
 The scoping rules are worth knowing, because they are what keep results independent of
@@ -331,13 +375,13 @@ timing:
   element per iteration, each a map of body step id to that step's outputs. Body outputs do
   not leak into the enclosing scope, because with more than one iteration they would
   overwrite each other and a later step would read whichever iteration happened to finish
-  last. So `${steps.process.results}` is available afterwards; `${steps.label.result}` is
-  not.
+  last. So `${steps.process.results}` is available afterwards; `${steps.label.status_code}`
+  is not.
 - **The iterator is a local binding, not a step**, which is why it is written bare and why
   it may be named after a step in the same file. `${name}` inside the body is the current
-  item; `${steps.name.result}` would be a step called `name`, if there were one.
+  item; `${steps.name.status_code}` would be a step called `name`, if there were one.
 - **Parallel branch outputs do merge** once the block completes, so
-  `${steps.check_config.result}` works afterwards. Branches must not reference each
+  `${steps.check_config.status_code}` works afterwards. Branches must not reference each
   other, since there is no ordering between them — `flow validate` reports it if they do.
 - Iterations and branches each start from the outputs that existed before the block, so
   neither can observe the other's work. That is what makes concurrent and sequential
@@ -350,45 +394,42 @@ See [examples/fan-out-and-parallel](examples/fan-out-and-parallel).
 
 ## Task Outputs and Data Flow
 
-### Parse JSON with CEL
+### Parse JSON without a JSON task
 
-You can keep HTTP simple (returning `status_code`, `headers`, `body` as this step's outputs) and use the CEL task to parse JSON without a separate HTTP+JSON task. `json_parse(string)` is available with nothing to enable:
+You can keep HTTP simple — returning `status_code`, `headers`, `body` as this step's
+outputs — and pull a field out of the body in an expression, so there is no HTTP+JSON
+task and no step that exists only to hold a computation. `json_parse(string)` is
+available with nothing to enable:
 
 ```yaml
+edition: v2026.2
 name: json-via-cel
 steps:
   - id: resp
     http:
       method: GET
       url: https://httpbin.org/json
-  - id: pick
-    cel:
-      expr: json_parse(steps.resp.body)['slideshow']['title']
+  - id: report
+    vars:
+      title: ${json_parse(steps.resp.body)['slideshow']['title']}
+    log:
+      message: ${'fetched ' + title}
 ```
 
-The CEL task’s `result` will be the selected field from the parsed JSON. This keeps activities minimal and payloads small while letting you shape data in CEL.
+The parsing happens where the value is used, in the engine, at no cost in activities or
+history. There is no step in the middle, because there is nothing for one to do: a step is
+an effect, and selecting a field out of a string is not one.
 
-`expr` is the expression the task exists to evaluate, so it is written bare rather than
-wrapped in `${...}` — but it resolves against the same names everything else does, and a
-step is `steps.<id>.<output>` here too. The task evaluates it itself, which is why
-`flow validate` does not reference-check it: what it may name also depends on `vars`,
-which the validator cannot see.
+Where to put the expression is the only real choice, and the two positions read
+differently. A `vars:` binding on the step names the value, which is worth doing when it
+is long or read twice — `title` above is read once and named anyway, because
+`${'fetched ' + json_parse(steps.resp.body)['slideshow']['title']}` says the same thing
+and is harder to see the shape of. Written inline it is one expression and no binding.
+If more than one step needs it, it belongs in the workflow's own `vars:` instead.
 
-It is the one reference `flow fix` will not rewrite for you, but it will tell you about
-it. Rooting is a rewrite of `${...}` values, and `expr` is not one of them — it is the
-expression itself rather than a value containing one — so a `cel` step written before the
-root is left exactly as it was. It keeps working, because the runtime still answers the
-older bare spelling, and stops the day that compatibility is dropped. So `flow fix`
-reports it instead, with the rooted form to paste:
-
-```
-workflow.yaml:10:13: `expr` is evaluated by the task against its own scope, so this was
-left alone — but it names something spelled like a step. If it means the step, write it
-`json_parse(steps.web.body)['slideshow']['title']`
-```
-
-It stays quiet about a name the step binds as a variable, under `vars:` or beside it,
-since that name is the variable and rooting it would break the step.
+A step is `steps.<id>.<output>` here as everywhere, and `flow validate` reference-checks
+these expressions like any other — which the older `cel` step's `expr` input, evaluated by
+the task against a scope the validator could not see, was never able to offer.
 
 ### Shape HTTP outputs to fit limits
 
@@ -397,6 +438,8 @@ To keep workflow payloads small, the `http` task supports an optional `outputs` 
 Example:
 
 ```yaml
+edition: v2026.2
+name: output-shaping
 steps:
   - id: web
     http:
@@ -639,7 +682,7 @@ assumes a hosted service.
 
 
 
-Each step in a `Flowfile` has named inputs and produces named outputs, which later steps reference in CEL expressions as `${steps.<id>.<output>}` — the step `id` selects the step and the output name selects the value. The outputs of a step are determined by the task being used, and can be of various types (e.g., `string`, `int`, `map`, etc.). The outputs of a step can be used as inputs to later steps, allowing for complex data flows and transformations.
+Each step in a `Flowfile` has named inputs, and a step that brings something back has named outputs, which later steps reference in CEL expressions as `${steps.<id>.<output>}` — the step `id` selects the step and the output name selects the value. Which outputs a step has is determined by the task being used, and they can be of various types (e.g., `string`, `int`, `map`, etc.). A task is free to have none: outputs are what a step learned from the world outside, so a task that only acts on it has nothing to report. Values a file computes for itself are named with `vars:` instead.
 
 ### Saying what happened: `log:`
 
@@ -649,6 +692,12 @@ watching — `flow run local` renders it to your terminal, and on a worker it re
 same logs everything else there does, tagged with the run that emitted it.
 
 ```yaml
+edition: v2026.2
+name: canary-watch
+
+vars:
+  service: billing
+
 steps:
   - id: canary
     log:
@@ -680,10 +729,7 @@ See [examples/logging](examples/logging).
 | Task Name | Inputs | Outputs |
 |-----------|--------|---------|
 | `log`     | `message`, `level`, `fields` | *(none)* |
-| `echo`    | `message` | `result` |
-| `printf`  | `format`, `args` | `result` |
 | `http`    | `url`, `method`, `headers`, `body`, `query`, `form`, `json`, `parse_json`, `outputs`, `expect`, `retry_on_unknown_outcome` | `status_code`, `headers`, `body`, `json` |
-| `cel`     | `expr`, `vars` | `result` |
 
 `log` has no outputs, which is the design rather than a gap: a log line is an effect on a
 reader, not a value for a later step. Naming one — `${steps.announce.result}` — would give
@@ -714,22 +760,24 @@ $ flow tasks --output json | jq '.tasks[] | select(.name == "http") | .inputs[] 
 }
 ```
 
-Tasks can be chained together as tasks. For example, the following `Flowfile` makes an HTTP `GET` request to `https://microsoft.com`, and then echoes the status code of the response:
+Steps chain through their outputs. For example, the following `Flowfile` makes an HTTP `GET` request to `https://microsoft.com`, and then logs the status code of the response:
 
 ```yaml
+edition: v2026.2
+name: chained
 steps:
   - id: web
     http:
       method: GET
       url: https://microsoft.com
-  - id: output
-    echo:
+  - id: report
+    log:
       message: ${string(steps.web.status_code)}
 ```
 
 > [!TIP]
 > Use `${...}` for expressions, like referencing a previous step's output as `${steps.<id>.<output>}`.
-> The `cel` task evaluates the expression string provided in its `expr` input at runtime. Variables for the expression are provided under the `vars` input, and referenced as `vars.<name>`. Every expression in a workflow — this one, `if:`, `items:`, `wait_until:`, and every task input — reaches the same CEL extension libraries: `bindings`, `comprehensions`, `encoders`, `json`, `lists`, `math`, `optional`, `protos`, `regex`, `sets`, `strings`. There is nothing to enable; `flow tasks` prints the same set.
+> Every expression in a workflow — a task input, a `vars:` value, `if:`, `items:`, `wait_until:` — is evaluated by the engine against one vocabulary, and reaches the same CEL extension libraries: `bindings`, `comprehensions`, `encoders`, `json`, `lists`, `math`, `optional`, `protos`, `regex`, `sets`, `strings`. There is nothing to enable; `flow tasks` prints the same set.
 
 ### Waiting
 
@@ -738,6 +786,7 @@ because a wait is the engine's business: nothing runs, no worker slot is held, a
 workload parked for a month costs the same as one parked for a second.
 
 ```yaml
+edition: v2026.2
 name: waiting
 steps:
   # A duration.
@@ -757,7 +806,7 @@ steps:
 
   - id: act
     if: ${!steps.approval.timed_out && has(steps.approval.payload.approver)}
-    echo:
+    log:
       message: ${'approved by ' + steps.approval.payload.approver}
 ```
 
@@ -802,7 +851,7 @@ Problems are reported with the position, the step, and what to do about them:
 
 ```console
 $ flow validate broken.yaml
-broken.yaml:4:5: step "web": unknown task "htpp"; available tasks are cel, echo, http, printf
+broken.yaml:4:5: step "web": unknown task "htpp"; available tasks are http, log
 broken.yaml:8:16: step "out" input "message": references step "later", which runs later; steps can only reference steps defined before them
 ```
 
@@ -815,13 +864,31 @@ the migration is a command:
 ```console
 $ flow fix workflow.yaml
 workflow.yaml:10: step references rooted under `steps`
-workflow.yaml:4: `task:` naming "echo" rewritten to `echo:`
+workflow.yaml:4: `task:` naming "http" rewritten to `http:`
+workflow.yaml:1: `edition: v2026.2` added, which is now required
 ```
 
-That is both of the retired spellings in one pass: a step that named its task through
-`task:`/`name:`, and a reference that named a step bare. A bare reference is what
-`flow validate` reports as `` `greet` is a step, and a step is named `steps.greet` now``,
-which names the command rather than leaving an author to guess what an unknown name means.
+That is three retired spellings in one pass: a step that named its task through
+`task:`/`name:`, a reference that named a step bare, and a file with no `edition:` line.
+A bare reference is what `flow validate` reports as `` `greet` is a step, and a step is
+named `steps.greet` now``, which names the command rather than leaving an author to guess
+what an unknown name means.
+
+What `flow fix` will not do is guess at intent, and the tasks retired at this edition —
+`echo`, `printf` and `cel` — are where that shows. A retired step whose result a later
+step reads has one honest answer, so the rewriter takes it: the step becomes a `vars:`
+binding and the references to it are rewritten. A retired step whose result *nothing*
+reads does not. It may have meant "show a human this line", which is `log:`, or it may
+have been computing a value nobody wanted, in which case it can simply go — and no tool
+can tell those apart from the file. Those are reported with their position and left
+alone, which is the same contract that covers flow style and YAML aliases:
+
+```console
+$ flow fix workflow.yaml
+workflow.yaml:8:5: `printf:` is retired and nothing reads `steps.b.result`, so this cannot
+tell what the step was for: a line for a person to see is `log:`, and a step that produced
+a value nobody uses can simply go. Only you know which, so this leaves it alone
+```
 
 It rewrites only the lines it must and copies the rest through byte for byte, so
 comments and formatting survive and a file with nothing to change comes back identical —
@@ -835,6 +902,10 @@ Every file names the grammar it is written in with a top-level `edition:`:
 ```yaml
 edition: v2026.2
 name: deploy
+steps:
+  - id: start
+    log:
+      message: rolling the service
 ```
 
 What it buys is a *refusal*: a build that does not have that grammar says so instead of
@@ -884,15 +955,22 @@ Run a `Flowfile` locally (without Temporal):
 
 ```console
 $ go run ./cmd/flow run local ./examples/hello-world-multi-step/workflow.yaml
-{"stepValues":{"a":{"namedValues":{"result":{"literal":{"stringValue":"hello world"}}}},"b":{"namedValues":{"result":{"literal":{"stringValue":"hello world"}}}}}}
+INFO hello world
+INFO HELLO WORLD
+{"stepValues":{"greet":{},"shout":{}}}
 ```
 
 Run a `Flowfile` using Temporal via the Flowstate API server:
 
 ```console
 $ go run ./cmd/flow run ./examples/hello-world-multi-step/workflow.yaml
-{"stepValues":{"a":{"namedValues":{"result":{"literal":{"stringValue":"hello world"}}}},"b":{"namedValues":{"result":{"literal":{"stringValue":"hello world"}}}}}}
+{"stepValues":{"greet":{},"shout":{}}}
 ```
+
+Both steps in that example are `log:` steps, so both appear in `stepValues` with nothing
+under them — the run is reporting that the steps completed and produced no values, which
+is what a log step is. The lines a person reads went to stderr, which is why piping the
+stdout of the first command into `jq` still sees one JSON document.
 
 ## CLI
 

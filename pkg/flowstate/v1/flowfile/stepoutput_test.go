@@ -32,13 +32,13 @@ edition: v2026.2
 name: t
 steps:
   - id: a
-    echo:
-      message: hi
+    http:
+      url: https://example.com
   - id: b
-    echo:
+    log:
       message: ${steps.a.nonsense}
 `,
-			want: `step "a" has no output "nonsense"; it produces result`,
+			want: `step "a" has no output "nonsense"; it produces status_code`,
 		},
 		{
 			name: "a near miss gets a suggestion rather than a list",
@@ -47,13 +47,13 @@ edition: v2026.2
 name: t
 steps:
   - id: a
-    echo:
-      message: hi
+    http:
+      url: https://example.com
   - id: b
-    echo:
-      message: ${steps.a.reslt}
+    log:
+      message: ${steps.a.bdy}
 `,
-			want: `did you mean "result"?`,
+			want: `did you mean "body"?`,
 		},
 		{
 			// The reason this check exists. A task with no outputs makes *every*
@@ -68,7 +68,7 @@ steps:
     log:
       message: hi
   - id: b
-    echo:
+    log:
       message: ${steps.say.result}
 `,
 			want: "the log task produces no outputs, because a log step is an effect rather than a value",
@@ -82,11 +82,11 @@ edition: v2026.2
 name: t
 steps:
   - id: a
-    echo:
-      message: hi
+    http:
+      url: https://example.com
   - id: b
-    echo:
-      message: ${steps.a.result.something.deeper}
+    log:
+      message: ${steps.a.body.something.deeper}
 `,
 		},
 		{
@@ -101,7 +101,7 @@ steps:
     log:
       message: hi
   - id: b
-    echo:
+    log:
       message: ${string(steps.say)}
 `,
 		},
@@ -144,7 +144,7 @@ steps:
       outputs:
         anything: ${status_code}
   - id: use
-    echo:
+    log:
       message: ${steps.fetch.anything}
 `
 
@@ -171,14 +171,14 @@ steps:
       as: name
       steps:
         - id: inner
-          echo:
+          log:
             message: ${name}
   - id: gate
     wait_for_signal:
       name: go
       timeout: 1h
   - id: use
-    echo:
+    log:
       message: ${string(steps.each.results) + string(steps.gate.payload)}
 `
 
@@ -210,7 +210,7 @@ steps:
     http:
       url: https://example.com
   - id: report
-    echo:
+    log:
       message: ${steps.risky.error}
 `
 
@@ -227,7 +227,7 @@ steps:
     http:
       url: https://example.com
   - id: report
-    echo:
+    log:
       message: ${steps.risky.error}
 `
 
@@ -252,7 +252,7 @@ steps:
     log:
       message: hi
   - id: report
-    echo:
+    log:
       message: ${steps.risky.nonsense}
 `
 

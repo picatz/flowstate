@@ -39,7 +39,7 @@ name: t
 steps:
   - id: a
     timeout: 30 seconds
-    echo:
+    log:
 `,
 			line: 5, col: 14,
 			want: `timeout "30 seconds" is not a duration; write it as 30s, 5m, 1h, or 7d`,
@@ -51,7 +51,7 @@ name: t
 steps:
   - id: a
     timeout: 30
-    echo:
+    log:
 `,
 			line: 5, col: 14,
 			want: "must be a duration written as a string",
@@ -63,7 +63,7 @@ name: t
 steps:
   - id: a
     timout: 30s
-    echo:
+    log:
 `,
 			line: 5, col: 5,
 			want: `unknown key "timout"; did you mean "timeout"?`,
@@ -75,10 +75,10 @@ name: t
 steps:
   - id: a
     nonsense: 1
-    echo:
+    log:
 `,
 			line: 5, col: 5,
-			want: `unknown key "nonsense"; the keys here are id, description, if, vars, timeout, retry, continue_on_error, for_each, parallel, sleep, wait_until, wait_for_signal, cel, echo, http, log, and printf`,
+			want: `unknown key "nonsense"; the keys here are id, description, if, vars, timeout, retry, continue_on_error, for_each, parallel, sleep, wait_until, wait_for_signal, http, and log`,
 		},
 		{
 			// The shape every Flowfile written before the flattening has, and the
@@ -96,7 +96,7 @@ name: t
 steps:
   - id: a
     task:
-      name: echo
+      name: log
       inputs:
         message: hi
 `,
@@ -111,7 +111,7 @@ labels:
   env: dev
 steps:
   - id: a
-    echo:
+    log:
 `,
 			line: 3, col: 1,
 			want: `unknown key "labels"`,
@@ -122,15 +122,15 @@ steps:
 name: t
 steps:
   - id: a
-    echo:
+    log:
     for_each:
       items: ${[1]}
       steps:
         - id: b
-          echo:
+          log:
 `,
 			line: 6, col: 5,
-			want: "has both echo and for_each; a step does exactly one kind of work",
+			want: "has both log and for_each; a step does exactly one kind of work",
 		},
 		{
 			name: "no kind of work at all",
@@ -141,7 +141,7 @@ steps:
     timeout: 5s
 `,
 			line: 4, col: 5,
-			want: "must have one of for_each, parallel, sleep, wait_until, wait_for_signal, cel, echo, http, log, or printf",
+			want: "must have one of for_each, parallel, sleep, wait_until, wait_for_signal, http, or log",
 		},
 		{
 			name: "a step key that is not a string",
@@ -175,7 +175,7 @@ steps:
 name: t
 steps:
   - id: a
-    echo:
+    log:
       message: hello ${who.result}
 `,
 			line: 6, col: 16,
@@ -187,7 +187,7 @@ steps:
 name: t
 steps:
   - id: a
-    echo:
+    log:
       message: ${a +}
 `,
 			// CEL reports the fault at the end of `a +`, which is the `}` in
@@ -202,7 +202,7 @@ steps:
 name: t
 steps:
   - id: a
-    echo:
+    log:
       message:
 `,
 			// The span is empty and sits where the value would have gone.
@@ -217,7 +217,7 @@ steps:
   - id: a
     retry:
       attemps: 3
-    echo:
+    log:
 `,
 			line: 6, col: 7,
 			want: `unknown key "attemps"; did you mean "attempts"?`,
@@ -232,7 +232,7 @@ steps:
       as: x
       steps:
         - id: b
-          echo:
+          log:
 `,
 			line: 6, col: 7,
 			want: "for_each requires items",
@@ -246,7 +246,7 @@ steps:
     parallel:
       steps:
         - id: b
-          echo:
+          log:
 `,
 			line: 6, col: 7,
 			want: "parallel must be a list of branches",
@@ -262,7 +262,7 @@ steps:
       steps:
         - id: inner
           timeout: soon
-          echo:
+          log:
 `,
 			line: 9, col: 20,
 			want: `step "inner": timeout "soon" is not a duration`,
@@ -276,7 +276,7 @@ steps:
     parallel:
       - steps:
           - id: inner
-            echo:
+            log:
               message: hi ${there}
 `,
 			line: 9, col: 24,
@@ -309,12 +309,12 @@ steps:
 name: a
 steps:
   - id: a
-    echo:
+    log:
 ---
 name: b
 steps:
   - id: b
-    echo:
+    log:
 `,
 			line: 7, col: 1,
 			want: "a Flowfile holds one workflow",
@@ -335,9 +335,9 @@ steps:
 name: t
 steps:
   - id: a
-    echo: *base
+    log: *base
 `,
-			line: 5, col: 11,
+			line: 5, col: 10,
 			want: "unknown alias *base",
 		},
 	}
@@ -378,7 +378,7 @@ name: positions
 steps:
   - id: first
     timeout: 30s
-    echo:
+    log:
       message: ${greeting.result}
   - id: second
     for_each:
@@ -386,7 +386,7 @@ steps:
       as: n
       steps:
         - id: inner
-          echo:
+          log:
             message: hello
 `
 	_, positions, err := flowfile.Parse([]byte(src))
@@ -402,10 +402,10 @@ steps:
 		{path: "name", start: flowfile.Position{Line: 2, Column: 7}, end: flowfile.Position{Line: 2, Column: 16}},
 		{path: "steps[0].id", start: flowfile.Position{Line: 4, Column: 9}, end: flowfile.Position{Line: 4, Column: 14}},
 		{path: "steps[0].timeout", start: flowfile.Position{Line: 5, Column: 14}, end: flowfile.Position{Line: 5, Column: 17}},
-		{path: "steps[0].echo.message", start: flowfile.Position{Line: 7, Column: 16}, end: flowfile.Position{Line: 7, Column: 34}},
+		{path: "steps[0].log.message", start: flowfile.Position{Line: 7, Column: 16}, end: flowfile.Position{Line: 7, Column: 34}},
 		{path: "steps[1].for_each.items", start: flowfile.Position{Line: 10, Column: 14}, end: flowfile.Position{Line: 10, Column: 23}},
 		{path: "steps[1].for_each.as", start: flowfile.Position{Line: 11, Column: 11}, end: flowfile.Position{Line: 11, Column: 12}},
-		{path: "steps[1].for_each.steps[0].echo.message", start: flowfile.Position{Line: 15, Column: 22}, end: flowfile.Position{Line: 15, Column: 27}},
+		{path: "steps[1].for_each.steps[0].log.message", start: flowfile.Position{Line: 15, Column: 22}, end: flowfile.Position{Line: 15, Column: 27}},
 	}
 
 	for _, tt := range tests {
@@ -422,7 +422,7 @@ steps:
 
 	// An expression's span excludes the fence, which is what an editor underlines
 	// for a problem with the expression itself.
-	span, ok := positions.ExprAt("steps[0].echo.message")
+	span, ok := positions.ExprAt("steps[0].log.message")
 	if !ok {
 		t.Fatal("ExprAt() not recorded for a fenced expression")
 	}
@@ -528,7 +528,7 @@ steps:
       items: targets.result
       steps:
         - id: b
-          echo:
+          log:
             message: hi
 `,
 			check: func(t *testing.T, step *v1.Node) {
@@ -545,7 +545,7 @@ steps:
       items: [1, 2]
       steps:
         - id: b
-          echo:
+          log:
             message: hi
 `,
 			check: func(t *testing.T, step *v1.Node) {
@@ -623,8 +623,8 @@ name: zero
 steps:
   - id: a
     continue_on_error: false
-    printf:
-      format: ""
+    log:
+      message: ""
       args: [0, false, ""]
       count: 0
       enabled: false
@@ -641,7 +641,7 @@ steps:
 
 	inputs := step.GetTask().GetInputs()
 	for name, check := range map[string]func(*v1.Value) bool{
-		"format":  func(v *v1.Value) bool { return v.GetLiteral().GetStringValue() == "" },
+		"message": func(v *v1.Value) bool { return v.GetLiteral().GetStringValue() == "" },
 		"count":   func(v *v1.Value) bool { return v.GetLiteral().GetInt64Value() == 0 },
 		"enabled": func(v *v1.Value) bool { return v.GetLiteral().GetBoolValue() == false },
 	} {
@@ -676,16 +676,16 @@ steps:
     retry: &policy
       attempts: 3
       interval: 1s
-    echo: &echo
+    log: &log
       message: one
   - id: b
     retry: *policy
-    echo: *echo
+    log: *log
   - id: c
     retry:
       <<: *policy
       attempts: 5
-    echo:
+    log:
       message: three
 `
 	wf, err := flowfile.Unmarshal([]byte(src))
@@ -713,7 +713,7 @@ func TestParseRejectsSelfReferentialAlias(t *testing.T) {
 name: t
 steps: &loop
   - id: a
-    echo:
+    log:
       message: *loop
 `
 	if _, err := flowfile.Unmarshal([]byte(src)); err == nil {
@@ -787,7 +787,7 @@ steps:
         - id: inner
           if: ${n > 1}
           timeout: 5s
-          echo:
+          log:
             message: ${string(n)}
 `,
 		},
@@ -800,12 +800,12 @@ steps:
     parallel:
       - steps:
           - id: left
-            echo:
+            log:
               message: left
       - steps:
           - id: right
             continue_on_error: true
-            echo:
+            log:
               message: right
 `,
 		},
@@ -822,7 +822,7 @@ steps:
               items: ${['a']}
               steps:
                 - id: body
-                  echo:
+                  log:
                     message: ${item}
 `,
 		},
@@ -840,7 +840,7 @@ steps:
       backoff: 2
       max_interval: 10s
     continue_on_error: true
-    echo:
+    log:
       message: go
 `,
 		},
@@ -851,7 +851,7 @@ name: defaults
 steps:
   - id: a
     retry: {}
-    echo:
+    log:
       message: hi
 `,
 		},
@@ -868,11 +868,12 @@ steps:
         B: ${string(2)}
       outputs: "${ {'status': status_code, 'body': body} }"
   - id: b
-    printf:
-      format: "%s %d"
+    vars:
       args:
-        - ${a.status}
+        - ${steps.a.status}
         - 0
+    log:
+      message: ${string(args)}
 `,
 		},
 		{
@@ -881,13 +882,14 @@ steps:
 name: literals
 steps:
   - id: a
-    cel:
-      expr: "1 + 1"
+    vars:
       empty: ""
       list: [1, 2, 3]
       nested:
         k: v
         n: 0
+    log:
+      message: ${empty}
 `,
 		},
 		{
@@ -897,7 +899,7 @@ name: described
 description: ""
 steps:
   - id: a
-    echo:
+    log:
       message: hi
 `,
 		},
@@ -927,7 +929,7 @@ func TestMarshalReportsWhatItCannotWrite(t *testing.T) {
 name: t
 steps:
   - id: a
-    echo:
+    log:
       message: ${['x'].map(v, v).size()}
 `))
 		if err != nil {
@@ -952,7 +954,7 @@ steps:
 			Steps: []*v1.Node{{
 				Id: "a",
 				Kind: &v1.Node_Task{Task: &v1.Task{
-					Name:   "echo",
+					Name:   "log",
 					Inputs: map[string]*v1.Value{"message": v1.NewLiteral("${a.result}")},
 				}},
 			}},
@@ -971,7 +973,7 @@ steps:
 				Id:        "a",
 				Condition: v1.NewLiteral("ready"),
 				Kind: &v1.Node_Task{Task: &v1.Task{
-					Name:   "echo",
+					Name:   "log",
 					Inputs: map[string]*v1.Value{"message": v1.NewLiteral("hi")},
 				}},
 			}},
@@ -1049,7 +1051,7 @@ func requireExpr(t *testing.T, value *v1.Value, want string) {
 // stepWith returns a workflow whose single step carries the given property line.
 func stepWith(property string) string {
 	return "edition: v2026.2\nname: t\nsteps:\n  - id: a\n    " + property + `
-    echo:
+    log:
       message: hi
 `
 }
@@ -1060,7 +1062,7 @@ func taskInput(input string) string {
 name: t
 steps:
   - id: a
-    echo:
+    log:
       ` + input + "\n"
 }
 
@@ -1118,7 +1120,7 @@ steps:
   - id: a
     retry:
       backoff: fast
-    echo:
+    log:
 `,
 			want: "must be a number",
 		},
@@ -1129,7 +1131,7 @@ name: t
 steps:
   - id: a
     continue_on_error: sometimes
-    echo:
+    log:
 `,
 			want: "must be true or false",
 		},
@@ -1140,7 +1142,7 @@ name: t
 steps:
   - id: a
     timeout: 0s
-    echo:
+    log:
 `,
 			want: "must be greater than zero",
 		},
@@ -1183,7 +1185,7 @@ steps:
 name: t
 steps:
   - id: a
-    echo: hello
+    log: hello
 `,
 			// The value under a task's name is its inputs, so a scalar there is an
 			// author reaching for a shorthand the grammar does not have.
@@ -1211,7 +1213,7 @@ steps:
 name: ${chosen}
 steps:
   - id: a
-    echo:
+    log:
 `,
 			want: "name: cannot be an expression",
 		},
@@ -1266,7 +1268,7 @@ func TestParseValueKinds(t *testing.T) {
 name: t
 steps:
   - id: a
-    cel:
+    vars:
       text: plain
       number: 7
       fraction: 1.5
@@ -1279,12 +1281,14 @@ steps:
         lines
       mapping:
         k: v
+    log:
+      message: ${text}
 `
 	workflow, err := flowfile.Unmarshal([]byte(literals))
 	if err != nil {
 		t.Fatalf("Unmarshal() error: %v", err)
 	}
-	inputs := workflow.GetSteps()[0].GetTask().GetInputs()
+	values := workflow.GetSteps()[0].GetVars()
 	for name, want := range map[string]string{
 		"text":     "plain",
 		"number":   "7",
@@ -1294,13 +1298,13 @@ steps:
 		"big":      "18446744073709551615",
 		"block":    "two\nlines\n",
 	} {
-		got := inputs[name].GetLiteral()
+		got := values[name].GetLiteral()
 		if got == nil {
-			t.Errorf("input %q is not a literal: %v", name, inputs[name])
+			t.Errorf("var %q is not a literal: %v", name, values[name])
 			continue
 		}
 		if text := literalText(got); text != want {
-			t.Errorf("input %q = %s, want %s", name, text, want)
+			t.Errorf("var %q = %s, want %s", name, text, want)
 		}
 	}
 	requireRoundTrip(t, workflow)
@@ -1310,7 +1314,7 @@ steps:
 name: t
 steps:
   - id: a
-    cel:
+    vars:
       vals:
         text: plain
         number: 7
@@ -1319,12 +1323,14 @@ steps:
         nothing: null
         list: [1, hello]
         computed: ${1 + 1}
+    log:
+      message: ${string(vals)}
 `
 	workflow, err = flowfile.Unmarshal([]byte(computed))
 	if err != nil {
 		t.Fatalf("Unmarshal() error: %v", err)
 	}
-	value := workflow.GetSteps()[0].GetTask().GetInputs()["vals"]
+	value := workflow.GetSteps()[0].GetVars()["vals"]
 	requireExpr(t, value,
 		`{"text": "plain", "number": 7, "fraction": 1.5, "flag": true, "nothing": null, "list": [1, "hello"], "computed": 1 + 1}`)
 	requireRoundTrip(t, workflow)
@@ -1362,55 +1368,21 @@ steps:
       ` + keys + `
       steps:
         - id: b
-          echo:
+          log:
 `
-}
-
-// TestParseHoistsCelVars pins the one place the compiler reshapes what was written:
-// a `vars` mapping is flattened into the inputs around it.
-//
-// The cel task binds every input it does not recognize as a variable, and needs
-// each one resolved on its own — a nested map holding an expression would arrive as
-// one expression the task cannot resolve. Compiling `vars` as written would break
-// every workflow that passes a step output through it.
-func TestParseHoistsCelVars(t *testing.T) {
-	workflow, err := flowfile.Unmarshal([]byte(`edition: v2026.2
-name: t
-steps:
-  - id: greet
-    echo:
-      message: hello
-  - id: modify
-    cel:
-      expr: "vars.greeting"
-      vars:
-        greeting: ${greet.result}
-`))
-	if err != nil {
-		t.Fatalf("Unmarshal() error: %v", err)
-	}
-
-	inputs := workflow.GetSteps()[1].GetTask().GetInputs()
-	if _, present := inputs["vars"]; present {
-		t.Error("vars should have been flattened into the inputs around it")
-	}
-	greeting, ok := inputs["greeting"]
-	if !ok {
-		t.Fatalf("greeting was not hoisted; inputs are %v", inputs)
-	}
-	requireExpr(t, greeting, "greet.result")
 }
 
 // TestVarsUnderATaskThatHasNoVarsIsReportedWhereItWasWritten pins a diagnostic's
 // position, which is the thing this file treats as a feature.
 //
-// `vars:` is a compatibility shim for the cel task, whose inputs are whatever its
-// expression references. The hoist that implements it used to fire on the key name
-// alone, for every task — so writing `vars:` under `echo` emptied it into the
-// surrounding inputs and then reported the *contents* as unknown inputs:
+// `vars:` is a step key, one level up from a task's inputs — so `vars:` written
+// *under* a task is an input no task declares. The hoist that once flattened it for
+// the cel task fired on the key name alone, for every task, so writing `vars:` under
+// a task emptied it into the surrounding inputs and then reported the *contents* as
+// unknown inputs:
 //
-//	step "a" input "greeting": task "echo" has no such input; it accepts message
-//	step "a": task "echo" requires input "message" (a string)
+//	step "a" input "greeting": task "log" has no such input; it accepts message
+//	step "a": task "log" requires input "message" (a string)
 //
 // Neither line names `vars`, which is the only thing the author wrote wrong. They
 // are sent looking for a mistake in a key they did not type, at a level they did
@@ -1422,7 +1394,7 @@ func TestVarsUnderATaskThatHasNoVarsIsReportedWhereItWasWritten(t *testing.T) {
 name: misplaced-vars
 steps:
   - id: a
-    echo:
+    log:
       message: hi
       vars:
         greeting: hello
@@ -1438,7 +1410,7 @@ steps:
 
 	reported := diagnostics.Error()
 
-	// It is reported as an input `echo` does not have — which is exactly what it
+	// It is reported as an input `log` does not have — which is exactly what it
 	// is — and it is reported against `vars`, the key in the file.
 	if !strings.Contains(reported, `"vars"`) {
 		t.Errorf("the diagnostic does not name the key the author actually wrote:\n%s", reported)

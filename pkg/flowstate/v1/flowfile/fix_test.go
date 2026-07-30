@@ -42,7 +42,7 @@ name: t
 steps:
   - id: a
     task:
-      name: echo
+      name: log
       inputs:
         message: hello
 `,
@@ -50,7 +50,7 @@ steps:
 name: t
 steps:
   - id: a
-    echo:
+    log:
       message: hello
 `,
 		},
@@ -66,7 +66,7 @@ steps:
     timeout: 30s
     if: ${b.result}
     task:
-      name: echo
+      name: log
       inputs:
         message: hello
     continue_on_error: true
@@ -77,7 +77,7 @@ steps:
   - id: a
     timeout: 30s
     if: ${b.result}
-    echo:
+    log:
       message: hello
     continue_on_error: true
 `,
@@ -92,7 +92,7 @@ name: t
 steps:
   - id: a
     task:
-      name: echo
+      name: log
       description: greets the world
       inputs:
         message: hello
@@ -102,7 +102,7 @@ name: t
 steps:
   - id: a
     description: greets the world
-    echo:
+    log:
       message: hello
 `,
 		},
@@ -141,13 +141,13 @@ name: t
 steps:
   - id: a
     task:
-      name: echo
+      name: log
 `,
 			want: `edition: v2026.2
 name: t
 steps:
   - id: a
-    echo: {}
+    log: {}
 `,
 		},
 		{
@@ -161,7 +161,7 @@ steps:
       steps:
         - id: inner
           task:
-            name: echo
+            name: log
             inputs:
               message: hi
 `,
@@ -173,7 +173,7 @@ steps:
       items: ${[1, 2]}
       steps:
         - id: inner
-          echo:
+          log:
             message: hi
 `,
 		},
@@ -187,13 +187,13 @@ steps:
       - steps:
           - id: one
             task:
-              name: echo
+              name: log
               inputs:
                 message: a
       - steps:
           - id: two
             task:
-              name: echo
+              name: log
               inputs:
                 message: b
 `,
@@ -204,11 +204,11 @@ steps:
     parallel:
       - steps:
           - id: one
-            echo:
+            log:
               message: a
       - steps:
           - id: two
-            echo:
+            log:
               message: b
 `,
 		},
@@ -223,7 +223,7 @@ steps:
   # why this step is here
   - id: a
     task:
-      name: echo
+      name: log
       inputs:
         message: hello # and a trailing one
 `,
@@ -232,7 +232,7 @@ name: t
 steps:
   # why this step is here
   - id: a
-    echo:
+    log:
       message: hello # and a trailing one
 `,
 		},
@@ -252,7 +252,7 @@ steps:
   - id: a
     task:
       # which task this is
-      name: echo
+      name: log
       inputs:
         # what to say
         message: hello
@@ -263,7 +263,7 @@ name: t
 steps:
   - id: a
     # which task this is
-    echo:
+    log:
       # what to say
       message: hello
       # and a note after it
@@ -287,7 +287,7 @@ name: t
 steps:
   - id: a
     task:
-      name: echo
+      name: log
       inputs:
         message: hi
       # a note beside the inputs key
@@ -298,7 +298,7 @@ name: t
 steps:
   - id: a
     # a note beside the inputs key
-    echo:
+    log:
       message: hi
     # a note beside the task key
 `,
@@ -316,7 +316,7 @@ name: t
 steps:
   - id: a
     task:
-      name: echo
+      name: log
       inputs:
 
         message: hi
@@ -325,7 +325,7 @@ steps:
 name: t
 steps:
   - id: a
-    echo:
+    log:
 
       message: hi
 `,
@@ -344,7 +344,7 @@ steps:
   - id: a
     task:
 # pushed to the margin
-      name: echo
+      name: log
       inputs:
         message: hi
 `,
@@ -353,7 +353,7 @@ name: t
 steps:
   - id: a
     # pushed to the margin
-    echo:
+    log:
       message: hi
 `,
 		},
@@ -367,23 +367,23 @@ name: t
 steps:
   - id: a
     task:
-      name: echo
+      name: log
       inputs:
         message: hi
         # a note under the last input
   - id: b
-    echo:
+    log:
       message: bye
 `,
 			want: `edition: v2026.2
 name: t
 steps:
   - id: a
-    echo:
+    log:
       message: hi
       # a note under the last input
   - id: b
-    echo:
+    log:
       message: bye
 `,
 		},
@@ -398,7 +398,7 @@ name: t
 steps:
   - id: a
     task: # why there is a step here
-      name: echo # the greeting one
+      name: log # the greeting one
       inputs: # what it says
         message: hi
 `,
@@ -409,7 +409,7 @@ steps:
     # why there is a step here
     # the greeting one
     # what it says
-    echo:
+    log:
       message: hi
 `,
 		},
@@ -426,12 +426,12 @@ steps:
   - &first
     id: a
     task:
-      name: echo
+      name: log
       inputs:
         message: hi
   - id: b
     <<: *first
-    echo:
+    log:
       message: bye
 `,
 			want: `edition: v2026.2
@@ -439,11 +439,11 @@ name: t
 steps:
   - &first
     id: a
-    echo:
+    log:
       message: hi
   - id: b
     <<: *first
-    echo:
+    log:
       message: bye
 `,
 		},
@@ -457,7 +457,7 @@ name: t
 steps:
   - id: a
     task:
-      name: echo
+      name: log
       inputs:
         message: |
           first
@@ -468,7 +468,7 @@ steps:
 name: t
 steps:
   - id: a
-    echo:
+    log:
       message: |
         first
           indented
@@ -502,13 +502,13 @@ func TestFixLeavesACurrentFileByteForByte(t *testing.T) {
 	t.Parallel()
 
 	srcs := []string{
-		"edition: v2026.2\nname: t\nsteps:\n  - id: a\n    echo:\n      message: hi\n",
+		"edition: v2026.2\nname: t\nsteps:\n  - id: a\n    log:\n      message: hi\n",
 		// Odd but legal spacing, blank lines, comments, and a trailing newline that
 		// a naive round trip would normalise away.
-		"# leading comment\nedition: v2026.2\nname:    t\n\nsteps:\n\n  - id: a\n\n    echo:\n      message:   hi\n\n",
+		"# leading comment\nedition: v2026.2\nname:    t\n\nsteps:\n\n  - id: a\n\n    log:\n      message:   hi\n\n",
 		// Flow style that is already current, which the refusal path must not catch:
 		// there is no `task:` here to refuse.
-		"edition: v2026.2\nname: t\nsteps: [{id: a, echo: {message: hi}}]\n",
+		"edition: v2026.2\nname: t\nsteps: [{id: a, log: {message: hi}}]\n",
 		// A document with no steps at all.
 		"edition: v2026.2\nname: t\n",
 	}
@@ -540,19 +540,19 @@ func TestFixRefusesRatherThanGuesses(t *testing.T) {
 	}{
 		{
 			name: "a task written in flow style",
-			src:  "edition: v2026.2\nname: t\nsteps:\n  - id: a\n    task: {name: echo, inputs: {message: hi}}\n",
+			src:  "edition: v2026.2\nname: t\nsteps:\n  - id: a\n    task: {name: log, inputs: {message: hi}}\n",
 			says: "flow style",
 		},
 		{
 			name: "inputs written in flow style",
-			src:  "edition: v2026.2\nname: t\nsteps:\n  - id: a\n    task:\n      name: echo\n      inputs: {message: hi}\n",
+			src:  "edition: v2026.2\nname: t\nsteps:\n  - id: a\n    task:\n      name: log\n      inputs: {message: hi}\n",
 			says: "flow style",
 		},
 		{
 			// There is no way to know what the alias will contain, and guessing
 			// produces a file that looks right and names the wrong task.
 			name: "a task standing behind an alias",
-			src:  "edition: v2026.2\nname: t\nbase: &b\n  name: echo\n  inputs:\n    message: hi\nsteps:\n  - id: a\n    task: *b\n",
+			src:  "edition: v2026.2\nname: t\nbase: &b\n  name: log\n  inputs:\n    message: hi\nsteps:\n  - id: a\n    task: *b\n",
 			says: "alias",
 		},
 		{
@@ -562,7 +562,7 @@ func TestFixRefusesRatherThanGuesses(t *testing.T) {
 		},
 		{
 			name: "a task whose name is not a plain value",
-			src:  "edition: v2026.2\nname: t\nsteps:\n  - id: a\n    task:\n      name: [echo]\n      inputs:\n        message: hi\n",
+			src:  "edition: v2026.2\nname: t\nsteps:\n  - id: a\n    task:\n      name: [log]\n      inputs:\n        message: hi\n",
 			says: "no `name:`",
 		},
 	}
@@ -598,17 +598,16 @@ name: t
 steps:
   - id: fine
     task:
-      name: echo
+      name: log
       inputs:
         message: hello
   - id: awkward
-    task: {name: echo, inputs: {message: hi}}
+    task: {name: log, inputs: {message: hi}}
   - id: alsofine
     task:
-      name: printf
+      name: http
       inputs:
-        format: "%s"
-        args: [x]
+        url: https://example.com
 `
 	result, err := flowfile.Fix([]byte(src))
 	require.NoError(t, err)
@@ -617,9 +616,9 @@ steps:
 	require.Len(t, result.Refusals, 1, "the flow-style one is reported")
 
 	rewritten := string(result.Source)
-	assert.Contains(t, rewritten, "    echo:\n      message: hello")
-	assert.Contains(t, rewritten, "    printf:\n      format: \"%s\"")
-	assert.Contains(t, rewritten, "task: {name: echo, inputs: {message: hi}}",
+	assert.Contains(t, rewritten, "    log:\n      message: hello")
+	assert.Contains(t, rewritten, "    http:\n      url: https://example.com")
+	assert.Contains(t, rewritten, "task: {name: log, inputs: {message: hi}}",
 		"the refused step is left exactly as written")
 }
 
@@ -638,7 +637,7 @@ name: t
 steps:
   - id: a
     task:
-      name: echo
+      name: log
       description: greets
       inputs:
         message: hello
@@ -649,10 +648,9 @@ steps:
       steps:
         - id: inner
           task:
-            name: printf
+            name: log
             inputs:
-              format: "%d"
-              args: [1]
+              message: one
 `
 	once, err := flowfile.Fix([]byte(src))
 	require.NoError(t, err)
@@ -675,7 +673,7 @@ name: t
 steps:
   - id: a
     task:
-      name: echo
+      name: log
       inputs:
         message: hello
 `
@@ -685,7 +683,7 @@ steps:
 
 	// Line 4 is `task:`, the key that went away.
 	assert.Equal(t, 5, result.Changes[0].Line)
-	assert.Contains(t, result.Changes[0].Message, "echo")
+	assert.Contains(t, result.Changes[0].Message, "log")
 }
 
 // TestFixRefusesADocumentThatIsNotYAML draws the line between a report and an
@@ -705,7 +703,7 @@ func TestFixRefusesADocumentThatIsNotYAML(t *testing.T) {
 func TestFixBoundsItsInput(t *testing.T) {
 	t.Parallel()
 
-	huge := "edition: v2026.2\nname: t\nsteps:\n" + strings.Repeat("  - id: a\n    echo: {}\n", 200_000)
+	huge := "edition: v2026.2\nname: t\nsteps:\n" + strings.Repeat("  - id: a\n    log: {}\n", 200_000)
 	require.Greater(t, len(huge), 1<<20, "premise: the input is over the limit")
 
 	_, err := flowfile.Fix([]byte(huge))
@@ -734,7 +732,7 @@ func TestFixRefusesToDowngradeAnEditionItDoesNotKnow(t *testing.T) {
 name: t
 steps:
   - id: a
-    echo:
+    log:
       message: hi
 `
 	result, err := flowfile.Fix([]byte(src))
@@ -759,7 +757,7 @@ func TestFixStampsAnEditionOntoAFileWithoutOne(t *testing.T) {
 steps:
   - id: a
     task:
-      name: echo
+      name: log
       inputs:
         message: hi
 `
@@ -770,7 +768,7 @@ steps:
 	rewritten := string(result.Source)
 	assert.True(t, strings.HasPrefix(rewritten, "edition: "+flowfile.CurrentEdition+"\n"),
 		"the marker is written first, where a statement about the whole document belongs:\n%s", rewritten)
-	assert.Contains(t, rewritten, "    echo:\n      message: hi",
+	assert.Contains(t, rewritten, "    log:\n      message: hi",
 		"the task block is still rewritten")
 
 	// And the result is a file this build accepts, which is the whole reason the
@@ -794,7 +792,7 @@ func TestFixStampsBelowAHeaderComment(t *testing.T) {
 name: t
 steps:
   - id: a
-    echo:
+    log:
       message: hi
 `
 	result, err := flowfile.Fix([]byte(src))
@@ -815,7 +813,7 @@ func TestFixKeepsACurrentEditionMarkerAsWritten(t *testing.T) {
 		`edition: "` + flowfile.CurrentEdition + `"`,
 		"edition: " + flowfile.CurrentEdition,
 	} {
-		src := marker + "\nname: t\nsteps:\n  - id: a\n    echo:\n      message: hi\n"
+		src := marker + "\nname: t\nsteps:\n  - id: a\n    log:\n      message: hi\n"
 
 		result, err := flowfile.Fix([]byte(src))
 		require.NoError(t, err)
@@ -940,14 +938,14 @@ func unflatten(t *testing.T, src string) string {
 func TestFixKeepsTheLineEndingsItFound(t *testing.T) {
 	t.Parallel()
 
-	crlf := "edition: v2026.2\r\nname: t\r\nsteps:\r\n  - id: a\r\n    task:\r\n      name: echo\r\n      inputs:\r\n        message: hi\r\n"
+	crlf := "edition: v2026.2\r\nname: t\r\nsteps:\r\n  - id: a\r\n    task:\r\n      name: log\r\n      inputs:\r\n        message: hi\r\n"
 
 	result, err := flowfile.Fix([]byte(crlf))
 	require.NoError(t, err)
 	require.True(t, result.Changed())
 
 	out := string(result.Source)
-	assert.Equal(t, "edition: v2026.2\r\nname: t\r\nsteps:\r\n  - id: a\r\n    echo:\r\n      message: hi\r\n", out)
+	assert.Equal(t, "edition: v2026.2\r\nname: t\r\nsteps:\r\n  - id: a\r\n    log:\r\n      message: hi\r\n", out)
 
 	// Stated separately, because "every line ends the same way" is the property and
 	// the exact bytes above are only one instance of it.
@@ -956,7 +954,7 @@ func TestFixKeepsTheLineEndingsItFound(t *testing.T) {
 
 	// And the other direction: a plain LF document does not acquire carriage
 	// returns from anywhere.
-	lf := "edition: v2026.2\nname: t\nsteps:\n  - id: a\n    task:\n      name: echo\n      inputs:\n        message: hi\n"
+	lf := "edition: v2026.2\nname: t\nsteps:\n  - id: a\n    task:\n      name: log\n      inputs:\n        message: hi\n"
 	plain, err := flowfile.Fix([]byte(lf))
 	require.NoError(t, err)
 	assert.NotContains(t, string(plain.Source), "\r")
@@ -976,7 +974,7 @@ name: t
 steps:
   - id: a
     task:
-      name: echo
+      name: log
       inputs:
         message: "a # b"
 `
@@ -1009,7 +1007,7 @@ steps:
   - &first
     id: a
     task:
-      name: echo
+      name: log
       inputs:
         message: hi
 `,
@@ -1018,7 +1016,7 @@ name: t
 steps: &all
   - id: a
     task:
-      name: echo
+      name: log
       inputs:
         message: hi
 `,
@@ -1031,7 +1029,7 @@ steps:
       steps: &body
         - id: inner
           task:
-            name: echo
+            name: log
             inputs:
               message: hi
 `,
@@ -1044,7 +1042,7 @@ steps:
         steps:
           - id: one
             task:
-              name: echo
+              name: log
               inputs:
                 message: a
 `,
@@ -1102,31 +1100,31 @@ func TestFixLeavesDeferredInputsAlone(t *testing.T) {
 name: t
 steps:
   - id: status_code
-    echo:
-      message: a step sharing a response field's name
+    http:
+      url: https://example.com/other
   - id: fetch
     http:
       url: https://example.com
       expect: ${status_code == 200}
       outputs: "${ {'code': status_code} }"
   - id: after
-    echo:
-      message: ${status_code.result}
+    log:
+      message: ${status_code.body}
 `
 	want := `edition: v2026.2
 name: t
 steps:
   - id: status_code
-    echo:
-      message: a step sharing a response field's name
+    http:
+      url: https://example.com/other
   - id: fetch
     http:
       url: https://example.com
       expect: ${response.status_code == 200}
       outputs: "${ {'code': response.status_code} }"
   - id: after
-    echo:
-      message: ${steps.status_code.result}
+    log:
+      message: ${steps.status_code.body}
 `
 	result, err := flowfile.Fix([]byte(src))
 	require.NoError(t, err)
@@ -1136,33 +1134,6 @@ steps:
 
 	_, _, err = flowfile.Parse(result.Source)
 	assert.NoError(t, err)
-}
-
-// TestFixLeavesTheCelTasksOwnScopeAlone is the same rule on the other task that
-// declares deferred inputs, so the fix is not one task's special case.
-func TestFixLeavesTheCelTasksOwnScopeAlone(t *testing.T) {
-	t.Parallel()
-
-	src := `edition: v2026.2
-name: t
-steps:
-  - id: total
-    echo:
-      message: a step sharing a var's name
-  - id: compute
-    cel:
-      expr: "total * 2"
-      vars:
-        total: 21
-  - id: after
-    echo:
-      message: ${total.result}
-`
-	result, err := flowfile.Fix([]byte(src))
-	require.NoError(t, err)
-	assert.Contains(t, string(result.Source), `expr: "total * 2"`,
-		"the cel task binds its own vars, so `total` there is not the step")
-	assert.Contains(t, string(result.Source), "message: ${steps.total.result}")
 }
 
 // TestFixNotesADeferredInputThatNamesAStep is the other half of leaving deferred
@@ -1185,7 +1156,7 @@ func TestFixNotesADeferredInputThatNamesAStep(t *testing.T) {
 name: t
 steps:
   - id: threshold
-    echo:
+    log:
       message: hi
   - id: fetch
     http:
@@ -1219,7 +1190,7 @@ func TestFixDoesNotSuggestAStepForARootedResponseName(t *testing.T) {
 name: t
 steps:
   - id: status_code
-    echo:
+    log:
       message: hi
   - id: fetch
     http:
@@ -1257,181 +1228,37 @@ steps:
 	assert.Empty(t, result.Refusals)
 }
 
-// TestFixNotesABareDeferredInputThatNamesAStep covers the deferred input that is
-// not fenced.
+// TestFixRewritesAStepsVarsLikeAnyOtherValue pins that a step's `vars:` block is
+// not mistaken for a scope the rewriter must leave alone.
 //
-// A deferred input holds an expression by construction — deferring one is the
-// registry saying the task evaluates it — but the two in the library are written
-// differently. The http task's `expect:` carries a fence, because it could have
-// been a literal. The cel task's `expr:` does not, because evaluating it is the
-// whole purpose of the task.
-//
-// Only the fenced form used to be read, and the consequence was silent in the
-// worst way: `expr:` is the input most likely to hold a step reference, nothing
-// else looks at it — the rewriter never sees an unfenced value and the validator
-// does not reference-check a deferred input — so a file with a bare `expr:`
-// migrated clean while still meaning the pre-root spelling, and kept working only
-// on the runtime's compatibility arm. A shipped example was in exactly that state
-// (`examples/http-json-via-cel`), migrated by this tool and missed by it.
-func TestFixNotesABareDeferredInputThatNamesAStep(t *testing.T) {
-	t.Parallel()
-
-	src := `edition: v2026.2
-name: t
-steps:
-  - id: web
-    echo:
-      message: hi
-  - id: title
-    cel:
-      expr: web.result + "!"
-`
-	result, err := flowfile.Fix([]byte(src))
-	require.NoError(t, err)
-
-	assert.Empty(t, result.Refusals, "nothing here is broken")
-	assert.Equal(t, src, string(result.Source), "the deferred input is left exactly as written")
-
-	require.Len(t, result.Notes, 1)
-	assert.Equal(t, 9, result.Notes[0].Line)
-	// Suggested back unfenced, because that is how it has to be written. Handing
-	// back a `${...}` here would be telling the author to make the file invalid.
-	assert.Contains(t, result.Notes[0].Message, `steps.web.result + "!"`)
-	assert.NotContains(t, result.Notes[0].Message, "${",
-		"a bare input suggested back with a fence is a suggestion that does not compile")
-}
-
-// TestFixSaysNothingAboutADeferredInputHoldingText keeps the unfenced half from
-// inventing migrations for prose.
-//
-// Reading an unfenced value as an expression is only safe because a deferred
-// input is one. Text that does not parse as CEL is declined rather than guessed
-// at — the direction that stays quiet, since a false diagnostic costs more than a
-// missing one.
-func TestFixSaysNothingAboutADeferredInputHoldingText(t *testing.T) {
-	t.Parallel()
-
-	src := `edition: v2026.2
-name: t
-steps:
-  - id: web
-    echo:
-      message: hi
-  - id: title
-    cel:
-      expr: the web result please
-`
-	result, err := flowfile.Fix([]byte(src))
-	require.NoError(t, err)
-	assert.Empty(t, result.Notes, "text that is not an expression names nothing")
-	assert.Empty(t, result.Refusals)
-}
-
-// TestFixLeavesVarsToTheValidator pins the one deferred input this note skips.
-//
-// The cel task defers `vars` alongside `expr`, but the two are not alike from a
-// Flowfile: the compiler flattens `vars:` into ordinary inputs before the engine
-// sees them, so those entries are resolved by the workflow, reference-checked by
-// the validator, and rewritten by this pass like any other input. Reading the
-// mapping here as well would report each entry twice, and the second report would
-// be the vaguer of the two.
-func TestFixLeavesVarsToTheValidator(t *testing.T) {
+// A deferred input is left as written and only noted, because the task evaluates it
+// against names this tool cannot see. A step's `vars:` is the opposite: the workflow
+// resolves it, the validator reference-checks it, and so this pass roots it like any
+// other value. Reading it as deferred would leave the one place authors most often
+// name a step un-migrated, and report it in vaguer words than the validator already
+// uses.
+func TestFixRewritesAStepsVarsLikeAnyOtherValue(t *testing.T) {
 	t.Parallel()
 
 	src := `edition: v2026.2
 name: t
 steps:
   - id: greeting
-    echo:
-      message: hi
+    http:
+      url: https://example.com
   - id: b
-    cel:
-      vars:
-        g: ${greeting.result}
-      expr: g
+    vars:
+      g: ${greeting.body}
+    log:
+      message: ${g}
 `
 	result, err := flowfile.Fix([]byte(src))
 	require.NoError(t, err)
 
-	assert.Empty(t, result.Notes, "a vars entry is an ordinary input; the validator reports it")
-	assert.Contains(t, string(result.Source), "${steps.greeting.result}",
-		"a vars entry is rewritten rather than noted, because the compiler flattens it")
-}
+	assert.Empty(t, result.Notes, "a var is an ordinary value; the validator reports it")
+	assert.Contains(t, string(result.Source), "${steps.greeting.body}",
+		"a var was left as written rather than rooted")
 
-// TestFixDoesNotAskAboutANameTheStepBinds keeps the deferred-input note from
-// firing where the author has already answered it.
-//
-// The note is worded as a question — "if it means the step" — because the tool
-// genuinely cannot tell a task's own scope from the workflow's. That wording
-// stops being honest once the file says which: a name bound as a variable in the
-// same step is that variable, and asking anyway sends the author to root a
-// reference that would break the step if they did.
-//
-// Both spellings the cel task accepts are covered, because the compiler treats
-// them identically — under `vars:`, and beside it as an undeclared input — and a
-// check that knew only about `vars:` would still be wrong half the time.
-func TestFixDoesNotAskAboutANameTheStepBinds(t *testing.T) {
-	t.Parallel()
-
-	for name, src := range map[string]string{
-		"declared under vars": `edition: v2026.2
-name: t
-steps:
-  - id: total
-    echo:
-      message: a step sharing a var's name
-  - id: compute
-    cel:
-      expr: "total * 2"
-      vars:
-        total: 21
-`,
-		"declared beside vars": `edition: v2026.2
-name: t
-steps:
-  - id: total
-    echo:
-      message: a step sharing a var's name
-  - id: compute
-    cel:
-      expr: "total * 2"
-      total: 21
-`,
-	} {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-
-			result, err := flowfile.Fix([]byte(src))
-			require.NoError(t, err)
-			assert.Empty(t, result.Notes,
-				"`total` is bound by the step, so there is nothing conditional to raise")
-			assert.Equal(t, src, string(result.Source), "and nothing to rewrite either")
-		})
-	}
-}
-
-// TestFixStillAsksWhenTheStepBindsNothing is the other direction of that
-// suppression.
-//
-// Reading the step's bindings is only worth doing if the note still fires when
-// there are none — otherwise the suppression could be silencing every note and
-// the test above would not notice.
-func TestFixStillAsksWhenTheStepBindsNothing(t *testing.T) {
-	t.Parallel()
-
-	src := `edition: v2026.2
-name: t
-steps:
-  - id: total
-    echo:
-      message: hi
-  - id: compute
-    cel:
-      expr: "total.result"
-`
-	result, err := flowfile.Fix([]byte(src))
-	require.NoError(t, err)
-
-	require.Len(t, result.Notes, 1, "nothing binds `total` here, so it is the step or a mistake")
-	assert.Contains(t, result.Notes[0].Message, "steps.total.result")
+	_, _, err = flowfile.Parse(result.Source)
+	assert.NoError(t, err)
 }

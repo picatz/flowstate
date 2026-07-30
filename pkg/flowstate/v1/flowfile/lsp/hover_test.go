@@ -13,12 +13,12 @@ import (
 // hoverSource is used by the hover tests. Positions are given as the text to point
 // at rather than as coordinates, so the tests stay readable and stay correct when
 // the source is edited.
-// The cel step's `expr` reaches the response through `vars`, which is the only
-// scope that input has. It said `json_parse(web.body)` while references were bare,
-// and that was already wrong — a deferred input is not resolved against step
-// outputs, so nothing would have reported it. Rooting is what made the difference
-// visible: `steps.web.body` in the vars mapping is a reference the compiler
-// checks, and `web.body` inside the expr never was one.
+//
+// A third step used to sit below these two: a `cel:` one whose `expr` reached the
+// response through its own `vars` mapping, there to show a deferred input being
+// resolved in a scope of its own. It went with the task at edition v2026.2, and
+// nothing here pointed at it — every case below asks about the http step, the
+// reference in the log step, or a document key.
 const hoverSource = `name: hover
 steps:
   - id: web
@@ -26,13 +26,8 @@ steps:
       method: GET
       url: https://example.com
   - id: shout
-    echo:
+    log:
       message: ${steps.web.body}
-  - id: parsed
-    cel:
-      expr: json_parse(vars.raw)
-      vars:
-        raw: ${steps.web.body}
 edition: v2026.2
 `
 
@@ -183,7 +178,7 @@ steps:
     http:
       url: https://example.com/roster
   - id: quiet
-    echo:
+    log:
       message: hi
 edition: v2026.2
 `
@@ -234,10 +229,10 @@ func TestHoverOnTheRootItself(t *testing.T) {
 	const src = `name: root
 steps:
   - id: a
-    echo:
+    log:
       message: hi
   - id: b
-    echo:
+    log:
       message: ${string(size(steps))}
 edition: v2026.2
 `
@@ -269,18 +264,18 @@ func TestHoverStaysQuietOnUnresolvableReference(t *testing.T) {
 	const src = `name: quiet
 steps:
   - id: a
-    echo:
-      message: ${steps.later.result}
+    log:
+      message: ${steps.later.body}
   - id: later
-    echo:
-      message: hi
+    http:
+      url: https://example.com
 edition: v2026.2
 `
 	c := newClient(t)
 	c.initialize()
 	c.open("file:///quiet.yaml", src)
 
-	pos := positionOf(t, src, "${steps.later.result}", len("${steps."))
+	pos := positionOf(t, src, "${steps.later.body}", len("${steps."))
 	assert.Nil(t, c.hover("file:///quiet.yaml", pos.Line, pos.Character))
 }
 
@@ -300,7 +295,7 @@ steps:
     http:
       url: https://example.com
   - id: out
-    echo:
+    log:
       message: ${web.body}
 edition: v2026.2
 `
@@ -336,7 +331,7 @@ steps:
     http:
       url: https://example.com
   - id: out
-    echo:
+    log:
       message: ${steps.web.stdout}
 edition: v2026.2
 `
@@ -357,7 +352,7 @@ steps:
     shell:
       command: ls
   - id: out
-    echo:
+    log:
       message: ${steps.mystery.stdout}
 edition: v2026.2
 `
@@ -378,9 +373,9 @@ steps:
     http:
       url: https://example.com
   - id: out
-    cel:
-      expr: "1"
-      vars:
+    http:
+      url: https://example.com
+      outputs:
         v: ${steps.web}
 edition: v2026.2
 `
@@ -471,7 +466,7 @@ func TestHoverOnSecretReferences(t *testing.T) {
 		const src = `name: secrets
 steps:
   - id: a
-    echo:
+    log:
       message: ${secret('env:API_KEY')}
 edition: v2026.2
 `
@@ -497,7 +492,7 @@ edition: v2026.2
 		const src = `name: secrets
 steps:
   - id: a
-    echo:
+    log:
       message: ${secret('API_KEY')}
 edition: v2026.2
 `
@@ -517,7 +512,7 @@ edition: v2026.2
 		const src = `name: secrets
 steps:
   - id: a
-    echo:
+    log:
       message: ${secret('vault:prod/api#token')}
 edition: v2026.2
 `
@@ -732,16 +727,19 @@ func TestSecretRefAt(t *testing.T) {
 func TestHoverUsesUTF16Columns(t *testing.T) {
 	t.Parallel()
 
+	// Both steps fetch, because the reference has to reach an output that exists:
+	// `log:` has none, and hover naming a reference it cannot resolve would leave
+	// the type assertion below with nothing to fail against.
 	const src = "name: ünïcödé\n" +
 		"steps:\n" +
 		"  - id: first\n" +
-		"    echo:\n" +
-		"      message: \"héllo wörld\"\n" +
+		"    http:\n" +
+		"      url: https://exämple.com\n" +
 		"  - id: second\n" +
 		"    http:\n" +
 		"      url: https://example.com\n" +
 		"      headers:\n" +
-		"        X-🙂-Trace: ${steps.first.result}\n"
+		"        X-🙂-Trace: ${steps.first.body}\n"
 
 	// The three unit systems genuinely disagree on this line, which is the point.
 	// Flattening dropped the `task:`/`inputs:` scaffolding, so the header sits one
@@ -750,7 +748,7 @@ func TestHoverUsesUTF16Columns(t *testing.T) {
 	// between them are what the test is about, and those are unchanged. Rooting
 	// lengthens the reference and does not touch anything before the `$`, so they
 	// are unchanged again.
-	line := "        X-🙂-Trace: ${steps.first.result}"
+	line := "        X-🙂-Trace: ${steps.first.body}"
 	dollar := strings.Index(line, "$")
 	require.Equal(t, 22, dollar, "byte column")
 	require.Equal(t, 19, len([]rune(line[:dollar])), "code point column")
@@ -767,9 +765,9 @@ func TestHoverUsesUTF16Columns(t *testing.T) {
 	// the source rather than counted a second time.
 	got := c.hover("file:///unicode.yaml", 9, 20+len("${steps.")+1)
 	require.NotNil(t, got, "hover must resolve a reference that follows non-ASCII text")
-	assert.Contains(t, hoverText(got), "`steps.first.result`")
+	assert.Contains(t, hoverText(got), "`steps.first.body`")
 	// The declared type of the output, which only appears once the reference has
-	// resolved all the way to the echo task's schema. Hover names the reference
+	// resolved all the way to the http task's schema. Hover names the reference
 	// even when it cannot resolve the producing step, so without this the fixture
 	// could stop parsing as a task and nothing here would notice.
 	assert.Contains(t, hoverText(got), "`string`")
@@ -778,7 +776,7 @@ func TestHoverUsesUTF16Columns(t *testing.T) {
 	// the reference — which is the whole of it, root included, because that is
 	// what the author wrote and what an editor should highlight.
 	require.NotNil(t, got.Range)
-	assert.Equal(t, "steps.first.result", textInRange(src, *got.Range))
+	assert.Equal(t, "steps.first.body", textInRange(src, *got.Range))
 }
 
 // positionOf returns the position of the needle in src, advanced by offset UTF-16

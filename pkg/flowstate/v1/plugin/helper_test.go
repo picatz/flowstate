@@ -323,8 +323,8 @@ func fakeManifest(mode string) (*pluginv1.PluginManifest, error) {
 			Summary: "a fake task",
 			// Reuses a message the engine already has, which exercises the
 			// no-descriptor path; descriptor reconstruction is tested directly.
-			InputMessage:  "flowstate.v1.Task.Echo.Inputs",
-			OutputMessage: "flowstate.v1.Task.Echo.Outputs",
+			InputMessage:  "flowstate.v1.Task.Log.Inputs",
+			OutputMessage: "flowstate.v1.Task.Log.Outputs",
 		}}
 		return base, nil
 	}

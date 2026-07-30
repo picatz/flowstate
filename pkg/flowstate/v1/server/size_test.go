@@ -2,6 +2,7 @@ package server_test
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
 )
 
 // A run that cannot continue must fail, and these two tests are about the one
@@ -29,17 +31,44 @@ import (
 // successfully, ran its first step, and was on attempt 5 of a workflow task
 // forty-five seconds later, with a status any listing would show as healthy.
 
-// echoing returns a step whose output is a large string.
+// bulky returns a step whose *specification* is large: a log line nobody would
+// write, carrying a literal of the requested size.
 //
-// echo returns its input, so this is the shortest way to make a run's carried
-// state grow — which is what a workload that reads a large document does without
-// anyone deciding to.
-func echoing(id string, size int) *v1.Node {
+// It weighs down the spec and nothing else. A `log` step has no outputs, so a run
+// made of these grows exactly as much as the file does — which is the case the
+// submit check is for.
+func bulky(id string, size int) *v1.Node {
 	return &v1.Node{
 		Id: id,
 		Kind: &v1.Node_Task{Task: &v1.Task{
-			Name:   "echo",
+			Name:   "log",
 			Inputs: map[string]*v1.Value{"message": v1.NewLiteral(strings.Repeat(id, size))},
+		}},
+	}
+}
+
+// producing returns a step whose *output* is a large string, built by the step
+// rather than written into the file.
+//
+// This is the shape the submit check cannot see, and it takes a request to make
+// now: no task returns a value except `http`, so the size has to come back from
+// somewhere. The loopback server generates it rather than echoing it, which keeps
+// the specification tiny while the run's state grows — the asymmetry the test is
+// about.
+//
+// Which is worth saying plainly, because it reads like a workaround and is not:
+// this is now the *only* way a run's carried state grows at all. A workload that
+// reads a large document is an http step, and its response is what it carries.
+func producing(id, httpBaseURL string, size int) *v1.Node {
+	return &v1.Node{
+		Id: id,
+		Kind: &v1.Node_Task{Task: &v1.Task{
+			Name: "http",
+			Inputs: map[string]*v1.Value{
+				"method":  v1.NewLiteral("GET"),
+				"url":     v1.NewLiteral(fmt.Sprintf("%s/bytes/%d", httpBaseURL, size)),
+				"outputs": v1.NewExpr(`{"chunk": response.body}`),
+			},
 		}},
 	}
 }
@@ -60,7 +89,7 @@ func TestRunRefusesASpecificationTooLargeToExecute(t *testing.T) {
 
 	spec := &v1.Workflow{
 		Name:  "too-large",
-		Steps: []*v1.Node{echoing("big", v1.MaxSpecBytes)},
+		Steps: []*v1.Node{bulky("big", v1.MaxSpecBytes)},
 	}
 
 	// Schema-valid, and that is the point: nothing about it is malformed. No
@@ -99,6 +128,7 @@ func TestARunTooLargeToCarryFailsRatherThanWedging(t *testing.T) {
 
 	temporal, _ := newTemporalNamespace(t)
 	startWorker(t, temporal)
+	httpBaseURL := tests.NewHTTPServer(t)
 
 	// A specification that is small, and a run that is not.
 	//
@@ -120,7 +150,7 @@ func TestARunTooLargeToCarryFailsRatherThanWedging(t *testing.T) {
 			Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
 				Items:    v1.NewLiteralList(items...),
 				Iterator: "one",
-				Body:     []*v1.Node{echoing("chunk", 40<<10)},
+				Body:     []*v1.Node{producing("chunk", httpBaseURL, 40<<10)},
 			}},
 		}},
 	}
