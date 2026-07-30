@@ -707,7 +707,25 @@ flow server
 flow lsp`,
 	}
 
-	rootCmd.PersistentFlags().BoolVarP(&verboseLogging, "verbose", "v", false, "enable verbose logging")
+	// Bound to a local rather than to the package variable, and copied across when
+	// the command actually runs.
+	//
+	// Two reasons, and the second one was silently broken. pflag writes the default
+	// into the pointer the moment the flag is declared, so binding the package
+	// variable directly meant *building* the CLI wrote to shared state — which is a
+	// data race as soon as two tests build one at once, and there is no reason
+	// constructing a command should be an observable event at all.
+	//
+	// And the default it wrote was `false`, over the top of the value
+	// `FLOWSTATE_VERBOSE_LOGGING` had just put there. That variable is documented in
+	// the README and did nothing: the environment set it, construction cleared it,
+	// and nothing in between read it. The default is now the environment's own value,
+	// so the flag overrides the variable rather than erasing it.
+	verbose := verboseLogging
+	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", verboseLogging, "enable verbose logging")
+	rootCmd.PersistentPreRun = func(*cobra.Command, []string) {
+		verboseLogging = verbose
+	}
 
 	// Run command, which executes a workflow using the Flowstate service.
 	runCmd := &cobra.Command{

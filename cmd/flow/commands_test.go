@@ -94,8 +94,6 @@ func realCommands(root *cobra.Command) []string {
 // A command with no row is one nobody finds by reading. The CLI has grown by a command
 // at a time — `fix`, `lsp`, `tasks` — and each one was a separate chance to forget.
 func TestREADMEDocumentsEveryCommand(t *testing.T) {
-	t.Parallel()
-
 	documented := documentedCommands(t)
 	for _, command := range realCommands(newRootCommand()) {
 		assert.Contains(t, documented, command,
@@ -110,8 +108,6 @@ func TestREADMEDocumentsEveryCommand(t *testing.T) {
 // learned that the documentation cannot be trusted, which is a more expensive lesson
 // than not finding a feature.
 func TestTheREADMEDocumentsNoCommandThatIsGone(t *testing.T) {
-	t.Parallel()
-
 	real := realCommands(newRootCommand())
 	for _, command := range documentedCommands(t) {
 		assert.Contains(t, real, command,
@@ -125,8 +121,6 @@ func TestTheREADMEDocumentsNoCommandThatIsGone(t *testing.T) {
 // table above can only check that a row exists; whether the tool can describe itself
 // without the README is a different question, and this is where it is asked.
 func TestEveryCommandSaysWhatItIsFor(t *testing.T) {
-	t.Parallel()
-
 	root := newRootCommand()
 	for _, command := range realCommands(root) {
 		found, _, err := root.Find(strings.Fields(command))
@@ -136,15 +130,47 @@ func TestEveryCommandSaysWhatItIsFor(t *testing.T) {
 	}
 }
 
-// TestNewRootCommandIsPure is what lets the tests above trust their answer.
+// TestBuildingTheCLITwiceBuildsTheSameCLI is what lets the tests above trust their
+// answer.
 //
-// Two calls must build the same CLI. A constructor that read a flag, an environment
-// variable or a terminal would make "which commands exist" depend on where it was
-// asked, and every assertion here would be about the test's environment rather than
-// about the tool.
-func TestNewRootCommandIsPure(t *testing.T) {
-	t.Parallel()
-
+// Two calls must produce the same set of commands. A constructor whose answer depended
+// on a flag, an environment variable or a terminal would make every assertion here
+// about the test's environment rather than about the tool.
+//
+// It does *not* claim the constructor is free of side effects, and an earlier version
+// of this test did — under the name TestNewRootCommandIsPure, which was wrong and was
+// caught by CI rather than by reading. pflag writes a flag's default into the variable
+// it is bound to the moment the flag is declared, so declaring a persistent flag bound
+// to a package variable made construction a write to shared state: two parallel tests
+// building a CLI raced on one word.
+//
+// The flag is bound to a local now and copied across in PersistentPreRun, so
+// construction writes nothing shared. These tests still run serially, because "nothing
+// shared *today*" is a property of the current flags rather than a guarantee — the next
+// persistent flag someone adds could reintroduce it, and a test suite that would go red
+// for the right reason is worth more than one that would go green for a stale one.
+func TestBuildingTheCLITwiceBuildsTheSameCLI(t *testing.T) {
 	assert.Equal(t, realCommands(newRootCommand()), realCommands(newRootCommand()),
 		"building the CLI twice produced two different sets of commands")
+}
+
+// TestBuildingTheCLIDoesNotClearTheVerboseEnvironmentVariable pins the bug the race
+// uncovered on its way past.
+//
+// `FLOWSTATE_VERBOSE_LOGGING` is documented in the README and did nothing. The
+// environment set the package variable at init; declaring `--verbose` bound to that
+// same variable then wrote the flag's `false` default straight over it, before any
+// command ran and with nothing in between reading it.
+//
+// A silent no-op is the worst shape a setting can have: it is indistinguishable from
+// one that works and is simply not taking effect for some other reason.
+func TestBuildingTheCLIDoesNotClearTheVerboseEnvironmentVariable(t *testing.T) {
+	was := verboseLogging
+	t.Cleanup(func() { verboseLogging = was })
+
+	verboseLogging = true
+	_ = newRootCommand()
+
+	assert.True(t, verboseLogging,
+		"building the CLI cleared verboseLogging, so FLOWSTATE_VERBOSE_LOGGING does nothing")
 }
