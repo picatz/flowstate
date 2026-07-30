@@ -423,6 +423,12 @@ func validateWorkflowVars(wf *v1.Workflow) Diagnostics {
 				continue
 			}
 
+			if functionNamespaces[ref] {
+				// The profile's own functions, which a var may absolutely use — the
+				// sentence below says so and this used to refuse them anyway.
+				continue
+			}
+
 			ds = append(ds, Diagnostic{
 				Field: field, Value: ref,
 				Message: fmt.Sprintf(
@@ -870,6 +876,15 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 			// `steps` was exempted when rooting landed and `vars` was not, which is
 			// the shape a second root always takes: the rule was written where the
 			// first one needed it rather than where the *category* does.
+			continue
+		}
+		if functionNamespaces[ref] {
+			// A namespaced function from the profile — `regex.replace(...)`,
+			// `math.greatest(...)`. cel-go parses the qualifier as an identifier, so
+			// it arrives here looking exactly like a name nobody bound, and every one
+			// of them was reported as an unknown step in every expression position in
+			// the language. A false diagnostic about a documented function, which is
+			// how a tool teaches people to stop reading it.
 			continue
 		}
 
@@ -1436,3 +1451,25 @@ func nodeWithID(id string, wf *v1.Workflow) *v1.Node {
 
 	return walk(wf.GetSteps())
 }
+
+// functionNamespaces are the qualifiers a profile's namespaced functions hang from.
+//
+// cel-go parses `regex.replace(s, a, b)` as a select over the identifier `regex`, so the
+// qualifier reaches the reference walk looking exactly like a name nobody bound — and
+// every use of one was reported as an unknown step, in every expression position the
+// language has. The functions are documented, `flow tasks` prints them, and the
+// validator refused them.
+//
+// Derived from the extension libraries this build ships rather than listed, so a library
+// added to a profile is covered the day it is added. Not every library contributes a
+// namespace — `strings` supplies methods like `.format()` and no qualifier — but a name
+// in this set is never a step id either, since a step called `regex` would be shadowed
+// by the functions and is a mistake worth its own diagnostic rather than this one.
+var functionNamespaces = func() map[string]bool {
+	out := make(map[string]bool, len(v1.ExtensionLibraries()))
+	for _, name := range v1.ExtensionLibraries() {
+		out[name] = true
+	}
+
+	return out
+}()
