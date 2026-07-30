@@ -483,10 +483,52 @@ func NewExpr(exprStr string) *Value {
 	return v
 }
 
+// newValueExprWithErr parses one expression into the form a specification carries.
+//
+// Parsed against the profile's environment, and that is the whole of this
+// function's difficulty. It used to parse against a bare one — `Env()` with no
+// libraries — on the reasoning that parsing does not need declarations, which is
+// true of functions and false of macros.
+//
+// A macro is expanded by the *parser*, so a parser that has not been told about one
+// does not expand it. `math.greatest(1, 2)` was stored as a receiver call on an
+// identifier named `math`, and there is no such identifier and no such method, so
+// nothing could ever evaluate it. Eighteen of the profile's macros were in that
+// state: `cel.bind`, every two-variable comprehension (`transformList`,
+// `transformMap`, `transformMapEntry`, and the three-argument `all`, `exists` and
+// `existsOne`), `sortBy`, `math.least` and `math.greatest`, `optMap`, `optFlatMap`,
+// `proto.getExt` and `proto.hasExt`.
+//
+// It failed in two different-looking ways, which is why it stayed hidden. A macro
+// whose qualifier is a name — `math.greatest` — validated cleanly and died at run
+// time with `no such attribute(s): math`. One that binds a variable —
+// `[3,1,2].sortBy(v, v)` — left `v` as a bare identifier in the stored tree, so the
+// reference walk reported `references unknown name "v"`: a false diagnostic naming
+// the macro's own bound variable, about a function the docs list and `flow tasks`
+// prints.
+//
+// The standard macros — `has`, `filter`, `map`, `all/2`, `exists/2` — always worked,
+// because they are in cel-go's default environment rather than in a library. That is
+// what made the failure look like something particular to a few functions instead of
+// what it was.
 func newValueExprWithErr(exprStr string) (*Value, error) {
-	env, err := DefaultEvaluator().Env()
+	libs, err := ProfileLibraries(CurrentProfile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve profile libraries: %w", err)
+	}
+
+	// CurrentProfile rather than a profile carried in from the caller: this is
+	// compilation, and a file compiled by this build is compiled in this build's
+	// language. What a *spec* pins is which profile evaluates it later, which is a
+	// different question and already answered by Workflow.profile.
+	base, err := DefaultEvaluator().Env(libs...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create CEL environment: %w", err)
+	}
+
+	env, err := base.Extend(cel.EnableMacroCallTracking())
+	if err != nil {
+		return nil, fmt.Errorf("failed to enable macro call tracking: %w", err)
 	}
 
 	ast, issues := env.Parse(exprStr)

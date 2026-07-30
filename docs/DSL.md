@@ -205,6 +205,36 @@ as retired, which it has to be, because `cel` binds an unrecognised input as a
 *variable* — silence there would have turned a leftover `libs:` into a binding nobody
 reads.
 
+*A correction, on where a profile actually takes effect.* "A worker evaluates a run
+against the vocabulary it was compiled with" is true of the profile's *functions* and
+was false of its *macros*, and the difference is not a detail of implementation — it
+is where in the pipeline each is resolved. A function is looked up while an expression
+evaluates, so recording the profile name in the spec is what pins it. A macro is
+expanded by the **parser**, so it is settled when the file compiles, and a compiler
+that has not been told which libraries the profile has does not expand one at all: it
+stores an ordinary call on an identifier nothing binds.
+
+Which is what it did. Flowfile expressions were parsed against a bare environment, so
+every macro the profile adds — `cel.bind`, all six two-variable comprehensions,
+`sortBy`, `math.least` and `math.greatest`, `optMap`, `optFlatMap`, `proto.getExt` and
+`proto.hasExt` — could be written, could be validated, and could never run.
+`${math.greatest(1, 2)}` died with `no such attribute(s): math`, and
+`${[3,1,2].sortBy(v, -v)}` was refused by the validator as a reference to an unknown
+name `v`, which is the macro's own bound variable. Only cel-go's standard macros
+worked, because those are in its default environment rather than in a library — so
+`filter` worked and `transformList` did not, which reads like a fact about two
+functions rather than about where either is declared.
+
+Two consequences worth keeping in view now that they are expanded. A run carries the
+expansion rather than the spelling, so what a spec pins for a macro is stronger than
+what it pins for a function: the meaning is frozen at compile time and no later worker
+can reinterpret it. And a compiled expression records the call it came from, so
+`flow fix` can still write the file back — without that, an expanded `math.greatest`
+would have been rewritten as `math.@max`, which is not a spelling anybody can write.
+That recording costs about 25% of an expression's encoded size where a macro is used,
+and 1.7% across the shipped corpus; it also repaired `flow fix`, which until now
+refused outright to write back any file containing `filter` or `map`.
+
 **Signal payloads under `<id>.payload.*`.** *(landed)* The proposal files this as
 ergonomics. It is a security fix and was prioritised as one: a signal sender used to
 inject arbitrary names into a step's output namespace, which is the namespace later
