@@ -127,8 +127,22 @@ of these is a bug, even if it passes tests.
 
 4. **Workflow-side code is pure and frozen.** Anything nondeterministic, version-sensitive,
    or I/O-bound happens inside an activity, never in workflow code. Temporal replays
-   workflow code against recorded history; impurity there corrupts in-flight runs. This
-   constraint is why expression evaluation belongs in activities.
+   workflow code against recorded history; impurity there corrupts in-flight runs.
+
+   Expression evaluation is the exception, and it is worth stating plainly because the
+   obvious inference from this invariant is wrong. Step conditions, a loop's `items:`, a
+   step's own `vars:`, and every task input that does not need prior outputs are all
+   evaluated *inline, in workflow code* — the executor holds a `workflow.Context`. cel-go
+   is version-sensitive in exactly the way this invariant is about: a profile pins which
+   functions exist and not how they are implemented. That exposure is accepted rather
+   than avoided, because routing each of those through an activity would be a round trip
+   per condition, and it is mitigated by pinning the interpreter per run (below).
+
+   Only the workflow's own `vars:` is an activity, and not for this reason. Its reason is
+   Continue-As-New, which is the one seam replay does not cover: the next segment starts
+   from `RunState` rather than from history, so an inline `vars:` would be re-evaluated at
+   the top of every segment against whatever cel-go that worker carries — a value that
+   changes halfway through a run, which nothing detects. See `engine.WorkflowVars`.
 
 5. **The registry is the single source of truth.** The engine never special-cases a task by
    name. Behavioral differences between tasks are declared as data on `TaskDef`.
@@ -462,10 +476,14 @@ the moment the wait is evaluated, and `seconds`/`minutes`/`hours`/`days`/`weeks`
 durations, so `${now + days(3)}` says what it reads as. `now` is bound there and nowhere
 else, and that placement is invariant 4 rather than an omission — its value is the
 driver's own clock (`workflow.Now` under Temporal, which replays to the same instant), so
-a deadline computed from it survives replay. A task input is resolved inside an activity,
-where each retry would read a different value and two steps in a run would disagree about
-what time it is; making the name resolvable only where a replay-safe clock exists keeps
-that version from being expressible at all.
+a deadline computed from it survives replay. A task input is the other case, and the
+reason is the split rather than the activity: most inputs resolve in workflow code where
+the same clock is available, but a task declaring `needs_prev_outputs` — `http`, and
+plugins asking for a scope — resolves its inputs inside an activity, where each retry
+would read a different value and two steps in a run would disagree about what time it is.
+Binding `now` there would give one spelling two behaviours, decided by a property of the
+task an author has no reason to know. Making the name resolvable only where a replay-safe
+clock exists in every case keeps that version from being expressible at all.
 
 `now` is written bare because it is bound where the expression is, which is what a step
 reference is not: a step is `${steps.<id>.<output>}`. Two namespaces, so the clock and a
@@ -573,8 +591,12 @@ Honest notes on where the design strains, so future work does not rediscover the
 
 - **Expression evaluation placement.** Evaluating CEL in workflow code makes payloads
   smaller and step scheduling cheaper, but it puts an evolving evaluator inside the replay
-  path, where a semantic change breaks in-flight runs (invariant 4). Resolution belongs in
-  activities; the workflow keeps orchestration, compaction, and Continue-As-New.
+  path, where a semantic change breaks in-flight runs (invariant 4). This is a live
+  tension rather than a settled one: conditions, loop `items:`, step `vars:` and most task
+  inputs *are* evaluated in workflow code today, and the exposure is held down by pinning
+  the interpreter per run rather than by moving the evaluation. Moving it would be a round
+  trip per condition. If that trade is ever revisited, the thing to measure is what
+  pinning does not cover, which is the Continue-As-New seam.
 
 - **Static reference analysis is conservative by necessity.** Compaction reads CEL ASTs to
   decide what to carry forward, which cannot see dynamically constructed expressions. When

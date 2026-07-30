@@ -77,11 +77,17 @@ func Run(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error
 
 	// The workflow's `vars:`, evaluated once for the run.
 	//
-	// Through an activity, and only when this segment does not already carry them:
-	// evaluating CEL in workflow code is not replay-safe, because a profile pins which
-	// functions exist and not how cel-go implements them. See [WorkflowVars]. A run
-	// that continued as new arrives holding the answer, so this is one round trip per
-	// *run* rather than per segment.
+	// Through an activity, and only when this segment does not already carry them.
+	// Not because CEL in workflow code is unsafe — the executor below evaluates every
+	// condition, every loop's `items:`, every step's own `vars:` and most task inputs
+	// inline, and always has. The reason is Continue-As-New, which is the one seam
+	// replay does not cover: a later segment starts from RunState rather than from
+	// history, so a `vars:` block evaluated inline would be evaluated again at the top
+	// of every segment against whatever cel-go that worker carries. See [WorkflowVars]
+	// for the whole of it.
+	//
+	// A run that continued as new arrives holding the answer, so this is one round
+	// trip per *run* rather than per segment.
 	vars := st.GetVars()
 	if len(vars) == 0 && len(st.GetWorkflow().GetVars()) > 0 {
 		var evaluated v1.Scope

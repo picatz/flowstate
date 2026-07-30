@@ -125,12 +125,19 @@ func SignalOutputs(payload *Node_Outputs, timedOut bool) *Node_Outputs {
 // wait computed from it survives replay and a worker restart.
 //
 // A task input is the other case, and it is the reason this is not simply bound
-// everywhere. Input expressions are resolved inside an activity, so a `now` there
-// would be read afresh on every attempt: a retried step would compute a different
-// value than the one that failed, and two steps in the same run would disagree
-// about what time it is. Neither is a bug anybody would find quickly. Making the
-// name resolvable in exactly the place with a clock behind it keeps the awkward
-// version from being expressible at all.
+// everywhere — though not for the reason it first looks like. Most task inputs are
+// resolved in workflow code too, where the same replay-safe clock is available; the
+// activity is taken only by a task declaring NeedsPrevOutputs, which today is `http`
+// and plugins asking for a scope.
+//
+// That split is the problem. A `now` resolved in an activity is read afresh on every
+// attempt: a retried step would compute a different value than the one that failed,
+// and two steps in the same run would disagree about what time it is. So binding the
+// name in task inputs would make it replay-safe for most tasks and not for `http` —
+// one spelling with two behaviours, decided by a property of the task an author has
+// no reason to know. Neither failure is one anybody would find quickly. Making the
+// name resolvable in exactly the place that has a clock behind it in *every* case
+// keeps the awkward version from being expressible at all.
 //
 // It is reserved as a step id for the same reason: a step named `now` would be
 // silently shadowed inside a wait expression, and `flowfile` refuses it rather
