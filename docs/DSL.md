@@ -27,6 +27,43 @@ That is the sentence the product is: *your least careful author cannot break rep
 It is also fragile in a specific way, which the proposal does not state and which is
 recorded below as a precondition rather than an open question.
 
+## The constitution
+
+The bet is the first principle of a set this document had been carrying implicitly,
+one decision at a time. They are hoisted here so a proposal can be checked against
+them before it is argued on its merits — most of what [the second
+round](#the-second-round-vocabulary-expressions-extension) refuses is refused by one
+of these.
+
+1. **The language cannot express nondeterminism.** Every effect is an activity by
+   grammar; expressions are pure and I/O-free.
+2. **A value is not an effect.** Literals and expressions produce data. Anything
+   that touches the world outside evaluation is a node kind or a task, and nothing
+   that stays inside it is either.
+3. **Expressions are explicit.** A reader tells data from code without consulting a
+   registry: where a field can hold either, the `${...}` fence decides, and nothing
+   is ever evaluated because it happens to parse.
+4. **One dialect per file, pinned per run.**
+5. **Author-chosen names stay bare; system-chosen names are rooted.** An author can
+   see every name they bound; nobody can see the names a future engine will inject.
+   `now` is the single blessed exception and pays for itself in standing guard
+   rules.
+6. **YAML is an authoring projection.** The compiled proto is the contract, and
+   anything a Flowfile can say, another surface — a form, an API, an agent — says by
+   producing the same proto.
+7. **Fail closed.** Deny beats allow, an errored rule denies, and capability is
+   granted by deployment posture rather than assumed by vocabulary.
+8. **Secrets are references until the activity that needs the value.**
+9. **Anything an outside party can grow has an explicit bound**, matched to the
+   resource that party controls.
+10. **Fewer orthogonal primitives beat many convenient ones.** A capability earns a
+    word by being inexpressible without one.
+11. **Surface syntax breaks at editions, with a rewriter.** Compiled specs and
+    running histories never break.
+12. **Built-ins and plugins describe themselves through one metadata contract**, and
+    every surface — validator, language server, CLI, UI, agent — derives from it
+    rather than keeping a copy.
+
 ## Accepted, and why
 
 **Rooted ambient names, bare local names** (`inputs.*`, `vars.*`, `steps.<id>.*`,
@@ -332,6 +369,548 @@ not a detail of implementation.
 because it will be asked for repeatedly: an IPC call inside a cost-bounded,
 replay-sensitive evaluator breaks both properties at once. Complex logic is a task.
 
+## The second round: vocabulary, expressions, extension
+
+A second proposal arrived — two, in fact, from different reviewers, converging
+independently on the same complaints — about the task vocabulary (`cel`, `echo`,
+`printf`), the expression marker, and how plugins should appear in the grammar. This
+section is the response, in the same shape as the first: accepted, changed, refused,
+with reasoning. Claims about current behaviour below were verified against the code
+and by running Flowfiles through `flow validate` and `flow run local`, per [the
+standing rule](#the-standing-rule).
+
+### The admission test for a built-in
+
+The roster was being decided task by task, which is how it came to hold an identity
+function. A step's key belongs to one of three categories, and the category decides
+where a capability lives:
+
+- **Values** — literals and expressions. Pure, replay-safe, engine-evaluated. Never
+  a task, because a task is an activity and evaluating a pure expression as an
+  effect is a category error against principles 1 and 2.
+- **Control flow** — `if:`, `for_each`, `parallel`, `sleep`, `wait_until`,
+  `wait_for_signal`, later `call:`. Node kinds in the schema. Some evaluate
+  expressions; that does not make them tasks either.
+- **Effects** — the registry. A task earns a place in the *built-in* registry only
+  by passing all four of:
+
+  1. **Vendor-free and credential-free.** Nothing that names a product.
+  2. **Its danger is governed by engine policy.** `http` qualifies *because of*
+     `netpolicy`. A task whose risk the engine cannot govern does not belong inside
+     the trust boundary.
+  3. **Universally reimplemented otherwise.** If every second plugin would ship its
+     own copy, centralize it; if only some would, don't.
+  4. **It is actually an effect.**
+
+Everything people will ask for that is really control — retries, gates, timeouts,
+fan-out — stays grammar, which is the moat: elsewhere retry logic is a marketplace
+action, here it is a property of every step because the engine owns it.
+
+### `cel:` is retired — not renamed
+
+The name is wrong the way `re2:` would be wrong where `regexp` is meant: it answers
+"which evaluator?" when the author is asking "what role does this value play?". But
+renaming it to `expr:` or `eval:` would treat the symptom. The task fails the
+admission test's fourth condition: evaluating a pure expression is not an effect,
+and paying an activity round trip plus a history entry to compute what replay could
+recompute for free is the grammar miscategorizing its own bet.
+
+What the task actually serves is three needs, each with a better home:
+
+| Need | Home |
+| --- | --- |
+| name an intermediate value | `vars:` — workflow-level and step-level |
+| derive data at the point of use | inline `${...}`, which works everywhere today |
+| shape a final result | the workflow `outputs:` contract (Phase 2) |
+
+So `cel:` is deleted at the same edition boundary that lands `vars:`, and not
+before — retiring it first would take capability away. Before and after:
+
+```yaml
+# before
+steps:
+  - id: greet
+    echo:
+      message: hello
+  - id: modify
+    cel:
+      expr: "regex.replace(vars.greeting.upperAscii(), 'HELLO', 'HI')"
+      vars:
+        greeting: ${steps.greet.result}
+  - id: shout
+    if: ${steps.modify.result.startsWith('HI')}
+    echo:
+      message: ${steps.modify.result.lowerAscii()}
+```
+
+```yaml
+# after
+vars:
+  greeting: hello
+steps:
+  - id: shout
+    vars:
+      modified: ${regex.replace(vars.greeting.upperAscii(), 'HELLO', 'HI')}
+    if: ${modified.startsWith('HI')}
+    log:
+      message: ${modified.lowerAscii()}
+```
+
+Three steps and two activity round trips become one step and one; the `cel` task's
+private `vars` input — a compatibility shim the parser already documents as one —
+disappears along with the confusion of two things named `vars`.
+
+### `echo:` is retired; `log:` is the capability it was imitating
+
+`echo` is an identity function registered as an activity. Its shipped uses are (a) a
+poor author's `vars:`, (b) hello-world scaffolding, and (c) "this branch ran"
+markers. Use (a) dies with `vars:`. Uses (b) and (c) were always a *logging* need
+served under a misleading name — echo returns; it does not emit.
+
+`log:` is a real product surface: a message a human sees in `flow run` output, the
+TUI, and the run record, durable and honest about its purpose. Its inputs are
+`message` (required), `level` (optional: `info`, `warn`, `error`; default `info`),
+and `fields` (optional string-keyed map for structured sinks). It has **no
+outputs** — referencing `${steps.announce.result}` off a log line is the `vars:`
+use case sneaking back in, and offering nothing is how the language says so. It is
+also the trivial effect the shared driver-agreement tests need, which is the one
+legitimate job `echo` was doing.
+
+```yaml
+# before
+- id: hello
+  echo:
+    message: hello world
+```
+
+```yaml
+# after
+- id: hello
+  log:
+    message: hello world
+```
+
+### `printf:` is retired — the replacement already exists
+
+Verified: `${'hello %s, you have %d step(s) left'.format([vars.name, 0])}` compiles
+and runs today, because the pinned profile ships CEL's strings extension. The
+`format` function is specified at the CEL level — cross-language, versioned, pinned
+by the profile and by Worker Versioning — which is precisely the determinism story a
+formatting facility needs, and which a task wrapping Go's `fmt` can never have,
+because that leaks the implementation language into the DSL contract. The task also
+duplicates conversion logic the expression layer owns, and rejects doubles, which
+`format` handles.
+
+```yaml
+# before
+steps:
+  - id: name
+    echo:
+      message: flowstate
+  - id: greeting
+    printf:
+      format: "hello %s, you have %d step(s) left"
+      args:
+        - ${steps.name.result}
+        - 0
+```
+
+```yaml
+# after
+vars:
+  name: flowstate
+steps:
+  - id: greeting
+    log:
+      message: ${'hello %s, you have %d step(s) left'.format([vars.name, 0])}
+```
+
+### `vars:`, and the shadowing rule that ships with it
+
+`vars` lands in the positions already planned, and the scope rules land in the same
+change — deciding them later is the Terraform `optional()` mistake this document
+already refused once.
+
+- **Workflow-level `vars:`** — constants and start-time derivations, referenced
+  rooted: `${vars.region}`. Rooted because ambient, per principle 5.
+- **Step-level `vars:`** — private bindings, referenced bare within the step:
+  `${modified}`. Bare because author-chosen and lexically local, the same standing
+  as a loop binding.
+- **Shadowing is refused, not resolved.** A bare name must be unique against every
+  bare name in scope: a step var may not collide with an enclosing loop binding, a
+  loop binding may not collide with an enclosing step var, and neither may be
+  `now`. `flow validate` reports the collision at the inner declaration. Silent
+  shadowing is how `${body}` comes to mean two things eleven lines apart.
+- **The fence stays required inside `vars` values.** A var legitimately holds the
+  literal string `"steps.greet.result"`, so this is exactly the ambiguous position
+  the fence exists for. No exception.
+
+Two spellings improve for free once static data stops impersonating computation.
+Verified: `items:` already accepts a literal YAML list — the shipped example routes
+one through a `cel` step for no reason the language imposes.
+
+```yaml
+# before (the shipped example)
+steps:
+  - id: targets
+    cel:
+      expr: "['alpha', 'beta', 'gamma']"
+  - id: process
+    for_each:
+      items: ${steps.targets.result}
+      iterator: name
+```
+
+```yaml
+# after
+vars:
+  targets: [alpha, beta, gamma]
+steps:
+  - id: process
+    for_each:
+      items: ${vars.targets}
+      as: name
+```
+
+### `for_each` reads `as:`
+
+`iterator:` is retired for `as:` in the same edition sweep. It is shorter, names the
+binding rather than the mechanism, and reads as the sentence it is: *for each item
+as name*. `flow fix` rewrites it.
+
+### `http:` stays; its response scope gets a root
+
+The name passes the test the others fail — it names the protocol, not an
+implementation or a vendor — and its danger is governed where principle 7 wants it,
+in `netpolicy`. What changes is the private scope its `expect:` and `outputs:`
+expressions evaluate in. Today those bind bare `status_code`, `headers`, `body`,
+`json`. Those are *system-chosen* names injected into an author's namespace, exactly
+the shape the signal-payload fix already rooted under `payload.*`, and for the same
+two reasons: the set will grow (a future `duration_ms` must not capture anyone's
+binding), and collisions are already representable — `as: body` on a loop enclosing
+an `http` step whose `expect:` says `body` silently reads the response, not the
+item. Every bare system name costs a guard rule forever; a root costs one spelling.
+
+So the response scope becomes `response.*`, keeping the existing field names, and
+`flow fix` roots existing expressions mechanically:
+
+```yaml
+# before
+- id: web
+  http:
+    url: https://httpbin.org/json
+    parse_json: true
+    expect: ${status_code == 200}
+    outputs:
+      title: ${json.slideshow.title}
+```
+
+```yaml
+# after
+- id: web
+  http:
+    url: https://httpbin.org/json
+    parse_json: true
+    expect: ${response.status_code == 200}
+    outputs:
+      title: ${response.json.slideshow.title}
+```
+
+This narrows the statement of principle 5 that the first round's naming model made:
+"bare local names" always meant the names an *author* binds. A loop's `as:` stays
+bare; what a task or the engine injects gets a root. `now` remains the single
+exception, already fenced by its own rules.
+
+Held for their own reviewed changes, in this order of need: structured `auth:` (so
+authors stop hand-building secret-bearing headers), an `idempotency_key`, and
+declared egress capabilities. Each interacts with policy or secrets and none blocks
+the vocabulary work.
+
+### `${...}` stays; `!expr` is refused
+
+The fence survives two challenges on its merits.
+
+**Interpolation stays refused.** `"deployed ${a} to ${b}"` is two languages in one
+scalar — a template language containing CEL fragments — and it is the direct
+mechanism of the injection class that string-splicing CI systems keep shipping.
+A value is one literal or one expression, never a string with holes; `format()` and
+concatenation are the answer, and the diagnostic already teaches them.
+
+**A YAML `!expr` tag is refused.** It looks structurally cleaner — the AST would
+know literal from expression without delimiter scanning — but it fails on the case
+that decides it: a tag changes how YAML parses the node beneath it. Write the
+natural thing,
+
+```yaml
+json: !expr {'service': vars.service}
+```
+
+and YAML reads `{...}` as a flow *mapping* with a tag on it; the expression is
+destroyed by the host syntax before CEL sees the text. It must be quoted anyway, and
+a tag plus quotes is a worse-spelled fence. The fence's whole virtue is that
+expression text always travels inside a plain string, immune to YAML's own syntax —
+`${ {'k': 1} }` works today for exactly this reason. Add that generic YAML emitters
+(the form builders and agents principle 6 exists for) handle custom tags poorly
+while `${...}` is what every model has seen, and that the fence's load-bearing
+surface *shrinks* every time the schema types another position as
+expression-known — churn on a contracting surface buys nothing. Refused, and
+recorded so the next proposal engages the flow-mapping counterexample rather than
+the aesthetics.
+
+### `value:` is refused, for now
+
+If a pure result-producing step existed, `value:` would be its right name — it says
+what the step contributes, accepts literals and expressions equally, and avoids the
+false implications of `set:`, `eval:`, `compute:`, and `run:`. But everything it
+does is `vars:` wearing a step id, and it drags real debt behind it: whether
+`${steps.roster}` should then mean the value directly, which breaks the uniform
+named-outputs model every tool reads. Adding it later is additive and cheap;
+removing it later will never happen. So: refused until a corpus file hurts without
+it, and the word joins the reserved list so no plugin takes it in the meantime.
+`assert:` is held on the same terms — it is pure, so it would be a node kind, and
+`if:` plus a failing step nearly covers it; whichever of it and Phase 2's `check:`
+lands first must be designed knowing the other is coming, because two spellings of
+"refuse to proceed" is one too many.
+
+### Plugins appear in the syntax, deliberately distinguishable
+
+ARCHITECTURE.md says a plugin task should be "indistinguishable from a built-in."
+Half of that survives contact with this round: indistinguishable in *tooling* —
+validation, completion, hover, docs, all derived from the descriptors the manifest
+already ships — yes, that is the registry invariant across a process boundary.
+Indistinguishable in *spelling*, no, for three reasons: provenance is a fact a
+reviewer needs at the step ("this line leaves the engine's code and enters code
+somebody installed"); a flat namespace makes installation order load-bearing the
+day two plugins want `deploy`; and a file using a missing plugin deserves "plugin
+`slack` is not installed on this worker," not "unknown task." That sentence in
+ARCHITECTURE.md gets amended when this lands.
+
+The spelling is **`<plugin>.<task>:`** — dotted, two segments:
+
+```yaml
+steps:
+  - id: notify
+    slack.post:
+      channel: "#deploys"
+      text: ${'released %s'.format([steps.build.version])}
+```
+
+The grammar slot is already vacant, verified twice over: `TaskManifest.name` is
+validated `^[a-z][a-z0-9_]*$`, so no task can contain a dot, and the parser's
+`couldBeATaskName` rejects dots, so a dotted key today is an unknown key rather than
+a task. A dotted key is therefore *unambiguously* a plugin reference — the
+disjointness guarantee extends without a new rule, the first segment is the name
+discovery already establishes (`flowstate-plugin-<name>`), and the language server
+gets a two-level completion tree. The dot also rhymes with the language's one idiom:
+`steps.build.version` on the read side, `slack.post` on the write side — selection,
+both times. What is refused alongside: `uses:`-style indirection (the `task:` /
+`name:` nesting this document spent an edition deleting) and distribution metadata
+in the step key (`owner/repo@ref` welds deployment concerns into every call site).
+
+Version constraints belong to the file's header, not the step:
+
+```yaml
+plugins:
+  slack: ">=2"
+  github: "1.4"
+```
+
+Declared once, auditable in one place, resolved against the worker's catalog at
+submit and refused closed — "this deployment cannot run this file" at the terminal,
+not a failing step forty minutes in. It is also what gives `flow validate` and the
+language server a schema source for `slack.post` on a machine that has the plugin,
+and the compiled spec a place to record what a run was compiled against — the
+profile-pinning logic, extended to the task surface, which replay will eventually
+demand. It lands with Phase 3, where `call:` forces the cross-file question anyway;
+the dotted-key *shape rule* is reserved now, while it costs one sentence. Task-queue
+routing — a plugin task running on a specialized worker — stays a deployment
+concern and never becomes a Flowfile spelling.
+
+### `exec:` will be built-in, denied by default
+
+Competitiveness with CI systems needs process execution; the admission test's second
+condition says it cannot ship before its policy exists, because today the engine has
+no exec analog to `netpolicy`. Both facts are honoured: `exec` is built-in, **denied
+by default**, enabled per deployment — the loopback-egress posture, applied to a
+sharper knife. And it takes **`argv` as a list, never a shell string**:
+
+```yaml
+- id: test
+  exec:
+    argv: [go, test, -count=1, ./...]
+    dir: ${steps.checkout.dir}
+```
+
+A shell-string form with expressions producing pieces of it is command injection by
+construction — the same reasoning that refused `${...}` interpolation, with higher
+stakes. An author who wants shell semantics writes `argv: [bash, -c, "..."]` and
+owns it visibly. There is no `shell:` task. Outputs are `exit_code` and
+byte-bounded `stdout`/`stderr` (principle 9: the process, not the worker, decides
+what it prints, so the worker bounds what it keeps). The full input surface —
+environment, working directory, what a nonzero exit means — is settled when the
+policy is, in its own reviewed change.
+
+### The disposition table
+
+| Today | Fate | Replaced by |
+| --- | --- | --- |
+| `cel:` | retired at the `vars:` edition | `vars:`, inline `${...}`, Phase 2 `outputs:` |
+| `echo:` | retired at the same edition | `vars:` for data, `log:` for visibility |
+| `printf:` | retired at the same edition | `format()` in the profile (already present) |
+| `iterator:` | retired at the same edition | `as:` |
+| bare `status_code`/`body`/`headers`/`json` | rerooted | `response.*` |
+| `http:` | kept | — (auth, idempotency key, egress declarations held) |
+| `log:` | new | — |
+| `exec:` | new, gated on its policy | — |
+| `value:` | refused for now, name reserved | `vars:` until a corpus file proves otherwise |
+| `assert:` | held | `if:` + failure, pending Phase 2 `check:` |
+| `!expr` | refused | whole-value `${...}`, fence-optional where the schema knows |
+| plugin tasks | dotted keys, `plugins:` header in Phase 3 | — |
+
+End state of the built-in registry: **`log`, `http`, `exec`**. Small enough to
+memorize, which is the property worth copying from the standard library this
+vocabulary keeps being compared to.
+
+### One edition, one sweep, and what the rewriter may not guess
+
+All of the retirements ride one edition boundary — `cel`, `echo`, `printf`,
+`iterator:`, and the response rooting together — because each boundary is a whole
+migration story and five small ones would be five of them. `flow fix` rewrites the
+mechanical cases: rooting response names, `iterator:` to `as:`, `printf` to a
+`format()` call, `cel`/`echo` steps whose results feed later steps into the
+equivalent `vars:` bindings with references rewritten, the same way it rooted step
+outputs. What it must refuse rather than guess is intent it cannot see — an `echo`
+whose result nothing references might have meant "show a human this line" (`log:`)
+or nothing at all; the fixer says so and stops, which is already its contract for
+flow style and aliases. Every retired spelling gets a `retiredStepKeys` entry
+naming its replacement, so the diagnostic teaches the migration instead of
+reporting an unknown task.
+
+### The corpus is the acceptance list
+
+Designing from hello-world is how `echo` happened. The fix is a corpus of
+representative workloads — CI pipeline, deployment with approval, ETL, incident
+runbook, fan-out matrix, agent loop with a gate, saga/compensation, scheduled
+maintenance — but held to this repo's reachability rule, which "design fixtures"
+would otherwise erode: each corpus file is written down as the *acceptance target*
+for the phase that makes it compile, and graduates into `examples/` (and so into
+CI) the day it runs. A corpus file that never graduates is a design that never
+landed, kept visible. The two below are the first two entries.
+
+### What the language looks like when this round lands
+
+Everything in this file is decided surface: Phase 1 vocabulary plus the response
+root. It is the deployment-with-approval corpus entry, and the acceptance target
+for the retirement edition.
+
+```yaml
+name: deploy
+description: Ship a build, gate production behind a human, then page in order.
+
+vars:
+  service: billing
+  version: 2026.07.30-r1
+  api: https://deploys.internal.example.com
+  oncall: [ada, grace, katherine]
+
+steps:
+  - id: submit
+    description: Ask the deployment API to roll the service.
+    http:
+      method: POST
+      url: ${vars.api + '/deployments'}
+      json:
+        service: ${vars.service}
+        version: ${vars.version}
+      parse_json: true
+      expect: ${response.status_code == 202}
+      outputs:
+        deployment: ${response.json.id}
+    retry:
+      attempts: 3
+
+  - id: approval
+    description: A human approves the roll, or the day ends without one.
+    wait_for_signal:
+      name: approve
+      timeout: 24h
+
+  - id: halt
+    if: ${steps.approval.timed_out || !steps.approval.payload.approved}
+    log:
+      level: warn
+      message: ${'deployment %s not approved; stopping'.format([steps.submit.deployment])}
+
+  - id: page
+    if: ${!steps.approval.timed_out && steps.approval.payload.approved}
+    for_each:
+      items: ${vars.oncall}
+      as: person
+      max_parallel: 1
+      steps:
+        - id: notify
+          log:
+            message: ${'paging %s: %s %s is rolling'.format([person, vars.service, vars.version])}
+            fields:
+              deployment: ${steps.submit.deployment}
+              approved_by: ${steps.approval.payload.by}
+```
+
+Worth noticing what is absent: no `cel:`, no `expr:` nested inside anything, no
+`echo:`, no `printf:`, no template sublanguage, no hand-built JSON string, no bare
+response names, and no evaluator branding anywhere an author looks. CEL is doing
+all of the work and none of the talking.
+
+And the CI-pipeline corpus entry, which is the same language plus the Phase 3
+plugin surface and a policied `exec` — the file that makes "could be used for CI"
+a demonstration rather than a claim:
+
+```yaml
+name: ci
+plugins:
+  github: ">=1"
+
+vars:
+  repo: picatz/flowstate
+  ref: main
+
+steps:
+  - id: checkout
+    github.clone:
+      repo: ${vars.repo}
+      ref: ${vars.ref}
+
+  - id: test
+    exec:
+      argv: [go, test, -count=1, ./...]
+      dir: ${steps.checkout.dir}
+    timeout: 15m
+
+  - id: report
+    if: ${steps.test.exit_code != 0}
+    github.create_issue:
+      repo: ${vars.repo}
+      title: ${'CI failed on %s'.format([vars.ref])}
+      body: ${steps.test.stderr}
+```
+
+Nothing in the *language* says CI — the same shapes serve the runbook above — which
+is the positioning: one execution model, with CI as one workload it happens to beat
+incumbents at by owning durability, retries, gates, and policy in the grammar.
+
+### What this round adds to the order of work
+
+Phase 1 grows: `vars:` with its shadowing rules, `log:`, the retirement edition
+(`cel`, `echo`, `printf`, `iterator:`→`as:`, `response.*` rooting), the
+`retiredStepKeys` entries, and reserving `value` alongside the dotted-key shape
+rule — the last two cost sentences now and compatibility later. The `plugins:`
+header and dotted-key resolution land in Phase 3 with `call:`. `exec` lands only
+with its policy, gated the way workflow-side evaluation is gated on Worker
+Versioning: a capability that assumes a posture verifies it or stays off. The
+`Host.Register` seam — one call wide — is the highest-leverage unbuilt item in this
+document, because the catalog it populates is what every surface in principle 12
+reads.
+
 ## Order of work
 
 Each phase lands green and reachable from a Flowfile.
@@ -385,6 +964,12 @@ reserved-keyword diagnostics. Pinning the profile is the only Phase 1 item that 
 schema break, so it goes last rather than first. `inputs` is not a Phase 1 item at all; it
 is Phase 2 and lands with its checker or not at all, per
 [The type system is not a later phase](#the-type-system-is-not-a-later-phase).
+
+*Since written:* [the second round](#the-second-round-vocabulary-expressions-extension)
+grows this phase — `log:`, the retirement edition (`cel`, `echo`, `printf`,
+`iterator:`→`as:`, `response.*` rooting), and two reservations (`value`, the dotted
+plugin-key shape). The vars shadowing rules are part of `vars` landing, not a
+separate item.
 
 **Phase 2 — the contract, with its checker.** `inputs`, `outputs`, `check:`,
 `env.Check` at validate and in the LSP, typed hover, the absent/null/default matrix,
