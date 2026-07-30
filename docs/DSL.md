@@ -379,10 +379,78 @@ one the shipped default has, and nothing refuses to run without it.
 That is stated here rather than quietly fixed because the fix is a real decision and
 not an obvious one. Refusing to start an unversioned worker would make the
 self-hosted `temporal server start-dev` path (invariant 8) require versioning
-configuration to run anything at all. Routing every condition through an activity
-would be a round trip per condition. Warning at worker start is what `flow worker`
-does today for the *absence* of versioning, and a warning is not a gate. Whichever
-is chosen, the gap is between this page and the code, and the page was the wrong one.
+configuration to run anything at all. Warning at worker start is what `flow worker`
+does today for the *absence* of versioning, and a warning is not a gate. Whichever is
+chosen, the gap is between this page and the code, and the page was the wrong one.
+
+The remaining option — routing every evaluation through an activity — has a cost
+worth having a number for, since "a round trip per condition" is the kind of estimate
+that gets repeated without being checked.
+
+Counted at `Evaluator.Eval` (`celenv.go`), which is where a compiled program is
+actually run and where every path — a condition, a loop's `items:`, a step's `vars:`,
+a task's inputs — arrives. Counting the entry points instead does not work, and the
+first version of this table did exactly that: `EvalConditionInScope` on a step with no
+`if:` returns without evaluating anything, so a call to it is not an evaluation.
+Counted that way `hello-world` reported 2 and contains no expressions at all, every
+row was inflated two- to four-fold, and `ResolveItems` — a loop's `items:`, the one
+expression whose cost multiplies — was not among the three entry points and so was
+missed entirely. A count of the places evaluation is *asked for* is not a count of
+evaluation.
+
+Over the shipped corpus, per run:
+
+| workflow | evaluations | of which workflow `vars:` |
+|---|---|---|
+| `hello-world` | 0 | 0 |
+| `http-form`, `simple-http-multi-step` | 1 | 0 |
+| `hello-world-multi-step`, `http-output-shaping` | 2 | 0 |
+| `string-formatting` | 2 | 1 |
+| `conditional-and-retry`, `http-json` | 3 | 0 |
+| `headers-and-nested` | 3 | 1 |
+| `expressions`, `http-expect` | 4 | 0 |
+| `approval-gate` | 5 | 0 |
+| `wait-until-a-moment` | 5 | 1 |
+| `logging` | 6 | 0 |
+| `edition-and-descriptions`, `fan-out-and-parallel`, `workflow-vars` | 6 | 1 |
+| `step-vars` | 11 | 0 |
+
+The second column is subtracted rather than added: a workflow's `vars:` block is
+*already* an activity on the durable driver (`engine.WorkflowVars`), so those
+evaluations would not become new round trips. It is broken out because the numbers
+come from `flow run local`, which evaluates that block inline.
+
+Two other things follow from measuring through the local driver, and both were
+checked rather than assumed. The two drivers reach the same four sites —
+`EvalConditionInScope`, `EvalStepVars`, `ResolveTaskInputs`, `ResolveItems` — so the
+set being counted is the right one. But a retried step re-resolves its inputs locally
+(`runStepWithPolicy` calls `EvalInScope` per attempt) where the durable driver
+resolves once before `ExecuteActivity` and never returns to workflow code between
+attempts: measured, a one-expression step retried three times counts 3 locally and
+would be 1 there. No corpus workflow retries a step carrying an expression, so no row
+above is affected — but the local count is an upper bound, not an equal one.
+
+None of which decides it, because the corpus is not what this costs on. A loop is,
+because the body is evaluated once per item. Measured over a one-step body with a
+condition, a `vars:` entry, and one task input:
+
+| items | evaluations |
+|---|---|
+| 1 | 4 |
+| 10 | 31 |
+| 50 | 151 |
+| 200 | 601 |
+
+Which is `3n + 1`: three per iteration — the condition, the step's `vars:`, and the
+task's inputs — over one for the `items:` expression itself, evaluated once. Every
+task is already an activity (`engine.Task` or `TaskInScope`), so a 200-item loop over
+a one-step body schedules 200 activities today and would schedule 801: four times the
+activities for the same work.
+
+That is the real shape of the cost, and it lands on history size rather than only on
+latency: Temporal records every activity, and history size is what forces
+Continue-As-New in the first place. The option that looks safest for determinism is
+the one that most increases how often a run has to suspend.
 
 **`flow test` mocks must not see resolved secrets.** The proposal matches mocks with
 `where: ${...}`, a CEL predicate over the task's *resolved* inputs. Resolved inputs
