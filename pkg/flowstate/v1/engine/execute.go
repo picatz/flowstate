@@ -253,7 +253,7 @@ func (e *executor) runIteration(loop *v1.ForEach, iterator string, item *v1.Valu
 		spec: e.spec,
 		// The iteration's scope: outputs visible before the loop, plus the
 		// current item bound to the iterator's name.
-		scope:     e.scope.WithVars(iterator, item).WithOutputs(iterationOutputs),
+		scope:     e.scope.WithLocal(iterator, item).WithOutputs(iterationOutputs),
 		budget:    e.budget,
 		processed: e.processed,
 		frames:    e.frames,
@@ -302,7 +302,7 @@ func (e *executor) runIterationsConcurrently(loop *v1.ForEach, iterator string, 
 				worker := &executor{
 					ctx:    gctx,
 					spec:   e.spec,
-					scope:  e.scope.WithVars(iterator, items[i]).WithOutputs(cloneOutputs(e.scope.GetOutputs())),
+					scope:  e.scope.WithLocal(iterator, items[i]).WithOutputs(cloneOutputs(e.scope.GetOutputs())),
 					budget: e.budget,
 				}
 				if err := worker.runNodes(loop.GetBody(), depth); err != nil {

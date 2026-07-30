@@ -50,58 +50,95 @@ func (s *Scope) ActivationWith(ctx context.Context, extra map[string]ref.Val) ce
 		return s.Activation(ctx)
 	}
 
-	vars := make(map[string]ref.Val, len(extra))
-	if s != nil {
-		for name, v := range s.Vars {
-			rv, err := cel.ValueToRefValue(TypeAdapter, v.GetLiteral())
-			if err != nil {
-				rv = types.NewErr("variable %q: %v", name, err)
-			}
-			vars[name] = rv
-		}
-	}
+	// The extras join the *locals*, because a name bound around an expression is what
+	// a local is. Adding them to the rooted vars would make `now` reachable as
+	// `vars.now`, which is a spelling nothing documents and nobody would guess.
+	locals := refValues(s.GetLocals())
 	for name, v := range extra {
-		vars[name] = v
+		locals[name] = v
 	}
 
-	return Activation(ctx, s.GetProfile(), s.StepOutputs(), vars)
+	return Activation(ctx, s.GetProfile(), s.StepOutputs(), refValues(s.GetVars()), locals)
 }
 
 // Activation returns the CEL activation for this scope.
 func (s *Scope) Activation(ctx context.Context) cel.Activation {
 	if s == nil {
-		return Activation(ctx, "", nil, nil)
+		return Activation(ctx, "", nil, nil, nil)
 	}
 
-	vars := make(map[string]ref.Val, len(s.Vars))
-	for name, v := range s.Vars {
-		rv, err := cel.ValueToRefValue(TypeAdapter, v.GetLiteral())
-		if err != nil {
-			// A variable that cannot be converted is reported as an error value
-			// so the expression referencing it fails, rather than the variable
-			// silently going missing and reading as an unresolved reference.
-			rv = types.NewErr("variable %q: %v", name, err)
-		}
-		vars[name] = rv
-	}
-	return Activation(ctx, s.Profile, s.Outputs, vars)
+	return Activation(ctx, s.Profile, s.Outputs, refValues(s.GetVars()), refValues(s.GetLocals()))
 }
 
-// WithVars returns a copy of the scope with the given variables bound, leaving the
-// original untouched so sibling iterations cannot affect each other.
-func (s *Scope) WithVars(name string, item *Value) *Scope {
-	next := &Scope{Vars: make(map[string]*Value, len(s.Vars)+1)}
+// refValues converts a map of schema values to CEL values.
+//
+// A value that cannot be converted becomes an error value rather than being dropped,
+// so the expression referencing it fails and says why. Dropping it would leave the
+// name looking simply unbound, which sends the author looking for a typo in the one
+// case where the name is right and the value is not.
+func refValues(values map[string]*Value) map[string]ref.Val {
+	if len(values) == 0 {
+		return nil
+	}
+
+	converted := make(map[string]ref.Val, len(values))
+	for name, v := range values {
+		rv, err := cel.ValueToRefValue(TypeAdapter, v.GetLiteral())
+		if err != nil {
+			rv = types.NewErr("variable %q: %v", name, err)
+		}
+		converted[name] = rv
+	}
+
+	return converted
+}
+
+// WithLocal returns a copy of the scope with one bare name bound, leaving the original
+// untouched so sibling iterations cannot affect each other.
+//
+// Named for what it binds. It used to be WithVars and it used to write into the field
+// that now carries the rooted namespace, which is how a loop iterator and a declared
+// var came to share one map.
+func (s *Scope) WithLocal(name string, item *Value) *Scope {
+	next := &Scope{Locals: make(map[string]*Value, len(s.GetLocals())+1)}
 	if s != nil {
 		next.Outputs = s.Outputs
 		// Carried, not re-derived. A loop body that evaluated against a different
 		// vocabulary than the step containing it is the same run speaking two
 		// dialects, one nesting level down.
 		next.Profile = s.Profile
+		next.Vars = s.Vars
+		for k, v := range s.Locals {
+			next.Locals[k] = v
+		}
+	}
+	next.Locals[name] = item
+	return next
+}
+
+// WithVars returns a copy of the scope with additional rooted vars in effect,
+// shadowing any of the same name already there.
+//
+// Copying rather than mutating for the same reason [Scope.WithLocal] does: a loop body
+// or a branch that declared its own vars must not change what a sibling sees.
+func (s *Scope) WithVars(vars map[string]*Value) *Scope {
+	if len(vars) == 0 {
+		return s
+	}
+
+	next := &Scope{Vars: make(map[string]*Value, len(s.GetVars())+len(vars))}
+	if s != nil {
+		next.Outputs = s.Outputs
+		next.Profile = s.Profile
+		next.Locals = s.Locals
 		for k, v := range s.Vars {
 			next.Vars[k] = v
 		}
 	}
-	next.Vars[name] = item
+	for k, v := range vars {
+		next.Vars[k] = v
+	}
+
 	return next
 }
 
@@ -260,11 +297,24 @@ func ResolveTaskInputs(ctx context.Context, task *Task, scope *Scope) (*Task, er
 }
 
 // Activation returns the CEL activation for evaluating an expression against step
-// outputs and any variables bound by enclosing control flow.
-func Activation(ctx context.Context, profile string, prev *Workflow_StepOutputs, vars map[string]ref.Val) cel.Activation {
+// outputs, the rooted vars in scope, and the names bound where the expression is
+// written.
+//
+// Three arguments for three namespaces, kept apart all the way down rather than
+// merged here: `steps.<id>` and `vars.<name>` are rooted, locals are bare, and which
+// one a name came from decides how it resolves. Merging them at this boundary is what
+// made "is this rooted?" answerable only by knowing which caller supplied it.
+func Activation(
+	ctx context.Context,
+	profile string,
+	prev *Workflow_StepOutputs,
+	vars map[string]ref.Val,
+	locals map[string]ref.Val,
+) cel.Activation {
 	return cel.Activation(&StepsOutputActivation{
 		Prev:    prev,
 		Vars:    vars,
+		Locals:  locals,
 		Ctx:     ctx,
 		Eval:    DefaultEvaluator(),
 		Profile: profile,
@@ -299,11 +349,13 @@ func (s *Scope) WithOutputs(outputs *Workflow_StepOutputs) *Scope {
 	if s != nil {
 		next.Profile = s.Profile
 	}
-	if s != nil && len(s.Vars) > 0 {
-		next.Vars = make(map[string]*Value, len(s.Vars))
-		for k, v := range s.Vars {
-			next.Vars[k] = v
-		}
+	if s != nil {
+		// Both namespaces travel, because both are "what the enclosing control flow
+		// bound" — a branch sees its loop's iterator and its workflow's vars alike.
+		// Shared rather than copied: neither map is written through after the scope
+		// carrying it is built, and the copy-on-write is in WithVars and WithLocal.
+		next.Vars = s.Vars
+		next.Locals = s.Locals
 	}
 	return next
 }

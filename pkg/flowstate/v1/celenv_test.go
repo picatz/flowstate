@@ -386,7 +386,10 @@ func TestAScopeCarriesTheProfileThroughNesting(t *testing.T) {
 
 	root := NewScope("2026.1", nil)
 
-	if got := root.WithVars("item", NewLiteral(&expr.Value{Kind: &expr.Value_Int64Value{Int64Value: 1}})).GetProfile(); got != "2026.1" {
+	if got := root.WithLocal("item", NewLiteral(&expr.Value{Kind: &expr.Value_Int64Value{Int64Value: 1}})).GetProfile(); got != "2026.1" {
+		t.Errorf("WithLocal dropped the profile: got %q", got)
+	}
+	if got := root.WithVars(map[string]*Value{"region": NewLiteral("eu")}).GetProfile(); got != "2026.1" {
 		t.Errorf("WithVars dropped the profile: got %q", got)
 	}
 	if got := root.WithOutputs(nil).GetProfile(); got != "2026.1" {
