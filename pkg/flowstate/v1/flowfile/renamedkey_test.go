@@ -281,3 +281,92 @@ steps:
 	require.Contains(t, string(result.Source), v1.ResponseRoot+".status_code",
 		"the rewriter and the task disagree about the root")
 }
+
+// The edition marker is the one value in a Flowfile that decides how every other value
+// is read, so the two ways `flow fix` touches it — stamping one in, and bringing an old
+// one forward — are the two places a rewriter can do the most damage with the least
+// visible diff.
+
+// TestFixDoesNotStampOverAMergedEdition is the fail-closed direction.
+//
+// A merge key names nothing itself and brings in whatever it points at, which may be an
+// edition. The stamp decided one was absent by scanning direct keys only — and a direct
+// key beats a merged one, so a document declaring a grammar this build *refuses* came
+// back declaring one it compiles. A future-edition file silently downgraded by the
+// command that exists to keep files honest.
+//
+// Not stamping is the whole fix: bringing a merged edition forward would mean editing an
+// anchor that may be shared with other keys or other documents, so finding one means
+// leaving the file alone and letting `flow validate` speak.
+func TestFixDoesNotStampOverAMergedEdition(t *testing.T) {
+	t.Parallel()
+
+	src := `meta: &m
+  edition: v2099.1
+<<: *m
+name: t
+steps:
+  - id: a
+    log:
+      message: hi
+`
+
+	result, err := flowfile.Fix([]byte(src))
+	require.NoError(t, err)
+	require.Equal(t, src, string(result.Source),
+		"an edition arriving through a merge key was stamped over, which downgrades the file")
+
+	// And the file is still one this build refuses, which is the property the stamp
+	// was quietly undoing.
+	require.Contains(t, diagnose(t, string(result.Source)), "v2099.1")
+}
+
+// TestFixLeavesAFileAloneWhenItCannotSeeWhatIsMerged covers the answer to "cannot tell".
+//
+// An alias pointing at an anchor this cannot resolve might be bringing an edition in.
+// Every uncertain case has to answer *yes* — the cost runs one way only. Saying yes
+// leaves a file unstamped and an author told to write the line; saying no silently
+// rewrites what a file declares.
+func TestFixLeavesAFileAloneWhenItCannotSeeWhatIsMerged(t *testing.T) {
+	t.Parallel()
+
+	src := `<<: *nowhere
+name: t
+steps:
+  - id: a
+    log:
+      message: hi
+`
+
+	result, err := flowfile.Fix([]byte(src))
+	require.NoError(t, err)
+	require.NotContains(t, string(result.Source), "edition: "+flowfile.CurrentEdition,
+		"an edition was stamped into a file whose merged contents this cannot see")
+}
+
+// TestFixKeepsWhatIsWrittenAfterAnEdition is the data-loss direction.
+//
+// Rebuilding the line from the key and the new value dropped whatever followed it, so
+// `edition: 2026.1 # pinned deliberately, see RFC-14` came back without the sentence
+// explaining it. That path became reachable the moment `2026.1` turned into an edition
+// this build actually upgrades — which is exactly the migration this rewriter exists to
+// perform, so the first author to run it would have been the one to lose a comment.
+func TestFixKeepsWhatIsWrittenAfterAnEdition(t *testing.T) {
+	t.Parallel()
+
+	src := `edition: 2026.1 # pinned deliberately, see RFC-14
+name: t
+steps:
+  - id: a
+    log:
+      message: hi
+`
+
+	result, err := flowfile.Fix([]byte(src))
+	require.NoError(t, err)
+	require.True(t, result.Changed(), "an older edition was not brought forward")
+
+	require.Contains(t, string(result.Source),
+		"edition: "+flowfile.CurrentEdition+" # pinned deliberately, see RFC-14",
+		"the comment beside the edition was deleted along with the version:\n%s", result.Source)
+}
