@@ -409,6 +409,7 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 				Status:     respStatus,
 				StartTime:  start,
 				CloseTime:  closed,
+				Progress:   runProgress(ctx, temporal, resp),
 			},
 		), nil
 	case v1.RunResponse_STATUS_COMPLETED:
@@ -558,4 +559,68 @@ func runStatus(status enums.WorkflowExecutionStatus) v1.RunResponse_Status {
 	default:
 		return v1.RunResponse_STATUS_UNSPECIFIED
 	}
+}
+
+// progressQueryTimeout bounds the one part of a Get that reaches a worker.
+const progressQueryTimeout = 2 * time.Second
+
+// runProgress asks a running workload where it has got to.
+//
+// Nil on any failure, and that is the whole design of this function. A query reaches
+// a *worker*, so it fails for reasons that say nothing about the run: no worker is
+// polling the queue right now, the run is pinned to an interpreter built before the
+// handler existed, the worker is busy, the query timed out. In every one of those the
+// status, the start time and the run id are still correct and still worth returning.
+//
+// So a failed query costs the caller one optional field rather than the answer. The
+// alternative — failing Get because the position could not be fetched — would make
+// `flow get` on a healthy run start failing the moment a worker was restarted, which
+// is both wrong and the kind of wrong that looks like the run's fault.
+//
+// Deliberately not logged at error level for the same reason: on a fleet with any
+// unversioned or older workers this is an ordinary outcome, and an error line per
+// `flow get` would train whoever reads the logs to ignore them.
+func runProgress(ctx context.Context, temporal client.Client, resp *workflowservice.DescribeWorkflowExecutionResponse) *v1.RunProgress {
+	// Only where Temporal itself says the execution is running.
+	//
+	// STATUS_RUNNING covers one case where it does not: a segment that continued as
+	// new is *closed*, and is reported running because the workload is — the run id
+	// somebody holds still names the workload they asked about. Temporal will answer
+	// a query against a closed execution by replaying its history, so asking here
+	// returns the position that segment finished at, presented as where the workload
+	// is now. That is worse than saying nothing: it is a real step id, from the right
+	// workload, that the run left behind possibly hours ago.
+	//
+	// Unset instead. A caller holding a superseded run id is asking about an attempt
+	// that has handed off, and "no current position" is the true answer for it.
+	if resp.GetWorkflowExecutionInfo().GetStatus() != enums.WORKFLOW_EXECUTION_STATUS_RUNNING {
+		return nil
+	}
+
+	workflowID := resp.GetWorkflowExecutionInfo().GetExecution().GetWorkflowId()
+	runID := resp.GetWorkflowExecutionInfo().GetExecution().GetRunId()
+
+	// Bounded separately from the request, because the request's own deadline is the
+	// wrong bound for an optional field. Measured against a run whose worker is away:
+	// the query took 10.5s to give up, and every `flow get` on such a run wore all of
+	// it before printing a status it had already had. Waiting that long for something
+	// nice to have is worse than not having it.
+	//
+	// Generous against the normal case rather than tuned — an answering worker
+	// replies in milliseconds, so this only ever bites when nothing is going to
+	// answer at all.
+	ctx, cancel := context.WithTimeout(ctx, progressQueryTimeout)
+	defer cancel()
+
+	encoded, err := temporal.QueryWorkflow(ctx, workflowID, runID, engine.ProgressQuery)
+	if err != nil {
+		return nil
+	}
+
+	var progress v1.RunProgress
+	if err := encoded.Get(&progress); err != nil {
+		return nil
+	}
+
+	return &progress
 }

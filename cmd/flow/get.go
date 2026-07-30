@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/encoding/protojson"
 
+	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
@@ -84,9 +85,10 @@ func runGet(cmd *cobra.Command, args []string) error {
 	// ErrTheme, because this line goes to stderr: `flow get x | jq` has a piped
 	// stdout and a terminal stderr, and the palette for one is not the palette for
 	// the other.
-	fmt.Fprintf(surface.Err, "%s workflow %s run %s%s\n",
+	fmt.Fprintf(surface.Err, "%s workflow %s run %s%s%s\n",
 		surface.ErrTheme.Pill(statusTone(msg.GetStatus()), statusLabel(msg.GetStatus())),
-		msg.GetWorkflowId(), msg.GetRunId(), runAge(msg))
+		msg.GetWorkflowId(), msg.GetRunId(), runAge(msg),
+		runPosition(surface.ErrTheme, msg.GetProgress()))
 
 	if outputs := msg.GetOutputs(); outputs != nil {
 		encoded, err := protojson.Marshal(outputs)
@@ -155,4 +157,28 @@ func roundedDuration(d time.Duration) time.Duration {
 // line harder to scan.
 func statusLabel(status v1.RunResponse_Status) string {
 	return strings.TrimPrefix(status.String(), "STATUS_")
+}
+
+// runPosition renders where a running run has got to.
+//
+// Empty where the server said nothing, which is not the same as the beginning: a
+// run whose worker did not answer, or one on an interpreter built before the query
+// existed, reports no position. Rendering that as "on step 1" would be a fact
+// invented on the run's behalf, and it would be wrong exactly when somebody is
+// looking because something seems stuck.
+//
+// The path is joined with a separator rather than nested, because this is one line
+// beside a status and the whole value of it is being readable at a glance —
+// `on deploy > each > upload` says the shape without spending three lines on it.
+func runPosition(theme ui.Theme, progress *v1.RunProgress) string {
+	if progress.GetStepId() == "" {
+		return ""
+	}
+
+	position := progress.GetStepId()
+	for _, step := range progress.GetPath() {
+		position += " > " + step
+	}
+
+	return theme.Muted.Render(" on " + position)
 }

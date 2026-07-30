@@ -52,6 +52,12 @@ type executor struct {
 	// waits. No lock is needed: workflow coroutines are scheduled cooperatively,
 	// so only one of them runs at a time.
 	signals *signalCarry
+
+	// progress is where the run has got to, for the query handler to answer from.
+	// Shared by pointer for the same reason signals is, and for the sharper version
+	// of it: a copy per level would leave the query reading the root's copy, which
+	// is the one that stops moving the moment the run descends into anything.
+	progress *progress
 }
 
 // signalCarry holds the run's early-arriving signals.
@@ -70,6 +76,7 @@ func (e *executor) runNodes(nodes []*v1.Node, depth int) error {
 	for i := start; i < len(nodes); i++ {
 		node := nodes[i]
 		e.setFrame(depth, i)
+		e.progress.enter(depth, node.GetId())
 
 		// Only the node the resume path points at continues descending into a
 		// saved position; everything after it starts fresh.
@@ -112,6 +119,7 @@ func (e *executor) runNodes(nodes []*v1.Node, depth int) error {
 		}
 
 		e.processed++
+		e.progress.finished()
 
 		// Suspending is only possible where the position is representable, and
 		// only between top-level steps. A deeper level completes first.
@@ -304,7 +312,8 @@ func (e *executor) runIteration(loop *v1.ForEach, iterator string, item *v1.Valu
 		// The run's carry, by pointer. A wait in a loop body consumes from the
 		// same place a top-level one does, and consuming it here has to remove it
 		// for the whole run.
-		signals: e.signals,
+		signals:  e.signals,
+		progress: e.progress,
 	}
 	if descend {
 		nested.resume = e.resume
@@ -353,6 +362,13 @@ func (e *executor) runIterationsConcurrently(loop *v1.ForEach, iterator string, 
 					scope:   e.scope.WithLocal(iterator, items[i]).WithOutputs(cloneOutputs(e.scope.GetOutputs())),
 					budget:  e.budget,
 					signals: e.signals,
+
+					// Deliberately not carried. Iterations run at once, so a
+					// worker writing its own step in would be reporting a
+					// position that depends on which coroutine was scheduled
+					// last — two identical queries could disagree. The nil
+					// guards in progress's methods exist for exactly this.
+					progress: nil,
 				}
 				if err := worker.runNodes(loop.GetBody(), depth); err != nil {
 					errs[i] = err
@@ -397,6 +413,10 @@ func (e *executor) runParallel(parallel *v1.Parallel, depth int) error {
 				scope:   e.scope.WithOutputs(branchOutputs),
 				budget:  e.budget,
 				signals: e.signals,
+
+				// Not carried, for the same reason a concurrent iteration does
+				// not carry it: no one branch is the run's position.
+				progress: nil,
 			}
 			if err := worker.runNodes(branch.GetSteps(), depth+1); err != nil {
 				errs[i] = err

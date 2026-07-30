@@ -60,6 +60,15 @@ func Run(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error
 
 	logger := workflow.GetLogger(ctx)
 
+	// Registered before anything else happens, including the vars activity below.
+	// Temporal fails a query whose handler is not installed yet, and a run in its
+	// first moments is exactly when somebody asks what it is doing — "nowhere yet"
+	// is a better answer than an error that reads like a broken worker.
+	position := &progress{}
+	if err := setProgressQuery(ctx, position); err != nil {
+		return nil, fmt.Errorf("register progress query: %w", err)
+	}
+
 	// Initialize step outputs with carried-over minimal subset if present.
 	stepOutputs := st.Outputs
 	if stepOutputs == nil {
@@ -117,7 +126,8 @@ func Run(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error
 
 		// Signals that arrived before their step was reached, carried from the
 		// run that suspended. A wait consumes from here before it blocks.
-		signals: &signalCarry{pending: st.GetPendingSignals()},
+		signals:  &signalCarry{pending: st.GetPendingSignals()},
+		progress: position,
 	}
 
 	err := exec.runNodes(st.Workflow.GetSteps(), 0)
