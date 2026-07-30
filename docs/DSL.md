@@ -707,11 +707,12 @@ both times. What is refused alongside: `uses:`-style indirection (the `task:` /
 `name:` nesting this document spent an edition deleting) and distribution metadata
 in the step key (`owner/repo@ref` welds deployment concerns into every call site).
 
-Version constraints belong to the file's header, not the step:
+Version requirements belong to the file's header, not the step — declared as
+minimums, per [the versioning scheme](#versioning-one-scheme-for-everything-that-can-break):
 
 ```yaml
 plugins:
-  slack: ">=2"
+  slack: "2.1"     # at least 2.1, same major
   github: "1.4"
 ```
 
@@ -868,7 +869,7 @@ a demonstration rather than a claim:
 ```yaml
 name: ci
 plugins:
-  github: ">=1"
+  github: "1.2"
 
 vars:
   repo: picatz/flowstate
@@ -897,6 +898,84 @@ steps:
 Nothing in the *language* says CI — the same shapes serve the runbook above — which
 is the positioning: one execution model, with CI as one workload it happens to beat
 incumbents at by owning durability, retries, gates, and policy in the grammar.
+
+### Versioning: one scheme for everything that can break
+
+This is a greenfield project with one user. Nothing pre-1.0 is kept for
+compatibility — old spellings are deleted, not carried, and the question "may we
+break this?" is always yes. What that freedom does **not** buy is the right to
+break *carelessly*: histories replay for months, and an agent trained on last
+quarter's examples will keep writing last quarter's grammar forever. So the
+mechanics of breaking are the product surface here, and they should be one
+coherent scheme rather than five dials invented separately. The model is Go
+modules, because it is the one versioning design whose choices have survived
+contact with a decade of ecosystems: a language version in the file, a toolchain
+that refuses what it cannot honour, minimum-version dependency selection with no
+solver, major versions as part of identity, and a lockfile of exact resolutions.
+
+Mapped onto this system, five things version, and each binds at a different
+moment:
+
+| Layer | Declared | Binds at | May break |
+| --- | --- | --- | --- |
+| grammar | `edition:` in the file (absent = current) | parse | at any edition, with `flow fix` across the boundary |
+| expression dialect | `Workflow.profile`, stamped by the compiler | compile; honoured at run and replay | with the edition; never within one |
+| compiled spec | proto package `flowstate.v1` | forever — histories replay against it | WIRE never; FILE spent deliberately |
+| engine | worker `--deployment-name --build-id` | run start; Continue-As-New takes current | freely between runs; never within one |
+| plugins | `plugins:` minimums in the file; exact resolutions recorded in the compiled spec | resolve at submit, pin for the run | majors freely; a major is a different requirement |
+
+The coherence rules, and what each refuses:
+
+**The author sees one version: the edition.** Everything else is stamped,
+resolved, or pinned by machinery. The profile is already compiler-stamped —
+`profile:` is not a Flowfile key and must never become one, because two files in
+one repo speaking two dialects is the situation the one-profile decision exists
+to prevent. The edition names the grammar *and* implies the dialect; the two are
+recorded separately because they die at different times — the edition at compile
+(the schema deliberately has no field for it), the profile at the end of the last
+run that replays against it.
+
+**There is no toolchain directive, because its two halves already exist.** Go
+needs `toolchain` because old toolchains must build new modules. Here, an edition
+this build does not know is *refused rather than translated* — that is the
+toolchain check, fail-closed — and every capability question beyond grammar
+("does this worker have `slack.post` at ≥2.1?") is answered by submit-time
+resolution against the deployment's catalog. An `engine:` key would be a second
+dial answering the same two questions worse.
+
+**Plugin versions follow the import-compatibility rule, without the solver.**
+A `plugins:` entry declares a *minimum*: `slack: "2.1"` means at least 2.1,
+same major. There is no range syntax and no constraint solver, for Go's reason —
+a deployment installs exactly one version of a plugin, so resolution is a
+comparison, not a search. A new major is a different requirement declared
+explicitly, never satisfied silently by an installed older one. The declared
+minimums are the `go.mod`; the compiled spec records the *exact* versions
+resolved at submit — the lockfile — so a run is reproducible from its spec alone:
+spec + profile + worker build + resolved plugin versions is the complete answer
+to "what exactly did this run mean?".
+
+**Workflows themselves become modules in Phase 3, not before.** The day `call:`
+lands, a workflow is a dependency and needs an identity and a version. The shape
+to hold: name plus major as identity (the import-compatibility rule again), and
+the version speaks about the workflow's *contract* — its typed `inputs:` and
+`outputs:` — which is why it cannot precede Phase 2: a semver promise over an
+untyped surface is decoration, by the same rule that keeps `type:` out until its
+checker exists.
+
+**Feature flags are refused.** No `experiments:`, no opt-in grammar, no
+per-file switches. A file compiles under its edition or it does not; flags make
+2ⁿ dialects out of one, which principle 4 exists to prevent. The one legitimate
+shape that looks like a flag — `exec` enabled, loopback egress allowed — is
+deployment *posture*, deliberately not expressible in the file, per principle 7.
+
+**And the retirement machinery is for models, not for users.** With one user
+there is nobody to deprecate for, so `retiredStepKeys` and the `flow fix`
+refusal-not-guess contract might look like baggage. They are the opposite: agents
+generating Flowfiles are trained on every example that ever existed, so the old
+spellings keep arriving *forever*, from authors who were never using the old
+version at all. A diagnostic that names the replacement is how the language
+teaches the training-data gap away; that is a permanent product feature, not a
+transition cost.
 
 ### What this round adds to the order of work
 
