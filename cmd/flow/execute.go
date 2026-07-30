@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -83,6 +82,14 @@ func manCommand() *cobra.Command {
 // produced. It has to survive losing its colour, because it is the line most likely
 // to be read out of a CI log. And it must not be the only place the reason exists —
 // the error's own text is printed verbatim, never summarised.
+//
+// Verbatim includes the first letter. An earlier version capitalized it, on the
+// reasoning that Go errors are written lower case because they are usually wrapped
+// and this is the end of that chain — which is true of prose and wrong of everything
+// else an error starts with. `step "web": …` became `Step "web": …`, and a file
+// position became `Workflow.yaml:3:1`, which is not a file anybody can search for.
+// No heuristic separates the two: the guard tried, and the test that caught it was
+// the one asserting the text survives. An author who wants a capital writes one.
 func renderError(w io.Writer, theme ui.Theme, width int, err error) {
 	if err == nil {
 		return
@@ -91,7 +98,7 @@ func renderError(w io.Writer, theme ui.Theme, width int, err error) {
 	var b strings.Builder
 
 	fmt.Fprintln(&b, theme.Pill(ui.ToneDanger, "error"))
-	fmt.Fprintln(&b, wrap(capitalize(err.Error()), width))
+	fmt.Fprintln(&b, wrap(err.Error(), width))
 
 	// A wrong flag or an unknown command is a mistake about the command line
 	// itself, and the one case where what to do next is knowable. Everything else
@@ -104,43 +111,15 @@ func renderError(w io.Writer, theme ui.Theme, width int, err error) {
 	fmt.Fprint(w, b.String())
 }
 
-// capitalize starts an error's text with a capital, since it begins a sentence here.
-//
-// Go's own convention is that an error string is lower case because it is usually
-// wrapped into a longer one. This is the end of that chain: nothing wraps what is
-// printed, so it reads as the sentence it is.
-func capitalize(text string) string {
-	if text == "" {
-		return text
-	}
-
-	runes := []rune(text)
-
-	// Only where the first word is not one somebody wrote as a name. `flow` and a
-	// workflow id are lower case on purpose, and capitalizing them makes the report
-	// name something that does not exist.
-	if word, _, _ := strings.Cut(text, " "); strings.ContainsAny(word, "-_/.\"`") {
-		return text
-	}
-
-	runes[0] = []rune(strings.ToUpper(string(runes[0])))[0]
-
-	return string(runes)
-}
-
 // isUsageError reports whether cobra refused the command line rather than the
 // command failing.
 //
-// Matched on the text because cobra does not give these a type. That is fragile in
-// the direction that costs the least: a miss loses one line of advice, and there is
-// no wrong advice it can produce, since every other error prints exactly the same
-// report without it.
+// Matched on the text because cobra does not give these a type — there is nothing
+// to match on with errors.As, and an errors.As against an interface every error
+// satisfies would look like a check and be none. That is fragile in the direction
+// costing least: a miss loses one line of advice, and there is no wrong advice it
+// can produce, since every other error prints exactly this report without it.
 func isUsageError(err error) bool {
-	var flagErr interface{ Error() string }
-	if !errors.As(err, &flagErr) {
-		return false
-	}
-
 	text := err.Error()
 	for _, prefix := range []string{
 		"unknown command",
