@@ -707,7 +707,11 @@ func loadWorkflow(path string) (*v1.Workflow, error) {
 //
 // Required inputs are marked with `*` rather than only sorted first, because a
 // mark survives being piped, logged, and read by somebody who cannot see colour.
-func writeFields(w io.Writer, theme ui.Theme, groups []fieldGroup) {
+// Errors are returned rather than discarded, which the tabwriter this replaced did
+// by way of Flush. A full disk or a pipe that has gone away makes every write fail,
+// and a listing that stopped halfway while reporting success is worse than one that
+// says it could not finish.
+func writeFields(w io.Writer, theme ui.Theme, groups []fieldGroup) error {
 	// Laid out here rather than by tabwriter, which measures the bytes it is given.
 	// A styled cell is mostly escape sequences, so tabwriter counted them as width
 	// and every column after the first shifted — the terminal rendering came out
@@ -743,10 +747,12 @@ func writeFields(w io.Writer, theme ui.Theme, groups []fieldGroup) {
 
 			name := fieldName(field)
 
-			fmt.Fprintf(w, "  %s%s%s%s%s",
+			if _, err := fmt.Fprintf(w, "  %s%s%s%s%s",
 				styledLabel, pad(labels-lipgloss.Width(label)+gutter),
 				theme.Strong.Render(name), pad(names-lipgloss.Width(name)+gutter),
-				theme.Muted.Render(field.Type))
+				theme.Muted.Render(field.Type)); err != nil {
+				return err
+			}
 
 			if field.Deferred {
 				// Worth saying, because it changes what an author may write here.
@@ -754,13 +760,19 @@ func writeFields(w io.Writer, theme ui.Theme, groups []fieldGroup) {
 				// these the task evaluates itself, against a scope the workflow
 				// does not have — which is why `http`'s `outputs` can name
 				// `status_code` and an ordinary input cannot.
-				fmt.Fprintf(w, "  %s",
-					theme.Muted.Render("the task evaluates this itself, in its own scope"))
+				if _, err := fmt.Fprintf(w, "  %s",
+					theme.Muted.Render("the task evaluates this itself, in its own scope")); err != nil {
+					return err
+				}
 			}
 
-			fmt.Fprintln(w)
+			if _, err := fmt.Fprintln(w); err != nil {
+				return err
+			}
 		}
 	}
+
+	return nil
 }
 
 // fieldGroup is one labelled list of a task's fields.
@@ -788,7 +800,14 @@ func pad(n int) string {
 }
 
 func runTasks(cmd *cobra.Command, args []string) error {
-	out := cmd.OutOrStdout()
+	surface := newSurface(cmd)
+
+	// Through the surface rather than cmd.OutOrStdout(), which matters now that
+	// this is styled. A theme resolves to the palette's own colours, and it is
+	// [ui.New]'s colorprofile writer that degrades those to what the stream can
+	// carry — 24-bit down to 256, to 16, to none. Writing styled text past it sent
+	// truecolor sequences to a terminal that had told us it has 256 colours.
+	out := surface.Out
 
 	format, err := resolveOutputFormat(cmd)
 	if err != nil {
@@ -804,7 +823,7 @@ func runTasks(cmd *cobra.Command, args []string) error {
 	// one answer — a consumer wants `.tasks[] | select(.name=="http")`, not a
 	// stream it has to reassemble before it can index into it.
 	if format.Machine() {
-		return writeJSON(newSurface(cmd), FormatJSON, v1.Catalog())
+		return writeJSON(surface, FormatJSON, v1.Catalog())
 	}
 
 	// What a task takes, not just that it exists.
@@ -814,7 +833,6 @@ func runTasks(cmd *cobra.Command, args []string) error {
 	// README's hand-maintained table, which is exactly the drift the registry
 	// exists to prevent. The schema knows; printing it here means the answer
 	// cannot go stale.
-	surface := newSurface(cmd)
 	theme := surface.Theme
 
 	for i, def := range v1.DefaultRegistry().All() {
@@ -823,10 +841,12 @@ func runTasks(cmd *cobra.Command, args []string) error {
 		}
 		fmt.Fprintf(out, "%s\n  %s\n", theme.Accent.Render(def.Name), def.Summary)
 
-		writeFields(out, theme, []fieldGroup{
+		if err := writeFields(out, theme, []fieldGroup{
 			{label: "inputs", fields: v1.Inputs(def)},
 			{label: "outputs", fields: v1.Outputs(def)},
-		})
+		}); err != nil {
+			return fmt.Errorf("writing the task catalog: %w", err)
+		}
 	}
 
 	fmt.Fprintf(out, "\n%s\n", theme.Muted.Render("* marks an input the task cannot run without."))

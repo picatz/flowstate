@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"strings"
 	"testing"
 
@@ -232,3 +233,60 @@ func stripANSI(s string) string {
 
 	return b.String()
 }
+
+// TestTasksDegradesToWhatTheStreamCarries is the half of styling that is not about
+// choosing a colour.
+//
+// A theme resolves to the palette's own values, which are 24-bit. It is the
+// colorprofile writer that turns those into what the stream actually supports — 256
+// colours, then 16, then none. `runTasks` built a profile-aware surface and then
+// wrote past it to cmd.OutOrStdout(), so a terminal that had told us it has 256
+// colours received truecolor sequences it cannot render.
+//
+// Invisible through a pipe, like the alignment bug: an unstyled stream degrades to
+// nothing either way.
+func TestTasksDegradesToWhatTheStreamCarries(t *testing.T) {
+	t.Parallel()
+
+	// The profile is set rather than detected. colorprofile.NewWriter asks the
+	// writer what it is, and a strings.Builder is not a terminal — so detection
+	// answers NoTTY and the writer strips every sequence, which made the first
+	// version of this test pass while proving nothing. Its own guard caught that.
+	var raw strings.Builder
+	styled := &colorprofile.Writer{Forward: &raw, Profile: colorprofile.ANSI256}
+
+	surface := ui.ForCapabilities(styled, styled,
+		ui.Capabilities{Profile: colorprofile.ANSI256, TTY: true, Width: 120},
+		ui.Capabilities{Profile: colorprofile.ANSI256, TTY: true, Width: 120})
+
+	require.NoError(t, writeFields(surface.Out, surface.Theme, []fieldGroup{
+		{label: "inputs", fields: []v1.InputField{{Name: "url", Type: "string", Required: true}}},
+	}))
+
+	rendered := raw.String()
+	require.Contains(t, rendered, "\x1b[", "nothing was styled, so this proves nothing")
+	assert.NotContains(t, rendered, "38;2;",
+		"a 24-bit colour reached a stream that carries 256, so the degrading writer was bypassed")
+}
+
+// TestTasksReportsAWriteItCouldNotFinish keeps a truncated listing from reporting
+// success.
+//
+// The tabwriter this replaced returned the error from Flush. Writing directly makes
+// every Fprintf a place the failure can be dropped instead — a full disk, or a pipe
+// that has gone away — and a listing that stopped halfway while exiting zero is
+// worse than one that says it could not finish.
+func TestTasksReportsAWriteItCouldNotFinish(t *testing.T) {
+	t.Parallel()
+
+	err := writeFields(failingWriter{}, ui.Plain(io.Discard, io.Discard).Theme, []fieldGroup{
+		{label: "inputs", fields: []v1.InputField{{Name: "url", Type: "string"}}},
+	})
+
+	require.Error(t, err, "a listing that could not be written reported success")
+}
+
+// failingWriter is a stdout that has gone away.
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
