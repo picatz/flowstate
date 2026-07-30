@@ -1,16 +1,19 @@
 package main
 
 import (
+	"cmp"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"connectrpc.com/connect"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
+	"github.com/spf13/cobra"
 )
 
 // maxResponseBytes bounds a single RPC response body.
@@ -49,15 +52,69 @@ var requestTimeout = 30 * time.Second
 // invoked, pointed at a server the user chose, so exhausting its memory costs a
 // process rather than a service. It is bounded anyway, because "the peer is probably
 // fine" is not a bound.
-func newWorkflowServiceClient() flowstatev1connect.WorkflowServiceClient {
+// serverFlags is what a command needs in order to reach a Flowstate server.
+//
+// A value read off the command being run rather than a package variable, which is
+// what `--address` and `--token-file` used to be. Both were bound by every verb that
+// contacts a server, so pflag wrote them at declaration and each verb's default
+// overwrote the last — one address for the process, assembled by whichever command
+// was built most recently.
+//
+// Carried as a pair because they are always needed together: an address with no
+// credential reaches a server that refuses, and a credential with no address is a
+// token sent nowhere.
+type serverFlags struct {
+	address   string
+	tokenFile string
+}
+
+// addServerFlags declares them on a verb that contacts a server.
+//
+// One place, so a verb added later cannot be given a group and left without an
+// address — the way `get` and `signal` were first written. The defaults come from
+// the environment at declaration time, which is what makes FLOWSTATE_ADDRESS and
+// FLOWSTATE_TOKEN_FILE reach a flag nobody passed.
+func addServerFlags(cmd *cobra.Command) {
+	cmd.Flags().String("address", cmp.Or(os.Getenv("FLOWSTATE_ADDRESS"), defaultServerAddress),
+		"address of the Flowstate server (overrides FLOWSTATE_ADDRESS); "+
+			"an explicit https:// scheme is honored")
+
+	// A path, never the token. A credential in argv is a credential in `ps` and in
+	// shell history — and the file form is the one federated identity arrives in
+	// anyway, since Kubernetes projects a service account token to a path and
+	// rotates it there. Read per request for that reason.
+	cmd.Flags().String("token-file", os.Getenv("FLOWSTATE_TOKEN_FILE"),
+		"file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); "+
+			"re-read per request, so a rotating token keeps working. "+
+			"Without it, FLOWSTATE_TOKEN is used, and neither means anonymous")
+}
+
+// defaultServerAddress is where a Flowstate server runs unless told otherwise.
+const defaultServerAddress = "localhost:9233"
+
+// serverFlagsOf reads them off the command being run.
+//
+// Defaults come from the environment at declaration, so an unset flag answers
+// FLOWSTATE_ADDRESS rather than the empty string — which is the direction the
+// `--verbose` bug went wrong in, where a hardcoded default silently overwrote what
+// the environment had supplied.
+func serverFlagsOf(cmd *cobra.Command) serverFlags {
+	address, _ := cmd.Flags().GetString("address")
+	tokenFile, _ := cmd.Flags().GetString("token-file")
+
+	return serverFlags{address: address, tokenFile: tokenFile}
+}
+
+func newWorkflowServiceClient(server serverFlags) flowstatev1connect.WorkflowServiceClient {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	baseURL := serverBaseURL(flowstateAddress)
+	baseURL := serverBaseURL(server.address)
 
 	return flowstatev1connect.NewWorkflowServiceClient(
 		&http.Client{
 			Transport: &authorizingTransport{
-				base:    &boundedTransport{base: transport, max: maxResponseBytes},
-				baseURL: baseURL,
+				base:      &boundedTransport{base: transport, max: maxResponseBytes},
+				baseURL:   baseURL,
+				tokenFile: server.tokenFile,
 			},
 
 			// Bounded in time as well as in bytes, and for the same reason: the peer
@@ -159,7 +216,7 @@ func isLoopbackAddress(address string) bool {
 // The verb says what was being attempted, because "no run X is addressable" is a
 // different problem depending on whether it came from reading one or signalling
 // one.
-func refusedRun(verb, workflowID string, err error) error {
+func refusedRun(verb, workflowID string, server serverFlags, err error) error {
 	switch connect.CodeOf(err) {
 	case connect.CodeNotFound:
 		return fmt.Errorf("no run %q is addressable: check the id, or it belongs to a tenant "+
@@ -168,7 +225,7 @@ func refusedRun(verb, workflowID string, err error) error {
 		return fmt.Errorf("refused while %s %q: %w", verb, workflowID, err)
 	case connect.CodeUnavailable:
 		return fmt.Errorf("no Flowstate server answered at %s (set --address or FLOWSTATE_ADDRESS "+
-			"to point somewhere else): %w", flowstateAddress, err)
+			"to point somewhere else): %w", server.address, err)
 	default:
 		return fmt.Errorf("%s %q: %w", verb, workflowID, err)
 	}

@@ -37,6 +37,7 @@ func lifecycleCommand(t *testing.T) (*cobra.Command, *strings.Builder, *strings.
 	cmd.Flags().Int32("page-size", 0, "")
 	cmd.Flags().Bool("all", false, "")
 	addOutputFlag(cmd)
+	addServerFlags(cmd)
 	cmd.SetContext(t.Context())
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)

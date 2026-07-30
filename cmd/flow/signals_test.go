@@ -289,7 +289,9 @@ func (f *fakeWorkflowService) Signal(_ context.Context, req *connect.Request[v1.
 
 // serveFake stands a fake Flowstate server up and points the CLI at it for the
 // duration of one test.
-func serveFake(t *testing.T, fake *fakeWorkflowService) {
+// Returns the address, for the tests that build a poller directly rather than
+// through a command and so have no flag to read one from.
+func serveFake(t *testing.T, fake *fakeWorkflowService) string {
 	t.Helper()
 
 	mux := http.NewServeMux()
@@ -298,11 +300,16 @@ func serveFake(t *testing.T, fake *fakeWorkflowService) {
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	// The address is process-wide configuration, so it is restored rather than
-	// left pointing at a server that has been closed.
-	previous := flowstateAddress
-	flowstateAddress = server.URL
-	t.Cleanup(func() { flowstateAddress = previous })
+	// Through the environment, which is where `--address` takes its default, so a
+	// command built after this points at the fake without any test knowing the flag
+	// exists. That also exercises the default path itself: FLOWSTATE_ADDRESS
+	// reaching a flag nobody passed is the thing a person relies on, and it is how
+	// the `--verbose` bug hid — a hardcoded default silently overwrote it.
+	//
+	// t.Setenv restores it and forbids t.Parallel, which these tests already are.
+	t.Setenv("FLOWSTATE_ADDRESS", server.URL)
+
+	return server.URL
 }
 
 // signalCommand builds the command runSignal expects, with the flags it declares.
@@ -317,6 +324,7 @@ func signalCommand(t *testing.T) (*cobra.Command, *strings.Builder) {
 	cmd := &cobra.Command{}
 	cmd.Flags().String("data", "", "")
 	cmd.Flags().String("run-id", "", "")
+	addServerFlags(cmd)
 	cmd.SetContext(t.Context())
 	cmd.SetOut(&out)
 

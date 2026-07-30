@@ -142,6 +142,7 @@ func parseSignalPayload(source, raw string) (*v1.Node_Outputs, error) {
 func runSignal(cmd *cobra.Command, args []string) error {
 	workflowID, name := args[0], args[1]
 
+	server := serverFlagsOf(cmd)
 	data, _ := cmd.Flags().GetString("data")
 	runID, _ := cmd.Flags().GetString("run-id")
 
@@ -179,8 +180,8 @@ func runSignal(cmd *cobra.Command, args []string) error {
 			"a letter or digit, then letters, digits, - or _", err)
 	}
 
-	if _, err := newWorkflowServiceClient().Signal(cmd.Context(), connect.NewRequest(request)); err != nil {
-		return refusedRun("signalling", workflowID, err)
+	if _, err := newWorkflowServiceClient(server).Signal(cmd.Context(), connect.NewRequest(request)); err != nil {
+		return refusedRun("signalling", workflowID, server, err)
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "delivered %s to %s\n", name, workflowID)
