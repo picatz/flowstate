@@ -74,10 +74,11 @@ type EgressConfig struct {
 	// first one. Unset keeps [DefaultMaxRedirects]. See [WithMaxRedirects].
 	MaxRedirects *int `json:"max_redirects,omitempty" yaml:"max_redirects,omitempty"`
 
-	// MaxResponseBytes caps the response body. It must be positive: the bound
-	// cannot be removed from a file, only moved. Unset keeps
-	// [DefaultMaxResponseBytes]. See [WithMaxResponseBytes].
-	MaxResponseBytes *int64 `json:"max_response_bytes,omitempty" yaml:"max_response_bytes,omitempty"`
+	// MaxResponseBytes caps the response body, written the way sizes are said:
+	// `1MiB`, `10MB`, or a bare count of bytes — see [ByteSize] for the forms.
+	// It must be positive: the bound cannot be removed from a file, only moved.
+	// Unset keeps [DefaultMaxResponseBytes]. See [WithMaxResponseBytes].
+	MaxResponseBytes *ByteSize `json:"max_response_bytes,omitempty" yaml:"max_response_bytes,omitempty"`
 
 	// Timeout bounds a whole request, written as a duration such as "30s". It
 	// must be positive, for the same reason MaxResponseBytes must: unbounded is
@@ -228,7 +229,7 @@ func (c Config) Options() ([]Option, error) {
 				"%w: max_response_bytes must be positive, got %d; the body cap cannot be removed from a policy file, "+
 					"only raised", ErrInvalidPolicy, *e.MaxResponseBytes)
 		}
-		opts = append(opts, WithMaxResponseBytes(*e.MaxResponseBytes))
+		opts = append(opts, WithMaxResponseBytes(int64(*e.MaxResponseBytes)))
 	}
 
 	if e.Timeout != nil {

@@ -33,9 +33,10 @@ egress:
   allow_ports: [443]
 
   # Bounds. Both exist by default; writing them down pins them, and neither can
-  # be removed from a file — only raised.
+  # be removed from a file — only raised. Sizes are written the way they are
+  # said — 1MiB, 10MB — or as a bare count of bytes.
   max_redirects: 3
-  max_response_bytes: 1048576
+  max_response_bytes: 1MiB
   timeout: 30s
 
   # TLS 1.2 is the floor by default; a deployment that can say 1.3 should.

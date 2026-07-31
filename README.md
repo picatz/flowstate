@@ -502,7 +502,8 @@ It is an explicit opt-in because the same permission is what would let a workflo
 worker's own internal endpoints in production.
 
 The full policy — scheme and port allowlists, CIDR ranges, the CEL rules above, redirect
-and body-size bounds, the TLS floor — is configured as a file:
+and body-size bounds, the TLS floor — is configured as a file, with durations written as
+`30s` and sizes as `1MiB` or `10MB`, the way they are said:
 
 ```console
 $ flow worker --egress-policy egress-policy.yaml
