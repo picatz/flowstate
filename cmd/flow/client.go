@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"connectrpc.com/otelconnect"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 	"github.com/spf13/cobra"
 )
@@ -109,6 +110,16 @@ func newWorkflowServiceClient(server serverFlags) flowstatev1connect.WorkflowSer
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	baseURL := serverBaseURL(server.address)
 
+	// The client half of the tracing the server has carried all along. With no
+	// SDK configured this is a no-op passthrough; with OTEL_EXPORTER_OTLP_*
+	// set, a trace starts at `flow run` and the server's spans join it instead
+	// of each being a root with no parent — which is the difference between a
+	// trace and a pile of disconnected timings.
+	var interceptors []connect.Interceptor
+	if otelInterceptor, err := otelconnect.NewInterceptor(); err == nil {
+		interceptors = append(interceptors, otelInterceptor)
+	}
+
 	return flowstatev1connect.NewWorkflowServiceClient(
 		&http.Client{
 			Transport: &authorizingTransport{
@@ -148,6 +159,7 @@ func newWorkflowServiceClient(server serverFlags) flowstatev1connect.WorkflowSer
 			},
 		},
 		baseURL,
+		connect.WithInterceptors(interceptors...),
 	)
 }
 
