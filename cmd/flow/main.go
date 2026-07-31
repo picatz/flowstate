@@ -904,15 +904,20 @@ func runTasks(cmd *cobra.Command, args []string) error {
 				strings.Join(names, ", "))
 		}
 
-		// Said once rather than guessed at per entry. cel-go identifies a macro by
-		// the name after the dot, so `math.greatest(1, 2)` is reported as `greatest`
-		// and `[3,1,2].sortBy(v, v)` as `sortBy` — a receiver style whose receiver is
-		// a namespace in the first case and a value in the second, and its API does
-		// not say which. Printing a bare name as though it were the call form would
-		// hand somebody a spelling that does not parse.
-		fmt.Fprintf(out, "  %s\n",
-			theme.Muted.Render("a macro is written on something — math.greatest(1, 2), [3,1,2].sortBy(v, v) — "+
-				"and is expanded when the file compiles"))
+		// Said once rather than inlined per entry. A macro's name is not its call
+		// form — cel-go reports `greatest` for `math.greatest(1, 2)` — so a reader
+		// needs an example, and a list of ninety names with two long expressions
+		// spliced into it is harder to scan than a list of names plus one line.
+		//
+		// The examples come from the catalog rather than being written here, so this
+		// line cannot describe a spelling the schema does not carry. Two of them,
+		// because the two shapes are the whole point: one goes on a namespace and
+		// one on a value, and showing only either would imply macros are all alike.
+		if written := macroExamplesFor(functions, "greatest", "sortBy"); written != "" {
+			fmt.Fprintf(out, "  %s\n",
+				theme.Muted.Render("a macro goes on something — "+written+
+					" — and is expanded when the file compiles"))
+		}
 	}
 
 	fmt.Fprintf(out, "\n%s\n  %s\n",
@@ -938,6 +943,31 @@ func runTasks(cmd *cobra.Command, args []string) error {
 		v1.VarsRoot, v1.StepsRoot)
 
 	return nil
+}
+
+// macroExamplesFor renders the catalog's example calls for the named macros.
+//
+// Read out of the catalog rather than written into the sentence, so the one line
+// explaining how a macro is written cannot name a spelling the schema does not
+// carry — the two would drift the first time an example changed, and this line is
+// the only place a reader of the terminal listing learns the call form at all.
+//
+// Silently skips a name with no example, and returns empty if none of them have
+// one, which the caller treats as "say nothing". A sentence promising examples and
+// then listing none is worse than its absence.
+func macroExamplesFor(functions []v1.LibraryFunction, names ...string) string {
+	var out []string
+	for _, name := range names {
+		for _, fn := range functions {
+			if fn.Name == name && fn.Example != "" {
+				out = append(out, fn.Example)
+
+				break
+			}
+		}
+	}
+
+	return strings.Join(out, ", ")
 }
 
 // newRootCommand builds the whole CLI: every command, its flags, and the groups the

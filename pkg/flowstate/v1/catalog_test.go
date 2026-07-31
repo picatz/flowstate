@@ -131,3 +131,86 @@ func TestAStepNamedStepsStillWinsOverTheRoot(t *testing.T) {
 		"a step named `steps` lost to the root, so a run compiled before the root existed "+
 			"changed meaning")
 }
+
+// TestTheCatalogNamesTheFunctionsAndNotOnlyTheLibraries is the same failure the
+// value roots exist for, one level down.
+//
+// `cel_libraries` says which libraries are switched on and nothing about what is in
+// them. A consumer reading it to find out how to sort a list learns that `lists` is
+// enabled and still has to go and read cel-go's documentation to discover `sortBy` —
+// and then guess whether this build enables that part of it. A subset nobody can
+// enumerate is a subset nobody can write against, which is what a profile became the
+// moment it stopped meaning "everything".
+func TestTheCatalogNamesTheFunctionsAndNotOnlyTheLibraries(t *testing.T) {
+	t.Parallel()
+
+	catalog := v1.Catalog()
+
+	require.NotEmpty(t, catalog.GetCelFunctions(),
+		"the catalog names the libraries and never what is in them, so a consumer "+
+			"reading it cannot write a call")
+
+	// Still both. A library name is what groups these and what the profile
+	// definition and docs/DSL.md talk in, so a consumer wanting the shape of the
+	// dialect should not have to derive it from ninety names.
+	assert.NotEmpty(t, catalog.GetCelLibraries(),
+		"the libraries stopped being listed, so the grouping these hang from is gone")
+
+	named := map[string]bool{}
+	for _, fn := range catalog.GetCelFunctions() {
+		named[fn.GetName()] = true
+
+		assert.NotEmpty(t, fn.GetLibrary(), "%q is listed under no library", fn.GetName())
+		assert.Contains(t, catalog.GetCelLibraries(), fn.GetLibrary(),
+			"%q is attributed to %q, which is not a library this profile has",
+			fn.GetName(), fn.GetLibrary())
+	}
+
+	// The ones this repo has actually had to answer by reading cel-go's source.
+	for _, name := range []string{"sortBy", "greatest", "json.encode", "upperAscii", "regex.replace"} {
+		assert.Contains(t, named, name, "%q is in the profile and the catalog does not name it", name)
+	}
+}
+
+// TestEveryCatalogedFunctionIsOneAnExpressionCanCall is the direction that costs a
+// consumer real work, and it is the same shape as the value-roots check above.
+//
+// A name the catalog hands out that no expression can call is worse than an omission:
+// somebody builds a call from this answer and it does not compile. Two ways that
+// happens, and both were live before the filter existed — an operator is declared
+// under a placeholder spelling (`_+_`) and a macro's expansion under a reserved one
+// (`math.@max`), and neither is a thing anybody may type.
+func TestEveryCatalogedFunctionIsOneAnExpressionCanCall(t *testing.T) {
+	t.Parallel()
+
+	for _, fn := range v1.Catalog().GetCelFunctions() {
+		assert.NotContains(t, fn.GetName(), "@",
+			"the catalog names %q, which is a macro's internal expansion", fn.GetName())
+		assert.NotContains(t, fn.GetName(), "_?",
+			"the catalog names %q, which is an operator's placeholder spelling", fn.GetName())
+	}
+}
+
+// TestTheCatalogAndTheListingAgree is the vocabulary rule applied to the two halves
+// of one answer.
+//
+// `flow tasks` prints these for a person and this message carries them for everything
+// else. They come from one [v1.ProfileFunctions] so that they cannot differ — and a
+// catalog that named a different set from the one somebody is shown would be worse
+// than not carrying them, because this message is meant to be the contract.
+func TestTheCatalogAndTheListingAgree(t *testing.T) {
+	t.Parallel()
+
+	listed := v1.ProfileFunctions(v1.CurrentProfile)
+	carried := v1.Catalog().GetCelFunctions()
+
+	require.Len(t, carried, len(listed),
+		"the catalog carries a different number of functions from the listing")
+
+	for i, fn := range listed {
+		assert.Equal(t, fn.Name, carried[i].GetName())
+		assert.Equal(t, fn.Library, carried[i].GetLibrary())
+		assert.Equal(t, fn.Macro, carried[i].GetMacro(),
+			"%q disagrees about being a macro, which is what says when it is resolved", fn.Name)
+	}
+}

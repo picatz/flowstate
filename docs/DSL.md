@@ -428,11 +428,26 @@ default. So the deployment posture this section says the language depends on is 
 one the shipped default has, and nothing refuses to run without it.
 
 That is stated here rather than quietly fixed because the fix is a real decision and
-not an obvious one. Refusing to start an unversioned worker would make the
-self-hosted `temporal server start-dev` path (invariant 8) require versioning
-configuration to run anything at all. Warning at worker start is what `flow worker`
-does today for the *absence* of versioning, and a warning is not a gate. Whichever is
-chosen, the gap is between this page and the code, and the page was the wrong one.
+not an obvious one. Warning at worker start is what `flow worker` does today for the
+*absence* of versioning, and a warning is not a gate. Whichever is chosen, the gap is
+between this page and the code, and the page was the wrong one.
+
+*A correction, on what gating would actually cost.* This paragraph used to say that
+refusing to start an unversioned worker "would make the self-hosted `temporal server
+start-dev` path (invariant 8) require versioning configuration to run anything at
+all", which named the wrong obstacle and made the option sound blocked.
+
+Invariant 8 forbids a *cloud* prerequisite — "no cloud dependency and no external
+identity provider" — and Worker Deployment Versioning is not one.
+`TestAPinnedRunTakesTheCurrentVersionAtContinueAsNew` runs two versioned builds
+against `testsuite.StartDevServer`, which is `temporal server start-dev`, and moves a
+suspended run between them. It is in the passing suite. So versioning demonstrably
+works self-hosted, and requiring it would not put a cloud dependency in anyone's way.
+
+What gating costs is two flags before `flow worker` will start, which is an
+ergonomic price on the shortest path into the project rather than an invariant being
+broken. That is a smaller objection than the one this page was making, and the
+decision should be taken against the real one.
 
 The remaining option — routing every evaluation through an activity — has a cost
 worth having a number for, since "a round trip per condition" is the kind of estimate

@@ -777,7 +777,7 @@ steps:
 
 > [!TIP]
 > Use `${...}` for expressions, like referencing a previous step's output as `${steps.<id>.<output>}`.
-> Every expression in a workflow — a task input, a `vars:` value, `if:`, `items:`, `wait_until:` — is evaluated by the engine against one vocabulary, and reaches the same CEL extension libraries: `bindings`, `comprehensions`, `encoders`, `json`, `lists`, `math`, `optional`, `protos`, `regex`, `sets`, `strings`. There is nothing to enable; `flow tasks` prints the same set.
+> Every expression in a workflow — a task input, a `vars:` value, `if:`, `items:`, `wait_until:` — is evaluated by the engine against one vocabulary, and reaches the same CEL extension libraries: `bindings`, `comprehensions`, `encoders`, `json`, `lists`, `math`, `optional`, `protos`, `regex`, `sets`, `strings`. There is nothing to enable; `flow tasks` prints the same set, and every function in it — `sortBy`, `math.greatest`, `json.encode`, `upperAscii` — since a library name says what is switched on and nothing about what it contains. `flow tasks --output json` carries the same names for a consumer that is not a person.
 
 ### Waiting
 

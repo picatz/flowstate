@@ -2,6 +2,7 @@ package lsp
 
 import (
 	"log/slog"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -47,6 +48,67 @@ func TestInitializeAdvertisesOnlyWhatIsImplemented(t *testing.T) {
 	assert.Nil(t, got.SignatureHelpProvider)
 	assert.Nil(t, got.CodeLensProvider)
 	assert.Nil(t, got.ExecuteCommandProvider)
+}
+
+// implementedCapabilities are the fields of lsp.ServerCapabilities this server is
+// allowed to set, each paired with the request it answers.
+//
+// The list is of what *is* implemented, which is the direction that stays small: it
+// changes when this server gains a feature, and a feature is exactly when somebody
+// is already editing this file.
+var implementedCapabilities = map[string]string{
+	"TextDocumentSync":       "textDocument/didOpen",
+	"HoverProvider":          "textDocument/hover",
+	"CompletionProvider":     "textDocument/completion",
+	"DefinitionProvider":     "textDocument/definition",
+	"DocumentSymbolProvider": "textDocument/documentSymbol",
+}
+
+// TestNoCapabilityIsAdvertisedWithoutAHandler is the check the list above cannot be
+// written by hand.
+//
+// The test beside it names eight providers that must stay off, which is a list of
+// *negatives* — and a list of negatives over somebody else's struct is unbounded and
+// silently incomplete. `lsp.ServerCapabilities` has more fields than that today, and
+// gains more as the protocol does; a capability set on one nobody thought to name
+// would be advertised and unchecked.
+//
+// So this asks the struct instead. Every field that is set has to be one this server
+// implements, and the reverse: an entry here with nothing set means the list has
+// outlived the capability. Neither direction can be satisfied by forgetting.
+//
+// It is the same shape as the catalog's function listing, and for the same reason —
+// advertising something and not providing it reads to a user as broken rather than
+// absent, and that is a worse answer than saying nothing.
+func TestNoCapabilityIsAdvertisedWithoutAHandler(t *testing.T) {
+	t.Parallel()
+
+	c := newClient(t)
+	got := c.initialize()
+
+	value := reflect.ValueOf(got)
+	fields := value.Type()
+	require.Positive(t, fields.NumField(), "ServerCapabilities has no fields; this checks nothing")
+
+	set := map[string]bool{}
+	for i := range fields.NumField() {
+		if value.Field(i).IsZero() {
+			continue
+		}
+		name := fields.Field(i).Name
+		set[name] = true
+
+		assert.Contains(t, implementedCapabilities, name,
+			"the server advertises %q and nothing here says which request it answers; "+
+				"an editor will route one and get an empty answer, which reads as broken "+
+				"rather than absent", name)
+	}
+
+	for name, request := range implementedCapabilities {
+		assert.Contains(t, set, name,
+			"%q is listed as implemented (it answers %s) and is not advertised, so an editor "+
+				"will never send one", name, request)
+	}
 }
 
 // TestNotificationsGetNoReply checks the rule the previous server broke: a

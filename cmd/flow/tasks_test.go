@@ -59,7 +59,12 @@ func TestTasksJSONIsOneDocumentAConsumerCanIndex(t *testing.T) {
 				Name string `json:"name"`
 			} `json:"outputs"`
 		} `json:"tasks"`
-		CELLibraries  []string `json:"celLibraries"`
+		CELLibraries []string `json:"celLibraries"`
+		CELFunctions []struct {
+			Name    string `json:"name"`
+			Library string `json:"library"`
+			Macro   bool   `json:"macro"`
+		} `json:"celFunctions"`
 		DurationUnits []string `json:"durationUnits"`
 		NowIdentifier string   `json:"nowIdentifier"`
 	}
@@ -117,6 +122,31 @@ func TestTasksJSONIsOneDocumentAConsumerCanIndex(t *testing.T) {
 
 	if len(catalog.CELLibraries) == 0 || len(catalog.DurationUnits) == 0 || catalog.NowIdentifier == "" {
 		t.Errorf("the catalog omits what an expression can say: %+v", catalog)
+	}
+
+	// The names, and not only the libraries they are grouped under. A consumer
+	// reading `celLibraries` to find out how to sort a list learns that `lists` is
+	// enabled and still cannot write the call.
+	//
+	// Checked here rather than only against the Go value because this is the form an
+	// agent actually receives: a field that exists on the message and never reaches
+	// the pipe is not a contract, it is an intention.
+	if len(catalog.CELFunctions) == 0 {
+		t.Error("the catalog names the libraries and not what is in them")
+	}
+
+	byName := make(map[string]string, len(catalog.CELFunctions))
+	for _, fn := range catalog.CELFunctions {
+		byName[fn.Name] = fn.Library
+	}
+	for name, library := range map[string]string{
+		"sortBy":        "lists",
+		"upperAscii":    "strings",
+		"regex.replace": "regex",
+	} {
+		if byName[name] != library {
+			t.Errorf("the catalog puts %q in %q rather than %q", name, byName[name], library)
+		}
 	}
 }
 

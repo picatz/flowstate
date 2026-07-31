@@ -127,10 +127,17 @@ func fieldNames(md protoreflect.MessageDescriptor) []string {
 // `libs` listed eight, both missing `json` — which `examples/http-json-via-cel`
 // uses, so the documentation omitted a library a shipped example depends on.
 //
-// The language server was the one that was right, and it is worth saying why,
-// because it is not diligence: `celLibraries` iterates `v1.ExtensionLibraries()`
-// and diffs environments to find what each provides, so it cannot name a library
-// the evaluator would refuse. Derived beats maintained, again.
+// The catalog was the one that was right, and it is worth saying why, because it
+// is not diligence: `celLibraries` is `v1.ExtensionLibraries()`, which is the key
+// set `buildEnv` matches against, so it cannot name a library the evaluator would
+// refuse. Derived beats maintained, again.
+//
+// An earlier version of this comment also said it "diffs environments to find what
+// each provides", which was not true of anything: the catalog carried library names
+// and nothing about their contents. It is true now — `cel_functions` is built by
+// asking each library's environment what it declares and subtracting cel-go's own —
+// which is the direction a comment describing something aspirational should be
+// resolved in.
 //
 // The schema comment stopped enumerating rather than being corrected — a list in
 // prose beside the thing it describes is a second source of truth, and that one
