@@ -439,6 +439,36 @@ func kindPhrase(kind protoreflect.Kind) string {
 // treatment again the day one is retired, and not before.
 const varsKey = "vars"
 
+// The other keys that introduce a bare binding, which is what makes a name inside
+// them something other than a step id.
+//
+// Named here beside `vars:` because they are read together: [boundBareNames] has to
+// know all of them, and a rewriter that knew two of three corrupts a working file
+// in the one case it did not know about.
+const (
+	// forEachKey opens a loop, whose `as:` names the item.
+	forEachKey = "for_each"
+
+	// forEachAsKey is where that name is written, when it is written at all. A
+	// loop with no `as:` still binds one, under [v1.DefaultIterator].
+	forEachAsKey = "as"
+
+	// forEachItemsKey and forEachStepsKey are the two keys that make a mapping a
+	// loop's, which is how the default iterator is recognised.
+	forEachItemsKey = "items"
+	forEachStepsKey = "steps"
+
+	// conditionKey is the step's `if:`, evaluated before the step's own `vars:`
+	// exist and therefore unable to see them.
+	conditionKey = "if"
+
+	// waitUntilKey opens the one expression that sees `now`.
+	waitUntilKey = "wait_until"
+
+	// nowBinding is the clock, bound bare and only inside a wait.
+	nowBinding = "now"
+)
+
 // findField returns the field a task declares under the given input name.
 func findField(md protoreflect.MessageDescriptor, name string) protoreflect.FieldDescriptor {
 	if md == nil {
