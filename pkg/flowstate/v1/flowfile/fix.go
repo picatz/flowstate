@@ -1250,15 +1250,44 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 	if len(steps) == 0 {
 		return
 	}
-	var walk func(n ast.Node, task taskScope)
-	walk = func(n ast.Node, task taskScope) {
+	// steps arrives as the ids in the document and shrinks on the way down, because
+	// a name the *grammar* binds bare is that binding and not a step that happens to
+	// share its spelling.
+	//
+	// [collectStepIdents] already tracks what CEL binds — a comprehension's iteration
+	// variable — and says why: "rooting it would change what the expression means
+	// rather than how it is written." It has no way to know what the grammar binds,
+	// and the grammar binds three things bare: a loop's `as:`, a step's own `vars:`
+	// keys, and `now` inside a wait. All three were made legal alongside a step of
+	// the same id on purpose, so all three could be written and then silently
+	// rewritten into a reference to that step.
+	//
+	// Subtracted from the candidate set rather than added to a bound set, so the
+	// notes about deferred inputs narrow with it: suggesting the `steps.` spelling
+	// for a name the author bound in a loop would send them to make the corruption
+	// by hand.
+	var walk func(n ast.Node, task taskScope, steps map[string]bool)
+	walk = func(n ast.Node, task taskScope, steps map[string]bool) {
 		switch node := unwrapAnchor(n).(type) {
 		case *ast.MappingNode:
+			// The bindings a mapping introduces are written as siblings of the
+			// expressions that see them — `as:` beside `steps:`, `vars:` beside the
+			// task — so they are read off the whole mapping first, and then applied
+			// per key, because each is in scope for some of its siblings and not
+			// others.
+			vars, iterator := boundBareNames(node)
+
 			for _, v := range node.Values {
-				walk(v, task)
+				walk(v, task, sees(steps, v, vars, iterator))
 			}
 		case *ast.MappingValueNode:
 			name, named := keyNameOf(node.Key)
+			if named && name == waitUntilKey {
+				// `now` is bound only here. Bound for this value alone rather than
+				// for the step, because outside a wait it is an ordinary name and a
+				// step may legitimately be called it.
+				steps = without(steps, map[string]bool{nowBinding: true})
+			}
 			if named && task.deferred[name] {
 				// One deferred scope this rewriter *can* see. The http task binds
 				// exactly four names into its `expect:` and `outputs:` expressions,
@@ -1301,20 +1330,121 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 					walk(node.Value, taskScope{
 						name:     name,
 						deferred: deferredInputs(def),
-					})
+					}, steps)
 					return
 				}
 			}
-			walk(node.Value, task)
+			walk(node.Value, task, steps)
 		case *ast.SequenceNode:
 			for _, v := range node.Values {
-				walk(v, task)
+				walk(v, task, steps)
 			}
 		case *ast.StringNode:
 			f.rootScalar(node, steps)
 		}
 	}
-	walk(n, taskScope{})
+	walk(n, taskScope{}, steps)
+}
+
+// boundBareNames reads the bindings a mapping introduces: the keys of a step's
+// own `vars:`, and the item name of a loop.
+//
+// Returned separately because they are in scope in different places, which is the
+// whole difficulty — see [sees].
+//
+// The iterator is `item` when a loop writes no `as:`, matching [v1.IteratorName].
+// A loop is recognised by carrying both `items:` and `steps:`, since that is what
+// makes the default reachable at all: a mapping with an explicit `as:` announces
+// itself, and one without announces nothing.
+func boundBareNames(node *ast.MappingNode) (vars map[string]bool, iterator string) {
+	var (
+		hasItems bool
+		hasSteps bool
+	)
+
+	for _, value := range node.Values {
+		key, named := keyNameOf(value.Key)
+		if !named {
+			continue
+		}
+
+		switch key {
+		case forEachItemsKey:
+			hasItems = true
+
+		case forEachStepsKey:
+			hasSteps = true
+
+		case forEachAsKey:
+			if name, isString := scalarText(value.Value); isString && name != "" {
+				iterator = name
+			}
+
+		case varsKey:
+			if declared, isMapping := unwrapAnchor(value.Value).(*ast.MappingNode); isMapping {
+				for _, entry := range declared.Values {
+					if name, ok := keyNameOf(entry.Key); ok {
+						if vars == nil {
+							vars = map[string]bool{}
+						}
+						vars[name] = true
+					}
+				}
+			}
+		}
+	}
+
+	if !hasItems || !hasSteps {
+		// Not a loop's inner mapping. An `as:` elsewhere is somebody's input named
+		// `as`, and claiming it would suppress a rooting for no reason.
+		iterator = ""
+	} else if iterator == "" {
+		iterator = v1.DefaultIterator
+	}
+
+	return vars, iterator
+}
+
+// sees returns the step ids one value of a mapping may still be rooted against.
+//
+// A binding is in scope for some of its siblings and not others, and getting that
+// wrong costs a file in one direction or the other. Too narrow and a legacy
+// reference is rewritten into the binding — the corruption this is here to stop.
+// Too wide and a legacy reference is *left* bare while the edition is stamped, so
+// `flow fix` exits zero on a file the validator then rejects, which is the other
+// thing this command promises not to do.
+//
+// The three scopes, each taken from where the engine evaluates the thing:
+//
+//   - A loop's item is bound for the body and nothing else. `items:` is evaluated
+//     to produce the list before anything is bound, so a bare reference there is
+//     a step.
+//   - A step's `vars:` are bound for the rest of the step but not for its `if:`,
+//     because the condition decides whether the step runs at all and is evaluated
+//     first — `runNodes` says so where it does it. Nor for the `vars:` block
+//     itself, where they are being defined rather than read.
+//   - `now` is handled at the wait's own key, since it is in scope for one value.
+func sees(steps map[string]bool, value *ast.MappingValueNode, vars map[string]bool, iterator string) map[string]bool {
+	key, named := keyNameOf(value.Key)
+	if !named {
+		return steps
+	}
+
+	switch key {
+	case conditionKey, varsKey:
+		// Neither sees the step's own vars.
+		return steps
+
+	case forEachStepsKey:
+		if iterator != "" {
+			return without(steps, map[string]bool{iterator: true})
+		}
+
+		return without(steps, vars)
+
+	default:
+		return without(steps, vars)
+	}
 }
 
 // taskScope is what the walk knows once it is inside a task's inputs.

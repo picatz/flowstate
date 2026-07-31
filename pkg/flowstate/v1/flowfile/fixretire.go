@@ -406,10 +406,52 @@ func (f *fixer) deleteStep(step *ast.MappingNode) {
 	// at the second — `- id: greet` would go and `echo:` would stay, leaving an orphan
 	// block where a step used to be. The dash is one level further out, and the lines
 	// belonging to the step are everything indented past it, up to the next dash.
+	// And the dash is not always on the same line as the first key. YAML allows it
+	// on its own, and then a range starting at the key leaves the dash behind: the
+	// sequence keeps an entry with nothing under it, `flow validate` refuses the
+	// file with "must be a mapping of keys to values, but nothing was written
+	// here", and `flow fix` had already exited zero. `flow fix . && git commit`
+	// succeeded on a file the validator refuses, which is the one thing
+	// cmd/flow/fix.go says must not happen.
 	first := span.Start.Line
-	through := f.blockEnd(first, span.Start.Column-2)
+	if dash := f.dashLineAbove(first, span.Start.Column-2); dash > 0 {
+		first = dash
+	}
+
+	through := f.blockEnd(span.Start.Line, span.Start.Column-2)
 
 	f.record(first, through, nil, "step moved into `"+varsKey+":` and removed")
+}
+
+// dashLineAbove returns the line holding the sequence dash a step's keys begin
+// below, or zero when the dash shares a line with the first key.
+//
+// column is where the dash would be: one indent level outside the keys, which is
+// how [fixer.deleteStep] and [fixer.blockEnd] already locate it.
+//
+// Blank lines and comments between the dash and the first key are walked over
+// rather than treated as the end of the search, because both are legal there and
+// both belong to the step being removed. Anything else means the dash is not above
+// this key after all, and nothing is claimed.
+func (f *fixer) dashLineAbove(first, column int) int {
+	for line := first - 1; line >= 1; line-- {
+		text := f.line(line)
+
+		trimmed := strings.TrimSpace(text)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+
+		// The dash alone. `- id: greet` never reaches here, because then the key is
+		// on the dash's own line and this loop starts above both.
+		if trimmed == "-" && indentWidth(text) == column-1 {
+			return line
+		}
+
+		return 0
+	}
+
+	return 0
 }
 
 // A movedVar is one retired step's value, on its way to the `vars:` block.
