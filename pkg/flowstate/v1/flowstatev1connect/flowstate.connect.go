@@ -46,6 +46,12 @@ const (
 	// WorkflowServiceTerminateProcedure is the fully-qualified name of the WorkflowService's Terminate
 	// RPC.
 	WorkflowServiceTerminateProcedure = "/flowstate.v1.WorkflowService/Terminate"
+	// WorkflowServiceValidateProcedure is the fully-qualified name of the WorkflowService's Validate
+	// RPC.
+	WorkflowServiceValidateProcedure = "/flowstate.v1.WorkflowService/Validate"
+	// WorkflowServiceGetCatalogProcedure is the fully-qualified name of the WorkflowService's
+	// GetCatalog RPC.
+	WorkflowServiceGetCatalogProcedure = "/flowstate.v1.WorkflowService/GetCatalog"
 )
 
 // WorkflowServiceClient is a client for the flowstate.v1.WorkflowService service.
@@ -83,6 +89,38 @@ type WorkflowServiceClient interface {
 	// Terminate stops a run immediately, running none of its cleanup. Prefer
 	// Cancel; see CancelRequest for when this is the right answer anyway.
 	Terminate(context.Context, *connect.Request[v1.TerminateRequest]) (*connect.Response[v1.TerminateResponse], error)
+	// Validate checks Flowfiles and returns their diagnostics, executing nothing.
+	//
+	// `flow validate` does this offline and must keep doing so: a validator that
+	// needs a server is one that stops working on an aeroplane, and invariant 8
+	// says a first run needs no infrastructure. This is not a replacement for that.
+	// It is the same check for a caller who has no filesystem to point the command
+	// at — a browser, a CI service, an agent writing a file it has not saved —
+	// and it answers with the very same [ValidationReport] message the command
+	// prints, from the very same code, so there is no second validator to disagree
+	// with the first.
+	//
+	// Pure by construction, which is what makes it the useful one to hand an agent:
+	// it reads nothing, writes nothing, and starts nothing, so it can be looped on
+	// unattended in a way none of the verbs above can.
+	//
+	// Authenticated like everything else here, because checking a file is work
+	// somebody's CPU does. Bounded like everything else that takes input somebody
+	// else chose: see ValidateRequest.
+	Validate(context.Context, *connect.Request[v1.ValidateRequest]) (*connect.Response[v1.ValidateResponse], error)
+	// GetCatalog returns what this deployment can execute.
+	//
+	// The registry is the single source of truth for capability, and until this
+	// existed the only way to ask it was to run `flow tasks` on a machine with the
+	// same build — which is not the same question. A worker that loaded plugins can
+	// run tasks this binary has never heard of, so "what tasks exist" is a property
+	// of a deployment, and a caller writing a workflow for it needs the deployment's
+	// answer rather than their laptop's.
+	//
+	// [TaskCatalog]'s own comment anticipated this RPC, and returning that message
+	// unchanged is the point: an editor, an agent, a documentation generator and
+	// `flow tasks --output json` all read one shape.
+	GetCatalog(context.Context, *connect.Request[v1.GetCatalogRequest]) (*connect.Response[v1.GetCatalogResponse], error)
 }
 
 // NewWorkflowServiceClient constructs a client for the flowstate.v1.WorkflowService service. By
@@ -132,17 +170,31 @@ func NewWorkflowServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(workflowServiceMethods.ByName("Terminate")),
 			connect.WithClientOptions(opts...),
 		),
+		validate: connect.NewClient[v1.ValidateRequest, v1.ValidateResponse](
+			httpClient,
+			baseURL+WorkflowServiceValidateProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("Validate")),
+			connect.WithClientOptions(opts...),
+		),
+		getCatalog: connect.NewClient[v1.GetCatalogRequest, v1.GetCatalogResponse](
+			httpClient,
+			baseURL+WorkflowServiceGetCatalogProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("GetCatalog")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // workflowServiceClient implements WorkflowServiceClient.
 type workflowServiceClient struct {
-	run       *connect.Client[v1.RunRequest, v1.RunResponse]
-	get       *connect.Client[v1.GetRequest, v1.GetResponse]
-	signal    *connect.Client[v1.SignalRequest, v1.SignalResponse]
-	list      *connect.Client[v1.ListRequest, v1.ListResponse]
-	cancel    *connect.Client[v1.CancelRequest, v1.CancelResponse]
-	terminate *connect.Client[v1.TerminateRequest, v1.TerminateResponse]
+	run        *connect.Client[v1.RunRequest, v1.RunResponse]
+	get        *connect.Client[v1.GetRequest, v1.GetResponse]
+	signal     *connect.Client[v1.SignalRequest, v1.SignalResponse]
+	list       *connect.Client[v1.ListRequest, v1.ListResponse]
+	cancel     *connect.Client[v1.CancelRequest, v1.CancelResponse]
+	terminate  *connect.Client[v1.TerminateRequest, v1.TerminateResponse]
+	validate   *connect.Client[v1.ValidateRequest, v1.ValidateResponse]
+	getCatalog *connect.Client[v1.GetCatalogRequest, v1.GetCatalogResponse]
 }
 
 // Run calls flowstate.v1.WorkflowService.Run.
@@ -173,6 +225,16 @@ func (c *workflowServiceClient) Cancel(ctx context.Context, req *connect.Request
 // Terminate calls flowstate.v1.WorkflowService.Terminate.
 func (c *workflowServiceClient) Terminate(ctx context.Context, req *connect.Request[v1.TerminateRequest]) (*connect.Response[v1.TerminateResponse], error) {
 	return c.terminate.CallUnary(ctx, req)
+}
+
+// Validate calls flowstate.v1.WorkflowService.Validate.
+func (c *workflowServiceClient) Validate(ctx context.Context, req *connect.Request[v1.ValidateRequest]) (*connect.Response[v1.ValidateResponse], error) {
+	return c.validate.CallUnary(ctx, req)
+}
+
+// GetCatalog calls flowstate.v1.WorkflowService.GetCatalog.
+func (c *workflowServiceClient) GetCatalog(ctx context.Context, req *connect.Request[v1.GetCatalogRequest]) (*connect.Response[v1.GetCatalogResponse], error) {
+	return c.getCatalog.CallUnary(ctx, req)
 }
 
 // WorkflowServiceHandler is an implementation of the flowstate.v1.WorkflowService service.
@@ -210,6 +272,38 @@ type WorkflowServiceHandler interface {
 	// Terminate stops a run immediately, running none of its cleanup. Prefer
 	// Cancel; see CancelRequest for when this is the right answer anyway.
 	Terminate(context.Context, *connect.Request[v1.TerminateRequest]) (*connect.Response[v1.TerminateResponse], error)
+	// Validate checks Flowfiles and returns their diagnostics, executing nothing.
+	//
+	// `flow validate` does this offline and must keep doing so: a validator that
+	// needs a server is one that stops working on an aeroplane, and invariant 8
+	// says a first run needs no infrastructure. This is not a replacement for that.
+	// It is the same check for a caller who has no filesystem to point the command
+	// at — a browser, a CI service, an agent writing a file it has not saved —
+	// and it answers with the very same [ValidationReport] message the command
+	// prints, from the very same code, so there is no second validator to disagree
+	// with the first.
+	//
+	// Pure by construction, which is what makes it the useful one to hand an agent:
+	// it reads nothing, writes nothing, and starts nothing, so it can be looped on
+	// unattended in a way none of the verbs above can.
+	//
+	// Authenticated like everything else here, because checking a file is work
+	// somebody's CPU does. Bounded like everything else that takes input somebody
+	// else chose: see ValidateRequest.
+	Validate(context.Context, *connect.Request[v1.ValidateRequest]) (*connect.Response[v1.ValidateResponse], error)
+	// GetCatalog returns what this deployment can execute.
+	//
+	// The registry is the single source of truth for capability, and until this
+	// existed the only way to ask it was to run `flow tasks` on a machine with the
+	// same build — which is not the same question. A worker that loaded plugins can
+	// run tasks this binary has never heard of, so "what tasks exist" is a property
+	// of a deployment, and a caller writing a workflow for it needs the deployment's
+	// answer rather than their laptop's.
+	//
+	// [TaskCatalog]'s own comment anticipated this RPC, and returning that message
+	// unchanged is the point: an editor, an agent, a documentation generator and
+	// `flow tasks --output json` all read one shape.
+	GetCatalog(context.Context, *connect.Request[v1.GetCatalogRequest]) (*connect.Response[v1.GetCatalogResponse], error)
 }
 
 // NewWorkflowServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -255,6 +349,18 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 		connect.WithSchema(workflowServiceMethods.ByName("Terminate")),
 		connect.WithHandlerOptions(opts...),
 	)
+	workflowServiceValidateHandler := connect.NewUnaryHandler(
+		WorkflowServiceValidateProcedure,
+		svc.Validate,
+		connect.WithSchema(workflowServiceMethods.ByName("Validate")),
+		connect.WithHandlerOptions(opts...),
+	)
+	workflowServiceGetCatalogHandler := connect.NewUnaryHandler(
+		WorkflowServiceGetCatalogProcedure,
+		svc.GetCatalog,
+		connect.WithSchema(workflowServiceMethods.ByName("GetCatalog")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/flowstate.v1.WorkflowService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case WorkflowServiceRunProcedure:
@@ -269,6 +375,10 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 			workflowServiceCancelHandler.ServeHTTP(w, r)
 		case WorkflowServiceTerminateProcedure:
 			workflowServiceTerminateHandler.ServeHTTP(w, r)
+		case WorkflowServiceValidateProcedure:
+			workflowServiceValidateHandler.ServeHTTP(w, r)
+		case WorkflowServiceGetCatalogProcedure:
+			workflowServiceGetCatalogHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -300,4 +410,12 @@ func (UnimplementedWorkflowServiceHandler) Cancel(context.Context, *connect.Requ
 
 func (UnimplementedWorkflowServiceHandler) Terminate(context.Context, *connect.Request[v1.TerminateRequest]) (*connect.Response[v1.TerminateResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.Terminate is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) Validate(context.Context, *connect.Request[v1.ValidateRequest]) (*connect.Response[v1.ValidateResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.Validate is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) GetCatalog(context.Context, *connect.Request[v1.GetCatalogRequest]) (*connect.Response[v1.GetCatalogResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.GetCatalog is not implemented"))
 }
