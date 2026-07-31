@@ -56,12 +56,28 @@ func TestWaitDeadlineDurationUnits(t *testing.T) {
 
 	now := time.Date(2026, 3, 1, 9, 0, 0, 0, time.UTC)
 
+	// Keyed by the unit each one exercises, so the completeness check below can ask
+	// whether every advertised unit is here. The two that combine or subtract are
+	// keyed by the unit they turn on.
+	perUnit := map[string]struct {
+		expression string
+		want       time.Duration
+	}{
+		"seconds": {"${now + seconds(30)}", 30 * time.Second},
+		"minutes": {"${now + minutes(5)}", 5 * time.Minute},
+		"hours":   {"${now + hours(2)}", 2 * time.Hour},
+		"days":    {"${now + days(3)}", 72 * time.Hour},
+		"weeks":   {"${now + weeks(1)}", 7 * 24 * time.Hour},
+	}
+
+	for unit, test := range perUnit {
+		deadline, err := v1.EvalWaitDeadline(t.Context(), waitUntil(t, test.expression), nil, now)
+		require.NoError(t, err, "%s did not evaluate", test.expression)
+		require.Equal(t, now.Add(test.want).UTC(), deadline.UTC(),
+			"%s (the %s case) computed the wrong moment", test.expression, unit)
+	}
+
 	for expression, want := range map[string]time.Duration{
-		"${now + seconds(30)}":        30 * time.Second,
-		"${now + minutes(5)}":         5 * time.Minute,
-		"${now + hours(2)}":           2 * time.Hour,
-		"${now + days(3)}":            72 * time.Hour,
-		"${now + weeks(1)}":           7 * 24 * time.Hour,
 		"${now + days(1) + hours(6)}": 30 * time.Hour,
 
 		// A day is a fixed offset here rather than a calendar day, which is the
@@ -71,6 +87,25 @@ func TestWaitDeadlineDurationUnits(t *testing.T) {
 		deadline, err := v1.EvalWaitDeadline(t.Context(), waitUntil(t, expression), nil, now)
 		require.NoError(t, err, "%s did not evaluate", expression)
 		require.Equal(t, now.Add(want).UTC(), deadline.UTC(), "%s computed the wrong moment", expression)
+	}
+
+	// Every unit the catalog advertises has a case above.
+	//
+	// The list was maintained and the advertised set is derived, which is the gap
+	// that let eighteen macros be listed by `flow tasks` and be impossible to run: a
+	// sixth unit added to durationUnits would appear in the catalog, in `flow tasks`
+	// and in the editor, and nothing here would ask whether it works.
+	//
+	// It is not hypothetical for this list in particular. The units stop at weeks
+	// because a month is a calendar question rather than a quantity — which is a
+	// decision somebody could revisit, and the revisiting is exactly when a check
+	// like this earns itself.
+	advertised := v1.DurationUnits()
+	require.NotEmpty(t, advertised, "the catalog advertises no duration units; this checks nothing")
+
+	for _, unit := range advertised {
+		assert.Contains(t, perUnit, unit,
+			"`%s` is offered as a duration constructor and nothing here evaluates one", unit)
 	}
 }
 
