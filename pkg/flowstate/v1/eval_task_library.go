@@ -502,17 +502,31 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 				// here by hand did neither: an author's `outputs:` expression is
 				// the expression they most directly control, and it was the one
 				// place in the engine that ran unbounded.
+				//
+				// Every failure below is classified, and that is not tidiness. An
+				// unwrapped error classifies as [ErrorKindInternal], which is
+				// *retryable* — so a typo in `outputs:` re-ran the whole attempt,
+				// and the whole attempt begins by sending the request again. A POST
+				// that had already succeeded was sent five times for a mistake no
+				// number of attempts could fix. [ErrorKind.Retryable] states the
+				// rule this was breaking: "Retrying a POST that already took effect
+				// is worse than surfacing a failure that might have resolved on its
+				// own." `expect:`, one file over, has classified all along.
 				out, err := DefaultEvaluator().EvalParsed(ctx, env, outputsExpr, act)
 				if err != nil {
-					return nil, fmt.Errorf("failed to evaluate HTTP outputs expression: %w", err)
+					return nil, NewTaskError("http", ErrorKindExpression,
+						fmt.Errorf("evaluating outputs: %w", err))
 				}
 				pv, err := cel.RefValueToValue(out)
 				if err != nil {
-					return nil, fmt.Errorf("failed to convert HTTP outputs expression result: %w", err)
+					return nil, NewTaskError("http", ErrorKindExpression,
+						fmt.Errorf("converting the result of outputs: %w", err))
 				}
 				mv, ok := pv.GetKind().(*expr.Value_MapValue)
 				if !ok {
-					return nil, fmt.Errorf("HTTP outputs expression must evaluate to a map")
+					return nil, NewTaskError("http", ErrorKindExpression,
+						fmt.Errorf("outputs must evaluate to a map of names to values, got %s",
+							out.Type().TypeName()))
 				}
 				outputs := &Node_Outputs{NamedValues: make(map[string]*Value, len(mv.MapValue.Entries))}
 				for _, e := range mv.MapValue.Entries {
@@ -530,17 +544,20 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 					// Same path as the whole-block form above, for the same reason.
 					out, err := DefaultEvaluator().EvalParsed(ctx, env, k.Expr, act)
 					if err != nil {
-						return nil, fmt.Errorf("failed to evaluate CEL outputs: %w", err)
+						return nil, NewTaskError("http", ErrorKindExpression,
+							fmt.Errorf("evaluating output %q: %w", name, err))
 					}
 					pv, err := cel.RefValueToValue(out)
 					if err != nil {
-						return nil, fmt.Errorf("failed to convert outputs value: %w", err)
+						return nil, NewTaskError("http", ErrorKindExpression,
+							fmt.Errorf("converting output %q: %w", name, err))
 					}
 					outputs.NamedValues[name] = &Value{Kind: &Value_Literal{Literal: pv}}
 				case *Value_Literal:
 					outputs.NamedValues[name] = &Value{Kind: &Value_Literal{Literal: k.Literal}}
 				default:
-					return nil, fmt.Errorf("unsupported outputs value kind for %q: %T", name, v.GetKind())
+					return nil, NewTaskError("http", ErrorKindInvalidInput,
+						fmt.Errorf("output %q is neither an expression nor a literal (%T)", name, v.GetKind()))
 				}
 			}
 			return outputs, nil
