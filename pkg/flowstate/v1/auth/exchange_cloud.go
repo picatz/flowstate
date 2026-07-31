@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base32"
 	"encoding/xml"
 	"fmt"
 	"net/http"
@@ -33,6 +35,17 @@ const (
 
 	// awsMaxSessionNameLength is the longest role session name AWS accepts.
 	awsMaxSessionNameLength = 64
+
+	// awsSessionDigestLength is how much of the subject digest a session name
+	// carries, in base32 characters at five bits each — so twenty is a hundred
+	// bits.
+	//
+	// The number that matters is second-preimage resistance, not birthday
+	// resistance: the attack this closes is a workload aiming at one *particular*
+	// other workload's name, which it does by choosing the workflow and step in
+	// its own Flowfile. A hundred bits leaves it nothing to grind, and leaves
+	// forty-three characters for the part a person reads.
+	awsSessionDigestLength = 20
 )
 
 // AWSConfig configures exchanging a Flowstate assertion for temporary AWS
@@ -248,34 +261,84 @@ func (e *awsExchanger) Exchange(ctx context.Context, assertion Assertion) (Crede
 // The session name is what appears in CloudTrail for everything the credential
 // goes on to do, so deriving it from the subject is what connects an AWS audit
 // trail back to the workload that caused the call. AWS accepts only
-// [\w+=,.@-] and at most 64 characters, so the subject's separators are
-// rewritten rather than dropped: two different subjects must not collapse into
-// one session name.
+// [\w+=,.@-] and at most 64 characters, so the subject cannot simply be used —
+// and the property that makes any substitute worth having is that two different
+// subjects must not collapse into one session name.
+//
+// # Why a digest, and not a better rewrite
+//
+// Rewriting the separators was the first answer, and it gave that property away
+// twice.
+//
+// AWS accepts `-`, which is also legal *inside* a subject component, so
+// `.../c/d-e` and `.../c-d/e` — two different workloads, both valid — rewrote to
+// one name. That is the failure CLAUDE.md already records for the secret
+// providers, in the same words: no separator fixes it, because every character
+// legal in a prefix is legal in a name.
+//
+// And truncation kept the tail, on the reasoning that the workflow and step are
+// more distinguishing than the namespace they share. That holds inside one tenant
+// and is backwards across tenants: the namespace is the only component a tenant
+// does not choose, so dropping the head left a workload naming all 64 characters
+// out of its own Flowfile, and CloudTrail attributing its calls to whichever
+// other tenant it wanted.
+//
+// No rewriting can be injective into a 64-character alphabet from an unbounded
+// subject, so the identity is carried by a digest of the whole subject, and the
+// readable part sits beside it as a convenience. Distinctness then does not
+// depend on what the readable part happens to keep, which is what both bugs did.
+//
+// # What this is not
+//
+// It is not the authorization boundary. A relying party restricts *which*
+// workloads may assume a role through the `sub` condition on the role's own trust
+// policy, matched against the full subject — which is why
+// [WorkloadIdentity.SubjectFor] refuses a component containing a separator. This
+// is attribution: it has to name one workload unambiguously and stay recognisable
+// at a glance.
 func awsSessionName(subject string) string {
-	var name strings.Builder
+	// Over the subject as given, before any rewriting. A digest of the rewritten
+	// form would inherit exactly the collisions the rewriting introduces.
+	sum := sha256.Sum256([]byte(subject))
 
+	// Base32 rather than base64, whose alphabet includes `/` and `+` and only one
+	// of those is legal here. Lowercased so the name reads as a word rather than
+	// as shouting in the middle of a console.
+	digest := strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).
+		EncodeToString(sum[:]))[:awsSessionDigestLength]
+
+	var readable strings.Builder
 	for _, r := range subject {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
-			name.WriteRune(r)
+			readable.WriteRune(r)
 		case strings.ContainsRune("+=,.@-_", r):
-			name.WriteRune(r)
+			readable.WriteRune(r)
 		default:
-			name.WriteRune('-')
+			readable.WriteRune('-')
 		}
 	}
 
-	trimmed := name.String()
-	if len(trimmed) > awsMaxSessionNameLength {
-		// Keep the tail: the workload and step are more distinguishing than the
-		// namespace prefix they share with every other workload.
-		trimmed = trimmed[len(trimmed)-awsMaxSessionNameLength:]
+	name := readable.String()
+
+	// One character for the separator between the two halves.
+	if budget := awsMaxSessionNameLength - awsSessionDigestLength - 1; len(name) > budget {
+		// Still the tail, and now that is only a readability choice: the step is
+		// the most specific component and the one an operator scanning CloudTrail
+		// is usually looking for. Nothing depends on it any more.
+		//
+		// Sliced by byte safely, because every rune outside the accepted alphabet
+		// was replaced above and what is left to cut is ASCII.
+		name = name[len(name)-budget:]
 	}
-	if trimmed == "" {
-		trimmed = "flowstate"
+	if name == "" {
+		// A subject that rewrote to nothing at all. The digest alone is a legal
+		// name and still a distinct one, which is more than the fixed placeholder
+		// this used to return could say.
+		return digest
 	}
 
-	return trimmed
+	return name + "-" + digest
 }
 
 // xmlError extracts the code and message from an AWS error response, which is
