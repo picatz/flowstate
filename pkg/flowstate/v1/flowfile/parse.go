@@ -93,6 +93,17 @@ func stepKeys() []string {
 // looser than the schema it claims to mirror makes the language server model a
 // task where the compiler sees an error.
 func couldBeATaskName(key string) bool {
+	// One dot, splitting a plugin's name from its task — `slack.post` — and no
+	// more than one, matching the schema's pattern. The halves are checked with
+	// the same rule as a bare name, so `.post`, `slack.`, and `a.b.c` all stay
+	// unknown keys rather than plausible tasks.
+	if plugin, task, dotted := strings.Cut(key, "."); dotted {
+		// Cut splits at the first dot, so a second one survives inside `task` —
+		// where the recursion would happily split it again. Counting keeps
+		// `a.b.c` an unknown key instead of a plausible plugin task.
+		return strings.Count(key, ".") == 1 && couldBeATaskName(plugin) && couldBeATaskName(task)
+	}
+
 	if key == "" {
 		return false
 	}

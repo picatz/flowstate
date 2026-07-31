@@ -158,18 +158,23 @@ func TestATrailingSeparatorDoesNotAddTheWorkingDirectory(t *testing.T) {
 // read the zero value forever, silently, and the failure would look like a plugin
 // that does not load.
 func TestTheWorkerTakesThePluginFlags(t *testing.T) {
-	var worker *cobra.Command
-	for _, c := range newRootCommand().Commands() {
-		if c.Name() == "worker" {
-			worker = c
+	// The server too: it answers Validate and GetCatalog from the same registry,
+	// so a deployment whose workers load plugins points the server at the same
+	// directory, or the capability it reports is the built-ins alone.
+	for _, command := range []string{"worker", "server"} {
+		var cmd *cobra.Command
+		for _, c := range newRootCommand().Commands() {
+			if c.Name() == command {
+				cmd = c
 
-			break
+				break
+			}
 		}
-	}
-	require.NotNil(t, worker, "there is no worker command")
+		require.NotNil(t, cmd, "there is no %s command", command)
 
-	for _, name := range []string{"plugin-dir", "plugin", "plugin-scheme", "allow-insecure-plugin-dir"} {
-		assert.NotNil(t, worker.Flags().Lookup(name),
-			"`flow worker` does not take --%s, so a deployment cannot configure it", name)
+		for _, name := range []string{"plugin-dir", "plugin", "plugin-scheme", "allow-insecure-plugin-dir"} {
+			assert.NotNil(t, cmd.Flags().Lookup(name),
+				"`flow %s` does not take --%s, so a deployment cannot configure it", command, name)
+		}
 	}
 }

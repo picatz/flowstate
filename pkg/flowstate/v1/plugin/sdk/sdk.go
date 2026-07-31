@@ -19,7 +19,7 @@
 //				Resolve: resolve,
 //			},
 //			Tasks: []sdk.Task{{
-//				Name:    "example_greet",
+//				Name:    "greet",
 //				Summary: "Greet someone by name.",
 //				Input:   &examplev1.GreetInputs{},
 //				Output:  &examplev1.GreetOutputs{},
@@ -193,10 +193,16 @@ type ResolveFunc func(ctx context.Context, req SecretRequest) (SecretResponse, e
 // meant to be indistinguishable from a built-in one to everything else in the
 // system, and it is easier to keep that true when it is written the same way.
 type Task struct {
-	// Name is how a Flowfile refers to the task. It must be lowercase letters,
-	// digits, and underscores, starting with a letter. Prefixing it with the
-	// plugin's name — "example_greet" — avoids colliding with another plugin's
-	// task, which the engine refuses.
+	// Name is the task's own name, without the plugin's: "greet", not
+	// "example.greet". It must be lowercase letters, digits, and underscores,
+	// starting with a letter.
+	//
+	// A Flowfile spells the task qualified — `<plugin>.<task>:`, so `example.greet:`
+	// for this plugin's `greet` — and the host adds that prefix from the name
+	// discovery established for the binary. A plugin does not write its own
+	// qualifier, and could not lie in one: two plugins may each declare `post`
+	// and neither can collide, because the segment that distinguishes them was
+	// never theirs to choose.
 	Name string
 
 	// Summary is one line, shown by `flow tasks` and in editor completion.

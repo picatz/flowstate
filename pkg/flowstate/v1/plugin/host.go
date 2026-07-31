@@ -201,26 +201,27 @@ func (h *Host) bind(launched []*Plugin) []error {
 		}
 
 		for _, manifest := range p.Tasks() {
-			name := manifest.GetName()
+			// The registered name is `<plugin>.<task>`, and the dot is doing three
+			// jobs at once. It is provenance — a reviewer reading `slack.post:`
+			// knows the step leaves the engine's code for code somebody installed,
+			// at the line where that fact matters. It makes shadowing a built-in
+			// unrepresentable, because every plugin task carries a dot and no
+			// built-in does — a rule this loop used to enforce with a check that
+			// once misfired, telling a second host its task collided with "a
+			// built-in" the first host had registered. And it makes two plugins
+			// wanting the same task name a non-event rather than a race decided by
+			// installation order, because the first segment is the name discovery
+			// established from the binary, which no manifest gets to choose.
+			//
+			// What is still checked is the one collision the prefix cannot rule
+			// out: one plugin declaring the same task twice.
+			name := p.Name() + "." + manifest.GetName()
 
-			// The frozen set rather than a lookup in the registry, which is
-			// mutable and which this host is about to add to. Asking the registry
-			// meant that once one host had registered, a second one opening in the
-			// same process was told its task collided with a built-in — naming a
-			// conflict that does not exist, in the voice of a refusal.
-			if flowstatev1.IsBuiltinTask(name) {
+			if other, taken := h.taskDefs[name]; taken && other.plugin == p {
 				problems = append(problems, pluginError(p.Name(), p.Path(), fmt.Errorf(
-					"%w: provides task %q, which is a built-in task; a plugin silently replacing a built-in would change what every existing workflow using it does",
-					ErrManifest, truncate(name, 64),
+					"%w: declares task %q twice",
+					ErrManifest, truncate(manifest.GetName(), 64),
 				)))
-				continue
-			}
-
-			if other, taken := h.taskDefs[name]; taken {
-				problems = append(problems, fmt.Errorf(
-					"%w: task %q is provided by both %q and %q",
-					ErrManifest, truncate(name, 64), other.plugin.Name(), p.Name(),
-				))
 				continue
 			}
 

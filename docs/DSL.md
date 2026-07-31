@@ -1092,6 +1092,17 @@ the dotted-key *shape rule* is reserved now, while it costs one sentence. Task-q
 routing — a plugin task running on a specialized worker — stays a deployment
 concern and never becomes a Flowfile spelling.
 
+*Since written:* the dotted key landed with the registration seam rather than
+waiting for Phase 3, because the seam forced the question early: the first plugin
+tasks were about to register under bare manifest names, and renaming a spelling
+people have used is exactly the migration cost this section was written to avoid.
+What shipped is the spelling and its enforcement — the host registers
+`<plugin>.<task>`, the manifest name stays dot-free so a plugin cannot choose its
+own qualifier, `Task.name` admits at most one dot, and a dotted key naming an
+uninstalled plugin is diagnosed as an installation question rather than a spelling
+one. The `plugins:` version header, the submit-time catalog check, and the language
+server's two-level completion tree remain Phase 3 as planned.
+
 ### `exec:` will be built-in, denied by default
 
 Competitiveness with CI systems needs process execution; the admission test's second

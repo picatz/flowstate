@@ -681,7 +681,8 @@ message Value {
 // It is a schema type rather than a shape invented in the CLI because it
 // describes the system, which is what this file is for: a field added to it
 // appears in every consumer without any of them changing, and it is already
-// versioned and wire-stable if a `ListTasks` RPC ever wants to return one.
+// versioned and wire-stable — which is what let GetCatalog return it unchanged
+// the day that RPC arrived.
 message TaskCatalog {
   // Tasks is every task this build can run, sorted by name.
   repeated TaskDescription tasks = 1;
@@ -1122,13 +1123,32 @@ message Task {
   // Tasks have specific names that identify the type of task being performed,
   // such as "log" or "http". The name is used to determine which task
   // implementation to execute when the workflow is run.
+  //
+  // # A dot means a plugin, and its absence means the engine
+  //
+  // A built-in task is one bare word. A plugin's task is two, joined by a dot —
+  // `slack.post` is the `post` task of the plugin discovered as
+  // `flowstate-plugin-slack` — and the dot is provenance rather than decoration:
+  // it tells a reviewer that this line leaves the engine's code and enters code
+  // somebody installed, at the step, where that fact is needed. It also makes
+  // collision unrepresentable in both directions. A plugin task cannot shadow a
+  // built-in because a plugin's tasks all carry a dot and no built-in does; two
+  // plugins cannot fight over one name because each one's tasks are prefixed
+  // with a name discovery established from the binary, not self-reported.
+  //
+  // At most one dot, by the pattern below. The first segment is a plugin name
+  // (`^[a-z0-9][a-z0-9-]*$`, from the executable's own name) and the second a
+  // task name (`^[a-z][a-z0-9_]*$`, from its manifest); the pattern here is the
+  // permissive union rather than that concatenation, because this field also
+  // spells built-in names with their historical uppercase-and-dash latitude, and
+  // the registry enforces the sharper per-segment rules at registration.
   string name = 1 [
     (buf.validate.field).required = true,
     (google.api.field_behavior) = REQUIRED,
     (buf.validate.field).string = {
       min_len: 1
       max_len: 128
-      pattern: "^[A-Za-z0-9-_]+$"
+      pattern: "^[A-Za-z0-9-_]+(\\.[A-Za-z0-9-_]+)?$"
     }
   ];
 
@@ -1285,7 +1305,7 @@ message RunProgress {
 // A schema type rather than a shape the CLI invents, because it already has three
 // readers and they must agree: `flow validate --output json` hands it to whatever is
 // driving the CLI, the language server converts it into an editor's own diagnostic,
-// and a future `Validate` RPC would return it unchanged. Three hand-written
+// and the Validate RPC returns it unchanged. Three hand-written
 // projections of one idea is how the editor and the command line come to disagree
 // about what is wrong with a file.
 //
@@ -1696,4 +1716,89 @@ service WorkflowService {
   // Terminate stops a run immediately, running none of its cleanup. Prefer
   // Cancel; see CancelRequest for when this is the right answer anyway.
   rpc Terminate(TerminateRequest) returns (TerminateResponse) {}
+
+  // Validate checks Flowfiles and returns their diagnostics, executing nothing.
+  //
+  // `flow validate` does this offline and must keep doing so: a validator that
+  // needs a server is one that stops working on an aeroplane, and invariant 8
+  // says a first run needs no infrastructure. This is not a replacement for that.
+  // It is the same check for a caller who has no filesystem to point the command
+  // at — a browser, a CI service, an agent writing a file it has not saved —
+  // and it answers with the very same [ValidationReport] message the command
+  // prints, from the very same code, so there is no second validator to disagree
+  // with the first.
+  //
+  // Pure by construction, which is what makes it the useful one to hand an agent:
+  // it reads nothing, writes nothing, and starts nothing, so it can be looped on
+  // unattended in a way none of the verbs above can.
+  //
+  // Authenticated like everything else here, because checking a file is work
+  // somebody's CPU does. Bounded like everything else that takes input somebody
+  // else chose: see ValidateRequest.
+  rpc Validate(ValidateRequest) returns (ValidateResponse) {}
+
+  // GetCatalog returns what this deployment can execute.
+  //
+  // The registry is the single source of truth for capability, and until this
+  // existed the only way to ask it was to run `flow tasks` on a machine with the
+  // same build — which is not the same question. A worker that loaded plugins can
+  // run tasks this binary has never heard of, so "what tasks exist" is a property
+  // of a deployment, and a caller writing a workflow for it needs the deployment's
+  // answer rather than their laptop's.
+  //
+  // [TaskCatalog]'s own comment anticipated this RPC, and returning that message
+  // unchanged is the point: an editor, an agent, a documentation generator and
+  // `flow tasks --output json` all read one shape.
+  rpc GetCatalog(GetCatalogRequest) returns (GetCatalogResponse) {}
+}
+
+// SourceFile is one file's contents, with the name to report diagnostics against.
+message SourceFile {
+  // Name is what a diagnostic should call this file. It is a label, not a path
+  // the server resolves — nothing here opens anything — so a caller with no
+  // filesystem may say `<stdin>` or a request id and still get a readable report.
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 512
+  }];
+
+  // Source is the file's bytes.
+  //
+  // Bounded at the same megabyte the offline parser bounds a Flowfile at, and for
+  // the same reason: this is input an outside party chooses, and the resource it
+  // spends is memory in the parser. A caller sending more is refused by
+  // protovalidate before anything reads it.
+  bytes source = 2 [(buf.validate.field).bytes = {max_len: 1048576}];
+}
+
+// ValidateRequest is one or more files to check.
+message ValidateRequest {
+  // Files are the files to check, in the order the report should list them.
+  //
+  // Bounded by count as well as by size, because bounding one resource does not
+  // bound another the peer controls the ratio to: a thousand megabyte files is a
+  // gigabyte of parsing, and every one of them is individually within its bound.
+  repeated SourceFile files = 1 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 64
+  }];
+}
+
+// ValidateResponse is what the check found.
+message ValidateResponse {
+  // Report is one entry per file, including the files that were clean.
+  //
+  // Wrapped rather than returned bare so the RPC can grow a second thing to say —
+  // which version of the grammar answered, how long it took — without changing
+  // the shape a caller already parses.
+  ValidationReport report = 1;
+}
+
+// GetCatalogRequest asks what this deployment can execute. It takes nothing
+// today; a filter or a profile selector would go here.
+message GetCatalogRequest {}
+
+// GetCatalogResponse is the deployment's capability.
+message GetCatalogResponse {
+  TaskCatalog catalog = 1;
 }

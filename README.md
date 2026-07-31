@@ -564,13 +564,13 @@ Point a worker at a directory and its plugins' tasks become step keys:
 
 ```console
 $ flow worker --plugin-dir /usr/local/lib/flowstate/plugins
-Loaded plugin example 0.1.0 from /usr/local/lib/flowstate/plugins/flowstate-plugin-example (tasks: example_greet)
+Loaded plugin example 0.1.0 from /usr/local/lib/flowstate/plugins/flowstate-plugin-example (tasks: example.greet)
 ```
 
 ```yaml
 steps:
   - id: greet
-    example_greet:
+    example.greet:
       name: ${vars.who}
 ```
 

@@ -464,13 +464,29 @@ func validateTaskStep(id string, node *v1.Node, task *v1.Task, scope, inner refS
 	if task.GetName() == "" {
 		ds = append(ds, Diagnostic{Step: id, Message: "task has no name"})
 	} else if _, known := v1.LookupTask(task.GetName()); !known {
+		message := fmt.Sprintf("unknown task %q; available tasks are %s",
+			task.GetName(), strings.Join(v1.TaskNames(), ", "))
+
+		// A dot names a plugin — `slack.post` is the `post` task of the plugin
+		// discovered as `flowstate-plugin-slack` — so the honest diagnosis is
+		// about installation, not spelling. "Unknown task" would send the author
+		// to check a name that may be exactly right, in a file that will run
+		// unchanged on a worker that has the plugin; and this validator, which
+		// launches nothing, genuinely cannot tell that case from a typo. Saying
+		// what it cannot know is the diagnostic here.
+		if plugin, _, dotted := strings.Cut(task.GetName(), "."); dotted {
+			message = fmt.Sprintf("no plugin task %q is registered here; if the %q plugin "+
+				"is installed on the worker this will run on, the file is fine and this "+
+				"process simply has not loaded it — `flow plugins` shows what a plugin "+
+				"directory provides", task.GetName(), plugin)
+		}
+
 		ds = append(ds, Diagnostic{
 			Step: id,
 			// Under the flattening the task's name is a key an author wrote, so
 			// there is a token to underline rather than a whole step.
-			Kind: task.GetName(),
-			Message: fmt.Sprintf("unknown task %q; available tasks are %s",
-				task.GetName(), strings.Join(v1.TaskNames(), ", ")),
+			Kind:    task.GetName(),
+			Message: message,
 		})
 	}
 
