@@ -1338,6 +1338,24 @@ flow plugins -o json | jq -r '.plugins[] | select(.tasks[].name == "example.gree
 	addOutputFlag(pluginsCmd)
 	addPluginFlags(pluginsCmd)
 
+	// MCP command, which serves the control plane to an AI agent as tools.
+	mcpCmd := &cobra.Command{
+		Use:   "mcp",
+		Short: "Serve Flowstate to an AI agent over the Model Context Protocol",
+		Long: "Serve every workflow-service RPC as an MCP tool over stdin and stdout, " +
+			"with input schemas derived from the same protobuf schema the API speaks. " +
+			"Validation and the task catalog answer locally; the run-lifecycle tools " +
+			"call the configured server.",
+		Args: cobra.NoArgs,
+		RunE: runMCP,
+		Example: `# Serve the MCP tools on stdio (an MCP client launches this):
+flow mcp
+
+# Against a specific server for the run-lifecycle tools:
+flow mcp --address flowstate.internal:9233`,
+	}
+	addServerFlags(mcpCmd)
+
 	// LSP command, which starts a Language Server Protocol (LSP) server for Flowfile files.
 	lspCmd := &cobra.Command{
 		Use:   "lsp",
@@ -1392,6 +1410,7 @@ flow lsp`,
 	rootCmd.AddCommand(fixCmd)
 	rootCmd.AddCommand(tasksCmd)
 	rootCmd.AddCommand(pluginsCmd)
+	rootCmd.AddCommand(mcpCmd)
 	rootCmd.AddCommand(getCmd)
 	rootCmd.AddCommand(watchCmd)
 	rootCmd.AddCommand(signalCmd)
