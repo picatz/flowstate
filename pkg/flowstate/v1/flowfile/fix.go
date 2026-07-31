@@ -244,6 +244,19 @@ type fixer struct {
 	// does not capture and which still means the document changed.
 	substituted bool
 
+	// deferredValueLines are the lines holding a deferred input's value, which is
+	// expression source whether or not it carries a fence.
+	//
+	// Recorded during the expression walk, which is the only pass that knows which
+	// inputs a task evaluates itself. [fixer.rewriteMovedReferences] rewrites
+	// inside `${...}` everywhere else — because outside a fence a step reference is
+	// prose — and a deferred input is the one place that rule is wrong: an input
+	// that *is* expression source is written bare, since a fence there would be a
+	// fence around a fence. Left out, a rooted reference in one survived a step
+	// being migrated and named something that no longer existed, in a file that
+	// validated, because deferred inputs are deliberately not reference-checked.
+	deferredValueLines map[int]bool
+
 	// anchors maps an anchor's name to what it holds, so a merge key's alias can be
 	// followed. See [fixer.mergedDeclaresEdition].
 	anchors map[string]ast.Node
@@ -1321,6 +1334,8 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 					candidates = without(candidates, responseNames)
 				}
 				f.noteDeferred(node.Value, name, candidates)
+				f.recordDeferredValue(node.Value)
+
 				return
 			}
 			// A task's key opens its inputs, so the names its own scope binds are
@@ -1444,6 +1459,25 @@ func sees(steps map[string]bool, value *ast.MappingValueNode, vars map[string]bo
 
 	default:
 		return without(steps, vars)
+	}
+}
+
+// recordDeferredValue marks the lines a deferred input's value occupies.
+//
+// See [fixer.deferredValueLines] for what they are for. A span is used rather than
+// the node's text because a block scalar spans several lines, and every one of them
+// is expression source.
+func (f *fixer) recordDeferredValue(value ast.Node) {
+	span := spanOfNode(value)
+	if !span.IsValid() {
+		return
+	}
+
+	if f.deferredValueLines == nil {
+		f.deferredValueLines = map[int]bool{}
+	}
+	for line := span.Start.Line; line <= span.End.Line; line++ {
+		f.deferredValueLines[line] = true
 	}
 }
 

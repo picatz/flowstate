@@ -293,3 +293,212 @@ steps:
 		})
 	}
 }
+
+// TestFixDoesNotRewriteProse is the over-read [stepReference]'s comment calls
+// harmless.
+//
+// It claimed both directions were safe — "reading a reference that is not one
+// produces an unused `vars:` entry, and missing one produces a refusal. Neither
+// writes something that means something else" — and the first half was wrong twice
+// over. The scan decides whether a retired step is *migrated or deleted*, so a
+// sentence in a `message:` was enough to delete an `echo` an author meant a person
+// to see; and the rewriter then edited the sentence itself:
+//
+//   - message: "to read the greeting write steps.greet.result in your expression"
+//   - message: "to read the greeting write vars.greet in your expression"
+//
+// The file validated and ran, printing prose nobody wrote.
+//
+// A reference is a reference only inside a `${...}`. Outside one it is text, and
+// under-reading it produces a refusal — which is the direction the comment was
+// right about.
+func TestFixDoesNotRewriteProse(t *testing.T) {
+	t.Parallel()
+
+	const prose = `to read the greeting write steps.greet.result in your expression`
+
+	result, err := flowfile.Fix([]byte(`edition: 2026.1
+name: literal
+steps:
+  - id: greet
+    echo:
+      message: hello
+  - id: doc
+    log:
+      message: "` + prose + `"
+`))
+	require.NoError(t, err)
+
+	assert.Contains(t, string(result.Source), prose,
+		"an author's sentence was rewritten because it mentioned a step")
+
+	// And the step survives, because nothing actually reads it: the migration
+	// cannot tell what an `echo` nobody reads was for, and says so rather than
+	// guessing. A refusal is the safe direction — it leaves work to do rather than
+	// removing work already done.
+	assert.NotEmpty(t, result.Refusals,
+		"a step mentioned only in prose was migrated as though something read it")
+	assert.Contains(t, string(result.Source), "id: greet",
+		"a step nothing reads was deleted on the strength of a sentence")
+}
+
+// TestFixStillFindsAReferenceInsideAFence is the control for that narrowing.
+//
+// Scanning only inside fences is a real reduction in what the migration sees, and
+// a version that saw nothing would pass the test above while refusing every file
+// it used to rewrite.
+func TestFixStillFindsAReferenceInsideAFence(t *testing.T) {
+	t.Parallel()
+
+	result, err := flowfile.Fix([]byte(`edition: 2026.1
+name: fenced
+steps:
+  - id: greet
+    echo:
+      message: hello
+  - id: show
+    log:
+      message: "${steps.greet.result}"
+`))
+	require.NoError(t, err)
+	require.Empty(t, result.Refusals, "a reference written inside a fence was not seen")
+
+	assert.Contains(t, string(result.Source), "vars.greet",
+		"the reference was found but not rewritten")
+
+	_, err = flowfile.ValidateSource(result.Source)
+	require.NoError(t, err, "the rewritten file does not compile:\n%s", result.Source)
+}
+
+// TestAnExpressionMayContainBraces covers the reason the scan counts them.
+//
+// `${ {'a': steps.x.result} }` closes at the last brace and not the first, and a
+// scanner that stopped at the first would read half an expression — finding the
+// reference or not depending on where the author put a map.
+func TestAnExpressionMayContainBraces(t *testing.T) {
+	t.Parallel()
+
+	result, err := flowfile.Fix([]byte(`edition: 2026.1
+name: braces
+steps:
+  - id: greet
+    echo:
+      message: hello
+  - id: show
+    log:
+      message: "${ {'said': steps.greet.result}['said'] }"
+`))
+	require.NoError(t, err)
+	require.Empty(t, result.Refusals)
+
+	assert.Contains(t, string(result.Source), "vars.greet",
+		"a reference after a map literal inside the same expression was not seen")
+}
+
+// TestFixMigratesAPrintfWithANumericArgument covers the migration DSL.md
+// documents and `flow fix` refused.
+//
+// `celSourceOf` asked [scalarText] first, which answers only for text — so an
+// integer, float or boolean argument took the refusal at the top, and the branch
+// written directly below it for exactly those three node kinds could never run.
+// `parse.go` tells an author to "Run `flow fix` to rewrite it", and running it
+// stamped the new edition and left the step, producing a file that was neither the
+// old spelling nor a valid one.
+func TestFixMigratesAPrintfWithANumericArgument(t *testing.T) {
+	t.Parallel()
+
+	result, err := flowfile.Fix([]byte(`edition: 2026.1
+name: printf-numeric
+steps:
+  - id: greet
+    printf:
+      format: "hello %s (%d)"
+      args:
+        - "world"
+        - 0
+  - id: show
+    log:
+      message: "${steps.greet.result}"
+`))
+	require.NoError(t, err)
+	require.Empty(t, result.Refusals,
+		"the migration this repo tells authors to run refused the example its own docs give")
+
+	// The number stays a number. Quoting it — which is what text needs, and what
+	// the refusal was standing in front of — would make `%d` a string and the
+	// format fail at run time rather than here.
+	assert.Contains(t, string(result.Source), `"hello %s (%d)".format(["world", 0])`,
+		"the rewritten expression is not the one the docs show")
+
+	_, err = flowfile.ValidateSource(result.Source)
+	require.NoError(t, err, "the rewritten file does not compile:\n%s", result.Source)
+}
+
+// TestABraceInsideAStringDoesNotEndTheExpression is the counter's second rule.
+//
+// `${a + '}' + b}` closes at the *last* brace. A counter that stopped at the
+// quoted one rewrote the first reference and left the second naming a step the
+// same pass had just deleted — a current-edition file the validator rejects, from
+// a command that exited zero.
+func TestABraceInsideAStringDoesNotEndTheExpression(t *testing.T) {
+	t.Parallel()
+
+	result, err := flowfile.Fix([]byte(`edition: 2026.1
+name: braced-string
+steps:
+  - id: greet
+    echo:
+      message: hello
+  - id: show
+    log:
+      message: "${steps.greet.result + '}' + steps.greet.result}"
+`))
+	require.NoError(t, err)
+	require.Empty(t, result.Refusals)
+
+	assert.NotContains(t, string(result.Source), "steps.greet",
+		"a reference after a brace inside a string outlived the step it names")
+	assert.Contains(t, string(result.Source), `'}'`,
+		"the string literal itself was disturbed")
+
+	_, err = flowfile.ValidateSource(result.Source)
+	require.NoError(t, err, "the rewritten file does not compile:\n%s", result.Source)
+}
+
+// TestADeferredInputIsExpressionSourceWhole is the one place the fence rule is
+// wrong, and the reason it is a rule about *prose* rather than about fences.
+//
+// An input the task evaluates itself is written bare, since a fence there would be
+// a fence around a fence. Rewriting only inside `${...}` therefore skipped it: a
+// rooted reference in an `outputs:` survived `greet` being migrated and went on
+// naming a step that no longer existed.
+//
+// And it validated, because deferred inputs are deliberately not reference-checked
+// — the task evaluates them in a scope the validator cannot see. So the only place
+// this could surface was a run.
+func TestADeferredInputIsExpressionSourceWhole(t *testing.T) {
+	t.Parallel()
+
+	result, err := flowfile.Fix([]byte(`edition: 2026.1
+name: deferred-bare
+steps:
+  - id: greet
+    echo:
+      message: hello
+  - id: fetch
+    http:
+      url: https://example.com/
+      outputs: "{'said': steps.greet.result}"
+  - id: show
+    log:
+      message: "${steps.greet.result}"
+`))
+	require.NoError(t, err)
+	require.Empty(t, result.Refusals)
+
+	assert.NotContains(t, string(result.Source), "steps.greet",
+		"a bare deferred input kept a reference to a step this pass deleted, and nothing "+
+			"downstream checks a deferred input, so the run is the first thing that would say so")
+	assert.Contains(t, string(result.Source), `outputs: "{'said': vars.greet}"`,
+		"the deferred input was not rewritten to the value the step moved to")
+}
