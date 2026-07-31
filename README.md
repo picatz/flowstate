@@ -1041,6 +1041,7 @@ Run `flow <command> --help` for the full flags of any of these.
 | `flow worker` | Start a Temporal worker, which is what actually executes steps. |
 | `flow server` | Start the Flowstate API server that accepts workflows. |
 | `flow lsp` | Serve the Flowfile language server over stdin and stdout, for editor diagnostics. |
+| `flow mcp` | Serve the control plane to an AI agent as MCP tools over stdin and stdout, schemas derived from the API's own. |
 
 `run`, `get`, `watch`, `list`, `signal`, `cancel` and `terminate` talk to a server,
 and take `--address` (or `FLOWSTATE_ADDRESS`) to say which one. `run local` does

@@ -2,7 +2,9 @@ package flowstatev1
 
 import (
 	"context"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/google/cel-go/cel"
 )
@@ -89,12 +91,21 @@ func TestStepsOutputActivationDeepSelection(t *testing.T) {
 }
 
 // TestStepsOutputActivationSelfReference verifies that a stored expression
-// referencing its own step is rejected rather than recursing until the stack is
-// exhausted. Stored expressions are evaluated against the same activation, so
-// without a depth bound this crashes the worker.
+// referencing its own step terminates rather than recursing until something
+// else gives out.
+//
+// This test used to be vacuous, and the shape of the mistake is worth keeping:
+// it resolved "loop.result" against a fixture whose only step is "cycle" — the
+// step had been renamed to dodge a CEL reserved word and the assertion had not
+// followed — so it returned not-found in under a microsecond and the guard it
+// existed to verify ran never. Worse, the guard it believed in was inadequate:
+// resolving the real name recursed under the depth limit and then multiplied,
+// because a failed deep resolution makes CEL fall back to the shorter prefix,
+// which re-evaluates the same expression. What bounds this now is the shared
+// evaluation budget, and the assertion resolves the name the fixture has.
 func TestStepsOutputActivationSelfReference(t *testing.T) {
-	// Note: the step ID must not be a CEL reserved identifier such as "loop",
-	// or the fixture fails to parse for an unrelated reason.
+	t.Parallel()
+
 	selfRef := NewExpr("cycle.result")
 	if selfRef.GetExpr() == nil {
 		t.Fatalf("fixture expression failed to compile: %v", selfRef.GetError())
@@ -106,9 +117,68 @@ func TestStepsOutputActivationSelfReference(t *testing.T) {
 		}},
 	}
 
-	// The contract is that this returns rather than overflowing the stack; the
-	// value it reports is unimportant.
-	if _, ok := act.ResolveName("loop.result"); ok {
-		t.Log("self-referential expression resolved to a value; bounded, which is what matters")
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// The contract is that this returns; the value is unimportant, and a
+		// self-reference cannot have one.
+		act.ResolveName("cycle.result")
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("resolving a self-referential output did not terminate; the evaluation " +
+			"budget is not being spent, or not being shared with child activations")
+	}
+}
+
+// TestAFanOutOfStoredExpressionsIsBoundedByWorkNotDepth is the breadth half,
+// which the depth bound cannot see.
+//
+// Each level references the one below it twice, so the work is 2^n evaluations
+// at depth n while the depth stays comfortably under its limit — measured at 71
+// seconds of CPU by depth 20, with every CEL cost meter reading near zero,
+// because each evaluation carried its own fresh budget. The shared evaluation
+// budget is what turns that into an error, and this asserts it is *reached*,
+// not merely never exceeded: a budget nothing reaches is a bound nothing tests.
+func TestAFanOutOfStoredExpressionsIsBoundedByWorkNotDepth(t *testing.T) {
+	t.Parallel()
+
+	// Depth 24 would be 2^24 evaluations unbounded — minutes of CPU — and is
+	// still eight levels under maxActivationDepth, so only the work budget can
+	// stop it.
+	const depth = 24
+
+	outputs := map[string]*Node_Outputs{
+		"level0": {NamedValues: map[string]*Value{"v": NewLiteral(int64(1))}},
+	}
+	for i := 1; i <= depth; i++ {
+		ref := fmt.Sprintf("level%d.v", i-1)
+		doubled := NewExpr(ref + " + " + ref)
+		if doubled.GetExpr() == nil {
+			t.Fatalf("fixture expression failed to compile: %v", doubled.GetError())
+		}
+		outputs[fmt.Sprintf("level%d", i)] = &Node_Outputs{
+			NamedValues: map[string]*Value{"v": doubled},
+		}
+	}
+
+	act := &StepsOutputActivation{
+		Prev: &Workflow_StepOutputs{StepValues: outputs},
+	}
+
+	start := time.Now()
+	_, ok := act.ResolveName(fmt.Sprintf("level%d.v", depth))
+	elapsed := time.Since(start)
+
+	// Refused rather than computed: 2^24 evaluations under budget would take
+	// minutes, so a success here means the budget was never spent.
+	if ok {
+		t.Fatal("a 2^24-evaluation fan-out resolved to a value, so the evaluation budget " +
+			"was never charged for the work")
+	}
+	if elapsed > 30*time.Second {
+		t.Fatalf("the refusal took %v; the budget bounded the answer but not the work", elapsed)
 	}
 }

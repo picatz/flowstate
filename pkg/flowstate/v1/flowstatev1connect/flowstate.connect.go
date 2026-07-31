@@ -49,6 +49,8 @@ const (
 	// WorkflowServiceValidateProcedure is the fully-qualified name of the WorkflowService's Validate
 	// RPC.
 	WorkflowServiceValidateProcedure = "/flowstate.v1.WorkflowService/Validate"
+	// WorkflowServiceCompileProcedure is the fully-qualified name of the WorkflowService's Compile RPC.
+	WorkflowServiceCompileProcedure = "/flowstate.v1.WorkflowService/Compile"
 	// WorkflowServiceGetCatalogProcedure is the fully-qualified name of the WorkflowService's
 	// GetCatalog RPC.
 	WorkflowServiceGetCatalogProcedure = "/flowstate.v1.WorkflowService/GetCatalog"
@@ -108,6 +110,20 @@ type WorkflowServiceClient interface {
 	// somebody's CPU does. Bounded like everything else that takes input somebody
 	// else chose: see ValidateRequest.
 	Validate(context.Context, *connect.Request[v1.ValidateRequest]) (*connect.Response[v1.ValidateResponse], error)
+	// Compile turns Flowfile source into the specification Run takes, executing
+	// nothing.
+	//
+	// It exists because Validate alone left a caller one step short: an agent
+	// could check a file and could submit a compiled specification, and nothing
+	// on the wire connected the two — the compiler lived only in the CLI, so a
+	// caller with no `flow` binary could author a correct file it had no way to
+	// run. Same terms as Validate: the same compiler the CLI uses, pure, bounded
+	// by the schema, authenticated like everything else.
+	//
+	// A file that does not compile answers with its diagnostics rather than an
+	// RPC error, because "your file has a problem at line 12" is an answer, not a
+	// failure to answer.
+	Compile(context.Context, *connect.Request[v1.CompileRequest]) (*connect.Response[v1.CompileResponse], error)
 	// GetCatalog returns what this deployment can execute.
 	//
 	// The registry is the single source of truth for capability, and until this
@@ -176,6 +192,12 @@ func NewWorkflowServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(workflowServiceMethods.ByName("Validate")),
 			connect.WithClientOptions(opts...),
 		),
+		compile: connect.NewClient[v1.CompileRequest, v1.CompileResponse](
+			httpClient,
+			baseURL+WorkflowServiceCompileProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("Compile")),
+			connect.WithClientOptions(opts...),
+		),
 		getCatalog: connect.NewClient[v1.GetCatalogRequest, v1.GetCatalogResponse](
 			httpClient,
 			baseURL+WorkflowServiceGetCatalogProcedure,
@@ -194,6 +216,7 @@ type workflowServiceClient struct {
 	cancel     *connect.Client[v1.CancelRequest, v1.CancelResponse]
 	terminate  *connect.Client[v1.TerminateRequest, v1.TerminateResponse]
 	validate   *connect.Client[v1.ValidateRequest, v1.ValidateResponse]
+	compile    *connect.Client[v1.CompileRequest, v1.CompileResponse]
 	getCatalog *connect.Client[v1.GetCatalogRequest, v1.GetCatalogResponse]
 }
 
@@ -230,6 +253,11 @@ func (c *workflowServiceClient) Terminate(ctx context.Context, req *connect.Requ
 // Validate calls flowstate.v1.WorkflowService.Validate.
 func (c *workflowServiceClient) Validate(ctx context.Context, req *connect.Request[v1.ValidateRequest]) (*connect.Response[v1.ValidateResponse], error) {
 	return c.validate.CallUnary(ctx, req)
+}
+
+// Compile calls flowstate.v1.WorkflowService.Compile.
+func (c *workflowServiceClient) Compile(ctx context.Context, req *connect.Request[v1.CompileRequest]) (*connect.Response[v1.CompileResponse], error) {
+	return c.compile.CallUnary(ctx, req)
 }
 
 // GetCatalog calls flowstate.v1.WorkflowService.GetCatalog.
@@ -291,6 +319,20 @@ type WorkflowServiceHandler interface {
 	// somebody's CPU does. Bounded like everything else that takes input somebody
 	// else chose: see ValidateRequest.
 	Validate(context.Context, *connect.Request[v1.ValidateRequest]) (*connect.Response[v1.ValidateResponse], error)
+	// Compile turns Flowfile source into the specification Run takes, executing
+	// nothing.
+	//
+	// It exists because Validate alone left a caller one step short: an agent
+	// could check a file and could submit a compiled specification, and nothing
+	// on the wire connected the two — the compiler lived only in the CLI, so a
+	// caller with no `flow` binary could author a correct file it had no way to
+	// run. Same terms as Validate: the same compiler the CLI uses, pure, bounded
+	// by the schema, authenticated like everything else.
+	//
+	// A file that does not compile answers with its diagnostics rather than an
+	// RPC error, because "your file has a problem at line 12" is an answer, not a
+	// failure to answer.
+	Compile(context.Context, *connect.Request[v1.CompileRequest]) (*connect.Response[v1.CompileResponse], error)
 	// GetCatalog returns what this deployment can execute.
 	//
 	// The registry is the single source of truth for capability, and until this
@@ -355,6 +397,12 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 		connect.WithSchema(workflowServiceMethods.ByName("Validate")),
 		connect.WithHandlerOptions(opts...),
 	)
+	workflowServiceCompileHandler := connect.NewUnaryHandler(
+		WorkflowServiceCompileProcedure,
+		svc.Compile,
+		connect.WithSchema(workflowServiceMethods.ByName("Compile")),
+		connect.WithHandlerOptions(opts...),
+	)
 	workflowServiceGetCatalogHandler := connect.NewUnaryHandler(
 		WorkflowServiceGetCatalogProcedure,
 		svc.GetCatalog,
@@ -377,6 +425,8 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 			workflowServiceTerminateHandler.ServeHTTP(w, r)
 		case WorkflowServiceValidateProcedure:
 			workflowServiceValidateHandler.ServeHTTP(w, r)
+		case WorkflowServiceCompileProcedure:
+			workflowServiceCompileHandler.ServeHTTP(w, r)
 		case WorkflowServiceGetCatalogProcedure:
 			workflowServiceGetCatalogHandler.ServeHTTP(w, r)
 		default:
@@ -414,6 +464,10 @@ func (UnimplementedWorkflowServiceHandler) Terminate(context.Context, *connect.R
 
 func (UnimplementedWorkflowServiceHandler) Validate(context.Context, *connect.Request[v1.ValidateRequest]) (*connect.Response[v1.ValidateResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.Validate is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) Compile(context.Context, *connect.Request[v1.CompileRequest]) (*connect.Response[v1.CompileResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.Compile is not implemented"))
 }
 
 func (UnimplementedWorkflowServiceHandler) GetCatalog(context.Context, *connect.Request[v1.GetCatalogRequest]) (*connect.Response[v1.GetCatalogResponse], error) {
