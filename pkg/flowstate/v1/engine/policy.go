@@ -31,16 +31,14 @@ const (
 	// the sum of every attempt plus every wait. This caps that.
 	defaultScheduleToCloseTimeout = 10 * time.Minute
 
-	// defaultMaximumAttempts bounds how many times a retryable failure is
-	// attempted. Zero would mean unlimited, which turns a persistently failing
-	// dependency into an indefinitely running workflow.
-	defaultMaximumAttempts = 5
-
-	// Backoff settings for retryable failures. Exponential backoff with a
-	// ceiling avoids hammering a dependency that is already struggling.
-	defaultRetryInitialInterval = time.Second
-	defaultRetryBackoff         = 2.0
-	defaultRetryMaximumInterval = 30 * time.Second
+	// The retry defaults are v1's, not this package's. They used to be written
+	// here as literals and again in the local driver, where the attempt count was
+	// one rather than five — so a step with no `retry:` behaved differently in the
+	// driver that exists to rehearse this one.
+	defaultMaximumAttempts      = v1.DefaultMaxAttempts
+	defaultRetryInitialInterval = v1.DefaultRetryInitialInterval
+	defaultRetryBackoff         = v1.DefaultRetryBackoff
+	defaultRetryMaximumInterval = v1.DefaultRetryMaxInterval
 )
 
 // defaultActivityOptions returns the options every step activity runs under.

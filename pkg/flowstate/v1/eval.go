@@ -869,10 +869,10 @@ func EvalConditionInScope(ctx context.Context, condition *Value, scope *Scope) (
 // succeeds on the second attempt succeeds in both places — rather than to make
 // local execution reliable.
 func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scope *Scope) (*Node_Outputs, error) {
-	attempts := 1
-	if retry := policy.GetRetry(); retry != nil && retry.GetMaxAttempts() > 0 {
-		attempts = int(retry.GetMaxAttempts())
-	}
+	// The same number the durable driver uses, from the same constant. This was
+	// `1` here and five there, so a step with no `retry:` behaved differently in
+	// the place that exists to rehearse the other.
+	attempts := RetryAttemptsFor(policy.GetRetry())
 
 	var err error
 	for attempt := 1; ; attempt++ {
@@ -888,7 +888,19 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 			return nil, err
 		}
 
-		delay := retryDelay(policy.GetRetry(), attempt)
+		// What the failure itself asked for wins over the policy's backoff, which
+		// is what the durable driver does — `engine/activities.go` reads the same
+		// value and hands it to Temporal as NextRetryDelay.
+		//
+		// Invisible until now for the reason the missing interval cap was: with one
+		// attempt there was never a delay to get wrong. A server answering 503 with
+		// `Retry-After: 30` would have been asked again after a second here and
+		// after thirty in production — hammering a dependency that has just said it
+		// is struggling, in the driver whose whole purpose is to rehearse the other.
+		delay := RetryAfter(err)
+		if delay <= 0 {
+			delay = retryDelay(policy.GetRetry(), attempt)
+		}
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
@@ -911,18 +923,28 @@ func runStepAttempt(ctx context.Context, task *Task, policy *StepPolicy, scope *
 func retryDelay(retry *RetryPolicy, attempt int) time.Duration {
 	interval := retry.GetInitialInterval().AsDuration()
 	if interval <= 0 {
-		interval = time.Second
+		interval = DefaultRetryInitialInterval
 	}
 
 	backoff := retry.GetBackoffCoefficient()
 	if backoff < 1 {
-		backoff = 2
+		backoff = DefaultRetryBackoff
+	}
+
+	// Defaulted rather than left unbounded, which is what it was. With one attempt
+	// there was never a second wait for the missing cap to matter; with the attempt
+	// counts agreeing, a step's fourth retry would have waited eight seconds here
+	// and four under Temporal.
+	max := retry.GetMaxInterval().AsDuration()
+	if max <= 0 {
+		max = DefaultRetryMaxInterval
 	}
 
 	delay := float64(interval) * math.Pow(backoff, float64(attempt-1))
-	if max := retry.GetMaxInterval().AsDuration(); max > 0 && time.Duration(delay) > max {
+	if time.Duration(delay) > max {
 		return max
 	}
+
 	return time.Duration(delay)
 }
 
