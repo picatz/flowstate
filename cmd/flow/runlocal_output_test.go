@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"maps"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -192,6 +196,116 @@ func TestALocalRunThatFailsWritesNoDocumentForAPerson(t *testing.T) {
 
 	assert.Empty(t, stdout,
 		"a run that produced no answer wrote something to the stream a pipe reads")
+}
+
+// TestARunSomebodyStoppedIsNotReportedAsAFault is the distinction a machine
+// consumer has only one field to make.
+//
+// ctrl+c cancels the command's context, `v1.Run` returns an error like any other,
+// and reporting that as STATUS_FAILED tells a caller the workload broke when what
+// happened is that an operator stopped it. The schema has a word for that which is
+// not FAILED, and [statusTone] already says the same thing about colour: "a run
+// somebody stopped on purpose is not a fault and must not be coloured as one".
+func TestARunSomebodyStoppedIsNotReportedAsAFault(t *testing.T) {
+	t.Parallel()
+
+	stdout, _, err := runLocalUnder(t, cancelAfter(t, 200*time.Millisecond), nappingWorkflow, "--output", "json")
+	require.Error(t, err, "a run that was cut short reported success")
+
+	var run map[string]any
+	require.NoError(t, json.Unmarshal([]byte(stdout), &run),
+		"an interrupted run answered a machine caller with nothing it could parse:\n%s", stdout)
+
+	assert.Equal(t, "STATUS_CANCELED", run["status"],
+		"a run an operator stopped is reported as a workload failure")
+}
+
+// TestAFailureIsClassifiedByWhoStoppedTheRun is the direction that makes the check
+// non-trivial, and the reason it reads the command's context rather than the error.
+//
+// Every one of these arrives as a non-nil error from `v1.Run`, and two of them carry
+// the *same* sentinel for opposite reasons. A step's own `timeout:` expires an inner
+// context, so its failure wraps [context.DeadlineExceeded] exactly as a command that
+// ran out of time does — and an implementation that classified by walking the error
+// chain, which is the obvious one, calls that run TIMED_OUT. It is not: what ran out
+// of time is one step inside it, and a step that fails is a run that failed.
+//
+// Only the command's own context can separate them, because nothing inside the
+// engine can reach it. Asserted here rather than through a workflow because the
+// engine refuses `timeout:` on a waiting step, so the collision cannot be staged
+// from a Flowfile — and a discrimination that is hard to provoke is exactly the one
+// worth pinning where it is decided.
+func TestAFailureIsClassifiedByWhoStoppedTheRun(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name        string
+		runErr      error
+		interrupted error
+		want        v1.RunResponse_Status
+	}{
+		{
+			name:        "an operator pressed ctrl+c",
+			runErr:      fmt.Errorf(`step "nap": %w`, context.Canceled),
+			interrupted: context.Canceled,
+			want:        v1.RunResponse_STATUS_CANCELED,
+		},
+		{
+			name:        "the command was given a deadline and reached it",
+			runErr:      fmt.Errorf(`step "nap": %w`, context.DeadlineExceeded),
+			interrupted: context.DeadlineExceeded,
+			want:        v1.RunResponse_STATUS_TIMED_OUT,
+		},
+		{
+			name: "a step ran out of its own time",
+			// The same sentinel as the case above, and a different fact. The
+			// command was never interrupted, so this is the run failing.
+			runErr:      fmt.Errorf(`step "nap": %w`, context.DeadlineExceeded),
+			interrupted: nil,
+			want:        v1.RunResponse_STATUS_FAILED,
+		},
+		{
+			name:   "the workload itself failed",
+			runErr: errors.New(`step "fetch": denied by egress policy`),
+			want:   v1.RunResponse_STATUS_FAILED,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			at := time.Unix(0, 0)
+			run := localRun(nil, test.runErr, test.interrupted, at, at)
+
+			assert.Equal(t, test.want, run.GetStatus())
+			assert.NotEmpty(t, run.GetError().GetMessage(),
+				"the reason was dropped, so a caller has a status and nothing to act on")
+		})
+	}
+}
+
+// nappingWorkflow runs long enough to be interrupted and does nothing else.
+const nappingWorkflow = `edition: v2026.2
+name: naps
+steps:
+  - id: nap
+    sleep: 30s
+`
+
+// cancelAfter is a context that stands in for somebody pressing ctrl+c.
+//
+// Cancelled rather than deadlined, because those produce different statuses and
+// this test is about the one an operator causes.
+func cancelAfter(t *testing.T, after time.Duration) context.Context {
+	t.Helper()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	timer := time.AfterFunc(after, cancel)
+	t.Cleanup(func() {
+		timer.Stop()
+		cancel()
+	})
+
+	return ctx
 }
 
 // TestTheLineShapeIsOneLine is what `jsonl` promises, on a driver that produces one

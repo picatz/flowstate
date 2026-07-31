@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -67,7 +69,7 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 
 	started := time.Now()
 	outputs, runErr := v1.Run(ctx, workflow)
-	response := localRun(outputs, runErr, started, time.Now())
+	response := localRun(outputs, runErr, cmd.Context().Err(), started, time.Now())
 
 	if runErr != nil {
 		// A machine caller is owed a document about the failure, which is the half
@@ -124,7 +126,12 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 // The two timestamps are the wall clock either side of the run rather than anything
 // the engine reports, so they mean here what they mean in a listing: when the
 // workload began and when it finished.
-func localRun(outputs *v1.Workflow_StepOutputs, runErr error, started, closed time.Time) *v1.GetResponse {
+//
+// interrupted is the command's own context after the run, and it decides between
+// three different things that all arrive as a non-nil error. A run somebody stopped
+// is not a fault and must not be reported as one — [statusTone] says the same thing
+// about colour, and a machine consumer has only this field.
+func localRun(outputs *v1.Workflow_StepOutputs, runErr, interrupted error, started, closed time.Time) *v1.GetResponse {
 	response := &v1.GetResponse{
 		Status:    v1.RunResponse_STATUS_COMPLETED,
 		StartTime: timestamppb.New(started),
@@ -132,7 +139,7 @@ func localRun(outputs *v1.Workflow_StepOutputs, runErr error, started, closed ti
 	}
 
 	if runErr != nil {
-		response.Status = v1.RunResponse_STATUS_FAILED
+		response.Status = interruptedStatus(interrupted)
 		response.Kind = &v1.GetResponse_Error{
 			Error: &v1.RunResponse_Error{Message: runErr.Error()},
 		}
@@ -148,4 +155,34 @@ func localRun(outputs *v1.Workflow_StepOutputs, runErr error, started, closed ti
 	}
 
 	return response
+}
+
+// interruptedStatus says why a local run stopped early, from the state of the
+// command's own context rather than from the error it produced.
+//
+// Which context is the whole of it, and the durable driver already learned this
+// lesson: [followPlainly] checks `ctx.Err()` before folding an answer in, because a
+// poll cut short by ctrl+c fails like any other refusal and would otherwise be read
+// as the server having stopped answering.
+//
+// Here the trap is sharper. A step's own `timeout:` expires an *inner* context, so
+// its failure arrives wrapping [context.DeadlineExceeded] exactly as a run that ran
+// out of time does — and those are different facts about different things. A step
+// that timed out is a step that failed, and the run failed with it. Only the
+// command's context can tell them apart, because nothing inside the engine can
+// cancel it.
+func interruptedStatus(interrupted error) v1.RunResponse_Status {
+	switch {
+	case errors.Is(interrupted, context.Canceled):
+		// Somebody stopped it — ctrl+c, or a parent process going away. Not a
+		// fault, and the schema has a word for it that is not FAILED.
+		return v1.RunResponse_STATUS_CANCELED
+
+	case errors.Is(interrupted, context.DeadlineExceeded):
+		// The whole command was given a deadline and reached it.
+		return v1.RunResponse_STATUS_TIMED_OUT
+
+	default:
+		return v1.RunResponse_STATUS_FAILED
+	}
 }

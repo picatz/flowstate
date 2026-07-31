@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -33,6 +34,14 @@ import (
 func runLocal(t *testing.T, body string, extra ...string) (stdout, stderr string, err error) {
 	t.Helper()
 
+	return runLocalUnder(t, t.Context(), body, extra...)
+}
+
+// runLocalUnder is the same, under a context the caller controls, which is how a
+// test stands in for somebody pressing ctrl+c.
+func runLocalUnder(t *testing.T, ctx context.Context, body string, extra ...string) (stdout, stderr string, err error) {
+	t.Helper()
+
 	path := filepath.Join(t.TempDir(), "workflow.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 
@@ -42,7 +51,7 @@ func runLocal(t *testing.T, body string, extra ...string) (stdout, stderr string
 	root.SetErr(&errOut)
 	root.SetArgs(append([]string{"run", "local", path}, extra...))
 
-	err = execute(t.Context(), root)
+	err = execute(ctx, root)
 
 	return out.String(), errOut.String(), err
 }
