@@ -53,6 +53,106 @@ var stepReference = regexp.MustCompile(`\bsteps\.([A-Za-z_][A-Za-z0-9_]*)\b`)
 // with the same tolerances.
 var varReference = regexp.MustCompile(`\bvars\.([A-Za-z_][A-Za-z0-9_]*)\b`)
 
+// expressionSpans returns the byte range of the source inside each `${...}` on a
+// line.
+//
+// A reference is a reference only inside a fence. Outside one, `steps.greet.result`
+// is text — a sentence in a `message:`, a URL path, a description — and reading it
+// as a reference is not the harmless over-read [stepReference]'s comment claims:
+//
+//	message: "to read the greeting write steps.greet.result in your expression"
+//
+// was rewritten to say `vars.greet`, in a file that then validated and ran,
+// printing prose the author did not write. The over-read also decides whether a
+// retired step is *migrated or deleted*, so a sentence in the margin was enough to
+// remove a step somebody meant a person to see.
+//
+// Comments are stripped by the callers and quotes are deliberately not, because the
+// ordinary spelling of an expression is a quoted YAML scalar —
+// `message: "${steps.a.result}"` — so a scanner that skipped quoted regions would
+// skip everything worth reading.
+//
+// Braces are counted rather than searched for, since an expression may contain
+// them: `${ {'a': steps.x.result} }` closes at the last one and not the first. And
+// the count skips CEL string literals, because a brace inside one is text —
+// `${a + '}' + b}` also closes at the last brace, and stopping at the quoted one
+// rewrites the first reference and leaves the second naming a step the same pass
+// has just deleted.
+//
+// An unterminated fence yields the rest of the line, which keeps a half-written
+// file's references visible while somebody is still editing it.
+func expressionSpans(line string) [][2]int {
+	var out [][2]int
+
+	for i := 0; i+1 < len(line); i++ {
+		if line[i] != '$' || line[i+1] != '{' {
+			continue
+		}
+
+		depth, start := 1, i+2
+
+		// Braces inside a CEL string are text, not structure. `${a + '}' + b}`
+		// closes at the last brace, and a counter that stopped at the quoted one
+		// would rewrite the first reference and leave the second naming a step the
+		// same pass had just deleted — a current-edition file the validator then
+		// rejects.
+		var quote byte
+		j := start
+		for ; j < len(line) && depth > 0; j++ {
+			c := line[j]
+			switch {
+			case quote != 0 && c == '\\':
+				// An escape consumes the next character, so `\'` does not close the
+				// literal it is inside.
+				j++
+			case quote != 0 && c == quote:
+				quote = 0
+			case quote != 0:
+			case c == '\'' || c == '"':
+				quote = c
+			case c == '{':
+				depth++
+			case c == '}':
+				depth--
+			}
+		}
+		if depth > 0 {
+			out = append(out, [2]int{start, len(line)})
+
+			break
+		}
+
+		out = append(out, [2]int{start, j - 1})
+		i = j - 1
+	}
+
+	return out
+}
+
+// rewriteExpressions applies a rewrite to each expression on a line, leaving
+// everything around them untouched.
+//
+// Right to left, so an earlier span's offsets are still good after a later one has
+// changed length.
+func rewriteExpressions(line string, rewrite func(string) (string, bool)) (string, bool) {
+	spans := expressionSpans(line)
+
+	out, changed := line, false
+	for i := len(spans) - 1; i >= 0; i-- {
+		span := spans[i]
+
+		replaced, did := rewrite(out[span[0]:span[1]])
+		if !did {
+			continue
+		}
+
+		out = out[:span[0]] + replaced + out[span[1]:]
+		changed = true
+	}
+
+	return out, changed
+}
+
 // retiredStep rewrites one step running a retired task, or refuses.
 //
 // Returns whether it acted, so the caller knows not to look for anything else on a step
@@ -331,6 +431,19 @@ func (f *fixer) retiredPrintf(entry *ast.MappingValueNode) (string, bool) {
 // literal has to be *quoted* rather than pasted — the value is moving from a position
 // where text is text into one where text is code.
 func (f *fixer) celSourceOf(value ast.Node, task, input string) (string, bool) {
+	// Numbers and booleans first, because they arrive as their own node kinds and
+	// [scalarText] answers only for text. Asking it first refused them — so
+	// `printf:` with `args: [${name.result}, 0]`, which is the migration DSL.md
+	// documents, could not be rewritten at all, and the branch written below for
+	// exactly these three kinds could never run. `flow fix` still stamped the new
+	// edition, leaving a file that was neither the old spelling nor a valid one.
+	switch node := unwrapAnchor(value).(type) {
+	case *ast.IntegerNode, *ast.FloatNode, *ast.BoolNode:
+		// Their own CEL source already: `0` is `0` in both languages, and quoting
+		// would turn a number into a string.
+		return node.String(), true
+	}
+
 	text, ok := scalarText(value)
 	if !ok {
 		f.refuse(value,
@@ -344,12 +457,8 @@ func (f *fixer) celSourceOf(value ast.Node, task, input string) (string, bool) {
 		return inner, true
 	}
 
-	// Numbers and booleans are already their own CEL source; only text needs quoting.
-	switch value.(type) {
-	case *ast.IntegerNode, *ast.FloatNode, *ast.BoolNode:
-		return text, true
-	}
-
+	// Only text is left, and it needs quoting: the value is moving from a position
+	// where text is text into one where text is code.
 	return strconv.Quote(text), true
 }
 
@@ -565,8 +674,10 @@ func (f *fixer) collectRetirementContext(n ast.Node) {
 		if at := commentStart(line); at >= 0 {
 			line = line[:at]
 		}
-		for _, match := range stepReference.FindAllStringSubmatch(line, -1) {
-			f.referenced[match[1]] = true
+		for _, span := range expressionSpans(line) {
+			for _, match := range stepReference.FindAllStringSubmatch(line[span[0]:span[1]], -1) {
+				f.referenced[match[1]] = true
+			}
 		}
 	}
 
@@ -614,7 +725,21 @@ func (f *fixer) rewriteMovedReferences() {
 			code, comment = line[:at], line[at:]
 		}
 
-		rewritten, changed := f.movedReferences(code)
+		// Inside the fences only. Rewriting the whole line is what edited an
+		// author's prose, and the same over-read had already decided the step was
+		// unread and deleted it.
+		//
+		// Except on a deferred input's value, which is expression source whole —
+		// see [fixer.deferredValueLines]. There the whole of it is code, and
+		// leaving it out let a rooted reference outlive the step it named.
+		rewrite := func(source string) (string, bool) {
+			return rewriteExpressions(source, f.movedReferences)
+		}
+		if f.deferredValueLines[i+1] {
+			rewrite = f.movedReferences
+		}
+
+		rewritten, changed := rewrite(code)
 		if !changed {
 			continue
 		}
