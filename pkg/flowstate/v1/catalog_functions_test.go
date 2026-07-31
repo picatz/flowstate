@@ -192,3 +192,77 @@ func TestIsCallableNameRefusesTheSpellingsNobodyCanType(t *testing.T) {
 		})
 	}
 }
+
+// TestEveryMacroHasAnExample is what makes a written table acceptable here.
+//
+// The set comes from the environment, so a library added to a profile brings its
+// macros into this check the same day, and one with no entry fails naming itself.
+// That is the half a maintained list normally cannot have.
+//
+// An entry may be empty, and that is not the same as missing: `proto.getExt` takes a
+// protobuf extension field, which is a name in a descriptor rather than a value an
+// expression can write, so there is no complete call to give. Present-and-empty says
+// somebody decided; absent says nobody looked.
+func TestEveryMacroHasAnExample(t *testing.T) {
+	t.Parallel()
+
+	libs, err := ProfileLibraries(CurrentProfile)
+	require.NoError(t, err)
+
+	env, err := DefaultEvaluator().Env(libs...)
+	require.NoError(t, err)
+
+	require.NotEmpty(t, env.Macros(), "no macros found, so this test checks nothing")
+
+	for _, macro := range env.Macros() {
+		_, described := macroExamples[macro.Function()]
+		assert.True(t, described,
+			"the profile has a macro %q and no example calls it; add one, or an empty entry "+
+				"saying no expression can", macro.Function())
+	}
+}
+
+// TestEveryMacroExampleEvaluates is the other half, and the reason the table can be
+// trusted at all.
+//
+// Evaluated rather than inspected. An example is a string in a map, so nothing about
+// writing one proves it is a call anybody can make — and this table exists precisely
+// because the *machine-readable* catalog hands these to a consumer that will try to
+// use them. An entry that stops working stops passing.
+func TestEveryMacroExampleEvaluates(t *testing.T) {
+	t.Parallel()
+
+	libs, err := ProfileLibraries(CurrentProfile)
+	require.NoError(t, err)
+
+	for name, example := range macroExamples {
+		if example == "" {
+			continue
+		}
+
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			out, err := DefaultEvaluator().EvalString(t.Context(), example, libs, map[string]any{})
+			require.NoError(t, err, "the example for %q does not evaluate: %s", name, example)
+			require.NotNil(t, out, "the example for %q evaluated to nothing: %s", name, example)
+		})
+	}
+}
+
+// TestOnlyAMacroCarriesAnExample keeps the field meaning one thing.
+//
+// A function's name *is* its call form, so an example beside one would be a second
+// way of saying what `name` already says — and two spellings of one fact is how they
+// come to disagree.
+func TestOnlyAMacroCarriesAnExample(t *testing.T) {
+	t.Parallel()
+
+	for _, fn := range ProfileFunctions(CurrentProfile) {
+		if fn.Macro {
+			continue
+		}
+		assert.Empty(t, fn.Example,
+			"%q is an ordinary function and carries an example, which its name already is", fn.Name)
+	}
+}

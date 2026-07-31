@@ -248,6 +248,7 @@ func catalogFunctions() []*CELFunction {
 			Name:    fn.Name,
 			Library: fn.Library,
 			Macro:   fn.Macro,
+			Example: fn.Example,
 		})
 	}
 

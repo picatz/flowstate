@@ -61,13 +61,20 @@ func hoverFunction(doc *document, v *value, cursor int) *lsp.Hover {
 	}
 
 	if fn.Macro {
+		written := "It is written on something"
+		if fn.Example != "" {
+			// The call form, which the name is not: cel-go reports `greatest` for
+			// something written `math.greatest(1, 2)`.
+			written = fmt.Sprintf("Written `%s`. It goes on something", fn.Example)
+		}
+
 		return markdownHover(fmt.Sprintf(
-			"**`%s`** — a macro from the `%s` library.\n\n"+
-				"It is written on something — `math.greatest(1, 2)`, `[3,1,2].sortBy(v, v)` — and is "+
-				"expanded when the file *compiles*, so what a run carries is the expansion rather "+
-				"than this spelling. That is why a macro's meaning is frozen by the spec where a "+
-				"function's is resolved by whichever worker evaluates the run.",
-			fn.Name, fn.Library), rng)
+			"**`%s`** — a macro from the `%s` library.\n\n%s"+
+				" — a value or a namespace — and is expanded when the file *compiles*, so what a "+
+				"run carries is the expansion rather than this spelling. That is why a macro's "+
+				"meaning is frozen by the spec where a function's is resolved by whichever worker "+
+				"evaluates the run.",
+			fn.Name, fn.Library, written), rng)
 	}
 
 	return markdownHover(fmt.Sprintf(

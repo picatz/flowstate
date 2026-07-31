@@ -1685,7 +1685,33 @@ type CELFunction struct {
 	// levelled away: a macro is settled when the file compiles, so its meaning is
 	// frozen into the compiled workflow, where a function is looked up by whichever
 	// worker evaluates the run.
-	Macro         bool `protobuf:"varint,3,opt,name=macro,proto3" json:"macro,omitempty"`
+	Macro bool `protobuf:"varint,3,opt,name=macro,proto3" json:"macro,omitempty"`
+	// Example is a complete expression calling this, set only where `name` is not
+	// enough to construct one — which is exactly the macros.
+	//
+	// A function's name *is* its call form: `upperAscii` is written `x.upperAscii()`
+	// or `regex.replace(a, b, c)` as the name says. A macro's is not, and cel-go's
+	// parser API is why: `Macro` exposes `Function`, `ArgCount`, `IsReceiverStyle`
+	// and `MacroKey`, and none of them names the *receiver*. So `greatest` is
+	// reported for something written `math.greatest(1, 2)` and `sortBy` for
+	// something written `[3,1,2].sortBy(v, v)` — a namespace in one case and a value
+	// in the other, indistinguishable from the outside.
+	//
+	// Which means this cannot be derived, and a consumer told "do not render `name`
+	// as a call" and given nothing else has been handed a catalogue of things it
+	// cannot use. It is a written table, kept honest the way this repo keeps the
+	// things that cannot be derived: a test asks the environment for its macros and
+	// fails on any that has no example, and every example is *evaluated* rather than
+	// inspected, so an entry that stops working stops passing.
+	//
+	// Deriving it was tried and rejected rather than skipped. A library's macros can
+	// be paired with the internal `@` names it declares — `math.@max` alongside
+	// `greatest` gives `math` — and that is right for `math` and `bindings` and
+	// silently wrong for `comprehensions`, which declares `cel.@mapInsert` while
+	// `transformList` is written on a value. A derivation that is wrong for one
+	// library in five is worse than a table somebody has to keep, because nothing
+	// about it says which one.
+	Example       string `protobuf:"bytes,4,opt,name=example,proto3" json:"example,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1739,6 +1765,13 @@ func (x *CELFunction) GetMacro() bool {
 		return x.Macro
 	}
 	return false
+}
+
+func (x *CELFunction) GetExample() string {
+	if x != nil {
+		return x.Example
+	}
+	return ""
 }
 
 // TaskDescription is one task's name and shape.
@@ -4355,11 +4388,12 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"\x0enow_identifier\x18\x04 \x01(\tR\rnowIdentifier\x12\x1f\n" +
 	"\vvalue_roots\x18\x05 \x03(\tR\n" +
 	"valueRoots\x12>\n" +
-	"\rcel_functions\x18\x06 \x03(\v2\x19.flowstate.v1.CELFunctionR\fcelFunctions\"Q\n" +
+	"\rcel_functions\x18\x06 \x03(\v2\x19.flowstate.v1.CELFunctionR\fcelFunctions\"k\n" +
 	"\vCELFunction\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\alibrary\x18\x02 \x01(\tR\alibrary\x12\x14\n" +
-	"\x05macro\x18\x03 \x01(\bR\x05macro\"\xa3\x01\n" +
+	"\x05macro\x18\x03 \x01(\bR\x05macro\x12\x18\n" +
+	"\aexample\x18\x04 \x01(\tR\aexample\"\xa3\x01\n" +
 	"\x0fTaskDescription\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\asummary\x18\x02 \x01(\tR\asummary\x12/\n" +

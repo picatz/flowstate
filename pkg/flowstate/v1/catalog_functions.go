@@ -28,6 +28,11 @@ type LibraryFunction struct {
 	// Name is written exactly as it is called: `math.greatest`, `upperAscii`.
 	Name string
 
+	// Example is a complete expression calling this, set only for a macro.
+	//
+	// A function's name is its call form and a macro's is not — see [macroExamples].
+	Example string
+
 	// Macro says the parser expands this rather than the evaluator calling it.
 	//
 	// Worth surfacing rather than levelling away, for two reasons. The difference is
@@ -98,7 +103,12 @@ func ProfileFunctions(profile string) []LibraryFunction {
 				continue
 			}
 			claimed[name] = true
-			out = append(out, LibraryFunction{Library: lib, Name: name, Macro: macro})
+			out = append(out, LibraryFunction{
+				Library: lib,
+				Name:    name,
+				Macro:   macro,
+				Example: macroExamples[name],
+			})
 		}
 	}
 
@@ -165,4 +175,67 @@ func isCallableName(name string) bool {
 	}
 
 	return true
+}
+
+// macroExamples is a working expression for every macro the profile has, keyed by
+// the name cel-go reports.
+//
+// Written out, which this file otherwise refuses to do. Everything else here is
+// derived, and this is derived too where it can be: the *set* comes from the
+// environment, and [TestEveryMacroHasAnExample] fails on a macro that has no entry,
+// so a library added to a profile cannot bring in a macro nobody has written a call
+// for.
+//
+// What cannot be derived is the call itself. cel-go's `Macro` exposes `Function`,
+// `ArgCount`, `IsReceiverStyle` and `MacroKey`; none of them names the receiver. So
+// `greatest` is reported for `math.greatest(1, 2)` and `sortBy` for
+// `[3,1,2].sortBy(v, v)` — a namespace in one case and a value in the other, and
+// nothing in the API tells them apart.
+//
+// Pairing each library's macros with the internal `@` names it declares was tried:
+// `math.@max` beside `greatest` gives `math`, and `cel.@block` beside `bind` gives
+// `cel`, both right. It is silently wrong for `comprehensions`, which declares
+// `cel.@mapInsert` while `transformList` is written on a value. A derivation wrong
+// for one library in five is worse than a written table, because nothing about it
+// says which one.
+//
+// Every entry is *evaluated* by its test rather than eyeballed, so an example that
+// stops working stops passing.
+var macroExamples = map[string]string{
+	// Standard, from cel-go itself.
+	"has":        `has({'a': 1}.a)`,
+	"all":        `[1, 2].all(v, v > 0)`,
+	"exists":     `[1, 2].exists(v, v > 1)`,
+	"exists_one": `[1, 2].exists_one(v, v > 1)`,
+	"map":        `[1, 2].map(v, v * 2)`,
+	"filter":     `[1, 2].filter(v, v > 1)`,
+
+	// bindings.
+	"bind": `cel.bind(x, 2, x + 1)`,
+
+	// comprehensions. Written on a value despite the library declaring `cel.@…`,
+	// which is the case that sank deriving these.
+	"existsOne":         `[1, 2].existsOne(i, v, v > 1)`,
+	"transformList":     `[1, 2].transformList(i, v, v * 2)`,
+	"transformMap":      `{'a': 1}.transformMap(k, v, v * 10)`,
+	"transformMapEntry": `{'a': 1}.transformMapEntry(k, v, {k: v * 2})`,
+
+	// lists.
+	"sortBy": `[3, 1, 2].sortBy(v, v)`,
+
+	// math. Written on the namespace.
+	"greatest": `math.greatest(1, 2)`,
+	"least":    `math.least(3, 4)`,
+
+	// optional.
+	"optMap":     `optional.of(2).optMap(v, v * 3)`,
+	"optFlatMap": `optional.of(2).optFlatMap(v, optional.of(v * 3))`,
+
+	// protos. The only two with no example: both take a protobuf extension field,
+	// which is a name in a descriptor rather than a value an expression can write,
+	// so there is no complete call to give. Present as empty entries rather than
+	// absent, because absent is indistinguishable from forgotten — and that is the
+	// distinction the completeness test needs in order to mean anything.
+	"getExt": "",
+	"hasExt": "",
 }
