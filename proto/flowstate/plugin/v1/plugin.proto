@@ -142,6 +142,35 @@ message TaskManifest {
   // NeedsScope reports whether the task must receive prior step outputs and the
   // variables bound by enclosing control flow.
   bool needs_scope = 8;
+
+  // ExpressionInputs are inputs that must be *written* as `${...}` rather than as
+  // a literal.
+  //
+  // A different question from deferred_inputs above, which says who evaluates an
+  // input. This says what one has to be, and a plugin had no way to say it: the
+  // built-in http task declares the same thing about `expect`, because a schema
+  // field typed `Value` is deliberately permissive — so `expect: {status: 200}`
+  // compiled, validated, and failed on the first request.
+  //
+  // Checkable with no scope at all, which is what makes it declarable rather than
+  // inferable: whether a value carries a fence is lexical, decided by the parser.
+  // What it cannot check is the type — an expression returning the wrong thing is
+  // still wrong, and that is not this field's problem.
+  //
+  // # Where it is enforced today, and where it is not
+  //
+  // The host maps this onto TaskDef.ExpressionInputs, so a registry holding the
+  // plugin's task answers MustBeExpression correctly. What does *not* follow is
+  // that `flow validate` sees it, because nothing shipped puts a plugin task in
+  // the registry the validator reads: MustBeExpression and LookupTask ask
+  // DefaultRegistry, Host.Register writes to whichever registry it is handed, and
+  // no binary in this repository connects the two — `flow validate` on a plugin's
+  // task answers `unknown task`.
+  //
+  // So this declaration is necessary and not yet sufficient, and saying so here is
+  // the point: a field whose enforcement is assumed rather than checked is how
+  // `expect:` got its own reputation.
+  repeated string expression_inputs = 9 [(buf.validate.field).repeated = {max_items: 16}];
 }
 
 // PluginService is the capability handshake every plugin must implement.
