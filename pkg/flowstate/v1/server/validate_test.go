@@ -116,3 +116,50 @@ func TestGetCatalogAnswersWithTheCatalog(t *testing.T) {
 		"the catalog names no functions, so an agent reading it would conclude "+
 			"expressions can call nothing")
 }
+
+// TestTheHandlerEnforcesItsOwnBounds is here because review caught it missing.
+//
+// The CLI installs a protovalidate interceptor, so through `flow server` the
+// schema's bounds held — and an embedder mounting the handler directly got no
+// interceptor and no bounds, which is a bound enforced by a caller's
+// configuration: it fails open for whoever wires it up without one. These tests
+// call the handler with no interceptor in front, which is exactly that embedder.
+func TestTheHandlerEnforcesItsOwnBounds(t *testing.T) {
+	t.Parallel()
+
+	s := validateServer(t)
+
+	t.Run("too many files", func(t *testing.T) {
+		t.Parallel()
+
+		files := make([]*v1.SourceFile, 65)
+		for i := range files {
+			files[i] = &v1.SourceFile{Name: "f.yaml", Source: []byte(aValidFile)}
+		}
+
+		_, err := s.Validate(t.Context(), connect.NewRequest(&v1.ValidateRequest{Files: files}))
+		require.Error(t, err,
+			"sixty-five files were parsed; the schema's bound holds only behind an "+
+				"interceptor an embedder does not have")
+		assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	})
+
+	t.Run("no files", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := s.Validate(t.Context(), connect.NewRequest(&v1.ValidateRequest{}))
+		require.Error(t, err, "an empty request was accepted; the schema requires a file")
+		assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	})
+
+	t.Run("an oversized file", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := s.Validate(t.Context(), connect.NewRequest(&v1.ValidateRequest{
+			Files: []*v1.SourceFile{{Name: "big.yaml", Source: make([]byte, 1<<20+1)}},
+		}))
+		require.Error(t, err,
+			"a file over the schema's megabyte bound reached the parser")
+		assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	})
+}

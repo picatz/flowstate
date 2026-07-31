@@ -27,7 +27,7 @@
 // "team-a" is EXAMPLE_SECRET_TEAM_A_API_KEY, and in the empty namespace it is
 // EXAMPLE_SECRET_API_KEY.
 //
-// It provides one task, example_greet, whose input and output messages are
+// It provides one task, written `example.greet:` in a Flowfile, whose input and output messages are
 // defined in this plugin's own schema rather than the engine's. That is the
 // realistic case: the engine has never seen these messages, and learns their
 // shape from the descriptors this plugin ships in its manifest.
@@ -56,7 +56,7 @@ func main() {
 		},
 
 		Tasks: []sdk.Task{{
-			Name:    "example_greet",
+			Name:    "greet",
 			Summary: "Greet someone by name.",
 			Input:   &examplev1.GreetInputs{},
 			Output:  &examplev1.GreetOutputs{},

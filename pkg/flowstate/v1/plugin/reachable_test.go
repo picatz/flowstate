@@ -29,14 +29,9 @@ import (
 // # Why this is one test and not several
 //
 // Registration into the default registry is a one-way door: there is no
-// Unregister, so a second host opening afterwards would find `example_greet`
-// present and refuse it as a built-in — [Host.bind] checks
-// [flowstatev1.LookupTask] to stop a plugin shadowing the engine's own tasks, and
-// cannot tell a built-in from another host's plugin. That is correct behaviour
-// for a worker, which opens one host and holds it until it exits, and it means
-// exactly one test in this binary may do the global registration.
-//
-// Deliberately not parallel, for the same reason.
+// Unregister, so a worker opens one host and holds it until the process exits.
+// This test does the same, which means exactly one test in this binary may do
+// the global registration. Deliberately not parallel, for the same reason.
 
 const pluginWorkflow = `edition: v2026.2
 name: plugin-reachable
@@ -44,7 +39,7 @@ vars:
   who: world
 steps:
   - id: greet
-    example_greet:
+    example.greet:
       name: ${vars.who}
       greeting: Hello
   - id: report
@@ -58,9 +53,9 @@ func TestAFlowfileCanNameAPluginTask(t *testing.T) {
 	// The premise. Before registration the task is not a task, and the file below
 	// is a file naming something that does not exist — which is what every author
 	// got, and what makes the assertions after registration mean something.
-	_, unregistered := flowstatev1.LookupTask("example_greet")
+	_, unregistered := flowstatev1.LookupTask("example.greet")
 	require.False(t, unregistered,
-		"`example_greet` is already in the default registry before this test registered it, "+
+		"`example.greet` is already in the default registry before this test registered it, "+
 			"so nothing below distinguishes a working seam from a task that was always there")
 
 	before, err := flowfile.ValidateSource([]byte(pluginWorkflow))
@@ -68,7 +63,7 @@ func TestAFlowfileCanNameAPluginTask(t *testing.T) {
 	require.NotEmpty(t, before,
 		"the validator accepted a step naming a task no registry holds")
 
-	require.Contains(t, diagnosticText(before), "example_greet",
+	require.Contains(t, diagnosticText(before), "example.greet",
 		"the diagnostic does not name the task the author wrote, so it cannot teach them anything")
 
 	// The seam. One call, against the registry the engine reads.
@@ -102,16 +97,13 @@ func TestAFlowfileCanNameAPluginTask(t *testing.T) {
 			"a number was accepted for an input the plugin declares as a string")
 	})
 
-	t.Run("a later host is not told its task is a built-in", func(t *testing.T) {
-		// Found by this file breaking every other test in the package, which is a
-		// worse way to find it than it looks: the symptom was five unrelated
-		// failures, and the cause was one question asked of the wrong thing.
-		//
-		// `bind` refuses a plugin task that shadows a built-in, and asked the
-		// *registry* — which is mutable, and which the host above had just added
-		// to. So the second host to open in a process was told `example_greet` is
-		// "a built-in task", which is both false and unfixable by whoever read it.
-		// [flowstatev1.IsBuiltinTask] answers from a frozen set instead.
+	t.Run("a later host is not confused by the first one's registration", func(t *testing.T) {
+		// An earlier shape of `bind` asked the mutable registry whether a name
+		// was a built-in, so once one host had registered, the next host in the
+		// same process was refused over a conflict that did not exist — found by
+		// this file breaking every other test in the package. The dotted name
+		// now makes the collision unrepresentable, and this holds the property
+		// the hard way: a second host after a global registration.
 		second := exampleHost(t)
 
 		_, ok := second.Lookup("example")
@@ -120,15 +112,20 @@ func TestAFlowfileCanNameAPluginTask(t *testing.T) {
 				"registered its tasks")
 	})
 
-	t.Run("a plugin still cannot shadow a real built-in", func(t *testing.T) {
-		// The other direction, which the fix above must not have loosened: the
-		// refusal exists so that installing a plugin cannot change what an
-		// existing workflow's `http:` step does.
+	t.Run("a plugin cannot spell a built-in's name", func(t *testing.T) {
+		// The dot is what enforces it: every plugin task carries one, no
+		// built-in does, so installing a plugin cannot change what an existing
+		// workflow's `http:` step does — structurally, rather than by a check
+		// that could misfire.
 		assert.True(t, flowstatev1.IsBuiltinTask("http"))
 		assert.True(t, flowstatev1.IsBuiltinTask("log"))
-		assert.False(t, flowstatev1.IsBuiltinTask("example_greet"),
-			"a plugin's task is reported as a built-in, so a later plugin of the same "+
-				"name would be refused with a reason that names the wrong conflict")
+		assert.False(t, flowstatev1.IsBuiltinTask("example.greet"))
+
+		def, ok := flowstatev1.LookupTask("example.greet")
+		require.True(t, ok)
+		assert.Contains(t, def.Name, ".",
+			"a registered plugin task carries no dot, so nothing structurally "+
+				"separates it from the built-in namespace")
 	})
 
 	t.Run("the run reaches the plugin process", func(t *testing.T) {

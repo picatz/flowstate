@@ -494,8 +494,10 @@ func TestTaskDefExecutes(t *testing.T) {
 	}
 
 	def := defs[0]
-	if def.Name != "ok_task" {
-		t.Errorf("task name = %q, want %q", def.Name, "ok_task")
+	// Qualified by the plugin's discovered name, which is the spelling a
+	// Flowfile uses and the dot is the provenance.
+	if def.Name != "ok.ok_task" {
+		t.Errorf("task name = %q, want %q", def.Name, "ok.ok_task")
 	}
 
 	// A plugin task carries descriptors like a built-in one, which is what lets
@@ -512,7 +514,7 @@ func TestTaskDefExecutes(t *testing.T) {
 		t.Fatalf("registering the plugin task: %v", err)
 	}
 
-	registered, ok := registry.Lookup("ok_task")
+	registered, ok := registry.Lookup("ok.ok_task")
 	if !ok {
 		t.Fatal("the registered plugin task cannot be looked up")
 	}

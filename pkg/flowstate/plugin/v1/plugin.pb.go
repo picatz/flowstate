@@ -242,7 +242,15 @@ func (x *PluginManifest) GetTasks() []*TaskManifest {
 // arrives from a plugin.
 type TaskManifest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// Name is the task's own name, without the plugin's: `post`, not `slack.post`.
+	//
+	// A Flowfile spells the task qualified — `<plugin>.<task>:` — and the host adds
+	// that prefix from the name discovery established for the binary. The pattern
+	// below is what keeps the seam honest: a name cannot contain a dot, so a plugin
+	// cannot smuggle a qualifier of its own choosing, and two plugins declaring the
+	// same task name cannot collide because the segment that distinguishes them was
+	// never theirs to write.
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// Summary is one line, shown by `flow tasks` and in editor completion.
 	Summary string `protobuf:"bytes,2,opt,name=summary,proto3" json:"summary,omitempty"`
 	// Inputs and outputs are serialized FileDescriptorProtos plus the full name of

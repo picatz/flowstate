@@ -1123,13 +1123,32 @@ message Task {
   // Tasks have specific names that identify the type of task being performed,
   // such as "log" or "http". The name is used to determine which task
   // implementation to execute when the workflow is run.
+  //
+  // # A dot means a plugin, and its absence means the engine
+  //
+  // A built-in task is one bare word. A plugin's task is two, joined by a dot —
+  // `slack.post` is the `post` task of the plugin discovered as
+  // `flowstate-plugin-slack` — and the dot is provenance rather than decoration:
+  // it tells a reviewer that this line leaves the engine's code and enters code
+  // somebody installed, at the step, where that fact is needed. It also makes
+  // collision unrepresentable in both directions. A plugin task cannot shadow a
+  // built-in because a plugin's tasks all carry a dot and no built-in does; two
+  // plugins cannot fight over one name because each one's tasks are prefixed
+  // with a name discovery established from the binary, not self-reported.
+  //
+  // At most one dot, by the pattern below. The first segment is a plugin name
+  // (`^[a-z0-9][a-z0-9-]*$`, from the executable's own name) and the second a
+  // task name (`^[a-z][a-z0-9_]*$`, from its manifest); the pattern here is the
+  // permissive union rather than that concatenation, because this field also
+  // spells built-in names with their historical uppercase-and-dash latitude, and
+  // the registry enforces the sharper per-segment rules at registration.
   string name = 1 [
     (buf.validate.field).required = true,
     (google.api.field_behavior) = REQUIRED,
     (buf.validate.field).string = {
       min_len: 1
       max_len: 128
-      pattern: "^[A-Za-z0-9-_]+$"
+      pattern: "^[A-Za-z0-9-_]+(\\.[A-Za-z0-9-_]+)?$"
     }
   ];
 

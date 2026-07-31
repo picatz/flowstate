@@ -22,6 +22,13 @@ import (
 func (p *Plugin) taskDef(manifest *pluginv1.TaskManifest, cfg Config) (flowstatev1.TaskDef, error) {
 	name := manifest.GetName()
 
+	// The def is registered under the name an author writes, which is the
+	// manifest's name qualified by the plugin's: `slack.post` for the `post`
+	// task of `flowstate-plugin-slack`. The wire keeps the bare name — the
+	// plugin knows its task as `post`, and telling it otherwise would make every
+	// plugin parse its own name back out of a prefix the host added.
+	qualified := p.name + "." + name
+
 	inputs, err := messageDescriptor(manifest.GetInputDescriptor(), manifest.GetInputMessage(), cfg)
 	if err != nil {
 		return flowstatev1.TaskDef{}, pluginError(p.name, p.path, fmt.Errorf("task %q inputs: %w", truncate(name, 64), err))
@@ -33,7 +40,7 @@ func (p *Plugin) taskDef(manifest *pluginv1.TaskManifest, cfg Config) (flowstate
 	}
 
 	return flowstatev1.TaskDef{
-		Name:           name,
+		Name:           qualified,
 		Summary:        manifest.GetSummary(),
 		Inputs:         inputs,
 		Outputs:        outputs,
@@ -56,7 +63,12 @@ func (p *Plugin) taskDef(manifest *pluginv1.TaskManifest, cfg Config) (flowstate
 
 // taskFunc returns the function that executes a task by asking the plugin to.
 func (p *Plugin) taskFunc(manifest *pluginv1.TaskManifest) flowstatev1.TaskFunc {
+	// Two names for one task, each used where it is true. The wire carries the
+	// bare manifest name, because that is what the plugin calls it; every error
+	// carries the qualified one, because that is what the author wrote and what
+	// they will search their file for.
 	name := manifest.GetName()
+	qualified := p.name + "." + name
 	needsScope := manifest.GetNeedsScope()
 
 	return func(ctx context.Context, inputs map[string]*flowstatev1.Value, scope *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
@@ -64,7 +76,7 @@ func (p *Plugin) taskFunc(manifest *pluginv1.TaskManifest) flowstatev1.TaskFunc 
 		if err != nil {
 			// Unavailability is the one retryable classification, so a step's
 			// retry policy gets to decide whether to wait out a restart.
-			return nil, flowstatev1.NewTaskError(name, flowstatev1.ErrorKindUpstream, err)
+			return nil, flowstatev1.NewTaskError(qualified, flowstatev1.ErrorKindUpstream, err)
 		}
 
 		identity, _ := IdentityFromContext(ctx)
@@ -90,7 +102,7 @@ func (p *Plugin) taskFunc(manifest *pluginv1.TaskManifest) flowstatev1.TaskFunc 
 
 		resp, err := inst.clients.task.Execute(callCtx, connect.NewRequest(request))
 		if err != nil {
-			return nil, taskError(name, p.name, err)
+			return nil, taskError(qualified, p.name, err)
 		}
 
 		return resp.Msg.GetOutputs(), nil

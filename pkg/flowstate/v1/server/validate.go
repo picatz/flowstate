@@ -37,8 +37,19 @@ func (s *FlowstateServer) Validate(
 	// with --insecure-no-auth rather than a path through here. What this method
 	// deliberately does not do is derive a tenant: checking a file touches no
 	// run and reads no tenant's anything, so the caller's identity has nothing
-	// to scope. The bounds are the schema's, enforced by the validation
-	// interceptor: sixty-four files, a megabyte each, before any byte is parsed.
+	// to scope.
+	//
+	// The bounds, though, are enforced here and not left to an interceptor. The
+	// schema declares them — sixty-four files, a megabyte each — and the CLI
+	// installs a protovalidate interceptor that enforces them, but an embedder
+	// mounting this handler directly gets no interceptor, and a bound enforced
+	// by a caller's configuration fails open for whoever wired it up without
+	// one. Run learned this exact lesson (see the comment there); a handler that
+	// parses attacker-sized input checks its own request.
+	if err := v1.Validate(req.Msg); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
 	reports := make([]*v1.DiagnosticReport, 0, len(req.Msg.GetFiles()))
 
 	for _, file := range req.Msg.GetFiles() {
@@ -69,6 +80,13 @@ func (s *FlowstateServer) GetCatalog(
 	ctx context.Context,
 	req *connect.Request[v1.GetCatalogRequest],
 ) (*connect.Response[v1.GetCatalogResponse], error) {
+	// Nothing to check today — the request is empty — and checked anyway, so the
+	// habit holds when a filter field arrives and so this handler reads like its
+	// siblings.
+	if err := v1.Validate(req.Msg); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
 	// The process-wide catalog, deliberately. It reads the default registry, so
 	// a deployment that extended this process — a worker's plugins, a build with
 	// more built-ins — answers with what it can actually do, and a stock one

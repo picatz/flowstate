@@ -137,12 +137,6 @@ func TestOpenRefusesBadPlugins(t *testing.T) {
 			wantErr:     ErrDescriptor,
 			wantMessage: "could not reconstruct",
 		},
-		{
-			name:        "task shadowing a built-in",
-			mode:        "builtin-task",
-			wantErr:     ErrManifest,
-			wantMessage: "built-in task",
-		},
 	}
 
 	for _, test := range tests {
@@ -331,5 +325,28 @@ func TestPluginEnvironmentIsMinimal(t *testing.T) {
 		if strings.HasPrefix(entry, "A_WORKER_SECRET") {
 			t.Errorf("the worker's own environment reached the plugin: %q", entry)
 		}
+	}
+}
+
+// TestAPluginTaskNamedLikeABuiltinIsNamespacedNotRefused pins the shape that
+// replaced a refusal.
+//
+// A plugin providing a task called `http` used to be refused as shadowing the
+// built-in. The dotted registration makes the collision unrepresentable instead:
+// the task registers as `<plugin>.http`, a different name from the built-in's
+// bare one, so nothing an author already wrote can change meaning when the
+// plugin is installed — which was the whole point of the refusal, held now by
+// structure rather than by a check.
+func TestAPluginTaskNamedLikeABuiltinIsNamespacedNotRefused(t *testing.T) {
+	t.Parallel()
+
+	host := openHost(t, testConfig(t, pluginDir(t, "builtin-task")))
+
+	defs := host.TaskDefs()
+	if len(defs) != 1 {
+		t.Fatalf("host provides %d tasks, want 1", len(defs))
+	}
+	if want := "builtin-task.http"; defs[0].Name != want {
+		t.Errorf("task name = %q, want %q", defs[0].Name, want)
 	}
 }

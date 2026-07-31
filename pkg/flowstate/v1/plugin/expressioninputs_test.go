@@ -31,10 +31,12 @@ import (
 func TestAPluginCanRequireAnInputBeAnExpression(t *testing.T) {
 	t.Parallel()
 
-	const task = "example_check"
+	// The manifest's own name is bare; the registered name — and the one the
+	// validator asks about — carries the plugin's prefix.
+	const task = "example.check"
 
 	def, err := (&Plugin{name: "example"}).taskDef(&pluginv1.TaskManifest{
-		Name:             task,
+		Name:             "check",
 		Summary:          "checks something",
 		InputMessage:     "flowstate.v1.Task.Log.Inputs",
 		OutputMessage:    "flowstate.v1.Task.Log.Outputs",
@@ -52,16 +54,11 @@ func TestAPluginCanRequireAnInputBeAnExpression(t *testing.T) {
 	// it looks like it does, which review caught and which is worth writing down
 	// rather than quietly relying on.
 	//
-	// `Host.Register` writes to whichever registry it is handed, and the host's own
-	// documented usage hands it a fresh one. So a deployment following the host API
-	// gets a registry the validator never reads, and this declaration reaches
-	// nothing. Nor is that specific to expression inputs: `flow validate` on a
-	// plugin's task answers `unknown task`, because no binary in this repository
-	// connects the host to the registry the validator uses.
-	//
-	// What this test therefore proves is the mapping and the lookup — the manifest
-	// reaches TaskDef, and a registry holding that TaskDef answers correctly. It
-	// does not prove `flow validate` enforces it, because today it does not.
+	// `flow worker --plugin-dir` registers a host's tasks into that registry, so
+	// inside a worker this declaration is enforced by the same code that enforces
+	// the built-in http task's — reachable_test.go proves the whole path from a
+	// file. What this test holds is the narrower mapping: the manifest reaches
+	// TaskDef, and the registry the validator asks answers correctly.
 	//
 	// Not restored afterwards, because a registry has no way to remove a task. Safe
 	// here for a stated reason rather than an assumed one: the name is a plugin's,

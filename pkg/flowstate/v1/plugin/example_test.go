@@ -126,8 +126,8 @@ func TestExamplePluginAdvertisesBothCapabilities(t *testing.T) {
 	if schemes := p.Schemes(); len(schemes) != 1 || schemes[0] != "example" {
 		t.Errorf("schemes = %v, want [example]", schemes)
 	}
-	if tasks := p.Tasks(); len(tasks) != 1 || tasks[0].GetName() != "example_greet" {
-		t.Errorf("tasks = %v, want [example_greet]", taskNames(p.Tasks()))
+	if tasks := p.Tasks(); len(tasks) != 1 || tasks[0].GetName() != "greet" {
+		t.Errorf("tasks = %v, want [greet]", taskNames(p.Tasks()))
 	}
 	if version := p.Manifest().GetVersion(); version == "" {
 		t.Error("the example reports no version")
@@ -194,7 +194,7 @@ func TestExamplePluginTaskRuns(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	def, ok := registry.Lookup("example_greet")
+	def, ok := registry.Lookup("example.greet")
 	if !ok {
 		t.Fatal("the example's task is not in the registry")
 	}

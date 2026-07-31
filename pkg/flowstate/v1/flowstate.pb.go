@@ -2106,6 +2106,25 @@ type Task struct {
 	// Tasks have specific names that identify the type of task being performed,
 	// such as "log" or "http". The name is used to determine which task
 	// implementation to execute when the workflow is run.
+	//
+	// # A dot means a plugin, and its absence means the engine
+	//
+	// A built-in task is one bare word. A plugin's task is two, joined by a dot —
+	// `slack.post` is the `post` task of the plugin discovered as
+	// `flowstate-plugin-slack` — and the dot is provenance rather than decoration:
+	// it tells a reviewer that this line leaves the engine's code and enters code
+	// somebody installed, at the step, where that fact is needed. It also makes
+	// collision unrepresentable in both directions. A plugin task cannot shadow a
+	// built-in because a plugin's tasks all carry a dot and no built-in does; two
+	// plugins cannot fight over one name because each one's tasks are prefixed
+	// with a name discovery established from the binary, not self-reported.
+	//
+	// At most one dot, by the pattern below. The first segment is a plugin name
+	// (`^[a-z0-9][a-z0-9-]*$`, from the executable's own name) and the second a
+	// task name (`^[a-z][a-z0-9_]*$`, from its manifest); the pattern here is the
+	// permissive union rather than that concatenation, because this field also
+	// spells built-in names with their historical uppercase-and-dash latitude, and
+	// the registry enforces the sharper per-segment rules at registration.
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// Inputs are the parameters that the task requires to perform its operation.
 	Inputs        map[string]*Value `protobuf:"bytes,3,rep,name=inputs,proto3" json:"inputs,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
@@ -4834,9 +4853,9 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x1a\n" +
 	"\brequired\x18\x03 \x01(\bR\brequired\x12\x1a\n" +
-	"\bdeferred\x18\x04 \x01(\bR\bdeferred\"\xa9\x0e\n" +
-	"\x04Task\x127\n" +
-	"\x04name\x18\x01 \x01(\tB#\xe2A\x01\x02\xbaH\x1c\xc8\x01\x01r\x17\x10\x01\x18\x80\x012\x10^[A-Za-z0-9-_]+$R\x04name\x12K\n" +
+	"\bdeferred\x18\x04 \x01(\bR\bdeferred\"\xbc\x0e\n" +
+	"\x04Task\x12J\n" +
+	"\x04name\x18\x01 \x01(\tB6\xe2A\x01\x02\xbaH/\xc8\x01\x01r*\x10\x01\x18\x80\x012#^[A-Za-z0-9-_]+(\\.[A-Za-z0-9-_]+)?$R\x04name\x12K\n" +
 	"\x06inputs\x18\x03 \x03(\v2\x1e.flowstate.v1.Task.InputsEntryB\x13\xe2A\x01\x01\xbaH\f\xc8\x01\x01\x9a\x01\x06\"\x04r\x02\x10\x01R\x06inputs\x1a\xe7\x02\n" +
 	"\x03Log\x1a\x83\x02\n" +
 	"\x06Inputs\x12$\n" +

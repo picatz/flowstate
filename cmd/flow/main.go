@@ -309,6 +309,18 @@ func runServer(cmd *cobra.Command, args []string) error {
 	}
 	defer c.Close()
 
+	// The server answers Validate and GetCatalog from the process-wide registry,
+	// so a deployment whose workers load plugins points the server at the same
+	// directory — otherwise the capability it reports is the built-ins alone, and
+	// a caller authoring against GetCatalog would be told a task its workers run
+	// does not exist. The plugins launched here serve descriptors and health
+	// checks; execution still happens on the workers.
+	closePlugins, err := startPlugins(cmd)
+	if err != nil {
+		return err
+	}
+	defer closePlugins()
+
 	interceptor, err := validate.NewInterceptor()
 	if err != nil {
 		return fmt.Errorf("error creating validation interceptor: %w", err)
@@ -1155,6 +1167,7 @@ flow server --verbose`,
 		"version identifier for this worker's binary, unique per build. Required with --deployment-name")
 
 	addPluginFlags(workerCmd)
+	addPluginFlags(serverCmd)
 
 	serverCmd.Flags().String("auth-policy", "",
 		"path to an OIDC/workload-identity trust policy (YAML) describing which issuers to accept")
@@ -1320,7 +1333,7 @@ flow plugins --plugin-dir /usr/local/lib/flowstate/plugins
 flow plugins --plugin-dir /usr/local/lib/flowstate/plugins --output json
 
 # Which plugin provides a given task?
-flow plugins -o json | jq -r '.plugins[] | select(.tasks[].name == "example_greet") | .name'`,
+flow plugins -o json | jq -r '.plugins[] | select(.tasks[].name == "example.greet") | .name'`,
 	}
 	addOutputFlag(pluginsCmd)
 	addPluginFlags(pluginsCmd)
