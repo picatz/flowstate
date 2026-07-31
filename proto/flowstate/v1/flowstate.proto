@@ -1267,6 +1267,43 @@ message GetResponse {
   // deployment rather than about the workload. A reader that rendered an unanswered
   // query as "step 1 of 5" would be inventing one.
   RunProgress progress = 8;
+
+  // PendingActivities are the steps Temporal is retrying right now, with why the
+  // last attempt failed and when the next one is due.
+  //
+  // This is the answer to "why has this been RUNNING for six hours", and until
+  // it was carried here that answer was unobtainable through Flowstate at all:
+  // Temporal's Describe response held it, the server read only the status beside
+  // it, and an operator had to leave the tenancy boundary this service enforces
+  // and ask the temporal CLI directly. Set only for a RUNNING run, on the same
+  // reasoning progress is; empty for a running run means nothing is mid-retry,
+  // which is itself the answer — the run is waiting or between steps, not stuck.
+  repeated PendingActivity pending_activities = 9;
+}
+
+// PendingActivity is one activity Temporal is retrying, projected from its
+// Describe response into the vocabulary this schema speaks.
+//
+// Deliberately not named by step. Temporal identifies a pending activity by an
+// id it generated and a function name the engine registered, and neither is a
+// name an author chose; the engine cannot stamp the step's id onto the activity
+// either, because a loop running iterations in parallel schedules one step id
+// several times at once and activity ids must be unique. Which step a running
+// run is on is the progress query's answer, one field over — the two are read
+// together, and a field here that claimed the step would be guessing.
+message PendingActivity {
+  // Attempt is the attempt about to run or running, starting at 1. An attempt
+  // count climbing on a RUNNING run is the signature of a workload that is
+  // stuck rather than working.
+  int32 attempt = 1;
+
+  // LastFailure is the message of the most recent failed attempt, which is the
+  // sentence that usually contains the whole diagnosis.
+  string last_failure = 2;
+
+  // NextAttemptScheduledTime is when the next attempt is due. Unset when an
+  // attempt is running right now.
+  google.protobuf.Timestamp next_attempt_scheduled_time = 3;
 }
 
 // RunProgress is where a run has got to, answered by the running workflow itself.

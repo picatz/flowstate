@@ -410,6 +410,11 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 				StartTime:  start,
 				CloseTime:  closed,
 				Progress:   runProgress(ctx, temporal, resp),
+				// From the same Describe response the status came from, so the
+				// answer to "why has this been RUNNING for six hours" costs no
+				// further round trip. See pendingActivities for what is and is
+				// not claimed.
+				PendingActivities: pendingActivities(resp),
 			},
 		), nil
 	case v1.RunResponse_STATUS_COMPLETED:
@@ -623,4 +628,42 @@ func runProgress(ctx context.Context, temporal client.Client, resp *workflowserv
 	}
 
 	return &progress
+}
+
+// pendingActivities projects what Temporal is retrying into the schema's own
+// vocabulary.
+//
+// The Describe response has carried this all along; the server read only the
+// status beside it, so "why is this run stuck" was unobtainable through
+// Flowstate and an operator had to leave the tenancy boundary this service
+// enforces and ask the temporal CLI directly. Everything here is a projection
+// of fields Temporal already answered with — no further round trip, and
+// nothing inferred: an activity mid-retry has an attempt count and a last
+// failure, and which *step* it is remains the progress query's answer.
+func pendingActivities(resp *workflowservice.DescribeWorkflowExecutionResponse) []*v1.PendingActivity {
+	infos := resp.GetPendingActivities()
+	if len(infos) == 0 {
+		return nil
+	}
+
+	out := make([]*v1.PendingActivity, 0, len(infos))
+	for _, info := range infos {
+		pending := &v1.PendingActivity{
+			Attempt: info.GetAttempt(),
+			// The message alone rather than the whole failure chain: the chain
+			// repeats what the attempt count already says, and the outermost
+			// message is the sentence the task classified its own failure into.
+			LastFailure: info.GetLastFailure().GetMessage(),
+		}
+
+		// Only when Temporal set one: an attempt running right now has no next
+		// schedule, and inventing a zero time would read as 1970.
+		if scheduled := info.GetScheduledTime(); scheduled != nil {
+			pending.NextAttemptScheduledTime = scheduled
+		}
+
+		out = append(out, pending)
+	}
+
+	return out
 }
