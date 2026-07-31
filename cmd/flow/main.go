@@ -203,6 +203,13 @@ func temporalConfig(ctx context.Context, flags temporalFlags) (temporalclient.Co
 func runWorker(cmd *cobra.Command, args []string) error {
 	flags := temporalFlagsOf(cmd)
 
+	// Before any I/O, and before the worker can poll: a policy file that does not
+	// load must refuse the command, not leave a worker running the default policy
+	// its operator believes was replaced.
+	if err := applyEgressPolicy(cmd); err != nil {
+		return err
+	}
+
 	c, err := initTemporalClient(cmd.Context(), flags)
 	if err != nil {
 		return err
@@ -1266,6 +1273,12 @@ flow server --verbose`,
 
 	addPluginFlags(workerCmd)
 	addPluginFlags(serverCmd)
+
+	// The worker and the local rehearsal, and deliberately not the server — see
+	// egress.go for why a policy registered on the server would change nothing
+	// the server answers.
+	addEgressPolicyFlag(workerCmd)
+	addEgressPolicyFlag(runLocalCmd)
 
 	serverCmd.Flags().String("auth-policy",
 		os.Getenv("FLOWSTATE_AUTH_POLICY"),

@@ -50,6 +50,13 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// The same flag the worker takes, because a rehearsal under a different egress
+	// policy rehearses a different production. A file that does not load refuses
+	// the run, exactly as it refuses the worker.
+	if err := applyEgressPolicy(cmd); err != nil {
+		return err
+	}
+
 	// A workload that waits for a signal needs something able to deliver one, or it
 	// blocks with nothing that could ever release it.
 	localSignals, _ := cmd.Flags().GetStringArray("signal")

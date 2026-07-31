@@ -501,6 +501,23 @@ To develop against a service on `localhost`, set `FLOWSTATE_ALLOW_LOOPBACK_EGRES
 It is an explicit opt-in because the same permission is what would let a workflow reach a
 worker's own internal endpoints in production.
 
+The full policy — scheme and port allowlists, CIDR ranges, the CEL rules above, redirect
+and body-size bounds, the TLS floor — is configured as a file, with durations written as
+`30s` and sizes as `1MiB` or `10MB`, the way they are said:
+
+```console
+$ flow worker --egress-policy egress-policy.yaml
+```
+
+`flow run local` takes the same flag, so a rehearsal is governed by the same rules a
+worker would apply — see [examples/egress-policy.yaml](examples/egress-policy.yaml) for a
+worked policy. A file replaces the default policy entirely rather than layering on top of
+it, and `FLOWSTATE_ALLOW_LOOPBACK_EGRESS` is ignored while one is in force: a policy
+assembled from two places is a policy nobody can read in either. Every field a file can
+set can only tighten or relocate a bound, never remove one — an explicitly empty scheme
+list, a zero body cap, or a zero timeout all refuse to load rather than building a policy
+that allows everything or nothing by accident.
+
 ## Secrets
 
 > [!NOTE]
@@ -604,7 +621,8 @@ Flowstate's own settings:
 |---|---|---|
 | `FLOWSTATE_ADDRESS` | `localhost:9233` | Address the API server listens on, and that `flow run` connects to |
 | `TEMPORAL_TASK_QUEUE` | `flowstate-run-task-queue` | Task queue workers serve and workflows are routed to |
-| `FLOWSTATE_ALLOW_LOOPBACK_EGRESS` | unset | Permit the `http` task to reach loopback addresses |
+| `FLOWSTATE_ALLOW_LOOPBACK_EGRESS` | unset | Permit the `http` task to reach loopback addresses (ignored when `--egress-policy` is set) |
+| `FLOWSTATE_EGRESS_POLICY` | unset | Path to an egress policy file (see `--egress-policy` above) |
 | `FLOWSTATE_TOKEN_FILE` | unset | File holding the bearer token `flow` authenticates with, re-read per request |
 | `FLOWSTATE_TOKEN` | unset | Bearer token, used when no token file is set |
 | `FLOWSTATE_DEPLOYMENT_NAME` | unset | Worker Deployment this worker belongs to (see below) |
