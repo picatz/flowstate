@@ -445,7 +445,7 @@ func parseFlowfile(text string, ix *lineIndex) (*parsedFile, error) {
 func buildSteps(steps *entry, ix *lineIndex) []*parsedStep {
 	var out []*parsedStep
 	collectSteps(steps, nil, nil, ix, &out)
-	assignStepRanges(ix, out)
+	assignStepRanges(ix, out, steps.keyRange.Start.Character)
 	return out
 }
 
@@ -472,10 +472,28 @@ func collectSteps(steps *entry, parent *parsedStep, scope []scopeFrame, ix *line
 		// A nested body's steps follow their parent in document order, which is
 		// also the order they run in. Each carries a frame naming the block it is
 		// inside, which is what the visibility rules are expressed against.
+		//
+		// [slices.Clip] before each append, and it is load-bearing rather than
+		// tidy. `scope` is retained by every step built below — `parsedStep.scope`
+		// — so `append(scope, frame)` on a slice with spare capacity hands two
+		// siblings the same backing array, and the second one's frame overwrites
+		// the first one's *in a slice somebody already kept*. Sibling A ends up
+		// recorded as being inside sibling B.
+		//
+		// It is not a deep-nesting curiosity, though it looks like one: it happens
+		// exactly when the incoming scope has room to spare, which follows append's
+		// growth, so it comes and goes with depth — clean at 2, 3, 5 and 9, broken
+		// at 4, 6, 7, 8 and everything from 10 up. `TestReferenceScoping` covered
+		// depth 1, which is one of the depths that happens to be safe.
+		//
+		// What it costs is the rule this whole file exists to mirror. At depth 4,
+		// one parallel branch was offered its sibling's step ids and one loop body
+		// was offered a different loop body's — names the validator on the same
+		// file rejects with `references unknown step`.
 		if s.forEachEntry != nil && s.forEachEntry.value != nil {
 			for _, fe := range s.forEachEntry.value.entries {
 				if fe.key == "steps" {
-					collectSteps(fe, s, append(scope, scopeFrame{block: s, branch: -1}), ix, out)
+					collectSteps(fe, s, append(slices.Clip(scope), scopeFrame{block: s, branch: -1}), ix, out)
 				}
 			}
 		}
@@ -483,7 +501,7 @@ func collectSteps(steps *entry, parent *parsedStep, scope []scopeFrame, ix *line
 			for i, branch := range s.parallelEntry.value.items {
 				for _, be := range branch.entries {
 					if be.key == "steps" {
-						collectSteps(be, s, append(scope, scopeFrame{block: s, branch: i}), ix, out)
+						collectSteps(be, s, append(slices.Clip(scope), scopeFrame{block: s, branch: i}), ix, out)
 					}
 				}
 			}
@@ -692,11 +710,36 @@ func fillParsedStep(s *parsedStep, entries []*entry) {
 // A step containing nested steps therefore ends where its first child begins. That
 // is what makes the ranges disjoint, which is what lets a position inside a loop
 // body resolve to the body's step rather than to the loop.
-func assignStepRanges(ix *lineIndex, steps []*parsedStep) {
+//
+// The *last* step has no neighbour to end at, and ending it at the document instead
+// gave it everything written below `steps:`. A Flowfile's keys are unordered, so
+// `vars:` or `edition:` at the bottom is an ordinary file — and every one of its
+// lines then belonged to the last step. The cost is not cosmetic: `stepAt` is what
+// completion asks which step the cursor is in, so a trailing `vars:` block was
+// offered the last step's scope and answered with step ids and a loop iterator,
+// which the validator rejects on that exact line with "a var may not read a step".
+// Hover went the other way and stopped answering at all, because `hoverAt` takes
+// the step branch and never reaches the document keys — so `edition:` written last
+// documented itself and written first did not.
+//
+// stepsIndent is the column of the `steps:` key. Everything belonging to the block
+// is indented past it, so a line at or left of it ends the block — which is the
+// same rule YAML itself used to decide the line was not part of it.
+func assignStepRanges(ix *lineIndex, steps []*parsedStep, stepsIndent int) {
 	for i, s := range steps {
 		endLine := ix.lineCount() - 1
 		if i+1 < len(steps) {
 			endLine = steps[i+1].rng.Start.Line - 1
+		} else {
+			// Forward from the step, not back from the document. Walking back finds
+			// the *inside* of a trailing block first — `greeting:` under a trailing
+			// `vars:` is indented exactly like a step's own lines — and stops there,
+			// having skipped only the top-level key. Going forward stops at that key,
+			// which is where the steps block actually ends.
+			endLine = s.rng.Start.Line
+			for next := endLine + 1; next < ix.lineCount() && withinBlock(ix.line(next), stepsIndent); next++ {
+				endLine = next
+			}
 		}
 		for endLine > s.rng.Start.Line && strings.TrimSpace(ix.line(endLine)) == "" {
 			endLine--
@@ -706,6 +749,20 @@ func assignStepRanges(ix *lineIndex, steps []*parsedStep) {
 			End:   lsp.Position{Line: endLine, Character: utf16Len(ix.line(endLine))},
 		}
 	}
+}
+
+// withinBlock reports whether a line belongs to a block whose key sits at indent.
+//
+// A blank line is inside it: blank lines appear between steps constantly and a step
+// that stopped at one would have a hole in the middle of it. The caller trims the
+// trailing blanks afterwards, so a run of them at the end of the file is not kept.
+func withinBlock(line string, indent int) bool {
+	trimmed := strings.TrimLeft(line, " \t")
+	if trimmed == "" {
+		return true
+	}
+
+	return len(line)-len(trimmed) > indent
 }
 
 // buildEntry converts one mapping entry, returning nil when its key is not a
