@@ -31,6 +31,26 @@ var _ interpreter.Activation = (*StepsOutputActivation)(nil)
 // stack is exhausted.
 const maxActivationDepth = 32
 
+// maxActivationEvaluations bounds how many stored-expression evaluations one
+// resolution may perform in total, shared across every nesting level.
+//
+// The depth bound above cannot do this job, and measuring proved it: a chain of
+// stored expressions where each level references the one below it twice is 2^n
+// evaluations at depth n — 71 seconds of CPU at depth 20, with twelve levels of
+// headroom still under the depth limit. Each of those evaluations also carried
+// its own fresh CEL cost budget, so cost accounting never saw the total either:
+// the work was exponential and every meter that existed read near zero. A depth
+// bound on a breadth explosion, which CLAUDE.md names as the exact mistake —
+// bound the resource that grows, and here that is evaluations performed, not
+// levels descended.
+//
+// The value is far above anything legitimate. Step outputs are stored as
+// literals by every execution path today, so resolution performs zero stored
+// evaluations for a real workflow; this exists so that the invariant is
+// enforced rather than relied on, and a future path that stores an expression
+// meets a limit instead of an afternoon of CPU.
+const maxActivationEvaluations = 10_000
+
 // StepsOutputActivation is a CEL activation that exposes the outputs of earlier
 // workflow steps to an expression.
 //
@@ -80,6 +100,14 @@ type StepsOutputActivation struct {
 	// depth counts nested stored-expression evaluations, bounded by
 	// maxActivationDepth.
 	depth int
+
+	// remaining is the evaluation budget shared by pointer with every child
+	// activation, bounded by maxActivationEvaluations. Shared, because the
+	// resource it bounds is the total across the whole resolution: a budget per
+	// level is a depth bound wearing a different name. Nil until the first
+	// stored expression needs it, so the common case — every output a literal —
+	// allocates nothing.
+	remaining *int
 }
 
 // evaluator returns the evaluator to use, defaulting to the shared one.
@@ -303,12 +331,32 @@ func (e *StepsOutputActivation) resolveValue(v *Value) (ref.Val, error) {
 		if e.depth >= maxActivationDepth {
 			return nil, fmt.Errorf("expression nesting exceeded %d levels", maxActivationDepth)
 		}
+
+		// The budget is the bound that matters; the depth check above only keeps
+		// the stack shallow. Initialized lazily at the root so a resolution that
+		// meets no stored expression — every real workflow today — pays nothing.
+		if e.remaining == nil {
+			budget := maxActivationEvaluations
+			e.remaining = &budget
+		}
+		if *e.remaining <= 0 {
+			return nil, fmt.Errorf(
+				"resolving stored expressions exceeded %d evaluations; a chain of "+
+					"expressions that reference each other multiplies work at every level, "+
+					"and this run's outputs reference each other too much to resolve",
+				maxActivationEvaluations)
+		}
+		*e.remaining--
+
 		child := &StepsOutputActivation{
 			Prev:    e.Prev,
 			Ctx:     e.Ctx,
 			Eval:    e.Eval,
 			Profile: e.Profile,
 			depth:   e.depth + 1,
+			// The same counter, not a copy: children spend the parent's budget,
+			// which is what makes it a bound on the total.
+			remaining: e.remaining,
 		}
 		return e.evaluator().EvalParsedBase(e.context(), e.Profile, v.GetExpr(), cel.Activation(child))
 	case *Value_Literal:
