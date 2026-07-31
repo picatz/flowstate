@@ -1012,6 +1012,24 @@ message Task {
       }];
       map<string, string> headers = 3;
       optional string body = 4;
+
+      // Bearer is the credential for an Authorization header, and it is the
+      // first task input built to take a secret reference.
+      //
+      // A `Value` rather than a string, deliberately: a field declared as Value
+      // receives the author's value whole — reference included — where a string
+      // field can only hold what the workflow already evaluated, and evaluating
+      // a secret is what would put it in history. It cannot live inside
+      // `headers`, whose entries compile into a single expression the workflow
+      // evaluates; the error messages that used to advise "send it in a header"
+      // were pointing at a place that did not exist, which is the gap this
+      // field closes.
+      //
+      // The worker resolves it inside the activity and sends
+      // `Authorization: Bearer <value>`. The name says the scheme so the field
+      // cannot quietly become a junk drawer: a future credential shape gets its
+      // own field, named for what it is.
+      Value bearer = 12;
       // Optional outputs shaping: when provided, the HTTP task will return only
       // the named outputs defined by this map instead of the default outputs.
       // Values are evaluated as CEL expressions (or used as literals) with the

@@ -4580,6 +4580,23 @@ type Task_HTTP_Inputs struct {
 	Method  *string                `protobuf:"bytes,2,opt,name=method,proto3,oneof" json:"method,omitempty"`
 	Headers map[string]string      `protobuf:"bytes,3,rep,name=headers,proto3" json:"headers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	Body    *string                `protobuf:"bytes,4,opt,name=body,proto3,oneof" json:"body,omitempty"`
+	// Bearer is the credential for an Authorization header, and it is the
+	// first task input built to take a secret reference.
+	//
+	// A `Value` rather than a string, deliberately: a field declared as Value
+	// receives the author's value whole — reference included — where a string
+	// field can only hold what the workflow already evaluated, and evaluating
+	// a secret is what would put it in history. It cannot live inside
+	// `headers`, whose entries compile into a single expression the workflow
+	// evaluates; the error messages that used to advise "send it in a header"
+	// were pointing at a place that did not exist, which is the gap this
+	// field closes.
+	//
+	// The worker resolves it inside the activity and sends
+	// `Authorization: Bearer <value>`. The name says the scheme so the field
+	// cannot quietly become a junk drawer: a future credential shape gets its
+	// own field, named for what it is.
+	Bearer *Value `protobuf:"bytes,12,opt,name=bearer,proto3" json:"bearer,omitempty"`
 	// Optional outputs shaping: when provided, the HTTP task will return only
 	// the named outputs defined by this map instead of the default outputs.
 	// Values are evaluated as CEL expressions (or used as literals) with the
@@ -4704,6 +4721,13 @@ func (x *Task_HTTP_Inputs) GetBody() string {
 		return *x.Body
 	}
 	return ""
+}
+
+func (x *Task_HTTP_Inputs) GetBearer() *Value {
+	if x != nil {
+		return x.Bearer
+	}
+	return nil
 }
 
 func (x *Task_HTTP_Inputs) GetOutputs() map[string]*Value {
@@ -5055,7 +5079,7 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x1a\n" +
 	"\brequired\x18\x03 \x01(\bR\brequired\x12\x1a\n" +
-	"\bdeferred\x18\x04 \x01(\bR\bdeferred\"\xbc\x0e\n" +
+	"\bdeferred\x18\x04 \x01(\bR\bdeferred\"\xe9\x0e\n" +
 	"\x04Task\x12J\n" +
 	"\x04name\x18\x01 \x01(\tB6\xe2A\x01\x02\xbaH/\xc8\x01\x01r*\x10\x01\x18\x80\x012#^[A-Za-z0-9-_]+(\\.[A-Za-z0-9-_]+)?$R\x04name\x12K\n" +
 	"\x06inputs\x18\x03 \x03(\v2\x1e.flowstate.v1.Task.InputsEntryB\x13\xe2A\x01\x01\xbaH\f\xc8\x01\x01\x9a\x01\x06\"\x04r\x02\x10\x01R\x06inputs\x1a\xe7\x02\n" +
@@ -5075,13 +5099,14 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"LEVEL_INFO\x10\x01\x12\x0e\n" +
 	"\n" +
 	"LEVEL_WARN\x10\x02\x12\x0f\n" +
-	"\vLEVEL_ERROR\x10\x03\x1a\xcd\t\n" +
-	"\x04HTTP\x1a\xbe\a\n" +
+	"\vLEVEL_ERROR\x10\x03\x1a\xfa\t\n" +
+	"\x04HTTP\x1a\xeb\a\n" +
 	"\x06Inputs\x12!\n" +
 	"\x03url\x18\x01 \x01(\tB\x0f\xe2A\x01\x02\xbaH\b\xc8\x01\x01r\x03\x88\x01\x01R\x03url\x12I\n" +
 	"\x06method\x18\x02 \x01(\tB,\xbaH)r'\x10\x03\x18\x062!^(?i)(GET|POST|PUT|PATCH|DELETE)$H\x00R\x06method\x88\x01\x01\x12E\n" +
 	"\aheaders\x18\x03 \x03(\v2+.flowstate.v1.Task.HTTP.Inputs.HeadersEntryR\aheaders\x12\x17\n" +
-	"\x04body\x18\x04 \x01(\tH\x01R\x04body\x88\x01\x01\x12E\n" +
+	"\x04body\x18\x04 \x01(\tH\x01R\x04body\x88\x01\x01\x12+\n" +
+	"\x06bearer\x18\f \x01(\v2\x13.flowstate.v1.ValueR\x06bearer\x12E\n" +
 	"\aoutputs\x18\x05 \x03(\v2+.flowstate.v1.Task.HTTP.Inputs.OutputsEntryR\aoutputs\x12?\n" +
 	"\x05query\x18\x06 \x03(\v2).flowstate.v1.Task.HTTP.Inputs.QueryEntryR\x05query\x12'\n" +
 	"\x04json\x18\a \x01(\v2\x13.flowstate.v1.ValueR\x04json\x12<\n" +
@@ -5469,40 +5494,41 @@ var file_flowstate_v1_flowstate_proto_depIdxs = []int32{
 	2,   // 80: flowstate.v1.Task.Log.Inputs.level:type_name -> flowstate.v1.Task.Log.Level
 	67,  // 81: flowstate.v1.Task.Log.Inputs.fields:type_name -> flowstate.v1.Task.Log.Inputs.FieldsEntry
 	70,  // 82: flowstate.v1.Task.HTTP.Inputs.headers:type_name -> flowstate.v1.Task.HTTP.Inputs.HeadersEntry
-	71,  // 83: flowstate.v1.Task.HTTP.Inputs.outputs:type_name -> flowstate.v1.Task.HTTP.Inputs.OutputsEntry
-	72,  // 84: flowstate.v1.Task.HTTP.Inputs.query:type_name -> flowstate.v1.Task.HTTP.Inputs.QueryEntry
-	15,  // 85: flowstate.v1.Task.HTTP.Inputs.json:type_name -> flowstate.v1.Value
-	73,  // 86: flowstate.v1.Task.HTTP.Inputs.form:type_name -> flowstate.v1.Task.HTTP.Inputs.FormEntry
-	15,  // 87: flowstate.v1.Task.HTTP.Inputs.expect:type_name -> flowstate.v1.Value
-	74,  // 88: flowstate.v1.Task.HTTP.Outputs.headers:type_name -> flowstate.v1.Task.HTTP.Outputs.HeadersEntry
-	80,  // 89: flowstate.v1.Task.HTTP.Outputs.json:type_name -> google.api.expr.v1alpha1.Value
-	15,  // 90: flowstate.v1.Task.HTTP.Inputs.OutputsEntry.value:type_name -> flowstate.v1.Value
-	15,  // 91: flowstate.v1.Task.HTTP.Inputs.QueryEntry.value:type_name -> flowstate.v1.Value
-	15,  // 92: flowstate.v1.Task.HTTP.Inputs.FormEntry.value:type_name -> flowstate.v1.Value
-	15,  // 93: flowstate.v1.RunState.VarsEntry.value:type_name -> flowstate.v1.Value
-	23,  // 94: flowstate.v1.WorkflowService.Run:input_type -> flowstate.v1.RunRequest
-	25,  // 95: flowstate.v1.WorkflowService.Get:input_type -> flowstate.v1.GetRequest
-	35,  // 96: flowstate.v1.WorkflowService.Signal:input_type -> flowstate.v1.SignalRequest
-	41,  // 97: flowstate.v1.WorkflowService.List:input_type -> flowstate.v1.ListRequest
-	37,  // 98: flowstate.v1.WorkflowService.Cancel:input_type -> flowstate.v1.CancelRequest
-	39,  // 99: flowstate.v1.WorkflowService.Terminate:input_type -> flowstate.v1.TerminateRequest
-	45,  // 100: flowstate.v1.WorkflowService.Validate:input_type -> flowstate.v1.ValidateRequest
-	47,  // 101: flowstate.v1.WorkflowService.Compile:input_type -> flowstate.v1.CompileRequest
-	49,  // 102: flowstate.v1.WorkflowService.GetCatalog:input_type -> flowstate.v1.GetCatalogRequest
-	24,  // 103: flowstate.v1.WorkflowService.Run:output_type -> flowstate.v1.RunResponse
-	26,  // 104: flowstate.v1.WorkflowService.Get:output_type -> flowstate.v1.GetResponse
-	36,  // 105: flowstate.v1.WorkflowService.Signal:output_type -> flowstate.v1.SignalResponse
-	43,  // 106: flowstate.v1.WorkflowService.List:output_type -> flowstate.v1.ListResponse
-	38,  // 107: flowstate.v1.WorkflowService.Cancel:output_type -> flowstate.v1.CancelResponse
-	40,  // 108: flowstate.v1.WorkflowService.Terminate:output_type -> flowstate.v1.TerminateResponse
-	46,  // 109: flowstate.v1.WorkflowService.Validate:output_type -> flowstate.v1.ValidateResponse
-	48,  // 110: flowstate.v1.WorkflowService.Compile:output_type -> flowstate.v1.CompileResponse
-	50,  // 111: flowstate.v1.WorkflowService.GetCatalog:output_type -> flowstate.v1.GetCatalogResponse
-	103, // [103:112] is the sub-list for method output_type
-	94,  // [94:103] is the sub-list for method input_type
-	94,  // [94:94] is the sub-list for extension type_name
-	94,  // [94:94] is the sub-list for extension extendee
-	0,   // [0:94] is the sub-list for field type_name
+	15,  // 83: flowstate.v1.Task.HTTP.Inputs.bearer:type_name -> flowstate.v1.Value
+	71,  // 84: flowstate.v1.Task.HTTP.Inputs.outputs:type_name -> flowstate.v1.Task.HTTP.Inputs.OutputsEntry
+	72,  // 85: flowstate.v1.Task.HTTP.Inputs.query:type_name -> flowstate.v1.Task.HTTP.Inputs.QueryEntry
+	15,  // 86: flowstate.v1.Task.HTTP.Inputs.json:type_name -> flowstate.v1.Value
+	73,  // 87: flowstate.v1.Task.HTTP.Inputs.form:type_name -> flowstate.v1.Task.HTTP.Inputs.FormEntry
+	15,  // 88: flowstate.v1.Task.HTTP.Inputs.expect:type_name -> flowstate.v1.Value
+	74,  // 89: flowstate.v1.Task.HTTP.Outputs.headers:type_name -> flowstate.v1.Task.HTTP.Outputs.HeadersEntry
+	80,  // 90: flowstate.v1.Task.HTTP.Outputs.json:type_name -> google.api.expr.v1alpha1.Value
+	15,  // 91: flowstate.v1.Task.HTTP.Inputs.OutputsEntry.value:type_name -> flowstate.v1.Value
+	15,  // 92: flowstate.v1.Task.HTTP.Inputs.QueryEntry.value:type_name -> flowstate.v1.Value
+	15,  // 93: flowstate.v1.Task.HTTP.Inputs.FormEntry.value:type_name -> flowstate.v1.Value
+	15,  // 94: flowstate.v1.RunState.VarsEntry.value:type_name -> flowstate.v1.Value
+	23,  // 95: flowstate.v1.WorkflowService.Run:input_type -> flowstate.v1.RunRequest
+	25,  // 96: flowstate.v1.WorkflowService.Get:input_type -> flowstate.v1.GetRequest
+	35,  // 97: flowstate.v1.WorkflowService.Signal:input_type -> flowstate.v1.SignalRequest
+	41,  // 98: flowstate.v1.WorkflowService.List:input_type -> flowstate.v1.ListRequest
+	37,  // 99: flowstate.v1.WorkflowService.Cancel:input_type -> flowstate.v1.CancelRequest
+	39,  // 100: flowstate.v1.WorkflowService.Terminate:input_type -> flowstate.v1.TerminateRequest
+	45,  // 101: flowstate.v1.WorkflowService.Validate:input_type -> flowstate.v1.ValidateRequest
+	47,  // 102: flowstate.v1.WorkflowService.Compile:input_type -> flowstate.v1.CompileRequest
+	49,  // 103: flowstate.v1.WorkflowService.GetCatalog:input_type -> flowstate.v1.GetCatalogRequest
+	24,  // 104: flowstate.v1.WorkflowService.Run:output_type -> flowstate.v1.RunResponse
+	26,  // 105: flowstate.v1.WorkflowService.Get:output_type -> flowstate.v1.GetResponse
+	36,  // 106: flowstate.v1.WorkflowService.Signal:output_type -> flowstate.v1.SignalResponse
+	43,  // 107: flowstate.v1.WorkflowService.List:output_type -> flowstate.v1.ListResponse
+	38,  // 108: flowstate.v1.WorkflowService.Cancel:output_type -> flowstate.v1.CancelResponse
+	40,  // 109: flowstate.v1.WorkflowService.Terminate:output_type -> flowstate.v1.TerminateResponse
+	46,  // 110: flowstate.v1.WorkflowService.Validate:output_type -> flowstate.v1.ValidateResponse
+	48,  // 111: flowstate.v1.WorkflowService.Compile:output_type -> flowstate.v1.CompileResponse
+	50,  // 112: flowstate.v1.WorkflowService.GetCatalog:output_type -> flowstate.v1.GetCatalogResponse
+	104, // [104:113] is the sub-list for method output_type
+	95,  // [95:104] is the sub-list for method input_type
+	95,  // [95:95] is the sub-list for extension type_name
+	95,  // [95:95] is the sub-list for extension extendee
+	0,   // [0:95] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_flowstate_proto_init() }
