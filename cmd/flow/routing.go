@@ -38,6 +38,21 @@ func serverHandler(verifier auth.Verifier, broker *auth.Broker, rpc http.Handler
 	mux := http.NewServeMux()
 	mux.Handle("/", authenticated.Wrap(rpc))
 
+	// Liveness, deliberately unauthenticated and deliberately empty-handed. A
+	// load balancer or an orchestrator probes before it holds any credential —
+	// the same reason the discovery documents below sit outside the mux — and
+	// what it needs is a status code, not information: no version, no config,
+	// no dependency states, because an unauthenticated endpoint that describes
+	// the deployment is reconnaissance served on request. GET and HEAD only,
+	// mirroring the identity documents' handler.
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
 	if broker != nil {
 		issuer := broker.Issuer()
 		mux.Handle(auth.DiscoveryPath, issuer.Handler())

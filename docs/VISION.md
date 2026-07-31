@@ -85,6 +85,23 @@ extended to the third-party boundary. Open question, deliberately unanswered:
 do plugins get OIDC identities of their own, a scoped subset of the worker's, or
 none — and what does a *remote* plugin present back to us?
 
+## Webhooks, in both directions
+
+Workloads live among systems that speak webhooks, and both directions belong
+here. Inbound: Slack, Discord, Jira, a GitHub App, or an arbitrary system posts
+an event; signature verification is a first-class necessity (per-provider HMAC
+or asymmetric schemes, timestamp and replay windows), and a verified event
+feeds the trigger mechanism and bridges into signals — a webhook answering a
+`wait_for_signal:` gate is the human-in-the-loop story meeting the systems the
+humans already use. Outbound: a workflow sends a webhook with the secret store
+doing the signing and auth, scoped by least privilege without making the easy
+case hard. The plugin protocol grows a webhook *capability* beside secrets and
+tasks, so an integration plugin can receive (verify, normalize, route) and
+send for its own provider; where verification helpers live — CEL function,
+task, or the capability contract itself — is decided by what keeps the DSL
+ergonomic and the trust boundary clean. All of it coherent with the identity
+model, observable, and fail-closed: an unverifiable event is not an event.
+
 ## Security posture
 
 The gating concern for all of the above, not a follow-up. Sandboxing for plugin

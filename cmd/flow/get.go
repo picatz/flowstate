@@ -89,6 +89,23 @@ func runGet(cmd *cobra.Command, args []string) error {
 		msg.GetWorkflowId(), msg.GetRunId(), runAge(msg),
 		runPosition(surface.ErrTheme, msg.GetProgress()))
 
+	// The why beneath the where. Position says which step a running run is on;
+	// this says an attempt count is climbing and what the last one died of,
+	// which is the difference between "working" and "stuck" — the question that
+	// used to require leaving Flowstate for the temporal CLI.
+	for _, pending := range msg.GetPendingActivities() {
+		line := fmt.Sprintf("retrying, attempt %d", pending.GetAttempt())
+		if failure := pending.GetLastFailure(); failure != "" {
+			line += ": " + failure
+		}
+		if next := pending.GetNextAttemptScheduledTime(); next != nil {
+			if wait := time.Until(next.AsTime()); wait > 0 {
+				line += fmt.Sprintf(" (next attempt in %s)", wait.Round(time.Second))
+			}
+		}
+		fmt.Fprintf(surface.Err, "  %s\n", surface.ErrTheme.Muted.Render(line))
+	}
+
 	if outputs := msg.GetOutputs(); outputs != nil {
 		encoded, err := protojson.Marshal(outputs)
 		if err != nil {

@@ -126,3 +126,36 @@ func testBroker(t *testing.T) *auth.Broker {
 
 	return broker
 }
+
+// TestHealthzAnswersWithoutCredentialsAndWithoutInformation pins both halves of
+// the liveness route: a prober holding no credential gets its status code, and
+// gets nothing else — an unauthenticated endpoint that described the deployment
+// would be reconnaissance served on request.
+func TestHealthzAnswersWithoutCredentialsAndWithoutInformation(t *testing.T) {
+	t.Parallel()
+
+	handler := serverHandler(refusingVerifier{}, nil, http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			t.Error("a health probe reached the RPC handler")
+		}))
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/healthz")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode,
+		"a load balancer probing before it holds any credential was refused")
+
+	var body [64]byte
+	n, _ := resp.Body.Read(body[:])
+	require.Zero(t, n, "the health endpoint answered with content: %q", body[:n])
+
+	// The method discipline the identity documents' handler keeps.
+	post, err := http.Post(server.URL+"/healthz", "text/plain", nil)
+	require.NoError(t, err)
+	defer post.Body.Close()
+	require.Equal(t, http.StatusMethodNotAllowed, post.StatusCode)
+}

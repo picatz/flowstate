@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -361,8 +360,11 @@ func startPlugins(cmd *cobra.Command) (func(), error) {
 		// A step failing with `unknown task` and a worker that quietly found no
 		// plugins look identical from a Flowfile, and this is what tells them
 		// apart without a debugger.
-		log.Printf("Loaded plugin %s %s from %s (tasks: %s)",
-			p.GetName(), p.GetVersion(), p.GetPath(), strings.Join(names, ", "))
+		infraLogger().Info("loaded plugin",
+			"plugin", p.GetName(),
+			"version", p.GetVersion(),
+			"path", p.GetPath(),
+			"tasks", strings.Join(names, ", "))
 	}
 
 	return stop, nil

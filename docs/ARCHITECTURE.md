@@ -217,7 +217,7 @@ Rows marked **(done)** are implemented; the rest are the shape the surface shoul
 | Error classification | retryable vs permanent, decided by the failure not a preference **(done)** |
 | Durable timer | `sleep:` and `wait_until:` steps — one `Node.wait` kind in the schema rather than a task, since a wait schedules no activity **(done)** |
 | Signal | `wait_for_signal:` step, `flow signal` — human-in-the-loop approval gates **(done)** |
-| Query | `flow inspect` — read live state of a running workload |
+| Query | a run's live position, served through `Get` and rendered by `flow get`/`flow watch` **(done)**; richer state as it earns a place |
 | Update | synchronous request/response against a running workload |
 | Child workflow | `workflow:` step — sub-workflow composition with its own history |
 | Continue-As-New | transparent history and payload management **(done)** |

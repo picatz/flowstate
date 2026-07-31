@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -121,6 +122,18 @@ func authFlagsOf(cmd *cobra.Command) authFlags {
 	return authFlags{policyPath: policyPath, insecure: insecure, identityKeyPath: identityKeyPath}
 }
 
+// infraLogger is the server's and worker's own voice: slog, text, stderr.
+//
+// These two processes logged through the stdlib log package — unstructured,
+// unleveled — while everything around them was structured: the plugin host
+// speaks slog, the activities bridge slog into Temporal's tagged logger, and
+// the `log:` task renders through slog handlers. The infrastructure's own
+// lines were the odd ones out, which mattered the moment telemetry landed:
+// a fleet's collector can parse key=value pairs and cannot parse prose.
+func infraLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(os.Stderr, nil))
+}
+
 // initTemporalClient connects to Temporal.
 //
 // Configuration comes from Temporal's own environment configuration — the
@@ -132,15 +145,24 @@ func authFlagsOf(cmd *cobra.Command) authFlags {
 // happen: the two callers are `flow worker` and `flow server`, and a process runs
 // one command. What it did do was outlive whatever set it.
 func initTemporalClient(ctx context.Context, flags temporalFlags) (client.Client, error) {
+	// Telemetry first, so the client is born instrumented. Off unless the
+	// operator pointed OTEL_EXPORTER_OTLP_* somewhere; the shutdown flush is
+	// process-exit's job, which for the two callers here is process lifetime.
+	metricsHandler, _, err := initTelemetry(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	cfg := temporalclient.Config{
-		Address:   flags.address,
-		Namespace: flags.namespace,
-		Profile:   flags.profile,
+		Address:        flags.address,
+		Namespace:      flags.namespace,
+		Profile:        flags.profile,
+		MetricsHandler: metricsHandler,
 	}
 
 	if flags.verbose {
 		if opts, err := cfg.Options(); err == nil {
-			log.Printf("Temporal: %s", temporalclient.Describe(opts))
+			infraLogger().Info("temporal connection resolved", "config", temporalclient.Describe(opts))
 		}
 	}
 
@@ -177,16 +199,18 @@ func runWorker(cmd *cobra.Command, args []string) error {
 	engine.Register(w)
 
 	if deployment.UseVersioning {
-		log.Printf("Starting worker on task queue %s as %s/%s",
-			flags.taskQueue, deployment.Version.DeploymentName, deployment.Version.BuildID)
+		infraLogger().Info("starting worker",
+			"task_queue", flags.taskQueue,
+			"deployment", deployment.Version.DeploymentName,
+			"build_id", deployment.Version.BuildID)
 	} else {
 		// Said out loud rather than left to be inferred from silence. Without a
 		// version, deploying this binary changes the behaviour of every run
 		// already in flight — which is the default Temporal has always had, and
 		// is a choice an operator should know they are making.
-		log.Printf("Starting worker on task queue %s, unversioned "+
-			"(set FLOWSTATE_DEPLOYMENT_NAME and FLOWSTATE_BUILD_ID, or --deployment-name and --build-id, "+
-			"to pin in-flight runs to the interpreter they started on)", flags.taskQueue)
+		infraLogger().Warn("starting worker unversioned; deploying this binary changes every run in flight",
+			"task_queue", flags.taskQueue,
+			"fix", "set FLOWSTATE_DEPLOYMENT_NAME and FLOWSTATE_BUILD_ID, or --deployment-name and --build-id")
 	}
 
 	// Start worker (non-blocking) such that it can run in the background
@@ -198,9 +222,9 @@ func runWorker(cmd *cobra.Command, args []string) error {
 
 	// Listen for shutdown signals to gracefully stop the worker.
 	<-cmd.Context().Done()
-	log.Println("Shutting down worker...")
+	infraLogger().Info("shutting down worker")
 	w.Stop()
-	log.Println("Worker stopped")
+	infraLogger().Info("worker stopped")
 
 	return nil
 }
@@ -366,17 +390,17 @@ func runServer(cmd *cobra.Command, args []string) error {
 		MaxHeaderBytes:    1 << 20,
 	}
 
-	log.Printf("Starting Flowstate server on %s", httpServer.Addr)
+	infraLogger().Info("starting server", "address", httpServer.Addr)
 	if authCfg.insecure {
-		log.Printf("WARNING: authentication is disabled; every caller is anonymous " +
-			"and can start workflows. Do not use this outside local development.")
+		infraLogger().Warn("authentication is disabled; every caller is anonymous and can start workflows",
+			"use", "local development only")
 	}
 	if broker != nil {
 		// Log the discovery URL rather than the fact of federation: an operator
 		// configuring a relying party needs this exact string, and finding it by
 		// reading source is the sort of friction that gets solved by guessing.
-		log.Printf("Issuing workload identity assertions; discovery at %s%s",
-			broker.Issuer().URL(), auth.DiscoveryPath)
+		infraLogger().Info("issuing workload identity assertions",
+			"discovery", broker.Issuer().URL()+auth.DiscoveryPath)
 	}
 
 	serveErr := make(chan error, 1)
@@ -396,13 +420,13 @@ func runServer(cmd *cobra.Command, args []string) error {
 	case <-cmd.Context().Done():
 	}
 
-	log.Println("Shutting down server...")
+	infraLogger().Info("shutting down server")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
 	defer cancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("server forced to shutdown: %w", err)
 	}
-	log.Println("Server stopped")
+	infraLogger().Info("server stopped")
 
 	return nil
 }
