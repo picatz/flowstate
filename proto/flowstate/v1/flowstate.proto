@@ -1737,6 +1737,21 @@ service WorkflowService {
   // else chose: see ValidateRequest.
   rpc Validate(ValidateRequest) returns (ValidateResponse) {}
 
+  // Compile turns Flowfile source into the specification Run takes, executing
+  // nothing.
+  //
+  // It exists because Validate alone left a caller one step short: an agent
+  // could check a file and could submit a compiled specification, and nothing
+  // on the wire connected the two — the compiler lived only in the CLI, so a
+  // caller with no `flow` binary could author a correct file it had no way to
+  // run. Same terms as Validate: the same compiler the CLI uses, pure, bounded
+  // by the schema, authenticated like everything else.
+  //
+  // A file that does not compile answers with its diagnostics rather than an
+  // RPC error, because "your file has a problem at line 12" is an answer, not a
+  // failure to answer.
+  rpc Compile(CompileRequest) returns (CompileResponse) {}
+
   // GetCatalog returns what this deployment can execute.
   //
   // The registry is the single source of truth for capability, and until this
@@ -1792,6 +1807,30 @@ message ValidateResponse {
   // which version of the grammar answered, how long it took — without changing
   // the shape a caller already parses.
   ValidationReport report = 1;
+}
+
+// CompileRequest is one Flowfile to compile.
+//
+// One rather than many, unlike ValidateRequest: validation is a survey and its
+// answer is a report, while compilation produces the artifact the next call
+// submits, and a batch of artifacts would leave a caller matching outputs back
+// to inputs by position.
+message CompileRequest {
+  SourceFile file = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED
+  ];
+}
+
+// CompileResponse is the specification, or the reasons there is not one.
+message CompileResponse {
+  // Workflow is the compiled specification, set only when the file compiled
+  // clean. It is exactly what RunRequest.workflow takes.
+  Workflow workflow = 1;
+
+  // Report carries the diagnostics for the file, present even when empty so
+  // "compiled clean" is stated rather than inferred from absence.
+  DiagnosticReport report = 2;
 }
 
 // GetCatalogRequest asks what this deployment can execute. It takes nothing

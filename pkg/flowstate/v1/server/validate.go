@@ -75,6 +75,55 @@ func (s *FlowstateServer) Validate(
 	}), nil
 }
 
+// Compile turns Flowfile source into the specification Run takes, executing
+// nothing.
+func (s *FlowstateServer) Compile(
+	ctx context.Context,
+	req *connect.Request[v1.CompileRequest],
+) (*connect.Response[v1.CompileResponse], error) {
+	if err := v1.Validate(req.Msg); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	file := req.Msg.GetFile()
+
+	// Parse is the whole of the CLI's own compiler, which is the point: the
+	// specification this returns is byte-for-byte what `flow run` would submit
+	// for the same file, because it is the same function.
+	workflow, _, err := flowfile.Parse(file.GetSource())
+	if err != nil {
+		var diagnostics flowfile.Diagnostics
+		if !errors.As(err, &diagnostics) {
+			diagnostics = flowfile.Diagnostics{{Message: err.Error()}}
+		}
+
+		return connect.NewResponse(&v1.CompileResponse{
+			Report: diagnostics.Report(file.GetName()),
+		}), nil
+	}
+
+	// The compiler accepts more than the validator does — a parse can succeed
+	// on a file validation would still object to — so the full check runs too,
+	// and a file with diagnostics answers with them and no specification. A
+	// specification handed out beside a list of its problems would be an
+	// invitation to run it anyway.
+	diagnostics, err := flowfile.ValidateSource(file.GetSource())
+	if err != nil {
+		var parsed flowfile.Diagnostics
+		if !errors.As(err, &parsed) {
+			parsed = flowfile.Diagnostics{{Message: err.Error()}}
+		}
+		diagnostics = parsed
+	}
+
+	response := &v1.CompileResponse{Report: diagnostics.Report(file.GetName())}
+	if len(diagnostics) == 0 {
+		response.Workflow = workflow
+	}
+
+	return connect.NewResponse(response), nil
+}
+
 // GetCatalog reports what this deployment can execute.
 func (s *FlowstateServer) GetCatalog(
 	ctx context.Context,

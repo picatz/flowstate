@@ -2,6 +2,8 @@ package main
 
 import (
 	"google.golang.org/protobuf/reflect/protoreflect"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
 // The MCP tool schemas are derived, not written.
@@ -33,6 +35,7 @@ func schemaForMessage(md protoreflect.MessageDescriptor) map[string]any {
 // that depth for a schema that terminates.
 func messageSchema(md protoreflect.MessageDescriptor, visiting map[protoreflect.FullName]bool) map[string]any {
 	properties := map[string]any{}
+	var required []string
 
 	visiting[md.FullName()] = true
 	defer delete(visiting, md.FullName())
@@ -41,9 +44,18 @@ func messageSchema(md protoreflect.MessageDescriptor, visiting map[protoreflect.
 	for i := 0; i < fields.Len(); i++ {
 		fd := fields.Get(i)
 		properties[fd.JSONName()] = fieldSchema(fd, visiting)
+
+		// From the same protovalidate rules the server enforces — required
+		// fields and repeated fields with a minimum — so a client validating
+		// against this schema refuses {} where the tool boundary would. One
+		// definition of "required", read here as the task schema already reads
+		// it, rather than a judgement this file makes on its own.
+		if v1.RequiredInput(fd) {
+			required = append(required, fd.JSONName())
+		}
 	}
 
-	return map[string]any{
+	schema := map[string]any{
 		"type":       "object",
 		"properties": properties,
 		// Refused rather than ignored, because the caller is a model: a
@@ -52,6 +64,11 @@ func messageSchema(md protoreflect.MessageDescriptor, visiting map[protoreflect.
 		// schema exists to prevent.
 		"additionalProperties": false,
 	}
+	if len(required) > 0 {
+		schema["required"] = required
+	}
+
+	return schema
 }
 
 func fieldSchema(fd protoreflect.FieldDescriptor, visiting map[protoreflect.FullName]bool) map[string]any {

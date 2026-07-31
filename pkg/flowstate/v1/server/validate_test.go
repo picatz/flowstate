@@ -163,3 +163,60 @@ func TestTheHandlerEnforcesItsOwnBounds(t *testing.T) {
 		assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 	})
 }
+
+// TestCompileAnswersWithWhatRunTakes closes the loop review found open: an
+// agent could check a file and could submit a specification, with nothing on
+// the wire connecting the two.
+func TestCompileAnswersWithWhatRunTakes(t *testing.T) {
+	t.Parallel()
+
+	s := validateServer(t)
+
+	t.Run("a clean file compiles to a specification", func(t *testing.T) {
+		t.Parallel()
+
+		resp, err := s.Compile(t.Context(), connect.NewRequest(&v1.CompileRequest{
+			File: &v1.SourceFile{Name: "clean.yaml", Source: []byte(aValidFile)},
+		}))
+		require.NoError(t, err)
+
+		workflow := resp.Msg.GetWorkflow()
+		require.NotNil(t, workflow, "a clean file compiled to nothing")
+		assert.Equal(t, "remote-check", workflow.GetName())
+		require.Len(t, workflow.GetSteps(), 1)
+
+		// The artifact is what Run submits, so it must pass the same check Run
+		// applies at submit — otherwise this hands out specifications the next
+		// call refuses.
+		assert.NoError(t, v1.Validate(workflow))
+
+		// Present and empty rather than absent: "compiled clean" is stated.
+		require.NotNil(t, resp.Msg.GetReport())
+		assert.Empty(t, resp.Msg.GetReport().GetDiagnostics())
+	})
+
+	t.Run("a broken file answers with diagnostics and no specification", func(t *testing.T) {
+		t.Parallel()
+
+		resp, err := s.Compile(t.Context(), connect.NewRequest(&v1.CompileRequest{
+			File: &v1.SourceFile{
+				Name:   "broken.yaml",
+				Source: []byte(strings.Replace(aValidFile, "log:", "lg:", 1)),
+			},
+		}))
+		require.NoError(t, err,
+			"a file with a problem failed the RPC; the diagnostics are the answer")
+
+		assert.Nil(t, resp.Msg.GetWorkflow(),
+			"a specification was handed out beside a list of its problems")
+		assert.NotEmpty(t, resp.Msg.GetReport().GetDiagnostics())
+	})
+
+	t.Run("the bounds hold here too", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := s.Compile(t.Context(), connect.NewRequest(&v1.CompileRequest{}))
+		require.Error(t, err, "a request with no file was accepted")
+		assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	})
+}

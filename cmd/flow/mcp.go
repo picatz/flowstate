@@ -28,8 +28,8 @@ import (
 // wrote this down as a rule before the surface existed: MCP is generated, not
 // written.
 //
-// Two tools answer locally and the rest speak to a server, split by what the
-// method needs. Validate and GetCatalog touch no run and no tenant — the
+// Three tools answer locally and the rest speak to a server, split by what the
+// method needs. Validate, Compile and GetCatalog touch no run and no tenant — the
 // server's own handlers take a nil Temporal client, which is the proof — so
 // they run in-process and an agent gets a working authoring loop with nothing
 // else stood up. The lifecycle verbs address durable runs, which only a server
@@ -49,13 +49,16 @@ const mcpToolPrefix = "flowstate_"
 // directions, so a method added without a sentence fails the build rather than
 // shipping mute.
 var mcpDescriptions = map[string]string{
-	"Run":       "Submit a compiled workflow specification to run durably. Returns ids to watch it by; it does not wait. Compile a Flowfile first with flowstate_validate to check it.",
+	"Run": "Submit a compiled workflow specification to run durably. Returns ids to watch it by; it does not wait. " +
+		"Author a Flowfile, check it with flowstate_validate, compile it with flowstate_compile, and submit the result here.",
 	"Get":       "Report a run's status, timing, current position, and its outputs once finished.",
 	"Signal":    "Deliver a named signal to a run waiting for one — how an approval reaches a workload.",
 	"List":      "List the caller's runs, paged. A short or empty page with a nextPageToken is not the end of the listing; keep paging.",
 	"Cancel":    "Ask a run to stop, letting it clean up on the way out.",
 	"Terminate": "Stop a run immediately, running none of its cleanup. Prefer cancel.",
 	"Validate":  "Check Flowfile YAML sources and report positioned diagnostics without executing anything. Pure and safe to loop on; answers locally, no server needed.",
+	"Compile": "Compile Flowfile YAML into the workflow specification flowstate_run submits. A file with problems answers with its " +
+		"diagnostics and no specification. Answers locally, no server needed.",
 	"GetCatalog": "What this build can execute: every task with its typed inputs and outputs, and every CEL function an expression may call. " +
 		"Read this before writing a Flowfile. Answers locally, no server needed.",
 }
@@ -154,6 +157,18 @@ func workflowServiceMethods() []serviceMethod {
 			input: (&v1.ValidateRequest{}).ProtoReflect().Descriptor(),
 			call: func(ctx context.Context, local *server.FlowstateServer, _ func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
 				resp, err := local.Validate(ctx, connect.NewRequest(in.(*v1.ValidateRequest)))
+				if err != nil {
+					return nil, err
+				}
+
+				return resp.Msg, nil
+			},
+		},
+		{
+			name:  "Compile",
+			input: (&v1.CompileRequest{}).ProtoReflect().Descriptor(),
+			call: func(ctx context.Context, local *server.FlowstateServer, _ func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
+				resp, err := local.Compile(ctx, connect.NewRequest(in.(*v1.CompileRequest)))
 				if err != nil {
 					return nil, err
 				}
