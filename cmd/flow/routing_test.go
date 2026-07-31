@@ -1,15 +1,19 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
-	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 )
 
 // TestIdentityDocumentsAreReachableWithoutCredentials is the regression guard for
@@ -27,7 +31,7 @@ func TestIdentityDocumentsAreReachableWithoutCredentials(t *testing.T) {
 
 	// A verifier that refuses everything, so an authenticated route answering at
 	// all would mean the middleware was not applied.
-	handler := serverHandler(refusingVerifier{}, broker, http.HandlerFunc(
+	handler := serverHandler(discardLogger(), refusingVerifier{}, broker, http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"api":"reached"}`))
@@ -83,7 +87,7 @@ func TestIdentityDocumentsAreReachableWithoutCredentials(t *testing.T) {
 func TestNoUnauthenticatedRoutesWithoutFederation(t *testing.T) {
 	t.Parallel()
 
-	handler := serverHandler(refusingVerifier{}, nil, http.HandlerFunc(
+	handler := serverHandler(discardLogger(), refusingVerifier{}, nil, http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) },
 	))
 
@@ -134,7 +138,7 @@ func testBroker(t *testing.T) *auth.Broker {
 func TestHealthzAnswersWithoutCredentialsAndWithoutInformation(t *testing.T) {
 	t.Parallel()
 
-	handler := serverHandler(refusingVerifier{}, nil, http.HandlerFunc(
+	handler := serverHandler(discardLogger(), refusingVerifier{}, nil, http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			t.Error("a health probe reached the RPC handler")
 		}))
@@ -158,4 +162,68 @@ func TestHealthzAnswersWithoutCredentialsAndWithoutInformation(t *testing.T) {
 	require.NoError(t, err)
 	defer post.Body.Close()
 	require.Equal(t, http.StatusMethodNotAllowed, post.StatusCode)
+}
+
+// discardLogger is a logger for tests that assert on behavior rather than on
+// what was said about it.
+func discardLogger() *slog.Logger {
+	return slog.New(slog.DiscardHandler)
+}
+
+// TestARejectionIsLoggedWithoutTheToken pins the two halves of the failure
+// observer at once: that a rejection is visible to the operator at all — the
+// caller's error deliberately says almost nothing, so before the observer a
+// misconfigured CI job and a probe were both silence — and that what becomes
+// visible is the classified reason, never anything from the request's
+// Authorization header.
+func TestARejectionIsLoggedWithoutTheToken(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+	handler := serverHandler(logger, refusingVerifier{}, nil, http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			t.Error("a rejected request reached the RPC handler")
+		}))
+
+	const token = "not-a-real-credential-but-must-not-appear"
+
+	req := httptest.NewRequest(http.MethodPost, "/flowstate.v1.WorkflowService/Run", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+
+	logged := buf.String()
+	require.NotEmpty(t, logged, "a rejection produced no log line, which is the silence the observer exists to end")
+	require.Contains(t, logged, "/flowstate.v1.WorkflowService/Run",
+		"the log does not say which procedure was called")
+	require.NotContains(t, logged, token,
+		"the Authorization header's value reached the log")
+}
+
+// TestTheServerTakesTheIdentityFlags is the wiring check, in the same shape the
+// plugin flags have: a flag this file reads that the command does not declare
+// would read its zero value forever, and the failure would look like a policy
+// that silently carries no claims.
+func TestTheServerTakesTheIdentityFlags(t *testing.T) {
+	t.Parallel()
+
+	var server *cobra.Command
+	for _, c := range newRootCommand().Commands() {
+		if c.Name() == "server" {
+			server = c
+
+			break
+		}
+	}
+	require.NotNil(t, server, "there is no server command")
+
+	for _, name := range []string{"identity-claim", "deployment-name", "auth-policy", "identity-key"} {
+		require.NotNil(t, server.Flags().Lookup(name),
+			"`flow server` does not take --%s, so a deployment cannot configure it", name)
+	}
 }
