@@ -153,6 +153,32 @@ func (c Config) Options() ([]Option, error) {
 		opts = append(opts, WithAllowPrivateNetworks())
 	}
 
+	// The empty-allowlist rule, applied to every allow-shaped field and not only
+	// schemes. Each of these is nil when absent — keep the default — and non-nil
+	// empty when an operator wrote `[]`, which reads as "allow none" and would
+	// quietly mean "no restriction" if the empty value dropped the option: the
+	// one direction a parse must never widen. A generated policy is where this
+	// happens in practice — a template whose range produced nothing.
+	//
+	// Deny-shaped fields need no such check, because an empty deny list and an
+	// absent one both deny nothing, and treating them alike loses no restriction.
+	if e.AllowNetworks != nil && len(e.AllowNetworks) == 0 {
+		return nil, fmt.Errorf(
+			"%w: allow_networks is empty; an empty allowlist would permit every public network, "+
+				"which is the default it looks like it restricts — delete the key to mean that, "+
+				"or name the networks to mean the restriction", ErrInvalidPolicy)
+	}
+	if e.AllowPorts != nil && len(e.AllowPorts) == 0 {
+		return nil, fmt.Errorf(
+			"%w: allow_ports is empty; an empty allowlist would permit every port — delete the key "+
+				"to mean that, or name the ports to mean the restriction", ErrInvalidPolicy)
+	}
+	if e.Allow != nil && len(e.Allow) == 0 {
+		return nil, fmt.Errorf(
+			"%w: allow is empty; an empty rule list would remove the allowlist gate entirely — delete "+
+				"the key to mean that, or write the rules a request must match", ErrInvalidPolicy)
+	}
+
 	allowNets, err := parsePrefixes("allow_networks", e.AllowNetworks)
 	if err != nil {
 		return nil, err

@@ -236,3 +236,39 @@ egress:
 		t.Fatal("proxy_from_environment did not reach the policy")
 	}
 }
+
+// TestConfigRefusesAnEmptyAllowlist covers the widening direction Codex caught
+// in review: `allow_networks: []` read as absent would drop the option and
+// permit every public network — an empty allowlist quietly meaning "no
+// restriction", which is the one direction a parse must never widen. The
+// schemes field already refused its empty form; these three did not.
+//
+// Deny-shaped fields are deliberately not here: an empty deny list and an
+// absent one both deny nothing, so treating them alike loses no restriction.
+func TestConfigRefusesAnEmptyAllowlist(t *testing.T) {
+	t.Parallel()
+
+	for name, doc := range map[string]string{
+		"allow_networks": "egress:\n  allow_networks: []\n",
+		"allow_ports":    "egress:\n  allow_ports: []\n",
+		"allow":          "egress:\n  allow: []\n",
+	} {
+		cfg, err := ParseConfig([]byte(doc))
+		if err != nil {
+			t.Fatalf("%s: parsing: %v", name, err)
+		}
+		if _, err := cfg.Policy(); err == nil {
+			t.Fatalf("%s: an explicitly empty allowlist was read as absent, silently widening the policy", name)
+		}
+	}
+
+	// The distinction the refusals rest on: an empty deny list stays legal,
+	// because both readings deny nothing.
+	cfg, err := ParseConfig([]byte("egress:\n  deny_networks: []\n  deny_ports: []\n  deny: []\n"))
+	if err != nil {
+		t.Fatalf("parsing: %v", err)
+	}
+	if _, err := cfg.Policy(); err != nil {
+		t.Fatalf("an empty deny list was refused, though absent and empty deny the same nothing: %v", err)
+	}
+}
