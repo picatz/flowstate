@@ -442,6 +442,32 @@ func hoverBareName(from *parsedStep, name string, clock bool, rng lsp.Range) *ls
 				"not escape it.", name, loop.id, v1.StepsRoot, loop.id, loopResultsOutput), rng)
 	}
 
+	// A `vars:` key, the step's own first and then any block enclosing it — the
+	// order the engine resolves them in.
+	//
+	// This is where the "binding first, function second" rule above was being
+	// decided wrongly rather than applied wrongly. The bindings this knew were the
+	// iterator, `now` and the roots, so a step var went unrecognized, the function
+	// fallback won, and hovering `${join}` over a step's own `vars: {join: ...}`
+	// answered with the `strings` library's `join` — confidently, about a name the
+	// engine resolves to the author's value. The profile has thirty-six bare
+	// function names and they are words people name variables: `value`, `first`,
+	// `last`, `or`, `format`, `sort`, `replace`, `split`, `trim`.
+	for _, block := range append([]*parsedStep{from}, blocksAround(from)...) {
+		if e := varEntry(block.varsEntry, name); e != nil {
+			where := "this step declares"
+			if block != from {
+				where = "the enclosing " + block.kind() + " declares"
+			}
+
+			return markdownHover(fmt.Sprintf(
+				"**`%s`** — a variable %s.\n\n%s\n\nIt is written bare rather than under "+
+					"`%s.`, which is the workflow's block: the two are separate namespaces, so a "+
+					"name here cannot hide one there.",
+				name, where, varDoc(e), v1.VarsRoot), rng)
+		}
+	}
+
 	if name == v1.StepsRoot {
 		// The root itself, which is a value an expression may legitimately name:
 		// `size(steps)` counts what has run. Saying so is also the answer to the
@@ -454,6 +480,32 @@ func hoverBareName(from *parsedStep, name string, clock bool, rng lsp.Range) *ls
 				"separate namespaces, so neither can hide the other.",
 			v1.StepsRoot, v1.StepsRoot, v1.NowIdentifier), rng)
 	}
+	return nil
+}
+
+// blocksAround returns the blocks enclosing a step, nearest first.
+func blocksAround(from *parsedStep) []*parsedStep {
+	var out []*parsedStep
+	for i := len(from.scope) - 1; i >= 0; i-- {
+		if from.scope[i].block != nil {
+			out = append(out, from.scope[i].block)
+		}
+	}
+
+	return out
+}
+
+// varEntry finds one key of a `vars:` block.
+func varEntry(vars *entry, name string) *entry {
+	if vars == nil || vars.value == nil {
+		return nil
+	}
+	for _, e := range vars.value.entries {
+		if e.key == name {
+			return e
+		}
+	}
+
 	return nil
 }
 

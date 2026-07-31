@@ -325,9 +325,21 @@ type refScope struct {
 	// `steps.` and never bare.
 	steps []refCandidate
 
-	// locals are the names bound bare where the cursor is: a loop's iterator, and
-	// `now` where a wait binds it. Offered bare and never after the root.
+	// locals are the names bound bare where the cursor is: a loop's iterator, a
+	// step's own `vars:` keys, and `now` where a wait binds it. Offered bare and
+	// never after the root.
 	locals []refCandidate
+
+	// vars are the workflow's declared variables, offered after `vars.` and never
+	// bare — the crossing [v1.Scope.Activation] describes, met from the editor's
+	// side: the rooted block is `vars.<name>` and the bare one is a step's.
+	//
+	// They are the file's rather than a step's, so they are the same list wherever
+	// the cursor is. Held separately from steps for the same reason the engine holds
+	// two namespaces: a step called `region` and a var called `region` are different
+	// things and completing one as the other is the mistake this package exists to
+	// avoid.
+	vars []refCandidate
 }
 
 // referenceScope returns the names an expression at pos may reference.
@@ -355,6 +367,13 @@ func referenceScope(doc *document, pos lsp.Position, clock bool, current *outlin
 		scope = scopeFromModel(doc, from)
 	} else {
 		scope = scopeFromOutline(earlier, currentIndent)
+	}
+
+	// The workflow's own vars, which belong to the file rather than to a step and
+	// so are the same wherever the cursor is — including the outline fallback,
+	// where the model is unavailable but this block usually still parsed.
+	if doc.parsed != nil {
+		scope.vars = varsCandidates(doc.parsed.varsEntry, "a variable declared by the workflow")
 	}
 
 	if clock {
@@ -414,6 +433,16 @@ func stepAtIfParsed(doc *document, pos lsp.Position) *parsedStep {
 func scopeFromModel(doc *document, from *parsedStep) refScope {
 	var scope refScope
 
+	// The step's own `vars:`, first because they are the nearest binding there is —
+	// nearer than an enclosing loop's item, which is why they win at evaluation too
+	// (`StepsOutputActivation` reads Locals before anything else).
+	//
+	// They were offered nowhere. `expressionEntries` has read this block since it
+	// landed, so hover and diagnostics knew about it and completion did not — the
+	// author declaring `vars:` two lines above got a menu that did not contain what
+	// they had just written.
+	scope.locals = append(scope.locals, varsCandidates(from.varsEntry, "a variable this step declares")...)
+
 	// Innermost loop first: standing in nested bodies, the nearest binding is the
 	// one most likely to be wanted.
 	for _, loop := range from.iteratorsInScope() {
@@ -440,7 +469,59 @@ func scopeFromModel(doc *document, from *parsedStep) refScope {
 		}
 		scope.steps = append(scope.steps, stepCandidate(s))
 	}
+
+	// A `vars:` on an enclosing block binds for that block's whole body, so a step
+	// inside a loop sees the loop's. Outermost first, so a name declared nearer the
+	// cursor is offered nearer the top — and after the step's own, which is nearer
+	// still.
+	for _, frame := range from.scope {
+		if frame.block == nil {
+			continue
+		}
+		scope.locals = append(scope.locals,
+			varsCandidates(frame.block.varsEntry, "a variable the enclosing "+frame.block.kind()+" declares")...)
+	}
+
 	return scope
+}
+
+// varsCandidates offers the keys of a `vars:` block.
+//
+// One function for both positions, because the block is one grammar rule written at
+// several sites — the same reason the compiler compiles it in one place. What
+// differs is only what to call it, which is what detail says.
+func varsCandidates(vars *entry, detail string) []refCandidate {
+	if vars == nil || vars.value == nil {
+		return nil
+	}
+
+	var out []refCandidate
+	for _, e := range vars.value.entries {
+		if e.key == "" {
+			continue
+		}
+		out = append(out, refCandidate{
+			name:   e.key,
+			kind:   lsp.CIKVariable,
+			detail: detail,
+			docs:   varDoc(e),
+		})
+	}
+
+	return out
+}
+
+// varDoc describes one declared variable, showing what it is bound to.
+//
+// The value is the whole of what there is to say: a var has no declared type, so
+// what an author wants to be reminded of is the expression or literal they wrote.
+func varDoc(e *entry) string {
+	value := e.valueText()
+	if value == "" {
+		return "A variable bound where it is declared."
+	}
+
+	return "Bound to " + value + "."
 }
 
 // scopeFromOutline builds the candidate lists from the line scan, for a document
@@ -559,6 +640,12 @@ func completeInExpression(pos lsp.Position, inner string, scope refScope) *lsp.C
 	switch {
 	case qualifier == v1.StepsRoot:
 		return list(offer(scope.steps, member, replace))
+	case qualifier == v1.VarsRoot:
+		// The other root, which was reachable by typing it and by nothing else:
+		// `vars` was not offered bare and `vars.` fell through to the arm below,
+		// which treats an unknown qualifier as a binding and offers nothing. One
+		// root answered and one silent, for two names the grammar treats alike.
+		return list(offer(scope.vars, member, replace))
 	case functionsAfter(qualifier) != nil:
 		// A namespace the profile declares — `math.`, `regex.`, `json.`. Checked
 		// after the root and before the bare-qualifier fallthrough below, which
@@ -596,7 +683,31 @@ func bareCandidates(prefix string, replace lsp.Range, scope refScope) []lsp.Comp
 	candidates := slices.Clone(scope.locals)
 	candidates = append(candidates, stepsRootCandidate(scope))
 
+	// Both roots, and `vars` only where the file has one. The steps root is offered
+	// unconditionally because the first step is written before there is anything to
+	// reference and the name is still what an author needs to learn; a `vars:` block
+	// that does not exist is a different case — offering the root would be teaching
+	// a name that resolves to an empty map.
+	if len(scope.vars) > 0 {
+		candidates = append(candidates, varsRootCandidate(scope))
+	}
+
 	return offer(append(candidates, functionCandidates()...), prefix, replace)
+}
+
+// varsRootCandidate describes the workflow's variables root.
+func varsRootCandidate(scope refScope) refCandidate {
+	return refCandidate{
+		name: v1.VarsRoot,
+		// A value with named members, the same shape as the steps root.
+		kind:   lsp.CIKStruct,
+		detail: "workflow variables",
+		docs: "The workflow's declared variables, keyed by name: write " + v1.VarsRoot +
+			".<name>. They are evaluated once before the first step runs, so every step " +
+			"sees the same values. A step's own `vars:` are written bare instead.",
+		// The dot comes with it, as the steps root's does.
+		insert: v1.VarsRoot + ".",
+	}
 }
 
 // stepsRootCandidate describes the root itself.
