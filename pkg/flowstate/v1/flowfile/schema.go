@@ -191,7 +191,26 @@ func violatedRules(stepID string, task *v1.Task, def v1.TaskDef, checkable map[s
 		if !checkable[name] {
 			continue
 		}
-		ds = append(ds, violatedRulesFor(stepID, name, task.GetInputs()[name], def)...)
+		if violations := violatedRulesFor(stepID, name, task.GetInputs()[name], def); len(violations) > 0 {
+			ds = append(ds, violations...)
+
+			continue
+		}
+		// What the task itself knows, asked last because it is the narrowest of
+		// the three questions and the only one that presumes the other two were
+		// answered.
+		//
+		// The order is not a preference. `url: not a uri at all` is refused by the
+		// schema's own `uri` rule, and the egress policy — handed a string it
+		// cannot parse as a URL — reports that it has no scheme and suggests
+		// writing `https://not a uri at all`. Asking the task first produced
+		// exactly that, which is a worse answer to a question the schema had
+		// already answered well. So: does the field accept this shape, then does
+		// the schema's rule accept this value, then will this build do anything
+		// with it.
+		if err := v1.CheckLiteralInput(def.Name, name, task.GetInputs()[name]); err != nil {
+			ds = append(ds, Diagnostic{Step: stepID, Field: name, Message: err.Error()})
+		}
 	}
 
 	return ds

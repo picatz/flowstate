@@ -86,8 +86,53 @@ type TaskDef struct {
 	// itself does need them.
 	NeedsPrevOutputs bool
 
+	// CheckLiteral is what the task alone can say about an input written out in
+	// full, before anything runs.
+	//
+	// The schema answers whether a value is well-formed and the type system
+	// whether it fits the field. Neither can answer whether the thing the task
+	// would then *do* with it is something this build permits — and the http
+	// task's `url:` is the case that made this necessary: `ftp://example.com` is
+	// a valid URI, satisfies every rule the schema carries, and is refused by the
+	// egress policy on the first request. So `flow validate` said ok on a file
+	// that could not run, which is the worst answer the tool can give.
+	//
+	// Nil for a task with nothing to add, which is most of them. The error's
+	// message is shown to an author, so it is written the way the rest of
+	// `flowfile` writes one: what is wrong, and what to write instead.
+	//
+	// # What it must not do
+	//
+	// It is called by `flow validate` and by the language server on a keystroke,
+	// so anything a *run's* environment decides belongs in the task and not here.
+	// Resolving a name, opening a connection, or reading configuration a worker
+	// has and an editor does not would make a diagnostic depend on where it was
+	// asked — and a validator that reports a problem another machine would not
+	// have is worse than one that reports nothing, because an author cannot tell
+	// which kind they are looking at.
+	//
+	// Called only for an input written as a literal, and only for one the task
+	// does not evaluate itself: there is nothing to check about an expression
+	// before it has a scope to be evaluated against.
+	CheckLiteral func(input string, value *Value) error
+
 	// Fn executes the task.
 	Fn TaskFunc
+}
+
+// CheckLiteralInput asks the task what it can say about a literal input.
+//
+// Nil when the task has nothing to add or is not registered, which is the same
+// answer: a task this build does not have is reported on its own, and inventing a
+// complaint about an input of it would be a second diagnostic about a step whose
+// real problem is already named.
+func CheckLiteralInput(taskName, input string, value *Value) error {
+	def, found := LookupTask(taskName)
+	if !found || def.CheckLiteral == nil {
+		return nil
+	}
+
+	return def.CheckLiteral(input, value)
 }
 
 // deferred reports whether the named input is evaluated by the task itself.

@@ -102,7 +102,12 @@ func HTTPTaskDef(policy *netpolicy.Policy) TaskDef {
 		// which is this rule's own failure mode pointed the other way.
 		ExpressionInputs: []string{"expect"},
 		NeedsPrevOutputs: true,
-		Fn:               taskFuncHTTP(policy),
+		// Takes no policy, deliberately. What it answers is what the *task* can
+		// request, which is the same in every deployment — see the file it lives
+		// in for why asking the policy instead would put DNS in an editor and
+		// deployment configuration in a diagnostic.
+		CheckLiteral: checkHTTPLiteral,
+		Fn:           taskFuncHTTP(policy),
 	}
 }
 
