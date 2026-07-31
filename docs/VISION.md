@@ -114,6 +114,40 @@ allows it — verify what the Go runtime actually ships before relying on it; th
 closure-holding design exists because strings cannot be wiped. Everything
 fail-closed, every parser bounded, per CLAUDE.md.
 
+## The observability lab, and Flowstate as an OTLP citizen
+
+The telemetry hooks landed (metrics and traces behind OTEL_EXPORTER_OTLP_*,
+structured logs, client-to-server trace propagation). The direction from here
+is to make Flowstate a first-class citizen of a modern OpenTelemetry stack, and
+to prove it end to end:
+
+- **All three signals over OTLP**: metrics, traces, and logs, with logs shipped
+  through the OTLP log exporter rather than only written to stderr, so a
+  collector is the single ingress for everything.
+- **Correlated with Temporal.** Temporal emits its own traces and metrics;
+  the goal is that a span from `flow run` threads through the server, into the
+  workflow and its activities, and is visible both in Grafana Tempo and clickable
+  from the Temporal UI — one trace id, both worlds. Follow Temporal's own OTel
+  guidance (the interceptor and tracer contract) so the correlation is theirs to
+  keep working, not ours to reinvent.
+- **A docker-compose lab** under `examples/` (or `deploy/`) that stands up the
+  full modern Grafana stack — Grafana, Tempo (traces), Loki (logs), Prometheus or
+  Mimir (metrics), the OpenTelemetry Collector as the fan-in — alongside a
+  Temporal dev server and a Flowstate worker and server, so `docker compose up`
+  gives a working lab that shows metrics, logs, and traces correlated by trace id,
+  with a provisioned dashboard. Research the current recommended stack before
+  building; the OTel Collector config is where the cohesion lives.
+- **Plugins for the stack itself**, deliberately and slightly cursed: a Temporal
+  plugin, a Grafana plugin, a Loki plugin, so a Flowstate workflow can query and
+  act on the very systems observing it. The circularity is the point when threaded
+  carefully — a workflow that reads its own traces from Tempo, or files a Grafana
+  annotation, is powerful precisely because it closes the loop. It composes with
+  the plugin ecosystem and must stay optional.
+- **Progressive adoption.** None of this is required to start: stderr logs and no
+  exporter is the zero-config default. An operator adds the collector endpoint,
+  then the lab, then the plugins, one rung at a time — and the examples prove each
+  rung works rather than asserting it.
+
 ## The generated ecosystem
 
 Proto-first extends to documentation and the agent surface: reference docs
