@@ -152,6 +152,48 @@ func writeJSON(surface *ui.UI, format OutputFormat, message proto.Message) error
 	return err
 }
 
+// writeRun writes a finished run, in the shape the format asks for.
+//
+// One function for both drivers. `flow run` and `flow run local` execute a workload
+// two different ways and are otherwise the same command from a caller's position —
+// so a caller reading `.outputs.stepValues` has to be reading one document, and the
+// surest way to guarantee that is for one function to write it.
+//
+// The split between the shapes is the CLI's rule about its two streams rather than
+// two renderings of one thing. A person is handed the *answer*, which is the
+// outputs, because the account of how the run went has already been narrated to
+// them on stderr as it happened. A program is handed the whole state document,
+// because it was not watching and the status is part of what it asked for.
+func writeRun(surface *ui.UI, format OutputFormat, response *v1.GetResponse) error {
+	if format.Machine() {
+		return writeJSON(surface, format, response)
+	}
+
+	return writeStepOutputs(surface, response)
+}
+
+// writeStepOutputs writes a finished run's outputs, and nothing at all when it has
+// none.
+//
+// Nothing rather than an empty document, because a failed run produced no outputs
+// and `{}` would claim it produced none *successfully* — a distinction a shell
+// reader has only the exit code to recover.
+func writeStepOutputs(surface *ui.UI, response *v1.GetResponse) error {
+	outputs := response.GetOutputs()
+	if outputs == nil {
+		return nil
+	}
+
+	encoded, err := marshalJSON(outputs, false)
+	if err != nil {
+		return fmt.Errorf("formatting the outputs of the run: %w", err)
+	}
+
+	_, err = fmt.Fprintf(surface.Out, "%s\n", encoded)
+
+	return err
+}
+
 // statusTone maps a run's status onto the palette's outcome roles.
 //
 // One mapping, used by every surface that shows a status, so a listing and a

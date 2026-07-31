@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -34,7 +33,6 @@ import (
 	"github.com/spf13/cobra"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
-	"google.golang.org/protobuf/encoding/protojson"
 )
 
 // Set by the build system, e.g. using -ldflags="-X main.version=1.0.0"
@@ -1061,68 +1059,33 @@ flow validate examples/hello-world/workflow.yaml`,
 	runLocalCmd := &cobra.Command{
 		Use:   "local [workflow-file]",
 		Short: "Run a workflow locally without Temporal",
-		Long:  "Execute a workflow locally without using Temporal or the Flowstate service. This is useful for testing and development.",
-		Args:  cobra.MinimumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			workflowFilePath := args[0]
-			workflow, err := loadWorkflow(workflowFilePath)
-			if err != nil {
-				return err
-			}
-			// A workload that waits for a signal needs something able to deliver
-			// one, or it blocks with nothing that could ever release it.
-			localSignals, _ := cmd.Flags().GetStringArray("signal")
-
-			ctx, err := withLocalSignals(cmd.Context(), localSignals)
-			if err != nil {
-				return err
-			}
-			reportUnansweredGates(cmd.ErrOrStderr(), workflow, localSignals)
-
-			// `log:` steps go to stderr, where the run's own commentary already goes,
-			// so the result on stdout stays a single JSON document a pipe can read.
-			// A workflow that narrates itself must not break `flow run local ... | jq`.
-			surface := newSurface(cmd)
-			ctx = v1.ContextWithLogger(ctx,
-				slog.New(newRunLogHandler(surface.Err, surface.ErrTheme)))
-
-			result, err := v1.Run(ctx, workflow)
-			if err != nil {
-				return fmt.Errorf("error running workflow locally: %w", err)
-			}
-			b, err := protojson.Marshal(result)
-			if err != nil {
-				return fmt.Errorf("error marshaling result to JSON: %w", err)
-			}
-			// The same word `flow get` uses for the same outcome, through the same
-			// pill, on the same stream. This was `log.Println("run completed")` —
-			// the one user-facing line in the CLI that went through the standard
-			// logger, so it arrived timestamped and unstyled directly beneath the
-			// themed lines a `log:` step had just written. Two renderings of one
-			// program's output, a line apart.
-			//
-			// To stderr, because the result itself goes to stdout below and a pipe
-			// must receive one JSON document and nothing else.
-			fmt.Fprintf(surface.Err, "%s workflow %s\n",
-				surface.ErrTheme.Pill(statusTone(v1.RunResponse_STATUS_COMPLETED),
-					statusLabel(v1.RunResponse_STATUS_COMPLETED)),
-				workflow.GetName())
-
-			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "%s\n", b); err != nil {
-				return fmt.Errorf("writing the outputs of %s: %w", workflow.GetName(), err)
-			}
-
-			return nil
-		},
+		Long: "Execute a workload in this process, without Temporal and without a Flowstate " +
+			"server.\n\nThis is the rehearsal, and it is worth rehearsing with because the two " +
+			"drivers are one execution model: conditions, retries, timeouts, loops and waits " +
+			"behave here the way they behave in production, and the answer comes back in the " +
+			"same document `flow run` writes — so a `jq` expression written against one works " +
+			"against the other.\n\nWhat it cannot give you is durability. A local run is a " +
+			"process: it has no run id, nothing can watch it, and it does not survive this " +
+			"command being interrupted.",
+		Args: cobra.MinimumNArgs(1),
+		RunE: runLocalWorkflow,
 		Example: `# Run a workflow locally:
 flow run local examples/hello-world/workflow.yaml
 
 # Run a multi-step workflow:
 flow run local examples/hello-world-multi-step/workflow.yaml
 
+# Take one step's output, the same way you would from a durable run:
+flow run local examples/hello-world/workflow.yaml | jq .stepValues.hello.namedValues
+
+# Ask for the whole run as one document, including how it went:
+flow run local examples/hello-world/workflow.yaml -o json | jq -r .status
+
 # Run a workflow with an approval gate, answering the gate up front:
 flow run local examples/approval-gate/workflow.yaml --signal deploy-approved='{"approved": true}'`,
 	}
+
+	addOutputFlag(runLocalCmd)
 
 	// Supplying signals up front is what makes an approval gate something an author
 	// can exercise on their laptop rather than first meeting in production. A local

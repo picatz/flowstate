@@ -419,47 +419,18 @@ func finishWatch(surface *ui.UI, format OutputFormat, state *watchState) error {
 		return state.lastError
 	}
 
-	switch format {
-	case FormatJSON:
-		if err := writeJSON(surface, format, state.response); err != nil {
-			return err
-		}
-
-	case FormatJSONL:
-		// Every change was written as it happened, including the last.
-
-	default:
-		// The same bytes `flow get` writes to stdout, for the same reason: a run
-		// that produced outputs has an answer, and the answer belongs on the
-		// stream a pipe reads.
-		if err := writeStepOutputs(surface, state.response); err != nil {
+	// The line-per-change shape has already written every change including the last,
+	// so there is nothing final left to say. Every other shape owes its reader one
+	// document, and [writeRun] is the one that writes it — the same function
+	// `flow run local` finishes through, which is what keeps a caller reading
+	// `.outputs.stepValues` reading the same field from both drivers.
+	if format != FormatJSONL {
+		if err := writeRun(surface, format, state.response); err != nil {
 			return err
 		}
 	}
 
 	return outcomeError(state.status, state.workflowID, state.failure)
-}
-
-// writeStepOutputs writes a finished run's outputs, and nothing at all when it has
-// none.
-//
-// Nothing rather than an empty document, because a failed run produced no outputs
-// and `{}` would claim it produced none *successfully* — a distinction a shell
-// reader has only the exit code to recover.
-func writeStepOutputs(surface *ui.UI, response *v1.GetResponse) error {
-	outputs := response.GetOutputs()
-	if outputs == nil {
-		return nil
-	}
-
-	encoded, err := marshalJSON(outputs, false)
-	if err != nil {
-		return fmt.Errorf("formatting the outputs of %s: %w", response.GetWorkflowId(), err)
-	}
-
-	_, err = fmt.Fprintf(surface.Out, "%s\n", encoded)
-
-	return err
 }
 
 // watchState is the run as the watch has seen it, and the decision of when to stop.

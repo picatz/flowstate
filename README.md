@@ -957,20 +957,42 @@ Run a `Flowfile` locally (without Temporal):
 $ go run ./cmd/flow run local ./examples/hello-world-multi-step/workflow.yaml
 INFO hello world
 INFO HELLO WORLD
-{"stepValues":{"greet":{},"shout":{}}}
+{"stepValues":{"greet":{"namedValues":{}},"shout":{"namedValues":{}}}}
 ```
 
 Run a `Flowfile` using Temporal via the Flowstate API server:
 
 ```console
 $ go run ./cmd/flow run ./examples/hello-world-multi-step/workflow.yaml
-{"stepValues":{"greet":{},"shout":{}}}
+{"stepValues":{"greet":{"namedValues":{}},"shout":{"namedValues":{}}}}
 ```
 
-Both steps in that example are `log:` steps, so both appear in `stepValues` with nothing
-under them — the run is reporting that the steps completed and produced no values, which
-is what a log step is. The lines a person reads went to stderr, which is why piping the
-stdout of the first command into `jq` still sees one JSON document.
+Byte for byte the same answer, which is the point: the two drivers write it through one
+renderer, so a `jq` expression written against a rehearsal works against production.
+
+Both steps in that example are `log:` steps, so both appear in `stepValues` with an empty
+`namedValues` — the run is reporting that the steps completed and produced no values,
+which is what a log step is. Emitted rather than omitted, because a reader who finds the
+key missing cannot tell "no values" from "a field this build does not have" without going
+to the schema. The lines a person reads went to stderr, which is why piping the stdout of
+either command into `jq` still sees one JSON document.
+
+`--output json` asks for the run itself rather than only its answer — the status, the
+outputs or the failure, and when it began and ended — as the schema's own `GetResponse`,
+which is again the same document from either driver:
+
+```console
+$ go run ./cmd/flow run local ./examples/hello-world-multi-step/workflow.yaml -o json \
+    | jq '{status, steps: (.outputs.stepValues | keys)}'
+{
+  "status": "STATUS_COMPLETED",
+  "steps": ["greet", "shout"]
+}
+```
+
+A local run's `workflowId` and `runId` come back empty, and that is the honest answer
+rather than an omission: a local run is a process, so there is no id to watch it by. That
+is the whole of what the local driver cannot give you.
 
 ## CLI
 
@@ -985,7 +1007,7 @@ Run `flow <command> --help` for the full flags of any of these.
 | `flow validate <file...>` | Check Flowfiles without executing them. Reports the line and column of each problem. `--output json` or `jsonl` carries the diagnostics as data. |
 | `flow fix <path...>` | Rewrite Flowfiles from a retired spelling into the current one, preserving comments and formatting. `--check` reports and writes nothing, exiting non-zero if there is work. |
 | `flow run <file>` | Submit a workflow to a server, which runs it durably, and follow the run until it finishes. |
-| `flow run local <file>` | Run a workflow in this process, with no server and no Temporal. Answers signal gates from `--signal name=json`. |
+| `flow run local <file>` | Run a workflow in this process, with no server and no Temporal. Answers signal gates from `--signal name=json`. `--output json` or `jsonl` carries the same document `flow run` writes. |
 | `flow get <id>` | Report what a run is doing, and its outputs if it finished. Status on stderr, outputs on stdout, so `flow get id \| jq` sees only the data. |
 | `flow watch <id>` | Follow a run until it finishes: a live view on a terminal, one line per change without one. Exits with the run's outcome. |
 | `flow list` | List your runs. |
