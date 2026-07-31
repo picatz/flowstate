@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	pluginv1connect "github.com/picatz/flowstate/pkg/flowstate/plugin/v1/pluginv1connect"
@@ -392,6 +393,14 @@ func (s *fakeSecretService) Resolve(ctx context.Context, req *connect.Request[pl
 
 	case name == "empty":
 		return connect.NewResponse(&pluginv1.ResolveResponse{}), nil
+
+	case name == "leased":
+		// A backend that issues short-lived credentials and says so, which is the
+		// only party that knows.
+		return connect.NewResponse(&pluginv1.ResolveResponse{
+			Value:     []byte("a credential that expires soon"),
+			ExpiresIn: durationpb.New(30 * time.Second),
+		}), nil
 	}
 
 	// The namespace is part of the answer, so a test can prove it was carried

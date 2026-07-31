@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 
 	"connectrpc.com/connect"
 
@@ -39,10 +38,6 @@ type secretProvider struct {
 	plugin *Plugin
 	scheme string
 	cfg    Config
-
-	// warnOnce keeps the unimplemented-TTL warning to one line per plugin
-	// rather than one per resolution.
-	warnOnce sync.Once
 }
 
 // newSecretProvider returns the provider for one of a plugin's schemes.
@@ -124,25 +119,24 @@ func (s *secretProvider) Resolve(ctx context.Context, req secrets.Request) (secr
 		}
 	}
 
-	// The response's expires_in is a per-value hint that the engine should cache
-	// this no longer than the plugin considers safe, and it cannot be honored
-	// yet: secrets.Provider returns (Secret, error), with nowhere to carry a
-	// TTL, so secrets.Cache applies its own default regardless. A plugin vending
-	// a short-lived lease therefore has it cached for the cache's default
-	// instead. Saying so once per resolution would be noise, so it is said once
-	// per plugin and only when a plugin actually asks for something shorter.
-	if expires := resp.Msg.GetExpiresIn().AsDuration(); expires > 0 {
-		s.warnOnce.Do(func() {
-			s.plugin.log.Warn(
-				"plugin asks that resolved secrets not be cached beyond a limit, which this engine cannot honor yet; the configured cache TTL applies instead",
-				"scheme", s.scheme, "requested", expires,
-			)
-		})
-	}
-
-	// The one statement the value appears in. NewSecret closes over it, so from
-	// here it is reachable only through Reveal.
-	return secrets.NewSecret(ref, string(value)), nil
+	// The response's expires_in is the plugin saying how long caching this value
+	// is safe, which a backend issuing short-lived credentials is the only party
+	// that knows. [secrets.Cache] takes it as a ceiling and never as a floor: a
+	// shorter answer shortens the entry, and a longer one is capped, because a
+	// provider is entitled to say "expire sooner than you planned" and not to say
+	// "hold this longer than the operator allows".
+	//
+	// This used to be dropped, with a warning saying the engine could not honor it
+	// because `secrets.Provider` returns `(Secret, error)` and had nowhere to
+	// carry a TTL. [secrets.NewSecretWithTTL] is that carrier and was one line
+	// away in the package this already imports.
+	//
+	// A non-positive duration is a plugin not saying, which is what the zero value
+	// means to the cache, so it needs no branch here.
+	//
+	// The one statement the value appears in. NewSecretWithTTL closes over it, so
+	// from here it is reachable only through Reveal.
+	return secrets.NewSecretWithTTL(ref, string(value), resp.Msg.GetExpiresIn().AsDuration()), nil
 }
 
 // classify maps a plugin's failure onto the secrets package's classification,
