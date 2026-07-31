@@ -30,7 +30,7 @@ import (
 //
 // Serial for the reason TestBuildingTheCLITwiceBuildsTheSameCLI records: building a
 // CLI writes to package state.
-func runLocal(t *testing.T, body string) (stdout, stderr string, err error) {
+func runLocal(t *testing.T, body string, extra ...string) (stdout, stderr string, err error) {
 	t.Helper()
 
 	path := filepath.Join(t.TempDir(), "workflow.yaml")
@@ -40,7 +40,7 @@ func runLocal(t *testing.T, body string) (stdout, stderr string, err error) {
 	var out, errOut strings.Builder
 	root.SetOut(&out)
 	root.SetErr(&errOut)
-	root.SetArgs([]string{"run", "local", path})
+	root.SetArgs(append([]string{"run", "local", path}, extra...))
 
 	err = execute(t.Context(), root)
 
