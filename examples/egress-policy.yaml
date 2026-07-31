@@ -1,0 +1,42 @@
+# An egress policy for the http task, loaded with:
+#
+#   flow worker --egress-policy examples/egress-policy.yaml
+#   flow run local workflow.yaml --egress-policy examples/egress-policy.yaml
+#
+# A file replaces the default policy entirely, so what it does not loosen stays
+# denied: loopback, private ranges, link-local, and the cloud metadata endpoints
+# all remain refused unless a field here says otherwise, and
+# FLOWSTATE_ALLOW_LOOPBACK_EGRESS is ignored while a file is in force.
+#
+# An empty file is the default policy. Every key below is optional; a misspelled
+# one is a startup error rather than a silently dropped restriction.
+egress:
+  # Only https leaves this deployment. Naming http too is the default.
+  schemes: [https]
+
+  # Nothing reaches link-local space, over and above the categorical denial —
+  # a deny here wins against every allowance, including allow_networks.
+  deny_networks:
+    - 169.254.0.0/16
+
+  # Allow rules make the policy an allowlist: a request must match one. These
+  # are CEL, the same language workflow expressions are written in, over url,
+  # scheme, host, port, method, path, and (connection-scoped) ip.
+  allow:
+    - host == "api.github.com" || host.endsWith(".githubusercontent.com")
+
+  # Deny beats allow, and a rule that fails to evaluate denies the request.
+  deny:
+    - method != "GET" && method != "HEAD"
+
+  # Anything not on 443 is refused before a connection is made.
+  allow_ports: [443]
+
+  # Bounds. Both exist by default; writing them down pins them, and neither can
+  # be removed from a file — only raised.
+  max_redirects: 3
+  max_response_bytes: 1048576
+  timeout: 30s
+
+  # TLS 1.2 is the floor by default; a deployment that can say 1.3 should.
+  min_tls_version: "1.3"
