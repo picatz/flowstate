@@ -132,10 +132,19 @@ func authFlagsOf(cmd *cobra.Command) authFlags {
 // happen: the two callers are `flow worker` and `flow server`, and a process runs
 // one command. What it did do was outlive whatever set it.
 func initTemporalClient(ctx context.Context, flags temporalFlags) (client.Client, error) {
+	// Telemetry first, so the client is born instrumented. Off unless the
+	// operator pointed OTEL_EXPORTER_OTLP_* somewhere; the shutdown flush is
+	// process-exit's job, which for the two callers here is process lifetime.
+	metricsHandler, _, err := initTelemetry(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	cfg := temporalclient.Config{
-		Address:   flags.address,
-		Namespace: flags.namespace,
-		Profile:   flags.profile,
+		Address:        flags.address,
+		Namespace:      flags.namespace,
+		Profile:        flags.profile,
+		MetricsHandler: metricsHandler,
 	}
 
 	if flags.verbose {

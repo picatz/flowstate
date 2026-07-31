@@ -69,6 +69,14 @@ type Config struct {
 	// ConfigFile overrides the path of the TOML configuration file. Empty uses
 	// TEMPORAL_CONFIG_FILE, or the conventional location.
 	ConfigFile string
+
+	// MetricsHandler receives the SDK's own metrics — task-queue backlog,
+	// workflow-task latency, poller counts, activity failures. Nil keeps the
+	// SDK's no-op default, which is what an unconfigured deployment wants and
+	// what every deployment silently had before this field existed: the SDK
+	// measured all of it and the options never carried a handler, so every
+	// number was discarded.
+	MetricsHandler client.MetricsHandler
 }
 
 // Options resolves c into Temporal client options.
@@ -103,6 +111,10 @@ func (c Config) Options() (client.Options, error) {
 	}
 	if opts.Namespace == "" {
 		opts.Namespace = DefaultNamespace
+	}
+
+	if c.MetricsHandler != nil {
+		opts.MetricsHandler = c.MetricsHandler
 	}
 
 	return opts, nil
