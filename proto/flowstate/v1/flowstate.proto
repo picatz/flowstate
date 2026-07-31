@@ -803,6 +803,64 @@ message TaskDescription {
   repeated TaskField outputs = 4;
 }
 
+// PluginCatalog is what a deployment's plugins add to this build, described so
+// that something other than a person can read it.
+//
+// The same argument as [TaskCatalog], applied one process boundary out. A plugin
+// is code the engine does not ship, so "which tasks can this worker run" stops
+// being a property of the binary and becomes a property of a deployment — and a
+// question nobody can ask from outside is one every operator answers by reading
+// logs.
+//
+// A plugin's task is described by [TaskDescription], the same message a built-in
+// one is. That is not a convenience: a plugin ships protobuf descriptors for its
+// inputs and outputs, so there is genuinely nothing left over to say about it,
+// and giving it a parallel message would have been a second definition of the
+// same thing. Where the two differ is *provenance*, which is the field this
+// message adds and the reason it exists — a reviewer needs to know that a step
+// leaves the engine's code.
+//
+// Wire-stable, on the same terms as [TaskCatalog], and for the same reason: a
+// worker-introspection RPC that wants to return one should not have to invent a
+// shape the CLI already prints.
+message PluginCatalog {
+  // Plugins is every plugin the worker brought up, sorted by name.
+  repeated PluginDescription plugins = 1;
+
+  // SearchPath is the directories the worker was configured to discover plugins
+  // in, in precedence order.
+  //
+  // Carried because an empty plugin list has two meanings that matter to tell
+  // apart — nothing installed, or nowhere to look — and only one of them is a
+  // configuration mistake.
+  repeated string search_path = 2;
+}
+
+// PluginDescription is one plugin's identity and what it advertises.
+message PluginDescription {
+  // Name is the segment after `flowstate-plugin-` in the executable's name, and
+  // is how discovery establishes it. It is not self-reported.
+  string name = 1;
+
+  // Version is what the plugin says it is. Informational: compatibility is
+  // decided by the protocol version, not by this.
+  string version = 2;
+
+  // Description is the plugin's own one-line summary.
+  string description = 3;
+
+  // Path is the executable this worker launched, which is the fact an operator
+  // wants when two directories on the search path hold the same name.
+  string path = 4;
+
+  // SecretSchemes are the secret reference schemes this plugin resolves.
+  repeated string secret_schemes = 5;
+
+  // Tasks are the tasks this plugin provides, described exactly as a built-in
+  // task is.
+  repeated TaskDescription tasks = 6;
+}
+
 // TaskField is one input or output, described in the DSL's vocabulary.
 message TaskField {
   string name = 1;

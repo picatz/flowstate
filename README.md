@@ -557,16 +557,36 @@ interface, so a plugin can be written in any language with Connect or gRPC suppo
 A plugin advertises *capabilities* rather than being of a kind, so one binary can
 resolve secrets and provide tasks both — which is what the useful integrations
 actually look like. A plugin-provided task ships its own protobuf descriptors, which
-is what will let `flow validate`, editor completion, and `flow tasks` treat it
-exactly like a built-in one.
+is what lets validation check its inputs by name and by type without this build ever
+having compiled its schema.
 
-**None of that is reachable yet.** The protocol, the host, the SDK and a worked
-example are all here and tested, and nothing wires the host into `flow worker` — so
-the task registry every one of those surfaces reads is built from the built-ins
-alone, and a Flowfile naming a plugin task is told `unknown task`. There is no `flow
-plugins` command either. This section describes a design that is finished and a path
-that is not yet connected; it is called out rather than quietly implied, because a
-capability nobody can reach is not done.
+Point a worker at a directory and its plugins' tasks become step keys:
+
+```console
+$ flow worker --plugin-dir /usr/local/lib/flowstate/plugins
+Loaded plugin example 0.1.0 from /usr/local/lib/flowstate/plugins/flowstate-plugin-example (tasks: example_greet)
+```
+
+```yaml
+steps:
+  - id: greet
+    example_greet:
+      name: ${vars.who}
+```
+
+`flow plugins --plugin-dir <dir>` reports what a worker started that way would load,
+by launching each plugin and asking it — which is the only way to know, since nothing
+is read from a binary to discover what it does. `--output json` carries the same
+answer as a document.
+
+Two things are deliberately not connected yet, and are called out rather than quietly
+implied. **A plugin's secret schemes are not registered**, because nothing in the
+engine resolves a secret reference yet — providers registered now would sit behind a
+call that is never made. And **`flow validate` and the editor do not see plugin
+tasks**: they build their registry from the built-ins alone, so a plugin's task reads
+as `unknown task` there while running correctly on the worker. Closing that means
+executing plugin binaries to check a file, which is not something an editor should do
+on a keystroke.
 
 A plugin extends what the engine can do, not what it is allowed to do: it resolves
 only permitted schemes, receives the tenant a workload belongs to rather than
@@ -1015,6 +1035,7 @@ Run `flow <command> --help` for the full flags of any of these.
 | `flow cancel <id>` | Ask a run to stop, letting it clean up. |
 | `flow terminate <id>` | Stop a run immediately, running none of its cleanup. |
 | `flow tasks` | List the tasks a workflow may use, and the libraries every expression reaches. |
+| `flow plugins` | List the plugins on a search path and the tasks each one adds, by launching them and asking. |
 | `flow worker` | Start a Temporal worker, which is what actually executes steps. |
 | `flow server` | Start the Flowstate API server that accepts workflows. |
 | `flow lsp` | Serve the Flowfile language server over stdin and stdout, for editor diagnostics. |

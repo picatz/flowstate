@@ -28,16 +28,16 @@
 //		return err
 //	}
 //
-//	for _, provider := range host.SecretProviders() {
-//		if err := registry.Register(provider); err != nil {
-//			return err
-//		}
+//	if err := host.Register(flowstatev1.DefaultRegistry(), providers); err != nil {
+//		return err
 //	}
-//	for _, def := range host.TaskDefs() {
-//		if err := tasks.Register(def); err != nil {
-//			return err
-//		}
-//	}
+//
+// [flowstatev1.DefaultRegistry] specifically, and not a registry made for the
+// occasion. Every surface that looks a task up — execution dispatch, the split
+// between inputs the engine resolves and inputs the task does, whether a step
+// ships prior outputs, and validation — reaches it through a package-level
+// function over the default registry. A host registered anywhere else is a host
+// whose plugins launched, passed their health checks, and answer `unknown task`.
 //
 // [Host.Close] must run. It is what kills the plugin processes; nothing else
 // does.

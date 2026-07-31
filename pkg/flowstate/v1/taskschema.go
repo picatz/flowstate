@@ -222,15 +222,25 @@ func Catalog() *TaskCatalog {
 	}
 
 	for _, def := range defs {
-		catalog.Tasks = append(catalog.Tasks, &TaskDescription{
-			Name:    def.Name,
-			Summary: def.Summary,
-			Inputs:  taskFields(Inputs(def)),
-			Outputs: taskFields(Outputs(def)),
-		})
+		catalog.Tasks = append(catalog.Tasks, DescribeTask(def))
 	}
 
 	return catalog
+}
+
+// DescribeTask renders one task into its schema form.
+//
+// Exported because a plugin's tasks are described here too, and a second
+// rendering of the same thing is how the two would come to disagree about a task
+// that is meant to be indistinguishable from a built-in. There is one way a task
+// is described, and this is it.
+func DescribeTask(def TaskDef) *TaskDescription {
+	return &TaskDescription{
+		Name:    def.Name,
+		Summary: def.Summary,
+		Inputs:  taskFields(Inputs(def)),
+		Outputs: taskFields(Outputs(def)),
+	}
 }
 
 // catalogFunctions renders the profile's functions into their schema form.
