@@ -9,8 +9,10 @@ that has to finish correctly despite crashes, network failures, and long waits: 
 pipelines, provisioning and orchestration, operational runbooks, agentic pipelines with
 approval gates, and scheduled maintenance work.
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the layer model, the invariants the
-implementation holds to, and how Temporal's primitives map onto the DSL.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the layer model, the invariants
+the implementation holds to, and how Temporal's primitives map onto the DSL — and
+[docs/VISION.md](docs/VISION.md) for where the platform is going and what should
+shape work in the meantime.
 
 [CEL]: https://cel.dev/
 [YAML]: https://yaml.org/
