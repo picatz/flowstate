@@ -158,6 +158,16 @@ func runWorker(cmd *cobra.Command, args []string) error {
 	}
 	defer c.Close()
 
+	// Before the worker starts polling, because a worker that accepted a step for
+	// a plugin task it has not registered yet would answer `unknown task` for a
+	// workflow that is correct — and Open is strict, so a plugin that cannot come
+	// up fails the command here rather than one step at a time later.
+	closePlugins, err := startPlugins(cmd)
+	if err != nil {
+		return err
+	}
+	defer closePlugins()
+
 	deployment := engine.DeploymentOptions(flags.deploymentName, flags.buildID)
 
 	w := worker.New(c, flags.taskQueue, worker.Options{
@@ -1144,6 +1154,8 @@ flow server --verbose`,
 	workerCmd.Flags().String("build-id", os.Getenv("FLOWSTATE_BUILD_ID"),
 		"version identifier for this worker's binary, unique per build. Required with --deployment-name")
 
+	addPluginFlags(workerCmd)
+
 	serverCmd.Flags().String("auth-policy", "",
 		"path to an OIDC/workload-identity trust policy (YAML) describing which issuers to accept")
 	serverCmd.Flags().Bool("insecure-no-auth", false,
@@ -1286,6 +1298,33 @@ flow tasks --output json | jq '.tasks[] | select(.name == "http") | .inputs'`,
 	}
 	addOutputFlag(tasksCmd)
 
+	// Plugins command, which reports what a plugin directory adds to this build.
+	//
+	// Beside `tasks` rather than under `worker`, because the question it answers is
+	// the same one: what can a step in my file name? The registry a worker runs
+	// with is the built-ins plus whatever its plugins provide, and until this
+	// existed the second half was visible only in a worker's log.
+	pluginsCmd := &cobra.Command{
+		Use:   "plugins",
+		Short: "List the plugins a worker would load, and the tasks they add",
+		Long: "List the plugins discovered on a search path, along with the tasks and " +
+			"secret schemes each one provides. A plugin is an executable named " +
+			"flowstate-plugin-<name>; this launches each one it finds and asks it, " +
+			"which is the only way to know what a plugin does.",
+		Args: cobra.NoArgs,
+		RunE: runPlugins,
+		Example: `# What would a worker with this plugin directory be able to run?
+flow plugins --plugin-dir /usr/local/lib/flowstate/plugins
+
+# The same thing as a document:
+flow plugins --plugin-dir /usr/local/lib/flowstate/plugins --output json
+
+# Which plugin provides a given task?
+flow plugins -o json | jq -r '.plugins[] | select(.tasks[].name == "example_greet") | .name'`,
+	}
+	addOutputFlag(pluginsCmd)
+	addPluginFlags(pluginsCmd)
+
 	// LSP command, which starts a Language Server Protocol (LSP) server for Flowfile files.
 	lspCmd := &cobra.Command{
 		Use:   "lsp",
@@ -1339,6 +1378,7 @@ flow lsp`,
 	fixCmd.GroupID = "workflow"
 	rootCmd.AddCommand(fixCmd)
 	rootCmd.AddCommand(tasksCmd)
+	rootCmd.AddCommand(pluginsCmd)
 	rootCmd.AddCommand(getCmd)
 	rootCmd.AddCommand(watchCmd)
 	rootCmd.AddCommand(signalCmd)

@@ -273,19 +273,23 @@ type TaskManifest struct {
 	// What it cannot check is the type — an expression returning the wrong thing is
 	// still wrong, and that is not this field's problem.
 	//
-	// # Where it is enforced today, and where it is not
+	// # Where it is enforced, and where it still is not
 	//
-	// The host maps this onto TaskDef.ExpressionInputs, so a registry holding the
-	// plugin's task answers MustBeExpression correctly. What does *not* follow is
-	// that `flow validate` sees it, because nothing shipped puts a plugin task in
-	// the registry the validator reads: MustBeExpression and LookupTask ask
-	// DefaultRegistry, Host.Register writes to whichever registry it is handed, and
-	// no binary in this repository connects the two — `flow validate` on a plugin's
-	// task answers `unknown task`.
+	// The host maps this onto TaskDef.ExpressionInputs, and `flow worker` registers
+	// a host's tasks into the registry every lookup reads — so inside a worker this
+	// is enforced by the same code that enforces `http`'s `expect:`, because it is
+	// the same code.
 	//
-	// So this declaration is necessary and not yet sufficient, and saying so here is
-	// the point: a field whose enforcement is assumed rather than checked is how
-	// `expect:` got its own reputation.
+	// Where it is still not enforced is a process that has not launched the plugin.
+	// `flow validate` in a terminal and the language server in an editor build their
+	// registry from the built-ins alone, so a plugin's task is `unknown task` there
+	// while running correctly on the worker. That split is deliberate for now —
+	// validating a file would otherwise mean executing plugin binaries on an
+	// editor's keystroke path — and it is the reason `flow plugins` exists: it is
+	// the surface that will launch them when you have asked it to.
+	//
+	// Recorded rather than assumed, because a field whose enforcement is assumed
+	// rather than checked is how `expect:` got its own reputation.
 	ExpressionInputs []string `protobuf:"bytes,9,rep,name=expression_inputs,json=expressionInputs,proto3" json:"expression_inputs,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache

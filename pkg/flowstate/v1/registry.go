@@ -235,9 +235,45 @@ var defaultRegistry = sync.OnceValue(func() *Registry {
 	return r
 })
 
-// DefaultRegistry returns the registry of built-in tasks.
+// DefaultRegistry returns the registry every lookup in the engine reads.
+//
+// It starts as the built-in tasks and is added to at startup by anything
+// extending this build's capability — today that is a worker's plugin host. So
+// it is the registry to register into and *not* the way to ask what is built in,
+// which is what [IsBuiltinTask] is for.
 func DefaultRegistry() *Registry {
 	return defaultRegistry()
+}
+
+// builtinTaskNames is the set of tasks this build ships, frozen at first use.
+//
+// Frozen because the question "is this name a built-in" has a fixed answer, and
+// the default registry stopped being able to give it the moment anything could
+// add to that registry. A plugin host asked exactly that question through
+// [LookupTask], which was correct while nothing registered anything — and became
+// wrong in a way that reads as a security refusal: after one host registered its
+// tasks, a second host opening in the same process was told its own task
+// collided with a *built-in*, naming a conflict that does not exist.
+var builtinTaskNames = sync.OnceValue(func() map[string]struct{} {
+	defs := builtinTasks()
+
+	names := make(map[string]struct{}, len(defs))
+	for _, def := range defs {
+		names[def.Name] = struct{}{}
+	}
+
+	return names
+})
+
+// IsBuiltinTask reports whether name is a task this build ships.
+//
+// Distinct from a lookup in [DefaultRegistry] succeeding, which also answers yes
+// for a task a plugin added. Both questions are worth asking and only one of them
+// is about what a workflow can rely on being there.
+func IsBuiltinTask(name string) bool {
+	_, ok := builtinTaskNames()[name]
+
+	return ok
 }
 
 // LookupTask returns the built-in task definition registered under name.

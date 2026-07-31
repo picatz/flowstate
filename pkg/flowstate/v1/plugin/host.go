@@ -203,7 +203,12 @@ func (h *Host) bind(launched []*Plugin) []error {
 		for _, manifest := range p.Tasks() {
 			name := manifest.GetName()
 
-			if _, builtin := flowstatev1.LookupTask(name); builtin {
+			// The frozen set rather than a lookup in the registry, which is
+			// mutable and which this host is about to add to. Asking the registry
+			// meant that once one host had registered, a second one opening in the
+			// same process was told its task collided with a built-in — naming a
+			// conflict that does not exist, in the voice of a refusal.
+			if flowstatev1.IsBuiltinTask(name) {
 				problems = append(problems, pluginError(p.Name(), p.Path(), fmt.Errorf(
 					"%w: provides task %q, which is a built-in task; a plugin silently replacing a built-in would change what every existing workflow using it does",
 					ErrManifest, truncate(name, 64),
@@ -352,6 +357,53 @@ func (h *Host) TaskDefs() []flowstatev1.TaskDef {
 	return defs
 }
 
+// Catalog describes what the running plugins add to this build.
+//
+// It is the answer `flow plugins` prints and the shape a worker-introspection
+// RPC would return, built here rather than in the CLI because the host is what
+// knows: a manifest is what a plugin said about itself, and everything beside it
+// — which executable it came from, which of its tasks survived descriptor
+// reconstruction — is a fact only the process that launched it has.
+func (h *Host) Catalog() *flowstatev1.PluginCatalog {
+	h.mu.RLock()
+	plugins := make([]*Plugin, 0, len(h.plugins))
+	for _, name := range slices.Sorted(maps.Keys(h.plugins)) {
+		plugins = append(plugins, h.plugins[name])
+	}
+	byPlugin := make(map[string][]*flowstatev1.TaskDescription, len(h.plugins))
+	for _, name := range slices.Sorted(maps.Keys(h.taskDefs)) {
+		binding := h.taskDefs[name]
+		owner := binding.plugin.Name()
+		byPlugin[owner] = append(byPlugin[owner], flowstatev1.DescribeTask(binding.def))
+	}
+	h.mu.RUnlock()
+
+	catalog := &flowstatev1.PluginCatalog{
+		Plugins:    make([]*flowstatev1.PluginDescription, 0, len(plugins)),
+		SearchPath: slices.Clone(h.cfg.SearchPath),
+	}
+
+	for _, p := range plugins {
+		manifest := p.Manifest()
+
+		catalog.Plugins = append(catalog.Plugins, &flowstatev1.PluginDescription{
+			Name:        p.Name(),
+			Version:     manifest.GetVersion(),
+			Description: manifest.GetDescription(),
+			Path:        p.Path(),
+			// From the host's own scheme table rather than from the manifest,
+			// because the two can differ: a scheme the deployment does not permit
+			// is refused at bind time, and reporting what the plugin asked for
+			// would tell an operator it resolves something it will not be asked
+			// to resolve.
+			SecretSchemes: p.Schemes(),
+			Tasks:         byPlugin[p.Name()],
+		})
+	}
+
+	return catalog
+}
+
 // Register adds every plugin-provided task to a task registry and every
 // plugin-provided secret scheme to a secrets registry.
 //
@@ -359,6 +411,21 @@ func (h *Host) TaskDefs() []flowstatev1.TaskDef {
 // first registration that failed, which for the secrets registry includes a
 // scheme a non-plugin provider already claims — a conflict this host cannot see
 // on its own, because it knows only about plugins.
+//
+// # Which registry to hand it
+//
+// [flowstatev1.DefaultRegistry], in a worker. That is not one choice among two:
+// dispatch, input partitioning, scope shipping and validation all reach the
+// registry through package-level functions that read the default one, so a host
+// registered into a fresh [flowstatev1.NewRegistry] holds tasks nothing will ever
+// look up. This paragraph exists because the example above used to show exactly
+// that, and a deployment following it would have got a worker that discovered its
+// plugins, launched them, health-checked them, and answered `unknown task`.
+//
+// Registering into the process-global default is a one-way door — there is no
+// Unregister — so a process opens one host and keeps it until it exits. That is
+// what a worker does; it is not what a long-lived process reopening a host would
+// want, and such a process does not exist yet.
 func (h *Host) Register(tasks *flowstatev1.Registry, providers *secrets.Registry) error {
 	if tasks != nil {
 		for _, def := range h.TaskDefs() {

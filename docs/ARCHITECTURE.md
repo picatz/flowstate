@@ -377,17 +377,23 @@ to prevent — and would need an adapter in both directions. Extending the proto
 extends both paths at once, and an in-process provider costs no serialization,
 because nothing serializes when the call is a Go method call.
 
-A plugin task is meant to be indistinguishable from a built-in one to the rest of the
-system, because a plugin ships protobuf descriptors for its inputs and outputs.
-Validation, editor completion, and generated documentation would read the same shape
-either way, which is the registry invariant applied across a process boundary.
+A plugin task is indistinguishable from a built-in one to the rest of the system,
+because a plugin ships protobuf descriptors for its inputs and outputs. Validation,
+dispatch, input resolution, and generated documentation read the same shape either
+way, which is the registry invariant applied across a process boundary.
 
-That is the design and not yet the behaviour: `Host.Register` exists and is called by
-nothing, so the registry those surfaces read holds only the built-ins. The seam is one
-call wide, and until it is made, this paragraph describes an intention. It stays
-written in the future tense until then — a document that asserts a capability the code
-does not have is worse than one that admits the gap, because it stops anyone going
-looking for it.
+`flow worker --plugin-dir` is what makes that true: it discovers, launches, and
+registers a host's tasks into the registry every lookup in the engine reads. Which
+registry is the whole of the seam, and it was the whole of the gap — `Host.Register`
+takes one, and a host registered into a registry made for the occasion launches
+plugins that pass their health checks and answer `unknown task`.
+
+One asymmetry is left, deliberately. A process that has not launched the plugins does
+not know their tasks, so `flow validate` in a terminal and the language server in an
+editor still answer `unknown task` for one, while a worker runs it correctly. Closing
+that means executing plugin binaries to check a file, which is not something an
+editor should do on a keystroke; `flow plugins` is the surface that launches them
+when somebody has asked for it.
 
 What a plugin cannot do is escape policy. It resolves secrets only for schemes the
 deployment permitted, receives the tenant a workload belongs to rather than choosing
