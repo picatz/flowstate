@@ -351,3 +351,77 @@ func TestRunWorkflowVars(t *testing.T) {
 		})
 	}
 }
+
+// TestRunWorkflowZeroValues runs the shared zero-value cases against the durable
+// driver, which nothing did.
+//
+// Every other set in `tests` had two callers — one per driver, which is the whole
+// reason the package exists — and this one had one. It was also the worst set to be
+// missing, because what it asserts is that a legitimately empty value survives a
+// round trip, and the round trip is longer here: an empty string crosses Temporal's
+// payload converter twice per step on its way into and out of an activity, and the
+// local driver's does not exist. A conversion that dropped a zero value would be
+// invisible to the driver that was running these.
+func TestRunWorkflowZeroValues(t *testing.T) {
+	baseURL := tests.NewHTTPServer(t)
+	for _, test := range tests.ZeroValueCases(baseURL) {
+		t.Run(test.Name, func(t *testing.T) {
+			runWorkflow(t, test.Workflow, test.ExpectedOutputs)
+		})
+	}
+}
+
+// TestAStepsVarsSurviveContinueAsNew is the same claim as
+// [TestABudgetSmallerThanTheWorkflowContinuesAsNew], written the way the language
+// actually encourages — and the way that used to lose the value.
+//
+// `collectNodeRefs` walked a task's inputs and not a step's `vars:`, so the two
+// shapes below, which mean the same thing, behaved differently across a handover:
+// the reference in an input carried its output forward and the reference in `vars:`
+// did not. The second segment then resumed with nothing for `carried` to read out
+// of and failed permanently — on a step that had already succeeded.
+//
+// `examples/http-json` is exactly this shape and teaches it: "a step's own `vars:`
+// gives that value a name so the parse is written once rather than at every use."
+// Nothing running the examples could see it, because only the durable driver
+// continues as new.
+func TestAStepsVarsSurviveContinueAsNew(t *testing.T) {
+	baseURL := tests.NewHTTPServer(t)
+	env := budgetEnv(t)
+
+	// `b` reads `a.said` through its own `vars:` rather than through a task input,
+	// and its input names only the var — so `a`'s output is reachable from nowhere
+	// else and carrying it is the only way this can resume.
+	reader := &v1.Node{
+		Id:   "b",
+		Vars: map[string]*v1.Value{"carried": v1.NewExpr("a.said")},
+		Kind: &v1.Node_Task{Task: &v1.Task{
+			Name: "http",
+			Inputs: map[string]*v1.Value{
+				"method":  v1.NewLiteral(http.MethodPost),
+				"url":     v1.NewLiteral(baseURL + "/echo"),
+				"body":    v1.NewExpr("carried"),
+				"outputs": v1.NewExpr(`{"said": response.body}`),
+			},
+		}},
+	}
+
+	wf := &v1.Workflow{Name: "vars-across-handover", Steps: []*v1.Node{chained(baseURL)[0], reader}}
+
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: wf, StepsBudget: 1})
+	require.True(t, env.IsWorkflowCompleted())
+
+	var continued *workflow.ContinueAsNewError
+	require.ErrorAs(t, env.GetWorkflowError(), &continued,
+		"a run with one step of budget and two steps did not continue as new")
+
+	require.Len(t, continued.Input.GetPayloads(), 1, "the next segment was passed no state")
+
+	var next v1.RunState
+	require.NoError(t, converter.GetDefaultDataConverter().
+		FromPayload(continued.Input.GetPayloads()[0], &next))
+
+	require.Contains(t, next.GetOutputs().GetStepValues(), "a",
+		"the output a later step's `vars:` reads was not carried into the next segment, so "+
+			"the resumed run fails on a reference to a step that has already succeeded")
+}

@@ -321,6 +321,60 @@ func rootedStepRef(sel *expr.Expr_Select) (step, field string, ok bool) {
 // step IDs to the set of fields referenced on that step. If a step is
 // referenced without a field (e.g., just `a`), the field set will be empty to
 // indicate that the whole step's outputs are required.
+// wholeStep marks a step whose every output is needed, in the field set that
+// otherwise names the ones that are.
+//
+// An empty set used to mean the same thing, and could not survive company. A step
+// referenced whole by one expression and by field from another — `${steps.a}` in a
+// step's `vars:` beside `${steps.a.foo}` in its input — recorded the empty set
+// first and then had `foo` put into it, after which "everything" and "just foo"
+// were the same value. The resumed segment got `foo` alone and failed on the next
+// field the whole reference reached for.
+//
+// The empty string is the marker because it cannot collide: an output name is
+// `min_len: 1` in the schema, so no field can ever be spelled this way.
+const wholeStep = ""
+
+// markWholeStep records that every output of a step is needed.
+func markWholeStep(refs map[string]map[string]struct{}, step string) {
+	fields, seen := refs[step]
+	if !seen {
+		fields = map[string]struct{}{}
+		refs[step] = fields
+	}
+	fields[wholeStep] = struct{}{}
+}
+
+// markStepField records that one named output of a step is needed.
+func markStepField(refs map[string]map[string]struct{}, step, field string) {
+	fields, seen := refs[step]
+	if !seen {
+		fields = map[string]struct{}{}
+		refs[step] = fields
+	}
+	fields[field] = struct{}{}
+}
+
+// neededOutputs returns the outputs to carry for one step, or the whole set when
+// anything asked for it whole.
+func neededOutputs(full *v1.Node_Outputs, fields map[string]struct{}) *v1.Node_Outputs {
+	if _, whole := fields[wholeStep]; whole || len(fields) == 0 {
+		return full
+	}
+
+	nv := map[string]*v1.Value{}
+	for field := range fields {
+		if value, has := full.GetNamedValues()[field]; has {
+			nv[field] = value
+		}
+	}
+	if len(nv) == 0 {
+		return nil
+	}
+
+	return &v1.Node_Outputs{NamedValues: nv}
+}
+
 func collectRefsFromExpr(e *expr.Expr, prev *v1.Workflow_StepOutputs, refs map[string]map[string]struct{}) {
 	if e == nil {
 		return
@@ -332,9 +386,8 @@ func collectRefsFromExpr(e *expr.Expr, prev *v1.Workflow_StepOutputs, refs map[s
 			return
 		}
 		if _, ok := prev.StepValues[name]; ok {
-			if _, exists := refs[name]; !exists {
-				refs[name] = make(map[string]struct{})
-			}
+			markWholeStep(refs, name)
+
 			return
 		}
 		// The root named on its own — `has(steps.a)`, or handed to a macro — asks
@@ -343,9 +396,7 @@ func collectRefsFromExpr(e *expr.Expr, prev *v1.Workflow_StepOutputs, refs map[s
 		// costs history size and being wrong this way costs the run.
 		if name == v1.StepsRoot {
 			for id := range prev.StepValues {
-				if _, exists := refs[id]; !exists {
-					refs[id] = make(map[string]struct{})
-				}
+				markWholeStep(refs, id)
 			}
 		}
 	case *expr.Expr_SelectExpr:
@@ -361,11 +412,10 @@ func collectRefsFromExpr(e *expr.Expr, prev *v1.Workflow_StepOutputs, refs map[s
 		if step, field, ok := rootedStepRef(kind.SelectExpr); ok {
 			if prev != nil && prev.StepValues != nil {
 				if _, known := prev.StepValues[step]; known {
-					if _, exists := refs[step]; !exists {
-						refs[step] = make(map[string]struct{})
-					}
-					if field != "" {
-						refs[step][field] = struct{}{}
+					if field == "" {
+						markWholeStep(refs, step)
+					} else {
+						markStepField(refs, step, field)
 					}
 				}
 			}
@@ -377,8 +427,23 @@ func collectRefsFromExpr(e *expr.Expr, prev *v1.Workflow_StepOutputs, refs map[s
 		// For nested selects, this still captures the top-level output field.
 		// E.g., a.result.subfield -> keep `result` from step `a`.
 		// Traverse to find the base ident name.
-		// First, collect from operand recursively to ensure ident is seen.
-		collectRefsFromExpr(kind.SelectExpr.GetOperand(), prev, refs)
+		// Recursed into only when the operand is something other than the step
+		// ident itself, which the loop below reads directly.
+		//
+		// The distinction is what `a` *means* here. Visited on its own it is a
+		// whole-step reference and marks the step whole; visited as the operand of
+		// `a.result` it is the root of a field reference, and marking it whole
+		// there would carry every output of every step any expression touched —
+		// the opposite mistake to the one [wholeStep] exists to prevent, and one
+		// that shows up only as history nobody can explain.
+		//
+		// This used to work by accident: the ident case created an *empty* set,
+		// the loop below then put a field into it, and empty-means-whole was
+		// quietly overwritten. Making the marker explicit made the accident visible
+		// as two failing tests.
+		if _, bare := kind.SelectExpr.GetOperand().GetExprKind().(*expr.Expr_IdentExpr); !bare {
+			collectRefsFromExpr(kind.SelectExpr.GetOperand(), prev, refs)
+		}
 		// Try to find the base step ident name.
 		base := kind.SelectExpr.GetOperand()
 		for base != nil {
@@ -387,12 +452,10 @@ func collectRefsFromExpr(e *expr.Expr, prev *v1.Workflow_StepOutputs, refs map[s
 				name := b.IdentExpr.GetName()
 				if prev != nil && prev.StepValues != nil {
 					if _, ok := prev.StepValues[name]; ok {
-						if _, exists := refs[name]; !exists {
-							refs[name] = make(map[string]struct{})
-						}
-						field := kind.SelectExpr.GetField()
-						if field != "" {
-							refs[name][field] = struct{}{}
+						if field := kind.SelectExpr.GetField(); field != "" {
+							markStepField(refs, name, field)
+						} else {
+							markWholeStep(refs, name)
 						}
 					}
 				}
@@ -473,20 +536,8 @@ func compactPrevOutputsForTask(task *v1.Task, prev *v1.Workflow_StepOutputs) *v1
 		if !ok || full == nil || full.NamedValues == nil {
 			continue
 		}
-		// If no specific fields recorded, include whole step.
-		if len(fields) == 0 {
-			trimmed.StepValues[stepID] = full
-			continue
-		}
-		// Otherwise include only referenced fields.
-		nv := map[string]*v1.Value{}
-		for f := range fields {
-			if v, ok := full.NamedValues[f]; ok {
-				nv[f] = v
-			}
-		}
-		if len(nv) > 0 {
-			trimmed.StepValues[stepID] = &v1.Node_Outputs{NamedValues: nv}
+		if needed := neededOutputs(full, fields); needed != nil {
+			trimmed.StepValues[stepID] = needed
 		}
 	}
 	return trimmed
@@ -495,11 +546,18 @@ func compactPrevOutputsForTask(task *v1.Task, prev *v1.Workflow_StepOutputs) *v1
 // collectNodeRefs records every step output a node could still need.
 //
 // Every expression site in the node counts, not only a task's inputs: a step's
-// condition, a loop's item list and everything in its body, every branch of a
-// parallel block, and a wait's own expression. Dropping an output one of those
-// needs is a correctness failure — the resumed run fails on an unresolved
-// reference — while keeping one it turns out not to need only costs payload. So
-// when in doubt this keeps more.
+// condition, a step's own `vars:`, a loop's item list and everything in its body,
+// every branch of a parallel block, and a wait's own expression. Dropping an
+// output one of those needs is a correctness failure — the resumed run fails on an
+// unresolved reference — while keeping one it turns out not to need only costs
+// payload. So when in doubt this keeps more.
+//
+// `vars:` was missing from that list and from the switch below, and it is the site
+// the language most encourages: `examples/http-json` names a parsed body in a
+// step's `vars:` precisely so the parse is written once, and a run of that shape
+// that continued as new resumed without the output and failed on a reference to a
+// step that had already succeeded. Nothing running the examples could catch it,
+// because only the durable driver continues as new.
 func collectNodeRefs(node *v1.Node, prev *v1.Workflow_StepOutputs, refs map[string]map[string]struct{}) {
 	if node == nil {
 		return
@@ -508,6 +566,14 @@ func collectNodeRefs(node *v1.Node, prev *v1.Workflow_StepOutputs, refs map[stri
 	// A condition decides whether the step runs at all, so it is evaluated before
 	// anything else and its references are needed just as much.
 	collectValueRefs(node.GetCondition(), prev, refs)
+
+	// Outside the switch, with the condition, because both are step *properties*
+	// rather than parts of one kind of work: a `for_each` and a `wait` carry
+	// `vars:` exactly as a task step does. Putting it in the Task arm would have
+	// fixed the shape that was reported and left the other two.
+	for _, value := range node.GetVars() {
+		collectValueRefs(value, prev, refs)
+	}
 
 	switch kind := node.GetKind().(type) {
 	case *v1.Node_Task:
@@ -569,18 +635,8 @@ func compactOutputsForRemainingSteps(steps []*v1.Node, from int, prev *v1.Workfl
 		if !ok || full == nil || full.NamedValues == nil {
 			continue
 		}
-		if len(fields) == 0 {
-			trimmed.StepValues[stepID] = full
-			continue
-		}
-		nv := map[string]*v1.Value{}
-		for f := range fields {
-			if v, ok := full.NamedValues[f]; ok {
-				nv[f] = v
-			}
-		}
-		if len(nv) > 0 {
-			trimmed.StepValues[stepID] = &v1.Node_Outputs{NamedValues: nv}
+		if needed := neededOutputs(full, fields); needed != nil {
+			trimmed.StepValues[stepID] = needed
 		}
 	}
 	return trimmed
