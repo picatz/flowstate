@@ -39,6 +39,13 @@ func (p *Plugin) taskDef(manifest *pluginv1.TaskManifest, cfg Config) (flowstate
 		Outputs:        outputs,
 		DeferredInputs: manifest.GetDeferredInputs(),
 
+		// What an input has to *be*, as distinct from who evaluates it. Without
+		// this a plugin could mark an input deferred and had no way to require it
+		// be written as an expression — so a literal compiled, validated, and
+		// failed inside the plugin, which is the failure the engine's own
+		// ExpressionInputs was added to move back to the author's terminal.
+		ExpressionInputs: manifest.GetExpressionInputs(),
+
 		// The scope is what a task's own expressions evaluate against, so a task
 		// that declared it needs one needs prior step outputs to build it.
 		NeedsPrevOutputs: manifest.GetNeedsScope(),

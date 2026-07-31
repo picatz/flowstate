@@ -222,6 +222,23 @@ type Task struct {
 	// passed through untouched.
 	DeferredInputs []string
 
+	// ExpressionInputs names inputs that have to be *written* as `${...}` rather
+	// than as a literal.
+	//
+	// A different question from DeferredInputs above, which says who evaluates an
+	// input; this says what one has to be. The engine's own http task is the
+	// worked example: `expect:` is deferred and must be an expression, and before
+	// it could say so, `expect: {status: 200}` got as far as the first request
+	// before anything objected.
+	//
+	// Declared here, carried in the manifest, and honoured by whatever registry
+	// holds the task. It is *not* yet enforced by `flow validate`, and that is
+	// worth knowing before relying on it: the validator reads the default task
+	// registry and nothing shipped registers a plugin's tasks there, so a Flowfile
+	// naming one is told the task is unknown. Declaring this is necessary and not
+	// on its own sufficient.
+	ExpressionInputs []string
+
 	// NeedsScope reports whether the task must receive prior step outputs and
 	// the variables bound by enclosing control flow. A task that evaluates its
 	// own expressions does; most tasks do not, and asking for it puts data on
@@ -657,6 +674,7 @@ func (t Task) manifest() (*pluginv1.TaskManifest, error) {
 		OutputDescriptor: outputDescriptor,
 		OutputMessage:    outputMessage,
 		DeferredInputs:   slices.Clone(t.DeferredInputs),
+		ExpressionInputs: slices.Clone(t.ExpressionInputs),
 		NeedsScope:       t.NeedsScope,
 	}, nil
 }

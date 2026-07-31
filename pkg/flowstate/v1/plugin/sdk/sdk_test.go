@@ -580,12 +580,13 @@ func TestTaskManifestCarriesDeclarations(t *testing.T) {
 	t.Parallel()
 
 	task := Task{
-		Name:           "x_do",
-		Summary:        "does x",
-		Input:          &flowstatev1.Task_Log_Inputs{},
-		Output:         &flowstatev1.Task_Log_Outputs{},
-		DeferredInputs: []string{"expr"},
-		NeedsScope:     true,
+		Name:             "x_do",
+		Summary:          "does x",
+		Input:            &flowstatev1.Task_Log_Inputs{},
+		Output:           &flowstatev1.Task_Log_Outputs{},
+		DeferredInputs:   []string{"expr"},
+		ExpressionInputs: []string{"expr"},
+		NeedsScope:       true,
 		Fn: func(context.Context, map[string]*flowstatev1.Value, *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
 			return nil, nil
 		},
@@ -605,6 +606,14 @@ func TestTaskManifestCarriesDeclarations(t *testing.T) {
 	if got := manifest.GetDeferredInputs(); len(got) != 1 || got[0] != "expr" {
 		t.Errorf("deferred_inputs = %v, want [expr]", got)
 	}
+
+	// The two travel together here and are different claims: one says the plugin
+	// evaluates this input, the other says an author has to write it as `${...}`.
+	// A task can want either without the other, so carrying one and dropping the
+	// other would be invisible until a workload failed.
+	if got := manifest.GetExpressionInputs(); len(got) != 1 || got[0] != "expr" {
+		t.Errorf("expression_inputs = %v, want [expr]", got)
+	}
 	if manifest.GetInputMessage() != "flowstate.v1.Task.Log.Inputs" {
 		t.Errorf("input_message = %q", manifest.GetInputMessage())
 	}
@@ -613,6 +622,10 @@ func TestTaskManifestCarriesDeclarations(t *testing.T) {
 	task.DeferredInputs[0] = "changed"
 	if manifest.GetDeferredInputs()[0] != "expr" {
 		t.Error("the manifest aliases the task's slice")
+	}
+	task.ExpressionInputs[0] = "changed"
+	if manifest.GetExpressionInputs()[0] != "expr" {
+		t.Error("the manifest aliases the task's expression-inputs slice")
 	}
 
 	if !proto.Equal(manifest, manifest) {

@@ -258,9 +258,37 @@ type TaskManifest struct {
 	DeferredInputs []string `protobuf:"bytes,7,rep,name=deferred_inputs,json=deferredInputs,proto3" json:"deferred_inputs,omitempty"`
 	// NeedsScope reports whether the task must receive prior step outputs and the
 	// variables bound by enclosing control flow.
-	NeedsScope    bool `protobuf:"varint,8,opt,name=needs_scope,json=needsScope,proto3" json:"needs_scope,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	NeedsScope bool `protobuf:"varint,8,opt,name=needs_scope,json=needsScope,proto3" json:"needs_scope,omitempty"`
+	// ExpressionInputs are inputs that must be *written* as `${...}` rather than as
+	// a literal.
+	//
+	// A different question from deferred_inputs above, which says who evaluates an
+	// input. This says what one has to be, and a plugin had no way to say it: the
+	// built-in http task declares the same thing about `expect`, because a schema
+	// field typed `Value` is deliberately permissive — so `expect: {status: 200}`
+	// compiled, validated, and failed on the first request.
+	//
+	// Checkable with no scope at all, which is what makes it declarable rather than
+	// inferable: whether a value carries a fence is lexical, decided by the parser.
+	// What it cannot check is the type — an expression returning the wrong thing is
+	// still wrong, and that is not this field's problem.
+	//
+	// # Where it is enforced today, and where it is not
+	//
+	// The host maps this onto TaskDef.ExpressionInputs, so a registry holding the
+	// plugin's task answers MustBeExpression correctly. What does *not* follow is
+	// that `flow validate` sees it, because nothing shipped puts a plugin task in
+	// the registry the validator reads: MustBeExpression and LookupTask ask
+	// DefaultRegistry, Host.Register writes to whichever registry it is handed, and
+	// no binary in this repository connects the two — `flow validate` on a plugin's
+	// task answers `unknown task`.
+	//
+	// So this declaration is necessary and not yet sufficient, and saying so here is
+	// the point: a field whose enforcement is assumed rather than checked is how
+	// `expect:` got its own reputation.
+	ExpressionInputs []string `protobuf:"bytes,9,rep,name=expression_inputs,json=expressionInputs,proto3" json:"expression_inputs,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *TaskManifest) Reset() {
@@ -347,6 +375,13 @@ func (x *TaskManifest) GetNeedsScope() bool {
 		return x.NeedsScope
 	}
 	return false
+}
+
+func (x *TaskManifest) GetExpressionInputs() []string {
+	if x != nil {
+		return x.ExpressionInputs
+	}
+	return nil
 }
 
 type DescribeRequest struct {
@@ -797,7 +832,7 @@ const file_flowstate_plugin_v1_plugin_proto_rawDesc = "" +
 	"\fcapabilities\x18\x04 \x03(\x0e2\x1f.flowstate.plugin.v1.CapabilityB\n" +
 	"\xbaH\a\x92\x01\x04\b\x01\x10\x10R\fcapabilities\x128\n" +
 	"\aschemes\x18\x05 \x03(\tB\x1e\xbaH\x1b\x92\x01\x18\x10 \"\x14r\x12\x10\x01\x18 2\f^[a-z0-9-]+$R\aschemes\x12A\n" +
-	"\x05tasks\x18\x06 \x03(\v2!.flowstate.plugin.v1.TaskManifestB\b\xbaH\x05\x92\x01\x02\x10@R\x05tasks\"\xf7\x02\n" +
+	"\x05tasks\x18\x06 \x03(\v2!.flowstate.plugin.v1.TaskManifestB\b\xbaH\x05\x92\x01\x02\x10@R\x05tasks\"\xae\x03\n" +
 	"\fTaskManifest\x127\n" +
 	"\x04name\x18\x01 \x01(\tB#\xe2A\x01\x02\xbaH\x1c\xc8\x01\x01r\x17\x10\x01\x18@2\x11^[a-z][a-z0-9_]*$R\x04name\x12\"\n" +
 	"\asummary\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\asummary\x12)\n" +
@@ -807,7 +842,8 @@ const file_flowstate_plugin_v1_plugin_proto_rawDesc = "" +
 	"\x0eoutput_message\x18\x06 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\routputMessage\x121\n" +
 	"\x0fdeferred_inputs\x18\a \x03(\tB\b\xbaH\x05\x92\x01\x02\x10\x10R\x0edeferredInputs\x12\x1f\n" +
 	"\vneeds_scope\x18\b \x01(\bR\n" +
-	"needsScope\"=\n" +
+	"needsScope\x125\n" +
+	"\x11expression_inputs\x18\t \x03(\tB\b\xbaH\x05\x92\x01\x02\x10\x10R\x10expressionInputs\"=\n" +
 	"\x0fDescribeRequest\x12*\n" +
 	"\fhost_version\x18\x01 \x01(\tB\a\xbaH\x04r\x02\x18@R\vhostVersion\"_\n" +
 	"\x10DescribeResponse\x12K\n" +
