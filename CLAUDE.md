@@ -119,7 +119,24 @@ retried, tolerated, or how a loop reports results — must match, because local 
 exist to tell an author what production will do.
 
 Shared cases live in `pkg/flowstate/v1/tests`; both drivers run them. Add cases
-there rather than in one driver's package.
+there rather than in one driver's package — and check that both drivers actually
+*call* the set you added. Every function in that package had two callers, one per
+driver, except `ZeroValueCases`, which had one; it sat there for months proving
+half of what it was written for.
+
+The disagreements found so far were all one shape: a value with one meaning,
+written down twice. The default attempt count was `1` in `eval.go` and `5` in
+`engine/policy.go`; the answer document was rendered through `marshalJSON` on one
+side and a bare `protojson.Marshal` on the other. Neither pair was ever compared,
+because nothing imported both. So put the value in `pkg/flowstate/v1`, which both
+drivers already import, and let each read it — one constant cannot disagree with
+itself.
+
+And when you fix one of these, look immediately behind it. Local execution
+defaulted to a single attempt, which hid two more disagreements that could not
+show until there was a second attempt to get wrong: no maximum retry interval,
+and `Retry-After` ignored where the durable driver passes it to Temporal as
+`NextRetryDelay`. A bound nothing reaches is a bound nothing tests.
 
 ## Fail closed
 
@@ -224,6 +241,41 @@ ignored: silently doing nothing gives the author no reason to doubt the file.
 False diagnostics are worse than missing ones. Some task inputs are evaluated by the
 task itself against a scope the validator cannot see; check `ResolvableInputs` before
 reporting a reference as unresolved.
+
+The rule that decides the rest of them: **report what is a property of the file, and
+stay silent about what a deployment decides.** A validator runs in an author's
+editor and the worker runs somewhere else, so a diagnostic drawn from an egress
+policy, a scheme allowlist, a port rule or a CEL rule tells an author their file is
+wrong on the strength of configuration the machine they are typing on may not
+share. Ask the *task* what it can never do — the http task speaks HTTP, so `ftp://`
+is wrong everywhere — and leave the deployment's answers to the deployment. The
+same rule keeps I/O out: `netpolicy.Policy.CheckURL` resolves the host when a proxy
+is configured, which would put DNS on the editor's keystroke path.
+
+## A rewriter has to know what the grammar binds
+
+`flow fix` corrupting a valid file is the worst thing this repo can do, because the
+whole promise of the command is that it is safe to run on anything. It has managed
+it twice, and both times the rewriter knew less about scope than the language does.
+
+The first was a name CEL binds — a macro's iteration variable — fixed by parsing
+with the profile's environment. The second was the four names the *grammar* binds
+bare: a loop's `as:`, the `item` a loop binds when it writes no `as:`, a step's own
+`vars:` keys, and `now` inside a wait. All four are deliberately legal alongside a
+step of the same id, and each was rewritten into a reference to that step.
+
+Two things make this class hard to see. Every corrupted file still passes
+`flow validate`, because a whole-step reference with no output name is legal — so
+the file simply computes something else. And the scope of a binding is not the step:
+a loop's item is bound for the body only, and a step's `vars:` are not in scope for
+its own `if:`, which `runNodes` evaluates first. Subtracting a name too widely fails
+the other way — the reference is *left* bare while the edition is stamped, and
+`flow fix` exits zero on a file the validator then rejects.
+
+So when the rewriter needs to know a scope, take it from where the engine evaluates
+the thing rather than from where it is written. And test by comparing bytes or by
+compiling the result: asserting the output still validates is what let all of this
+through.
 
 ## Working alongside other agents
 

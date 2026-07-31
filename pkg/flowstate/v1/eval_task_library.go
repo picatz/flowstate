@@ -1118,8 +1118,29 @@ func populateProtoMessageFromValueMap(ctx context.Context, input map[string]*Val
 				return fmt.Errorf("field %q: %w", fieldName, err)
 			}
 			msg.ProtoReflect().Set(fieldDesc, pv)
+		case *Value_SecretRef:
+			// The one kind that is deliberately inert everywhere except the activity
+			// that uses it, and which no task input accepts yet.
+			//
+			// Named rather than left to the default below, which reported
+			// `unsupported value type: *flowstatev1.Value` — a Go type, naming
+			// neither the input nor the reference, for a spelling `flow validate`
+			// had just accepted. An author who wrote `${secret(...)}` where it does
+			// not go got no way to tell what they had written wrong.
+			//
+			// About the *field* and not the task, which is a distinction with a
+			// caller: `plugin/sdk/values.go` takes a singular `flowstate.v1.Value`
+			// field whole, secret reference included, and says so in the same words.
+			// A task-wide claim would send an author away from another input on the
+			// same task that would have worked.
+			return fmt.Errorf(
+				"field %q was given a secret reference (%s:%s), which this field's type "+
+					"cannot hold; a field declared as flowstate.v1.Value receives one whole, "+
+					"which is how a task takes a value it resolves itself",
+				fieldName, kind.SecretRef.GetScheme(), kind.SecretRef.GetName())
+
 		default:
-			return fmt.Errorf("unsupported value type: %T", val)
+			return fmt.Errorf("field %q: unsupported value type: %T", fieldName, val)
 		}
 	}
 	return nil
