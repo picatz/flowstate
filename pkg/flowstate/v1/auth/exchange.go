@@ -481,14 +481,57 @@ type exchangeClient struct {
 	timeout time.Duration
 }
 
-// newExchangeClient returns a client for talking to a relying party. The
-// transport is wrapped so a redirect cannot move an exchange onto an unprotected
-// connection, where the assertion in the request body would be readable.
+// newExchangeClient returns a client for talking to a relying party. It follows
+// no redirect at all, which is not the same rule the key fetcher needs and is the
+// reason these are two clients.
 func newExchangeClient(client *http.Client, timeout time.Duration) *exchangeClient {
 	if timeout <= 0 {
 		timeout = DefaultExchangeTimeout
 	}
-	return &exchangeClient{client: transportProtectedClient(client), timeout: timeout}
+	return &exchangeClient{client: unredirectedClient(client), timeout: timeout}
+}
+
+// unredirectedClient returns a client that refuses to follow any redirect,
+// applied to a copy so a caller's own client is never modified.
+//
+// An exchange carries the assertion in the request *body*, and that is the whole
+// difference from fetching an issuer's keys, which shares almost all of this code.
+// A key set is a GET carrying nothing, so following a redirect anywhere is
+// ordinary and [transportProtectedClient]'s scheme check is the right rule for it.
+//
+// A body is not covered by anything. net/http drops the Authorization header when
+// a redirect crosses to another host, and has no equivalent notion for a body —
+// while 307 and 308 are defined to replay one. So a check on the redirect target's
+// *scheme* let a configured endpoint name any other https host and have a signed
+// assertion delivered to it. The assertion is audience-scoped, so what the
+// recipient gains is the ability to act as that workload at the relying party it
+// was minted for, which is the whole of what it was minted to do.
+//
+// Refused outright rather than pinned to the configured host, because a token
+// endpoint does not redirect: RFC 8693 has no such step, and net/http turns 301,
+// 302 and 303 on a POST into a bodyless GET — so an exchange meeting one of those
+// was already failing. What was reachable was exactly the pair that leaks, and
+// nothing that works today is being taken away.
+func unredirectedClient(client *http.Client) *http.Client {
+	unredirected := &http.Client{}
+	if client != nil {
+		unredirected = &http.Client{
+			Transport: client.Transport,
+			Jar:       client.Jar,
+			Timeout:   client.Timeout,
+		}
+	}
+
+	unredirected.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		// Named so an operator can act on it: this is a misconfiguration — the
+		// endpoint they wrote down is not the one serving the exchange — and the
+		// fix is to configure the destination directly.
+		return fmt.Errorf("endpoint redirected to %s: configure the endpoint that serves "+
+			"the exchange, since following would send the assertion there",
+			req.URL.Redacted())
+	}
+
+	return unredirected
 }
 
 // postForm posts form-encoded values and returns the response body.
