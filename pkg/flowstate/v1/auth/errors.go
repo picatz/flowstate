@@ -283,6 +283,20 @@ func (e *ClaimMismatchError) Unwrap() error {
 	return ErrClaimMismatch
 }
 
+// PublicReason returns the short, fixed description of an authentication
+// failure that [Authenticator.Authenticate] returns to the caller, such as
+// "token is expired".
+//
+// It exists for a [WithFailureObserver] callback that logs rejections. The full
+// error is safe to log server-side — it never contains token signatures or
+// secret material — but it can carry verified claim values and the wrapped text
+// of a parse failure, which a log shipped somewhere less trusted should not.
+// This is the classification with none of that: it names no configured value and
+// nothing taken from the token.
+func PublicReason(err error) string {
+	return publicReason(err)
+}
+
 // publicReason returns a short description of an authentication failure to
 // return to an unauthenticated caller.
 //

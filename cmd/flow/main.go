@@ -111,6 +111,12 @@ type authFlags struct {
 	// with, when the trust policy configures federation. Unset means the server
 	// verifies callers but issues nothing, which is the inbound-only deployment.
 	identityKeyPath string
+
+	// identityClaims names the caller token claims carried into each run's
+	// identity, where `workload.claims[...]` rules and downstream relying parties
+	// read them. Empty means a run's identity records the subject and issuer and
+	// nothing more.
+	identityClaims []string
 }
 
 // authFlagsOf reads them off the command being run.
@@ -118,8 +124,14 @@ func authFlagsOf(cmd *cobra.Command) authFlags {
 	policyPath, _ := cmd.Flags().GetString("auth-policy")
 	insecure, _ := cmd.Flags().GetBool("insecure-no-auth")
 	identityKeyPath, _ := cmd.Flags().GetString("identity-key")
+	identityClaims, _ := cmd.Flags().GetStringArray("identity-claim")
 
-	return authFlags{policyPath: policyPath, insecure: insecure, identityKeyPath: identityKeyPath}
+	return authFlags{
+		policyPath:      policyPath,
+		insecure:        insecure,
+		identityKeyPath: identityKeyPath,
+		identityClaims:  identityClaims,
+	}
 }
 
 // infraLogger is the server's and worker's own voice: slog, text, stderr.
@@ -145,12 +157,29 @@ func infraLogger() *slog.Logger {
 // happen: the two callers are `flow worker` and `flow server`, and a process runs
 // one command. What it did do was outlive whatever set it.
 func initTemporalClient(ctx context.Context, flags temporalFlags) (client.Client, error) {
+	cfg, err := temporalConfig(ctx, flags)
+	if err != nil {
+		return nil, err
+	}
+
+	return temporalclient.Dial(ctx, cfg)
+}
+
+// temporalConfig resolves the connection configuration a command's flags describe,
+// with telemetry attached.
+//
+// Split from [initTemporalClient] because `flow server` needs the configuration
+// twice when the trust policy maps tenants onto Temporal namespaces: once for the
+// client it was configured with, and once for the pool that dials each mapped
+// namespace. Resolving it in one place keeps the two from ever describing
+// different clusters.
+func temporalConfig(ctx context.Context, flags temporalFlags) (temporalclient.Config, error) {
 	// Telemetry first, so the client is born instrumented. Off unless the
 	// operator pointed OTEL_EXPORTER_OTLP_* somewhere; the shutdown flush is
 	// process-exit's job, which for the two callers here is process lifetime.
 	metricsHandler, _, err := initTelemetry(ctx)
 	if err != nil {
-		return nil, err
+		return temporalclient.Config{}, err
 	}
 
 	cfg := temporalclient.Config{
@@ -166,7 +195,7 @@ func initTemporalClient(ctx context.Context, flags temporalFlags) (client.Client
 		}
 	}
 
-	return temporalclient.Dial(ctx, cfg)
+	return cfg, nil
 }
 
 // runWorker implements the worker sub-command to start a Temporal worker
@@ -313,9 +342,12 @@ func startedRun(started *v1.RunResponse) *v1.GetResponse {
 // that listens for incoming workflow requests and serves them using the
 // Flowstate service implementation over HTTP (via Connect RPC).
 func runServer(cmd *cobra.Command, args []string) error {
+	logger := infraLogger()
+
 	// Resolve configuration before doing any I/O, so a misconfiguration is
 	// reported immediately rather than after waiting on a connection attempt.
 	authCfg := authFlagsOf(cmd)
+	temporalCfg := temporalFlagsOf(cmd)
 
 	verifier, policy, err := authVerifier(authCfg)
 	if err != nil {
@@ -327,11 +359,53 @@ func runServer(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	c, err := initTemporalClient(cmd.Context(), temporalFlagsOf(cmd))
+	// Fetch every trusted issuer's keys now, so an issuer that is misconfigured
+	// or unreachable is reported at startup instead of as a puzzling
+	// authentication failure on the first request. Log-and-continue rather than
+	// refuse to start, per Prime's own contract: keys are fetched on demand
+	// anyway, and an identity provider having a bad minute should not keep a
+	// deployment down.
+	if oidc, ok := verifier.(*auth.OIDCVerifier); ok {
+		if err := oidc.Prime(cmd.Context()); err != nil {
+			logger.Warn("could not prefetch every trusted issuer's keys; verification will retry on demand",
+				"error", err)
+		}
+	}
+
+	cfg, err := temporalConfig(cmd.Context(), temporalCfg)
+	if err != nil {
+		return err
+	}
+
+	c, err := temporalclient.Dial(cmd.Context(), cfg)
 	if err != nil {
 		return err
 	}
 	defer c.Close()
+
+	serverOpts := []server.Option{}
+	if temporalCfg.deploymentName != "" {
+		serverOpts = append(serverOpts, server.WithDeployment(temporalCfg.deploymentName))
+	}
+	if len(authCfg.identityClaims) > 0 {
+		serverOpts = append(serverOpts, server.WithIdentityClaims(authCfg.identityClaims...))
+	}
+
+	// A trust policy that maps tenants onto Temporal namespaces needs a client
+	// per namespace it can route to, dialed now so an unreachable namespace fails
+	// the start rather than the first tenant to submit. The server refuses a
+	// tenant the mapping cannot place — see FlowstateServer.clientFor — so this
+	// only has to hand it the pool.
+	if policy != nil && policy.Tenancy != nil {
+		pool, err := temporalclient.NewPool(cmd.Context(), cfg, policy.Tenancy)
+		if err != nil {
+			return fmt.Errorf("dialing the Temporal namespaces the trust policy maps tenants onto: %w", err)
+		}
+		defer pool.Close()
+
+		serverOpts = append(serverOpts, server.WithNamespacePool(pool))
+		logger.Info("routing tenants to mapped Temporal namespaces", "namespaces", pool.Namespaces())
+	}
 
 	// The server answers Validate and GetCatalog from the process-wide registry,
 	// so a deployment whose workers load plugins points the server at the same
@@ -358,7 +432,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	rpcMux := http.NewServeMux()
 	rpcMux.Handle(
 		flowstatev1connect.NewWorkflowServiceHandler(
-			server.New(c),
+			server.New(c, serverOpts...),
 			connect.WithInterceptors(
 				interceptor,
 				otelInterceptor,
@@ -378,7 +452,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 		// --address flag, so the variable it shared could only ever hold the
 		// environment's value anyway. Read directly, which is what it meant.
 		Addr:    cmp.Or(os.Getenv("FLOWSTATE_ADDRESS"), defaultServerAddress),
-		Handler: serverHandler(verifier, broker, rpcMux),
+		Handler: serverHandler(logger, verifier, broker, rpcMux),
 
 		// Without these a client that opens a connection and sends bytes
 		// slowly, or never, occupies a connection indefinitely. Go's zero
@@ -390,16 +464,16 @@ func runServer(cmd *cobra.Command, args []string) error {
 		MaxHeaderBytes:    1 << 20,
 	}
 
-	infraLogger().Info("starting server", "address", httpServer.Addr)
+	logger.Info("starting server", "address", httpServer.Addr)
 	if authCfg.insecure {
-		infraLogger().Warn("authentication is disabled; every caller is anonymous and can start workflows",
+		logger.Warn("authentication is disabled; every caller is anonymous and can start workflows",
 			"use", "local development only")
 	}
 	if broker != nil {
 		// Log the discovery URL rather than the fact of federation: an operator
 		// configuring a relying party needs this exact string, and finding it by
 		// reading source is the sort of friction that gets solved by guessing.
-		infraLogger().Info("issuing workload identity assertions",
+		logger.Info("issuing workload identity assertions",
 			"discovery", broker.Issuer().URL()+auth.DiscoveryPath)
 	}
 
@@ -420,13 +494,13 @@ func runServer(cmd *cobra.Command, args []string) error {
 	case <-cmd.Context().Done():
 	}
 
-	infraLogger().Info("shutting down server")
+	logger.Info("shutting down server")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
 	defer cancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("server forced to shutdown: %w", err)
 	}
-	infraLogger().Info("server stopped")
+	logger.Info("server stopped")
 
 	return nil
 }
@@ -1193,7 +1267,8 @@ flow server --verbose`,
 	addPluginFlags(workerCmd)
 	addPluginFlags(serverCmd)
 
-	serverCmd.Flags().String("auth-policy", "",
+	serverCmd.Flags().String("auth-policy",
+		os.Getenv("FLOWSTATE_AUTH_POLICY"),
 		"path to an OIDC/workload-identity trust policy (YAML) describing which issuers to accept")
 	serverCmd.Flags().Bool("insecure-no-auth", false,
 		"allow unauthenticated access; for local development only")
@@ -1202,6 +1277,19 @@ flow server --verbose`,
 		"path to a PKCS#8 PEM private key Flowstate signs its own assertions with, "+
 			"required when the trust policy configures federation; the file's base name "+
 			"becomes the published key id, so 2026-07.pem publishes as \"2026-07\"")
+
+	// The server's deployment name is not the worker's Worker Deployment pair: it
+	// names this Flowstate installation in the identity every run carries, so an
+	// assertion presented to an external system distinguishes staging from
+	// production. Same spelling and same environment default as the worker's flag
+	// on purpose, because they describe the same installation.
+	serverCmd.Flags().String("deployment-name", os.Getenv("FLOWSTATE_DEPLOYMENT_NAME"),
+		"name of this Flowstate deployment, recorded in each run's workload identity "+
+			"and in every assertion subject it mints")
+	serverCmd.Flags().StringArray("identity-claim", nil,
+		"caller token claim to carry into each run's workload identity (repeatable), "+
+			"such as repository or email; only named claims are carried, and they are "+
+			"what workload.claims[...] policy rules read")
 
 	// Validate command, which checks Flowfiles without executing them.
 	validateCmd := &cobra.Command{

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"log/slog"
 	"net/http"
 
 	"connectrpc.com/authn"
@@ -32,8 +34,25 @@ import (
 //
 // A deployment that does not federate outward has no broker, and then nothing is
 // mounted unauthenticated at all.
-func serverHandler(verifier auth.Verifier, broker *auth.Broker, rpc http.Handler) http.Handler {
-	authenticated := authn.NewMiddleware(auth.NewAuthenticator(verifier).Authenticate)
+//
+// # Why rejections are logged here
+//
+// The error an unauthenticated caller receives deliberately says very little, so
+// without the failure observer a rejection is invisible to the server too — a
+// misconfigured CI job and a probe both look like silence. What is logged is the
+// classified reason from [auth.PublicReason], never the raw error: the full
+// cause can carry the wrapped text of a parse failure, and the token itself is
+// in the request's Authorization header, which is exactly why the observer logs
+// fields it chooses rather than the request.
+func serverHandler(logger *slog.Logger, verifier auth.Verifier, broker *auth.Broker, rpc http.Handler) http.Handler {
+	authenticated := authn.NewMiddleware(auth.NewAuthenticator(verifier,
+		auth.WithFailureObserver(func(ctx context.Context, req *http.Request, err error) {
+			logger.WarnContext(ctx, "rejected unauthenticated request",
+				"procedure", req.URL.Path,
+				"peer", req.RemoteAddr,
+				"reason", auth.PublicReason(err))
+		}),
+	).Authenticate)
 
 	mux := http.NewServeMux()
 	mux.Handle("/", authenticated.Wrap(rpc))
