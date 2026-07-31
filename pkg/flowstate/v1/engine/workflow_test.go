@@ -352,6 +352,39 @@ func TestRunWorkflowVars(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowResponseScope runs the response-scope cases against the durable
+// driver.
+//
+// The names these read reach the task by three different routes, and the durable
+// driver takes a longer version of each: the workflow's vars are evaluated in the
+// WorkflowVars activity and carried across Continue-As-New, a step's own vars are
+// evaluated in workflow code and swapped into the executor's scope, and a loop's
+// iterator is copied into a per-iteration scope by hand — and then the whole scope
+// crosses the payload converter on its way to TaskInScope, which is where these
+// expressions are finally evaluated. Every one of those is somewhere the bindings
+// could be dropped again after being restored here.
+func TestRunWorkflowResponseScope(t *testing.T) {
+	baseURL := tests.NewHTTPServer(t)
+	for _, test := range tests.ResponseScopeCases(baseURL) {
+		t.Run(test.Name, func(t *testing.T) {
+			testSuite := &testsuite.WorkflowTestSuite{}
+			env := testSuite.NewTestWorkflowEnvironment()
+			env.RegisterWorkflow(engine.Run)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
+
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow})
+			require.True(t, env.IsWorkflowCompleted())
+			require.NoError(t, env.GetWorkflowError())
+
+			var out v1.Workflow_StepOutputs
+			require.NoError(t, env.GetWorkflowResult(&out))
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, &out, protocmp.Transform()))
+		})
+	}
+}
+
 // TestRunWorkflowZeroValues runs the shared zero-value cases against the durable
 // driver, which nothing did.
 //

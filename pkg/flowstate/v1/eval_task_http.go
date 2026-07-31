@@ -474,10 +474,18 @@ func httpExpectSatisfied(
 		return NewTaskError("http", ErrorKindInternal, fmt.Errorf("failed to create activation: %w", err))
 	}
 
+	// The scope's own activation, not a hand-built one over its step outputs. See
+	// [httpResponseEnv] — the environment carries the same fix from the other side,
+	// and the names have to travel with the vocabulary or the position is still a
+	// dialect of its own.
+	//
+	// The response stays the *child*, so it is asked first: inside `expect:` and
+	// `outputs:`, `response` means the response. That is the contract those two
+	// positions are written against and what `flow fix` rewrites bare names *to*, so
+	// an iterator spelled `as: response` is shadowed here — the same precedence as
+	// before this change, which only ever adds names that could not resolve at all.
 	out, err := DefaultEvaluator().EvalParsed(ctx, env, parsed,
-		interpreter.NewHierarchicalActivation(
-			&StepsOutputActivation{Prev: scope.StepOutputs(), Ctx: ctx, Eval: DefaultEvaluator()},
-			activation))
+		interpreter.NewHierarchicalActivation(scope.Activation(ctx), activation))
 	if err != nil {
 		return NewTaskError("http", ErrorKindExpression, fmt.Errorf("evaluating expect: %w", err))
 	}

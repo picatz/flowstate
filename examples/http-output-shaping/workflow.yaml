@@ -14,6 +14,11 @@
 # here; `steps.web.body` is this step's output, read later.
 edition: v2026.2
 name: http-output-shaping
+# `outputs` is evaluated where it is written, so the names in scope there are the
+# ones in scope here: `response` for what came back, plus everything the file
+# already had — the workflow's vars below, a step's own vars, and a loop's binding.
+vars:
+  source: catalog
 steps:
   - id: web
     http:
@@ -22,8 +27,8 @@ steps:
       # ${...} marks a CEL expression, as everywhere else in a Flowfile; a bare
       # string would be a literal. Quote it because YAML would otherwise read
       # the colons inside as mapping syntax.
-      outputs: "${ {'status': response.status_code, 'title': json_parse(response.body)['slideshow']['title']} }"
+      outputs: "${ {'status': response.status_code, 'title': json_parse(response.body)['slideshow']['title'], 'source': vars.source} }"
 
   - id: report
     log:
-      message: ${"got %d for %s".format([steps.web.status, steps.web.title])}
+      message: ${"got %d for %s from %s".format([steps.web.status, steps.web.title, steps.web.source])}

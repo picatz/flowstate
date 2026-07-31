@@ -269,6 +269,19 @@ func firstHeaderValues(h http.Header) map[string]string {
 // Found by a type checker disagreeing with the runtime: the validator judged these
 // expressions against the profile, which was right, against a runtime that was not.
 //
+// # The example above needs both halves
+//
+// `${vars.greeting.upperAscii()}` names a function and a variable, and fixing the
+// environment fixed only the function. The *activation* is where the variable comes
+// from, and both callers built one by hand over the step outputs alone — so the same
+// expression kept failing here, now saying `no such key: greeting` about a variable
+// declared at the top of the file. Worse than the unbound name it replaced: an empty
+// `vars` root answers by design, so that `vars.missing` reads as a missing key rather
+// than as the namespace not existing, and with nothing in it every var read that way.
+//
+// One dialect is a claim about names as much as functions, and a position gets both
+// from the scope or it is still a dialect of its own. See [Scope.Activation].
+//
 // # The profile is the run's, not the build's
 //
 // Taken from the scope rather than from [CurrentProfile], because this evaluates on
@@ -489,12 +502,15 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 			if err != nil {
 				return nil, fmt.Errorf("failed to create activation: %w", err)
 			}
-			// Ctx and Eval are set so that a stored expression resolved while
-			// shaping these outputs is itself cancellable and cost-bounded.
-			// Without them StepsOutputActivation falls back to context.Background.
-			act := interpreter.NewHierarchicalActivation(
-				&StepsOutputActivation{Prev: scope.StepOutputs(), Ctx: ctx, Eval: DefaultEvaluator()},
-				varAct)
+			// The scope's own activation, which is what carries `vars.<name>` and a
+			// loop's iterator into here — and which sets Ctx, Eval and Profile, so a
+			// stored expression resolved while shaping these outputs stays
+			// cancellable, cost-bounded and pinned to the run's vocabulary. The
+			// hand-built one this replaces set the first two and dropped the rest.
+			//
+			// The response is the child, so it is asked first; see the same note in
+			// [httpExpectSatisfied].
+			act := interpreter.NewHierarchicalActivation(scope.Activation(ctx), varAct)
 
 			if outputsExpr != nil {
 				// Through the shared evaluator, which is what applies the cost

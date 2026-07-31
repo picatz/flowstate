@@ -337,11 +337,23 @@ func startTestPluginCapturing(t *testing.T, token string, stdout *syncBuffer) st
 		reader.Close()
 	})
 
-	// Wait for the socket, which is what the handshake line would tell a real
-	// host.
+	// Wait for the handshake line, which is what a real host waits for.
+	//
+	// This used to wait for the socket to exist, and the comment claimed that was
+	// the same thing. It is not, and the difference is the whole of what
+	// TestServeSocketPermissions asserts: `listen` creates the socket and *then*
+	// narrows it to 0600, so a test that resumes the moment the path stats is
+	// racing the chmod it is about to measure. It lost, once, in a full `-race`
+	// run — `socket mode = 0755, want 0600`, which is umask 022 applied to a fresh
+	// socket, the mode before the chmod rather than after it.
+	//
+	// The handshake is announced after `listen` returns, so waiting for it is
+	// waiting for everything `listen` does. A weaker readiness signal than the one
+	// the real consumer uses will eventually observe a state the real consumer
+	// never can.
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, err := os.Stat(socket); err == nil {
+		if strings.Contains(stdout.String(), "\n") {
 			return socket
 		}
 		select {

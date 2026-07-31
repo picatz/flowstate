@@ -159,6 +159,25 @@ func TestRunWorkflowVars(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowResponseScope covers what an http step's `expect:` and `outputs:`
+// can see, in the local driver.
+//
+// The same cases run against the Temporal driver in the engine package, and the reason
+// is the one the shared package exists for read backwards: what these guard is not a
+// difference between the drivers but a difference between two positions in one file,
+// and both drivers reach both positions through the same task. A set that ran here
+// only would let the durable driver rebuild that activation by hand unobserved.
+func TestRunWorkflowResponseScope(t *testing.T) {
+	baseURL := tests.NewHTTPServer(t)
+	for _, test := range tests.ResponseScopeCases(baseURL) {
+		t.Run(test.Name, func(t *testing.T) {
+			out, err := v1.Run(t.Context(), test.Workflow)
+			require.NoError(t, err)
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, out, protocmp.Transform()))
+		})
+	}
+}
+
 // TestRunWorkflowLog covers the `log` task in the local driver.
 //
 // What a workflow's *result* can see of a log step is that it ran and produced nothing,
