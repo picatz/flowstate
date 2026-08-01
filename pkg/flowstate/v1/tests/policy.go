@@ -275,3 +275,81 @@ func PolicyCaseFailedSteps() map[string]string {
 		"continue_on_error records the failure and proceeds": "flaky",
 	}
 }
+
+// ErrorTextCases pin what `${steps.<id>.error}` actually says, in both drivers.
+//
+// The other policy cases assert that a tolerated failure *happened* — which step
+// carries an error output and which does not. That is the half a paging-shaped
+// test would call the page rather than the walk: it stayed green while the two
+// drivers recorded completely different sentences, because nothing compared
+// them. The local driver recorded the task's own error and the durable driver
+// recorded Temporal's envelope around it, with event ids that vary per run.
+//
+// So these assert the string literally, and deliberately not by calling
+// [v1.StepErrorText] — a test that renders its expectation with the same
+// function under test agrees with any change to it, including a wrong one.
+// Writing the sentence out means changing it is a change somebody reads.
+//
+// Both a permanent and a retryable failure, because the durable driver reaches
+// the recorded text through a different path when there has been more than one
+// attempt, and a sentence that is stable on attempt one and not on attempt two
+// is the same defect wearing a longer sleeve.
+func ErrorTextCases(baseURL string) []Case {
+	permanent := `task "http" failed (InvalidInput): GET ` + baseURL + `/status/404 returned status 404`
+	retryable := `task "http" failed (Upstream): GET ` + baseURL + `/status/500 returned status 500`
+
+	return []Case{
+		{
+			Name: "a tolerated permanent failure records what went wrong",
+			Workflow: &v1.Workflow{
+				Name: "error-text-permanent",
+				Steps: []*v1.Node{
+					{
+						Id:     "flaky",
+						Policy: &v1.StepPolicy{ContinueOnError: true},
+						Kind: &v1.Node_Task{Task: &v1.Task{
+							Name: "http",
+							Inputs: map[string]*v1.Value{
+								"url": v1.NewValue(baseURL + "/status/404"),
+							},
+						}},
+					},
+				},
+			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{
+				StepValues: map[string]*v1.Node_Outputs{
+					"flaky": v1.FailedStepOutputs(permanent),
+				},
+			},
+		},
+		{
+			Name: "a tolerated retryable failure says the same thing on every attempt",
+			Workflow: &v1.Workflow{
+				Name: "error-text-retryable",
+				Steps: []*v1.Node{
+					{
+						Id: "flaky",
+						Policy: &v1.StepPolicy{
+							ContinueOnError: true,
+							Retry: &v1.RetryPolicy{
+								MaxAttempts:     2,
+								InitialInterval: durationpb.New(1e6), // 1ms, so the case is not a wait
+							},
+						},
+						Kind: &v1.Node_Task{Task: &v1.Task{
+							Name: "http",
+							Inputs: map[string]*v1.Value{
+								"url": v1.NewValue(baseURL + "/status/500"),
+							},
+						}},
+					},
+				},
+			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{
+				StepValues: map[string]*v1.Node_Outputs{
+					"flaky": v1.FailedStepOutputs(retryable),
+				},
+			},
+		},
+	}
+}

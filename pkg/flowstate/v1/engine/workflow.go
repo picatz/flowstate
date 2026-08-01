@@ -13,6 +13,21 @@ import (
 
 type ErrRunFailed struct {
 	Message string
+
+	// Recorded is the driver-independent text this failure records as the step's
+	// `error` output when `continue_on_error` tolerates it — rendered by
+	// [v1.StepErrorText], and deliberately not Message.
+	//
+	// Message formats the whole cause, Temporal's envelope included, for the
+	// run-level failure a person reads. Recorded is the value an author's
+	// expression compares, so it has to be the same sentence the local driver
+	// records for the same failure.
+	//
+	// It travels as a field rather than as a wrapped cause because this type has
+	// no Unwrap on purpose: Temporal's failure converter walks the unwrap chain
+	// into the failure it persists, and what this deliberately flattens must stay
+	// flattened.
+	Recorded string
 }
 
 func (e *ErrRunFailed) Error() string {
@@ -40,7 +55,45 @@ func stepFailed(err error, format string, args ...any) error {
 	if temporal.IsCanceledError(err) {
 		return err
 	}
-	return &ErrRunFailed{Message: fmt.Sprintf(format, args...)}
+	return &ErrRunFailed{
+		Message:  fmt.Sprintf(format, args...),
+		Recorded: recordedStepError(err),
+	}
+}
+
+// recordedStepError extracts the text a tolerated failure records as the step's
+// `error` output, from whatever shape the failure reached this driver in.
+//
+// The text itself has exactly one renderer, [v1.StepErrorText]; this only
+// recovers its output from the wrapping the durable driver adds in transit. A
+// task failure arrives from an activity inside a failure envelope — scheduled
+// event ids, a worker identity, the classification restated at every level of
+// the cause chain — and the application error within carries the rendered text
+// as its message, put there by activityError on the worker. A failure from a
+// nested level (a loop iteration, a parallel branch) arrives as an
+// [ErrRunFailed] already carrying the text it extracted, so the innermost task's
+// sentence is what propagates outward. Anything else never crossed a wire, and
+// its own words are already what the local driver would record.
+func recordedStepError(err error) string {
+	var run *ErrRunFailed
+	if errors.As(err, &run) && run.Recorded != "" {
+		return run.Recorded
+	}
+
+	var app *temporal.ApplicationError
+	if errors.As(err, &app) {
+		return app.Message()
+	}
+
+	// An activity failure with no application error inside — a timeout, say —
+	// still sheds the envelope: the cause is the failure, the envelope is only
+	// how it travelled.
+	var activity *temporal.ActivityError
+	if errors.As(err, &activity) && activity.Unwrap() != nil {
+		return activity.Unwrap().Error()
+	}
+
+	return v1.StepErrorText(err)
 }
 
 const RunTaskQueueName = "flowstate-run-task-queue"
@@ -258,14 +311,14 @@ func compactOutputsForFrames(spec *v1.Workflow, frames []*v1.Frame, outputs *v1.
 //
 // A step allowed to continue past its own failure still has to leave something
 // behind, so that a later step can branch on whether it worked. Reporting the
-// failure under a well-known `error` output makes that expressible as
+// failure under [v1.StepErrorOutput] makes that expressible as
 // `${steps.<id>.error}`, and its absence means the step succeeded.
+//
+// The text recorded is the extracted, driver-independent one rather than
+// err.Error(): what reaches here is wrapped in this driver's transport, and the
+// local driver records the same failure without any of it.
 func failedStepOutputs(err error) *v1.Node_Outputs {
-	return &v1.Node_Outputs{
-		NamedValues: map[string]*v1.Value{
-			"error": v1.NewLiteral(err.Error()),
-		},
-	}
+	return v1.FailedStepOutputs(recordedStepError(err))
 }
 
 // rootedStepRef reads a reference written under the steps root, returning the

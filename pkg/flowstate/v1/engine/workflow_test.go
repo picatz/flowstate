@@ -458,3 +458,77 @@ func TestAStepsVarsSurviveContinueAsNew(t *testing.T) {
 		"the output a later step's `vars:` reads was not carried into the next segment, so "+
 			"the resumed run fails on a reference to a step that has already succeeded")
 }
+
+// TestRunWorkflowErrorText runs the shared error-text cases against the durable
+// driver, which is the side that was getting them wrong.
+//
+// What a tolerated failure records used to be whatever Temporal handed back: an
+// activity envelope carrying scheduled event ids, a worker identity, and the
+// classification restated at every level of the cause chain. The event ids vary
+// per run, so the value an author's `if:` compares was not only different from
+// the local driver's but unstable between runs of this one.
+func TestRunWorkflowErrorText(t *testing.T) {
+	baseURL := tests.NewHTTPServer(t)
+	for _, test := range tests.ErrorTextCases(baseURL) {
+		t.Run(test.Name, func(t *testing.T) {
+			testSuite := &testsuite.WorkflowTestSuite{}
+			env := testSuite.NewTestWorkflowEnvironment()
+			env.RegisterWorkflow(engine.Run)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
+
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow})
+			require.True(t, env.IsWorkflowCompleted())
+			require.NoError(t, env.GetWorkflowError())
+
+			var out v1.Workflow_StepOutputs
+			require.NoError(t, env.GetWorkflowResult(&out))
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, &out, protocmp.Transform()))
+		})
+	}
+}
+
+// TestToleratedFailureTextCarriesNoTransportWrapping is the negative direction.
+//
+// The case above pins the sentence that should be recorded; this pins that none
+// of the envelope's vocabulary survives into it. Worth stating separately because
+// the two fail differently: a renderer change breaks the case above and reads as
+// a deliberate edit, while a regression that reintroduces the wrapping would make
+// the recorded value grow a per-run event id — which the exact-match case would
+// also catch, but this one names.
+func TestToleratedFailureTextCarriesNoTransportWrapping(t *testing.T) {
+	baseURL := tests.NewHTTPServer(t)
+	cases := tests.ErrorTextCases(baseURL)
+	require.NotEmpty(t, cases, "no error-text cases, so this asserts nothing")
+
+	for _, test := range cases {
+		t.Run(test.Name, func(t *testing.T) {
+			testSuite := &testsuite.WorkflowTestSuite{}
+			env := testSuite.NewTestWorkflowEnvironment()
+			env.RegisterWorkflow(engine.Run)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
+
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow})
+			require.True(t, env.IsWorkflowCompleted())
+			require.NoError(t, env.GetWorkflowError())
+
+			var out v1.Workflow_StepOutputs
+			require.NoError(t, env.GetWorkflowResult(&out))
+
+			recorded := out.GetStepValues()["flaky"].GetNamedValues()[v1.StepErrorOutput].GetLiteral().GetStringValue()
+			require.NotEmpty(t, recorded, "the tolerated step recorded nothing")
+
+			for _, leaked := range []string{
+				"activity error", "scheduledEventID", "startedEventID", "identity:",
+				"retryable:", "engine: flowstate run failed", "Attempt", "attempt",
+			} {
+				require.NotContains(t, recorded, leaked,
+					"the recorded value carries %q from the transport that delivered it, "+
+						"which the local driver has no equivalent of", leaked)
+			}
+		})
+	}
+}

@@ -738,9 +738,7 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope) error {
 			if !node.GetPolicy().GetContinueOnError() {
 				return fmt.Errorf("step %q: %w", node.GetId(), err)
 			}
-			scope.Outputs.StepValues[node.GetId()] = &Node_Outputs{
-				NamedValues: map[string]*Value{"error": NewLiteral(err.Error())},
-			}
+			scope.Outputs.StepValues[node.GetId()] = FailedStepOutputs(StepErrorText(err))
 			continue
 		}
 		if outputs != nil {
