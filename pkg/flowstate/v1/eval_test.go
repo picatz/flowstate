@@ -192,3 +192,27 @@ func TestRunWorkflowLog(t *testing.T) {
 		})
 	}
 }
+
+// TestRunWorkflowErrorText pins what a tolerated failure records, in the local
+// driver. The durable driver runs the same cases in the engine package, and the
+// pairing is the whole point: this value used to be a different sentence in each.
+func TestRunWorkflowErrorText(t *testing.T) {
+	baseURL := tests.NewHTTPServer(t)
+	for _, test := range tests.ErrorTextCases(baseURL) {
+		t.Run(test.Name, func(t *testing.T) {
+			out, err := v1.Run(t.Context(), test.Workflow)
+			require.NoError(t, err)
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, out, protocmp.Transform()))
+		})
+	}
+}
+
+func TestRunWorkflowNestedErrorText(t *testing.T) {
+	for _, test := range tests.NestedErrorTextCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			out, err := v1.Run(t.Context(), test.Workflow)
+			require.NoError(t, err)
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, out, protocmp.Transform()))
+		})
+	}
+}

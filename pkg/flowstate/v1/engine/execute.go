@@ -86,7 +86,7 @@ func (e *executor) runNodes(nodes []*v1.Node, depth int) error {
 
 		run, err := v1.EvalConditionInScope(context.Background(), node.GetCondition(), e.scope)
 		if err != nil {
-			return stepFailed(err, "step %q: %v", node.GetId(), err)
+			return stepFailed(err, "step %q", node.GetId())
 		}
 		if !run {
 			workflow.GetLogger(e.ctx).Info("skipping step, condition is false", "id", node.GetId())
@@ -150,7 +150,7 @@ func (e *executor) runNodes(nodes []*v1.Node, depth int) error {
 func (e *executor) runNodeWithVars(node *v1.Node, depth int, descend bool) error {
 	inner, err := v1.EvalStepVars(context.Background(), node, e.scope)
 	if err != nil {
-		return stepFailed(err, "step %q: %v", node.GetId(), err)
+		return stepFailed(err, "step %q", node.GetId())
 	}
 	if inner == e.scope {
 		return e.runNode(node, depth, descend)
@@ -190,7 +190,7 @@ func (e *executor) runTask(node *v1.Node, task *v1.Task) error {
 	// values into the next.
 	resolved, err := v1.ResolveTaskInputs(context.Background(), task, e.scope)
 	if err != nil {
-		return stepFailed(err, "step %q: %v", node.GetId(), err)
+		return stepFailed(err, "step %q", node.GetId())
 	}
 
 	stepCtx := workflow.WithActivityOptions(e.ctx, activityOptionsFor(node.GetPolicy()))
@@ -241,7 +241,7 @@ func (e *executor) runTask(node *v1.Node, task *v1.Task) error {
 		}
 	}
 	if evalErr != nil {
-		return stepFailed(evalErr, "step %q: %v", node.GetId(), evalErr)
+		return stepFailed(evalErr, "step %q", node.GetId())
 	}
 
 	e.scope.Outputs.StepValues[node.GetId()] = &out
@@ -253,7 +253,7 @@ func (e *executor) runTask(node *v1.Node, task *v1.Task) error {
 func (e *executor) runForEach(node *v1.Node, loop *v1.ForEach, depth int, descend bool) error {
 	items, err := v1.ResolveItems(context.Background(), loop, e.scope)
 	if err != nil {
-		return stepFailed(err, "step %q: %v", node.GetId(), err)
+		return stepFailed(err, "step %q", node.GetId())
 	}
 
 	name := v1.IteratorName(loop)
@@ -286,7 +286,13 @@ func (e *executor) runForEach(node *v1.Node, loop *v1.ForEach, depth int, descen
 			if errors.Is(err, errContinueAsNew) {
 				return err
 			}
-			return stepFailed(err, "step %q iteration %d: %v", node.GetId(), i, err)
+			// The iteration only, not the step: the enclosing runNodes adds
+			// `step %q` for the message a person reads, and the recorded text is
+			// already filed under that step's id, so naming it here said it
+			// twice in one and once in the other. The concurrent path below
+			// always spelled it this way; these two disagreeing was invisible
+			// until the recorded text had to match across drivers.
+			return stepFailed(err, "iteration %d", i)
 		}
 		results = append(results, iteration)
 
@@ -403,7 +409,7 @@ func (e *executor) runIterationsConcurrently(loop *v1.ForEach, iterator string, 
 
 	for i, err := range errs {
 		if err != nil {
-			return nil, stepFailed(err, "iteration %d: %v", i, err)
+			return nil, stepFailed(err, "iteration %d", i)
 		}
 	}
 	return results, nil
@@ -451,7 +457,7 @@ func (e *executor) runParallel(parallel *v1.Parallel, depth int) error {
 
 	for i, err := range errs {
 		if err != nil {
-			return stepFailed(err, "branch %d: %v", i, err)
+			return stepFailed(err, "branch %d", i)
 		}
 	}
 

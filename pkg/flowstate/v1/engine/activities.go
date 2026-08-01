@@ -123,6 +123,14 @@ func activityError(taskName string, err error) error {
 	}
 
 	kind := v1.ClassifyError(err)
+
+	// The application error's message is how a tolerated failure's recorded text
+	// crosses the activity boundary: the workflow side reads exactly this back
+	// out of Temporal's envelope (see recordedStepError). Rendering it here, from
+	// the one renderer both drivers share, is what keeps `${steps.<id>.error}`
+	// the same sentence under either driver.
+	message := v1.StepErrorText(err)
+
 	if kind.Retryable() {
 		// A failure that told us when to come back gets that carried to the
 		// substrate, which schedules the next attempt. The alternative — sleeping
@@ -131,16 +139,19 @@ func activityError(taskName string, err error) error {
 		// This belongs on the retryable path and only here: a delay on a
 		// non-retryable error is inert, because there is no next attempt to delay.
 		if delay := v1.RetryAfter(err); delay > 0 {
-			return temporal.NewApplicationErrorWithOptions(err.Error(), kind.String(),
+			return temporal.NewApplicationErrorWithOptions(message, kind.String(),
 				temporal.ApplicationErrorOptions{
 					Cause:          err,
 					NextRetryDelay: delay,
 				})
 		}
 
-		// Returning the error unchanged leaves it retryable, which is
-		// Temporal's default for application errors.
-		return err
+		// An application error with no NonRetryable option is retryable, which is
+		// what returning the error unchanged used to rely on. It is built
+		// explicitly now so the message carries the canonical text; the retry
+		// semantics are the same, and the type names the classification.
+		return temporal.NewApplicationErrorWithOptions(message, kind.String(),
+			temporal.ApplicationErrorOptions{Cause: err})
 	}
-	return temporal.NewNonRetryableApplicationError(err.Error(), kind.String(), err)
+	return temporal.NewNonRetryableApplicationError(message, kind.String(), err)
 }

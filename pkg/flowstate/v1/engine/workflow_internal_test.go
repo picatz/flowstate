@@ -256,13 +256,32 @@ func Test_activityError_retryAfter(t *testing.T) {
 		require.False(t, appErr.NonRetryable(), "carrying a delay must not make it permanent")
 	})
 
-	t.Run("a retryable failure with no delay takes exactly its old path", func(t *testing.T) {
-		// The plugin host depends on this: a retryable kind with no delay must be
-		// returned unchanged, since an unwrapped error is retryable by default.
+	t.Run("a retryable failure with no delay stays retryable and says the same thing", func(t *testing.T) {
+		// This used to assert the error was returned *unchanged*, on the reasoning
+		// that an unwrapped error is retryable by default. It is wrapped now, so
+		// that the application error's message carries the text a tolerated failure
+		// records — which is how `${steps.<id>.error}` reads the same under either
+		// driver.
+		//
+		// So what is pinned is the property that assertion was standing in for,
+		// rather than the identity that happened to deliver it: still retryable,
+		// still typed by kind, with the cause reachable for anything that classifies
+		// on it.
 		original := &v1.TaskError{Task: "http", Kind: v1.ErrorKindUpstream, Err: errors.New("boom")}
 
 		err := activityError("http", original)
-		require.Same(t, original, err, "the zero case must stay on the path it takes today")
+
+		var appErr *temporal.ApplicationError
+		require.ErrorAs(t, err, &appErr)
+		require.False(t, appErr.NonRetryable(), "a retryable kind must not become permanent")
+		require.Zero(t, appErr.NextRetryDelay(), "no delay was asked for, so none may be imposed")
+		require.Equal(t, v1.ErrorKindUpstream.String(), appErr.Type())
+		require.Equal(t, v1.StepErrorText(original), appErr.Message(),
+			"the message is how the recorded text crosses the activity boundary")
+
+		var taskErr *v1.TaskError
+		require.ErrorAs(t, err, &taskErr, "the classified cause must stay reachable")
+		require.Same(t, original, taskErr)
 	})
 
 	t.Run("a permanent failure ignores a delay", func(t *testing.T) {
