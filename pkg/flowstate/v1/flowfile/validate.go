@@ -1353,7 +1353,7 @@ func unresolvedStep(stepID, inputName, ref string, index int, wf *v1.Workflow) D
 // `continue_on_error:` is set, which is what a later step branches on. Named here
 // because the validator has to know about it and does not otherwise: it is the one
 // output that comes from the *policy* rather than from the task.
-const toleratedErrorOutput = "error"
+const toleratedErrorOutput = v1.StepErrorOutput
 
 // unknownStepOutput reports a reference to an output a step does not produce.
 //

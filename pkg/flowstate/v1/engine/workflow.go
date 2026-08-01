@@ -13,6 +13,33 @@ import (
 
 type ErrRunFailed struct {
 	Message string
+
+	// Recorded is the driver-independent text this failure records as the step's
+	// `error` output when `continue_on_error` tolerates it — rendered by
+	// [v1.StepErrorText], and deliberately not Message.
+	//
+	// Message formats the whole cause, Temporal's envelope included, for the
+	// run-level failure a person reads. Recorded is the value an author's
+	// expression compares, so it has to be the same sentence the local driver
+	// records for the same failure.
+	//
+	// It travels as a field rather than as a wrapped cause because this type has
+	// no Unwrap on purpose: Temporal's failure converter walks the unwrap chain
+	// into the failure it persists, and what this deliberately flattens must stay
+	// flattened.
+	Recorded string
+
+	// recordedFromTask reports whether Recorded came from a classified task
+	// failure.
+	//
+	// A classified failure renders canonically — `task "http" failed (Kind): …` —
+	// and absorbs the structural prefixes around it, because the local driver's
+	// errors.As reaches straight past `iteration 0:` and `step "x":` to the
+	// TaskError inside. Anything else keeps those prefixes, because there the
+	// local driver renders the wrapped error's own words and the position is part
+	// of them. This bit is what lets the durable driver make the same choice
+	// without re-deriving it from a chain it has already flattened.
+	recordedFromTask bool
 }
 
 func (e *ErrRunFailed) Error() string {
@@ -36,11 +63,75 @@ func (e *ErrRunFailed) Error() string {
 // failure. Cancellation reaches here from anything that blocks on the workflow's
 // context — an activity, a timer, a signal channel — which is why this is a
 // helper rather than a check at one site.
+// The format names only the *position* — `step %q`, `iteration %d` — and not the
+// cause: this composes both strings from it, so the message a person reads and
+// the text an expression compares cannot drift apart at a call site that
+// remembered to interpolate the error into one of them and not the other.
 func stepFailed(err error, format string, args ...any) error {
 	if temporal.IsCanceledError(err) {
 		return err
 	}
-	return &ErrRunFailed{Message: fmt.Sprintf(format, args...)}
+
+	position := fmt.Sprintf(format, args...)
+	recorded, fromTask := recordedStepError(err)
+
+	// A nested structural position is prepended for the same failures the local
+	// driver prepends it for, and dropped for the same ones it drops it for. A
+	// tolerated `for_each` whose body raised a runtime CEL error records
+	// `iteration 0: step "child": no such key: field` under either driver;
+	// a tolerated body whose *task* failed records the canonical task sentence
+	// under either, because that is what errors.As finds locally.
+	if !fromTask && recorded != "" {
+		recorded = position + ": " + recorded
+	}
+
+	return &ErrRunFailed{
+		Message:          position + ": " + err.Error(),
+		Recorded:         recorded,
+		recordedFromTask: fromTask,
+	}
+}
+
+// recordedStepError extracts the text a tolerated failure records as the step's
+// `error` output, from whatever shape the failure reached this driver in.
+//
+// The text itself has exactly one renderer, [v1.StepErrorText]; this only
+// recovers its output from the wrapping the durable driver adds in transit. A
+// task failure arrives from an activity inside a failure envelope — scheduled
+// event ids, a worker identity, the classification restated at every level of
+// the cause chain — and the application error within carries the rendered text
+// as its message, put there by activityError on the worker. A failure from a
+// nested level (a loop iteration, a parallel branch) arrives as an
+// [ErrRunFailed] already carrying the text it extracted, so the innermost task's
+// sentence is what propagates outward. Anything else never crossed a wire, and
+// its own words are already what the local driver would record.
+// The second return says whether the text came from a classified task failure,
+// which decides whether an enclosing position is prepended to it — see
+// [stepFailed].
+func recordedStepError(err error) (string, bool) {
+	var run *ErrRunFailed
+	if errors.As(err, &run) && run.Recorded != "" {
+		return run.Recorded, run.recordedFromTask
+	}
+
+	// Every application error reaching a step's tolerance came from
+	// activityError, which builds it from a classified task failure and puts the
+	// canonical text in the message.
+	var app *temporal.ApplicationError
+	if errors.As(err, &app) {
+		return app.Message(), true
+	}
+
+	// An activity failure with no application error inside — a timeout, say —
+	// still sheds the envelope: the cause is the failure, the envelope is only
+	// how it travelled. Not a classified failure, so a position still applies.
+	var activity *temporal.ActivityError
+	if errors.As(err, &activity) && activity.Unwrap() != nil {
+		return activity.Unwrap().Error(), false
+	}
+
+	var taskErr *v1.TaskError
+	return v1.StepErrorText(err), errors.As(err, &taskErr)
 }
 
 const RunTaskQueueName = "flowstate-run-task-queue"
@@ -260,14 +351,16 @@ func compactOutputsForFrames(spec *v1.Workflow, frames []*v1.Frame, outputs *v1.
 //
 // A step allowed to continue past its own failure still has to leave something
 // behind, so that a later step can branch on whether it worked. Reporting the
-// failure under a well-known `error` output makes that expressible as
+// failure under [v1.StepErrorOutput] makes that expressible as
 // `${steps.<id>.error}`, and its absence means the step succeeded.
+//
+// The text recorded is the extracted, driver-independent one rather than
+// err.Error(): what reaches here is wrapped in this driver's transport, and the
+// local driver records the same failure without any of it.
 func failedStepOutputs(err error) *v1.Node_Outputs {
-	return &v1.Node_Outputs{
-		NamedValues: map[string]*v1.Value{
-			"error": v1.NewLiteral(err.Error()),
-		},
-	}
+	recorded, _ := recordedStepError(err)
+
+	return v1.FailedStepOutputs(recorded)
 }
 
 // rootedStepRef reads a reference written under the steps root, returning the

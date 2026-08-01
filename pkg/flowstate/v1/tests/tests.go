@@ -38,6 +38,17 @@ func NewHTTPServer(tb testing.TB) string {
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusOK)
 	})
+	// Two failure codes, one permanent and one retryable, so a case can pin what a
+	// tolerated failure *says* rather than only that it happened — and can pin that
+	// the sentence is the same on the second attempt as on the first.
+	mux.HandleFunc("/status/404", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusNotFound)
+	})
+	mux.HandleFunc("/status/500", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusInternalServerError)
+	})
 	mux.HandleFunc("/json", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
