@@ -140,10 +140,17 @@ func (a Authority) Broker(tb testing.TB) *auth.Broker {
 // ProtoIdentity renders this Authority's identity as the wire type
 // [v1.RunState.Identity] carries, for the durable driver to install at worker
 // registration.
+//
+// Claims is copied too, not just the four scalar fields: a case whose policy
+// keys on workload.claims["repository"] would otherwise see them on the local
+// driver, which installs auth.WorkloadIdentity directly, and lose them on the
+// durable driver, which only ever sees what crossed this conversion — a
+// driver disagreement the harness itself would have caused rather than caught.
 func (a Authority) ProtoIdentity() *v1.WorkloadIdentity {
 	return &v1.WorkloadIdentity{
 		Subject:    a.Identity.Subject,
 		Issuer:     a.Identity.Issuer,
+		Claims:     a.Identity.Claims,
 		Namespace:  a.Identity.Namespace,
 		Deployment: a.Identity.Deployment,
 	}
