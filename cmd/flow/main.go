@@ -1500,6 +1500,12 @@ flow plugins -o json | jq -r '.plugins[] | select(.tasks[].name == "example.gree
 	addOutputFlag(pluginsCmd)
 	addPluginFlags(pluginsCmd)
 
+	// Keys and JWT commands, for admin debugging of workload identity: what a
+	// generated key publishes, and what a token actually claims and verifies
+	// against, without needing a throwaway Go program to find out.
+	keysCmd := newKeysCommand()
+	jwtCmd := newJWTCommand()
+
 	// MCP command, which serves the control plane to an AI agent as tools.
 	mcpCmd := &cobra.Command{
 		Use:   "mcp",
@@ -1559,6 +1565,8 @@ flow lsp`,
 	workerCmd.GroupID = "infrastructure"
 	serverCmd.GroupID = "infrastructure"
 	lspCmd.GroupID = "development"
+	keysCmd.GroupID = "development"
+	jwtCmd.GroupID = "development"
 
 	// Add commands to root.
 	rootCmd.AddCommand(runCmd)
@@ -1583,6 +1591,8 @@ flow lsp`,
 	rootCmd.AddCommand(serverCmd)
 	runCmd.AddCommand(runLocalCmd)
 	rootCmd.AddCommand(lspCmd)
+	rootCmd.AddCommand(keysCmd)
+	rootCmd.AddCommand(jwtCmd)
 
 	return rootCmd
 }
