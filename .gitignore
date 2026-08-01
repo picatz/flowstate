@@ -25,3 +25,10 @@ go.work
 
 # The compiled CLI, when built in place with `go build ./cmd/flow`.
 /flow
+
+# Agent worktrees and session-local tool state. Worktree isolation for
+# subagents materializes under .claude/worktrees/, which is scratch by
+# definition: each is a copy of the tree mid-edit, and committing one would
+# commit a snapshot of unfinished work twice over.
+.claude/
+
