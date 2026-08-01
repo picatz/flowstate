@@ -86,7 +86,7 @@ func TestRegisterInstallsEverythingHistoryCanName(t *testing.T) {
 	// not a build error and not a test failure anywhere else — it is a run that
 	// cannot finish on a worker that does not answer to the name.
 	require.ElementsMatch(t,
-		[]string{"Task", "TaskInScope", "TaskWithPrev", "WorkflowVars"}, registry.activities)
+		[]string{"Task", "TaskInScope", "TaskWithPrev", "TaskAuthorized", "TaskInScopeAuthorized", "WorkflowVars"}, registry.activities)
 }
 
 // TestRegisterPinsTheInterpreter is the assertion the whole versioning posture
@@ -356,8 +356,12 @@ func (r *recordingRegistry) RegisterActivity(a any) {
 	r.activities = append(r.activities, functionName(a))
 }
 
-func (r *recordingRegistry) RegisterActivityWithOptions(a any, _ activity.RegisterOptions) {
-	r.activities = append(r.activities, functionName(a))
+func (r *recordingRegistry) RegisterActivityWithOptions(a any, options activity.RegisterOptions) {
+	name := options.Name
+	if name == "" {
+		name = functionName(a)
+	}
+	r.activities = append(r.activities, name)
 }
 
 func (r *recordingRegistry) RegisterDynamicWorkflow(any, workflow.DynamicRegisterOptions) {}

@@ -10,6 +10,67 @@ other.
 [CLAUDE.md](../CLAUDE.md) describes how to change it. This describes what a person
 meets.
 
+## Worker-side secrets
+
+A Flowfile carries only a reference such as `${secret('env:API_TOKEN')}`. The
+value is resolved inside the task activity, after the authenticated workload and
+step are known, and is never placed in the workflow payload, outputs, or history.
+
+Secret access requires two independent pieces of worker configuration:
+
+```sh
+flow worker \
+  --secret-env API_TOKEN \
+  --secret-dir /var/run/secrets/flowstate \
+  --auth-policy /etc/flowstate/auth.yaml
+```
+
+`--secret-env` is an allowlist and may be repeated (or supplied as a
+comma-separated list). It exposes only variables named
+`FLOWSTATE_SECRET_<NAME>`. `--secret-dir` enables `file:` references rooted below
+the given directory. Providers without an auth policy, a policy without a
+`secrets:` section, an unknown scheme, and a rule that does not allow the exact
+workload/step/reference all fail closed before a value is read.
+
+`flow run local` accepts the same flags. That is intentional: a rehearsal under a
+different secret policy is not a rehearsal of production. See
+[`examples/http-secret`](../examples/http-secret/) for the Flowfile and policy
+together.
+
+## Just-in-time workload credentials
+
+Prefer federation to a static secret when the downstream system supports token
+exchange or workload identity. Configure `federation.targets` in the same reviewed
+auth policy, give the worker a rotating PKCS#8 signing key, and name the target in
+the HTTP task:
+
+```yaml
+http:
+  url: https://api.partner.example.com/orders
+  credential: partner-api
+```
+
+```sh
+flow worker \
+  --auth-policy /etc/flowstate/auth.yaml \
+  --identity-key /var/run/flowstate/2026-08.pem
+```
+
+The activity evaluates the target's CEL assume policy against the authenticated
+tenant, workflow, run, and step; mints an audience-scoped Flowstate assertion;
+exchanges it; and applies the short-lived bearer token directly to the request.
+The assertion and exchanged credential are never task outputs. An unknown target,
+denied rule, missing key, non-expiring credential, or federation configuration
+error fails closed. AWS session targets require SigV4 and are intentionally left
+to AWS-aware tasks rather than being misrepresented as bearer credentials. See
+[`examples/http-federated`](../examples/http-federated/).
+
+For multi-tenant static providers, combine `--secret-require-namespace` with
+`--secret-env-namespace team-a=TEAM_A_SECRET_` or
+`--secret-dir-namespaced`. A tenant with no configured environment prefix is
+refused; prefixes are checked for overlap; file tenants receive separate rooted
+directories.
+
 ## The two audiences
 
 **stdout carries the answer. stderr carries the account of it.**

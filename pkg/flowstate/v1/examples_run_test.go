@@ -2,6 +2,8 @@ package flowstatev1_test
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -19,9 +21,43 @@ import (
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 )
+
+type exampleSecretProvider struct{}
+
+func (exampleSecretProvider) Scheme() string { return "env" }
+func (exampleSecretProvider) Resolve(_ context.Context, req secrets.Request) (secrets.Secret, error) {
+	return secrets.NewSecret(req.Ref, "example-token"), nil
+}
+
+type exampleExchanger struct{}
+
+func (exampleExchanger) Name() string { return "example-sts" }
+func (exampleExchanger) Requirement() auth.Requirement {
+	return auth.Requirement{Audience: "https://api.example.com"}
+}
+func (exampleExchanger) Exchange(context.Context, auth.Assertion) (auth.Credential, error) {
+	return auth.NewCredential(auth.CredentialBearer, time.Now().Add(time.Minute),
+		map[string]string{auth.CredentialAccessToken: "example-jit-token"})
+}
+
+func exampleBroker(t *testing.T) *auth.Broker {
+	t.Helper()
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	key, err := auth.NewSigningKey("example", private)
+	require.NoError(t, err)
+	issuer, err := auth.NewIssuer("https://flowstate.example", key)
+	require.NoError(t, err)
+	broker, err := auth.NewBroker(issuer,
+		auth.WithTarget("partner-api", exampleExchanger{}), auth.WithAssumeAllowRules("true"))
+	require.NoError(t, err)
+	return broker
+}
 
 // CLAUDE.md says a capability is not done until an example exercises it, "those
 // run in CI, which is what keeps them honest". They did not run. Every test over
@@ -144,6 +180,11 @@ func TestEveryNetworkedExampleRuns(t *testing.T) {
 	// have the first one's restore land while the second still runs. Subtests may
 	// still be parallel — cleanup waits for them.
 	base, unserved := exampleHTTPServer(t)
+	secretStore, err := secrets.NewStore(exampleSecretProvider{})
+	require.NoError(t, err)
+	secretPolicy, err := (auth.SecretAccessPolicy{Allow: []string{"true"}}).Compile()
+	require.NoError(t, err)
+	broker := exampleBroker(t)
 
 	paths, err := filepath.Glob(filepath.Join("..", "..", "..", "examples", "*", "workflow.yaml"))
 	require.NoError(t, err)
@@ -180,6 +221,11 @@ func TestEveryNetworkedExampleRuns(t *testing.T) {
 
 			ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
 			defer cancel()
+			ctx = v1.ContextWithTaskRuntime(ctx, v1.TaskRuntime{
+				Store: secretStore, Policy: secretPolicy, Broker: broker,
+				Identity: auth.WorkloadIdentity{Subject: "examples", Issuer: "flowstate:test"},
+				Step:     auth.StepRef{Workflow: wf.GetName(), Run: "example-run"},
+			})
 
 			outputs, err := v1.Run(ctx, wf)
 			require.NoError(t, err, "%s validates but does not run", name)

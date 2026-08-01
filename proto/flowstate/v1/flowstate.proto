@@ -1030,6 +1030,20 @@ message Task {
       // cannot quietly become a junk drawer: a future credential shape gets its
       // own field, named for what it is.
       Value bearer = 12;
+
+      // Credential names an outbound federation target configured by the
+      // deployment, such as "aws-prod" or "partner-api". The worker authorizes
+      // the exact workload and step, mints a short-lived assertion, exchanges it,
+      // and applies the resulting bearer credential inside the activity. No
+      // credential material crosses workflow history.
+      //
+      // AWS session targets are deliberately refused by the generic HTTP task:
+      // they require SigV4 request signing and belong in an AWS-aware task.
+      optional string credential = 13 [(buf.validate.field).string = {
+        min_len: 1
+        max_len: 128
+        pattern: "^[a-z][a-z0-9-]*$"
+      }];
       // Optional outputs shaping: when provided, the HTTP task will return only
       // the named outputs defined by this map instead of the default outputs.
       // Values are evaluated as CEL expressions (or used as literals) with the

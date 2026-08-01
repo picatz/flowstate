@@ -699,6 +699,10 @@ func eval(ctx context.Context, w *Workflow) (*Workflow_StepOutputs, error) {
 	scope := NewScope(w.GetProfile(), stepOutputs)
 	scope.AmbientVars = vars
 
+	if runtime, ok := ctx.Value(secretRuntimeKey{}).(TaskRuntime); ok && runtime.Step.Workflow == "" {
+		runtime.Step.Workflow = w.GetName()
+		ctx = ContextWithTaskRuntime(ctx, runtime)
+	}
 	if err := runNodes(ctx, w.Steps, scope); err != nil {
 		return nil, err
 	}
@@ -716,7 +720,11 @@ func eval(ctx context.Context, w *Workflow) (*Workflow_StepOutputs, error) {
 // block whose branches contain further loops.
 func runNodes(ctx context.Context, nodes []*Node, scope *Scope) error {
 	for _, node := range nodes {
-		run, err := EvalConditionInScope(ctx, node.GetCondition(), scope)
+		nodeCtx := ctx
+		if runtime, ok := ctx.Value(secretRuntimeKey{}).(TaskRuntime); ok {
+			nodeCtx = ContextWithSecretStep(ctx, runtime.Step.Workflow, runtime.Step.Run, node.GetId())
+		}
+		run, err := EvalConditionInScope(nodeCtx, node.GetCondition(), scope)
 		if err != nil {
 			return fmt.Errorf("step %q: %w", node.GetId(), err)
 		}
@@ -728,12 +736,12 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope) error {
 		// after the condition deliberately: `if:` decides whether the step runs at
 		// all, so a var it declares does not exist yet when the question is asked —
 		// and a var whose expression would fail must not fail a step that is skipped.
-		inner, err := EvalStepVars(ctx, node, scope)
+		inner, err := EvalStepVars(nodeCtx, node, scope)
 		if err != nil {
 			return fmt.Errorf("step %q: %w", node.GetId(), err)
 		}
 
-		outputs, err := runNode(ctx, node, inner)
+		outputs, err := runNode(nodeCtx, node, inner)
 		if err != nil {
 			if !node.GetPolicy().GetContinueOnError() {
 				return fmt.Errorf("step %q: %w", node.GetId(), err)

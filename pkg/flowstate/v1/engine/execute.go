@@ -27,9 +27,11 @@ var errContinueAsNew = errors.New("engine: continue as new")
 
 // executor carries the state of one workflow execution.
 type executor struct {
-	ctx   workflow.Context
-	spec  *v1.Workflow
-	scope *v1.Scope
+	ctx      workflow.Context
+	spec     *v1.Workflow
+	scope    *v1.Scope
+	identity *v1.WorkloadIdentity
+	runID    string
 
 	// budget and processed implement the step budget for Continue-As-New.
 	budget    int
@@ -195,6 +197,7 @@ func (e *executor) runTask(node *v1.Node, task *v1.Task) error {
 
 	var out v1.Node_Outputs
 	var evalErr error
+	needsAuthority := v1.TaskNeedsAuthority(resolved)
 	if v1.TaskNeedsPrevOutputs(resolved.GetName()) {
 		// Compacted in the outputs and *whole* in every namespace. Only step outputs
 		// are pruned, because only they are large and only they are addressable by a
@@ -223,9 +226,19 @@ func (e *executor) runTask(node *v1.Node, task *v1.Task) error {
 			// being resolved locally at each end.
 			Profile: e.scope.GetProfile(),
 		}
-		evalErr = workflow.ExecuteActivity(stepCtx, TaskInScope, resolved, compact).Get(stepCtx, &out)
+		if needsAuthority {
+			evalErr = workflow.ExecuteActivity(stepCtx, "TaskInScopeAuthorized", resolved, compact,
+				e.identity, e.spec.GetName(), e.runID, node.GetId()).Get(stepCtx, &out)
+		} else {
+			evalErr = workflow.ExecuteActivity(stepCtx, TaskInScope, resolved, compact).Get(stepCtx, &out)
+		}
 	} else {
-		evalErr = workflow.ExecuteActivity(stepCtx, Task, resolved).Get(stepCtx, &out)
+		if needsAuthority {
+			evalErr = workflow.ExecuteActivity(stepCtx, "TaskAuthorized", resolved,
+				e.identity, e.spec.GetName(), e.runID, node.GetId()).Get(stepCtx, &out)
+		} else {
+			evalErr = workflow.ExecuteActivity(stepCtx, Task, resolved).Get(stepCtx, &out)
+		}
 	}
 	if evalErr != nil {
 		return stepFailed(evalErr, "step %q: %v", node.GetId(), evalErr)
@@ -300,8 +313,10 @@ func (e *executor) runIteration(loop *v1.ForEach, iterator string, item *v1.Valu
 	iterationOutputs := cloneOutputs(e.scope.GetOutputs())
 
 	nested := &executor{
-		ctx:  e.ctx,
-		spec: e.spec,
+		ctx:      e.ctx,
+		spec:     e.spec,
+		identity: e.identity,
+		runID:    e.runID,
 		// The iteration's scope: outputs visible before the loop, plus the
 		// current item bound to the iterator's name.
 		scope:     e.scope.WithLocal(iterator, item).WithOutputs(iterationOutputs),
@@ -357,11 +372,13 @@ func (e *executor) runIterationsConcurrently(loop *v1.ForEach, iterator string, 
 				next++
 
 				worker := &executor{
-					ctx:     gctx,
-					spec:    e.spec,
-					scope:   e.scope.WithLocal(iterator, items[i]).WithOutputs(cloneOutputs(e.scope.GetOutputs())),
-					budget:  e.budget,
-					signals: e.signals,
+					ctx:      gctx,
+					spec:     e.spec,
+					identity: e.identity,
+					runID:    e.runID,
+					scope:    e.scope.WithLocal(iterator, items[i]).WithOutputs(cloneOutputs(e.scope.GetOutputs())),
+					budget:   e.budget,
+					signals:  e.signals,
 
 					// Deliberately not carried. Iterations run at once, so a
 					// worker writing its own step in would be reporting a
@@ -408,11 +425,13 @@ func (e *executor) runParallel(parallel *v1.Parallel, depth int) error {
 			// make the result depend on scheduling.
 			branchOutputs := cloneOutputs(e.scope.GetOutputs())
 			worker := &executor{
-				ctx:     gctx,
-				spec:    e.spec,
-				scope:   e.scope.WithOutputs(branchOutputs),
-				budget:  e.budget,
-				signals: e.signals,
+				ctx:      gctx,
+				spec:     e.spec,
+				identity: e.identity,
+				runID:    e.runID,
+				scope:    e.scope.WithOutputs(branchOutputs),
+				budget:   e.budget,
+				signals:  e.signals,
 
 				// Not carried, for the same reason a concurrent iteration does
 				// not carry it: no one branch is the run's position.

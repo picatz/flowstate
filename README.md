@@ -769,7 +769,7 @@ See [examples/logging](examples/logging).
 | Task Name | Inputs | Outputs |
 |-----------|--------|---------|
 | `log`     | `message`, `level`, `fields` | *(none)* |
-| `http`    | `url`, `method`, `headers`, `body`, `query`, `form`, `json`, `parse_json`, `outputs`, `expect`, `retry_on_unknown_outcome`, `bearer` | `status_code`, `headers`, `body`, `json` |
+| `http`    | `url`, `method`, `headers`, `body`, `query`, `form`, `json`, `parse_json`, `outputs`, `expect`, `retry_on_unknown_outcome`, `bearer`, `credential` | `status_code`, `headers`, `body`, `json` |
 
 `log` has no outputs, which is the design rather than a gap: a log line is an effect on a
 reader, not a value for a later step. Naming one — `${steps.announce.result}` — would give

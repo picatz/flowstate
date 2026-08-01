@@ -1,0 +1,10 @@
+edition: v2026.2
+name: federated-health-check
+
+steps:
+  - id: health
+    http:
+      url: https://api.example.com/status/200
+      credential: partner-api
+      expect: ${response.status_code == 200}
+

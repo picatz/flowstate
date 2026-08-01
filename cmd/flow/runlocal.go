@@ -66,6 +66,11 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	reportUnansweredGates(cmd.ErrOrStderr(), workflow, localSignals)
+	ctx, closeSecretProviders, err := withLocalTaskRuntime(cmd, ctx, workflow)
+	if err != nil {
+		return err
+	}
+	defer closeSecretProviders()
 
 	// `log:` steps go to stderr, where the run's own commentary already goes, so the
 	// result on stdout stays a single JSON document a pipe can read. A workflow that

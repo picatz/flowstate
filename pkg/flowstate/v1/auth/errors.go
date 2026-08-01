@@ -93,12 +93,21 @@ var (
 	// assertion, or could not be reached.
 	ErrExchangeFailed = errors.New("auth: credential exchange failed")
 
+	// ErrExchangeUnavailable marks a transient exchange failure: transport
+	// failure, throttling, or a relying-party 5xx. It also wraps
+	// [ErrExchangeFailed], so callers can report one exchange category while task
+	// retry policy distinguishes an outage from a permanent refusal.
+	ErrExchangeUnavailable = errors.New("auth: credential exchange temporarily unavailable")
+
 	// ErrCredentialUnresolved is returned when a [Credential] carries no secret
 	// material. It means the credential was serialized somewhere, which strips
 	// the secret by design: credentials must be resolved in the activity that
 	// uses them, never carried through workflow history.
 	ErrCredentialUnresolved = errors.New("auth: credential carries no secret material")
 )
+
+// Retryable reports whether another credential exchange attempt may succeed.
+func Retryable(err error) bool { return errors.Is(err, ErrExchangeUnavailable) }
 
 // Errors returned when a tenant boundary or a secret access decision is at stake.
 var (

@@ -210,6 +210,12 @@ func runWorker(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	secretProviders, secretsConfigured, closeSecretProviders, err := secretRegistry(cmd)
+	if err != nil {
+		return err
+	}
+	defer closeSecretProviders()
+
 	c, err := initTemporalClient(cmd.Context(), flags)
 	if err != nil {
 		return err
@@ -220,11 +226,15 @@ func runWorker(cmd *cobra.Command, args []string) error {
 	// a plugin task it has not registered yet would answer `unknown task` for a
 	// workflow that is correct — and Open is strict, so a plugin that cannot come
 	// up fails the command here rather than one step at a time later.
-	closePlugins, err := startPlugins(cmd)
+	closePlugins, err := startPlugins(cmd, secretProviders)
 	if err != nil {
 		return err
 	}
 	defer closePlugins()
+	runtime, err := workerRuntime(cmd, secretProviders, secretsConfigured)
+	if err != nil {
+		return err
+	}
 
 	deployment := engine.DeploymentOptions(flags.deploymentName, flags.buildID)
 
@@ -232,7 +242,7 @@ func runWorker(cmd *cobra.Command, args []string) error {
 		DeploymentOptions: deployment,
 	})
 
-	engine.Register(w)
+	engine.Register(w, runtime)
 
 	if deployment.UseVersioning {
 		infraLogger().Info("starting worker",
@@ -397,6 +407,13 @@ func runServer(cmd *cobra.Command, args []string) error {
 	if len(authCfg.identityClaims) > 0 {
 		serverOpts = append(serverOpts, server.WithIdentityClaims(authCfg.identityClaims...))
 	}
+	if policy != nil {
+		var targets []string
+		if broker != nil {
+			targets = broker.Targets()
+		}
+		serverOpts = append(serverOpts, server.WithCredentialTargets(targets...))
+	}
 
 	// A trust policy that maps tenants onto Temporal namespaces needs a client
 	// per namespace it can route to, dialed now so an unreachable namespace fails
@@ -420,7 +437,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// a caller authoring against GetCatalog would be told a task its workers run
 	// does not exist. The plugins launched here serve descriptors and health
 	// checks; execution still happens on the workers.
-	closePlugins, err := startPlugins(cmd)
+	closePlugins, err := startPlugins(cmd, nil)
 	if err != nil {
 		return err
 	}
@@ -1279,6 +1296,26 @@ flow server --verbose`,
 	// the server answers.
 	addEgressPolicyFlag(workerCmd)
 	addEgressPolicyFlag(runLocalCmd)
+	addSecretFlags(workerCmd)
+	addSecretFlags(runLocalCmd)
+	runLocalCmd.Flags().String("as-subject", "local-user",
+		"authenticated subject to rehearse policy as (local runs only)")
+	runLocalCmd.Flags().String("as-issuer", "flowstate:local",
+		"authenticated issuer to rehearse policy as (local runs only)")
+	runLocalCmd.Flags().String("as-namespace", "",
+		"tenant namespace to rehearse policy as (local runs only)")
+	runLocalCmd.Flags().String("as-deployment", "local",
+		"Flowstate deployment name to rehearse policy as (local runs only)")
+	runLocalCmd.Flags().StringArray("as-claim", nil,
+		"authenticated string claim NAME=VALUE to rehearse policy as (repeatable)")
+	workerCmd.Flags().String("auth-policy", os.Getenv("FLOWSTATE_AUTH_POLICY"),
+		"path to an access policy whose secrets rules authorize worker-side resolution")
+	runLocalCmd.Flags().String("auth-policy", os.Getenv("FLOWSTATE_AUTH_POLICY"),
+		"path to an access policy whose secrets rules authorize this local rehearsal")
+	for _, c := range []*cobra.Command{workerCmd, runLocalCmd} {
+		c.Flags().String("identity-key", os.Getenv("FLOWSTATE_IDENTITY_KEY"),
+			"PKCS#8 PEM key used to mint short-lived workload assertions for federation targets")
+	}
 
 	serverCmd.Flags().String("auth-policy",
 		os.Getenv("FLOWSTATE_AUTH_POLICY"),

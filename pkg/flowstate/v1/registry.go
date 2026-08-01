@@ -86,6 +86,18 @@ type TaskDef struct {
 	// itself does need them.
 	NeedsPrevOutputs bool
 
+	// AuthorityInputs names inputs whose presence requires the activity to carry
+	// the authenticated workload identity and exact execution position. Secret
+	// resolution and JIT credential exchange both need that authority, while an
+	// ordinary task stays on the legacy activity name for replay compatibility.
+	AuthorityInputs []string
+
+	// CredentialInputs is the subset of authority inputs whose literal value
+	// names a deployment federation target. Deployment-aware validators use this
+	// metadata instead of knowing built-in task names, so AWS-aware and plugin
+	// tasks can compose with the same target catalog.
+	CredentialInputs []string
+
 	// CheckLiteral is what the task alone can say about an input written out in
 	// full, before anything runs.
 	//
@@ -118,6 +130,24 @@ type TaskDef struct {
 
 	// Fn executes the task.
 	Fn TaskFunc
+}
+
+// TaskNeedsAuthority reports whether this concrete task invocation needs the
+// identity-aware activity entry point.
+func TaskNeedsAuthority(task *Task) bool {
+	if task == nil {
+		return false
+	}
+	def, found := LookupTask(task.GetName())
+	if !found {
+		return false
+	}
+	for _, name := range def.AuthorityInputs {
+		if value := task.GetInputs()[name]; value != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // CheckLiteralInput asks the task what it can say about a literal input.
@@ -172,6 +202,11 @@ func (r *Registry) Register(def TaskDef) error {
 	}
 	if def.Fn == nil {
 		return fmt.Errorf("task %q has no function", def.Name)
+	}
+	for _, input := range def.CredentialInputs {
+		if !slices.Contains(def.AuthorityInputs, input) {
+			return fmt.Errorf("task %q credential input %q is not an authority input", def.Name, input)
+		}
 	}
 
 	// A step names its task directly, so a task named for part of the step

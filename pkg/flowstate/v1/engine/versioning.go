@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
 )
@@ -60,7 +61,7 @@ import (
 // The parameter is [worker.Registry] rather than [worker.Worker] so that anything
 // that can hold registrations can be passed one — including a test environment
 // wrapping a real worker.
-func Register(w worker.Registry) {
+func Register(w worker.Registry, runtime ...TaskRuntimeConfig) {
 	w.RegisterWorkflowWithOptions(Run, workflow.RegisterOptions{
 		// Pinned, so an in-flight run is never handed to a different interpreter
 		// than the one that has been executing it. On a worker that has not opted
@@ -71,6 +72,13 @@ func Register(w worker.Registry) {
 
 	w.RegisterActivity(Task)
 	w.RegisterActivity(TaskInScope)
+	configured := TaskRuntimeConfig{}
+	if len(runtime) > 0 {
+		configured = runtime[0]
+	}
+	authorized := taskActivities{configured: configured}
+	w.RegisterActivityWithOptions(authorized.TaskAuthorized, activity.RegisterOptions{Name: "TaskAuthorized"})
+	w.RegisterActivityWithOptions(authorized.TaskInScopeAuthorized, activity.RegisterOptions{Name: "TaskInScopeAuthorized"})
 	w.RegisterActivity(WorkflowVars)
 
 	// Registered so a run started before scopes existed can still complete. It has
