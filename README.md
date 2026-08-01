@@ -534,11 +534,20 @@ steps:
 `bearer:` is the input that consumes a reference today. The worker resolves it
 inside the activity that makes the request, sets `Authorization: Bearer <value>`,
 and the value exists for that call and nowhere else — see
-[examples/http-secret](examples/http-secret) for a worked file. Two placements are
-still refused, and both refusals are deliberate rather than pending: a reference
-inside the `headers` map, because that map is `map<string, string>` and a
-reference is not a string; and a reference read by an expression, because
-computing with it in workflow code would put the result in history.
+[examples/http-secret](examples/http-secret) for a worked file. Every other
+placement is refused, and each refusal is deliberate rather than pending:
+
+- **`headers:`**, because that map is `map<string, string>` and a reference is not
+  a string.
+- **`query:`**, because a query string is written to access logs, browser
+  history, and a `Referer` header on redirect — a secret there is a secret
+  published.
+- **`json:`** and the raw string `body:`, because resolving one there would mean
+  the workflow had already evaluated it on the way in, which is what puts a
+  secret in history. Whether a body may one day carry a reference is a decision
+  for the schema, not for the request encoder.
+- **read by an expression** anywhere, because computing with it in workflow code
+  would put the result in history.
 
 ```
 a secret reference cannot be read in an expression; pass it to a task input that
@@ -603,14 +612,17 @@ by launching each plugin and asking it — which is the only way to know, since 
 is read from a binary to discover what it does. `--output json` carries the same
 answer as a document.
 
-Two things are deliberately not connected yet, and are called out rather than quietly
-implied. **A plugin's secret schemes are not registered**, because nothing in the
-engine resolves a secret reference yet — providers registered now would sit behind a
-call that is never made. And **`flow validate` and the editor do not see plugin
-tasks**: they build their registry from the built-ins alone, so a plugin's task reads
-as `unknown task` there while running correctly on the worker. Closing that means
-executing plugin binaries to check a file, which is not something an editor should do
-on a keystroke.
+A plugin's secret schemes are registered alongside its tasks — `flow worker`
+resolves `${secret('<scheme>:<name>')}` through a plugin the same way it resolves
+one through the built-in `env` or `file` provider, once the deployment's secret
+policy permits the scheme.
+
+One thing is deliberately not connected yet, and is called out rather than
+quietly implied: **`flow validate` and the editor do not see plugin tasks**. They
+build their registry from the built-ins alone, so a plugin's task reads as
+`unknown task` there while running correctly on the worker. Closing that means
+executing plugin binaries to check a file, which is not something an editor should
+do on a keystroke.
 
 A plugin extends what the engine can do, not what it is allowed to do: it resolves
 only permitted schemes, receives the tenant a workload belongs to rather than

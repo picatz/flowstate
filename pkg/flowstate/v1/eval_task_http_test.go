@@ -546,7 +546,7 @@ func Test_secretRefInQuery(t *testing.T) {
 
 	require.ErrorContains(t, err, "cannot go in a query parameter")
 	require.ErrorContains(t, err, "access logs")
-	require.ErrorContains(t, err, "header instead")
+	require.ErrorContains(t, err, "bearer:")
 	require.ErrorContains(t, err, "env:API_TOKEN", "the reference is named, since a reference is safe to log")
 }
 

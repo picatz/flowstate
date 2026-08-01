@@ -176,7 +176,8 @@ func valueToQueryString(v *Value) ([]string, error) {
 		// header on redirect — a secret in one is a secret published.
 		return nil, fmt.Errorf(
 			"a secret reference cannot go in a query parameter, because query strings are recorded in "+
-				"access logs, browser history, and Referer headers; put it in a header instead (%s)",
+				"access logs, browser history, and Referer headers; use bearer: for a credential, or a "+
+				"header for anything else the destination expects signed requests to carry (%s)",
 			secretRefText(ref))
 	}
 
@@ -239,7 +240,8 @@ func valueToNative(v *Value) (any, error) {
 		// carry a reference is a decision for the schema, not for this converter.
 		return nil, fmt.Errorf(
 			"a secret reference cannot be placed inside a json body yet (%s); "+
-				"send it in a header, where a task input accepts a reference",
+				"use bearer: if the destination takes it as a header, or wait for a task input that "+
+				"accepts a reference in the body",
 			secretRefText(ref))
 	}
 

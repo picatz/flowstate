@@ -1241,7 +1241,8 @@ func populateProtoMessageFromValueMap(ctx context.Context, input map[string]*Val
 			return fmt.Errorf(
 				"field %q was given a secret reference (%s:%s), which this field's type "+
 					"cannot hold; a field declared as flowstate.v1.Value receives one whole, "+
-					"which is how a task takes a value it resolves itself",
+					"which is how a task takes a value it resolves itself — the http task's "+
+					"bearer: input is the one built today",
 				fieldName, kind.SecretRef.GetScheme(), kind.SecretRef.GetName())
 
 		default:
