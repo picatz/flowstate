@@ -520,12 +520,6 @@ that allows everything or nothing by accident.
 
 ## Secrets
 
-> [!NOTE]
-> `${secret(...)}` compiles to a reference and a malformed one is a validation error,
-> but no task consumes a reference yet, and the placement shown below — inside a
-> `headers` map — is currently refused. Treat this section as the intended design
-> rather than as working behavior until this note is gone.
-
 A secret never appears in a workflow. A *reference* to one does:
 
 ```yaml
@@ -534,8 +528,21 @@ steps:
     http:
       method: POST
       url: https://api.example.com/events
-      headers:
-        Authorization: ${secret('vault:prod/api#token')}
+      bearer: ${secret('vault:prod/api#token')}
+```
+
+`bearer:` is the input that consumes a reference today. The worker resolves it
+inside the activity that makes the request, sets `Authorization: Bearer <value>`,
+and the value exists for that call and nowhere else — see
+[examples/http-secret](examples/http-secret) for a worked file. Two placements are
+still refused, and both refusals are deliberate rather than pending: a reference
+inside the `headers` map, because that map is `map<string, string>` and a
+reference is not a string; and a reference read by an expression, because
+computing with it in workflow code would put the result in history.
+
+```
+a secret reference cannot be read in an expression; pass it to a task input that
+accepts one (vault:prod/api#token)
 ```
 
 A reference is `scheme:name`. The scheme selects which backend resolves it, and the
@@ -543,15 +550,13 @@ name means whatever that backend means by it — an environment variable, a path
 a mounted directory, a vault path.
 
 The reference is all that exists in the compiled workflow, in the request that
-submits it, and in the durable history Temporal keeps. The value is resolved on the
-worker, inside the step that uses it, and exists only for that call. Referencing a
-secret in an expression is refused, because computing with it in workflow code would
-put the result in history:
+submits it, and in the durable history Temporal keeps.
 
-```
-a secret reference cannot be read in an expression; pass it to a task input that
-accepts one (vault:prod/api#token)
-```
+A resolved value is also scrubbed out of what the step reports. A server that
+reflects the `Authorization` header back in its response body or headers would
+otherwise turn a credential into a step output, which is durable — so the response
+is scrubbed before the body is parsed, before `expect:` is evaluated, and before
+`outputs:` shapes anything.
 
 Which backend resolves a scheme is the deployment's choice, and the same workflow
 runs unchanged against any of them. That is the point of referencing rather than
