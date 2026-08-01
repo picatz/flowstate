@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -119,4 +120,60 @@ func TestHTTPCredentialIsMintedAndContainedInsideExecution(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, out.String(), material)
 	require.Contains(t, out.String(), secrets.Redacted)
+}
+
+// A revealed value has to survive every shape something might print it in, not
+// just the one the assertion above happens to use.
+//
+// `out.String()` is proto's own formatting, and it is the shape least likely to
+// leak: it goes through the generated marshaller. The shapes that have leaked in
+// this repository before are the reflective ones — `%#v` walks unexported fields
+// and prints what it finds there, which is exactly how a redacting String method
+// gets bypassed when the value sits inside another struct. CLAUDE.md asks for the
+// whole matrix for that reason: the value, a struct holding it, and a slice of
+// those, under %v, %+v, %#v and %s.
+//
+// This is the test that would notice if outputs ever gained a field the scrubber
+// does not reach, or if a Value started carrying revealed material somewhere the
+// generated formatter does not render.
+func TestARevealedValueSurvivesEveryPrintingShape(t *testing.T) {
+	const material = "material-that-must-not-appear-in-any-rendering"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		// Reflected in both directions, because a peer that echoes the header is
+		// the path that turns a request credential into a durable output.
+		w.Header().Set("X-Reflected", "Bearer "+material)
+		_, _ = w.Write([]byte("echo: " + material))
+	}))
+	defer server.Close()
+
+	ctx := ContextWithTaskRuntime(t.Context(), testTaskRuntime(t, material))
+	out, err := taskFuncHTTP(testEgressPolicy(t))(ctx, map[string]*Value{
+		"url":    NewValue(server.URL),
+		"bearer": {Kind: &Value_SecretRef{SecretRef: &SecretRef{Scheme: "env", Name: "API_TOKEN"}}},
+	}, nil)
+	require.NoError(t, err)
+
+	// A struct holding the outputs through an unexported field, which is the
+	// arrangement `fmt` cannot call a method on and therefore reflects into.
+	type holder struct{ outputs *Node_Outputs }
+
+	for name, rendered := range map[string]string{
+		"%v on the outputs":    fmt.Sprintf("%v", out),
+		"%+v on the outputs":   fmt.Sprintf("%+v", out),
+		"%#v on the outputs":   fmt.Sprintf("%#v", out),
+		"%s on the outputs":    fmt.Sprintf("%s", out),
+		"%v on a struct":       fmt.Sprintf("%v", holder{outputs: out}),
+		"%+v on a struct":      fmt.Sprintf("%+v", holder{outputs: out}),
+		"%#v on a struct":      fmt.Sprintf("%#v", holder{outputs: out}),
+		"%v on a slice":        fmt.Sprintf("%v", []holder{{outputs: out}}),
+		"%+v on a slice":       fmt.Sprintf("%+v", []holder{{outputs: out}}),
+		"%#v on a slice":       fmt.Sprintf("%#v", []holder{{outputs: out}}),
+		"%v on the named map":  fmt.Sprintf("%v", out.GetNamedValues()),
+		"%#v on the named map": fmt.Sprintf("%#v", out.GetNamedValues()),
+	} {
+		require.NotContains(t, rendered, material,
+			"the revealed value appears under %s, so a log line or an error built that "+
+				"way would carry it into somewhere durable", name)
+	}
 }
