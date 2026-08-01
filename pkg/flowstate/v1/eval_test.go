@@ -216,3 +216,60 @@ func TestRunWorkflowNestedErrorText(t *testing.T) {
 		})
 	}
 }
+
+// runAuthorityCase installs test's Authority the way the local driver actually
+// does it in production — [v1.ContextWithTaskRuntime] on the context a run is
+// started with — and runs the case through [v1.Run].
+//
+// engine/authority_test.go's runAuthorityCase runs the identical [tests.AuthorityCase]
+// through worker registration instead. That pairing is #116: before it, secret
+// denial and containment were each proven once, by whichever driver's test file
+// happened to add them, and nothing compared the two.
+func runAuthorityCase(t *testing.T, test tests.AuthorityCase) {
+	t.Helper()
+
+	ctx := t.Context()
+	if !test.Authority.NoRuntime {
+		runtime := v1.TaskRuntime{Broker: test.Authority.Broker(t), Identity: test.Authority.Identity}
+		if test.Authority.HasSecrets() {
+			runtime.Store = test.Authority.Store(t)
+			runtime.Policy = test.Authority.Policy(t)
+		}
+		ctx = v1.ContextWithTaskRuntime(ctx, runtime)
+	}
+
+	out, err := v1.Run(ctx, test.Workflow)
+	require.NoError(t, err)
+	require.Empty(t, cmp.Diff(test.ExpectedOutputs, out, protocmp.Transform()))
+
+	if test.ContainmentValue != "" {
+		tests.AssertNoLeak(t, out, test.ContainmentValue)
+	}
+}
+
+// TestAuthorityDenial runs the shared fail-closed and policy-denial cases
+// against the local driver. The durable driver runs the same cases in
+// engine/authority_test.go.
+func TestAuthorityDenial(t *testing.T) {
+	for _, test := range tests.AuthorityDenialCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			runAuthorityCase(t, test)
+			if test.Authority.ProviderCalls != nil {
+				require.Zero(t, test.Authority.ProviderCalls.Load(),
+					"the fixture provider resolved a reference the policy should have denied first")
+			}
+		})
+	}
+}
+
+// TestAuthorityContainment runs the shared secret and JIT credential
+// containment cases against the local driver. The durable driver runs the
+// same cases in engine/authority_test.go.
+func TestAuthorityContainment(t *testing.T) {
+	baseURL := tests.NewHTTPServer(t)
+	for _, test := range tests.AuthorityContainmentCases(baseURL) {
+		t.Run(test.Name, func(t *testing.T) {
+			runAuthorityCase(t, test)
+		})
+	}
+}
