@@ -82,6 +82,18 @@ func NewHTTPServer(tb testing.TB) string {
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.Copy(w, r.Body)
 	})
+	// Reflects whatever Authorization header arrived, in both a header and the
+	// body — the shape a peer that echoes a bearer token or a minted JIT
+	// credential takes. [Authority]'s containment cases point a step at this so
+	// the assertion is about what the *worker* does with a revealed value (scrub
+	// it before it becomes an output) rather than about what the peer sends back.
+	mux.HandleFunc("/reflect-authorization", func(w http.ResponseWriter, r *http.Request) {
+		authorization := r.Header.Get("Authorization")
+		w.Header().Set("X-Reflected", authorization)
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "echo: "+strings.TrimPrefix(authorization, "Bearer "))
+	})
 
 	srv := httptest.NewServer(mux)
 	tb.Cleanup(srv.Close)
