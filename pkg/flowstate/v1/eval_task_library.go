@@ -17,7 +17,9 @@ import (
 	"github.com/google/cel-go/cel"
 	ref "github.com/google/cel-go/common/types/ref"
 	"github.com/google/cel-go/interpreter"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/proto"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
@@ -102,6 +104,8 @@ func HTTPTaskDef(policy *netpolicy.Policy) TaskDef {
 		// which is this rule's own failure mode pointed the other way.
 		ExpressionInputs: []string{"expect"},
 		NeedsPrevOutputs: true,
+		AuthorityInputs:  []string{"bearer", "credential"},
+		CredentialInputs: []string{"credential"},
 		// Takes no policy, deliberately. What it answers is what the *task* can
 		// request, which is the same in every deployment — see the file it lives
 		// in for why asking the policy instead would put DNS in an editor and
@@ -402,6 +406,59 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 			}
 		}
 
+		// Resolve the reference only here, after the task has crossed into its
+		// execution context. The workflow and the activity payload continue to hold
+		// only the reference; the revealed value exists for the lifetime of this
+		// request and is never added to an output.
+		scrubber := secrets.NewScrubber()
+		if taskInputs.GetBearer() != nil && taskInputs.GetCredential() != "" {
+			return nil, NewTaskError("http", ErrorKindInvalidInput,
+				fmt.Errorf("bearer and credential are mutually exclusive; use a static secret reference or a JIT federation target, not both"))
+		}
+		if bearer := taskInputs.GetBearer(); bearer != nil {
+			ref := bearer.GetSecretRef()
+			if ref == nil {
+				return nil, NewTaskError("http", ErrorKindInvalidInput,
+					fmt.Errorf("bearer must be a secret reference, such as env:API_TOKEN"))
+			}
+			if httpReq.Header.Get("Authorization") != "" {
+				return nil, NewTaskError("http", ErrorKindInvalidInput,
+					fmt.Errorf("bearer and an Authorization header cannot both be set"))
+			}
+			secret, err := ResolveSecret(ctx, ref)
+			if err != nil {
+				kind := ErrorKindPolicyDenied
+				if secrets.Retryable(err) {
+					kind = ErrorKindUpstream
+				}
+				return nil, NewTaskError("http", kind, fmt.Errorf("resolving bearer reference %s: %w", secretRefText(ref), err))
+			}
+			scrubber.Add(secret)
+			httpReq.Header.Set("Authorization", "Bearer "+secret.Reveal())
+		}
+		if target := taskInputs.GetCredential(); target != "" {
+			if httpReq.Header.Get("Authorization") != "" {
+				return nil, NewTaskError("http", ErrorKindInvalidInput,
+					fmt.Errorf("credential and an Authorization header cannot both be set"))
+			}
+			if err := AuthorizeCredential(ctx, httpReq, target); err != nil {
+				kind := ErrorKindPolicyDenied
+				if auth.Retryable(err) {
+					kind = ErrorKindUpstream
+				}
+				return nil, NewTaskError("http", kind,
+					fmt.Errorf("authorizing federation target %q: %w", target, err))
+			}
+			// The broker applies material directly to the request. Register both the
+			// complete header and its bearer value so a peer reflecting either form
+			// cannot put the credential into outputs or history.
+			authorization := httpReq.Header.Get("Authorization")
+			scrubber.AddValue(authorization)
+			if token, found := strings.CutPrefix(authorization, "Bearer "); found {
+				scrubber.AddValue(token)
+			}
+		}
+
 		// A structured body implies the header describing it, but only when the author
 		// did not say: someone sending a JSON variant like application/ld+json has
 		// been more specific than we can be, and overwriting that would be wrong.
@@ -411,6 +468,7 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 
 		httpResp, err := policy.Client().Do(httpReq)
 		if err != nil {
+			err = scrubber.ScrubError(err)
 			// A policy denial is deliberate and will happen again; a connection
 			// reset, DNS failure, or timeout may succeed later. Distinguishing
 			// them is what stops a denied request from being retried.
@@ -437,6 +495,7 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 		// how much memory the worker allocates.
 		respBody, err := policy.ReadResponseBody(httpResp)
 		if err != nil {
+			err = scrubber.ScrubError(err)
 			var tooLarge *netpolicy.BodyTooLargeError
 			if errors.As(err, &tooLarge) {
 				return nil, NewTaskError("http", ErrorKindLimitExceeded, fmt.Errorf(
@@ -461,6 +520,19 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 
 			return nil, NewTaskError("http", ErrorKindUpstream,
 				fmt.Errorf("failed to read HTTP response body: %w", err))
+		}
+
+		// A peer may reflect the Authorization header in its response body or
+		// headers. Those values are about to become task outputs and workflow
+		// history, so scrub them before parsing, expectation evaluation, logging or
+		// output shaping can observe them. Scrubbing only transport errors protects
+		// the exceptional path and leaves the successful echo path wide open.
+		respBody = []byte(scrubber.Scrub(string(respBody)))
+		for name, values := range httpResp.Header {
+			for i := range values {
+				values[i] = scrubber.Scrub(values[i])
+			}
+			httpResp.Header[name] = values
 		}
 
 		// Parsing is opt-in, so a body that is not JSON is a real error here rather

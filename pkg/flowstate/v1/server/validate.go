@@ -66,6 +66,14 @@ func (s *FlowstateServer) Validate(
 			}
 			diagnostics = parsed
 		}
+		if len(diagnostics) == 0 && s.credentialTargetsConfigured {
+			workflow, _, parseErr := flowfile.Parse(file.GetSource())
+			if parseErr == nil {
+				if targetErr := v1.ValidateCredentialTargets(workflow, s.credentialTargets); targetErr != nil {
+					diagnostics = append(diagnostics, flowfile.Diagnostic{Message: targetErr.Error()})
+				}
+			}
+		}
 
 		reports = append(reports, diagnostics.Report(file.GetName()))
 	}
@@ -114,6 +122,11 @@ func (s *FlowstateServer) Compile(
 			parsed = flowfile.Diagnostics{{Message: err.Error()}}
 		}
 		diagnostics = parsed
+	}
+	if len(diagnostics) == 0 && s.credentialTargetsConfigured {
+		if targetErr := v1.ValidateCredentialTargets(workflow, s.credentialTargets); targetErr != nil {
+			diagnostics = append(diagnostics, flowfile.Diagnostic{Message: targetErr.Error()})
+		}
 	}
 
 	response := &v1.CompileResponse{Report: diagnostics.Report(file.GetName())}

@@ -113,6 +113,15 @@ func WithIdentityClaims(claims ...string) Option {
 	return func(s *FlowstateServer) { s.identityClaims = claims }
 }
 
+// WithCredentialTargets makes validation deployment-aware: a Flowfile naming a
+// JIT target this server's workers do not configure is refused before submission.
+func WithCredentialTargets(targets ...string) Option {
+	return func(s *FlowstateServer) {
+		s.credentialTargetsConfigured = true
+		s.credentialTargets = append([]string(nil), targets...)
+	}
+}
+
 // FlowstateServer implements the flowstatev1connect.WorkflowServiceHandler interface
 // and provides methods to run and get the status of workflows using Temporal.
 type FlowstateServer struct {
@@ -132,9 +141,11 @@ type FlowstateServer struct {
 	// is what a workload waiting on a person needs.
 	executionTimeout time.Duration
 
-	namespace      string
-	deployment     string
-	identityClaims []string
+	namespace                   string
+	deployment                  string
+	identityClaims              []string
+	credentialTargets           []string
+	credentialTargetsConfigured bool
 }
 
 // namespaceMemoKey is the memo field recording which tenant a run belongs to.
@@ -220,6 +231,11 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	// it up.
 	if err := v1.Validate(req.Msg); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	if s.credentialTargetsConfigured {
+		if err := v1.ValidateCredentialTargets(req.Msg.GetWorkflow(), s.credentialTargets); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
 	}
 
 	// Size is a separate question from validity, and it has to be asked here

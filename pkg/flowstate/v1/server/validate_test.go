@@ -220,3 +220,23 @@ func TestCompileAnswersWithWhatRunTakes(t *testing.T) {
 		assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 	})
 }
+
+func TestCompileRejectsUnknownDeploymentCredentialTarget(t *testing.T) {
+	s := server.New(nil, server.WithCredentialTargets("partner-api"))
+	source := []byte(`edition: v2026.2
+name: federated
+steps:
+  - id: call
+    http:
+      url: https://api.example.com
+      credential: aws-prod
+`)
+	response, err := s.Compile(t.Context(), connect.NewRequest(&v1.CompileRequest{
+		File: &v1.SourceFile{Name: "workflow.yaml", Source: source},
+	}))
+	require.NoError(t, err)
+	require.Nil(t, response.Msg.GetWorkflow())
+	require.Len(t, response.Msg.GetReport().GetDiagnostics(), 1)
+	require.Contains(t, response.Msg.GetReport().GetDiagnostics()[0].GetMessage(),
+		`credential target "aws-prod" is not configured`)
+}

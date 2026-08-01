@@ -33,6 +33,8 @@ $ flow validate examples/hello-world/workflow.yaml
 | [http-form](http-form) | A url-encoded `form:` body, as OAuth token endpoints expect | yes |
 | [http-expect](http-expect) | `expect:` — accepting a 404, and rejecting a 200 with an error in the body | yes |
 | [http-output-shaping](http-output-shaping) | Returning only chosen fields from a response via `outputs` | yes |
+| [http-secret](http-secret) | Resolving an authorized bearer reference only inside the HTTP task | yes |
+| [http-federated](http-federated) | Exchanging the workload identity for a short-lived API credential inside the task | yes |
 | [simple-http-multi-step](simple-http-multi-step) | Using a response status code in a later step | yes |
 | [edition-and-descriptions](edition-and-descriptions) | `description:` as a property of the step, and the required `edition:` naming the grammar the file is written in | no |
 

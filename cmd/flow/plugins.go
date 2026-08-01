@@ -14,6 +14,7 @@ import (
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 )
 
 // A worker could discover, launch, supervise and health-check plugins, and then
@@ -300,7 +301,7 @@ func inputFields(fields []*v1.TaskField) []v1.InputField {
 // It is a one-way door: there is no Unregister. A worker opens one host and holds
 // it until the process exits, which is the only lifecycle this supports and the
 // only one it needs.
-func startPlugins(cmd *cobra.Command) (func(), error) {
+func startPlugins(cmd *cobra.Command, secretProviders *secrets.Registry) (func(), error) {
 	noop := func() {}
 
 	flags, err := pluginFlagsOf(cmd)
@@ -338,12 +339,7 @@ func startPlugins(cmd *cobra.Command) (func(), error) {
 		return noop, err
 	}
 
-	// The secrets half is deliberately not registered here, and that is a gap
-	// rather than a decision: nothing in the engine resolves a secret reference
-	// yet, so providers registered now would sit behind a call that is never
-	// made. Passing nil says so, where passing a registry nobody reads would be
-	// the same mistake this whole function exists to correct.
-	if err := host.Register(v1.DefaultRegistry(), nil); err != nil {
+	if err := host.Register(v1.DefaultRegistry(), secretProviders); err != nil {
 		stop()
 
 		return noop, err

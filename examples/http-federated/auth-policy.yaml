@@ -1,0 +1,17 @@
+issuers:
+  - name: github-actions
+    issuer: https://token.actions.githubusercontent.com
+    audiences: [flowstate]
+    algorithms: [RS256]
+
+federation:
+  issuer: https://flowstate.example.com
+  allow:
+    - 'target == "partner-api" && workload.step == "health"'
+  targets:
+    - name: partner-api
+      token_exchange:
+        token_url: https://identity.partner.example.com/oauth2/token
+        audience: https://identity.partner.example.com
+        target_audience: https://api.example.com
+

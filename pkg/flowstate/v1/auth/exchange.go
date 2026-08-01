@@ -584,19 +584,23 @@ func (e *exchangeClient) post(ctx context.Context, provider, endpoint, contentTy
 
 	response, err := e.client.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s at %q: %w", ErrExchangeFailed, provider, endpoint, err)
+		return nil, fmt.Errorf("%w: %w: %s at %q: %v", ErrExchangeFailed, ErrExchangeUnavailable, provider, endpoint, err)
 	}
 	defer response.Body.Close()
 
 	raw, err := io.ReadAll(io.LimitReader(response.Body, maxExchangeResponseBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("%w: reading %s response: %w", ErrExchangeFailed, provider, err)
+		return nil, fmt.Errorf("%w: %w: reading %s response: %v", ErrExchangeFailed, ErrExchangeUnavailable, provider, err)
 	}
 	if len(raw) > maxExchangeResponseBytes {
 		return nil, fmt.Errorf("%w: %s returned more than %d bytes", ErrExchangeFailed, provider, maxExchangeResponseBytes)
 	}
 
 	if response.StatusCode != http.StatusOK {
+		if response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= 500 {
+			return nil, fmt.Errorf("%w: %w: %s at %q returned %s%s",
+				ErrExchangeFailed, ErrExchangeUnavailable, provider, endpoint, response.Status, describeError(raw))
+		}
 		return nil, fmt.Errorf("%w: %s at %q returned %s%s",
 			ErrExchangeFailed, provider, endpoint, response.Status, describeError(raw))
 	}

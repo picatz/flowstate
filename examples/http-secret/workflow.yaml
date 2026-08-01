@@ -1,0 +1,9 @@
+edition: v2026.2
+name: authenticated-health-check
+
+steps:
+  - id: health
+    http:
+      url: https://api.example.com/status/200
+      bearer: ${secret('env:API_TOKEN')}
+      expect: ${response.status_code == 200}

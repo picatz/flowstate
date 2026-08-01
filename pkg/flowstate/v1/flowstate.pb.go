@@ -4597,6 +4597,15 @@ type Task_HTTP_Inputs struct {
 	// cannot quietly become a junk drawer: a future credential shape gets its
 	// own field, named for what it is.
 	Bearer *Value `protobuf:"bytes,12,opt,name=bearer,proto3" json:"bearer,omitempty"`
+	// Credential names an outbound federation target configured by the
+	// deployment, such as "aws-prod" or "partner-api". The worker authorizes
+	// the exact workload and step, mints a short-lived assertion, exchanges it,
+	// and applies the resulting bearer credential inside the activity. No
+	// credential material crosses workflow history.
+	//
+	// AWS session targets are deliberately refused by the generic HTTP task:
+	// they require SigV4 request signing and belong in an AWS-aware task.
+	Credential *string `protobuf:"bytes,13,opt,name=credential,proto3,oneof" json:"credential,omitempty"`
 	// Optional outputs shaping: when provided, the HTTP task will return only
 	// the named outputs defined by this map instead of the default outputs.
 	// Values are evaluated as CEL expressions (or used as literals) with the
@@ -4728,6 +4737,13 @@ func (x *Task_HTTP_Inputs) GetBearer() *Value {
 		return x.Bearer
 	}
 	return nil
+}
+
+func (x *Task_HTTP_Inputs) GetCredential() string {
+	if x != nil && x.Credential != nil {
+		return *x.Credential
+	}
+	return ""
 }
 
 func (x *Task_HTTP_Inputs) GetOutputs() map[string]*Value {
@@ -5079,7 +5095,7 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x1a\n" +
 	"\brequired\x18\x03 \x01(\bR\brequired\x12\x1a\n" +
-	"\bdeferred\x18\x04 \x01(\bR\bdeferred\"\xe9\x0e\n" +
+	"\bdeferred\x18\x04 \x01(\bR\bdeferred\"\xbc\x0f\n" +
 	"\x04Task\x12J\n" +
 	"\x04name\x18\x01 \x01(\tB6\xe2A\x01\x02\xbaH/\xc8\x01\x01r*\x10\x01\x18\x80\x012#^[A-Za-z0-9-_]+(\\.[A-Za-z0-9-_]+)?$R\x04name\x12K\n" +
 	"\x06inputs\x18\x03 \x03(\v2\x1e.flowstate.v1.Task.InputsEntryB\x13\xe2A\x01\x01\xbaH\f\xc8\x01\x01\x9a\x01\x06\"\x04r\x02\x10\x01R\x06inputs\x1a\xe7\x02\n" +
@@ -5099,14 +5115,18 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"LEVEL_INFO\x10\x01\x12\x0e\n" +
 	"\n" +
 	"LEVEL_WARN\x10\x02\x12\x0f\n" +
-	"\vLEVEL_ERROR\x10\x03\x1a\xfa\t\n" +
-	"\x04HTTP\x1a\xeb\a\n" +
+	"\vLEVEL_ERROR\x10\x03\x1a\xcd\n" +
+	"\n" +
+	"\x04HTTP\x1a\xbe\b\n" +
 	"\x06Inputs\x12!\n" +
 	"\x03url\x18\x01 \x01(\tB\x0f\xe2A\x01\x02\xbaH\b\xc8\x01\x01r\x03\x88\x01\x01R\x03url\x12I\n" +
 	"\x06method\x18\x02 \x01(\tB,\xbaH)r'\x10\x03\x18\x062!^(?i)(GET|POST|PUT|PATCH|DELETE)$H\x00R\x06method\x88\x01\x01\x12E\n" +
 	"\aheaders\x18\x03 \x03(\v2+.flowstate.v1.Task.HTTP.Inputs.HeadersEntryR\aheaders\x12\x17\n" +
 	"\x04body\x18\x04 \x01(\tH\x01R\x04body\x88\x01\x01\x12+\n" +
-	"\x06bearer\x18\f \x01(\v2\x13.flowstate.v1.ValueR\x06bearer\x12E\n" +
+	"\x06bearer\x18\f \x01(\v2\x13.flowstate.v1.ValueR\x06bearer\x12B\n" +
+	"\n" +
+	"credential\x18\r \x01(\tB\x1d\xbaH\x1ar\x18\x10\x01\x18\x80\x012\x11^[a-z][a-z0-9-]*$H\x02R\n" +
+	"credential\x88\x01\x01\x12E\n" +
 	"\aoutputs\x18\x05 \x03(\v2+.flowstate.v1.Task.HTTP.Inputs.OutputsEntryR\aoutputs\x12?\n" +
 	"\x05query\x18\x06 \x03(\v2).flowstate.v1.Task.HTTP.Inputs.QueryEntryR\x05query\x12'\n" +
 	"\x04json\x18\a \x01(\v2\x13.flowstate.v1.ValueR\x04json\x12<\n" +
@@ -5114,8 +5134,8 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"\x06expect\x18\t \x01(\v2\x13.flowstate.v1.ValueR\x06expect\x12\"\n" +
 	"\n" +
 	"parse_json\x18\n" +
-	" \x01(\bH\x02R\tparseJson\x88\x01\x01\x12<\n" +
-	"\x18retry_on_unknown_outcome\x18\v \x01(\bH\x03R\x15retryOnUnknownOutcome\x88\x01\x01\x1a:\n" +
+	" \x01(\bH\x03R\tparseJson\x88\x01\x01\x12<\n" +
+	"\x18retry_on_unknown_outcome\x18\v \x01(\bH\x04R\x15retryOnUnknownOutcome\x88\x01\x01\x1a:\n" +
 	"\fHeadersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aO\n" +
@@ -5131,6 +5151,7 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01B\t\n" +
 	"\a_methodB\a\n" +
 	"\x05_bodyB\r\n" +
+	"\v_credentialB\r\n" +
 	"\v_parse_jsonB\x1b\n" +
 	"\x19_retry_on_unknown_outcome\x1a\x83\x02\n" +
 	"\aOutputs\x12+\n" +
