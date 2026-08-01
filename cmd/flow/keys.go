@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/picatz/jose/pkg/jwa"
@@ -72,8 +73,12 @@ func newKeysGenerateCommand() *cobra.Command {
 			"the same convention the server's --identity-key flag uses.",
 		Args: cobra.NoArgs,
 		RunE: runKeysGenerate,
-		Example: `# Generate an Ed25519 key, the smallest and fastest option:
+		Example: `# Generate an ES256 key, the default: smallest and fastest, accepted
+# everywhere:
 flow keys generate --out identity/2026-08.pem
+
+# Ed25519, if the relying party prefers it:
+flow keys generate --algorithm ed25519 --out identity/2026-08.pem
 
 # RSA-2048, for a relying party that requires it:
 flow keys generate --algorithm rs256 --out identity/2026-08.pem
@@ -255,13 +260,24 @@ func writePrivateKeyPEM(path string, private crypto.PrivateKey) error {
 		return fmt.Errorf("closing %s: %w", path, err)
 	}
 
-	info, err := os.Stat(path)
-	if err != nil {
-		return fmt.Errorf("verifying permissions of %s: %w", path, err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		return fmt.Errorf("%s was created with mode %s instead of the requested "+
-			"0600; refusing to leave a private key at that path", path, info.Mode().Perm())
+	// Windows has no POSIX permission bits: os.FileInfo.Mode().Perm() on a
+	// writable regular file there synthesizes 0666 regardless of what was
+	// requested, because access is actually governed by ACLs the Mode call
+	// does not see. Checking Perm() there would reject every successful
+	// write, and — since the file is already created and O_EXCL then refuses
+	// a retry — turn a false alarm into `flow keys generate` never working at
+	// all. Access control on Windows is left to the filesystem's own
+	// defaults for a newly created file, the same as any other tool that
+	// writes secrets to disk there.
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		if err != nil {
+			return fmt.Errorf("verifying permissions of %s: %w", path, err)
+		}
+		if info.Mode().Perm() != 0o600 {
+			return fmt.Errorf("%s was created with mode %s instead of the requested "+
+				"0600; refusing to leave a private key at that path", path, info.Mode().Perm())
+		}
 	}
 
 	return nil

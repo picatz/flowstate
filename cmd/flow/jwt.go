@@ -281,7 +281,16 @@ func runJWTInspect(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("token header: %w", err)
 		}
 
-		kid := keyIDFromPath(keyPath)
+		// Keyed by the token's own "kid" header, not the key file's name: a
+		// token signed with `flow jwt sign --id custom` carries "custom" in
+		// its header regardless of what the key file is called, and
+		// VerifySignature looks the key up by that header value. Keying by
+		// the file name instead would report a correctly-signed token as
+		// invalid whenever the two disagree.
+		kid := headerKeyID(token.Header)
+		if kid == "" {
+			kid = keyIDFromPath(keyPath)
+		}
 		verifyErr := token.VerifySignature([]jwa.Algorithm{alg}, map[string]any{kid: public})
 		valid := verifyErr == nil
 		result.Valid = &valid
@@ -298,6 +307,19 @@ func writeInspectResult(surface *ui.UI, result inspectResult) error {
 
 	_, err = fmt.Fprintf(surface.Out, "%s\n", encoded)
 	return err
+}
+
+// headerKeyID reads the "kid" header parameter, the same way auth.headerString
+// does for verification elsewhere in this codebase — a defensive read that
+// returns "" for a missing or non-string value rather than an error, since a
+// token with no "kid" is not malformed, just unidentified.
+func headerKeyID(params header.Parameters) string {
+	value, err := params.Get(header.KeyID)
+	if err != nil {
+		return ""
+	}
+	text, _ := value.(string)
+	return text
 }
 
 // tokenExpired reports whether claims carries an "exp" claim and, if so,

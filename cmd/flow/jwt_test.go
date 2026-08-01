@@ -121,6 +121,31 @@ func TestJWTInspectWithTheSigningKeyVerifiesTheSignature(t *testing.T) {
 	require.Equal(t, false, result["signatureValid"])
 }
 
+// TestJWTInspectVerifiesByTheTokensOwnKeyIDNotTheKeyFileName is the regression
+// case for a bug Codex found in review: verification keyed the lookup map by
+// the key *file's* name rather than the token's "kid" header, so a token
+// signed with `flow jwt sign --id` set to something other than the file name
+// reported signatureValid=false even though the right key had signed it.
+func TestJWTInspectVerifiesByTheTokensOwnKeyIDNotTheKeyFileName(t *testing.T) {
+	keyPath := generateTestKey(t, t.TempDir(), "2026-08")
+
+	token, _, err := runJWTSignInto(t,
+		"key", keyPath, "id", "a-completely-different-kid",
+		"issuer", "i", "subject", "s", "audience", "a",
+	)
+	require.NoError(t, err)
+	token = strings.TrimSpace(token)
+
+	stdout, _, err := runJWTInspectInto(t, token, "key", keyPath)
+	require.NoError(t, err)
+
+	var result map[string]any
+	require.NoError(t, json.Unmarshal([]byte(stdout), &result))
+	require.Equal(t, "a-completely-different-kid", result["header"].(map[string]any)["kid"])
+	require.Equal(t, true, result["signatureValid"],
+		"the key that signed the token must verify it regardless of what its file happens to be named")
+}
+
 func TestJWTSignRefusesATTLOverTheCap(t *testing.T) {
 	keyPath := generateTestKey(t, t.TempDir(), "2026-08")
 
