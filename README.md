@@ -520,12 +520,6 @@ that allows everything or nothing by accident.
 
 ## Secrets
 
-> [!NOTE]
-> `${secret(...)}` compiles to a reference and a malformed one is a validation error,
-> but no task consumes a reference yet, and the placement shown below — inside a
-> `headers` map — is currently refused. Treat this section as the intended design
-> rather than as working behavior until this note is gone.
-
 A secret never appears in a workflow. A *reference* to one does:
 
 ```yaml
@@ -534,8 +528,30 @@ steps:
     http:
       method: POST
       url: https://api.example.com/events
-      headers:
-        Authorization: ${secret('vault:prod/api#token')}
+      bearer: ${secret('vault:prod/api#token')}
+```
+
+`bearer:` is the input that consumes a reference today. The worker resolves it
+inside the activity that makes the request, sets `Authorization: Bearer <value>`,
+and the value exists for that call and nowhere else — see
+[examples/http-secret](examples/http-secret) for a worked file. Every other
+placement is refused, and each refusal is deliberate rather than pending:
+
+- **`headers:`**, because that map is `map<string, string>` and a reference is not
+  a string.
+- **`query:`**, because a query string is written to access logs, browser
+  history, and a `Referer` header on redirect — a secret there is a secret
+  published.
+- **`json:`** and the raw string `body:`, because resolving one there would mean
+  the workflow had already evaluated it on the way in, which is what puts a
+  secret in history. Whether a body may one day carry a reference is a decision
+  for the schema, not for the request encoder.
+- **read by an expression** anywhere, because computing with it in workflow code
+  would put the result in history.
+
+```
+a secret reference cannot be read in an expression; pass it to a task input that
+accepts one (vault:prod/api#token)
 ```
 
 A reference is `scheme:name`. The scheme selects which backend resolves it, and the
@@ -543,15 +559,13 @@ name means whatever that backend means by it — an environment variable, a path
 a mounted directory, a vault path.
 
 The reference is all that exists in the compiled workflow, in the request that
-submits it, and in the durable history Temporal keeps. The value is resolved on the
-worker, inside the step that uses it, and exists only for that call. Referencing a
-secret in an expression is refused, because computing with it in workflow code would
-put the result in history:
+submits it, and in the durable history Temporal keeps.
 
-```
-a secret reference cannot be read in an expression; pass it to a task input that
-accepts one (vault:prod/api#token)
-```
+A resolved value is also scrubbed out of what the step reports. A server that
+reflects the `Authorization` header back in its response body or headers would
+otherwise turn a credential into a step output, which is durable — so the response
+is scrubbed before the body is parsed, before `expect:` is evaluated, and before
+`outputs:` shapes anything.
 
 Which backend resolves a scheme is the deployment's choice, and the same workflow
 runs unchanged against any of them. That is the point of referencing rather than
@@ -598,14 +612,17 @@ by launching each plugin and asking it — which is the only way to know, since 
 is read from a binary to discover what it does. `--output json` carries the same
 answer as a document.
 
-Two things are deliberately not connected yet, and are called out rather than quietly
-implied. **A plugin's secret schemes are not registered**, because nothing in the
-engine resolves a secret reference yet — providers registered now would sit behind a
-call that is never made. And **`flow validate` and the editor do not see plugin
-tasks**: they build their registry from the built-ins alone, so a plugin's task reads
-as `unknown task` there while running correctly on the worker. Closing that means
-executing plugin binaries to check a file, which is not something an editor should do
-on a keystroke.
+A plugin's secret schemes are registered alongside its tasks — `flow worker`
+resolves `${secret('<scheme>:<name>')}` through a plugin the same way it resolves
+one through the built-in `env` or `file` provider, once the deployment's secret
+policy permits the scheme.
+
+One thing is deliberately not connected yet, and is called out rather than
+quietly implied: **`flow validate` and the editor do not see plugin tasks**. They
+build their registry from the built-ins alone, so a plugin's task reads as
+`unknown task` there while running correctly on the worker. Closing that means
+executing plugin binaries to check a file, which is not something an editor should
+do on a keystroke.
 
 A plugin extends what the engine can do, not what it is allowed to do: it resolves
 only permitted schemes, receives the tenant a workload belongs to rather than
