@@ -353,3 +353,59 @@ func ErrorTextCases(baseURL string) []Case {
 		},
 	}
 }
+
+// NestedErrorTextCases cover the failure that is *not* a classified task error,
+// tolerated at an enclosing node.
+//
+// The task case above converges because errors.As reaches the TaskError through
+// every structural wrapper, so both drivers render the canonical sentence and
+// drop the position. A runtime expression failure has no TaskError to find, so
+// the position is part of what the error says — and there the two drivers were
+// still disagreeing after the task case was fixed: the local driver kept
+// `iteration 0: step "child": …` from its %w chain, while the durable driver
+// read the innermost recorded text straight out of the envelope and dropped
+// every wrapper on the way.
+//
+// Worth its own set because it fails in the opposite direction from the task
+// case: there the danger was keeping transport wrapping, here it is losing
+// structural wrapping an author needs to know *which* iteration went wrong.
+func NestedErrorTextCases() []Case {
+	// Indexing past the end of a list: legal to compile, fails when evaluated,
+	// and carries no TaskError because it never reaches a task.
+	const recorded = `iteration 0: step "child": ` +
+		`input "message": evaluate expression: index out of bounds: 5`
+
+	return []Case{
+		{
+			Name: "a tolerated nested expression failure says which iteration",
+			Workflow: &v1.Workflow{
+				Name: "nested-error-text",
+				Steps: []*v1.Node{
+					{
+						Id:     "outer",
+						Policy: &v1.StepPolicy{ContinueOnError: true},
+						Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+							Items: v1.NewExpr("[1]"),
+							Body: []*v1.Node{
+								{
+									Id: "child",
+									Kind: &v1.Node_Task{Task: &v1.Task{
+										Name: "log",
+										Inputs: map[string]*v1.Value{
+											"message": v1.NewExpr("['a'][5]"),
+										},
+									}},
+								},
+							},
+						}},
+					},
+				},
+			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{
+				StepValues: map[string]*v1.Node_Outputs{
+					"outer": v1.FailedStepOutputs(recorded),
+				},
+			},
+		},
+	}
+}

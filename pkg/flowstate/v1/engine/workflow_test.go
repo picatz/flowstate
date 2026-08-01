@@ -532,3 +532,30 @@ func TestToleratedFailureTextCarriesNoTransportWrapping(t *testing.T) {
 		})
 	}
 }
+
+// TestRunWorkflowNestedErrorText is the durable half of the nested case.
+//
+// The task case converges because errors.As reaches a TaskError through every
+// wrapper. This one has no TaskError to find, so the structural position is part
+// of what the failure says — and the durable driver used to read the innermost
+// recorded text out of the envelope and drop every wrapper on the way to it.
+func TestRunWorkflowNestedErrorText(t *testing.T) {
+	for _, test := range tests.NestedErrorTextCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			testSuite := &testsuite.WorkflowTestSuite{}
+			env := testSuite.NewTestWorkflowEnvironment()
+			env.RegisterWorkflow(engine.Run)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
+
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow})
+			require.True(t, env.IsWorkflowCompleted())
+			require.NoError(t, env.GetWorkflowError())
+
+			var out v1.Workflow_StepOutputs
+			require.NoError(t, env.GetWorkflowResult(&out))
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, &out, protocmp.Transform()))
+		})
+	}
+}

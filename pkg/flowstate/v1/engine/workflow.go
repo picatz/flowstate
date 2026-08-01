@@ -28,6 +28,18 @@ type ErrRunFailed struct {
 	// into the failure it persists, and what this deliberately flattens must stay
 	// flattened.
 	Recorded string
+
+	// recordedFromTask reports whether Recorded came from a classified task
+	// failure.
+	//
+	// A classified failure renders canonically — `task "http" failed (Kind): …` —
+	// and absorbs the structural prefixes around it, because the local driver's
+	// errors.As reaches straight past `iteration 0:` and `step "x":` to the
+	// TaskError inside. Anything else keeps those prefixes, because there the
+	// local driver renders the wrapped error's own words and the position is part
+	// of them. This bit is what lets the durable driver make the same choice
+	// without re-deriving it from a chain it has already flattened.
+	recordedFromTask bool
 }
 
 func (e *ErrRunFailed) Error() string {
@@ -51,13 +63,32 @@ func (e *ErrRunFailed) Error() string {
 // failure. Cancellation reaches here from anything that blocks on the workflow's
 // context — an activity, a timer, a signal channel — which is why this is a
 // helper rather than a check at one site.
+// The format names only the *position* — `step %q`, `iteration %d` — and not the
+// cause: this composes both strings from it, so the message a person reads and
+// the text an expression compares cannot drift apart at a call site that
+// remembered to interpolate the error into one of them and not the other.
 func stepFailed(err error, format string, args ...any) error {
 	if temporal.IsCanceledError(err) {
 		return err
 	}
+
+	position := fmt.Sprintf(format, args...)
+	recorded, fromTask := recordedStepError(err)
+
+	// A nested structural position is prepended for the same failures the local
+	// driver prepends it for, and dropped for the same ones it drops it for. A
+	// tolerated `for_each` whose body raised a runtime CEL error records
+	// `iteration 0: step "child": no such key: field` under either driver;
+	// a tolerated body whose *task* failed records the canonical task sentence
+	// under either, because that is what errors.As finds locally.
+	if !fromTask && recorded != "" {
+		recorded = position + ": " + recorded
+	}
+
 	return &ErrRunFailed{
-		Message:  fmt.Sprintf(format, args...),
-		Recorded: recordedStepError(err),
+		Message:          position + ": " + err.Error(),
+		Recorded:         recorded,
+		recordedFromTask: fromTask,
 	}
 }
 
@@ -74,26 +105,33 @@ func stepFailed(err error, format string, args ...any) error {
 // [ErrRunFailed] already carrying the text it extracted, so the innermost task's
 // sentence is what propagates outward. Anything else never crossed a wire, and
 // its own words are already what the local driver would record.
-func recordedStepError(err error) string {
+// The second return says whether the text came from a classified task failure,
+// which decides whether an enclosing position is prepended to it — see
+// [stepFailed].
+func recordedStepError(err error) (string, bool) {
 	var run *ErrRunFailed
 	if errors.As(err, &run) && run.Recorded != "" {
-		return run.Recorded
+		return run.Recorded, run.recordedFromTask
 	}
 
+	// Every application error reaching a step's tolerance came from
+	// activityError, which builds it from a classified task failure and puts the
+	// canonical text in the message.
 	var app *temporal.ApplicationError
 	if errors.As(err, &app) {
-		return app.Message()
+		return app.Message(), true
 	}
 
 	// An activity failure with no application error inside — a timeout, say —
 	// still sheds the envelope: the cause is the failure, the envelope is only
-	// how it travelled.
+	// how it travelled. Not a classified failure, so a position still applies.
 	var activity *temporal.ActivityError
 	if errors.As(err, &activity) && activity.Unwrap() != nil {
-		return activity.Unwrap().Error()
+		return activity.Unwrap().Error(), false
 	}
 
-	return v1.StepErrorText(err)
+	var taskErr *v1.TaskError
+	return v1.StepErrorText(err), errors.As(err, &taskErr)
 }
 
 const RunTaskQueueName = "flowstate-run-task-queue"
@@ -318,7 +356,9 @@ func compactOutputsForFrames(spec *v1.Workflow, frames []*v1.Frame, outputs *v1.
 // err.Error(): what reaches here is wrapped in this driver's transport, and the
 // local driver records the same failure without any of it.
 func failedStepOutputs(err error) *v1.Node_Outputs {
-	return v1.FailedStepOutputs(recordedStepError(err))
+	recorded, _ := recordedStepError(err)
+
+	return v1.FailedStepOutputs(recorded)
 }
 
 // rootedStepRef reads a reference written under the steps root, returning the

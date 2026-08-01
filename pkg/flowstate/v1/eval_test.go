@@ -206,3 +206,13 @@ func TestRunWorkflowErrorText(t *testing.T) {
 		})
 	}
 }
+
+func TestRunWorkflowNestedErrorText(t *testing.T) {
+	for _, test := range tests.NestedErrorTextCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			out, err := v1.Run(t.Context(), test.Workflow)
+			require.NoError(t, err)
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, out, protocmp.Transform()))
+		})
+	}
+}

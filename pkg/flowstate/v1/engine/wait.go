@@ -27,7 +27,7 @@ import (
 // outcome as the step's outputs.
 func (e *executor) runWait(node *v1.Node, wait *v1.Wait) error {
 	if err := v1.ValidateWait(wait); err != nil {
-		return stepFailed(err, "step %q: %v", node.GetId(), err)
+		return stepFailed(err, "step %q", node.GetId())
 	}
 
 	logger := workflow.GetLogger(e.ctx)
@@ -40,7 +40,7 @@ func (e *executor) runWait(node *v1.Node, wait *v1.Wait) error {
 	case *v1.Wait_Until:
 		deadline, err := v1.EvalWaitDeadline(context.Background(), kind.Until, e.scope, workflow.Now(e.ctx))
 		if err != nil {
-			return stepFailed(err, "step %q: %v", node.GetId(), err)
+			return stepFailed(err, "step %q", node.GetId())
 		}
 		// A moment already past is not an error: a workload resumed after an
 		// outage may reach a window that has opened, and refusing then would
@@ -62,7 +62,7 @@ func (e *executor) waitFor(node *v1.Node, d time.Duration) error {
 		// propagate: a cancelled run has to stop waiting, and swallowing this
 		// would make a waiting step the one place cancellation does not reach.
 		if err := workflow.Sleep(e.ctx, d); err != nil {
-			return stepFailed(err, "step %q: %v", node.GetId(), err)
+			return stepFailed(err, "step %q", node.GetId())
 		}
 	}
 
