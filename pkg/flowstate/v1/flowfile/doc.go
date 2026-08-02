@@ -84,22 +84,34 @@
 // names `prod/api#token` to the vault backend, and what the `#` means there is
 // vault's business, not the DSL's.
 //
-// A reference has to be the whole value of a task input, and each way of writing one
-// somewhere else is a compile error naming the line and column it is on. It cannot be
-// combined with anything, so ${'Bearer ' + secret('env:TOKEN')} is refused rather
-// than compiled into an expression that fails at run time. It cannot appear in an
-// `if` or a loop's `items`, which the workflow evaluates itself.
+// A reference has to be the whole value of a task input that is declared to take
+// one, and each way of writing it somewhere else is a compile error naming the line
+// and column it is on. It cannot be combined with anything, so
+// ${'Bearer ' + secret('env:TOKEN')} is refused rather than compiled into an
+// expression that fails at run time. It cannot appear in an `if` or a loop's
+// `items`, which the workflow evaluates itself.
 //
-// And — a limitation rather than a rule, which the diagnostic says — it cannot be
-// nested in a list or a mapping, so an authorization header cannot yet be written the
-// obvious way:
+// The input built to receive one is the http task's `bearer:`:
+//
+//	http:
+//	  url: https://api.example.com/events
+//	  bearer: ${secret('vault:prod/api#token')}
+//
+// The worker resolves it inside the activity that makes the request and sets
+// `Authorization: Bearer <value>`, so the value exists for that call and nowhere
+// else. Writing the same thing as a header entry is refused, and that refusal is
+// deliberate rather than pending:
 //
 //	headers:
-//	  Authorization: ${secret('env:API_TOKEN')}   # refused, for now
+//	  Authorization: ${secret('env:API_TOKEN')}   # refused; use bearer:
 //
-// A structure containing any expression compiles into a single expression, and the
-// workflow evaluates that expression, which is the one thing all of this exists to
-// prevent.
+// `headers` is map<string, string> and a reference is not a string; a structure
+// containing any expression compiles into a single expression, and the workflow
+// evaluates that expression, which is the one thing all of this exists to prevent.
+// The general form of that — a reference nested anywhere inside a list or a mapping
+// — remains a limitation rather than a rule, and the diagnostic says so: a value is
+// a reference or a structure, never a structure holding one, so each input that
+// should accept a reference gets a field declared to take it, as `bearer:` did.
 //
 // [flowstatev1.Workflow]: https://pkg.go.dev/github.com/picatz/flowstate/pkg/flowstate/v1#Workflow
 package flowfile

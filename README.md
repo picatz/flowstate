@@ -645,6 +645,24 @@ Flowstate's own settings:
 | `FLOWSTATE_DEPLOYMENT_NAME` | unset | Worker Deployment this worker belongs to (see below) |
 | `FLOWSTATE_BUILD_ID` | unset | Version identifier for this worker's binary, unique per build |
 | `FLOWSTATE_VERBOSE_LOGGING` | `false` | Verbose logging |
+| `FLOWSTATE_AUTH_POLICY` | unset | Default for `--auth-policy`: on `flow server` the trust policy naming which issuers and claims to accept; on `flow worker` and `flow run local` the same file's secrets rules, authorizing worker-side resolution |
+| `FLOWSTATE_IDENTITY_KEY` | unset | Default for `--identity-key`: the PKCS#8 PEM key Flowstate signs its own short-lived assertions with, required when the trust policy configures federation |
+| `FLOWSTATE_SECRET_ENV_ALLOW` | unset | Default for `--secret-env`: comma-separated names this process may resolve as `env:` secrets, whose values come from `FLOWSTATE_SECRET_<NAME>` |
+| `FLOWSTATE_SECRET_DIR` | unset | Default for `--secret-dir`: the directory `file:` secrets are read from |
+| `FLOWSTATE_PLUGIN_DIR` | unset | Default for `--plugin-dir`: directories to discover plugins in, separated the way `$PATH` is — the form an image bakes in rather than repeating on every command line |
+| `FLOWSTATE_MAX_STEPS_PER_RUN` | unset | Server-side ceiling on the steps one run may submit; an unparseable or non-positive value is ignored rather than lowering the bound |
+| `FLOWSTATE_INSECURE_PLAINTEXT_TOKEN` | `false` | Set to `true` to permit sending a bearer token over plain HTTP to somewhere that is not loopback. It is a refusal by default, because a token on the wire in the clear belongs to whatever is between here and there |
+| `FLOWSTATE_SYMBOLS` | unset | Override symbol selection (`unicode`/`ascii`) when terminal detection guesses wrong |
+| `FLOWSTATE_BACKGROUND` | unset | Declare the terminal background (`dark`/`light`) instead of querying for it — also the way out of the four-second wait on a terminal that never answers the query |
+
+And the standard OpenTelemetry variables, which are read by the exporters
+themselves rather than re-spelled here:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | Turns telemetry on and says where it goes. Unset means no exporter, no goroutines, no network |
+| `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | unset | The same, for a deployment sending metrics somewhere different; either variable being set enables telemetry |
+| other `OTEL_EXPORTER_OTLP_*` | — | Headers, protocol, timeouts: read by the OTLP exporters directly, so anything else OTLP-speaking is configured the same way |
 
 ### Authenticating
 
@@ -1105,12 +1123,14 @@ information rather than two features:
   Not per poll: a run that sits on one step for four minutes says nothing for four
   minutes, rather than repeating itself 240 times.
 
-It is not step-by-step progress, and the reason is worth stating plainly: the server
-answers a *running* execution with the two ids and a status, and reports outputs only
-once the run has finished. There is nothing per-step to show while it would matter. The
-missing piece is the server's, and until it lands, what a follow adds over `flow get` in
-a loop is that it exits by itself, exits with the run's outcome, does not repeat itself,
-and shows time passing.
+It is not step-by-step progress, and the reason is worth stating plainly because it is
+no longer the one it used to be: the server *does* answer a running execution with
+where it has got to — which step, and which activities are retrying, with the attempt
+count and the last failure — and `flow get` prints both. What `flow watch` has not
+done yet is read those fields; it folds each poll into the status, the run id, and the
+steps that have produced outputs. Until it consumes them, what a follow adds over
+`flow get` in a loop is that it exits by itself, exits with the run's outcome, does not
+repeat itself, and shows time passing.
 
 The live view is drawn on **stderr**, and the outputs go to stdout exactly as
 `flow get` writes them. So one invocation does both:

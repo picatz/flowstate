@@ -110,11 +110,18 @@ func newWorkflowServiceClient(server serverFlags) flowstatev1connect.WorkflowSer
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	baseURL := serverBaseURL(server.address)
 
-	// The client half of the tracing the server has carried all along. With no
-	// SDK configured this is a no-op passthrough; with OTEL_EXPORTER_OTLP_*
-	// set, a trace starts at `flow run` and the server's spans join it instead
-	// of each being a root with no parent — which is the difference between a
-	// trace and a pile of disconnected timings.
+	// The client half of the tracing the server has carried all along — the
+	// interceptor, at least. It does not yet do what the rest of this comment
+	// used to claim, and the gap is worth naming rather than discovering from a
+	// trace that has no client span in it: nothing on a client command
+	// initializes a tracer provider, and no text-map propagator is registered
+	// anywhere in this binary. initTelemetry is reached only through
+	// temporalConfig, which is `flow server` and `flow worker`. So with
+	// OTEL_EXPORTER_OTLP_* set, this interceptor still records into the global
+	// no-op provider and injects no trace context, and a trace begins at the
+	// server rather than at the person who ran the command. Closing it is client
+	// telemetry initialization plus otel.SetTextMapPropagator; the interceptor is
+	// here so the wiring has somewhere to arrive.
 	var interceptors []connect.Interceptor
 	if otelInterceptor, err := otelconnect.NewInterceptor(); err == nil {
 		interceptors = append(interceptors, otelInterceptor)

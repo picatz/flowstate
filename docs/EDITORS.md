@@ -96,26 +96,35 @@ references, and workspace symbols. The server also never type-checks expressions
 it only parses them — because a step's output types are not statically known for
 every task, and a wrong squiggle under working code is worse than no squiggle.
 
-Secret references are described on hover but **not** offered by completion. A
-`${secret('env:API_KEY')}` marker compiles and validates today, but no task consumes
-one yet, so a workflow using it fails at run time — suggesting it would be offering
-a trap. Hover reads the reference through the same parser the compiler uses, so it
-cannot describe a form a worker would refuse, and it names the scheme rather than a
-backend: which provider serves `vault` is a deployment's choice, made worker-side.
+Secret references are described on hover but **not** offered by completion, and the
+reason is narrower than it once was: a secret is consumed for real now — the `http`
+task's `bearer:` takes a reference whole and the worker resolves it inside the
+activity — so a `${secret('env:API_KEY')}` marker in the one place built to receive
+one runs rather than failing. What completion would still have to know is *where* it
+may be offered, and that is the hard half: a reference has to be the whole value of a
+task input the schema declares as taking one, and every other position — a header
+entry, an `if:`, a loop's `items` — is a compile error the validator explains at
+length. A completion list that cannot make that distinction offers the refusal as
+often as the working form, so it stays unoffered until it can. Hover reads the
+reference through the same parser the compiler uses, so it cannot describe a form a
+worker would refuse, and it names the scheme rather than a backend: which provider
+serves `vault` is a deployment's choice, made worker-side.
 Misplaced references — combined into a larger expression, or used in `if` or
 `for_each.items`, where resolving them would put the secret into workflow history —
 are reported by the validator with its own explanation.
 
 Inputs a task evaluates itself are not reference-checked, because they resolve
-against a scope the document does not model: the `http` task's `outputs` expression
-sees `status_code`, `headers`, `body`, and `json` from the response, which exist only once
-the request has been made. Those names are bare because the task binds them, the
-same way a loop binds its iterator; `steps.` is still reachable alongside them, so a
-shaping expression can combine the response with an earlier step's output. Which
-inputs are deferred this way comes from the task's own definition, so this cannot go
-stale. Note that `outputs` has to be written as a quoted whole-value expression —
-`outputs: "${ {'status': status_code} }"` — since an unquoted value would read the
-colons inside as YAML mapping syntax.
+against a scope the document does not model: the `http` task's `expect` and `outputs`
+expressions see the response under `response.` — `response.status_code`,
+`response.headers`, `response.body`, and, when the step asked for `parse_json`,
+`response.json` — none of which exist until the request has been made. That root is
+bound by the task rather than by the workflow's scope, which is why a step's ordinary
+inputs cannot see it: there is no response yet when those are resolved. `steps.` is
+reachable alongside it, so a shaping expression can combine the response with an
+earlier step's output. Which inputs are deferred this way comes from the task's own
+definition, so this cannot go stale. Note that `outputs` has to be written as a
+quoted whole-value expression — `outputs: "${ {'status': response.status_code} }"` —
+since an unquoted value would read the colons inside as YAML mapping syntax.
 
 ## Install the binary
 

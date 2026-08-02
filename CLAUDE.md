@@ -85,10 +85,25 @@ behind it too.
     go vet ./...
     gofmt -l ./cmd ./pkg                       # must print nothing
     GOMEMLIMIT=2GiB go test -race -timeout 900s ./...
+    go run github.com/bufbuild/buf/cmd/buf@v1.72.0 lint
+    go run github.com/bufbuild/buf/cmd/buf@v1.72.0 breaking --against '.git#branch=origin/main'
     go run github.com/bufbuild/buf/cmd/buf@v1.72.0 generate && git diff --exit-code
     go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 
-Two of those repay the trouble in ways that are not obvious.
+`make check` in the repo root runs exactly that list, in that order, with the
+govulncheck pin below already applied. Prefer it, and keep it and this section
+saying the same thing — a copy of a command list is a thing that drifts, and the
+whole point of the list is that it is what CI runs.
+
+Three of those repay the trouble in ways that are not obvious.
+
+The two `buf` checks that are not `generate` guard a contract rather than a build.
+`buf lint` enforces the whole default rule set, with nothing suppressed. `buf
+breaking` compares against `origin/main`, which is why it needs the base branch
+fetched, and why it is the one check that can fail on a diff that compiles and tests
+perfectly. The schema is public — plugins are separate processes compiling against
+these descriptors — so a break here is not a compile error somebody sees, it is every
+plugin in the wild.
 
 `buf generate` followed by `git diff --exit-code` is the one people skip, and it is
 the one that fails for someone else rather than for you: committed generated code

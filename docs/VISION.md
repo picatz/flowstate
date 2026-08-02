@@ -106,13 +106,16 @@ model, observable, and fail-closed: an unverifiable event is not an event.
 
 The gating concern for all of the above, not a follow-up. Sandboxing for plugin
 and `exec:` workloads beyond process isolation — filesystem, network, and
-syscall confinement, possibly via the sandbox-provider plugin shape. JIT access:
-short-lived, audience-scoped, bounded credentials via the workload identity
-federation that is built and (today) unwired, with the broker moved into the
-worker where the credential is used. Secret material zeroed where the runtime
-allows it — verify what the Go runtime actually ships before relying on it; the
-closure-holding design exists because strings cannot be wiped. Everything
-fail-closed, every parser bounded, per CLAUDE.md.
+syscall confinement, possibly via the sandbox-provider plugin shape. Secret
+material zeroed where the runtime allows it — verify what the Go runtime actually
+ships before relying on it; the closure-holding design exists because strings
+cannot be wiped. Everything fail-closed, every parser bounded, per CLAUDE.md.
+
+JIT access used to be listed here and is not any more, per this file's own rule:
+short-lived, audience-scoped credentials via workload identity federation landed,
+with the broker in the worker where the credential is used. See the outbound half
+of [ARCHITECTURE.md](ARCHITECTURE.md#identity-in-both-directions) and
+`examples/http-federated/`.
 
 ## The observability lab, and Flowstate as an OTLP citizen
 

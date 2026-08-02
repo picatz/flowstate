@@ -70,10 +70,12 @@ of these.
 `run.*`; bare loop bindings, private vars, `now`). Accepted, and the `steps.` half has
 landed: a step's outputs are `${steps.<id>.<output>}`, and what stays bare is what is
 bound *where the expression is written* — a `for_each` iterator, `now` inside
-`wait_until:`, and the names a task resolves against its own scope (`status_code`,
-`headers`, `body`, and — when the step asked for `parse_json` — `json`, in the `http`
-task's `expect:` and `outputs:`). `vars.*` has since landed too, in both of its
-positions; `inputs.*` and `run.*` do not exist; see [Order of work](#order-of-work).
+`wait_until:`. The names a task resolves against its own scope were bare when this was
+written and are not any more: the `http` task's `expect:` and `outputs:` reach the
+response under a root of its own, `${response.status_code}`, `response.headers`,
+`response.body` and — when the step asked for `parse_json` — `response.json`, per the
+disposition table below. `vars.*` has since landed too, in both of its positions;
+`inputs.*` and `run.*` do not exist; see [Order of work](#order-of-work).
 
 *Since written:* the reason this section gave for accepting it was checked against the
 code and was half wrong, so it is replaced here rather than left to be rediscovered.
@@ -1178,13 +1180,21 @@ a build does not merely decline to compile the old grammar, it does not contain 
 diagnostic is documentation with a position attached, not a gate in front of a
 still-present task.
 
-**With no local task returning a value, `http` and `for_each` are the only steps that
-produce outputs at all.** `log` declares none by design, and the other node kinds are
-control flow or waits. That is a bigger consequence than the vocabulary argument
-implies, and it lands on the type system: every remaining producer of a value is
-something the *outside world* handed back, so a workflow currently has no supported way
-to name a computed result as an output of the run. Inside a file `vars:` covers it, and
-the moment the question is what the run *returns* — to a caller, to a schedule, to
+**With no local task returning a value, nothing left produces a value the workflow
+itself computed.** The enumeration this paragraph first gave was wrong and is corrected
+rather than quietly dropped: `http` and `for_each` are not the only producers, because a
+wait produces outputs too — every wait reports `timed_out`, and a `wait_for_signal:`
+additionally carries whatever the sender supplied under `payload.*`, which is what makes
+`${approval.timed_out}` and `${approval.payload.approved}` writable at all. `log`
+declares none by design, and what remains is control flow.
+
+The correction does not rescue the conclusion, though, because the outputs it adds are
+of exactly the kind already named: a wait's `timed_out` is something the *clock* decided
+and a signal's `payload` is something a *sender* asserted, just as an `http` step's
+outputs are what a server handed back. Every remaining producer of a value is
+therefore something outside the workflow handed in, so a workflow still has no supported
+way to name a computed result as an output of the run. Inside a file `vars:` covers it,
+and the moment the question is what the run *returns* — to a caller, to a schedule, to
 Phase 3's `call:` — the answer is the `outputs:` contract, which is not built. Phase 2
 was already scheduled as the phase that ships the contract with its checker. It is now
 also the phase that restores a capability the sweep removed, and it should be sequenced
