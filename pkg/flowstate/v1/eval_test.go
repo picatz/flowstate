@@ -207,6 +207,24 @@ func TestRunWorkflowErrorText(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowToleratedStepFailure covers a non-task failure tolerated at the
+// step that raised it, in the local driver.
+//
+// The local half is where a step's own `vars:` failing used to abort the whole
+// run: the evaluation returned out of runNodes above the `continue_on_error`
+// check, so the driver that exists to predict production was stricter than it.
+// The engine package runs the identical cases against the durable driver, which
+// is the only thing that can say the two now agree.
+func TestRunWorkflowToleratedStepFailure(t *testing.T) {
+	for _, test := range tests.ToleratedStepFailureCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			out, err := v1.Run(t.Context(), test.Workflow)
+			require.NoError(t, err)
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, out, protocmp.Transform()))
+		})
+	}
+}
+
 func TestRunWorkflowNestedErrorText(t *testing.T) {
 	for _, test := range tests.NestedErrorTextCases() {
 		t.Run(test.Name, func(t *testing.T) {

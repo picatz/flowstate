@@ -67,26 +67,65 @@ func (e *ErrRunFailed) Error() string {
 // cause: this composes both strings from it, so the message a person reads and
 // the text an expression compares cannot drift apart at a call site that
 // remembered to interpolate the error into one of them and not the other.
+//
+// A position belongs to the level a failure is passing *out of*, never to the
+// level that raised it. `step %q` is therefore added by [executor.runNodes] on
+// the propagating path — where the local driver adds its own — and not by the
+// call that raised the failure. Adding it at the raising site put the tolerating
+// step's own id into the text it recorded for itself: `${steps.gate.error}` read
+// `step "gate": evaluating items: …` durably and `evaluating items: …` locally,
+// for the same file. Which step it is, is what the key already says.
 func stepFailed(err error, format string, args ...any) error {
 	if temporal.IsCanceledError(err) {
 		return err
 	}
 
-	position := fmt.Sprintf(format, args...)
+	return failedAt(err, fmt.Sprintf(format, args...))
+}
+
+// nodeFailed reports a failure raised by a node itself — its `vars:`, its task's
+// inputs, its loop's items, its wait — carrying no position of its own.
+//
+// The position is added if and when this leaves the node, so that a node
+// tolerating its own failure records the same sentence the local driver records
+// for it. See [stepFailed].
+func nodeFailed(err error) error {
+	if temporal.IsCanceledError(err) {
+		return err
+	}
+
+	return failedAt(err, "")
+}
+
+// failedAt builds the run failure, optionally prefixed by a position.
+func failedAt(err error, position string) error {
 	recorded, fromTask := recordedStepError(err)
 
-	// A nested structural position is prepended for the same failures the local
-	// driver prepends it for, and dropped for the same ones it drops it for. A
-	// tolerated `for_each` whose body raised a runtime CEL error records
-	// `iteration 0: step "child": no such key: field` under either driver;
-	// a tolerated body whose *task* failed records the canonical task sentence
-	// under either, because that is what errors.As finds locally.
-	if !fromTask && recorded != "" {
-		recorded = position + ": " + recorded
+	// Composed from the inner failure's own message rather than from its
+	// Error(), which restates the `engine: flowstate run failed:` preamble at
+	// every level a position is added at.
+	message := err.Error()
+	var inner *ErrRunFailed
+	if errors.As(err, &inner) {
+		message = inner.Message
+	}
+
+	if position != "" {
+		message = position + ": " + message
+
+		// A structural position is prepended for the same failures the local
+		// driver prepends it for, and dropped for the same ones it drops it for. A
+		// tolerated `for_each` whose body raised a runtime CEL error records
+		// `iteration 0: step "child": no such key: field` under either driver;
+		// a tolerated body whose *task* failed records the canonical task sentence
+		// under either, because that is what errors.As finds locally.
+		if !fromTask && recorded != "" {
+			recorded = position + ": " + recorded
+		}
 	}
 
 	return &ErrRunFailed{
-		Message:          position + ": " + err.Error(),
+		Message:          message,
 		Recorded:         recorded,
 		recordedFromTask: fromTask,
 	}

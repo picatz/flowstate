@@ -2,6 +2,7 @@ package flowstatev1
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"reflect"
@@ -732,20 +733,29 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope) error {
 			continue
 		}
 
-		// The step's own `vars:`, bound for this node and its body only. Evaluated
-		// after the condition deliberately: `if:` decides whether the step runs at
-		// all, so a var it declares does not exist yet when the question is asked —
-		// and a var whose expression would fail must not fail a step that is skipped.
-		inner, err := EvalStepVars(nodeCtx, node, scope)
+		outputs, err := runNodeWithVars(nodeCtx, node, scope)
 		if err != nil {
-			return fmt.Errorf("step %q: %w", node.GetId(), err)
-		}
-
-		outputs, err := runNode(nodeCtx, node, inner)
-		if err != nil {
+			// Cancellation is not a step failure, so `continue_on_error` does not
+			// get to tolerate it — the durable driver says the same thing at the
+			// same point, and for the same reason: that policy says "this task may
+			// fail without stopping the workload", not "the workload may not be
+			// stopped". Tolerated, a cancelled run would walk on through every
+			// remaining step, fail each one instantly on the same dead context,
+			// record each as a best-effort failure, and *succeed*.
+			//
+			// Asked of the run's context rather than of the error, because a
+			// step's own `timeout:` also arrives here as a context error and that
+			// one is an ordinary failure the policy exists to tolerate.
+			if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+				return fmt.Errorf("step %q: %w", node.GetId(), err)
+			}
 			if !node.GetPolicy().GetContinueOnError() {
 				return fmt.Errorf("step %q: %w", node.GetId(), err)
 			}
+			// Recorded without the `step %q` position the propagating path adds:
+			// the id is implied by the key this is recorded under, and repeating it
+			// would make `${steps.<id>.error}` name its own step. The durable
+			// driver draws the same line at the same place — see stepFailed.
 			scope.Outputs.StepValues[node.GetId()] = FailedStepOutputs(StepErrorText(err))
 			continue
 		}
@@ -754,6 +764,30 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope) error {
 		}
 	}
 	return nil
+}
+
+// runNodeWithVars executes a node with its own `vars:` block bound.
+//
+// The block is evaluated here rather than in runNodes' loop body so that a
+// failure evaluating it is a failure *of this node*, reaching the same
+// `continue_on_error` check every other failure of this node reaches. It used to
+// return straight out of runNodes, one statement above that check: a step whose
+// `vars:` expression failed aborted the whole local run even where the author had
+// said the step may fail, while the durable driver — which evaluates the same
+// block inside its own runNodeWithVars, whose error flows to the same tolerance
+// check — carried on and recorded the failure. Rehearsal was stricter than
+// production, in the direction that makes a local run misleading.
+//
+// Evaluated after the condition deliberately: `if:` decides whether the step runs
+// at all, so a var it declares does not exist yet when the question is asked —
+// and a var whose expression would fail must not fail a step that is skipped.
+func runNodeWithVars(ctx context.Context, node *Node, scope *Scope) (*Node_Outputs, error) {
+	inner, err := EvalStepVars(ctx, node, scope)
+	if err != nil {
+		return nil, err
+	}
+
+	return runNode(ctx, node, inner)
 }
 
 // runNode executes one node and returns the outputs it records.
