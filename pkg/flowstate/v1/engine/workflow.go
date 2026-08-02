@@ -616,6 +616,16 @@ func collectRefsFromExpr(e *expr.Expr, prev *v1.Workflow_StepOutputs, refs map[s
 		}
 	case *expr.Expr_StructExpr:
 		for _, e := range kind.StructExpr.GetEntries() {
+			// An entry's key is an expression too. `Expr_CreateStruct_Entry` has a
+			// key_kind oneof: `field_key` is a bare string naming a message field,
+			// but `map_key` is a full expression, and a map literal written in a
+			// Flowfile — `${ {steps.name.result: steps.data.body} }` — puts one
+			// there. Walking only the value made a reference in key position
+			// invisible, so compaction pruned an output the resumed segment then
+			// failed on. Every other CEL walker in the repo (`flowfile`'s
+			// validate, celcheck, secret and fixexpr passes) already walks both
+			// halves; this one was the outlier.
+			collectRefsFromExpr(e.GetMapKey(), prev, refs)
 			collectRefsFromExpr(e.GetValue(), prev, refs)
 		}
 	case *expr.Expr_ComprehensionExpr:
