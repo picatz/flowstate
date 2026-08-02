@@ -130,6 +130,21 @@ func rootedUnder(src, root string, names map[string]bool) (string, bool, error) 
 	}
 	positions := parsed.GetSourceInfo().GetPositions()
 
+	// cel-go records a position as a *code-point* offset into the expression source,
+	// which is the same number as a byte offset only while the expression is ASCII.
+	// Indexing the string with one is therefore wrong twice for a file with a
+	// non-ASCII character before a reference: the boundary check reads bytes that are
+	// not where the identifier is, so a valid file is refused with a diagnostic
+	// blaming a macro; and where the wrong offset happens to *hold* the name — a step
+	// called `a` and `${'日本a' + a}`, where the shifted offset lands on the `a`
+	// inside the literal — the literal is rewritten, the real reference is left bare,
+	// and `flow fix` exits zero on a file `flow validate` rejects.
+	//
+	// So the whole rewrite works in runes, the way [markerSpan] already does for a
+	// diagnostic's column: both the check and the splice index the same units cel-go
+	// counted in.
+	runes := []rune(src)
+
 	type splice struct {
 		offset int
 		name   string
@@ -151,7 +166,7 @@ func rootedUnder(src, root string, names map[string]bool) (string, bool, error) 
 			return fmt.Errorf("the reference to %q has no recorded position, so it cannot be rooted here; write `%s.%s` by hand",
 				name, root, name)
 		}
-		if !identifierAt(src, int(offset), name) {
+		if !identifierAt(runes, int(offset), name) {
 			return fmt.Errorf("the reference to %q is recorded at a position that does not hold it, which happens inside a macro; write `%s.%s` by hand",
 				name, root, name)
 		}
@@ -169,11 +184,16 @@ func rootedUnder(src, root string, names map[string]bool) (string, bool, error) 
 	// measured against.
 	sort.Slice(splices, func(i, j int) bool { return splices[i].offset > splices[j].offset })
 
-	out := src
+	prefix := []rune(root + ".")
+	out := runes
 	for _, s := range splices {
-		out = out[:s.offset] + root + "." + out[s.offset:]
+		next := make([]rune, 0, len(out)+len(prefix))
+		next = append(next, out[:s.offset]...)
+		next = append(next, prefix...)
+		next = append(next, out[s.offset:]...)
+		out = next
 	}
-	return out, true, nil
+	return string(out), true, nil
 }
 
 // collectStepIdents calls visit for every free identifier naming a step.
@@ -237,29 +257,36 @@ func collectStepIdents(e *exprpb.Expr, bound, steps map[string]bool, visit func(
 // identifierAt reports whether name is written at offset in src, on its own token
 // boundaries.
 //
+// src is runes rather than bytes because the offset is a code-point offset — see
+// [rootedUnder]. A CEL identifier is ASCII, so the name's own length is the same in
+// either unit; what is not the same is where in the source that length starts.
+//
 // The boundary check is the point. `a` appears inside `aardvark` and inside
 // `x.a`, and splicing at either produces something that still parses and means
-// something else.
-func identifierAt(src string, offset int, name string) bool {
-	if offset < 0 || offset+len(name) > len(src) {
+// something else. A non-ASCII neighbour is a boundary too — `é` cannot appear in a
+// CEL identifier — so it is only ever read as one rune, never as the bytes it is
+// made of.
+func identifierAt(src []rune, offset int, name string) bool {
+	want := []rune(name)
+	if offset < 0 || offset+len(want) > len(src) {
 		return false
 	}
-	if src[offset:offset+len(name)] != name {
+	if string(src[offset:offset+len(want)]) != name {
 		return false
 	}
-	if offset > 0 && (isIdentifierByte(src[offset-1]) || src[offset-1] == '.') {
+	if offset > 0 && (isIdentifierRune(src[offset-1]) || src[offset-1] == '.') {
 		return false
 	}
-	if end := offset + len(name); end < len(src) && isIdentifierByte(src[end]) {
+	if end := offset + len(want); end < len(src) && isIdentifierRune(src[end]) {
 		return false
 	}
 	return true
 }
 
-// isIdentifierByte reports whether b can appear inside a CEL identifier.
-func isIdentifierByte(b byte) bool {
+// isIdentifierRune reports whether r can appear inside a CEL identifier.
+func isIdentifierRune(r rune) bool {
 	switch {
-	case b >= 'a' && b <= 'z', b >= 'A' && b <= 'Z', b >= '0' && b <= '9', b == '_':
+	case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_':
 		return true
 	default:
 		return false

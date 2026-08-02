@@ -179,6 +179,21 @@ func fixOnce(data []byte) (FixResult, error) {
 		terminator:      lineTerminator(data),
 	}
 	for _, doc := range file.Docs {
+		// Anchors first, before anything that has to resolve an alias.
+		//
+		// This used to run after the expression pass, which meant the expression pass
+		// could not follow an alias — so a loop writing `as: *name` looked like a loop
+		// with no `as:` at all, and the rewriter subtracted `item` instead of the name
+		// the file actually binds. Both directions of that are wrong at once: the real
+		// binding is rooted inside the body, and a legacy reference to a step called
+		// `item` is left bare.
+		//
+		// Nothing in the expression pass writes an anchor, and a Flowfile holds one
+		// document (`compile` says so), so hoisting this changes only what the walks
+		// below can see.
+		f.collectAnchors(doc.Body)
+	}
+	for _, doc := range file.Docs {
 		// Expressions are rooted first, and written straight into the lines rather
 		// than recorded as an edit.
 		//
@@ -193,7 +208,6 @@ func fixOnce(data []byte) (FixResult, error) {
 		f.expressions(doc.Body, stepIDs(doc.Body))
 	}
 	for _, doc := range file.Docs {
-		f.collectAnchors(doc.Body)
 		f.collectRetirementContext(doc.Body)
 		f.workflow(doc.Body)
 	}
@@ -1279,8 +1293,15 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 	// notes about deferred inputs narrow with it: suggesting the `steps.` spelling
 	// for a name the author bound in a loop would send them to make the corruption
 	// by hand.
-	var walk func(n ast.Node, task taskScope, steps map[string]bool)
-	walk = func(n ast.Node, task taskScope, steps map[string]bool) {
+	//
+	// workflow marks the one mapping in the document that is not a step: the
+	// workflow's own. Its `vars:` are not bound bare — they are read as
+	// `vars.<name>` — so subtracting them there suppressed the rooting of a step
+	// sharing a top-level var's name, which is the opposite failure and just as
+	// bad. Only the document's body is the workflow; everything reached from it is
+	// a step, a task, or something inside one.
+	var walk func(n ast.Node, task taskScope, steps map[string]bool, workflow bool)
+	walk = func(n ast.Node, task taskScope, steps map[string]bool, workflow bool) {
 		switch node := unwrapAnchor(n).(type) {
 		case *ast.MappingNode:
 			// The bindings a mapping introduces are written as siblings of the
@@ -1288,10 +1309,20 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 			// task — so they are read off the whole mapping first, and then applied
 			// per key, because each is in scope for some of its siblings and not
 			// others.
-			vars, iterator := boundBareNames(node)
+			vars, iterator, unresolvable := f.boundBareNames(node, workflow)
+			if unresolvable != nil && len(steps) > 0 {
+				// A binding written through an alias this walk cannot follow. Both
+				// guesses corrupt — see [fixer.boundBareNames] — so nothing under this
+				// mapping is rooted, and the author is told where. Refusing costs a
+				// migration somebody finishes by hand; guessing costs a file that
+				// still validates and computes something else.
+				f.refuse(unresolvable,
+					"this binding is written through an alias that cannot be resolved here, so the names it binds are unknown; write the name directly, or root the step references under this key by hand")
+				steps = nil
+			}
 
 			for _, v := range node.Values {
-				walk(v, task, sees(steps, v, vars, iterator))
+				walk(v, task, sees(steps, v, vars, iterator), false)
 			}
 		case *ast.MappingValueNode:
 			name, named := keyNameOf(node.Key)
@@ -1345,20 +1376,57 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 					walk(node.Value, taskScope{
 						name:     name,
 						deferred: deferredInputs(def),
-					}, steps)
+					}, steps, false)
 					return
 				}
 			}
-			walk(node.Value, task, steps)
+			walk(node.Value, task, steps, false)
 		case *ast.SequenceNode:
 			for _, v := range node.Values {
-				walk(v, task, steps)
+				walk(v, task, steps, false)
 			}
 		case *ast.StringNode:
 			f.rootScalar(node, steps)
 		}
 	}
-	walk(n, taskScope{}, steps)
+	walk(n, taskScope{}, steps, true)
+}
+
+// resolved follows anchors and aliases to the node that was actually written,
+// mirroring [compiler.resolveQuiet].
+//
+// The rewriter needs it for the same reason the compiler does: the two have to agree
+// about what a value *is*, and the compiler accepts `as: &n host` and `as: *hostname`
+// as readily as `as: host`. A rewriter that reads only the third spelling does not
+// merely miss a binding — it substitutes a different one, because a loop with an
+// unreadable `as:` looks like a loop with none and falls back to [v1.DefaultIterator].
+//
+// The bool reports whether the value could be resolved at all. Bounded by
+// [maxAliasDepth], because an alias cycle is a shape the parser accepts and this walk
+// would otherwise follow forever — the compiler refuses one for the same reason.
+func (f *fixer) resolved(n ast.Node) (ast.Node, bool) {
+	for depth := 0; depth <= maxAliasDepth; depth++ {
+		switch node := n.(type) {
+		case nil:
+			return nil, false
+		case *ast.AnchorNode:
+			n = node.Value
+		case *ast.AliasNode:
+			name, ok := scalarText(node.Value)
+			if !ok {
+				return nil, false
+			}
+			target, known := f.anchors[name]
+			if !known {
+				return nil, false
+			}
+			n = target
+		default:
+			return n, true
+		}
+	}
+
+	return nil, false
 }
 
 // boundBareNames reads the bindings a mapping introduces: the keys of a step's
@@ -1371,10 +1439,24 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 // A loop is recognised by carrying both `items:` and `steps:`, since that is what
 // makes the default reachable at all: a mapping with an explicit `as:` announces
 // itself, and one without announces nothing.
-func boundBareNames(node *ast.MappingNode) (vars map[string]bool, iterator string) {
+//
+// workflow says the mapping is the document's own, whose `vars:` are the *workflow's*
+// and are reached as `vars.<name>` rather than bare — so they bind nothing here. Read
+// as bindings they made a top-level var sharing a step's id suppress that step's
+// rooting, leaving a legacy reference bare in a file stamped with the new edition:
+// `flow fix` exits zero and `flow validate` then rejects it. Only a *step's* vars are
+// bare, and only inside that step.
+//
+// unresolvable is the value of a binding this walk could not read — an alias naming an
+// anchor that is not in the document, or a cycle. It is returned rather than guessed
+// around, because both guesses corrupt: assuming no binding roots the body's uses of
+// it, and assuming the default subtracts a name the file never bound. The caller
+// refuses instead.
+func (f *fixer) boundBareNames(node *ast.MappingNode, workflow bool) (vars map[string]bool, iterator string, unresolvable ast.Node) {
 	var (
-		hasItems bool
-		hasSteps bool
+		hasItems     bool
+		hasSteps     bool
+		unreadableAs ast.Node
 	)
 
 	for _, value := range node.Values {
@@ -1391,12 +1473,27 @@ func boundBareNames(node *ast.MappingNode) (vars map[string]bool, iterator strin
 			hasSteps = true
 
 		case forEachAsKey:
-			if name, isString := scalarText(value.Value); isString && name != "" {
+			written, ok := f.resolved(value.Value)
+			if !ok {
+				unreadableAs = value.Value
+
+				continue
+			}
+			if name, isString := scalarText(written); isString && name != "" {
 				iterator = name
 			}
 
 		case varsKey:
-			if declared, isMapping := unwrapAnchor(value.Value).(*ast.MappingNode); isMapping {
+			if workflow {
+				continue
+			}
+			written, ok := f.resolved(value.Value)
+			if !ok {
+				unresolvable = value.Value
+
+				continue
+			}
+			if declared, isMapping := written.(*ast.MappingNode); isMapping {
 				for _, entry := range declared.Values {
 					if name, ok := keyNameOf(entry.Key); ok {
 						if vars == nil {
@@ -1411,13 +1508,19 @@ func boundBareNames(node *ast.MappingNode) (vars map[string]bool, iterator strin
 
 	if !hasItems || !hasSteps {
 		// Not a loop's inner mapping. An `as:` elsewhere is somebody's input named
-		// `as`, and claiming it would suppress a rooting for no reason.
+		// `as`, and claiming it would suppress a rooting for no reason — and an
+		// unreadable one is nothing to refuse over, for that same reason.
 		iterator = ""
-	} else if iterator == "" {
-		iterator = v1.DefaultIterator
+	} else {
+		if unreadableAs != nil {
+			unresolvable = unreadableAs
+		}
+		if iterator == "" {
+			iterator = v1.DefaultIterator
+		}
 	}
 
-	return vars, iterator
+	return vars, iterator, unresolvable
 }
 
 // sees returns the step ids one value of a mapping may still be rooted against.
