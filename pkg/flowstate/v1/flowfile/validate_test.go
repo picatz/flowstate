@@ -735,3 +735,94 @@ func TestAWorkflowTooLargeToRunIsReportedAtValidateTime(t *testing.T) {
 	require.Contains(t, reported, "step outputs",
 		"the diagnostic does not explain that a run carries more than the workflow: %s", reported)
 }
+
+// TestAnInputIsRefusedInWorkflowVarsAndAcceptedInAStepsVars covers both directions of
+// the one position `${inputs.<name>}` may not be written in.
+//
+// Written as a pair deliberately. A refusal tested on its own is half a rule: the
+// same walk decides both, and a check subtracting `inputs.` too widely would refuse
+// the step-level `vars:` this file's other half depends on and still look correct
+// from the negative case alone. That failure is the shape CLAUDE.md names — a test
+// asserting a party reaches its own resource, never that the other direction is
+// closed — turned around: here it is the *permitted* direction that would go
+// unnoticed.
+//
+// And each half is checked against what the engine actually does rather than only
+// against the validator, because a diagnostic that is not true of the run is worse
+// than no diagnostic. The refused file really does die before its first step, and the
+// accepted one really does read the argument.
+func TestAnInputIsRefusedInWorkflowVarsAndAcceptedInAStepsVars(t *testing.T) {
+	t.Parallel()
+
+	const inWorkflowVars = `edition: ` + flowfile.CurrentEdition + `
+name: reading-an-input
+inputs:
+  service:
+    type: string
+    required: true
+vars:
+  target: ${inputs.service}
+steps:
+  - id: plan
+    log:
+      message: ${vars.target}
+`
+
+	diagnostics, err := flowfile.ValidateSource([]byte(inWorkflowVars))
+	require.NoError(t, err, "the fixture no longer compiles, so it tests nothing")
+	require.Len(t, diagnostics, 1,
+		"a workflow-level var reading an input was not refused: %s", diagnostics.Error())
+
+	reported := diagnostics[0]
+	require.Equal(t, "vars.target", reported.Field,
+		"the diagnostic does not name the var it is about")
+	require.Equal(t, "service", reported.Value)
+	require.NotZero(t, reported.Line, "the diagnostic has no position: %s", reported.Error())
+	require.NotZero(t, reported.Column, "the diagnostic has no column: %s", reported.Error())
+	require.Contains(t, reported.Message, "a var may not read an input")
+	require.Contains(t, reported.Message, "inputs.service",
+		"the diagnostic does not say where to write the reference instead")
+
+	// The refusal is true of the engine, not a rule the validator invented.
+	// `EvalWorkflowVars` evaluates the block against `NewScope(profile, nil)` — the
+	// run's arguments are bound into the scope only afterwards (eval.go), and the
+	// durable driver evaluates them in an activity handed the declared vars and the
+	// profile and nothing else (engine.WorkflowVars) — so the name resolves against
+	// no inputs at all.
+	refused, err := flowfile.Unmarshal([]byte(inWorkflowVars))
+	require.NoError(t, err)
+
+	_, err = v1.RunWithInputs(t.Context(), refused,
+		map[string]*v1.Value{"service": v1.NewLiteral("checkout")})
+	require.ErrorContains(t, err, `var "target"`,
+		"the file the validator refuses now runs, so the diagnostic reports something that is not so")
+
+	// The other direction: a step's own `vars:` is evaluated where the run's
+	// arguments are in scope, so it may read one — and must keep being able to.
+	const inStepVars = `edition: ` + flowfile.CurrentEdition + `
+name: reading-an-input-in-a-step
+inputs:
+  service:
+    type: string
+    required: true
+steps:
+  - id: plan
+    vars:
+      target: ${inputs.service}
+    if: ${inputs.service != ''}
+    log:
+      message: ${'deploying ' + target}
+`
+
+	diagnostics, err = flowfile.ValidateSource([]byte(inStepVars))
+	require.NoError(t, err)
+	require.Empty(t, diagnostics,
+		"a step's own `vars:` may read an input, and this file was refused: %s", diagnostics.Error())
+
+	accepted, err := flowfile.Unmarshal([]byte(inStepVars))
+	require.NoError(t, err)
+
+	_, err = v1.RunWithInputs(t.Context(), accepted,
+		map[string]*v1.Value{"service": v1.NewLiteral("checkout")})
+	require.NoError(t, err, "a step's `vars:` reading an input validates but does not run")
+}

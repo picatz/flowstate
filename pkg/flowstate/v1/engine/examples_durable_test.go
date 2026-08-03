@@ -91,21 +91,6 @@ var exampleSignals = map[string]map[string]*v1.Node_Outputs{
 	},
 }
 
-// exampleInputs supplies what an example's `inputs:` block requires and does not
-// default.
-//
-// Only what is required: everything with a `default:` is left to
-// [v1.BindRunInputs], because the default is part of what the example teaches and
-// overriding it here would test this table instead of the file. `parameterized-deploy`
-// declares `service` required with no default, which is the one thing a run of it
-// cannot invent.
-//
-// An example whose declarations this cannot satisfy fails rather than being skipped —
-// see the require in the loop below.
-var exampleInputs = map[string]map[string]*v1.Value{
-	"parameterized-deploy": {"service": v1.NewLiteral("checkout")},
-}
-
 // exampleDurableSkips names an example this harness genuinely cannot run durably,
 // against the reason why.
 //
@@ -198,10 +183,16 @@ func TestEveryExampleRunsDurably(t *testing.T) {
 		// (workflow.go's comment on RunState.Inputs). Binding separately per driver
 		// would let a default differ between them and call that a driver
 		// disagreement.
-		inputs, err := v1.BindRunInputs(wf, exampleInputs[name])
+		//
+		// The arguments come from the example's own `inputs.json`, which is also
+		// what the local harness reads and what `flow run local --input-file` takes.
+		// They were a Go map here — one entry, `parameterized-deploy: service:
+		// checkout` — which was a second answer to what an example needs, sitting
+		// beside the file a reader actually runs. Two answers drift, and the one
+		// nobody can reproduce is the harness's.
+		inputs, err := tests.BindExampleInputs(t, wf, path)
 		require.NoError(t, err,
-			"%s declares inputs this harness cannot satisfy; add what it requires to exampleInputs, "+
-				"since an example nobody can start is not an example anybody can use", name)
+			"%s cannot be started, so it is an example nobody can run", name)
 
 		signals := exampleSignals[name]
 		if tests.WaitsForASignal(wf.GetSteps()) {
@@ -626,4 +617,48 @@ func mapKeyOrder(key *expr.Value) string {
 		// comparison report what actually differs.
 		return "?"
 	}
+}
+
+// TestAnExampleWithNoInputsFileIsRefusedRatherThanCapped pins the failure that keeps
+// the corpus honest about its own arguments.
+//
+// Both harnesses read what an example requires from an `inputs.json` beside its
+// `workflow.yaml`. That answer used to exist twice — this file also carried a Go map
+// naming `parameterized-deploy`'s `service` — and the map was the answer no reader
+// could reproduce: a run of the example from the command line takes the file.
+//
+// With one answer, the way it now fails matters. An example declaring a required
+// input with no file beside it must fail *naming the file*, because the two silent
+// outcomes are both worse than a red test: skipping the example drops it out of
+// coverage, and inventing a value tests the harness rather than the example. So this
+// asserts the sentence, not merely the error — a harness that failed with "input
+// "service" is required" alone would leave an author with nowhere to write the
+// answer.
+func TestAnExampleWithNoInputsFileIsRefusedRatherThanCapped(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join("..", "..", "..", "..", "examples", "parameterized-deploy", "workflow.yaml")
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+
+	wf, err := flowfile.Unmarshal(data)
+	require.NoError(t, err)
+
+	// The example as it ships: the file beside it answers what it declares.
+	bound, err := tests.BindExampleInputs(t, wf, path)
+	require.NoError(t, err, "the example's own inputs.json no longer answers its declarations")
+	require.Equal(t, "checkout", bound["service"].GetLiteral().GetStringValue())
+
+	// The same specification, read from a directory holding no inputs.json — which is
+	// what a new example demonstrating a required input looks like before anyone
+	// writes one.
+	_, err = tests.BindExampleInputs(t, wf, filepath.Join(t.TempDir(), "workflow.yaml"))
+	require.Error(t, err,
+		"an example whose required inputs nothing answers was accepted, so a run of it would be "+
+			"skipped or invented rather than reported")
+	require.ErrorContains(t, err, tests.ExampleInputsFile,
+		"the refusal does not name the file convention, so an author is told what is missing "+
+			"without being told where to write it")
+	require.ErrorContains(t, err, `input "service" is required`)
 }

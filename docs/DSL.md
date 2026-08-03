@@ -1903,10 +1903,21 @@ of this phase, not the tail of this item.
 
 One limit worth writing down where the spelling is, because it is not obvious from
 the blocks: the workflow-level `vars:` block cannot read `${inputs.<name>}`. Vars
-are evaluated once before the first step, against an empty scope, in an activity
-that is handed the declared vars and nothing else — so an argument is in scope for
-a step's `if:`, a step's own `vars:`, and a task's inputs, but not for the ambient
+are evaluated once before the first step, against a scope holding literals,
+operators and the profile's functions — `EvalWorkflowVars` builds it as
+`NewScope(profile, nil)`, the run's arguments are bound into the scope only
+afterwards, and the durable driver evaluates the block in an activity handed the
+declared vars and the profile and nothing else. So an argument is in scope for a
+step's `if:`, a step's own `vars:`, and a task's inputs, but not for the ambient
 block above them.
+
+That is refused with a diagnostic rather than left to fail at run time: `flow
+validate` names the var, the line and column, and the reference — "a var may not
+read an input: `vars:` is evaluated before the run's arguments are in scope, so
+write `inputs.<name>` where the value is used — in a step's `if:`, its own `vars:`,
+or a task input". Reported as its own sentence because "unknown name" would be
+false: the input exists and the reference is spelled correctly, and what the author
+needs is where to write it instead.
 
 The spelling it is landing under, so that the schema and the surface cannot be
 designed twice:

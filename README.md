@@ -283,7 +283,9 @@ An input is declared with a `type:` — `string`, `int`, `float`, `bool`, `list`
 rooted for the reason `vars.` and `steps.` are: a root cannot collide with a step id, so
 no precedence rule has to exist for anyone to read the file. Inputs are in scope wherever
 an expression is — a step's `if:`, its `vars:`, a task's inputs — except in the
-workflow-level `vars:` block, which is evaluated before the run has arguments.
+workflow-level `vars:` block, which is evaluated once before the run's arguments are in
+scope. Writing one there is refused by `flow validate` with a diagnostic naming the var,
+its position, and where to write the reference instead — not left to fail at run time.
 
 Arguments are values, never expressions: `${...}` in an argument is refused rather than
 evaluated, because an expression is something a reviewed file says and an argument is

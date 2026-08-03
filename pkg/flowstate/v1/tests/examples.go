@@ -1,11 +1,15 @@
 package tests
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,6 +32,107 @@ import (
 // The local harness still carries its own copies at the time of writing; these are
 // deliberately the same shapes, so that adopting them is a deletion rather than a
 // rewrite.
+
+// ExampleInputsFile is the name of the file an example's arguments are written in,
+// beside its `workflow.yaml`.
+//
+// Named rather than spelled at each use because it is the whole of the convention:
+// every diagnostic about a missing argument has to say this word, or an author is
+// told what is wrong without being told where to write the answer.
+const ExampleInputsFile = "inputs.json"
+
+// ExampleInputs reads the arguments an example is run with, from an inputs.json
+// beside its workflow.yaml.
+//
+// Nil where there is no such file, which is every example but one: a workflow that
+// declares no `inputs:`, or declares them all with defaults, runs with nothing — and
+// an example must run as written, because "paste this and watch it work" is what an
+// example is for.
+//
+// The one exception is the point of the convention. `parameterized-deploy` exists to
+// show a *required* input, and a required input with a default is not one — so the
+// example would either demonstrate nothing or not run here. The file beside it is
+// what `flow run local --input-file` takes, so what CI runs is a command a reader can
+// run, and the example's own comments name it.
+//
+// Read here rather than through the CLI's parser because that lives in package main.
+// What is shared is the decoding rule the parser exists to get right — JSON numbers
+// are read as written, so an int declaration is given an int — and the binding
+// itself, which is [v1.BindRunInputs] on both sides.
+//
+// Shared by both harnesses for the reason the rest of this file is. The durable
+// harness held the same answers in a Go map — `{"parameterized-deploy": {"service":
+// "checkout"}}` — which is a second answer to "what does this example need", and the
+// two would drift the first time an example's declarations changed: the file is what
+// a reader runs, so a harness disagreeing with it tests something nobody can
+// reproduce.
+func ExampleInputs(tb testing.TB, workflowPath string) map[string]*v1.Value {
+	tb.Helper()
+
+	data, err := os.ReadFile(filepath.Join(filepath.Dir(workflowPath), ExampleInputsFile))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		tb.Fatalf("reading %s beside %s: %v", ExampleInputsFile, workflowPath, err)
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+
+	var fields map[string]any
+	if err := decoder.Decode(&fields); err != nil {
+		tb.Fatalf("%s has an %s that is not a JSON object: %v",
+			filepath.Dir(workflowPath), ExampleInputsFile, err)
+	}
+
+	inputs := make(map[string]*v1.Value, len(fields))
+	for name, value := range fields {
+		if number, ok := value.(json.Number); ok {
+			whole, err := number.Int64()
+			if err != nil {
+				tb.Fatalf("input %q is not a whole number: %v", name, err)
+			}
+			inputs[name] = v1.NewLiteral(whole)
+
+			continue
+		}
+		inputs[name] = v1.NewValue(value)
+	}
+
+	return inputs
+}
+
+// BindExampleInputs answers an example's declared `inputs:` from its inputs.json and
+// checks them the way a submitted run is checked.
+//
+// The error is returned rather than fatal, and it names the convention, because a
+// harness that cannot start an example must say what a person would have to write to
+// fix it. The failure it exists for is silent: an example declaring a required input
+// with nowhere to read one from would otherwise be skipped, or "satisfied" by a value
+// only a harness knows — which is an example nobody can actually run, passing CI.
+//
+// Bound here rather than inside each run, so both drivers are handed one already
+// checked and defaulted map — which is also how a deployment does it, since the
+// server binds at submit and carries the result across every Continue-As-New.
+func BindExampleInputs(tb testing.TB, wf *v1.Workflow, workflowPath string) (map[string]*v1.Value, error) {
+	tb.Helper()
+
+	supplied := ExampleInputs(tb, workflowPath)
+
+	bound, err := v1.BindRunInputs(wf, supplied)
+	if err == nil {
+		return bound, nil
+	}
+
+	path := filepath.Join(filepath.Dir(workflowPath), ExampleInputsFile)
+	if supplied == nil {
+		return nil, fmt.Errorf("%w; write %s — the file `flow run local --input-file` takes — "+
+			"rather than teaching a harness a value only it knows", err, path)
+	}
+
+	return nil, fmt.Errorf("%w; %s does not answer it", err, path)
+}
 
 // NewExamplesHTTPServer starts a stand-in for httpbin.org, and returns its base URL
 // along with a function reporting every path an example asked for that it does not
