@@ -784,8 +784,32 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 		runtime.Step.Workflow = w.GetName()
 		ctx = ContextWithTaskRuntime(ctx, runtime)
 	}
-	if err := runNodes(ctx, w.Steps, scope); err != nil {
-		return nil, err
+
+	// The compensations steps register as they succeed. Empty for a workflow with
+	// no `undo:` anywhere, which is every workflow that predates the feature, and
+	// then nothing below this line does anything.
+	undo := NewUndoLog(nil)
+
+	if err := runNodes(ctx, w.Steps, scope, undo, false); err != nil {
+		// The run cannot continue, so whatever already happened is taken back —
+		// reverse order, every entry attempted, one summary appended to the failure.
+		// [RunUndoLog] owns all three of those rules and the durable driver reaches
+		// them through the same call.
+		//
+		// Not attempted when the run was cancelled rather than failed: this slice is
+		// failure-triggered compensation, and the two drivers already agree here that
+		// a cancellation is not a step failure (see runNodes below). Compensating a
+		// cancelled run is a real feature and a different one — it needs a scope the
+		// cancellation does not reach, which is Temporal's disconnected context and
+		// has no equivalent here yet. DSL.md says so rather than leaving it to be
+		// inferred from silence.
+		if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+			return nil, err
+		}
+
+		return nil, UndoRunError(err, RunUndoLog(undo, func(entry *PendingUndo) error {
+			return runUndoTask(ctx, w.GetProfile(), entry)
+		}))
 	}
 
 	// Evaluated once, after the last step, against the scope the run finished in —
@@ -810,8 +834,19 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 //
 // It is recursive because control flow nests: a loop body may contain a parallel
 // block whose branches contain further loops.
-func runNodes(ctx context.Context, nodes []*Node, scope *Scope) error {
+//
+// undo collects the compensations of steps that succeed, and nested is what tells
+// this level whether it is one a compensation may be written at — see
+// [CheckUndoPlacement], which refuses the nested case rather than silently
+// dropping it.
+func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, nested bool) error {
 	for _, node := range nodes {
+		// Refused before the step runs rather than after it succeeds, so a workload
+		// the engine cannot honour does not perform half of itself first.
+		if err := CheckUndoPlacement(node, nested); err != nil {
+			return fmt.Errorf("step %q: %w", node.GetId(), err)
+		}
+
 		nodeCtx := ctx
 		if runtime, ok := ctx.Value(secretRuntimeKey{}).(TaskRuntime); ok {
 			nodeCtx = ContextWithSecretStep(ctx, runtime.Step.Workflow, runtime.Step.Run, node.GetId())
@@ -824,7 +859,7 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope) error {
 			continue
 		}
 
-		outputs, err := runNodeWithVars(nodeCtx, node, scope)
+		outputs, err := runNodeWithVars(nodeCtx, node, scope, undo)
 		if err != nil {
 			// Cancellation is not a step failure, so `continue_on_error` does not
 			// get to tolerate it — the durable driver says the same thing at the
@@ -872,13 +907,54 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope) error {
 // Evaluated after the condition deliberately: `if:` decides whether the step runs
 // at all, so a var it declares does not exist yet when the question is asked —
 // and a var whose expression would fail must not fail a step that is skipped.
-func runNodeWithVars(ctx context.Context, node *Node, scope *Scope) (*Node_Outputs, error) {
+func runNodeWithVars(ctx context.Context, node *Node, scope *Scope, undo *UndoLog) (*Node_Outputs, error) {
 	inner, err := EvalStepVars(ctx, node, scope)
 	if err != nil {
 		return nil, err
 	}
 
-	return runNode(ctx, node, inner)
+	outputs, err := runNode(ctx, node, inner)
+	if err != nil {
+		return nil, err
+	}
+
+	// Registered here rather than in runNodes' loop for the same reason the vars
+	// block is evaluated here: the inner scope is live at this point, so a
+	// compensation can read the step's own bare `vars:` exactly as the step's inputs
+	// could. One statement further out they are gone.
+	//
+	// A failure to resolve one is a failure of this step, reaching the same
+	// `continue_on_error:` check every other failure of this step reaches — and, on
+	// the path where it is not tolerated, ending the run before anything is built on
+	// top of an effect that has no way back. The durable driver registers at the
+	// identical point, in its own runNodeWithVars.
+	entry, err := UndoRegistrationFor(ctx, node, inner, outputs)
+	if err != nil {
+		return nil, err
+	}
+	undo.Register(entry)
+
+	return outputs, nil
+}
+
+// runUndoTask executes one registered compensation.
+//
+// Through [runStepWithPolicy] with no policy, which is what gives a compensation
+// the same defaults an ordinary step with no `retry:` and no `timeout:` gets — the
+// attempt count, the backoff and both timeouts, from the constants the durable
+// driver reads for the same purpose. A compensation deserves at least the
+// resilience of the step it is undoing, and giving it a *different* answer would
+// be one more number written down twice.
+//
+// The scope is empty but for the profile, and that is not a shortcut. The task's
+// inputs were resolved when the step succeeded, so there is nothing here left to
+// evaluate against a run; what remains unresolved is only what a task evaluates
+// against its own response, which needs no run scope in either driver.
+func runUndoTask(ctx context.Context, profile string, entry *PendingUndo) error {
+	scope := NewScope(profile, &Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}})
+	_, err := runStepWithPolicy(ctx, entry.GetTask(), nil, scope)
+
+	return err
 }
 
 // runNode executes one node and returns the outputs it records.
@@ -932,7 +1008,9 @@ func runForEach(ctx context.Context, loop *ForEach, scope *Scope) (*Node_Outputs
 		iterationScope := scope.WithLocal(name, item)
 		iterationScope.Outputs = iterationOutputs
 
-		if err := runNodes(ctx, loop.GetBody(), iterationScope); err != nil {
+		// nil log and nested: a compensation may not be written in a loop body, and
+		// [CheckUndoPlacement] refuses one rather than this level quietly ignoring it.
+		if err := runNodes(ctx, loop.GetBody(), iterationScope, nil, true); err != nil {
 			return nil, fmt.Errorf("iteration %d: %w", i, err)
 		}
 
@@ -981,7 +1059,7 @@ func runParallel(ctx context.Context, parallel *Parallel, scope *Scope) error {
 		// went missing in the first place: it names the two fields somebody was
 		// thinking about, and silently omits every other one the type grows.
 		branchScope := scope.WithOutputs(branchOutputs)
-		if err := runNodes(ctx, branch.GetSteps(), branchScope); err != nil {
+		if err := runNodes(ctx, branch.GetSteps(), branchScope, nil, true); err != nil {
 			return fmt.Errorf("branch %d: %w", i, err)
 		}
 

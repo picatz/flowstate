@@ -328,3 +328,62 @@ func TestAuthorityContainment(t *testing.T) {
 		})
 	}
 }
+
+// TestRunWorkflowUndo is the local half of the saga cases.
+//
+// The engine package runs the identical [tests.UndoCases] against the durable
+// driver. That pairing is the whole point: compensation is where the two drivers
+// have the most reason to be implemented separately — a function call here, an
+// activity scheduled by a failing workflow there — and the order compensations run
+// in is exactly what a local run exists to rehearse.
+//
+// A recording server per case rather than one for the whole set, because what is
+// asserted is a *sequence* of requests: sharing one would make each case's
+// expectation depend on which cases ran before it. The case list is built twice for
+// that reason — once to enumerate, once against the server the subtest started.
+func TestRunWorkflowUndo(t *testing.T) {
+	for index, outline := range tests.UndoCases(undoPlaceholderBase) {
+		t.Run(outline.Name, func(t *testing.T) {
+			base, recorded := tests.NewUndoServer(t)
+			test := tests.UndoCases(base)[index]
+
+			_, err := v1.Run(t.Context(), test.Workflow)
+			if !test.Fails {
+				require.NoError(t, err, "the run was expected to succeed")
+			} else {
+				require.Error(t, err, "the run was expected to fail")
+				require.Contains(t, err.Error(), test.Summary,
+					"the failure does not carry the account of what was compensated")
+			}
+
+			require.Equal(t, test.Recorded, recorded(),
+				"the effects that happened, and their order, are not what compensating should have produced")
+		})
+	}
+}
+
+// undoPlaceholderBase is a base URL used only to enumerate the shared saga cases.
+//
+// `.invalid` is reserved by RFC 2606 and resolves nowhere, so a case list built
+// with it and then accidentally *run* fails rather than reaching something real.
+const undoPlaceholderBase = "http://undo.invalid"
+
+// TestRunWorkflowUndoPlacement pins the shapes the local engine refuses.
+//
+// `flow validate` refuses them earlier and with a position, which is where an
+// author meets them. This is the backstop for a specification that never came from
+// a Flowfile — and it is a driver-agreement case rather than a local one because a
+// refusal that held here and not durably would be a rehearsal passing a workload
+// production rejects, which is invariant 3 in the other direction.
+func TestRunWorkflowUndoPlacement(t *testing.T) {
+	base, _ := tests.NewUndoServer(t)
+
+	for _, test := range tests.UndoPlacementCases(base) {
+		t.Run(test.Name, func(t *testing.T) {
+			_, err := v1.Run(t.Context(), test.Workflow)
+			require.Error(t, err, "a compensation the engine cannot honour was accepted")
+			require.Contains(t, err.Error(), "`undo:` is only supported on",
+				"the refusal does not say what is wrong with where the compensation is written")
+		})
+	}
+}

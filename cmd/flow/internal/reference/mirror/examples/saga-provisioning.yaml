@@ -1,0 +1,96 @@
+# Provision three things, fail on the third, and take the first two back.
+#
+# This is the example that ends in a *failed* run on purpose, and it is the only
+# one in the corpus that does. A saga has nothing to show when everything works:
+# the compensations are written, nothing runs them, and the file proves only that
+# it compiles. What is worth seeing is the other half — what the run leaves behind
+# when a step in the middle of it cannot be made to work.
+#
+# Run it and read the last line of the failure:
+#
+#     flow run local examples/saga-provisioning/workflow.yaml
+#     ...
+#     step "attach": task "http" failed (Upstream): ... ; compensation ran in
+#     reverse order: undid "volume", undid "network"
+#
+# Reverse order, and that is the whole of why compensation is not just "a cleanup
+# step at the end". The volume was created inside the network, so the network
+# cannot be torn down until the volume is gone. Steps depend forwards, so undoing
+# has to go backwards.
+edition: v2026.2
+name: saga-provisioning
+description: Provision a tenant, fail partway, and undo what already succeeded.
+
+inputs:
+  tenant:
+    type: string
+    default: acme
+    description: which tenant is being provisioned
+
+steps:
+  # `undo:` names the task that takes this step back, with its inputs beneath it —
+  # the same shape as the step's own work, because it is the same kind of thing.
+  #
+  # It is registered when this step *succeeds*, and never otherwise: a step skipped
+  # by an `if:` has done nothing to undo, and a step that failed may have applied
+  # part of its effect, which the engine cannot see and will not guess at.
+  - id: network
+    description: allocate the tenant's network
+    http:
+      method: GET
+      url: https://httpbin.org/get
+      query:
+        create: network
+        tenant: ${inputs.tenant}
+      parse_json: true
+      outputs: '${ {"id": "net-" + response.json.args.tenant} }'
+    undo:
+      # `${steps.network.id}` — a step reading its own output. Anywhere else in a
+      # Flowfile that is a forward reference and `flow validate` refuses it; inside
+      # a step's own `undo:` it is the ordinary case, because by the time this runs
+      # the step has finished.
+      #
+      # The value is resolved the moment the step succeeds rather than when the
+      # compensation runs, so what the engine carries forward is `net-acme` and not
+      # an expression waiting for a scope. That is what lets a compensation survive
+      # a run suspending and resuming somewhere else entirely.
+      http:
+        method: GET
+        url: https://httpbin.org/get
+        query:
+          delete: ${steps.network.id}
+
+  - id: volume
+    description: allocate storage inside that network
+    http:
+      method: GET
+      url: https://httpbin.org/get
+      query:
+        create: volume
+        network: ${steps.network.id}
+      parse_json: true
+      outputs: '${ {"id": "vol-" + response.json.args.network} }'
+    undo:
+      http:
+        method: GET
+        url: https://httpbin.org/get
+        query:
+          delete: ${steps.volume.id}
+
+  # And the step that does not work. A 500 is retried — it is the kind of failure
+  # that could plausibly succeed next time — and when the attempts run out the run
+  # cannot continue, which is the moment the two compensations above run.
+  #
+  # The run reports FAILED afterwards, not a status of its own. A run that cleaned
+  # up after itself has still not done what it was asked; what compensation changes
+  # is the state of the world, not the outcome of the run. What it *did* clean up is
+  # in the failure message.
+  - id: attach
+    description: attach the volume — the step that fails
+    retry:
+      attempts: 2
+      interval: 200ms
+      backoff: 2
+    http:
+      method: GET
+      url: https://httpbin.org/status/500

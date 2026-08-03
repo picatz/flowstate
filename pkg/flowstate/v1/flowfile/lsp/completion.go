@@ -133,6 +133,14 @@ var dslKeys = map[string][]dslKey{
 		{name: "timeout", detail: "duration", docs: "Bounds one attempt at the step, written as `30s`, `5m`, or `1h`."},
 		{name: "retry", detail: "map", docs: "How a failed attempt is retried. Omit it to use the engine's defaults."},
 		{name: "continue_on_error", detail: "bool", docs: "Let the run proceed when this step fails. A cancellation is not a failure, so this does not tolerate one."},
+		{name: "undo", detail: "map", docs: "How this step is taken back when a *later* step fails and the run cannot continue — the saga compensation for what it did.\n\n" +
+			"Written as the task that undoes it, with its inputs beneath: the same shape as the step's own work, because it is the same kind of thing. " +
+			"A compensation is one task — it cannot loop, branch, wait, or carry an `undo:` of its own.\n\n" +
+			"Registered when this step *succeeds*, and never otherwise: a step skipped by its `if:` did nothing, and a step that failed may have applied part of its effect, which the engine will not guess at. " +
+			"Compensations then run in reverse order, because steps depend forwards.\n\n" +
+			"Its inputs are resolved the moment the step succeeds, in that step's scope with its own outputs added — so `${" + v1.StepsRoot + ".<this step>.<output>}` is the reference to use, and it is the one place a step may name itself. " +
+			"A run that failed and compensated still reports FAILED; what it undid is in the failure.\n\n" +
+			"Top-level task steps only in this version. Inside a `for_each` body or a `parallel:` branch it is refused, because the order work registers in there is not the same under `flow run local` as it is durably."},
 	},
 	"wait_for_signal": {
 		{name: "name", detail: "string", docs: "The signal this step waits for, and what a sender addresses with `flow signal <workflow-id> <name>`."},

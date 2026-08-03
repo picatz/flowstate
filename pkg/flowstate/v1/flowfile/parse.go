@@ -61,7 +61,7 @@ var (
 
 	// stepPropertyKeys say which step this is, how it runs, and what it is for —
 	// everything except what work it does.
-	stepPropertyKeys = []string{"id", "description", "if", "vars", "timeout", "retry", "continue_on_error"}
+	stepPropertyKeys = []string{"id", "description", "if", "vars", "timeout", "retry", "continue_on_error", "undo"}
 
 	// nodeKindKeys are the kinds of work that are not a task, and so name a node
 	// kind in the schema rather than anything in the registry.
@@ -1077,10 +1077,92 @@ func (c *compiler) step(n ast.Node, path string) *v1.Node {
 		step.Vars = c.vars(f.value, varsPath, ref{step: step.GetId(), path: varsPath, label: "vars"})
 	}
 
+	// Read after the work, because that is the order it is written and the order it
+	// is read: what the step does, then how to take it back.
+	if f, found := fields.get("undo"); found {
+		undoPath := fieldPath(path, "undo")
+		c.pos.record(undoPath, spanOfNode(f.key))
+		step.Undo = c.undo(f.value, undoPath, r)
+	}
+
 	step.Policy = c.policy(fields, path, r)
 	c.checkWaitPolicy(step, fields, path, r)
 
 	return step
+}
+
+// undo compiles a step's compensation: one task, named directly, with its inputs
+// beneath — the same shape a step's own work has.
+//
+// The same shape deliberately, because it is the same kind of thing: `http:` under
+// `undo:` reads as "the http request that undoes this" without anybody learning a
+// second spelling for naming a task. What it is *not* is a step — no `id`, no
+// `if:`, no `retry:`, and no second `undo:` — and that narrowing is the schema's
+// (see [v1.Compensation]) rather than a set of keys refused here.
+//
+// So the whole of the grammar is: exactly one key, which must name a task.
+func (c *compiler) undo(n ast.Node, path string, r ref) *v1.Compensation {
+	n = c.resolve(n, path, r)
+	if n == nil {
+		return nil
+	}
+
+	if _, empty := n.(*ast.NullNode); empty {
+		c.report(spanOfNode(n), r,
+			"`undo:` must name the task that takes this step back, with its inputs beneath it — "+
+				"the same shape as the step's own work")
+
+		return nil
+	}
+
+	entries, ok := c.entries(n, path, ref{step: r.step, path: path, label: "undo"})
+	if !ok {
+		return nil
+	}
+	if len(entries) == 0 {
+		c.report(spanOfNode(n), r,
+			"`undo:` must name the task that takes this step back, with its inputs beneath it — "+
+				"the same shape as the step's own work")
+
+		return nil
+	}
+	if len(entries) > 1 {
+		// Positioned on the second key, which is the one that was added to something
+		// already complete — the same rule a step with two kinds of work follows.
+		c.report(spanOfNode(entries[1].key), r,
+			"`undo:` names both %s and %s; a compensation is a single task, so if taking this "+
+				"step back needs two of them, make the second one a step of its own with its own `undo:`",
+			entries[0].name, entries[1].name)
+	}
+
+	e := entries[0]
+	if instead, retired := retiredStepKeys[e.name]; retired {
+		c.report(spanOfNode(e.key), r, "`%s:` is no longer a step key; %s", e.name, instead)
+
+		return nil
+	}
+	if slices.Contains(nodeKindKeys, e.name) {
+		c.report(spanOfNode(e.key), r,
+			"`%s:` is control flow rather than a task, and a compensation is a single task; "+
+				"a block of work that has to be undone belongs in steps that each say how they are undone",
+			e.name)
+
+		return nil
+	}
+	if !couldBeATaskName(e.name) {
+		c.report(spanOfNode(e.key), r,
+			"`undo:` must name a task, and %q is not spelled the way a task name is; "+
+				"a compensation cannot be chosen at run time", e.name)
+
+		return nil
+	}
+
+	// The key is the task's name, so a diagnostic about the task underlines that
+	// word — the same addressing a step's own task key gets.
+	taskPath := fieldPath(path, e.name)
+	c.pos.record(taskPath, spanOfNode(e.key))
+
+	return &v1.Compensation{Task: c.task(e.name, e.value, taskPath, r)}
 }
 
 // task compiles a task step: the key is the task's name, the value is its inputs.

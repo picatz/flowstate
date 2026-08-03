@@ -287,9 +287,16 @@ func NewExamplesHTTPServer(tb testing.TB) (string, func() []string) {
 }
 
 // ReachesTheNetwork reports whether any step, at any depth, makes a request.
+//
+// A step's compensation counts, because it is a request the run may make. It was
+// missed at first and the miss was not theoretical: `saga-provisioning`'s undo
+// steps went out to the real httpbin.org from inside a test suite that believed it
+// had pointed every request at a stand-in, and answered 503. A walk that knows
+// about one of a step's two task positions is a walk that is wrong about half of
+// them.
 func ReachesTheNetwork(nodes []*v1.Node) bool {
 	return AnyStep(nodes, func(node *v1.Node) bool {
-		return node.GetTask().GetName() == "http"
+		return node.GetTask().GetName() == "http" || node.GetUndo().GetTask().GetName() == "http"
 	})
 }
 
@@ -403,6 +410,17 @@ func PointAtStandIn(nodes []*v1.Node, base string) []string {
 				unpointable = append(unpointable, node.GetId())
 			}
 		}
+
+		// A step's compensation is a request too. Left out at first, and the run
+		// went to the real httpbin.org from a suite that thought it had pointed
+		// everything at the stand-in — silently, because an unpointed *undo* is not
+		// an unpointed step and nothing counted it.
+		if undo := node.GetUndo().GetTask(); undo.GetName() == "http" {
+			if !rewriteURL(undo, standIn) {
+				unpointable = append(unpointable, node.GetId()+" (undo)")
+			}
+		}
+
 		switch kind := node.GetKind().(type) {
 		case *v1.Node_ForEach:
 			unpointable = append(unpointable, PointAtStandIn(kind.ForEach.GetBody(), base)...)
@@ -422,6 +440,9 @@ func httpStepIDs(nodes []*v1.Node) []string {
 	for _, node := range nodes {
 		if node.GetTask().GetName() == "http" {
 			ids = append(ids, node.GetId())
+		}
+		if node.GetUndo().GetTask().GetName() == "http" {
+			ids = append(ids, node.GetId()+" (undo)")
 		}
 		switch kind := node.GetKind().(type) {
 		case *v1.Node_ForEach:
@@ -457,4 +478,42 @@ func rewriteURL(task *v1.Task, standIn *url.URL) bool {
 	task.Inputs["url"] = v1.NewLiteral(target.String())
 
 	return true
+}
+
+// exampleFailures names the examples whose point is a run that does *not* succeed,
+// against the text their failure must carry.
+//
+// One entry, and it should stay hard to add to. "Expected to fail" is the shape a
+// harness classification most easily rots into an excuse — an example that broke,
+// listed here rather than fixed — so the bar is that the failure is the thing being
+// demonstrated and there is no version of the example without it.
+//
+// `saga-provisioning` meets it by construction. A saga has nothing to show when
+// every step works: the compensations are written, nothing runs them, and the file
+// proves only that it compiles. What is worth seeing is the run that fails partway
+// and takes back what it already did, so the example ends in a failure the way
+// `http-expect` ends in a 404.
+//
+// The expected text is [v1.UndoSummary]'s output and nothing else. Not the whole
+// failure message: the two drivers legitimately differ before it — the durable one
+// carries an activity envelope — and pinning that here would make an example test
+// fail on a Temporal upgrade nothing in this repository caused.
+//
+// Shared between the two harnesses for the reason the rest of this file is. A
+// classification each driver kept its own copy of is two answers to "is this
+// example meant to fail", and the day they disagree the durable harness reports a
+// driver disagreement it invented itself.
+var exampleFailures = map[string]string{
+	"saga-provisioning": `; compensation ran in reverse order: undid "volume", undid "network"`,
+}
+
+// ExampleFailure reports the text an example's failure must carry, for an example
+// that is meant to fail.
+//
+// The second return is false for every other example, which is the ordinary case
+// and the one both harnesses assert `NoError` for.
+func ExampleFailure(name string) (string, bool) {
+	want, expected := exampleFailures[name]
+
+	return want, expected
 }

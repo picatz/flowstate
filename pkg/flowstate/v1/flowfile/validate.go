@@ -56,6 +56,7 @@ var stepProperties = map[string]bool{
 	"timeout":           true,
 	"retry":             true,
 	"continue_on_error": true,
+	"undo":              true,
 	"for_each":          true,
 	"parallel":          true,
 	"as":                true,
@@ -326,6 +327,8 @@ func Validate(wf *v1.Workflow) Diagnostics {
 		// redeclaring one was allowed to silently shadow it.
 		inner, varDiagnostics := scopeWithStepVars(id, node, scope, i, wf)
 		ds = append(ds, varDiagnostics...)
+
+		ds = append(ds, validateUndo(id, node, inner, i, wf, false)...)
 
 		if task == nil {
 			// A step may be a loop or a parallel block rather than a task. Its
@@ -810,6 +813,11 @@ func validateNested(nodes []*v1.Node, enclosing refScope, index int, wf *v1.Work
 		inner, varDiagnostics := scopeWithStepVars(id, node, scope, index, wf)
 		ds = append(ds, varDiagnostics...)
 
+		// Nested, which is the position a compensation may not be written at — see
+		// [v1.CheckUndoPlacement]. Reported here, where there is a position to put it
+		// on, rather than left to the engine's own refusal at run time.
+		ds = append(ds, validateUndo(id, node, inner, index, wf, true)...)
+
 		task := node.GetTask()
 		if task == nil {
 			switch kind := node.GetKind().(type) {
@@ -901,6 +909,98 @@ func scopeWithStepVars(id string, node *v1.Node, scope refScope, index int, wf *
 	}
 
 	return next, ds
+}
+
+// validateUndo checks a step's compensation: where it may be written, what it may
+// name, and whether its expressions resolve.
+//
+// # Where
+//
+// [v1.CheckUndoPlacement] owns the two placement rules — top-level only, task
+// steps only — because both drivers enforce them too and a rule spelled once
+// cannot disagree with itself. What this adds is a position: an author meets the
+// refusal in their editor, on the `undo:` key, rather than as a run that fails on
+// its first step.
+//
+// # What its expressions may name
+//
+// Everything the step itself could name, plus the step's own outputs. That last
+// part is the interesting one, because a step referencing itself is a forward
+// reference everywhere else in the language and is refused as one. Inside its own
+// `undo:` it is the ordinary case: `${steps.provision.id}` is how a compensation
+// says which thing to delete, and by the time a compensation runs the step it
+// belongs to has finished. The engine agrees — [v1.UndoRegistrationFor] resolves
+// against the scope with the step's outputs added — so this is the validator
+// modelling what the engine does rather than a special case invented here.
+//
+// Inputs the task evaluates for itself are skipped, exactly as they are for a
+// step's own inputs and for the same reason: their scope is the response, which
+// this validator cannot see, and reporting them would train authors to ignore the
+// tool.
+func validateUndo(id string, node *v1.Node, scope refScope, index int, wf *v1.Workflow, nested bool) Diagnostics {
+	undo := node.GetUndo()
+	if undo == nil {
+		return nil
+	}
+
+	var ds Diagnostics
+
+	if err := v1.CheckUndoPlacement(node, nested); err != nil {
+		return append(ds, Diagnostic{Step: id, Field: "undo", Message: err.Error()})
+	}
+
+	task := undo.GetTask()
+	if task.GetName() == "" {
+		return append(ds, Diagnostic{Step: id, Field: "undo", Message: "compensation has no task"})
+	}
+	if _, known := v1.LookupTask(task.GetName()); !known {
+		return append(ds, Diagnostic{
+			Step:  id,
+			Field: "undo",
+			Message: fmt.Sprintf("unknown task %q; available tasks are %s",
+				task.GetName(), strings.Join(v1.TaskNames(), ", ")),
+		})
+	}
+
+	ds = append(ds, validateUndoInputs(id, task)...)
+
+	// The step's own outputs, added to a copy: this scope is for the compensation
+	// and is thrown away, so nothing after the step can reference itself by having
+	// been undone.
+	self := scope.clone()
+	self.steps[id] = true
+
+	checkable, _ := v1.ResolvableInputs(task.GetName(), task.GetInputs())
+	for _, name := range sortedInputNames(checkable) {
+		ds = append(ds, validateInputRefs(id, "undo", checkable[name], self, index, wf)...)
+	}
+
+	return ds
+}
+
+// validateUndoInputs reports what is wrong with a compensation's inputs, refiled
+// against the step's `undo:` key.
+//
+// The check itself is [validateTaskInputs], unchanged: a compensation runs the
+// same tasks a step runs, so an input a task does not have is the same mistake in
+// both positions and deserves the same sentence. What differs is where the
+// diagnostic lands. A `Field` naming the input would be looked up as an input of
+// the *step's own* task and resolve to nothing or, worse, to a same-named input of
+// it — so the field is the `undo:` key, and the input's name moves into the
+// message where it is unambiguous.
+func validateUndoInputs(id string, task *v1.Task) Diagnostics {
+	inner := validateTaskInputs(id, task)
+
+	ds := make(Diagnostics, 0, len(inner))
+	for _, d := range inner {
+		message := d.Message
+		if d.Field != "" {
+			message = fmt.Sprintf("input %q: %s", d.Field, message)
+		}
+		ds = append(ds, Diagnostic{Step: d.Step, Field: "undo", Value: d.Value, Message: message})
+	}
+
+	return ds
 }
 
 // validateInputRefs reports references in one input that cannot resolve.

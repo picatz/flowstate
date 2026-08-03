@@ -312,7 +312,7 @@ edition: v2026.2
 				[]string{"id", "description"},
 				v1.TaskNames(),
 				[]string{"for_each", "parallel", "sleep", "wait_until", "wait_for_signal"},
-				[]string{"if", "vars", "timeout", "retry", "continue_on_error"},
+				[]string{"if", "vars", "timeout", "retry", "continue_on_error", "undo"},
 			),
 		},
 		{

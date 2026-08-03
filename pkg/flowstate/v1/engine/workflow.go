@@ -261,6 +261,12 @@ func Run(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error
 		// run that suspended. A wait consumes from here before it blocks.
 		signals:  &signalCarry{pending: st.GetPendingSignals()},
 		progress: position,
+
+		// The compensations registered by segments that already ran, oldest first.
+		// A saga is exactly the workload that outlives one segment — provision,
+		// suspend, fail — so the run that fails is usually not the run that did the
+		// work it has to take back.
+		undo: v1.NewUndoLog(st.GetPendingUndo()),
 	}
 
 	err := exec.runNodes(st.Workflow.GetSteps(), 0)
@@ -335,6 +341,17 @@ func Run(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error
 			// turn an authenticated workload into an anonymous one partway
 			// through.
 			Identity: st.Identity,
+
+			// What the run has still to take back if it fails later. Carried rather
+			// than re-derived, because it *cannot* be re-derived: which steps
+			// succeeded is not a property of the specification, and the values a
+			// compensation was resolved with belong to outputs the compaction above
+			// is entitled to have dropped.
+			//
+			// Weighed by CheckRunStateSize below along with everything else, which
+			// measures the whole message rather than the fields somebody remembered
+			// — so this was bounded on the day it was added.
+			PendingUndo: exec.undo.Pending(),
 		}
 		// Refused here rather than left to Temporal, because Temporal's refusal is
 		// not an outcome — it fails the workflow task, and a failed workflow task
@@ -383,8 +400,61 @@ func Run(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error
 		}, Run, next)
 
 	default:
-		return nil, err
+		return nil, compensate(ctx, exec, err)
 	}
+}
+
+// compensate takes back what the run already did, and returns the failure it will
+// report.
+//
+// # Not for a cancellation
+//
+// A cancelled run passes through untouched, and that is the boundary of this
+// slice rather than an oversight. Compensating a cancellation is the harder half:
+// every activity scheduled on a cancelled workflow context is refused immediately,
+// so the compensations would have to run on a disconnected context with a deadline
+// of its own, and an operator who typed `flow terminate` has asked for the opposite
+// of "do some more work first". Both are real designs. Neither is this one, and
+// docs/DSL.md says so in as many words rather than leaving it to be inferred from
+// a run that quietly cleaned up nothing.
+//
+// [stepFailed] already refuses to wrap a cancellation for the neighbouring reason
+// — Temporal decides CANCELED from the error's type — so what arrives here as a
+// cancellation is exactly what arrives there as one.
+//
+// # Failing after compensating is still failing
+//
+// The run reports FAILED, with the summary appended to the failure that caused it.
+// A compensated run has not succeeded: the work it was asked to do did not happen.
+// What compensation changes is the state of the world, not the outcome of the run,
+// and that is why there is no third status — see docs/DSL.md, and invariant 10 for
+// what a new one would cost every reader of a closed run.
+func compensate(ctx workflow.Context, exec *executor, err error) error {
+	if temporal.IsCanceledError(err) || exec.undo.Len() == 0 {
+		return err
+	}
+
+	workflow.GetLogger(ctx).Info("compensating a failed run",
+		"pending", exec.undo.Len(), "error", err.Error())
+
+	results := v1.RunUndoLog(exec.undo, exec.runUndoTask)
+
+	// Composed from the inner failure's own message, exactly as failedAt does, so
+	// the run's failure reads as one sentence rather than restating this driver's
+	// preamble in the middle of it. What is appended is [v1.UndoSummary]'s output
+	// and nothing else, which is the string the local driver appends to its own
+	// failure — the one value that has to be identical for a local run to rehearse
+	// what a compensated production run will say.
+	var inner *ErrRunFailed
+	if errors.As(err, &inner) {
+		return &ErrRunFailed{
+			Message:          inner.Message + v1.UndoSummary(results),
+			Recorded:         inner.Recorded,
+			recordedFromTask: inner.recordedFromTask,
+		}
+	}
+
+	return v1.UndoRunError(err, results)
 }
 
 // resumeFrames returns the position a run resumes from.

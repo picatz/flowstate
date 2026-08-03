@@ -286,6 +286,24 @@ func TestEveryExampleRunsDurably(t *testing.T) {
 			suspendingSpec := cloneSpec(t, wf)
 			localSpec := cloneSpec(t, wf)
 
+			// The one example whose point is a run that fails, which is a different
+			// set of questions: there is no answer to compare between the drivers,
+			// and what has to agree is the account the failure gives of what it
+			// compensated. Run across a handover, because a saga that suspended
+			// before it failed is the shape only this harness can reach —
+			// `RunState.pending_undo` is the field that makes it work, and a run that
+			// never suspends never reads it.
+			if want, fails := tests.ExampleFailure(name); fails {
+				assertFailingExampleAgrees(t, devServer.Client(), name, want,
+					localSpec, suspendingSpec, inputs, authority, signals)
+
+				mu.Lock()
+				crossed[name] = 1
+				mu.Unlock()
+
+				return
+			}
+
 			local := runExampleLocally(t, localSpec, inputs, authority, signals)
 
 			// Two durable runs of one file, because the two questions need different
@@ -727,4 +745,94 @@ func TestAnExampleWithNoInputsFileIsRefusedRatherThanCapped(t *testing.T) {
 		"the refusal does not name the file convention, so an author is told what is missing "+
 			"without being told where to write it")
 	require.ErrorContains(t, err, `input "service" is required`)
+}
+
+// assertFailingExampleAgrees runs an example that is meant to fail on both drivers
+// and checks they fail the same way.
+//
+// "The same way" is deliberately not the whole message. The two drivers differ
+// before the part that matters — the durable one carries `engine: flowstate run
+// failed:` and an activity envelope with per-run event ids in it — and pinning
+// that would tie an example test to a Temporal rendering nothing in this
+// repository controls. What must be identical is the account of what was
+// compensated, which is [v1.UndoSummary]'s output and has exactly one renderer for
+// exactly this reason.
+//
+// The durable half runs with a budget of one step, so the run suspends between
+// every step and the compensations registered by earlier segments have to survive
+// a Continue-As-New to run at all. That is the property the local driver cannot
+// have and the reason this harness exists.
+func assertFailingExampleAgrees(
+	t *testing.T,
+	c client.Client,
+	name, want string,
+	localSpec, durableSpec *v1.Workflow,
+	inputs map[string]*v1.Value,
+	authority tests.Authority,
+	signals map[string]*v1.Node_Outputs,
+) {
+	t.Helper()
+
+	localErr := runFailingExampleLocally(t, localSpec, inputs, authority, signals)
+	require.ErrorContains(t, localErr, want,
+		"%s is meant to fail locally in a particular way and did not", name)
+
+	ctx, cancel := context.WithTimeout(t.Context(), exampleRunTimeout)
+	defer cancel()
+
+	run, err := c.ExecuteWorkflow(ctx,
+		client.StartWorkflowOptions{ID: "example-failing-" + name, TaskQueue: engine.RunTaskQueueName},
+		engine.Run,
+		&v1.RunState{
+			Workflow:    durableSpec,
+			Inputs:      inputs,
+			StepsBudget: 1,
+			Identity: (&tests.Authority{
+				Identity: auth.WorkloadIdentity{Subject: "examples", Issuer: "flowstate:test"},
+			}).ProtoIdentity(),
+		})
+	require.NoError(t, err)
+
+	var outputs v1.Workflow_StepOutputs
+	durableErr := run.Get(ctx, &outputs)
+	require.Error(t, durableErr, "%s is meant to fail durably and did not", name)
+	require.ErrorContains(t, durableErr, want,
+		"%s fails differently on the two drivers, so a local run does not tell an author "+
+			"what production will clean up", name)
+}
+
+// runFailingExampleLocally is [runExampleLocally] for a run that is expected to
+// fail: same stand-in, same fixture authority, same signals, and the error
+// returned rather than asserted away.
+func runFailingExampleLocally(
+	t *testing.T,
+	spec *v1.Workflow,
+	inputs map[string]*v1.Value,
+	authority tests.Authority,
+	signals map[string]*v1.Node_Outputs,
+) error {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(t.Context(), exampleRunTimeout)
+	defer cancel()
+
+	ctx = v1.ContextWithTaskRuntime(ctx, v1.TaskRuntime{
+		Store:    authority.Store(t),
+		Policy:   authority.Policy(t),
+		Broker:   authority.Broker(t),
+		Identity: authority.Identity,
+		Step:     auth.StepRef{Workflow: spec.GetName(), Run: "example-run"},
+	})
+
+	if len(signals) > 0 {
+		waiter := v1.NewLocalSignals()
+		for signal, payload := range signals {
+			require.NoError(t, waiter.Deliver(signal, payload))
+		}
+		ctx = v1.NewContextWithSignalWaiter(ctx, waiter)
+	}
+
+	_, err := v1.RunWithInputs(ctx, spec, inputs)
+
+	return err
 }

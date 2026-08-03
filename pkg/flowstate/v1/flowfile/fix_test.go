@@ -879,20 +879,56 @@ func unflatten(t *testing.T, src string) string {
 	t.Helper()
 
 	taskKey := regexp.MustCompile(`^(\s*)([a-z_]+):\s*$`)
+	undoKey := regexp.MustCompile(`^(\s*)undo:\s*$`)
 	names := v1.TaskNames()
+
+	// A task named under `undo:` is left alone, and that is a statement about the
+	// migration rather than a concession to the rewriter.
+	//
+	// This helper models the spelling the flattening retired: `task:` / `name:` /
+	// `inputs:`, which is what every Flowfile written before that edition looks
+	// like. `undo:` is grammar that arrived *after* it, so there has never been a
+	// file in which a compensation was written the old way — un-flattening one here
+	// would be inventing a migration and then asserting the rewriter performs it.
+	//
+	// The rewriter is not let off anything by this. It still has to reproduce the
+	// `undo:` block byte for byte while rewriting the step around it, which is the
+	// property that would break if it started descending into blocks it does not
+	// understand.
+	undoIndent := -1
 
 	lines := strings.Split(src, "\n")
 	var out []string
 	for i := 0; i < len(lines); {
 		line := lines[i]
+		if m := undoKey.FindStringSubmatch(line); m != nil {
+			undoIndent = len(m[1])
+			out = append(out, line)
+			i++
+			continue
+		}
+
 		m := taskKey.FindStringSubmatch(line)
 		if m == nil || !slices.Contains(names, m[2]) {
+			if trimmed := strings.TrimLeft(line, " "); trimmed != "" && len(line)-len(trimmed) <= undoIndent {
+				undoIndent = -1
+			}
 			out = append(out, line)
 			i++
 			continue
 		}
 
 		indent, name := m[1], m[2]
+
+		if undoIndent >= 0 && len(indent) > undoIndent {
+			// The compensation's own task. Copied through, and the block is closed:
+			// only the one key directly under `undo:` names it.
+			undoIndent = -1
+			out = append(out, line)
+			i++
+			continue
+		}
+		undoIndent = -1
 
 		// The task's inputs are the lines under it, by indentation.
 		var body []string

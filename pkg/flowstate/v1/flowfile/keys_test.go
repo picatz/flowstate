@@ -228,7 +228,7 @@ func TestAFutureKeyIsNotAlsoGrammar(t *testing.T) {
 
 // TestAFutureKeyIsReportedAsUnbuiltRatherThanUnknown covers what an author reads.
 //
-// `undo:` on a step and `undoo:` on a step are not the same mistake, and the generic
+// `needs:` on a step and `neds:` on a step are not the same mistake, and the generic
 // key check cannot tell them apart: it offers the nearest known key and then lists the
 // rest, which for a reserved word describes a typo the author did not make and sends
 // them looking for one that is not there.
@@ -238,8 +238,8 @@ func TestAFutureKeyIsNotAlsoGrammar(t *testing.T) {
 func TestAFutureKeyIsReportedAsUnbuiltRatherThanUnknown(t *testing.T) {
 	t.Parallel()
 
-	_, err := Unmarshal([]byte("edition: v2026.2\nname: t\nsteps:\n  - id: a\n    undo:\n      x: 1\n    log:\n      message: hi\n"))
-	require.Error(t, err, "`undo:` is not a step key in this build and was accepted")
+	_, err := Unmarshal([]byte("edition: v2026.2\nname: t\nsteps:\n  - id: a\n    needs:\n      x: 1\n    log:\n      message: hi\n"))
+	require.Error(t, err, "`needs:` is not a step key in this build and was accepted")
 
 	message := err.Error()
 	assert.Contains(t, message, "reserved for a later version of the grammar",
@@ -272,21 +272,24 @@ func TestAMisspelledKeyStillGetsItsSuggestion(t *testing.T) {
 //
 // Asserted with a word that is reserved *everywhere*, which is what the property is
 // about. `vars` used to be the example and has since landed at the workflow level, so
-// it now reads differently by design — see the test below, which is that case.
+// it now reads differently by design — see the test below, which is that case. `undo`
+// was the example after it and has since landed as a step key, which is the same
+// graduation happening again: the word to assert this with is whichever one is still
+// held everywhere.
 func TestAFutureKeyReadsTheSameWhereverItIsWritten(t *testing.T) {
 	t.Parallel()
 
 	for name, src := range map[string]string{
-		"workflow": "edition: v2026.2\nname: t\nundo:\n  x: 1\nsteps:\n  - id: a\n    log:\n      message: hi\n",
-		"step":     "edition: v2026.2\nname: t\nsteps:\n  - id: a\n    undo:\n      x: 1\n    log:\n      message: hi\n",
+		"workflow": "edition: v2026.2\nname: t\nneeds:\n  x: 1\nsteps:\n  - id: a\n    log:\n      message: hi\n",
+		"step":     "edition: v2026.2\nname: t\nsteps:\n  - id: a\n    needs:\n      x: 1\n    log:\n      message: hi\n",
 		"loop body": "edition: v2026.2\nname: t\nsteps:\n  - id: loop\n    for_each:\n      items: [1, 2]\n      steps:\n" +
-			"        - id: inner\n          undo:\n            x: 1\n          log:\n            message: hi\n",
+			"        - id: inner\n          needs:\n            x: 1\n          log:\n            message: hi\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
 			_, err := Unmarshal([]byte(src))
-			require.Error(t, err, "`undo:` is not grammar in this build and was accepted at the %s level", name)
+			require.Error(t, err, "`needs:` is not grammar in this build and was accepted at the %s level", name)
 
 			message := err.Error()
 			assert.Contains(t, message, "reserved for a later version of the grammar",

@@ -122,6 +122,17 @@ func checkNodeExpressions(nodes []*v1.Node) Diagnostics {
 			}
 		}
 
+		// A compensation's inputs are expressions like any others, and an operator
+		// with no overload is as wrong there as anywhere else. Reported against the
+		// `undo:` key rather than the input's name, for the reason [validateUndoInputs]
+		// gives: an input name here would be looked up among the *step's* inputs.
+		if undo := node.GetUndo(); undo != nil {
+			inputs := undo.GetTask().GetInputs()
+			for _, name := range slices.Sorted(maps.Keys(inputs)) {
+				ds = append(ds, typeErrors(id, "undo", inputs[name])...)
+			}
+		}
+
 		switch kind := node.GetKind().(type) {
 		case *v1.Node_ForEach:
 			ds = append(ds, typeErrors(id, "items", kind.ForEach.GetItems())...)

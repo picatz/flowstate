@@ -382,6 +382,16 @@ steps:
     http:
       method: POST
       url: https://example.com/notify
+
+  - id: register
+    http:
+      method: POST
+      url: https://example.com/registry
+      outputs: '${ {"id": response.json.id} }'
+    undo:                            # how to take this step back
+      http:
+        method: DELETE
+        url: ${"https://example.com/registry/" + steps.register.id}
 ```
 
 Behavior worth knowing:
@@ -395,6 +405,14 @@ Behavior worth knowing:
   failing.
 - `continue_on_error` records the failure as `${steps.<id>.error}` rather than discarding it,
   so a later step can branch on whether it worked.
+- `undo` is saga compensation, and runs when a *later* step fails and the run cannot
+  continue — never when the step it is written on fails, which is what `retry` and
+  `continue_on_error` are for. A step registers its compensation by succeeding, so a step
+  that was skipped or that failed compensates nothing; the registered ones run in reverse
+  order, because steps depend forwards. Its inputs are resolved the moment the step
+  succeeds, which is why `${steps.register.id}` — a step naming itself — means something
+  here and nowhere else. The run still reports FAILED afterwards; what it undid is in the
+  failure. See `examples/saga-provisioning/`.
 - These behave identically under `flow run local` and durable execution. Local retries are
   in-process and therefore not durable — a crash loses them — but the observable outcome
   matches, which is what makes a local run worth trusting.

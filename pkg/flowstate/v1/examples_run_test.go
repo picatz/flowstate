@@ -269,6 +269,22 @@ func TestEveryNetworkedExampleRuns(t *testing.T) {
 			})
 
 			outputs, err := v1.RunWithInputs(ctx, wf, inputs)
+
+			// An example whose point is a run that does not succeed. One of them,
+			// and the classification is shared with the durable harness so the two
+			// cannot disagree about which — see [tests.ExampleFailure].
+			//
+			// What is asserted is that it failed *and* what the failure says, because
+			// "it failed" is satisfied by an example that broke for some other reason
+			// entirely, which is exactly how this kind of entry rots.
+			if want, fails := tests.ExampleFailure(name); fails {
+				require.Error(t, err, "%s is meant to fail and did not", name)
+				require.Contains(t, err.Error(), want,
+					"%s failed, but not in the way it exists to demonstrate", name)
+
+				return
+			}
+
 			require.NoError(t, err, "%s validates but does not run", name)
 			require.NotNil(t, outputs)
 

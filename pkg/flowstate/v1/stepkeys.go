@@ -40,6 +40,12 @@ var grammarStepKeys = []string{
 	"retry",
 	"continue_on_error",
 
+	// How a step is taken back when a later one fails and the run cannot continue.
+	// Reserved before it was built, which is exactly what [futureStepKeys] is for:
+	// it moved from there to here when `undo:` became grammar, and no plugin had
+	// been able to claim the word in the meantime.
+	"undo",
+
 	// Kinds of work that are not tasks. These name a node kind in the schema
 	// rather than anything in the registry, so a task could never provide one.
 	"for_each",
@@ -79,7 +85,6 @@ var grammarStepKeys = []string{
 // in a list of things the engine will eventually do.
 var futureStepKeys = []string{
 	"call",
-	"undo",
 	"needs",
 }
 
