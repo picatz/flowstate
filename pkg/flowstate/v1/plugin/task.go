@@ -62,14 +62,15 @@ func (p *Plugin) taskDef(manifest *pluginv1.TaskManifest, cfg Config) (flowstate
 		// that declared it needs one needs prior step outputs to build it.
 		NeedsPrevOutputs: manifest.GetNeedsScope(),
 
-		// Nothing here declares AuthorityInputs or CredentialInputs for a
-		// plugin task's secret inputs, and that is deliberate rather than an
-		// omission: [flowstatev1.TaskNeedsAuthority] already scans every input
-		// of a concrete task invocation for a held [flowstatev1.SecretRef],
-		// wherever in it the reference sits, which is what routes a step using
-		// one to the identity-aware activity regardless of which task it names.
-		// A plugin task with a secret input is already covered by the same scan
-		// a built-in task's `bearer:` is.
+		// Nothing here declares [flowstatev1.TaskDef.AuthorityInputs] or
+		// .CredentialInputs for a plugin task's secret inputs — see the
+		// cross-reference on AuthorityInputs itself — and that is deliberate
+		// rather than an omission: [flowstatev1.TaskNeedsAuthority] already
+		// scans every input of a concrete task invocation for a held
+		// [flowstatev1.SecretRef], wherever in it the reference sits, which is
+		// what routes a step using one to the identity-aware activity
+		// regardless of which task it names. A plugin task with a secret input
+		// is already covered by the same scan a built-in task's `bearer:` is.
 		Fn: p.taskFunc(manifest),
 	}, nil
 }
