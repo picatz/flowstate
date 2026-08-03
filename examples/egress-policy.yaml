@@ -1,6 +1,6 @@
 # An egress policy for the http task, loaded with:
 #
-#   flow worker --egress-policy examples/egress-policy.yaml
+#   flow worker --allow-unversioned-interpreter --egress-policy examples/egress-policy.yaml
 #   flow run local workflow.yaml --egress-policy examples/egress-policy.yaml
 #
 # A file replaces the default policy entirely, so what it does not loosen stays

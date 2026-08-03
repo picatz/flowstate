@@ -506,7 +506,8 @@ and body-size bounds, the TLS floor — is configured as a file, with durations 
 `30s` and sizes as `1MiB` or `10MB`, the way they are said:
 
 ```console
-$ flow worker --egress-policy egress-policy.yaml
+$ flow worker --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)" \
+    --egress-policy egress-policy.yaml
 ```
 
 `flow run local` takes the same flag, so a rehearsal is governed by the same rules a
@@ -596,7 +597,8 @@ having compiled its schema.
 Point a worker at a directory and its plugins' tasks become step keys:
 
 ```console
-$ flow worker --plugin-dir /usr/local/lib/flowstate/plugins
+$ flow worker --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)" \
+    --plugin-dir /usr/local/lib/flowstate/plugins
 Loaded plugin example 0.1.0 from /usr/local/lib/flowstate/plugins/flowstate-plugin-example (tasks: example.greet)
 ```
 
@@ -642,8 +644,8 @@ Flowstate's own settings:
 | `FLOWSTATE_EGRESS_POLICY` | unset | Path to an egress policy file (see `--egress-policy` above) |
 | `FLOWSTATE_TOKEN_FILE` | unset | File holding the bearer token `flow` authenticates with, re-read per request |
 | `FLOWSTATE_TOKEN` | unset | Bearer token, used when no token file is set |
-| `FLOWSTATE_DEPLOYMENT_NAME` | unset | Worker Deployment this worker belongs to (see below) |
-| `FLOWSTATE_BUILD_ID` | unset | Version identifier for this worker's binary, unique per build |
+| `FLOWSTATE_DEPLOYMENT_NAME` | unset | Worker Deployment this worker belongs to (see below); a worker refuses to start without both halves of a version unless `--allow-unversioned-interpreter` accepts the risk |
+| `FLOWSTATE_BUILD_ID` | unset | Version identifier for this worker's binary, unique per build; required with the deployment name, same refusal |
 | `FLOWSTATE_VERBOSE_LOGGING` | `false` | Verbose logging |
 | `FLOWSTATE_AUTH_POLICY` | unset | Default for `--auth-policy`: on `flow server` the trust policy naming which issuers and claims to accept; on `flow worker` and `flow run local` the same file's secrets rules, authorizing worker-side resolution |
 | `FLOWSTATE_IDENTITY_KEY` | unset | Default for `--identity-key`: the PKCS#8 PEM key Flowstate signs its own short-lived assertions with, required when the trust policy configures federation |
@@ -744,7 +746,8 @@ configured for the CLI works without being restated. Profiles are how one instal
 addresses several environments:
 
 ```console
-$ TEMPORAL_PROFILE=staging flow worker
+$ TEMPORAL_PROFILE=staging flow worker \
+    --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"
 ```
 
 `--address`, `--namespace`, and `--profile` on `flow worker` and `flow server` override
@@ -1012,10 +1015,12 @@ $ temporal server start-dev
 ...
 ```
 
-Start a Temporal worker for Flowstate:
+Start a Temporal worker for Flowstate. The flag accepts running the expression
+interpreter unversioned, which is fine against a dev server that outlives nothing;
+a production worker passes `--deployment-name` and `--build-id` instead:
 
 ```console
-$ go run ./cmd/flow worker
+$ go run ./cmd/flow worker --allow-unversioned-interpreter
 ...
 ```
 

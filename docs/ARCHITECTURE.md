@@ -195,11 +195,13 @@ Continue-As-New is the only safe seam: the next run replays nothing, starting fr
 instead of from history. That is the whole reason invariant 10 exists — the seam is only sound
 if the two versions either side of it agree about the message crossing it.
 
-Both halves are opt-in (`--deployment-name` and `--build-id` on `flow worker`) and inert
-without them, which is what keeps invariant 8. One planned capability depends on the
-guarantee rather than merely benefiting from it: expression evaluation may move into workflow
-code only where versioning pins the interpreter, because cel-go's behavior is pinned by the
-binary and by nothing else. See [DSL.md](DSL.md).
+Both halves arrive together or not at all: a worker given one of `--deployment-name` and
+`--build-id` refuses to start naming the missing half, and a worker given neither refuses
+unless `--allow-unversioned-interpreter` accepts the exposure by name — which is what keeps
+invariant 8, since typing the flag is the whole cost of a dev-server session. The gate
+exists because a shipped capability depends on the guarantee rather than merely benefiting
+from it: expression evaluation runs in workflow code, where cel-go's behavior is pinned by
+the binary and by nothing else. See [DSL.md](DSL.md).
 
 ## Leaning into Temporal
 
