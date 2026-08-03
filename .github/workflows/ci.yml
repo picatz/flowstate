@@ -96,6 +96,16 @@ jobs:
       - name: Examples are in the current edition
         run: go run ./cmd/flow fix --check examples/*/workflow.yaml
 
+      # The observability lab is eight services of other people's software, so
+      # standing it up here would make this repository's build depend on seven
+      # registries and a Temporal cluster coming up in time. What is checked is
+      # what is ours: that the compose file parses and resolves — a broken YAML
+      # anchor, an unknown key, a service naming a volume that does not exist.
+      # `config` is a client-side operation: no daemon, no pulls, under a second.
+      # The full-stack smoke is a manual step, written out in the lab's README.
+      - name: Observability lab compose file resolves
+        run: docker compose -f examples/observability/docker-compose.yaml config -q
+
   # The schema is a public contract, not an internal detail: plugins are separate
   # processes that compile against these descriptors, so breaking it breaks every
   # plugin in the wild rather than producing a compile error someone can see. That

@@ -1,0 +1,47 @@
+# Tempo, single binary, local disk. A lab wants the smallest thing that answers
+# a trace query, not a deployment topology.
+
+stream_over_http_enabled: true
+
+server:
+  http_listen_port: 3200
+  log_level: warn
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        # Only gRPC, because only the collector sends here. Flowstate speaks OTLP
+        # over HTTP and speaks it to the collector; a second HTTP ingress on the
+        # trace store would be a second way in that nothing uses and that nobody
+        # would notice breaking.
+        grpc:
+          endpoint: 0.0.0.0:4317
+
+ingester:
+  # Short, so a trace is queryable seconds after the run that produced it rather
+  # than at the next default flush. The reason to shorten it in a lab is the same
+  # reason not to in production: durability against a restart matters less than
+  # the feedback loop here.
+  max_block_duration: 1m
+
+compactor:
+  compaction:
+    block_retention: 24h
+
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /var/tempo/wal
+    local:
+      path: /var/tempo/blocks
+
+# No multitenancy: one tenant, no X-Scope-OrgID header anywhere. That is a lab
+# choice and it is the interesting one to revisit — Flowstate has a tenant
+# boundary of its own, and mapping it onto Tempo tenants is how the two would
+# agree about who may read whose traces.
+multitenancy_enabled: false
+
+usage_report:
+  reporting_enabled: false

@@ -39,6 +39,7 @@ $ flow validate examples/hello-world/workflow.yaml
 | [edition-and-descriptions](edition-and-descriptions) | `description:` as a property of the step, and the required `edition:` naming the grammar the file is written in | no |
 | [parameterized-deploy](parameterized-deploy) | `inputs:` — typed arguments with defaults and a required one, read from an `if:`, a step's `vars:`, and a task input | yes |
 | [computed-outputs](computed-outputs) | `outputs:` — what the run answers with, computed from its steps and its arguments | no |
+| [observability](observability) | The docker-compose observability lab: one trace id from `flow run` through Grafana Tempo to the Temporal UI | no |
 
 Where a directory holds an `inputs.json` beside its `workflow.yaml`, that file is what
 the example is run with — by you and by CI, through the same flag:
