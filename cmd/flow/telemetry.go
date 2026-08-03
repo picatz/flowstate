@@ -70,10 +70,21 @@ const telemetryFlushTimeout = 5 * time.Second
 
 // telemetryConfigured reports whether the operator pointed telemetry anywhere.
 //
-// The two standard variables, either one: the general endpoint, or the
-// metrics-specific one somebody sets when metrics go somewhere different.
+// The standard variables, any one of them: the general endpoint, or either
+// signal-specific one somebody sets when traces and metrics go to different
+// collectors. All three, because the OTLP exporters each read their own
+// signal's variable and fall back to the general one — so a predicate naming
+// fewer than they read answers "unconfigured" for a configuration they would
+// have honoured, and the operator gets silence from a binary they told where to
+// send things. Traces-only is the deployment that failed this way: the SDK
+// would have exported them and this said no.
+//
+// OTEL_EXPORTER_OTLP_LOGS_ENDPOINT is deliberately absent. Nothing here exports
+// logs yet, so honouring it would start a tracer and a meter on the strength of
+// a variable about neither.
 func telemetryConfigured() bool {
 	return os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") != "" ||
+		os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") != "" ||
 		os.Getenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT") != ""
 }
 

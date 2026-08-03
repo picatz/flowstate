@@ -8,6 +8,7 @@ import (
 
 	"connectrpc.com/connect"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -76,9 +77,82 @@ func telemetryOff(t *testing.T) {
 	t.Helper()
 
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
 	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "")
 	t.Setenv("OTEL_SERVICE_NAME", "")
 	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "")
+}
+
+// TestTelemetryIsConfiguredBySignalSpecificEndpoints covers the variables an
+// operator may set instead of the general one.
+//
+// Each OTLP exporter reads its own signal's variable and falls back to the
+// general one, so a predicate that names fewer variables than the exporters read
+// answers "unconfigured" for a configuration they would have honoured — and the
+// operator gets silence from a binary they told where to send things. Traces-only
+// is the deployment that failed that way, which is exactly the signal the
+// client-side tracing this file configures exists to send.
+func TestTelemetryIsConfiguredBySignalSpecificEndpoints(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		variable string
+		want     bool
+	}{
+		{name: "nothing set", want: false},
+		{name: "the general endpoint", variable: "OTEL_EXPORTER_OTLP_ENDPOINT", want: true},
+		{name: "traces only", variable: "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", want: true},
+		{name: "metrics only", variable: "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", want: true},
+		// Nothing here exports logs, so this one must not turn on a tracer and
+		// a meter on the strength of a variable about neither.
+		{name: "logs only", variable: "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			telemetryOff(t)
+			t.Setenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "")
+
+			if test.variable != "" {
+				t.Setenv(test.variable, "http://127.0.0.1:4318")
+			}
+
+			assert.Equal(t, test.want, telemetryConfigured(),
+				"%s decides whether an exporter is built at all", test.variable)
+		})
+	}
+}
+
+// TestTracesOnlyBuildsATracerProvider is the same fact one layer down: the
+// predicate agreeing is only useful if the SDK is actually installed, which is
+// what the operator sees.
+func TestTracesOnlyBuildsATracerProvider(t *testing.T) {
+	isolateTelemetry(t)
+	telemetryOff(t)
+
+	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(collector.Close)
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", collector.URL)
+
+	_, shutdown, err := initTelemetry(t.Context())
+	require.NoError(t, err)
+	t.Cleanup(func() { shutdown(context.Background()) })
+
+	require.IsType(t, &sdktrace.TracerProvider{}, otel.GetTracerProvider(),
+		"an operator set the traces endpoint and got the no-op provider")
+
+	// And the propagator with it: a trace that starts here is only useful if the
+	// header reaches the server.
+	carrier := propagation.HeaderCarrier{}
+	otel.GetTextMapPropagator().Inject(
+		trace.ContextWithSpanContext(t.Context(), trace.NewSpanContext(trace.SpanContextConfig{
+			TraceID:    trace.TraceID{0x01},
+			SpanID:     trace.SpanID{0x02},
+			TraceFlags: trace.FlagsSampled,
+		})),
+		carrier,
+	)
+	assert.NotEmpty(t, carrier.Get("traceparent"),
+		"traces are configured and nothing is injected, so the trace still starts at the server")
 }
 
 // telemetryTo points the exporters at a collector that answers politely and

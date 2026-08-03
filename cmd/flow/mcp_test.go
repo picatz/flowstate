@@ -694,6 +694,85 @@ func TestTheRunLocalAnswerIsBounded(t *testing.T) {
 		"trimming took the status with it; the two things worth keeping are what happened and why")
 }
 
+// TestTheRunLocalAnswerIsBoundedByItsDeclaredOutputs is the direction the test
+// above cannot see.
+//
+// It grows the step transcript, which the third shrinking step drops. A run's
+// *declared* outputs are carried in a different field, and were left untouched
+// by that drop and then returned with no further size check — so a single
+// `outputs:` expression building a large string spent a model's context
+// regardless of the cap. The workflow chooses that expression, which is what
+// makes it the same untrusted-consumer problem as the transcript rather than a
+// smaller one.
+func TestTheRunLocalAnswerIsBoundedByItsDeclaredOutputs(t *testing.T) {
+	t.Parallel()
+
+	outputs := &v1.Workflow_StepOutputs{
+		StepValues: map[string]*v1.Node_Outputs{
+			"build": {NamedValues: map[string]*v1.Value{"body": v1.NewValue("small")}},
+		},
+		RunOutputs: &v1.RunOutputs{Values: map[string]*v1.Value{
+			"report": v1.NewValue(strings.Repeat("x", 2<<20)),
+		}},
+	}
+
+	encoded, err := renderRunLocalResult(
+		localRun(outputs, nil, nil, time.Now(), time.Now()),
+		[]runLocalLogRecord{{Level: "INFO", Message: "hi"}},
+	)
+	require.NoError(t, err)
+
+	assert.LessOrEqual(t, len(encoded), maxRunLocalResultBytes,
+		"a declared output is the workflow's choice too, and this one spent %d bytes of a model's context",
+		len(encoded))
+
+	var answer runLocalAnswer
+	require.NoError(t, json.Unmarshal(encoded, &answer),
+		"the bounded answer is not parseable, which makes a large run indistinguishable from a broken tool")
+
+	assert.Empty(t, answer.Run.RunOutputs.Values,
+		"the declared outputs are what carried the answer past the cap and are still in it")
+	assert.NotEmpty(t, answer.Note, "the answer was trimmed and does not say so")
+	assert.Equal(t, "STATUS_COMPLETED", answer.Run.Status,
+		"trimming took the status with it; the two things worth keeping are what happened and why")
+}
+
+// TestADeclaredOutputThatFitsSurvivesTheTranscript pins the shrinking *order*.
+//
+// The transcript is commentary; the declared outputs are what the workflow said
+// it answers with. A run whose transcript alone exceeds the cap must lose the
+// transcript and keep the answer — dropping both at once would be a simpler
+// implementation and a worse one.
+func TestADeclaredOutputThatFitsSurvivesTheTranscript(t *testing.T) {
+	t.Parallel()
+
+	outputs := &v1.Workflow_StepOutputs{
+		StepValues: map[string]*v1.Node_Outputs{},
+		RunOutputs: &v1.RunOutputs{Values: map[string]*v1.Value{
+			"release": v1.NewValue("2026.8.1"),
+		}},
+	}
+	for i := range 64 {
+		outputs.StepValues[fmt.Sprintf("step_%d", i)] = &v1.Node_Outputs{
+			NamedValues: map[string]*v1.Value{"body": v1.NewValue(strings.Repeat("x", 32<<10))},
+		}
+	}
+
+	encoded, err := renderRunLocalResult(
+		localRun(outputs, nil, nil, time.Now(), time.Now()),
+		[]runLocalLogRecord{{Level: "INFO", Message: "hi"}},
+	)
+	require.NoError(t, err)
+	assert.LessOrEqual(t, len(encoded), maxRunLocalResultBytes)
+
+	var answer runLocalAnswer
+	require.NoError(t, json.Unmarshal(encoded, &answer))
+
+	require.Contains(t, answer.Run.RunOutputs.Values, "release",
+		"the transcript was what did not fit, and the run's own answer went with it")
+	assert.Empty(t, answer.Run.Outputs.StepValues, "the transcript is still here, so nothing was actually dropped")
+}
+
 // TestARunThatFitsIsNotTrimmed is the other side of that bound: an ordinary run
 // keeps its outputs and its logs, so the trimming path cannot quietly become the
 // normal one.

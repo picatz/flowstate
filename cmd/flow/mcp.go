@@ -801,9 +801,9 @@ func renderRunLocalResult(response *v1.GetResponse, logs []runLocalLogRecord) ([
 		return encoded, nil
 	}
 
-	// Then the outputs, keeping the status, the timing and any error — a run
-	// reported without its outputs is still an answer; an unparsable document is
-	// not.
+	// Then the step transcript, keeping the status, the timing, any error, and
+	// the run's declared outputs — a run reported without its transcript is
+	// still an answer; an unparsable document is not.
 	trimmed, ok := proto.Clone(response).(*v1.GetResponse)
 	if !ok {
 		return nil, errors.New("rendering the answer: the run is not a GetResponse")
@@ -812,18 +812,54 @@ func renderRunLocalResult(response *v1.GetResponse, logs []runLocalLogRecord) ([
 		trimmed.Kind = nil
 	}
 
-	run, err = marshalJSON(trimmed, false)
+	encoded, err = renderTrimmedRun(trimmed, fmt.Sprintf(
+		"the step outputs and logs were dropped: the answer exceeded %d bytes. "+
+			"Have the workflow carry less, or read the values it needs in a step of its own",
+		maxRunLocalResultBytes))
+	if err != nil {
+		return nil, err
+	}
+	if len(encoded) <= maxRunLocalResultBytes {
+		return encoded, nil
+	}
+
+	// Last, what the workflow declared it answers with. This is the most
+	// valuable part of the document and so the last to go — but it is chosen by
+	// the same submitted workflow as everything above it, so a single `outputs:`
+	// expression building a megabyte of string is enough to carry a run past the
+	// cap on its own. Dropping the transcript while leaving this untouched was
+	// the hole: the cap bounded the part a workflow was least able to abuse.
+	trimmed.RunOutputs = nil
+
+	encoded, err = renderTrimmedRun(trimmed, fmt.Sprintf(
+		"the declared outputs, step outputs and logs were dropped: the answer exceeded %d bytes. "+
+			"Read what the run produced with `flow get`, or have the workflow answer with less",
+		maxRunLocalResultBytes))
+	if err != nil {
+		return nil, err
+	}
+
+	// Deliberately returned whether or not it fits. What remains is a status, two
+	// ids, two timestamps and possibly a failure message — bounded by the schema
+	// rather than by the workflow — so there is nothing left to drop that would
+	// not take the answer with it.
+	return encoded, nil
+}
+
+// renderTrimmedRun encodes one shrinking step's document, with the note that
+// says what left and why.
+func renderTrimmedRun(trimmed *v1.GetResponse, note string) ([]byte, error) {
+	run, err := marshalJSON(trimmed, false)
 	if err != nil {
 		return nil, fmt.Errorf("rendering the run: %w", err)
 	}
 
-	return json.Marshal(runLocalResult{
-		Run: run,
-		Note: fmt.Sprintf(
-			"the step outputs and logs were dropped: the answer exceeded %d bytes. "+
-				"Have the workflow carry less, or read the values it needs in a step of its own",
-			maxRunLocalResultBytes),
-	})
+	encoded, err := json.Marshal(runLocalResult{Run: run, Note: note})
+	if err != nil {
+		return nil, fmt.Errorf("rendering the answer: %w", err)
+	}
+
+	return encoded, nil
 }
 
 // runLocalLogRecord is one `log:` line, as data.
