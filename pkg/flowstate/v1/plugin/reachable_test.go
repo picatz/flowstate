@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -8,7 +9,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 )
 
 // Everything in this package was tested and none of it was reachable.
@@ -133,7 +136,15 @@ func TestAFlowfileCanNameAPluginTask(t *testing.T) {
 		workflow, _, err := flowfile.Parse([]byte(pluginWorkflow))
 		require.NoError(t, err)
 
-		outputs, err := flowstatev1.Run(t.Context(), workflow)
+		// The file writes `token: ${secret('env:GREET_TOKEN')}` — an ordinary
+		// host secret reference, under the same `env:` scheme a built-in task
+		// would use, not the plugin's own "example:" scheme. Resolving it needs
+		// a [flowstatev1.TaskRuntime] on the context, exactly as a built-in
+		// task's own secret input would; see [hostSecretRuntime].
+		const token = "host-secret-that-must-not-enter-a-step-output"
+		ctx := flowstatev1.ContextWithTaskRuntime(t.Context(), hostSecretRuntime(t, "GREET_TOKEN", token))
+
+		outputs, err := flowstatev1.Run(ctx, workflow)
 		require.NoError(t, err, "a workflow naming a plugin task did not run")
 
 		// The value came out of another process, through the socket, and back
@@ -146,6 +157,19 @@ func TestAFlowfileCanNameAPluginTask(t *testing.T) {
 		assert.Equal(t, "Hello, world!", message.GetLiteral().GetStringValue(),
 			"the step ran and did not produce what the plugin computes")
 
+		// The token reached the plugin process: `authenticated` is the plugin's
+		// own proof of receipt, computed from `in.GetToken() != ""` inside a
+		// process this test does not control.
+		authenticated := outputs.GetStepValues()["hello"].GetNamedValues()["authenticated"]
+		assert.True(t, authenticated.GetLiteral().GetBoolValue(),
+			"the host resolved a secret input, but the plugin reports it received no token")
+
+		// And the value itself never reached this run's outputs, which are
+		// durable workflow history — the whole reason SecretInputs resolves
+		// host-side rather than letting the plugin see a reference.
+		assert.NotContains(t, outputs.String(), token,
+			"the resolved secret appears in the run's step outputs")
+
 		// And the run's declared outputs, which is the half a step-output check
 		// cannot see: `length` is an integer in a message this build has never
 		// compiled, computed by the plugin and carried back through an `outputs:`
@@ -154,7 +178,51 @@ func TestAFlowfileCanNameAPluginTask(t *testing.T) {
 		assert.Equal(t, "Hello, world!", values["greeting"].GetLiteral().GetStringValue())
 		assert.Equal(t, int64(len("Hello, world!")), values["length"].GetLiteral().GetInt64Value(),
 			"the plugin's integer output did not arrive as a number the run could report")
+		assert.True(t, values["authenticated"].GetLiteral().GetBoolValue(),
+			"the run's own declared outputs do not show the plugin received the host's secret")
+		assert.NotContains(t, outputs.String(), token,
+			"the resolved secret appears somewhere in the run's declared outputs")
 	})
+}
+
+// fixedEnvProvider answers the "env" scheme with one fixed value, standing in
+// for a deployment's real environment-variable provider so this test does not
+// depend on the process environment.
+type fixedEnvProvider struct{ name, value string }
+
+func (p fixedEnvProvider) Scheme() string { return "env" }
+
+func (p fixedEnvProvider) Resolve(_ context.Context, req secrets.Request) (secrets.Secret, error) {
+	if req.Ref.GetName() != p.name {
+		return secrets.Secret{}, secrets.ErrNotFound
+	}
+	return secrets.NewSecret(req.Ref, p.value), nil
+}
+
+// hostSecretRuntime builds the [flowstatev1.TaskRuntime] a worker installs
+// before running a step, scoped to resolve exactly one "env:" reference.
+//
+// This is what makes `token: ${secret('env:GREET_TOKEN')}` in the plugin
+// example resolve without a real environment variable: the same shape a
+// built-in task's own secret input is resolved through, per
+// [flowstatev1.ResolveSecret] — a plugin task gets no different treatment.
+func hostSecretRuntime(t *testing.T, name, value string) flowstatev1.TaskRuntime {
+	t.Helper()
+
+	store, err := secrets.NewStore(fixedEnvProvider{name: name, value: value})
+	require.NoError(t, err)
+
+	policy, err := (auth.SecretAccessPolicy{Allow: []string{"true"}}).Compile()
+	require.NoError(t, err)
+
+	return flowstatev1.TaskRuntime{
+		Store:  store,
+		Policy: policy,
+		Identity: auth.WorkloadIdentity{
+			Subject: "test-user", Issuer: "https://issuer.example", Namespace: "test",
+		},
+		Step: auth.StepRef{Workflow: "test-workflow", Run: "test-run", Step: "hello"},
+	}
 }
 
 // diagnosticText joins diagnostics into one string to assert against.

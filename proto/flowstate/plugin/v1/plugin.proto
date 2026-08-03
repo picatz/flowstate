@@ -183,6 +183,57 @@ message TaskManifest {
   // Recorded rather than assumed, because a field whose enforcement is assumed
   // rather than checked is how `expect:` got its own reputation.
   repeated string expression_inputs = 9 [(buf.validate.field).repeated = {max_items: 16}];
+
+  // SecretInputs names the inputs this task accepts a host secret reference
+  // through — a Flowfile writes `${secret('vault:prod/api#token')}`, and this
+  // is what tells the host it may resolve one into this input rather than
+  // refusing it.
+  //
+  // # Why the host resolves rather than the plugin
+  //
+  // A plugin can already resolve references under a scheme *it* provides — see
+  // SecretService. That is a different direction: a plugin task consuming a
+  // secret the *host* manages, such as one the workflow author addresses with
+  // the engine's own `vault:` or `env:` provider. Letting the plugin ask the
+  // host to resolve an arbitrary reference would make every plugin a confused
+  // deputy, fanning the engine's providers, tenancy scoping, and audit out to
+  // every plugin process rather than keeping them in the one place a
+  // deployment configures and reviews them.
+  //
+  // So the host resolves a reference named here before the request crosses
+  // into the plugin process at all, exactly where and how it resolves one for
+  // a built-in task's own secret input: inside the activity, under the
+  // caller's authenticated identity and namespace, through the deployment's
+  // configured providers. The plugin receives a value, never a reference and
+  // never provider access — which is what keeps a plugin from fishing for a
+  // secret a Flowfile never routed to it.
+  //
+  // # This guarantee is scoped to a local transport
+  //
+  // Handing the plugin a resolved value rather than a reference is safe today
+  // because "the plugin" means a process on the same machine, reached over a
+  // filesystem socket only this worker can open — there is exactly one policy
+  // enforcement point between the secret store and the value's only reader.
+  // A remote plugin endpoint (tracked as issue #151) breaks that: resolving
+  // here and sending the value over a network hands a credential to a third
+  // party's process, which is disclosure rather than execution. Extending the
+  // transport to a remote endpoint must NOT reuse this resolve-then-send path
+  // without a per-endpoint secret-release policy — deny by default — deciding
+  // first whether that endpoint may receive the value at all; no such policy
+  // exists yet, and until it does a remote transport must refuse every
+  // secret_inputs reference rather than resolve one. See the same note at the
+  // host's choke point, [resolvePluginSecretInputs] in plugin/task.go, which is
+  // where a future remote-transport change would have to pass.
+  //
+  // # Fail closed, both directions
+  //
+  // A reference in an input not named here is refused — as a task error,
+  // since (like expression_inputs above) a process that has not launched the
+  // plugin cannot check this at `flow validate` time. And an input named here
+  // that still holds an unresolved reference when the request would otherwise
+  // cross into the plugin is refused rather than forwarded: the plugin
+  // process must never see a [flowstate.v1.SecretRef], only the value.
+  repeated string secret_inputs = 10 [(buf.validate.field).repeated = {max_items: 16}];
 }
 
 // PluginService is the capability handshake every plugin must implement.
@@ -308,4 +359,21 @@ message ExecuteResponse {
   // transient. The engine defaults to not retrying, so a plugin that says nothing
   // gets the safe answer.
   bool retryable = 2;
+
+  // UnknownOutcome reports that whether the operation took effect is unknown —
+  // the request may have reached the backend and failed only to answer, so
+  // retrying could perform it a second time. Meaningful only alongside
+  // retryable = false, and only when the RPC failed: it is the plugin's own
+  // version of the http task's own "sent, then lost the response" case, which
+  // the engine reports as permanent for the same reason — an unknown outcome
+  // is not a failure another attempt could clear up, it is an operation that
+  // may already have happened, and the author is the one who gets to decide
+  // what to do about it.
+  bool unknown_outcome = 3;
+
+  // RetryAfter says how long to wait before another attempt, when retryable is
+  // true and the plugin's own backend named a preferred delay — a 429 or a 503
+  // carrying one, the same reason the http task honors a `Retry-After` header
+  // rather than guessing. Unset lets the engine apply its own backoff.
+  google.protobuf.Duration retry_after = 4;
 }

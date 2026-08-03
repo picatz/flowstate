@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
@@ -508,6 +509,11 @@ func TestErrorClassification(t *testing.T) {
 			wantRetryable: true,
 		},
 		{
+			name:     "outcome unknown",
+			err:      OutcomeUnknown("the request may have already taken effect"),
+			wantCode: connect.CodeUnknown,
+		},
+		{
 			name:     "an error the author did not classify",
 			err:      errors.New("something went wrong"),
 			wantCode: connect.CodeUnknown,
@@ -574,6 +580,84 @@ func retryableDetail(t *testing.T, err *connect.Error) (retryable, found bool) {
 	return false, false
 }
 
+// responseDetail returns the ExecuteResponse an error carries as a detail, for
+// the fields TestErrorClassification's simpler helper does not read.
+func responseDetail(t *testing.T, err *connect.Error) *pluginv1.ExecuteResponse {
+	t.Helper()
+
+	for _, detail := range err.Details() {
+		value, valueErr := detail.Value()
+		if valueErr != nil {
+			continue
+		}
+		if response, ok := value.(*pluginv1.ExecuteResponse); ok {
+			return response
+		}
+	}
+
+	t.Fatal("no ExecuteResponse detail was attached")
+	return nil
+}
+
+// TestOutcomeUnknownIsPermanentAndDistinctFromFailed checks the classification
+// the host maps onto flowstatev1.ErrorKindUpstreamUnknown rather than the
+// misleading InvalidInput a bare permanent verdict used to get: not retryable,
+// and marked as an unknown outcome rather than merely "the plugin's own
+// unqualified permanent failure" the way [Failed] is.
+func TestOutcomeUnknownIsPermanentAndDistinctFromFailed(t *testing.T) {
+	t.Parallel()
+
+	var connectErr *connect.Error
+	if !errors.As(asConnectError(OutcomeUnknown("lost the response")), &connectErr) {
+		t.Fatal("asConnectError did not return a *connect.Error")
+	}
+
+	response := responseDetail(t, connectErr)
+	if response.GetRetryable() {
+		t.Error("OutcomeUnknown must not be retryable")
+	}
+	if !response.GetUnknownOutcome() {
+		t.Error("OutcomeUnknown did not mark the response as an unknown outcome")
+	}
+
+	// Failed, beside it, must not set the same flag — the two are deliberately
+	// different claims, and if Failed set it too the host could not tell them
+	// apart.
+	if !errors.As(asConnectError(Failed("ordinary permanent failure")), &connectErr) {
+		t.Fatal("asConnectError did not return a *connect.Error")
+	}
+	if responseDetail(t, connectErr).GetUnknownOutcome() {
+		t.Error("Failed must not be reported as an unknown outcome")
+	}
+}
+
+// TestUnavailableAfterCarriesTheDelay checks that a plugin's preferred retry
+// delay reaches the response detail the host reads it from, and that a
+// non-positive delay is silently treated as no preference rather than an
+// invalid one.
+func TestUnavailableAfterCarriesTheDelay(t *testing.T) {
+	t.Parallel()
+
+	var connectErr *connect.Error
+	if !errors.As(asConnectError(UnavailableAfter(30*time.Second, "rate limited")), &connectErr) {
+		t.Fatal("asConnectError did not return a *connect.Error")
+	}
+	response := responseDetail(t, connectErr)
+	if !response.GetRetryable() {
+		t.Error("UnavailableAfter must remain retryable")
+	}
+	if got := response.GetRetryAfter().AsDuration(); got != 30*time.Second {
+		t.Errorf("retry_after = %v, want 30s", got)
+	}
+
+	if !errors.As(asConnectError(UnavailableAfter(-time.Second, "no preference")), &connectErr) {
+		t.Fatal("asConnectError did not return a *connect.Error")
+	}
+	if d := responseDetail(t, connectErr).GetRetryAfter(); d != nil {
+		t.Errorf("a non-positive delay set retry_after = %v, want unset", d.AsDuration())
+	}
+}
+
 // TestTaskManifestCarriesDeclarations checks that what the engine needs in order
 // to treat a plugin task correctly reaches it.
 func TestTaskManifestCarriesDeclarations(t *testing.T) {
@@ -586,6 +670,7 @@ func TestTaskManifestCarriesDeclarations(t *testing.T) {
 		Output:           &flowstatev1.Task_Log_Outputs{},
 		DeferredInputs:   []string{"expr"},
 		ExpressionInputs: []string{"expr"},
+		SecretInputs:     []string{"token"},
 		NeedsScope:       true,
 		Fn: func(context.Context, map[string]*flowstatev1.Value, *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
 			return nil, nil
@@ -613,6 +698,9 @@ func TestTaskManifestCarriesDeclarations(t *testing.T) {
 	// other would be invisible until a workload failed.
 	if got := manifest.GetExpressionInputs(); len(got) != 1 || got[0] != "expr" {
 		t.Errorf("expression_inputs = %v, want [expr]", got)
+	}
+	if got := manifest.GetSecretInputs(); len(got) != 1 || got[0] != "token" {
+		t.Errorf("secret_inputs = %v, want [token]", got)
 	}
 	if manifest.GetInputMessage() != "flowstate.v1.Task.Log.Inputs" {
 		t.Errorf("input_message = %q", manifest.GetInputMessage())

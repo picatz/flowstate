@@ -20,6 +20,22 @@ message GreetInputs {
 
   // Greeting overrides the default "Hello".
   string greeting = 2;
+
+  // Token is a credential the *host* manages — not this plugin's own
+  // "example:" scheme, which SecretResolve below resolves, but a reference
+  // under whatever scheme the deployment's worker is configured with, such as
+  // `env:` or `vault:`.
+  //
+  // An ordinary string, deliberately: this plugin does not declare the field's
+  // *type* as anything unusual for a secret to arrive in, because a Flowfile
+  // input naming a host secret arrives here already resolved. The host names
+  // this field in the "greet" task's manifest as one of SecretInputs, resolves
+  // whatever `${secret(...)}` the workflow wrote before the request ever
+  // reaches this process, and this plugin never sees a reference — see
+  // sdk.Task.SecretInputs in this plugin's main.go, and TaskManifest's own
+  // secret_inputs field, for why the host resolves rather than this plugin
+  // asking it to.
+  string token = 3;
 }
 
 // GreetOutputs are the results of the greet task.
@@ -29,4 +45,11 @@ message GreetOutputs {
 
   // Length is how long the message is, in bytes.
   int64 length = 2;
+
+  // Authenticated reports whether a token was received, which is what this
+  // example uses to prove the value arrived — deliberately never the token
+  // itself. Echoing it here would make the point of routing it through
+  // secret_inputs pointless: the value would sit in a step output, which is
+  // durable workflow history.
+  bool authenticated = 3;
 }

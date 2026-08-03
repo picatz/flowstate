@@ -31,6 +31,19 @@
 // defined in this plugin's own schema rather than the engine's. That is the
 // realistic case: the engine has never seen these messages, and learns their
 // shape from the descriptors this plugin ships in its manifest.
+//
+// # The other direction: a host secret, in a plugin task
+//
+// `greet` also takes `token`, named in its manifest as a SecretInput. That is
+// the reverse of resolveSecret below: not this plugin answering for its own
+// "example:" scheme, but a task of this plugin *consuming* a secret the host
+// manages under whatever scheme the deployment configured — `env:`, `vault:`,
+// anything else a worker's secret providers answer for. A Flowfile writes
+// `token: ${secret('env:GREET_TOKEN')}` and greet receives a value, never a
+// reference: the host resolves it before this process ever sees the request,
+// under the caller's authenticated identity, through its own providers and
+// policy — the same activity-side moment a built-in task's own secret input
+// resolves at. This plugin never gains a scheme to fish with for it.
 package main
 
 import (
@@ -60,7 +73,16 @@ func main() {
 			Summary: "Greet someone by name.",
 			Input:   &examplev1.GreetInputs{},
 			Output:  &examplev1.GreetOutputs{},
-			Fn:      greet,
+
+			// `token` is a credential the *host* manages, not this plugin's own
+			// "example:" scheme above. Naming it here is what lets a Flowfile
+			// write `token: ${secret('env:...')}` and have the value arrive
+			// resolved: the host refuses to resolve a reference into any input
+			// not named here, and refuses to forward one, resolved or not, into
+			// this plugin process at all.
+			SecretInputs: []string{"token"},
+
+			Fn: greet,
 		}},
 
 		Health: checkHealth,
@@ -130,7 +152,11 @@ func envSegment(s string) string {
 //
 // It is the shape every plugin task has: decode the inputs into the message the
 // task declared, do the work, encode the outputs. The engine has already
-// resolved the input expressions, so what arrives here are values.
+// resolved the input expressions, so what arrives here are values — including
+// `token`, which the host resolves from whichever secret provider a Flowfile
+// named before this process ever saw the request. This function never sees a
+// reference and never has a scheme to fish with; it either receives a token or
+// it does not.
 func greet(_ context.Context, inputs map[string]*flowstatev1.Value, _ *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
 	var in examplev1.GreetInputs
 	if err := sdk.DecodeInputs(inputs, &in); err != nil {
@@ -148,9 +174,15 @@ func greet(_ context.Context, inputs map[string]*flowstatev1.Value, _ *flowstate
 
 	message := fmt.Sprintf("%s, %s!", greeting, in.GetName())
 
+	// Proof of receipt, deliberately never the value itself: reporting
+	// in.GetToken() back as an output would turn a step output — durable
+	// workflow history — into the very leak routing it through SecretInputs
+	// exists to prevent. A length or a boolean says the value arrived without
+	// saying what it is.
 	outputs, err := sdk.EncodeOutputs(&examplev1.GreetOutputs{
-		Message: message,
-		Length:  int64(len(message)),
+		Message:       message,
+		Length:        int64(len(message)),
+		Authenticated: in.GetToken() != "",
 	})
 	if err != nil {
 		return nil, sdk.Failed("%v", err)

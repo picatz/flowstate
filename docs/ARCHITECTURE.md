@@ -423,6 +423,28 @@ deployment permitted, receives the tenant a workload belongs to rather than choo
 one, and its network access is the worker's to govern. A plugin is an extension of
 the engine's capability, not an exemption from its rules.
 
+**A plugin *task* consuming a host secret is the reverse direction, and the host
+resolves it, not the plugin.** `SecretService` above is a plugin answering for a
+scheme it owns; a plugin task with an ordinary `${secret('vault:...')}` input needs
+the opposite seam, and the wrong shape for it is a new RPC letting a plugin ask the
+host to resolve an arbitrary reference — that makes every plugin a confused deputy
+and puts policy in N places instead of one. So a `TaskManifest` names its
+`secret_inputs`, and the worker resolves a reference into one of them *before*
+calling the plugin's `Execute` — the same activity-side moment, the same providers,
+the same tenancy scoping a built-in task's own secret input goes through. The
+plugin process receives a value over the socket, never a reference and never
+provider access, and every resolved value is registered with the activity's
+scrubber so an echo cannot reach a step output or a task error. An input a
+`TaskManifest` did not name is refused rather than resolved, fail-closed in both
+directions. That hand-off is sound only because "the plugin" is a process on the
+same machine, reached over a socket only the worker can open — a future remote
+plugin endpoint must not resolve-then-send the same way without a per-endpoint
+release policy deciding first whether that endpoint may receive the value at all.
+
+A plugin task also receives the caller's identity and namespace — the wire always
+carried them, and `sdk.CallerFromContext` is what reads them without widening every
+task's function signature to carry a value most tasks never need.
+
 ### Tenancy
 
 Multiple teams sharing a deployment need their workloads, secrets, and egress kept apart. A
