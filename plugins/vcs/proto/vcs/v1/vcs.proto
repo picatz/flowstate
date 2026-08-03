@@ -1,0 +1,145 @@
+syntax = "proto3";
+
+package vcs.v1;
+
+option go_package = "github.com/picatz/flowstate/plugins/vcs/gen/vcs/v1;vcsv1";
+
+import "flowstate/v1/flowstate.proto";
+
+// This plugin's own task schema: version control only, and deliberately
+// forge-agnostic. Nothing here names GitHub, GitLab, or any host — a commit, a
+// ref, and a diff mean the same thing whichever forge (if any) is hosting the
+// remote. This build speaks git (via go-git); a future implementation of the
+// same "vcs.*" task names could speak jj instead, which is why nothing here is
+// named after the backend either.
+//
+// A forge plugin (this repository ships "github") adds what version control
+// itself does not have: issues, pull/merge requests, reviews, checks. The two
+// stay in separate binaries on purpose, so pairing this plugin with a
+// different forge, or a different vcs plugin with the same forge, needs no
+// change on either side.
+//
+// # Why log and diff, and not clone, commit, push, or fetch
+//
+// See doc.go for the full argument. In one line: a task's result here is
+// content, never a path into a workspace a later step or a later run could
+// read — there is no shared clone to hand off, on purpose, which is also why
+// there is nothing to call "clone" on its own.
+
+// Commit is one entry of a repository's history.
+message Commit {
+  // Sha is the commit's full hex object id. Deliberately not called
+  // "change_id" or anything hash-agnostic: this build's identity for a
+  // revision is its content hash because that is what git has. A vcs plugin
+  // backed by jj, which carries a change id distinct from its content hash,
+  // would need a field this schema does not have — adding one is future work,
+  // not a compatible extension of this one.
+  string sha = 1;
+
+  // AuthorName and AuthorEmail are read from the commit's author line, exactly
+  // as the repository recorded them - unverified, since anyone with push
+  // access controls what a commit author line says.
+  string author_name = 2;
+  string author_email = 3;
+
+  // Message is the commit's message, bounded (see maxCommitMessageBytes) so a
+  // pathological commit cannot inflate a run's history with its own text.
+  string message = 4;
+
+  // AuthoredAt is the author timestamp, RFC 3339, in the zone the commit
+  // recorded.
+  string authored_at = 5;
+}
+
+// LogInputs asks for a bounded slice of a repository's commit history.
+message LogInputs {
+  // Url is the repository to read, https:// only (see doc.go for why). It is
+  // attacker-chosen input - the whole point of this task - so nothing about it
+  // is trusted beyond what the scheme allowlist and the egress-governed
+  // transport enforce.
+  string url = 1;
+
+  // Ref is the branch, tag, or commit-ish to start from - anything go-git's own
+  // revision parser accepts, such as "main", "v1.2.3", or a hex prefix. Empty
+  // means the remote's default branch (its HEAD).
+  string ref = 2;
+
+  // MaxCommits bounds how many commits are returned. Zero means the task's own
+  // default (see defaultMaxCommits); anything over the task's ceiling
+  // (maxMaxCommits) is refused rather than silently clamped, on the same
+  // reasoning DecodeInputs refuses a value it cannot represent: a silently
+  // clamped bound looks like a working request that quietly returns less than
+  // it was asked for.
+  int32 max_commits = 3;
+
+  // Token is a secret reference for HTTPS authentication against a private
+  // repository, resolved inside this task and never logged. See the plugin's
+  // secret scheme in main.go. A literal string here is refused: see doc.go.
+  flowstate.v1.Value token = 4;
+}
+
+// LogOutputs is a bounded slice of history.
+message LogOutputs {
+  // Commits are the entries found, most recent first, capped at max_commits.
+  repeated Commit commits = 1;
+
+  // ResolvedRef is the exact commit `ref` named, as a full sha - what a
+  // relative ref like "main" or "HEAD~3" actually meant at the moment this ran.
+  string resolved_ref = 2;
+
+  // Truncated reports whether more history existed beyond max_commits, so a
+  // workflow can tell "this is all of it" from "this is as much as was asked
+  // for."
+  bool truncated = 3;
+}
+
+// FileChange describes one file's part of a diff.
+message FileChange {
+  // Path is the file's path in the head revision, or in the base revision for
+  // a deletion.
+  string path = 1;
+
+  // OldPath is set only for a rename, to the path in the base revision.
+  string old_path = 2;
+
+  // ChangeType is one of "added", "modified", "deleted", "renamed".
+  string change_type = 3;
+
+  // Additions and Deletions are line counts, from the unified diff's own
+  // accounting.
+  int64 additions = 4;
+  int64 deletions = 5;
+}
+
+// DiffInputs asks for the changes between two revisions.
+message DiffInputs {
+  // Url is the repository to read, https:// only.
+  string url = 1;
+
+  // Base and Head are the two revisions to compare, in the sense `git diff
+  // base..head` gives: what changed getting from base to head. Both accept
+  // anything go-git's revision parser does.
+  string base = 2;
+  string head = 3;
+
+  // Token is a secret reference for HTTPS authentication. See LogInputs.token.
+  flowstate.v1.Value token = 4;
+}
+
+// DiffOutputs is the result of comparing two revisions.
+message DiffOutputs {
+  // Patch is a unified diff of every changed file, bounded in size (see
+  // maxPatchBytes). Feeding a diff of unbounded size into a workflow's own
+  // history would let an attacker-chosen repository choose how large a run's
+  // history grows.
+  string patch = 1;
+
+  // Files summarizes each changed file, capped at maxDiffFiles entries even
+  // when the patch itself was not truncated - a rename-heavy commit can have
+  // thousands of file entries and a two-line patch.
+  repeated FileChange files = 2;
+
+  // Truncated reports whether patch, files, or both were cut short of the
+  // whole diff.
+  bool truncated = 3;
+}

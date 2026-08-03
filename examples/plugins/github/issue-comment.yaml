@@ -1,0 +1,54 @@
+edition: v2026.2
+name: github-issue-comment
+description: Posts a real comment on a real issue or pull request using the "github" plugin's one non-idempotent task. Requires inputs; never runs by accident.
+
+# github.issue_comment is a mutation - unlike this directory's other file,
+# workflow.yaml, running this posts a real, visible comment. It is written
+# with required `inputs:` rather than a hard-coded owner/repo/number,
+# specifically so it cannot run with no arguments the way every other
+# example in this repository is designed to - see examples/README.md's own
+# rule about that, and its one exception: "an example whose subject is a
+# required input needs a file saying what it requires." This one's subject
+# is a mutation, which is exactly the case for requiring input rather than
+# assuming a default.
+#
+# See errors.go in plugins/github for why a failure here that leaves this
+# plugin unable to tell whether the comment was actually created is never
+# retried automatically - the same reasoning the core http task's
+# retry_on_unknown_outcome exists for.
+
+inputs:
+  owner:
+    type: string
+    required: true
+    description: repository owner, e.g. "octocat"
+  repo:
+    type: string
+    required: true
+    description: repository name, e.g. "hello-world"
+  number:
+    type: int
+    required: true
+    description: the issue or pull request number to comment on
+  body:
+    type: string
+    required: true
+    description: the comment's Markdown text
+
+steps:
+  - id: comment
+    github.issue_comment:
+      owner: ${inputs.owner}
+      repo: ${inputs.repo}
+      number: ${inputs.number}
+      body: ${inputs.body}
+      # A secret reference, resolved inside the task, never a literal - see
+      # plugins/github/README.md, "Authentication," for how this plugin
+      # answers it: a GitHub App installation token when one is configured,
+      # a personal access token otherwise.
+      token: ${secret('github:token')}
+
+outputs:
+  comment_url:
+    value: ${steps.comment.html_url}
+    description: where to see what this run just posted

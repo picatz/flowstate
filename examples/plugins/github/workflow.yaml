@@ -1,0 +1,48 @@
+edition: v2026.2
+name: github-pull-request-get
+description: Reads a public pull request's state using the "github" plugin - the one read task this example runs by default.
+
+# github.pull_request_get is one of two tasks the "github" plugin provides;
+# the other, github.issue_comment, posts a comment and needs a credential -
+# see comment-inputs.json and the README before running that half.
+#
+# The dot in "github.pull_request_get" is what marks this as a plugin task
+# rather than a built-in: no built-in task has one. The engine has never
+# compiled github.v1.PullRequestGetInputs; it learns the shape from
+# descriptors this plugin ships in its manifest at launch. See
+# plugins/github for the source and plugins/github/README.md for the
+# authentication modes it supports, in the order this plugin prefers them.
+
+vars:
+  owner: golang
+  repo: go
+  # A pull request old enough to be merged and stable, so this example's
+  # output does not change out from under it.
+  number: 1
+
+steps:
+  - id: pr
+    github.pull_request_get:
+      owner: ${vars.owner}
+      repo: ${vars.repo}
+      number: ${vars.number}
+      # No token: a public repository's pull requests are readable
+      # unauthenticated, at a much lower rate limit. Compare this to
+      # comment-inputs.json, where posting a comment requires one.
+
+  - id: announce
+    log:
+      message: "${'pull request #%d (%s) - %s'.format([vars.number, steps.pr.state, steps.pr.title])}"
+
+outputs:
+  title:
+    value: ${steps.pr.title}
+    description: the pull request's title, read from GitHub's API without this build knowing its schema
+
+  state:
+    value: ${steps.pr.state}
+    description: "open or closed"
+
+  head_sha:
+    value: ${steps.pr.head_sha}
+    description: the commit at the tip of the pull request's branch
