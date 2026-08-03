@@ -41,11 +41,35 @@ type pollAnswer struct {
 type scriptedPoller struct {
 	answers []pollAnswer
 	calls   int
+
+	// holdFrom, when set, makes the poller wait on release before answering the
+	// call at that index and every one after it.
+	//
+	// It exists so a test can assert a *progression* without betting on frame
+	// timing. bubbletea coalesces redraws, so a script that finishes a run in four
+	// quick answers can legitimately reach the terminal state inside one frame,
+	// and an assertion that one string was drawn before another then fails on a
+	// loaded machine while passing on a quiet one — a test measuring the
+	// scheduler. Holding the answer until the test has seen what it is waiting for
+	// makes the order causal: the run cannot finish before the frame that proves
+	// it was watched while running.
+	holdFrom int
+	release  chan struct{}
 }
 
-func (p *scriptedPoller) Poll(context.Context) (*v1.GetResponse, error) {
-	answer := p.answers[min(p.calls, len(p.answers)-1)]
+func (p *scriptedPoller) Poll(ctx context.Context) (*v1.GetResponse, error) {
+	call := p.calls
 	p.calls++
+
+	if p.release != nil && call >= p.holdFrom {
+		select {
+		case <-p.release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
+	answer := p.answers[min(call, len(p.answers)-1)]
 
 	return answer.response, answer.err
 }
