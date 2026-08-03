@@ -100,6 +100,10 @@ func (p *Plugin) taskFunc(manifest *pluginv1.TaskManifest) flowstatev1.TaskFunc 
 		callCtx, cancel := p.callContext(ctx)
 		defer cancel()
 
+		// The other place a step spends real time, and the one whose duration is
+		// decided by code this repository did not write.
+		flowstatev1.ReportProgress(ctx, flowstatev1.PhaseCallingPlugin)
+
 		resp, err := inst.clients.task.Execute(callCtx, connect.NewRequest(request))
 		if err != nil {
 			return nil, taskError(qualified, p.name, err)

@@ -2120,6 +2120,31 @@ message PendingActivity {
   // NextAttemptScheduledTime is when the next attempt is due. Unset when an
   // attempt is running right now.
   google.protobuf.Timestamp next_attempt_scheduled_time = 3;
+
+  // Phase is what the running attempt last said it was doing — `requesting`
+  // while a request is out, `reading the response` once a peer has answered,
+  // `calling the plugin` around a plugin's RPC.
+  //
+  // This is the field that separates "this step has been running for four
+  // minutes" from knowing which end of it is slow, and the two phases an http
+  // request moves through fail differently: stuck requesting is a peer that has
+  // said nothing, stuck reading is a peer that answered and then stopped
+  // talking.
+  //
+  // Unset in three situations that a reader must not confuse with a fourth.
+  // The attempt may be between its start and its first report; it may be
+  // waiting to be retried, in which case nothing is running to have a phase at
+  // all; or the worker may be older than this field. None of those means "the
+  // step is doing nothing", and a renderer that printed a blank phase as an
+  // absence of work would be inventing one.
+  //
+  // The vocabulary is closed on purpose, and that is a security property rather
+  // than a style. This is projected from an activity heartbeat, heartbeats are
+  // written into workflow history, and history is durable and broadly readable —
+  // so a phase built from a task's inputs would be invariant 7's exact failure.
+  // The worker enforces it with a type that has no constructor; see
+  // `v1.Phase` and the AST check beside it.
+  string phase = 4;
 }
 
 // RunProgress is where a run has got to, answered by the running workflow itself.

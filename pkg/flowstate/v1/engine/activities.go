@@ -76,6 +76,12 @@ func Task(ctx context.Context, task *v1.Task) (*v1.Node_Outputs, error) {
 	ctx, span := startTaskSpan(ctx, task, "")
 	defer span.End()
 
+	// Installed on all three entry points for the reason the logger bridge below
+	// is: which activity carries a step is decided by whether the task evaluates
+	// its own inputs, which is a property of the task and not of how long it takes.
+	ctx, stop := withHeartbeat(ctx)
+	defer stop()
+
 	// Inputs are pre-resolved by the workflow, so no scope is needed; task
 	// implementations read the supplied literals.
 	//
@@ -99,6 +105,9 @@ func TaskWithPrev(ctx context.Context, task *v1.Task, prev *v1.Workflow_StepOutp
 	ctx, span := startTaskSpan(ctx, task, "")
 	defer span.End()
 
+	ctx, stop := withHeartbeat(ctx)
+	defer stop()
+
 	out, err := task.Eval(withActivityLogger(ctx), prev)
 	recordTaskOutcome(span, err)
 
@@ -121,6 +130,9 @@ func TaskWithPrev(ctx context.Context, task *v1.Task, prev *v1.Workflow_StepOutp
 func TaskInScope(ctx context.Context, task *v1.Task, scope *v1.Scope) (*v1.Node_Outputs, error) {
 	ctx, span := startTaskSpan(ctx, task, "")
 	defer span.End()
+
+	ctx, stop := withHeartbeat(ctx)
+	defer stop()
 
 	out, err := task.EvalInScope(withActivityLogger(ctx), scope)
 	recordTaskOutcome(span, err)

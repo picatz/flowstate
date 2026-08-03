@@ -5,10 +5,12 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -211,4 +213,62 @@ func TestGetOnAnUnaddressableRunNamesEveryCause(t *testing.T) {
 	require.ErrorContains(t, err, "check the id")
 	require.ErrorContains(t, err, "tenant")
 	require.ErrorContains(t, err, "retention")
+}
+
+// TestAPendingActivityLineSaysWhatItIsDoing is the render half of heartbeat phases.
+//
+// The phase travels a long way to be seen — a task reports it, a ticker heartbeats
+// it, Temporal stores it, the server projects it out of a Describe response — and
+// every one of those steps can be right while the last one is missing, in which
+// case the feature is present, tested, and invisible. That is the failure the house
+// rule about reachability describes, and this is the assertion that closes it for
+// the two surfaces a person actually reads.
+//
+// Both `flow get` and `flow watch` render through this function, which is why there
+// is one test rather than two: the two surfaces cannot drift because there is only
+// one renderer.
+func TestAPendingActivityLineSaysWhatItIsDoing(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+
+	lines := pendingActivityLines([]*v1.PendingActivity{
+		{Attempt: 1, Phase: "reading the response"},
+	}, now)
+
+	require.Equal(t, []string{"retrying, attempt 1, reading the response"}, lines)
+
+	// A phase is an aside about the attempt running now; a failure and a countdown
+	// describe attempts that are over. So the phase goes last, and the order is
+	// asserted rather than the presence of each part — a line that reported what a
+	// finished attempt is doing would read as a contradiction.
+	lines = pendingActivityLines([]*v1.PendingActivity{{
+		Attempt:                  3,
+		LastFailure:              "connection refused",
+		NextAttemptScheduledTime: timestamppb.New(now.Add(4 * time.Second)),
+		Phase:                    "requesting",
+	}}, now)
+
+	require.Equal(t,
+		[]string{"retrying, attempt 3: connection refused (next attempt in 4s), requesting"},
+		lines)
+}
+
+// TestAPendingActivityWithNoPhaseSaysNothingAboutIt is the negative direction, and
+// the one that matters most for honesty.
+//
+// A phase is absent in three situations that are not the same: the attempt has not
+// reported yet, it is waiting to be retried and so nothing is running to have a
+// phase, or the worker predates the field. None of them is "the step is doing
+// nothing", so a renderer that printed a word for the empty phase would be
+// inventing a fact about a workload — which is the failure this repository treats
+// as worse than saying nothing at all.
+func TestAPendingActivityWithNoPhaseSaysNothingAboutIt(t *testing.T) {
+	t.Parallel()
+
+	lines := pendingActivityLines([]*v1.PendingActivity{
+		{Attempt: 2, LastFailure: "boom"},
+	}, time.Now())
+
+	require.Equal(t, []string{"retrying, attempt 2: boom"}, lines)
 }

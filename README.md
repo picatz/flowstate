@@ -1356,14 +1356,17 @@ information rather than two features:
   Not per poll: a run that sits on one step for four minutes says nothing for four
   minutes, rather than repeating itself 240 times.
 
-It is not step-by-step progress, and the reason is worth stating plainly because it is
-no longer the one it used to be: the server *does* answer a running execution with
-where it has got to — which step, and which activities are retrying, with the attempt
-count and the last failure — and `flow get` prints both. What `flow watch` has not
-done yet is read those fields; it folds each poll into the status, the run id, and the
-steps that have produced outputs. Until it consumes them, what a follow adds over
-`flow get` in a loop is that it exits by itself, exits with the run's outcome, does not
-repeat itself, and shows time passing.
+It is step-by-step progress. The server answers a running execution with where it has
+got to — which step, and which activities are retrying, with the attempt count and the
+last failure — and both `flow get` and `flow watch` render it, through the same helpers
+so the two surfaces cannot drift apart.
+
+Underneath that, every task activity heartbeats while it works, carrying the phase it
+has reached: `requesting` while a request is out, `reading the response` once a peer
+has answered. That is the difference between "this step has been running for four
+minutes" and knowing which end of it is slow — and it is the same mechanism that lets
+a `flow cancel` reach a step that is mid-request, since Temporal delivers a
+cancellation to a running activity in the reply to a heartbeat.
 
 The live view is drawn on **stderr**, and the outputs go to stdout exactly as
 `flow get` writes them. So one invocation does both:

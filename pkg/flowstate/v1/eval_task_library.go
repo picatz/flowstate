@@ -559,6 +559,11 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 			httpReq.Header.Set("Content-Type", contentType)
 		}
 
+		// Built, authorized, and about to leave the worker. A step that sits here is
+		// waiting on somebody else, and until this said so a long request was
+		// indistinguishable from a wedged worker.
+		ReportProgress(ctx, PhaseRequesting)
+
 		httpResp, err := policy.Client().Do(httpReq)
 		if err != nil {
 			err = scrubber.ScrubError(err)
@@ -586,6 +591,12 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 		//
 		// The policy bounds the read, so no endpoint a workflow names can decide
 		// how much memory the worker allocates.
+		// The peer answered; what is left is however long it takes to say the rest.
+		// Separate from the phase above because the two fail differently: stuck
+		// requesting is a peer that has said nothing, stuck reading is a peer that
+		// answered and then stopped talking.
+		ReportProgress(ctx, PhaseReadingResponse)
+
 		respBody, err := policy.ReadResponseBody(httpResp)
 		if err != nil {
 			err = scrubber.ScrubError(err)

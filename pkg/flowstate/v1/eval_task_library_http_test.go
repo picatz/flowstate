@@ -350,3 +350,43 @@ func TestTheHTTPTasksExpectSpeaksItToo(t *testing.T) {
 	require.NoError(t, err,
 		"an `expect:` expression could not use the profile's functions, though every other position can")
 }
+
+// TestTheHTTPTaskSaysWhereItIs is the behavioural half of progress reporting, and
+// it is in this package on purpose.
+//
+// Where the phases *go* is a driver's business — the durable driver puts them in an
+// activity heartbeat, the local driver has nowhere to put them and installs
+// nothing. Whether the task reports them at all is not: it is a property of the
+// task, in the layer both drivers share, and it is the part that rots silently. A
+// heartbeat that faithfully carries a phase no task ever sets is indistinguishable
+// from one that works, right up until somebody asks what a stuck step is doing.
+//
+// The order is asserted rather than the set. "Requesting" and "reading the
+// response" are a diagnosis precisely because they are sequential — a step stuck on
+// the first is waiting for a peer that has said nothing, and one stuck on the
+// second has a peer that answered and then stopped talking. Reported in the wrong
+// order they would be worse than absent.
+func TestTheHTTPTaskSaysWhereItIs(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(srv.Close)
+
+	policy, err := netpolicy.New(netpolicy.WithAllowLoopback(), netpolicy.WithTimeout(5*time.Second))
+	require.NoError(t, err)
+
+	var heard []string
+	ctx := ContextWithProgress(t.Context(), func(phase Phase) {
+		heard = append(heard, phase.String())
+	})
+
+	_, err = taskFuncHTTP(policy)(ctx, NewNamedValues(map[string]any{
+		"url":    srv.URL,
+		"method": http.MethodGet,
+	}), nil)
+	require.NoError(t, err)
+
+	require.Equal(t, []string{"requesting", "reading the response"}, heard,
+		"the http task no longer says where it is, so a step stuck on it is opaque again")
+}

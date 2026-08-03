@@ -72,6 +72,13 @@ func defaultActivityOptions() workflow.ActivityOptions {
 		StartToCloseTimeout:    defaultStartToCloseTimeout,
 		ScheduleToCloseTimeout: defaultScheduleToCloseTimeout,
 		WaitForCancellation:    true,
+
+		// Set because every task activity heartbeats — see heartbeat.go, where the
+		// interval this is derived from lives. It is what makes the wait above
+		// short: Temporal delivers a cancellation to a running activity through the
+		// response to a heartbeat, so an activity that never heartbeats never
+		// learns it was cancelled and runs to its StartToCloseTimeout.
+		HeartbeatTimeout: heartbeatTimeout,
 		RetryPolicy: &temporal.RetryPolicy{
 			InitialInterval:        defaultRetryInitialInterval,
 			BackoffCoefficient:     defaultRetryBackoff,
@@ -96,6 +103,11 @@ func defaultActivityOptions() workflow.ActivityOptions {
 // have is not something a file gets an opinion about. Nothing below touches it;
 // this says so, because "not overridable" being true only by omission is how it
 // stops being true.
+//
+// `HeartbeatTimeout` is the third. It is derived from the interval the worker
+// actually ticks at, so a file lowering it would fail perfectly healthy steps and
+// a file raising it would only delay noticing a dead worker. Neither is a decision
+// a workflow is in a position to make.
 func activityOptionsFor(policy *v1.StepPolicy) workflow.ActivityOptions {
 	opts := defaultActivityOptions()
 	if policy == nil {
