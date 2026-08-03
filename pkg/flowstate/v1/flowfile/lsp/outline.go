@@ -58,7 +58,7 @@ func (s *outlineStep) containsLine(line0 int) bool {
 // Every one of them is treated the same way, so completion works at any depth — a
 // step inside a loop body is where an author is just as likely to want a suggestion
 // as one at the top level.
-func scanOutline(ix *lineIndex) []*outlineStep {
+func scanOutline(ix *lineIndex, tasks *v1.Registry) []*outlineStep {
 	// A step entry is a dash at the indentation a `steps:` key opens. Any other
 	// dash belongs to some other list nested under an input.
 	entryIndents := map[int]bool{}
@@ -106,13 +106,13 @@ func scanOutline(ix *lineIndex) []*outlineStep {
 		if i+1 < len(steps) {
 			s.endLine = steps[i+1].startLine - 1
 		}
-		fillStep(ix, s, s.indent)
+		fillStep(ix, s, s.indent, tasks)
 	}
 	return steps
 }
 
 // fillStep reads one step's id, task name, and input keys.
-func fillStep(ix *lineIndex, s *outlineStep, entryIndent int) {
+func fillStep(ix *lineIndex, s *outlineStep, entryIndent int, tasks *v1.Registry) {
 	// A step's own keys sit at the column after the dash, wherever the writer put
 	// it: `- id: a` and `-\n  id: a` are both legal.
 	contentIndent := -1
@@ -159,7 +159,7 @@ func fillStep(ix *lineIndex, s *outlineStep, entryIndent int) {
 			if s.id == "" {
 				s.id, s.idLine = unquote(rest), l
 			}
-		case indent == contentIndent && isRegisteredTask(key):
+		case indent == contentIndent && isRegisteredTask(tasks, key):
 			// The key is the task, and everything under it is an input.
 			//
 			// A registered name only — see isRegisteredTask for why this asks a
@@ -211,8 +211,8 @@ func unquote(s string) string {
 // scanner declining to name it produces the same empty answer by a shorter route.
 // A consumer that ever wants the broader rule needs the parsed model instead, not
 // a wider guess here.
-func isRegisteredTask(key string) bool {
-	_, known := v1.LookupTask(key)
+func isRegisteredTask(tasks *v1.Registry, key string) bool {
+	_, known := tasks.Lookup(key)
 	return known
 }
 

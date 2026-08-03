@@ -371,7 +371,7 @@ flow list --all -o json | jq '.runs[] | select(.status == "STATUS_RUNNING")'
 Start a Flowfile Language Server Protocol (LSP) server
 
 ```
-flow lsp
+flow lsp [flags]
 ```
 
 Start a language server for Flowfile editing in text editors and IDEs, serving the Language Server Protocol over stdin and stdout. It reports Flowfile problems as diagnostics as you type.
@@ -381,7 +381,18 @@ Examples:
 ```sh
 # Start the LSP server:
 flow lsp
+
+# Teach the editor the tasks a plugin provides, so a file that names one
+# stops reading as a mistake:
+flow lsp --plugin-dir ./plugins
 ```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `--allow-insecure-plugin-dir` | `bool` | `false` | — | permit a plugin directory other users can write to, which lets them choose what this worker runs |
+| `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
+| `--plugin-dir <string,...>` | `stringArray` | — | — | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
+| `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
 
 ## `flow mcp`
 

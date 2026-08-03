@@ -15,6 +15,14 @@
 // offering nothing. Registering a new task makes it appear in completion,
 // hover, and diagnostics with no change to this package.
 //
+// Which registry is a property of the server rather than of this package, so
+// that stays true for a task nothing here could have known about.
+// [FlowfileServer.Tasks] is the seam, and it is what `flow lsp --plugin-dir`
+// fills in: a plugin's tasks are ordinary descriptors once a host has been
+// launched and has registered them, and every feature below reads them the way
+// it reads a built-in. Left nil, the server answers from the default registry —
+// the built-in set, which is also what a process that launched no plugins knows.
+//
 // # False diagnostics are worse than missing ones
 //
 // A squiggle under correct code teaches an author to ignore squiggles. Where a

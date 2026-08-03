@@ -147,9 +147,9 @@ $ go build -o /usr/local/bin/flow ./cmd/flow
 ```
 
 The server speaks the Language Server Protocol over stdin and stdout, so the
-command every editor needs is just `flow lsp`. It takes no arguments. Logs go to
-stderr; document contents are never logged, since a Flowfile input can hold a
-credential.
+command every editor needs is just `flow lsp`. It takes no arguments unless you
+have plugins, which is the next section. Logs go to stderr; document contents are
+never logged, since a Flowfile input can hold a credential.
 
 ## Which files are Flowfiles
 
@@ -163,6 +163,68 @@ specific they are:
 
 Adjust these to your layout. Pointing the server at every `*.yaml` in a repository
 works, but you will get Flowfile diagnostics on your Kubernetes manifests.
+
+## Plugin tasks: `flow lsp --plugin-dir`
+
+A plugin's tasks are named with a dot — `slack.post` is the `post` task of the
+plugin discovered as `flowstate-plugin-slack` — and by default your editor has
+never heard of one. It underlines the name, lists the tasks it does know, and the
+worker that runs the file executes the step perfectly. That disagreement is real
+and the server is being honest about it: a process that has launched no plugins
+cannot know what they provide, so `flow validate` in a terminal says the same
+thing. The diagnostic says as much rather than calling it a typo — it names
+installation, not spelling, because it genuinely cannot tell the two apart.
+
+Pass `--plugin-dir` and it can:
+
+```console
+$ flow lsp --plugin-dir /usr/local/lib/flowstate/plugins
+```
+
+The flag is the same one `flow worker`, `flow server` and `flow plugins` take,
+doing the same thing through the same discovery: the directory is searched for
+executables named `flowstate-plugin-<name>`, each is launched, and what it
+advertises is registered before the server answers its first request. From then
+on a plugin's task is a task — completion offers it where a step's keys go, hover
+shows the signature built from the descriptors the plugin shipped, its inputs are
+checked against them, and the unknown-task diagnostic goes away. Point it at the
+same directory your workers use and the editor and the worker agree.
+
+`--plugin`, `--plugin-scheme` and `--allow-insecure-plugin-dir` are accepted too,
+with the meanings [CLI.md](CLI.md) gives them. A plugin that will not start —
+including one you pinned with `--plugin` that is not installed — fails the command
+at startup rather than leaving you with a server that quietly knows less than you
+think it does. If your editor reports that the language server exited immediately
+after you added the flag, run the same command line in a terminal and it will tell
+you which plugin and why.
+
+**It is opt-in, and the command line is the only way in.** Launching plugins means
+executing binaries, and there are two ways that could have happened by itself,
+both refused:
+
+- **Not per request.** Plugins start once, at server startup. Checking a file must
+  never launch a process, because an editor asks this server a question on every
+  keystroke.
+- **Not from the workspace.** No setting in a repository, and no LSP configuration
+  request, reaches this. A project you cloned to read must not be able to decide
+  what your editor executes.
+
+What is left is you, typing a flag for your own machine, in the editor
+configuration that starts the server. So that is where it goes — in the same place
+as the `lsp` argument, not in a project file:
+
+| Editor | Where |
+| --- | --- |
+| Neovim | `cmd = { 'flow', 'lsp', '--plugin-dir', '/path/to/plugins' }` |
+| VS Code | `args: ['lsp', '--plugin-dir', '/path/to/plugins']` in the extension's server options |
+| Helix | `args = ["lsp", "--plugin-dir", "/path/to/plugins"]` under `[language-server.flowstate]` |
+| Zed | `"arguments": ["lsp", "--plugin-dir", "/path/to/plugins"]` in the `binary` block |
+| Emacs | `'(flowfile-mode . ("flow" "lsp" "--plugin-dir" "/path/to/plugins"))` |
+
+`$FLOWSTATE_PLUGIN_DIR` is read when no `--plugin-dir` is given, the same as for a
+worker — which is a convenience for a machine where every Flowstate command should
+see the same plugins, and still an operator's decision about their own environment
+rather than a repository's about yours.
 
 ## Neovim
 

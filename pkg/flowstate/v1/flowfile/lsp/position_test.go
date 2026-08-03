@@ -203,7 +203,7 @@ func TestStoreAppliesIncrementalEdits(t *testing.T) {
 	t.Parallel()
 
 	var store documentStore
-	store.open("file:///edit.yaml", 1, "name: ünïcödé\nsteps: []\n")
+	store.open("file:///edit.yaml", 1, "name: ünïcödé\nsteps: []\n", nil)
 
 	// Replace "ünïcödé" with "plain". The name starts at UTF-16 column 6.
 	doc := store.change("file:///edit.yaml", 2, []lsp.TextDocumentContentChangeEvent{{
@@ -212,11 +212,11 @@ func TestStoreAppliesIncrementalEdits(t *testing.T) {
 			End:   lsp.Position{Line: 0, Character: 13},
 		},
 		Text: "plain",
-	}})
+	}}, nil)
 	assert.Equal(t, "name: plain\nsteps: []\n", doc.text)
 
 	// A change with no range replaces everything.
-	doc = store.change("file:///edit.yaml", 3, []lsp.TextDocumentContentChangeEvent{{Text: "name: other\n"}})
+	doc = store.change("file:///edit.yaml", 3, []lsp.TextDocumentContentChangeEvent{{Text: "name: other\n"}}, nil)
 	assert.Equal(t, "name: other\n", doc.text)
 
 	// An inverted range is tolerated rather than panicking.
@@ -226,7 +226,7 @@ func TestStoreAppliesIncrementalEdits(t *testing.T) {
 			End:   lsp.Position{Line: 0, Character: 2},
 		},
 		Text: "",
-	}})
+	}}, nil)
 	require.NotNil(t, doc)
 	assert.NotPanics(t, func() { _ = doc.text })
 
@@ -242,16 +242,16 @@ func TestStoreRejectsStaleEdits(t *testing.T) {
 	t.Parallel()
 
 	var store documentStore
-	store.open("file:///stale.yaml", 1, "name: one\n")
+	store.open("file:///stale.yaml", 1, "name: one\n", nil)
 
-	newer := store.change("file:///stale.yaml", 5, []lsp.TextDocumentContentChangeEvent{{Text: "name: five\n"}})
+	newer := store.change("file:///stale.yaml", 5, []lsp.TextDocumentContentChangeEvent{{Text: "name: five\n"}}, nil)
 	require.NotNil(t, newer)
 	assert.Equal(t, "name: five\n", newer.text)
 
 	// An edit that arrives late is dropped rather than reverting the document.
-	assert.Nil(t, store.change("file:///stale.yaml", 3, []lsp.TextDocumentContentChangeEvent{{Text: "name: three\n"}}))
+	assert.Nil(t, store.change("file:///stale.yaml", 3, []lsp.TextDocumentContentChangeEvent{{Text: "name: three\n"}}, nil))
 	// The same version twice is also stale: it has already been applied.
-	assert.Nil(t, store.change("file:///stale.yaml", 5, []lsp.TextDocumentContentChangeEvent{{Text: "name: other\n"}}))
+	assert.Nil(t, store.change("file:///stale.yaml", 5, []lsp.TextDocumentContentChangeEvent{{Text: "name: other\n"}}, nil))
 
 	current, ok := store.get("file:///stale.yaml")
 	require.True(t, ok)
@@ -260,13 +260,13 @@ func TestStoreRejectsStaleEdits(t *testing.T) {
 	// A client that does not track versions still gets last-write-wins, because
 	// there is nothing to order by.
 	var untracked documentStore
-	untracked.open("file:///untracked.yaml", 0, "name: one\n")
-	got := untracked.change("file:///untracked.yaml", 0, []lsp.TextDocumentContentChangeEvent{{Text: "name: two\n"}})
+	untracked.open("file:///untracked.yaml", 0, "name: one\n", nil)
+	got := untracked.change("file:///untracked.yaml", 0, []lsp.TextDocumentContentChangeEvent{{Text: "name: two\n"}}, nil)
 	require.NotNil(t, got)
 	assert.Equal(t, "name: two\n", got.text)
 
 	// Reopening resets the version, since an editor may close and reopen a file.
-	reopened := store.open("file:///stale.yaml", 1, "name: reopened\n")
+	reopened := store.open("file:///stale.yaml", 1, "name: reopened\n", nil)
 	assert.Equal(t, "name: reopened\n", reopened.text)
 }
 

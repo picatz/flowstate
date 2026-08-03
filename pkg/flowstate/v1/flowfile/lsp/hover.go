@@ -46,7 +46,7 @@ func hoverAt(doc *document, pos lsp.Position) *lsp.Hover {
 		}
 		return nil
 	}
-	def, taskKnown := v1.LookupTask(step.taskName)
+	def, taskKnown := doc.tasks.Lookup(step.taskName)
 
 	// An expression reference is checked first: it is the innermost thing at a
 	// position, nested inside an input's value or the step's condition.
@@ -517,7 +517,7 @@ func hoverStepOutput(doc *document, from *parsedStep, ref reference, rng lsp.Ran
 		// say so; hover stays quiet rather than repeating it.
 		return nil
 	}
-	def, known := v1.LookupTask(target.taskName)
+	def, known := doc.tasks.Lookup(target.taskName)
 
 	var b strings.Builder
 	if ref.output == "" {

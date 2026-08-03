@@ -758,10 +758,33 @@ func runLSP(cmd *cobra.Command, args []string) error {
 	log.SetFlags(0)
 	log.SetOutput(os.Stderr)
 
+	// Plugins are launched here, before the first byte of protocol is read, and
+	// nowhere else. An editor asks this process a question per keystroke, and
+	// launching a binary is not an answer to a keystroke; nor may the workspace
+	// decide it, because a repository somebody cloned would then choose what
+	// their editor executes. The only thing that turns this on is --plugin-dir on
+	// the command line the person configured their editor with, which is an
+	// operator saying yes about their own machine. That is the whole of the
+	// opt-in, and it is why there is no configuration path to the same effect.
+	//
+	// Strict, as a worker is: a plugin that will not come up fails the command
+	// here rather than leaving an editor quietly reporting `unknown task` for
+	// tasks the author asked for and had every reason to expect.
+	closePlugins, err := startPlugins(cmd, nil)
+	if err != nil {
+		return err
+	}
+	// Registered, so it must be closed: nothing else kills the plugin processes,
+	// and an editor restarting its server would otherwise leave one behind per
+	// restart.
+	defer closePlugins()
+
 	conn := jsonrpc2.NewConn(
 		cmd.Context(),
 		jsonrpc2.NewBufferedStream(stdio{}, jsonrpc2.VSCodeObjectCodec{}),
-		jsonrpc2.AsyncHandler(&lsp.FlowfileServer{}),
+		// The registry the host registered into, handed over rather than reached
+		// for, so that what this server knows is what this command launched.
+		jsonrpc2.AsyncHandler(&lsp.FlowfileServer{Tasks: v1.DefaultRegistry()}),
 	)
 
 	// NewConn serves in a background goroutine and returns immediately, so
@@ -1678,8 +1701,27 @@ flow mcp --secret-env API_KEY --auth-policy policy.yaml`,
 			"Flowfile problems as diagnostics as you type.",
 		RunE: runLSP,
 		Example: `# Start the LSP server:
-flow lsp`,
+flow lsp
+
+# Teach the editor the tasks a plugin provides, so a file that names one
+# stops reading as a mistake:
+flow lsp --plugin-dir ./plugins`,
 	}
+
+	// The same flags `flow worker` takes, doing the same thing — one discovery
+	// path, so a directory that brings a plugin up on a worker brings the same one
+	// up here.
+	//
+	// Opt-in, and only from this command line. Without it the server answers from
+	// the built-in task set and a plugin's task reads as unknown, which is the
+	// honest report from a process that launched nothing. Turning it on means
+	// executing the binaries on the search path, and the two ways that could
+	// happen by itself are both refused: it is not read from workspace
+	// configuration, because a cloned repository would then choose what an
+	// author's editor runs, and it is not done per request, because a keystroke
+	// is not a moment to launch a process. Somebody types this flag for their own
+	// machine, once, in the editor configuration that starts the server.
+	addPluginFlags(lspCmd)
 
 	// Add command groups for better organization
 	rootCmd.AddGroup(&cobra.Group{
