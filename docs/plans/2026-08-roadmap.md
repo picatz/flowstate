@@ -1,5 +1,39 @@
 # Flowstate — One-Week Plan (2026-08-03 → 2026-08-09): bugs, features, examples, tests, docs
 
+## Status: executed (2026-08-03)
+
+The must-land set and the Day 1–5 waves all shipped, as thirty commits on this
+branch — `git log 997fe32..68e648f` is the record, and each commit message names
+the item it lands. What the checklists below promise is done unless it appears in
+the ledger that follows; the workstream sections are kept as written so the plan
+and its execution can be compared.
+
+**Shipped**: Z1–Z11 (all eleven verified bugs, plus two found wider during the
+fix: the ASCII whole-line fallback in `rootResponseScalar`, and the cancelled
+local run that tolerated its way to success); G1 and G2 (corrections sweep, then
+`docs/reference/` generated and CI-pinned, with the env-var enumeration held to
+the tree by AST walk in both directions); A1–A5; B1–B3 (`inputs:`/`outputs:`
+end-to-end: schema, both drivers, CLI, MCP, two CI-run examples); C1–C3
+(versioning gate with `--allow-unversioned-interpreter`, the durable example
+harness forcing Continue-As-New over all 23 examples with exact driver
+agreement, nested secret references via `Value.Structure`); D1–D3 (client-side
+traces with flush on every exit path, the Temporal tracing interceptor and
+activity spans with containment tests, the observability lab); E1–E5 (LSP code
+actions and formatting, `flow fmt`, `flow compile` was NOT shipped — see
+deferred — `flow lsp --plugin-dir` was NOT shipped — see deferred, TUI progress
+consumption was NOT shipped — see deferred); F1–F3 (`flowstate_run_local`,
+resources, client docs); three new fuzz targets; the runage clock-injection
+flake fix.
+
+**Deferred, with owners' notes in the ledger**: `flow compile` verb (E3), `flow
+lsp --plugin-dir` (E4), TUI live-progress consumption (E5) — squeezed out by the
+wave that shipped code actions and fmt; they are small, unblocked, and first in
+line next week. Schedules (the stretch) did not start. Everything in "Explicitly
+NOT this week" stayed not-this-week; written issues for the deferral list are
+still owed. Also owed from handoffs: collapsing `renderLiteral` onto an exported
+value-to-native conversion, and per-phase compile-span attributes if anyone
+wants them.
+
 ## Context
 
 Flowstate is ~50 PRs old: a durable, policy-governed workflow engine (YAML+CEL DSL → protobuf spec → Temporal) with two agreeing execution drivers, a connect-go control plane, LSP, MCP, TUI, plugin system, and an identity/secrets substrate. The owner asked for a step-back plan for the coming week covering every surface (DSL, engine, Temporal, OTel, TUI, CLI, API/RPC/proto-first, LSP, MCP) plus agentic self-improvement — and, explicitly, checking everything so the plan contains concrete bug fixes, not just features, and fixing doc bit-rot.
