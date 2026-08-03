@@ -1,11 +1,20 @@
 # The fan-in. Everything Flowstate emits arrives here and leaves in three
 # directions.
 #
-# Two things about this file are decisions rather than boilerplate:
+# Three things about this file are decisions rather than boilerplate:
 #
 #   * Loki is fed over OTLP, not through the collector's deprecated `loki`
 #     exporter. Loki has ingested OTLP natively since 3.0, so the exporter that
 #     used to translate is a moving part with nothing left to do.
+#   * There is one receiver, for all three signals. Two `filelog` receivers used
+#     to sit here reading the Flowstate services' redirected stderr out of a
+#     shared volume, because the binary wrote logs and did not send them. It
+#     sends them now, so the receivers deleted themselves exactly as the comment
+#     that used to be here said they would — and with them the volume, the
+#     redirection, and the `docker compose logs` that showed nothing. What Loki
+#     no longer sees is the handful of lines Flowstate does not write through
+#     slog: the Temporal SDK's own logger, and four `log.Printf` warnings. Those
+#     are in `docker compose logs` now that stderr is stderr again.
 #   * Prometheus *pulls* from this collector rather than being pushed to. A
 #     scrape target that is briefly unreachable is a gap in a graph; a push
 #     pipeline that is briefly unreachable is backpressure into the process being
@@ -18,29 +27,6 @@ receivers:
         endpoint: 0.0.0.0:4317
       http:
         endpoint: 0.0.0.0:4318
-
-  # Flowstate does not speak OTLP for logs yet — it writes structured lines to
-  # stderr, which the compose file redirects into a shared volume. One receiver
-  # per file, so each can stamp the service that wrote it; a single glob would
-  # give Loki one undifferentiated stream.
-  #
-  # Deliberately no parsing operators. The lines are slog's logfmt and Loki
-  # parses logfmt at query time, so a parser here would be an untested moving
-  # part in the ingest path buying a conversion that is free later. When
-  # Flowstate grows an OTLP log exporter this receiver disappears entirely.
-  filelog/server:
-    include: [/var/log/flowstate/server.log]
-    start_at: beginning
-    resource:
-      service.name: flowstate-server
-      deployment.environment: lab
-
-  filelog/worker:
-    include: [/var/log/flowstate/worker.log]
-    start_at: beginning
-    resource:
-      service.name: flowstate-worker
-      deployment.environment: lab
 
 processors:
   # First in every pipeline, on purpose: a collector that refuses data while
@@ -107,6 +93,6 @@ service:
       exporters: [prometheus]
 
     logs:
-      receivers: [otlp, filelog/server, filelog/worker]
+      receivers: [otlp]
       processors: [memory_limiter, batch]
       exporters: [otlphttp/loki]

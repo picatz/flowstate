@@ -142,8 +142,15 @@ func authFlagsOf(cmd *cobra.Command) authFlags {
 // the `log:` task renders through slog handlers. The infrastructure's own
 // lines were the odd ones out, which mattered the moment telemetry landed:
 // a fleet's collector can parse key=value pairs and cannot parse prose.
+//
+// Now with a second destination when one is configured, and stderr either way:
+// [telemetryLogHandler] adds the OTLP bridge beside the text handler rather than
+// in place of it, so a collector parses nothing and a person watching a terminal
+// loses nothing. These lines carry no trace id — they are start-up and shutdown
+// commentary, emitted outside any span; see the note above [telemetryLogHandler]
+// for which paths do correlate.
 func infraLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(os.Stderr, nil))
+	return slog.New(telemetryLogHandler(slog.NewTextHandler(os.Stderr, nil)))
 }
 
 // initTemporalClient connects to Temporal.

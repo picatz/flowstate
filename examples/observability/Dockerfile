@@ -33,11 +33,10 @@ FROM alpine:3.22
 # wrong thing.
 RUN apk add --no-cache ca-certificates
 
-# Unprivileged, and the directory it writes logs into is created here so the
-# named volume mounted over it inherits this ownership rather than root's.
-RUN adduser -D -u 10001 flowstate \
- && mkdir -p /var/log/flowstate \
- && chown flowstate:flowstate /var/log/flowstate
+# Unprivileged. There is no log directory to prepare any more: logs leave over
+# OTLP rather than into a file on a shared volume, so stderr is stderr and
+# `docker compose logs` shows it.
+RUN adduser -D -u 10001 flowstate
 
 COPY --from=build /out/flow /usr/local/bin/flow
 

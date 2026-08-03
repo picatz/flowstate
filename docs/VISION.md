@@ -124,11 +124,26 @@ OTEL_EXPORTER_OTLP_*, structured logs), and client-to-server trace propagation
 followed: client commands initialize the tracer and the W3C propagator when the
 same variables opt in, flush before exiting, and a trace now begins at the person
 running `flow run` rather than at the server. The direction from here is to make Flowstate a
-first-class citizen of a modern OpenTelemetry stack, and to prove it end to end:
+first-class citizen of a modern OpenTelemetry stack, and to prove it end to end.
 
-- **All three signals over OTLP**: metrics, traces, and logs, with logs shipped
-  through the OTLP log exporter rather than only written to stderr, so a
-  collector is the single ingress for everything.
+All three signals over OTLP used to be listed here and is not any more, per this
+file's own rule: logs ship through the OTLP log exporter alongside metrics and
+traces, so a collector is the single ingress for everything and the lab no longer
+tails a file into Loki. An `otelslog` bridge sits *beside* the stderr handler
+rather than replacing it — adding a collector gains a destination and does not
+cost the terminal — and OTEL_EXPORTER_OTLP_LOGS_ENDPOINT now counts as telemetry
+being configured, which it deliberately did not while nothing exported logs.
+
+What that bought, and its edge: a `log:` step on the worker emits with the
+activity's context, so its record carries the trace and span ids of the step's own
+span and a log line is one click from its trace in both directions. Lines emitted
+outside a span — the server's and worker's own start-up commentary, and every
+`log:` step under `flow run local`, which opens no span at all — are exported and
+searchable but carry no trace id. The remaining rung is the Temporal SDK's own
+logger, which is not a `slog` logger and so still reaches stderr only.
+
+What is left:
+
 - **Correlated with Temporal.** Temporal emits its own traces and metrics;
   the goal is that a span from `flow run` threads through the server, into the
   workflow and its activities, and is visible both in Grafana Tempo and clickable
@@ -141,7 +156,9 @@ first-class citizen of a modern OpenTelemetry stack, and to prove it end to end:
   Temporal dev server and a Flowstate worker and server, so `docker compose up`
   gives a working lab that shows metrics, logs, and traces correlated by trace id,
   with a provisioned dashboard. Research the current recommended stack before
-  building; the OTel Collector config is where the cohesion lives.
+  building; the OTel Collector config is where the cohesion lives. Largely landed
+  in `examples/observability/`, and now genuinely correlated by trace id rather
+  than by workflow id; what is left is the manual smoke being manual.
 - **Plugins for the stack itself**, deliberately and slightly cursed: a Temporal
   plugin, a Grafana plugin, a Loki plugin, so a Flowstate workflow can query and
   act on the very systems observing it. The circularity is the point when threaded

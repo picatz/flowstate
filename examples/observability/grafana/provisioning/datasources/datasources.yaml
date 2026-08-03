@@ -20,15 +20,21 @@ datasources:
     access: proxy
     url: http://tempo:3200
     jsonData:
-      # From a span to the logs around it. Deliberately *not* filtered by trace
-      # id: Flowstate's logs are stderr lines that carry no trace id yet — that
-      # is the next rung of VISION's ladder, the OTLP log exporter — so the
-      # honest correlation available today is "the same service, the same
-      # moment". Claiming more would send someone hunting for a link that cannot
-      # exist.
+      # From a span to the logs of the same trace. Filtered by trace id now that
+      # Flowstate ships logs over OTLP: a `log:` step emits with the activity's
+      # context, so its record carries the trace and span ids of the step's own
+      # span and the link lands on exactly the lines that run produced.
+      #
+      # What this link will *not* find is the server's and worker's own start-up
+      # and shutdown commentary. Those lines are emitted outside any span — there
+      # is no request in flight when a worker says it is starting — so they carry
+      # no trace id and no filter by trace id can reach them. Find those by
+      # service and time in the log panel. Stated here because the previous
+      # version of this comment was about the opposite compromise, and a link
+      # that quietly returns nothing is the thing worth warning about.
       tracesToLogsV2:
         datasourceUid: flowstate-loki
-        filterByTraceID: false
+        filterByTraceID: true
         filterBySpanID: false
         spanStartTimeShift: -2m
         spanEndTimeShift: 2m
@@ -53,3 +59,17 @@ datasources:
     jsonData:
       # Loki is single-tenant here (auth_enabled: false), so no X-Scope-OrgID.
       maxLines: 1000
+      # And the other direction: from a log line to its trace, in one click.
+      #
+      # Loki stores an OTLP record's TraceId as *structured metadata* rather than
+      # in the line body, which is why this matches on a label rather than with a
+      # regex over the text — there is nothing in the message to match. A regex
+      # here would find nothing and look like a Grafana misconfiguration rather
+      # than a wrong assumption about where Loki put the field.
+      derivedFields:
+        - name: TraceID
+          matcherType: label
+          matcherRegex: trace_id
+          url: "${__value.raw}"
+          datasourceUid: flowstate-tempo
+          urlDisplayLabel: View trace

@@ -1,24 +1,39 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 
 	"connectrpc.com/connect"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	logglobal "go.opentelemetry.io/otel/log/global"
+	noopLog "go.opentelemetry.io/otel/log/noop"
 	noopMetric "go.opentelemetry.io/otel/metric/noop"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 	noopTrace "go.opentelemetry.io/otel/trace/noop"
+	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/worker"
+	"google.golang.org/protobuf/encoding/prototext"
+	"google.golang.org/protobuf/proto"
 )
 
 // Telemetry lives in process-wide globals — the OTel providers, the text-map
@@ -43,10 +58,17 @@ func isolateTelemetry(t *testing.T) {
 	tracerProvider := otel.GetTracerProvider()
 	meterProvider := otel.GetMeterProvider()
 	propagator := otel.GetTextMapPropagator()
+	loggerProvider := logglobal.GetLoggerProvider()
 
 	otel.SetTracerProvider(noopTrace.NewTracerProvider())
 	otel.SetMeterProvider(noopMetric.NewMeterProvider())
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator())
+
+	// Logs have their own global, in their own package, and it has the same
+	// delegate-exactly-once behaviour the tracer provider does — so the same
+	// reasoning applies: hand a concrete no-op to the next test rather than the
+	// delegating instance this one may have pointed at a collector.
+	logglobal.SetLoggerProvider(noopLog.NewLoggerProvider())
 
 	telemetryState.mu.Lock()
 	started, handler, shutdown, err := telemetryState.started, telemetryState.handler, telemetryState.shutdown, telemetryState.err
@@ -64,6 +86,7 @@ func isolateTelemetry(t *testing.T) {
 		otel.SetTracerProvider(tracerProvider)
 		otel.SetMeterProvider(meterProvider)
 		otel.SetTextMapPropagator(propagator)
+		logglobal.SetLoggerProvider(loggerProvider)
 
 		telemetryState.mu.Lock()
 		telemetryState.started, telemetryState.handler, telemetryState.shutdown, telemetryState.err = started, handler, shutdown, err
@@ -79,6 +102,7 @@ func telemetryOff(t *testing.T) {
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
 	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
 	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "")
 	t.Setenv("OTEL_SERVICE_NAME", "")
 	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "")
 }
@@ -102,13 +126,16 @@ func TestTelemetryIsConfiguredBySignalSpecificEndpoints(t *testing.T) {
 		{name: "the general endpoint", variable: "OTEL_EXPORTER_OTLP_ENDPOINT", want: true},
 		{name: "traces only", variable: "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", want: true},
 		{name: "metrics only", variable: "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", want: true},
-		// Nothing here exports logs, so this one must not turn on a tracer and
-		// a meter on the strength of a variable about neither.
-		{name: "logs only", variable: "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", want: false},
+		// This one used to be false, correctly: nothing exported logs, so
+		// honouring a variable about logs would have started a tracer and a
+		// meter and nothing else. There is a log exporter now, so the variable
+		// names a signal this binary sends — and a fleet whose logs go to a
+		// collector and whose traces do not must not be told it configured
+		// nothing.
+		{name: "logs only", variable: "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", want: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			telemetryOff(t)
-			t.Setenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "")
 
 			if test.variable != "" {
 				t.Setenv(test.variable, "http://127.0.0.1:4318")
@@ -509,4 +536,340 @@ func TestTemporalTracingInterceptorServesBothSides(t *testing.T) {
 
 	var _ interceptor.ClientInterceptor = tracing
 	var _ interceptor.WorkerInterceptor = tracing
+}
+
+// The third signal.
+//
+// Everything below asserts on records that made it out of an exporter and onto
+// the wire, rather than on a handler having been constructed. That is deliberate
+// and it is the same lesson the trace-injection test above records: a bridge
+// built against the wrong provider, or built before the provider was registered,
+// looks perfectly well wired from the inside and emits nothing. Only a request
+// that has arrived can tell the difference.
+
+// logCollector is a stub OTLP/HTTP collector that keeps the log records it is
+// sent.
+//
+// It answers 200 to everything so the exporter never spends its retry budget,
+// and decodes only /v1/logs — traces and metrics go to the same base endpoint
+// and are not what any of these tests are about.
+type logCollector struct {
+	mu      sync.Mutex
+	records []*logspb.LogRecord
+}
+
+// logCollectorTo stands one up and points the exporters at it.
+//
+// Registered before [isolateTelemetry] in every caller, so that the collector's
+// own Close runs *after* the flush that cleanup arranges: cleanups are
+// last-in-first-out, and flushing into a closed collector is an error report
+// about nothing.
+func logCollectorTo(t *testing.T) *logCollector {
+	t.Helper()
+
+	collector := &logCollector{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer w.WriteHeader(http.StatusOK)
+
+		if r.URL.Path != "/v1/logs" {
+			return
+		}
+
+		if err := collector.accept(r); err != nil {
+			t.Errorf("decoding an OTLP log export: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", server.URL)
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "")
+	t.Setenv("OTEL_SERVICE_NAME", "")
+	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "")
+
+	return collector
+}
+
+// accept decodes one export request and keeps its records.
+//
+// The gzip branch is not optional: otlploghttp compresses by default, so a
+// decoder that only handled identity would find every body unparseable and every
+// test here would report zero records for a pipeline that was working.
+func (c *logCollector) accept(r *http.Request) error {
+	var body io.Reader = r.Body
+	if r.Header.Get("Content-Encoding") == "gzip" {
+		unzipped, err := gzip.NewReader(r.Body)
+		if err != nil {
+			return fmt.Errorf("gzip: %w", err)
+		}
+		defer unzipped.Close()
+
+		body = unzipped
+	}
+
+	raw, err := io.ReadAll(body)
+	if err != nil {
+		return fmt.Errorf("reading the body: %w", err)
+	}
+
+	var request collogspb.ExportLogsServiceRequest
+	if err := proto.Unmarshal(raw, &request); err != nil {
+		return fmt.Errorf("unmarshaling: %w", err)
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for _, resource := range request.GetResourceLogs() {
+		for _, scope := range resource.GetScopeLogs() {
+			c.records = append(c.records, scope.GetLogRecords()...)
+		}
+	}
+
+	return nil
+}
+
+// exported returns the records received so far.
+func (c *logCollector) exported() []*logspb.LogRecord {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return append([]*logspb.LogRecord{}, c.records...)
+}
+
+// text renders everything received as one string, for containment assertions.
+//
+// The whole record rather than the body: a secret that leaked into an attribute
+// value, an attribute *key*, or a trace state is leaked just as thoroughly as one
+// in the message, and a test that only reads the body would say so was fine.
+func (c *logCollector) text() string {
+	var b strings.Builder
+	for _, record := range c.exported() {
+		b.WriteString(prototext.Format(record))
+		b.WriteString("\n")
+	}
+
+	return b.String()
+}
+
+// TestZeroConfigExportsNoLogsAndLeavesTheStderrHandlerAlone is invariant 8 for
+// the third signal.
+//
+// Two assertions, because either alone would pass while the thing they are about
+// was broken. The handler must be the *same* handler — identity, not a fan-out of
+// one — since a wrapper is a place a record can be dropped and a thing somebody
+// has to reason about. And the global logger provider must still be the no-op,
+// which is what makes a bridge built anywhere else in the process (the engine's
+// activity logger builds one unconditionally) cost nothing.
+func TestZeroConfigExportsNoLogsAndLeavesTheStderrHandlerAlone(t *testing.T) {
+	isolateTelemetry(t)
+	telemetryOff(t)
+
+	var stderr bytes.Buffer
+	handler := slog.NewTextHandler(&stderr, nil)
+
+	require.Same(t, handler, telemetryLogHandler(handler),
+		"an unconfigured binary wrapped the stderr handler")
+
+	_, shutdown, err := initTelemetry(t.Context())
+	require.NoError(t, err)
+	t.Cleanup(func() { shutdown(context.Background()) })
+
+	require.IsType(t, noopLog.LoggerProvider{}, logglobal.GetLoggerProvider(),
+		"an exporter was built for a binary nobody configured, and it is the global that would make every bridge in the process live")
+
+	// And the destination that was always there still works, unchanged.
+	slog.New(telemetryLogHandler(handler)).Info("still on stderr")
+	require.Contains(t, stderr.String(), "still on stderr")
+}
+
+// TestConfiguredSlogCallReachesTheCollector is the feature: a line written to
+// stderr is also a log record at a collector.
+//
+// Both destinations asserted in one test on purpose. The requirement is not that
+// OTLP works — it is that an operator who adds a collector *gains* a destination,
+// and a test that only looked at the collector would be equally happy with a
+// handler swap that took the terminal away.
+func TestConfiguredSlogCallReachesTheCollector(t *testing.T) {
+	collector := logCollectorTo(t)
+	isolateTelemetry(t)
+
+	_, shutdown, err := initTelemetry(t.Context())
+	require.NoError(t, err)
+
+	var stderr bytes.Buffer
+	text := slog.NewTextHandler(&stderr, nil)
+	handler := telemetryLogHandler(text)
+	require.NotSame(t, slog.Handler(text), handler,
+		"telemetry is configured and the bridge was not added beside the stderr handler")
+
+	slog.New(handler).Info("a step said something", "step", "greet")
+
+	shutdown(context.Background())
+
+	require.Contains(t, stderr.String(), "a step said something",
+		"the destination the operator already had was taken away rather than added to")
+
+	records := collector.exported()
+	require.Len(t, records, 1, "the collector received %d records", len(records))
+	require.Equal(t, "a step said something", records[0].GetBody().GetStringValue())
+
+	var attrs []string
+	for _, attr := range records[0].GetAttributes() {
+		attrs = append(attrs, attr.GetKey()+"="+attr.GetValue().GetStringValue())
+	}
+	require.Contains(t, attrs, "step=greet", "the record arrived without its structured attributes")
+}
+
+// TestLogRecordCarriesTheTraceOfItsSpan is the point of shipping logs over OTLP
+// rather than tailing a file: a line and the span it happened inside share a
+// trace id, so a log panel is reachable from a trace instead of joinable only by
+// workflow id.
+//
+// Emitted through LogAttrs with a context, which is what the `log:` task does and
+// what makes this reachable in production — on the worker, where the activity's
+// context carries the span Temporal's tracing interceptor opened.
+func TestLogRecordCarriesTheTraceOfItsSpan(t *testing.T) {
+	collector := logCollectorTo(t)
+	isolateTelemetry(t)
+
+	_, shutdown, err := initTelemetry(t.Context())
+	require.NoError(t, err)
+
+	spanCtx := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    trace.TraceID{0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x10},
+		SpanID:     trace.SpanID{0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18},
+		TraceFlags: trace.FlagsSampled,
+	})
+	ctx := trace.ContextWithSpanContext(t.Context(), spanCtx)
+
+	logger := slog.New(telemetryLogHandler(slog.NewTextHandler(io.Discard, nil)))
+	logger.LogAttrs(ctx, slog.LevelInfo, "inside a span")
+
+	shutdown(context.Background())
+
+	records := collector.exported()
+	require.Len(t, records, 1)
+	require.Equal(t, spanCtx.TraceID().String(), hex.EncodeToString(records[0].GetTraceId()),
+		"the record carries no trace id, so nothing links it to the span it happened inside")
+	require.Equal(t, spanCtx.SpanID().String(), hex.EncodeToString(records[0].GetSpanId()))
+}
+
+// TestLogRecordWithoutASpanIsStillExported is the honest other half.
+//
+// `flow run local` opens no span — it makes no RPC — and the server's and
+// worker's own start-up lines are emitted outside any request. Those records must
+// still reach the collector, uncorrelated, rather than being dropped for want of
+// a trace to belong to: a log nobody can click on is worth much more than no log.
+func TestLogRecordWithoutASpanIsStillExported(t *testing.T) {
+	collector := logCollectorTo(t)
+	isolateTelemetry(t)
+
+	_, shutdown, err := initTelemetry(t.Context())
+	require.NoError(t, err)
+
+	slog.New(telemetryLogHandler(slog.NewTextHandler(io.Discard, nil))).Info("no span here")
+
+	shutdown(context.Background())
+
+	records := collector.exported()
+	require.Len(t, records, 1)
+	require.Equal(t, "no span here", records[0].GetBody().GetStringValue())
+	require.Empty(t, records[0].GetTraceId(), "a trace id was invented for a record that was not inside a span")
+}
+
+// TestFlushTelemetryDeliversBufferedLogs pins logs onto the *existing* exit path.
+//
+// A log processor batches exactly as a span processor does, so the records a
+// process never flushes are the ones from the moments before it exited — which
+// are the lines saying why it is leaving, and the reason anybody is reading them.
+// The pre-flush assertion is what makes this a test of the flush rather than of
+// the batch interval quietly elapsing.
+func TestFlushTelemetryDeliversBufferedLogs(t *testing.T) {
+	collector := logCollectorTo(t)
+	isolateTelemetry(t)
+
+	_, err := startTelemetry(t.Context())
+	require.NoError(t, err)
+
+	slog.New(telemetryLogHandler(slog.NewTextHandler(io.Discard, nil))).Error("worker stopped")
+
+	require.Empty(t, collector.exported(),
+		"the record left the process without a flush, so this test cannot tell whether the flush works")
+
+	// Through the memoized shutdown, which is the one every exit path reaches —
+	// including the os.Exit branch — rather than a second flush written for this.
+	flushTelemetry()
+
+	records := collector.exported()
+	require.Len(t, records, 1, "the flush on the way out does not reach the log provider")
+	require.Equal(t, "worker stopped", records[0].GetBody().GetStringValue())
+}
+
+// TestSecretsAreRedactedOnTheOTLPPathToo is invariant 7 pointed at the new
+// destination.
+//
+// The risk this closes is specific and it is not "does Secret redact" — that is
+// covered where Secret lives. It is that a *second* rendering of the same record
+// might not honour the same protections: stderr goes through slog's own handler,
+// which resolves [slog.LogValuer] and calls String, and a bridge that converted
+// attributes by reflecting over them instead would ship in the clear what the
+// terminal redacts. A destination that scrubs less than the one beside it is
+// worse than no second destination, because nobody is watching it.
+//
+// Tested in the containment shapes CLAUDE.md requires — %v, %+v, %#v, %s, on the
+// value, on a struct holding it, and on a slice of those — and asserted in both
+// directions: the collector must not carry the material, and neither must stderr,
+// so a regression cannot hide by moving between them.
+func TestSecretsAreRedactedOnTheOTLPPathToo(t *testing.T) {
+	collector := logCollectorTo(t)
+	isolateTelemetry(t)
+
+	_, shutdown, err := initTelemetry(t.Context())
+	require.NoError(t, err)
+
+	const material = "s3cr3t-material-that-must-not-travel"
+	secret := secrets.NewSecret(secrets.NewRef("env", "API_TOKEN"), material)
+
+	type holder struct {
+		Token secrets.Secret
+		Note  string
+	}
+
+	held := holder{Token: secret, Note: "held"}
+	slice := []holder{held}
+
+	var stderr bytes.Buffer
+	logger := slog.New(telemetryLogHandler(slog.NewTextHandler(&stderr, nil)))
+
+	// As a structured attribute, which is the shape a bridge converts rather than
+	// formats, and therefore the one that can diverge from stderr.
+	logger.Info("as an attribute", "secret", secret, "holder", held, "slice", slice)
+
+	// And through every verb, on each of the three shapes. Formatted into the
+	// message because that is where a careless call site puts it.
+	for _, value := range []any{secret, held, slice} {
+		logger.Info(fmt.Sprintf("%v", value))
+		logger.Info(fmt.Sprintf("%+v", value))
+		logger.Info(fmt.Sprintf("%#v", value))
+		logger.Info(fmt.Sprintf("%s", value))
+		logger.Info("formatted", "value", fmt.Sprintf("%v", value))
+	}
+
+	shutdown(context.Background())
+
+	exported := collector.text()
+	require.NotEmpty(t, exported, "nothing was exported, so this test asserts nothing")
+	require.NotContains(t, exported, material,
+		"secret material reached the collector through the OTLP log path")
+
+	// The same direction on the destination that was already there, so the two
+	// cannot disagree about what is safe to print.
+	require.NotContains(t, stderr.String(), material)
+
+	// And the redaction is visible rather than the value having merely been
+	// dropped: a record that lost the attribute entirely would also pass the
+	// assertion above, and would be a different bug.
+	require.Contains(t, exported, secrets.Redacted)
 }

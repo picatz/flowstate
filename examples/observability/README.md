@@ -68,7 +68,7 @@ this list acceptable, and you own what follows.
   (`tls: insecure: true`).
 - **No credentials appear anywhere in this directory**, real or fake. There is
   nothing here to leak and nothing to rotate. Check that this stays true.
-- **The Temporal database and the log files are unbounded**, in a named volume,
+- **The Temporal database and the three time-series stores are unbounded**, in named volumes,
   with no rotation. `docker compose down -v` is the cleanup, and you will want it.
 
 ## Why the worker is unversioned, honestly
@@ -85,8 +85,7 @@ you will rebuild this image constantly. It would be dishonest anywhere else. The
 alternative is two flags, and the lab works exactly as well with them:
 
 ```yaml
-    command:
-      - exec flow worker --address=temporal:7233 --deployment-name=flowstate --build-id=lab-1 --verbose >> /var/log/flowstate/worker.log 2>&1
+    command: ["worker", "--address=temporal:7233", "--deployment-name=flowstate", "--build-id=lab-1", "--verbose"]
 ```
 
 Bump `--build-id` whenever you rebuild, and watch runs stay pinned to the version
@@ -95,40 +94,51 @@ it matters.
 
 ## How logs get to Loki
 
-Flowstate writes structured logs to stderr. It does not speak OTLP for logs yet —
-that is the next rung in [VISION.md](../../docs/VISION.md) — so something has to
-carry stderr into the collector. Three options, and the lab picks the third:
+Flowstate speaks OTLP for logs, so they get there the same way traces and metrics
+do: the process exports them to the collector, and the collector forwards them to
+Loki. There is nothing in this directory carrying them.
 
-1. **The Loki Docker driver plugin.** Requires `docker plugin install` on the
-   host: a machine-wide mutation, a prerequisite outside the compose file, and a
-   failure mode where `docker compose up` breaks for every service because a
-   plugin is missing.
-2. **The collector's `filelog` receiver over `/var/lib/docker/containers`.**
-   Requires mounting a host path, running the collector as root to read it, and
-   assuming the `json-file` log driver. Three assumptions about the host.
-3. **A shared volume the two Flowstate services write to and the collector reads
-   read-only.** No host mount, no Docker socket, no root, no plugin, and it
-   behaves identically on Docker Engine, Docker Desktop and Podman.
+That is a recent change and it deleted a whole rung of scaffolding. The three
+options a lab has when a binary writes logs and does not send them are the Loki
+Docker driver plugin (a machine-wide `docker plugin install`), the collector's
+`filelog` receiver over `/var/lib/docker/containers` (a host mount, root, and an
+assumption about the log driver), and a shared volume the services redirect
+stderr into and the collector tails. This lab picked the third, and the third is
+now gone: no volume, no `>> /var/log/flowstate/…`, no `filelog` receivers, and no
+`entrypoint: ["/bin/sh", "-c"]` wrapper that existed only so a redirection could
+be spelled.
 
-The cost of (3) is stated plainly: stderr is redirected into a file, so
-`docker compose logs flowstate-server` shows nothing. Read the logs the way the
-lab intends — in Grafana — or directly:
+Two things came back with it.
+
+**`docker compose logs` works again.** The stated cost of the old design was that
+`docker compose logs flowstate-server` showed nothing, because stderr was a file.
+stderr is stderr:
 
 ```console
-$ docker compose exec flowstate-worker tail -f /var/log/flowstate/worker.log
+$ docker compose -f examples/observability/docker-compose.yaml logs -f flowstate-worker
 ```
 
-The redirection uses `exec` so that `flow` is pid 1 and receives the `SIGTERM`
-from `docker compose down`. A pipeline into `tee` would keep both outputs but
-leave the *shell* as pid 1, and a shell does not forward signals — the process
-would be killed at the grace period instead of flushing its last spans, which are
-precisely the spans somebody is looking at a trace to find.
+**Nothing is parsed at query time.** The old pipeline shipped slog's logfmt as
+opaque text and left Loki to parse it with `| logfmt`. An OTLP record arrives with
+its attributes already structured, so the dashboard's query is a bare stream
+selector.
 
-Nothing parses the lines at ingest. They are slog's logfmt and Loki parses logfmt
-at query time (`| logfmt`), so a parser in the collector would be an untested
-moving part in the ingest path buying a conversion that is free later. When
-Flowstate grows an OTLP log exporter, this whole rung — the volume, the
-redirection, the two `filelog` receivers — deletes itself.
+### What Loki no longer sees, said plainly
+
+The exporter carries what Flowstate writes through `slog`, which is the server's
+and worker's own commentary and every `log:` step. It does not carry two things
+that used to reach Loki because they landed on the same stderr:
+
+- **The Temporal SDK's own logger.** The Temporal client is not given a `slog`
+  logger, so its lines — poller errors, task failures the SDK reports itself — go
+  to stderr and stop there.
+- **Four `log.Printf` warnings** in `cmd/flow`, about telemetry that could not
+  start and about talking to a server over plain HTTP.
+
+Both are in `docker compose logs`. Wiring the Temporal SDK's logger into `slog` is
+a real improvement and a separate change; until then this is the boundary, and it
+is better stated here than discovered by someone grepping Loki for a line they
+watched scroll past.
 
 ## The walkthrough
 
@@ -239,13 +249,27 @@ Flowstate already emits — nothing was added to the engine to make a panel work
   a unit or a suffix, so when a panel is empty this is how you tell "not measured"
   from "spelled differently". The same list is at
   <http://127.0.0.1:8889/metrics>.
-- **Logs**, from Loki, parsed with `| logfmt` at query time.
+- **Logs**, from Loki, as OTLP records rather than parsed text.
 
-Log-to-trace correlation is honest about its limits: the Tempo datasource links a
-span to the logs of the same service around the same moment, and *not* by trace
-id, because Flowstate's stderr lines do not carry one yet. Correlate on the
-workflow id, which both the logs and the Temporal UI use, until the OTLP log
-exporter lands.
+Log-to-trace correlation is by trace id, in both directions, and it is worth
+knowing exactly how far it reaches.
+
+A `log:` step's record **carries the trace and span ids of the step it ran in**.
+The task emits through its context, and on the worker that context is the
+activity's — which holds the span Temporal's tracing interceptor opened. So a line
+in the log panel has a **TraceID** field that opens the trace, and a span in Tempo
+links to the lines that run produced. That is the join the lab could not make
+before, when the honest answer was "the same service, around the same moment" and
+the workflow id was the only real key.
+
+The server's and worker's **own** lines carry no trace id, and cannot: a worker
+saying it is starting up is not inside anybody's request. Find those by service
+and time. A `log:` step in `flow run local` carries none either — the local driver
+makes no RPC and opens no span, so there is no trace for the line to belong to,
+though the record is still exported.
+
+The workflow id still works as a key and is still the string that joins Grafana to
+the Temporal UI. It is no longer the only one.
 
 ### 6. Tear it down
 
@@ -253,8 +277,9 @@ exporter lands.
 $ docker compose -f examples/observability/docker-compose.yaml down -v
 ```
 
-`-v` matters: the Temporal database, the log files, and three time-series stores
-are in named volumes and none of them are bounded.
+`-v` matters: the Temporal database and three time-series stores are in named
+volumes and none of them are bounded. (The log-file volume is gone — logs go over
+OTLP now, so there is no file to grow.)
 
 ## What CI checks, and what it does not
 
