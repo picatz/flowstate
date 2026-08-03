@@ -186,13 +186,17 @@ jobs:
         run: GOTOOLCHAIN=go1.26.5 go run honnef.co/go/tools/cmd/staticcheck@${{ env.STATICCHECK_VERSION }} ./...
 
   # Bounded per CLAUDE.md's fuzz recipe: `-parallel 1` and a memory limit because a
-  # fuzzer's purpose is to find the input that explodes, `-fuzztime 30s` because
-  # that bounds time and not memory, and one target because it is the one that
-  # exists today. Advisory for the same 48h window as staticcheck (until
-  # 2026-08-04) to absorb flake in a job this new — but a crasher the fuzzer
-  # actually finds is a real finding, not flake, and must be triaged rather than
-  # re-run away; `continue-on-error` here covers infrastructure noise, not a
-  # standing invitation to ignore a found corpus entry.
+  # fuzzer's purpose is to find the input that explodes, `-fuzztime 30s` per target
+  # because that bounds time and not memory. Four targets now: the round-trip one
+  # that existed first, plus the three the roadmap called for — CEL compile,
+  # MCP tool-argument decode, plugin descriptor parsing — each its own step so one
+  # hanging does not hide the others' output. Four times 30s is still comfortably
+  # under this job's five-minute budget alongside checkout and setup. Advisory for
+  # the same 48h window as staticcheck (until 2026-08-04) to absorb flake in a job
+  # this new — but a crasher the fuzzer actually finds is a real finding, not
+  # flake, and must be triaged rather than re-run away; `continue-on-error` here
+  # covers infrastructure noise, not a standing invitation to ignore a found
+  # corpus entry.
   fuzz-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -209,3 +213,12 @@ jobs:
       # commit.
       - name: Fuzz smoke (FuzzRoundTrip)
         run: GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzRoundTrip -fuzztime 30s ./pkg/flowstate/v1/flowfile/
+
+      - name: Fuzz smoke (FuzzCELCompile)
+        run: GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzCELCompile -fuzztime 30s ./pkg/flowstate/v1/flowfile/
+
+      - name: Fuzz smoke (FuzzMCPToolArguments)
+        run: GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzMCPToolArguments -fuzztime 30s ./cmd/flow/
+
+      - name: Fuzz smoke (FuzzMessageDescriptor)
+        run: GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzMessageDescriptor -fuzztime 30s ./pkg/flowstate/v1/plugin/
