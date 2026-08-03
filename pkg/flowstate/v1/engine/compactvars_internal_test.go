@@ -147,7 +147,7 @@ func TestEveryExpressionSiteKeepsWhatItReferences(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			carried := compactOutputsForRemainingSteps([]*v1.Node{test.node}, 0, produced)
+			carried := compactOutputsForRemainingSteps([]*v1.Node{test.node}, 0, produced, nil)
 			require.NotNil(t, carried)
 
 			assert.Contains(t, carried.GetStepValues(), "src",
@@ -180,7 +180,7 @@ func TestASiteThatReferencesNothingKeepsNothing(t *testing.T) {
 		}},
 	}
 
-	carried := compactOutputsForRemainingSteps([]*v1.Node{node}, 0, produced)
+	carried := compactOutputsForRemainingSteps([]*v1.Node{node}, 0, produced, nil)
 	require.NotNil(t, carried)
 
 	assert.Empty(t, carried.GetStepValues(),
@@ -252,7 +252,7 @@ func TestAWholeStepReferenceSurvivesAFieldReference(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			carried := compactOutputsForRemainingSteps([]*v1.Node{test.node}, 0, produced)
+			carried := compactOutputsForRemainingSteps([]*v1.Node{test.node}, 0, produced, nil)
 			require.NotNil(t, carried)
 
 			assert.Len(t, carried.GetStepValues()["a"].GetNamedValues(), 2,
@@ -329,7 +329,7 @@ func TestAReferenceInAMapKeySurvivesCompaction(t *testing.T) {
 				Inputs: map[string]*v1.Value{"message": reference},
 			}}}
 
-			carried := compactOutputsForRemainingSteps([]*v1.Node{node}, 0, produced)
+			carried := compactOutputsForRemainingSteps([]*v1.Node{node}, 0, produced, nil)
 			require.NotNil(t, carried)
 			require.Contains(t, carried.GetStepValues(), "src",
 				"a reference in map-key position was not seen, so the output it needs is "+

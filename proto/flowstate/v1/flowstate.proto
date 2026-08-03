@@ -32,6 +32,38 @@ message Workflow {
         keys: {string: {min_len: 1}}
       }
     ];
+
+    // RunOutputs are the values [Workflow.declared_outputs] promised, once this
+    // run has computed them. Unset for a workflow that declares none, and unset
+    // for a run that has not finished.
+    //
+    // # Why the answer travels beside the transcript
+    //
+    // This message *is* what a finished run hands back — the local driver returns
+    // it and the durable workflow completes with it — so it is the one value both
+    // drivers already carry out of a run. A field here is therefore how the answer
+    // reaches a caller without either driver changing shape, which is what keeps
+    // `flow run local` and a durable run reporting one thing (invariant 3).
+    //
+    // The alternative was a new result message wrapping both. That is a *different
+    // type* on the workflow's completion payload, and a run that completed before
+    // the change is read back by decoding its stored payload into whatever type the
+    // reader names — so an old result would be decoded as a new message and mean
+    // something else, or fail. Adding a field is free and reads back as absent
+    // (invariant 10); replacing the type is not, and this is a payload nobody can
+    // rewrite after the fact.
+    //
+    // It stays a distinct message rather than more entries in `step_values` for the
+    // reason [RunOutputs] gives: the transcript is keyed by the step that produced
+    // each value, and these are the few values the *workflow* said it would report.
+    // A reader never has to ask which of the two it is holding, because they are
+    // different fields of different types.
+    //
+    // Meaningless on the copies of this message that are not a run's result — a
+    // scope's visible outputs, one loop iteration's results, the outputs carried
+    // across a Continue-As-New — where it is simply never set. The run's own end is
+    // the only place anything writes it.
+    RunOutputs run_outputs = 2;
   }
 
   // Workflow is identified by a unique name.
@@ -752,6 +784,33 @@ message Scope {
   // A new field rather than a new meaning for an old one: see [Scope.vars].
   map<string, Value> ambient_vars = 4 [(buf.validate.field).map = {
     keys: {string: {min_len: 1}}
+  }];
+
+  // Inputs holds the rooted `inputs.<name>` namespace: the arguments this run was
+  // started with, checked against [Workflow.declared_inputs] and defaulted at
+  // submit.
+  //
+  // Carried on the scope rather than looked up from the specification where an
+  // expression is evaluated, because the specification is not everywhere the scope
+  // is: a task declaring `needs_prev_outputs` evaluates its own expressions inside
+  // an activity, on a worker holding this message and nothing else. Without the
+  // field, `${inputs.region}` would resolve in a step's `if:` and be unbound in the
+  // http task's `outputs:` two lines below it — one spelling with two behaviours,
+  // decided by a property of the task an author has no reason to know. That is the
+  // failure `now` is placed to avoid; see [Scope.ambient_vars], which was added and
+  // then omitted from the compacted copy the executor ships, with exactly that
+  // result.
+  //
+  // Values only, never expressions: what a caller sends is data (see
+  // [RunRequest.inputs]), and a default is required to be a literal by the
+  // compiler.
+  //
+  // A new field rather than folding these into [Scope.ambient_vars]: a var and an
+  // input are different things with different roots, and merging them would make
+  // `${vars.region}` resolve an argument nobody declared as a var.
+  map<string, Value> inputs = 5 [(buf.validate.field).map = {
+    keys: {string: {min_len: 1}}
+    max_pairs: 64
   }];
 }
 

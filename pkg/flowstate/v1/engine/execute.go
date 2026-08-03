@@ -224,6 +224,13 @@ func (e *executor) runTask(node *v1.Node, task *v1.Task) error {
 			Vars:        e.scope.GetVars(),
 			AmbientVars: e.scope.GetAmbientVars(),
 
+			// And the run's arguments, whole. This is the field the comment above
+			// was written for: `${inputs.region}` inside an http task's `outputs:`
+			// expression is evaluated *here*, on whatever worker takes the activity,
+			// and omitting it would leave that one position unable to resolve a name
+			// every other position in the file resolves.
+			Inputs: e.scope.GetInputs(),
+
 			// Carried across the wire. This scope is what an activity on some other
 			// worker evaluates a task's own expressions against, and that worker's
 			// build may know a different set of profiles than the one that compiled

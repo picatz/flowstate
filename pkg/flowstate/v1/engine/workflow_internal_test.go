@@ -220,7 +220,7 @@ func TestCompactOutputsForRemainingSteps_Table(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			trimmed := compactOutputsForRemainingSteps(steps, tc.from, prev)
+			trimmed := compactOutputsForRemainingSteps(steps, tc.from, prev, nil)
 			require.NotNil(t, trimmed)
 			require.Equal(t, len(tc.expect), len(trimmed.StepValues))
 			for step, fields := range tc.expect {

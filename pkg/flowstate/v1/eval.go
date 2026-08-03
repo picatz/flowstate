@@ -70,6 +70,14 @@ type StepsOutputActivation struct {
 	// deep a reference goes. See [VarsRoot].
 	AmbientVars map[string]ref.Val
 
+	// Inputs holds the rooted `inputs.<name>` namespace: the arguments the run was
+	// started with, already checked against the workflow's declarations and
+	// defaulted.
+	//
+	// Answered whole, exactly as [StepsOutputActivation.AmbientVars] is, so nothing
+	// here needs an opinion about how deep a reference goes. See [InputsRoot].
+	Inputs map[string]ref.Val
+
 	// Locals holds names bound *where the expression is written* — a loop's current
 	// item, a step's own `vars:`, `now` inside a wait — resolved bare. They are
 	// resolved before step outputs, so a loop body can refer to its iterator by name.
@@ -202,7 +210,7 @@ func (e *StepsOutputActivation) ResolveName(name string) (any, bool) {
 			return root, true
 		}
 
-		return nil, false
+		return e.ambientRoot(name)
 	}
 
 	stepName, outputName, hasOutput := strings.Cut(name, ".")
@@ -224,7 +232,7 @@ func (e *StepsOutputActivation) ResolveName(name string) (any, bool) {
 			}
 			return root, true
 		}
-		return nil, false
+		return e.ambientRoot(name)
 	}
 	if !hasOutput {
 		// Return CEL-native values, not the protobuf message. CEL has no type
@@ -277,6 +285,50 @@ const StepsRoot = "steps"
 // local's binding is visible where the expression is written and `${item.name}` reads
 // better than `${vars.item.name}`.
 const VarsRoot = "vars"
+
+// ambientRoot answers a rooted namespace that is not `steps` and not `vars`, for
+// the two positions in [StepsOutputActivation.ResolveName] where a name has been
+// found not to be a step.
+//
+// Answered *after* the step lookup, which is the same placement [StepsRoot] gets
+// and for the same reason: a specification compiled before a root existed may hold
+// a step of that name, and a worker evaluates the stored AST out of `RunState`
+// rather than re-parsing the file — so a run started on an older build keeps
+// resolving the way it always did (invariant 10). The compiler refuses the id, so
+// no new file can reach this precedence; it exists for the runs that predate the
+// root and for nothing else.
+func (e *StepsOutputActivation) ambientRoot(name string) (any, bool) {
+	if name != InputsRoot {
+		return nil, false
+	}
+
+	// An empty root still resolves, to an empty map, for the reason [VarsRoot] does:
+	// a run started with no arguments should make `inputs.missing` a missing key
+	// rather than an unresolved reference, so the diagnostic describes the mistake
+	// the author made rather than sending them to look for a root that is always
+	// there.
+	if len(e.Inputs) == 0 {
+		return types.NewStringInterfaceMap(TypeAdapter, nil), true
+	}
+
+	entries := make(map[ref.Val]ref.Val, len(e.Inputs))
+	for inputName, v := range e.Inputs {
+		entries[types.String(inputName)] = v
+	}
+
+	return types.NewRefValMap(TypeAdapter, entries), true
+}
+
+// InputsRoot is the name a run's arguments hang from in an expression, as
+// `inputs.<name>`.
+//
+// The third rooted namespace, for the reason the first two have one (invariant 2):
+// a root makes a collision with a step id or a var unrepresentable rather than a
+// rule somebody has to write, and it turns a declared name into a field selection —
+// so seventeen of CEL's twenty-one reserved words are legal input names for free.
+// The four that are not are lexer tokens, which is the one thing a root cannot
+// rescue; the compiler refuses those.
+const InputsRoot = "inputs"
 
 // ResponseRoot is the name an http task's `expect:` and `outputs:` expressions reach the
 // response through: `${response.status_code}`.
@@ -678,10 +730,34 @@ func (v *Value) Error() error {
 }
 
 func Run(ctx context.Context, w *Workflow) (*Workflow_StepOutputs, error) {
-	return eval(ctx, w)
+	return RunWithInputs(ctx, w, nil)
 }
 
-func eval(ctx context.Context, w *Workflow) (*Workflow_StepOutputs, error) {
+// RunWithInputs runs a workflow locally with the arguments a caller supplied.
+//
+// This is the local driver's submit boundary, and it enforces exactly what the
+// server enforces at its own: the arguments are checked against the workflow's
+// declarations and defaulted by [BindRunInputs], and the pair is weighed by
+// [CheckSubmissionSize]. One function, two callers — a local run that accepted an
+// undeclared input would be a rehearsal that says yes to a submission production
+// refuses, which is the direction invariant 3 exists to prevent.
+func RunWithInputs(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow_StepOutputs, error) {
+	if w == nil || len(w.Steps) == 0 {
+		return nil, fmt.Errorf("workflow cannot be nil or empty")
+	}
+
+	bound, err := BindRunInputs(w, inputs)
+	if err != nil {
+		return nil, err
+	}
+	if err := CheckSubmissionSize(w, bound); err != nil {
+		return nil, err
+	}
+
+	return eval(ctx, w, bound)
+}
+
+func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow_StepOutputs, error) {
 	if w == nil || len(w.Steps) == 0 {
 		return nil, fmt.Errorf("workflow cannot be nil or empty")
 	}
@@ -700,6 +776,10 @@ func eval(ctx context.Context, w *Workflow) (*Workflow_StepOutputs, error) {
 	scope := NewScope(w.GetProfile(), stepOutputs)
 	scope.AmbientVars = vars
 
+	// Bound for the whole run rather than per step: an argument is a fact about the
+	// run, which is what makes it a root and not a binding.
+	scope.Inputs = inputs
+
 	if runtime, ok := ctx.Value(secretRuntimeKey{}).(TaskRuntime); ok && runtime.Step.Workflow == "" {
 		runtime.Step.Workflow = w.GetName()
 		ctx = ContextWithTaskRuntime(ctx, runtime)
@@ -707,6 +787,17 @@ func eval(ctx context.Context, w *Workflow) (*Workflow_StepOutputs, error) {
 	if err := runNodes(ctx, w.Steps, scope); err != nil {
 		return nil, err
 	}
+
+	// Evaluated once, after the last step, against the scope the run finished in —
+	// the same moment and the same scope the durable driver uses. See
+	// [EvalRunOutputs] and engine.Run, where the reason that moment is safe in
+	// workflow code is written down.
+	outputs, err := EvalRunOutputs(ctx, w, scope)
+	if err != nil {
+		return nil, err
+	}
+	stepOutputs.RunOutputs = outputs
+
 	return stepOutputs, nil
 }
 

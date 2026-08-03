@@ -88,7 +88,16 @@ func checkExpressionTypes(wf *v1.Workflow) Diagnostics {
 		ds = append(ds, typeErrors("", v1.VarsRoot+"."+name, wf.GetVars()[name])...)
 	}
 
-	return append(ds, checkNodeExpressions(wf.GetSteps())...)
+	ds = append(ds, checkNodeExpressions(wf.GetSteps())...)
+
+	// A declared output is an expression like any other, and this is the one check
+	// that has to know about a *position* rather than about a scope — so a position
+	// the language grows either appears here or is never type-checked at all.
+	for _, declaration := range wf.GetDeclaredOutputs() {
+		ds = append(ds, typeErrors("", "outputs."+declaration.GetName(), declaration.GetValue())...)
+	}
+
+	return ds
 }
 
 // checkNodeExpressions checks every expression a step carries, at any depth.

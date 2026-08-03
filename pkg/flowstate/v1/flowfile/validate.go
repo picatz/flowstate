@@ -248,8 +248,8 @@ func Validate(wf *v1.Workflow) Diagnostics {
 				Field:   fmt.Sprintf("steps[%d]", i),
 				Message: "step has no id; every step needs an id so later steps can reference its outputs",
 			})
-		case id == v1.StepsRoot:
-			// The root itself. Refused as an id, and this is the one collision
+		case isDeclarationRoot(id):
+			// A root itself. Refused as an id, and this is the one collision
 			// rooting *creates* rather than removes — worth stating, because the
 			// rest of this change is about deleting rules like it.
 			//
@@ -261,11 +261,12 @@ func Validate(wf *v1.Workflow) Diagnostics {
 			// called `steps` shadows the root, and every rooted reference in the
 			// file resolves against that step's outputs instead. Which validates
 			// clean and fails at run time with `no such key`.
+			//
+			// Every root rather than only `steps`: the argument is about what a name
+			// hides, not about which root was written first.
 			ds = append(ds, Diagnostic{
-				Step: id,
-				Message: fmt.Sprintf(
-					"id %q is the root every step is named under, so a step called that would hide all the others; choose another id",
-					id),
+				Step:    id,
+				Message: "id " + shadowsRoot("step", id),
 			})
 		case slices.Contains(celUnusableStepIDs, id):
 			// Four words, where there used to be twenty-one — see celUnusableStepIDs
@@ -297,6 +298,7 @@ func Validate(wf *v1.Workflow) Diagnostics {
 		}
 	}
 
+	ds = append(ds, validateDeclaredInputs(wf)...)
 	ds = append(ds, validateWorkflowVars(wf)...)
 
 	// What is wrong with an expression regardless of what the file means — a
@@ -363,6 +365,11 @@ func Validate(wf *v1.Workflow) Diagnostics {
 		scope.steps[id] = true
 	}
 
+	// Last, against the scope the walk ends with, because that is when a run
+	// evaluates them: every top-level step has finished, so a reference to the final
+	// step is correct here and would be a forward reference anywhere else.
+	ds = append(ds, validateDeclaredOutputs(wf, scope, len(wf.GetSteps()))...)
+
 	return ds
 }
 
@@ -390,7 +397,30 @@ func validateWorkflowVars(wf *v1.Workflow) Diagnostics {
 		}
 
 		field := v1.VarsRoot + "." + name
-		rooted, vars, bare := referencedIdentifiers(parsed)
+		rooted, vars, inputs, bare := referencedIdentifiers(parsed)
+
+		for _, ref := range inputs {
+			// A run's arguments *are* known before the first step, so this refusal is
+			// about where the block is evaluated rather than about what is knowable.
+			// The workflow's `vars:` are evaluated in an activity under the durable
+			// driver — that is what keeps a suspended run from recomputing them
+			// against a different cel-go — and what reaches that activity is the
+			// declared block and the profile, not the run's arguments. Rather than
+			// widening that payload for a convenience, a var stays what it has been:
+			// literals, operators, and the profile's functions.
+			//
+			// Named as its own sentence because "unknown name" would be false. The
+			// input exists, the reference is spelled correctly, and the answer is
+			// where to write it instead.
+			ds = append(ds, Diagnostic{
+				Field: field, Value: ref,
+				Message: fmt.Sprintf(
+					"a var may not read an input: `%s:` is evaluated before the run's arguments are in "+
+						"scope, so write `%s.%s` where the value is used — in a step's `if:`, its own "+
+						"`vars:`, or a task input",
+					v1.VarsRoot, v1.InputsRoot, ref),
+			})
+		}
 
 		for _, ref := range vars {
 			ds = append(ds, Diagnostic{
@@ -415,7 +445,7 @@ func validateWorkflowVars(wf *v1.Workflow) Diagnostics {
 		}
 
 		for _, ref := range bare {
-			if ref == v1.StepsRoot || ref == v1.VarsRoot {
+			if ref == v1.StepsRoot || ref == v1.VarsRoot || ref == v1.InputsRoot {
 				// A root as an operand, which fails here for the same reason a
 				// selection through it does — and is described by the two loops
 				// above, not by the general "unknown name" sentence.
@@ -563,6 +593,13 @@ type refScope struct {
 	// wait expression. They are not steps and never were.
 	locals map[string]bool
 
+	// inputs are the run's declared inputs, reachable as `inputs.<name>`.
+	//
+	// Fixed for the whole file like vars and for a stronger reason: a declaration is
+	// a promise about what a *caller* passes, so it neither grows as the walk
+	// proceeds nor depends on where in the file the reference is written.
+	inputs map[string]bool
+
 	// vars are the workflow's declared vars, reachable as `vars.<name>`.
 	//
 	// Unlike steps, this set does not grow as the walk proceeds: workflow vars are
@@ -584,7 +621,12 @@ func newRefScope(wf *v1.Workflow) refScope {
 		vars[name] = true
 	}
 
-	return refScope{steps: map[string]bool{}, locals: map[string]bool{}, vars: vars}
+	inputs := make(map[string]bool, len(wf.GetDeclaredInputs()))
+	for _, declaration := range wf.GetDeclaredInputs() {
+		inputs[declaration.GetName()] = true
+	}
+
+	return refScope{steps: map[string]bool{}, locals: map[string]bool{}, vars: vars, inputs: inputs}
 }
 
 // clone returns a copy that can be extended without disturbing the original,
@@ -595,8 +637,10 @@ func (s refScope) clone() refScope {
 		steps:  make(map[string]bool, len(s.steps)+1),
 		locals: make(map[string]bool, len(s.locals)+1),
 		// Shared rather than copied: nothing extends the var set after the scope is
-		// built, because workflow vars all exist before the first step runs.
-		vars: s.vars,
+		// built, because workflow vars all exist before the first step runs. The same
+		// is true of the declared inputs, more so — nothing in the file can add one.
+		vars:   s.vars,
+		inputs: s.inputs,
 	}
 	maps.Copy(out.steps, s.steps)
 	maps.Copy(out.locals, s.locals)
@@ -637,16 +681,18 @@ func validateLoop(stepID string, loop *v1.ForEach, enclosing refScope, index int
 			Message: fmt.Sprintf("%q is a CEL reserved word, so ${%s} cannot be parsed", iterator, iterator),
 		})
 	}
-	if iterator == v1.StepsRoot {
-		// The root, by the other route into a body's scope. A bound name wins over
+	if isDeclarationRoot(iterator) {
+		// A root, by the other route into a body's scope. A bound name wins over
 		// the scope it is bound into, so an iterator spelled `steps` hides every
 		// step from the body — and the body is exactly where rooted references are
 		// written.
+		//
+		// Every root rather than the one this rule was written for: an iterator
+		// called `vars` or `inputs` hides its namespace just as completely, and the
+		// body is where those are read too.
 		ds = append(ds, Diagnostic{
 			Step: stepID, Field: "as",
-			Message: fmt.Sprintf(
-				"%q is the root every step is named under, and a loop variable of that name would hide all of them inside the body; choose another iterator",
-				iterator),
+			Message: shadowsRoot("loop variable", iterator),
 		})
 	}
 	// An iterator sharing a step's id used to be refused here, because both
@@ -739,15 +785,13 @@ func validateNested(nodes []*v1.Node, enclosing refScope, index int, wf *v1.Work
 		// from the step it collides with, often in a different part of the file, and
 		// nothing said so. It also left a diagnostic about the body step landing on
 		// the top-level one, since a source position is looked up by id.
-		if id == v1.StepsRoot {
+		if isDeclarationRoot(id) {
 			// The same refusal a top-level id gets, for the same reason. A nested
 			// step's outputs are named through the root too, so one called `steps`
 			// hides them from everything after it in the body.
 			ds = append(ds, Diagnostic{
-				Step: id,
-				Message: fmt.Sprintf(
-					"id %q is the root every step is named under, so a step called that would hide all the others; choose another id",
-					id),
+				Step:    id,
+				Message: "id " + shadowsRoot("step", id),
 			})
 		}
 
@@ -832,6 +876,17 @@ func scopeWithStepVars(id string, node *v1.Node, scope refScope, index int, wf *
 						"different name", name),
 			})
 
+		case isDeclarationRoot(name):
+			// A bare binding wins over every root, so a step var of a root's name
+			// hides that namespace for the whole step — its task's inputs, a loop's
+			// items, and everything nested inside it. Refused rather than resolved,
+			// which is the rule this block already applies to a name an enclosing
+			// scope bound.
+			ds = append(ds, Diagnostic{
+				Step: id, Field: "vars." + name, Value: name,
+				Message: shadowsRoot("var", name),
+			})
+
 		case name == v1.NowIdentifier:
 			ds = append(ds, Diagnostic{
 				Step: id, Field: "vars." + name, Value: name,
@@ -858,7 +913,17 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 		return ds
 	}
 
-	rooted, vars, bare := referencedIdentifiers(parsed)
+	rooted, vars, inputs, bare := referencedIdentifiers(parsed)
+
+	// An input can only fail one way — nothing declared it — for the reason a var
+	// can: every declaration exists before the run starts, so there is no forward
+	// reference to distinguish and no scope to explain.
+	for _, ref := range inputs {
+		if scope.inputs[ref] {
+			continue
+		}
+		ds = append(ds, unresolvedInput(stepID, inputName, ref, scope))
+	}
 
 	// A var can only fail one way — nothing declared it — because they all exist
 	// before the first step runs. So there is no forward reference to distinguish and
@@ -890,7 +955,7 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 		if scope.locals[ref] {
 			continue
 		}
-		if ref == v1.StepsRoot || ref == v1.VarsRoot {
+		if ref == v1.StepsRoot || ref == v1.VarsRoot || ref == v1.InputsRoot {
 			// A root written as an operand rather than selected through:
 			// `size(steps)`, or `vars["region"]` where the key is computed. Both
 			// resolve — the activation answers a root whole — so reporting either as
@@ -989,9 +1054,33 @@ func unresolvedVar(stepID, inputName, ref string, scope refScope) Diagnostic {
 	return Diagnostic{Step: stepID, Field: inputName, Value: ref, Message: message}
 }
 
-// referencedIdentifiers returns the names an expression references, in three groups:
-// steps reached under the `steps.` root, vars reached under the `vars.` root, and
-// whatever is written bare.
+// unresolvedInput reports a reference to an input the workflow does not declare.
+//
+// Shaped like [unresolvedVar] and for the same reasons: the declared names are few,
+// known in full, and all in scope at once, so offering them is the shortest path
+// from the diagnostic to the edit.
+func unresolvedInput(stepID, inputName, ref string, scope refScope) Diagnostic {
+	declared := slices.Sorted(maps.Keys(scope.inputs))
+
+	message := fmt.Sprintf("references unknown input %q", ref)
+	switch {
+	case len(declared) == 0:
+		message += "; this workflow declares no `inputs:`, which is a top-level block naming what a " +
+			"run may be started with — each with a `type:` — read as `" + v1.InputsRoot + ".<name>`"
+	default:
+		if suggestion, ok := nearest(ref, declared); ok {
+			message += fmt.Sprintf("; did you mean %q?", suggestion)
+		} else {
+			message += fmt.Sprintf("; this workflow declares %s", strings.Join(declared, ", "))
+		}
+	}
+
+	return Diagnostic{Step: stepID, Field: inputName, Value: ref, Message: message}
+}
+
+// referencedIdentifiers returns the names an expression references, in four groups:
+// steps reached under the `steps.` root, vars reached under the `vars.` root, inputs
+// reached under the `inputs.` root, and whatever is written bare.
 //
 // Three groups rather than one because each fails differently and so wants a different
 // diagnostic. An unknown step may be a forward reference, a typo, or a step that exists
@@ -1003,12 +1092,12 @@ func unresolvedVar(stepID, inputName, ref string, scope refScope) Diagnostic {
 // Identifiers bound by a comprehension are excluded: in `items.map(x, x + 1)`
 // the name `x` is introduced by the expression itself and is not a step
 // reference. Reporting those would make every use of a comprehension look broken.
-func referencedIdentifiers(parsed *expr.ParsedExpr) (rooted []stepRef, vars, bare []string) {
+func referencedIdentifiers(parsed *expr.ParsedExpr) (rooted []stepRef, vars, inputs, bare []string) {
 	roots := map[stepRef]struct{}{}
-	varNames, free := map[string]struct{}{}, map[string]struct{}{}
-	collectReferences(parsed.GetExpr(), map[string]struct{}{}, roots, varNames, free)
+	varNames, inputNames, free := map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}
+	collectReferences(parsed.GetExpr(), map[string]struct{}{}, roots, varNames, inputNames, free)
 
-	return sortedStepRefs(roots), sortedNames(varNames), sortedNames(free)
+	return sortedStepRefs(roots), sortedNames(varNames), sortedNames(inputNames), sortedNames(free)
 }
 
 // A stepRef is one reference to a step: which step, and which of its outputs.
@@ -1064,7 +1153,7 @@ func sortedNames(set map[string]struct{}) []string {
 // the spelling this grammar retired, and those want different diagnostics. They
 // are collected apart rather than merged and sorted out afterwards, because the
 // distinction is exactly what the caller needs and is lost by then.
-func collectReferences(e *expr.Expr, bound map[string]struct{}, rooted map[stepRef]struct{}, vars, free map[string]struct{}) {
+func collectReferences(e *expr.Expr, bound map[string]struct{}, rooted map[stepRef]struct{}, vars, inputs, free map[string]struct{}) {
 	if e == nil {
 		return
 	}
@@ -1083,6 +1172,10 @@ func collectReferences(e *expr.Expr, bound map[string]struct{}, rooted map[stepR
 				vars[name] = struct{}{}
 
 				return
+			case v1.InputsRoot:
+				inputs[name] = struct{}{}
+
+				return
 			}
 		}
 	}
@@ -1093,28 +1186,28 @@ func collectReferences(e *expr.Expr, bound map[string]struct{}, rooted map[stepR
 			free[name] = struct{}{}
 		}
 	case *expr.Expr_SelectExpr:
-		collectReferences(kind.SelectExpr.GetOperand(), bound, rooted, vars, free)
+		collectReferences(kind.SelectExpr.GetOperand(), bound, rooted, vars, inputs, free)
 	case *expr.Expr_CallExpr:
-		collectReferences(kind.CallExpr.GetTarget(), bound, rooted, vars, free)
+		collectReferences(kind.CallExpr.GetTarget(), bound, rooted, vars, inputs, free)
 		for _, arg := range kind.CallExpr.GetArgs() {
-			collectReferences(arg, bound, rooted, vars, free)
+			collectReferences(arg, bound, rooted, vars, inputs, free)
 		}
 	case *expr.Expr_ListExpr:
 		for _, el := range kind.ListExpr.GetElements() {
-			collectReferences(el, bound, rooted, vars, free)
+			collectReferences(el, bound, rooted, vars, inputs, free)
 		}
 	case *expr.Expr_StructExpr:
 		for _, entry := range kind.StructExpr.GetEntries() {
-			collectReferences(entry.GetMapKey(), bound, rooted, vars, free)
-			collectReferences(entry.GetValue(), bound, rooted, vars, free)
+			collectReferences(entry.GetMapKey(), bound, rooted, vars, inputs, free)
+			collectReferences(entry.GetValue(), bound, rooted, vars, inputs, free)
 		}
 	case *expr.Expr_ComprehensionExpr:
 		c := kind.ComprehensionExpr
 
 		// The range and the accumulator's start are evaluated outside the
 		// comprehension's own scope.
-		collectReferences(c.GetIterRange(), bound, rooted, vars, free)
-		collectReferences(c.GetAccuInit(), bound, rooted, vars, free)
+		collectReferences(c.GetIterRange(), bound, rooted, vars, inputs, free)
+		collectReferences(c.GetAccuInit(), bound, rooted, vars, inputs, free)
 
 		inner := make(map[string]struct{}, len(bound)+3)
 		for name := range bound {
@@ -1125,9 +1218,9 @@ func collectReferences(e *expr.Expr, bound map[string]struct{}, rooted map[stepR
 				inner[name] = struct{}{}
 			}
 		}
-		collectReferences(c.GetLoopCondition(), inner, rooted, vars, free)
-		collectReferences(c.GetLoopStep(), inner, rooted, vars, free)
-		collectReferences(c.GetResult(), inner, rooted, vars, free)
+		collectReferences(c.GetLoopCondition(), inner, rooted, vars, inputs, free)
+		collectReferences(c.GetLoopStep(), inner, rooted, vars, inputs, free)
+		collectReferences(c.GetResult(), inner, rooted, vars, inputs, free)
 	}
 }
 

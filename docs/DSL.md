@@ -1881,17 +1881,20 @@ nothing carries one out of the run. That does not change the rule this phase exi
 hold, which is that a declared type without a checker is decoration. It changes the
 cost of the phase slipping, which is worth knowing before it does.
 
-*Since written:* **the schema half of `inputs:`/`outputs:` has landed, and nothing
-else has.** `Workflow.declared_inputs` and `Workflow.declared_outputs` exist, as do
-`InputDeclaration` (name, type, required, default, description),
-`OutputDeclaration` (name, expression, description), `RunOutputs`,
-`RunRequest.inputs`, `RunState.inputs`/`RunState.run_outputs`, and
-`GetResponse.run_outputs`. **No Flowfile can express any of it, no compiler reads
-it, and no driver evaluates it** — `flow validate` still answers `unknown key
-"inputs"`, exactly as it did the day this section was written. Written down here
-because a schema that carries a capability reads, from the outside, like a language
-that has one, and this file's own rule is that a capability is not a feature until
-a Flowfile can reach it.
+*Since written:* **the schema half of `inputs:`/`outputs:` landed first, and the
+language half followed in the same week.** `Workflow.declared_inputs` and
+`Workflow.declared_outputs` exist, as do `InputDeclaration` (name, type, required,
+default, description), `OutputDeclaration` (name, expression, description),
+`RunOutputs`, `RunRequest.inputs`, `RunState.inputs`/`RunState.run_outputs`, and
+`GetResponse.run_outputs` — and a Flowfile now writes both blocks in the spelling
+below, `flow validate` checks the deferred list (duplicate names, the four lexer
+tokens, literal-only defaults, the required-with-default contradiction, default
+type), `${inputs.<name>}` resolves as a fourth root in every expression position,
+and both drivers bind submitted values, apply defaults, and evaluate declared
+outputs once in the segment that finishes the run. What is still owed is the house
+gate's last clause: `flow run --input` and the two `examples/` that exercise it in
+CI, plus `check:`, `env.Check` in the LSP, typed hover, and the `secret:` taint —
+the rest of this phase, not the tail of this item.
 
 The spelling it is landing under, so that the schema and the surface cannot be
 designed twice:

@@ -17,6 +17,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/testing/protocmp"
+	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 func runWorkflow(t *testing.T, input *v1.Workflow, expected *v1.Workflow_StepOutputs) {
@@ -350,6 +351,181 @@ func TestRunWorkflowVars(t *testing.T) {
 			require.Empty(t, cmp.Diff(test.ExpectedOutputs, &out, protocmp.Transform()))
 		})
 	}
+}
+
+// TestRunWorkflowInputsAndOutputs runs the shared `inputs:`/`outputs:` cases
+// against the durable driver.
+//
+// The arguments are bound the way the server binds them — [v1.BindRunInputs], once,
+// before the workflow is started — and then handed to the run in `RunState`, which
+// is exactly what `server.Run` does. The engine deliberately does not re-derive
+// them: re-applying a default at the top of every segment would let a declaration
+// edited between deploys change an argument underneath a run in flight, so what a
+// segment reads is what the submission established.
+//
+// The declared outputs are the other half, and the durable route to them is the
+// longer one: they are evaluated in workflow code after the last step, and the
+// result crosses Temporal's payload converter as part of the run's completion.
+func TestRunWorkflowInputsAndOutputs(t *testing.T) {
+	baseURL := tests.NewHTTPServer(t)
+	for _, test := range tests.InputOutputCases(baseURL) {
+		t.Run(test.Name, func(t *testing.T) {
+			inputs, err := v1.BindRunInputs(test.Workflow, test.Inputs)
+			require.NoError(t, err, "the submission was refused")
+			require.NoError(t, v1.CheckSubmissionSize(test.Workflow, inputs))
+
+			testSuite := &testsuite.WorkflowTestSuite{}
+			env := testSuite.NewTestWorkflowEnvironment()
+			env.RegisterWorkflow(engine.Run)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
+
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow, Inputs: inputs})
+			require.True(t, env.IsWorkflowCompleted())
+			require.NoError(t, env.GetWorkflowError())
+
+			var out v1.Workflow_StepOutputs
+			require.NoError(t, env.GetWorkflowResult(&out))
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, &out, protocmp.Transform()))
+		})
+	}
+}
+
+// TestRunWorkflowInputsRefused is the negative direction, against the durable
+// driver's own submit boundary.
+//
+// Nothing is executed, because nothing should be: the point of checking at submit
+// is that a run which would be wrong never starts. What this pins is that the
+// durable path refuses the same submissions the local one does, in the same words —
+// which is only true while both go through one function, and is the first thing to
+// stop being true if either grows a check of its own.
+func TestRunWorkflowInputsRefused(t *testing.T) {
+	for _, test := range tests.InputRefusalCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			_, err := v1.BindRunInputs(test.Workflow, test.Inputs)
+			require.Error(t, err, "the submission was accepted")
+			require.Contains(t, err.Error(), test.Contains)
+		})
+	}
+}
+
+// TestInputsAndDeclaredOutputsSurviveContinueAsNew is the durable half of this
+// feature that no shared case can reach: the local driver never suspends.
+//
+// Two things have to survive the handover, and they fail differently. The
+// arguments have to be carried in `RunState`, or a later segment resolves
+// `${inputs.region}` against nothing — which is a run that succeeded for two steps
+// and then failed on a value it was started with. And an output the *declared
+// outputs* reference has to survive compaction, which walks the remaining steps to
+// decide what a resumed segment can still need: the block is evaluated after the
+// last step, so a reference in it belongs to no step at all, and a walk that only
+// asks the steps prunes exactly the output the run is about to be judged by. Both
+// only bite after a suspend, and the run fails at the one moment there is nothing
+// left to retry.
+func TestInputsAndDeclaredOutputsSurviveContinueAsNew(t *testing.T) {
+	t.Parallel()
+
+	spec := &v1.Workflow{
+		Name:    "carries-inputs",
+		Profile: v1.CurrentProfile,
+		DeclaredInputs: []*v1.InputDeclaration{
+			{Name: "region", Type: v1.InputDeclaration_TYPE_STRING, Required: true},
+		},
+		DeclaredOutputs: []*v1.OutputDeclaration{
+			// Reaches back to the first step, which is the reference compaction is
+			// most likely to prune: nothing after it mentions the step.
+			{Name: "waited", Value: v1.NewExpr("!steps.gate.timed_out")},
+			{Name: "where", Value: v1.NewExpr("inputs.region")},
+		},
+		Steps: []*v1.Node{
+			{
+				Id:   "gate",
+				Kind: &v1.Node_Wait{Wait: &v1.Wait{Kind: &v1.Wait_Duration{Duration: durationpb.New(0)}}},
+			},
+			logStep("one", "1"),
+			logStep("two", "2"),
+		},
+	}
+
+	inputs, err := v1.BindRunInputs(spec, map[string]*v1.Value{"region": v1.NewLiteral("eu-west-1")})
+	require.NoError(t, err)
+
+	// A budget of one forces a suspend after the wait, so everything the outputs
+	// need has to cross a handover.
+	first := newWaitEnv(t)
+	first.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: spec, Inputs: inputs, StepsBudget: 1})
+	require.True(t, first.IsWorkflowCompleted())
+
+	suspended := first.GetWorkflowError()
+	require.Error(t, suspended, "the run did not suspend, so this test proves nothing")
+
+	var continueAsNew *workflow.ContinueAsNewError
+	require.ErrorAs(t, suspended, &continueAsNew)
+
+	var carried v1.RunState
+	require.NoError(t,
+		converter.GetDefaultDataConverter().FromPayloads(continueAsNew.Input, &carried),
+		"could not read the state the suspended run carried")
+
+	require.Equal(t, "eu-west-1", carried.GetInputs()["region"].GetLiteral().GetStringValue(),
+		"the run's arguments were not carried across the suspend")
+	require.Contains(t, carried.GetOutputs().GetStepValues(), "gate",
+		"compaction dropped the output a declared output reads, so the resumed run cannot answer")
+
+	outputs, runs := resumeToCompletion(t, &carried)
+	require.Greater(t, runs, 1, "the run did not suspend again, so the carry was only tested once")
+
+	require.True(t, outputs.GetRunOutputs().GetValues()["waited"].GetLiteral().GetBoolValue(),
+		"the wait's own output did not survive to the moment the outputs were evaluated")
+	require.Equal(t, "eu-west-1",
+		outputs.GetRunOutputs().GetValues()["where"].GetLiteral().GetStringValue(),
+		"an argument the run was started with did not reach the outputs it is reported in")
+}
+
+// TestARunStateWrittenBeforeInputsExistedStillRuns is the cross-version read
+// invariant 10 asks for, in the direction that actually happens: an old writer and
+// a new reader.
+//
+// `RunState` is a wire contract between interpreter versions — one writes it at
+// Continue-As-New and a different one reads it back — so a run suspended by a
+// worker that had never heard of `inputs` or `run_outputs` has to resume here
+// without either. Absent must read as "this run has no arguments", which is exactly
+// what that run is, rather than as anything needing a compatibility arm.
+//
+// Written as stored ProtoJSON rather than as a Go value with fields left unset,
+// because that is what is actually in a history: the two differ precisely when a
+// field's absence and its zero value are not the same thing, which is the case this
+// is about.
+func TestARunStateWrittenBeforeInputsExistedStillRuns(t *testing.T) {
+	t.Parallel()
+
+	stored := []byte(`{"workflow":{"name":"old","profile":"2026.1","steps":[` +
+		`{"id":"a","task":{"name":"log","inputs":{"message":{"literal":{"stringValue":"hello"}}}}}` +
+		`]},"stepsBudget":100}`)
+
+	payload, err := converter.NewProtoJSONPayloadConverter().ToPayload(&v1.RunState{})
+	require.NoError(t, err)
+	payload.Data = stored
+
+	var state v1.RunState
+	require.NoError(t, converter.NewProtoJSONPayloadConverter().FromPayload(payload, &state),
+		"a state written before these fields existed no longer decodes")
+
+	require.Empty(t, state.GetInputs(), "an absent field decoded as something")
+	require.Nil(t, state.GetRunOutputs(), "an absent field decoded as something")
+
+	env := newWaitEnv(t)
+	env.ExecuteWorkflow(engine.Run, &state)
+	require.True(t, env.IsWorkflowCompleted())
+	require.NoError(t, env.GetWorkflowError(),
+		"a run suspended by a worker that predates inputs cannot be resumed by this one")
+
+	var out v1.Workflow_StepOutputs
+	require.NoError(t, env.GetWorkflowResult(&out))
+	require.Contains(t, out.GetStepValues(), "a")
+	require.Nil(t, out.GetRunOutputs(),
+		"a workflow declaring no outputs reported a result rather than nothing")
 }
 
 // TestRunWorkflowResponseScope runs the response-scope cases against the durable
