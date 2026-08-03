@@ -1728,6 +1728,13 @@ flow lsp`,
 	fmtCmd := newFmtCommand()
 	fmtCmd.GroupID = "workflow"
 	rootCmd.AddCommand(fmtCmd)
+
+	// Beside `validate`, which is the command it is most often confused with and
+	// the one an author reaches for first: same file, same compiler, different
+	// question — whether it is correct, and what it becomes.
+	compileCmd := newCompileCommand()
+	compileCmd.GroupID = "workflow"
+	rootCmd.AddCommand(compileCmd)
 	rootCmd.AddCommand(tasksCmd)
 	rootCmd.AddCommand(pluginsCmd)
 	rootCmd.AddCommand(mcpCmd)

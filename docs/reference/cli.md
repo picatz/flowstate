@@ -69,6 +69,41 @@ flow get flowstate-workflow-3f7c
 | `--run-id <string>` | `string` | — | — | pin the request to one run of the workload; unset addresses whichever run is current |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
 
+## `flow compile`
+
+Print the workflow specification a Flowfile compiles to
+
+```
+flow compile [workflow-file] [flags]
+```
+
+Compile a Flowfile and write the resulting workflow specification to standard output, executing nothing and contacting no server.
+
+This is the sibling of `flow validate` and the two answer different questions. `flow validate` answers whether a file is correct, and its answer is the list of problems. This answers what a correct file becomes, and its answer is the specification — the same `Workflow` message `flow run` submits, so a reviewer, a diff, or a tool reading a step's compiled expressions is reading exactly what would have executed.
+
+A file with problems is refused: the diagnostics go to standard error in the same `file:line:column: message` form `flow validate` writes, standard output stays empty, and the exit status is non-zero. A specification handed out beside a list of its problems would be an invitation to run it anyway.
+
+There is no --input or --input-file here, and the omission is the design rather than a gap. Compilation takes no arguments: a workflow's `inputs:` are bound to values when a run is submitted, so the specification is the same document whatever it will later be run with. Give arguments to `flow run` or `flow run local`.
+
+The specification is a protobuf message, and protojson is the only faithful way to write one down, so `--output text` writes the same document `--output json` does rather than inventing a second rendering nobody could read back. `--output jsonl` writes that document on a single line.
+
+Examples:
+
+```sh
+# See what a Flowfile compiles to:
+flow compile examples/hello-world/workflow.yaml
+
+# Keep the specification for a review or a diff:
+flow compile examples/hello-world/workflow.yaml > hello-world.json
+
+# Ask what one step became:
+flow compile examples/hello-world/workflow.yaml | jq '.steps[0]'
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl carry the server's own schema, so a field is addressable by name |
+
 ## `flow fix`
 
 Rewrite Flowfiles into the current edition

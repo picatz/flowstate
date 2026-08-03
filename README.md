@@ -1038,6 +1038,26 @@ broken.yaml:8:16: step "out" input "message": references step "later", which run
 `flow run` and `flow run local` apply the same checks before executing anything, so a
 mistake is reported rather than partially performed.
 
+A file that passes has a second question worth asking, and `flow compile` is where it is
+asked. `flow validate` answers whether a file is correct; this answers what a correct
+file *becomes* — the workflow specification, the same `Workflow` message `flow run`
+submits to a server, written to standard output as protojson:
+
+```console
+$ flow compile examples/hello-world/workflow.yaml | jq '.steps[0].task.name'
+"log"
+```
+
+It executes nothing and contacts nothing: the compiler that answers here is the same one
+behind the `Compile` RPC and the `flowstate_compile` MCP tool, running in this process.
+That makes it the thing to read when a step's expressions, defaults or retry policy are
+not what you expected — the specification says what would have run, without running it.
+It takes no `--input`, deliberately: a workflow's `inputs:` are bound when a run is
+submitted, so the specification is the same document whatever it is later run with. A
+file with problems is refused, with its diagnostics on standard error and nothing on
+standard output, so `flow compile x.yaml | jq` never sees a diagnostic and a broken file
+never produces a half-answer.
+
 When a spelling in the language is replaced, it is replaced rather than deprecated, and
 the migration is a command:
 
@@ -1190,6 +1210,7 @@ default comes from.
 | Command | What it does |
 | --- | --- |
 | `flow validate <file...>` | Check Flowfiles without executing them. Reports the line and column of each problem. `--output json` or `jsonl` carries the diagnostics as data. |
+| `flow compile <file>` | Print the workflow specification a Flowfile compiles to, executing nothing and contacting no server. Where `flow validate` answers whether a file is correct, this answers what it becomes: the same `Workflow` message `flow run` submits, as protojson on stdout. A file with problems is refused with its diagnostics on stderr and nothing on stdout. |
 | `flow fix <path...>` | Rewrite Flowfiles from a retired spelling into the current one, preserving comments and formatting. `--check` reports and writes nothing, exiting non-zero if there is work. |
 | `flow fmt <path...>` | Rewrite Flowfiles into the form `flowfile.Marshal` writes. Unlike `flow fix`, this does not preserve comments, blank lines, key order, or quote style — it renders from the parsed workflow, not the source text. `--check` reports and writes nothing; `--stdout` writes one file's result to standard output. A file that does not parse is left untouched. |
 | `flow run <file>` | Submit a workflow to a server, which runs it durably, and follow the run until it finishes. Arguments for a workflow's `inputs:` come from `--input name=value` (repeatable) or `--input-file inputs.json`. |
