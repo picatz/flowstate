@@ -115,7 +115,7 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 	switch req.Method {
 	case "initialize":
 		s.initialized.Store(true)
-		return &lsp.InitializeResult{Capabilities: capabilities()}, nil
+		return &initializeResult{Capabilities: capabilities()}, nil
 
 	case "initialized":
 		return nil, nil
@@ -251,6 +251,25 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 		}
 		return edits, nil
 
+	case "textDocument/codeAction":
+		var params codeActionParams
+		if err := decode(req, &params); err != nil {
+			return nil, err
+		}
+		doc, ok := s.docs.get(params.TextDocument.URI)
+		if !ok {
+			return []codeAction{}, nil
+		}
+		actions := codeActions(doc, params)
+		if actions == nil {
+			// Nothing to migrate, nothing that could be migrated safely, or a
+			// document that does not parse. The empty list rather than nil, for
+			// the reason formatting returns one: "there is nothing to do here" is
+			// an answer, and a client should not have to tell it from a failure.
+			actions = []codeAction{}
+		}
+		return actions, nil
+
 	case "$/cancelRequest", "$/setTrace", "$/logTrace", "workspace/didChangeConfiguration",
 		"workspace/didChangeWatchedFiles":
 		// Accepted and ignored. Cancellation is not honored because every
@@ -271,32 +290,77 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 	}
 }
 
+// An initializeResult is [lsp.InitializeResult] over the capability set this
+// server actually advertises.
+//
+// It exists for one field. See [serverCapabilities].
+type initializeResult struct {
+	Capabilities serverCapabilities `json:"capabilities"`
+}
+
+// serverCapabilities is [lsp.ServerCapabilities] with `codeActionProvider` in the
+// options form.
+//
+// The vendored go-lsp models that field as a bool, which is one of the two
+// spellings the protocol allows and the one that cannot say *which* kinds are on
+// offer. Kinds are what a client filters providers by when a user binds fix-on-save
+// to `source.fixAll`, so answering with `true` leaves an editor to discover by
+// asking — and leaves a user who reads the handshake unable to tell that this
+// server has a fixAll at all.
+//
+// Declaring the field again at the outer level replaces the embedded one: encoding
+// and decoding both take the shallower of two fields with the same JSON name, so
+// there is exactly one `codeActionProvider` on the wire and it is this one. The
+// embedded bool is therefore never set — [capabilities] leaves it alone, and the
+// capability pin test reads the field below instead.
+type serverCapabilities struct {
+	lsp.ServerCapabilities
+
+	CodeActionProvider *codeActionOptions `json:"codeActionProvider,omitempty"`
+}
+
+// codeActionOptions says which kinds of action the server can return.
+//
+// go-lsp has no such type — its code action support predates the kind — so this is
+// the protocol's shape written out here.
+type codeActionOptions struct {
+	CodeActionKinds []lsp.CodeActionKind `json:"codeActionKinds,omitempty"`
+}
+
 // capabilities describes exactly what this server implements.
 //
 // Advertising anything more makes an editor route requests here that get an empty
 // answer, which reads to a user as the feature being broken rather than absent.
-func capabilities() lsp.ServerCapabilities {
-	return lsp.ServerCapabilities{
-		TextDocumentSync: &lsp.TextDocumentSyncOptionsOrKind{
-			// Only Options is set: the marshaler prefers Kind when both are
-			// present, and the kind form cannot express that the server wants
-			// save notifications.
-			Options: &lsp.TextDocumentSyncOptions{
-				OpenClose: true,
-				Change:    lsp.TDSKFull,
-				Save:      &lsp.SaveOptions{IncludeText: true},
+func capabilities() serverCapabilities {
+	return serverCapabilities{
+		CodeActionProvider: &codeActionOptions{
+			// Both spellings of the same migration: the quickfix an author reaches
+			// from the diagnostic under their cursor, and the whole-file action an
+			// editor can bind to a command or to save.
+			CodeActionKinds: []lsp.CodeActionKind{lsp.CAKQuickFix, codeActionKindSourceFixAll},
+		},
+		ServerCapabilities: lsp.ServerCapabilities{
+			TextDocumentSync: &lsp.TextDocumentSyncOptionsOrKind{
+				// Only Options is set: the marshaler prefers Kind when both are
+				// present, and the kind form cannot express that the server wants
+				// save notifications.
+				Options: &lsp.TextDocumentSyncOptions{
+					OpenClose: true,
+					Change:    lsp.TDSKFull,
+					Save:      &lsp.SaveOptions{IncludeText: true},
+				},
 			},
+			HoverProvider: true,
+			CompletionProvider: &lsp.CompletionOptions{
+				// Enough to open completion at each place a Flowfile has something
+				// to offer: after a key's colon, inside ${...}, after a step id's
+				// dot, and within a libs list.
+				TriggerCharacters: []string{":", " ", ".", "{", "[", ",", "-"},
+			},
+			DefinitionProvider:         true,
+			DocumentSymbolProvider:     true,
+			DocumentFormattingProvider: true,
 		},
-		HoverProvider: true,
-		CompletionProvider: &lsp.CompletionOptions{
-			// Enough to open completion at each place a Flowfile has something
-			// to offer: after a key's colon, inside ${...}, after a step id's
-			// dot, and within a libs list.
-			TriggerCharacters: []string{":", " ", ".", "{", "[", ",", "-"},
-		},
-		DefinitionProvider:         true,
-		DocumentSymbolProvider:     true,
-		DocumentFormattingProvider: true,
 	}
 }
 

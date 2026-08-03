@@ -40,10 +40,20 @@ func TestInitializeAdvertisesOnlyWhatIsImplemented(t *testing.T) {
 	assert.Contains(t, got.CompletionProvider.TriggerCharacters, ":")
 	assert.Contains(t, got.CompletionProvider.TriggerCharacters, "{")
 
+	require.NotNil(t, got.CodeActionProvider)
+	assert.Equal(t,
+		[]lsp.CodeActionKind{lsp.CAKQuickFix, codeActionKindSourceFixAll},
+		got.CodeActionProvider.CodeActionKinds,
+		"the kinds are what a client filters providers by when a user binds fix-on-save")
+
+	// The bool go-lsp models the same field as is never set: the options form
+	// shadows it, and setting both would put two spellings in one struct for one
+	// field on the wire.
+	assert.False(t, got.ServerCapabilities.CodeActionProvider)
+
 	// Everything not implemented must stay unadvertised.
 	assert.False(t, got.ReferencesProvider)
 	assert.False(t, got.RenameProvider)
-	assert.False(t, got.CodeActionProvider)
 	assert.False(t, got.WorkspaceSymbolProvider)
 	assert.Nil(t, got.SignatureHelpProvider)
 	assert.Nil(t, got.CodeLensProvider)
@@ -63,6 +73,7 @@ var implementedCapabilities = map[string]string{
 	"DefinitionProvider":         "textDocument/definition",
 	"DocumentSymbolProvider":     "textDocument/documentSymbol",
 	"DocumentFormattingProvider": "textDocument/formatting",
+	"CodeActionProvider":         "textDocument/codeAction",
 }
 
 // TestNoCapabilityIsAdvertisedWithoutAHandler is the check the list above cannot be
@@ -87,11 +98,19 @@ func TestNoCapabilityIsAdvertisedWithoutAHandler(t *testing.T) {
 	c := newClient(t)
 	got := c.initialize()
 
-	value := reflect.ValueOf(got)
+	// The embedded struct rather than the wrapper, because it is go-lsp's field list
+	// this cannot enumerate by hand — the wrapper's own fields are this package's and
+	// are checked below.
+	value := reflect.ValueOf(got.ServerCapabilities)
 	fields := value.Type()
 	require.Positive(t, fields.NumField(), "ServerCapabilities has no fields; this checks nothing")
 
 	set := map[string]bool{}
+	if got.CodeActionProvider != nil {
+		// Advertised in the options form, which shadows the embedded bool — so the
+		// scan below will always find that one zero and this is where it is counted.
+		set["CodeActionProvider"] = true
+	}
 	for i := range fields.NumField() {
 		if value.Field(i).IsZero() {
 			continue

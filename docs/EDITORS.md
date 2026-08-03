@@ -14,6 +14,7 @@ that only ever offers things the engine will accept.
 | **Go to definition** | Jump from a `${steps.<id>.<output>}` reference to that step's `id:` declaration. |
 | **Document symbols** | An outline of the workflow's steps, each labelled with the task it runs, and for a nested step the block it belongs to. |
 | **Formatting** | Rewrites the whole document into the form `flow fmt` and `flowfile.Marshal` write. This is not comment-preserving or whitespace-preserving — it renders from the parsed workflow rather than editing source text, so a comment, a blank line, a mapping's key order, and a string literal's quote style are all normalized away. A document that does not compile draws no edit at all, never a partial or guessed one. Because of the rewrite, this is opt-in in most editors' configuration rather than run on every save; see the per-editor notes below for how to bind it deliberately. |
+| **Code actions** | The migration `flow fix` performs, offered from the editor. Two kinds of the same thing: a `source.fixAll` action titled *Migrate to edition …*, and a `quickfix` on each line the migration rewrites, so it is reachable from the diagnostic that told you to run the command. Both carry one whole-document edit holding exactly what `flow fix` writes — comments and untouched lines copied through byte for byte, unlike formatting. A document already in the current edition, one that does not parse, and one where the rewriter *refuses* — a `task:` written in flow style, a binding through an alias it cannot resolve — each draw no action at all, because the only edit that could be offered there is the guess `flow fix` declined to make. |
 
 Everything above is read from the task registry and the Protobuf schema at the
 moment you ask for it, so a task added to the engine shows up in your editor with
@@ -92,8 +93,8 @@ server only improves the position — including where the validator names an ele
 of a list it has no coordinates for, so the squiggle lands on the element rather
 than on the whole value.
 
-Not implemented, and deliberately not advertised: rename, code actions, references,
-and workspace symbols. The server also never type-checks expressions —
+Not implemented, and deliberately not advertised: rename, references, and workspace
+symbols. The server also never type-checks expressions —
 it only parses them — because a step's output types are not statically known for
 every task, and a wrong squiggle under working code is worse than no squiggle.
 
@@ -450,6 +451,24 @@ Open a Flowfile and try each of these:
    Palette's "Format Document" in VS Code, `M-x eglot-format-buffer` in Emacs) and
    review the diff before committing it, the same as running `flow fmt` from the
    command line.
+7. **Code actions.** Open a Flowfile written in an older edition — one this build
+   refuses, with a diagnostic saying to run `flow fix` — and ask your editor for
+   the actions at the underlined line (`vim.lsp.buf.code_action()` in Neovim,
+   `<space>a` in Helix, the lightbulb or `Ctrl+.` in VS Code, `M-x
+   eglot-code-actions` in Emacs). You should be offered *Migrate to edition …*
+   plus a line-level entry naming the change under the cursor. Applying either one
+   rewrites the buffer to exactly what `flow fix` writes, comments and all.
+
+   The `source.fixAll` action is the one editors bind to fix-on-save
+   (`editor.codeActionsOnSave` in VS Code, `lsp-format`/`code_action` hooks
+   elsewhere). None of the configurations above turn that on, and the reason is
+   not that the rewrite is unsafe — `flow fix` refuses rather than guesses, which
+   is why an editor that cannot be sure offers nothing. It is that a migration is
+   a thing people read in review. The command changes what a file *says* it is
+   written in and moves an author's steps around to say the same thing in the
+   current grammar, and the moment to see that is when it happens, not in a
+   `git diff` after a save you were not thinking about. Invoke it deliberately,
+   read the diff, commit it on its own.
 
 If nothing happens, check that the server starts and answers at all. The `sleep`
 matters: the server exits as soon as its input closes, so a plain heredoc ends the

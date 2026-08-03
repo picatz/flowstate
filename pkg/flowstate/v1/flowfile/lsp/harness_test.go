@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -96,12 +97,69 @@ func (c *client) handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.
 }
 
 // initialize performs the handshake and returns the advertised capabilities.
-func (c *client) initialize() lsp.ServerCapabilities {
+//
+// Decoded into this package's own [serverCapabilities] rather than go-lsp's,
+// because `codeActionProvider` is sent in the options form and go-lsp models it as
+// a bool — a client library that has not caught up with the protocol is exactly
+// what that type exists to work around, and a test decoding through the narrower
+// one would be asserting about a message no editor receives.
+func (c *client) initialize() serverCapabilities {
 	c.t.Helper()
-	var result lsp.InitializeResult
+	var result initializeResult
 	require.NoError(c.t, c.conn.Call(c.t.Context(), "initialize", lsp.InitializeParams{}, &result))
 	require.NoError(c.t, c.conn.Notify(c.t.Context(), "initialized", struct{}{}))
 	return result.Capabilities
+}
+
+// codeAction requests the actions offered over a range, optionally filtered by
+// kind and carrying the diagnostics an editor would send along.
+func (c *client) codeAction(uri string, rng lsp.Range, only []lsp.CodeActionKind, diagnostics []lsp.Diagnostic) []codeAction {
+	c.t.Helper()
+	var result []codeAction
+	require.NoError(c.t, c.conn.Call(c.t.Context(), "textDocument/codeAction", codeActionParams{
+		TextDocument: lsp.TextDocumentIdentifier{URI: lsp.DocumentURI(uri)},
+		Range:        rng,
+		Context:      codeActionContext{Diagnostics: diagnostics, Only: only},
+	}, &result))
+	return result
+}
+
+// wholeOf is the range covering a document's text, which is what an editor sends
+// for a whole-file action and what a select-all produces.
+func wholeOf(text string) lsp.Range {
+	lines := strings.Split(text, "\n")
+	last := len(lines) - 1
+	return lsp.Range{
+		Start: lsp.Position{Line: 0, Character: 0},
+		End:   lsp.Position{Line: last, Character: len(lines[last])},
+	}
+}
+
+// atLine is the empty range at the start of a line, which is what an editor sends
+// when the cursor is sitting there.
+func atLine(line int) lsp.Range {
+	return lsp.Range{
+		Start: lsp.Position{Line: line, Character: 0},
+		End:   lsp.Position{Line: line, Character: 0},
+	}
+}
+
+// applyEdit applies a single-edit workspace edit to text and returns the result.
+//
+// Deliberately the whole path an editor takes: the URI is looked up in the edit's
+// changes map, the range is checked to cover the document, and the replacement is
+// spliced in by offset. A test that read NewText straight out of the action would
+// pass on an edit whose range replaced half the file.
+func applyEdit(t *testing.T, uri, text string, edit *lsp.WorkspaceEdit) string {
+	t.Helper()
+	require.NotNil(t, edit)
+	edits := edit.Changes[uri]
+	require.Len(t, edits, 1, "a migration is one full-document edit")
+
+	ix := newLineIndex(text)
+	start := ix.offsetOfPosition(edits[0].Range.Start)
+	end := ix.offsetOfPosition(edits[0].Range.End)
+	return text[:start] + edits[0].NewText + text[end:]
 }
 
 // open sends didOpen and waits for the diagnostics it triggers.
