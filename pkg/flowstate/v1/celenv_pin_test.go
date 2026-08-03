@@ -59,6 +59,21 @@ func TestEveryStringsExtensionIsVersionPinned(t *testing.T) {
 			return err
 		}
 
+		// The extension package's local name in THIS file, resolved from the
+		// import path rather than assumed to be `ext`. Matching the spelling
+		// alone would let an aliased import — `celext "…/cel-go/ext"` — build an
+		// unpinned environment the walk never sees, while the existing call
+		// sites keep the floor satisfied: a tripwire that checks the convention
+		// instead of the fact. A dot import makes the calls bare and untraceable
+		// by name, so it is refused outright rather than half-matched.
+		extName, dotImported := celExtLocalName(file)
+		require.False(t, dotImported,
+			"%s dot-imports the cel-go ext package, which makes its calls impossible "+
+				"to attribute by name; import it qualified so the version pin stays checkable", path)
+		if extName == "" {
+			return nil
+		}
+
 		ast.Inspect(file, func(node ast.Node) bool {
 			call, ok := node.(*ast.CallExpr)
 			if !ok {
@@ -68,7 +83,7 @@ func TestEveryStringsExtensionIsVersionPinned(t *testing.T) {
 			if !ok || selector.Sel.Name != "Strings" {
 				return true
 			}
-			if pkg, ok := selector.X.(*ast.Ident); !ok || pkg.Name != "ext" {
+			if pkg, ok := selector.X.(*ast.Ident); !ok || pkg.Name != extName {
 				return true
 			}
 
@@ -89,6 +104,30 @@ func TestEveryStringsExtensionIsVersionPinned(t *testing.T) {
 	// assertion above.
 	require.GreaterOrEqual(t, found, 4,
 		"fewer ext.Strings call sites than expected were found, so this walked the wrong tree")
+}
+
+// celExtLocalName returns the name the cel-go ext package is imported under in
+// a file, and whether it was dot-imported.
+//
+// Empty when the file does not import it at all, which is most files and the
+// cheap early exit: a file that never imports the package cannot call it, so
+// nothing in it needs walking.
+func celExtLocalName(file *ast.File) (name string, dotImported bool) {
+	for _, imported := range file.Imports {
+		if imported.Path.Value != `"github.com/google/cel-go/ext"` {
+			continue
+		}
+		if imported.Name == nil {
+			return "ext", false
+		}
+		if imported.Name.Name == "." {
+			return "", true
+		}
+
+		return imported.Name.Name, false
+	}
+
+	return "", false
 }
 
 // hasStringsVersionOption reports whether one of a call's arguments is an
