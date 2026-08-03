@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"regexp"
+	"strings"
 )
 
 // Bounds and validation this plugin applies to attacker-chosen input before
@@ -26,20 +27,65 @@ const (
 	requestTimeout = 30 // seconds; see client.go
 )
 
-// ownerRepoPattern matches what GitHub actually permits in an owner or
-// repository name: this is validated because it is later placed into a URL
-// path via go-github's own request builder (never string-concatenated by
-// this plugin - go-github's PullRequests.Get and Issues.CreateComment take
-// owner/repo as separate parameters and build the request path themselves),
-// so refusing a malformed value here is a courtesy to the author, not a
-// defense the request-building code needs.
-var ownerRepoPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9])?$`)
+// ownerPattern and repoPattern are validated because both are later placed
+// into a URL path via go-github's own request builder (never
+// string-concatenated by this plugin - go-github's PullRequests.Get and
+// Issues.CreateComment take owner/repo as separate parameters and build the
+// request path themselves), so refusing a malformed value here is a
+// courtesy to the author, not a defense the request-building code needs.
+//
+// The two are deliberately different patterns, not one shared one. A single
+// pattern requiring an alphanumeric first character rejects GitHub's own
+// `.github` community-health repository before this task ever makes a
+// request - GitHub's owner rules and repository-name rules are not the
+// same, and treating them as one was itself the bug.
+//
+// Owner (a user or organization login): alphanumeric characters or
+// hyphens, max 39 characters, and may not begin or end with a hyphen -
+// GitHub's own documented username rules
+// (https://docs.github.com/en/actions/reference/workflows-and-actions/limits#usernames,
+// mirrored by github.com/shinnn/github-username-regex). Consecutive hyphens
+// are refused too, checked separately below since Go's RE2 engine has no
+// lookahead to express "no --" in the pattern itself.
+var ownerPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$`)
 
-func validateOwnerRepo(field, value string) error {
+// repoPattern is GitHub's actual repository-name rule: alphanumeric
+// characters, hyphens, underscores, and periods, up to 100 characters -
+// which is why a leading `.` or `_` (as in `.github` or `_internal-tools`)
+// is accepted here where it is refused for an owner. `.` and `..` are
+// refused explicitly below rather than by the pattern, and refused outright
+// rather than sanitized: a name meaningful to path traversal in anything
+// filesystem-adjacent is exactly the shape CLAUDE.md says to reject, not
+// clean up, because a "cleaned" `..` silently becomes a different,
+// unintended value instead of failing loudly.
+var repoPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
+
+func validateOwner(field, value string) error {
 	if value == "" {
 		return fmt.Errorf("%s is required", field)
 	}
-	if !ownerRepoPattern.MatchString(value) {
+	if !ownerPattern.MatchString(value) {
+		return fmt.Errorf("%s %q is not a name GitHub allows", field, value)
+	}
+	if strings.Contains(value, "--") {
+		return fmt.Errorf("%s %q is not a name GitHub allows: consecutive hyphens", field, value)
+	}
+	return nil
+}
+
+func validateRepo(field, value string) error {
+	if value == "" {
+		return fmt.Errorf("%s is required", field)
+	}
+	// Rejected outright, not stripped or normalized: `.` and `..` are the
+	// two repository names that mean something other than a name wherever
+	// this string might later reach a filesystem path, and refusing them
+	// here is cheaper and more honest than trusting every future caller of
+	// this value to also treat them as path-meaningful.
+	if value == "." || value == ".." {
+		return fmt.Errorf("%s %q is not a name GitHub allows", field, value)
+	}
+	if !repoPattern.MatchString(value) {
 		return fmt.Errorf("%s %q is not a name GitHub allows", field, value)
 	}
 	return nil

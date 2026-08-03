@@ -65,6 +65,19 @@ func TestValidateRevisionAcceptsOrdinaryNames(t *testing.T) {
 	}
 }
 
+// fetchDepthForMaxCommits (log.go) fetches maxCommits+1 without a clamp of
+// its own, on the assumption that the ceiling clampMaxCommits already
+// enforces (maxMaxCommits) leaves room below maxCloneDepth for the extra
+// commit. This test exists so that changing either constant without
+// checking the other trips here, in a name that says why, rather than
+// quietly letting fetchDepthForMaxCommits ask cloneBounded for a depth
+// cloneBounded's own bound then refuses.
+func TestMaxMaxCommitsFetchDepthNeverExceedsMaxCloneDepth(t *testing.T) {
+	if got := fetchDepthForMaxCommits(maxMaxCommits); got > maxCloneDepth {
+		t.Fatalf("fetchDepthForMaxCommits(maxMaxCommits) = %d, exceeds maxCloneDepth (%d)", got, maxCloneDepth)
+	}
+}
+
 func TestClampMaxCommitsRefusesRatherThanSilentlyClamps(t *testing.T) {
 	if _, err := clampMaxCommits(maxMaxCommits + 1); err == nil {
 		t.Fatal("clampMaxCommits over the ceiling: got no error, want one - " +

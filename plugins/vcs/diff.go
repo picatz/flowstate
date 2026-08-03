@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 
 	fdiff "github.com/go-git/go-git/v5/plumbing/format/diff"
 	"github.com/go-git/go-git/v5/plumbing/object"
@@ -92,9 +93,8 @@ func vcsDiff(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flows
 		return nil, classifyGitError(err)
 	}
 
-	patchText, patchTruncated := truncateBytes(patch.String(), maxPatchBytes)
-
 	filePatches := patch.FilePatches()
+	patchText, patchTruncated := encodeBoundedPatch(filePatches, maxPatchBytes)
 
 	var files []*vcsv1.FileChange
 	filesTruncated := false
@@ -182,4 +182,110 @@ func truncateBytes(s string, n int) (string, bool) {
 		n--
 	}
 	return s[:n], true
+}
+
+// errPatchCapped is boundedPatchWriter's sentinel for "the cap was reached,"
+// distinguished from any other error fdiff.UnifiedEncoder.Encode might
+// return so encodeBoundedPatch can tell a full buffer apart from something
+// actually going wrong.
+var errPatchCapped = errors.New("vcs: patch byte cap reached")
+
+// boundedPatchWriter accepts writes up to max bytes total (cut on a rune
+// boundary, the same shape truncateBytes uses) and refuses every write past
+// it, which is what turns maxPatchBytes into a memory bound rather than a
+// bound on the string this function already finished building.
+type boundedPatchWriter struct {
+	buf       []byte
+	max       int
+	truncated bool
+}
+
+func (b *boundedPatchWriter) Write(p []byte) (int, error) {
+	if b.truncated {
+		return 0, errPatchCapped
+	}
+	remaining := b.max - len(b.buf)
+	if remaining <= 0 {
+		b.truncated = true
+		return 0, errPatchCapped
+	}
+	if len(p) > remaining {
+		n := remaining
+		for n > 0 && !isRuneStart(p[n]) {
+			n--
+		}
+		b.buf = append(b.buf, p[:n]...)
+		b.truncated = true
+		// io.Writer requires a non-nil error whenever n < len(p); this is
+		// also encodeBoundedPatch's own signal to stop asking for more
+		// files rather than just this one write being short.
+		return n, errPatchCapped
+	}
+	b.buf = append(b.buf, p...)
+	return len(p), nil
+}
+
+// singleFilePatch adapts one fdiff.FilePatch to the fdiff.Patch interface,
+// which only needs FilePatches and Message - it does not require go-git's
+// own object.Patch struct, whose fields encodeBoundedPatch could not set
+// from outside the object package anyway.
+type singleFilePatch struct{ fp fdiff.FilePatch }
+
+func (s singleFilePatch) FilePatches() []fdiff.FilePatch { return []fdiff.FilePatch{s.fp} }
+func (s singleFilePatch) Message() string                { return "" }
+
+// encodeBoundedPatch renders a unified diff one file at a time into a
+// byte-capped sink, stopping as soon as maxBytes is reached instead of after
+// the whole multi-file diff has already been rendered.
+//
+// This exists because go-git's own Patch.Encode does not stream: reading
+// plumbing/format/diff/unified_encoder.go, UnifiedEncoder.Encode writes
+// every file's header and hunks into one strings.Builder and only then
+// makes a single Write call with the finished text. Calling Encode (or
+// patch.String(), which just wraps Encode with a bytes.Buffer) once on the
+// whole multi-file Patch therefore costs memory proportional to the entire
+// rendered diff before a single byte ever reaches a bound - the same
+// "the bound covers the cooperative path, not the attacker's" shape
+// CLAUDE.md's connect-go example describes: the cap would only ever see the
+// finished, oversized string, after the damage of building it was already
+// done. Encoding file-by-file into the same bounded writer means the
+// largest buffer this function ever holds mid-flight is one file's own
+// rendered patch, and it stops asking for the next file the moment the cap
+// is hit rather than rendering (and discarding) the rest.
+//
+// What this does not bound: changes.Patch() itself (called by vcsDiff
+// before this function ever runs) has already computed every file's diff
+// chunks in memory, because vcsDiff needs those same chunks for countLines'
+// per-file stats regardless of how much of the formatted text this function
+// keeps. And a single file whose own diff is enormous still costs memory
+// proportional to that one file while it is being encoded, because
+// UnifiedEncoder cannot be interrupted partway through one file any more
+// than through the whole patch - the same gap clone.go documents for depth
+// vs. blob size: this bound stops the sum across files from growing without
+// limit, not one file from being large. diff_test.go proves both halves of
+// that split rather than asserting one and hoping: see
+// TestEncodeBoundedPatchAllocatesFarLessThanTheUnboundedStringAcrossManyFiles
+// for the bound this function does deliver, and
+// TestEncodeBoundedPatchDoesNotBoundASingleEnormousFile for the one it does
+// not. maxResponseBytes at the transport is the backstop for both gaps, as
+// it is for clone's.
+func encodeBoundedPatch(filePatches []fdiff.FilePatch, maxBytes int) (string, bool) {
+	w := &boundedPatchWriter{max: maxBytes}
+	enc := fdiff.NewUnifiedEncoder(w, fdiff.DefaultContextLines)
+
+	for _, fp := range filePatches {
+		if w.truncated {
+			break
+		}
+		if err := enc.Encode(singleFilePatch{fp}); err != nil && !errors.Is(err, errPatchCapped) {
+			// UnifiedEncoder.Encode's only error path is the writer's own
+			// (see the file's doc comment above), so anything else here
+			// would mean go-git changed that contract; keep whatever was
+			// already accumulated rather than losing an otherwise-good
+			// partial diff over one file's encoding hiccup.
+			break
+		}
+	}
+
+	return string(w.buf), w.truncated
 }

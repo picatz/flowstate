@@ -26,10 +26,10 @@ func pullRequestGet(ctx context.Context, inputs map[string]*flowstatev1.Value, _
 		return nil, sdk.InvalidInput("%v", err)
 	}
 
-	if err := validateOwnerRepo("owner", in.GetOwner()); err != nil {
+	if err := validateOwner("owner", in.GetOwner()); err != nil {
 		return nil, sdk.InvalidInput("%v", err)
 	}
-	if err := validateOwnerRepo("repo", in.GetRepo()); err != nil {
+	if err := validateRepo("repo", in.GetRepo()); err != nil {
 		return nil, sdk.InvalidInput("%v", err)
 	}
 	if err := validateNumber("number", in.GetNumber()); err != nil {

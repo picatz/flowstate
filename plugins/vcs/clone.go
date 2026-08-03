@@ -120,8 +120,21 @@ func cloneBounded(ctx context.Context, opts cloneOptions) (*git.Repository, erro
 		URL:          opts.url.String(),
 		Depth:        opts.depth,
 		SingleBranch: false, // vcs.diff needs to resolve two revisions, which may sit on different branches
-		Tags:         git.NoTags,
-		NoCheckout:   true, // objects only; nothing here ever needs a working tree
+		// AllTags, not NoTags or the git.TagFollowing default: the task
+		// schema and README both advertise `ref: v1.2.3` as a supported
+		// lookup, and TagFollowing only fetches a tag whose target commit
+		// is already within the shallow window this clone fetched - which a
+		// release tag, named specifically because it is *not* one of the
+		// last few commits, usually is not. AllTags fetches every tag ref
+		// (and, for one that points outside the shallow window, the single
+		// commit object it points to) regardless of depth, which is what
+		// actually resolves a tag named by an author rather than only one
+		// that happens to sit near a branch tip. The cost is bounded the
+		// same way everything else here is: tag refs are lightweight, and
+		// any object AllTags pulls in still crosses the egress policy's
+		// maxResponseBytes cap like every other byte this clone reads.
+		Tags:       git.AllTags,
+		NoCheckout: true, // objects only; nothing here ever needs a working tree
 	}
 
 	if token := opts.tokenValue(); token != "" {
