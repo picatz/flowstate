@@ -89,6 +89,29 @@ jobs:
       - name: Test
         run: go test -race ./...
 
+      # The plugins are separate Go modules, which is the point of them: a plugin
+      # owns its dependencies so an operator decides whether to trust them, and
+      # nothing a plugin needs reaches the engine's own go.mod.
+      #
+      # The cost of that boundary is that `./...` from the root does not cross it.
+      # Every check above would stay green with a plugin that does not compile, so
+      # the modules are walked explicitly. Found by looking rather than by a
+      # failure, which is the only way this class is ever found — a module nobody
+      # builds is not red, it is absent.
+      - name: Test plugin modules
+        run: |
+          for module in plugins/*/; do
+            [ -f "$module/go.mod" ] || continue
+            echo "::group::$module"
+            (cd "$module" && go build ./... && go vet ./... && go test -race ./...)
+            unformatted=$(gofmt -l "$module")
+            if [ -n "$unformatted" ]; then
+              echo "::error::not gofmt'd: $unformatted"
+              exit 1
+            fi
+            echo "::endgroup::"
+          done
+
       # The same mechanism as the proto job's generated-code check, on the four
       # reference documents that are derived rather than written: the task
       # reference from the registry, the CLI reference from the cobra tree, the
