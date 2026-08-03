@@ -1,0 +1,112 @@
+# The fan-in. Everything Flowstate emits arrives here and leaves in three
+# directions.
+#
+# Two things about this file are decisions rather than boilerplate:
+#
+#   * Loki is fed over OTLP, not through the collector's deprecated `loki`
+#     exporter. Loki has ingested OTLP natively since 3.0, so the exporter that
+#     used to translate is a moving part with nothing left to do.
+#   * Prometheus *pulls* from this collector rather than being pushed to. A
+#     scrape target that is briefly unreachable is a gap in a graph; a push
+#     pipeline that is briefly unreachable is backpressure into the process being
+#     observed. In a lab that difference is visible weekly.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+  # Flowstate does not speak OTLP for logs yet — it writes structured lines to
+  # stderr, which the compose file redirects into a shared volume. One receiver
+  # per file, so each can stamp the service that wrote it; a single glob would
+  # give Loki one undifferentiated stream.
+  #
+  # Deliberately no parsing operators. The lines are slog's logfmt and Loki
+  # parses logfmt at query time, so a parser here would be an untested moving
+  # part in the ingest path buying a conversion that is free later. When
+  # Flowstate grows an OTLP log exporter this receiver disappears entirely.
+  filelog/server:
+    include: [/var/log/flowstate/server.log]
+    start_at: beginning
+    resource:
+      service.name: flowstate-server
+      deployment.environment: lab
+
+  filelog/worker:
+    include: [/var/log/flowstate/worker.log]
+    start_at: beginning
+    resource:
+      service.name: flowstate-worker
+      deployment.environment: lab
+
+processors:
+  # First in every pipeline, on purpose: a collector that refuses data while
+  # under memory pressure stays up, and one that does not becomes the outage. The
+  # limit is the shape of an attacker-or-accident-controlled resource — the peer
+  # decides how much it sends, so the bound belongs on the byte side.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 400
+    spike_limit_mib: 100
+
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+
+exporters:
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      # Plaintext inside the compose network only. Nothing on this network leaves
+      # the machine; see the loopback bindings in docker-compose.yaml.
+      insecure: true
+
+  otlphttp/loki:
+    # Loki's native OTLP ingest path. The exporter appends /v1/logs.
+    endpoint: http://loki:3100/otlp
+
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    # Without this, resource attributes stay on a single `target_info` series and
+    # every metric loses the service that produced it — which makes it impossible
+    # to tell the server's numbers from the worker's, the one distinction the
+    # dashboard is built around.
+    resource_to_telemetry_conversion:
+      enabled: true
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+
+  telemetry:
+    metrics:
+      # The collector's own metrics, scraped by Prometheus as a separate job. A
+      # pipeline that is dropping data should be able to say so.
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888
+
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp/tempo]
+
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [prometheus]
+
+    logs:
+      receivers: [otlp, filelog/server, filelog/worker]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/loki]

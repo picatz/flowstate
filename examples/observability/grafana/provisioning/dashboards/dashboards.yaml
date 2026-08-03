@@ -1,0 +1,16 @@
+apiVersion: 1
+
+providers:
+  - name: flowstate
+    orgId: 1
+    folder: Flowstate
+    type: file
+    disableDeletion: false
+    # Editable in the UI so you can build on it, and reset by the file on every
+    # restart — which is what makes the committed JSON the source of truth rather
+    # than whatever the last person left behind in Grafana's database.
+    allowUiUpdates: true
+    updateIntervalSeconds: 10
+    options:
+      path: /etc/grafana/dashboards
+      foldersFromFilesStructure: false

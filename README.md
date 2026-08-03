@@ -244,6 +244,82 @@ value, declare it at the top of the file — that is what the ambient position i
 See [examples/workflow-vars](examples/workflow-vars) and
 [examples/step-vars](examples/step-vars).
 
+### What a run takes, and what it answers: `inputs:` and `outputs:`
+
+A `vars:` block names what the *file* decided. `inputs:` names what the *caller* decides,
+and `outputs:` names what the run reports back:
+
+```yaml
+edition: v2026.2
+name: deploy
+
+inputs:
+  service:
+    type: string
+    required: true
+    description: which service to deploy
+  region:
+    type: string
+    default: eu-west-1
+  replicas:
+    type: int
+    default: 2
+
+outputs:
+  placed:
+    value: ${inputs.service + ' in ' + inputs.region}
+    description: what this run deployed and where
+
+steps:
+  - id: plan
+    log:
+      message: ${'planning ' + inputs.service}
+      fields:
+        replicas: ${string(inputs.replicas)}
+```
+
+An input is declared with a `type:` — `string`, `int`, `float`, `bool`, `list` or
+`struct` — and either a `default:` or `required: true`. It is read as `${inputs.<name>}`,
+rooted for the reason `vars.` and `steps.` are: a root cannot collide with a step id, so
+no precedence rule has to exist for anyone to read the file. Inputs are in scope wherever
+an expression is — a step's `if:`, its `vars:`, a task's inputs — except in the
+workflow-level `vars:` block, which is evaluated once before the run's arguments are in
+scope. Writing one there is refused by `flow validate` with a diagnostic naming the var,
+its position, and where to write the reference instead — not left to fail at run time.
+
+Arguments are values, never expressions: `${...}` in an argument is refused rather than
+evaluated, because an expression is something a reviewed file says and an argument is
+data a caller sends. Everything else is refused while the caller is still there to be
+told — an undeclared name, a missing required input, a value of the wrong type — by one
+function both drivers call, so a rehearsal refuses exactly what production refuses.
+
+Supply them on the command line, where the declaration decides how each word is read:
+
+```console
+$ flow run local examples/parameterized-deploy/workflow.yaml --input service=checkout --input replicas=3
+$ flow run local examples/parameterized-deploy/workflow.yaml --input-file examples/parameterized-deploy/inputs.json
+```
+
+`--input name=value` is repeatable; a `list` or `struct` is written as JSON
+(`--input targets='["alpha","beta"]'`). `--input-file` takes a JSON object keyed by input
+name, which is the form for arguments that outgrew a command line, and a `--input` flag
+wins over the file it is given beside.
+
+`outputs:` names expressions evaluated once, after every step has finished, against the
+run's whole scope — `${steps.<id>.<output>}`, `${vars.<name>}` and `${inputs.<name>}`.
+They are the run's *answer*, as against the transcript of what each step produced, and
+they come back in the `runOutputs` field of the same document either driver writes:
+
+```console
+$ flow run local examples/computed-outputs/workflow.yaml -o json | jq .runOutputs
+```
+
+An output that cannot be computed fails the run: an output is the answer somebody asked
+for, so a run that cannot produce its answer has not succeeded.
+
+See [examples/parameterized-deploy](examples/parameterized-deploy) and
+[examples/computed-outputs](examples/computed-outputs).
+
 ### Saying why a step is there
 
 A step can carry `description:` — prose the mechanics under it cannot supply, written
@@ -506,7 +582,8 @@ and body-size bounds, the TLS floor — is configured as a file, with durations 
 `30s` and sizes as `1MiB` or `10MB`, the way they are said:
 
 ```console
-$ flow worker --egress-policy egress-policy.yaml
+$ flow worker --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)" \
+    --egress-policy egress-policy.yaml
 ```
 
 `flow run local` takes the same flag, so a rehearsal is governed by the same rules a
@@ -531,23 +608,41 @@ steps:
       bearer: ${secret('vault:prod/api#token')}
 ```
 
-`bearer:` is the input that consumes a reference today. The worker resolves it
+`bearer:` is the input built to consume a reference whole. The worker resolves it
 inside the activity that makes the request, sets `Authorization: Bearer <value>`,
 and the value exists for that call and nowhere else — see
-[examples/http-secret](examples/http-secret) for a worked file. Every other
-placement is refused, and each refusal is deliberate rather than pending:
+[examples/http-secret](examples/http-secret) for a worked file.
 
-- **`headers:`**, because that map is `map<string, string>` and a reference is not
-  a string.
-- **`query:`**, because a query string is written to access logs, browser
-  history, and a `Referer` header on redirect — a secret there is a secret
-  published.
-- **`json:`** and the raw string `body:`, because resolving one there would mean
-  the workflow had already evaluated it on the way in, which is what puts a
-  secret in history. Whether a body may one day carry a reference is a decision
-  for the schema, not for the request encoder.
-- **read by an expression** anywhere, because computing with it in workflow code
-  would put the result in history.
+A reference may also sit inside a list or a mapping written in an input the task
+turns into request bytes itself — the http task's `headers:`, `form:` and `json:`:
+
+```yaml
+      headers:
+        Accept: application/json
+        Authorization: ${secret('env:API_TOKEN')}
+```
+
+The mapping compiles to a structure whose entries are values, so the entry is
+still a reference in the specification and in the activity payload, and the worker
+resolves it as it sets the header. What decides whether a position accepts one is
+that single question — does the *task* apply this input's entries itself, inside
+the activity — because an input the workflow resolves is one whose resolved value
+travels into history. Everywhere else is refused, and each refusal is deliberate
+rather than pending:
+
+- **`query:`**, although it is the same kind of map as `form:`. A query string is
+  written to access logs, browser history, and a `Referer` header on redirect — a
+  secret there is a secret published.
+- **the raw string `body:`**, which is a string field: a reference is not a string,
+  and there is nothing between it and the wire to resolve one.
+- **an expression sharing the list or mapping** with the reference. The entries of
+  a structure holding a reference travel as they were written, and an expression
+  among them would have to be evaluated by the workflow to get there. For an
+  Authorization header this costs nothing: `bearer:` takes the credential and
+  leaves the rest of `headers:` free to compute.
+- **read by an expression** anywhere — an `if:`, a loop's `items:`, a `vars:`, an
+  `outputs:` declaration — because computing with it in workflow code would put
+  the result in history.
 
 ```
 a secret reference cannot be read in an expression; pass it to a task input that
@@ -596,7 +691,8 @@ having compiled its schema.
 Point a worker at a directory and its plugins' tasks become step keys:
 
 ```console
-$ flow worker --plugin-dir /usr/local/lib/flowstate/plugins
+$ flow worker --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)" \
+    --plugin-dir /usr/local/lib/flowstate/plugins
 Loaded plugin example 0.1.0 from /usr/local/lib/flowstate/plugins/flowstate-plugin-example (tasks: example.greet)
 ```
 
@@ -632,7 +728,10 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and the handshak
 
 ## Configuration
 
-Flowstate's own settings:
+Flowstate's own settings. [docs/reference/envvars.md](docs/reference/envvars.md) is the
+generated version of this table — every variable the code reads, with where it is read,
+held to the tree by a test that fails on a read this list does not carry. The table below
+is the tour; that one is the enumeration.
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -642,9 +741,27 @@ Flowstate's own settings:
 | `FLOWSTATE_EGRESS_POLICY` | unset | Path to an egress policy file (see `--egress-policy` above) |
 | `FLOWSTATE_TOKEN_FILE` | unset | File holding the bearer token `flow` authenticates with, re-read per request |
 | `FLOWSTATE_TOKEN` | unset | Bearer token, used when no token file is set |
-| `FLOWSTATE_DEPLOYMENT_NAME` | unset | Worker Deployment this worker belongs to (see below) |
-| `FLOWSTATE_BUILD_ID` | unset | Version identifier for this worker's binary, unique per build |
+| `FLOWSTATE_DEPLOYMENT_NAME` | unset | Worker Deployment this worker belongs to (see below); a worker refuses to start without both halves of a version unless `--allow-unversioned-interpreter` accepts the risk |
+| `FLOWSTATE_BUILD_ID` | unset | Version identifier for this worker's binary, unique per build; required with the deployment name, same refusal |
 | `FLOWSTATE_VERBOSE_LOGGING` | `false` | Verbose logging |
+| `FLOWSTATE_AUTH_POLICY` | unset | Default for `--auth-policy`: on `flow server` the trust policy naming which issuers and claims to accept; on `flow worker` and `flow run local` the same file's secrets rules, authorizing worker-side resolution |
+| `FLOWSTATE_IDENTITY_KEY` | unset | Default for `--identity-key`: the PKCS#8 PEM key Flowstate signs its own short-lived assertions with, required when the trust policy configures federation |
+| `FLOWSTATE_SECRET_ENV_ALLOW` | unset | Default for `--secret-env`: comma-separated names this process may resolve as `env:` secrets, whose values come from `FLOWSTATE_SECRET_<NAME>` |
+| `FLOWSTATE_SECRET_DIR` | unset | Default for `--secret-dir`: the directory `file:` secrets are read from |
+| `FLOWSTATE_PLUGIN_DIR` | unset | Default for `--plugin-dir`: directories to discover plugins in, separated the way `$PATH` is — the form an image bakes in rather than repeating on every command line |
+| `FLOWSTATE_MAX_STEPS_PER_RUN` | unset | Server-side ceiling on the steps one run may submit; an unparseable or non-positive value is ignored rather than lowering the bound |
+| `FLOWSTATE_INSECURE_PLAINTEXT_TOKEN` | `false` | Set to `true` to permit sending a bearer token over plain HTTP to somewhere that is not loopback. It is a refusal by default, because a token on the wire in the clear belongs to whatever is between here and there |
+| `FLOWSTATE_SYMBOLS` | unset | Override symbol selection (`unicode`/`ascii`) when terminal detection guesses wrong |
+| `FLOWSTATE_BACKGROUND` | unset | Declare the terminal background (`dark`/`light`) instead of querying for it — also the way out of the four-second wait on a terminal that never answers the query |
+
+And the standard OpenTelemetry variables, which are read by the exporters
+themselves rather than re-spelled here:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | Turns telemetry on and says where it goes. Unset means no exporter, no goroutines, no network |
+| `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | unset | The same, for a deployment sending metrics somewhere different; either variable being set enables telemetry |
+| other `OTEL_EXPORTER_OTLP_*` | — | Headers, protocol, timeouts: read by the OTLP exporters directly, so anything else OTLP-speaking is configured the same way |
 
 ### Authenticating
 
@@ -726,7 +843,8 @@ configured for the CLI works without being restated. Profiles are how one instal
 addresses several environments:
 
 ```console
-$ TEMPORAL_PROFILE=staging flow worker
+$ TEMPORAL_PROFILE=staging flow worker \
+    --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"
 ```
 
 `--address`, `--namespace`, and `--profile` on `flow worker` and `flow server` override
@@ -797,6 +915,11 @@ Names only, deliberately: types and constraints belong to the schema, and repeat
 here is how the two disagree. `flow tasks` prints the same catalog with every type, which
 required input is which, and the CEL libraries every expression reaches — derived from the
 registry, so it cannot drift from what the engine will execute.
+
+[docs/reference/tasks.md](docs/reference/tasks.md) is that same catalog written down: every
+input with its type, whether it is required, and whether the task evaluates it itself, plus
+every CEL function an expression may call. It is generated from the registry and pinned in
+CI, so it is the one to read when the answer has to be complete.
 
 This table is checked against that registry by a test, because it *had* drifted: it was
 missing six of `http`'s inputs and one of its outputs, while the sentence beneath it
@@ -994,10 +1117,12 @@ $ temporal server start-dev
 ...
 ```
 
-Start a Temporal worker for Flowstate:
+Start a Temporal worker for Flowstate. The flag accepts running the expression
+interpreter unversioned, which is fine against a dev server that outlives nothing;
+a production worker passes `--deployment-name` and `--build-id` instead:
 
 ```console
-$ go run ./cmd/flow worker
+$ go run ./cmd/flow worker --allow-unversioned-interpreter
 ...
 ```
 
@@ -1057,15 +1182,19 @@ is the whole of what the local driver cannot give you.
 it, and then either run it on your own machine or hand it to a server that
 executes it durably through Temporal.
 
-Run `flow <command> --help` for the full flags of any of these.
+Run `flow <command> --help` for the full flags of any of these, or read
+[docs/reference/cli.md](docs/reference/cli.md), which is every command and flag generated
+from the binary's own command tree — including which environment variable each flag
+default comes from.
 
 | Command | What it does |
 | --- | --- |
 | `flow validate <file...>` | Check Flowfiles without executing them. Reports the line and column of each problem. `--output json` or `jsonl` carries the diagnostics as data. |
 | `flow fix <path...>` | Rewrite Flowfiles from a retired spelling into the current one, preserving comments and formatting. `--check` reports and writes nothing, exiting non-zero if there is work. |
-| `flow run <file>` | Submit a workflow to a server, which runs it durably, and follow the run until it finishes. |
-| `flow run local <file>` | Run a workflow in this process, with no server and no Temporal. Answers signal gates from `--signal name=json`. `--output json` or `jsonl` carries the same document `flow run` writes. |
-| `flow get <id>` | Report what a run is doing, and its outputs if it finished. Status on stderr, outputs on stdout, so `flow get id \| jq` sees only the data. |
+| `flow fmt <path...>` | Rewrite Flowfiles into the form `flowfile.Marshal` writes. Unlike `flow fix`, this does not preserve comments, blank lines, key order, or quote style — it renders from the parsed workflow, not the source text. `--check` reports and writes nothing; `--stdout` writes one file's result to standard output. A file that does not parse is left untouched. |
+| `flow run <file>` | Submit a workflow to a server, which runs it durably, and follow the run until it finishes. Arguments for a workflow's `inputs:` come from `--input name=value` (repeatable) or `--input-file inputs.json`. |
+| `flow run local <file>` | Run a workflow in this process, with no server and no Temporal. Takes the same `--input`/`--input-file` as `flow run`, and answers signal gates from `--signal name=json`. `--output json` or `jsonl` carries the same document `flow run` writes. |
+| `flow get <id>` | Report what a run is doing, and its outputs if it finished. Status and the run's declared `outputs:` on stderr, the outputs document on stdout, so `flow get id \| jq` sees only the data. |
 | `flow watch <id>` | Follow a run until it finishes: a live view on a terminal, one line per change without one. Exits with the run's outcome. |
 | `flow list` | List your runs. |
 | `flow signal <id> <name>` | Deliver a signal to a run that is waiting, which is how a human approval reaches a workload. |
@@ -1076,7 +1205,7 @@ Run `flow <command> --help` for the full flags of any of these.
 | `flow worker` | Start a Temporal worker, which is what actually executes steps. |
 | `flow server` | Start the Flowstate API server that accepts workflows. |
 | `flow lsp` | Serve the Flowfile language server over stdin and stdout, for editor diagnostics. |
-| `flow mcp` | Serve the control plane to an AI agent as MCP tools over stdin and stdout, schemas derived from the API's own. |
+| `flow mcp` | Serve the control plane to an AI agent over stdin and stdout: one tool per RPC with schemas derived from the API's own, plus `flowstate_run_local` to rehearse a Flowfile in-process, and read-only resources carrying the DSL reference, the task catalog and the examples. What a local run may reach is decided by this process's flags — with none, egress is denied. See [docs/CLI.md](docs/CLI.md#flow-mcp-the-same-surface-for-an-agent) for client configuration. |
 | `flow keys` | Generate and inspect signing keys for workload identity. |
 | `flow keys generate` | Generate a signing key, write it PKCS#8-PEM at file mode 0600, and print its public JWK. Refuses to overwrite an existing key. |
 | `flow keys public` | Print the public JWK for an existing signing key, without touching the private half. |
@@ -1105,12 +1234,14 @@ information rather than two features:
   Not per poll: a run that sits on one step for four minutes says nothing for four
   minutes, rather than repeating itself 240 times.
 
-It is not step-by-step progress, and the reason is worth stating plainly: the server
-answers a *running* execution with the two ids and a status, and reports outputs only
-once the run has finished. There is nothing per-step to show while it would matter. The
-missing piece is the server's, and until it lands, what a follow adds over `flow get` in
-a loop is that it exits by itself, exits with the run's outcome, does not repeat itself,
-and shows time passing.
+It is not step-by-step progress, and the reason is worth stating plainly because it is
+no longer the one it used to be: the server *does* answer a running execution with
+where it has got to — which step, and which activities are retrying, with the attempt
+count and the last failure — and `flow get` prints both. What `flow watch` has not
+done yet is read those fields; it folds each poll into the status, the run id, and the
+steps that have produced outputs. Until it consumes them, what a follow adds over
+`flow get` in a loop is that it exits by itself, exits with the run's outcome, does not
+repeat itself, and shows time passing.
 
 The live view is drawn on **stderr**, and the outputs go to stdout exactly as
 `flow get` writes them. So one invocation does both:

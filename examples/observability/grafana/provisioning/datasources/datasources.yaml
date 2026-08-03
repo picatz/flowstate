@@ -1,0 +1,55 @@
+# Three datasources, provisioned, with fixed uids so the dashboard JSON can name
+# them. A dashboard that references a datasource by uid is portable; one that
+# references it by name breaks the moment somebody renames it in the UI.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: flowstate-prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      timeInterval: 15s
+
+  - name: Tempo
+    uid: flowstate-tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    jsonData:
+      # From a span to the logs around it. Deliberately *not* filtered by trace
+      # id: Flowstate's logs are stderr lines that carry no trace id yet — that
+      # is the next rung of VISION's ladder, the OTLP log exporter — so the
+      # honest correlation available today is "the same service, the same
+      # moment". Claiming more would send someone hunting for a link that cannot
+      # exist.
+      tracesToLogsV2:
+        datasourceUid: flowstate-loki
+        filterByTraceID: false
+        filterBySpanID: false
+        spanStartTimeShift: -2m
+        spanEndTimeShift: 2m
+        tags:
+          - key: service.name
+            value: service_name
+      tracesToMetrics:
+        datasourceUid: flowstate-prometheus
+        spanStartTimeShift: -2m
+        spanEndTimeShift: 2m
+        tags:
+          - key: service.name
+            value: service_name
+      nodeGraph:
+        enabled: true
+
+  - name: Loki
+    uid: flowstate-loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    jsonData:
+      # Loki is single-tenant here (auth_enabled: false), so no X-Scope-OrgID.
+      maxLines: 1000

@@ -1,0 +1,219 @@
+{
+  "uid": "flowstate-lab",
+  "title": "Flowstate — runs, steps, latency",
+  "description": "Runs, steps and latency from the metrics Flowstate already emits: otelconnect's RPC instruments on the control plane, and the Temporal SDK's own instruments on the worker. Nothing here is a metric written for a dashboard — if a panel is empty, the interesting question is which pipeline is quiet.",
+  "tags": ["flowstate", "lab"],
+  "timezone": "browser",
+  "editable": true,
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-30m", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "service",
+        "label": "service",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "flowstate-prometheus" },
+        "query": "label_values(rpc_server_duration_milliseconds_count, service_name)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "id": 100,
+      "title": "Control plane (otelconnect, from the server)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false
+    },
+    {
+      "type": "stat",
+      "id": 1,
+      "title": "Runs started",
+      "description": "Every `flow run` is one Run RPC, so the control plane can count runs without the engine having to publish a counter for it.",
+      "datasource": { "type": "prometheus", "uid": "flowstate-prometheus" },
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 1 },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "text", "value": null }] } },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto", "graphMode": "area" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "flowstate-prometheus" },
+          "expr": "sum(rpc_server_duration_milliseconds_count{rpc_method=\"Run\"})",
+          "legendFormat": "runs"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 2,
+      "title": "RPCs per second, by method",
+      "datasource": { "type": "prometheus", "uid": "flowstate-prometheus" },
+      "gridPos": { "h": 5, "w": 9, "x": 6, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "fillOpacity": 10 } }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "flowstate-prometheus" },
+          "expr": "sum by (rpc_method) (rate(rpc_server_duration_milliseconds_count{service_name=~\"$service\"}[$__rate_interval]))",
+          "legendFormat": "{{rpc_method}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 3,
+      "title": "RPC latency, p95",
+      "description": "otelconnect records rpc.server.duration in milliseconds; the collector's Prometheus exporter appends the unit, which is why the series is named _milliseconds.",
+      "datasource": { "type": "prometheus", "uid": "flowstate-prometheus" },
+      "gridPos": { "h": 5, "w": 9, "x": 15, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "ms", "custom": { "fillOpacity": 0 } }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "flowstate-prometheus" },
+          "expr": "histogram_quantile(0.95, sum by (le, rpc_method) (rate(rpc_server_duration_milliseconds_bucket{service_name=~\"$service\"}[$__rate_interval])))",
+          "legendFormat": "{{rpc_method}} p95"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "id": 101,
+      "title": "Runs and steps (Temporal SDK, from the worker)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 6 },
+      "collapsed": false
+    },
+    {
+      "type": "stat",
+      "id": 4,
+      "title": "Workflows completed / failed",
+      "description": "The Temporal SDK's counters arrive as up-down counters, so the Prometheus exporter writes them as gauges — no _total suffix, and rate() is not meaningful. The value is cumulative since the worker started.",
+      "datasource": { "type": "prometheus", "uid": "flowstate-prometheus" },
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 7 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value_and_name" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "flowstate-prometheus" },
+          "expr": "sum(temporal_workflow_completed)",
+          "legendFormat": "completed"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "flowstate-prometheus" },
+          "expr": "sum(temporal_workflow_failed)",
+          "legendFormat": "failed"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 5,
+      "title": "Run duration, end to end",
+      "description": "temporal_workflow_endtoend_latency, a histogram in seconds: start to close, including every durable wait — a workflow that sleeps for a day is a day long here, and that is correct rather than a bug.",
+      "datasource": { "type": "prometheus", "uid": "flowstate-prometheus" },
+      "gridPos": { "h": 5, "w": 9, "x": 6, "y": 7 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "flowstate-prometheus" },
+          "expr": "histogram_quantile(0.95, sum by (le, workflow_type) (rate(temporal_workflow_endtoend_latency_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{workflow_type}} p95"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "flowstate-prometheus" },
+          "expr": "histogram_quantile(0.50, sum by (le, workflow_type) (rate(temporal_workflow_endtoend_latency_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{workflow_type}} p50"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 6,
+      "title": "Step execution latency (activities), p95",
+      "description": "A Flowstate step that does work is a Temporal activity, so this is per-step latency by activity type.",
+      "datasource": { "type": "prometheus", "uid": "flowstate-prometheus" },
+      "gridPos": { "h": 5, "w": 9, "x": 15, "y": 7 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "flowstate-prometheus" },
+          "expr": "histogram_quantile(0.95, sum by (le, activity_type) (rate(temporal_activity_execution_latency_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{activity_type}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 7,
+      "title": "Worker task slots available",
+      "description": "The number that says whether the worker is the bottleneck. Flat at the maximum means idle; near zero means work is queueing behind this worker rather than behind the engine.",
+      "datasource": { "type": "prometheus", "uid": "flowstate-prometheus" },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 12 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "flowstate-prometheus" },
+          "expr": "sum by (worker_type) (temporal_worker_task_slots_available)",
+          "legendFormat": "{{worker_type}}"
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "id": 8,
+      "title": "Everything the SDK is actually emitting",
+      "description": "Not decoration. Metric names travel through the SDK, the OTLP exporter and the Prometheus exporter, each of which may add a unit or a suffix — so when a panel above is empty, this is where you find out whether the number is missing or merely spelled differently.",
+      "datasource": { "type": "prometheus", "uid": "flowstate-prometheus" },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 12 },
+      "options": { "showHeader": true },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "flowstate-prometheus" },
+          "expr": "{__name__=~\"temporal_.*|rpc_.*\"}",
+          "instant": true,
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "id": 102,
+      "title": "Logs",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 },
+      "collapsed": false
+    },
+    {
+      "type": "logs",
+      "id": 9,
+      "title": "Server and worker (stderr, via the collector)",
+      "description": "slog's logfmt, parsed at query time rather than at ingest. These lines carry no trace id yet — that arrives with the OTLP log exporter — so correlate on the workflow id, which both the logs and the Temporal UI use.",
+      "datasource": { "type": "loki", "uid": "flowstate-loki" },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 19 },
+      "options": { "showTime": true, "wrapLogMessage": true, "sortOrder": "Descending" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "flowstate-loki" },
+          "expr": "{service_name=~\"flowstate-.*\"} | logfmt"
+        }
+      ]
+    }
+  ]
+}

@@ -354,6 +354,184 @@ func ErrorTextCases(baseURL string) []Case {
 	}
 }
 
+// ToleratedStepFailureCases cover a non-task failure tolerated at the *outermost*
+// step — the step that raised it is the step that forgives it.
+//
+// This is the direction [ErrorTextCases] and [NestedErrorTextCases] both miss.
+// The first tolerates a classified task failure, which converges by construction:
+// errors.As finds the TaskError through any wrapping, so both drivers render the
+// canonical sentence. The second tolerates a failure raised one level *below* the
+// tolerating step, so the position it carries is a nested one — `iteration 0:
+// step "child": …` — which both drivers had reason to keep.
+//
+// Nothing covered the failure raised by the tolerating step itself, and two
+// separate defects lived there.
+//
+// The first was that the local driver did not tolerate it at all when it came
+// from a step's own `vars:`: that evaluation returned straight out of runNodes,
+// one statement above the `continue_on_error` check, so the whole local run
+// aborted where the durable run carried on. A local run stricter than production
+// is the failure mode local runs exist to prevent.
+//
+// The second was what the text said once both drivers did tolerate it. The
+// durable driver attached `step "<id>": ` where the failure was raised, so the
+// step recorded its own id inside the value recorded *under* that id —
+// `${steps.gate.error}` reading `step "gate": evaluating items: …` durably and
+// `evaluating items: …` locally, for the same file. The position belongs to the
+// level a failure passes out of, so a step that never passes it out records it
+// without one; a run-level failure still names the step, because there nothing
+// else does.
+//
+// Four raising sites, because each reaches its driver's tolerance check through
+// different code and one being right says nothing about the others: a step's own
+// `vars:`, a loop's `items:`, a wait's `wait_until:`, and a task's `inputs:`.
+//
+// The fourth was deliberately absent until the drivers had one answer to pin. The
+// local driver used to hand an unresolved task to the task itself whenever the
+// scope bound no names (`Task.EvalInScope`), so at a top-level step the failure
+// came back classified — `task "log" failed (InvalidInput): field "message": …` —
+// while the durable driver, resolving inputs in workflow code before scheduling
+// anything, reported `input "message": …`. Same file, same failure, two sentences
+// and two error *kinds*, which is two answers to "is this retryable" as well as
+// two values for `${steps.<id>.error}`.
+//
+// The answer kept is the durable one, and it is kept at the resolution point
+// rather than the rendering one: the local driver now resolves a step's inputs
+// above its retry loop, which is the position `engine/execute.go`'s runTask
+// resolves at. That fixes the sentence and the far larger thing behind it —
+// inputs are part of the specification, so a failure to evaluate one is
+// deterministic, and resolving inside the loop had made it a *retried* failure:
+// five attempts over fifteen seconds of backoff locally against one instant
+// failure in production.
+//
+// Note what the case below therefore does not say: `(InvalidInput)`. An input
+// that cannot be evaluated never reaches a task, so there is no task to classify
+// the failure — under either driver it is the resolver's own words, and both
+// drivers hold them identically before any wrapping.
+//
+// The nested corpus already covered the same failure one level down, because a
+// loop body's scope binds the iterator: local resolved inputs itself there, so
+// both drivers said `input "message": …` and the divergence stayed hidden behind
+// exactly the case that could not see it.
+//
+// A fifth raising site is absent and stays absent: a step that runs out of time.
+// Both drivers now bound every step by default — [v1.DefaultStartToCloseTimeout]
+// per attempt and [v1.DefaultScheduleToCloseTimeout] overall, one pair of
+// constants — and the failure is tolerated and retryable under both. The sentence
+// is the part that cannot converge: Temporal times the activity out on the server
+// and hands back its own failure, where locally the deadline reaches the task and
+// the task classifies it. Pinning either here would pin a transport's rendering
+// into the one value errors.go exists to keep transports out of, and would break
+// on a Temporal upgrade nothing in this repo caused. See [v1.StepTimeouts] for the
+// seam written out.
+func ToleratedStepFailureCases() []Case {
+	// One expression for all four, indexing past the end of a list: it compiles,
+	// it fails when evaluated, and it carries no TaskError — so what each case
+	// pins is the wrapping its own site adds, and the four expectations differ by
+	// exactly that.
+	const oops = "['a'][5]"
+	const evaluated = "evaluate expression: index out of bounds: 5"
+
+	return []Case{
+		{
+			// Bug Z2.6: locally this aborted the run instead of being tolerated.
+			Name: "a tolerated step vars failure records what went wrong and continues",
+			Workflow: &v1.Workflow{
+				Name: "tolerated-step-vars",
+				Steps: []*v1.Node{
+					func() *v1.Node {
+						node := withVars(says("gate", "unreachable"), map[string]*v1.Value{
+							"bad": v1.NewExpr(oops),
+						})
+						node.Policy = &v1.StepPolicy{ContinueOnError: true}
+
+						return node
+					}(),
+					// The step after it proves the run continued rather than merely
+					// recording something on its way out.
+					says("after", "still here"),
+				},
+			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"gate":  v1.FailedStepOutputs(`var "bad": ` + evaluated),
+				"after": {},
+			}},
+		},
+		{
+			Name: "a tolerated for_each items failure records what went wrong",
+			Workflow: &v1.Workflow{
+				Name: "tolerated-loop-items",
+				Steps: []*v1.Node{
+					{
+						Id:     "gate",
+						Policy: &v1.StepPolicy{ContinueOnError: true},
+						Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+							Items: v1.NewExpr(oops),
+							Body:  []*v1.Node{says("never", "unreachable")},
+						}},
+					},
+					says("after", "still here"),
+				},
+			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"gate":  v1.FailedStepOutputs("evaluating items: " + evaluated),
+				"after": {},
+			}},
+		},
+		{
+			// A wait is the site with the most raising points — validation, the
+			// deadline expression, the timer, the signal — and every one of them
+			// was prefixed durably and bare locally.
+			Name: "a tolerated wait_until failure records what went wrong",
+			Workflow: &v1.Workflow{
+				Name: "tolerated-wait-until",
+				Steps: []*v1.Node{
+					{
+						Id:     "gate",
+						Policy: &v1.StepPolicy{ContinueOnError: true},
+						Kind: &v1.Node_Wait{Wait: &v1.Wait{
+							Kind: &v1.Wait_Until{Until: v1.NewExpr(oops)},
+						}},
+					},
+					says("after", "still here"),
+				},
+			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"gate":  v1.FailedStepOutputs("evaluating wait_until: " + evaluated),
+				"after": {},
+			}},
+		},
+		{
+			// The outermost position of the failure NestedErrorTextCases covers
+			// one level down. Nothing here binds a name — no loop, no `vars:` —
+			// which is precisely the shape the local driver used to skip
+			// resolution for, handing the expression to the task and getting a
+			// different sentence and a different error kind back.
+			Name: "a tolerated task input failure records what went wrong",
+			Workflow: &v1.Workflow{
+				Name: "tolerated-task-inputs",
+				Steps: []*v1.Node{
+					{
+						Id:     "gate",
+						Policy: &v1.StepPolicy{ContinueOnError: true},
+						Kind: &v1.Node_Task{Task: &v1.Task{
+							Name: "log",
+							Inputs: map[string]*v1.Value{
+								"message": v1.NewExpr(oops),
+							},
+						}},
+					},
+					says("after", "still here"),
+				},
+			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"gate":  v1.FailedStepOutputs(`input "message": ` + evaluated),
+				"after": {},
+			}},
+		},
+	}
+}
+
 // NestedErrorTextCases cover the failure that is *not* a classified task error,
 // tolerated at an enclosing node.
 //

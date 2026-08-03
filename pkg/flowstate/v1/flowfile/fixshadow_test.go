@@ -94,6 +94,57 @@ steps:
 `,
 		},
 		{
+			// The same binding, written the two other ways the compiler accepts it
+			// (`fields.go`'s `resolve` follows both). The rewriter read only a plain
+			// scalar, so an anchored or aliased `as:` looked like a loop with no
+			// `as:` at all — and a loop with no `as:` binds `item`, so the name the
+			// file actually binds was rooted inside the body of both loops.
+			name: "a loop's binding is written through an anchor and an alias",
+			source: `edition: v2026.2
+name: shadow-anchored
+steps:
+  - id: host
+    log:
+      message: a step whose id is host
+  - id: first
+    for_each:
+      items: "${['a']}"
+      as: &binding host
+      steps:
+        - id: one
+          log:
+            message: "${host}"
+  - id: second
+    for_each:
+      items: "${['b']}"
+      as: *binding
+      steps:
+        - id: two
+          log:
+            message: "${host}"
+`,
+		},
+		{
+			// A step's `vars:` reached the same way. The anchor was unwrapped here
+			// already and the alias was not, so `vars: *defaults` read as no vars at
+			// all and the name it declares was rooted into the step it shadows.
+			name: "a step's vars are written through an alias",
+			source: `edition: v2026.2
+name: shadow-alias-vars
+vars:
+  defaults: &defaults
+    subject: "${'world'}"
+steps:
+  - id: subject
+    log:
+      message: a step called subject
+  - id: greet
+    vars: *defaults
+    log:
+      message: "${'hello ' + subject}"
+`,
+		},
+		{
 			// The exact file DSL.md claims was verified: "a step called `now`, and
 			// a `wait_until: ${now + seconds(1)}` in the same workflow that still
 			// reads the clock rather than the step".
@@ -501,4 +552,112 @@ steps:
 			"downstream checks a deferred input, so the run is the first thing that would say so")
 	assert.Contains(t, string(result.Source), `outputs: "{'said': vars.greet}"`,
 		"the deferred input was not rewritten to the value the step moved to")
+}
+
+// TestFixRootsAStepShadowedByNothingWhenTheBindingIsAnchored is the other
+// direction of the anchored `as:`, and the one an over-broad exemption hides.
+//
+// Reading a binding it cannot spell wrong in *two* ways at once is what made this
+// worth its own test. A loop whose `as:` was an anchor fell back to
+// [v1.DefaultIterator], so the rewriter subtracted `item` — a name the file never
+// binds — while leaving `host`, the name it does, in the candidate set. So the
+// legacy reference to a step genuinely called `item` was left bare in a file
+// stamped with the new edition, which is `flow fix` exiting zero on a file `flow
+// validate` then rejects; and a body reference to `host` would have been rooted
+// into the step of that name, which is the corruption.
+//
+// Byte-for-byte, because the interesting property is which of the two names moved.
+func TestFixRootsAStepShadowedByNothingWhenTheBindingIsAnchored(t *testing.T) {
+	t.Parallel()
+
+	const want = `edition: v2026.2
+name: itemroot
+steps:
+  - id: item
+    log:
+      message: something
+  - id: each
+    for_each:
+      items: "${['a']}"
+      as: &binding host
+      steps:
+        - id: inner
+          log:
+            message: "${host + steps.item.said}"
+`
+
+	result, err := flowfile.Fix([]byte(`edition: 2026.1
+name: itemroot
+steps:
+  - id: item
+    log:
+      message: something
+  - id: each
+    for_each:
+      items: "${['a']}"
+      as: &binding host
+      steps:
+        - id: inner
+          log:
+            message: "${host + item.said}"
+`))
+	require.NoError(t, err)
+	require.Empty(t, result.Refusals)
+
+	assert.Equal(t, want, string(result.Source),
+		"the loop's `as:` was read as absent, so `item` was subtracted as a binding "+
+			"the file never made and the step of that name was left unrooted")
+
+	_, err = flowfile.ValidateSource(result.Source)
+	require.NoError(t, err, "the rewritten file does not compile:\n%s", result.Source)
+}
+
+// TestFixRootsAStepSharingTheWorkflowsVarName is the third scope, and the one
+// [boundBareNames] was applied to by accident.
+//
+// The walk reads the bindings off every mapping, and the document's own body is a
+// mapping — so the *workflow's* `vars:` were subtracted as though they were bound
+// bare. They are not: a workflow var is reached as `vars.<name>`, which is what
+// makes a top-level var legal beside a step of the same id in the first place.
+//
+// The cost is the leave-it-bare direction. `greet` was subtracted, the legacy
+// `greet.said` was left as written, and the edition was stamped anyway — so `flow
+// fix` reported success on a file `flow validate` refuses.
+func TestFixRootsAStepSharingTheWorkflowsVarName(t *testing.T) {
+	t.Parallel()
+
+	const want = `edition: v2026.2
+name: topvars
+vars:
+  greet: "${'hi'}"
+steps:
+  - id: greet
+    log:
+      message: something
+  - id: show
+    log:
+      message: "${steps.greet.said}"
+`
+
+	result, err := flowfile.Fix([]byte(`edition: 2026.1
+name: topvars
+vars:
+  greet: "${'hi'}"
+steps:
+  - id: greet
+    log:
+      message: something
+  - id: show
+    log:
+      message: "${greet.said}"
+`))
+	require.NoError(t, err)
+	require.Empty(t, result.Refusals)
+
+	assert.Equal(t, want, string(result.Source),
+		"a workflow var was read as a bare binding, so the step sharing its name was "+
+			"left unrooted in a file stamped with the new edition")
+
+	_, err = flowfile.ValidateSource(result.Source)
+	require.NoError(t, err, "the rewritten file does not compile:\n%s", result.Source)
 }

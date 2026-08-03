@@ -18,6 +18,10 @@ type Case struct {
 	Name string
 	// Workflow is the actual workflow definition to be tested.
 	Workflow *v1.Workflow
+	// Inputs are the arguments the run is submitted with, checked against the
+	// workflow's declarations by whichever driver runs the case. Nil for a case
+	// about something else, which is every case that predates `inputs:`.
+	Inputs map[string]*v1.Value
 	// ExpectedOutputs is the expected outputs of the workflow steps after execution.
 	ExpectedOutputs *v1.Workflow_StepOutputs
 }

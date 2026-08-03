@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/goccy/go-yaml/ast"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
@@ -38,15 +39,16 @@ const SecretMarker = "secret"
 type secretPlacement int
 
 const (
-	// secretAllowed is the whole value of a task input: the one place a reference
-	// can go, because it reaches the task untouched.
+	// secretAllowed is the whole value of a task input, or the whole value of one
+	// entry of a structure written in an input that carries its entries to the
+	// worker: the places a reference reaches the task untouched.
 	secretAllowed secretPlacement = iota
 
 	// secretNotWholeValue is inside a larger expression, where the reference would
 	// have to be combined with something.
 	secretNotWholeValue
 
-	// secretInStructure is nested in a list or a mapping.
+	// secretInStructure is nested in a list or a mapping that cannot carry one.
 	secretInStructure
 
 	// secretNotEvaluable is a field the workflow evaluates itself: a step's
@@ -58,33 +60,35 @@ const (
 // position it is in, because the three reasons are genuinely different and an
 // author sent hunting for the wrong mistake is worse off than one told nothing.
 const (
-	notWholeValueHelp = "a secret reference has to be the whole value of a task input; " +
+	notWholeValueHelp = "a secret reference has to be the whole value of a task input, " +
+		"or the whole value of one entry inside one; " +
 		"it names a value that does not exist until the worker running the step resolves it, " +
 		"so nothing workflow-side can combine it with anything else"
 
-	// This one is a limitation rather than a rule, and says so: the schema has no
-	// way to carry a reference inside a structure, since a value is either a
-	// reference or a structure and never a structure holding one.
+	// A reference nested in a structure is legal now — `headers: {Authorization:
+	// ${secret('env:TOKEN')}}` compiles, and the entries reach the worker as
+	// values, the reference among them still a reference. What this reports is
+	// the position where that is *not* true.
 	//
-	// It looks like the check is merely in the wrong place, and it is not. Values
-	// exist per task input, because Task.inputs is map<string, Value> — a mapping
-	// containing any expression compiles to one Value_Expr holding a CEL
-	// map-construction expression, and its entries are nodes inside that one AST.
-	// An Authorization entry therefore never occupies a Value of its own, so there
-	// is nowhere further down to anchor the check, and Value's oneof has no nested
-	// kind that could hold a reference there even if something were willing to
-	// resolve it.
-	//
-	// Lifting the limitation means one of two things, not a smaller check: a task
-	// input that accepts a SecretRef directly, which is cheap and unblocks the
-	// header case; or a Value kind that nests Values, which is general and forces
-	// Task.HTTP.Inputs.headers to stop being map<string, string>.
-	inStructureHelp = "a secret reference cannot be nested inside a list or a mapping: " +
-		"a structure holding an expression compiles into a single expression, which the workflow " +
-		"evaluates, and evaluating a secret is what would put it in history. " +
-		"This is a current limitation rather than a mistake in the file — a value can be a reference " +
-		"or a structure, never a structure containing one — so an authorization header needs a task " +
-		"input that accepts the reference itself"
+	// It is a statement about the input rather than about the shape, which is why
+	// it names the inputs that would work. A task can carry a reference through an
+	// input only if it applies that input's entries itself, inside the activity:
+	// everything else about an input — including that it is a map of the right
+	// type — is beside the point, because an input the workflow resolves is one
+	// whose resolved value rides the activity payload into history.
+	inStructureHelp = "a secret reference cannot be nested inside this input's list or mapping: " +
+		"only an input the task applies entry by entry, inside the activity that makes the request, " +
+		"can carry one — anything else is resolved by the workflow, and a secret the workflow " +
+		"resolved is a secret in durable history"
+
+	// The other half of the same rule, for the mixture the schema deliberately
+	// cannot represent. See [flowstatev1.Value_Structure].
+	mixedStructureHelp = "a secret reference and an expression cannot share a list or a mapping: " +
+		"the entries of a structure holding a reference are carried to the worker one at a time, " +
+		"and an expression among them would have to be evaluated by the workflow — which is what " +
+		"nesting the reference exists to avoid. Keep the computed entries in a structure of their " +
+		"own; for an Authorization header, `bearer:` takes the credential and leaves the rest of " +
+		"`headers:` free to hold expressions"
 
 	notEvaluableHelp = "a secret reference cannot go where the workflow evaluates the value itself; " +
 		"resolving it here would put the secret in workflow history, which is durable and " +
@@ -135,6 +139,205 @@ func (c *compiler) secret(parsed *expr.ParsedExpr, src string, span Span, r ref,
 	}}}, true
 }
 
+// structure compiles a list or a mapping that holds a secret reference somewhere
+// inside it, or reports why this input cannot carry one.
+//
+// It is the whole of what [compiler.composite] does differently when a marker is
+// present. An ordinary structure containing expressions still compiles to the one
+// CEL expression that builds it, which is what makes every entry evaluable; a
+// structure holding a reference cannot, because evaluating the reference is the one
+// thing none of this may do. So its entries stay Values and travel as they were
+// written.
+func (c *compiler) structure(n ast.Node, path string, r ref) *v1.Value {
+	if !v1.AcceptsNestedSecret(r.task, r.input) {
+		c.report(spanOfNode(c.markerNode(n)), r, "%s%s", inStructureHelp, acceptedElsewhere(r.task))
+		return nil
+	}
+
+	return c.structureValue(n, path, r)
+}
+
+// acceptedElsewhere names the inputs of a task that do accept a nested reference,
+// so a refusal points somewhere rather than only saying no.
+//
+// Read from the task's own definition rather than written out, for the reason the
+// rest of this package reads descriptors: an input built to take one is offered
+// here on the day it is built, and an input this build has never heard of is not
+// offered at all.
+func acceptedElsewhere(taskName string) string {
+	accepted := v1.NestedSecretInputs(taskName)
+	if len(accepted) == 0 {
+		return ""
+	}
+
+	return fmt.Sprintf("; %q accepts one in %s", taskName, strings.Join(accepted, ", "))
+}
+
+// markerNode returns the node holding the first secret marker inside n, so that a
+// refusal underlines the reference rather than the mapping it is in.
+//
+// It falls back to n itself, which is honest about what it could find: a structure
+// this cannot walk is one the report should cover whole.
+func (c *compiler) markerNode(n ast.Node) ast.Node {
+	found := n
+	c.walkMarkers(n, func(scalar ast.Node, _ string) bool {
+		found = scalar
+		return false
+	})
+	return found
+}
+
+// structureValue compiles one node of a structure that holds a reference.
+func (c *compiler) structureValue(n ast.Node, path string, r ref) *v1.Value {
+	n = c.resolve(n, path, r)
+	if n == nil || !c.enter(n, r) {
+		return nil
+	}
+	defer c.exit()
+	c.pos.record(path, spanOfNode(n))
+
+	switch node := n.(type) {
+	case *ast.SequenceNode:
+		values := make([]*v1.Value, 0, len(node.Values))
+		for i, element := range node.Values {
+			value := c.structureValue(element, indexPath(path, i), r)
+			if value == nil {
+				return nil
+			}
+			values = append(values, value)
+		}
+		return v1.NewStructureList(values...)
+
+	case *ast.MappingNode, *ast.MappingValueNode:
+		entries, ok := c.entries(n, path, r)
+		if !ok {
+			return nil
+		}
+		mapped := make(map[string]*v1.Value, len(entries))
+		for _, e := range entries {
+			value := c.structureValue(e.value, fieldPath(path, e.name), r)
+			if value == nil {
+				return nil
+			}
+			mapped[e.name] = value
+		}
+		return v1.NewStructureMap(mapped)
+
+	case *ast.StringNode:
+		return c.structureScalar(n, node.Value, path, r)
+
+	case *ast.LiteralNode:
+		return c.structureScalar(n, blockText(node), path, r)
+
+	default:
+		lit := c.literal(n, path, r)
+		if lit == nil {
+			return nil
+		}
+		return &v1.Value{Kind: &v1.Value_Literal{Literal: lit}}
+	}
+}
+
+// structureScalar compiles one entry of such a structure: a reference, or literal
+// text.
+func (c *compiler) structureScalar(n ast.Node, text, path string, r ref) *v1.Value {
+	inner, fenced := SplitFence(text)
+	if !fenced {
+		if err := fenceError(text); err != nil {
+			c.report(spanOfNode(n), r, "%s", err)
+			return nil
+		}
+		return &v1.Value{Kind: &v1.Value_Literal{Literal: &expr.Value{
+			Kind: &expr.Value_StringValue{StringValue: text},
+		}}}
+	}
+
+	span := spanWithin(n, inner)
+	c.recordExpr(path, span)
+
+	val := v1.NewExpr(inner)
+	if err := val.Error(); err != nil {
+		at, msg := celFailure(err, span)
+		c.report(at, r, "is not a valid expression: %s", msg)
+		return nil
+	}
+
+	// A whole entry, so the reference may be the whole of it and nothing else:
+	// `${'Bearer ' + secret('env:T')}` is refused here by the same rule that
+	// refuses it as a whole input, and with the same sentence.
+	if reference, isSecret := c.secret(val.GetExpr(), inner, span, r, secretAllowed); isSecret {
+		return reference
+	}
+
+	c.report(span, r, "%s", mixedStructureHelp)
+	return nil
+}
+
+// holdsSecretMarker reports whether a structure has a ${secret(...)} anywhere
+// inside it, which is what decides how the structure is compiled at all.
+func (c *compiler) holdsSecretMarker(n ast.Node) bool {
+	found := false
+	c.walkMarkers(n, func(ast.Node, string) bool {
+		found = true
+		return false
+	})
+	return found
+}
+
+// walkMarkers visits every scalar inside n whose expression calls the marker,
+// stopping early when visit says so.
+//
+// Parsing each fenced scalar rather than looking for the text `secret(`, because
+// the question is whether CEL sees a call to it: `${steps.secret.result}` and
+// `${'secret('}` both contain those characters and neither is a reference. The
+// same walk answers where to point a diagnostic, so the two cannot disagree about
+// what counts as a marker.
+func (c *compiler) walkMarkers(n ast.Node, visit func(ast.Node, string) bool) bool {
+	n = c.resolveQuiet(n)
+	if n == nil || !c.enter(n, ref{}) {
+		return true
+	}
+	defer c.exit()
+
+	scalar := func(text string) bool {
+		inner, fenced := SplitFence(text)
+		if !fenced {
+			return true
+		}
+		parsed := v1.NewExpr(inner)
+		if parsed.Error() != nil {
+			return true
+		}
+		if _, found := findSecretCall(parsed.GetExpr().GetExpr()); !found {
+			return true
+		}
+		return visit(n, inner)
+	}
+
+	switch node := n.(type) {
+	case *ast.StringNode:
+		return scalar(node.Value)
+	case *ast.LiteralNode:
+		return scalar(blockText(node))
+	case *ast.SequenceNode:
+		for _, v := range node.Values {
+			if !c.walkMarkers(v, visit) {
+				return false
+			}
+		}
+	case *ast.MappingNode:
+		for _, v := range node.Values {
+			if !c.walkMarkers(v.Value, visit) {
+				return false
+			}
+		}
+	case *ast.MappingValueNode:
+		return c.walkMarkers(node.Value, visit)
+	}
+
+	return true
+}
+
 // misplacedHelp explains why a reference cannot be where it is, or returns empty
 // when it can.
 //
@@ -146,6 +349,12 @@ func misplacedHelp(placement secretPlacement, isWholeExpression bool) string {
 	case placement == secretNotEvaluable:
 		return notEvaluableHelp
 	case placement == secretInStructure:
+		// Reached only if [compiler.holdsSecretMarker] and this disagree about what
+		// a marker is — they call the same [findSecretCall] over the same scalars,
+		// so they should not. Kept because the direction of the disagreement
+		// matters: without this, a marker the first walk missed would be compiled
+		// into the one expression that builds the structure, and the workflow would
+		// evaluate a secret. Refusing is the safe half of a contradiction.
 		return inStructureHelp
 	case placement == secretNotWholeValue, !isWholeExpression:
 		return notWholeValueHelp

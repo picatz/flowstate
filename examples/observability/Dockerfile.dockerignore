@@ -1,0 +1,12 @@
+# The build context is the repository root, because the image is built from this
+# module's own go.mod. BuildKit reads the ignore file named after the Dockerfile
+# when one exists, which is what keeps this scoped to the lab instead of adding a
+# .dockerignore at the root that every other build in the repo would inherit.
+#
+# .git is the whole of the point: it is larger than the source and no build step
+# reads it.
+.git
+.github
+.claude
+docs
+examples

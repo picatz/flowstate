@@ -32,6 +32,7 @@ permissions:
 env:
   BUF_VERSION: v1.72.0
   GOVULNCHECK_VERSION: v1.6.0
+  STATICCHECK_VERSION: 2026.1
 
 # Only the newest commit on a branch is worth testing. Pushing three times in a
 # minute otherwise runs three full matrices and the first two answer questions
@@ -87,6 +88,42 @@ jobs:
 
       - name: Test
         run: go test -race ./...
+
+      # The same mechanism as the proto job's generated-code check, on the four
+      # reference documents that are derived rather than written: the task
+      # reference from the registry, the CLI reference from the cobra tree, the
+      # MCP tool list, and the env-var table. Those four are exactly the tables
+      # the doc audit found had drifted, and they drift silently — a task gains a
+      # field, a flag gains an env default, and the prose stays confidently wrong
+      # until somebody follows it and fails.
+      #
+      # Here rather than in the proto job because what it pins is Go values, not
+      # the schema: `flow docs generate` runs the binary, so a failure here is a
+      # tree whose documentation disagrees with its own code.
+      - name: Verify generated reference docs are current
+        run: |
+          go run ./cmd/flow docs generate
+          git diff --exit-code -- docs/reference/ || {
+            echo "::error::generated reference docs do not match the code; run 'make docs' and commit the result"
+            exit 1
+          }
+
+      # `flow fix --check` is the command this exists to protect: examples are
+      # already in the current edition, and a PR that leaves one behind should fail
+      # here rather than at the next person's `flow fix .`. Not advisory — the
+      # examples are clean today, so a failure here is a real regression.
+      - name: Examples are in the current edition
+        run: go run ./cmd/flow fix --check examples/*/workflow.yaml
+
+      # The observability lab is eight services of other people's software, so
+      # standing it up here would make this repository's build depend on seven
+      # registries and a Temporal cluster coming up in time. What is checked is
+      # what is ours: that the compose file parses and resolves — a broken YAML
+      # anchor, an unknown key, a service naming a volume that does not exist.
+      # `config` is a client-side operation: no daemon, no pulls, under a second.
+      # The full-stack smoke is a manual step, written out in the lab's README.
+      - name: Observability lab compose file resolves
+        run: docker compose -f examples/observability/docker-compose.yaml config -q
 
   # The schema is a public contract, not an internal detail: plugins are separate
   # processes that compile against these descriptors, so breaking it breaks every
@@ -152,3 +189,65 @@ jobs:
       # actually reach the vulnerable path.
       - name: Vulnerability scan
         run: go run golang.org/x/vuln/cmd/govulncheck@${{ env.GOVULNCHECK_VERSION }} ./...
+
+  # Advisory for 48h from landing (until 2026-08-04): the govulncheck lesson
+  # generalizes to any newly-added check — a check nobody has run against this
+  # tree yet can go red on code nobody touched, and a red build everyone learns to
+  # ignore is worse than no build. `continue-on-error` surfaces the findings
+  # without blocking merges while that settles; after 2026-08-04 this job is
+  # promoted to required the same way the others are.
+  staticcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+
+      # Same toolchain pin as govulncheck, and for the same reason: staticcheck's
+      # own go.mod selects a toolchain older than go.mod's, so without the pin it
+      # downgrades underneath itself and then fails type-checking the standard
+      # library vendored into the newer toolchain's module cache — not a finding
+      # about this tree at all.
+      - name: Static analysis
+        run: GOTOOLCHAIN=go1.26.5 go run honnef.co/go/tools/cmd/staticcheck@${{ env.STATICCHECK_VERSION }} ./...
+
+  # Bounded per CLAUDE.md's fuzz recipe: `-parallel 1` and a memory limit because a
+  # fuzzer's purpose is to find the input that explodes, `-fuzztime 30s` per target
+  # because that bounds time and not memory. Four targets now: the round-trip one
+  # that existed first, plus the three the roadmap called for — CEL compile,
+  # MCP tool-argument decode, plugin descriptor parsing — each its own step so one
+  # hanging does not hide the others' output. Four times 30s is still comfortably
+  # under this job's five-minute budget alongside checkout and setup. Advisory for
+  # the same 48h window as staticcheck (until 2026-08-04) to absorb flake in a job
+  # this new — but a crasher the fuzzer actually finds is a real finding, not
+  # flake, and must be triaged rather than re-run away; `continue-on-error` here
+  # covers infrastructure noise, not a standing invitation to ignore a found
+  # corpus entry.
+  fuzz-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+
+      # No corpus is committed, so `-fuzz` always runs against the seed corpus in
+      # source plus whatever it generates this run; a runner-local checkout means
+      # generated corpus entries never persist between runs and never pollute a
+      # commit.
+      - name: Fuzz smoke (FuzzRoundTrip)
+        run: GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzRoundTrip -fuzztime 30s ./pkg/flowstate/v1/flowfile/
+
+      - name: Fuzz smoke (FuzzCELCompile)
+        run: GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzCELCompile -fuzztime 30s ./pkg/flowstate/v1/flowfile/
+
+      - name: Fuzz smoke (FuzzMCPToolArguments)
+        run: GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzMCPToolArguments -fuzztime 30s ./cmd/flow/
+
+      - name: Fuzz smoke (FuzzMessageDescriptor)
+        run: GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzMessageDescriptor -fuzztime 30s ./pkg/flowstate/v1/plugin/

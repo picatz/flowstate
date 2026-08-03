@@ -81,6 +81,49 @@ func TestGetSeparatesOutputsFromStatus(t *testing.T) {
 	require.Contains(t, errOut.String(), "flowstate-workflow-3f7c")
 }
 
+// TestGetReportsWhatTheRunAnswered is the other half of a finished run: the
+// transcript says what each step produced, and `run_outputs` says what the workflow
+// promised to report.
+//
+// Both directions matter here. The values reach a person on stderr, named, without
+// their having to read the document — and they do not reach stdout, where a second
+// copy would break the one property this command is built around.
+func TestGetReportsWhatTheRunAnswered(t *testing.T) {
+	fake := &fakeWorkflowService{
+		getResponse: &v1.GetResponse{
+			WorkflowId: "flowstate-workflow-3f7c",
+			RunId:      "0198f1e2-0000-7000-8000-000000000000",
+			Status:     v1.RunResponse_STATUS_COMPLETED,
+			Kind: &v1.GetResponse_Outputs{
+				Outputs: &v1.Workflow_StepOutputs{
+					StepValues: map[string]*v1.Node_Outputs{
+						"deploy": {NamedValues: map[string]*v1.Value{"status_code": v1.NewLiteral(200)}},
+					},
+				},
+			},
+			RunOutputs: &v1.RunOutputs{Values: map[string]*v1.Value{
+				"url":          v1.NewLiteral("https://example.com/build/12"),
+				"hosts_placed": v1.NewLiteral(3),
+			}},
+		},
+	}
+	serveFake(t, fake)
+	cmd, out, errOut := getCommand(t)
+
+	require.NoError(t, runGet(cmd, []string{"flowstate-workflow-3f7c"}))
+
+	require.Contains(t, errOut.String(), "outputs", "the run's declared outputs were not named")
+	require.Contains(t, errOut.String(), "url")
+	require.Contains(t, errOut.String(), "https://example.com/build/12",
+		"a string output was not written as itself, so it cannot be copied off the terminal")
+	require.Contains(t, errOut.String(), "hosts_placed")
+
+	require.NotContains(t, out.String(), "https://example.com/build/12",
+		"the human section was written to stdout, where the answer document lives")
+	require.Contains(t, out.String(), `"deploy"`,
+		"the transcript stopped being written when the answer started being")
+}
+
 // TestGetOnARunningRunProducesNoOutputs checks the honest answer to "what did it
 // produce" while it is still producing it.
 func TestGetOnARunningRunProducesNoOutputs(t *testing.T) {

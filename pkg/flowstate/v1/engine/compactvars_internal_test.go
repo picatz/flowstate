@@ -147,7 +147,7 @@ func TestEveryExpressionSiteKeepsWhatItReferences(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			carried := compactOutputsForRemainingSteps([]*v1.Node{test.node}, 0, produced)
+			carried := compactOutputsForRemainingSteps([]*v1.Node{test.node}, 0, produced, nil)
 			require.NotNil(t, carried)
 
 			assert.Contains(t, carried.GetStepValues(), "src",
@@ -180,7 +180,7 @@ func TestASiteThatReferencesNothingKeepsNothing(t *testing.T) {
 		}},
 	}
 
-	carried := compactOutputsForRemainingSteps([]*v1.Node{node}, 0, produced)
+	carried := compactOutputsForRemainingSteps([]*v1.Node{node}, 0, produced, nil)
 	require.NotNil(t, carried)
 
 	assert.Empty(t, carried.GetStepValues(),
@@ -252,12 +252,97 @@ func TestAWholeStepReferenceSurvivesAFieldReference(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			carried := compactOutputsForRemainingSteps([]*v1.Node{test.node}, 0, produced)
+			carried := compactOutputsForRemainingSteps([]*v1.Node{test.node}, 0, produced, nil)
 			require.NotNil(t, carried)
 
 			assert.Len(t, carried.GetStepValues()["a"].GetNamedValues(), 2,
 				"a step referenced whole was trimmed to the fields another expression "+
 					"happened to name, so the resumed run fails on the first one it did not")
+		})
+	}
+}
+
+// TestAReferenceInAMapKeySurvivesCompaction covers the other half of a map
+// literal.
+//
+// The tests above walk every place a *node* can hold an expression. This one walks
+// a place an *expression* can hold an expression, and the walker knew about only
+// one of the two: `Expr_CreateStruct_Entry` has a key_kind oneof — `field_key`,
+// a bare string naming a message field, or `map_key`, a full expression — and
+// [collectRefsFromExpr] read `GetValue()` alone.
+//
+// So `${ {steps.src.said: 'v'} }` recorded nothing. The map is built from an
+// output the resumed segment no longer has, and the step that already succeeded
+// fails after a Continue-As-New. It is reachable from a Flowfile exactly as
+// written here: the parser stores the key as a `map_key` select chain and
+// `flow validate` resolves it, because every other CEL walker in the repo
+// (`flowfile`'s validate, celcheck, secret and fixexpr passes) walks both halves.
+// Only the one deciding what survives a handover did not.
+//
+// Both compaction sites, because they share the walker and neither is fail-safe:
+// [compactOutputsForRemainingSteps] prunes the handover payload, and
+// [compactPrevOutputsForTask] prunes what an activity is handed.
+func TestAReferenceInAMapKeySurvivesCompaction(t *testing.T) {
+	t.Parallel()
+
+	// Two outputs, so "kept the right one" is distinguishable from "kept them all".
+	produced := &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+		"src": {NamedValues: map[string]*v1.Value{
+			"said":  v1.NewLiteral("payload"),
+			"other": v1.NewLiteral("unreferenced"),
+		}},
+	}}
+
+	for _, test := range []struct {
+		name string
+		expr string
+	}{
+		{
+			// The reported shape, rooted under `steps` — the reference exists
+			// nowhere but in key position.
+			name: "rooted, key position only",
+			expr: "{steps.src.said: 'v'}",
+		},
+		{
+			// The same in the legacy unrooted spelling, which reaches the walker's
+			// ident arm rather than [rootedStepRef].
+			name: "unrooted, key position only",
+			expr: "{src.said: 'v'}",
+		},
+		{
+			// A map literal is an ordinary sub-expression, so the gap also hides
+			// under everything that can contain one. A macro expands to a
+			// comprehension whose iter_range is the map — the walker reaches the
+			// map and then loses the key inside it.
+			name: "key position inside a macro's iteration range",
+			expr: "{steps.src.said: 'v'}.map(k, k)",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			reference := v1.NewExpr(test.expr)
+			require.NotNil(t, reference.GetExpr(), "expression did not parse: %s", test.expr)
+
+			node := &v1.Node{Id: "n", Kind: &v1.Node_Task{Task: &v1.Task{
+				Name:   "log",
+				Inputs: map[string]*v1.Value{"message": reference},
+			}}}
+
+			carried := compactOutputsForRemainingSteps([]*v1.Node{node}, 0, produced, nil)
+			require.NotNil(t, carried)
+			require.Contains(t, carried.GetStepValues(), "src",
+				"a reference in map-key position was not seen, so the output it needs is "+
+					"dropped at Continue-As-New and the resumed segment fails on a step "+
+					"that already succeeded")
+			assert.Contains(t, carried.GetStepValues()["src"].GetNamedValues(), "said")
+
+			handed := compactPrevOutputsForTask(node.GetTask(), produced)
+			require.NotNil(t, handed)
+			require.Contains(t, handed.GetStepValues(), "src",
+				"the same gap at the other compaction site: the activity is handed a "+
+					"map missing the output its own key names")
+			assert.Contains(t, handed.GetStepValues()["src"].GetNamedValues(), "said")
 		})
 	}
 }

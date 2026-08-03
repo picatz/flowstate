@@ -665,11 +665,12 @@ func secretDoc(ref string) string {
 //
 // Two namespaces, held in two fields rather than in one name plus a flag. A step's
 // outputs hang off the root — `steps.web.body` — and everything bound where the
-// cursor stands is written bare: a loop's iterator, `now` inside a `wait_until:`,
-// the response variables an http task resolves against its own scope. Before
-// rooting the two were the same shape, `a.b`, and only a lookup could say which
-// was meant; keeping them apart here is what stops a caller having to remember
-// which reading applies.
+// cursor stands is written bare: a loop's iterator, `now` inside a `wait_until:`.
+// The response an http task resolves against its own scope is not among them; it
+// has a root of its own, `response.*`, so `response.status_code` reads here the way
+// `steps.web.body` does. Before rooting the two were the same shape, `a.b`, and only
+// a lookup could say which was meant; keeping them apart here is what stops a caller
+// having to remember which reading applies.
 type reference struct {
 	// step is the id a rooted reference names, and output the step's output when
 	// one is written. Both are empty for a bare name.

@@ -37,6 +37,21 @@ $ flow validate examples/hello-world/workflow.yaml
 | [http-federated](http-federated) | Exchanging the workload identity for a short-lived API credential inside the task | yes |
 | [simple-http-multi-step](simple-http-multi-step) | Using a response status code in a later step | yes |
 | [edition-and-descriptions](edition-and-descriptions) | `description:` as a property of the step, and the required `edition:` naming the grammar the file is written in | no |
+| [parameterized-deploy](parameterized-deploy) | `inputs:` — typed arguments with defaults and a required one, read from an `if:`, a step's `vars:`, and a task input | yes |
+| [computed-outputs](computed-outputs) | `outputs:` — what the run answers with, computed from its steps and its arguments | no |
+| [observability](observability) | The docker-compose observability lab: one trace id from `flow run` through Grafana Tempo to the Temporal UI | no |
+
+Where a directory holds an `inputs.json` beside its `workflow.yaml`, that file is what
+the example is run with — by you and by CI, through the same flag:
+
+```console
+$ flow run local examples/parameterized-deploy/workflow.yaml \
+    --input-file examples/parameterized-deploy/inputs.json
+```
+
+Every other example runs as written, with no arguments, which is the rule: an example is
+something to paste and watch work. Only an example whose subject *is* a required input
+needs a file saying what it requires.
 
 The examples marked as needing network reach `httpbin.org`. They will fail without internet
 access, and the `http` task's egress policy denies internal addresses by default — see

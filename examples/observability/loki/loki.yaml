@@ -1,0 +1,47 @@
+# Loki, single binary, filesystem storage, no authentication.
+#
+# auth_enabled: false means Loki reads every request as the tenant "fake" rather
+# than requiring X-Scope-OrgID. Correct for a lab and wrong everywhere else; the
+# Grafana datasource is provisioned to match.
+
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+  log_level: warn
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2024-04-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  # The lab replays whole log files from the beginning when the collector
+  # restarts, and a strict window rejects those lines as too old — an empty
+  # Grafana that looks like a broken pipeline but is a refused timestamp.
+  reject_old_samples: false
+  # Structured metadata is how OTLP attributes that are not labels survive
+  # ingestion; without it Loki refuses OTLP writes carrying them.
+  allow_structured_metadata: true
+  volume_enabled: true
+
+analytics:
+  reporting_enabled: false

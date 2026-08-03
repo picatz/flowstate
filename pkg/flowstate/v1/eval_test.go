@@ -159,6 +159,43 @@ func TestRunWorkflowVars(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowInputsAndOutputs covers `inputs:` and `outputs:` in the local
+// driver.
+//
+// The same cases run against the durable driver in the engine package. Both reach
+// them through the submit boundary each driver actually has — here that is
+// [v1.RunWithInputs], there it is the check the server performs before starting the
+// workflow — which is the pairing that matters: the checking and the defaulting are
+// one function, and a driver that skipped it would accept a submission the other
+// refuses.
+func TestRunWorkflowInputsAndOutputs(t *testing.T) {
+	baseURL := tests.NewHTTPServer(t)
+	for _, test := range tests.InputOutputCases(baseURL) {
+		t.Run(test.Name, func(t *testing.T) {
+			out, err := v1.RunWithInputs(t.Context(), test.Workflow, test.Inputs)
+			require.NoError(t, err)
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, out, protocmp.Transform()))
+		})
+	}
+}
+
+// TestRunWorkflowInputsRefused is the negative direction of the same corpus: a
+// submission that must be refused before anything runs.
+//
+// Run by both drivers, because "refused" is an observable and the local driver
+// exists to predict it. A local run that started work on arguments the server would
+// have rejected is a rehearsal that says yes where production says no — and nothing
+// about the happy-path cases above could detect it.
+func TestRunWorkflowInputsRefused(t *testing.T) {
+	for _, test := range tests.InputRefusalCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			_, err := v1.RunWithInputs(t.Context(), test.Workflow, test.Inputs)
+			require.Error(t, err, "the submission was accepted")
+			require.Contains(t, err.Error(), test.Contains)
+		})
+	}
+}
+
 // TestRunWorkflowResponseScope covers what an http step's `expect:` and `outputs:`
 // can see, in the local driver.
 //
@@ -199,6 +236,24 @@ func TestRunWorkflowLog(t *testing.T) {
 func TestRunWorkflowErrorText(t *testing.T) {
 	baseURL := tests.NewHTTPServer(t)
 	for _, test := range tests.ErrorTextCases(baseURL) {
+		t.Run(test.Name, func(t *testing.T) {
+			out, err := v1.Run(t.Context(), test.Workflow)
+			require.NoError(t, err)
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, out, protocmp.Transform()))
+		})
+	}
+}
+
+// TestRunWorkflowToleratedStepFailure covers a non-task failure tolerated at the
+// step that raised it, in the local driver.
+//
+// The local half is where a step's own `vars:` failing used to abort the whole
+// run: the evaluation returned out of runNodes above the `continue_on_error`
+// check, so the driver that exists to predict production was stricter than it.
+// The engine package runs the identical cases against the durable driver, which
+// is the only thing that can say the two now agree.
+func TestRunWorkflowToleratedStepFailure(t *testing.T) {
+	for _, test := range tests.ToleratedStepFailureCases() {
 		t.Run(test.Name, func(t *testing.T) {
 			out, err := v1.Run(t.Context(), test.Workflow)
 			require.NoError(t, err)

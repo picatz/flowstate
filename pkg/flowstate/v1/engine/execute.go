@@ -113,7 +113,12 @@ func (e *executor) runNodes(nodes []*v1.Node, depth int) error {
 				return err
 			}
 			if !node.GetPolicy().GetContinueOnError() {
-				return err
+				// The step's position is added here, on the way out, rather than
+				// where the failure was raised — so that the branch below, which
+				// keeps the failure inside this step, records it without naming
+				// the step it is already filed under. The local driver adds its
+				// `step %q` at exactly this point too.
+				return stepFailed(err, "step %q", node.GetId())
 			}
 			workflow.GetLogger(e.ctx).Info("step failed but is allowed to continue",
 				"id", node.GetId(), "error", err.Error())
@@ -150,7 +155,7 @@ func (e *executor) runNodes(nodes []*v1.Node, depth int) error {
 func (e *executor) runNodeWithVars(node *v1.Node, depth int, descend bool) error {
 	inner, err := v1.EvalStepVars(context.Background(), node, e.scope)
 	if err != nil {
-		return stepFailed(err, "step %q", node.GetId())
+		return nodeFailed(err)
 	}
 	if inner == e.scope {
 		return e.runNode(node, depth, descend)
@@ -190,7 +195,7 @@ func (e *executor) runTask(node *v1.Node, task *v1.Task) error {
 	// values into the next.
 	resolved, err := v1.ResolveTaskInputs(context.Background(), task, e.scope)
 	if err != nil {
-		return stepFailed(err, "step %q", node.GetId())
+		return nodeFailed(err)
 	}
 
 	stepCtx := workflow.WithActivityOptions(e.ctx, activityOptionsFor(node.GetPolicy()))
@@ -219,6 +224,13 @@ func (e *executor) runTask(node *v1.Node, task *v1.Task) error {
 			Vars:        e.scope.GetVars(),
 			AmbientVars: e.scope.GetAmbientVars(),
 
+			// And the run's arguments, whole. This is the field the comment above
+			// was written for: `${inputs.region}` inside an http task's `outputs:`
+			// expression is evaluated *here*, on whatever worker takes the activity,
+			// and omitting it would leave that one position unable to resolve a name
+			// every other position in the file resolves.
+			Inputs: e.scope.GetInputs(),
+
 			// Carried across the wire. This scope is what an activity on some other
 			// worker evaluates a task's own expressions against, and that worker's
 			// build may know a different set of profiles than the one that compiled
@@ -241,7 +253,7 @@ func (e *executor) runTask(node *v1.Node, task *v1.Task) error {
 		}
 	}
 	if evalErr != nil {
-		return stepFailed(evalErr, "step %q", node.GetId())
+		return nodeFailed(evalErr)
 	}
 
 	e.scope.Outputs.StepValues[node.GetId()] = &out
@@ -253,7 +265,7 @@ func (e *executor) runTask(node *v1.Node, task *v1.Task) error {
 func (e *executor) runForEach(node *v1.Node, loop *v1.ForEach, depth int, descend bool) error {
 	items, err := v1.ResolveItems(context.Background(), loop, e.scope)
 	if err != nil {
-		return stepFailed(err, "step %q", node.GetId())
+		return nodeFailed(err)
 	}
 
 	name := v1.IteratorName(loop)

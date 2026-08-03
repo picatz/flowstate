@@ -2,6 +2,7 @@ package main
 
 import (
 	"cmp"
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -110,11 +111,33 @@ func newWorkflowServiceClient(server serverFlags) flowstatev1connect.WorkflowSer
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	baseURL := serverBaseURL(server.address)
 
-	// The client half of the tracing the server has carried all along. With no
-	// SDK configured this is a no-op passthrough; with OTEL_EXPORTER_OTLP_*
-	// set, a trace starts at `flow run` and the server's spans join it instead
-	// of each being a root with no parent — which is the difference between a
-	// trace and a pile of disconnected timings.
+	// The client half of the tracing the server has carried all along, and a
+	// trace that now begins at the person rather than at the server.
+	//
+	// Telemetry is started before the interceptor is built, and that ordering is
+	// the whole of it: otelconnect reads the global tracer provider and the
+	// global text-map propagator once, at construction, and keeps whatever it
+	// found. Built first, it captures the no-op pair and injects nothing for the
+	// life of the process — which is what this comment used to have to admit.
+	// Started first, the interceptor opens a client span per RPC and injects
+	// traceparent, so the server's own interceptor extracts it and its spans are
+	// children of the command somebody typed.
+	//
+	// Off unless the operator pointed OTEL_EXPORTER_OTLP_* somewhere: no
+	// exporter, no propagator, no headers, and this interceptor goes on
+	// recording into the no-op provider exactly as before.
+	//
+	// A warning rather than a refusal when telemetry cannot be configured. The
+	// command a person asked for is `flow get`, not `flow get with tracing`, and
+	// a mistyped endpoint should cost them the trace rather than the answer —
+	// but silently, and they would be reading an empty Grafana wondering which
+	// half was broken. Said once, on stderr, alongside the other things this
+	// client warns about.
+	if _, err := startTelemetry(context.Background()); err != nil {
+		log.Printf("WARNING: telemetry is configured but could not be started, "+
+			"so this command emits no trace: %v", err)
+	}
+
 	var interceptors []connect.Interceptor
 	if otelInterceptor, err := otelconnect.NewInterceptor(); err == nil {
 		interceptors = append(interceptors, otelInterceptor)

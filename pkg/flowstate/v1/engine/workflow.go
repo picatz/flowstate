@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -67,26 +68,65 @@ func (e *ErrRunFailed) Error() string {
 // cause: this composes both strings from it, so the message a person reads and
 // the text an expression compares cannot drift apart at a call site that
 // remembered to interpolate the error into one of them and not the other.
+//
+// A position belongs to the level a failure is passing *out of*, never to the
+// level that raised it. `step %q` is therefore added by [executor.runNodes] on
+// the propagating path — where the local driver adds its own — and not by the
+// call that raised the failure. Adding it at the raising site put the tolerating
+// step's own id into the text it recorded for itself: `${steps.gate.error}` read
+// `step "gate": evaluating items: …` durably and `evaluating items: …` locally,
+// for the same file. Which step it is, is what the key already says.
 func stepFailed(err error, format string, args ...any) error {
 	if temporal.IsCanceledError(err) {
 		return err
 	}
 
-	position := fmt.Sprintf(format, args...)
+	return failedAt(err, fmt.Sprintf(format, args...))
+}
+
+// nodeFailed reports a failure raised by a node itself — its `vars:`, its task's
+// inputs, its loop's items, its wait — carrying no position of its own.
+//
+// The position is added if and when this leaves the node, so that a node
+// tolerating its own failure records the same sentence the local driver records
+// for it. See [stepFailed].
+func nodeFailed(err error) error {
+	if temporal.IsCanceledError(err) {
+		return err
+	}
+
+	return failedAt(err, "")
+}
+
+// failedAt builds the run failure, optionally prefixed by a position.
+func failedAt(err error, position string) error {
 	recorded, fromTask := recordedStepError(err)
 
-	// A nested structural position is prepended for the same failures the local
-	// driver prepends it for, and dropped for the same ones it drops it for. A
-	// tolerated `for_each` whose body raised a runtime CEL error records
-	// `iteration 0: step "child": no such key: field` under either driver;
-	// a tolerated body whose *task* failed records the canonical task sentence
-	// under either, because that is what errors.As finds locally.
-	if !fromTask && recorded != "" {
-		recorded = position + ": " + recorded
+	// Composed from the inner failure's own message rather than from its
+	// Error(), which restates the `engine: flowstate run failed:` preamble at
+	// every level a position is added at.
+	message := err.Error()
+	var inner *ErrRunFailed
+	if errors.As(err, &inner) {
+		message = inner.Message
+	}
+
+	if position != "" {
+		message = position + ": " + message
+
+		// A structural position is prepended for the same failures the local
+		// driver prepends it for, and dropped for the same ones it drops it for. A
+		// tolerated `for_each` whose body raised a runtime CEL error records
+		// `iteration 0: step "child": no such key: field` under either driver;
+		// a tolerated body whose *task* failed records the canonical task sentence
+		// under either, because that is what errors.As finds locally.
+		if !fromTask && recorded != "" {
+			recorded = position + ": " + recorded
+		}
 	}
 
 	return &ErrRunFailed{
-		Message:          position + ": " + err.Error(),
+		Message:          message,
 		Recorded:         recorded,
 		recordedFromTask: fromTask,
 	}
@@ -213,7 +253,7 @@ func Run(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error
 		// the next task, and that worker must evaluate against the vocabulary the
 		// spec was compiled with rather than its own current one — otherwise a
 		// deployment mid-rollout runs one workload against two dialects.
-		scope:  varsScope(st.GetWorkflow().GetProfile(), stepOutputs, vars),
+		scope:  varsScope(st.GetWorkflow().GetProfile(), stepOutputs, vars, st.GetInputs()),
 		budget: stepsBudget,
 		resume: resumeFrames(st),
 
@@ -226,6 +266,35 @@ func Run(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error
 	err := exec.runNodes(st.Workflow.GetSteps(), 0)
 	switch {
 	case err == nil:
+		// The declared outputs, evaluated once — here, inline, in workflow code.
+		//
+		// # Why not an activity, when `vars:` is one
+		//
+		// The workflow's `vars:` go through an activity for one reason, and it is not
+		// that CEL in workflow code is unsafe: this executor evaluates every
+		// condition, every loop's `items:`, every step's own `vars:` and most task
+		// inputs inline and always has (invariant 4 says so explicitly). The reason is
+		// Continue-As-New — a later segment starts from `RunState` rather than from
+		// history, so an inline `vars:` would be *re-evaluated* at the top of every
+		// segment against whatever cel-go that worker carries, and a value that changes
+		// halfway through a run is what [WorkflowVars] exists to prevent.
+		//
+		// These are evaluated in the segment that finishes the run, exactly once,
+		// and never again — there is no later segment to re-evaluate them in, and a
+		// replay of *this* segment runs on the interpreter this segment is pinned to.
+		// So the seam that argument is about does not exist here, and paying a round
+		// trip per run to avoid a hazard that cannot arise would be paying for the
+		// shape of the answer rather than for the answer.
+		//
+		// Failing the run when an output cannot be computed is deliberate: an output
+		// is the answer the caller asked for, and a run that cannot produce it has not
+		// succeeded.
+		runOutputs, outputsErr := v1.EvalRunOutputs(context.Background(), st.GetWorkflow(), exec.scope)
+		if outputsErr != nil {
+			return nil, &ErrRunFailed{Message: outputsErr.Error()}
+		}
+		stepOutputs.RunOutputs = runOutputs
+
 		return stepOutputs, nil
 
 	case errors.Is(err, errContinueAsNew):
@@ -252,6 +321,14 @@ func Run(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error
 			// earlier ones saw — a value changing under a workload halfway through,
 			// for no cause visible in the file.
 			Vars: st.GetVars(),
+
+			// Checked and defaulted once, at submit, and carried unchanged — for the
+			// reason `Vars` above is carried, and one more: a run started before this
+			// field existed carries nothing here, which reads as a run with no
+			// arguments, which is exactly what it is. No compatibility arm needed
+			// (invariant 10).
+			Inputs: st.GetInputs(),
+
 			// Identity must survive Continue-As-New. A long workload spans
 			// several runs, and a step in the last one acts on behalf of the
 			// same caller as a step in the first; dropping it would silently
@@ -344,7 +421,7 @@ func compactOutputsForFrames(spec *v1.Workflow, frames []*v1.Frame, outputs *v1.
 	if len(frames) > 1 && from > 0 {
 		from--
 	}
-	return compactOutputsForRemainingSteps(spec.GetSteps(), from, outputs)
+	return compactOutputsForRemainingSteps(spec.GetSteps(), from, outputs, spec.GetDeclaredOutputs())
 }
 
 // failedStepOutputs records a failure as a step's outputs.
@@ -577,6 +654,16 @@ func collectRefsFromExpr(e *expr.Expr, prev *v1.Workflow_StepOutputs, refs map[s
 		}
 	case *expr.Expr_StructExpr:
 		for _, e := range kind.StructExpr.GetEntries() {
+			// An entry's key is an expression too. `Expr_CreateStruct_Entry` has a
+			// key_kind oneof: `field_key` is a bare string naming a message field,
+			// but `map_key` is a full expression, and a map literal written in a
+			// Flowfile — `${ {steps.name.result: steps.data.body} }` — puts one
+			// there. Walking only the value made a reference in key position
+			// invisible, so compaction pruned an output the resumed segment then
+			// failed on. Every other CEL walker in the repo (`flowfile`'s
+			// validate, celcheck, secret and fixexpr passes) already walks both
+			// halves; this one was the outlier.
+			collectRefsFromExpr(e.GetMapKey(), prev, refs)
 			collectRefsFromExpr(e.GetValue(), prev, refs)
 		}
 	case *expr.Expr_ComprehensionExpr:
@@ -712,13 +799,30 @@ func collectValueRefs(value *v1.Value, prev *v1.Workflow_StepOutputs, refs map[s
 
 // compactOutputsForRemainingSteps examines the remaining steps and returns a
 // minimal subset of step outputs required to evaluate their inputs.
-func compactOutputsForRemainingSteps(steps []*v1.Node, from int, prev *v1.Workflow_StepOutputs) *v1.Workflow_StepOutputs {
-	if prev == nil || prev.StepValues == nil || from >= len(steps) {
+//
+// The workflow's declared outputs count as remaining work, which is why they are a
+// parameter rather than something a caller may forget. They are evaluated after the
+// *last* step, in the run's own scope, so a `${steps.deploy.url}` written there is a
+// reference that outlives every step between here and the end — and pruning it
+// would fail the run at the one moment there is nothing left to retry, on a
+// specification that never changed. It is the same shape as the `vars:` block this
+// walk once missed, and the same shape as a reference in map-key position: a site
+// the language has and the compactor did not know about.
+func compactOutputsForRemainingSteps(
+	steps []*v1.Node,
+	from int,
+	prev *v1.Workflow_StepOutputs,
+	declaredOutputs []*v1.OutputDeclaration,
+) *v1.Workflow_StepOutputs {
+	if prev == nil || prev.StepValues == nil || (from >= len(steps) && len(declaredOutputs) == 0) {
 		return prev
 	}
 	refs := map[string]map[string]struct{}{}
 	for i := from; i < len(steps); i++ {
 		collectNodeRefs(steps[i], prev, refs)
+	}
+	for _, declaration := range declaredOutputs {
+		collectValueRefs(declaration.GetValue(), prev, refs)
 	}
 
 	if len(refs) == 0 {
@@ -744,9 +848,17 @@ func compactOutputsForRemainingSteps(steps []*v1.Node, from int, prev *v1.Workfl
 // same state through v1.EvalWorkflowVars; what must not differ between them is the
 // scope a first step sees, and that is easier to compare when each driver has exactly
 // one place that builds it.
-func varsScope(profile string, outputs *v1.Workflow_StepOutputs, vars map[string]*v1.Value) *v1.Scope {
+func varsScope(profile string, outputs *v1.Workflow_StepOutputs, vars, inputs map[string]*v1.Value) *v1.Scope {
 	scope := v1.NewScope(profile, outputs)
 	scope.AmbientVars = vars
+
+	// Taken from `RunState` rather than derived from the specification's
+	// declarations, and that is the whole of the durable driver's part in this: the
+	// checking and the defaulting happened once, at submit, where a caller was still
+	// there to be refused. Re-deriving them here would run at the top of *every*
+	// segment, so a declaration edited between deploys could change an argument
+	// underneath a run in flight — the class of thing invariant 10 exists to stop.
+	scope.Inputs = inputs
 
 	return scope
 }

@@ -10,6 +10,14 @@ other.
 [CLAUDE.md](../CLAUDE.md) describes how to change it. This describes what a person
 meets.
 
+It is the reasoning and not the enumeration. Every command and flag `flow` has —
+with defaults, and which environment variable feeds each one — is
+[reference/cli.md](reference/cli.md), generated from the command tree the binary
+builds at startup and pinned in CI, so it is complete in a way a page somebody
+maintains by hand is not. Its siblings answer the other three "what is there"
+questions: [reference/tasks.md](reference/tasks.md),
+[reference/mcp.md](reference/mcp.md), [reference/envvars.md](reference/envvars.md).
+
 ## Worker-side secrets
 
 A Flowfile carries only a reference such as `${secret('env:API_TOKEN')}`. The
@@ -20,6 +28,7 @@ Secret access requires two independent pieces of worker configuration:
 
 ```sh
 flow worker \
+  --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)" \
   --secret-env API_TOKEN \
   --secret-dir /var/run/secrets/flowstate \
   --auth-policy /etc/flowstate/auth.yaml
@@ -52,6 +61,7 @@ http:
 
 ```sh
 flow worker \
+  --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)" \
   --auth-policy /etc/flowstate/auth.yaml \
   --identity-key /var/run/flowstate/2026-08.pem
 ```
@@ -278,6 +288,167 @@ is one rule with consequences — the fuller reasoning lives in
 - **Pure verbs stay pure.** `validate`, every `--check`, and every read are
   side-effect-free so a program — or an agent — can loop on them unattended.
   Mutations sit behind explicit confirmation in non-interactive streams.
+
+## `flow mcp`: the same surface, for an agent
+
+An agent is the second machine audience, and it needs the same thing a pipe does
+— the RPCs, unembellished — plus one thing a pipe never asks for: somewhere to
+read before it writes. `flow mcp` serves both over stdin and stdout as a Model
+Context Protocol server, which an MCP client launches as a subprocess rather than
+something you run yourself.
+
+Nothing here is a second product. The tools are the Connect services projected,
+with input schemas derived from the same protobuf messages the API speaks, so a
+field added to a request reaches an agent the day the code is regenerated. There
+is no hand-maintained tool list to fall behind the engine, and a test holds the
+list to the service descriptor in both directions.
+
+### What it serves
+
+**Ten tools.** Nine are one-per-RPC — `flowstate_validate`, `flowstate_compile`,
+`flowstate_get_catalog`, `flowstate_run`, `flowstate_get`, `flowstate_signal`,
+`flowstate_list`, `flowstate_cancel`, `flowstate_terminate` — and they split by
+what the method needs. Validate, compile and the catalog touch no run and no
+tenant, so they answer in this process: an agent gets a working authoring loop
+with no server and no Temporal stood up. The lifecycle verbs address durable
+runs, which only a server has, and without `--address` they say so rather than
+failing opaquely.
+
+The tenth, `flowstate_run_local`, is the one tool that is not an RPC, and
+deliberately: it is the local driver executing a submitted Flowfile in this
+process — the same rehearsal `flow run local` performs — and giving it a service
+method would make a server executing submitted workflows in-process, which is a
+different product. It answers with the same `GetResponse` document
+`flowstate_get` returns, plus whatever `log:` steps emitted, because stdout is
+the transport here and a workflow that narrates itself must not write into the
+protocol.
+
+**Resources**, read-only and listed before anything is called:
+
+| URI | What it is |
+| --- | --- |
+| `flowstate://docs/dsl` | [docs/DSL.md](DSL.md) whole: the grammar, every step kind, expression scoping, retries, waits, secrets. |
+| `flowstate://catalog/tasks` | The task catalog as JSON — the same `GetCatalogResponse` bytes `flowstate_get_catalog` answers with, from the same encoder. |
+| `flowstate://docs/examples/<name>` | One example workflow, by its directory name under [`examples/`](../examples/) — `flowstate://docs/examples/hello-world`. A URI template, with each name also listed as a resource so nothing has to be guessed. |
+
+They are resources rather than tools because a verb is the wrong shape for "what
+is the language": an agent that must spend a call, a round trip, and a slice of
+its context window to learn the vocabulary will guess instead, and a guessed
+Flowfile costs that budget three times over in diagnostics.
+
+All three are compiled into the binary. That is a deliberate trade, stated
+plainly: what is served is frozen at build time, so a binary from March answers
+with March's reference — and that is the better failure, because `flow` is
+installed with `go install` and run from a container or a CI job with no checkout
+anywhere near it. An answer read off whatever happens to be on disk describes
+some other engine; a compiled-in one describes the engine the agent is about to
+call. The copies are held to the originals by a test, the way generated protobuf
+code is held to its schema.
+
+### The flag surface
+
+Every flag is taken at start-up, and that is the security posture rather than an
+implementation detail: a client speaks to this over stdio and never gets to
+choose any of it. An opt-in a caller can send is not an opt-in.
+
+- `--address` (or `FLOWSTATE_ADDRESS`), `--token-file` — which server the
+  lifecycle tools talk to, and how they authenticate. The local tools never dial.
+- `--egress-policy` — what `http:` steps in a `flowstate_run_local` run may
+  reach. **Without it, egress is denied entirely**, which is stricter than `flow
+  run local`'s default and deliberately so: that command is run by the person who
+  wrote the file, and this one serves a model the ability to compose a workflow
+  and have this process fetch a URL of its choosing. An empty allowlist is the
+  honest starting point for a surface whose caller is not a person.
+- `--secret-env`, `--secret-dir`, `--secret-dir-namespaced`,
+  `--secret-env-namespace`, `--secret-require-namespace`, `--auth-policy`,
+  `--identity-key` — the same secret and federation opt-ins `flow worker` and
+  `flow run local` take, with the same fail-closed rules. No scheme is registered
+  unless a flag says so.
+- `--as-subject`, `--as-issuer`, `--as-namespace`, `--as-deployment`,
+  `--as-claim` — the identity a local run rehearses policy as.
+- `--run-local-timeout` (default `2m`) — a bound `flow run local` does not need
+  and this does. There, a workflow waiting on a gate nobody will answer is a
+  terminal a person can interrupt; here it is a tool call holding a model's turn
+  open for as long as the workflow asks, and the workflow is untrusted input.
+  `sleep: 24h` is a legal Flowfile.
+
+Nothing in a tool's arguments can widen any of it. A denied request means this
+process was not configured for it, not that the workflow is wrong — which is what
+the refusal says, so an agent corrects the right thing.
+
+### Configuring a client
+
+**Claude Code**, which takes the command and its flags directly:
+
+```sh
+claude mcp add flowstate -- flow mcp
+
+# With a server for the durable verbs, and egress for local runs:
+claude mcp add flowstate -- flow mcp \
+  --address flowstate.internal:9233 \
+  --egress-policy /etc/flowstate/egress.yaml
+```
+
+**Claude Desktop**, in `claude_desktop_config.json` — `~/Library/Application
+Support/Claude/` on macOS, `%APPDATA%\Claude\` on Windows:
+
+```json
+{
+  "mcpServers": {
+    "flowstate": {
+      "command": "flow",
+      "args": ["mcp", "--egress-policy", "/etc/flowstate/egress.yaml"],
+      "env": {
+        "FLOWSTATE_ADDRESS": "flowstate.internal:9233"
+      }
+    }
+  }
+}
+```
+
+**Any other stdio client** takes the same three things, whatever it calls the
+file — a command, its arguments, and an environment:
+
+```json
+{
+  "command": "flow",
+  "args": ["mcp"],
+  "env": {}
+}
+```
+
+Two notes that save a support round trip. Use an absolute path to `flow` if the
+client does not inherit your shell's `PATH`; `$(go env GOPATH)/bin/flow` is where
+`go install` puts it. And logs go to stderr — stdout is the protocol, so anything
+written there breaks the session rather than appearing anywhere.
+
+### For agents
+
+The loop this surface is shaped around, in order:
+
+1. **Read** `flowstate://docs/dsl` for the grammar and `flowstate://catalog/tasks`
+   for what this build can actually execute — a task named correctly in prose and
+   absent from the catalog is a compile error you can avoid before writing a line.
+   `flowstate://docs/examples/<name>` has working files to pattern-match against.
+2. **Author** the Flowfile.
+3. **Validate** it with `flowstate_validate`. It is pure and safe to loop on, and
+   its diagnostics carry line and column, so correct against the position rather
+   than re-reading the whole file.
+4. **Run it locally** with `flowstate_run_local`. This is the step that used to
+   be missing: conditions, retries, timeouts, loops, waits and step outputs behave
+   here the way they behave in production, so a rehearsal that is right is
+   evidence rather than a hope.
+5. **Iterate** on 2–4, which costs nothing and reaches nothing.
+6. **Run it durably**: `flowstate_compile`, then `flowstate_run` against a server,
+   then `flowstate_get` to watch it.
+
+What step 4 does not prove is durability, and the tool's own description says so
+at length: a local run has no run id, nothing can watch it, it does not survive
+the process, Continue-As-New compaction never happens, and parallel steps are
+rehearsed rather than genuinely distributed. Two execution drivers agreeing on
+everything observable is what makes the rehearsal worth doing —
+[CLAUDE.md](../CLAUDE.md) has why that agreement is enforced rather than hoped
+for — but agreement about behavior is not a claim about durability.
 
 ## What this means for a change
 

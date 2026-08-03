@@ -50,6 +50,18 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// What the run is started with, read before anything happens: a command line that
+	// does not satisfy the workflow's `inputs:` is a refusal about the command line,
+	// and reporting it after a `log:` step has already narrated two lines would make
+	// it look like the run got somewhere first.
+	inputs, err := runInputs(cmd, workflow)
+	if err != nil {
+		return err
+	}
+	if err := checkRunInputs(workflow, inputs); err != nil {
+		return err
+	}
+
 	// The same flag the worker takes, because a rehearsal under a different egress
 	// policy rehearses a different production. A file that does not load refuses
 	// the run, exactly as it refuses the worker.
@@ -80,7 +92,11 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 		slog.New(newRunLogHandler(surface.Err, surface.ErrTheme)))
 
 	started := time.Now()
-	outputs, runErr := v1.Run(ctx, workflow)
+
+	// The local driver's own submit boundary, which binds the arguments and applies
+	// the declared defaults exactly as the server does before a durable run starts.
+	// The check above is for the message; this is the one that decides.
+	outputs, runErr := v1.RunWithInputs(ctx, workflow, inputs)
 	response := localRun(outputs, runErr, cmd.Context().Err(), started, time.Now())
 
 	if runErr != nil {
@@ -164,6 +180,14 @@ func localRun(outputs *v1.Workflow_StepOutputs, runErr, interrupted error, start
 		// `outputs` holding nothing would say the run produced no outputs
 		// *successfully*, and the oneof being absent says there is no answer here.
 		response.Kind = &v1.GetResponse_Outputs{Outputs: outputs}
+
+		// The answer, beside the transcript, in the field a durable run reports it
+		// in — the server copies it out of the completion payload the same way
+		// (`server.go`, STATUS_COMPLETED). Without this line the declared outputs
+		// would be readable at `.outputs.runOutputs` from a local run and at
+		// `.runOutputs` from a durable one: one document with two spellings, which
+		// is exactly the divergence [writeRun] exists to prevent.
+		response.RunOutputs = outputs.GetRunOutputs()
 	}
 
 	return response

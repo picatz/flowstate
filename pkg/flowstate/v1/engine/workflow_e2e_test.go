@@ -36,6 +36,10 @@ import (
 func TestRun_E2E_ExpressionsAcrossContinueAsNew(t *testing.T) {
 	t.Parallel()
 
+	if testing.Short() {
+		t.Skip("skipping: starts a real Temporal dev server; CI runs the full suite")
+	}
+
 	baseURL := tests.NewHTTPServer(t)
 
 	devServer, err := testsuite.StartDevServer(t.Context(), testsuite.DevServerOptions{

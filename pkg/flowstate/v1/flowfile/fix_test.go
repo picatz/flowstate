@@ -1262,3 +1262,222 @@ steps:
 	_, _, err = flowfile.Parse(result.Source)
 	assert.NoError(t, err)
 }
+
+// TestFixRootsAReferenceAfterANonASCIICharacter is the unit mismatch between what
+// cel-go counts and what a Go string is indexed in.
+//
+// `SourceInfo.Positions` are *code-point* offsets into the expression source. The
+// rewriter used them as byte offsets, for both the boundary check that guards a
+// splice and the splice itself, which is the same number only while the expression
+// is ASCII — and an expression is a place authors write prose.
+//
+// Both failures are here because they are the same defect pointing in opposite
+// directions, and only one of them is loud:
+//
+//   - The shifted offset usually lands on something that is not the identifier, so
+//     the guard fires and the file is refused with a diagnostic blaming a macro
+//     that is not there. `flow fix --check` then fails CI on a valid file.
+//   - Where it lands on the same spelling somewhere else — a step called `a`, and
+//     `'日本a' +a` positioning the literal's `a` at exactly the byte the real one
+//     has as its code point — the guard passes and the *string literal* is
+//     rewritten. The real reference is left bare, and `flow fix` exits zero on a
+//     file `flow validate` rejects.
+//
+// Byte-for-byte, because the whole question is which `a` moved.
+func TestFixRootsAReferenceAfterANonASCIICharacter(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name   string
+		source string
+		want   string
+	}{
+		{
+			// The refusal direction: an accented character before the reference is
+			// enough, and it is the shape a real file has.
+			name: "an accent before the reference",
+			source: `edition: 2026.1
+name: unicode
+steps:
+  - id: source
+    log:
+      message: something
+  - id: show
+    log:
+      message: "${'héllo ' + source.said}"
+`,
+			want: `edition: v2026.2
+name: unicode
+steps:
+  - id: source
+    log:
+      message: something
+  - id: show
+    log:
+      message: "${'héllo ' + steps.source.said}"
+`,
+		},
+		{
+			// The corruption direction, which needs the offsets to collide: two
+			// three-byte characters put the literal's `a` at byte 7, and ` +`
+			// puts the real reference at code point 7.
+			name: "a literal holding the same name at the shifted offset",
+			source: `edition: 2026.1
+name: mixed
+steps:
+  - id: a
+    log:
+      message: one
+  - id: show
+    log:
+      message: "${'日本a' +a.said}"
+`,
+			want: `edition: v2026.2
+name: mixed
+steps:
+  - id: a
+    log:
+      message: one
+  - id: show
+    log:
+      message: "${'日本a' +steps.a.said}"
+`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			result, err := flowfile.Fix([]byte(test.source))
+			require.NoError(t, err)
+			require.Empty(t, result.Refusals,
+				"a valid file was refused for a macro it does not contain, so `flow fix --check` fails on it in CI")
+
+			assert.Equal(t, test.want, string(result.Source),
+				"the splice landed at a byte offset rather than the code point cel-go counted")
+
+			_, err = flowfile.ValidateSource(result.Source)
+			require.NoError(t, err, "the rewritten file does not compile:\n%s", result.Source)
+		})
+	}
+}
+
+// TestFixSplicesAtTheValueAndNotAnEarlierFenceOnTheLine is the second half of the
+// same unit mismatch, one layer out from the expression: the *line* is spliced at a
+// byte index taken from a column the parser counts in code points.
+//
+// Both splice sites locate the value by its own column, and both say why in a
+// comment: a line can hold more than one `${...}` — a trailing comment, or another
+// value written in flow style — and rewriting the wrong one is `flow fix` corrupting
+// a valid file, which is the one thing it must never do. With a multi-byte character
+// earlier on the line the offset lands short of the value, so the search starts
+// *before* it and an identical fence written earlier is the one that gets rewritten.
+// The undershoot is exactly the number of extra bytes, so it takes a handful of
+// four-byte characters to reach back over a neighbour.
+//
+// Each case pairs the file with its ASCII twin, so what is asserted is that a
+// non-ASCII character changes nothing about which value moves. Byte-for-byte,
+// because the whole question is which fence moved.
+func TestFixSplicesAtTheValueAndNotAnEarlierFenceOnTheLine(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name   string
+		source string
+		want   string
+	}{
+		{
+			// rootScalar. The decoy is an `outputs:` expression, which is a
+			// deferred input: the http task evaluates it against the response, so
+			// `a.said` there is not a step reference and must be left exactly as
+			// written. It was rewritten into `steps.a.said` — a name that scope
+			// does not have — while the value the rewriter was actually looking at
+			// kept its bare reference.
+			name: "a step reference beside a deferred output",
+			source: `edition: 2026.1
+name: t
+steps:
+  - id: a
+    log:
+      message: one
+  - id: post
+    http: {url: "https://example.com", outputs: {n🎵🎵🎵🎵🎵🎵🎵🎵🎵🎵: "${a.said}"}, headers: {H: "${a.said}"}}
+`,
+			want: `edition: v2026.2
+name: t
+steps:
+  - id: a
+    log:
+      message: one
+  - id: post
+    http: {url: "https://example.com", outputs: {n🎵🎵🎵🎵🎵🎵🎵🎵🎵🎵: "${a.said}"}, headers: {H: "${steps.a.said}"}}
+`,
+		},
+		{
+			name: "the same file in ASCII",
+			source: `edition: 2026.1
+name: t
+steps:
+  - id: a
+    log:
+      message: one
+  - id: post
+    http: {url: "https://example.com", outputs: {n: "${a.said}"}, headers: {H: "${a.said}"}}
+`,
+			want: `edition: v2026.2
+name: t
+steps:
+  - id: a
+    log:
+      message: one
+  - id: post
+    http: {url: "https://example.com", outputs: {n: "${a.said}"}, headers: {H: "${steps.a.said}"}}
+`,
+		},
+		{
+			// rootResponseScalar, whose fallback made the same mistake without any
+			// help from Unicode: when the check at the column failed — as it does
+			// for every quoted value, since the span starts at the quote — it
+			// searched the whole line from the start. The first `${body}` on the
+			// line is in `headers:`, where a response name is not in scope at all.
+			name: "a response reference beside a header holding the same text",
+			source: `edition: 2026.1
+name: t
+steps:
+  - id: post
+    http: {url: "https://example.com", headers: {H🎵🎵🎵🎵🎵🎵🎵🎵🎵🎵: "${body}"}, outputs: {n: "${body}"}}
+`,
+			want: `edition: v2026.2
+name: t
+steps:
+  - id: post
+    http: {url: "https://example.com", headers: {H🎵🎵🎵🎵🎵🎵🎵🎵🎵🎵: "${body}"}, outputs: {n: "${response.body}"}}
+`,
+		},
+		{
+			name: "the same response file in ASCII",
+			source: `edition: 2026.1
+name: t
+steps:
+  - id: post
+    http: {url: "https://example.com", headers: {H: "${body}"}, outputs: {n: "${body}"}}
+`,
+			want: `edition: v2026.2
+name: t
+steps:
+  - id: post
+    http: {url: "https://example.com", headers: {H: "${body}"}, outputs: {n: "${response.body}"}}
+`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			result, err := flowfile.Fix([]byte(test.source))
+			require.NoError(t, err)
+			require.Empty(t, result.Refusals)
+
+			assert.Equal(t, test.want, string(result.Source),
+				"the splice was located at a byte index taken from a code-point column, so a fence earlier on the line was rewritten instead of the value")
+		})
+	}
+}

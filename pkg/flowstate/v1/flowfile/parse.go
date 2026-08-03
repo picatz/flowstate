@@ -50,7 +50,14 @@ const (
 // misspelled `timout:` that is silently ignored does nothing at run time and gives
 // the author no reason to doubt it, which is the worst of both outcomes.
 var (
-	workflowKeys = []string{"edition", "name", "description", "vars", "steps"}
+	workflowKeys = []string{"edition", "name", "description", "inputs", "outputs", "vars", "steps"}
+
+	// The keys of one input declaration and of one output declaration. Both are
+	// mappings keyed by the name being declared, so these are the keys *under* a
+	// name rather than the names themselves — which are the author's and are checked
+	// as names, not as keys.
+	inputKeys  = []string{"type", "required", "default", "description"}
+	outputKeys = []string{"value", "description"}
 
 	// stepPropertyKeys say which step this is, how it runs, and what it is for —
 	// everything except what work it does.
@@ -347,6 +354,16 @@ type ref struct {
 	// input is the task input at fault, when the value is one.
 	input string
 
+	// task is the name of the task the input belongs to, when there is one.
+	//
+	// Carried because one rule genuinely depends on it: whether a secret reference
+	// may be nested inside a list or a mapping is a property of the *input*, since
+	// only a task that applies an input's entries itself can carry a reference to
+	// the worker. Nothing else reads it, and a value that is not a task input —
+	// a var, a declaration's default — leaves it empty and is refused, which is
+	// the fail-closed direction.
+	task string
+
 	// path addresses the value in the source, and names it in a message when
 	// there is no step id to name instead.
 	path string
@@ -468,6 +485,13 @@ func (c *compiler) compile(file *ast.File) *v1.Workflow {
 		}
 	}
 
+	// What the run takes, read first because it is what a reader meets first: a
+	// declaration is in scope for everything below it, and nothing below it can
+	// change what it says.
+	if f, found := fields.get("inputs"); found {
+		workflow.DeclaredInputs = c.declaredInputs(f.value, "inputs", ref{path: "inputs", label: "inputs"})
+	}
+
 	// Read before steps, because every step's expressions may reference these and a
 	// reader follows the file in the order it is written.
 	if f, found := fields.get("vars"); found {
@@ -478,7 +502,195 @@ func (c *compiler) compile(file *ast.File) *v1.Workflow {
 		workflow.Steps = c.steps(f.value, "steps", ref{path: "steps", label: "steps"})
 	}
 
+	// What the run answers with, read last for the reason it is *evaluated* last:
+	// every one of these expressions is written against steps that have finished.
+	if f, found := fields.get("outputs"); found {
+		workflow.DeclaredOutputs = c.declaredOutputs(f.value, "outputs", ref{path: "outputs", label: "outputs"})
+	}
+
 	return workflow
+}
+
+// declaredInputs compiles the top-level `inputs:` block: one entry per parameter a
+// run may be started with.
+//
+// A repeated field rather than a map in the schema, so the order written here is
+// the order everything downstream reports them in — a `--help` listing, an editor's
+// completion, a diagnostic naming what a workflow declares. Which means the order
+// this reads them in is part of the contract, and it is the order they were
+// written.
+//
+// Everything a *set* of declarations can be wrong about — two sharing a name, a
+// name CEL's lexer refuses, a default that is not a literal, a required input
+// carrying one — belongs to [Validate], which sees the compiled workflow and can
+// answer for all of them at once. What is decided here is only what one declaration
+// says.
+func (c *compiler) declaredInputs(n ast.Node, path string, r ref) []*v1.InputDeclaration {
+	c.pos.record(path, spanOfNode(c.resolveQuiet(n)))
+
+	entries, ok := c.entries(n, path, r)
+	if !ok {
+		return nil
+	}
+
+	declarations := make([]*v1.InputDeclaration, 0, len(entries))
+	for _, e := range entries {
+		if declaration := c.declaredInput(e, path); declaration != nil {
+			declarations = append(declarations, declaration)
+		}
+	}
+
+	if len(declarations) == 0 {
+		// Nil rather than an empty slice, so `inputs:` written with nothing under it
+		// is indistinguishable from `inputs:` absent — which is what keeps Marshal an
+		// exact inverse, the same rule `vars:` follows.
+		return nil
+	}
+
+	return declarations
+}
+
+// declaredInput compiles one input declaration.
+func (c *compiler) declaredInput(e entry, parent string) *v1.InputDeclaration {
+	path := fieldPath(parent, e.name)
+	r := ref{path: path, label: "input " + e.name}
+
+	c.pos.record(path, spanOfNode(c.resolveQuiet(e.value)))
+
+	fields, ok := c.fields(e.value, path, r, inputKeys)
+	if !ok {
+		// The message [compiler.entries] gives — "must be a mapping of keys to
+		// values" — names the shape and not the reason, so the shape is spelled out
+		// here where the reason is known.
+		c.report(spanOfNode(e.value), r,
+			"is declared as a mapping saying what a value for it must be: `type:` (one of %s), "+
+				"and optionally `required:`, `default:` and `description:`",
+			strings.Join(v1.DeclaredTypeNames(), ", "))
+
+		return nil
+	}
+
+	declaration := &v1.InputDeclaration{Name: e.name}
+
+	if f, found := fields.get("type"); found {
+		typePath := fieldPath(path, "type")
+		typeRef := ref{path: typePath, label: "input " + e.name + " type"}
+		if text, ok := c.text(f.value, typePath, typeRef); ok {
+			declared, known := v1.ParseDeclaredType(text)
+			if !known {
+				c.report(spanOfNode(f.value), typeRef,
+					"is %q, which is not a type an input can have; the types are %s",
+					text, strings.Join(v1.DeclaredTypeNames(), ", "))
+			}
+			declaration.Type = declared
+		}
+	} else {
+		// Required rather than inferred from the default, deliberately: a type
+		// inferred from a default would leave an input with no default untyped, and
+		// the whole point of declaring one is that a value is checked against it
+		// before the run starts.
+		c.report(spanOfNode(e.value), r,
+			"has no `type:`; an input is checked against its type when a run is submitted, so say which of %s it is",
+			strings.Join(v1.DeclaredTypeNames(), ", "))
+	}
+
+	if f, found := fields.get("required"); found {
+		requiredPath := fieldPath(path, "required")
+		if required, ok := c.boolean(f.value, requiredPath,
+			ref{path: requiredPath, label: "input " + e.name + " required"}); ok {
+			declaration.Required = required
+		}
+	}
+
+	if f, found := fields.get("default"); found {
+		defaultPath := fieldPath(path, "default")
+		// An ordinary input value, so a default of the literal string
+		// "steps.a.result" stays that string — the same fence rule as everywhere
+		// else. That a default may not be an *expression* is a fact about the set of
+		// things a declaration says, so [Validate] reports it, where the sentence can
+		// explain why.
+		declaration.Default = c.inputValue(f.value, defaultPath,
+			ref{path: defaultPath, label: "input " + e.name + " default"})
+	}
+
+	if f, found := fields.get("description"); found {
+		descriptionPath := fieldPath(path, "description")
+		if description, ok := c.text(f.value, descriptionPath,
+			ref{path: descriptionPath, label: "input " + e.name + " description"}); ok {
+			declaration.Description = proto.String(description)
+		}
+	}
+
+	return declaration
+}
+
+// declaredOutputs compiles the top-level `outputs:` block: one named expression per
+// value a finished run reports.
+func (c *compiler) declaredOutputs(n ast.Node, path string, r ref) []*v1.OutputDeclaration {
+	c.pos.record(path, spanOfNode(c.resolveQuiet(n)))
+
+	entries, ok := c.entries(n, path, r)
+	if !ok {
+		return nil
+	}
+
+	declarations := make([]*v1.OutputDeclaration, 0, len(entries))
+	for _, e := range entries {
+		if declaration := c.declaredOutput(e, path); declaration != nil {
+			declarations = append(declarations, declaration)
+		}
+	}
+
+	if len(declarations) == 0 {
+		return nil
+	}
+
+	return declarations
+}
+
+// declaredOutput compiles one output declaration.
+//
+// The value is written under `value:` rather than as the entry's own scalar, which
+// costs a line and buys the room `description:` needs — and keeps the two blocks
+// shaped alike, so an author who has written one can write the other.
+func (c *compiler) declaredOutput(e entry, parent string) *v1.OutputDeclaration {
+	path := fieldPath(parent, e.name)
+	r := ref{path: path, label: "output " + e.name}
+
+	c.pos.record(path, spanOfNode(c.resolveQuiet(e.value)))
+
+	fields, ok := c.fields(e.value, path, r, outputKeys)
+	if !ok {
+		c.report(spanOfNode(e.value), r,
+			"is declared as a mapping with `value:`, the expression that produces it, "+
+				"and optionally `description:`")
+
+		return nil
+	}
+
+	declaration := &v1.OutputDeclaration{Name: e.name}
+
+	if f, found := fields.get("value"); found {
+		valuePath := fieldPath(path, "value")
+		// An expression field, so the fence is optional here the way it is on `if:`
+		// and a loop's `items:`: the schema knows this is an expression, and a string
+		// in it is expression source.
+		declaration.Value = c.exprValue(f.value, valuePath,
+			ref{path: valuePath, label: "output " + e.name + " value"})
+	} else {
+		c.report(spanOfNode(e.value), r,
+			"has no `value:`; an output is the expression that produces it, evaluated once the steps have finished")
+	}
+
+	if f, found := fields.get("description"); found {
+		descriptionPath := fieldPath(path, "description")
+		if description, ok := c.text(f.value, descriptionPath,
+			ref{path: descriptionPath, label: "output " + e.name + " description"}); ok {
+			declaration.Description = proto.String(description)
+		}
+	}
+
+	return declaration
 }
 
 // vars compiles a `vars:` mapping of names to values.
@@ -905,7 +1117,9 @@ func (c *compiler) inputs(n ast.Node, path string, r ref, taskName string, into 
 	// an input by that name — reported as unknown, where it was written.
 	for _, e := range entries {
 		valuePath := fieldPath(path, e.name)
-		if value := c.inputValue(e.value, valuePath, ref{step: r.step, input: e.name, path: valuePath}); value != nil {
+		value := c.inputValue(e.value, valuePath,
+			ref{step: r.step, task: taskName, input: e.name, path: valuePath})
+		if value != nil {
 			into[e.name] = value
 		}
 	}

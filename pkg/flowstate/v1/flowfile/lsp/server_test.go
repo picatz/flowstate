@@ -34,16 +34,26 @@ func TestInitializeAdvertisesOnlyWhatIsImplemented(t *testing.T) {
 	assert.True(t, got.HoverProvider)
 	assert.True(t, got.DefinitionProvider)
 	assert.True(t, got.DocumentSymbolProvider)
+	assert.True(t, got.DocumentFormattingProvider)
 	require.NotNil(t, got.CompletionProvider)
 	assert.Contains(t, got.CompletionProvider.TriggerCharacters, ".")
 	assert.Contains(t, got.CompletionProvider.TriggerCharacters, ":")
 	assert.Contains(t, got.CompletionProvider.TriggerCharacters, "{")
 
+	require.NotNil(t, got.CodeActionProvider)
+	assert.Equal(t,
+		[]lsp.CodeActionKind{lsp.CAKQuickFix, codeActionKindSourceFixAll},
+		got.CodeActionProvider.CodeActionKinds,
+		"the kinds are what a client filters providers by when a user binds fix-on-save")
+
+	// The bool go-lsp models the same field as is never set: the options form
+	// shadows it, and setting both would put two spellings in one struct for one
+	// field on the wire.
+	assert.False(t, got.ServerCapabilities.CodeActionProvider)
+
 	// Everything not implemented must stay unadvertised.
 	assert.False(t, got.ReferencesProvider)
 	assert.False(t, got.RenameProvider)
-	assert.False(t, got.CodeActionProvider)
-	assert.False(t, got.DocumentFormattingProvider)
 	assert.False(t, got.WorkspaceSymbolProvider)
 	assert.Nil(t, got.SignatureHelpProvider)
 	assert.Nil(t, got.CodeLensProvider)
@@ -57,11 +67,13 @@ func TestInitializeAdvertisesOnlyWhatIsImplemented(t *testing.T) {
 // changes when this server gains a feature, and a feature is exactly when somebody
 // is already editing this file.
 var implementedCapabilities = map[string]string{
-	"TextDocumentSync":       "textDocument/didOpen",
-	"HoverProvider":          "textDocument/hover",
-	"CompletionProvider":     "textDocument/completion",
-	"DefinitionProvider":     "textDocument/definition",
-	"DocumentSymbolProvider": "textDocument/documentSymbol",
+	"TextDocumentSync":           "textDocument/didOpen",
+	"HoverProvider":              "textDocument/hover",
+	"CompletionProvider":         "textDocument/completion",
+	"DefinitionProvider":         "textDocument/definition",
+	"DocumentSymbolProvider":     "textDocument/documentSymbol",
+	"DocumentFormattingProvider": "textDocument/formatting",
+	"CodeActionProvider":         "textDocument/codeAction",
 }
 
 // TestNoCapabilityIsAdvertisedWithoutAHandler is the check the list above cannot be
@@ -86,11 +98,19 @@ func TestNoCapabilityIsAdvertisedWithoutAHandler(t *testing.T) {
 	c := newClient(t)
 	got := c.initialize()
 
-	value := reflect.ValueOf(got)
+	// The embedded struct rather than the wrapper, because it is go-lsp's field list
+	// this cannot enumerate by hand — the wrapper's own fields are this package's and
+	// are checked below.
+	value := reflect.ValueOf(got.ServerCapabilities)
 	fields := value.Type()
 	require.Positive(t, fields.NumField(), "ServerCapabilities has no fields; this checks nothing")
 
 	set := map[string]bool{}
+	if got.CodeActionProvider != nil {
+		// Advertised in the options form, which shadows the embedded bool — so the
+		// scan below will always find that one zero and this is where it is counted.
+		set["CodeActionProvider"] = true
+	}
 	for i := range fields.NumField() {
 		if value.Field(i).IsZero() {
 			continue
@@ -243,6 +263,7 @@ func TestRequestsForUnknownDocumentAreEmpty(t *testing.T) {
 	assert.Empty(t, c.complete("file:///never-opened.yaml", 0, 0).Items)
 	assert.Empty(t, c.definition("file:///never-opened.yaml", 0, 0))
 	assert.Empty(t, c.symbols("file:///never-opened.yaml"))
+	assert.Empty(t, c.format("file:///never-opened.yaml"))
 }
 
 // TestConcurrentRequests exercises the store and the analysis under the concurrency

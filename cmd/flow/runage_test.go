@@ -24,7 +24,12 @@ import (
 func TestRunAgeSaysHowLongARunHasBeenGoing(t *testing.T) {
 	t.Parallel()
 
-	started := time.Now().Add(-90 * time.Second)
+	// A fixed clock, because the running branch measures against the moment the
+	// caller supplies. Measuring against a live time.Now() here raced the test
+	// body: under a loaded -race run, more than half a second between this line
+	// and the assertion rendered 1m31s and failed a test about arithmetic.
+	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	started := now.Add(-90 * time.Second)
 
 	for _, test := range []struct {
 		name string
@@ -68,7 +73,7 @@ func TestRunAgeSaysHowLongARunHasBeenGoing(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			assert.Equal(t, test.want, runAge(test.msg), test.why)
+			assert.Equal(t, test.want, runAge(test.msg, now), test.why)
 		})
 	}
 }
@@ -89,7 +94,7 @@ func TestRunAgeOfAFinishedRunDoesNotMoveWithTheClock(t *testing.T) {
 		CloseTime: timestamppb.New(longAgo.Add(7 * time.Second)),
 	}
 
-	assert.Equal(t, " (took 7s)", runAge(msg),
+	assert.Equal(t, " (took 7s)", runAge(msg, time.Now()),
 		"a run that finished a month ago is reported as having taken a month")
 }
 

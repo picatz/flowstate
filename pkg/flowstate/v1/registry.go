@@ -92,6 +92,23 @@ type TaskDef struct {
 	// ordinary task stays on the legacy activity name for replay compatibility.
 	AuthorityInputs []string
 
+	// NestedSecretInputs names the inputs whose entries the task applies itself,
+	// one at a time, so a secret reference nested inside a list or a mapping
+	// reaches the worker as a reference and is resolved where the value is used.
+	//
+	// It is not the same question as [TaskDef.AuthorityInputs], which says which
+	// inputs need the identity-aware activity, and it is deliberately narrower
+	// than "every input of a Value type". An input's resolution has to happen
+	// *inside the activity* for a reference to be safe there: the http task's
+	// `query` is a Value map like `form` is, and it is absent from this list
+	// because a query string is written to access logs, browser history and
+	// Referer headers, so the position is wrong however the value gets there.
+	//
+	// The compiler reads it. A reference nested anywhere else is refused where it
+	// is written, with a diagnostic naming the inputs that do accept one, rather
+	// than compiling into a specification that fails on its first request.
+	NestedSecretInputs []string
+
 	// CredentialInputs is the subset of authority inputs whose literal value
 	// names a deployment federation target. Deployment-aware validators use this
 	// metadata instead of knowing built-in task names, so AWS-aware and plugin
@@ -147,7 +164,47 @@ func TaskNeedsAuthority(task *Task) bool {
 			return true
 		}
 	}
+
+	// And any input *holding* a reference, wherever in it the reference sits.
+	//
+	// The named inputs above answer for the ones declared to take a whole value —
+	// `bearer:`, `credential:` — and cannot answer for a reference nested inside a
+	// header map, because the input carrying it is `headers`, which needs no
+	// authority when it holds only strings. Asking the value rather than the name
+	// is what keeps the two in step: an input that gains a reference gains the
+	// authority to resolve it in the same breath, and a task that never mentions
+	// one stays on the activity name replay compatibility depends on.
+	for _, value := range task.GetInputs() {
+		if ValueHoldsSecretRef(value) {
+			return true
+		}
+	}
+
 	return false
+}
+
+// AcceptsNestedSecret reports whether the named input of a task applies its
+// entries itself, and so can carry a secret reference nested inside a list or a
+// mapping.
+//
+// Asked by the compiler, which refuses one anywhere else. An unknown task accepts
+// none: a build that cannot describe a task cannot promise where that task
+// resolves a value, and guessing yes would compile a specification whose only
+// discovery of the mistake is a worker resolving a secret somewhere it should not.
+func AcceptsNestedSecret(taskName, input string) bool {
+	def, found := LookupTask(taskName)
+	return found && slices.Contains(def.NestedSecretInputs, input)
+}
+
+// NestedSecretInputs returns the inputs of a task that accept a nested reference,
+// sorted, for a diagnostic offering an author somewhere to put one.
+func NestedSecretInputs(taskName string) []string {
+	def, found := LookupTask(taskName)
+	if !found {
+		return nil
+	}
+
+	return slices.Sorted(slices.Values(def.NestedSecretInputs))
 }
 
 // CheckLiteralInput asks the task what it can say about a literal input.

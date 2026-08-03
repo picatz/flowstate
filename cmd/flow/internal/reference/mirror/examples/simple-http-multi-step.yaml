@@ -1,0 +1,13 @@
+edition: v2026.2
+name: simple
+steps:
+- id: web
+  http:
+    method: GET
+    url: https://microsoft.com
+- id: output
+  log:
+    # `message` is a string, and `status_code` is an int, so it is converted here
+    # rather than by the task: a task that quietly stringified whatever it was
+    # handed would also quietly accept the wrong value.
+    message: ${string(steps.web.status_code)}

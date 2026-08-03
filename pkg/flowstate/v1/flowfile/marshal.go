@@ -45,6 +45,16 @@ func Marshal(wf *v1.Workflow) ([]byte, error) {
 		doc = append(doc, yaml.MapItem{Key: "description", Value: wf.GetDescription()})
 	}
 
+	// What the run takes, above everything that reads it — the order the parser
+	// reads these in, and the order a reader meets them in.
+	if len(wf.GetDeclaredInputs()) > 0 {
+		inputs, err := declaredInputsToYAML(wf.GetDeclaredInputs())
+		if err != nil {
+			return nil, err
+		}
+		doc = append(doc, yaml.MapItem{Key: "inputs", Value: inputs})
+	}
+
 	// Written before steps, which is where an author writes it and so where a reader
 	// looks for it: a value every step can reach belongs above the steps that reach it.
 	if len(wf.GetVars()) > 0 {
@@ -65,6 +75,17 @@ func Marshal(wf *v1.Workflow) ([]byte, error) {
 			return nil, err
 		}
 		doc = append(doc, yaml.MapItem{Key: "steps", Value: steps})
+	}
+
+	// Below the steps, because that is what they are written against: an output is
+	// evaluated once every step has finished, and reads as the answer at the bottom
+	// of the file rather than as a promise at the top of it.
+	if len(wf.GetDeclaredOutputs()) > 0 {
+		outputs, err := declaredOutputsToYAML(wf.GetDeclaredOutputs())
+		if err != nil {
+			return nil, err
+		}
+		doc = append(doc, yaml.MapItem{Key: "outputs", Value: outputs})
 	}
 
 	return yaml.Marshal(doc)
@@ -281,8 +302,52 @@ func inputValueToYAML(value *v1.Value) (any, error) {
 		return literalToYAML(kind.Literal)
 	case *v1.Value_SecretRef:
 		return secretRefToDSL(kind.SecretRef)
+	case *v1.Value_Structure_:
+		return structureToYAML(kind.Structure)
 	default:
 		return nil, fmt.Errorf("cannot be written as YAML: %w", value.Error())
+	}
+}
+
+// structureToYAML writes a list or a mapping whose entries are values.
+//
+// Each entry is written the way a whole input is, which is what makes the round
+// trip a fixed point: a reference inside comes back out as `${secret('...')}`, and
+// reading that document produces this structure again. There is no other spelling —
+// a structure exists precisely because its entries could not be flattened into one
+// expression.
+func structureToYAML(structure *v1.Value_Structure) (any, error) {
+	switch kind := structure.GetKind().(type) {
+	case *v1.Value_Structure_List_:
+		values := kind.List.GetValues()
+		out := make([]any, 0, len(values))
+		for i, element := range values {
+			written, err := inputValueToYAML(element)
+			if err != nil {
+				return nil, fmt.Errorf("element %d: %w", i, err)
+			}
+			out = append(out, written)
+		}
+		return out, nil
+
+	case *v1.Value_Structure_Map_:
+		entries := kind.Map.GetEntries()
+		// A MapSlice in sorted key order, for the two reasons everything else here
+		// is ordered: a protobuf map has no order of its own, and a file that
+		// rewrites its own keys into a different arrangement on every `flow fmt` is
+		// a diff nobody made.
+		out := make(yaml.MapSlice, 0, len(entries))
+		for _, name := range slices.Sorted(maps.Keys(entries)) {
+			written, err := inputValueToYAML(entries[name])
+			if err != nil {
+				return nil, fmt.Errorf("key %q: %w", name, err)
+			}
+			out = append(out, yaml.MapItem{Key: name, Value: written})
+		}
+		return out, nil
+
+	default:
+		return nil, fmt.Errorf("a structure is a list or a mapping, and this is neither")
 	}
 }
 
@@ -435,4 +500,60 @@ func waitToYAML(wait *v1.Wait) (string, any, error) {
 	default:
 		return "", nil, fmt.Errorf("wait has no sleep, wait_until, or wait_for_signal")
 	}
+}
+
+// declaredInputsToYAML writes the `inputs:` block.
+//
+// In declaration order rather than sorted, unlike `vars:`, and the difference is
+// the schema's: these are a repeated field, so their order is a fact the document
+// carries and not an artifact of a protobuf map. Sorting them would make `flow fix`
+// reorder a file somebody arranged on purpose.
+func declaredInputsToYAML(declarations []*v1.InputDeclaration) (yaml.MapSlice, error) {
+	out := make(yaml.MapSlice, 0, len(declarations))
+	for _, declaration := range declarations {
+		entry := yaml.MapSlice{{Key: "type", Value: v1.DeclaredTypeName(declaration.GetType())}}
+
+		// Only when true. An input that says `required: false` has asked for the
+		// default, and writing it back would make two identical workflows produce
+		// different documents depending on whether one spelled the default out — the
+		// same rule `continue_on_error:` follows.
+		if declaration.GetRequired() {
+			entry = append(entry, yaml.MapItem{Key: "required", Value: true})
+		}
+		if declaration.GetDefault() != nil {
+			value, err := inputValueToYAML(declaration.GetDefault())
+			if err != nil {
+				return nil, fmt.Errorf("input %q default: %w", declaration.GetName(), err)
+			}
+			entry = append(entry, yaml.MapItem{Key: "default", Value: value})
+		}
+		if declaration.Description != nil {
+			entry = append(entry, yaml.MapItem{Key: "description", Value: declaration.GetDescription()})
+		}
+
+		out = append(out, yaml.MapItem{Key: declaration.GetName(), Value: entry})
+	}
+
+	return out, nil
+}
+
+// declaredOutputsToYAML writes the `outputs:` block, in declaration order for the
+// reason the inputs are.
+func declaredOutputsToYAML(declarations []*v1.OutputDeclaration) (yaml.MapSlice, error) {
+	out := make(yaml.MapSlice, 0, len(declarations))
+	for _, declaration := range declarations {
+		value, err := exprValueToYAML(declaration.GetValue())
+		if err != nil {
+			return nil, fmt.Errorf("output %q: %w", declaration.GetName(), err)
+		}
+
+		entry := yaml.MapSlice{{Key: "value", Value: value}}
+		if declaration.Description != nil {
+			entry = append(entry, yaml.MapItem{Key: "description", Value: declaration.GetDescription()})
+		}
+
+		out = append(out, yaml.MapItem{Key: declaration.GetName(), Value: entry})
+	}
+
+	return out, nil
 }

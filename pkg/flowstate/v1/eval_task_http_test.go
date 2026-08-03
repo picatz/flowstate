@@ -1,6 +1,7 @@
 package flowstatev1
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -550,16 +551,85 @@ func Test_secretRefInQuery(t *testing.T) {
 	require.ErrorContains(t, err, "env:API_TOKEN", "the reference is named, since a reference is safe to log")
 }
 
+// Test_secretRefInJSONBody covers the position a body's reference is resolved in:
+// here, as the body is encoded, and nowhere earlier.
+//
+// A JSON body is a legitimate place for a credential — an API taking its key in
+// the body rather than in a header is ordinary — and it used to be refused, because
+// a mapping holding a reference was an expression the *workflow* evaluated. What
+// changed is the shape the reference travels in, not where it is read.
 func Test_secretRefInJSONBody(t *testing.T) {
-	// A body is a legitimate place for a credential, unlike a query string — but
-	// resolving one here would mean the workflow had already evaluated it, which is
-	// what puts a secret in history. So it is refused with a pointer at the shape
-	// that does work today.
-	body := &Value{Kind: &Value_SecretRef{SecretRef: &SecretRef{Scheme: "env", Name: "API_TOKEN"}}}
+	const material = "material-that-must-not-appear-in-any-rendering"
 
-	_, _, err := httpRequestBody(&Task_HTTP_Inputs{Json: body})
+	reference := &Value{Kind: &Value_SecretRef{SecretRef: &SecretRef{Scheme: "env", Name: "API_TOKEN"}}}
+	body := NewStructureMap(map[string]*Value{
+		"client_id":     NewLiteral("flowstate"),
+		"client_secret": reference,
+	})
 
-	require.ErrorContains(t, err, "cannot be placed inside a json body")
+	encoded, contentType, err := httpRequestBody(&Task_HTTP_Inputs{Json: body},
+		func(*SecretRef) (string, error) { return material, nil })
+	require.NoError(t, err)
+	require.Equal(t, contentTypeJSON, contentType)
+	require.JSONEq(t, `{"client_id":"flowstate","client_secret":"`+material+`"}`, encoded)
+
+	// The inputs the activity was handed still name the reference and hold no
+	// value, which is the whole of what rides the payload.
+	require.NotContains(t, fmt.Sprintf("%v %+v %#v", body, body, body), material)
+	require.Equal(t, "API_TOKEN", body.GetStructure().GetMap().GetEntries()["client_secret"].
+		GetSecretRef().GetName())
+
+	// And with nothing to resolve through, the reference is refused rather than
+	// rendered as anything at all.
+	_, _, err = httpRequestBody(&Task_HTTP_Inputs{Json: reference}, nil)
+	require.ErrorContains(t, err, "secret reference")
 	require.ErrorContains(t, err, "env:API_TOKEN")
-	require.ErrorContains(t, err, "header")
+}
+
+// Test_secretRefInFormBody is the same position one step over: a form body is sent
+// in the request like a JSON one, so a reference in it is resolved as it is
+// encoded — while the query string built a few lines away stays refused.
+func Test_secretRefInFormBody(t *testing.T) {
+	const material = "material-that-must-not-appear-in-any-rendering"
+
+	form := map[string]*Value{
+		"grant_type":    NewLiteral("client_credentials"),
+		"client_secret": {Kind: &Value_SecretRef{SecretRef: &SecretRef{Scheme: "env", Name: "API_TOKEN"}}},
+	}
+
+	encoded, contentType, err := httpRequestBody(&Task_HTTP_Inputs{Form: form},
+		func(*SecretRef) (string, error) { return material, nil })
+	require.NoError(t, err)
+	require.Equal(t, contentTypeForm, contentType)
+	require.Equal(t, "client_secret="+material+"&grant_type=client_credentials", encoded)
+
+	_, _, err = httpRequestBody(&Task_HTTP_Inputs{Form: form}, nil)
+	require.ErrorContains(t, err, "secret reference")
+}
+
+// Test_secretRefInHeaderStaysAReference covers the header path: the value is
+// resolved as the header is set, and a control character in what came back is
+// refused without the value being named.
+func Test_secretRefInHeaderStaysAReference(t *testing.T) {
+	const material = "material-that-must-not-appear-in-any-rendering"
+
+	headers := NewStructureMap(map[string]*Value{
+		"Accept":        NewLiteral("application/json"),
+		"Authorization": {Kind: &Value_SecretRef{SecretRef: &SecretRef{Scheme: "env", Name: "API_TOKEN"}}},
+	})
+
+	header, err := httpRequestHeaders(headers, func(*SecretRef) (string, error) { return material, nil })
+	require.NoError(t, err)
+	require.Equal(t, material, header.Get("Authorization"))
+	require.Equal(t, "application/json", header.Get("Accept"))
+
+	// Nothing that held the reference ever held the value.
+	require.NotContains(t, fmt.Sprintf("%v %+v %#v %s", headers, headers, headers, headers), material)
+
+	_, err = httpRequestHeaders(headers, func(*SecretRef) (string, error) {
+		return "one\r\nX-Forged: yes", nil
+	})
+	require.ErrorContains(t, err, "forge further headers")
+	require.NotContains(t, err.Error(), "X-Forged",
+		"the refusal repeats the value it refused, which is the value it must not say")
 }

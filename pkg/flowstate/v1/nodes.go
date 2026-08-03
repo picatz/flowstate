@@ -42,7 +42,7 @@ func NewScope(profile string, outputs *Workflow_StepOutputs) *Scope {
 // spelling; when a second namespace arrived, a workflow-level var read by a step
 // outside any loop would have silently skipped resolution.
 func (s *Scope) BindsNames() bool {
-	return len(s.GetVars()) > 0 || len(s.GetAmbientVars()) > 0
+	return len(s.GetVars()) > 0 || len(s.GetAmbientVars()) > 0 || len(s.GetInputs()) > 0
 }
 
 // StepOutputs returns the scope's step outputs, tolerating a nil scope so callers
@@ -81,7 +81,7 @@ func (s *Scope) ActivationWith(ctx context.Context, extra map[string]ref.Val) ce
 		locals[name] = v
 	}
 
-	return Activation(ctx, s.GetProfile(), s.StepOutputs(), refValues(s.GetAmbientVars()), locals)
+	return Activation(ctx, s.GetProfile(), s.StepOutputs(), refValues(s.GetAmbientVars()), locals, refValues(s.GetInputs()))
 }
 
 // Activation returns the CEL activation for this scope.
@@ -92,10 +92,10 @@ func (s *Scope) ActivationWith(ctx context.Context, extra map[string]ref.Val) ce
 // evaluator names one for how it resolves. They disagree here and only here.
 func (s *Scope) Activation(ctx context.Context) cel.Activation {
 	if s == nil {
-		return Activation(ctx, "", nil, nil, nil)
+		return Activation(ctx, "", nil, nil, nil, nil)
 	}
 
-	return Activation(ctx, s.Profile, s.Outputs, refValues(s.GetAmbientVars()), refValues(s.GetVars()))
+	return Activation(ctx, s.Profile, s.Outputs, refValues(s.GetAmbientVars()), refValues(s.GetVars()), refValues(s.GetInputs()))
 }
 
 // refValues converts a map of schema values to CEL values.
@@ -137,6 +137,7 @@ func (s *Scope) WithLocal(name string, item *Value) *Scope {
 		// dialects, one nesting level down.
 		next.Profile = s.Profile
 		next.AmbientVars = s.AmbientVars
+		next.Inputs = s.Inputs
 		for k, v := range s.Vars {
 			next.Vars[k] = v
 		}
@@ -163,6 +164,7 @@ func (s *Scope) WithLocals(locals map[string]*Value) *Scope {
 		next.Outputs = s.Outputs
 		next.Profile = s.Profile
 		next.AmbientVars = s.AmbientVars
+		next.Inputs = s.Inputs
 		for k, v := range s.Vars {
 			next.Vars[k] = v
 		}
@@ -189,6 +191,7 @@ func (s *Scope) WithAmbientVars(vars map[string]*Value) *Scope {
 		next.Outputs = s.Outputs
 		next.Profile = s.Profile
 		next.Vars = s.Vars
+		next.Inputs = s.Inputs
 		for k, v := range s.AmbientVars {
 			next.AmbientVars[k] = v
 		}
@@ -473,11 +476,13 @@ func Activation(
 	prev *Workflow_StepOutputs,
 	ambientVars map[string]ref.Val,
 	locals map[string]ref.Val,
+	inputs map[string]ref.Val,
 ) cel.Activation {
 	return cel.Activation(&StepsOutputActivation{
 		Prev:        prev,
 		AmbientVars: ambientVars,
 		Locals:      locals,
+		Inputs:      inputs,
 		Ctx:         ctx,
 		Eval:        DefaultEvaluator(),
 		Profile:     profile,
@@ -520,6 +525,15 @@ func (s *Scope) WithOutputs(outputs *Workflow_StepOutputs) *Scope {
 		// WithLocal and WithLocals.
 		next.Vars = s.Vars
 		next.AmbientVars = s.AmbientVars
+
+		// The run's arguments travel with everything else a scope carries. They are
+		// fixed for the run, so this is a share rather than a copy — and it is here
+		// rather than only in the places that *change* a scope, because every one of
+		// these helpers is a place a field can be silently dropped: see
+		// [Scope.ambient_vars], added once and omitted from the executor's compacted
+		// copy, where the symptom was a loop body's task failing to find its iterator
+		// five retries deep.
+		next.Inputs = s.Inputs
 	}
 	return next
 }

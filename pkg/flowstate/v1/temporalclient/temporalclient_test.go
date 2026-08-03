@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/interceptor"
 )
 
 func TestConfigOptionsDefaults(t *testing.T) {
@@ -151,5 +152,43 @@ func TestDescribeNeverRevealsCredentials(t *testing.T) {
 				t.Skip("client.Options no longer exposes Credentials to fmt; the risk this guards has changed")
 			}
 		})
+	}
+}
+
+// stubClientInterceptor is a client interceptor that does nothing, which is all
+// this package needs: what is under test is whether a configured interceptor
+// reaches the options every client here is dialed from, not what it does.
+type stubClientInterceptor struct {
+	interceptor.ClientInterceptorBase
+}
+
+// TestConfigOptionsCarryInterceptors is the seam Temporal tracing rides on.
+//
+// It is asserted at Options rather than at Dial because Options is the single
+// funnel: [Dial] resolves through it, and so does every per-namespace client
+// [NewPool] builds. An interceptor that reached one and not the other would
+// instrument a single-tenant deployment and leave a mapped tenant's runs with a
+// trace that stops at the server — which is the gap this field exists to close,
+// and it is invisible from a test that only dials once.
+func TestConfigOptionsCarryInterceptors(t *testing.T) {
+	opts, err := Config{Interceptors: []interceptor.ClientInterceptor{&stubClientInterceptor{}}}.Options()
+	if err != nil {
+		t.Fatalf("Options() error: %v", err)
+	}
+	if len(opts.Interceptors) != 1 {
+		t.Fatalf("Interceptors = %d, want the one that was configured", len(opts.Interceptors))
+	}
+}
+
+// TestConfigOptionsInterceptorsAbsentByDefault is the direction invariant 8
+// cares about: a deployment that configured no telemetry dials a client that
+// intercepts nothing, so nothing is marshalled into a workflow's header.
+func TestConfigOptionsInterceptorsAbsentByDefault(t *testing.T) {
+	opts, err := Config{}.Options()
+	if err != nil {
+		t.Fatalf("Options() error: %v", err)
+	}
+	if len(opts.Interceptors) != 0 {
+		t.Errorf("Interceptors = %d, want none for an unconfigured deployment", len(opts.Interceptors))
 	}
 }

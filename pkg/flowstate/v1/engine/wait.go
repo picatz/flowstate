@@ -27,7 +27,7 @@ import (
 // outcome as the step's outputs.
 func (e *executor) runWait(node *v1.Node, wait *v1.Wait) error {
 	if err := v1.ValidateWait(wait); err != nil {
-		return stepFailed(err, "step %q", node.GetId())
+		return nodeFailed(err)
 	}
 
 	logger := workflow.GetLogger(e.ctx)
@@ -40,7 +40,7 @@ func (e *executor) runWait(node *v1.Node, wait *v1.Wait) error {
 	case *v1.Wait_Until:
 		deadline, err := v1.EvalWaitDeadline(context.Background(), kind.Until, e.scope, workflow.Now(e.ctx))
 		if err != nil {
-			return stepFailed(err, "step %q", node.GetId())
+			return nodeFailed(err)
 		}
 		// A moment already past is not an error: a workload resumed after an
 		// outage may reach a window that has opened, and refusing then would
@@ -51,7 +51,7 @@ func (e *executor) runWait(node *v1.Node, wait *v1.Wait) error {
 		return e.waitForSignal(node, kind.Signal, wait.GetTimeout().AsDuration())
 
 	default:
-		return &ErrRunFailed{Message: fmt.Sprintf("step %q: unsupported wait kind %T", node.GetId(), wait.GetKind())}
+		return nodeFailed(fmt.Errorf("unsupported wait kind %T", wait.GetKind()))
 	}
 }
 
@@ -62,7 +62,7 @@ func (e *executor) waitFor(node *v1.Node, d time.Duration) error {
 		// propagate: a cancelled run has to stop waiting, and swallowing this
 		// would make a waiting step the one place cancellation does not reach.
 		if err := workflow.Sleep(e.ctx, d); err != nil {
-			return stepFailed(err, "step %q", node.GetId())
+			return nodeFailed(err)
 		}
 	}
 
@@ -124,7 +124,7 @@ func (e *executor) waitForSignal(node *v1.Node, signal *v1.Signal, timeout time.
 	// cancellation must never produce, and it is invisible: the outputs are
 	// well-formed and the run looks like it merely went unanswered.
 	if err := e.ctx.Err(); err != nil {
-		return stepFailed(err, "step %q: cancelled while waiting for signal %q", node.GetId(), name)
+		return stepFailed(err, "cancelled while waiting for signal %q", name)
 	}
 
 	if !received {
@@ -132,8 +132,7 @@ func (e *executor) waitForSignal(node *v1.Node, signal *v1.Signal, timeout time.
 		// above: with no timeout there is nothing else for the selector to have
 		// woken on.
 		if timeout <= 0 {
-			return &ErrRunFailed{Message: fmt.Sprintf(
-				"step %q: stopped waiting for signal %q", node.GetId(), name)}
+			return nodeFailed(fmt.Errorf("stopped waiting for signal %q", name))
 		}
 
 		workflow.GetLogger(e.ctx).Info("wait timed out",

@@ -2,6 +2,7 @@ package flowstatev1
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"reflect"
@@ -68,6 +69,14 @@ type StepsOutputActivation struct {
 	// Answered as a whole root, the way step outputs are, so this needs no idea how
 	// deep a reference goes. See [VarsRoot].
 	AmbientVars map[string]ref.Val
+
+	// Inputs holds the rooted `inputs.<name>` namespace: the arguments the run was
+	// started with, already checked against the workflow's declarations and
+	// defaulted.
+	//
+	// Answered whole, exactly as [StepsOutputActivation.AmbientVars] is, so nothing
+	// here needs an opinion about how deep a reference goes. See [InputsRoot].
+	Inputs map[string]ref.Val
 
 	// Locals holds names bound *where the expression is written* — a loop's current
 	// item, a step's own `vars:`, `now` inside a wait — resolved bare. They are
@@ -201,7 +210,7 @@ func (e *StepsOutputActivation) ResolveName(name string) (any, bool) {
 			return root, true
 		}
 
-		return nil, false
+		return e.ambientRoot(name)
 	}
 
 	stepName, outputName, hasOutput := strings.Cut(name, ".")
@@ -223,7 +232,7 @@ func (e *StepsOutputActivation) ResolveName(name string) (any, bool) {
 			}
 			return root, true
 		}
-		return nil, false
+		return e.ambientRoot(name)
 	}
 	if !hasOutput {
 		// Return CEL-native values, not the protobuf message. CEL has no type
@@ -276,6 +285,50 @@ const StepsRoot = "steps"
 // local's binding is visible where the expression is written and `${item.name}` reads
 // better than `${vars.item.name}`.
 const VarsRoot = "vars"
+
+// ambientRoot answers a rooted namespace that is not `steps` and not `vars`, for
+// the two positions in [StepsOutputActivation.ResolveName] where a name has been
+// found not to be a step.
+//
+// Answered *after* the step lookup, which is the same placement [StepsRoot] gets
+// and for the same reason: a specification compiled before a root existed may hold
+// a step of that name, and a worker evaluates the stored AST out of `RunState`
+// rather than re-parsing the file — so a run started on an older build keeps
+// resolving the way it always did (invariant 10). The compiler refuses the id, so
+// no new file can reach this precedence; it exists for the runs that predate the
+// root and for nothing else.
+func (e *StepsOutputActivation) ambientRoot(name string) (any, bool) {
+	if name != InputsRoot {
+		return nil, false
+	}
+
+	// An empty root still resolves, to an empty map, for the reason [VarsRoot] does:
+	// a run started with no arguments should make `inputs.missing` a missing key
+	// rather than an unresolved reference, so the diagnostic describes the mistake
+	// the author made rather than sending them to look for a root that is always
+	// there.
+	if len(e.Inputs) == 0 {
+		return types.NewStringInterfaceMap(TypeAdapter, nil), true
+	}
+
+	entries := make(map[ref.Val]ref.Val, len(e.Inputs))
+	for inputName, v := range e.Inputs {
+		entries[types.String(inputName)] = v
+	}
+
+	return types.NewRefValMap(TypeAdapter, entries), true
+}
+
+// InputsRoot is the name a run's arguments hang from in an expression, as
+// `inputs.<name>`.
+//
+// The third rooted namespace, for the reason the first two have one (invariant 2):
+// a root makes a collision with a step id or a var unrepresentable rather than a
+// rule somebody has to write, and it turns a declared name into a field selection —
+// so seventeen of CEL's twenty-one reserved words are legal input names for free.
+// The four that are not are lexer tokens, which is the one thing a root cannot
+// rescue; the compiler refuses those.
+const InputsRoot = "inputs"
 
 // ResponseRoot is the name an http task's `expect:` and `outputs:` expressions reach the
 // response through: `${response.status_code}`.
@@ -677,10 +730,34 @@ func (v *Value) Error() error {
 }
 
 func Run(ctx context.Context, w *Workflow) (*Workflow_StepOutputs, error) {
-	return eval(ctx, w)
+	return RunWithInputs(ctx, w, nil)
 }
 
-func eval(ctx context.Context, w *Workflow) (*Workflow_StepOutputs, error) {
+// RunWithInputs runs a workflow locally with the arguments a caller supplied.
+//
+// This is the local driver's submit boundary, and it enforces exactly what the
+// server enforces at its own: the arguments are checked against the workflow's
+// declarations and defaulted by [BindRunInputs], and the pair is weighed by
+// [CheckSubmissionSize]. One function, two callers — a local run that accepted an
+// undeclared input would be a rehearsal that says yes to a submission production
+// refuses, which is the direction invariant 3 exists to prevent.
+func RunWithInputs(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow_StepOutputs, error) {
+	if w == nil || len(w.Steps) == 0 {
+		return nil, fmt.Errorf("workflow cannot be nil or empty")
+	}
+
+	bound, err := BindRunInputs(w, inputs)
+	if err != nil {
+		return nil, err
+	}
+	if err := CheckSubmissionSize(w, bound); err != nil {
+		return nil, err
+	}
+
+	return eval(ctx, w, bound)
+}
+
+func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow_StepOutputs, error) {
 	if w == nil || len(w.Steps) == 0 {
 		return nil, fmt.Errorf("workflow cannot be nil or empty")
 	}
@@ -699,6 +776,10 @@ func eval(ctx context.Context, w *Workflow) (*Workflow_StepOutputs, error) {
 	scope := NewScope(w.GetProfile(), stepOutputs)
 	scope.AmbientVars = vars
 
+	// Bound for the whole run rather than per step: an argument is a fact about the
+	// run, which is what makes it a root and not a binding.
+	scope.Inputs = inputs
+
 	if runtime, ok := ctx.Value(secretRuntimeKey{}).(TaskRuntime); ok && runtime.Step.Workflow == "" {
 		runtime.Step.Workflow = w.GetName()
 		ctx = ContextWithTaskRuntime(ctx, runtime)
@@ -706,6 +787,17 @@ func eval(ctx context.Context, w *Workflow) (*Workflow_StepOutputs, error) {
 	if err := runNodes(ctx, w.Steps, scope); err != nil {
 		return nil, err
 	}
+
+	// Evaluated once, after the last step, against the scope the run finished in —
+	// the same moment and the same scope the durable driver uses. See
+	// [EvalRunOutputs] and engine.Run, where the reason that moment is safe in
+	// workflow code is written down.
+	outputs, err := EvalRunOutputs(ctx, w, scope)
+	if err != nil {
+		return nil, err
+	}
+	stepOutputs.RunOutputs = outputs
+
 	return stepOutputs, nil
 }
 
@@ -732,20 +824,29 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope) error {
 			continue
 		}
 
-		// The step's own `vars:`, bound for this node and its body only. Evaluated
-		// after the condition deliberately: `if:` decides whether the step runs at
-		// all, so a var it declares does not exist yet when the question is asked —
-		// and a var whose expression would fail must not fail a step that is skipped.
-		inner, err := EvalStepVars(nodeCtx, node, scope)
+		outputs, err := runNodeWithVars(nodeCtx, node, scope)
 		if err != nil {
-			return fmt.Errorf("step %q: %w", node.GetId(), err)
-		}
-
-		outputs, err := runNode(nodeCtx, node, inner)
-		if err != nil {
+			// Cancellation is not a step failure, so `continue_on_error` does not
+			// get to tolerate it — the durable driver says the same thing at the
+			// same point, and for the same reason: that policy says "this task may
+			// fail without stopping the workload", not "the workload may not be
+			// stopped". Tolerated, a cancelled run would walk on through every
+			// remaining step, fail each one instantly on the same dead context,
+			// record each as a best-effort failure, and *succeed*.
+			//
+			// Asked of the run's context rather than of the error, because a
+			// step's own `timeout:` also arrives here as a context error and that
+			// one is an ordinary failure the policy exists to tolerate.
+			if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+				return fmt.Errorf("step %q: %w", node.GetId(), err)
+			}
 			if !node.GetPolicy().GetContinueOnError() {
 				return fmt.Errorf("step %q: %w", node.GetId(), err)
 			}
+			// Recorded without the `step %q` position the propagating path adds:
+			// the id is implied by the key this is recorded under, and repeating it
+			// would make `${steps.<id>.error}` name its own step. The durable
+			// driver draws the same line at the same place — see stepFailed.
 			scope.Outputs.StepValues[node.GetId()] = FailedStepOutputs(StepErrorText(err))
 			continue
 		}
@@ -754,6 +855,30 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope) error {
 		}
 	}
 	return nil
+}
+
+// runNodeWithVars executes a node with its own `vars:` block bound.
+//
+// The block is evaluated here rather than in runNodes' loop body so that a
+// failure evaluating it is a failure *of this node*, reaching the same
+// `continue_on_error` check every other failure of this node reaches. It used to
+// return straight out of runNodes, one statement above that check: a step whose
+// `vars:` expression failed aborted the whole local run even where the author had
+// said the step may fail, while the durable driver — which evaluates the same
+// block inside its own runNodeWithVars, whose error flows to the same tolerance
+// check — carried on and recorded the failure. Rehearsal was stricter than
+// production, in the direction that makes a local run misleading.
+//
+// Evaluated after the condition deliberately: `if:` decides whether the step runs
+// at all, so a var it declares does not exist yet when the question is asked —
+// and a var whose expression would fail must not fail a step that is skipped.
+func runNodeWithVars(ctx context.Context, node *Node, scope *Scope) (*Node_Outputs, error) {
+	inner, err := EvalStepVars(ctx, node, scope)
+	if err != nil {
+		return nil, err
+	}
+
+	return runNode(ctx, node, inner)
 }
 
 // runNode executes one node and returns the outputs it records.
@@ -923,15 +1048,54 @@ func EvalConditionInScope(ctx context.Context, condition *Value, scope *Scope) (
 // succeeds on the second attempt succeeds in both places — rather than to make
 // local execution reliable.
 func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scope *Scope) (*Node_Outputs, error) {
+	// Resolved here, above the loop, because this is the position the durable
+	// driver resolves at: in workflow code, before an activity is scheduled
+	// (`engine/execute.go`'s runTask). Inputs are part of the *specification*, so
+	// an expression that cannot be evaluated fails the same way every time — and
+	// resolving inside the loop made that deterministic failure a retryable one.
+	// A `for_each` body's `${item.missing}` was attempted five times over fifteen
+	// seconds of backoff locally and failed instantly in production, which is the
+	// rehearsal disagreeing about both the outcome's timing and the number of
+	// times a dependency is touched on the way to it.
+	//
+	// Unconditional, where it used to happen only for a scope that bound names
+	// (in [Task.EvalInScope]). That guard is why the same file recorded two
+	// different sentences: at a top-level step, with nothing bound, the task
+	// resolved its own inputs and reported a classified `task "log" failed
+	// (InvalidInput): field "message": …`, while the durable driver — which does
+	// not have the guard — reported `input "message": …`. Two sentences and two
+	// error kinds for one mistake, so the one an author's `if:` compared depended
+	// on where the workload ran.
+	//
+	// Inputs a task evaluates for itself are untouched by this and stay per
+	// attempt under both drivers; see [ResolvableInputs].
+	resolved, err := ResolveTaskInputs(ctx, task, scope)
+	if err != nil {
+		return nil, err
+	}
+
 	// The same number the durable driver uses, from the same constant. This was
 	// `1` here and five there, so a step with no `retry:` behaved differently in
 	// the place that exists to rehearse the other.
 	attempts := RetryAttemptsFor(policy.GetRetry())
 
-	var err error
+	// And the same two timeouts, through the same precedence. The local driver
+	// applied a bound only where a step declared one, so a task that hangs hung
+	// the whole run — the durable driver has never been able to do that, because
+	// Temporal refuses an activity with no timeout at all.
+	timeouts := StepTimeoutsFor(policy, StepTimeoutsFromContext(ctx))
+	if timeouts.ScheduleToClose > 0 {
+		// Derived here rather than around the whole run, so that exhausting it is
+		// an ordinary step failure `continue_on_error:` may tolerate — runNodes
+		// asks the *run's* context whether it is cancelled, and this one is not it.
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeouts.ScheduleToClose)
+		defer cancel()
+	}
+
 	for attempt := 1; ; attempt++ {
 		var out *Node_Outputs
-		out, err = runStepAttempt(ctx, task, policy, scope)
+		out, err = runStepAttempt(ctx, resolved, timeouts.StartToClose, scope)
 		if err == nil {
 			return out, nil
 		}
@@ -963,9 +1127,16 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 	}
 }
 
-// runStepAttempt performs one attempt, bounded by the step's timeout.
-func runStepAttempt(ctx context.Context, task *Task, policy *StepPolicy, scope *Scope) (*Node_Outputs, error) {
-	if timeout := policy.GetTimeout().AsDuration(); timeout > 0 {
+// runStepAttempt performs one attempt, bounded by the per-attempt timeout.
+//
+// The bound is passed in rather than read from the step's policy, because a step
+// that declares no `timeout:` still has one — [DefaultStartToCloseTimeout], the
+// same bound Temporal applies to every attempt at every activity. This used to ask
+// the policy directly and do nothing when it was silent, which is the whole of how
+// a hung task could hang a local run forever while production failed it after two
+// minutes.
+func runStepAttempt(ctx context.Context, task *Task, timeout time.Duration, scope *Scope) (*Node_Outputs, error) {
+	if timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
@@ -1014,10 +1185,20 @@ func (t *Task) Eval(ctx context.Context, prevStepOutputs *Workflow_StepOutputs) 
 // EvalInScope executes the task against a scope, which is how a loop body's
 // inputs and a task's own expressions reference the current item.
 //
-// Expression inputs are resolved into a copy of the task before execution, which
-// is the single place resolution happens for the local driver — the durable driver
-// resolves the same way before scheduling an activity, so both agree on what a
-// task receives.
+// Expression inputs are resolved into a copy of the task before execution, for the
+// callers that reach a task without having resolved them: the durable driver's
+// activity, which receives a scope built on another machine, and direct callers of
+// [Task.Eval]. A step running under the local driver arrives with its inputs
+// already resolved — [runStepWithPolicy] does it above the retry loop, at the
+// position the durable driver resolves at — so this is a second, idempotent pass
+// over literals for that path.
+//
+// The `BindsNames` guard is why it cannot be the *only* resolution point for the
+// local driver. A scope binding no names skips it, leaving the task to evaluate
+// its own inputs, and a task reports that failure as a classified `task "log"
+// failed (InvalidInput): field "message": …` where the durable driver reports
+// `input "message": …`. Same file, same mistake, two sentences and two error
+// kinds.
 func (t *Task) EvalInScope(ctx context.Context, scope *Scope) (*Node_Outputs, error) {
 	if t == nil {
 		return nil, fmt.Errorf("task cannot be nil")

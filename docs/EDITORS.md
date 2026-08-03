@@ -13,6 +13,8 @@ that only ever offers things the engine will accept.
 | **Completion** | Task names where a step's keys go, alongside `id`/`if`/`timeout` and the other kinds; input keys under the task's own name, required ones first, already-written ones omitted; the names in scope inside `${...}` (see the scoping rules below); and the document's own keys (`id`, `if`, `timeout`, `retry`, `for_each`, `parallel`, …). |
 | **Go to definition** | Jump from a `${steps.<id>.<output>}` reference to that step's `id:` declaration. |
 | **Document symbols** | An outline of the workflow's steps, each labelled with the task it runs, and for a nested step the block it belongs to. |
+| **Formatting** | Rewrites the whole document into the form `flow fmt` and `flowfile.Marshal` write. This is not comment-preserving or whitespace-preserving — it renders from the parsed workflow rather than editing source text, so a comment, a blank line, a mapping's key order, and a string literal's quote style are all normalized away. A document that does not compile draws no edit at all, never a partial or guessed one. Because of the rewrite, this is opt-in in most editors' configuration rather than run on every save; see the per-editor notes below for how to bind it deliberately. |
+| **Code actions** | The migration `flow fix` performs, offered from the editor. Two kinds of the same thing: a `source.fixAll` action titled *Migrate to edition …*, and a `quickfix` on each line the migration rewrites, so it is reachable from the diagnostic that told you to run the command. Both carry one whole-document edit holding exactly what `flow fix` writes — comments and untouched lines copied through byte for byte, unlike formatting. A document already in the current edition, one that does not parse, and one where the rewriter *refuses* — a `task:` written in flow style, a binding through an alias it cannot resolve — each draw no action at all, because the only edit that could be offered there is the guess `flow fix` declined to make. |
 
 Everything above is read from the task registry and the Protobuf schema at the
 moment you ask for it, so a task added to the engine shows up in your editor with
@@ -91,31 +93,40 @@ server only improves the position — including where the validator names an ele
 of a list it has no coordinates for, so the squiggle lands on the element rather
 than on the whole value.
 
-Not implemented, and deliberately not advertised: formatting, rename, code actions,
-references, and workspace symbols. The server also never type-checks expressions —
+Not implemented, and deliberately not advertised: rename, references, and workspace
+symbols. The server also never type-checks expressions —
 it only parses them — because a step's output types are not statically known for
 every task, and a wrong squiggle under working code is worse than no squiggle.
 
-Secret references are described on hover but **not** offered by completion. A
-`${secret('env:API_KEY')}` marker compiles and validates today, but no task consumes
-one yet, so a workflow using it fails at run time — suggesting it would be offering
-a trap. Hover reads the reference through the same parser the compiler uses, so it
-cannot describe a form a worker would refuse, and it names the scheme rather than a
-backend: which provider serves `vault` is a deployment's choice, made worker-side.
+Secret references are described on hover but **not** offered by completion, and the
+reason is narrower than it once was: a secret is consumed for real now — the `http`
+task's `bearer:` takes a reference whole and the worker resolves it inside the
+activity — so a `${secret('env:API_KEY')}` marker in the one place built to receive
+one runs rather than failing. What completion would still have to know is *where* it
+may be offered, and that is the hard half: a reference has to be the whole value of a
+task input the schema declares as taking one, and every other position — a header
+entry, an `if:`, a loop's `items` — is a compile error the validator explains at
+length. A completion list that cannot make that distinction offers the refusal as
+often as the working form, so it stays unoffered until it can. Hover reads the
+reference through the same parser the compiler uses, so it cannot describe a form a
+worker would refuse, and it names the scheme rather than a backend: which provider
+serves `vault` is a deployment's choice, made worker-side.
 Misplaced references — combined into a larger expression, or used in `if` or
 `for_each.items`, where resolving them would put the secret into workflow history —
 are reported by the validator with its own explanation.
 
 Inputs a task evaluates itself are not reference-checked, because they resolve
-against a scope the document does not model: the `http` task's `outputs` expression
-sees `status_code`, `headers`, `body`, and `json` from the response, which exist only once
-the request has been made. Those names are bare because the task binds them, the
-same way a loop binds its iterator; `steps.` is still reachable alongside them, so a
-shaping expression can combine the response with an earlier step's output. Which
-inputs are deferred this way comes from the task's own definition, so this cannot go
-stale. Note that `outputs` has to be written as a quoted whole-value expression —
-`outputs: "${ {'status': status_code} }"` — since an unquoted value would read the
-colons inside as YAML mapping syntax.
+against a scope the document does not model: the `http` task's `expect` and `outputs`
+expressions see the response under `response.` — `response.status_code`,
+`response.headers`, `response.body`, and, when the step asked for `parse_json`,
+`response.json` — none of which exist until the request has been made. That root is
+bound by the task rather than by the workflow's scope, which is why a step's ordinary
+inputs cannot see it: there is no response yet when those are resolved. `steps.` is
+reachable alongside it, so a shaping expression can combine the response with an
+earlier step's output. Which inputs are deferred this way comes from the task's own
+definition, so this cannot go stale. Note that `outputs` has to be written as a
+quoted whole-value expression — `outputs: "${ {'status': response.status_code} }"` —
+since an unquoted value would read the colons inside as YAML mapping syntax.
 
 ## Install the binary
 
@@ -431,6 +442,33 @@ Open a Flowfile and try each of these:
    jump to that step's `id:`.
 5. **Outline.** Open your editor's symbol list. Each step appears, labelled with
    its task.
+6. **Formatting.** Run your editor's "Format Document" command on a file with a
+   comment or two in it. The comments disappear and the document comes back as
+   `flow fmt` would write it — that is the whole-document rewrite the capability
+   table describes, not a bug. Because of that rewrite, none of the editor
+   configurations above bind this to format-on-save; invoke it deliberately
+   (`:lua vim.lsp.buf.format()` in Neovim, `:format` in Helix, the Command
+   Palette's "Format Document" in VS Code, `M-x eglot-format-buffer` in Emacs) and
+   review the diff before committing it, the same as running `flow fmt` from the
+   command line.
+7. **Code actions.** Open a Flowfile written in an older edition — one this build
+   refuses, with a diagnostic saying to run `flow fix` — and ask your editor for
+   the actions at the underlined line (`vim.lsp.buf.code_action()` in Neovim,
+   `<space>a` in Helix, the lightbulb or `Ctrl+.` in VS Code, `M-x
+   eglot-code-actions` in Emacs). You should be offered *Migrate to edition …*
+   plus a line-level entry naming the change under the cursor. Applying either one
+   rewrites the buffer to exactly what `flow fix` writes, comments and all.
+
+   The `source.fixAll` action is the one editors bind to fix-on-save
+   (`editor.codeActionsOnSave` in VS Code, `lsp-format`/`code_action` hooks
+   elsewhere). None of the configurations above turn that on, and the reason is
+   not that the rewrite is unsafe — `flow fix` refuses rather than guesses, which
+   is why an editor that cannot be sure offers nothing. It is that a migration is
+   a thing people read in review. The command changes what a file *says* it is
+   written in and moves an author's steps around to say the same thing in the
+   current grammar, and the moment to see that is when it happens, not in a
+   `git diff` after a save you were not thinking about. Invoke it deliberately,
+   read the diff, commit it on its own.
 
 If nothing happens, check that the server starts and answers at all. The `sleep`
 matters: the server exits as soon as its input closes, so a plain heredoc ends the
@@ -459,3 +497,22 @@ $ flow tasks
 `flow validate` runs the same semantic validation the language server reports, so
 if a file is clean there and not in your editor, the editor is looking at a
 different file than you think.
+
+## Agents
+
+An AI agent editing Flowfiles is not an editor client, and pointing one at
+`flow lsp` is the wrong shape: LSP answers questions about a buffer at a
+position, and an agent has no cursor. It wants the same guarantees through a
+protocol built for it, which is `flow mcp` — one tool per RPC with schemas
+derived from the protobuf schema, `flowstate_run_local` to rehearse a file in
+process, and read-only resources carrying the DSL reference, the task catalog,
+and the examples.
+
+The validation is the same validation. `flow validate`, the language server's
+`flowfile` diagnostics, and `flowstate_validate` are one implementation with
+three front doors, so an agent and the person reviewing its pull request cannot
+be told different things about the same file.
+
+Client configuration — Claude Code, Claude Desktop, and the generic stdio shape —
+is in [CLI.md](CLI.md#flow-mcp-the-same-surface-for-an-agent), along with what a
+local run may reach and the authoring loop the surface is shaped around.

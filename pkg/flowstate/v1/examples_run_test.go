@@ -25,6 +25,7 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
 )
 
 type exampleSecretProvider struct{}
@@ -105,6 +106,14 @@ func TestEveryOfflineExampleRuns(t *testing.T) {
 		if waitsForASignal(wf.GetSteps()) {
 			continue
 		}
+
+		// Bound once, here, from the example's own inputs.json — the file
+		// `flow run local --input-file` takes, and the only answer either harness
+		// has to what an example requires. An example this cannot start fails
+		// naming that file rather than being skipped.
+		inputs, err := tests.BindExampleInputs(t, wf, path)
+		require.NoError(t, err, "%s cannot be started", name)
+
 		ran++
 
 		t.Run(name, func(t *testing.T) {
@@ -116,7 +125,7 @@ func TestEveryOfflineExampleRuns(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
 			defer cancel()
 
-			outputs, err := v1.Run(ctx, wf)
+			outputs, err := v1.RunWithInputs(ctx, wf, inputs)
 			require.NoError(t, err, "%s validates but does not run", name)
 			require.NotNil(t, outputs)
 
@@ -206,6 +215,10 @@ func TestEveryNetworkedExampleRuns(t *testing.T) {
 		if waitsForASignal(wf.GetSteps()) {
 			continue
 		}
+
+		inputs, err := tests.BindExampleInputs(t, wf, path)
+		require.NoError(t, err, "%s cannot be started", name)
+
 		ran++
 
 		// Every request has to be pointed somewhere this test controls before the
@@ -227,7 +240,7 @@ func TestEveryNetworkedExampleRuns(t *testing.T) {
 				Step:     auth.StepRef{Workflow: wf.GetName(), Run: "example-run"},
 			})
 
-			outputs, err := v1.Run(ctx, wf)
+			outputs, err := v1.RunWithInputs(ctx, wf, inputs)
 			require.NoError(t, err, "%s validates but does not run", name)
 			require.NotNil(t, outputs)
 

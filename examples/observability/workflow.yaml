@@ -1,0 +1,59 @@
+edition: v2026.2
+name: observability-lab
+description: A run shaped to be worth looking at in Grafana and in the Temporal UI.
+
+# The workload the lab's walkthrough runs. Nothing in it is about telemetry —
+# that is the point. Flowstate emits spans and metrics for whatever a file
+# happens to do, so an example that had to opt into being observable would be
+# demonstrating the wrong thing.
+#
+# What it is shaped for is a trace with something in it. A single `log:` step
+# produces a trace that is one span wide and over before it is drawn, which
+# proves the pipeline works and shows nothing about the workload. So:
+#
+#   * a durable wait, which is visible as a gap the worker is not occupying —
+#     the distinction between a workflow that is slow and a worker that is busy
+#     is the first thing a durable engine's telemetry should be able to answer;
+#   * a fan-out, so the trace has siblings rather than a single line, and the
+#     step-latency panel has more than one activity type to sort by;
+#   * a step that carries a value into a later one, so the spans have a reason
+#     to be in the order they are in.
+#
+# Run it against the lab's server per README.md. It needs no network beyond the
+# server itself.
+
+vars:
+  release: v2026.8.0
+  regions: [eu-west-1, us-east-1, ap-southeast-2]
+
+steps:
+  - id: announce
+    log:
+      message: ${'starting rollout of ' + vars.release}
+      fields:
+        release: ${vars.release}
+        regions: ${string(size(vars.regions))}
+
+  # A durable timer. The worker is not holding a thread here, and the trace shows
+  # it: the gap belongs to the workflow, not to a busy process. Kept to a couple
+  # of seconds so the walkthrough finishes while somebody is watching it.
+  - id: settle
+    sleep: 2s
+
+  # Fan-out, which is what gives the trace siblings and the dashboard more than
+  # one activity type to distinguish.
+  - id: rollout
+    for_each:
+      items: ${vars.regions}
+      as: region
+      steps:
+        - id: deploy
+          log:
+            message: ${'rolled out ' + vars.release + ' to ' + region}
+            fields:
+              region: ${region}
+              release: ${vars.release}
+
+  - id: report
+    log:
+      message: ${'rollout of %s reached %d regions'.format([vars.release, size(vars.regions)])}

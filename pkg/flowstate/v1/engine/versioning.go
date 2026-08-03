@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"fmt"
+
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
@@ -42,13 +44,22 @@ import (
 // us: add fields, never renumber, never repurpose, and treat a field the previous
 // version did not set as absent rather than as a default that means something.
 //
-// None of this is required to run Flowstate. A deployment without Worker
-// Versioning gets the behaviour it has always had: whatever is deployed executes
-// whatever is in flight. What it does not get is the guarantee — and one thing
-// depends on the guarantee rather than merely benefiting from it, which is
-// recorded in docs/DSL.md: expression evaluation may move into workflow code only
-// where versioning pins the interpreter, because cel-go's own implementation is
-// pinned by the binary and by nothing else.
+// A deployment without Worker Versioning gets the behaviour Temporal has always
+// had: whatever is deployed executes whatever is in flight. What it does not get
+// is the guarantee — and one thing depends on the guarantee rather than merely
+// benefiting from it, which is argued in docs/DSL.md: expression evaluation
+// belongs in workflow code only where versioning pins the interpreter, because
+// cel-go's own implementation is pinned by the binary and by nothing else.
+//
+// That is not a future condition. The interpreter already evaluates CEL inline in
+// workflow code — step conditions, a loop's `items:`, a step's own `vars:`, and
+// every task input that does not declare `needs_prev_outputs` — so every worker
+// this package registers depends on it today. `flow worker` therefore refuses to
+// start unversioned unless the operator says in the command line that they accept
+// the exposure (`--allow-unversioned-interpreter`); see cmd/flow/main.go. The
+// refusal lives at the command rather than here because this package is also the
+// registration path for test workers and embedded hosts, and a library that
+// refuses to be constructed is a library that gets worked around.
 
 // Register installs the interpreter on a worker.
 //
@@ -98,9 +109,24 @@ func Register(w worker.Registry, runtime ...TaskRuntimeConfig) {
 //
 // Empty in, empty out. The SDK panics rather than errors on a contradictory worker
 // configuration, so the contradictions are made unrepresentable here instead.
-func DeploymentOptions(deployment, buildID string) worker.DeploymentOptions {
-	if deployment == "" || buildID == "" {
-		return worker.DeploymentOptions{}
+//
+// Half in is an error, and used not to be. Dropping silently to unversioned is the
+// worst of the three answers: the operator asked for versioning, the worker starts,
+// nothing says otherwise, and the guarantee they configured is simply absent — a
+// fail-open on the exact posture the interpreter depends on. Somebody who set one
+// flag meant to set both, so the missing half is named and the command stops.
+func DeploymentOptions(deployment, buildID string) (worker.DeploymentOptions, error) {
+	switch {
+	case deployment == "" && buildID == "":
+		return worker.DeploymentOptions{}, nil
+	case buildID == "":
+		return worker.DeploymentOptions{}, fmt.Errorf(
+			"worker deployment %q has no build id: a version is the pair, so set --build-id "+
+				"(or FLOWSTATE_BUILD_ID) to something unique per build, such as the commit", deployment)
+	case deployment == "":
+		return worker.DeploymentOptions{}, fmt.Errorf(
+			"build id %q has no worker deployment: a version is the pair, so set --deployment-name "+
+				"(or FLOWSTATE_DEPLOYMENT_NAME) to the deployment this worker belongs to", buildID)
 	}
 
 	return worker.DeploymentOptions{
@@ -115,5 +141,5 @@ func DeploymentOptions(deployment, buildID string) worker.DeploymentOptions {
 		// so setting one here could only ever mask the day somebody removes that
 		// declaration. Without it the SDK panics at registration, which is the
 		// failure we want: loud, immediate, and before any run exists.
-	}
+	}, nil
 }

@@ -244,17 +244,22 @@ func normalizeExpr(val *v1.Value) *v1.Value {
 // A structure whose values are all literal stays a literal, so that a map of
 // headers is carried as data. One containing a ${...} anywhere inside becomes a
 // single CEL expression building the whole structure, which is the only way a
-// per-key expression can be evaluated at all.
+// per-key expression can be evaluated at all — unless one of those ${...} is a
+// secret reference, which is the one thing that must not be evaluated. That case
+// keeps every entry a value of its own; see [compiler.structure].
 func (c *compiler) composite(n ast.Node, path string, r ref) *v1.Value {
 	if c.containsExpr(n) {
+		// A structure holding a secret reference is compiled entry by entry
+		// instead, so the reference stays one — see [compiler.structure], which
+		// also reports the inputs where that is not allowed.
+		if c.holdsSecretMarker(n) {
+			return c.structure(n, path, r)
+		}
+
 		text, ok := c.celText(n, path, r)
 		if !ok {
 			return nil
 		}
-		// A reference nested in a structure would have to be built into the one
-		// expression that builds the structure, and the workflow evaluates that
-		// expression. There is no reference to emit here even in principle: a value
-		// is a reference or a structure, never a structure holding one.
 		return c.expression(n, text, path, r, secretInStructure)
 	}
 	lit := c.literal(n, path, r)
@@ -314,6 +319,17 @@ func (c *compiler) literal(n ast.Node, path string, r ref) *expr.Value {
 		}
 		return &expr.Value{Kind: &expr.Value_StringValue{StringValue: node.Value}}
 	case *ast.LiteralNode:
+		// A block scalar is a string like any other, so it carries the same rule:
+		// text that opens a fence is not literal text, whatever it is nested in.
+		// [compiler.scalarString] applies this where a block scalar is a value on
+		// its own; without it here, the same document with the block scalar one
+		// level down — a `note: |` inside a `json:` mapping — ships the `${...}`
+		// as characters and says nothing, which leaves the author no reason to
+		// doubt the file.
+		if err := fenceError(blockText(node)); err != nil {
+			c.report(spanOfNode(n), r, "%s", err)
+			return nil
+		}
 		return &expr.Value{Kind: &expr.Value_StringValue{StringValue: blockText(node)}}
 	case *ast.IntegerNode:
 		switch v := node.Value.(type) {

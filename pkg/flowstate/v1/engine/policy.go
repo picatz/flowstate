@@ -1,8 +1,6 @@
 package engine
 
 import (
-	"time"
-
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
@@ -15,21 +13,12 @@ import (
 // Temporal requires a timeout to be set, and leaving retry behavior implicit is
 // how a workflow ends up repeating an operation that should have failed once.
 const (
-	// defaultStartToCloseTimeout bounds a single attempt at a step.
-	//
-	// It must accommodate the slowest legitimate task — an HTTP request to a
-	// slow endpoint — while still being short enough that a hung attempt is
-	// detected rather than occupying a worker slot indefinitely. The http task's
-	// own client timeout is lower, so a well-behaved task fails first and this
-	// acts as a backstop.
-	defaultStartToCloseTimeout = 2 * time.Minute
-
-	// defaultScheduleToCloseTimeout bounds a step across all of its attempts.
-	//
-	// Without an overall bound, a step failing with a retryable error consumes
-	// its full attempt budget with backoff between each, so the worst case is
-	// the sum of every attempt plus every wait. This caps that.
-	defaultScheduleToCloseTimeout = 10 * time.Minute
+	// The timeouts are v1's for the reason the retry defaults below are: they
+	// were literals here and *nothing* in the local driver, so a step declaring
+	// no `timeout:` was bounded per attempt and overall in production and
+	// unbounded on the laptop rehearsing it.
+	defaultStartToCloseTimeout    = v1.DefaultStartToCloseTimeout
+	defaultScheduleToCloseTimeout = v1.DefaultScheduleToCloseTimeout
 
 	// The retry defaults are v1's, not this package's. They used to be written
 	// here as literals and again in the local driver, where the attempt count was
@@ -76,18 +65,17 @@ func activityOptionsFor(policy *v1.StepPolicy) workflow.ActivityOptions {
 		return opts
 	}
 
-	if timeout := policy.GetTimeout().AsDuration(); timeout > 0 {
-		opts.StartToCloseTimeout = timeout
-
-		// The overall bound must leave room for the attempts the retry policy
-		// allows, or a step would be cut short by a ceiling derived from
-		// defaults rather than by its own policy.
-		if attempts := int64(effectiveMaxAttempts(policy.GetRetry())); attempts > 0 {
-			if budget := timeout * time.Duration(attempts); budget > opts.ScheduleToCloseTimeout {
-				opts.ScheduleToCloseTimeout = budget
-			}
-		}
-	}
+	// Including the rule that the overall bound must leave room for the attempts
+	// the retry policy allows, or a step would be cut short by a ceiling derived
+	// from defaults rather than by its own policy. The rule lives in v1 rather
+	// than here because the local driver has to apply the same one, and a
+	// precedence written twice is how the defaults themselves came to disagree.
+	timeouts := v1.StepTimeoutsFor(policy, v1.StepTimeouts{
+		StartToClose:    opts.StartToCloseTimeout,
+		ScheduleToClose: opts.ScheduleToCloseTimeout,
+	})
+	opts.StartToCloseTimeout = timeouts.StartToClose
+	opts.ScheduleToCloseTimeout = timeouts.ScheduleToClose
 
 	retry := policy.GetRetry()
 	if retry == nil {
@@ -114,14 +102,10 @@ func activityOptionsFor(policy *v1.StepPolicy) workflow.ActivityOptions {
 	return opts
 }
 
-// effectiveMaxAttempts reports how many attempts a retry policy allows,
-// substituting the default when it does not say.
-func effectiveMaxAttempts(retry *v1.RetryPolicy) int32 {
-	if v := retry.GetMaxAttempts(); v > 0 {
-		return v
-	}
-	return defaultMaximumAttempts
-}
+// How many attempts a policy allows is [v1.RetryAttemptsFor], which is what
+// [v1.StepTimeoutsFor] reads when it widens the overall bound. The local copy this
+// package kept said the same thing in its own words, which is the arrangement the
+// shared constants exist to end.
 
 // nonRetryableErrorTypes returns the application error types that must not be
 // retried.

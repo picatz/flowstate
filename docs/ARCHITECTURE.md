@@ -195,11 +195,13 @@ Continue-As-New is the only safe seam: the next run replays nothing, starting fr
 instead of from history. That is the whole reason invariant 10 exists — the seam is only sound
 if the two versions either side of it agree about the message crossing it.
 
-Both halves are opt-in (`--deployment-name` and `--build-id` on `flow worker`) and inert
-without them, which is what keeps invariant 8. One planned capability depends on the
-guarantee rather than merely benefiting from it: expression evaluation may move into workflow
-code only where versioning pins the interpreter, because cel-go's behavior is pinned by the
-binary and by nothing else. See [DSL.md](DSL.md).
+Both halves arrive together or not at all: a worker given one of `--deployment-name` and
+`--build-id` refuses to start naming the missing half, and a worker given neither refuses
+unless `--allow-unversioned-interpreter` accepts the exposure by name — which is what keeps
+invariant 8, since typing the flag is the whole cost of a dev-server session. The gate
+exists because a shipped capability depends on the guarantee rather than merely benefiting
+from it: expression evaluation runs in workflow code, where cel-go's behavior is pinned by
+the binary and by nothing else. See [DSL.md](DSL.md).
 
 ## Leaning into Temporal
 
@@ -223,7 +225,8 @@ Rows marked **(done)** are implemented; the rest are the shape the surface shoul
 | Continue-As-New | transparent history and payload management **(done)** |
 | Worker Deployment Versioning | `flow worker --deployment-name --build-id`; a run is pinned to the interpreter it started on and takes the current version at Continue-As-New **(done)** |
 | Schedules | `triggers: { schedule: ... }`, `flow schedule` |
-| Search attributes and memo | labels projected into visibility, `flow list --filter`; a run's tenant is recorded as a memo, which needs no cluster-side registration so a dev server works unconfigured |
+| Memo | a run's tenant, recorded when `Run` starts it and authorized against on every later request **(done)**; a memo rather than a search attribute because it needs no cluster-side registration, so a dev server works unconfigured — the cost being that Temporal cannot filter on it, so `List` reads pages and filters them itself under its own scan and request bounds |
+| Search attributes | labels projected into visibility, `flow list --filter` — server-side filtering, which is what a memo cannot give |
 | Cancellation scopes | `on_failure:` compensation, saga semantics |
 | Conditional execution | per-step `if:`, evaluated in workflow code so the branch is in history **(done)** |
 | Bounded concurrency | `for_each` with `max_parallel:`, fanning out over a computed list **(done)** |
@@ -304,6 +307,18 @@ language rather than three.
 
 Credentials obtained this way are resolved worker-side at execution time and never enter
 workflow history, per the secrets invariant above.
+
+The outbound half is built and reachable from a Flowfile. An `http:` step names a
+deployment-configured target with `credential: partner-api`; the broker lives on the
+worker, alongside the secrets store and the authenticated workload identity, so the
+same account of who is acting governs both a static secret and a minted credential
+(`TaskRuntime` in `pkg/flowstate/v1/taskruntime.go`). It authorizes the exact workload
+and step, mints the assertion, exchanges it, and applies the result to the outbound
+request inside the activity — the material moves broker-to-request and is never
+returned to workflow code. `examples/http-federated/` is the worked example, with the
+CEL policy that decides which workload may assume which target. AWS session targets are
+deliberately refused by the generic HTTP task: they need SigV4 request signing, which
+belongs in an AWS-aware task rather than in a header.
 
 ### Secrets
 

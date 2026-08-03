@@ -1,0 +1,6 @@
+edition: v2026.2
+name: simple
+steps:
+- id: hello
+  log:
+    message: hello world

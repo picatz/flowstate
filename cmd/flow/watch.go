@@ -26,20 +26,23 @@ import (
 //
 // # What it can actually show, which is less than it should be
 //
-// Not which step the run is on. `Get` answers a running execution with three
-// scalars — the two ids and the status — and reports outputs only once the run has
-// finished, so there is no per-step progress to display while it matters. See
-// `pkg/flowstate/v1/server/server.go`, the STATUS_RUNNING case.
+// Not which step the run is on — and that is this file's gap rather than the
+// server's. `Get` fills Progress and PendingActivities for a running execution
+// (`pkg/flowstate/v1/server/server.go`, the STATUS_RUNNING case), so which step a
+// run is on, and whether an activity is on its fourth attempt and what the last one
+// died of, arrive on every poll. `flow get` already prints both. Nothing here reads
+// either field: absorb folds a response into a status, a run id, and the list of
+// steps that have produced outputs, so a follow currently says less about a run in
+// flight than a single `flow get` does.
 //
-// So what a follow reports while a run is going is the status, how long it has been
-// watched, and — the moment the run ends — the steps that produced outputs. That is
-// worth having: the elapsed time is what distinguishes a run that is working from a
-// watch that has frozen, the exit is automatic, and the step list is a summary on the
-// final frame. It is not the live step-by-step this ought to be, and the missing piece
-// is the server's, not this file's. Anything here that renders steps is written to be
-// right the day the server can answer, and is exercised meanwhile by tests that supply
-// a response shape the server does not yet produce — which is stated rather than left
-// for somebody to discover.
+// So what a follow reports while a run is going is the status and how long it has
+// been watched, and — the moment the run ends — the steps that produced outputs.
+// That is worth having: the elapsed time is what distinguishes a run that is working
+// from a watch that has frozen, the exit is automatic, and the step list is a summary
+// on the final frame. It is not the live step-by-step this ought to be, and what is
+// missing is the consumption, not the answer: the fields are on the wire and there is
+// a renderer for a position in get.go. Wiring them through absorb is the remaining
+// work, stated here rather than left for somebody to discover.
 //
 // # It must not become the only way to watch
 //

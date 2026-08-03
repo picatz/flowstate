@@ -1,0 +1,17 @@
+# A JSON response is text until something parses it. `json_parse` turns a body
+# into a value expressions can index, and a step's own `vars:` gives that value
+# a name so the parse is written once rather than at every use.
+edition: v2026.2
+name: http-json
+steps:
+  - id: web
+    http:
+      method: GET
+      url: https://httpbin.org/json
+  - id: title
+    vars:
+      slideshow: ${json_parse(steps.web.body)['slideshow']}
+    log:
+      message: ${slideshow['title']}
+      fields:
+        author: ${slideshow['author']}

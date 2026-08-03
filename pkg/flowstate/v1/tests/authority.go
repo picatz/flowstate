@@ -221,6 +221,31 @@ func bearerSecretStep(stepID, url, scheme, name string) *v1.Node {
 	}
 }
 
+// headerSecretStep builds an http step that reads a static secret reference from
+// inside its `headers:` mapping, tolerated for the same reason [bearerSecretStep]
+// is.
+//
+// The reference sits one level down, which is the whole difference: `bearer:` is a
+// whole input declared to take one, and this is an entry of a structure. Both must
+// reach the worker as references and fail the same way when they may not be read,
+// or the two spellings of one intention have two behaviours.
+func headerSecretStep(stepID, url, scheme, name string) *v1.Node {
+	return &v1.Node{
+		Id:     stepID,
+		Policy: &v1.StepPolicy{ContinueOnError: true},
+		Kind: &v1.Node_Task{Task: &v1.Task{
+			Name: "http",
+			Inputs: map[string]*v1.Value{
+				"url": v1.NewLiteral(url),
+				"headers": v1.NewStructureMap(map[string]*v1.Value{
+					"Accept":        v1.NewLiteral("application/json"),
+					"Authorization": {Kind: &v1.Value_SecretRef{SecretRef: &v1.SecretRef{Scheme: scheme, Name: name}}},
+				}),
+			},
+		}},
+	}
+}
+
 // credentialStep builds an http step that authorizes a JIT federation target,
 // tolerated for the same reason [bearerSecretStep] is.
 func credentialStep(stepID, url, target string) *v1.Node {
@@ -330,6 +355,46 @@ func AuthorityDenialCases() []AuthorityCase {
 			},
 		},
 		{
+			// The nested position, failing closed exactly as the whole-value one
+			// does. A reference inside a header map is resolved by the same
+			// activity through the same authority, so a worker with none refuses
+			// it in the same words — with the header named, because a mapping can
+			// hold several and an author needs to know which.
+			Case: Case{
+				Name: "a header reference fails closed with no runtime configured",
+				Workflow: &v1.Workflow{
+					Name:  "authority-fail-closed-header",
+					Steps: []*v1.Node{headerSecretStep("read", unreachable, "fixture-secret", "API_TOKEN")},
+				},
+				ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+					"read": v1.FailedStepOutputs(`task "http" failed (PolicyDenied): ` +
+						`header "Authorization": resolving reference fixture-secret:API_TOKEN: ` +
+						`secret access is not configured on this worker`),
+				}},
+			},
+			Authority: Authority{NoRuntime: true},
+		},
+		{
+			Case: Case{
+				Name: "a deny rule refuses a header reference",
+				Workflow: &v1.Workflow{
+					Name:  "authority-denied-header",
+					Steps: []*v1.Node{headerSecretStep("read", unreachable, "fixture-secret", "API_TOKEN")},
+				},
+				ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+					"read": v1.FailedStepOutputs(`task "http" failed (PolicyDenied): ` +
+						`header "Authorization": resolving reference fixture-secret:API_TOKEN: ` +
+						`auth: denied by secret access policy: no rule permits workload ` +
+						`"flowstate:acme-tenant/default/authority-denied-header/read" ` +
+						`in namespace "acme-tenant" to read fixture-secret:API_TOKEN (deny rule: true)`),
+				}},
+			},
+			Authority: Authority{
+				Scheme: "fixture-secret", FixtureValue: "must-not-resolve",
+				Allow: []string{"true"}, Deny: []string{"true"}, Identity: identity,
+			},
+		},
+		{
 			// Same denial as above, under a case whose whole point is the
 			// ordering: the caller asserts, after running this, that
 			// Authority.ProviderCalls never advanced past zero — proof the
@@ -376,6 +441,7 @@ func AuthorityContainmentCases(baseURL string) []AuthorityCase {
 
 	const bearerMaterial = "material-that-must-not-appear-in-any-rendering-bearer"
 	const jitMaterial = "material-that-must-not-appear-in-any-rendering-jit"
+	const headerMaterial = "material-that-must-not-appear-in-any-rendering-header"
 
 	reflectOutputs := v1.NewExpr(`{"body": response.body, "reflected": response.headers["X-Reflected"][0]}`)
 
@@ -392,6 +458,15 @@ func AuthorityContainmentCases(baseURL string) []AuthorityCase {
 		"call": {NamedValues: map[string]*v1.Value{
 			"body":      v1.NewLiteral("echo: " + secrets.Redacted),
 			"reflected": v1.NewLiteral("Bearer " + secrets.Redacted),
+		}},
+	}}
+	// A header written by the author carries what the author wrote and nothing
+	// else, so the reflected value is the material alone — one [REDACTED] with no
+	// prefix, the same shape the JIT case produces and for the opposite reason.
+	headerRedacted := &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+		"call": {NamedValues: map[string]*v1.Value{
+			"body":      v1.NewLiteral("echo: " + secrets.Redacted),
+			"reflected": v1.NewLiteral(secrets.Redacted),
 		}},
 	}}
 	jitRedacted := &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
@@ -426,6 +501,42 @@ func AuthorityContainmentCases(baseURL string) []AuthorityCase {
 				Allow: []string{"true"}, Identity: identity,
 			},
 			ContainmentValue: bearerMaterial,
+		},
+		{
+			// The same containment, from the position a reference reaches by
+			// being nested rather than by being a whole input. It matters
+			// separately: `bearer:` hands its value to one `Header.Set` in a
+			// function written around a single reference, while a header map is
+			// walked, and a walk is where a value gets copied into something that
+			// outlives it. What comes back is the material the peer reflected,
+			// redacted — and with no "Bearer " prefix, because this header carries
+			// the credential exactly as the author wrote it.
+			Case: Case{
+				Name: "a secret nested in a header is contained end to end",
+				Workflow: &v1.Workflow{
+					Name: "authority-contained-header",
+					Steps: []*v1.Node{{
+						Id: "call",
+						Kind: &v1.Node_Task{Task: &v1.Task{
+							Name: "http",
+							Inputs: map[string]*v1.Value{
+								"url": v1.NewLiteral(baseURL + "/reflect-authorization"),
+								"headers": v1.NewStructureMap(map[string]*v1.Value{
+									"Accept":        v1.NewLiteral("application/json"),
+									"Authorization": {Kind: &v1.Value_SecretRef{SecretRef: &v1.SecretRef{Scheme: "fixture-secret", Name: "API_TOKEN"}}},
+								}),
+								"outputs": reflectOutputs,
+							},
+						}},
+					}},
+				},
+				ExpectedOutputs: headerRedacted,
+			},
+			Authority: Authority{
+				Scheme: "fixture-secret", FixtureValue: headerMaterial,
+				Allow: []string{"true"}, Identity: identity,
+			},
+			ContainmentValue: headerMaterial,
 		},
 		{
 			Case: Case{

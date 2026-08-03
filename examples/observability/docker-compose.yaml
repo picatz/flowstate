@@ -1,0 +1,264 @@
+# The observability lab: Flowstate as an OTLP citizen, with somewhere for the
+# telemetry to land.
+#
+# Nothing here is required to run Flowstate. Unset OTEL_EXPORTER_OTLP_ENDPOINT is
+# the default posture and it stays that way — see README.md, which says so first
+# and says why.
+#
+# Eight services, three of which are Flowstate's and five of which are the stack
+# watching it:
+#
+#   flow run (on your host) ─traceparent─▶ flowstate-server ─▶ temporal ─▶ flowstate-worker
+#            │                                   │                              │
+#            └───────── OTLP ───────────────┬────┴──────────────────────────────┘
+#                                           ▼
+#                                     otel-collector ──▶ tempo       (traces)
+#                                           ├──────────▶ prometheus  (metrics, scraped)
+#                                           └──────────▶ loki        (logs)
+#                                                          ▼
+#                                                       grafana
+#
+# Every published port is bound to 127.0.0.1. Nothing in this file is reachable
+# from another machine, which is the only reason the rest of its posture —
+# anonymous Grafana admin, unauthenticated Flowstate, an unversioned worker — is
+# acceptable. README.md names each of those choices; if you change a binding to
+# 0.0.0.0 you have taken the argument away and you own what follows.
+
+# Both Flowstate services are the same image, built once from the repository
+# root. An anchor rather than two build blocks, so they cannot drift into being
+# two different binaries — the disagreement Worker Deployment Versioning exists
+# to prevent is not one a lab should model by accident.
+x-flowstate: &flowstate
+  build:
+    context: ../..
+    dockerfile: examples/observability/Dockerfile
+  image: flowstate-lab:dev
+  environment: &flowstate-env
+    # The one variable that turns telemetry on. Both signals travel over OTLP
+    # HTTP, which is the protocol cmd/flow/telemetry.go's exporters speak, so
+    # this is the collector's 4318 rather than its 4317.
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+    # The binary compiles in service.name=flowstate; resource detection reads the
+    # environment last, so this wins. Worth setting: the host's `flow run` keeps
+    # the compiled-in name, which is what makes one trace read as three services
+    # — the person, the server, and the worker.
+    OTEL_SERVICE_NAME: flowstate-server
+    OTEL_RESOURCE_ATTRIBUTES: deployment.environment=lab
+  volumes:
+    # Where stderr goes, and where the collector's filelog receiver reads it
+    # back. See README.md, "How logs get to Loki", for why this rather than the
+    # Loki docker driver or a mount of /var/lib/docker/containers.
+    - flowstate-logs:/var/log/flowstate
+  # The binary flushes its last spans and metrics on the way out, and that flush
+  # is bounded at five seconds. A grace period shorter than that would kill the
+  # process during precisely the flush a lab exists to demonstrate.
+  stop_grace_period: 30s
+  depends_on:
+    temporal:
+      condition: service_healthy
+    otel-collector:
+      condition: service_started
+
+services:
+  # ---------------------------------------------------------------- Flowstate
+
+  flowstate-server:
+    <<: *flowstate
+    container_name: flowstate-server
+    environment:
+      <<: *flowstate-env
+      # `flow server` reads FLOWSTATE_ADDRESS as where to *listen*; the client
+      # reads the same variable as where to *connect*. Inside a container the
+      # default (localhost:9233) would bind the loopback interface of the
+      # container's own namespace, which no published port can reach — hence
+      # 0.0.0.0 here, and 127.0.0.1 on the published side below. The container
+      # binds broadly; the host binds narrowly. That asymmetry is the point.
+      FLOWSTATE_ADDRESS: 0.0.0.0:9233
+    # --insecure-no-auth: every caller is anonymous. Acceptable only because the
+    # published port is loopback-only. The server says so in its own logs on
+    # every start, which you will see in Grafana.
+    #
+    # `exec` is load-bearing: it replaces the shell, so `flow` is pid 1 and
+    # receives the SIGTERM `docker compose down` sends. A pipeline into `tee`
+    # would leave the shell as pid 1, and a shell does not forward signals — the
+    # process would be killed at the grace period instead of flushing its last
+    # spans, which is the one moment a lab most wants a trace from.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - exec flow server --address=temporal:7233 --insecure-no-auth --verbose >> /var/log/flowstate/server.log 2>&1
+    ports:
+      - "127.0.0.1:9233:9233"
+
+  flowstate-worker:
+    <<: *flowstate
+    container_name: flowstate-worker
+    environment:
+      <<: *flowstate-env
+      OTEL_SERVICE_NAME: flowstate-worker
+    # --allow-unversioned-interpreter is a deliberate acceptance, not a
+    # convenience. The worker evaluates CEL in workflow code, so the binary
+    # decides what a run in flight computes; unversioned, replacing this image
+    # changes that underneath running workloads. In a lab you replace the image
+    # constantly and there are no workloads to protect, which is what makes
+    # accepting the exposure honest here and dishonest anywhere else. README.md
+    # shows the two flags that pin it instead.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - exec flow worker --address=temporal:7233 --allow-unversioned-interpreter --verbose >> /var/log/flowstate/worker.log 2>&1
+
+  # ----------------------------------------------------------------- Temporal
+
+  # `temporal server start-dev` in a container: one process holding the frontend,
+  # the UI, and a SQLite database. The same thing invariant 8 requires every
+  # feature to work against, which is why the lab runs it rather than the
+  # auto-setup image and a separate database and a separate UI — three more
+  # services, a schema migration on first boot, and a cluster that is not the one
+  # anybody develops against.
+  #
+  # admin-tools is the image carrying the `temporal` CLI. --ip 0.0.0.0 because a
+  # dev server otherwise listens on the container's own loopback; the published
+  # ports below are still 127.0.0.1.
+  temporal:
+    image: temporalio/admin-tools:1.29.0-tctl-1.18.6-cli-1.5.0
+    container_name: temporal
+    command:
+      - temporal
+      - server
+      - start-dev
+      - --ip=0.0.0.0
+      - --port=7233
+      - --ui-port=8233
+      - --metrics-port=9091
+      - --db-filename=/home/temporal/temporal.db
+      - --log-format=json
+    ports:
+      - "127.0.0.1:7233:7233" # frontend (gRPC)
+      - "127.0.0.1:8233:8233" # web UI
+    volumes:
+      - temporal-data:/home/temporal
+    healthcheck:
+      test: ["CMD", "temporal", "operator", "cluster", "health", "--address", "127.0.0.1:7233"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+  # ---------------------------------------------------------------- Collector
+
+  # The fan-in, and where the cohesion lives: one ingress for all three signals,
+  # three backends behind it. Everything else in this file is a destination.
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.140.0
+    container_name: otel-collector
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otel-collector/config.yaml:/etc/otelcol/config.yaml:ro
+      # Read-only, and shared with the two Flowstate services: the collector
+      # tails what they write, and cannot write to it.
+      - flowstate-logs:/var/log/flowstate:ro
+    ports:
+      - "127.0.0.1:4317:4317" # OTLP/gRPC
+      - "127.0.0.1:4318:4318" # OTLP/HTTP — what `flow` speaks
+      - "127.0.0.1:8889:8889" # the Prometheus exporter, published for debugging
+    depends_on:
+      - tempo
+      - loki
+
+  # ------------------------------------------------------------------- Tempo
+
+  # The tempo image runs as uid 10001 and does not create /var/tempo, so a fresh
+  # named volume arrives owned by root and the process cannot write its WAL. One
+  # short-lived container fixes the ownership; the alternative is running the
+  # trace store as root for the life of the lab.
+  tempo-init:
+    image: busybox:1.37
+    container_name: tempo-init
+    user: "0:0"
+    command: ["sh", "-c", "mkdir -p /var/tempo/wal /var/tempo/blocks && chown -R 10001:10001 /var/tempo"]
+    volumes:
+      - tempo-data:/var/tempo
+
+  tempo:
+    image: grafana/tempo:2.9.0
+    container_name: tempo
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    volumes:
+      - ./tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    ports:
+      # Published for `curl`-level debugging of the query API. Grafana reaches it
+      # over the compose network and does not need this.
+      - "127.0.0.1:3200:3200"
+    depends_on:
+      tempo-init:
+        condition: service_completed_successfully
+
+  # -------------------------------------------------------------------- Loki
+
+  loki:
+    image: grafana/loki:3.6.0
+    container_name: loki
+    command: ["-config.file=/etc/loki/loki.yaml"]
+    volumes:
+      - ./loki/loki.yaml:/etc/loki/loki.yaml:ro
+      - loki-data:/loki
+    ports:
+      - "127.0.0.1:3100:3100"
+
+  # -------------------------------------------------------------- Prometheus
+
+  prometheus:
+    image: prom/prometheus:v3.7.0
+    container_name: prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      # The lab's whole reason to exist is looking at what just happened, and the
+      # default retention outlives the lab by a fortnight.
+      - --storage.tsdb.retention.time=24h
+      - --web.enable-lifecycle
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+
+  # ----------------------------------------------------------------- Grafana
+
+  grafana:
+    image: grafana/grafana:12.3.0
+    container_name: grafana
+    environment:
+      # Anonymous admin. No password is set here, and none is needed: there is
+      # no login form, no user database worth anything, and no route to this port
+      # from anywhere but this machine. A lab that asks for credentials is a lab
+      # whose credentials end up in a compose file, which is worse — see
+      # README.md, "Insecure by design".
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_AUTH_BASIC_ENABLED: "false"
+      # Land on the lab's dashboard rather than on an empty home page.
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/dashboards/flowstate.json
+      # Nothing here should phone home; the lab is meant to work offline.
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - tempo
+      - loki
+      - prometheus
+
+volumes:
+  flowstate-logs:
+  temporal-data:
+  tempo-data:
+  loki-data:
+  prometheus-data:
+  grafana-data:

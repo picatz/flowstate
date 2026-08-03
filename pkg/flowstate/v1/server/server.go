@@ -254,6 +254,30 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
+	// The caller's half of the input contract, refused here rather than discovered
+	// three steps in: every required input present, nothing undeclared, every value
+	// of its declared type, and values only — never an expression the server would
+	// then be evaluating on a caller's behalf, never a secret reference naming a
+	// credential the specification did not choose.
+	//
+	// Through the same function `flow run local` binds with, so a submission this
+	// refuses is one a local rehearsal refuses too and in the same words. Defaults
+	// are filled in here, once: what goes into `RunState` is what every segment of
+	// the run will see.
+	inputs, err := v1.BindRunInputs(req.Msg.GetWorkflow(), req.Msg.GetInputs())
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	// Weighed together, because they travel together. CheckSpecSize above bounds the
+	// part an author wrote; this bounds the pair, so a caller cannot push a run past
+	// what Temporal will store using arguments alone — which would be the wedged run
+	// invariant 9 exists to convert into an answer, reached by the one path the
+	// specification's own check cannot see.
+	if err := v1.CheckSubmissionSize(req.Msg.GetWorkflow(), inputs); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
 	workflowID := fmt.Sprintf("flowstate-workflow-%s", uuid.NewString())
 
 	// Capture the identity now, while the authenticated caller is still in scope.
@@ -321,6 +345,11 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 		Workflow:    req.Msg.GetWorkflow(),
 		StepsBudget: int32(s.maxStepsPerRun),
 		Identity:    identity,
+
+		// Checked and defaulted, once, above. The engine reads them and never
+		// re-derives them, so every segment of the run sees what this submission
+		// established.
+		Inputs: inputs,
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("unable to execute workflow: %w", err))
@@ -453,6 +482,12 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 				Kind: &v1.GetResponse_Outputs{
 					Outputs: &result,
 				},
+
+				// The answer, beside the transcript. Unset when the workflow declared
+				// no outputs, which is the same "nothing to report" a run started
+				// before any of this existed reports — see the field's own comment,
+				// which is why there is no empty message to distinguish them.
+				RunOutputs: result.GetRunOutputs(),
 			},
 		), nil
 	case v1.RunResponse_STATUS_FAILED, v1.RunResponse_STATUS_CANCELED, v1.RunResponse_STATUS_TERMINATED, v1.RunResponse_STATUS_TIMED_OUT:

@@ -84,22 +84,60 @@
 // names `prod/api#token` to the vault backend, and what the `#` means there is
 // vault's business, not the DSL's.
 //
-// A reference has to be the whole value of a task input, and each way of writing one
-// somewhere else is a compile error naming the line and column it is on. It cannot be
-// combined with anything, so ${'Bearer ' + secret('env:TOKEN')} is refused rather
-// than compiled into an expression that fails at run time. It cannot appear in an
-// `if` or a loop's `items`, which the workflow evaluates itself.
+// A reference has to be the whole value of a task input, or of one entry of a list
+// or a mapping written in one, and each way of writing it somewhere else is a
+// compile error naming the line and column it is on. It cannot be combined with
+// anything, so ${'Bearer ' + secret('env:TOKEN')} is refused rather than compiled
+// into an expression that fails at run time. It cannot appear in an `if` or a
+// loop's `items`, which the workflow evaluates itself.
 //
-// And — a limitation rather than a rule, which the diagnostic says — it cannot be
-// nested in a list or a mapping, so an authorization header cannot yet be written the
-// obvious way:
+// The first input built to receive one was the http task's `bearer:`:
 //
-//	headers:
-//	  Authorization: ${secret('env:API_TOKEN')}   # refused, for now
+//	http:
+//	  url: https://api.example.com/events
+//	  bearer: ${secret('vault:prod/api#token')}
 //
-// A structure containing any expression compiles into a single expression, and the
-// workflow evaluates that expression, which is the one thing all of this exists to
-// prevent.
+// The worker resolves it inside the activity that makes the request and sets
+// `Authorization: Bearer <value>`, so the value exists for that call and nowhere
+// else. The same is true one level down, inside the inputs the http task turns
+// into request bytes itself — `headers:`, `form:` and `json:`:
+//
+//	http:
+//	  url: https://api.example.com/events
+//	  headers:
+//	    Accept: application/json
+//	    Authorization: ${secret('env:API_TOKEN')}
+//
+// Nothing about the reference changes by being nested. The mapping compiles to a
+// structure whose entries are values, the entry stays a reference in the
+// specification and in the activity payload, and the worker resolves it as it sets
+// the header.
+//
+// # Where a reference is still refused, and why
+//
+// The rule is one question asked of the input: does the *task* apply this input's
+// entries itself, inside the activity? An input the workflow resolves is one whose
+// resolved value rides the activity payload into history, so no reference may go
+// there however the file spells it.
+//
+//   - The http task's `query:` is refused although it is the same kind of map as
+//     `form:`. The destination is what refuses it: a query string is written to
+//     access logs, kept in browser history, and forwarded in a Referer header by
+//     anything that follows a redirect.
+//   - The raw string `body:`, a `log:` field, a step's `vars:`, an `if:`, a loop's
+//     `items:`, an `outputs:` declaration, a wait's payload — all of these are
+//     values the workflow itself reads, and reading a secret in workflow code is
+//     the one thing this whole arrangement exists to prevent.
+//   - An expression sharing a list or a mapping with a reference. The entries of a
+//     structure holding a reference travel as they were written, and an expression
+//     among them would have to be evaluated by the workflow to get there; a
+//     mapping of expressions with no reference in it still compiles to the single
+//     expression it always did. For an Authorization header this costs nothing —
+//     `bearer:` takes the credential and leaves the rest of `headers:` free.
+//
+// Each refusal names the inputs of that task which would have worked, read from
+// the task's own definition, so an input built to accept a reference is offered on
+// the day it is built.
 //
 // [flowstatev1.Workflow]: https://pkg.go.dev/github.com/picatz/flowstate/pkg/flowstate/v1#Workflow
 package flowfile

@@ -174,10 +174,17 @@ func initTemporalClient(ctx context.Context, flags temporalFlags) (client.Client
 // namespace. Resolving it in one place keeps the two from ever describing
 // different clusters.
 func temporalConfig(ctx context.Context, flags temporalFlags) (temporalclient.Config, error) {
-	// Telemetry first, so the client is born instrumented. Off unless the
-	// operator pointed OTEL_EXPORTER_OTLP_* somewhere; the shutdown flush is
-	// process-exit's job, which for the two callers here is process lifetime.
-	metricsHandler, _, err := initTelemetry(ctx)
+	// Telemetry first, so the client is born instrumented, and before the RPC
+	// interceptors are built: otelconnect captures the global tracer provider
+	// and propagator at construction, so an interceptor built ahead of this
+	// captures the no-op ones and keeps them for the life of the process.
+	//
+	// Off unless the operator pointed OTEL_EXPORTER_OTLP_* somewhere. Started
+	// rather than initialized, because `flow server` reaches here twice when
+	// the trust policy maps tenants onto namespaces, and the flush this
+	// registers has to reach one set of providers rather than the last of
+	// several — runServer and runWorker call flushTelemetry at their teardown.
+	metricsHandler, err := startTelemetry(ctx)
 	if err != nil {
 		return temporalclient.Config{}, err
 	}
@@ -187,6 +194,7 @@ func temporalConfig(ctx context.Context, flags temporalFlags) (temporalclient.Co
 		Namespace:      flags.namespace,
 		Profile:        flags.profile,
 		MetricsHandler: metricsHandler,
+		Interceptors:   temporalClientInterceptors(),
 	}
 
 	if flags.verbose {
@@ -198,10 +206,77 @@ func temporalConfig(ctx context.Context, flags temporalFlags) (temporalclient.Co
 	return cfg, nil
 }
 
+// allowUnversionedFlag is how an operator says they accept running the
+// interpreter with nothing pinning it.
+//
+// Named for what is being accepted rather than for the check being skipped, in the
+// same spirit as --allow-insecure-plugin-dir: the flag that permits a plugin
+// directory other users can write to says so, instead of saying "--no-plugin-check".
+// A person reading a command line should be able to see the risk without reading
+// the code that enforces it.
+const allowUnversionedFlag = "allow-unversioned-interpreter"
+
+// workerDeployment resolves the versioning posture a `flow worker` command
+// describes, and refuses the ones that are unsafe or incoherent.
+//
+// The refusal exists because the interpreter evaluates CEL *in workflow code* —
+// step conditions, a loop's `items:`, a step's own `vars:`, and every task input
+// that does not declare `needs_prev_outputs`. What those expressions mean is
+// decided by the cel-go compiled into this binary, and on an unversioned worker
+// nothing pins which binary a run in flight is handed to. docs/DSL.md states that
+// dependency as a deployment precondition; this is where it stops being a note.
+//
+// Zero-config local development still works, and invariant 8 is what says how much
+// it has to: every feature must work against `temporal server start-dev` with no
+// cloud dependency. Worker Deployment Versioning is not a cloud dependency — the
+// versioning end-to-end test drives two builds against a dev server — so an
+// operator's honest options on a laptop are both open. What invariant 8 does forbid
+// is a dead end, so the refusal is written to be a signpost: it names the flag to
+// type, and typing it is the whole of the fix.
+//
+// Detecting the dev server and exempting it was the alternative, and it was
+// rejected for being a guess. The address a dev server listens on is configurable,
+// a production cluster can be reached at localhost through a tunnel, and a rule
+// that decides how much safety to enforce by pattern-matching a hostname fails open
+// on exactly the deployment that most needs it.
+func workerDeployment(cmd *cobra.Command, flags temporalFlags) (worker.DeploymentOptions, error) {
+	deployment, err := engine.DeploymentOptions(flags.deploymentName, flags.buildID)
+	if err != nil {
+		return worker.DeploymentOptions{}, err
+	}
+
+	if deployment.UseVersioning {
+		return deployment, nil
+	}
+
+	if allowed, _ := cmd.Flags().GetBool(allowUnversionedFlag); allowed {
+		return deployment, nil
+	}
+
+	return worker.DeploymentOptions{}, fmt.Errorf(
+		"refusing to start an unversioned worker: this worker evaluates workflow expressions "+
+			"(step conditions, a loop's items:, a step's vars:, task inputs) in workflow code, so the "+
+			"expression engine built into this binary decides what they mean — and with no version, "+
+			"deploying a different binary changes what every run already in flight computes, including "+
+			"where a run resumes after continue-as-new. Pass --deployment-name and --build-id "+
+			"(or FLOWSTATE_DEPLOYMENT_NAME and FLOWSTATE_BUILD_ID) to pin each run to the interpreter "+
+			"it started on, or --%s to accept that exposure, which is what a local "+
+			"`temporal server start-dev` session usually wants",
+		allowUnversionedFlag)
+}
+
 // runWorker implements the worker sub-command to start a Temporal worker
 // to process Flowstate workflows and activities.
 func runWorker(cmd *cobra.Command, args []string) error {
 	flags := temporalFlagsOf(cmd)
+
+	// First, because it reads flags and nothing else: a worker whose versioning is
+	// half-configured or unaccounted for should say so before it dials Temporal,
+	// launches a plugin, or opens a secret provider.
+	deployment, err := workerDeployment(cmd, flags)
+	if err != nil {
+		return err
+	}
 
 	// Before any I/O, and before the worker can poll: a policy file that does not
 	// load must refuse the command, not leave a worker running the default policy
@@ -236,10 +311,9 @@ func runWorker(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	deployment := engine.DeploymentOptions(flags.deploymentName, flags.buildID)
-
 	w := worker.New(c, flags.taskQueue, worker.Options{
 		DeploymentOptions: deployment,
+		Interceptors:      temporalWorkerInterceptors(),
 	})
 
 	engine.Register(w, runtime)
@@ -250,12 +324,13 @@ func runWorker(cmd *cobra.Command, args []string) error {
 			"deployment", deployment.Version.DeploymentName,
 			"build_id", deployment.Version.BuildID)
 	} else {
-		// Said out loud rather than left to be inferred from silence. Without a
-		// version, deploying this binary changes the behaviour of every run
-		// already in flight — which is the default Temporal has always had, and
-		// is a choice an operator should know they are making.
+		// Reached only with --allow-unversioned-interpreter, since workerDeployment
+		// refuses otherwise. Still said out loud on every start rather than only at
+		// the moment the flag was typed: the person reading a worker's logs a month
+		// later is usually not the person who wrote its command line.
 		infraLogger().Warn("starting worker unversioned; deploying this binary changes every run in flight",
 			"task_queue", flags.taskQueue,
+			"accepted_with", "--"+allowUnversionedFlag,
 			"fix", "set FLOWSTATE_DEPLOYMENT_NAME and FLOWSTATE_BUILD_ID, or --deployment-name and --build-id")
 	}
 
@@ -270,6 +345,13 @@ func runWorker(cmd *cobra.Command, args []string) error {
 	<-cmd.Context().Done()
 	infraLogger().Info("shutting down worker")
 	w.Stop()
+
+	// After the worker has stopped, so the last activity's spans and the last
+	// interval's metrics are in the batch this pushes — those are the ones
+	// somebody is looking for when they come to ask what a worker was doing
+	// when it went away. Bounded and best-effort; see flushTelemetry.
+	flushTelemetry()
+
 	infraLogger().Info("worker stopped")
 
 	return nil
@@ -301,8 +383,21 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 
 	surface := newSurface(cmd)
 
+	// The arguments this run is started with, coerced against what the file declares.
+	// Checked here as well as at the server, for the message rather than for the
+	// control: a missing or mistyped argument is a fact about the command line, and
+	// reading it back as a remote invalid-argument sends an author looking at the
+	// wrong machine. The server binds them again regardless.
+	inputs, err := runInputs(cmd, workflow)
+	if err != nil {
+		return err
+	}
+	if err := checkRunInputs(workflow, inputs); err != nil {
+		return err
+	}
+
 	started, err := newWorkflowServiceClient(serverFlagsOf(cmd)).Run(cmd.Context(),
-		connect.NewRequest(&v1.RunRequest{Workflow: workflow}))
+		connect.NewRequest(&v1.RunRequest{Workflow: workflow, Inputs: inputs}))
 	if err != nil {
 		return fmt.Errorf("starting %s: %w", workflow.GetName(), err)
 	}
@@ -522,8 +617,17 @@ func runServer(cmd *cobra.Command, args []string) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
 	defer cancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		// Flushed on the way out of this path too, because a server that had to
+		// be forced down is the case where the last spans matter most.
+		flushTelemetry()
+
 		return fmt.Errorf("server forced to shutdown: %w", err)
 	}
+
+	// After the in-flight requests have drained, so their spans are in the
+	// batch rather than in the one nobody sends.
+	flushTelemetry()
+
 	logger.Info("server stopped")
 
 	return nil
@@ -1180,11 +1284,20 @@ flow lsp`,
 			"and the outputs on stdout when the run produced them. The exit code is the " +
 			"run's, so `flow run x && ./promote.sh` behaves the way a shell reader expects.\n\n" +
 			"Stopping watching does not stop the run. The workflow id is printed as soon as " +
-			"the run starts, so `flow watch` can pick it up again afterwards.",
+			"the run starts, so `flow watch` can pick it up again afterwards.\n\n" +
+			"A workflow that declares `inputs:` is given them with --input name=value or " +
+			"--input-file inputs.json. The declaration decides how a value is read, so an " +
+			"argument that does not fit is refused here, before the run starts.",
 		Args: cobra.ExactArgs(1),
 		RunE: runWorkflow,
 		Example: `# Run a workflow and watch it:
 flow run examples/hello-world/workflow.yaml
+
+# Run a workflow that takes arguments:
+flow run examples/parameterized-deploy/workflow.yaml --input service=checkout --input replicas=3
+
+# Or send the same arguments as a document:
+flow run examples/parameterized-deploy/workflow.yaml --input-file examples/parameterized-deploy/inputs.json
 
 # Run it and pipe the outputs, with the live view still on the terminal:
 flow run examples/hello-world/workflow.yaml | jq .stepValues
@@ -1198,6 +1311,7 @@ flow validate examples/hello-world/workflow.yaml`,
 
 	addOutputFlag(runCmd)
 	addFollowFlags(runCmd)
+	addInputFlags(runCmd)
 
 	// Run local command, which executes a workflow locally without using Temporal or the Flowstate service.
 	runLocalCmd := &cobra.Command{
@@ -1210,7 +1324,11 @@ flow validate examples/hello-world/workflow.yaml`,
 			"same document `flow run` writes — so a `jq` expression written against one works " +
 			"against the other.\n\nWhat it cannot give you is durability. A local run is a " +
 			"process: it has no run id, nothing can watch it, and it does not survive this " +
-			"command being interrupted.",
+			"command being interrupted.\n\n" +
+			"Arguments are given the same way `flow run` takes them — --input name=value or " +
+			"--input-file inputs.json — and are bound against the workflow's `inputs:` by the " +
+			"same function the server binds them with, so a rehearsal refuses what production " +
+			"refuses.",
 		Args: cobra.MinimumNArgs(1),
 		RunE: runLocalWorkflow,
 		Example: `# Run a workflow locally:
@@ -1226,10 +1344,14 @@ flow run local examples/hello-world/workflow.yaml | jq .stepValues.hello.namedVa
 flow run local examples/hello-world/workflow.yaml -o json | jq -r .status
 
 # Run a workflow with an approval gate, answering the gate up front:
-flow run local examples/approval-gate/workflow.yaml --signal deploy-approved='{"approved": true}'`,
+flow run local examples/approval-gate/workflow.yaml --signal deploy-approved='{"approved": true}'
+
+# Run a workflow that takes arguments, and read what it answered with:
+flow run local examples/computed-outputs/workflow.yaml --input release=2026.9.0 -o json | jq .runOutputs`,
 	}
 
 	addOutputFlag(runLocalCmd)
+	addInputFlags(runLocalCmd)
 
 	// Supplying signals up front is what makes an approval gate something an author
 	// can exercise on their laptop rather than first meeting in production. A local
@@ -1246,17 +1368,17 @@ flow run local examples/approval-gate/workflow.yaml --signal deploy-approved='{"
 		Short: "Start a worker",
 		Long:  "Start a Temporal worker to process workflows and activities. The worker connects to the Temporal server and processes tasks from the specified task queue.",
 		RunE:  runWorker,
-		Example: `# Start a worker with default settings:
-flow worker
+		Example: `# Start a worker, pinned so a deploy does not change runs already in flight:
+flow worker --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"
+
+# Start one against a local dev server, accepting that nothing pins the interpreter:
+flow worker --allow-unversioned-interpreter
 
 # Start a worker with custom Temporal server:
-flow worker --address localhost:7233
+flow worker --address localhost:7233 --deployment-name flowstate --build-id dev-1
 
 # Start a worker with custom namespace:
-flow worker --namespace production
-
-# Start a versioned worker, so a deploy does not change runs already in flight:
-flow worker --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"`,
+flow worker --namespace production --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"`,
 	}
 
 	// These override Temporal's environment configuration when set; unset means
@@ -1287,6 +1409,9 @@ flow server --verbose`,
 			"interpreter version it started on; a run moves to the current version only at continue-as-new")
 	workerCmd.Flags().String("build-id", os.Getenv("FLOWSTATE_BUILD_ID"),
 		"version identifier for this worker's binary, unique per build. Required with --deployment-name")
+	workerCmd.Flags().Bool(allowUnversionedFlag, false,
+		"start without a Worker Deployment version, accepting that deploying a different binary "+
+			"changes what runs already in flight compute; for local development")
 
 	addPluginFlags(workerCmd)
 	addPluginFlags(serverCmd)
@@ -1512,17 +1637,38 @@ flow plugins -o json | jq -r '.plugins[] | select(.tasks[].name == "example.gree
 		Short: "Serve Flowstate to an AI agent over the Model Context Protocol",
 		Long: "Serve every workflow-service RPC as an MCP tool over stdin and stdout, " +
 			"with input schemas derived from the same protobuf schema the API speaks. " +
-			"Validation and the task catalog answer locally; the run-lifecycle tools " +
-			"call the configured server.",
+			"Validation, the task catalog and local execution answer in this process; " +
+			"the run-lifecycle tools call the configured server.\n\n" +
+			"flowstate_run_local executes a submitted Flowfile here, the way `flow run local` " +
+			"does. What such a run may reach is decided by the flags this process is started " +
+			"with and by nothing a client sends: with no flags, egress is denied and no secret " +
+			"scheme is registered.\n\n" +
+			"Beside the tools, the server publishes read-only resources: the whole DSL " +
+			"reference at flowstate://docs/dsl, the task catalog as JSON at " +
+			"flowstate://catalog/tasks, and every example Flowfile under " +
+			"flowstate://docs/examples/ — embedded at build time, so an agent can read the " +
+			"language and working references without a checkout nearby. See docs/CLI.md " +
+			"for client configuration.",
 		Args: cobra.NoArgs,
 		RunE: runMCP,
 		Example: `# Serve the MCP tools on stdio (an MCP client launches this):
 flow mcp
 
 # Against a specific server for the run-lifecycle tools:
-flow mcp --address flowstate.internal:9233`,
+flow mcp --address flowstate.internal:9233
+
+# Permit local runs to reach what an egress policy names, and nothing else:
+flow mcp --egress-policy examples/egress-policy.yaml
+
+# Let local runs resolve one environment secret, under an access policy:
+flow mcp --secret-env API_KEY --auth-policy policy.yaml`,
 	}
 	addServerFlags(mcpCmd)
+
+	// The posture flowstate_run_local executes under, taken at start-up because a
+	// long-lived process serving a model cannot take it per call: an opt-in a
+	// caller can send is not an opt-in. See mcp.go.
+	addLocalRunFlags(mcpCmd)
 
 	// LSP command, which starts a Language Server Protocol (LSP) server for Flowfile files.
 	lspCmd := &cobra.Command{
@@ -1578,6 +1724,10 @@ flow lsp`,
 	fixCmd := newFixCommand()
 	fixCmd.GroupID = "workflow"
 	rootCmd.AddCommand(fixCmd)
+
+	fmtCmd := newFmtCommand()
+	fmtCmd.GroupID = "workflow"
+	rootCmd.AddCommand(fmtCmd)
 	rootCmd.AddCommand(tasksCmd)
 	rootCmd.AddCommand(pluginsCmd)
 	rootCmd.AddCommand(mcpCmd)
@@ -1608,7 +1758,19 @@ func main() {
 	// as everything else it prints. A binary whose help is one colour and whose
 	// output is another reads as two tools — and the reason it is drawn here rather
 	// than by fang is a terminal query fang's options could not reach. See execute.go.
-	if err := execute(ctx, rootCmd); err != nil {
+	err := execute(ctx, rootCmd)
+
+	// Every command's last act, and the only one a client command gets: `flow
+	// run`, `flow get`, `flow watch` and the rest live for a second or two,
+	// which is shorter than a batch exporter's window, so without this their
+	// spans are built, recorded, and thrown away at exit. Not deferred, because
+	// the failing path below leaves through os.Exit and a deferred flush would
+	// be the one skipped exactly when a trace is being read to find out why.
+	//
+	// Costs nothing when telemetry was never started, which is the default.
+	flushTelemetry()
+
+	if err != nil {
 		os.Exit(exitCode)
 	}
 }

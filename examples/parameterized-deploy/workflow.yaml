@@ -1,0 +1,90 @@
+# A run takes arguments, and `inputs:` is where the file says which ones.
+#
+# Each declaration names the argument, the type it must be, and either a default or
+# that it is required. That is the whole contract: a caller who names something else,
+# sends a number where a string was declared, or leaves out a required one is refused
+# while they are still there to be told — before the first step runs and before the
+# first request goes out.
+#
+# An argument is read as `${inputs.<name>}`, rooted for the same reason `vars.` and
+# `steps.` are: a root cannot collide with a step id, so no rule about precedence has
+# to exist for anyone to read this file.
+#
+# Supply them on the command line:
+#
+#   flow run local examples/parameterized-deploy/workflow.yaml --input service=checkout
+#   flow run local examples/parameterized-deploy/workflow.yaml \
+#       --input-file examples/parameterized-deploy/inputs.json
+#
+# `service` has no default, so one of those two is required — which is why the
+# inputs.json beside this file exists: it is what CI runs the example with, and it is
+# the shortest answer to "what does this need".
+edition: v2026.2
+name: parameterized-deploy
+
+inputs:
+  # No default, so a run must supply it. The description is the one part of a
+  # declaration written for whoever supplies the value, and it is repeated back in the
+  # refusal when the value is missing.
+  service:
+    type: string
+    required: true
+    description: which service to deploy
+
+  # A default makes the input optional: a run that says nothing gets this, and it is
+  # type-checked exactly as a supplied value is, because a default is part of the
+  # specification and a specification can be built by hand.
+  region:
+    type: string
+    default: eu-west-1
+    description: where to deploy it
+
+  # Declared `int`, so `--input replicas=3` arrives as the number 3 rather than as
+  # the three characters. The declaration is what the CLI coerces against — which is
+  # also why `--input replicas=many` is refused here rather than in the middle of the
+  # run.
+  replicas:
+    type: int
+    default: 2
+
+  # A bool an `if:` reads. A flag that decides whether a step happens is exactly the
+  # kind of thing that used to require two nearly identical files.
+  dry_run:
+    type: bool
+    default: false
+    description: plan the deploy without announcing it
+
+steps:
+  # Inputs are in scope everywhere an expression is: a step's own `vars:`, its `if:`,
+  # and a task's inputs. They are *not* in scope for the workflow's top-level `vars:`,
+  # which are evaluated before the run has arguments — name a value from an input in
+  # the step that needs it, as here.
+  - id: plan
+    vars:
+      target: ${inputs.service + ' in ' + inputs.region}
+    log:
+      message: ${'planning ' + target}
+      fields:
+        # `fields:` are string-valued, so a number is rendered rather than passed.
+        replicas: ${string(inputs.replicas)}
+
+  # An input deciding whether a step runs at all. A skipped step produces no outputs,
+  # so nothing later may reference it.
+  - id: announce
+    if: ${!inputs.dry_run}
+    http:
+      method: POST
+      url: https://httpbin.org/anything
+      json:
+        # A task input reading an argument, which is the ordinary case: the workflow
+        # is the same either way, and what it does with the world is parameterized.
+        service: ${inputs.service}
+        region: ${inputs.region}
+        replicas: ${inputs.replicas}
+      parse_json: true
+
+  # The other side of the same condition, so a dry run still says what it did.
+  - id: note_dry_run
+    if: ${inputs.dry_run}
+    log:
+      message: "${'dry run, ' + inputs.service + ' was not announced'}"

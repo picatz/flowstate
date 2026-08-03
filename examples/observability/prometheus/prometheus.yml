@@ -1,0 +1,43 @@
+# Prometheus scrapes; nothing pushes to it.
+#
+# Four targets, and the fourth is the one people forget: the collector's own
+# metrics. A pipeline that is silently dropping spans looks exactly like an
+# application that is silently not emitting them, and only one of those two is
+# visible from here.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    env: lab
+
+scrape_configs:
+  # Everything Flowstate and the Temporal SDK emit, after the collector has
+  # turned OTLP into Prometheus exposition.
+  - job_name: otel-collector-exported
+    static_configs:
+      - targets: ["otel-collector:8889"]
+    # The collector already stamps service.name (and the rest of the resource) as
+    # labels; honoring them keeps this scrape from overwriting the instance the
+    # data actually came from with the collector's own address.
+    honor_labels: true
+
+  - job_name: otel-collector-internal
+    static_configs:
+      - targets: ["otel-collector:8888"]
+
+  # Temporal's own server metrics, which are a different thing from the Temporal
+  # SDK metrics the worker emits: this is the cluster's view (task queue backlog,
+  # persistence latency), that is the client's.
+  #
+  # `temporal server start-dev --metrics-port` serves these. If your CLI build
+  # does not have that flag, this target simply stays down and everything else in
+  # the lab keeps working — which is the reason it is a separate job rather than
+  # another target in an existing one.
+  - job_name: temporal
+    static_configs:
+      - targets: ["temporal:9091"]
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["127.0.0.1:9090"]

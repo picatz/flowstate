@@ -85,14 +85,40 @@ behind it too.
     go vet ./...
     gofmt -l ./cmd ./pkg                       # must print nothing
     GOMEMLIMIT=2GiB go test -race -timeout 900s ./...
+    go run ./cmd/flow fix --check examples/*/workflow.yaml
+    go run ./cmd/flow docs generate && git diff --exit-code -- docs/reference/
+    go generate ./cmd/flow/internal/reference && git diff --exit-code -- cmd/flow/internal/reference/
+    go run github.com/bufbuild/buf/cmd/buf@v1.72.0 lint
+    go run github.com/bufbuild/buf/cmd/buf@v1.72.0 breaking --against '.git#branch=origin/main'
     go run github.com/bufbuild/buf/cmd/buf@v1.72.0 generate && git diff --exit-code
     go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+    go run honnef.co/go/tools/cmd/staticcheck@2026.1 ./...
 
-Two of those repay the trouble in ways that are not obvious.
+`make check` in the repo root runs exactly that list, in that order, with the
+toolchain pins below already applied. Prefer it, and keep it and this section
+saying the same thing — a copy of a command list is a thing that drifts, and the
+whole point of the list is that it is what CI runs.
+
+Four of those repay the trouble in ways that are not obvious.
+
+The two `buf` checks that are not `generate` guard a contract rather than a build.
+`buf lint` enforces the whole default rule set, with nothing suppressed. `buf
+breaking` compares against `origin/main`, which is why it needs the base branch
+fetched, and why it is the one check that can fail on a diff that compiles and tests
+perfectly. The schema is public — plugins are separate processes compiling against
+these descriptors — so a break here is not a compile error somebody sees, it is every
+plugin in the wild.
 
 `buf generate` followed by `git diff --exit-code` is the one people skip, and it is
 the one that fails for someone else rather than for you: committed generated code
 that disagrees with its schema builds perfectly until the next person regenerates.
+
+`flow docs generate` followed by the same `git diff --exit-code` is that mechanism
+pointed at prose. `docs/reference/` is derived from the task registry, the cobra
+tree, the MCP tool table and one hand-kept env-var table — the four surfaces the doc
+audit found had drifted — so adding a task, a flag, an RPC or a variable and not
+regenerating fails here. Never hand-edit a file under `docs/reference/`; edit what it
+is derived from (`cmd/flow/docsgen.go` for the env-var prose) and run `make docs`.
 
 `govulncheck` reports *reachability* against a database fetched when it runs, so it
 can go red on a tree nobody touched — a new advisory is not a new bug in your diff.
@@ -110,6 +136,20 @@ go1.25)` on files in the module cache and exits 1. CI does not see this, because
 Pin the run to match and it scans clean:
 
     GOTOOLCHAIN=go1.26.5 go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+
+`staticcheck` builds the same way — its own `go.mod` selects a toolchain, so it
+needs the identical pin, for the identical reason:
+
+    GOTOOLCHAIN=go1.26.5 go run honnef.co/go/tools/cmd/staticcheck@2026.1 ./...
+
+staticcheck is advisory in CI (`continue-on-error: true`) until 2026-08-04, the
+same 48-hour window every newly-added check gets: the govulncheck lesson above
+applies just as well to a linter nobody has run against this tree before — a
+finding on landing is not necessarily a finding in your diff. The bounded fuzz
+smoke job (`GOMEMLIMIT=512MiB go test -parallel 1 -fuzztime 30s
+./pkg/flowstate/v1/flowfile/`, per the fuzzing recipe above) is advisory on the
+same schedule, to absorb infrastructure flake — not to excuse ignoring an actual
+crasher the fuzzer finds, which is a real defect to triage.
 
 ## Both execution drivers must agree
 

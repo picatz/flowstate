@@ -2,6 +2,7 @@ package server_test
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log/slog"
 	"os"
@@ -62,6 +63,20 @@ var devServer *testsuite.DevServer
 var namespaceOrdinal atomic.Int64
 
 func TestMain(m *testing.M) {
+	// testing.Short() reads a flag, and flags are only populated once parsed.
+	// TestMain is the one entry point that runs before the testing package has
+	// done that parsing itself, so it has to be done here first.
+	flag.Parse()
+
+	if testing.Short() {
+		// Every test in this package that needs the server reaches it through
+		// newTemporalNamespace, which skips before touching the nil devServer
+		// left below. Skipping the download-and-boot here as well, rather than
+		// only inside that helper, is what keeps `-short` from paying the
+		// dev server's ~2 minutes of startup cost it exists to avoid.
+		os.Exit(m.Run())
+	}
+
 	code, err := runPackageTests(m)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
@@ -111,6 +126,10 @@ func runPackageTests(m *testing.M) (int, error) {
 // now a per-test value rather than "default".
 func newTemporalNamespace(t *testing.T) (client.Client, string) {
 	t.Helper()
+
+	if testing.Short() {
+		t.Skip("skipping: needs the shared Temporal dev server, not started under -short; CI runs the full suite")
+	}
 
 	namespace := namespaceNameFor(t)
 

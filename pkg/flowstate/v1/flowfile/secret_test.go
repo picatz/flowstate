@@ -97,23 +97,52 @@ func TestSecretReferenceRejected(t *testing.T) {
 			want: "has to be the whole value of a task input",
 		},
 		{
-			name: "nested in a list",
+			// Nested is legal in an input the task applies itself; `args` is not
+			// one of those, and neither is any input of `log`. The rule the
+			// message states is about the input, not about the shape.
+			name: "nested in a list of an input that cannot carry one",
 			src: taskInput(`args:
           - ${secret('env:TOKEN')}
           - plain`),
-			want: "cannot be nested inside a list or a mapping",
+			want: "cannot be nested inside this input's list or mapping",
 		},
 		{
-			// The header case, which is the first thing anyone writes. It is
-			// refused because there is no reference to emit: the whole mapping
-			// compiles to one expression the workflow evaluates. The message has
-			// to say that rather than cite the combination rule, which does not
-			// apply — nothing is being combined with this secret.
-			name: "an authorization header",
-			src: taskInput(`headers:
-          Authorization: ${secret('env:API_TOKEN')}
-          Accept: application/json`),
-			want: "current limitation rather than a mistake in the file",
+			// The log task's fields are written to a worker's log and into
+			// durable history, so no input of it accepts a reference — and the
+			// message offers nothing, because there is nowhere on this task to
+			// offer.
+			name: "a log field",
+			src: taskInput(`fields:
+          token: ${secret('env:API_TOKEN')}`),
+			want: "a secret the workflow resolved is a secret in durable history",
+		},
+		{
+			// A reference and an expression in one structure. The schema cannot
+			// hold both — see [flowstatev1.Value_Structure] — and the diagnostic
+			// says which of the two to move, rather than reporting the reference
+			// as misplaced when it is not.
+			name: "an expression sharing the structure",
+			src: httpInput(`headers:
+        Authorization: ${secret('env:API_TOKEN')}
+        X-Trace: ${steps.start.result}`),
+			want: "cannot share a list or a mapping",
+		},
+		{
+			// Nesting does not lift the combination rule: an entry is a whole
+			// value like an input is, so the reference is still the whole of it
+			// or nothing.
+			name: "combined with text inside a header",
+			src: httpInput(`headers:
+        Authorization: ${'Bearer ' + secret('env:API_TOKEN')}`),
+			want: "has to be the whole value of a task input",
+		},
+		{
+			// The position query strings are refused in, refused where it is
+			// written rather than on the first request.
+			name: "a query parameter",
+			src: httpInput(`query:
+        token: ${secret('env:API_TOKEN')}`),
+			want: `"http" accepts one in form, headers, json`,
 		},
 		{
 			name: "passed to another call",
@@ -200,6 +229,118 @@ steps:
 				t.Errorf("diagnostics do not mention %q; got:\n%v", tt.want, err)
 			}
 			t.Logf("reported: %v", err)
+		})
+	}
+}
+
+// httpInput returns a workflow whose single step is an http step with the given
+// input written under it.
+//
+// Separate from [taskInput], which builds a `log` step: where a reference may be
+// nested is a property of the task, so a case about a header needs a task that has
+// headers.
+func httpInput(input string) string {
+	return `edition: v2026.2
+name: t
+steps:
+  - id: a
+    http:
+      url: https://api.example.com/events
+      ` + input + "\n"
+}
+
+// TestSecretReferenceNestsWhereTheTaskAppliesIt covers the position this whole
+// mechanism exists for: a reference inside a structure, compiled entry by entry so
+// that the reference is still a reference in the specification.
+//
+// The assertion that matters is the *shape* of what compiled, not that it
+// compiled: a structure whose Authorization entry is a SecretRef is the thing that
+// travels; a mapping flattened into one expression would be a workflow evaluating
+// a secret, which is what everything here is arranged to prevent.
+func TestSecretReferenceNestsWhereTheTaskAppliesIt(t *testing.T) {
+	tests := []struct {
+		name  string
+		src   string
+		input string
+		at    func(*v1.Value) *v1.Value
+	}{
+		{
+			name: "a header",
+			src: httpInput(`headers:
+        Authorization: ${secret('env:API_TOKEN')}
+        Accept: application/json`),
+			input: "headers",
+			at:    func(v *v1.Value) *v1.Value { return v.GetStructure().GetMap().GetEntries()["Authorization"] },
+		},
+		{
+			name: "a form entry",
+			src: httpInput(`form:
+        client_secret: ${secret('env:API_TOKEN')}`),
+			input: "form",
+			at:    func(v *v1.Value) *v1.Value { return v.GetStructure().GetMap().GetEntries()["client_secret"] },
+		},
+		{
+			name: "a json body, two levels down",
+			src: httpInput(`json:
+        auth:
+          token: ${secret('env:API_TOKEN')}`),
+			input: "json",
+			at: func(v *v1.Value) *v1.Value {
+				return v.GetStructure().GetMap().GetEntries()["auth"].
+					GetStructure().GetMap().GetEntries()["token"]
+			},
+		},
+		{
+			name: "a json body's list element",
+			src: httpInput(`json:
+        tokens:
+          - ${secret('env:API_TOKEN')}`),
+			input: "json",
+			at: func(v *v1.Value) *v1.Value {
+				return v.GetStructure().GetMap().GetEntries()["tokens"].
+					GetStructure().GetList().GetValues()[0]
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			workflow, err := flowfile.Unmarshal([]byte(tt.src))
+			if err != nil {
+				t.Fatalf("Unmarshal() error: %v", err)
+			}
+
+			value := workflow.GetSteps()[0].GetTask().GetInputs()[tt.input]
+			if value.GetStructure() == nil {
+				t.Fatalf("input %q is %v, want a structure carrying the reference", tt.input, value)
+			}
+			// Not an expression, which is the failure mode with teeth: a mapping
+			// compiled into one CEL expression is a mapping the workflow evaluates.
+			if value.GetExpr() != nil || value.GetLiteral() != nil {
+				t.Errorf("input %q carries something other than a structure: %v", tt.input, value)
+			}
+
+			reference := tt.at(value).GetSecretRef()
+			if reference == nil {
+				t.Fatalf("the nested entry is %v, want a secret reference", tt.at(value))
+			}
+			if reference.GetScheme() != "env" || reference.GetName() != "API_TOKEN" {
+				t.Errorf("reference = %q:%q, want env:API_TOKEN",
+					reference.GetScheme(), reference.GetName())
+			}
+
+			// And `flow validate` accepts the file, which is the other half of a
+			// capability being reachable: a spelling the compiler takes and the
+			// validator refuses is not one an author can use.
+			ds, err := flowfile.ValidateSource([]byte(tt.src))
+			if err != nil {
+				t.Fatalf("ValidateSource() error: %v", err)
+			}
+			if len(ds) != 0 {
+				t.Fatalf("expected no diagnostics, got:\n%s", ds.Error())
+			}
+
+			requireRoundTrip(t, workflow)
 		})
 	}
 }
