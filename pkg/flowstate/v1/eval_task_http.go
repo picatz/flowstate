@@ -34,13 +34,49 @@ const (
 // as it liked. Past this the header is ignored and the ordinary backoff applies.
 const maxRetryAfter = 5 * time.Minute
 
+// revealFunc turns a secret reference into its value, at the moment the value is
+// applied to the request and never before.
+//
+// It is a function rather than a resolved map because the difference is the whole
+// point: a map of resolved values would exist as data — reachable by reflection,
+// printable by `fmt`, and one refactor away from an error message — while a closure
+// hands the value straight to the header or the encoder that needs it and keeps
+// nothing.
+//
+// A nil revealFunc means this position does not resolve references, and one found
+// there is refused rather than quietly dropped. That is what keeps `query` refused
+// on a specification that never met the compiler.
+type revealFunc func(*SecretRef) (string, error)
+
+// secretResolutionError marks a failure that came from resolving a reference, so
+// that a caller building the request can classify it as a denial rather than as a
+// malformed input.
+//
+// It wraps and is wrapped in turn, which is safe here for the reason the whole
+// design is safe: every level of the chain names the reference and the policy that
+// refused it, and none of them has ever held the value. That matters because
+// Temporal's failure converter writes every level's message into the failure it
+// persists.
+type secretResolutionError struct{ err error }
+
+func (e *secretResolutionError) Error() string { return e.err.Error() }
+func (e *secretResolutionError) Unwrap() error { return e.err }
+
+// reveal resolves a reference through r, or reports why this position cannot.
+func (r revealFunc) reveal(ref *SecretRef, refusal string) (string, error) {
+	if r == nil {
+		return "", fmt.Errorf("%s (%s)", refusal, secretRefText(ref))
+	}
+	return r(ref)
+}
+
 // httpRequestBody builds the request body from whichever of body, json, and form was
 // given, returning the content type that describes it.
 //
 // The three are mutually exclusive. Accepting more than one would make the meaning of
 // a request depend on which field the implementation happened to read first, so it is
 // an error rather than a precedence rule nobody would remember.
-func httpRequestBody(inputs *Task_HTTP_Inputs) (body string, contentType string, err error) {
+func httpRequestBody(inputs *Task_HTTP_Inputs, reveal revealFunc) (body string, contentType string, err error) {
 	given := make([]string, 0, 3)
 	if inputs.Body != nil {
 		given = append(given, "body")
@@ -66,14 +102,14 @@ func httpRequestBody(inputs *Task_HTTP_Inputs) (body string, contentType string,
 		return inputs.GetBody(), "", nil
 
 	case inputs.GetJson() != nil:
-		encoded, err := jsonRequestBody(inputs.GetJson())
+		encoded, err := jsonRequestBody(inputs.GetJson(), reveal)
 		if err != nil {
 			return "", "", err
 		}
 		return encoded, contentTypeJSON, nil
 
 	case len(inputs.GetForm()) > 0:
-		encoded, err := formRequestBody(inputs.GetForm())
+		encoded, err := formRequestBody(inputs.GetForm(), reveal)
 		if err != nil {
 			return "", "", err
 		}
@@ -85,8 +121,8 @@ func httpRequestBody(inputs *Task_HTTP_Inputs) (body string, contentType string,
 }
 
 // jsonRequestBody serializes a structured body to JSON.
-func jsonRequestBody(value *Value) (string, error) {
-	native, err := valueToNative(value)
+func jsonRequestBody(value *Value, reveal revealFunc) (string, error) {
+	native, err := valueToNative(value, reveal, 0)
 	if err != nil {
 		return "", fmt.Errorf("json body: %w", err)
 	}
@@ -100,8 +136,13 @@ func jsonRequestBody(value *Value) (string, error) {
 }
 
 // formRequestBody url-encodes a form body.
-func formRequestBody(form map[string]*Value) (string, error) {
-	values, err := urlValues(form, "form")
+//
+// Unlike a query string, a form body is sent in the request and is not written to
+// an access log, a browser's history, or a Referer header — so this is a position a
+// credential may legitimately occupy, and the reference is resolved here, one entry
+// at a time, as the body is encoded.
+func formRequestBody(form map[string]*Value, reveal revealFunc) (string, error) {
+	values, err := urlValues(form, "form", reveal)
 	if err != nil {
 		return "", err
 	}
@@ -124,7 +165,9 @@ func applyQuery(rawURL string, query map[string]*Value) (string, error) {
 		return "", fmt.Errorf("url %q could not be parsed to add query parameters: %w", rawURL, err)
 	}
 
-	added, err := urlValues(query, "query")
+	// No revealFunc: see [Task_HTTP_Inputs]'s `query` field. This is the position
+	// a secret may not occupy however it got here.
+	added, err := urlValues(query, "query", nil)
 	if err != nil {
 		return "", err
 	}
@@ -144,7 +187,7 @@ func applyQuery(rawURL string, query map[string]*Value) (string, error) {
 // urlValues renders a map of values as url.Values, in sorted key order so that an
 // encoded query or form body is the same on every run — which matters because a
 // workflow's inputs are recorded and compared.
-func urlValues(m map[string]*Value, what string) (url.Values, error) {
+func urlValues(m map[string]*Value, what string, reveal revealFunc) (url.Values, error) {
 	values := make(url.Values, len(m))
 
 	for _, name := range slices.Sorted(maps.Keys(m)) {
@@ -152,7 +195,7 @@ func urlValues(m map[string]*Value, what string) (url.Values, error) {
 			return nil, fmt.Errorf("%s has an entry with an empty name", what)
 		}
 
-		rendered, err := valueToQueryString(m[name])
+		rendered, err := valueToQueryString(m[name], reveal)
 		if err != nil {
 			return nil, fmt.Errorf("%s %q: %w", what, name, err)
 		}
@@ -168,17 +211,30 @@ func urlValues(m map[string]*Value, what string) (url.Values, error) {
 // A list becomes a repeated parameter, which is how every server that accepts more
 // than one value for a name expects to receive them. A nested structure has no
 // agreed encoding, so it is refused rather than guessed at.
-func valueToQueryString(v *Value) ([]string, error) {
+func valueToQueryString(v *Value, reveal revealFunc) ([]string, error) {
 	if ref := v.GetSecretRef(); ref != nil {
 		// The author's intent is clear and only the placement is wrong, so this says
 		// where to put it instead of refusing anonymously. A query string is written
 		// to access logs, kept in browser history, and sent onward in a Referer
 		// header on redirect — a secret in one is a secret published.
-		return nil, fmt.Errorf(
+		text, err := reveal.reveal(ref,
 			"a secret reference cannot go in a query parameter, because query strings are recorded in "+
-				"access logs, browser history, and Referer headers; use bearer: for a credential, or a "+
-				"header for anything else the destination expects signed requests to carry (%s)",
-			secretRefText(ref))
+				"access logs, browser history, and Referer headers; send it in a header or a form body "+
+				"instead, or use bearer: for a credential the destination takes as one")
+		if err != nil {
+			return nil, err
+		}
+		return []string{text}, nil
+	}
+
+	if v.GetStructure() != nil {
+		// A structure exists to carry a reference, and one entry of a form or a
+		// query is a single value: a list of them is a repeated parameter, which
+		// the literal path below already builds, and anything deeper has no agreed
+		// encoding to build it into.
+		return nil, fmt.Errorf(
+			"a list or a mapping holding a secret reference cannot be one entry of a form or a query; " +
+				"give the entry the reference itself, or send the structure as a json body")
 	}
 
 	literal := v.GetLiteral()
@@ -231,18 +287,28 @@ func scalarText(v *expr.Value) (string, error) {
 	}
 }
 
-// valueToNative converts a value to the Go representation encoding/json accepts.
-func valueToNative(v *Value) (any, error) {
+// valueToNative converts a value to the Go representation encoding/json accepts,
+// resolving any reference it holds as it goes.
+//
+// A JSON body is a legitimate place for a credential — an API that takes its key in
+// the body rather than in a header is ordinary — and this is the moment it may be
+// resolved: inside the activity, one field at a time, into the bytes about to be
+// written to the request. What was refused before was not the position but the
+// timing, because a mapping containing a reference used to be an expression the
+// workflow evaluated.
+func valueToNative(v *Value, reveal revealFunc, depth int) (any, error) {
+	if depth > maxStructureDepth {
+		return nil, fmt.Errorf("nested more than %d levels deep", maxStructureDepth)
+	}
+
 	if ref := v.GetSecretRef(); ref != nil {
-		// Unlike a query parameter, a JSON body is a legitimate place for a
-		// credential — but resolving one here would mean the workflow had already
-		// evaluated it, which is what puts a secret in history. Whether a body may
-		// carry a reference is a decision for the schema, not for this converter.
-		return nil, fmt.Errorf(
-			"a secret reference cannot be placed inside a json body yet (%s); "+
-				"use bearer: if the destination takes it as a header, or wait for a task input that "+
-				"accepts a reference in the body",
-			secretRefText(ref))
+		return reveal.reveal(ref,
+			"a secret reference cannot be placed here; a json body accepts one, and this position "+
+				"is resolved before the worker sees it")
+	}
+
+	if structure := v.GetStructure(); structure != nil {
+		return structureToNative(structure, reveal, depth)
 	}
 
 	literal := v.GetLiteral()
@@ -251,6 +317,106 @@ func valueToNative(v *Value) (any, error) {
 	}
 
 	return literalToNative(literal)
+}
+
+// structureToNative converts a structure holding values — some of them references —
+// into the Go representation encoding/json accepts.
+func structureToNative(s *Value_Structure, reveal revealFunc, depth int) (any, error) {
+	switch kind := s.GetKind().(type) {
+	case *Value_Structure_List_:
+		list := make([]any, 0, len(kind.List.GetValues()))
+		for i, element := range kind.List.GetValues() {
+			native, err := valueToNative(element, reveal, depth+1)
+			if err != nil {
+				return nil, fmt.Errorf("element %d: %w", i, err)
+			}
+			list = append(list, native)
+		}
+		return list, nil
+
+	case *Value_Structure_Map_:
+		entries := kind.Map.GetEntries()
+		object := make(map[string]any, len(entries))
+		// Sorted, so a failure names the same entry on every run of the same body.
+		for _, name := range slices.Sorted(maps.Keys(entries)) {
+			if name == "" {
+				return nil, fmt.Errorf("json object keys must be non-empty strings")
+			}
+			native, err := valueToNative(entries[name], reveal, depth+1)
+			if err != nil {
+				return nil, fmt.Errorf("key %q: %w", name, err)
+			}
+			object[name] = native
+		}
+		return object, nil
+
+	default:
+		return nil, fmt.Errorf("a structure is a list or a mapping, and this is neither")
+	}
+}
+
+// httpRequestHeaders renders the entries of a `headers:` input written as a
+// structure, resolving any reference among them.
+//
+// Separate from the string map the schema's `headers` field carries, because that
+// field cannot hold anything but a string and a reference is not one. Both end up
+// on the same request; only one of them can carry a secret, and it carries it as a
+// reference right up to the [http.Header.Add] below.
+func httpRequestHeaders(v *Value, reveal revealFunc) (http.Header, error) {
+	entries, ok := StructureMap(v)
+	if !ok {
+		return nil, fmt.Errorf("headers must be a mapping of header name to value")
+	}
+
+	header := make(http.Header, len(entries))
+	for _, name := range slices.Sorted(maps.Keys(entries)) {
+		if name == "" {
+			return nil, fmt.Errorf("headers has an entry with an empty name")
+		}
+
+		text, err := headerText(entries[name], reveal)
+		if err != nil {
+			return nil, fmt.Errorf("header %q: %w", name, err)
+		}
+
+		// Checked after resolution and reported without the value, because the
+		// value is the one thing this must not say. A header value carrying a
+		// carriage return or a newline is how a request gets a second header
+		// nobody wrote; net/http would refuse it at write time with the value in
+		// the error, which is a secret in a log line.
+		if strings.ContainsAny(text, "\r\n") {
+			return nil, fmt.Errorf(
+				"header %q: the value contains a carriage return or a newline, which would let it "+
+					"forge further headers; the value is not shown", name)
+		}
+
+		header.Add(name, text)
+	}
+
+	return header, nil
+}
+
+// headerText renders one header entry.
+func headerText(v *Value, reveal revealFunc) (string, error) {
+	if ref := v.GetSecretRef(); ref != nil {
+		return reveal.reveal(ref, "a secret reference cannot go in a header here")
+	}
+
+	literal := v.GetLiteral()
+	if literal == nil {
+		return "", fmt.Errorf("must be a string or a secret reference, got %T", v.GetKind())
+	}
+
+	text, ok := literal.GetKind().(*expr.Value_StringValue)
+	if !ok {
+		// The same rule the `headers` field itself carries: it is map<string,
+		// string>, and a header is text on the wire. Refusing here rather than
+		// formatting whatever arrived keeps the two spellings of one input
+		// answering the same way.
+		return "", fmt.Errorf("must be a string, got %s", literalKindName(literal))
+	}
+
+	return text.StringValue, nil
 }
 
 // literalToNative converts a CEL literal to its Go equivalent, recursively.

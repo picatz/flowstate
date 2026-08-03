@@ -606,23 +606,41 @@ steps:
       bearer: ${secret('vault:prod/api#token')}
 ```
 
-`bearer:` is the input that consumes a reference today. The worker resolves it
+`bearer:` is the input built to consume a reference whole. The worker resolves it
 inside the activity that makes the request, sets `Authorization: Bearer <value>`,
 and the value exists for that call and nowhere else — see
-[examples/http-secret](examples/http-secret) for a worked file. Every other
-placement is refused, and each refusal is deliberate rather than pending:
+[examples/http-secret](examples/http-secret) for a worked file.
 
-- **`headers:`**, because that map is `map<string, string>` and a reference is not
-  a string.
-- **`query:`**, because a query string is written to access logs, browser
-  history, and a `Referer` header on redirect — a secret there is a secret
-  published.
-- **`json:`** and the raw string `body:`, because resolving one there would mean
-  the workflow had already evaluated it on the way in, which is what puts a
-  secret in history. Whether a body may one day carry a reference is a decision
-  for the schema, not for the request encoder.
-- **read by an expression** anywhere, because computing with it in workflow code
-  would put the result in history.
+A reference may also sit inside a list or a mapping written in an input the task
+turns into request bytes itself — the http task's `headers:`, `form:` and `json:`:
+
+```yaml
+      headers:
+        Accept: application/json
+        Authorization: ${secret('env:API_TOKEN')}
+```
+
+The mapping compiles to a structure whose entries are values, so the entry is
+still a reference in the specification and in the activity payload, and the worker
+resolves it as it sets the header. What decides whether a position accepts one is
+that single question — does the *task* apply this input's entries itself, inside
+the activity — because an input the workflow resolves is one whose resolved value
+travels into history. Everywhere else is refused, and each refusal is deliberate
+rather than pending:
+
+- **`query:`**, although it is the same kind of map as `form:`. A query string is
+  written to access logs, browser history, and a `Referer` header on redirect — a
+  secret there is a secret published.
+- **the raw string `body:`**, which is a string field: a reference is not a string,
+  and there is nothing between it and the wire to resolve one.
+- **an expression sharing the list or mapping** with the reference. The entries of
+  a structure holding a reference travel as they were written, and an expression
+  among them would have to be evaluated by the workflow to get there. For an
+  Authorization header this costs nothing: `bearer:` takes the credential and
+  leaves the rest of `headers:` free to compute.
+- **read by an expression** anywhere — an `if:`, a loop's `items:`, a `vars:`, an
+  `outputs:` declaration — because computing with it in workflow code would put
+  the result in history.
 
 ```
 a secret reference cannot be read in an expression; pass it to a task input that

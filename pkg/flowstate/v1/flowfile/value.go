@@ -244,17 +244,22 @@ func normalizeExpr(val *v1.Value) *v1.Value {
 // A structure whose values are all literal stays a literal, so that a map of
 // headers is carried as data. One containing a ${...} anywhere inside becomes a
 // single CEL expression building the whole structure, which is the only way a
-// per-key expression can be evaluated at all.
+// per-key expression can be evaluated at all — unless one of those ${...} is a
+// secret reference, which is the one thing that must not be evaluated. That case
+// keeps every entry a value of its own; see [compiler.structure].
 func (c *compiler) composite(n ast.Node, path string, r ref) *v1.Value {
 	if c.containsExpr(n) {
+		// A structure holding a secret reference is compiled entry by entry
+		// instead, so the reference stays one — see [compiler.structure], which
+		// also reports the inputs where that is not allowed.
+		if c.holdsSecretMarker(n) {
+			return c.structure(n, path, r)
+		}
+
 		text, ok := c.celText(n, path, r)
 		if !ok {
 			return nil
 		}
-		// A reference nested in a structure would have to be built into the one
-		// expression that builds the structure, and the workflow evaluates that
-		// expression. There is no reference to emit here even in principle: a value
-		// is a reference or a structure, never a structure holding one.
 		return c.expression(n, text, path, r, secretInStructure)
 	}
 	lit := c.literal(n, path, r)

@@ -974,6 +974,46 @@ message Value {
     ];
   }
 
+  // Structure is a list or a mapping whose entries are Values in their own
+  // right, rather than one value some expression produces.
+  //
+  // It exists for exactly one reason: so a secret reference can sit inside a
+  // header map, a form or a JSON body. A structure containing an expression
+  // compiles into a single CEL expression, and the *workflow* evaluates that —
+  // which is what evaluating a reference must never mean, because everything
+  // workflow code produces is written to durable, broadly readable history.
+  // Keeping every entry a Value keeps the reference a reference for the whole
+  // path, and the worker resolves it at the moment it applies the header or
+  // encodes the body.
+  //
+  // Its entries are literals and references, never expressions. That is a
+  // deliberate restriction rather than an omission: the walkers that decide
+  // which step outputs a resumed run has to carry look for a whole-value
+  // expression and cannot see one nested in here, and an output they miss is
+  // pruned from a run that then fails after Continue-As-New. The compiler
+  // refuses the mixture and says so, which is the fail-closed half of the same
+  // fact.
+  message Structure {
+    // List is a sequence, in the order it was written.
+    message List {
+      repeated Value values = 1;
+    }
+
+    // Map is a mapping. Entry order is not carried, because nothing that
+    // consumes one depends on it: headers are a set, a form and a query are
+    // encoded in sorted key order, and a JSON object is unordered by
+    // definition.
+    message Map {
+      map<string, Value> entries = 1;
+    }
+
+    oneof kind {
+      option (buf.validate.oneof).required = true;
+      List list = 1;
+      Map map = 2;
+    }
+  }
+
   oneof kind {
     option (buf.validate.oneof).required = true;
     google.api.expr.v1alpha1.ParsedExpr expr = 1;
@@ -989,6 +1029,10 @@ message Value {
     // broadly readable. Only the worker executing the task resolves it, and the
     // value exists solely for that call.
     SecretRef secret_ref = 4;
+
+    // A list or a mapping whose entries are values, which is the only shape
+    // that can hold a [SecretRef] somewhere other than at the top.
+    Structure structure = 5;
     // TODO(kent): we're using "value" to represent a "literal" value, which isn't quite the same.
     // So, this is probably worth revisiting. The "value" allows for more complex types, like a
     // struct or list, while the "literal" is more of a primitive value like a string, int, or bool.
@@ -1343,7 +1387,27 @@ message Task {
         max_len: 6
         pattern: '^(?i)(GET|POST|PUT|PATCH|DELETE)$'
       }];
+      // Request headers.
+      //
+      // Strings, because a header is text on the wire — and a secret reference is
+      // not a string, so a `headers:` mapping carrying one never reaches this
+      // field at all. It arrives as a [Value.Structure] among the task's inputs
+      // and is applied entry by entry, each reference resolved as its header is
+      // set. Both paths end on the same [http.Header]; only one of them can hold
+      // a reference, and it holds it as a reference right up to the last moment.
+      //
+      // Resolving into this field instead would be the mistake worth naming: a
+      // proto struct field is exactly what `fmt` reflects into, so a header
+      // resolved here would print under `%+v` of the inputs, of the task, and of
+      // anything holding either.
       map<string, string> headers = 3;
+
+      // A raw request body, sent as written.
+      //
+      // A string, and so unable to carry a secret reference: there is nothing
+      // between the field and the wire that could resolve one. A body that needs
+      // a credential in it is a `json` or a `form` body, both of which the task
+      // encodes itself and can therefore resolve into.
       optional string body = 4;
 
       // Bearer is the credential for an Authorization header, and it is the
@@ -1352,11 +1416,14 @@ message Task {
       // A `Value` rather than a string, deliberately: a field declared as Value
       // receives the author's value whole — reference included — where a string
       // field can only hold what the workflow already evaluated, and evaluating
-      // a secret is what would put it in history. It cannot live inside
-      // `headers`, whose entries compile into a single expression the workflow
-      // evaluates; the error messages that used to advise "send it in a header"
-      // were pointing at a place that did not exist, which is the gap this
-      // field closes.
+      // a secret is what would put it in history.
+      //
+      // A reference can also sit inside `headers` now, as one entry of a
+      // [Value.Structure], which is what makes `Authorization` writable by hand.
+      // This field stays, and stays the recommended spelling: it says what the
+      // credential *is*, so the worker renders the header and an author cannot
+      // get the scheme wrong — and it leaves the rest of `headers` free to hold
+      // expressions, which a structure carrying a reference deliberately cannot.
       //
       // The worker resolves it inside the activity and sends
       // `Authorization: Bearer <value>`. The name says the scheme so the field
@@ -1393,11 +1460,14 @@ message Task {
       // Building a query string by hand is where escaping bugs live, and they are
       // the kind that work until a value contains an ampersand.
       //
-      // A secret reference here is refused rather than resolved: query strings are
-      // written to access logs, kept in browser history, and forwarded in Referer
-      // headers by anything that follows a redirect. The diagnostic says to use a
-      // header instead, because the author's intent is clear and only the placement
-      // is wrong.
+      // A secret reference here is refused rather than resolved, and it is the one
+      // input of this task where that is a decision about the *destination* rather
+      // than about the mechanism: query strings are written to access logs, kept in
+      // browser history, and forwarded in Referer headers by anything that follows
+      // a redirect. `form` is the same kind of map, encoded by the same function a
+      // few lines away, and accepts one — so the refusal is stated twice on
+      // purpose, once in the compiler where an author can see it and once in
+      // `valueToQueryString` for a specification that never met the compiler.
       map<string, Value> query = 6;
 
       // A structured request body, serialized as JSON with a matching Content-Type.
@@ -1406,10 +1476,20 @@ message Task {
       // building the JSON by hand in a CEL expression and remembering the header.
       // Mutually exclusive with `body` and `form` — three ways to say what to send
       // is a request whose meaning depends on field order.
+      //
+      // A field of the body may be a secret reference, at any depth: the task
+      // serializes the body itself, inside the activity, so the reference is read
+      // as the bytes are written and nowhere earlier.
       Value json = 7;
 
       // A form body, url-encoded with a matching Content-Type. Mutually exclusive
       // with `body` and `json`.
+      //
+      // An entry may be a secret reference — an OAuth `client_secret` is the case
+      // — and it is resolved as the body is encoded, inside the activity. The
+      // difference from `query`, which is the same kind of map encoded by the same
+      // function, is entirely the destination: a form body is sent in the request,
+      // where a query string is written down by everything it passes.
       map<string, Value> form = 8;
 
       // Which responses count as success, as a CEL expression over the same

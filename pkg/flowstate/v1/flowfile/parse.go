@@ -354,6 +354,16 @@ type ref struct {
 	// input is the task input at fault, when the value is one.
 	input string
 
+	// task is the name of the task the input belongs to, when there is one.
+	//
+	// Carried because one rule genuinely depends on it: whether a secret reference
+	// may be nested inside a list or a mapping is a property of the *input*, since
+	// only a task that applies an input's entries itself can carry a reference to
+	// the worker. Nothing else reads it, and a value that is not a task input —
+	// a var, a declaration's default — leaves it empty and is refused, which is
+	// the fail-closed direction.
+	task string
+
 	// path addresses the value in the source, and names it in a message when
 	// there is no step id to name instead.
 	path string
@@ -1107,7 +1117,9 @@ func (c *compiler) inputs(n ast.Node, path string, r ref, taskName string, into 
 	// an input by that name — reported as unknown, where it was written.
 	for _, e := range entries {
 		valuePath := fieldPath(path, e.name)
-		if value := c.inputValue(e.value, valuePath, ref{step: r.step, input: e.name, path: valuePath}); value != nil {
+		value := c.inputValue(e.value, valuePath,
+			ref{step: r.step, task: taskName, input: e.name, path: valuePath})
+		if value != nil {
 			into[e.name] = value
 		}
 	}

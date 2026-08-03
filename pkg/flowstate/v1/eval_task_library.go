@@ -106,6 +106,20 @@ func HTTPTaskDef(policy *netpolicy.Policy) TaskDef {
 		NeedsPrevOutputs: true,
 		AuthorityInputs:  []string{"bearer", "credential"},
 		CredentialInputs: []string{"credential"},
+		// The three inputs this task turns into request bytes itself, inside the
+		// activity: a header it sets on the request, a form it encodes, a JSON
+		// body it serializes. A reference nested in one is resolved at exactly
+		// that moment and nowhere earlier.
+		//
+		// `query` is missing on purpose and not by oversight. It is the same kind
+		// of map as `form` and is encoded a few lines away from it, so nothing
+		// about the mechanism refuses it — what refuses it is the destination: a
+		// query string is written to access logs, kept in browser history, and
+		// forwarded in a Referer header by anything following a redirect. A
+		// credential that reaches one is a credential published, so the position
+		// stays refused both here and, for a specification that never met this
+		// compiler, in `valueToQueryString`.
+		NestedSecretInputs: []string{"form", "headers", "json"},
 		// Takes no policy, deliberately. What it answers is what the *task* can
 		// request, which is the same in every deployment — see the file it lives
 		// in for why asking the policy instead would put DNS in an editor and
@@ -325,6 +339,48 @@ func httpResponseEnv(profile string) (*cel.Env, error) {
 	return env, nil
 }
 
+// revealSecret returns the [revealFunc] the http task resolves references
+// through: authorized and resolved from the activity's own execution context, and
+// registered with the scrubber so a peer reflecting the value back cannot put it
+// into an output.
+//
+// The context is captured rather than threaded through every converter, and that is
+// deliberate. What travels is a function, so nothing between here and the header or
+// the encoded body holds a resolved value in a field, a map, or a struct — the
+// arrangement that survives `%+v` on whatever happens to hold it.
+func revealSecret(ctx context.Context, scrubber *secrets.Scrubber) revealFunc {
+	return func(ref *SecretRef) (string, error) {
+		secret, err := ResolveSecret(ctx, ref)
+		if err != nil {
+			return "", &secretResolutionError{err: fmt.Errorf(
+				"resolving reference %s: %w", secretRefText(ref), err)}
+		}
+		scrubber.Add(secret)
+
+		return secret.Reveal(), nil
+	}
+}
+
+// httpInputError classifies a failure to build the request from its inputs.
+//
+// A reference the policy refused is a denial and will be refused again; a
+// malformed input is the file's mistake. Both used to be reported as invalid
+// input, which made a policy decision look like a typo and — worse — made it
+// retryable in exactly the cases retrying cannot help.
+func httpInputError(err error) error {
+	var resolution *secretResolutionError
+	if errors.As(err, &resolution) {
+		kind := ErrorKindPolicyDenied
+		if secrets.Retryable(err) {
+			kind = ErrorKindUpstream
+		}
+
+		return NewTaskError("http", kind, err)
+	}
+
+	return NewTaskError("http", ErrorKindInvalidInput, err)
+}
+
 func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 	return func(ctx context.Context, input map[string]*Value, scope *Scope) (*Node_Outputs, error) {
 		taskInputs := &Task_HTTP_Inputs{
@@ -334,13 +390,27 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 		// `outputs` and `expect` are evaluated against the response rather than
 		// against earlier steps, so they are held back from population: resolving
 		// them here would fail on `status_code` and `body`, which do not exist yet.
-		var outputsSpec, expectSpec *Value
+		//
+		// `headers` is held back for a different reason and only when it is written
+		// as a structure. The schema's field is map<string, string> and a reference
+		// is not a string, so a structure carrying one has nowhere to be put down —
+		// and putting the *resolved* value there would be worse than the error it
+		// avoids, since a proto struct field is exactly what `fmt` reflects into.
+		// It stays a Value until [httpRequestHeaders] hands it to the request.
+		var outputsSpec, expectSpec, headersSpec *Value
 		inputForPopulate := input
-		if _, hasOutputs := input["outputs"]; hasOutputs || input["expect"] != nil {
+		if _, hasOutputs := input["outputs"]; hasOutputs || input["expect"] != nil ||
+			input["headers"].GetStructure() != nil {
 			outputsSpec, expectSpec = input["outputs"], input["expect"]
+			if input["headers"].GetStructure() != nil {
+				headersSpec = input["headers"]
+			}
 			inputForPopulate = make(map[string]*Value, len(input))
 			for k, v := range input {
 				if k == "outputs" || k == "expect" {
+					continue
+				}
+				if k == "headers" && headersSpec != nil {
 					continue
 				}
 				inputForPopulate[k] = v
@@ -381,12 +451,19 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 
 		requestURL, err := applyQuery(taskInputs.GetUrl(), taskInputs.GetQuery())
 		if err != nil {
-			return nil, NewTaskError("http", ErrorKindInvalidInput, err)
+			return nil, httpInputError(err)
 		}
 
-		bodyText, contentType, err := httpRequestBody(taskInputs)
+		// The scrubber exists before the first reference is resolved, because every
+		// value resolved from here on is registered with it: a peer that reflects a
+		// header or a body back is the path that turns a request credential into a
+		// durable output.
+		scrubber := secrets.NewScrubber()
+		reveal := revealSecret(ctx, scrubber)
+
+		bodyText, contentType, err := httpRequestBody(taskInputs, reveal)
 		if err != nil {
-			return nil, NewTaskError("http", ErrorKindInvalidInput, err)
+			return nil, httpInputError(err)
 		}
 
 		var body io.Reader
@@ -406,11 +483,27 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 			}
 		}
 
+		// And the ones written as a structure, whose references are resolved one
+		// entry at a time, straight onto the request. Applied before the bearer and
+		// credential blocks below so that an `Authorization` written here is the
+		// header they refuse to overwrite — two ways of setting one header have to
+		// meet whichever order an author writes them in.
+		if headersSpec != nil {
+			header, err := httpRequestHeaders(headersSpec, reveal)
+			if err != nil {
+				return nil, httpInputError(err)
+			}
+			for name, values := range header {
+				for _, value := range values {
+					httpReq.Header.Add(name, value)
+				}
+			}
+		}
+
 		// Resolve the reference only here, after the task has crossed into its
 		// execution context. The workflow and the activity payload continue to hold
 		// only the reference; the revealed value exists for the lifetime of this
 		// request and is never added to an output.
-		scrubber := secrets.NewScrubber()
 		if taskInputs.GetBearer() != nil && taskInputs.GetCredential() != "" {
 			return nil, NewTaskError("http", ErrorKindInvalidInput,
 				fmt.Errorf("bearer and credential are mutually exclusive; use a static secret reference or a JIT federation target, not both"))
@@ -1094,6 +1187,19 @@ func literalKindName(lit *expr.Value) string {
 	}
 }
 
+// nestedSecretHelp says where a reference nested in a list or a mapping can go,
+// for a specification that reached a worker without passing `flow validate`.
+//
+// It names the http task the way the neighbouring message about `bearer:` does,
+// rather than asking the registry which inputs accept one: this file builds the
+// registry, so reading it from here is an initialization cycle. The author-facing
+// answer — which inputs of *this* task accept a reference, named from the task's
+// own definition — is the compiler's, in `flowfile`, where there is a line and a
+// column to put it on.
+const nestedSecretHelp = "; an input that accepts one applies its entries itself, inside the " +
+	"activity, which is what lets the reference stay a reference — the http task's headers, " +
+	"form and json are the ones built today"
+
 func populateProtoMessageFromValueMap(ctx context.Context, input map[string]*Value, msg proto.Message, scope *Scope) error {
 	msgFields := msg.ProtoReflect().Descriptor().Fields()
 	for i := 0; i < msgFields.Len(); i++ {
@@ -1133,6 +1239,36 @@ func populateProtoMessageFromValueMap(ctx context.Context, input map[string]*Val
 					continue
 				}
 				return fmt.Errorf("expected map from CEL for field %q", fieldName)
+			case *Value_Structure_:
+				// A mapping whose entries are values in their own right, which is
+				// the shape that can hold a secret reference. It is set entry by
+				// entry and unconverted: the field's value type is
+				// flowstate.v1.Value, so what the author wrote arrives at the task
+				// exactly as written, reference included, and the task resolves it
+				// where it uses it.
+				entries, isMap := StructureMap(val)
+				if !isMap {
+					return fmt.Errorf("field %q expects a mapping, but a list was given", fieldName)
+				}
+				if fieldDesc.MapValue().Message() == nil ||
+					fieldDesc.MapValue().Message().FullName() != "flowstate.v1.Value" {
+					// map<string, string> and its like. The entries could be
+					// flattened into strings, and a reference among them could
+					// not — and this is the branch a reference would arrive by,
+					// so flattening would resolve one into a field that a `%+v`
+					// anywhere would print.
+					return fmt.Errorf(
+						"field %q holds plain values, so it cannot carry a secret reference%s",
+						fieldName, nestedSecretHelp)
+				}
+				for name, entry := range entries {
+					if name == "" {
+						return fmt.Errorf("field %q has an entry with an empty name", fieldName)
+					}
+					m.Set(protoreflect.ValueOfString(name).MapKey(),
+						protoreflect.ValueOfMessage(entry.ProtoReflect()))
+				}
+				continue
 			default:
 				return fmt.Errorf("unsupported map input for field %q: %T", fieldName, val)
 			}
@@ -1244,6 +1380,15 @@ func populateProtoMessageFromValueMap(ctx context.Context, input map[string]*Val
 					"which is how a task takes a value it resolves itself — the http task's "+
 					"bearer: input is the one built today",
 				fieldName, kind.SecretRef.GetScheme(), kind.SecretRef.GetName())
+
+		case *Value_Structure_:
+			// A list or a mapping where the field holds one value. Named for the
+			// same reason the reference above is: this is the shape a Flowfile
+			// compiles a structure holding a reference into, so an author who put
+			// one where a scalar belongs meets a sentence about what they wrote.
+			return fmt.Errorf(
+				"field %q was given a list or a mapping, which this field's type cannot hold%s",
+				fieldName, nestedSecretHelp)
 
 		default:
 			return fmt.Errorf("field %q: unsupported value type: %T", fieldName, val)

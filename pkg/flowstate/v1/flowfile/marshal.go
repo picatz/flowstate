@@ -302,8 +302,52 @@ func inputValueToYAML(value *v1.Value) (any, error) {
 		return literalToYAML(kind.Literal)
 	case *v1.Value_SecretRef:
 		return secretRefToDSL(kind.SecretRef)
+	case *v1.Value_Structure_:
+		return structureToYAML(kind.Structure)
 	default:
 		return nil, fmt.Errorf("cannot be written as YAML: %w", value.Error())
+	}
+}
+
+// structureToYAML writes a list or a mapping whose entries are values.
+//
+// Each entry is written the way a whole input is, which is what makes the round
+// trip a fixed point: a reference inside comes back out as `${secret('...')}`, and
+// reading that document produces this structure again. There is no other spelling —
+// a structure exists precisely because its entries could not be flattened into one
+// expression.
+func structureToYAML(structure *v1.Value_Structure) (any, error) {
+	switch kind := structure.GetKind().(type) {
+	case *v1.Value_Structure_List_:
+		values := kind.List.GetValues()
+		out := make([]any, 0, len(values))
+		for i, element := range values {
+			written, err := inputValueToYAML(element)
+			if err != nil {
+				return nil, fmt.Errorf("element %d: %w", i, err)
+			}
+			out = append(out, written)
+		}
+		return out, nil
+
+	case *v1.Value_Structure_Map_:
+		entries := kind.Map.GetEntries()
+		// A MapSlice in sorted key order, for the two reasons everything else here
+		// is ordered: a protobuf map has no order of its own, and a file that
+		// rewrites its own keys into a different arrangement on every `flow fmt` is
+		// a diff nobody made.
+		out := make(yaml.MapSlice, 0, len(entries))
+		for _, name := range slices.Sorted(maps.Keys(entries)) {
+			written, err := inputValueToYAML(entries[name])
+			if err != nil {
+				return nil, fmt.Errorf("key %q: %w", name, err)
+			}
+			out = append(out, yaml.MapItem{Key: name, Value: written})
+		}
+		return out, nil
+
+	default:
+		return nil, fmt.Errorf("a structure is a list or a mapping, and this is neither")
 	}
 }
 
