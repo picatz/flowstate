@@ -64,18 +64,26 @@ with a diagnostic that says so rather than a silent pass. See
 [`examples/README.md`](../../README.md) for the fuller version of this
 argument.
 
-## What this does not exercise, and why
+## What proves these files are reachable
 
-Neither file here is driven by an automated test that builds the plugin,
-launches it, and runs the workflow against it the way
-`TestAFlowfileCanNameAPluginTask` does for `examples/plugins/greet` in
-`pkg/flowstate/v1/plugin`. That test lives in the core repository and
-exercises the one plugin shipped there; writing its equivalent for this
-plugin - inside `plugins/github`, since that is a separate module and
-cannot be added to `pkg/flowstate/v1/plugin` without editing code this
-engagement does not own - was not done, for time, and is recorded here
-plainly rather than left to be discovered. See the top-level report for the
-same point stated once for both plugins.
+`TestAFlowfileCanNameTheGitHubPluginsTasks`, in
+[`plugins/github/reachable`](../../../plugins/github/reachable), is this
+plugin's equivalent of `TestAFlowfileCanNameAPluginTask` for
+`examples/plugins/greet` in `pkg/flowstate/v1/plugin`: it builds this plugin
+as a real, separately compiled binary, opens a
+[`plugin.Host`](../../../pkg/flowstate/v1/plugin) over it, and validates both
+files here from disk before and after registration - each refused with a
+diagnostic naming its task beforehand, accepted afterward, inputs checked
+against the descriptors the plugin actually shipped. It lives in its own
+package under `plugins/github` rather than beside `main.go`, and rather than
+in `pkg/flowstate/v1/plugin`: not in the root module, because that module
+must never depend on go-github, and not beside `main.go`, because that file
+imports this plugin's own generated types, which would register its schema
+in the test binary's own global proto registry before the test ever ran -
+see the package doc on `plugins/github/reachable` for what that would have
+hidden. It does not run `github.pull_request_get` or `github.issue_comment`
+for real - both reach the real GitHub API, and posting a comment needs a
+credential this test has no business holding.
 
 Posting a real, unattended comment as part of a CI run is also its own
 decision an operator should make deliberately - which repository, which

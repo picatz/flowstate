@@ -239,10 +239,14 @@ Two more, specific to this plugin:
   what the broker federates into; recorded rather than forced.
 - **Precise pre-send/mid-send network failure classification** for
   `issue_comment`. See "Design decisions" above.
-- **An integration test** that builds, launches, and runs this plugin
+- ~~An integration test~~ that builds, launches, and runs this plugin
   against a real workflow file, the way `TestAFlowfileCanNameAPluginTask`
-  does for `examples/plugins/greet`. Not done, for time - see
-  `plugins/vcs/README.md`'s identical note for the reasoning. What exists
-  instead: unit tests for every pure function (validation, classification,
-  JWT construction, containment), and the manually-run examples in
-  `examples/plugins/github`.
+  does for `examples/plugins/greet` - now
+  `TestAFlowfileCanNameTheGitHubPluginsTasks` in
+  [`reachable/`](reachable), this module's own equivalent, kept in its own
+  package for the same reason `plugins/vcs/reachable` is: `main.go` imports
+  this plugin's own generated types, and a test beside it would register
+  this plugin's schema in the test binary's own registry before the
+  reconstruction under test ever happened. What exists beside it: unit
+  tests for every pure function (validation, classification, JWT
+  construction, containment).
