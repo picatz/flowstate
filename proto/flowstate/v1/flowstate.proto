@@ -2566,6 +2566,52 @@ message ListRequest {
   // PageToken continues a previous List. Opaque: it encodes where the scan
   // stopped, and nothing else should be read from or written into it.
   string page_token = 2 [(buf.validate.field).string = {max_len: 4096}];
+
+  // Filter keeps only the runs a CEL expression answers yes about.
+  //
+  // CEL because that is what everything else an author writes here is: the
+  // expressions in a Flowfile, the rules in an egress or auth policy, the
+  // condition on a step. A query language of its own would be a second grammar
+  // to learn, a second parser to bound, and a second place for `status` to mean
+  // something slightly different.
+  //
+  // The names it binds are a run's own: `workflow_id`, `run_id`, `status`,
+  // `start_time`, `close_time`, `finished`. `status` is the short name —
+  // `FAILED`, not `STATUS_FAILED` — and comparing it to a name no status has is
+  // refused rather than silently matching nothing.
+  //
+  //     status == "FAILED"
+  //     status == "RUNNING" && start_time < timestamp("2026-08-01T00:00:00Z")
+  //     finished && close_time - start_time > duration("1h")
+  //
+  // `close_time` is null while a run is going — null rather than the epoch,
+  // because a run that has not finished has no close time and a filter that
+  // compared one against a date would otherwise report every running run as
+  // having finished in 1970. Comparing null errors, which is why `finished`
+  // exists: CEL's `&&` absorbs errors from the side it does not need, so the
+  // guarded form above does what it looks like it does.
+  //
+  // # What this bounds, and what it does not
+  //
+  // A filter narrows the *answer*, never the work. The tenant a run belongs to
+  // is a memo, which Temporal cannot query, so a listing is already a bounded
+  // scan with a predicate applied to each result — and a filter that matches
+  // little makes a page more likely to come back short with a token, not more
+  // likely to scan further. The scan bounds are unchanged and unaffected by what
+  // is written here.
+  //
+  // The evaluation itself is cost-bounded per run, well below the budget an
+  // ordinary expression gets, because this one is evaluated once per execution
+  // read and the two multiply.
+  //
+  // # Room this leaves
+  //
+  // When a deployment registers search attributes, the parts of a filter the
+  // visibility store can answer become a query pushed down into it, and the rest
+  // stays a predicate here. That changes what a listing costs and never what it
+  // means: the same filter returns the same runs either way, which is what lets
+  // an operator turn pushdown on without re-reading every saved query.
+  string filter = 3 [(buf.validate.field).string = {max_len: 4096}];
 }
 
 // RunSummary describes one run in a listing.

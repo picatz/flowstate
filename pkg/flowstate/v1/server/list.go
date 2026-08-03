@@ -113,6 +113,16 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
+	// Compiled once for the request, not once per run: compiling parses and
+	// type-checks, which costs more than the whole listing if repeated per
+	// execution. A malformed filter is the caller's mistake and is reported as
+	// such — `flow list --filter` compiles it before sending for the same reason,
+	// so this is the backstop for a caller that is not the CLI.
+	filter, err := v1.NewRunFilter(req.Msg.GetFilter())
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
 	runs := make([]*v1.RunSummary, 0, pageSize)
 	scanned := 0
 	requests := 0
@@ -188,7 +198,30 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 			if execution.GetStatus() == enums.WORKFLOW_EXECUTION_STATUS_CONTINUED_AS_NEW {
 				continue
 			}
-			runs = append(runs, summarize(execution))
+
+			run := summarize(execution)
+
+			// Applied after the tenant check and after the continued-as-new skip,
+			// which is the only correct order. A filter is the caller's question
+			// about their own runs; running it first would evaluate an expression
+			// against executions the caller is not entitled to see, and would let a
+			// filter that errors on another tenant's data fail this caller's
+			// listing.
+			//
+			// An error stops the listing rather than skipping the run. Nearly every
+			// error a filter can raise is a property of the expression rather than
+			// of the run — an unguarded `close_time` comparison errors on exactly
+			// the runs still going — so skipping would answer "nothing matched" to a
+			// question that was never asked correctly.
+			matched, err := filter.Match(ctx, run)
+			if err != nil {
+				return nil, connect.NewError(connect.CodeInvalidArgument, err)
+			}
+			if !matched {
+				continue
+			}
+
+			runs = append(runs, run)
 			if len(runs) == pageSize {
 				break
 			}

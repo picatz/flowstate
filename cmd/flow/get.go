@@ -175,8 +175,14 @@ func roundedDuration(d time.Duration) time.Duration {
 // The generated enum names carry a STATUS_ prefix that exists to keep the
 // constants distinct in the schema, and repeating it on a terminal only makes a
 // line harder to scan.
+//
+// Delegated rather than trimmed here, because this stopped being the only place
+// that needed the short name: `--filter` compares against it, so a filter and a
+// printed line have to agree about what a status is called. Two trims of one
+// prefix is the shape CLAUDE.md describes as a value with one meaning written
+// down twice — harmless until one of them changes.
 func statusLabel(status v1.RunResponse_Status) string {
-	return strings.TrimPrefix(status.String(), "STATUS_")
+	return v1.StatusName(status)
 }
 
 // runPosition renders where a running run has got to.
