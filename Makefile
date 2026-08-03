@@ -1,4 +1,4 @@
-.PHONY: check test test-fast fmt
+.PHONY: check test test-fast fmt docs
 
 # Full CI-parity loop, verbatim commands, in CI order. See CLAUDE.md.
 check:
@@ -12,6 +12,8 @@ check:
 	fi
 	GOMEMLIMIT=2GiB go test -race -timeout 900s ./...
 	go run ./cmd/flow fix --check examples/*/workflow.yaml
+	go run ./cmd/flow docs generate && git diff --exit-code -- docs/reference/
+	go generate ./cmd/flow/internal/reference && git diff --exit-code -- cmd/flow/internal/reference/
 	go run github.com/bufbuild/buf/cmd/buf@v1.72.0 lint
 	go run github.com/bufbuild/buf/cmd/buf@v1.72.0 breaking --against '.git#branch=origin/main'
 	go run github.com/bufbuild/buf/cmd/buf@v1.72.0 generate && git diff --exit-code
@@ -28,3 +30,9 @@ test-fast:
 
 fmt:
 	gofmt -w ./cmd ./pkg
+
+# Regenerate the reference documentation under docs/reference/ from the registry,
+# the cobra tree, the MCP tool table and the env-var table. CI pins the result
+# with `git diff --exit-code`, so this is what to run when that pin fails.
+docs:
+	go run ./cmd/flow docs generate

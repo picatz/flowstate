@@ -86,6 +86,8 @@ behind it too.
     gofmt -l ./cmd ./pkg                       # must print nothing
     GOMEMLIMIT=2GiB go test -race -timeout 900s ./...
     go run ./cmd/flow fix --check examples/*/workflow.yaml
+    go run ./cmd/flow docs generate && git diff --exit-code -- docs/reference/
+    go generate ./cmd/flow/internal/reference && git diff --exit-code -- cmd/flow/internal/reference/
     go run github.com/bufbuild/buf/cmd/buf@v1.72.0 lint
     go run github.com/bufbuild/buf/cmd/buf@v1.72.0 breaking --against '.git#branch=origin/main'
     go run github.com/bufbuild/buf/cmd/buf@v1.72.0 generate && git diff --exit-code
@@ -97,7 +99,7 @@ toolchain pins below already applied. Prefer it, and keep it and this section
 saying the same thing — a copy of a command list is a thing that drifts, and the
 whole point of the list is that it is what CI runs.
 
-Three of those repay the trouble in ways that are not obvious.
+Four of those repay the trouble in ways that are not obvious.
 
 The two `buf` checks that are not `generate` guard a contract rather than a build.
 `buf lint` enforces the whole default rule set, with nothing suppressed. `buf
@@ -110,6 +112,13 @@ plugin in the wild.
 `buf generate` followed by `git diff --exit-code` is the one people skip, and it is
 the one that fails for someone else rather than for you: committed generated code
 that disagrees with its schema builds perfectly until the next person regenerates.
+
+`flow docs generate` followed by the same `git diff --exit-code` is that mechanism
+pointed at prose. `docs/reference/` is derived from the task registry, the cobra
+tree, the MCP tool table and one hand-kept env-var table — the four surfaces the doc
+audit found had drifted — so adding a task, a flag, an RPC or a variable and not
+regenerating fails here. Never hand-edit a file under `docs/reference/`; edit what it
+is derived from (`cmd/flow/docsgen.go` for the env-var prose) and run `make docs`.
 
 `govulncheck` reports *reachability* against a database fetched when it runs, so it
 can go red on a tree nobody touched — a new advisory is not a new bug in your diff.

@@ -89,6 +89,25 @@ jobs:
       - name: Test
         run: go test -race ./...
 
+      # The same mechanism as the proto job's generated-code check, on the four
+      # reference documents that are derived rather than written: the task
+      # reference from the registry, the CLI reference from the cobra tree, the
+      # MCP tool list, and the env-var table. Those four are exactly the tables
+      # the doc audit found had drifted, and they drift silently — a task gains a
+      # field, a flag gains an env default, and the prose stays confidently wrong
+      # until somebody follows it and fails.
+      #
+      # Here rather than in the proto job because what it pins is Go values, not
+      # the schema: `flow docs generate` runs the binary, so a failure here is a
+      # tree whose documentation disagrees with its own code.
+      - name: Verify generated reference docs are current
+        run: |
+          go run ./cmd/flow docs generate
+          git diff --exit-code -- docs/reference/ || {
+            echo "::error::generated reference docs do not match the code; run 'make docs' and commit the result"
+            exit 1
+          }
+
       # `flow fix --check` is the command this exists to protect: examples are
       # already in the current edition, and a PR that leaves one behind should fail
       # here rather than at the next person's `flow fix .`. Not advisory — the

@@ -728,7 +728,10 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and the handshak
 
 ## Configuration
 
-Flowstate's own settings:
+Flowstate's own settings. [docs/reference/envvars.md](docs/reference/envvars.md) is the
+generated version of this table — every variable the code reads, with where it is read,
+held to the tree by a test that fails on a read this list does not carry. The table below
+is the tour; that one is the enumeration.
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -912,6 +915,11 @@ Names only, deliberately: types and constraints belong to the schema, and repeat
 here is how the two disagree. `flow tasks` prints the same catalog with every type, which
 required input is which, and the CEL libraries every expression reaches — derived from the
 registry, so it cannot drift from what the engine will execute.
+
+[docs/reference/tasks.md](docs/reference/tasks.md) is that same catalog written down: every
+input with its type, whether it is required, and whether the task evaluates it itself, plus
+every CEL function an expression may call. It is generated from the registry and pinned in
+CI, so it is the one to read when the answer has to be complete.
 
 This table is checked against that registry by a test, because it *had* drifted: it was
 missing six of `http`'s inputs and one of its outputs, while the sentence beneath it
@@ -1174,7 +1182,10 @@ is the whole of what the local driver cannot give you.
 it, and then either run it on your own machine or hand it to a server that
 executes it durably through Temporal.
 
-Run `flow <command> --help` for the full flags of any of these.
+Run `flow <command> --help` for the full flags of any of these, or read
+[docs/reference/cli.md](docs/reference/cli.md), which is every command and flag generated
+from the binary's own command tree — including which environment variable each flag
+default comes from.
 
 | Command | What it does |
 | --- | --- |
