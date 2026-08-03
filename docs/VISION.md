@@ -120,12 +120,10 @@ of [ARCHITECTURE.md](ARCHITECTURE.md#identity-in-both-directions) and
 ## The observability lab, and Flowstate as an OTLP citizen
 
 The telemetry hooks landed for the server and worker (metrics and traces behind
-OTEL_EXPORTER_OTLP_*, structured logs). Client-to-server trace propagation has
-*not*: the CLI's client commands never initialize a tracer provider and no text-map
-propagator is registered, so `flow run` currently injects no trace context — a
-trace begins at the server, not at the person. Closing that (client telemetry
-initialization plus `otel.SetTextMapPropagator`) is part of the work below, not a
-thing the lab can assume. The direction from here is to make Flowstate a
+OTEL_EXPORTER_OTLP_*, structured logs), and client-to-server trace propagation
+followed: client commands initialize the tracer and the W3C propagator when the
+same variables opt in, flush before exiting, and a trace now begins at the person
+running `flow run` rather than at the server. The direction from here is to make Flowstate a
 first-class citizen of a modern OpenTelemetry stack, and to prove it end to end:
 
 - **All three signals over OTLP**: metrics, traces, and logs, with logs shipped

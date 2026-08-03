@@ -174,10 +174,17 @@ func initTemporalClient(ctx context.Context, flags temporalFlags) (client.Client
 // namespace. Resolving it in one place keeps the two from ever describing
 // different clusters.
 func temporalConfig(ctx context.Context, flags temporalFlags) (temporalclient.Config, error) {
-	// Telemetry first, so the client is born instrumented. Off unless the
-	// operator pointed OTEL_EXPORTER_OTLP_* somewhere; the shutdown flush is
-	// process-exit's job, which for the two callers here is process lifetime.
-	metricsHandler, _, err := initTelemetry(ctx)
+	// Telemetry first, so the client is born instrumented, and before the RPC
+	// interceptors are built: otelconnect captures the global tracer provider
+	// and propagator at construction, so an interceptor built ahead of this
+	// captures the no-op ones and keeps them for the life of the process.
+	//
+	// Off unless the operator pointed OTEL_EXPORTER_OTLP_* somewhere. Started
+	// rather than initialized, because `flow server` reaches here twice when
+	// the trust policy maps tenants onto namespaces, and the flush this
+	// registers has to reach one set of providers rather than the last of
+	// several — runServer and runWorker call flushTelemetry at their teardown.
+	metricsHandler, err := startTelemetry(ctx)
 	if err != nil {
 		return temporalclient.Config{}, err
 	}
@@ -270,6 +277,13 @@ func runWorker(cmd *cobra.Command, args []string) error {
 	<-cmd.Context().Done()
 	infraLogger().Info("shutting down worker")
 	w.Stop()
+
+	// After the worker has stopped, so the last activity's spans and the last
+	// interval's metrics are in the batch this pushes — those are the ones
+	// somebody is looking for when they come to ask what a worker was doing
+	// when it went away. Bounded and best-effort; see flushTelemetry.
+	flushTelemetry()
+
 	infraLogger().Info("worker stopped")
 
 	return nil
@@ -522,8 +536,17 @@ func runServer(cmd *cobra.Command, args []string) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
 	defer cancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		// Flushed on the way out of this path too, because a server that had to
+		// be forced down is the case where the last spans matter most.
+		flushTelemetry()
+
 		return fmt.Errorf("server forced to shutdown: %w", err)
 	}
+
+	// After the in-flight requests have drained, so their spans are in the
+	// batch rather than in the one nobody sends.
+	flushTelemetry()
+
 	logger.Info("server stopped")
 
 	return nil
@@ -1608,7 +1631,19 @@ func main() {
 	// as everything else it prints. A binary whose help is one colour and whose
 	// output is another reads as two tools — and the reason it is drawn here rather
 	// than by fang is a terminal query fang's options could not reach. See execute.go.
-	if err := execute(ctx, rootCmd); err != nil {
+	err := execute(ctx, rootCmd)
+
+	// Every command's last act, and the only one a client command gets: `flow
+	// run`, `flow get`, `flow watch` and the rest live for a second or two,
+	// which is shorter than a batch exporter's window, so without this their
+	// spans are built, recorded, and thrown away at exit. Not deferred, because
+	// the failing path below leaves through os.Exit and a deferred flush would
+	// be the one skipped exactly when a trace is being read to find out why.
+	//
+	// Costs nothing when telemetry was never started, which is the default.
+	flushTelemetry()
+
+	if err != nil {
 		os.Exit(exitCode)
 	}
 }
