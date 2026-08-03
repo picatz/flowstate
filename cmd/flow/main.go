@@ -205,10 +205,77 @@ func temporalConfig(ctx context.Context, flags temporalFlags) (temporalclient.Co
 	return cfg, nil
 }
 
+// allowUnversionedFlag is how an operator says they accept running the
+// interpreter with nothing pinning it.
+//
+// Named for what is being accepted rather than for the check being skipped, in the
+// same spirit as --allow-insecure-plugin-dir: the flag that permits a plugin
+// directory other users can write to says so, instead of saying "--no-plugin-check".
+// A person reading a command line should be able to see the risk without reading
+// the code that enforces it.
+const allowUnversionedFlag = "allow-unversioned-interpreter"
+
+// workerDeployment resolves the versioning posture a `flow worker` command
+// describes, and refuses the ones that are unsafe or incoherent.
+//
+// The refusal exists because the interpreter evaluates CEL *in workflow code* —
+// step conditions, a loop's `items:`, a step's own `vars:`, and every task input
+// that does not declare `needs_prev_outputs`. What those expressions mean is
+// decided by the cel-go compiled into this binary, and on an unversioned worker
+// nothing pins which binary a run in flight is handed to. docs/DSL.md states that
+// dependency as a deployment precondition; this is where it stops being a note.
+//
+// Zero-config local development still works, and invariant 8 is what says how much
+// it has to: every feature must work against `temporal server start-dev` with no
+// cloud dependency. Worker Deployment Versioning is not a cloud dependency — the
+// versioning end-to-end test drives two builds against a dev server — so an
+// operator's honest options on a laptop are both open. What invariant 8 does forbid
+// is a dead end, so the refusal is written to be a signpost: it names the flag to
+// type, and typing it is the whole of the fix.
+//
+// Detecting the dev server and exempting it was the alternative, and it was
+// rejected for being a guess. The address a dev server listens on is configurable,
+// a production cluster can be reached at localhost through a tunnel, and a rule
+// that decides how much safety to enforce by pattern-matching a hostname fails open
+// on exactly the deployment that most needs it.
+func workerDeployment(cmd *cobra.Command, flags temporalFlags) (worker.DeploymentOptions, error) {
+	deployment, err := engine.DeploymentOptions(flags.deploymentName, flags.buildID)
+	if err != nil {
+		return worker.DeploymentOptions{}, err
+	}
+
+	if deployment.UseVersioning {
+		return deployment, nil
+	}
+
+	if allowed, _ := cmd.Flags().GetBool(allowUnversionedFlag); allowed {
+		return deployment, nil
+	}
+
+	return worker.DeploymentOptions{}, fmt.Errorf(
+		"refusing to start an unversioned worker: this worker evaluates workflow expressions "+
+			"(step conditions, a loop's items:, a step's vars:, task inputs) in workflow code, so the "+
+			"expression engine built into this binary decides what they mean — and with no version, "+
+			"deploying a different binary changes what every run already in flight computes, including "+
+			"where a run resumes after continue-as-new. Pass --deployment-name and --build-id "+
+			"(or FLOWSTATE_DEPLOYMENT_NAME and FLOWSTATE_BUILD_ID) to pin each run to the interpreter "+
+			"it started on, or --%s to accept that exposure, which is what a local "+
+			"`temporal server start-dev` session usually wants",
+		allowUnversionedFlag)
+}
+
 // runWorker implements the worker sub-command to start a Temporal worker
 // to process Flowstate workflows and activities.
 func runWorker(cmd *cobra.Command, args []string) error {
 	flags := temporalFlagsOf(cmd)
+
+	// First, because it reads flags and nothing else: a worker whose versioning is
+	// half-configured or unaccounted for should say so before it dials Temporal,
+	// launches a plugin, or opens a secret provider.
+	deployment, err := workerDeployment(cmd, flags)
+	if err != nil {
+		return err
+	}
 
 	// Before any I/O, and before the worker can poll: a policy file that does not
 	// load must refuse the command, not leave a worker running the default policy
@@ -243,8 +310,6 @@ func runWorker(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	deployment := engine.DeploymentOptions(flags.deploymentName, flags.buildID)
-
 	w := worker.New(c, flags.taskQueue, worker.Options{
 		DeploymentOptions: deployment,
 	})
@@ -257,12 +322,13 @@ func runWorker(cmd *cobra.Command, args []string) error {
 			"deployment", deployment.Version.DeploymentName,
 			"build_id", deployment.Version.BuildID)
 	} else {
-		// Said out loud rather than left to be inferred from silence. Without a
-		// version, deploying this binary changes the behaviour of every run
-		// already in flight — which is the default Temporal has always had, and
-		// is a choice an operator should know they are making.
+		// Reached only with --allow-unversioned-interpreter, since workerDeployment
+		// refuses otherwise. Still said out loud on every start rather than only at
+		// the moment the flag was typed: the person reading a worker's logs a month
+		// later is usually not the person who wrote its command line.
 		infraLogger().Warn("starting worker unversioned; deploying this binary changes every run in flight",
 			"task_queue", flags.taskQueue,
+			"accepted_with", "--"+allowUnversionedFlag,
 			"fix", "set FLOWSTATE_DEPLOYMENT_NAME and FLOWSTATE_BUILD_ID, or --deployment-name and --build-id")
 	}
 
@@ -1269,17 +1335,17 @@ flow run local examples/approval-gate/workflow.yaml --signal deploy-approved='{"
 		Short: "Start a worker",
 		Long:  "Start a Temporal worker to process workflows and activities. The worker connects to the Temporal server and processes tasks from the specified task queue.",
 		RunE:  runWorker,
-		Example: `# Start a worker with default settings:
-flow worker
+		Example: `# Start a worker, pinned so a deploy does not change runs already in flight:
+flow worker --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"
+
+# Start one against a local dev server, accepting that nothing pins the interpreter:
+flow worker --allow-unversioned-interpreter
 
 # Start a worker with custom Temporal server:
-flow worker --address localhost:7233
+flow worker --address localhost:7233 --deployment-name flowstate --build-id dev-1
 
 # Start a worker with custom namespace:
-flow worker --namespace production
-
-# Start a versioned worker, so a deploy does not change runs already in flight:
-flow worker --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"`,
+flow worker --namespace production --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"`,
 	}
 
 	// These override Temporal's environment configuration when set; unset means
@@ -1310,6 +1376,9 @@ flow server --verbose`,
 			"interpreter version it started on; a run moves to the current version only at continue-as-new")
 	workerCmd.Flags().String("build-id", os.Getenv("FLOWSTATE_BUILD_ID"),
 		"version identifier for this worker's binary, unique per build. Required with --deployment-name")
+	workerCmd.Flags().Bool(allowUnversionedFlag, false,
+		"start without a Worker Deployment version, accepting that deploying a different binary "+
+			"changes what runs already in flight compute; for local development")
 
 	addPluginFlags(workerCmd)
 	addPluginFlags(serverCmd)

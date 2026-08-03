@@ -34,16 +34,29 @@ func TestDeploymentOptionsNeedsBothHalves(t *testing.T) {
 		deployment string
 		buildID    string
 		versioned  bool
+		// wantErr is the half a half-configured worker did not name. Empty means
+		// the pair is coherent — both halves or neither.
+		wantErr string
 	}{
 		{name: "neither"},
-		{name: "only a deployment name", deployment: "flowstate"},
-		{name: "only a build id", buildID: "abc123"},
+		{name: "only a deployment name", deployment: "flowstate", wantErr: "--build-id"},
+		{name: "only a build id", buildID: "abc123", wantErr: "--deployment-name"},
 		{name: "both", deployment: "flowstate", buildID: "abc123", versioned: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			options := engine.DeploymentOptions(test.deployment, test.buildID)
+			options, err := engine.DeploymentOptions(test.deployment, test.buildID)
+
+			// Half a version is refused rather than rounded down to unversioned:
+			// silently dropping the posture an operator configured is the fail-open
+			// this pair rule exists to prevent.
+			if test.wantErr != "" {
+				require.ErrorContains(t, err, test.wantErr)
+				require.Equal(t, worker.DeploymentOptions{}, options)
+				return
+			}
+			require.NoError(t, err)
 
 			require.Equal(t, test.versioned, options.UseVersioning)
 			if !test.versioned {
@@ -298,8 +311,11 @@ func requireRunCompletes(t *testing.T, temporal client.Client, run client.Workfl
 func startVersionedWorker(t *testing.T, temporal client.Client, taskQueue, deployment, buildID string) func() {
 	t.Helper()
 
+	options, err := engine.DeploymentOptions(deployment, buildID)
+	require.NoError(t, err)
+
 	w := worker.New(temporal, taskQueue, worker.Options{
-		DeploymentOptions: engine.DeploymentOptions(deployment, buildID),
+		DeploymentOptions: options,
 	})
 	engine.Register(w)
 	require.NoError(t, w.Start())

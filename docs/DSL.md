@@ -406,50 +406,62 @@ That is a deployment precondition the language is taking a dependency on. It is
 writable down, testable, and fine — but it must be stated, because a silent
 dependency on an optional feature is how an invariant dies quietly.
 
-*Since written:* the feature this depends on now exists. `flow worker
---deployment-name --build-id` pins a run to the interpreter it started on and
-takes the current version at Continue-As-New, and invariant 10 in
-[ARCHITECTURE.md](ARCHITECTURE.md) records what that costs. The precondition is
-therefore checkable rather than hypothetical — but it is still a precondition, and
-the workflow-side evaluation above must refuse to enable itself on a worker that
-has not opted in. A capability that assumes a deployment posture and does not
-verify it is the same defect as one that assumes a bound and does not enforce it.
+### The precondition, and how it is enforced
 
-*Correction, on reading the executor rather than this page:* the precondition is
-already unmet, and has been since before it was written. This section reads as
-though workflow-side evaluation is a proposal to be gated, and only the workflow's
-own `vars:` is actually gated — it is the one thing that goes through an activity.
-Everything else already evaluates CEL inline in workflow code: step conditions, a
-loop's `items:`, a step's own `vars:`, and every task input that does not declare
-`needs_prev_outputs`. The executor holds a `workflow.Context` and calls the
-evaluator directly (`engine/execute.go`).
+The section above reads as though workflow-side evaluation were a proposal still to
+be gated. It is not: **only** the workflow's own `vars:` block goes through an
+activity, and everything else already evaluates CEL inline in workflow code — step
+conditions, a loop's `items:`, a step's own `vars:`, and every task input that does
+not declare `needs_prev_outputs`. The executor holds a `workflow.Context` and calls
+the evaluator directly (`engine/execute.go`). So the precondition is not a condition
+on a future feature. It is a condition on every worker running today.
 
-And Worker Versioning is off unless an operator sets both `--deployment-name` and
-`--build-id`; a worker that has not opted in is unversioned, which is Temporal's
-default. So the deployment posture this section says the language depends on is not
-one the shipped default has, and nothing refuses to run without it.
+Worker Deployment Versioning is opt-in and Temporal's default is unversioned, which
+for a long time meant the shipped default did not meet the precondition and nothing
+said so — `flow worker` warned, and a warning is not a gate. It is a gate now:
 
-That is stated here rather than quietly fixed because the fix is a real decision and
-not an obvious one. Warning at worker start is what `flow worker` does today for the
-*absence* of versioning, and a warning is not a gate. Whichever is chosen, the gap is
-between this page and the code, and the page was the wrong one.
+    # Pinned: a run finishes on the interpreter it started on, and takes the
+    # current version at continue-as-new.
+    flow worker --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"
 
-*A correction, on what gating would actually cost.* This paragraph used to say that
-refusing to start an unversioned worker "would make the self-hosted `temporal server
-start-dev` path (invariant 8) require versioning configuration to run anything at
-all", which named the wrong obstacle and made the option sound blocked.
+    # Unpinned, accepted out loud.
+    flow worker --allow-unversioned-interpreter
 
-Invariant 8 forbids a *cloud* prerequisite — "no cloud dependency and no external
-identity provider" — and Worker Deployment Versioning is not one.
+Without one of those two, `flow worker` refuses to start, and the refusal names both
+of them. Three properties of that gate are deliberate.
+
+**The escape hatch accepts a risk rather than silencing a check.**
+`--allow-unversioned-interpreter` is named for the exposure it takes on, in the same
+spirit as `--allow-insecure-plugin-dir` and `--insecure-no-auth`: a reader of the
+command line can see what was accepted without reading the code that enforced it.
+The worker still warns on every start, because the person reading a worker's logs a
+month later is usually not the person who wrote its command line.
+
+**Half a version is an error, not a fallback.** Setting `--deployment-name` without
+`--build-id` (or the reverse) used to drop silently to unversioned — an operator who
+asked for the guarantee, did not get it, and was not told, which is a fail-open on
+the exact posture this section is about. `engine.DeploymentOptions` now names the
+missing half and the command stops. `--allow-unversioned-interpreter` does not
+rescue it either: half a version is a mistake in a command line, not a posture
+anyone chose.
+
+**Invariant 8 is kept by the flag, not by an exemption.** Invariant 8 forbids a
+*cloud* prerequisite — "no cloud dependency and no external identity provider" — and
+Worker Deployment Versioning is not one:
 `TestAPinnedRunTakesTheCurrentVersionAtContinueAsNew` runs two versioned builds
-against `testsuite.StartDevServer`, which is `temporal server start-dev`, and moves a
-suspended run between them. It is in the passing suite. So versioning demonstrably
-works self-hosted, and requiring it would not put a cloud dependency in anyone's way.
+against `testsuite.StartDevServer`, which *is* `temporal server start-dev`, and moves
+a suspended run between them. So both answers are available on a laptop, and what
+invariant 8 actually rules out is a dead end. The refusal is therefore written as a
+signpost: it says what to type, and typing it is the whole of the fix.
 
-What gating costs is two flags before `flow worker` will start, which is an
-ergonomic price on the shortest path into the project rather than an invariant being
-broken. That is a smaller objection than the one this page was making, and the
-decision should be taken against the real one.
+Detecting the dev server and exempting it was the other candidate, and it was
+rejected for being a guess. A dev server's address is configurable, a production
+cluster can be reached at localhost through a tunnel, and a rule that decides how
+much safety to enforce by pattern-matching a hostname fails open on precisely the
+deployment that most needs it.
+
+Gating is therefore settled. What it does not settle is what an operator who will
+not run versioned workers should get, and that is where the second option lives.
 
 The remaining option — routing every evaluation through an activity — has a cost
 worth having a number for, since "a round trip per condition" is the kind of estimate
