@@ -63,15 +63,24 @@ import (
 // suspending run is a workflow task round trip against a real server.
 const exampleRunTimeout = 3 * time.Minute
 
+// unattendedGateBudget is how long a gate listed in [exampleLapsingGates] may take
+// to lapse.
+//
+// The same number the local harness uses, and for the same reason: an example whose
+// subject is a deadline passing says so in seconds. A day is a lapse in every sense
+// except the one a test can sit through.
+const unattendedGateBudget = 30 * time.Second
+
 // exampleSignals answers the gates an example waits at.
 //
-// A gate is answered from outside the workload, which is the point of it, so an
-// example that waits for a signal cannot run unattended on either driver without a
-// harness supplying the answer. The local harness declines to run them at all
-// (`examples_run_test.go` skips `waitsForASignal`); this one answers them, because
-// a wait is the durable driver's flagship behavior and skipping it here would leave
-// the whole of `approval-gate` — a sleep, a gate, and three conditional branches
-// reading a sender's payload — outside every driver's example coverage.
+// A gate with no deadline is answered from outside the workload, which is the
+// point of it, so an example holding one cannot run unattended on either driver
+// without a harness supplying the answer. The local harness declines to run those
+// (`examples_run_test.go` runs only the gates that lapse on their own); this one
+// answers them, because a wait is the durable driver's flagship behavior and
+// skipping it here would leave the whole of `approval-gate` — a sleep, a gate, and
+// three conditional branches reading a sender's payload — outside every driver's
+// example coverage.
 //
 // The payloads are the ones the examples themselves document, from the `flow signal`
 // line in their own comments, rather than something invented to make an assertion
@@ -89,6 +98,27 @@ var exampleSignals = map[string]map[string]*v1.Node_Outputs{
 			"by":       v1.NewLiteral("someone@example.com"),
 		}},
 	},
+}
+
+// exampleLapsingGates names an example whose gate is meant to go unanswered,
+// against what it demonstrates by lapsing.
+//
+// The second half of [exampleSignals], and it has to be written down for the same
+// reason: an example that waits and is sent nothing is indistinguishable, from
+// here, from an example somebody forgot to add a payload for. One of those is the
+// subject of the file and the other is dropped coverage.
+//
+// So a waiting example must appear in exactly one of the two tables. `wait-timeout`
+// is here because sending it a signal would delete the only thing it shows — the
+// deadline passing, `timed_out` coming back true, and the run carrying on down the
+// branch written for that rather than failing.
+//
+// The claim is checked rather than trusted: [tests.LapsesWithin] asks the compiled
+// workflow whether every gate in it lapses inside [unattendedGateBudget], so an
+// entry here for a file that would block — `approval-gate` lapses after a day — is
+// refused below instead of suspending the suite until its own timeout.
+var exampleLapsingGates = map[string]string{
+	"wait-timeout": "the lapse is the subject: answering the gate would run the other branch",
 }
 
 // exampleDurableSkips names an example this harness genuinely cannot run durably,
@@ -160,6 +190,7 @@ func TestEveryExampleRunsDurably(t *testing.T) {
 		ran      int
 		skipped  []string
 		answered int
+		lapsed   int
 	)
 
 	for _, path := range paths {
@@ -196,10 +227,34 @@ func TestEveryExampleRunsDurably(t *testing.T) {
 
 		signals := exampleSignals[name]
 		if tests.WaitsForASignal(wf.GetSteps()) {
-			require.NotEmpty(t, signals,
-				"%s waits for a signal and exampleSignals has no answer for it; add the payload the "+
-					"example's own `flow signal` line documents, so the gate is exercised rather than skipped", name)
-			answered++
+			_, lapsing := exampleLapsingGates[name]
+
+			switch {
+			case len(signals) > 0:
+				require.False(t, lapsing,
+					"%s is in both tables, so it is unclear whether its gate is meant to be "+
+						"answered or to lapse; it can only demonstrate one of them", name)
+				answered++
+
+			case lapsing:
+				// Checked against the file rather than taken on trust. A gate with no
+				// `timeout:` blocks until the run ends, so an entry claiming a lapse for
+				// one would suspend this example until [exampleRunTimeout] and report a
+				// timeout instead of the mistake.
+				require.True(t, tests.LapsesWithin(wf.GetSteps(), unattendedGateBudget),
+					"%s is listed as lapsing and has a gate this harness cannot sit through: either no "+
+						"`timeout:` at all, which blocks for as long as the run lasts, or one longer "+
+						"than %s", name, unattendedGateBudget)
+				lapsed++
+
+			default:
+				require.Fail(t,
+					"a waiting example is in neither table",
+					"%s waits for a signal and nothing says what should happen to it. Add the payload "+
+						"its own `flow signal` line documents to exampleSignals, or — if going "+
+						"unanswered is the point — name it in exampleLapsingGates with the reason. "+
+						"Either way the gate is exercised rather than skipped", name)
+			}
 		}
 
 		// Every request is pointed at the stand-in before the example runs, on both
@@ -308,6 +363,10 @@ func TestEveryExampleRunsDurably(t *testing.T) {
 	assert.Positive(t, answered,
 		"no example exercised a signal gate durably; `approval-gate` is the one example about "+
 			"waiting, and a corpus that stopped covering it would still be green here")
+	assert.Positive(t, lapsed,
+		"no example exercised a gate that went unanswered durably; `wait-timeout` is the one that "+
+			"does, and it is the half of waiting a corpus loses silently — every other example "+
+			"passes without it")
 
 	t.Cleanup(func() {
 		assert.Empty(t, unserved(), "the examples stand-in was asked for paths it does not serve")
@@ -422,7 +481,14 @@ func runExampleLocally(
 		Step:     auth.StepRef{Workflow: spec.GetName(), Run: "example-run"},
 	})
 
-	if len(signals) > 0 {
+	// A waiter whenever the file waits, and not only when there is something to
+	// deliver. The local driver refuses a run that waits with nothing able to
+	// deliver to it at all ([v1.ErrNoSignalWaiter]) — which is about there being no
+	// channel rather than about nothing arriving on one, and a gate meant to lapse
+	// needs the channel to exist in order to go unanswered on it. Durably the
+	// equivalent is free: a Temporal workflow can always be signalled, so an empty
+	// map there simply means nobody did.
+	if tests.WaitsForASignal(spec.GetSteps()) {
 		waiter := v1.NewLocalSignals()
 		for signal, payload := range signals {
 			// Delivered before the run starts, for the reason the durable side signals

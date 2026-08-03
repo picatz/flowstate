@@ -33,22 +33,23 @@ import (
 // This test does the same, which means exactly one test in this binary may do
 // the global registration. Deliberately not parallel, for the same reason.
 
-const pluginWorkflow = `edition: v2026.2
-name: plugin-reachable
-vars:
-  who: world
-steps:
-  - id: greet
-    example.greet:
-      name: ${vars.who}
-      greeting: Hello
-  - id: report
-    log:
-      message: ${steps.greet.message}
-`
+// The file, and it is a file rather than a string here on purpose.
+//
+// This was a const in this test — a Flowfile written for the test, proving that
+// *a* file can name a plugin task and leaving the corpus in `examples/` with no
+// plugin example in it at all. VISION.md asks each plugin to land "with a worked
+// example verified in CI", and a literal inside a test is not one: nobody copies
+// it, nobody runs it, and it cannot go stale in a way anyone notices.
+//
+// So the bytes now come from [pluginExamplePath], which is what somebody reading
+// examples/ finds. Everything below — the validator accepting it, its inputs being
+// type-checked against a schema this build never compiled, the run reaching the
+// plugin process — is asserted about that file.
 
 func TestAFlowfileCanNameAPluginTask(t *testing.T) {
 	host := exampleHost(t)
+
+	pluginWorkflow := string(readPluginExample(t))
 
 	// The premise. Before registration the task is not a task, and the file below
 	// is a file naming something that does not exist — which is what every author
@@ -139,9 +140,20 @@ func TestAFlowfileCanNameAPluginTask(t *testing.T) {
 		// into a step output a later step read. Asserting on the greeting rather
 		// than on presence: an empty output would satisfy a nil check while
 		// proving the request never arrived.
-		message := outputs.GetStepValues()["greet"].GetNamedValues()["message"]
+		pluginExampleRan.Store(true)
+
+		message := outputs.GetStepValues()["hello"].GetNamedValues()["message"]
 		assert.Equal(t, "Hello, world!", message.GetLiteral().GetStringValue(),
 			"the step ran and did not produce what the plugin computes")
+
+		// And the run's declared outputs, which is the half a step-output check
+		// cannot see: `length` is an integer in a message this build has never
+		// compiled, computed by the plugin and carried back through an `outputs:`
+		// expression. A string would satisfy the assertion above and fail here.
+		values := outputs.GetRunOutputs().GetValues()
+		assert.Equal(t, "Hello, world!", values["greeting"].GetLiteral().GetStringValue())
+		assert.Equal(t, int64(len("Hello, world!")), values["length"].GetLiteral().GetInt64Value(),
+			"the plugin's integer output did not arrive as a number the run could report")
 	})
 }
 

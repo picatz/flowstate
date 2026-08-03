@@ -42,6 +42,14 @@ func TestMain(m *testing.M) {
 
 	code := m.Run()
 	removeBuiltExample()
+
+	// Checked after the suite rather than inside a test, because what it checks is
+	// the absence of a test having run. See [requirePluginExampleRan].
+	if err := requirePluginExampleRan(); err != nil && code == 0 {
+		fmt.Fprintln(os.Stderr, err)
+		code = 1
+	}
+
 	os.Exit(code)
 }
 
