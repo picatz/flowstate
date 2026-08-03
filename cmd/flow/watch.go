@@ -24,25 +24,28 @@ import (
 // what changed; it cannot say "nothing has changed yet" without saying it again; and
 // it cannot stop by itself when the run stops.
 //
-// # What it can actually show, which is less than it should be
+// # What it shows, and where each part comes from
 //
-// Not which step the run is on — and that is this file's gap rather than the
-// server's. `Get` fills Progress and PendingActivities for a running execution
-// (`pkg/flowstate/v1/server/server.go`, the STATUS_RUNNING case), so which step a
-// run is on, and whether an activity is on its fourth attempt and what the last one
-// died of, arrive on every poll. `flow get` already prints both. Nothing here reads
-// either field: absorb folds a response into a status, a run id, and the list of
-// steps that have produced outputs, so a follow currently says less about a run in
-// flight than a single `flow get` does.
+// `Get` fills Progress and PendingActivities for a running execution
+// (`pkg/flowstate/v1/server/server.go`, the STATUS_RUNNING case), so every poll
+// carries where the run is — the top-level step and the path into it — and whether
+// an activity is on its fourth attempt and what the last one died of. Both are
+// folded in by absorb and rendered by both shapes, through the same helpers
+// `flow get` prints them with: [runPosition] and [pendingActivityLines]. A follow
+// therefore says at least what a `flow get` says, continuously.
 //
-// So what a follow reports while a run is going is the status and how long it has
-// been watched, and — the moment the run ends — the steps that produced outputs.
-// That is worth having: the elapsed time is what distinguishes a run that is working
-// from a watch that has frozen, the exit is automatic, and the step list is a summary
-// on the final frame. It is not the live step-by-step this ought to be, and what is
-// missing is the consumption, not the answer: the fields are on the wire and there is
-// a renderer for a position in get.go. Wiring them through absorb is the remaining
-// work, stated here rather than left for somebody to discover.
+// The position is also part of what *changed* means. A run that spends four minutes
+// moving between steps under one status would otherwise be four minutes of a screen
+// nobody can distinguish from a frozen one — and in the line-per-change shape, four
+// minutes of nothing printed at all. Status, run id, position, retry state and the
+// steps that have produced outputs are each grounds for telling a reader something.
+//
+// What the position is not is a percentage. It is the step a run is on, because that
+// is the fact the workflow can answer for itself; a run does not know how many steps
+// remain any more than a program knows how many statements it has left. The elapsed
+// time is the other half of the same job, and it belongs to the watch rather than to
+// the run: it is what distinguishes a run that is working from a watch that has
+// frozen even when nothing else on screen moves.
 //
 // # It must not become the only way to watch
 //
@@ -452,6 +455,29 @@ type watchState struct {
 	// steps are the ids of steps that have produced outputs, sorted.
 	steps []string
 
+	// position is where the run has got to, as bare text: the top-level step and
+	// the path into it, joined by [positionPath]. Empty where the server answered
+	// nothing, which is not the same as the beginning — see [runPosition].
+	position string
+
+	// pending is what Temporal is retrying, already rendered.
+	//
+	// Rendered at absorb time rather than at draw time because one of the sentences
+	// carries a countdown, and the moment to measure it against is the moment the
+	// answer was observed rather than whichever redraw happens to display it. A
+	// live view repaints on a resize, and a countdown that ticked on a keystroke
+	// would be reporting the terminal rather than the run.
+	pending []string
+
+	// pendingKeys is the part of pending that means something has changed: the
+	// attempt count and the last failure, one string per activity.
+	//
+	// Deliberately not the countdown. It falls by whatever the interval is on every
+	// poll, so keying change detection on the rendered line would make every poll a
+	// change — one line per second in the plain shape, which is the `flow get` loop
+	// this command exists to replace.
+	pendingKeys []string
+
 	// failure is a failed run's message, empty until there is one.
 	failure string
 
@@ -534,6 +560,8 @@ func (s *watchState) absorb(at time.Time, response *v1.GetResponse, err error) w
 	s.outageSince, s.lastError = time.Time{}, nil
 
 	steps := completedSteps(response)
+	position := positionPath(response.GetProgress())
+	pendingKeys := pendingActivityKeys(response.GetPendingActivities())
 
 	// No separate "is this the first answer" flag, and the reason is the guard above
 	// rather than an oversight: the zero value of status is UNSPECIFIED, and an
@@ -541,15 +569,26 @@ func (s *watchState) absorb(at time.Time, response *v1.GetResponse, err error) w
 	// always has a status differing from the one held. A flag saying the same thing
 	// would be a field whose value can never change the outcome — which is a thing
 	// that reads as load-bearing and is not, and which no test can hold honest.
+	//
+	// Position and retry state are grounds on their own, because most of a run's
+	// interesting movement happens under one unchanging status: a run that reaches
+	// its third step, or an activity that fails and is scheduled again, has changed
+	// in the only sense a reader cares about. Without them the "nothing has changed
+	// yet" rule suppresses exactly the news this command exists to deliver.
 	changed := recovered ||
 		s.status != response.GetStatus() ||
 		s.runID != response.GetRunId() ||
+		s.position != position ||
+		!slices.Equal(s.pendingKeys, pendingKeys) ||
 		!slices.Equal(s.steps, steps)
 
 	s.response = response
 	s.runID = response.GetRunId()
 	s.status = response.GetStatus()
 	s.steps = steps
+	s.position = position
+	s.pending = pendingActivityLines(response.GetPendingActivities(), at)
+	s.pendingKeys = pendingKeys
 	if failure := response.GetError(); failure != nil {
 		s.failure = failure.GetMessage()
 	}
@@ -606,8 +645,18 @@ func (s *watchState) line(theme ui.Theme) string {
 		return fmt.Sprintf("%s %s", theme.Pill(ui.ToneWarning, "unreachable"), s.lastError)
 	}
 
-	line := fmt.Sprintf("%s workflow %s run %s",
-		theme.Pill(statusTone(s.status), statusLabel(s.status)), s.workflowID, s.runID)
+	// The same status-then-position sentence `flow get` writes, through the same
+	// renderer: one line about a run in flight, so a CI log and a person asking once
+	// are reading the same words about the same thing.
+	line := fmt.Sprintf("%s workflow %s run %s%s",
+		theme.Pill(statusTone(s.status), statusLabel(s.status)), s.workflowID, s.runID,
+		runPosition(theme, s.response.GetProgress()))
+
+	// Why it is where it is, on the same line, because this shape's whole discipline
+	// is one line per change and a retry is part of one change rather than another.
+	for _, pending := range s.pending {
+		line += fmt.Sprintf(" (%s)", pending)
+	}
 
 	if len(s.steps) > 0 {
 		line += fmt.Sprintf(" after %s", strings.Join(s.steps, ", "))
@@ -617,6 +666,23 @@ func (s *watchState) line(theme ui.Theme) string {
 	}
 
 	return line
+}
+
+// pendingActivityKeys reduces the retries to what a reader would call news.
+//
+// The attempt count and the last failure, and nothing else — see [watchState] for
+// why the countdown is left out of this and kept in the rendered line.
+func pendingActivityKeys(pending []*v1.PendingActivity) []string {
+	if len(pending) == 0 {
+		return nil
+	}
+
+	keys := make([]string, 0, len(pending))
+	for _, activity := range pending {
+		keys = append(keys, fmt.Sprintf("%d\x00%s", activity.GetAttempt(), activity.GetLastFailure()))
+	}
+
+	return keys
 }
 
 // terminalStatus reports whether a run has stopped moving.

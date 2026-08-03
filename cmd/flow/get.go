@@ -93,16 +93,11 @@ func runGet(cmd *cobra.Command, args []string) error {
 	// this says an attempt count is climbing and what the last one died of,
 	// which is the difference between "working" and "stuck" — the question that
 	// used to require leaving Flowstate for the temporal CLI.
-	for _, pending := range msg.GetPendingActivities() {
-		line := fmt.Sprintf("retrying, attempt %d", pending.GetAttempt())
-		if failure := pending.GetLastFailure(); failure != "" {
-			line += ": " + failure
-		}
-		if next := pending.GetNextAttemptScheduledTime(); next != nil {
-			if wait := time.Until(next.AsTime()); wait > 0 {
-				line += fmt.Sprintf(" (next attempt in %s)", wait.Round(time.Second))
-			}
-		}
+	//
+	// The same sentence `flow watch` shows, from the same function: a person who
+	// asks once and a person who watches are reading about one run, and two
+	// renderers for it would eventually describe it two ways.
+	for _, line := range pendingActivityLines(msg.GetPendingActivities(), time.Now()) {
 		fmt.Fprintf(surface.Err, "  %s\n", surface.ErrTheme.Muted.Render(line))
 	}
 
@@ -196,6 +191,26 @@ func statusLabel(status v1.RunResponse_Status) string {
 // beside a status and the whole value of it is being readable at a glance —
 // `on deploy > each > upload` says the shape without spending three lines on it.
 func runPosition(theme ui.Theme, progress *v1.RunProgress) string {
+	position := positionPath(progress)
+	if position == "" {
+		return ""
+	}
+
+	return theme.Muted.Render(" on " + position)
+}
+
+// positionPath is the position as bare text, with no styling and no sentence
+// around it.
+//
+// Split out because two surfaces want the same value in different frames: `flow get`
+// and the line-per-change shape of `flow watch` append it to a status line, which is
+// what [runPosition] renders; the live view puts it on a line of its own, and it is
+// also what that view compares against to decide a run has moved. Joining the path
+// twice is how the two would come to disagree about a run inside a loop.
+//
+// Empty where the server said nothing, which is not the same as the beginning — see
+// [runPosition].
+func positionPath(progress *v1.RunProgress) string {
 	if progress.GetStepId() == "" {
 		return ""
 	}
@@ -205,5 +220,33 @@ func runPosition(theme ui.Theme, progress *v1.RunProgress) string {
 		position += " > " + step
 	}
 
-	return theme.Muted.Render(" on " + position)
+	return position
+}
+
+// pendingActivityLines renders what Temporal is retrying, one sentence each.
+//
+// now is supplied rather than read, because the countdown is measured against
+// *some* moment: `flow get` reads the clock as it prints, and a watch uses the time
+// the answer was observed — which is what makes the line a fact about the poll
+// rather than about when it happened to be rendered.
+func pendingActivityLines(pending []*v1.PendingActivity, now time.Time) []string {
+	if len(pending) == 0 {
+		return nil
+	}
+
+	lines := make([]string, 0, len(pending))
+	for _, activity := range pending {
+		line := fmt.Sprintf("retrying, attempt %d", activity.GetAttempt())
+		if failure := activity.GetLastFailure(); failure != "" {
+			line += ": " + failure
+		}
+		if next := activity.GetNextAttemptScheduledTime(); next != nil {
+			if wait := next.AsTime().Sub(now); wait > 0 {
+				line += fmt.Sprintf(" (next attempt in %s)", wait.Round(time.Second))
+			}
+		}
+		lines = append(lines, line)
+	}
+
+	return lines
 }

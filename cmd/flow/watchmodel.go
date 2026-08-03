@@ -23,9 +23,13 @@ import (
 // difference between a run that is working and a watch that has frozen. A still
 // screen with a number moving on it is legible; a still screen is not.
 //
-// That elapsed number is carrying more weight than it looks like it is, because the
-// server reports no step progress while a run is going — see the package comment in
-// watch.go. For most of a run this view is a status, a run id, and that number.
+// What it draws while a run is going is where the run is — the step, and the path
+// into it — beside what Temporal is retrying and how long this has been watched. The
+// first two come from the server on every poll and are folded in by absorb; see the
+// package comment in watch.go. The elapsed number is the one thing here the run does
+// not supply, and it earns its line on the frames where nothing else moves: a still
+// screen with a number climbing on it is a run on a long step, and a still screen is
+// a program that may have died.
 //
 // What it deliberately does not do is own the outcome. The model reaches a terminal
 // status and quits; the exit code, the outputs, and the failure message are all
@@ -277,7 +281,25 @@ func (m watchModel) View() tea.View {
 		fmt.Fprintf(&b, "%s\n", theme.Muted.Render("run "+state.runID))
 	}
 
+	// Where the run is, on a line of its own rather than beside the id.
+	//
+	// Beside it, a workflow id long enough to fill the terminal would take the
+	// position off the screen with it — and the position is the line that moves,
+	// which makes it the one the eye is here for. Built from the same joined path
+	// `flow get` prints, so a loop reads `deploy > each > upload` on both.
+	if state.position != "" {
+		fmt.Fprintf(&b, "%s\n", theme.Muted.Render("on "+state.position))
+	}
+
 	fmt.Fprintf(&b, "%s\n", theme.Muted.Render(m.elapsedLine()))
+
+	// Why a run that is not moving is not moving. An attempt count climbing under an
+	// unchanging RUNNING is the signature of stuck rather than slow, and it is marked
+	// as a warning because that is what it is: the run is still going, and something
+	// in it keeps failing.
+	for _, pending := range state.pending {
+		fmt.Fprintf(&b, "%s\n", m.note(theme.Warning, symbols.Warning, pending))
+	}
 
 	if lines := m.stepLines(theme, symbols); lines != "" {
 		fmt.Fprintf(&b, "\n%s\n", lines)
@@ -361,8 +383,13 @@ func (m watchModel) elapsedLine() string {
 	return fmt.Sprintf("watching for %s", m.latest.Sub(m.first).Round(time.Second))
 }
 
-// visibleSteps is how many step lines fit, given the terminal's height and the
-// eight-ish lines the rest of the view occupies.
+// visibleSteps is how many step lines fit, given the terminal's height and what the
+// rest of the view occupies.
+//
+// The chrome is eight-ish lines plus whatever the run itself added above the list —
+// the position, and a sentence per activity being retried. Counted rather than
+// assumed, because those lines appear exactly when a run is in trouble, which is when
+// the screen is most worth reading.
 //
 // A floor of three rather than zero: a terminal too short to show the list is
 // better served by a short list that scrolls the header off than by a view that
@@ -372,7 +399,12 @@ func (m watchModel) visibleSteps() int {
 		return maxVisibleSteps
 	}
 
-	return max(3, min(maxVisibleSteps, m.height-8))
+	above := 8 + len(m.state.pending)
+	if m.state.position != "" {
+		above++
+	}
+
+	return max(3, min(maxVisibleSteps, m.height-above))
 }
 
 // maxVisibleSteps caps the list on a terminal tall enough not to need capping.
@@ -384,10 +416,11 @@ const maxVisibleSteps = 12
 
 // stepLines renders the steps that have produced outputs.
 //
-// Which, today, means it renders on the final frame and not before: the server sends
-// outputs only once the run has finished, so this is a summary rather than progress.
-// It is written as progress because that is what it becomes the day the server can
-// answer a running execution, and because a summary is the degenerate case of one.
+// A summary rather than progress, and deliberately so now that there is progress
+// above it: outputs arrive with the run's result, so this list fills in on the final
+// frame while the position line is what moves during the run. Two different facts —
+// where the run is, and what it produced — which is why they are two blocks rather
+// than one list that means different things at different times.
 //
 // The tail rather than the head, because the useful question is what just finished.
 // When the list is cut, the number cut is *stated*: a list that silently shows a

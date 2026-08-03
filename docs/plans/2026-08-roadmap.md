@@ -20,15 +20,15 @@ agreement, nested secret references via `Value.Structure`); D1–D3 (client-side
 traces with flush on every exit path, the Temporal tracing interceptor and
 activity spans with containment tests, the observability lab); E1–E5 (LSP code
 actions and formatting, `flow fmt`, `flow compile` was NOT shipped — see
-deferred — `flow lsp --plugin-dir` was NOT shipped — see deferred, TUI progress
-consumption was NOT shipped — see deferred); F1–F3 (`flowstate_run_local`,
+deferred — `flow lsp --plugin-dir` was NOT shipped — see deferred, TUI live
+progress consumption shipped after the week, see E5); F1–F3 (`flowstate_run_local`,
 resources, client docs); three new fuzz targets; the runage clock-injection
 flake fix.
 
 **Deferred, with owners' notes in the ledger**: `flow compile` verb (E3), `flow
-lsp --plugin-dir` (E4), TUI live-progress consumption (E5) — squeezed out by the
-wave that shipped code actions and fmt; they are small, unblocked, and first in
-line next week. Schedules (the stretch) did not start. Everything in "Explicitly
+lsp --plugin-dir` (E4) — squeezed out by the wave that shipped code actions and
+fmt; they are small, unblocked, and first in line next week. TUI live-progress
+consumption (E5) was on that list and has since landed; see E5 below. Schedules (the stretch) did not start. Everything in "Explicitly
 NOT this week" stayed not-this-week; written issues for the deferral list are
 still owed. Also owed from handoffs: collapsing `renderLiteral` onto an exported
 value-to-native conversion, and per-phase compile-span attributes if anyone
@@ -132,7 +132,7 @@ DSL.md's own Phase 2. Today runs can't be parameterized (`RunRequest` carries on
 2. **`flow fmt`** exposing `flowfile.Marshal` (+ `--check`); LSP formatting (opt-in — Marshal rewrites whole documents).
 3. **`flow compile`** verb (RPC exists; currently MCP-only).
 4. **`flow lsp --plugin-dir`** (command takes zero flags today): opt-in plugin awareness at startup, never on keystroke, so editor/validator/worker agree when asked.
-5. **TUI live progress**: make `watchState.absorb` (watch.go:516) consume `Progress`/`PendingActivities` — the server already answers; renderer already written. Integration test against real server responses (test the join, per the List lesson).
+5. ~~**TUI live progress**~~ — **shipped**: `watchState.absorb` folds `Progress` and `PendingActivities` in, a position change counts as a change in both shapes, and both render through the helpers `flow get` uses (`runPosition`, `pendingActivityLines`) so the two surfaces cannot drift. The join is covered by `TestWatchFollowsARealRunningExecution`, which watches a genuinely running execution through the real server and asserts it is observed moving between steps — dev-server-gated behind `-short` like the rest.
 
 ## Workstream F — MCP (close the agent loop)
 1. **`flowstate_run_local` tool**: compile → execute via the local driver in-process → structured result; agents can author *and verify* with no server/Temporal. Same fail-closed egress/secret posture and opt-ins as `flow run local`; it *is* the local driver (invariant 3).

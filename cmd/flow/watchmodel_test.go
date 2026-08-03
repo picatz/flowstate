@@ -74,20 +74,34 @@ func viewOf(model watchModel) string {
 // become true in order, and the reader only moves forwards.
 func TestWatchViewShowsProgressAsItArrives(t *testing.T) {
 	surface, _, _ := terminalSurface(80, 24, colorprofile.NoTTY)
-	poller := &scriptedPoller{answers: []pollAnswer{
-		runningPoll(),
-		runningPoll("checkout"),
-		runningPoll("build", "checkout"),
-		finishedPoll("build", "checkout", "deploy"),
-	}}
+	// The run is held one answer short of finishing until the test has seen a frame
+	// drawn while it was still going. Ordering then follows from causation rather
+	// than from how fast the machine happened to be: see scriptedPoller.holdFrom.
+	release := make(chan struct{})
+	poller := &scriptedPoller{
+		answers: []pollAnswer{
+			runningPoll(),
+			runningPoll("checkout"),
+			runningPoll("build", "checkout"),
+			finishedPoll("build", "checkout", "deploy"),
+		},
+		holdFrom: 3,
+		release:  release,
+	}
 
-	// Slower than the poll loop needs to be, so each answer gets a frame of its own:
-	// bubbletea coalesces redraws, and at a millisecond a run this short reaches its
-	// end inside one frame — which would leave the progression untestable rather than
-	// absent.
 	tm := teatest.NewTestModel(t,
-		newWatchModel(t.Context(), surface, poller, 20*time.Millisecond, "flowstate-workflow-3f7c", nil),
+		newWatchModel(t.Context(), surface, poller, 5*time.Millisecond, "flowstate-workflow-3f7c", nil),
 		teatest.WithInitialTermSize(80, 24))
+
+	// Released on a timer rather than on the output, because reading tm.Output()
+	// consumes what tm.FinalOutput() would otherwise return — the same reason the
+	// assertion below reads everything once at the end.
+	//
+	// It is still a clock, but with two orders of magnitude of margin instead of
+	// none: the first three answers are served in about fifteen milliseconds and
+	// the terminal one cannot arrive for two hundred, so "a frame was drawn while
+	// the run was going" no longer depends on the scheduler being kind.
+	time.AfterFunc(200*time.Millisecond, func() { close(release) })
 
 	// No key is pressed: a run reaching a terminal status has to stop the program by
 	// itself, or `flow watch` in a CI job never returns. The timeout is what
@@ -100,28 +114,103 @@ func TestWatchViewShowsProgressAsItArrives(t *testing.T) {
 	// satisfies the first wait and is gone before the second looks.
 	drawn := readAll(t, tm.FinalOutput(t))
 
-	// Ordering rather than presence, which is the whole claim. A final screen saying
-	// COMPLETED with three steps on it is also what a watch that drew nothing until
-	// the run finished produces — a `flow get` with extra machinery.
+	// One ordering claim, and only the one the gate above makes causal: a step name
+	// drawn before the terminal status can only have come from a frame drawn while
+	// the run was still going, which is the difference between a watch and a
+	// `flow get` with extra machinery.
 	//
-	// "checkout" before "COMPLETED" is what rules that out, and it is worth being
-	// precise about why: within any one frame the status is drawn *above* the step
-	// list, so a step name preceding the terminal status can only have come from an
-	// earlier frame — one drawn while the run was still going. "deploy" then comes
-	// after, because it finished in the same answer that finished the run.
-	requireInOrder(t, drawn,
-		"flowstate-workflow-3f7c",
-		"RUNNING",
-		"checkout",
-		"COMPLETED",
-		"deploy",
-	)
+	// Everything else is asserted by presence. Ordering *within* a frame is not a
+	// property worth pinning — a terminal is repainted differentially, so whether
+	// the run id reaches the stream before the status on its own line is a fact
+	// about the renderer's diff, and a test that pins it fails on a loaded machine
+	// while passing on a quiet one.
+	requireInOrder(t, drawn, "checkout", "COMPLETED")
+
+	for _, want := range []string{"flowstate-workflow-3f7c", "RUNNING", "deploy"} {
+		require.Contains(t, drawn, want, "%q never reached the screen", want)
+	}
+
 	require.Contains(t, drawn, "q stops watching")
 
 	final, ok := tm.FinalModel(t).(watchModel)
 	require.True(t, ok)
 	require.Equal(t, v1.RunResponse_STATUS_COMPLETED, final.state.status)
 	require.False(t, final.quit, "the run finishing was recorded as the person quitting")
+}
+
+// TestWatchViewShowsThePositionAdvancing is the same claim as the test above, made
+// about the thing a run actually does while nothing else changes.
+//
+// Each state is folded and its screen asserted, rather than scraping the frames a
+// program happened to emit. A terminal is repainted differentially and bubbletea
+// coalesces redraws under load, so "did this text appear in the byte stream, after
+// that text" is a question about scheduling rather than about the view — it passed
+// on a quiet machine and failed on a loaded CI runner, which is the definition of a
+// test measuring the wrong thing. What matters is that each answer produces a screen
+// naming where the run is, and that the screen changes as the run moves; that is
+// asserted here directly, per state.
+//
+// The live program is covered where it belongs: TestWatchViewShowsProgressAsItArrives
+// drives the real poll loop, and TestWatchFollowsARealRunningExecution drives it
+// against a real server.
+func TestWatchViewShowsThePositionAdvancing(t *testing.T) {
+	surface, _, _ := terminalSurface(80, 24, colorprofile.NoTTY)
+	model := newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second, "flowstate-workflow-3f7c", nil)
+	model = fold(t, model, tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	for _, step := range []struct {
+		answer pollAnswer
+		want   string
+		why    string
+	}{
+		{runningAt("checkout"), "on checkout", "the first step the run reported was not named"},
+		{runningAt("build"), "on build", "the position did not move with the run"},
+		// The path into the step, so two iterations of one loop do not read alike.
+		{runningAt("deploy", "each", "upload"), "on deploy > each > upload",
+			"the path into the step was dropped, so a loop's iterations are indistinguishable"},
+	} {
+		model = fold(t, model, watchStateMsg{at: observed, response: step.answer.response})
+
+		drawn := viewOf(model)
+		require.Contains(t, drawn, step.want, step.why)
+
+		// And the position it replaced is gone: a screen accumulating every step
+		// it has ever been on is a log, not a position.
+		require.Equal(t, 1, strings.Count(drawn, "on "),
+			"more than one position on screen at once:\n%s", drawn)
+	}
+
+	finished := fold(t, model, watchStateMsg{at: observed, response: finishedPoll("checkout", "build", "deploy").response})
+	require.Contains(t, viewOf(finished), "COMPLETED", "the run ended and the view did not say so")
+}
+
+// TestWatchViewShowsWhatIsBeingRetried is the difference between "working" and
+// "stuck", on the surface somebody stares at while wondering which one they have.
+//
+// The attempt count and the last failure both, because either alone leaves the
+// question open: a count says something is wrong and not what, and a message with no
+// count reads as one bad moment rather than as a step that cannot get past it.
+func TestWatchViewShowsWhatIsBeingRetried(t *testing.T) {
+	surface, _, _ := terminalSurface(80, 24, colorprofile.NoTTY)
+	model := newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second, "flowstate-workflow-3f7c", nil)
+
+	folded := fold(t, model,
+		tea.WindowSizeMsg{Width: 80, Height: 24},
+		watchStateMsg{at: observed, response: retryingAt("deploy", 4, "connection refused").response},
+	)
+
+	drawn := viewOf(folded)
+	require.Contains(t, drawn, "on deploy", "the step being retried was not named")
+	require.Contains(t, drawn, "attempt 4",
+		"an attempt count climbing under an unchanging RUNNING was left off the screen")
+	require.Contains(t, drawn, "connection refused",
+		"the reason the step keeps failing was left off the screen")
+
+	// And it goes away when the run stops retrying, rather than persisting as a
+	// warning about something that has already recovered.
+	recovered := fold(t, folded, watchStateMsg{at: observed, response: runningAt("deploy").response})
+	require.NotContains(t, viewOf(recovered), "attempt 4",
+		"a retry that had recovered was still on screen")
 }
 
 // requireInOrder asserts that each string first appears after the one before it.
