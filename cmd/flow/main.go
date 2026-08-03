@@ -1593,6 +1593,11 @@ flow run local examples/approval-gate/workflow.yaml --signal deploy-approved='{"
 	// without an address — the way `get` and `signal` were first written.
 	lifecycleCmds := lifecycleCommands()
 	watchCmd := newWatchCommand()
+
+	// The schedule verbs add their own server flags to each sub-command, because
+	// they are one level down and a flag on the group would not reach them.
+	scheduleCmd := newScheduleCommand()
+
 	serverCmds := append([]*cobra.Command{runCmd, getCmd, signalCmd, watchCmd}, lifecycleCmds...)
 
 	for _, c := range serverCmds {
@@ -1746,6 +1751,7 @@ flow lsp --plugin-dir ./plugins`,
 	getCmd.GroupID = "workflow"
 	watchCmd.GroupID = "workflow"
 	signalCmd.GroupID = "workflow"
+	scheduleCmd.GroupID = "workflow"
 	for _, c := range lifecycleCmds {
 		c.GroupID = "workflow"
 	}
@@ -1782,6 +1788,7 @@ flow lsp --plugin-dir ./plugins`,
 	rootCmd.AddCommand(getCmd)
 	rootCmd.AddCommand(watchCmd)
 	rootCmd.AddCommand(signalCmd)
+	rootCmd.AddCommand(scheduleCmd)
 	for _, c := range lifecycleCmds {
 		rootCmd.AddCommand(c)
 	}

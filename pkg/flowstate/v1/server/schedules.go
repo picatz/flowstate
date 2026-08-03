@@ -1,0 +1,639 @@
+package server
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"connectrpc.com/connect"
+	common "go.temporal.io/api/common/v1"
+	enums "go.temporal.io/api/enums/v1"
+	"go.temporal.io/api/serviceerror"
+	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
+	// Aliased because the local name `temporal` is taken throughout this file by
+	// the Temporal *client* a tenant's schedules live on, and shadowing the package
+	// with the client is how a sentinel comparison silently stops compiling.
+	sdk "go.temporal.io/sdk/temporal"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
+)
+
+// A schedule belongs to a tenant twice over, and both are load-bearing.
+//
+// **The id encodes it.** A schedule carries a name somebody chose, and a name
+// somebody chose collides: two teams sharing a Temporal namespace will both want
+// `nightly-report`, and one of them would be told the name was taken — which
+// denies them a name *and* discloses that the other team exists. So the Temporal
+// schedule id is derived from the tenant and the name together, and a caller
+// cannot express an id for a tenant that is not theirs, because the tenant half
+// comes from their authenticated identity and never from the request.
+//
+// **The memo records it.** Exactly as [FlowstateServer.Run] records the tenant on
+// a run, Create records it on the schedule, and every later request reads it back
+// and refuses a mismatch. That is what [ownedBy] already answers for runs, asked
+// here unchanged.
+//
+// Both, and not one, because they fail differently. The id derivation is what
+// makes another tenant's schedule *unaddressable* — the id a caller's request
+// resolves to simply is not the one that exists. The memo is what still holds if
+// the derivation ever changes, if a schedule is created by something other than
+// this code path, or if a deployment maps several Flowstate namespaces onto one
+// Temporal namespace. A boundary with one implementation is a boundary one
+// refactor from being decorative.
+//
+// # The separator is unambiguous, which is not automatic
+//
+// This repository has already been bitten by a namespaced key that could be read
+// two ways: the env secret provider derived `prefix + NAMESPACE + "_" + name`, and
+// because every character legal in a namespace was legal in a name, tenant
+// `team-a`'s secret was readable by two other tenants. So the encoding here is
+// checked rather than assumed.
+//
+// A Flowstate namespace is lowercase letters, digits and dashes
+// (`secrets.ValidateNamespace`), and may not contain an underscore. A schedule
+// name may. So splitting at the *first* underscore after the fixed prefix
+// recovers exactly the pair that was written, whatever either half contains — the
+// namespace cannot reach across the separator and a name cannot forge one, and
+// the empty namespace of an untenanted deployment produces a leading separator no
+// non-empty namespace can produce. TestScheduleIDsAreUnambiguous holds that.
+
+// schedulePrefix is what marks a Temporal schedule as one of Flowstate's.
+//
+// Present so a listing can tell this engine's schedules from anything else
+// sharing the namespace, which is the same reason `List` scopes its query to this
+// engine's workflow type: a Temporal namespace is not necessarily Flowstate's
+// alone, and every id a listing returns is a live argument to `flow schedule
+// delete`.
+const schedulePrefix = "flowstate-schedule-"
+
+// scheduleIDFor is the Temporal schedule id a tenant's schedule name maps to.
+func scheduleIDFor(namespace, name string) string {
+	return schedulePrefix + namespace + "_" + name
+}
+
+// scheduleNameFrom recovers the schedule name from a Temporal id, for the caller's
+// tenant, and reports false for an id that is not this tenant's Flowstate schedule.
+//
+// Fail closed on anything unexpected: an id without the prefix belongs to another
+// application, and an id whose namespace half is not the caller's belongs to
+// another tenant. Neither is named back to the caller.
+func scheduleNameFrom(id, namespace string) (string, bool) {
+	rest, ok := strings.CutPrefix(id, schedulePrefix)
+	if !ok {
+		return "", false
+	}
+
+	owner, name, separated := strings.Cut(rest, "_")
+	if !separated || owner != namespace || name == "" {
+		return "", false
+	}
+
+	return name, true
+}
+
+// CreateSchedule arranges for a workflow to run on a cadence.
+//
+// The refusals are `Run`'s, deliberately and in the same order, because a schedule
+// is a run somebody arranged in advance and every reason to refuse one now is a
+// reason to refuse it at three in the morning — with nobody there to read it. The
+// only addition is the cadence itself, which `Run` has no opinion about.
+func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Request[v1.CreateScheduleRequest]) (*connect.Response[v1.CreateScheduleResponse], error) {
+	if err := v1.Validate(req.Msg); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	workflow := req.Msg.GetWorkflow()
+
+	if s.credentialTargetsConfigured {
+		if err := v1.ValidateCredentialTargets(workflow, s.credentialTargets); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+	}
+
+	if err := v1.CheckSpecSize(workflow); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	// The cadence. A schedule with none is one Temporal creates happily and never
+	// fires — the silent success that is worse than a refusal, since the only
+	// evidence of it is a report nobody receives.
+	trigger := workflow.GetTriggers().GetSchedule()
+	if err := v1.CheckScheduleTrigger(trigger); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf(
+			"workflow %q cannot be scheduled: %w", workflow.GetName(), err))
+	}
+
+	// Bound here, once, through the very function `Run` and `flow run local` bind
+	// with. Every firing then starts from the checked and defaulted map rather than
+	// re-deriving it, so a declaration edited after this does not change what a
+	// schedule already created passes — the same rule `RunState.inputs` follows
+	// across a Continue-As-New, for the same reason.
+	inputs, err := v1.BindRunInputs(workflow, req.Msg.GetInputs())
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	if err := v1.CheckSubmissionSize(workflow, inputs); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	// Captured now, while the authenticated caller is still in scope, and then
+	// frozen: every firing for the life of this schedule acts as whoever created
+	// it. That is the honest reading of what a schedule is — a standing instruction
+	// left by a person — and the alternative has no answer, since at 03:00 there is
+	// no caller to derive an identity from. It is also why deleting a schedule
+	// matters when somebody leaves.
+	identity := s.identityFor(ctx)
+	namespace := identity.GetNamespace()
+
+	name := v1.ScheduleNameFor(req.Msg.GetName(), workflow)
+	if name == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New(
+			"the schedule has no name and the workflow has none to borrow; pass a name"))
+	}
+
+	temporal, err := s.clientFor(namespace)
+	if err != nil {
+		return nil, err
+	}
+
+	spec, err := scheduleSpecOf(trigger)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	_, err = temporal.ScheduleClient().Create(ctx, client.ScheduleOptions{
+		ID:      scheduleIDFor(namespace, name),
+		Spec:    spec,
+		Overlap: overlapOf(trigger.GetOverlap()),
+		Paused:  req.Msg.GetPaused(),
+
+		// The tenant, recorded the same way and under the same key a run records
+		// it, so [ownedBy] answers for a schedule without a second implementation
+		// of what ownership means.
+		Memo: map[string]any{
+			namespaceMemoKey: namespace,
+		},
+
+		Action: &client.ScheduleWorkflowAction{
+			// A readable id rather than a uuid, because unlike a run this workload
+			// has a name in advance: every firing is `<schedule>`, and Temporal
+			// appends the scheduled time to keep them distinct. An operator reading
+			// `flow list` can then see which schedule a run came from without asking
+			// anything else.
+			ID:        schedulePrefix + name,
+			Workflow:  engine.Run,
+			TaskQueue: engine.RunTaskQueueName,
+
+			WorkflowExecutionTimeout: s.executionTimeout,
+
+			// Everything a submitted run carries, so a scheduled run is
+			// indistinguishable from one somebody started — which is the point. It
+			// is authorized by the same memo, listed by the same scan, and scheduled
+			// under the same tenant's fairness key, so a schedule firing every
+			// minute cannot crowd out another tenant's work.
+			Memo: map[string]any{
+				namespaceMemoKey: namespace,
+			},
+			Priority: fairnessFor(namespace),
+
+			Args: []any{&v1.RunState{
+				Workflow:    workflow,
+				StepsBudget: int32(s.maxStepsPerRun),
+				Identity:    identity,
+				Inputs:      inputs,
+			}},
+		},
+	})
+	if err != nil {
+		// Matched on the SDK's own sentinel rather than on a service error type: the
+		// schedule client already classifies this one, translating Temporal's
+		// `WorkflowExecutionAlreadyStarted` into `ErrScheduleAlreadyRunning`, so the
+		// transport-level type never reaches here. Matching what does not arrive is
+		// how a clear refusal turns back into a 500.
+		if errors.Is(err, sdk.ErrScheduleAlreadyRunning) {
+			// Named plainly, because within a tenant this is the caller's own
+			// schedule and telling them about it is not disclosure — the id
+			// derivation is what stops the same answer describing somebody else's.
+			return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf(
+				"a schedule called %q already exists; delete it, or create this one under another name with --name", name))
+		}
+
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("creating schedule %q: %w", name, err))
+	}
+
+	// Described rather than merely confirmed, so the answer carries the next firing
+	// times. A cadence meaning something other than what was intended is almost
+	// always visible in the first two of those and almost never visible in the
+	// expression, which is exactly why a caller should not have to ask twice.
+	description, err := s.describeSchedule(ctx, temporal, namespace, name)
+	if err != nil {
+		return nil, err
+	}
+
+	return connect.NewResponse(&v1.CreateScheduleResponse{Schedule: description}), nil
+}
+
+// maxScheduleScan bounds how many schedules one listing may read.
+//
+// A bound is needed for the reason `List`'s is: the tenant is a memo, Temporal
+// cannot filter on one, and so the number examined is not the number returned — in
+// a namespace shared by several tenants, finding none of yours can mean reading all
+// of theirs. What is different is the scale. Schedules are created one at a time by
+// people, so this number is chosen to be past any real deployment rather than to be
+// a page: reaching it means something has gone wrong, and the listing says so
+// instead of presenting part of an answer as the whole of it.
+const maxScheduleScan = 10_000
+
+// ListSchedules returns the schedules belonging to the caller's tenant.
+func (s *FlowstateServer) ListSchedules(ctx context.Context, req *connect.Request[v1.ListSchedulesRequest]) (*connect.Response[v1.ListSchedulesResponse], error) {
+	if err := v1.Validate(req.Msg); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	namespace := s.identityFor(ctx).GetNamespace()
+
+	// The caller's namespace decides which Temporal namespace is listed at all,
+	// exactly as it decides which schedules are addressable. Where a deployment maps
+	// namespaces, another tenant's schedules are not filtered out here — they were
+	// never in the listing.
+	temporal, err := s.clientFor(namespace)
+	if err != nil {
+		return nil, err
+	}
+
+	iterator, err := temporal.ScheduleClient().List(ctx, client.ScheduleListOptions{})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("listing schedules: %w", err))
+	}
+
+	schedules := make([]*v1.ScheduleSummary, 0, 8)
+	scanned := 0
+	truncated := false
+
+	// HasNext fetches at most one page per call and answers false on a page that
+	// came back empty, so this loop's round trips are bounded by the entries it
+	// reads — which is what the scan bound counts. That is the property CLAUDE.md's
+	// rule about peer-controlled loops asks for, and it is the SDK's behavior rather
+	// than an assumption: an empty page with a next-page token ends the iteration
+	// here rather than continuing it.
+	for iterator.HasNext() {
+		if scanned >= maxScheduleScan {
+			truncated = true
+			break
+		}
+		scanned++
+
+		entry, err := iterator.Next()
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("listing schedules: %w", err))
+		}
+
+		name, mine := scheduleNameFrom(entry.ID, namespace)
+		if !mine {
+			continue
+		}
+
+		// Checked again against the recorded tenant, even though the id already
+		// answered. See this file's header: the two protections fail differently,
+		// and a listing is precisely where a wrong answer is cheapest to get and
+		// most expensive to notice.
+		if !ownedBy(namespace, entry.Memo) {
+			continue
+		}
+
+		schedules = append(schedules, &v1.ScheduleSummary{
+			Name:        name,
+			Paused:      entry.Paused,
+			Note:        entry.Note,
+			NextRunTime: firstTime(entry.NextActionTimes),
+		})
+	}
+
+	return connect.NewResponse(&v1.ListSchedulesResponse{
+		Schedules: schedules,
+		Truncated: truncated,
+	}), nil
+}
+
+// DescribeSchedule reports one schedule in full.
+func (s *FlowstateServer) DescribeSchedule(ctx context.Context, req *connect.Request[v1.DescribeScheduleRequest]) (*connect.Response[v1.DescribeScheduleResponse], error) {
+	if err := v1.Validate(req.Msg); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	temporal, namespace, err := s.scheduleClientFor(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	description, err := s.describeSchedule(ctx, temporal, namespace, req.Msg.GetName())
+	if err != nil {
+		return nil, err
+	}
+
+	return connect.NewResponse(&v1.DescribeScheduleResponse{Schedule: description}), nil
+}
+
+// DeleteSchedule removes a schedule.
+func (s *FlowstateServer) DeleteSchedule(ctx context.Context, req *connect.Request[v1.DeleteScheduleRequest]) (*connect.Response[v1.DeleteScheduleResponse], error) {
+	if err := v1.Validate(req.Msg); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	handle, err := s.authorizeSchedule(ctx, req.Msg.GetName())
+	if err != nil {
+		return nil, err
+	}
+
+	if err := handle.Delete(ctx); err != nil {
+		return nil, actOnScheduleError("deleting", req.Msg.GetName(), err)
+	}
+
+	return connect.NewResponse(&v1.DeleteScheduleResponse{}), nil
+}
+
+// PauseSchedule stops a schedule firing without removing it.
+func (s *FlowstateServer) PauseSchedule(ctx context.Context, req *connect.Request[v1.PauseScheduleRequest]) (*connect.Response[v1.PauseScheduleResponse], error) {
+	if err := v1.Validate(req.Msg); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	handle, err := s.authorizeSchedule(ctx, req.Msg.GetName())
+	if err != nil {
+		return nil, err
+	}
+
+	if err := handle.Pause(ctx, client.SchedulePauseOptions{Note: req.Msg.GetNote()}); err != nil {
+		return nil, actOnScheduleError("pausing", req.Msg.GetName(), err)
+	}
+
+	return connect.NewResponse(&v1.PauseScheduleResponse{}), nil
+}
+
+// ResumeSchedule lets a paused schedule fire again.
+func (s *FlowstateServer) ResumeSchedule(ctx context.Context, req *connect.Request[v1.ResumeScheduleRequest]) (*connect.Response[v1.ResumeScheduleResponse], error) {
+	if err := v1.Validate(req.Msg); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	handle, err := s.authorizeSchedule(ctx, req.Msg.GetName())
+	if err != nil {
+		return nil, err
+	}
+
+	if err := handle.Unpause(ctx, client.ScheduleUnpauseOptions{Note: req.Msg.GetNote()}); err != nil {
+		return nil, actOnScheduleError("resuming", req.Msg.GetName(), err)
+	}
+
+	return connect.NewResponse(&v1.ResumeScheduleResponse{}), nil
+}
+
+// TriggerSchedule fires a schedule now.
+func (s *FlowstateServer) TriggerSchedule(ctx context.Context, req *connect.Request[v1.TriggerScheduleRequest]) (*connect.Response[v1.TriggerScheduleResponse], error) {
+	if err := v1.Validate(req.Msg); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	handle, err := s.authorizeSchedule(ctx, req.Msg.GetName())
+	if err != nil {
+		return nil, err
+	}
+
+	// The schedule's own overlap policy decides what happens if the last firing is
+	// still going. Unspecified here means exactly that — it is not a default this
+	// invents, and overriding a policy the file declared would make a manual trigger
+	// behave unlike the schedule it is meant to be testing.
+	if err := handle.Trigger(ctx, client.ScheduleTriggerOptions{}); err != nil {
+		return nil, actOnScheduleError("triggering", req.Msg.GetName(), err)
+	}
+
+	return connect.NewResponse(&v1.TriggerScheduleResponse{}), nil
+}
+
+// scheduleClientFor returns the Temporal client the caller's schedules live on,
+// with the tenant they belong to.
+func (s *FlowstateServer) scheduleClientFor(ctx context.Context) (client.Client, string, error) {
+	namespace := s.identityFor(ctx).GetNamespace()
+
+	temporal, err := s.clientFor(namespace)
+	if err != nil {
+		return nil, "", err
+	}
+
+	return temporal, namespace, nil
+}
+
+// authorizeSchedule reports whether the caller may act on a schedule, and returns
+// the handle to act through.
+//
+// The handle rather than only a yes, for the reason [authorizeRun] returns its
+// client: a verb that checked one thing and acted on another would be a check that
+// proved nothing, and handing back the checked handle makes doing it right the path
+// of least effort.
+//
+// The refusal is "no such schedule" rather than "denied", the same answer a run in
+// another tenant gets. Denied would confirm that a schedule of that name exists
+// somewhere, which is the one fact a caller in the wrong tenant must not learn.
+func (s *FlowstateServer) authorizeSchedule(ctx context.Context, name string) (client.ScheduleHandle, error) {
+	temporal, namespace, err := s.scheduleClientFor(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	handle := temporal.ScheduleClient().GetHandle(ctx, scheduleIDFor(namespace, name))
+
+	// GetHandle validates nothing, so the check is a Describe — which is also what
+	// reads the memo. One round trip answers both "does it exist" and "is it mine".
+	description, err := handle.Describe(ctx)
+	if err != nil {
+		return nil, noSuchSchedule(name)
+	}
+
+	if !ownedBy(namespace, description.Memo) {
+		return nil, noSuchSchedule(name)
+	}
+
+	return handle, nil
+}
+
+// noSuchSchedule is the one answer every absent or unauthorized schedule gets.
+func noSuchSchedule(name string) *connect.Error {
+	return connect.NewError(connect.CodeNotFound, fmt.Errorf("no such schedule %q", name))
+}
+
+// actOnScheduleError classifies a failure to act on a schedule already authorized.
+//
+// A schedule deleted between the authorization and the act is the ordinary race,
+// and it is not a server fault: reported as NotFound in the same words an absent
+// schedule gets, so a caller sees one answer for one situation rather than a 500
+// for the half of it that happened to lose a race.
+func actOnScheduleError(verb, name string, err error) error {
+	var notFound *serviceerror.NotFound
+	if errors.As(err, &notFound) {
+		return noSuchSchedule(name)
+	}
+
+	return connect.NewError(connect.CodeInternal, fmt.Errorf("%s schedule %q: %w", verb, name, err))
+}
+
+// describeSchedule projects Temporal's description into the schema's own.
+//
+// Two sources, deliberately. What the schedule is *doing* — paused, when it next
+// fires, what it has fired lately — is the cluster's answer and is read from the
+// description. What it *is* — which workflow, which cadence, which arguments — is
+// read back out of the specification the schedule stores, because that is where the
+// author's own words survive: Temporal rewrites a cron expression into a calendar
+// spec when it stores one, and answering `0 9 * * MON-FRI` with a list of ranges is
+// accurate and unrecognisable.
+func (s *FlowstateServer) describeSchedule(ctx context.Context, temporal client.Client, namespace, name string) (*v1.ScheduleDescription, error) {
+	handle := temporal.ScheduleClient().GetHandle(ctx, scheduleIDFor(namespace, name))
+
+	description, err := handle.Describe(ctx)
+	if err != nil {
+		return nil, noSuchSchedule(name)
+	}
+
+	if !ownedBy(namespace, description.Memo) {
+		return nil, noSuchSchedule(name)
+	}
+
+	reported := &v1.ScheduleDescription{
+		Name:       name,
+		NumActions: int64(description.Info.NumActions),
+	}
+
+	// Temporal's own types here are plain structs rather than generated messages,
+	// so there are no accessors that tolerate a nil — and a schedule described by a
+	// cluster that answered without a state block is a real shape rather than a
+	// hypothetical one.
+	if state := description.Schedule.State; state != nil {
+		reported.Paused = state.Paused
+		reported.Note = state.Note
+	}
+
+	for _, at := range description.Info.NextActionTimes {
+		reported.NextRunTimes = append(reported.NextRunTimes, timestamppb.New(at))
+	}
+
+	for _, action := range description.Info.RecentActions {
+		result := &v1.ScheduleActionResult{
+			ScheduleTime: timestamppb.New(action.ScheduleTime),
+			ActualTime:   timestamppb.New(action.ActualTime),
+		}
+		if started := action.StartWorkflowResult; started != nil {
+			result.WorkflowId = started.WorkflowID
+			result.RunId = started.FirstExecutionRunID
+		}
+		reported.RecentRuns = append(reported.RecentRuns, result)
+	}
+
+	// Best effort, and the failure is silent on purpose: a schedule whose stored
+	// arguments cannot be decoded — created by a build whose message shape has since
+	// moved — is still describable in every other respect, and failing the whole
+	// description over one field would take the answer away along with the doubt.
+	// What is absent reads as absent, which is invariant 10's own rule.
+	if state := storedRunState(description.Schedule.Action); state != nil {
+		reported.WorkflowName = state.GetWorkflow().GetName()
+		reported.Inputs = state.GetInputs()
+		reported.Trigger = state.GetWorkflow().GetTriggers().GetSchedule()
+	}
+
+	return reported, nil
+}
+
+// storedRunState reads back the run state a schedule starts each firing with.
+//
+// Describe returns the action's arguments as payloads rather than as the values
+// that went in — the SDK says so — so this decodes the one argument
+// `engine.Run` takes, through the same default data converter that encoded it.
+// Nil for anything unexpected, which every caller treats as "not known" rather than
+// as an error.
+func storedRunState(action client.ScheduleAction) *v1.RunState {
+	workflowAction, ok := action.(*client.ScheduleWorkflowAction)
+	if !ok || len(workflowAction.Args) != 1 {
+		return nil
+	}
+
+	payload, ok := workflowAction.Args[0].(*common.Payload)
+	if !ok {
+		return nil
+	}
+
+	var state v1.RunState
+	if err := converter.GetDefaultDataConverter().FromPayload(payload, &state); err != nil {
+		return nil
+	}
+
+	return &state
+}
+
+// firstTime returns the first of a list of moments as a timestamp, or nil.
+//
+// Nil rather than the zero instant, the rule [runTimes] follows: a schedule with no
+// next firing has not been scheduled for 1970.
+func firstTime(times []time.Time) *timestamppb.Timestamp {
+	if len(times) == 0 {
+		return nil
+	}
+
+	return timestamppb.New(times[0])
+}
+
+// scheduleSpecOf projects a declared cadence onto Temporal's own spec.
+//
+// A projection and nothing more: no next firing time is computed here, no cron
+// expression is expanded here, and nothing here decides what an overlap means.
+// Temporal owns all of that, which is the whole reason this surface is thin.
+func scheduleSpecOf(trigger *v1.ScheduleTrigger) (client.ScheduleSpec, error) {
+	spec := client.ScheduleSpec{
+		CronExpressions: trigger.GetCron(),
+		TimeZoneName:    trigger.GetTimeZone(),
+		Jitter:          trigger.GetJitter().AsDuration(),
+	}
+
+	if every := trigger.GetEvery(); every != nil {
+		spec.Intervals = []client.ScheduleIntervalSpec{{Every: every.AsDuration()}}
+	}
+
+	// Checked again here rather than trusted from the caller's own validation, for
+	// the reason `Run` re-validates a specification the CLI already checked: a bound
+	// enforced by whoever happened to call is not a bound.
+	if len(spec.CronExpressions) == 0 && len(spec.Intervals) == 0 {
+		return client.ScheduleSpec{}, errors.New(
+			"the schedule says nothing about when to fire; write `cron:` or `every:` under `triggers.schedule`")
+	}
+
+	return spec, nil
+}
+
+// overlapOf maps the declared overlap policy onto Temporal's.
+//
+// A switch rather than a cast, the rule [inputTypeOf] follows: the two enums share
+// names and numbers today and are owned by different projects, so a conversion
+// between them is something somebody wrote and somebody reviewed.
+func overlapOf(overlap v1.ScheduleTrigger_Overlap) enums.ScheduleOverlapPolicy {
+	switch overlap {
+	case v1.ScheduleTrigger_OVERLAP_SKIP:
+		return enums.SCHEDULE_OVERLAP_POLICY_SKIP
+	case v1.ScheduleTrigger_OVERLAP_BUFFER_ONE:
+		return enums.SCHEDULE_OVERLAP_POLICY_BUFFER_ONE
+	case v1.ScheduleTrigger_OVERLAP_BUFFER_ALL:
+		return enums.SCHEDULE_OVERLAP_POLICY_BUFFER_ALL
+	case v1.ScheduleTrigger_OVERLAP_CANCEL_OTHER:
+		return enums.SCHEDULE_OVERLAP_POLICY_CANCEL_OTHER
+	case v1.ScheduleTrigger_OVERLAP_TERMINATE_OTHER:
+		return enums.SCHEDULE_OVERLAP_POLICY_TERMINATE_OTHER
+	case v1.ScheduleTrigger_OVERLAP_ALLOW_ALL:
+		return enums.SCHEDULE_OVERLAP_POLICY_ALLOW_ALL
+	default:
+		// Unspecified, which Temporal reads as its own default. Left to it rather
+		// than resolved here, so "the author said nothing" keeps meaning that.
+		return enums.SCHEDULE_OVERLAP_POLICY_UNSPECIFIED
+	}
+}
