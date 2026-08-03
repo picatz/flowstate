@@ -1015,6 +1015,79 @@ section had exactly that mistake, and `flow validate` caught it.
 See [examples/approval-gate](examples/approval-gate) and
 [examples/wait-until-a-moment](examples/wait-until-a-moment).
 
+## Workloads that run on a cadence
+
+A workflow can say when it is meant to run:
+
+```yaml
+triggers:
+  schedule:
+    cron: "0 7 * * MON-FRI"      # or a list of expressions
+    time_zone: Europe/Dublin     # empty means UTC
+    jitter: 5m                   # spread firings, so a fleet is not a herd
+    overlap: skip                # if the last one is still going
+```
+
+or, for an interval rather than a calendar:
+
+```yaml
+triggers:
+  schedule:
+    every: 15m
+```
+
+**The block declares; it does not create.** `flow run` and `flow run local` ignore it
+entirely, so a scheduled workflow is still an ordinary file you can run once, now.
+Creating the schedule is a separate act, typed by a person:
+
+```console
+$ flow schedule create examples/scheduled-report/workflow.yaml
+NAME       scheduled-report
+WORKFLOW   scheduled-report
+STATE      live
+CADENCE    0 7 * * MON-FRI, in Europe/Dublin, jittered by up to 5m0s, on overlap skip
+RUNS TAKEN 0
+NEXT       2026-08-04T06:00:00Z
+           2026-08-05T06:00:00Z
+```
+
+That is not ceremony. A file that begins running on its own the moment it merges is a
+surprise, and its first firing is indistinguishable from somebody having meant it. The
+next firing times come back unasked for, because a cadence meaning something other than
+what was intended is almost always visible there and almost never visible in the
+expression that produced it — and `--paused` lets you read them before anything fires.
+
+Arguments come from the command that creates the schedule, through the same flags
+`flow run` takes, and are bound and type-checked **once, at creation** rather than at
+each firing — a refusal at 03:00 in a worker's log, for a mistake made at a keyboard a
+week earlier, helps nobody. One file can therefore serve several cadences:
+
+```console
+$ flow schedule create report.yaml --name report-eu --input region=eu-west-1
+$ flow schedule create report.yaml --name report-us --input region=us-east-1
+$ flow schedule list
+NAME       STATE  NEXT                  NOTE
+report-eu  live   2026-08-04T06:00:00Z
+report-us  live   2026-08-04T06:00:00Z
+```
+
+The rest of the verbs are what an incident wants. `flow schedule pause <name> --note
+"upstream is down, INC-4471"` stops the firings and leaves the arrangement in place;
+`flow schedule resume` starts them again; `flow schedule trigger` fires one now, which
+is how a schedule is tested — it exercises the arguments the schedule stored and the
+tenant it records on the runs it starts, none of which running the workflow by hand
+would prove. A run a schedule started is an ordinary run: `flow get`, `flow watch`,
+`flow list` and `flow cancel` all address it.
+
+Schedules are Temporal Schedules underneath, so a firing that comes due while the
+cluster is unavailable is caught up rather than lost — which is the whole difference
+from a cron entry calling `flow run`. A schedule belongs to your tenant and is named
+within it, so two teams may both have a `nightly-report` without either learning of the
+other, and every firing acts as the identity that created the schedule, frozen at that
+moment.
+
+See [examples/scheduled-report](examples/scheduled-report).
+
 ## Getting Started
 
 ### Authoring
@@ -1221,6 +1294,14 @@ default comes from.
 | `flow signal <id> <name>` | Deliver a signal to a run that is waiting, which is how a human approval reaches a workload. |
 | `flow cancel <id>` | Ask a run to stop, letting it clean up. |
 | `flow terminate <id>` | Stop a run immediately, running none of its cleanup. |
+| `flow schedule` | Create and manage schedules that run workflows on a cadence. A Flowfile's `triggers:` block declares the cadence; these verbs are what act on it. |
+| `flow schedule create <file>` | Create a schedule from a Flowfile's `triggers:` block. The specification, the cadence and the arguments are all checked here, while somebody is present to be told. Takes the same `--input`/`--input-file` as `flow run`; `--name` gives one workflow more than one cadence, and `--paused` creates it without letting it fire. |
+| `flow schedule list` | List your schedules, with whether each is live and when it next fires. |
+| `flow schedule describe <name>` | Show one schedule: its cadence as the file declared it, the arguments every firing runs with, when it next fires, and what it has run lately. |
+| `flow schedule delete <name>` | Delete a schedule. Future firings stop; runs it already started keep going. |
+| `flow schedule pause <name>` | Stop a schedule firing without deleting it, recording a `--note` saying why. |
+| `flow schedule resume <name>` | Let a paused schedule fire again. Firings missed while it was paused are not made up. |
+| `flow schedule trigger <name>` | Fire a schedule now rather than waiting for its cadence, which is how a schedule is tested. Fires even a paused one. |
 | `flow tasks` | List the tasks a workflow may use, and the libraries every expression reaches. |
 | `flow plugins` | List the plugins on a search path and the tasks each one adds, by launching them and asking. |
 | `flow worker` | Start a Temporal worker, which is what actually executes steps. |

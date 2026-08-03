@@ -1,0 +1,95 @@
+# A workflow that says when it is meant to run — and still runs on demand.
+#
+# `triggers:` is where a file declares how it starts without anybody asking. It is a
+# declaration and not an act: nothing here creates anything, and neither `flow run`
+# nor `flow run local` looks at this block. Running the file runs it once, now:
+#
+#   flow run local examples/scheduled-report/workflow.yaml
+#
+# That is deliberate rather than a limitation. A file that begins running on its own
+# the moment it merges is a surprise, and a surprise whose first firing is
+# indistinguishable from somebody having meant it. So creating the schedule is a
+# separate act, typed by a person, against a running server:
+#
+#   flow schedule create examples/scheduled-report/workflow.yaml
+#   flow schedule describe scheduled-report
+#   flow schedule trigger scheduled-report     # fire it now, rather than at 07:00
+#   flow schedule delete scheduled-report
+#
+# Everything a firing needs is checked at that moment, while there is somebody there
+# to be told: the specification, the cadence, and the arguments below. What fires at
+# seven in the morning has already been refused if it was going to be.
+edition: v2026.2
+name: scheduled-report
+
+# A scheduled workload is the case parameters were made for: one file, and a
+# schedule per thing it reports on. Arguments are bound once, when the schedule is
+# created — `flow schedule create ... --input region=us-east-1` — and every firing
+# for the life of that schedule uses what was bound. A declaration edited afterwards
+# does not change what a schedule already created passes.
+inputs:
+  region:
+    type: string
+    default: eu-west-1
+    description: which region this report covers
+
+  # Both defaults, so the file runs as written with no arguments — the rule every
+  # example here follows.
+  detailed:
+    type: bool
+    default: false
+    description: whether to include the per-service breakdown
+
+triggers:
+  schedule:
+    # Weekdays at 07:00. Written as a cron expression because that is what "at 07:00
+    # on weekdays" is; `every:` is for "every fifteen minutes", and expressing either
+    # in the other's notation is where the mistakes live.
+    #
+    # `flow validate` checks the shape of this — a wrong number of fields, an hour of
+    # 25, a month that is not a month — and leaves the rest to the cluster, which is
+    # the standing rule: report what is a property of the file, and stay silent about
+    # what a deployment decides.
+    cron: "0 7 * * MON-FRI"
+
+    # The zone the expression is read in. Empty means UTC. Which zones exist is the
+    # Temporal cluster's answer, loaded from the environment it runs in, so nothing
+    # here resolves it.
+    time_zone: Europe/Dublin
+
+    # Spread the firing over five minutes. A fleet of schedules that all say `0 7 * * *`
+    # is a thundering herd on the hour, and this is the cheapest thing that is not one.
+    jitter: 5m
+
+    # What to do when 07:00 comes round with yesterday's run still going. `skip` is
+    # Temporal's default and the safe answer: a report that takes longer than a day
+    # does not pile up. The others are buffer_one, buffer_all, cancel_other,
+    # terminate_other and allow_all.
+    overlap: skip
+
+steps:
+  - id: gather
+    vars:
+      scope: ${'region ' + inputs.region}
+    log:
+      message: ${'gathering yesterday\'s numbers for ' + scope}
+
+  # An argument deciding whether a step happens at all, which is how one file serves
+  # a terse schedule and a verbose one.
+  - id: breakdown
+    if: ${inputs.detailed}
+    log:
+      message: per-service breakdown included
+
+  - id: publish
+    log:
+      message: ${'report ready for ' + inputs.region}
+      level: info
+
+outputs:
+  # What the run answers with. A scheduled run has nobody watching it, so what it
+  # reports is what anybody will ever see of it — `flow get` on the run id, which
+  # `flow schedule describe` lists under its recent runs.
+  region:
+    value: ${inputs.region}
+    description: the region this report covered

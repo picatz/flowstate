@@ -71,6 +71,14 @@ var mcpDescriptions = map[string]string{
 		"diagnostics and no specification. Answers locally, no server needed.",
 	"GetCatalog": "What this build can execute: every task with its typed inputs and outputs, and every CEL function an expression may call. " +
 		"Read this before writing a Flowfile. Answers locally, no server needed.",
+	"CreateSchedule": "Create a schedule that runs a workflow specification on the cadence its triggers.schedule declares. Arguments are bound and " +
+		"type-checked here, once, rather than at each firing. Create it paused to read its next firing times before it takes one.",
+	"ListSchedules":    "List the caller's schedules, with whether each is live and when it next fires.",
+	"DescribeSchedule": "Report one schedule: its cadence, the arguments every firing runs with, when it next fires, and what it has run lately.",
+	"DeleteSchedule":   "Delete a schedule. Future firings stop; runs it already started are unaffected and are cancelled with flowstate_cancel.",
+	"PauseSchedule":    "Stop a schedule firing without deleting it, recording a note saying why.",
+	"ResumeSchedule":   "Let a paused schedule fire again. Firings missed while it was paused are not made up.",
+	"TriggerSchedule":  "Fire a schedule now rather than waiting for its cadence, which is how a schedule is tested. It returns no run id; describe the schedule to see what it started.",
 }
 
 // runMCP implements the mcp sub-command.
@@ -297,6 +305,97 @@ func workflowServiceMethods() []serviceMethod {
 			input: (&v1.TerminateRequest{}).ProtoReflect().Descriptor(),
 			call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
 				resp, err := remote().Terminate(ctx, connect.NewRequest(in.(*v1.TerminateRequest)))
+				if err != nil {
+					return nil, err
+				}
+
+				return resp.Msg, nil
+			},
+		},
+
+		// The schedule verbs, all remote: a schedule is an object in a cluster, so
+		// unlike validate and compile there is nothing an agent could be told about
+		// one without a server to ask. Creating one is deliberately as available to
+		// an agent as running a workflow is — it is the same permission, and an agent
+		// that can start a workload every night should have to say so in a tool call
+		// somebody can read rather than by writing a loop that sleeps.
+		{
+			name:  "CreateSchedule",
+			input: (&v1.CreateScheduleRequest{}).ProtoReflect().Descriptor(),
+			call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
+				resp, err := remote().CreateSchedule(ctx, connect.NewRequest(in.(*v1.CreateScheduleRequest)))
+				if err != nil {
+					return nil, err
+				}
+
+				return resp.Msg, nil
+			},
+		},
+		{
+			name:  "ListSchedules",
+			input: (&v1.ListSchedulesRequest{}).ProtoReflect().Descriptor(),
+			call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
+				resp, err := remote().ListSchedules(ctx, connect.NewRequest(in.(*v1.ListSchedulesRequest)))
+				if err != nil {
+					return nil, err
+				}
+
+				return resp.Msg, nil
+			},
+		},
+		{
+			name:  "DescribeSchedule",
+			input: (&v1.DescribeScheduleRequest{}).ProtoReflect().Descriptor(),
+			call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
+				resp, err := remote().DescribeSchedule(ctx, connect.NewRequest(in.(*v1.DescribeScheduleRequest)))
+				if err != nil {
+					return nil, err
+				}
+
+				return resp.Msg, nil
+			},
+		},
+		{
+			name:  "DeleteSchedule",
+			input: (&v1.DeleteScheduleRequest{}).ProtoReflect().Descriptor(),
+			call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
+				resp, err := remote().DeleteSchedule(ctx, connect.NewRequest(in.(*v1.DeleteScheduleRequest)))
+				if err != nil {
+					return nil, err
+				}
+
+				return resp.Msg, nil
+			},
+		},
+		{
+			name:  "PauseSchedule",
+			input: (&v1.PauseScheduleRequest{}).ProtoReflect().Descriptor(),
+			call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
+				resp, err := remote().PauseSchedule(ctx, connect.NewRequest(in.(*v1.PauseScheduleRequest)))
+				if err != nil {
+					return nil, err
+				}
+
+				return resp.Msg, nil
+			},
+		},
+		{
+			name:  "ResumeSchedule",
+			input: (&v1.ResumeScheduleRequest{}).ProtoReflect().Descriptor(),
+			call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
+				resp, err := remote().ResumeSchedule(ctx, connect.NewRequest(in.(*v1.ResumeScheduleRequest)))
+				if err != nil {
+					return nil, err
+				}
+
+				return resp.Msg, nil
+			},
+		},
+		{
+			name:  "TriggerSchedule",
+			input: (&v1.TriggerScheduleRequest{}).ProtoReflect().Descriptor(),
+			call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
+				resp, err := remote().TriggerSchedule(ctx, connect.NewRequest(in.(*v1.TriggerScheduleRequest)))
 				if err != nil {
 					return nil, err
 				}

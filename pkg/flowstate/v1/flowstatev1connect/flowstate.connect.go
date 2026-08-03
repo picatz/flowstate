@@ -54,6 +54,27 @@ const (
 	// WorkflowServiceGetCatalogProcedure is the fully-qualified name of the WorkflowService's
 	// GetCatalog RPC.
 	WorkflowServiceGetCatalogProcedure = "/flowstate.v1.WorkflowService/GetCatalog"
+	// WorkflowServiceCreateScheduleProcedure is the fully-qualified name of the WorkflowService's
+	// CreateSchedule RPC.
+	WorkflowServiceCreateScheduleProcedure = "/flowstate.v1.WorkflowService/CreateSchedule"
+	// WorkflowServiceListSchedulesProcedure is the fully-qualified name of the WorkflowService's
+	// ListSchedules RPC.
+	WorkflowServiceListSchedulesProcedure = "/flowstate.v1.WorkflowService/ListSchedules"
+	// WorkflowServiceDescribeScheduleProcedure is the fully-qualified name of the WorkflowService's
+	// DescribeSchedule RPC.
+	WorkflowServiceDescribeScheduleProcedure = "/flowstate.v1.WorkflowService/DescribeSchedule"
+	// WorkflowServiceDeleteScheduleProcedure is the fully-qualified name of the WorkflowService's
+	// DeleteSchedule RPC.
+	WorkflowServiceDeleteScheduleProcedure = "/flowstate.v1.WorkflowService/DeleteSchedule"
+	// WorkflowServicePauseScheduleProcedure is the fully-qualified name of the WorkflowService's
+	// PauseSchedule RPC.
+	WorkflowServicePauseScheduleProcedure = "/flowstate.v1.WorkflowService/PauseSchedule"
+	// WorkflowServiceResumeScheduleProcedure is the fully-qualified name of the WorkflowService's
+	// ResumeSchedule RPC.
+	WorkflowServiceResumeScheduleProcedure = "/flowstate.v1.WorkflowService/ResumeSchedule"
+	// WorkflowServiceTriggerScheduleProcedure is the fully-qualified name of the WorkflowService's
+	// TriggerSchedule RPC.
+	WorkflowServiceTriggerScheduleProcedure = "/flowstate.v1.WorkflowService/TriggerSchedule"
 )
 
 // WorkflowServiceClient is a client for the flowstate.v1.WorkflowService service.
@@ -137,6 +158,51 @@ type WorkflowServiceClient interface {
 	// unchanged is the point: an editor, an agent, a documentation generator and
 	// `flow tasks --output json` all read one shape.
 	GetCatalog(context.Context, *connect.Request[v1.GetCatalogRequest]) (*connect.Response[v1.GetCatalogResponse], error)
+	// CreateSchedule arranges for a workflow to run on a cadence.
+	//
+	// The act a `triggers:` block does not perform. A file may declare that it is
+	// meant to run nightly, and that declaration does nothing until this is called
+	// — because a file that starts running on its own when it merges is a surprise,
+	// and one whose first firing is indistinguishable from somebody having meant
+	// it.
+	//
+	// Everything that can be refused is refused here, where a person is present:
+	// the specification is validated and size-checked exactly as `Run` does it, the
+	// arguments are bound against the workflow's declarations through the very same
+	// `BindRunInputs`, and the cadence must say when it fires. What fires at three
+	// in the morning has already been checked.
+	CreateSchedule(context.Context, *connect.Request[v1.CreateScheduleRequest]) (*connect.Response[v1.CreateScheduleResponse], error)
+	// ListSchedules returns the schedules belonging to the caller's tenant.
+	//
+	// A bounded scan filtered by the tenant recorded on each schedule, for the
+	// reason `List` scans runs: the tenant is a memo, which Temporal cannot query,
+	// and a memo is what keeps this working against `temporal server start-dev`
+	// with nothing registered. Unlike runs there is no paging — see
+	// [ListSchedulesRequest] for why, and for what the response says instead.
+	ListSchedules(context.Context, *connect.Request[v1.ListSchedulesRequest]) (*connect.Response[v1.ListSchedulesResponse], error)
+	// DescribeSchedule reports one schedule: its cadence, its arguments, when it
+	// next fires and what it has done lately.
+	DescribeSchedule(context.Context, *connect.Request[v1.DescribeScheduleRequest]) (*connect.Response[v1.DescribeScheduleResponse], error)
+	// DeleteSchedule removes a schedule. Runs it already started are unaffected —
+	// they are ordinary workloads, and stopping one is `Cancel`.
+	DeleteSchedule(context.Context, *connect.Request[v1.DeleteScheduleRequest]) (*connect.Response[v1.DeleteScheduleResponse], error)
+	// PauseSchedule stops a schedule firing without removing it, which is what an
+	// incident wants: the arrangement is still there, still reviewable, and not
+	// running.
+	PauseSchedule(context.Context, *connect.Request[v1.PauseScheduleRequest]) (*connect.Response[v1.PauseScheduleResponse], error)
+	// ResumeSchedule lets a paused schedule fire again.
+	ResumeSchedule(context.Context, *connect.Request[v1.ResumeScheduleRequest]) (*connect.Response[v1.ResumeScheduleResponse], error)
+	// TriggerSchedule fires a schedule now, without waiting for its cadence.
+	//
+	// The verb that makes a schedule testable. Creating one and waiting until
+	// Tuesday to find out whether it works is not a development loop, and the
+	// alternative — running the workflow by hand — proves the workflow rather than
+	// the schedule: it does not exercise the arguments the schedule stored, the
+	// tenant it records on the runs it starts, or the queue it puts them on.
+	//
+	// It fires even a paused schedule, which is Temporal's behavior and the useful
+	// one: create paused, trigger once to see what happens, then resume.
+	TriggerSchedule(context.Context, *connect.Request[v1.TriggerScheduleRequest]) (*connect.Response[v1.TriggerScheduleResponse], error)
 }
 
 // NewWorkflowServiceClient constructs a client for the flowstate.v1.WorkflowService service. By
@@ -204,20 +270,69 @@ func NewWorkflowServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(workflowServiceMethods.ByName("GetCatalog")),
 			connect.WithClientOptions(opts...),
 		),
+		createSchedule: connect.NewClient[v1.CreateScheduleRequest, v1.CreateScheduleResponse](
+			httpClient,
+			baseURL+WorkflowServiceCreateScheduleProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("CreateSchedule")),
+			connect.WithClientOptions(opts...),
+		),
+		listSchedules: connect.NewClient[v1.ListSchedulesRequest, v1.ListSchedulesResponse](
+			httpClient,
+			baseURL+WorkflowServiceListSchedulesProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("ListSchedules")),
+			connect.WithClientOptions(opts...),
+		),
+		describeSchedule: connect.NewClient[v1.DescribeScheduleRequest, v1.DescribeScheduleResponse](
+			httpClient,
+			baseURL+WorkflowServiceDescribeScheduleProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("DescribeSchedule")),
+			connect.WithClientOptions(opts...),
+		),
+		deleteSchedule: connect.NewClient[v1.DeleteScheduleRequest, v1.DeleteScheduleResponse](
+			httpClient,
+			baseURL+WorkflowServiceDeleteScheduleProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("DeleteSchedule")),
+			connect.WithClientOptions(opts...),
+		),
+		pauseSchedule: connect.NewClient[v1.PauseScheduleRequest, v1.PauseScheduleResponse](
+			httpClient,
+			baseURL+WorkflowServicePauseScheduleProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("PauseSchedule")),
+			connect.WithClientOptions(opts...),
+		),
+		resumeSchedule: connect.NewClient[v1.ResumeScheduleRequest, v1.ResumeScheduleResponse](
+			httpClient,
+			baseURL+WorkflowServiceResumeScheduleProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("ResumeSchedule")),
+			connect.WithClientOptions(opts...),
+		),
+		triggerSchedule: connect.NewClient[v1.TriggerScheduleRequest, v1.TriggerScheduleResponse](
+			httpClient,
+			baseURL+WorkflowServiceTriggerScheduleProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("TriggerSchedule")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // workflowServiceClient implements WorkflowServiceClient.
 type workflowServiceClient struct {
-	run        *connect.Client[v1.RunRequest, v1.RunResponse]
-	get        *connect.Client[v1.GetRequest, v1.GetResponse]
-	signal     *connect.Client[v1.SignalRequest, v1.SignalResponse]
-	list       *connect.Client[v1.ListRequest, v1.ListResponse]
-	cancel     *connect.Client[v1.CancelRequest, v1.CancelResponse]
-	terminate  *connect.Client[v1.TerminateRequest, v1.TerminateResponse]
-	validate   *connect.Client[v1.ValidateRequest, v1.ValidateResponse]
-	compile    *connect.Client[v1.CompileRequest, v1.CompileResponse]
-	getCatalog *connect.Client[v1.GetCatalogRequest, v1.GetCatalogResponse]
+	run              *connect.Client[v1.RunRequest, v1.RunResponse]
+	get              *connect.Client[v1.GetRequest, v1.GetResponse]
+	signal           *connect.Client[v1.SignalRequest, v1.SignalResponse]
+	list             *connect.Client[v1.ListRequest, v1.ListResponse]
+	cancel           *connect.Client[v1.CancelRequest, v1.CancelResponse]
+	terminate        *connect.Client[v1.TerminateRequest, v1.TerminateResponse]
+	validate         *connect.Client[v1.ValidateRequest, v1.ValidateResponse]
+	compile          *connect.Client[v1.CompileRequest, v1.CompileResponse]
+	getCatalog       *connect.Client[v1.GetCatalogRequest, v1.GetCatalogResponse]
+	createSchedule   *connect.Client[v1.CreateScheduleRequest, v1.CreateScheduleResponse]
+	listSchedules    *connect.Client[v1.ListSchedulesRequest, v1.ListSchedulesResponse]
+	describeSchedule *connect.Client[v1.DescribeScheduleRequest, v1.DescribeScheduleResponse]
+	deleteSchedule   *connect.Client[v1.DeleteScheduleRequest, v1.DeleteScheduleResponse]
+	pauseSchedule    *connect.Client[v1.PauseScheduleRequest, v1.PauseScheduleResponse]
+	resumeSchedule   *connect.Client[v1.ResumeScheduleRequest, v1.ResumeScheduleResponse]
+	triggerSchedule  *connect.Client[v1.TriggerScheduleRequest, v1.TriggerScheduleResponse]
 }
 
 // Run calls flowstate.v1.WorkflowService.Run.
@@ -263,6 +378,41 @@ func (c *workflowServiceClient) Compile(ctx context.Context, req *connect.Reques
 // GetCatalog calls flowstate.v1.WorkflowService.GetCatalog.
 func (c *workflowServiceClient) GetCatalog(ctx context.Context, req *connect.Request[v1.GetCatalogRequest]) (*connect.Response[v1.GetCatalogResponse], error) {
 	return c.getCatalog.CallUnary(ctx, req)
+}
+
+// CreateSchedule calls flowstate.v1.WorkflowService.CreateSchedule.
+func (c *workflowServiceClient) CreateSchedule(ctx context.Context, req *connect.Request[v1.CreateScheduleRequest]) (*connect.Response[v1.CreateScheduleResponse], error) {
+	return c.createSchedule.CallUnary(ctx, req)
+}
+
+// ListSchedules calls flowstate.v1.WorkflowService.ListSchedules.
+func (c *workflowServiceClient) ListSchedules(ctx context.Context, req *connect.Request[v1.ListSchedulesRequest]) (*connect.Response[v1.ListSchedulesResponse], error) {
+	return c.listSchedules.CallUnary(ctx, req)
+}
+
+// DescribeSchedule calls flowstate.v1.WorkflowService.DescribeSchedule.
+func (c *workflowServiceClient) DescribeSchedule(ctx context.Context, req *connect.Request[v1.DescribeScheduleRequest]) (*connect.Response[v1.DescribeScheduleResponse], error) {
+	return c.describeSchedule.CallUnary(ctx, req)
+}
+
+// DeleteSchedule calls flowstate.v1.WorkflowService.DeleteSchedule.
+func (c *workflowServiceClient) DeleteSchedule(ctx context.Context, req *connect.Request[v1.DeleteScheduleRequest]) (*connect.Response[v1.DeleteScheduleResponse], error) {
+	return c.deleteSchedule.CallUnary(ctx, req)
+}
+
+// PauseSchedule calls flowstate.v1.WorkflowService.PauseSchedule.
+func (c *workflowServiceClient) PauseSchedule(ctx context.Context, req *connect.Request[v1.PauseScheduleRequest]) (*connect.Response[v1.PauseScheduleResponse], error) {
+	return c.pauseSchedule.CallUnary(ctx, req)
+}
+
+// ResumeSchedule calls flowstate.v1.WorkflowService.ResumeSchedule.
+func (c *workflowServiceClient) ResumeSchedule(ctx context.Context, req *connect.Request[v1.ResumeScheduleRequest]) (*connect.Response[v1.ResumeScheduleResponse], error) {
+	return c.resumeSchedule.CallUnary(ctx, req)
+}
+
+// TriggerSchedule calls flowstate.v1.WorkflowService.TriggerSchedule.
+func (c *workflowServiceClient) TriggerSchedule(ctx context.Context, req *connect.Request[v1.TriggerScheduleRequest]) (*connect.Response[v1.TriggerScheduleResponse], error) {
+	return c.triggerSchedule.CallUnary(ctx, req)
 }
 
 // WorkflowServiceHandler is an implementation of the flowstate.v1.WorkflowService service.
@@ -346,6 +496,51 @@ type WorkflowServiceHandler interface {
 	// unchanged is the point: an editor, an agent, a documentation generator and
 	// `flow tasks --output json` all read one shape.
 	GetCatalog(context.Context, *connect.Request[v1.GetCatalogRequest]) (*connect.Response[v1.GetCatalogResponse], error)
+	// CreateSchedule arranges for a workflow to run on a cadence.
+	//
+	// The act a `triggers:` block does not perform. A file may declare that it is
+	// meant to run nightly, and that declaration does nothing until this is called
+	// — because a file that starts running on its own when it merges is a surprise,
+	// and one whose first firing is indistinguishable from somebody having meant
+	// it.
+	//
+	// Everything that can be refused is refused here, where a person is present:
+	// the specification is validated and size-checked exactly as `Run` does it, the
+	// arguments are bound against the workflow's declarations through the very same
+	// `BindRunInputs`, and the cadence must say when it fires. What fires at three
+	// in the morning has already been checked.
+	CreateSchedule(context.Context, *connect.Request[v1.CreateScheduleRequest]) (*connect.Response[v1.CreateScheduleResponse], error)
+	// ListSchedules returns the schedules belonging to the caller's tenant.
+	//
+	// A bounded scan filtered by the tenant recorded on each schedule, for the
+	// reason `List` scans runs: the tenant is a memo, which Temporal cannot query,
+	// and a memo is what keeps this working against `temporal server start-dev`
+	// with nothing registered. Unlike runs there is no paging — see
+	// [ListSchedulesRequest] for why, and for what the response says instead.
+	ListSchedules(context.Context, *connect.Request[v1.ListSchedulesRequest]) (*connect.Response[v1.ListSchedulesResponse], error)
+	// DescribeSchedule reports one schedule: its cadence, its arguments, when it
+	// next fires and what it has done lately.
+	DescribeSchedule(context.Context, *connect.Request[v1.DescribeScheduleRequest]) (*connect.Response[v1.DescribeScheduleResponse], error)
+	// DeleteSchedule removes a schedule. Runs it already started are unaffected —
+	// they are ordinary workloads, and stopping one is `Cancel`.
+	DeleteSchedule(context.Context, *connect.Request[v1.DeleteScheduleRequest]) (*connect.Response[v1.DeleteScheduleResponse], error)
+	// PauseSchedule stops a schedule firing without removing it, which is what an
+	// incident wants: the arrangement is still there, still reviewable, and not
+	// running.
+	PauseSchedule(context.Context, *connect.Request[v1.PauseScheduleRequest]) (*connect.Response[v1.PauseScheduleResponse], error)
+	// ResumeSchedule lets a paused schedule fire again.
+	ResumeSchedule(context.Context, *connect.Request[v1.ResumeScheduleRequest]) (*connect.Response[v1.ResumeScheduleResponse], error)
+	// TriggerSchedule fires a schedule now, without waiting for its cadence.
+	//
+	// The verb that makes a schedule testable. Creating one and waiting until
+	// Tuesday to find out whether it works is not a development loop, and the
+	// alternative — running the workflow by hand — proves the workflow rather than
+	// the schedule: it does not exercise the arguments the schedule stored, the
+	// tenant it records on the runs it starts, or the queue it puts them on.
+	//
+	// It fires even a paused schedule, which is Temporal's behavior and the useful
+	// one: create paused, trigger once to see what happens, then resume.
+	TriggerSchedule(context.Context, *connect.Request[v1.TriggerScheduleRequest]) (*connect.Response[v1.TriggerScheduleResponse], error)
 }
 
 // NewWorkflowServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -409,6 +604,48 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 		connect.WithSchema(workflowServiceMethods.ByName("GetCatalog")),
 		connect.WithHandlerOptions(opts...),
 	)
+	workflowServiceCreateScheduleHandler := connect.NewUnaryHandler(
+		WorkflowServiceCreateScheduleProcedure,
+		svc.CreateSchedule,
+		connect.WithSchema(workflowServiceMethods.ByName("CreateSchedule")),
+		connect.WithHandlerOptions(opts...),
+	)
+	workflowServiceListSchedulesHandler := connect.NewUnaryHandler(
+		WorkflowServiceListSchedulesProcedure,
+		svc.ListSchedules,
+		connect.WithSchema(workflowServiceMethods.ByName("ListSchedules")),
+		connect.WithHandlerOptions(opts...),
+	)
+	workflowServiceDescribeScheduleHandler := connect.NewUnaryHandler(
+		WorkflowServiceDescribeScheduleProcedure,
+		svc.DescribeSchedule,
+		connect.WithSchema(workflowServiceMethods.ByName("DescribeSchedule")),
+		connect.WithHandlerOptions(opts...),
+	)
+	workflowServiceDeleteScheduleHandler := connect.NewUnaryHandler(
+		WorkflowServiceDeleteScheduleProcedure,
+		svc.DeleteSchedule,
+		connect.WithSchema(workflowServiceMethods.ByName("DeleteSchedule")),
+		connect.WithHandlerOptions(opts...),
+	)
+	workflowServicePauseScheduleHandler := connect.NewUnaryHandler(
+		WorkflowServicePauseScheduleProcedure,
+		svc.PauseSchedule,
+		connect.WithSchema(workflowServiceMethods.ByName("PauseSchedule")),
+		connect.WithHandlerOptions(opts...),
+	)
+	workflowServiceResumeScheduleHandler := connect.NewUnaryHandler(
+		WorkflowServiceResumeScheduleProcedure,
+		svc.ResumeSchedule,
+		connect.WithSchema(workflowServiceMethods.ByName("ResumeSchedule")),
+		connect.WithHandlerOptions(opts...),
+	)
+	workflowServiceTriggerScheduleHandler := connect.NewUnaryHandler(
+		WorkflowServiceTriggerScheduleProcedure,
+		svc.TriggerSchedule,
+		connect.WithSchema(workflowServiceMethods.ByName("TriggerSchedule")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/flowstate.v1.WorkflowService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case WorkflowServiceRunProcedure:
@@ -429,6 +666,20 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 			workflowServiceCompileHandler.ServeHTTP(w, r)
 		case WorkflowServiceGetCatalogProcedure:
 			workflowServiceGetCatalogHandler.ServeHTTP(w, r)
+		case WorkflowServiceCreateScheduleProcedure:
+			workflowServiceCreateScheduleHandler.ServeHTTP(w, r)
+		case WorkflowServiceListSchedulesProcedure:
+			workflowServiceListSchedulesHandler.ServeHTTP(w, r)
+		case WorkflowServiceDescribeScheduleProcedure:
+			workflowServiceDescribeScheduleHandler.ServeHTTP(w, r)
+		case WorkflowServiceDeleteScheduleProcedure:
+			workflowServiceDeleteScheduleHandler.ServeHTTP(w, r)
+		case WorkflowServicePauseScheduleProcedure:
+			workflowServicePauseScheduleHandler.ServeHTTP(w, r)
+		case WorkflowServiceResumeScheduleProcedure:
+			workflowServiceResumeScheduleHandler.ServeHTTP(w, r)
+		case WorkflowServiceTriggerScheduleProcedure:
+			workflowServiceTriggerScheduleHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -472,4 +723,32 @@ func (UnimplementedWorkflowServiceHandler) Compile(context.Context, *connect.Req
 
 func (UnimplementedWorkflowServiceHandler) GetCatalog(context.Context, *connect.Request[v1.GetCatalogRequest]) (*connect.Response[v1.GetCatalogResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.GetCatalog is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) CreateSchedule(context.Context, *connect.Request[v1.CreateScheduleRequest]) (*connect.Response[v1.CreateScheduleResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.CreateSchedule is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) ListSchedules(context.Context, *connect.Request[v1.ListSchedulesRequest]) (*connect.Response[v1.ListSchedulesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.ListSchedules is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) DescribeSchedule(context.Context, *connect.Request[v1.DescribeScheduleRequest]) (*connect.Response[v1.DescribeScheduleResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.DescribeSchedule is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) DeleteSchedule(context.Context, *connect.Request[v1.DeleteScheduleRequest]) (*connect.Response[v1.DeleteScheduleResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.DeleteSchedule is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) PauseSchedule(context.Context, *connect.Request[v1.PauseScheduleRequest]) (*connect.Response[v1.PauseScheduleResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.PauseSchedule is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) ResumeSchedule(context.Context, *connect.Request[v1.ResumeScheduleRequest]) (*connect.Response[v1.ResumeScheduleResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.ResumeSchedule is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) TriggerSchedule(context.Context, *connect.Request[v1.TriggerScheduleRequest]) (*connect.Response[v1.TriggerScheduleResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.TriggerSchedule is not implemented"))
 }

@@ -50,7 +50,7 @@ const (
 // misspelled `timout:` that is silently ignored does nothing at run time and gives
 // the author no reason to doubt it, which is the worst of both outcomes.
 var (
-	workflowKeys = []string{"edition", "name", "description", "inputs", "outputs", "vars", "steps"}
+	workflowKeys = []string{"edition", "name", "description", "inputs", "outputs", "vars", "steps", "triggers"}
 
 	// The keys of one input declaration and of one output declaration. Both are
 	// mappings keyed by the name being declared, so these are the keys *under* a
@@ -490,6 +490,16 @@ func (c *compiler) compile(file *ast.File) *v1.Workflow {
 	// change what it says.
 	if f, found := fields.get("inputs"); found {
 		workflow.DeclaredInputs = c.declaredInputs(f.value, "inputs", ref{path: "inputs", label: "inputs"})
+	}
+
+	// How the workflow starts on its own, read after what it takes and before what
+	// it does — which is where an author writes it, because "this is the nightly
+	// report" is a fact about the whole file rather than about any step in it.
+	//
+	// Nothing here starts anything: both drivers ignore this, and creating the
+	// schedule is `flow schedule create`. See flowfile/triggers.go.
+	if f, found := fields.get("triggers"); found {
+		workflow.Triggers = c.triggers(f.key, f.value, "triggers", ref{path: "triggers", label: "triggers"})
 	}
 
 	// Read before steps, because every step's expressions may reference these and a

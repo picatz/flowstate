@@ -1005,6 +1005,88 @@ authors stop hand-building secret-bearing headers), an `idempotency_key`, and
 declared egress capabilities. Each interacts with policy or secrets and none blocks
 the vocabulary work.
 
+### `triggers:` — the file declares a cadence, a person creates it *(landed)*
+
+A workload that has to run every night is not an unusual workload; it is most of the
+maintenance work in any system. Until now expressing one meant a cron entry somewhere
+else calling `flow run`, which puts half the workload's definition in a file nobody
+reviews with it — and gives up everything durable execution is for, since a cron job
+that fires while the machine is rebooting simply does not happen.
+
+Temporal has first-class Schedules, so the work here is a *spelling*, not a mechanism:
+
+```yaml
+triggers:
+  schedule:
+    cron: "0 7 * * MON-FRI"      # or a list of expressions
+    time_zone: Europe/Dublin     # empty means UTC
+    jitter: 5m                   # spread firings, so a fleet is not a herd
+    overlap: skip                # what to do if the last one is still going
+```
+
+or, when the cadence is an interval rather than a calendar:
+
+```yaml
+triggers:
+  schedule:
+    every: 15m
+```
+
+Four decisions are worth writing down, because each had a plausible alternative.
+
+**`triggers:` is a mapping, and `schedule:` is a key in it.** A bare `schedule:` at the
+top level would be one word shorter and would make the second kind of trigger — a
+webhook, an event — a third and fourth top-level key competing with `steps:` for the
+reader's eye. It is also not a oneof in the schema: a workload that runs nightly *and*
+on a webhook is an ordinary thing to want, and a oneof would make expressing it a
+schema change rather than a second key.
+
+**Declaring is not creating.** `flow run` does not create a schedule, `flow run local`
+ignores the block entirely, and a scheduled workflow is therefore still an ordinary
+file both drivers execute once, now — which is what lets `examples/scheduled-report`
+run in CI like every other example. Creating the schedule is `flow schedule create`,
+typed by a person. The reason is not ceremony: a file that starts running on its own
+the moment it merges is a surprise, and a surprise whose first firing is
+indistinguishable from somebody having meant it.
+
+That reconciles the awkward part of putting a schedule in a file at all. A schedule
+*instance* is a property of a deployment — two environments running one workflow will
+want different cadences — but the *intent* is a property of the workload, written by
+whoever wrote the steps and reviewed with them. So the file declares and the operator
+creates, and `Workflow.triggers` carries the declaration because the Flowfile compiles
+to that message and nothing else: a block with no field would either be dropped on the
+floor, which is the shape `flow fix`'s history says never to build, or would need a
+second compilation output that only one command reads.
+
+**Arguments are not written here.** There is no `inputs:` under a schedule. What a
+scheduled run is started with comes from the command that creates it — `flow schedule
+create report.yaml --name report-eu --input region=eu-west-1` — through the same flags
+and the same `BindRunInputs` a run uses. Two reasons: arguments are the deployment's
+answer (which account, which region) where the cadence is the workload's, and an input
+declaration already carries a default, so writing them here would make one value
+expressible in two places with a precedence rule nobody benefits from learning.
+
+They are bound and type-checked **at creation**, once, and stored bound. Not at each
+firing: a refusal at 03:00 in a worker's log, for a mistake made at a keyboard a week
+earlier, is exactly the failure the fail-closed rule exists to prevent. It also means a
+declaration edited afterwards cannot change what an existing schedule passes.
+
+**What the validator says about a cron expression, and what it does not.** `0 9 * *`
+has four fields and is wrong on every cluster in the world, so `flow validate` reports
+it with a line and a column, as it reports anything else that is a property of the
+file. Whether *this* Temporal cluster's zone database has `Europe/Dublin` is a property
+of a deployment, so the zone is checked for shape and nothing more — the standing rule
+from "Diagnostics are a feature", where a false diagnostic is worse than a missing one.
+The checker is deliberately generous: `L`, `W`, `15#3` and `?` are cron syntax it does
+not model, and it lets them through rather than inventing a restriction Flowstate does
+not have.
+
+Not surfaced yet, each additive with no break: calendar specs and their `skip`
+exceptions (a cron expression says the same thing in a notation people already know),
+`start_at`/`end_at` bounds, the catchup window, pause-on-failure, a limit on the number
+of firings, and backfill. An operator wanting one today reaches for the `temporal` CLI
+against the schedule Flowstate created.
+
 ### `${...}` stays; `!expr` is refused
 
 The fence survives two challenges on its merits.

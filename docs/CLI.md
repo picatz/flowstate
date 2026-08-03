@@ -227,6 +227,34 @@ The exit status is part of the message. A run that finished as a failure exits
 non-zero, so `flow get x && deploy` behaves the way the shell reader expects — the
 query succeeded, and what it reports is a failure.
 
+## A command is the act; a file is only a declaration
+
+`flow schedule create` exists as a separate verb rather than as something `flow run`
+notices, and the reason generalises beyond schedules.
+
+A Flowfile may declare that a workload is meant to run every weekday at 07:00. That
+declaration is reviewed with the steps it belongs to, which is the whole argument for
+writing it in the file. It is also, on its own, inert: `flow run` does not create a
+schedule and `flow run local` ignores the block, so nothing in this tool turns merging
+a file into work being done. Somebody types the verb.
+
+The cost of the alternative is not that a schedule appears — it is that its *first
+firing looks like somebody meant it*. An unexpected run at 07:00 on a Tuesday is
+indistinguishable from an intended one until somebody goes looking for who asked, which
+is the kind of ambiguity an operator pays for at the worst moment. A verb somebody typed
+leaves an answer to that question.
+
+Two habits follow for anything else that reaches this shape:
+
+- **Refuse everything refusable at the moment a person is present.** `flow schedule
+  create` checks the specification, the cadence and the arguments there, rather than
+  letting a firing discover them. A refusal at 03:00 in a worker's log, about a mistake
+  made at a keyboard a week earlier, is a refusal nobody reads.
+- **Answer with what makes the mistake visible.** `create` prints the next firing times
+  without being asked, because a cadence that means something other than what was
+  intended is almost always obvious there and almost never obvious in the expression
+  that produced it. `--paused` exists so that answer arrives before anything fires.
+
 ## Interactive surfaces are optional, never required
 
 Anything the CLI can do interactively it can also do non-interactively, because the

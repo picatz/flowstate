@@ -580,6 +580,199 @@ flow run local examples/computed-outputs/workflow.yaml --input release=2026.9.0 
 | `--secret-require-namespace` | `bool` | `false` | — | refuse every secret read whose authenticated identity has no tenant namespace |
 | `--signal <string,...>` | `stringArray` | — | — | answer a wait_for_signal step, as name=json (repeatable), e.g. --signal deploy-approved='{"approved": true}' |
 
+## `flow schedule`
+
+Create and manage schedules that run workflows on a cadence
+
+```
+flow schedule [command]
+```
+
+Create and manage schedules. A Flowfile declares the cadence it is meant to run at in a `triggers:` block, and that declaration does nothing until `flow schedule create` is run against it — a file that starts running on its own when it merges is a surprise, and `flow run` therefore never creates one.
+
+A schedule belongs to your tenant and is named within it, so two teams may both have a `nightly-report` without either learning of the other. Firings act as the identity that created the schedule, frozen at that moment.
+
+## `flow schedule create`
+
+Create a schedule from a Flowfile's triggers block
+
+```
+flow schedule create [file] [flags]
+```
+
+Create a schedule that runs a Flowfile's workflow on the cadence its `triggers:` block declares. The specification, its arguments and the cadence are all checked here, while you are present to be told — nothing is left to fail at three in the morning.
+
+Examples:
+
+```sh
+# Create the schedule a file declares:
+flow schedule create examples/scheduled-report/workflow.yaml
+
+# Create it without letting it fire, look at when it would, then start it:
+flow schedule create workflow.yaml --paused
+flow schedule describe my-workflow
+flow schedule resume my-workflow
+
+# One workflow, two cadences, with the arguments each is for:
+flow schedule create report.yaml --name report-eu --input region=eu-west-1
+flow schedule create report.yaml --name report-us --input region=us-east-1
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
+| `--input <string,...>` | `stringArray` | — | — | an argument this run is started with, as name=value (repeatable). The workflow's `inputs:` declaration decides how the value is read: an int is parsed as a number, a bool as true/false, and a list or struct as JSON |
+| `--input-file <string>` | `string` | — | — | a JSON object of arguments, keyed by input name. Values arrive with the types JSON gives them; a --input flag of the same name wins over the file |
+| `--name <string>` | `string` | — | — | what to call the schedule; unset takes the workflow's own name, which is what one cadence per workflow wants |
+| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl carry the server's own schema, so a field is addressable by name |
+| `--paused` | `bool` | `false` | — | create the schedule without letting it fire, so its next firing times can be read before it takes one |
+| `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
+
+## `flow schedule delete`
+
+Delete a schedule
+
+```
+flow schedule delete [name] [flags]
+```
+
+Delete a schedule. Future firings stop; runs it has already started are ordinary workloads and keep going, so stopping one of those is `flow cancel`. Prefer `flow schedule pause` when the arrangement should survive whatever is wrong right now.
+
+Examples:
+
+```sh
+# Delete a schedule:
+flow schedule delete nightly-report
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
+| `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
+
+## `flow schedule describe`
+
+Show one schedule: its cadence, arguments, next firings and recent runs
+
+```
+flow schedule describe [name] [flags]
+```
+
+Show one schedule in full — the cadence as the file declared it, the arguments every firing starts its run with, when it next fires, and what it has run lately.
+
+Examples:
+
+```sh
+# What is this schedule going to do, and what has it done?
+flow schedule describe nightly-report
+
+# The run ids it started, which flow get takes:
+flow schedule describe nightly-report -o json | jq -r '.recentRuns[].workflowId'
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
+| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl carry the server's own schema, so a field is addressable by name |
+| `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
+
+## `flow schedule list`
+
+List your schedules
+
+```
+flow schedule list [flags]
+```
+
+List the schedules belonging to your tenant, with whether each is live and when it next fires.
+
+Examples:
+
+```sh
+# List your schedules:
+flow schedule list
+
+# Just the names, which every other schedule verb takes:
+flow schedule list -o jsonl | jq -r .name
+
+# Which of them are paused?
+flow schedule list -o json | jq -r '.schedules[] | select(.paused) | .name'
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
+| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl carry the server's own schema, so a field is addressable by name |
+| `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
+
+## `flow schedule pause`
+
+Stop a schedule firing, without deleting it
+
+```
+flow schedule pause [name] [flags]
+```
+
+Stop a schedule firing while leaving it in place, which is what an incident wants: the arrangement is still there and still reviewable, and it is not running.
+
+Examples:
+
+```sh
+# Pause a schedule, saying why:
+flow schedule pause nightly-report --note "upstream API is down, INC-4471"
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
+| `--note <string>` | `string` | — | — | recorded on the schedule and shown by list and describe; a paused schedule found by somebody else has no explanation attached unless this is written |
+| `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
+
+## `flow schedule resume`
+
+Let a paused schedule fire again
+
+```
+flow schedule resume [name] [flags]
+```
+
+Let a paused schedule fire again, from its next scheduled time. Firings missed while it was paused are not made up.
+
+Examples:
+
+```sh
+flow schedule resume nightly-report --note "upstream recovered"
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
+| `--note <string>` | `string` | — | — | replaces the message on the schedule, which is usually still the reason it was paused |
+| `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
+
+## `flow schedule trigger`
+
+Fire a schedule now, without waiting for its cadence
+
+```
+flow schedule trigger [name] [flags]
+```
+
+Fire a schedule now. This is what makes a schedule testable: it exercises the arguments the schedule stored, the tenant it records on the runs it starts and the queue it puts them on, none of which running the workflow by hand would prove. A paused schedule fires too, which is what `create --paused`, `trigger`, `resume` is for.
+
+Examples:
+
+```sh
+# Fire it now and watch what it started:
+flow schedule trigger nightly-report
+flow schedule describe nightly-report
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
+| `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
+
 ## `flow server`
 
 Start a server

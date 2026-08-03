@@ -23,6 +23,13 @@ rather than failing opaquely when `--address` was not given.
 | `flowstate_list` | via a server | `flowstate.v1.ListRequest` |
 | `flowstate_cancel` | via a server | `flowstate.v1.CancelRequest` |
 | `flowstate_terminate` | via a server | `flowstate.v1.TerminateRequest` |
+| `flowstate_create_schedule` | via a server | `flowstate.v1.CreateScheduleRequest` |
+| `flowstate_list_schedules` | via a server | `flowstate.v1.ListSchedulesRequest` |
+| `flowstate_describe_schedule` | via a server | `flowstate.v1.DescribeScheduleRequest` |
+| `flowstate_delete_schedule` | via a server | `flowstate.v1.DeleteScheduleRequest` |
+| `flowstate_pause_schedule` | via a server | `flowstate.v1.PauseScheduleRequest` |
+| `flowstate_resume_schedule` | via a server | `flowstate.v1.ResumeScheduleRequest` |
+| `flowstate_trigger_schedule` | via a server | `flowstate.v1.TriggerScheduleRequest` |
 | `flowstate_run_local` | locally | — |
 
 ## `flowstate_validate`
@@ -60,6 +67,34 @@ Ask a run to stop, letting it clean up on the way out.
 ## `flowstate_terminate`
 
 Stop a run immediately, running none of its cleanup. Prefer cancel.
+
+## `flowstate_create_schedule`
+
+Create a schedule that runs a workflow specification on the cadence its triggers.schedule declares. Arguments are bound and type-checked here, once, rather than at each firing. Create it paused to read its next firing times before it takes one.
+
+## `flowstate_list_schedules`
+
+List the caller's schedules, with whether each is live and when it next fires.
+
+## `flowstate_describe_schedule`
+
+Report one schedule: its cadence, the arguments every firing runs with, when it next fires, and what it has run lately.
+
+## `flowstate_delete_schedule`
+
+Delete a schedule. Future firings stop; runs it already started are unaffected and are cancelled with flowstate_cancel.
+
+## `flowstate_pause_schedule`
+
+Stop a schedule firing without deleting it, recording a note saying why.
+
+## `flowstate_resume_schedule`
+
+Let a paused schedule fire again. Firings missed while it was paused are not made up.
+
+## `flowstate_trigger_schedule`
+
+Fire a schedule now rather than waiting for its cadence, which is how a schedule is tested. It returns no run id; describe the schedule to see what it started.
 
 ## `flowstate_run_local`
 

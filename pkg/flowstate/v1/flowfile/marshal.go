@@ -55,6 +55,16 @@ func Marshal(wf *v1.Workflow) ([]byte, error) {
 		doc = append(doc, yaml.MapItem{Key: "inputs", Value: inputs})
 	}
 
+	// How it starts on its own, in the same position the parser reads it and an
+	// author writes it: after what the run takes, above what it does.
+	if triggers := wf.GetTriggers(); triggers != nil {
+		written, err := triggersToYAML(triggers)
+		if err != nil {
+			return nil, err
+		}
+		doc = append(doc, yaml.MapItem{Key: "triggers", Value: written})
+	}
+
 	// Written before steps, which is where an author writes it and so where a reader
 	// looks for it: a value every step can reach belongs above the steps that reach it.
 	if len(wf.GetVars()) > 0 {
