@@ -399,6 +399,9 @@ const runLocalToolDescription = "Execute a Flowfile immediately, in this process
 	"survive this process, Continue-As-New compaction never happens, and parallel steps are rehearsed " +
 	"rather than genuinely distributed. Submit the compiled specification with flowstate_run when the " +
 	"rehearsal is right.\n\n" +
+	"A source declaring `inputs:` is given them in the `inputs` object of this call, keyed by declared " +
+	"name and typed as declared; a required one left out, an undeclared name, or a mistyped value is " +
+	"refused before any step runs. What the source declares under `outputs:` comes back as `runOutputs`.\n\n" +
 	"Answers with {\"run\": <GetResponse>, \"logs\": [...]}: the run's status, timing and step outputs, " +
 	"plus whatever `log:` steps emitted. Invalid sources come back as an error carrying positioned " +
 	"diagnostics (line:column) to correct against."
@@ -419,6 +422,19 @@ type runLocalArguments struct {
 	// reached later still finds its answer, which is what Temporal does for a
 	// durable run.
 	Signals map[string]json.RawMessage `json:"signals,omitempty"`
+
+	// Inputs are the arguments the run is started with, keyed by the name the
+	// submitted source declares under `inputs:`.
+	//
+	// A JSON object, which is what `--input-file` takes, rather than the
+	// `name=value` words a shell hands over: the caller here is composing a
+	// document and already has types. It goes through the same decoder and the
+	// same binder, so an argument means one thing on both surfaces.
+	//
+	// Unlike a signal, this is not an escape hatch around the file — it is the
+	// file's own contract. A name the source does not declare is refused, with
+	// the declared names listed, before any step runs.
+	Inputs map[string]json.RawMessage `json:"inputs,omitempty"`
 }
 
 // runLocalTool declares the tool.
@@ -560,6 +576,16 @@ func runLocalToolHandler(posture *cobra.Command) mcp.ToolHandler {
 			return toolError(err), nil
 		}
 
+		// Bound before the timeout is started and before any provider is opened,
+		// because an argument that does not satisfy the source's `inputs:` is a
+		// fact about the call rather than about the run — and the refusal is the
+		// binder's own text, which is what an agent needs in order to correct the
+		// call rather than the workflow.
+		inputs, err := runLocalToolInputs(workflow, args.Inputs)
+		if err != nil {
+			return toolError(err), nil
+		}
+
 		timeout, _ := posture.Flags().GetDuration("run-local-timeout")
 		if timeout <= 0 {
 			timeout = 2 * time.Minute
@@ -588,7 +614,7 @@ func runLocalToolHandler(posture *cobra.Command) mcp.ToolHandler {
 		ctx = v1.ContextWithLogger(ctx, slog.New(logs))
 
 		started := time.Now()
-		outputs, runErr := v1.Run(ctx, workflow)
+		outputs, runErr := v1.RunWithInputs(ctx, workflow, inputs)
 
 		// ctx here is the run's own deadline, which is what distinguishes a step
 		// that timed out from a run that did: a step's `timeout:` expires an inner
@@ -669,6 +695,49 @@ func runLocalSignalFlags(signals map[string]json.RawMessage) ([]string, error) {
 	slices.Sort(flags)
 
 	return flags, nil
+}
+
+// runLocalToolInputs binds the tool's `inputs` object against the submitted
+// source's declarations.
+//
+// Reassembled into one document and handed to [inputsFromJSON] rather than
+// converted here, so this surface and `--input-file` read a value through one
+// decoder: the same reason [runLocalSignalFlags] renders signals as the flags the
+// CLI already parses. An agent and a person composing the same arguments get the
+// same run, or the same refusal.
+//
+// The refusal is checked here rather than left to the driver for the reason the
+// CLI checks early: [v1.RunWithInputs] binds authoritatively a moment later, and
+// its error would arrive wrapped in an account of a run that never started.
+func runLocalToolInputs(workflow *v1.Workflow, submitted map[string]json.RawMessage) (map[string]*v1.Value, error) {
+	if len(submitted) == 0 {
+		// Absent rather than empty, so a source declaring no `inputs:` is run
+		// exactly as it is without this argument.
+		return nil, checkToolRunInputs(workflow, nil)
+	}
+
+	document, err := json.Marshal(submitted)
+	if err != nil {
+		return nil, fmt.Errorf("reading the inputs argument: %w", err)
+	}
+
+	inputs, err := inputsFromJSON("the inputs argument", document, declaredInputs(workflow))
+	if err != nil {
+		return nil, err
+	}
+
+	return inputs, checkToolRunInputs(workflow, inputs)
+}
+
+// checkToolRunInputs is [checkRunInputs] with the CLI's closing advice replaced by
+// this surface's, since an agent has no flags to correct.
+func checkToolRunInputs(workflow *v1.Workflow, inputs map[string]*v1.Value) error {
+	if _, err := v1.BindRunInputs(workflow, inputs); err != nil {
+		return fmt.Errorf("%w\n  arguments go in the `inputs` object of this call, keyed by the name the "+
+			"source declares under `inputs:`", err)
+	}
+
+	return nil
 }
 
 // runLocalResult is the document the tool answers with.

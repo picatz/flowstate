@@ -323,6 +323,14 @@ type runLocalAnswer struct {
 				} `json:"namedValues"`
 			} `json:"stepValues"`
 		} `json:"outputs"`
+		// The run's answer, beside the transcript above, read by name for the
+		// reason the rest of this struct is: what an agent addresses is the
+		// field, not the Go type behind it.
+		RunOutputs struct {
+			Values map[string]struct {
+				Literal map[string]any `json:"literal"`
+			} `json:"values"`
+		} `json:"runOutputs"`
 	} `json:"run"`
 	Logs []struct {
 		Level   string `json:"level"`
@@ -436,6 +444,159 @@ steps:
 
 	require.NotEmpty(t, answer.Logs, "the step behind the gate did not run")
 	assert.Equal(t, "deploying", answer.Logs[0].Message)
+}
+
+// TestTheRunLocalToolTakesInputs closes the same loop for a workflow that takes
+// arguments: an agent authoring a parameterized file can supply them and read
+// back what the run answered with, without a server.
+//
+// The arguments go in as JSON of the declared types, which is why this is not
+// simply `flow run local --input` in another costume: an agent composing a call
+// already has a document, and the coercion the CLI performs from shell words has
+// nothing to do here.
+func TestTheRunLocalToolTakesInputs(t *testing.T) {
+	t.Parallel()
+
+	session := connectMCP(t, defaultLocalRunPosture())
+
+	result, answer := callRunLocal(t, session, map[string]any{
+		"source": `edition: v2026.2
+name: parameterized
+inputs:
+  service:
+    type: string
+    required: true
+  replicas:
+    type: int
+    default: 2
+outputs:
+  placed:
+    value: ${inputs.service}
+  replicas:
+    value: ${inputs.replicas}
+steps:
+  - id: plan
+    log:
+      message: ${'planning ' + inputs.service}
+`,
+		"inputs": map[string]any{"service": "checkout", "replicas": 5},
+	})
+	require.False(t, result.IsError, "a parameterized workflow failed: %s",
+		result.Content[0].(*mcp.TextContent).Text)
+
+	assert.Equal(t, "STATUS_COMPLETED", answer.Run.Status)
+	require.NotEmpty(t, answer.Logs, "the step did not run")
+	assert.Equal(t, "planning checkout", answer.Logs[0].Message,
+		"the argument did not reach the step that reads it")
+
+	// The answer, in the field a durable run reports it in — which is what makes
+	// this tool's document the one flowstate_get answers with.
+	require.NotNil(t, answer.Run.RunOutputs.Values, "the run reported no declared outputs")
+	assert.Equal(t, "checkout",
+		answer.Run.RunOutputs.Values["placed"].Literal["stringValue"])
+
+	// A whole number sent as JSON stays a whole number: protojson writes an int64
+	// as a string, and a float would have come back under doubleValue instead.
+	assert.Equal(t, "5", answer.Run.RunOutputs.Values["replicas"].Literal["int64Value"],
+		"an int input arrived as something other than an int")
+}
+
+// TestTheRunLocalToolRefusesArgumentsTheSourceDoesNotDeclare is the negative
+// direction, and the one that decides whether `inputs` is a contract or a hole:
+// the names a call may pass are the names the submitted source declared, and the
+// refusal is the binder's — the same text the server gives a caller of Run.
+func TestTheRunLocalToolRefusesArgumentsTheSourceDoesNotDeclare(t *testing.T) {
+	t.Parallel()
+
+	session := connectMCP(t, defaultLocalRunPosture())
+
+	const source = `edition: v2026.2
+name: parameterized
+inputs:
+  service:
+    type: string
+    required: true
+steps:
+  - id: plan
+    log:
+      message: ${'planning ' + inputs.service}
+`
+
+	for _, test := range []struct {
+		name   string
+		inputs map[string]any
+		says   string
+	}{
+		{
+			name:   "a name the source does not declare",
+			inputs: map[string]any{"service": "checkout", "regoin": "eu-west-1"},
+			says:   "is not declared",
+		},
+		{
+			name:   "a required argument left out",
+			inputs: map[string]any{},
+			says:   "is required",
+		},
+		{
+			name:   "a value of the wrong type",
+			inputs: map[string]any{"service": 3},
+			says:   "declared string",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			args := map[string]any{"source": source}
+			if len(test.inputs) > 0 {
+				args["inputs"] = test.inputs
+			}
+
+			result, _ := callRunLocal(t, session, args)
+			require.True(t, result.IsError, "the call was accepted: %v", result.Content)
+			assert.Contains(t, result.Content[0].(*mcp.TextContent).Text, test.says,
+				"the refusal does not say what is wrong with the call")
+		})
+	}
+}
+
+// TestTheRunToolCarriesInputsThroughItsDerivedSchema is the *other* run tool, and
+// the claim being checked is that nothing had to be written for it.
+//
+// flowstate_run submits a RunRequest, whose schema is derived from the message
+// descriptor — so `inputs` became callable on the day the field was added, with
+// no line in this repository naming it. That is the whole argument for deriving
+// the surface, and it is worth an assertion precisely because the alternative
+// failure is silent: a tool that quietly cannot express a field the RPC takes.
+func TestTheRunToolCarriesInputsThroughItsDerivedSchema(t *testing.T) {
+	t.Parallel()
+
+	var request protoreflect.MessageDescriptor
+	for _, method := range workflowServiceMethods() {
+		if method.name == "Run" {
+			request = method.input
+		}
+	}
+	require.NotNil(t, request, "the service declares no Run method")
+
+	schema := schemaForMessage(request)
+
+	properties, ok := schema["properties"].(map[string]any)
+	require.True(t, ok, "the derived schema has no properties")
+
+	inputs, ok := properties["inputs"].(map[string]any)
+	require.True(t, ok,
+		"flowstate_run's schema has no `inputs`, so an agent cannot start a parameterized "+
+			"run: %v", properties)
+	assert.Equal(t, "object", inputs["type"],
+		"RunRequest.inputs is a map, which protojson writes as an object")
+
+	// Derived rather than described: the field's own documentation lives in the
+	// schema, and what this asserts is that the *shape* an agent must send —
+	// values, each a Value message — survived the projection.
+	held, ok := inputs["additionalProperties"].(map[string]any)
+	require.True(t, ok, "the map's value has no schema, so an agent has nothing to send")
+	assert.Equal(t, "object", held["type"],
+		"an argument's value is a Value message, which protojson writes as an object")
 }
 
 // TestTheRunLocalToolReportsDiagnostics: the reason errors come back as tool

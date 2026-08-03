@@ -2,10 +2,14 @@ package main
 
 import (
 	"fmt"
+	"maps"
 	"os"
+	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
@@ -169,7 +173,124 @@ func writeRun(surface *ui.UI, format OutputFormat, response *v1.GetResponse) err
 		return writeJSON(surface, format, response)
 	}
 
+	writeRunOutputs(surface, response)
+
 	return writeStepOutputs(surface, response)
+}
+
+// writeRunOutputs names what the run answered with, for a person.
+//
+// The declared outputs are already in the document on stdout — nested under the
+// transcript, where a `jq` expression finds them — so this is not the answer being
+// delivered a second time. It is the same service [runPosition] and the pending
+// activities perform: the one or two values worth finding before the JSON is read,
+// on the stream where this CLI puts its account of a run.
+//
+// stderr, therefore, and only for a person. A machine format carries `runOutputs` as
+// a field of the message it already writes, and saying it again on another stream
+// would be a second spelling of one fact.
+//
+// Silent when the workflow declared none, which is most workflows: an "outputs"
+// heading over nothing would read as a run that failed to produce what it promised.
+func writeRunOutputs(surface *ui.UI, response *v1.GetResponse) {
+	values := response.GetRunOutputs().GetValues()
+	if len(values) == 0 {
+		return
+	}
+
+	fmt.Fprintf(surface.Err, "%s\n", surface.ErrTheme.Header.Render("outputs"))
+
+	// Sorted, because these arrive in a protobuf map and an unsorted list would
+	// reshuffle itself between two readings of the same finished run.
+	for _, name := range slices.Sorted(maps.Keys(values)) {
+		fmt.Fprintf(surface.Err, "  %s %s\n",
+			surface.ErrTheme.Strong.Render(name),
+			surface.ErrTheme.Muted.Render(renderOutputValue(values[name])))
+	}
+}
+
+// renderOutputValue writes one declared output the way somebody reads it.
+//
+// A string is written as itself rather than quoted, because a URL somebody is about
+// to copy should be copyable. Everything else is written the way it would be written
+// in JSON, which is the notation the rest of this line's reader already has: a list
+// is a list and a struct is an object.
+//
+// This is a *summary*, and it is allowed to be one. The value itself is on stdout in
+// the run's own document, addressable by name and typed by the schema — so a shape
+// this cannot render is a line that says less, never a value that was lost.
+func renderOutputValue(value *v1.Value) string {
+	return renderLiteral(value.GetLiteral())
+}
+
+// renderLiteral renders a CEL literal in JSON notation.
+//
+// Written here rather than borrowed because the engine's own conversion to native Go
+// values is unexported, and this is a rendering for a terminal rather than a
+// conversion anything computes with. A kind it does not know is named rather than
+// guessed at — a line reading `(bytes)` sends a reader to the document on stdout,
+// which is where the value actually is.
+func renderLiteral(literal *expr.Value) string {
+	switch kind := literal.GetKind().(type) {
+	case *expr.Value_StringValue:
+		return kind.StringValue
+	case *expr.Value_BoolValue:
+		return strconv.FormatBool(kind.BoolValue)
+	case *expr.Value_Int64Value:
+		return strconv.FormatInt(kind.Int64Value, 10)
+	case *expr.Value_Uint64Value:
+		return strconv.FormatUint(kind.Uint64Value, 10)
+	case *expr.Value_DoubleValue:
+		return strconv.FormatFloat(kind.DoubleValue, 'g', -1, 64)
+	case *expr.Value_NullValue:
+		return "null"
+
+	case *expr.Value_ListValue:
+		items := make([]string, 0, len(kind.ListValue.GetValues()))
+		for _, item := range kind.ListValue.GetValues() {
+			items = append(items, quotedLiteral(item))
+		}
+
+		return "[" + strings.Join(items, ", ") + "]"
+
+	case *expr.Value_MapValue:
+		entries := make([]string, 0, len(kind.MapValue.GetEntries()))
+		for _, entry := range kind.MapValue.GetEntries() {
+			entries = append(entries, quotedLiteral(entry.GetKey())+": "+quotedLiteral(entry.GetValue()))
+		}
+		// Sorted, because a protobuf map's entries arrive in no order and this line
+		// should read the same twice.
+		slices.Sort(entries)
+
+		return "{" + strings.Join(entries, ", ") + "}"
+
+	case *expr.Value_BytesValue:
+		// Named rather than written out: bytes on a terminal are either unreadable
+		// or a very long line, and the value itself is on stdout.
+		return fmt.Sprintf("(%d bytes)", len(kind.BytesValue))
+
+	case *expr.Value_TypeValue:
+		return kind.TypeValue
+
+	case nil:
+		return ""
+
+	default:
+		// A kind CEL has and this does not render — an enum, a message. Named, so
+		// the line says a value is there and where to read it, rather than nothing.
+		return "(" + strings.TrimPrefix(fmt.Sprintf("%T", kind), "*v1alpha1.Value_") + ")"
+	}
+}
+
+// quotedLiteral renders a literal *inside* a structure, where a string needs its
+// quotes back: `[alpha, beta]` and `["alpha", "beta"]` are different values, and the
+// top-level unquoted form is a convenience for the one-value case only.
+func quotedLiteral(literal *expr.Value) string {
+	if text, ok := literal.GetKind().(*expr.Value_StringValue); ok {
+		return strconv.Quote(text.StringValue)
+	}
+
+	return renderLiteral(literal)
 }
 
 // writeStepOutputs writes a finished run's outputs, and nothing at all when it has

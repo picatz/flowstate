@@ -106,6 +106,12 @@ func runGet(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(surface.Err, "  %s\n", surface.ErrTheme.Muted.Render(line))
 	}
 
+	// What the workflow said it would report, named before the transcript is written
+	// out beneath it — the same section `flow run` and `flow watch` finish with,
+	// through the same function, so one finished run reads the same however it was
+	// asked about.
+	writeRunOutputs(surface, msg)
+
 	if outputs := msg.GetOutputs(); outputs != nil {
 		encoded, err := protojson.Marshal(outputs)
 		if err != nil {

@@ -1,6 +1,7 @@
 package flowstatev1_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -116,7 +117,7 @@ func TestEveryOfflineExampleRuns(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
 			defer cancel()
 
-			outputs, err := v1.Run(ctx, wf)
+			outputs, err := v1.RunWithInputs(ctx, wf, exampleInputs(t, path))
 			require.NoError(t, err, "%s validates but does not run", name)
 			require.NotNil(t, outputs)
 
@@ -144,6 +145,55 @@ func TestEveryOfflineExampleRuns(t *testing.T) {
 	// silently running nothing and reporting success.
 	assert.GreaterOrEqual(t, ran, 8,
 		"expected most examples to be runnable offline; only %d were, which suggests the network check is wrong", ran)
+}
+
+// exampleInputs reads the arguments an example is run with, from an inputs.json
+// beside its workflow.yaml.
+//
+// Nil where there is no such file, which is every example but one: a workflow that
+// declares no `inputs:`, or declares them all with defaults, runs with nothing —
+// and an example must run as written, because "paste this and watch it work" is
+// what an example is for.
+//
+// The one exception is the point of the convention. `parameterized-deploy` exists
+// to show a *required* input, and a required input with a default is not one — so
+// the example would either demonstrate nothing or not run here. The file beside it
+// is what `flow run local --input-file` takes, so what CI runs is a command a
+// reader can run, and the example's own comments name it.
+//
+// Read here rather than through the CLI's parser because that lives in package
+// main. What is shared is the decoding rule the parser exists to get right — JSON
+// numbers are read as written, so an int declaration is given an int — and the
+// binding itself, which is [v1.RunWithInputs] on both sides.
+func exampleInputs(tb testing.TB, workflowPath string) map[string]*v1.Value {
+	tb.Helper()
+
+	data, err := os.ReadFile(filepath.Join(filepath.Dir(workflowPath), "inputs.json"))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	require.NoError(tb, err)
+
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+
+	var fields map[string]any
+	require.NoError(tb, decoder.Decode(&fields),
+		"%s has an inputs.json that is not a JSON object", filepath.Dir(workflowPath))
+
+	inputs := make(map[string]*v1.Value, len(fields))
+	for name, value := range fields {
+		if number, ok := value.(json.Number); ok {
+			whole, err := number.Int64()
+			require.NoError(tb, err, "input %q is not a whole number", name)
+			inputs[name] = v1.NewLiteral(whole)
+
+			continue
+		}
+		inputs[name] = v1.NewValue(value)
+	}
+
+	return inputs
 }
 
 // TestEveryNetworkedExampleRuns runs the other half — the ones skipped above.
@@ -227,7 +277,7 @@ func TestEveryNetworkedExampleRuns(t *testing.T) {
 				Step:     auth.StepRef{Workflow: wf.GetName(), Run: "example-run"},
 			})
 
-			outputs, err := v1.Run(ctx, wf)
+			outputs, err := v1.RunWithInputs(ctx, wf, exampleInputs(t, path))
 			require.NoError(t, err, "%s validates but does not run", name)
 			require.NotNil(t, outputs)
 

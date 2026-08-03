@@ -244,6 +244,80 @@ value, declare it at the top of the file — that is what the ambient position i
 See [examples/workflow-vars](examples/workflow-vars) and
 [examples/step-vars](examples/step-vars).
 
+### What a run takes, and what it answers: `inputs:` and `outputs:`
+
+A `vars:` block names what the *file* decided. `inputs:` names what the *caller* decides,
+and `outputs:` names what the run reports back:
+
+```yaml
+edition: v2026.2
+name: deploy
+
+inputs:
+  service:
+    type: string
+    required: true
+    description: which service to deploy
+  region:
+    type: string
+    default: eu-west-1
+  replicas:
+    type: int
+    default: 2
+
+outputs:
+  placed:
+    value: ${inputs.service + ' in ' + inputs.region}
+    description: what this run deployed and where
+
+steps:
+  - id: plan
+    log:
+      message: ${'planning ' + inputs.service}
+      fields:
+        replicas: ${string(inputs.replicas)}
+```
+
+An input is declared with a `type:` — `string`, `int`, `float`, `bool`, `list` or
+`struct` — and either a `default:` or `required: true`. It is read as `${inputs.<name>}`,
+rooted for the reason `vars.` and `steps.` are: a root cannot collide with a step id, so
+no precedence rule has to exist for anyone to read the file. Inputs are in scope wherever
+an expression is — a step's `if:`, its `vars:`, a task's inputs — except in the
+workflow-level `vars:` block, which is evaluated before the run has arguments.
+
+Arguments are values, never expressions: `${...}` in an argument is refused rather than
+evaluated, because an expression is something a reviewed file says and an argument is
+data a caller sends. Everything else is refused while the caller is still there to be
+told — an undeclared name, a missing required input, a value of the wrong type — by one
+function both drivers call, so a rehearsal refuses exactly what production refuses.
+
+Supply them on the command line, where the declaration decides how each word is read:
+
+```console
+$ flow run local examples/parameterized-deploy/workflow.yaml --input service=checkout --input replicas=3
+$ flow run local examples/parameterized-deploy/workflow.yaml --input-file examples/parameterized-deploy/inputs.json
+```
+
+`--input name=value` is repeatable; a `list` or `struct` is written as JSON
+(`--input targets='["alpha","beta"]'`). `--input-file` takes a JSON object keyed by input
+name, which is the form for arguments that outgrew a command line, and a `--input` flag
+wins over the file it is given beside.
+
+`outputs:` names expressions evaluated once, after every step has finished, against the
+run's whole scope — `${steps.<id>.<output>}`, `${vars.<name>}` and `${inputs.<name>}`.
+They are the run's *answer*, as against the transcript of what each step produced, and
+they come back in the `runOutputs` field of the same document either driver writes:
+
+```console
+$ flow run local examples/computed-outputs/workflow.yaml -o json | jq .runOutputs
+```
+
+An output that cannot be computed fails the run: an output is the answer somebody asked
+for, so a run that cannot produce its answer has not succeeded.
+
+See [examples/parameterized-deploy](examples/parameterized-deploy) and
+[examples/computed-outputs](examples/computed-outputs).
+
 ### Saying why a step is there
 
 A step can carry `description:` — prose the mechanics under it cannot supply, written
@@ -1087,9 +1161,9 @@ Run `flow <command> --help` for the full flags of any of these.
 | `flow validate <file...>` | Check Flowfiles without executing them. Reports the line and column of each problem. `--output json` or `jsonl` carries the diagnostics as data. |
 | `flow fix <path...>` | Rewrite Flowfiles from a retired spelling into the current one, preserving comments and formatting. `--check` reports and writes nothing, exiting non-zero if there is work. |
 | `flow fmt <path...>` | Rewrite Flowfiles into the form `flowfile.Marshal` writes. Unlike `flow fix`, this does not preserve comments, blank lines, key order, or quote style — it renders from the parsed workflow, not the source text. `--check` reports and writes nothing; `--stdout` writes one file's result to standard output. A file that does not parse is left untouched. |
-| `flow run <file>` | Submit a workflow to a server, which runs it durably, and follow the run until it finishes. |
-| `flow run local <file>` | Run a workflow in this process, with no server and no Temporal. Answers signal gates from `--signal name=json`. `--output json` or `jsonl` carries the same document `flow run` writes. |
-| `flow get <id>` | Report what a run is doing, and its outputs if it finished. Status on stderr, outputs on stdout, so `flow get id \| jq` sees only the data. |
+| `flow run <file>` | Submit a workflow to a server, which runs it durably, and follow the run until it finishes. Arguments for a workflow's `inputs:` come from `--input name=value` (repeatable) or `--input-file inputs.json`. |
+| `flow run local <file>` | Run a workflow in this process, with no server and no Temporal. Takes the same `--input`/`--input-file` as `flow run`, and answers signal gates from `--signal name=json`. `--output json` or `jsonl` carries the same document `flow run` writes. |
+| `flow get <id>` | Report what a run is doing, and its outputs if it finished. Status and the run's declared `outputs:` on stderr, the outputs document on stdout, so `flow get id \| jq` sees only the data. |
 | `flow watch <id>` | Follow a run until it finishes: a live view on a terminal, one line per change without one. Exits with the run's outcome. |
 | `flow list` | List your runs. |
 | `flow signal <id> <name>` | Deliver a signal to a run that is waiting, which is how a human approval reaches a workload. |

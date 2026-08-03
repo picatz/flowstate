@@ -34,6 +34,12 @@ import (
 // author would put them and where `flow validate` can see them. There is nothing
 // naming a URL, a secret, or a policy: what a run may reach is decided by the
 // flags `flow mcp` was started with, so no argument here can widen it.
+//
+// `inputs` is not an exception to that, which is why it is here and `vars` is
+// not. An input is a name the *submitted source* declared, of a type it named,
+// checked against those declarations before the run starts — so this argument
+// widens nothing the file did not already offer, and a name the file does not
+// declare is refused rather than quietly bound.
 func runLocalInputSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
@@ -43,6 +49,17 @@ func runLocalInputSchema() map[string]any {
 				"description": "The Flowfile YAML to execute, exactly as it would be written to disk — " +
 					"including the `edition:` line. It is parsed and validated first; a file with any " +
 					"diagnostic is reported and not executed.",
+			},
+			"inputs": map[string]any{
+				"type": "object",
+				"additionalProperties": map[string]any{
+					"description": "The value for one declared input, as JSON of the declared type.",
+				},
+				"description": "Arguments the run is started with, keyed by the name the source declares " +
+					"under `inputs:` — the same thing `flow run local --input-file` supplies. Values are " +
+					"JSON of the declared type. A name the source does not declare, a value of the wrong " +
+					"type, or a required input left out is refused before any step runs, with the declared " +
+					"names listed.",
 			},
 			"signals": map[string]any{
 				"type": "object",

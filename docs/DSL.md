@@ -1891,10 +1891,22 @@ below, `flow validate` checks the deferred list (duplicate names, the four lexer
 tokens, literal-only defaults, the required-with-default contradiction, default
 type), `${inputs.<name>}` resolves as a fourth root in every expression position,
 and both drivers bind submitted values, apply defaults, and evaluate declared
-outputs once in the segment that finishes the run. What is still owed is the house
-gate's last clause: `flow run --input` and the two `examples/` that exercise it in
-CI, plus `check:`, `env.Check` in the LSP, typed hover, and the `secret:` taint —
-the rest of this phase, not the tail of this item.
+outputs once in the segment that finishes the run. The house gate's last clause is
+met too: `flow run` and `flow run local` take `--input name=value` and
+`--input-file inputs.json`, `flowstate_run_local` takes an `inputs` object (and
+`flowstate_run` carried `inputs` the day the field landed, its schema being
+derived from the descriptor), declared outputs are reported as `runOutputs` by
+`flow get` and by both drivers' documents, and `examples/parameterized-deploy/` and
+`examples/computed-outputs/` exercise both blocks in CI. What is still owed is
+`check:`, `env.Check` in the LSP, typed hover, and the `secret:` taint — the rest
+of this phase, not the tail of this item.
+
+One limit worth writing down where the spelling is, because it is not obvious from
+the blocks: the workflow-level `vars:` block cannot read `${inputs.<name>}`. Vars
+are evaluated once before the first step, against an empty scope, in an activity
+that is handed the declared vars and nothing else — so an argument is in scope for
+a step's `if:`, a step's own `vars:`, and a task's inputs, but not for the ambient
+block above them.
 
 The spelling it is landing under, so that the schema and the surface cannot be
 designed twice:

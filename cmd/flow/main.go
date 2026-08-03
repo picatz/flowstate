@@ -383,8 +383,21 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 
 	surface := newSurface(cmd)
 
+	// The arguments this run is started with, coerced against what the file declares.
+	// Checked here as well as at the server, for the message rather than for the
+	// control: a missing or mistyped argument is a fact about the command line, and
+	// reading it back as a remote invalid-argument sends an author looking at the
+	// wrong machine. The server binds them again regardless.
+	inputs, err := runInputs(cmd, workflow)
+	if err != nil {
+		return err
+	}
+	if err := checkRunInputs(workflow, inputs); err != nil {
+		return err
+	}
+
 	started, err := newWorkflowServiceClient(serverFlagsOf(cmd)).Run(cmd.Context(),
-		connect.NewRequest(&v1.RunRequest{Workflow: workflow}))
+		connect.NewRequest(&v1.RunRequest{Workflow: workflow, Inputs: inputs}))
 	if err != nil {
 		return fmt.Errorf("starting %s: %w", workflow.GetName(), err)
 	}
@@ -1271,11 +1284,20 @@ flow lsp`,
 			"and the outputs on stdout when the run produced them. The exit code is the " +
 			"run's, so `flow run x && ./promote.sh` behaves the way a shell reader expects.\n\n" +
 			"Stopping watching does not stop the run. The workflow id is printed as soon as " +
-			"the run starts, so `flow watch` can pick it up again afterwards.",
+			"the run starts, so `flow watch` can pick it up again afterwards.\n\n" +
+			"A workflow that declares `inputs:` is given them with --input name=value or " +
+			"--input-file inputs.json. The declaration decides how a value is read, so an " +
+			"argument that does not fit is refused here, before the run starts.",
 		Args: cobra.ExactArgs(1),
 		RunE: runWorkflow,
 		Example: `# Run a workflow and watch it:
 flow run examples/hello-world/workflow.yaml
+
+# Run a workflow that takes arguments:
+flow run examples/parameterized-deploy/workflow.yaml --input service=checkout --input replicas=3
+
+# Or send the same arguments as a document:
+flow run examples/parameterized-deploy/workflow.yaml --input-file examples/parameterized-deploy/inputs.json
 
 # Run it and pipe the outputs, with the live view still on the terminal:
 flow run examples/hello-world/workflow.yaml | jq .stepValues
@@ -1289,6 +1311,7 @@ flow validate examples/hello-world/workflow.yaml`,
 
 	addOutputFlag(runCmd)
 	addFollowFlags(runCmd)
+	addInputFlags(runCmd)
 
 	// Run local command, which executes a workflow locally without using Temporal or the Flowstate service.
 	runLocalCmd := &cobra.Command{
@@ -1301,7 +1324,11 @@ flow validate examples/hello-world/workflow.yaml`,
 			"same document `flow run` writes — so a `jq` expression written against one works " +
 			"against the other.\n\nWhat it cannot give you is durability. A local run is a " +
 			"process: it has no run id, nothing can watch it, and it does not survive this " +
-			"command being interrupted.",
+			"command being interrupted.\n\n" +
+			"Arguments are given the same way `flow run` takes them — --input name=value or " +
+			"--input-file inputs.json — and are bound against the workflow's `inputs:` by the " +
+			"same function the server binds them with, so a rehearsal refuses what production " +
+			"refuses.",
 		Args: cobra.MinimumNArgs(1),
 		RunE: runLocalWorkflow,
 		Example: `# Run a workflow locally:
@@ -1317,10 +1344,14 @@ flow run local examples/hello-world/workflow.yaml | jq .stepValues.hello.namedVa
 flow run local examples/hello-world/workflow.yaml -o json | jq -r .status
 
 # Run a workflow with an approval gate, answering the gate up front:
-flow run local examples/approval-gate/workflow.yaml --signal deploy-approved='{"approved": true}'`,
+flow run local examples/approval-gate/workflow.yaml --signal deploy-approved='{"approved": true}'
+
+# Run a workflow that takes arguments, and read what it answered with:
+flow run local examples/computed-outputs/workflow.yaml --input release=2026.9.0 -o json | jq .runOutputs`,
 	}
 
 	addOutputFlag(runLocalCmd)
+	addInputFlags(runLocalCmd)
 
 	// Supplying signals up front is what makes an approval gate something an author
 	// can exercise on their laptop rather than first meeting in production. A local
