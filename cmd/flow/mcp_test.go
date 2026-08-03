@@ -2,14 +2,19 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
@@ -23,6 +28,13 @@ import (
 // longer has fails. The same pattern as the README's command table, for the
 // same reason: a hand-kept list is fine exactly as long as a test holds it to
 // the source of truth.
+//
+// The surface is no longer only RPCs, and the pin says so explicitly rather than
+// being loosened to accommodate it. flowstate_run_local is the local driver and
+// deliberately has no RPC behind it, so the assertion is now: every RPC has a
+// tool, and every tool that is not an RPC's is one this test names. A tool added
+// without a line here still fails, which is the direction that matters — a
+// surface that quietly grows is one nobody reviews.
 func TestToolsMatchTheServiceDescriptor(t *testing.T) {
 	t.Parallel()
 
@@ -49,9 +61,76 @@ func TestToolsMatchTheServiceDescriptor(t *testing.T) {
 		assert.True(t, names[name],
 			"the dispatch table lists %q, which the service no longer declares", name)
 	}
+
+	// The other direction, against what a client actually sees rather than
+	// against the table: registration is where a tool becomes real.
+	registered := registeredToolNames(t)
+
+	for name := range names {
+		assert.True(t, registered[mcpToolName(name)],
+			"rpc %s has a dispatch row but no registered tool", name)
+	}
+	for name := range registered {
+		if documentedLocalTools[name] {
+			continue
+		}
+
+		assert.True(t, names[rpcNameOfTool(name)],
+			"`flow mcp` serves %q, which is neither an RPC's tool nor one of the documented "+
+				"local tools (%v); add it to documentedLocalTools deliberately, with the reason "+
+				"it is not a service method", name, documentedLocalToolNames())
+	}
+	for name := range documentedLocalTools {
+		assert.True(t, registered[name],
+			"%q is documented as a local tool and nothing registers it", name)
+	}
 }
 
-// TestEveryToolHasADescription keeps the one hand-written map complete.
+// documentedLocalTools names every tool on this surface that is not the
+// projection of an RPC.
+//
+// There is one, and it should stay hard to add to. A tool with no service method
+// behind it is a capability that exists only here — no Connect client, no CLI
+// verb, nothing else to compare its behavior against — so each one is a
+// deliberate exception rather than a category.
+//
+// flowstate_run_local: the local driver, executing in this process. Not an RPC
+// because a server executing a submitted workflow in-process is a different
+// product, and inventing a service method for it would be that product's first
+// half.
+var documentedLocalTools = map[string]bool{
+	runLocalToolName: true,
+}
+
+func documentedLocalToolNames() []string {
+	names := make([]string, 0, len(documentedLocalTools))
+	for name := range documentedLocalTools {
+		names = append(names, name)
+	}
+
+	return names
+}
+
+// rpcNameOfTool inverts mcpToolName, so a registered tool can be matched back to
+// the method it claims to serve.
+func rpcNameOfTool(tool string) string {
+	var b strings.Builder
+	for _, word := range strings.Split(strings.TrimPrefix(tool, mcpToolPrefix), "_") {
+		if word == "" {
+			continue
+		}
+		b.WriteString(strings.ToUpper(word[:1]))
+		b.WriteString(word[1:])
+	}
+
+	return b.String()
+}
+
+// TestEveryToolHasADescription keeps the hand-written prose complete.
+//
+// Read off the registered tools rather than off the descriptions map, because
+// the map covers only the RPC half: a local tool shipping mute would have been
+// invisible to the map-shaped version of this test.
 func TestEveryToolHasADescription(t *testing.T) {
 	t.Parallel()
 
@@ -64,6 +143,39 @@ func TestEveryToolHasADescription(t *testing.T) {
 	for name := range mcpDescriptions {
 		assert.True(t, names[name],
 			"mcpDescriptions describes %q, which the service does not declare", name)
+	}
+
+	for _, tool := range registeredTools(t) {
+		assert.NotEmpty(t, tool.Description,
+			"tool %s has no description; a mute tool is one a model cannot choose", tool.Name)
+		assert.NotNil(t, tool.InputSchema,
+			"tool %s advertises no input schema", tool.Name)
+	}
+}
+
+// TestTheRunLocalToolDescribesWhatItDoesNotProve.
+//
+// The description is the only thing a model reads before deciding to trust a
+// result, and this tool's result is a rehearsal: the run had no durability, no
+// compaction, and its egress was whatever this process was started with. A
+// description that omitted any of that would be accurate about what happened and
+// misleading about what it means.
+func TestTheRunLocalToolDescribesWhatItDoesNotProve(t *testing.T) {
+	t.Parallel()
+
+	description := runLocalTool().Description
+
+	for _, claim := range []string{
+		"no server",
+		"no Temporal",
+		"denied",
+		"secret",
+		"Continue-As-New",
+		"durab",
+	} {
+		assert.Contains(t, description, claim,
+			"the run_local description does not mention %q, which is something an agent "+
+				"reading its result needs to know", claim)
 	}
 }
 
@@ -87,28 +199,67 @@ func serviceMethodNames(t *testing.T) map[string]bool {
 	return names
 }
 
+// registeredTools asks a connected client what the server serves.
+//
+// Over the protocol rather than off the registration code, because what a tool
+// list means is what a client receives.
+func registeredTools(t *testing.T) []*mcp.Tool {
+	t.Helper()
+
+	session := connectMCP(t, defaultLocalRunPosture())
+
+	result, err := session.ListTools(t.Context(), &mcp.ListToolsParams{})
+	require.NoError(t, err)
+
+	return result.Tools
+}
+
+func registeredToolNames(t *testing.T) map[string]bool {
+	t.Helper()
+
+	names := map[string]bool{}
+	for _, tool := range registeredTools(t) {
+		names[tool.Name] = true
+	}
+
+	return names
+}
+
+// connectMCP stands the server up over an in-memory transport and returns a
+// connected client session.
+//
+// posture is the flag set a run_local call executes under, which is the whole of
+// what a test is choosing when it calls this: everything else is the one
+// registration an agent connects to.
+func connectMCP(t *testing.T, posture *cobra.Command) *mcp.ClientSession {
+	t.Helper()
+
+	srv := mcp.NewServer(&mcp.Implementation{Name: "flowstate", Version: "test"}, nil)
+
+	addMCPTools(srv, server.New(nil), func() flowstatev1connect.WorkflowServiceClient {
+		t.Error("a local tool dialed the server")
+
+		return nil
+	}, posture)
+
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+
+	go func() { _ = srv.Run(t.Context(), serverTransport) }()
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "test"}, nil)
+	session, err := client.Connect(t.Context(), clientTransport, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	return session
+}
+
 // TestTheValidateToolAnswersOverTheProtocol is the functional half: a real MCP
 // client, over an in-memory transport, calling the tool an agent would call.
 func TestTheValidateToolAnswersOverTheProtocol(t *testing.T) {
 	t.Parallel()
 
-	srv := mcp.NewServer(&mcp.Implementation{Name: "flowstate", Version: "test"}, nil)
-
-	addMCPTools(srv, server.New(nil), func() flowstatev1connect.WorkflowServiceClient {
-		t.Fatal("a local tool dialed the server")
-
-		return nil
-	})
-
-	serverTransport, clientTransport := mcp.NewInMemoryTransports()
-
-	serverDone := make(chan error, 1)
-	go func() { serverDone <- srv.Run(t.Context(), serverTransport) }()
-
-	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "test"}, nil)
-	session, err := client.Connect(t.Context(), clientTransport, nil)
-	require.NoError(t, err)
-	defer session.Close()
+	session := connectMCP(t, defaultLocalRunPosture())
 
 	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
 		Name: mcpToolName("Validate"),
@@ -150,4 +301,352 @@ func TestTheValidateToolAnswersOverTheProtocol(t *testing.T) {
 		"the diagnostic lost its position crossing the protocol")
 	assert.Contains(t, files[0].Diagnostics[0].Message, "nope",
 		"the diagnostic does not name what the author wrote")
+}
+
+// runLocalAnswer is the tool's document, as a caller reads it.
+//
+// Written out rather than decoded into the schema types on purpose: what is
+// under test is the *document* an agent receives, so reading it the way an agent
+// would — by field name, through encoding/json — is what proves the names are
+// there. Unmarshalling into a GetResponse would pass on bytes no third party
+// could address.
+type runLocalAnswer struct {
+	Run struct {
+		Status string `json:"status"`
+		Error  struct {
+			Message string `json:"message"`
+		} `json:"error"`
+		Outputs struct {
+			StepValues map[string]struct {
+				NamedValues map[string]struct {
+					Literal map[string]any `json:"literal"`
+				} `json:"namedValues"`
+			} `json:"stepValues"`
+		} `json:"outputs"`
+	} `json:"run"`
+	Logs []struct {
+		Level   string `json:"level"`
+		Message string `json:"message"`
+	} `json:"logs"`
+	Note string `json:"note"`
+}
+
+// callRunLocal calls the tool and decodes its answer.
+func callRunLocal(t *testing.T, session *mcp.ClientSession, args map[string]any) (*mcp.CallToolResult, runLocalAnswer) {
+	t.Helper()
+
+	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name:      runLocalToolName,
+		Arguments: args,
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, result.Content)
+
+	text := result.Content[0].(*mcp.TextContent).Text
+
+	// A failed run still answers with the document — the status and the reason
+	// are the two things a model needs to decide what to do next — so this
+	// decodes whatever came back. Only a refusal before the run (a diagnostic) is
+	// bare text, and the tests for those read the text.
+	var answer runLocalAnswer
+	if err := json.Unmarshal([]byte(text), &answer); err != nil && !result.IsError {
+		require.NoError(t, err, "the tool's answer is not a JSON document: %s", text)
+	}
+
+	return result, answer
+}
+
+// TestTheRunLocalToolExecutesAWorkflow closes the loop the surface used to
+// dead-end at: a file an agent could write, executed, with its outputs and its
+// narration coming back as data.
+func TestTheRunLocalToolExecutesAWorkflow(t *testing.T) {
+	t.Parallel()
+
+	session := connectMCP(t, defaultLocalRunPosture())
+
+	result, answer := callRunLocal(t, session, map[string]any{
+		"source": `edition: v2026.2
+name: offline
+vars:
+  who: world
+steps:
+  - id: greet
+    log:
+      message: ${"hello %s".format([vars.who])}
+    vars:
+      greeting: ${"hello %s".format([vars.who])}
+`,
+	})
+	require.False(t, result.IsError, "a valid workflow reported an error: %s",
+		result.Content[0].(*mcp.TextContent).Text)
+
+	assert.Equal(t, "STATUS_COMPLETED", answer.Run.Status)
+
+	_, ok := answer.Run.Outputs.StepValues["greet"]
+	assert.True(t, ok,
+		"the run reported nothing for the step it ran, so an agent cannot tell it ran: %+v",
+		answer.Run.Outputs)
+
+	// The narration is data rather than a stream, because stdout on this surface
+	// is the protocol — a `log:` step writing there would corrupt the session it
+	// is reporting into.
+	require.NotEmpty(t, answer.Logs, "a log: step emitted nothing an agent can read")
+	assert.Equal(t, "hello world", answer.Logs[0].Message,
+		"the message the step composed did not survive into the answer")
+	assert.Equal(t, "INFO", answer.Logs[0].Level)
+}
+
+// TestTheRunLocalToolAnswersAGate rehearses an approval gate, which is the thing
+// an author most wants to exercise before production and least wants to first
+// meet there.
+func TestTheRunLocalToolAnswersAGate(t *testing.T) {
+	t.Parallel()
+
+	session := connectMCP(t, defaultLocalRunPosture())
+
+	result, answer := callRunLocal(t, session, map[string]any{
+		"source": `edition: v2026.2
+name: gated
+steps:
+  - id: approval
+    wait_for_signal:
+      name: deploy-approved
+      timeout: 30s
+
+  - id: deploy
+    if: ${steps.approval.payload.approved}
+    log:
+      message: deploying
+`,
+		"signals": map[string]any{
+			"deploy-approved": map[string]any{"approved": true, "by": "someone@example.com"},
+		},
+	})
+	require.False(t, result.IsError, "the gated workflow failed: %s",
+		result.Content[0].(*mcp.TextContent).Text)
+
+	assert.Equal(t, "STATUS_COMPLETED", answer.Run.Status)
+
+	approval, ok := answer.Run.Outputs.StepValues["approval"]
+	require.True(t, ok, "the wait reported no outputs: %+v", answer.Run.Outputs)
+	assert.Equal(t, false, approval.NamedValues["timed_out"].Literal["boolValue"],
+		"a gate answered up front reported as timed out")
+	assert.NotEmpty(t, approval.NamedValues["payload"].Literal,
+		"the payload supplied in the tool's signals did not reach the waiting step")
+
+	require.NotEmpty(t, answer.Logs, "the step behind the gate did not run")
+	assert.Equal(t, "deploying", answer.Logs[0].Message)
+}
+
+// TestTheRunLocalToolReportsDiagnostics: the reason errors come back as tool
+// results rather than protocol errors is that a model can act on them. A
+// diagnostic without a position is one it cannot act on.
+func TestTheRunLocalToolReportsDiagnostics(t *testing.T) {
+	t.Parallel()
+
+	session := connectMCP(t, defaultLocalRunPosture())
+
+	result, _ := callRunLocal(t, session, map[string]any{
+		"source": "edition: v2026.2\nname: x\nsteps:\n  - id: a\n    nope:\n      x: y\n",
+	})
+	require.True(t, result.IsError, "an invalid Flowfile executed without complaint")
+
+	text := result.Content[0].(*mcp.TextContent).Text
+	assert.Contains(t, text, "nope", "the diagnostic does not name what the author wrote")
+	assert.Regexp(t, `\d+:\d+:`, text,
+		"the diagnostic carries no line:column, so an agent cannot find what to fix: %s", text)
+}
+
+// TestTheRunLocalToolRefusesEgressByDefault is the negative direction, and the
+// one that matters.
+//
+// The tenancy lesson generalizes: asserting that a permitted thing works is a
+// functionality test wearing a security test's clothes. What has to be proved
+// here is that a workflow a model composed *cannot* make this process fetch a
+// URL when nobody turned egress on — so the assertion is on the run failing, at
+// a public address, with no server of ours anywhere near it.
+//
+// It goes through applyMCPEgressPolicy rather than constructing a policy,
+// because the posture under test is the one `flow mcp` starts with.
+func TestTheRunLocalToolRefusesEgressByDefault(t *testing.T) {
+	posture := defaultLocalRunPosture()
+	require.NoError(t, applyMCPEgressPolicy(posture))
+
+	session := connectMCP(t, posture)
+
+	result, answer := callRunLocal(t, session, map[string]any{
+		"source": `edition: v2026.2
+name: exfiltrate
+steps:
+  - id: fetch
+    http:
+      url: https://example.com/
+`,
+	})
+	require.True(t, result.IsError,
+		"a run reached a non-loopback URL with no egress policy configured: %s",
+		result.Content[0].(*mcp.TextContent).Text)
+
+	assert.Equal(t, "STATUS_FAILED", answer.Run.Status)
+	// The whole phrase, because "failed" is not the assertion: a sandbox with no
+	// route to the internet would fail this run too, and a test satisfied by that
+	// would pass on a machine where egress was wide open.
+	assert.Contains(t, answer.Run.Error.Message, "denied by egress policy",
+		"the run failed for some reason other than the egress policy denying it, so this "+
+			"proves nothing about the policy: %s", answer.Run.Error.Message)
+}
+
+// TestTheRunLocalAnswerIsBounded.
+//
+// The outputs are whatever the submitted workflow chose to produce, and the
+// consumer is a context window. What is asserted is both directions of the
+// bound: the answer comes in under it, and it is still a JSON document that
+// says what it dropped — cutting the bytes at the limit would satisfy the first
+// half while making the answer unreadable, which is the failure this shape
+// exists to avoid.
+func TestTheRunLocalAnswerIsBounded(t *testing.T) {
+	t.Parallel()
+
+	outputs := &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{}}
+	for i := range 64 {
+		outputs.StepValues[fmt.Sprintf("step_%d", i)] = &v1.Node_Outputs{
+			NamedValues: map[string]*v1.Value{
+				"body": v1.NewValue(strings.Repeat("x", 32<<10)),
+			},
+		}
+	}
+
+	response := localRun(outputs, nil, nil, time.Now(), time.Now())
+
+	encoded, err := renderRunLocalResult(response, []runLocalLogRecord{{Level: "INFO", Message: "hi"}})
+	require.NoError(t, err)
+	assert.LessOrEqual(t, len(encoded), maxRunLocalResultBytes,
+		"a run's outputs are the workflow's choice, and this one spent %d bytes of a model's context",
+		len(encoded))
+
+	var answer runLocalAnswer
+	require.NoError(t, json.Unmarshal(encoded, &answer),
+		"the bounded answer is not parseable, which makes a large run indistinguishable from a broken tool")
+
+	assert.NotEmpty(t, answer.Note, "the answer was trimmed and does not say so")
+	assert.Equal(t, "STATUS_COMPLETED", answer.Run.Status,
+		"trimming took the status with it; the two things worth keeping are what happened and why")
+}
+
+// TestARunThatFitsIsNotTrimmed is the other side of that bound: an ordinary run
+// keeps its outputs and its logs, so the trimming path cannot quietly become the
+// normal one.
+func TestARunThatFitsIsNotTrimmed(t *testing.T) {
+	t.Parallel()
+
+	outputs := &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+		"greet": {NamedValues: map[string]*v1.Value{"body": v1.NewValue("hello")}},
+	}}
+
+	encoded, err := renderRunLocalResult(
+		localRun(outputs, nil, nil, time.Now(), time.Now()),
+		[]runLocalLogRecord{{Level: "INFO", Message: "hi"}},
+	)
+	require.NoError(t, err)
+
+	var answer runLocalAnswer
+	require.NoError(t, json.Unmarshal(encoded, &answer))
+
+	assert.Empty(t, answer.Note)
+	assert.Len(t, answer.Logs, 1)
+	assert.Equal(t, "hello",
+		answer.Run.Outputs.StepValues["greet"].NamedValues["body"].Literal["stringValue"])
+}
+
+// TestTheRunLocalToolRefusesUnknownArguments.
+//
+// The schema says additionalProperties:false and the handler has to mean it: an
+// argument invented by a model and silently dropped is a tool that reports
+// success for something it did not do — and the plausible invention here is
+// exactly the dangerous one, a caller trying to widen its own egress.
+func TestTheRunLocalToolRefusesUnknownArguments(t *testing.T) {
+	t.Parallel()
+
+	session := connectMCP(t, defaultLocalRunPosture())
+
+	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name: runLocalToolName,
+		Arguments: map[string]any{
+			"source":        "edition: v2026.2\nname: x\nsteps:\n- id: a\n  log:\n    message: hi\n",
+			"egress_policy": "/tmp/anything.yaml",
+		},
+	})
+
+	// Either the SDK refuses it against the advertised schema or the handler
+	// does; what must not happen is the run proceeding as though the argument had
+	// not been sent.
+	if err != nil {
+		return
+	}
+	require.True(t, result.IsError,
+		"an unknown argument was accepted: %v", result.Content)
+}
+
+// TestTheRunLocalToolNeedsASource keeps the required field required at the
+// handler, not only in the schema a client may or may not enforce.
+func TestTheRunLocalToolNeedsASource(t *testing.T) {
+	t.Parallel()
+
+	session := connectMCP(t, defaultLocalRunPosture())
+
+	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name:      runLocalToolName,
+		Arguments: map[string]any{"source": "   "},
+	})
+	require.NoError(t, err)
+	assert.True(t, result.IsError, "a blank source executed")
+}
+
+// TestRunLocalFlagsMirrorRunLocal holds the MCP process's posture to the CLI's.
+//
+// The two are the same driver, so a lever that governs one and not the other is
+// a rehearsal that differs from the rehearsal — the shape of every driver
+// disagreement this repository has found. The comparison is by name and default
+// against the real `flow run local` command, so adding a flag there without
+// considering it here fails, which is the direction that goes wrong silently.
+func TestRunLocalFlagsMirrorRunLocal(t *testing.T) {
+	t.Parallel()
+
+	runLocal := findCommand(t, "run local")
+	mcpCmd := findCommand(t, "mcp")
+
+	// The flags `flow run local` takes that decide what a run may reach, as
+	// opposed to how its answer is printed or how it is signalled from a shell.
+	reach := []string{
+		"egress-policy",
+		"secret-env", "secret-dir", "secret-env-namespace",
+		"secret-dir-namespaced", "secret-require-namespace",
+		"as-subject", "as-issuer", "as-namespace", "as-deployment", "as-claim",
+		"auth-policy", "identity-key",
+	}
+
+	for _, name := range reach {
+		local := runLocal.Flags().Lookup(name)
+		require.NotNil(t, local, "`flow run local` no longer declares --%s; this list is stale", name)
+
+		served := mcpCmd.Flags().Lookup(name)
+		require.NotNil(t, served,
+			"`flow mcp` does not declare --%s, so flowstate_run_local rehearses under a "+
+				"different policy surface than `flow run local` does", name)
+
+		assert.Equal(t, local.DefValue, served.DefValue,
+			"--%s defaults differently on `flow mcp` than on `flow run local`", name)
+	}
+}
+
+// findCommand walks the real CLI tree, so what is compared is what ships.
+func findCommand(t *testing.T, path string) *cobra.Command {
+	t.Helper()
+
+	cmd, _, err := newRootCommand().Find(strings.Fields(path))
+	require.NoError(t, err)
+	require.Equal(t, strings.Fields(path)[len(strings.Fields(path))-1], cmd.Name(),
+		"`flow %s` was not found; the command tree moved", path)
+
+	return cmd
 }

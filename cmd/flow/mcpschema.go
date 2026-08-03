@@ -20,6 +20,50 @@ import (
 // README task table before the test that pinned it to the registry — right
 // until the first change, then quietly wrong for everyone.
 
+// runLocalInputSchema is the one schema on this surface that is written rather
+// than derived, because the tool it describes is the one that is not an RPC.
+//
+// flowstate_run_local is the local driver — a process executing a file — and
+// deliberately has no request message: giving it one would make it a service
+// capability, which is the thing it exists not to be. So there is no descriptor
+// to derive from, and this is written out in the same shape [messageSchema]
+// produces so a client sees one style across the tool list.
+//
+// It stays small on purpose, and the fields that are missing are the design.
+// There is no `vars` — workflow variables are written in the file, where an
+// author would put them and where `flow validate` can see them. There is nothing
+// naming a URL, a secret, or a policy: what a run may reach is decided by the
+// flags `flow mcp` was started with, so no argument here can widen it.
+func runLocalInputSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"source": map[string]any{
+				"type": "string",
+				"description": "The Flowfile YAML to execute, exactly as it would be written to disk — " +
+					"including the `edition:` line. It is parsed and validated first; a file with any " +
+					"diagnostic is reported and not executed.",
+			},
+			"signals": map[string]any{
+				"type": "object",
+				"additionalProperties": map[string]any{
+					"type":        "object",
+					"description": "The payload a wait_for_signal step reads as ${steps.<id>.payload.<key>}.",
+				},
+				"description": "Answers for wait_for_signal steps, by signal name, delivered before the run " +
+					"starts — the same thing `flow run local --signal name=json` does. A gate reached " +
+					"later still finds its answer waiting. A gate with no answer here blocks until its " +
+					"own timeout, or until the call's.",
+			},
+		},
+		"required": []any{"source"},
+		// Refused rather than ignored, for the reason [messageSchema] gives: a
+		// misspelled argument silently dropped is a tool that "worked" and did
+		// something other than what was asked.
+		"additionalProperties": false,
+	}
+}
+
 // schemaForMessage renders a message descriptor as a 2020-12 JSON Schema object
 // describing the message's protojson encoding: camelCase names, enums by name,
 // bytes as base64, 64-bit integers as strings.

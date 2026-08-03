@@ -1535,17 +1535,32 @@ flow plugins -o json | jq -r '.plugins[] | select(.tasks[].name == "example.gree
 		Short: "Serve Flowstate to an AI agent over the Model Context Protocol",
 		Long: "Serve every workflow-service RPC as an MCP tool over stdin and stdout, " +
 			"with input schemas derived from the same protobuf schema the API speaks. " +
-			"Validation and the task catalog answer locally; the run-lifecycle tools " +
-			"call the configured server.",
+			"Validation, the task catalog and local execution answer in this process; " +
+			"the run-lifecycle tools call the configured server.\n\n" +
+			"flowstate_run_local executes a submitted Flowfile here, the way `flow run local` " +
+			"does. What such a run may reach is decided by the flags this process is started " +
+			"with and by nothing a client sends: with no flags, egress is denied and no secret " +
+			"scheme is registered.",
 		Args: cobra.NoArgs,
 		RunE: runMCP,
 		Example: `# Serve the MCP tools on stdio (an MCP client launches this):
 flow mcp
 
 # Against a specific server for the run-lifecycle tools:
-flow mcp --address flowstate.internal:9233`,
+flow mcp --address flowstate.internal:9233
+
+# Permit local runs to reach what an egress policy names, and nothing else:
+flow mcp --egress-policy examples/egress-policy.yaml
+
+# Let local runs resolve one environment secret, under an access policy:
+flow mcp --secret-env API_KEY --auth-policy policy.yaml`,
 	}
 	addServerFlags(mcpCmd)
+
+	// The posture flowstate_run_local executes under, taken at start-up because a
+	// long-lived process serving a model cannot take it per call: an opt-in a
+	// caller can send is not an opt-in. See mcp.go.
+	addLocalRunFlags(mcpCmd)
 
 	// LSP command, which starts a Language Server Protocol (LSP) server for Flowfile files.
 	lspCmd := &cobra.Command{
