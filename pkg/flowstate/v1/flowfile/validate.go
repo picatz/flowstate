@@ -1224,17 +1224,6 @@ func collectReferences(e *expr.Expr, bound map[string]struct{}, rooted map[stepR
 	}
 }
 
-// rootedStepName reads the step a rooted reference names.
-//
-// The chain is walked to its base rather than matched at a fixed depth, because
-// the depth is whatever the author selected: `steps.a` is one select over the
-// root and `steps.a.result.code` is three.
-func rootedStepName(sel *expr.Expr_Select, bound map[string]struct{}) (string, bool) {
-	root, name, _, ok := rootedName(sel, bound)
-
-	return name, ok && root == v1.StepsRoot
-}
-
 // rootedName returns the root a select chain hangs from and the first field under it.
 //
 // One walk for both roots the language has. `steps.a.result` and `vars.region.zone`

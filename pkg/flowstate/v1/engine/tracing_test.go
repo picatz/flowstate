@@ -85,7 +85,7 @@ func renderedSpans(recorder *tracetest.SpanRecorder) []string {
 		)
 
 		for _, attr := range stub.Attributes {
-			rendered = append(rendered, string(attr.Key), attr.Value.Emit(),
+			rendered = append(rendered, string(attr.Key), attr.Value.String(),
 				fmt.Sprintf("%v", attr), fmt.Sprintf("%#v", attr))
 		}
 
@@ -118,7 +118,7 @@ func spanAttributes(t *testing.T, recorder *tracetest.SpanRecorder, name string)
 
 		attrs := make(map[string]string, len(stub.Attributes))
 		for _, attr := range stub.Attributes {
-			attrs[string(attr.Key)] = attr.Value.Emit()
+			attrs[string(attr.Key)] = attr.Value.String()
 		}
 
 		return attrs

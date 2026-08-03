@@ -81,16 +81,15 @@ type TokenExchangeConfig struct {
 
 // tokenExchanger implements RFC 8693 token exchange.
 type tokenExchanger struct {
-	name        string
-	tokenURL    string
-	audience    string
-	target      string
-	resource    string
-	scopes      []string
-	tokenType   string
-	client      *exchangeClient
-	clock       func() time.Time
-	credentials string
+	name      string
+	tokenURL  string
+	audience  string
+	target    string
+	resource  string
+	scopes    []string
+	tokenType string
+	client    *exchangeClient
+	clock     func() time.Time
 }
 
 // NewTokenExchanger returns an [Exchanger] that performs RFC 8693 token exchange.

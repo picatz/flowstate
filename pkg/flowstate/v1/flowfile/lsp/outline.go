@@ -183,23 +183,6 @@ func fillStep(ix *lineIndex, s *outlineStep, entryIndent int) {
 	}
 }
 
-// flowListItems returns the elements of a flow-style list, `[a, b]`, ignoring an
-// unterminated one so a list being typed still yields what has been written.
-func flowListItems(s string) []string {
-	s = strings.TrimSpace(s)
-	if !strings.HasPrefix(s, "[") {
-		return nil
-	}
-	s = strings.TrimSuffix(strings.TrimPrefix(s, "["), "]")
-	var out []string
-	for _, part := range strings.Split(s, ",") {
-		if v := unquote(strings.TrimSpace(part)); v != "" {
-			out = append(out, v)
-		}
-	}
-	return out
-}
-
 // unquote removes the surrounding quotes of a YAML scalar, if any.
 func unquote(s string) string {
 	s = strings.TrimSpace(s)

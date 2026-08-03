@@ -455,7 +455,7 @@ func Test_Store_Resolve_context(t *testing.T) {
 	})
 
 	t.Run("a nil context is refused rather than panicking", func(t *testing.T) {
-		//nolint:staticcheck // deliberately passing nil to check it is handled
+		//lint:ignore SA1012 passing nil is the mistake under test; the refusal is the assertion
 		_, err := mustResolver(t, store).Resolve(nil, ref)
 		require.ErrorContains(t, err, "requires a context")
 	})

@@ -1125,22 +1125,6 @@ func (c *compiler) inputs(n ast.Node, path string, r ref, taskName string, into 
 	}
 }
 
-// hoistVars flattens a `vars` mapping into the inputs around it.
-func (c *compiler) hoistVars(n ast.Node, path string, r ref, into map[string]*v1.Value) {
-	c.pos.record(path, spanOfNode(c.resolveQuiet(n)))
-
-	entries, ok := c.entries(n, path, ref{step: r.step, input: "vars", path: path})
-	if !ok {
-		return
-	}
-	for _, e := range entries {
-		valuePath := fieldPath(path, e.name)
-		if value := c.inputValue(e.value, valuePath, ref{step: r.step, input: e.name, path: valuePath}); value != nil {
-			into[e.name] = value
-		}
-	}
-}
-
 // forEach compiles a loop and its body.
 func (c *compiler) forEach(n ast.Node, path string, r ref) *v1.ForEach {
 	fields, ok := c.fields(n, path, r, forEachKeys)

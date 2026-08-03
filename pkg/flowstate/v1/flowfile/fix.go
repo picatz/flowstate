@@ -664,9 +664,9 @@ func (f *fixer) step(n ast.Node, scope stepScope) {
 		switch name {
 		case "task":
 			f.taskBlock(v)
-		case "for_each":
-			f.renamedKey(v.Value, "iterator", "as")
-			f.nested(v.Value, "steps", inner.with(iteratorOf(v.Value)))
+		case forEachKey:
+			f.renamedKey(v.Value, "iterator", forEachAsKey)
+			f.nested(v.Value, forEachStepsKey, inner.with(iteratorOf(v.Value)))
 		case "parallel":
 			f.branches(v.Value, inner)
 		}

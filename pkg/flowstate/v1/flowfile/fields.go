@@ -86,16 +86,12 @@ func expectedKeys(got string, known []string) string {
 	if suggestion, ok := nearest(got, known); ok {
 		return fmt.Sprintf("did you mean %q?", suggestion)
 	}
-	quoted := make([]string, 0, len(known))
-	for _, name := range known {
-		quoted = append(quoted, name)
-	}
-	switch len(quoted) {
+	switch len(known) {
 	case 1:
-		return fmt.Sprintf("the only key here is %s", quoted[0])
+		return fmt.Sprintf("the only key here is %s", known[0])
 	default:
 		return fmt.Sprintf("the keys here are %s, and %s",
-			strings.Join(quoted[:len(quoted)-1], ", "), quoted[len(quoted)-1])
+			strings.Join(known[:len(known)-1], ", "), known[len(known)-1])
 	}
 }
 

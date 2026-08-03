@@ -303,11 +303,7 @@ func TestPluginEnvironmentIsMinimal(t *testing.T) {
 
 	env := pluginEnv(cfg, "/tmp/s", "real-token")
 
-	var found []string
-	for _, entry := range env {
-		found = append(found, entry)
-	}
-	joined := strings.Join(found, "\n")
+	joined := strings.Join(env, "\n")
 
 	if !strings.Contains(joined, "SOMETHING=configured") {
 		t.Errorf("configured environment was not passed: %v", env)

@@ -464,6 +464,12 @@ func TestSigningKey(t *testing.T) {
 			require.Equal(t, "signing key k (ES256)", rendered)
 		}
 
+		// A type with no exported fields and no custom marshaling is usually a
+		// mistake, and staticcheck says so. Here it is the property under test:
+		// the key holds its material unexported precisely so that encoding it
+		// yields nothing, and the day someone exports a field the assertion
+		// below is what catches it.
+		//lint:ignore SA9005 the empty encoding is the assertion, not an oversight
 		encoded, err := json.Marshal(key)
 		require.NoError(t, err)
 		require.Equal(t, "{}", string(encoded), "a signing key must serialize to nothing")
