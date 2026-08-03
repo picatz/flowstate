@@ -636,3 +636,136 @@ func TestListPagingSurvivesANamespaceThatGrowsUnderIt(t *testing.T) {
 			"run %q was skipped or returned twice while the namespace grew under the walk", id)
 	}
 }
+
+// TestListPagingReachesEveryMatchingRun is the join, which is where the last
+// paging bug lived and where this one would live too.
+//
+// Paging was tested. Filtering is tested. The defect this guards against sits
+// exactly between them: a filter decides *where in a batch a page fills*, so a
+// cursor advanced past the whole batch when the page filled early leaves the
+// unexamined remainder behind a position that has already moved past it. Runs the
+// caller owns and the filter matches, absent from every later page rather than
+// delayed — and the listing reporting itself complete rather than short.
+//
+// So this walks to exhaustion and checks the *set*: every matching run reached,
+// exactly once, and nothing that does not match. A page-shaped assertion cannot
+// see a cursor that skips, which is the whole lesson from last time.
+//
+// The filter deliberately keeps a minority — one run in three — because that is
+// what makes pages fill from the middle of a batch rather than at its edge.
+func TestListPagingReachesEveryMatchingRun(t *testing.T) {
+	t.Parallel()
+
+	const total, pageSize = 23, 5
+
+	all := make([]*workflow.WorkflowExecutionInfo, 0, total)
+	wanted := map[string]bool{}
+	for i := range total {
+		id := fmt.Sprintf("run-%02d", i)
+
+		// Every third run failed; the rest completed.
+		status := enums.WORKFLOW_EXECUTION_STATUS_COMPLETED
+		if i%3 == 0 {
+			status = enums.WORKFLOW_EXECUTION_STATUS_FAILED
+			wanted[id] = true
+		}
+
+		all = append(all, &workflow.WorkflowExecutionInfo{
+			Execution: &common.WorkflowExecution{WorkflowId: id},
+			Status:    status,
+		})
+	}
+
+	require.NotEmpty(t, wanted)
+	require.Less(t, len(wanted), total, "the filter must exclude some runs or this proves nothing")
+
+	temporal := &mocks.Client{}
+	temporal.On("ListWorkflow", mock.Anything, mock.Anything).Return(
+		func(_ context.Context, request *workflowservice.ListWorkflowExecutionsRequest) *workflowservice.ListWorkflowExecutionsResponse {
+			offset := 0
+			if token := request.GetNextPageToken(); len(token) > 0 {
+				parsed, err := strconv.Atoi(string(token))
+				require.NoError(t, err)
+				offset = parsed
+			}
+
+			end := min(offset+int(request.GetPageSize()), len(all))
+
+			resp := &workflowservice.ListWorkflowExecutionsResponse{Executions: all[offset:end]}
+			if end < len(all) {
+				resp.NextPageToken = []byte(strconv.Itoa(end))
+			}
+
+			return resp
+		},
+		nil,
+	)
+
+	server := New(temporal)
+
+	seen := map[string]int{}
+	token := ""
+	pages := 0
+
+	for {
+		response, err := server.List(t.Context(), connect.NewRequest(&v1types.ListRequest{
+			PageSize:  pageSize,
+			PageToken: token,
+			Filter:    `status == "FAILED"`,
+		}))
+		require.NoError(t, err)
+
+		for _, run := range response.Msg.GetRuns() {
+			seen[run.GetWorkflowId()]++
+		}
+
+		pages++
+		require.Less(t, pages, 50, "the filtered listing never terminated")
+
+		token = response.Msg.GetNextPageToken()
+		if token == "" {
+			break
+		}
+	}
+
+	require.Len(t, seen, len(wanted),
+		"walking every page did not reach every matching run: a filter that empties part "+
+			"of a batch is exactly what moves a cursor past runs nobody looked at")
+	for id := range wanted {
+		require.Equal(t, 1, seen[id], "matching run %q was skipped or returned twice", id)
+	}
+	for id := range seen {
+		require.True(t, wanted[id], "run %q came back and does not match the filter", id)
+	}
+}
+
+// TestAFilterTheServerCannotCompileIsRefused is the backstop for a caller that is
+// not the CLI.
+//
+// `flow list --filter` compiles the expression before it makes a request, which is
+// where an author meets the mistake. That is an ergonomic, not a boundary: the RPC
+// is public and a caller can send anything, so the server compiles it too and
+// refuses with InvalidArgument rather than treating an uncompilable filter as one
+// that matches nothing.
+func TestAFilterTheServerCannotCompileIsRefused(t *testing.T) {
+	t.Parallel()
+
+	temporal := &mocks.Client{}
+	server := New(temporal)
+
+	for _, filter := range []string{
+		`status ==`,          // not parseable
+		`stauts == "FAILED"`, // not a name a run has
+		`status == "FAILD"`,  // not a status a run has
+		`workflow_id`,        // not a condition
+	} {
+		_, err := server.List(t.Context(), connect.NewRequest(&v1types.ListRequest{Filter: filter}))
+		require.Error(t, err, "a filter the server cannot compile was accepted: %s", filter)
+		require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err),
+			"a caller's malformed filter was reported as a server fault: %s", filter)
+	}
+
+	// And nothing was asked of Temporal, because a request that cannot be answered
+	// should not cost a round trip.
+	temporal.AssertNotCalled(t, "ListWorkflow", mock.Anything, mock.Anything)
+}

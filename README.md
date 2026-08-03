@@ -1428,3 +1428,31 @@ scan can spend its whole budget among other tenants' runs.
 So an empty page is not the end of the listing — only an empty page token is.
 `flow list` says on stderr when more remain, and `flow list --all` keeps asking
 until they do not.
+
+`--filter` narrows a listing with CEL — the same language a Flowfile's expressions,
+an egress rule and a step's `if:` are written in, rather than a query dialect of its
+own:
+
+```console
+$ flow list --filter 'status == "FAILED"'
+$ flow list --all --filter 'status == "RUNNING" && start_time < timestamp("2026-08-01T00:00:00Z")'
+$ flow list --all --filter 'finished && close_time - start_time > duration("1h")'
+```
+
+It binds a run's own fields: `workflow_id`, `run_id`, `status`, `start_time`,
+`close_time`, `finished`. `status` is the short name — `FAILED`, not
+`STATUS_FAILED` — and comparing it against a name no status has is refused, with
+the real ones listed, rather than quietly matching nothing.
+
+`close_time` is **null** until a run finishes, which is why `finished` exists. Null
+rather than the epoch, because a run that has not finished has no close time, and a
+filter that compared one against a date would otherwise report every running run as
+having finished in 1970. Comparing null is an error — and CEL's `&&` absorbs the
+error from the side it does not need, so the guarded form above does what it looks
+like it does.
+
+A filter narrows the *answer* and not the work. The scan bounds above are unchanged:
+a filter that matches little makes a short page with a token more likely, not a
+longer scan. The expression is compiled by `flow` before the request is made, so a
+mistyped one is refused with a position rather than by a round trip — and compiled
+again by the server, which does not trust a caller to be `flow`.

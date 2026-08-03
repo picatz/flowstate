@@ -353,14 +353,22 @@ flow list --all
 # Keep only the workflow ids, which is what get, signal, cancel and terminate take:
 flow list -o jsonl | jq -r .workflowId
 
-# Every run that is still going:
-flow list --all -o json | jq '.runs[] | select(.status == "STATUS_RUNNING")'
+# Every run that is still going, asked of the server rather than of jq:
+flow list --filter 'status == "RUNNING"'
+
+# What failed since yesterday:
+flow list --all --filter 'status == "FAILED" && start_time > timestamp("2026-08-02T00:00:00Z")'
+
+# Runs that took longer than an hour. close_time is null until a run finishes, so
+# the guard is not decoration: CEL's && absorbs the error from the side it skips.
+flow list --all --filter 'finished && close_time - start_time > duration("1h")'
 ```
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
 | `--all` | `bool` | `false` | — | keep asking until the listing is exhausted, rather than returning one page |
+| `--filter <string>` | `string` | — | — | keep only the runs a CEL expression answers yes about, over `workflow_id`, `run_id`, `status`, `start_time`, `close_time` and `finished` — for example status == "FAILED" |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl carry the server's own schema, so a field is addressable by name |
 | `--page-size <int32>` | `int32` | `0` | — | how many runs to return per page; unset takes the server's default |
 | `--page-token <string>` | `string` | — | — | continue a previous listing from where it stopped |

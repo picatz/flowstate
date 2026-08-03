@@ -87,6 +87,19 @@ func runList(cmd *cobra.Command, args []string) error {
 	pageSize, _ := cmd.Flags().GetInt32("page-size")
 	all, _ := cmd.Flags().GetBool("all")
 	token, _ := cmd.Flags().GetString("page-token")
+	filter, _ := cmd.Flags().GetString("filter")
+
+	// Compiled here as well as on the server, so a mistyped filter is refused
+	// before a request is made — with CEL's own position in the expression, which
+	// is the standard every other diagnostic in this system is held to. A caller
+	// who wrote `stauts == "FAILED"` should not learn it from a round trip, and
+	// should certainly not learn it from an empty listing.
+	//
+	// The server compiles it too and does not trust this: a caller is not
+	// necessarily the CLI.
+	if _, err := v1.NewRunFilter(filter); err != nil {
+		return err
+	}
 
 	// The walk is its own function so that every way out of it — success, a
 	// refused page, a token that stopped moving — passes through the one flush
@@ -100,7 +113,7 @@ func runList(cmd *cobra.Command, args []string) error {
 	// forms, so they are flushed through the same path.
 	walk := func() error {
 		for {
-			request := &v1.ListRequest{PageSize: pageSize, PageToken: token}
+			request := &v1.ListRequest{PageSize: pageSize, PageToken: token, Filter: filter}
 			if err := v1.Validate(request); err != nil {
 				return err
 			}
@@ -305,14 +318,26 @@ flow list --all
 # Keep only the workflow ids, which is what get, signal, cancel and terminate take:
 flow list -o jsonl | jq -r .workflowId
 
-# Every run that is still going:
-flow list --all -o json | jq '.runs[] | select(.status == "STATUS_RUNNING")'`,
+# Every run that is still going, asked of the server rather than of jq:
+flow list --filter 'status == "RUNNING"'
+
+# What failed since yesterday:
+flow list --all --filter 'status == "FAILED" && start_time > timestamp("2026-08-02T00:00:00Z")'
+
+# Runs that took longer than an hour. close_time is null until a run finishes, so
+# the guard is not decoration: CEL's && absorbs the error from the side it skips.
+flow list --all --filter 'finished && close_time - start_time > duration("1h")'`,
 	}
 
 	addOutputFlag(listCmd)
 
 	listCmd.Flags().Int32("page-size", 0,
 		"how many runs to return per page; unset takes the server's default")
+
+	listCmd.Flags().String("filter", "",
+		"keep only the runs a CEL expression answers yes about, over `workflow_id`, "+
+			"`run_id`, `status`, `start_time`, `close_time` and `finished` — for example "+
+			`status == "FAILED"`)
 	listCmd.Flags().String("page-token", "",
 		"continue a previous listing from where it stopped")
 	listCmd.Flags().Bool("all", false,

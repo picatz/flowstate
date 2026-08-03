@@ -4797,7 +4797,52 @@ type ListRequest struct {
 	PageSize int32 `protobuf:"varint,1,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
 	// PageToken continues a previous List. Opaque: it encodes where the scan
 	// stopped, and nothing else should be read from or written into it.
-	PageToken     string `protobuf:"bytes,2,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
+	PageToken string `protobuf:"bytes,2,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
+	// Filter keeps only the runs a CEL expression answers yes about.
+	//
+	// CEL because that is what everything else an author writes here is: the
+	// expressions in a Flowfile, the rules in an egress or auth policy, the
+	// condition on a step. A query language of its own would be a second grammar
+	// to learn, a second parser to bound, and a second place for `status` to mean
+	// something slightly different.
+	//
+	// The names it binds are a run's own: `workflow_id`, `run_id`, `status`,
+	// `start_time`, `close_time`, `finished`. `status` is the short name —
+	// `FAILED`, not `STATUS_FAILED` — and comparing it to a name no status has is
+	// refused rather than silently matching nothing.
+	//
+	//	status == "FAILED"
+	//	status == "RUNNING" && start_time < timestamp("2026-08-01T00:00:00Z")
+	//	finished && close_time - start_time > duration("1h")
+	//
+	// `close_time` is null while a run is going — null rather than the epoch,
+	// because a run that has not finished has no close time and a filter that
+	// compared one against a date would otherwise report every running run as
+	// having finished in 1970. Comparing null errors, which is why `finished`
+	// exists: CEL's `&&` absorbs errors from the side it does not need, so the
+	// guarded form above does what it looks like it does.
+	//
+	// # What this bounds, and what it does not
+	//
+	// A filter narrows the *answer*, never the work. The tenant a run belongs to
+	// is a memo, which Temporal cannot query, so a listing is already a bounded
+	// scan with a predicate applied to each result — and a filter that matches
+	// little makes a page more likely to come back short with a token, not more
+	// likely to scan further. The scan bounds are unchanged and unaffected by what
+	// is written here.
+	//
+	// The evaluation itself is cost-bounded per run, well below the budget an
+	// ordinary expression gets, because this one is evaluated once per execution
+	// read and the two multiply.
+	//
+	// # Room this leaves
+	//
+	// When a deployment registers search attributes, the parts of a filter the
+	// visibility store can answer become a query pushed down into it, and the rest
+	// stays a predicate here. That changes what a listing costs and never what it
+	// means: the same filter returns the same runs either way, which is what lets
+	// an operator turn pushdown on without re-reading every saved query.
+	Filter        string `protobuf:"bytes,3,opt,name=filter,proto3" json:"filter,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4842,6 +4887,13 @@ func (x *ListRequest) GetPageSize() int32 {
 func (x *ListRequest) GetPageToken() string {
 	if x != nil {
 		return x.PageToken
+	}
+	return ""
+}
+
+func (x *ListRequest) GetFilter() string {
+	if x != nil {
+		return x.Filter
 	}
 	return ""
 }
@@ -7831,12 +7883,13 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"workflowId\x12\x1f\n" +
 	"\x06run_id\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\x05runId\x12 \n" +
 	"\x06reason\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80\bR\x06reason\"\x13\n" +
-	"\x11TerminateResponse\"_\n" +
+	"\x11TerminateResponse\"\x81\x01\n" +
 	"\vListRequest\x12'\n" +
 	"\tpage_size\x18\x01 \x01(\x05B\n" +
 	"\xbaH\a\x1a\x05\x18\xe8\a(\x00R\bpageSize\x12'\n" +
 	"\n" +
-	"page_token\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\tpageToken\"\xf4\x01\n" +
+	"page_token\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\tpageToken\x12 \n" +
+	"\x06filter\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\x06filter\"\xf4\x01\n" +
 	"\n" +
 	"RunSummary\x12\x1f\n" +
 	"\vworkflow_id\x18\x01 \x01(\tR\n" +
