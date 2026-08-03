@@ -7,8 +7,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 // Saga compensation, held to one set of expectations across both drivers.
@@ -285,6 +287,150 @@ func UndoCases(base string) []UndoCase {
 			},
 			Fails:    false,
 			Recorded: []string{"a", "b"},
+		},
+	}
+}
+
+// UndoCancellationCase is a workflow cancelled while it is parked, paired with
+// what compensating it did.
+//
+// A separate type from [UndoCase] because the thing under test is a different
+// outcome, not a different failure: these runs end CANCELED rather than FAILED,
+// and `Fails` would have to be read as "was stopped", which is precisely the
+// conflation `flow cancel` exists to avoid.
+//
+// What the driver supplies, and why it is not in here: *when* the cancellation
+// arrives. Locally that is cancelling a context; durably it is a cancellation
+// request delivered to a workflow. Those have nothing in common to write down, in
+// the same way that running one compensation has nothing in common between a
+// function call and an activity — which is why [v1.RunUndoLog] takes it as a
+// parameter. What every case does share is that the run is parked on a long wait
+// when it happens, so the cancellation lands at a known point rather than racing
+// the steps.
+type UndoCancellationCase struct {
+	// Name of the case, used for test identification.
+	Name string
+
+	// Workflow is the specification to run. Every case here ends in a wait long
+	// enough that the run is certainly still on it when the cancellation arrives.
+	Workflow *v1.Workflow
+
+	// Summary is the exact text [v1.UndoSummary] must produce for what was taken
+	// back. Empty when nothing was.
+	Summary string
+
+	// Recorded is every token the recording server must have received, in order.
+	Recorded []string
+}
+
+// parks returns a step that waits far longer than any test will, so that a
+// cancellation arriving at any moment finds the run on it.
+func parks(id string) *v1.Node {
+	return &v1.Node{
+		Id:   id,
+		Kind: &v1.Node_Wait{Wait: &v1.Wait{Kind: &v1.Wait_Duration{Duration: durationpb.New(time.Hour)}}},
+	}
+}
+
+// reaches returns a recording step with no compensation, written between the last
+// compensated step and the wait.
+//
+// It exists to make the local driver's cancellation deterministic, and the reason
+// is worth writing down because it is not obvious. The recording server logs a
+// token when the *request arrives*, not when the step finishes, so a test that
+// cancels the moment the last compensated step's token appears can be cancelling
+// while that step is still in flight — and a step cancelled mid-flight never
+// succeeds, so it registers no compensation and the run takes back one thing fewer.
+// The assertion would fail for a reason that is entirely the test's.
+//
+// A token from a step with nothing to undo is the signal that the step before it
+// has certainly finished. Cancelling during *this* step and cancelling at the wait
+// are then indistinguishable in everything these cases assert, which is what makes
+// them deterministic rather than merely usually right.
+func reaches(id, base, token string) *v1.Node {
+	return records(id, base, token)
+}
+
+// UndoCancellationCases are the shared cases for the compensation `flow cancel`
+// triggers. Both drivers run every one of them.
+//
+// This is the half of saga compensation that shipped second, and it shipped
+// because the CLI had been promising it since before there was anything to
+// promise: `flow cancel --help` says a workload that has to release a lock or undo
+// a partial change still does, and for one release it did not. A capability three
+// user-facing surfaces describe and no code performs is worse than an absent one —
+// an operator who cancels a half-finished provisioning run and is told cleanup ran
+// stops looking for what is still allocated.
+//
+// The cases are deliberately the same shapes as [UndoCases], with the failure
+// replaced by a cancellation. Compensation must not acquire a second personality
+// depending on what triggered it: reverse registration order, every entry
+// attempted, one summary. What is genuinely different is the scope it runs in and
+// the bound on it, and neither is visible from here — which is the point. An
+// author reading DSL.md learns one rule.
+func UndoCancellationCases(base string) []UndoCancellationCase {
+	notFound := func(token string) string {
+		return `task "http" failed (InvalidInput): GET ` + base + `/fail/` + token + ` returned status 404`
+	}
+
+	return []UndoCancellationCase{
+		{
+			// The shape the feature is for, and the exact scenario the CLI's help
+			// text describes: two things provisioned, somebody stops the run, and
+			// both come back off in the opposite order.
+			Name: "cancelling a parked run takes its steps back in reverse order",
+			Workflow: &v1.Workflow{
+				Name:    "undo-cancel-reverse",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					undoing(records("first", base, "a"), base, "/do/undo"),
+					undoing(records("second", base, "b"), base, "/do/undo"),
+					reaches("reached", base, "z"),
+					parks("hold"),
+				},
+			},
+			Summary:  `; compensation ran in reverse order: undid "second", undid "first"`,
+			Recorded: []string{"a", "b", "z", "undo-b", "undo-a"},
+		},
+		{
+			// The negative direction, and the one that would be easy to lose while
+			// making the positive one work: a cancelled run with nothing registered
+			// must take nothing back and must not invent a summary. A run parked at
+			// a gate with no `undo:` anywhere in it is every workflow that predates
+			// the feature.
+			Name: "cancelling a run with no compensations takes nothing back",
+			Workflow: &v1.Workflow{
+				Name:    "undo-cancel-none",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					records("first", base, "a"),
+					reaches("reached", base, "z"),
+					parks("hold"),
+				},
+			},
+			Recorded: []string{"a", "z"},
+		},
+		{
+			// A compensation that cannot run must not stop the others, on this path
+			// as on the failure path. Worth its own case rather than assumed from
+			// [UndoCases] because this one runs on a context the cancellation does
+			// not reach: an implementation that got the disconnected scope subtly
+			// wrong would fail *every* entry here, and a suite that only asserted
+			// "some compensation ran" would not see it.
+			Name: "cancelling a run still undoes the rest when one compensation fails",
+			Workflow: &v1.Workflow{
+				Name:    "undo-cancel-partial",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					undoing(records("first", base, "a"), base, "/do/undo"),
+					undoing(records("second", base, "b"), base, "/fail/undo"),
+					reaches("reached", base, "z"),
+					parks("hold"),
+				},
+			},
+			Summary: `; compensation ran in reverse order: could not undo "second": ` +
+				notFound("undo-b") + `, undid "first"`,
+			Recorded: []string{"a", "b", "z", "undo-b", "undo-a"},
 		},
 	}
 }

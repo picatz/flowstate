@@ -30,6 +30,13 @@ func TestDefaultActivityOptionsAreUnchangedByTheMove(t *testing.T) {
 	want := workflow.ActivityOptions{
 		StartToCloseTimeout:    2 * time.Minute,
 		ScheduleToCloseTimeout: 10 * time.Minute,
+
+		// Not part of the move — a later, deliberate change, kept in this literal
+		// because the point of pinning the whole struct is that every field a step
+		// runs under is written down somewhere a diff has to touch.
+		// [TestAStepWaitsForItsOwnCancellation] is where the reasoning lives.
+		WaitForCancellation: true,
+
 		RetryPolicy: &temporal.RetryPolicy{
 			InitialInterval:        time.Second,
 			BackoffCoefficient:     2.0,
@@ -89,4 +96,47 @@ func TestDeclaredTimeoutPrecedenceIsUnchangedByTheMove(t *testing.T) {
 			assert.Equal(t, test.scheduleTo, opts.ScheduleToCloseTimeout)
 		})
 	}
+}
+
+// TestAStepWaitsForItsOwnCancellation pins the option a saga's correctness rests on.
+//
+// Temporal's default for `WaitForCancellation` is false, which resolves an activity
+// future when cancellation is *requested* rather than when the activity has stopped.
+// The workflow then believes the step is over while the worker is still running it,
+// and compensation for a cancelled run starts immediately — so the `delete` races
+// the `create` it is undoing, can win, and the summary reports a resource taken
+// back that is in fact still allocated. That is the one failure mode worse than not
+// compensating at all, because it is the sentence that makes somebody stop looking.
+//
+// Pinned as configuration rather than as a race reproduced in a test, deliberately.
+// The window is real and it is also small and scheduler-dependent, so a test that
+// tried to hit it would either be slow or be the flaky kind that gets deleted — and
+// a deleted test defends nothing. What is asserted instead is the property that
+// closes the window, in both the shape a step gets by default and the shape a step
+// that declares its own policy gets.
+func TestAStepWaitsForItsOwnCancellation(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, defaultActivityOptions().WaitForCancellation,
+		"a cancelled step reports finished before it has stopped, so a compensation "+
+			"can undo work that is still on its way to succeeding")
+
+	// Not overridable, for the reason NonRetryableErrorTypes is not: whether a
+	// workload's effects have actually stopped when the run says they have is not
+	// something a file gets an opinion about. Every knob a step can turn is turned
+	// here, so this fails if a later edit ever routes one of them through this
+	// field.
+	declared := activityOptionsFor(&v1.StepPolicy{
+		Timeout: durationpb.New(time.Second),
+		Retry: &v1.RetryPolicy{
+			MaxAttempts:        9,
+			InitialInterval:    durationpb.New(time.Millisecond),
+			BackoffCoefficient: 3,
+			MaxInterval:        durationpb.New(time.Minute),
+		},
+	})
+
+	assert.True(t, declared.WaitForCancellation,
+		"a step that declares a retry or a timeout stopped waiting for its own "+
+			"cancellation, so declaring an ordinary policy silently reopened the window")
 }

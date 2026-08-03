@@ -2,8 +2,10 @@ package flowstatev1
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // Saga compensation, in the half both drivers must agree about.
@@ -22,6 +24,42 @@ import (
 // What is *not* here is how a task is executed, because that is the one thing the
 // drivers legitimately differ about: locally it is a function call, durably it is
 // an activity. [RunUndoLog] takes that as a parameter and owns everything else.
+
+// UndoBudget is the wall time compensation gets when a *cancellation* is what
+// triggered it.
+//
+// A failure-triggered compensation needs no budget of its own: the run is already
+// failing, nothing is waiting on it, and each entry is bounded by the same
+// per-step timeouts every other task gets. A cancellation is the opposite
+// situation. Somebody typed `flow cancel` and is waiting for the run to stop, and
+// the compensations now run in a scope the cancellation deliberately does not
+// reach — Temporal's disconnected context on one driver, a context stripped of its
+// cancellation on the other. Without a bound of its own, a run asked to stop could
+// keep working for as long as its compensations felt like taking, which is the one
+// thing cancelling it was meant to prevent.
+//
+// So: bounded, and bounded by *time*, because time is the resource the operator is
+// spending. The number is the whole budget for the compensations together rather
+// than for each, and a compensation the budget leaves no room for is reported as
+// [ErrUndoBudget] rather than dropped — see [UndoSummary] for why silence is the
+// wrong answer to "what do I now have to clean up by hand".
+//
+// Two minutes is the same order as [DefaultStartToCloseTimeout], which is what one
+// compensation would get anyway. That is deliberate: a saga of a handful of steps
+// fits, and a saga whose compensations are each minutes long is telling its author
+// that `flow cancel` is not the verb for it.
+const UndoBudget = 2 * time.Minute
+
+// ErrUndoBudget is recorded against a compensation that [UndoBudget] left no room
+// to attempt.
+//
+// A distinct value rather than a string built at each driver, for the reason every
+// other shared value here is one: this sentence ends up in what an operator reads
+// after cancelling a run, and the two drivers must not describe the same outcome
+// differently. It is also the honest wording — the compensation was not attempted
+// and failed, it was not attempted at all, and an operator deciding what to clean
+// up by hand needs that distinction.
+var ErrUndoBudget = errors.New("not attempted: the compensation budget for a cancelled run was already spent")
 
 // UndoLog is the compensations a run has registered and not yet run, oldest first.
 //
@@ -128,6 +166,36 @@ type UndoResult struct {
 // run executes one compensation and is the only thing the two drivers implement
 // differently.
 func RunUndoLog(log *UndoLog, run func(*PendingUndo) error) []UndoResult {
+	return RunUndoLogWithin(log, nil, func(entry *PendingUndo, _ time.Duration) error {
+		return run(entry)
+	})
+}
+
+// RunUndoLogWithin is [RunUndoLog] against a budget, which is what a cancellation
+// compensates under.
+//
+// `remaining` reports how much of [UndoBudget] is left, and is nil on the failure
+// path, where there is no budget: a run that is already failing has nobody waiting
+// on it, and each compensation is bounded by the ordinary per-step timeouts.
+//
+// It is consulted before each entry rather than once at the start, and the amount
+// it reports is handed to `run` so that the compensation about to be attempted can
+// be bounded by what is actually left. That is what makes the number a budget for
+// the run rather than a quota per step: a compensation that returns quickly leaves
+// its unused share to the ones behind it.
+//
+// An entry the budget leaves no room for is *recorded* as [ErrUndoBudget] and not
+// attempted. Recording it is the point. [UndoSummary] exists so that the person
+// reading it can stop looking for what has already been cleaned up, and a
+// compensation silently dropped from that list reads exactly like one that ran.
+// The distinction between "was attempted and failed" and "was never attempted" is
+// also theirs to act on, which is why the two are different sentences.
+//
+// The bound must be enforced here as well as by whatever scope the driver runs
+// compensations in. A context deadline stops a compensation that is *running* when
+// the budget expires; only this stops one that has not started, and only this can
+// say which of the two happened.
+func RunUndoLogWithin(log *UndoLog, remaining func() time.Duration, run func(*PendingUndo, time.Duration) error) []UndoResult {
 	pending := log.Pending()
 	if len(pending) == 0 {
 		return nil
@@ -137,7 +205,18 @@ func RunUndoLog(log *UndoLog, run func(*PendingUndo) error) []UndoResult {
 	for i := len(pending) - 1; i >= 0; i-- {
 		entry := pending[i]
 		result := UndoResult{Step: entry.GetStepId()}
-		if err := run(entry); err != nil {
+
+		var left time.Duration
+		if remaining != nil {
+			if left = remaining(); left <= 0 {
+				result.Err = StepErrorText(ErrUndoBudget)
+				results = append(results, result)
+
+				continue
+			}
+		}
+
+		if err := run(entry, left); err != nil {
 			result.Err = StepErrorText(err)
 		}
 		results = append(results, result)
@@ -307,6 +386,14 @@ func CheckUndoPlacement(node *Node, nested bool) error {
 // a reader needs: what went wrong, then what was done about it. Both drivers build
 // the same suffix from [UndoSummary]; what differs before it is what already
 // differed — the durable driver's `engine: flowstate run failed:` preamble.
+//
+// Wrapping rather than replacing, which matters for a cancellation: the local
+// driver reports a cancelled-and-compensated run through this too, and a caller
+// asking `errors.Is(err, context.Canceled)` must still be told yes. A run somebody
+// stopped on purpose that starts reading as a fault sends whoever finds it later
+// looking for something that never happened. The durable driver's equivalent has
+// to be built differently for exactly the same reason — Temporal decides CANCELED
+// from the error's *type* — and `engine.compensate` says so where it does it.
 func UndoRunError(err error, results []UndoResult) error {
 	summary := UndoSummary(results)
 	if summary == "" {

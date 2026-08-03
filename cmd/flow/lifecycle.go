@@ -327,8 +327,10 @@ flow list --all -o json | jq '.runs[] | select(.status == "STATUS_RUNNING")'`,
 		Short: "Ask a run to stop, letting it clean up",
 		Long: "Ask a run to stop. Cancellation is cooperative: the run is told to stop and " +
 			"gets to finish responding, so a workload that has to release a lock or undo a " +
-			"partial change still does. A run wedged on something that never returns may not " +
-			"stop at all — `flow terminate` is the answer then, and not before.",
+			"partial change still does. A step that declares an `undo:` is taken back, in " +
+			"reverse order, within a bounded budget — the run reports what came off and what " +
+			"did not. A run wedged on something that never returns may not stop at all — " +
+			"`flow terminate` is the answer then, and not before.",
 		Args: cobra.ExactArgs(1),
 		RunE: runCancel,
 		Example: `# Ask a run to stop:

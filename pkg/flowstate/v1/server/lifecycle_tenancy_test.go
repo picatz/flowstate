@@ -266,3 +266,88 @@ func listRunIDs(call func() (*connect.Response[v1.ListResponse], error)) ([]stri
 
 	return ids, nil
 }
+
+// compensatedGatedWorkflow is [gatedWorkflow]'s shape with something to take back:
+// a step that succeeds and declares how it is undone, then the gate.
+//
+// The compensation is a `log` task rather than anything that reaches the world,
+// because what is under test here is the *report* — whether an operator asking a
+// cancelled run what happened is told what came off. Whether the compensations
+// themselves run, and in what order, is the shared cross-driver corpus's question
+// and is answered there against real effects.
+func compensatedGatedWorkflow() *v1.Workflow {
+	provision := &v1.Node{
+		Id: "provision",
+		Kind: &v1.Node_Task{Task: &v1.Task{
+			Name:   "log",
+			Inputs: map[string]*v1.Value{"message": v1.NewLiteral("provisioning")},
+		}},
+		Undo: &v1.Compensation{Task: &v1.Task{
+			Name:   "log",
+			Inputs: map[string]*v1.Value{"message": v1.NewLiteral("deprovisioning")},
+		}},
+	}
+
+	wf := gatedWorkflow()
+	wf.Name = "gated-saga"
+	wf.Steps = append([]*v1.Node{provision}, wf.Steps...)
+
+	return wf
+}
+
+// TestACancelledRunReportsWhatItTookBack is the report half of cancellation
+// compensation, tested where an operator actually meets it.
+//
+// The compensations themselves are pinned by the shared cross-driver cases. What
+// this asks is the next question, and it has its own way of going wrong: a
+// cancelled workflow is closed with a command whose only payload is the error's
+// details, and `Error()` on a cancellation is the bare word "canceled". So the
+// summary can be computed correctly, written into history correctly, and still
+// reach nobody — `flow get` would answer "canceled" to somebody asking what
+// happened to their half-provisioned tenant, which is the question rather than
+// the answer.
+//
+// Reverting the cancellation arm of `failureMessage` fails this, which was
+// checked rather than assumed.
+func TestACancelledRunReportsWhatItTookBack(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTenantFixture(t)
+
+	started, err := fixture.teamA.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+		Workflow: compensatedGatedWorkflow(),
+	}))
+	require.NoError(t, err)
+
+	workflowID := started.Msg.GetWorkflowId()
+
+	waitUntilParkedAtTheGate(t, fixture.temporal, workflowID)
+
+	_, err = fixture.teamA.Cancel(t.Context(), connect.NewRequest(&v1.CancelRequest{
+		WorkflowId: workflowID,
+	}))
+	require.NoError(t, err)
+
+	var final *v1.GetResponse
+	require.Eventually(t, func() bool {
+		resp, err := fixture.teamA.Get(t.Context(), connect.NewRequest(&v1.GetRequest{
+			WorkflowId: workflowID,
+		}))
+		if err != nil || resp.Msg.GetStatus() == v1.RunResponse_STATUS_RUNNING {
+			return false
+		}
+		final = resp.Msg
+
+		return true
+	}, 60*time.Second, 200*time.Millisecond, "a cancelled run never stopped")
+
+	// Still cancelled, not failed. Compensating changes the state of the world and
+	// not what the run was — asserted here as well as in the engine, because this
+	// is the status a person reads.
+	require.Equal(t, v1.RunResponse_STATUS_CANCELED, final.GetStatus(),
+		"a run stopped on purpose reported %s once it compensated", final.GetStatus())
+
+	require.Contains(t, final.GetError().GetMessage(), `undid "provision"`,
+		"a cancelled run that took a step back does not say so, so `flow get` answers "+
+			"the question with the question")
+}

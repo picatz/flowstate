@@ -1,8 +1,11 @@
 package flowstatev1_test
 
 import (
+	"context"
 	"fmt"
+	"slices"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -358,6 +361,73 @@ func TestRunWorkflowUndo(t *testing.T) {
 
 			require.Equal(t, test.Recorded, recorded(),
 				"the effects that happened, and their order, are not what compensating should have produced")
+		})
+	}
+}
+
+// TestRunWorkflowUndoOnCancellation is the local half of the cancellation cases.
+//
+// The engine package runs the identical [tests.UndoCancellationCases]. This is the
+// pairing invariant 3 most needs on this path, because the two drivers do not
+// merely implement it differently — they implement it against different
+// cancellation *mechanisms*. Locally the scope a compensation must escape is a
+// [context.Context]; durably it is a workflow context Temporal has cancelled and
+// every activity scheduled on refuses. An implementation that got either wrong
+// would report a run that took back nothing, having attempted nothing, which is the
+// failure this whole set exists to catch.
+//
+// The cancellation is delivered when the marker token arrives, which is what makes
+// this deterministic rather than timed — see `reaches` in the shared cases for why
+// the last compensated step's own token is the wrong signal to use.
+func TestRunWorkflowUndoOnCancellation(t *testing.T) {
+	for index, outline := range tests.UndoCancellationCases(undoPlaceholderBase) {
+		t.Run(outline.Name, func(t *testing.T) {
+			base, recorded := tests.NewUndoServer(t)
+			test := tests.UndoCancellationCases(base)[index]
+
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+
+			done := make(chan error, 1)
+			go func() {
+				_, err := v1.Run(ctx, test.Workflow)
+				done <- err
+			}()
+
+			require.Eventually(t, func() bool {
+				return slices.Contains(recorded(), "z")
+			}, 30*time.Second, time.Millisecond,
+				"the run never reached the step it was to be cancelled at")
+
+			// `flow cancel`, arriving while the run is parked.
+			cancel()
+
+			var err error
+			select {
+			case err = <-done:
+			case <-time.After(30 * time.Second):
+				t.Fatal("a cancelled run did not stop, so its compensations never ran")
+			}
+
+			require.Error(t, err, "a cancelled run reported success")
+
+			// The distinction the whole feature rests on: a run somebody stopped on
+			// purpose still reads as stopped, not as failed. Compensating must not
+			// change what the run *is* — see [v1.UndoRunError], which wraps for
+			// exactly this reason.
+			require.ErrorIs(t, err, context.Canceled,
+				"a stopped run stopped reading as cancelled once it compensated: %v", err)
+
+			if test.Summary == "" {
+				require.NotContains(t, err.Error(), "compensation ran",
+					"a run with nothing registered reported compensating anyway")
+			} else {
+				require.Contains(t, err.Error(), test.Summary,
+					"the cancellation does not carry the account of what was compensated")
+			}
+
+			require.Equal(t, test.Recorded, recorded(),
+				"the effects that happened, and their order, are not what compensating a cancelled run should have produced")
 		})
 	}
 }

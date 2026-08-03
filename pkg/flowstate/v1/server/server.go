@@ -562,9 +562,31 @@ func failureMessage(
 		return app.Message()
 	}
 
-	// No application error in the chain, which is what a cancellation or a timeout
-	// looks like: the run ended for a reason Temporal knows and the workload never
-	// said anything about. Its own text is then the best there is.
+	// A cancelled run that compensated has something to say, and `Error()` on a
+	// cancellation is the bare word "canceled" — Temporal closes such a run with a
+	// command whose only payload is the error's details, so the account of what was
+	// taken back and what was left behind is in there and nowhere else.
+	//
+	// Reading it here is what makes `flow get` and `flow watch` show it. Without
+	// this the summary is written into history and seen by nobody: the workflow
+	// records it, the status is CANCELED, and the operator asking what happened to
+	// their half-provisioned tenant is told "canceled" — which is the question, not
+	// the answer.
+	//
+	// Prefixed by the status for the same reason the failure path appends rather
+	// than replaces: what stopped, then what was done about it, in that order.
+	var canceled *temporal.CanceledError
+	if errors.As(err, &canceled) && canceled.HasDetails() {
+		var summary string
+		if canceled.Details(&summary) == nil && summary != "" {
+			return status.String() + summary
+		}
+	}
+
+	// No application error in the chain, which is what an uncompensated
+	// cancellation or a timeout looks like: the run ended for a reason Temporal
+	// knows and the workload never said anything about. Its own text is then the
+	// best there is.
 	if text := err.Error(); text != "" {
 		return text
 	}

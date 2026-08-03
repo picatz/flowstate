@@ -796,15 +796,21 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 		// [RunUndoLog] owns all three of those rules and the durable driver reaches
 		// them through the same call.
 		//
-		// Not attempted when the run was cancelled rather than failed: this slice is
-		// failure-triggered compensation, and the two drivers already agree here that
-		// a cancellation is not a step failure (see runNodes below). Compensating a
-		// cancelled run is a real feature and a different one — it needs a scope the
-		// cancellation does not reach, which is Temporal's disconnected context and
-		// has no equivalent here yet. DSL.md says so rather than leaving it to be
-		// inferred from silence.
+		// A cancellation compensates too, and it is the one case that cannot use the
+		// context it arrived on. Every call made with a cancelled context fails
+		// immediately, so compensating on `ctx` would attempt each entry, have each
+		// refused by its own transport before it left the process, and report a run
+		// that "could not undo" everything it had in fact never tried to. The scope
+		// therefore has to survive the cancellation — [context.WithoutCancel] here,
+		// `workflow.NewDisconnectedContext` in the durable driver — and be given a
+		// deadline of its own, because an operator who asked a run to stop is
+		// waiting for it. That deadline is [UndoBudget], read by both drivers.
+		//
+		// The cancellation itself is returned, wrapped: `errors.Is(err,
+		// context.Canceled)` still answers yes, so a caller that distinguishes a
+		// stopped run from a failed one keeps doing so.
 		if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
-			return nil, err
+			return nil, UndoRunError(err, runUndoOnCancel(ctx, w, undo))
 		}
 
 		return nil, UndoRunError(err, RunUndoLog(undo, func(entry *PendingUndo) error {
@@ -955,6 +961,37 @@ func runUndoTask(ctx context.Context, profile string, entry *PendingUndo) error 
 	_, err := runStepWithPolicy(ctx, entry.GetTask(), nil, scope)
 
 	return err
+}
+
+// runUndoOnCancel takes back what a cancelled run did, within [UndoBudget].
+//
+// The context is stripped of the cancellation that brought the run here and given
+// the budget as its whole deadline — not a deadline per compensation, because what
+// is being bounded is how long a run keeps working after being told to stop, and
+// that is a total.
+//
+// The budget is enforced twice over, and the two catch different things: the
+// context stops a compensation that is *running* when it expires, and
+// [RunUndoLogWithin] stops one that has not started, so that it is reported as
+// never attempted rather than as having failed. Both rules are that function's,
+// which is what keeps them identical in the durable driver.
+func runUndoOnCancel(ctx context.Context, w *Workflow, undo *UndoLog) []UndoResult {
+	if undo.Len() == 0 {
+		return nil
+	}
+
+	uctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), UndoBudget)
+	defer cancel()
+
+	deadline, _ := uctx.Deadline()
+
+	return RunUndoLogWithin(undo,
+		func() time.Duration { return time.Until(deadline) },
+		func(entry *PendingUndo, _ time.Duration) error {
+			// The remaining budget is not passed on here: locally it is already
+			// the context's own deadline, and the task honours that.
+			return runUndoTask(uctx, w.GetProfile(), entry)
+		})
 }
 
 // runNode executes one node and returns the outputs it records.

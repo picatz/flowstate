@@ -17,6 +17,18 @@
 # step at the end". The volume was created inside the network, so the network
 # cannot be torn down until the volume is gone. Steps depend forwards, so undoing
 # has to go backwards.
+#
+# A failure is not the only thing that triggers this. `flow cancel` on a run part
+# way through does the same, in the same order, reported in the same sentence —
+# bounded, because somebody is waiting for the run to stop. `flow terminate` does
+# not, and cannot: it stops the run without executing any more of it, which is what
+# the two verbs have always meant.
+#
+# Ctrl-C during `flow run local` is the same thing locally, and is the one way to
+# watch it happen from here: interrupt this file part way through and the steps that
+# had already succeeded come back off before the command exits. CI cannot press
+# Ctrl-C, so what keeps that honest is the shared cross-driver corpus in
+# `pkg/flowstate/v1/tests/undo.go` rather than this example.
 edition: v2026.2
 name: saga-provisioning
 description: Provision a tenant, fail partway, and undo what already succeeded.
