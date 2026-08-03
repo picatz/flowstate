@@ -70,13 +70,22 @@ That is the correct answer from a process that has not been told about this
 plugin, and it is worth keeping correct rather than growing an exception for
 this directory.
 
-## What this does not exercise, and why
+## What proves this file is reachable
 
-This file is not driven by an automated test that builds the plugin,
-launches it, and runs the workflow against it the way
-`TestAFlowfileCanNameAPluginTask` does for `examples/plugins/greet` in
-`pkg/flowstate/v1/plugin`. Writing its equivalent for `plugins/vcs` - a
-separate module, so it cannot be added to `pkg/flowstate/v1/plugin` without
-editing code this engagement does not own - was not done, for time, and is
-recorded here rather than left to be discovered. See the top-level report
-for the same point stated once for both of this repository's new plugins.
+`TestAFlowfileCanNameTheVCSPluginsTasks`, in
+[`plugins/vcs/reachable`](../../../plugins/vcs/reachable), is this file's
+equivalent of `TestAFlowfileCanNameAPluginTask` for `examples/plugins/greet`
+in `pkg/flowstate/v1/plugin`: it builds this plugin as a real, separately
+compiled binary, opens a [`plugin.Host`](../../../pkg/flowstate/v1/plugin)
+over it, and validates this exact file from disk before and after
+registration - refused with a diagnostic naming `vcs.log` beforehand, accepted
+afterward, its inputs checked against the descriptors the plugin actually
+shipped. It lives in its own package under `plugins/vcs` rather than beside
+`main.go`, and rather than in `pkg/flowstate/v1/plugin`: not in the root
+module, because that module must never depend on go-git, and not beside
+`main.go`, because that file imports this plugin's own generated types,
+which would register its schema in the test binary's own global proto
+registry before the test ever ran - see the package doc on
+`plugins/vcs/reachable` for what that would have hidden. It does not run
+`vcs.log` or `vcs.diff` for real, since both reach a real repository over
+HTTPS and that is not what this test is for.

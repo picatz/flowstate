@@ -150,10 +150,13 @@ smoothed over.
 - **SSH remotes.** Only `https://` is accepted; go-git also speaks
   `ssh://`, which this plugin refuses outright by its scheme allowlist
   rather than half-support it without a credential story for SSH keys.
-- **An integration test that builds, launches, and runs this plugin against
-  a real workflow file**, the way `TestAFlowfileCanNameAPluginTask` does for
-  `examples/plugins/greet` in `pkg/flowstate/v1/plugin`. That test lives in
-  the core repository; writing an equivalent for a plugin that is its own
-  module was not done, for time. What exists instead: unit tests for every
-  pure function in this plugin (bounds, classification, containment), and a
-  manually-run example in `examples/plugins/vcs`.
+- ~~An integration test that builds, launches, and runs this plugin against
+  a real workflow file~~ - now `TestAFlowfileCanNameTheVCSPluginsTasks` in
+  [`reachable/`](reachable), this module's own equivalent of
+  `TestAFlowfileCanNameAPluginTask` for `examples/plugins/greet` in
+  `pkg/flowstate/v1/plugin`. It lives in its own package, separate from
+  `main.go`, so that building this plugin's real binary and validating
+  `examples/plugins/vcs/workflow.yaml` against it never has this test
+  binary's own proto registry already holding `vcs.v1` before the
+  reconstruction it exists to check. What exists beside it: unit tests for
+  every pure function in this plugin (bounds, classification, containment).
