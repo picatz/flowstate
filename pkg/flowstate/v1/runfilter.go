@@ -254,7 +254,7 @@ func checkStatusLiterals(ast *cel.Ast) error {
 	valid := StatusNames()
 
 	var bad []string
-	walkStatusComparisons(ast.NativeRep().Expr(), func(literal string) {
+	walkStatusComparisons(ast.NativeRep().Expr(), false, func(literal string) {
 		if !valid[literal] {
 			bad = append(bad, literal)
 		}
@@ -279,61 +279,104 @@ func quoteAll(names []string) string {
 	return strings.Join(quoted, " and ")
 }
 
-// walkStatusComparisons calls found for every string literal compared against
-// `status` with `==` or `!=`.
+// walkStatusComparisons calls found for every string literal compared against the
+// run's `status`, through `==`, `!=`, or membership in a list.
 //
-// Only those two operators, and only a literal on the other side. `status` inside
-// an `in` list, or compared to something computed, is left alone — a check that
-// guessed at those would produce a false diagnostic, and the house rule is that a
-// false one is worse than a missing one.
-func walkStatusComparisons(e ast.Expr, found func(string)) {
+// # Why this has to know what the grammar binds
+//
+// `status` is a name, and a name can be *rebound*. CEL's comprehension macros
+// introduce an iteration variable into their body, so in
+//
+//	["x"].exists(status, status == "x")
+//
+// the `status` inside the body is the macro's variable and has nothing to do with
+// a run. A walker that identified the run field by spelling alone would refuse
+// that filter, reporting `"x"` as an invalid status — a false diagnostic on a
+// perfectly good expression, which this repository holds to be worse than a
+// missing one.
+//
+// This is not a new lesson. CLAUDE.md records `flow fix` corrupting valid files
+// twice for exactly this reason, both times because the rewriter knew less about
+// scope than the language does. The fix there and here is the same: track what the
+// grammar binds, and stop looking through a name once something else has claimed
+// it.
+//
+// # What is checked and what is deliberately not
+//
+// `==`, `!=`, and `in` over a list literal, with a string literal on the other
+// side. A `status` compared to something computed, or tested against a list built
+// at evaluation time, is not something this can decide — and guessing would be the
+// same false diagnostic in a different costume.
+func walkStatusComparisons(e ast.Expr, shadowed bool, found func(string)) {
 	if e == nil {
 		return
 	}
 
-	if e.Kind() == ast.CallKind {
+	switch e.Kind() {
+	case ast.CallKind:
 		call := e.AsCall()
-		if op := call.FunctionName(); op == operators.Equals || op == operators.NotEquals {
-			args := call.Args()
-			if len(args) == 2 {
+		args := call.Args()
+
+		if !shadowed && len(args) == 2 {
+			switch call.FunctionName() {
+			case operators.Equals, operators.NotEquals:
 				if literal, ok := statusComparison(args[0], args[1]); ok {
 					found(literal)
+				}
+			case operators.In:
+				// `status in ["FAILED", "FAILD"]`. Every element that is a string
+				// literal is checked; a list holding anything else is left alone
+				// rather than half-checked.
+				if isStatusIdent(args[0]) && args[1] != nil && args[1].Kind() == ast.ListKind {
+					for _, element := range args[1].AsList().Elements() {
+						if literal, ok := stringLiteral(element); ok {
+							found(literal)
+						}
+					}
 				}
 			}
 		}
 
 		if call.IsMemberFunction() {
-			walkStatusComparisons(call.Target(), found)
+			walkStatusComparisons(call.Target(), shadowed, found)
 		}
-		for _, arg := range call.Args() {
-			walkStatusComparisons(arg, found)
+		for _, arg := range args {
+			walkStatusComparisons(arg, shadowed, found)
 		}
 
-		return
-	}
-
-	// Everything else that can hold a comparison beneath it. Lists and maps are
-	// walked because `status == x` can sit inside one; a select or a comprehension
-	// because a filter is allowed to be more than a flat conjunction.
-	switch e.Kind() {
 	case ast.ListKind:
 		for _, element := range e.AsList().Elements() {
-			walkStatusComparisons(element, found)
+			walkStatusComparisons(element, shadowed, found)
 		}
+
 	case ast.MapKind, ast.StructKind:
 		for _, field := range e.AsMap().Entries() {
 			entry := field.AsMapEntry()
-			walkStatusComparisons(entry.Key(), found)
-			walkStatusComparisons(entry.Value(), found)
+			walkStatusComparisons(entry.Key(), shadowed, found)
+			walkStatusComparisons(entry.Value(), shadowed, found)
 		}
+
 	case ast.SelectKind:
-		walkStatusComparisons(e.AsSelect().Operand(), found)
+		walkStatusComparisons(e.AsSelect().Operand(), shadowed, found)
+
 	case ast.ComprehensionKind:
 		comp := e.AsComprehension()
-		walkStatusComparisons(comp.IterRange(), found)
-		walkStatusComparisons(comp.LoopCondition(), found)
-		walkStatusComparisons(comp.LoopStep(), found)
-		walkStatusComparisons(comp.Result(), found)
+
+		// The range is evaluated *outside* the binding — `[status].exists(x, …)`
+		// reads the run's status — so it is walked with the scope it actually has.
+		walkStatusComparisons(comp.IterRange(), shadowed, found)
+
+		// Everything else is inside, where any of the three names the macro binds
+		// may have taken `status` over. Subtracted for the whole body rather than
+		// per sub-expression, because that is the scope CEL gives them.
+		inner := shadowed ||
+			comp.IterVar() == filterStatus ||
+			(comp.HasIterVar2() && comp.IterVar2() == filterStatus) ||
+			comp.AccuVar() == filterStatus
+
+		walkStatusComparisons(comp.LoopCondition(), inner, found)
+		walkStatusComparisons(comp.LoopStep(), inner, found)
+		walkStatusComparisons(comp.Result(), inner, found)
 	}
 }
 

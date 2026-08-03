@@ -235,3 +235,70 @@ func TestAFilterIsCostBounded(t *testing.T) {
 	require.Error(t, err, "an expensive filter ran to completion, so the cost bound is not reached")
 	require.Contains(t, strings.ToLower(err.Error()), "cost")
 }
+
+// TestAMisspeltStatusInAListIsRefusedToo covers the form the first version of the
+// check could not see.
+//
+// `status in ["FAILED", "RUNNING"]` is a supported and natural way to ask for
+// either — it is in the table above — and a misspelling inside that list compiled
+// happily, matched nothing, and produced the empty listing the whole diagnostic
+// exists to prevent. Checking `==` and `!=` and not `in` meant the promise held
+// for two spellings of one question and not the third.
+func TestAMisspeltStatusInAListIsRefusedToo(t *testing.T) {
+	t.Parallel()
+
+	for _, expression := range []string{
+		`status in ["FAILD"]`,
+		`status in ["FAILED", "FAILD"]`,
+		`status in ["FAILD", "RUNNING"]`,
+	} {
+		_, err := v1.NewRunFilter(expression)
+		require.Error(t, err, "a misspelt status in a list was accepted: %s", expression)
+		require.Contains(t, err.Error(), `"FAILD"`)
+	}
+
+	// And the good form still compiles, so the check did not simply learn to
+	// refuse `in`.
+	_, err := v1.NewRunFilter(`status in ["FAILED", "RUNNING"]`)
+	require.NoError(t, err)
+}
+
+// TestAShadowedStatusIsNotTheRunsStatus is the direction that makes this a scope
+// question rather than a spelling one.
+//
+// A comprehension macro binds its iteration variable inside its body, so the
+// `status` in `["x"].exists(status, status == "x")` is the macro's and has nothing
+// to do with a run. A check that matched on the name alone would refuse this —
+// reporting `"x"` as an invalid run status, on an expression that is completely
+// correct.
+//
+// That is precisely the mistake CLAUDE.md records `flow fix` making twice: a
+// rewriter that knew less about scope than the language does. The lesson arriving
+// in a new place is why this test names it.
+func TestAShadowedStatusIsNotTheRunsStatus(t *testing.T) {
+	t.Parallel()
+
+	for _, expression := range []string{
+		`["x"].exists(status, status == "x")`,
+		`["x"].all(status, status != "not-a-run-status")`,
+		`["x"].exists_one(status, status == "x")`,
+
+		// Nested, so the subtraction has to survive more than one level.
+		`["x"].exists(status, ["y"].exists(other, status == "x" && other == "y"))`,
+	} {
+		_, err := v1.NewRunFilter(expression)
+		require.NoError(t, err,
+			"a comprehension variable named status was mistaken for the run's: %s", expression)
+	}
+
+	// The other side of the same boundary: a macro's *range* is evaluated outside
+	// the binding, so the run's status is still the run's status there — and a
+	// misspelling in that position is still caught.
+	_, err := v1.NewRunFilter(`[status].exists(s, s == "FAILED")`)
+	require.NoError(t, err)
+
+	_, err = v1.NewRunFilter(`status == "FAILD" && ["x"].exists(status, status == "x")`)
+	require.Error(t, err,
+		"shadowing inside one comprehension stopped the check seeing a real mistake beside it")
+	require.Contains(t, err.Error(), `"FAILD"`)
+}
