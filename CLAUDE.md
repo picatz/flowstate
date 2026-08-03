@@ -85,13 +85,15 @@ behind it too.
     go vet ./...
     gofmt -l ./cmd ./pkg                       # must print nothing
     GOMEMLIMIT=2GiB go test -race -timeout 900s ./...
+    go run ./cmd/flow fix --check examples/*/workflow.yaml
     go run github.com/bufbuild/buf/cmd/buf@v1.72.0 lint
     go run github.com/bufbuild/buf/cmd/buf@v1.72.0 breaking --against '.git#branch=origin/main'
     go run github.com/bufbuild/buf/cmd/buf@v1.72.0 generate && git diff --exit-code
     go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+    go run honnef.co/go/tools/cmd/staticcheck@2026.1 ./...
 
 `make check` in the repo root runs exactly that list, in that order, with the
-govulncheck pin below already applied. Prefer it, and keep it and this section
+toolchain pins below already applied. Prefer it, and keep it and this section
 saying the same thing — a copy of a command list is a thing that drifts, and the
 whole point of the list is that it is what CI runs.
 
@@ -125,6 +127,20 @@ go1.25)` on files in the module cache and exits 1. CI does not see this, because
 Pin the run to match and it scans clean:
 
     GOTOOLCHAIN=go1.26.5 go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+
+`staticcheck` builds the same way — its own `go.mod` selects a toolchain, so it
+needs the identical pin, for the identical reason:
+
+    GOTOOLCHAIN=go1.26.5 go run honnef.co/go/tools/cmd/staticcheck@2026.1 ./...
+
+staticcheck is advisory in CI (`continue-on-error: true`) until 2026-08-04, the
+same 48-hour window every newly-added check gets: the govulncheck lesson above
+applies just as well to a linter nobody has run against this tree before — a
+finding on landing is not necessarily a finding in your diff. The bounded fuzz
+smoke job (`GOMEMLIMIT=512MiB go test -parallel 1 -fuzztime 30s
+./pkg/flowstate/v1/flowfile/`, per the fuzzing recipe above) is advisory on the
+same schedule, to absorb infrastructure flake — not to excuse ignoring an actual
+crasher the fuzzer finds, which is a real defect to triage.
 
 ## Both execution drivers must agree
 

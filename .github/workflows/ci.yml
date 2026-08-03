@@ -32,6 +32,7 @@ permissions:
 env:
   BUF_VERSION: v1.72.0
   GOVULNCHECK_VERSION: v1.6.0
+  STATICCHECK_VERSION: 2026.1
 
 # Only the newest commit on a branch is worth testing. Pushing three times in a
 # minute otherwise runs three full matrices and the first two answer questions
@@ -87,6 +88,13 @@ jobs:
 
       - name: Test
         run: go test -race ./...
+
+      # `flow fix --check` is the command this exists to protect: examples are
+      # already in the current edition, and a PR that leaves one behind should fail
+      # here rather than at the next person's `flow fix .`. Not advisory — the
+      # examples are clean today, so a failure here is a real regression.
+      - name: Examples are in the current edition
+        run: go run ./cmd/flow fix --check examples/*/workflow.yaml
 
   # The schema is a public contract, not an internal detail: plugins are separate
   # processes that compile against these descriptors, so breaking it breaks every
@@ -152,3 +160,52 @@ jobs:
       # actually reach the vulnerable path.
       - name: Vulnerability scan
         run: go run golang.org/x/vuln/cmd/govulncheck@${{ env.GOVULNCHECK_VERSION }} ./...
+
+  # Advisory for 48h from landing (until 2026-08-04): the govulncheck lesson
+  # generalizes to any newly-added check — a check nobody has run against this
+  # tree yet can go red on code nobody touched, and a red build everyone learns to
+  # ignore is worse than no build. `continue-on-error` surfaces the findings
+  # without blocking merges while that settles; after 2026-08-04 this job is
+  # promoted to required the same way the others are.
+  staticcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+
+      # Same toolchain pin as govulncheck, and for the same reason: staticcheck's
+      # own go.mod selects a toolchain older than go.mod's, so without the pin it
+      # downgrades underneath itself and then fails type-checking the standard
+      # library vendored into the newer toolchain's module cache — not a finding
+      # about this tree at all.
+      - name: Static analysis
+        run: GOTOOLCHAIN=go1.26.5 go run honnef.co/go/tools/cmd/staticcheck@${{ env.STATICCHECK_VERSION }} ./...
+
+  # Bounded per CLAUDE.md's fuzz recipe: `-parallel 1` and a memory limit because a
+  # fuzzer's purpose is to find the input that explodes, `-fuzztime 30s` because
+  # that bounds time and not memory, and one target because it is the one that
+  # exists today. Advisory for the same 48h window as staticcheck (until
+  # 2026-08-04) to absorb flake in a job this new — but a crasher the fuzzer
+  # actually finds is a real finding, not flake, and must be triaged rather than
+  # re-run away; `continue-on-error` here covers infrastructure noise, not a
+  # standing invitation to ignore a found corpus entry.
+  fuzz-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+
+      # No corpus is committed, so `-fuzz` always runs against the seed corpus in
+      # source plus whatever it generates this run; a runner-local checkout means
+      # generated corpus entries never persist between runs and never pollute a
+      # commit.
+      - name: Fuzz smoke (FuzzRoundTrip)
+        run: GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzRoundTrip -fuzztime 30s ./pkg/flowstate/v1/flowfile/

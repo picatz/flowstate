@@ -11,10 +11,12 @@ check:
 		exit 1; \
 	fi
 	GOMEMLIMIT=2GiB go test -race -timeout 900s ./...
+	go run ./cmd/flow fix --check examples/*/workflow.yaml
 	go run github.com/bufbuild/buf/cmd/buf@v1.72.0 lint
 	go run github.com/bufbuild/buf/cmd/buf@v1.72.0 breaking --against '.git#branch=origin/main'
 	go run github.com/bufbuild/buf/cmd/buf@v1.72.0 generate && git diff --exit-code
 	GOTOOLCHAIN=go1.26.5 go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+	GOTOOLCHAIN=go1.26.5 go run honnef.co/go/tools/cmd/staticcheck@2026.1 ./...
 
 # Bounded full test run (no -short).
 test:
