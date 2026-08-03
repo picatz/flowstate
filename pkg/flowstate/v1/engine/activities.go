@@ -2,7 +2,6 @@ package engine
 
 import (
 	"context"
-	"slices"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"go.opentelemetry.io/otel"
@@ -259,26 +258,16 @@ func startTaskSpan(ctx context.Context, task *v1.Task, stepID string) (context.C
 // Sorted, because the inputs are a map and a set of attributes that reorders
 // between two runs of the same step is a diff for anyone comparing traces.
 func secretReferenceAttributes(task *v1.Task) []attribute.KeyValue {
-	var refs []string
-	for _, value := range task.GetInputs() {
-		// GetSecretRef is the only place a reference can be: a Value is an
-		// expression, a literal, an error, or a reference, and a literal is a
-		// CEL value that cannot contain one. So there is no recursion to do
-		// here, and no chance of walking into a literal's contents — which is
-		// the walk that would leak.
-		ref := value.GetSecretRef()
-		if ref == nil {
-			continue
-		}
-
-		refs = append(refs, ref.GetScheme()+":"+ref.GetName())
-	}
+	// v1.SecretRefsIn walks structures too — since Value.Structure landed, a
+	// reference may sit nested inside a header map or json body, and a
+	// top-level look would name some of a step's secrets and not others. The
+	// walk visits references and structure entries only, never a literal's
+	// contents, which is the walk that would leak.
+	refs := v1.SecretRefsIn(task)
 
 	if len(refs) == 0 {
 		return nil
 	}
-
-	slices.Sort(refs)
 
 	return []attribute.KeyValue{
 		attribute.StringSlice("flowstate.secret.refs", refs),
