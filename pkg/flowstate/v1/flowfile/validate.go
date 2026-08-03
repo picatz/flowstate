@@ -209,12 +209,39 @@ func suggestedName(name string) string {
 	}, name)
 }
 
+// Validate checks a compiled workflow and reports every problem it can find.
+//
+// A specification reaching this function did not necessarily pass through
+// [Parse] — the server accepts one built by hand over the API too — so nothing
+// here may assume a check [Parse] already makes was made.
 func Validate(wf *v1.Workflow) Diagnostics {
+	if wf == nil {
+		return Diagnostics{{Message: "workflow is empty"}}
+	}
+
+	// Checked before anything below walks the tree, including into any call a
+	// step makes: a hand-built specification may be diamond-shaped in exactly
+	// the way [Parse] refuses to compile, via [maxCallExpansionNodes] enforced
+	// as the tree is built — and nothing below this point may assume that
+	// protection ran first.
+	if !boundedCallExpansion(wf, new(int)) {
+		return Diagnostics{{
+			Message: fmt.Sprintf(
+				"compiles to more than %d steps once every call is counted, which is more than "+
+					"a Flowfile is meant to expand to; nothing further was checked", maxCallExpansionNodes),
+		}}
+	}
+
+	return validateAtDepth(wf, 0)
+}
+
+// validateAtDepth is the whole of what [Validate] checks for one workflow, at
+// the call depth ([v1.CheckCallDepth]) it was reached at — zero for the
+// top-level workflow a run submits, and one deeper for every call standing
+// between here and it.
+func validateAtDepth(wf *v1.Workflow, depth int) Diagnostics {
 	var ds Diagnostics
 
-	if wf == nil {
-		return append(ds, Diagnostic{Message: "workflow is empty"})
-	}
 	if wf.GetName() == "" {
 		ds = append(ds, Diagnostic{Field: "name", Message: "workflow has no name"})
 	} else if bad := firstIllegalNameRune(wf.GetName()); bad != "" {
@@ -337,12 +364,12 @@ func Validate(wf *v1.Workflow) Diagnostics {
 			// block it sits in.
 			switch kind := node.GetKind().(type) {
 			case *v1.Node_ForEach:
-				ds = append(ds, validateLoop(id, kind.ForEach, inner, i, wf)...)
+				ds = append(ds, validateLoop(id, kind.ForEach, inner, i, wf, depth)...)
 				// A loop's body outputs do not escape it — only its own `results`
 				// output does — so body step ids must not become referenceable.
 
 			case *v1.Node_Parallel:
-				ds = append(ds, validateParallel(id, kind.Parallel, inner, i, wf)...)
+				ds = append(ds, validateParallel(id, kind.Parallel, inner, i, wf, depth)...)
 				// Branch outputs are merged into the enclosing scope once the
 				// block completes, so a later step may reference them by id.
 				for _, branchID := range branchStepIDs(kind.Parallel) {
@@ -351,6 +378,9 @@ func Validate(wf *v1.Workflow) Diagnostics {
 
 			case *v1.Node_Wait:
 				ds = append(ds, validateWait(id, kind.Wait, inner, i, wf)...)
+
+			case *v1.Node_Call:
+				ds = append(ds, validateCallAtDepth(id, kind.Call, inner, i, wf, depth+1)...)
 
 			default:
 				ds = append(ds, Diagnostic{
@@ -665,7 +695,7 @@ func (s refScope) withLocal(name string) refScope {
 // The body is checked with the enclosing steps visible, because a body step may
 // legitimately reference a step defined before the loop, plus the iterator, which
 // exists only inside the body.
-func validateLoop(stepID string, loop *v1.ForEach, enclosing refScope, index int, wf *v1.Workflow) Diagnostics {
+func validateLoop(stepID string, loop *v1.ForEach, enclosing refScope, index int, wf *v1.Workflow, depth int) Diagnostics {
 	var ds Diagnostics
 
 	if loop.GetItems() == nil {
@@ -728,11 +758,11 @@ func validateLoop(stepID string, loop *v1.ForEach, enclosing refScope, index int
 	// one line is the whole of what rooting deletes: with the two apart, an
 	// iterator sharing a step's name is no longer ambiguous, so the rule that used
 	// to forbid it has nothing left to prevent.
-	return append(ds, validateNested(loop.GetBody(), enclosing.withLocal(iterator), index, wf)...)
+	return append(ds, validateNested(loop.GetBody(), enclosing.withLocal(iterator), index, wf, depth)...)
 }
 
 // validateParallel checks a parallel node and its branches.
-func validateParallel(stepID string, parallel *v1.Parallel, enclosing refScope, index int, wf *v1.Workflow) Diagnostics {
+func validateParallel(stepID string, parallel *v1.Parallel, enclosing refScope, index int, wf *v1.Workflow, depth int) Diagnostics {
 	var ds Diagnostics
 
 	if len(parallel.GetBranches()) == 0 {
@@ -759,7 +789,7 @@ func validateParallel(stepID string, parallel *v1.Parallel, enclosing refScope, 
 		// Each branch sees only what existed before the block, never a sibling's
 		// steps, which is what validation must model to catch a cross-branch
 		// reference.
-		ds = append(ds, validateNested(branch.GetSteps(), enclosing, index, wf)...)
+		ds = append(ds, validateNested(branch.GetSteps(), enclosing, index, wf, depth)...)
 		for _, node := range branch.GetSteps() {
 			seen[node.GetId()] = true
 		}
@@ -768,7 +798,7 @@ func validateParallel(stepID string, parallel *v1.Parallel, enclosing refScope, 
 }
 
 // validateNested checks a nested list of steps against the names visible to it.
-func validateNested(nodes []*v1.Node, enclosing refScope, index int, wf *v1.Workflow) Diagnostics {
+func validateNested(nodes []*v1.Node, enclosing refScope, index int, wf *v1.Workflow, depth int) Diagnostics {
 	var ds Diagnostics
 
 	scope := enclosing.clone()
@@ -822,11 +852,13 @@ func validateNested(nodes []*v1.Node, enclosing refScope, index int, wf *v1.Work
 		if task == nil {
 			switch kind := node.GetKind().(type) {
 			case *v1.Node_ForEach:
-				ds = append(ds, validateLoop(id, kind.ForEach, inner, index, wf)...)
+				ds = append(ds, validateLoop(id, kind.ForEach, inner, index, wf, depth)...)
 			case *v1.Node_Parallel:
-				ds = append(ds, validateParallel(id, kind.Parallel, inner, index, wf)...)
+				ds = append(ds, validateParallel(id, kind.Parallel, inner, index, wf, depth)...)
 			case *v1.Node_Wait:
 				ds = append(ds, validateWait(id, kind.Wait, inner, index, wf)...)
+			case *v1.Node_Call:
+				ds = append(ds, validateCallAtDepth(id, kind.Call, inner, index, wf, depth+1)...)
 			default:
 				ds = append(ds, Diagnostic{
 					Step:    id,
@@ -1410,7 +1442,23 @@ func sortedInputNames(inputs map[string]*v1.Value) []string {
 // is no workflow to validate, and the error already describes every problem the
 // compiler found, with positions.
 func ValidateSource(data []byte) (Diagnostics, error) {
-	wf, positions, err := Parse(data)
+	return validateParsed(Parse(data))
+}
+
+// ValidateSourceFile is [ValidateSource] for a file read from disk, additionally
+// resolving any `call:` step relative to path's own directory — see [ParseFile].
+func ValidateSourceFile(path string) (Diagnostics, error) {
+	return validateParsed(ParseFile(path))
+}
+
+// ValidateSourceAt is [ValidateSource] for data that is not necessarily what
+// path holds on disk yet — an editor's unsaved buffer — resolving a `call:`
+// step relative to path's directory all the same. See [ParseAt].
+func ValidateSourceAt(data []byte, path string) (Diagnostics, error) {
+	return validateParsed(ParseAt(data, path))
+}
+
+func validateParsed(wf *v1.Workflow, positions *Positions, err error) (Diagnostics, error) {
 	if err != nil {
 		return nil, err
 	}

@@ -21,6 +21,30 @@ import (
 // Inside concurrent work — parallel branches, or a loop running iterations
 // concurrently — the block completes first, because suspending mid-flight would
 // mean recording a position for work that has no single position.
+//
+// A call is transparent to that rule rather than a third exception to it. Two
+// depths are tracked separately because they answer different questions. `depth`
+// is the *frame* depth — how many levels of nesting stand between here and the
+// top, which is what a resumed run needs to reconstruct a position, and a call
+// needs its own level of it exactly as a loop body does, since the callee's own
+// next-node index has to be recorded somewhere. `susp` is *suspend* depth — how
+// many levels of nesting stand between here and the top that are not
+// transparent — and a call does not advance it, while a `for_each` body or a
+// `parallel` branch does, exactly as before. Suspension is legal wherever
+// `susp == 0`: at the run's own top level, between a callee's top-level steps,
+// between a doubly-called callee's, and between the iterations of a sequential
+// loop sitting at any of those — because the path from the run's top to that
+// position passes only through calls and positions that could already suspend.
+// A call sitting inside a `for_each` body or a `parallel` branch remains atomic,
+// because `susp` was already above zero before the call was reached, exactly as
+// everything else inside those constructs already is.
+//
+// A callee runs in its own isolated scope (CallScope), so unlike a top-level
+// segment — whose step outputs already live in RunState.outputs — a callee's
+// step outputs exist nowhere else. Suspending inside one therefore stashes them
+// into the call's own frame ([v1.Frame.CallOutputs]) on the way out, and a
+// resume that lands back inside a call seeds the isolated scope from there
+// before running the callee's remaining steps.
 
 // errContinueAsNew signals that the run should be continued as new. It unwinds to
 // [Run], which converts it using the frames recorded along the way.
@@ -37,6 +61,13 @@ type executor struct {
 	// budget and processed implement the step budget for Continue-As-New.
 	budget    int
 	processed int
+
+	// callDepth counts calls nested so far, zero at the top-level workflow. It
+	// is unaffected by descending into a loop body or a parallel branch — only
+	// a call advances it — and bounds recursion via [v1.CheckCallDepth] for a
+	// specification that never passed through a parser, exactly as the local
+	// driver bounds it.
+	callDepth int
 
 	// frames is the position reached so far, outermost first. It is only
 	// meaningful when suspending.
@@ -80,7 +111,10 @@ type signalCarry struct {
 }
 
 // runNodes executes a list of nodes in order at one nesting level.
-func (e *executor) runNodes(nodes []*v1.Node, depth int) error {
+//
+// depth is the frame depth (see the package comment above); susp is the suspend
+// depth, which a call leaves unchanged and everything else that nests advances.
+func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) error {
 	start := 0
 	resuming := depth < len(e.resume)
 	if resuming {
@@ -114,7 +148,7 @@ func (e *executor) runNodes(nodes []*v1.Node, depth int) error {
 			continue
 		}
 
-		if err := e.runNodeWithVars(node, depth, descend); err != nil {
+		if err := e.runNodeWithVars(node, depth, susp, descend); err != nil {
 			if errors.Is(err, errContinueAsNew) {
 				return err
 			}
@@ -150,10 +184,10 @@ func (e *executor) runNodes(nodes []*v1.Node, depth int) error {
 		e.progress.finished()
 
 		// Suspending is only possible where the position is representable, and
-		// only between top-level steps. A deeper level completes first.
-		if depth == 0 && i < len(nodes)-1 && e.shouldSuspend() {
-			e.setFrame(0, i+1)
-			e.frames = e.frames[:1]
+		// only between steps that a call cannot make opaque. A deeper suspend
+		// level (a for_each body, a parallel branch) completes first.
+		if susp == 0 && i < len(nodes)-1 && e.shouldSuspend() {
+			e.setFrame(depth, i+1)
 			return errContinueAsNew
 		}
 	}
@@ -173,13 +207,13 @@ func (e *executor) runNodes(nodes []*v1.Node, depth int) error {
 //
 // Evaluated after the condition, matching the local driver and the validator: a var
 // whose expression fails must not fail a step that was going to be skipped.
-func (e *executor) runNodeWithVars(node *v1.Node, depth int, descend bool) error {
+func (e *executor) runNodeWithVars(node *v1.Node, depth, susp int, descend bool) error {
 	inner, err := v1.EvalStepVars(context.Background(), node, e.scope)
 	if err != nil {
 		return nodeFailed(err)
 	}
 	if inner == e.scope {
-		if err := e.runNode(node, depth, descend); err != nil {
+		if err := e.runNode(node, depth, susp, descend); err != nil {
 			return err
 		}
 
@@ -190,7 +224,7 @@ func (e *executor) runNodeWithVars(node *v1.Node, depth int, descend bool) error
 	e.scope = inner
 	defer func() { e.scope = outer }()
 
-	if err := e.runNode(node, depth, descend); err != nil {
+	if err := e.runNode(node, depth, susp, descend); err != nil {
 		return err
 	}
 
@@ -237,20 +271,137 @@ func (e *executor) registerUndo(node *v1.Node, scope *v1.Scope) error {
 	return nil
 }
 
+// runCall runs a called workflow's steps and records what it declared it
+// answers with, under the step's own id.
+//
+// The three rules a call has to obey — what the callee can see, what comes
+// back, and how deep this may go — are [v1.CallScope], [v1.CallOutputs] and
+// [v1.CheckCallDepth], reached here exactly as the local driver's runCall
+// reaches them, which is what keeps the two drivers from disagreeing about a
+// call's isolation, its answer or its bound. What differs is the one thing a
+// driver is allowed to differ about: running the callee's steps is another
+// level of this same executor descending, where locally it is a function call.
+//
+// A call is transparent to suspension (see the package comment), so the
+// callee's steps get their own frame level (depth+1) to make a position inside
+// them representable, but not their own suspend level: susp is passed through
+// unchanged, and only advances past a construct that is genuinely opaque to
+// suspension. The callee's own isolated scope is not part of RunState.outputs,
+// so a suspend here stashes it into the call's frame ([v1.Frame.CallOutputs])
+// on the way out, and a resume landing back on this call seeds it from there.
+//
+// `descend` is true only for the node the resume path points at, matching
+// every other construct that can be resumed into.
+func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descend bool) error {
+	if err := v1.CheckCallDepth(e.callDepth + 1); err != nil {
+		return nodeFailed(err)
+	}
+
+	callee := call.GetWorkflow()
+
+	arguments, err := v1.ResolveCallArguments(context.Background(), call.GetArguments(), e.scope)
+	if err != nil {
+		return nodeFailed(err)
+	}
+
+	inner, err := v1.CallScope(e.scope, callee, arguments)
+	if err != nil {
+		return nodeFailed(err)
+	}
+
+	calleeDepth := depth + 1
+
+	// Resume mid-call: the callee's own step outputs accumulated before the run
+	// suspended travel in the frame at this level, since CallScope's isolation
+	// means they exist nowhere in RunState.outputs.
+	//
+	// StepValues is reset to an empty map rather than trusted as non-nil even
+	// when saved itself is non-nil: an empty map has no wire representation in
+	// protobuf, so a suspend before the callee's first step ever completed
+	// round-trips through Continue-As-New as a message with a nil map. Every
+	// other path to a fresh callee scope goes through [v1.CallScope], which
+	// always allocates one; skipping that here left the executor writing into
+	// a nil map the moment the callee's own first step tried to record its
+	// output — a panic Temporal's test environment retries into what looks
+	// indistinguishable from a hang.
+	if descend && calleeDepth < len(e.resume) {
+		if saved := e.resume[calleeDepth].GetCallOutputs(); saved != nil {
+			inner.Outputs = saved
+		}
+	}
+	if inner.Outputs == nil {
+		inner.Outputs = &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{}}
+	} else if inner.Outputs.StepValues == nil {
+		inner.Outputs.StepValues = map[string]*v1.Node_Outputs{}
+	}
+
+	nested := &executor{
+		ctx:      e.ctx,
+		spec:     e.spec,
+		identity: e.identity,
+		runID:    e.runID,
+		scope:    inner,
+
+		budget:    e.budget,
+		processed: e.processed,
+		frames:    e.frames,
+
+		// Shared by pointer with the caller, for the same reasons the top-level
+		// executor shares them with every nested one: a signal or a compensation
+		// belongs to the run, not to the level that happens to be executing.
+		signals:  e.signals,
+		progress: e.progress,
+		undo:     e.undo,
+
+		callDepth: e.callDepth + 1,
+	}
+	if descend {
+		nested.resume = e.resume
+	}
+
+	err = nested.runNodes(callee.GetSteps(), calleeDepth, susp)
+	e.processed = nested.processed
+	e.frames = nested.frames
+	if err != nil {
+		if errors.Is(err, errContinueAsNew) {
+			if calleeDepth < len(e.frames) {
+				e.frames[calleeDepth].CallOutputs = inner.GetOutputs()
+			}
+			return err
+		}
+		// Named, so a failure inside a called workflow reported without saying
+		// which one does not leave a reader looking through the caller for a
+		// step that is not there. `workflow %q` matches the local driver's
+		// runCall spelling exactly, which is what lets
+		// `${steps.<id>.error}` read identically under both drivers.
+		return stepFailed(err, "workflow %q", callee.GetName())
+	}
+
+	outputs, err := v1.CallOutputs(context.Background(), callee, inner)
+	if err != nil {
+		return nodeFailed(err)
+	}
+	e.scope.Outputs.StepValues[node.GetId()] = outputs
+	return nil
+}
+
 // runNode executes a single node.
-func (e *executor) runNode(node *v1.Node, depth int, descend bool) error {
+func (e *executor) runNode(node *v1.Node, depth, susp int, descend bool) error {
 	switch kind := node.Kind.(type) {
 	case *v1.Node_Task:
 		return e.runTask(node, kind.Task)
 
 	case *v1.Node_ForEach:
-		return e.runForEach(node, kind.ForEach, depth, descend)
+		return e.runForEach(node, kind.ForEach, depth, susp, descend)
 
 	case *v1.Node_Parallel:
-		return e.runParallel(kind.Parallel, depth)
+		return e.runParallel(kind.Parallel, depth, susp)
 
 	case *v1.Node_Wait:
 		return e.runWait(node, kind.Wait)
+
+	case *v1.Node_Call:
+		return e.runCall(node, kind.Call, depth, susp, descend)
 
 	default:
 		return &ErrRunFailed{Message: fmt.Sprintf("unsupported node kind: %T", node.Kind)}
@@ -422,7 +573,7 @@ func (e *executor) runUndoTask(wctx workflow.Context, entry *v1.PendingUndo, wit
 
 // runForEach runs a loop body once per item, sequentially or with bounded
 // concurrency.
-func (e *executor) runForEach(node *v1.Node, loop *v1.ForEach, depth int, descend bool) error {
+func (e *executor) runForEach(node *v1.Node, loop *v1.ForEach, depth, susp int, descend bool) error {
 	items, err := v1.ResolveItems(context.Background(), loop, e.scope)
 	if err != nil {
 		return nodeFailed(err)
@@ -430,6 +581,7 @@ func (e *executor) runForEach(node *v1.Node, loop *v1.ForEach, depth int, descen
 
 	name := v1.IteratorName(loop)
 	inner := depth + 1
+	innerSusp := susp + 1
 
 	// Resume mid-loop when a previous run suspended here.
 	startItem := 0
@@ -440,7 +592,7 @@ func (e *executor) runForEach(node *v1.Node, loop *v1.ForEach, depth int, descen
 	}
 
 	if loop.GetMaxParallel() > 1 {
-		iterations, err := e.runIterationsConcurrently(loop, name, items[startItem:], inner)
+		iterations, err := e.runIterationsConcurrently(loop, name, items[startItem:], inner, innerSusp)
 		if err != nil {
 			return err
 		}
@@ -453,7 +605,7 @@ func (e *executor) runForEach(node *v1.Node, loop *v1.ForEach, depth int, descen
 	for i := startItem; i < len(items); i++ {
 		e.setLoopFrame(inner, i, results)
 
-		iteration, err := e.runIteration(loop, name, items[i], inner, i == startItem && descend)
+		iteration, err := e.runIteration(loop, name, items[i], inner, innerSusp, i == startItem && descend)
 		if err != nil {
 			if errors.Is(err, errContinueAsNew) {
 				return err
@@ -471,7 +623,7 @@ func (e *executor) runForEach(node *v1.Node, loop *v1.ForEach, depth int, descen
 		// A long loop is exactly where history accumulates, so an iteration
 		// boundary is worth suspending at — the position is a single index plus
 		// the results so far, both of which are representable.
-		if depth == 0 && i < len(items)-1 && e.shouldSuspend() {
+		if susp == 0 && i < len(items)-1 && e.shouldSuspend() {
 			e.setLoopFrame(inner, i+1, results)
 			return errContinueAsNew
 		}
@@ -483,7 +635,7 @@ func (e *executor) runForEach(node *v1.Node, loop *v1.ForEach, depth int, descen
 }
 
 // runIteration executes the loop body once against its own output scope.
-func (e *executor) runIteration(loop *v1.ForEach, iterator string, item *v1.Value, depth int, descend bool) (*v1.Workflow_StepOutputs, error) {
+func (e *executor) runIteration(loop *v1.ForEach, iterator string, item *v1.Value, depth, susp int, descend bool) (*v1.Workflow_StepOutputs, error) {
 	// Each iteration starts from the outputs visible before the loop, so an
 	// iteration cannot observe a previous one — which keeps its behavior
 	// independent of how many ran before it, and identical whether iterations run
@@ -508,12 +660,14 @@ func (e *executor) runIteration(loop *v1.ForEach, iterator string, item *v1.Valu
 		signals:  e.signals,
 		progress: e.progress,
 		undo:     e.undo,
+
+		callDepth: e.callDepth,
 	}
 	if descend {
 		nested.resume = e.resume
 	}
 
-	err := nested.runNodes(loop.GetBody(), depth)
+	err := nested.runNodes(loop.GetBody(), depth, susp)
 	e.processed = nested.processed
 	e.frames = nested.frames
 	if err != nil {
@@ -527,7 +681,7 @@ func (e *executor) runIteration(loop *v1.ForEach, iterator string, item *v1.Valu
 //
 // Results keep the order of the input list rather than the order iterations
 // finished, so a loop's results do not depend on scheduling.
-func (e *executor) runIterationsConcurrently(loop *v1.ForEach, iterator string, items []*v1.Value, depth int) ([]*v1.Workflow_StepOutputs, error) {
+func (e *executor) runIterationsConcurrently(loop *v1.ForEach, iterator string, items []*v1.Value, depth, susp int) ([]*v1.Workflow_StepOutputs, error) {
 	limit := int(loop.GetMaxParallel())
 	if limit > len(items) {
 		limit = len(items)
@@ -551,14 +705,15 @@ func (e *executor) runIterationsConcurrently(loop *v1.ForEach, iterator string, 
 				next++
 
 				worker := &executor{
-					ctx:      gctx,
-					spec:     e.spec,
-					identity: e.identity,
-					runID:    e.runID,
-					scope:    e.scope.WithLocal(iterator, items[i]).WithOutputs(cloneOutputs(e.scope.GetOutputs())),
-					budget:   e.budget,
-					signals:  e.signals,
-					undo:     e.undo,
+					ctx:       gctx,
+					spec:      e.spec,
+					identity:  e.identity,
+					runID:     e.runID,
+					scope:     e.scope.WithLocal(iterator, items[i]).WithOutputs(cloneOutputs(e.scope.GetOutputs())),
+					budget:    e.budget,
+					signals:   e.signals,
+					undo:      e.undo,
+					callDepth: e.callDepth,
 
 					// Deliberately not carried. Iterations run at once, so a
 					// worker writing its own step in would be reporting a
@@ -567,7 +722,7 @@ func (e *executor) runIterationsConcurrently(loop *v1.ForEach, iterator string, 
 					// guards in progress's methods exist for exactly this.
 					progress: nil,
 				}
-				if err := worker.runNodes(loop.GetBody(), depth); err != nil {
+				if err := worker.runNodes(loop.GetBody(), depth, susp); err != nil {
 					errs[i] = err
 					continue
 				}
@@ -590,7 +745,7 @@ func (e *executor) runIterationsConcurrently(loop *v1.ForEach, iterator string, 
 }
 
 // runParallel runs branches concurrently and merges their outputs.
-func (e *executor) runParallel(parallel *v1.Parallel, depth int) error {
+func (e *executor) runParallel(parallel *v1.Parallel, depth, susp int) error {
 	branches := parallel.GetBranches()
 	scopes := make([]*v1.Workflow_StepOutputs, len(branches))
 	errs := make([]error, len(branches))
@@ -605,20 +760,21 @@ func (e *executor) runParallel(parallel *v1.Parallel, depth int) error {
 			// make the result depend on scheduling.
 			branchOutputs := cloneOutputs(e.scope.GetOutputs())
 			worker := &executor{
-				ctx:      gctx,
-				spec:     e.spec,
-				identity: e.identity,
-				runID:    e.runID,
-				scope:    e.scope.WithOutputs(branchOutputs),
-				budget:   e.budget,
-				signals:  e.signals,
-				undo:     e.undo,
+				ctx:       gctx,
+				spec:      e.spec,
+				identity:  e.identity,
+				runID:     e.runID,
+				scope:     e.scope.WithOutputs(branchOutputs),
+				budget:    e.budget,
+				signals:   e.signals,
+				undo:      e.undo,
+				callDepth: e.callDepth,
 
 				// Not carried, for the same reason a concurrent iteration does
 				// not carry it: no one branch is the run's position.
 				progress: nil,
 			}
-			if err := worker.runNodes(branch.GetSteps(), depth+1); err != nil {
+			if err := worker.runNodes(branch.GetSteps(), depth+1, susp+1); err != nil {
 				errs[i] = err
 			}
 			scopes[i] = branchOutputs

@@ -162,6 +162,31 @@ func TestRunWorkflowVars(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowCall covers `call:` in the local driver.
+//
+// The same cases run against the durable driver in the engine package — see
+// TestRunWorkflowCall there. What is under test is the three rules
+// [v1.CallScope], [v1.CallOutputs] and [v1.CheckCallDepth] both drivers reach,
+// so a case that only exercised one driver would not tell the two apart from
+// one that reaches a divergent path only the other driver walks.
+func TestRunWorkflowCall(t *testing.T) {
+	for _, test := range tests.CallCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			out, err := v1.Run(t.Context(), test.Workflow)
+			if test.ExpectFailure {
+				require.Error(t, err, "the call was expected to be refused")
+				return
+			}
+			require.NoError(t, err)
+			if test.ExpectedOutputsPredicate != nil {
+				require.True(t, test.ExpectedOutputsPredicate(out), "unexpected outputs: %v", out)
+				return
+			}
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, out, protocmp.Transform()))
+		})
+	}
+}
+
 // TestRunWorkflowInputsAndOutputs covers `inputs:` and `outputs:` in the local
 // driver.
 //

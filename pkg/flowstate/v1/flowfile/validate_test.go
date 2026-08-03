@@ -2,7 +2,6 @@ package flowfile_test
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -636,10 +635,7 @@ func TestEveryExampleSurvivesTheSchema(t *testing.T) {
 		t.Run(filepath.Base(filepath.Dir(path)), func(t *testing.T) {
 			t.Parallel()
 
-			source, err := os.ReadFile(path)
-			require.NoError(t, err)
-
-			workflow, _, err := flowfile.Parse(source)
+			workflow, _, err := flowfile.ParseFile(path)
 			require.NoError(t, err, "the example does not compile")
 
 			require.NoError(t, v1.Validate(workflow),

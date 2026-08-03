@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
@@ -49,13 +50,30 @@ func TestFmtIsIdempotentAcrossExamples(t *testing.T) {
 		t.Fatal("no examples were found, so this test proves nothing")
 	}
 
+	// Copied as `<name>/workflow.yaml` rather than flattened to one renamed
+	// file, and joined by whatever a `call:` step in it reaches: `call-a-
+	// workflow` names a sibling file by a relative path, and flattening it away
+	// would leave that path resolving to nothing in the copy. Nothing else
+	// under an example's own directory is copied — several examples ship a
+	// policy file or a docker-compose lab beside `workflow.yaml` that is not
+	// itself a Flowfile, and copying those in would ask this test to reformat
+	// documents `flow fmt` was never going to be pointed at.
 	var copies []string
 	for _, src := range paths {
-		data, err := os.ReadFile(src)
-		if err != nil {
-			t.Fatalf("reading %s: %v", src, err)
+		exampleDir := filepath.Dir(src)
+		name := filepath.Base(exampleDir)
+
+		copies = append(copies, writeFixture(t, dir, filepath.Join(name, "workflow.yaml"), readFixtureString(t, src)))
+
+		callees := map[string]bool{}
+		collectCallFiles(t, src, callees)
+		for abs := range callees {
+			rel, err := filepath.Rel(exampleDir, abs)
+			if err != nil || strings.HasPrefix(rel, "..") {
+				t.Fatalf("%s calls %s, outside its own example directory", src, abs)
+			}
+			copies = append(copies, writeFixture(t, dir, filepath.Join(name, rel), readFixtureString(t, abs)))
 		}
-		copies = append(copies, writeFixture(t, dir, filepath.Base(filepath.Dir(src))+".yaml", string(data)))
 	}
 
 	out, _, err := runFmtCommand(t, dir)
@@ -85,6 +103,54 @@ func TestFmtIsIdempotentAcrossExamples(t *testing.T) {
 		if !bytes.Equal(firstPass[path], second) {
 			t.Errorf("%s changed on a second --check run even though it exited zero:\n--- first\n%s\n--- second\n%s",
 				path, firstPass[path], second)
+		}
+	}
+}
+
+// readFixtureString reads path as a string, failing the test on error.
+func readFixtureString(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	return string(data)
+}
+
+// collectCallFiles compiles the Flowfile at path and records the absolute path
+// of every file a `call:` step in it — or in any callee it reaches,
+// transitively — resolves to.
+//
+// Each level is walked relative to *its own* directory, matching how the
+// compiler itself resolves `call:`: a callee's own calls are relative to the
+// callee's file, not to path's.
+func collectCallFiles(t *testing.T, path string, into map[string]bool) {
+	t.Helper()
+
+	workflow, _, err := flowfile.ParseFile(path)
+	if err != nil {
+		t.Fatalf("compiling %s: %v", path, err)
+	}
+	walkCallNodes(workflow.GetSteps(), filepath.Dir(path), into)
+}
+
+func walkCallNodes(nodes []*v1.Node, dir string, into map[string]bool) {
+	for _, node := range nodes {
+		switch kind := node.GetKind().(type) {
+		case *v1.Node_Call:
+			source := kind.Call.GetSource()
+			if source == "" {
+				continue
+			}
+			abs := filepath.Clean(filepath.Join(dir, source))
+			into[abs] = true
+			walkCallNodes(kind.Call.GetWorkflow().GetSteps(), filepath.Dir(abs), into)
+		case *v1.Node_ForEach:
+			walkCallNodes(kind.ForEach.GetBody(), dir, into)
+		case *v1.Node_Parallel:
+			for _, branch := range kind.Parallel.GetBranches() {
+				walkCallNodes(branch.GetSteps(), dir, into)
+			}
 		}
 	}
 }

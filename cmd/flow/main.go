@@ -828,13 +828,14 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	var failed bool
 
 	for _, path := range args {
-		data, err := os.ReadFile(path)
+		diagnostics, err := flowfile.ValidateSourceFile(path)
 		if err != nil {
-			return fmt.Errorf("error reading %s: %w", path, err)
-		}
-
-		diagnostics, err := flowfile.ValidateSource(data)
-		if err != nil {
+			var parsed flowfile.Diagnostics
+			if !errors.As(err, &parsed) {
+				// A file that cannot be read is a fact about the invocation, not
+				// about the workflow.
+				return fmt.Errorf("error reading %s: %w", path, err)
+			}
 			// A parse failure already carries its own line and column.
 			failed = true
 			fmt.Fprintf(out, "%s: %v\n", theme.Muted.Render(path), err)
@@ -887,15 +888,13 @@ func validateMachine(cmd *cobra.Command, args []string, format OutputFormat) err
 
 	reports := make([]*v1.DiagnosticReport, 0, len(args))
 	for _, path := range args {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("error reading %s: %w", path, err)
-		}
-
-		diagnostics, err := flowfile.ValidateSource(data)
+		diagnostics, err := flowfile.ValidateSourceFile(path)
 		if err != nil {
 			var parsed flowfile.Diagnostics
 			if !errors.As(err, &parsed) {
+				if _, statErr := os.Stat(path); statErr != nil {
+					return fmt.Errorf("error reading %s: %w", path, statErr)
+				}
 				// Not a shape this can position — a document that is not YAML at
 				// all. It is still the file's problem rather than the caller's, so
 				// it is reported as an unpositioned diagnostic rather than dropped.
@@ -945,17 +944,15 @@ var errValidationFailed = errors.New("validation failed")
 // its step was reached, by which point earlier steps had already made their
 // requests.
 func loadWorkflow(path string) (*v1.Workflow, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("error reading %s: %w", path, err)
-	}
-
-	workflow, err := flowfile.Unmarshal(data)
+	// File-aware rather than reading the bytes and calling [flowfile.Unmarshal]:
+	// a `call:` step is resolved relative to this file's own directory, and only
+	// the path-aware entry points know it.
+	workflow, _, err := flowfile.ParseFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 
-	diagnostics, err := flowfile.ValidateSource(data)
+	diagnostics, err := flowfile.ValidateSourceFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}

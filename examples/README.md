@@ -41,6 +41,7 @@ $ flow validate examples/hello-world/workflow.yaml
 | [parameterized-deploy](parameterized-deploy) | `inputs:` — typed arguments with defaults and a required one, read from an `if:`, a step's `vars:`, and a task input | yes |
 | [saga-provisioning](saga-provisioning) | `undo:` — saga compensation: three steps, a failure on the third, and the first two taken back in reverse order. The one example that ends in a failed run, on purpose | yes |
 | [computed-outputs](computed-outputs) | `outputs:` — what the run answers with, computed from its steps and its arguments | no |
+| [call-a-workflow](call-a-workflow) | `call:` — running another Flowfile as a step, isolated from the caller, with `with:` binding its declared inputs and its `outputs:` read back under the step id | no |
 | [scheduled-report](scheduled-report) | `triggers:` — the cadence a file declares, which `flow schedule create` turns into a schedule and `flow run` ignores | no |
 | [observability](observability) | The docker-compose observability lab: one trace id from `flow run` through Grafana Tempo to the Temporal UI | no |
 | [plugins/greet](plugins/greet/) | A task a plugin provides, written `example.greet:` and type-checked against the plugin's own schema — needs a built plugin and a worker, so read its README | no |
@@ -55,7 +56,10 @@ saying what the rest of the directory is for: [http-secret](http-secret) and
 [plugins/github](plugins/github/), and [plugins/git](plugins/git/) each need a plugin
 built and a worker told where to find it, and [observability](observability) is a whole
 docker-compose lab. Everywhere else the workflow's own comments are the documentation,
-and a README repeating them would be one more thing to leave stale.
+and a README repeating them would be one more thing to leave stale — which is also why
+[call-a-workflow](call-a-workflow) holds two files and has none: the second one is a
+Flowfile, called by the first, and its own comments are exactly as much documentation
+as any other example's.
 
 `plugins/greet`, `plugins/vcs`, `plugins/github`, and `plugins/git` also sit a directory
 deeper than the rest, which is deliberate: everything matching `examples/*/workflow.yaml`

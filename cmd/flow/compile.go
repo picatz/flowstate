@@ -5,12 +5,9 @@ import (
 	"fmt"
 	"os"
 
-	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 
-	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
 
 // `flow compile` is the answer to a question `flow validate` deliberately does not
@@ -22,11 +19,15 @@ import (
 // workload, which has side effects, or to drive the Compile RPC over MCP, which
 // needs an agent in the loop to look at a file already sitting on disk.
 //
-// It is a projection of the Compile RPC and nothing more, which is why it dials
-// nothing: [server.FlowstateServer.Compile] parses and validates in this process
-// over a nil Temporal client, so the specification printed here is byte-for-byte
-// what a server would answer with for the same bytes. One compiler, three callers —
-// this command, the RPC, and `flowstate_compile`.
+// It calls [flowfile.ParseFile] and [flowfile.ValidateSourceFile] directly rather
+// than dialing the Compile RPC the way it used to: this command already has the one
+// thing the RPC deliberately does not — a real path on the machine it is running
+// on — and a `call:` step needs that path to resolve. The RPC and `flowstate_compile`
+// stay bytes-only on purpose (see their own docs), because a browser or an agent
+// driving them may have no filesystem at all; this command always does, so paying
+// for that restriction here would refuse a file this command is the one place able
+// to compile in full. All three still call the same [flowfile.Parse] underneath —
+// what differs is only whether a path travels with the bytes.
 
 // newCompileCommand builds the `flow compile` command.
 func newCompileCommand() *cobra.Command {
@@ -97,40 +98,51 @@ func runCompile(cmd *cobra.Command, args []string) error {
 
 	path := args[0]
 
-	data, err := os.ReadFile(path)
-	if err != nil {
-		// Not a diagnostic: a path that cannot be read is a fact about the
-		// invocation rather than about a workflow, and listing it beside "this step
-		// references a step that does not exist" would put a mistake fixed in the
-		// shell in among mistakes fixed in the file.
-		return fmt.Errorf("error reading %s: %w", path, err)
-	}
-
-	// The handler over no Temporal client, exactly as `flow mcp` builds it: Compile
-	// touches no run and no tenant, so there is nothing for a client to serve.
-	local := server.New(nil)
-
-	response, err := local.Compile(cmd.Context(), connect.NewRequest(&v1.CompileRequest{
-		File: &v1.SourceFile{Name: path, Source: data},
-	}))
-	if err != nil {
-		// The request itself was refused — a file past the megabyte the schema
-		// bounds a source file at is the one way to reach this offline.
-		return fmt.Errorf("compiling %s: %w", path, err)
-	}
-
+	// Path-aware, so a `call:` step resolves relative to this file's own
+	// directory exactly as `flow validate` and `flow run` resolve it.
+	workflow, _, err := flowfile.ParseFile(path)
 	surface := newSurface(cmd)
-
-	if diagnostics := response.Msg.GetReport().GetDiagnostics(); len(diagnostics) > 0 {
-		// stderr, which is the split this command turns on. `flow validate` writes
-		// diagnostics to stdout because they are its answer; here the answer is the
-		// specification, so a diagnostic is the account of why there is not one —
-		// and a reader piping this into `jq` must never receive one.
-		for _, diagnostic := range diagnostics {
-			fmt.Fprintf(surface.Err, "%s:%s\n",
-				surface.ErrTheme.Muted.Render(path), diagnosticFromProto(diagnostic).Error())
+	if err != nil {
+		var pathErr *os.PathError
+		if errors.As(err, &pathErr) {
+			// Not a diagnostic: the path itself cannot be read, which is a fact
+			// about the invocation rather than about a workflow, and listing it
+			// beside "this step references a step that does not exist" would put
+			// a mistake fixed in the shell in among mistakes fixed in the file.
+			return fmt.Errorf("error reading %s: %w", path, err)
 		}
 
+		// Diagnostics from a file that failed to compile, or — the one shape that
+		// is not a [flowfile.Diagnostics] — a document that is not YAML at all.
+		// Both are the file's problem rather than the invocation's, so both are
+		// reported the same way.
+		var diagnostics flowfile.Diagnostics
+		if !errors.As(err, &diagnostics) {
+			diagnostics = flowfile.Diagnostics{{Message: err.Error()}}
+		}
+		for _, d := range diagnostics {
+			fmt.Fprintf(surface.Err, "%s:%s\n", surface.ErrTheme.Muted.Render(path), d.Error())
+		}
+		return errCompileRefused
+	}
+
+	// The compiler accepts more than the validator does — a parse can succeed on
+	// a file validation would still object to — so the full check runs too, and a
+	// file with diagnostics answers with them and no specification. A
+	// specification handed out beside a list of its problems would be an
+	// invitation to run it anyway.
+	diagnostics, err := flowfile.ValidateSourceFile(path)
+	if err != nil {
+		return fmt.Errorf("validating %s: %w", path, err)
+	}
+	if len(diagnostics) > 0 {
+		// stderr, which is the split this command turns on. `flow validate` writes
+		// diagnostics to stdout because they are its answer; here the answer is
+		// the specification, so a diagnostic is the account of why there is not
+		// one — and a reader piping this into `jq` must never receive one.
+		for _, d := range diagnostics {
+			fmt.Fprintf(surface.Err, "%s:%s\n", surface.ErrTheme.Muted.Render(path), d.Error())
+		}
 		return errCompileRefused
 	}
 
@@ -142,33 +154,5 @@ func runCompile(cmd *cobra.Command, args []string) error {
 		document = FormatJSON
 	}
 
-	// The workflow rather than the whole CompileResponse, because the specification
-	// is what was asked for and the envelope's other field is the report — which is
-	// empty on every path that reaches here, since a file with diagnostics has
-	// already left above. Wrapping the answer in a level of nesting that can only
-	// ever hold nothing would cost every consumer a `.workflow` and buy them no
-	// fact.
-	return writeJSON(surface, document, response.Msg.GetWorkflow())
-}
-
-// diagnosticFromProto returns the working type the diagnostic renderer takes.
-//
-// The rendering itself is [flowfile.Diagnostic.Error] — the same function `flow
-// validate`, `flow fix` and the language server print through — so this is an
-// adapter and not a second renderer. It exists because the compiler is reached here
-// through its RPC, which answers in the schema message [flowfile.Diagnostic.Proto]
-// produces, and the round trip has to come back before a line can be written.
-//
-// Positions narrow back to int unchanged, zero and all: a diagnostic with no
-// position is a real answer, and Error already knows how to say so.
-func diagnosticFromProto(d *v1.Diagnostic) flowfile.Diagnostic {
-	return flowfile.Diagnostic{
-		Line:    int(d.GetLine()),
-		Column:  int(d.GetColumn()),
-		Step:    d.GetStep(),
-		Field:   d.GetField(),
-		Kind:    d.GetKind(),
-		Value:   d.GetValue(),
-		Message: d.GetMessage(),
-	}
+	return writeJSON(surface, document, workflow)
 }

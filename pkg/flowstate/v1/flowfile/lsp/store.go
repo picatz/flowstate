@@ -1,6 +1,7 @@
 package lsp
 
 import (
+	"strings"
 	"sync"
 
 	"github.com/sourcegraph/go-lsp"
@@ -47,6 +48,23 @@ type document struct {
 	// tooLarge reports that the text exceeded maxDocumentBytes and was not
 	// parsed at all.
 	tooLarge bool
+}
+
+// filesystemPath returns doc's location as a path a `call:` step can be
+// resolved against, when its URI names one.
+//
+// Only the `file://` scheme has one: an untitled buffer, or a document an
+// extension synthesizes over some other scheme, has no directory a relative
+// path could mean anything against, and [flowfile.ValidateSourceAt] refuses a
+// `call:` in that case with a diagnostic saying so — the same answer every
+// other bytes-only caller of this package gives.
+func (doc *document) filesystemPath() (string, bool) {
+	const prefix = "file://"
+	uri := string(doc.uri)
+	if !strings.HasPrefix(uri, prefix) {
+		return "", false
+	}
+	return strings.TrimPrefix(uri, prefix), true
 }
 
 // newDocument analyzes text once, so that each request reads results rather than

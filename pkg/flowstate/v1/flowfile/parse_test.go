@@ -2,7 +2,6 @@ package flowfile_test
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -78,7 +77,7 @@ steps:
     log:
 `,
 			line: 5, col: 5,
-			want: `unknown key "nonsense"; the keys here are id, description, if, vars, timeout, retry, continue_on_error, undo, for_each, parallel, sleep, wait_until, wait_for_signal, http, and log`,
+			want: `unknown key "nonsense"; the keys here are id, description, if, vars, timeout, retry, continue_on_error, undo, with, for_each, parallel, sleep, wait_until, wait_for_signal, call, http, and log`,
 		},
 		{
 			// The shape every Flowfile written before the flattening has, and the
@@ -141,7 +140,7 @@ steps:
     timeout: 5s
 `,
 			line: 4, col: 5,
-			want: "must have one of for_each, parallel, sleep, wait_until, wait_for_signal, http, or log",
+			want: "must have one of for_each, parallel, sleep, wait_until, wait_for_signal, call, http, or log",
 		},
 		{
 			name: "a step key that is not a string",
@@ -736,17 +735,12 @@ func TestExamplesCompile(t *testing.T) {
 
 	for _, path := range paths {
 		t.Run(filepath.Base(filepath.Dir(path)), func(t *testing.T) {
-			data, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatalf("reading %s: %v", path, err)
-			}
-
-			workflow, positions, err := flowfile.Parse(data)
+			workflow, positions, err := flowfile.ParseFile(path)
 			if err != nil {
 				t.Fatalf("Parse() error: %v", err)
 			}
 
-			ds, err := flowfile.ValidateSource(data)
+			ds, err := flowfile.ValidateSourceFile(path)
 			if err != nil {
 				t.Fatalf("ValidateSource() error: %v", err)
 			}
@@ -761,7 +755,7 @@ func TestExamplesCompile(t *testing.T) {
 				}
 			}
 
-			requireRoundTrip(t, workflow)
+			requireRoundTripAt(t, workflow, path)
 		})
 	}
 }
@@ -990,13 +984,27 @@ steps:
 // the same workflow.
 func requireRoundTrip(t *testing.T, workflow *v1.Workflow) {
 	t.Helper()
+	requireRoundTripAt(t, workflow, "")
+}
+
+// requireRoundTripAt is [requireRoundTrip] for a workflow that may contain a
+// `call:` step, which Marshal writes back as the path it names — the
+// specification's compiled copy, never the source — so re-parsing that output
+// needs the same location a `call:` in it would have been compiled with.
+func requireRoundTripAt(t *testing.T, workflow *v1.Workflow, path string) {
+	t.Helper()
 
 	data, err := flowfile.Marshal(workflow)
 	if err != nil {
 		t.Fatalf("Marshal() error: %v", err)
 	}
 
-	again, err := flowfile.Unmarshal(data)
+	var again *v1.Workflow
+	if path != "" {
+		again, _, err = flowfile.ParseAt(data, path)
+	} else {
+		again, err = flowfile.Unmarshal(data)
+	}
 	if err != nil {
 		t.Fatalf("Unmarshal(Marshal()) error: %v\n%s", err, data)
 	}

@@ -81,7 +81,22 @@ func diagnose(doc *document) []lsp.Diagnostic {
 	// and only their positions are improved, because a rule implemented twice is a
 	// rule that will eventually differ — and the editor must never disagree with
 	// `flow validate` about the same file.
-	ds, err := flowfile.ValidateSource([]byte(doc.text))
+	// Path-aware when the document's URI names one, so a `call:` step resolves
+	// relative to its directory exactly as `flow validate` resolves it — against
+	// doc.text, the live buffer, rather than whatever the file holds on disk,
+	// since an editor's unsaved edits are exactly what a diagnostic has to
+	// reflect. A document with no filesystem location — untitled, or some other
+	// scheme entirely — has no directory to resolve a relative path against, and
+	// a `call:` there is refused with a diagnostic saying so.
+	var (
+		ds  flowfile.Diagnostics
+		err error
+	)
+	if path, ok := doc.filesystemPath(); ok {
+		ds, err = flowfile.ValidateSourceAt([]byte(doc.text), path)
+	} else {
+		ds, err = flowfile.ValidateSource([]byte(doc.text))
+	}
 	if err != nil {
 		// A failure to compile now arrives as positioned diagnostics, so it is
 		// placed exactly like a validation diagnostic rather than dumped at the
