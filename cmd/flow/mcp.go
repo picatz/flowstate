@@ -122,14 +122,28 @@ func serveMCPTools(
 	remote func() flowstatev1connect.WorkflowServiceClient,
 	posture *cobra.Command,
 ) error {
-	addMCPTools(srv, local, remote, posture)
+	addMCPCapabilities(srv, local, remote, posture)
 
 	return srv.Run(ctx, &mcp.StdioTransport{})
 }
 
-// addMCPTools is the one registration, shared with the tests so what they
+// addMCPCapabilities is the one registration, shared with the tests so what they
 // exercise is what an agent connects to — two registration sites would be the
 // two-copies defect this repository keeps refinding, on a new surface.
+//
+// Two halves, and the split is what each is for: tools are the verbs, resources
+// are what an agent reads before choosing one. See mcpresources.go.
+func addMCPCapabilities(
+	srv *mcp.Server,
+	local *server.FlowstateServer,
+	remote func() flowstatev1connect.WorkflowServiceClient,
+	posture *cobra.Command,
+) {
+	addMCPTools(srv, local, remote, posture)
+	addMCPResources(srv, local)
+}
+
+// addMCPTools registers one tool per RPC, plus the one that is not an RPC.
 func addMCPTools(
 	srv *mcp.Server,
 	local *server.FlowstateServer,

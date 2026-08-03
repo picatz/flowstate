@@ -1194,7 +1194,7 @@ Run `flow <command> --help` for the full flags of any of these.
 | `flow worker` | Start a Temporal worker, which is what actually executes steps. |
 | `flow server` | Start the Flowstate API server that accepts workflows. |
 | `flow lsp` | Serve the Flowfile language server over stdin and stdout, for editor diagnostics. |
-| `flow mcp` | Serve the control plane to an AI agent as MCP tools over stdin and stdout, schemas derived from the API's own. |
+| `flow mcp` | Serve the control plane to an AI agent over stdin and stdout: one tool per RPC with schemas derived from the API's own, plus `flowstate_run_local` to rehearse a Flowfile in-process, and read-only resources carrying the DSL reference, the task catalog and the examples. What a local run may reach is decided by this process's flags — with none, egress is denied. See [docs/CLI.md](docs/CLI.md#flow-mcp-the-same-surface-for-an-agent) for client configuration. |
 | `flow keys` | Generate and inspect signing keys for workload identity. |
 | `flow keys generate` | Generate a signing key, write it PKCS#8-PEM at file mode 0600, and print its public JWK. Refuses to overwrite an existing key. |
 | `flow keys public` | Print the public JWK for an existing signing key, without touching the private half. |

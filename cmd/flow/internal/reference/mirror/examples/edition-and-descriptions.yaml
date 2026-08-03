@@ -1,0 +1,60 @@
+edition: v2026.2
+name: edition-and-descriptions
+description: Two keys about the file itself rather than about the work it does.
+
+# A Flowfile can say two things that no step executes, and both are for whoever
+# reads it next — which, on a durable workload, is someone months from now trying
+# to work out why it does what it does.
+#
+# `edition:` names the grammar the file is written in, and every Flowfile carries
+# one. It used to be optional, with absent meaning "the current edition" — which
+# made a file's grammar depend on which build read it, and quietly re-read an old
+# file as a new one. Required, a file says what it is, and a build either has that
+# grammar or refuses.
+#
+# What it buys is a refusal. Surface syntax here gets no deprecation window — a
+# spelling that is replaced is *gone*, because carrying two spellings costs the
+# parser, the validator, the language server, the formatter, and every test that
+# crosses them, for as long as the window lasts. That trade is only safe if a file
+# can say which grammar it was written in, so a later build refuses it rather than
+# quietly reading it as something else. `flow fix` rewrites files across the
+# boundary, which is what makes the strictness affordable.
+#
+# It is not a compatibility switch. A build compiles one grammar, and declaring an
+# edition it does not have is an error rather than a translation request.
+
+vars:
+  roster: ${['ada', 'grace', 'katherine']}
+steps:
+  # `description:` is prose about a step: why it is here, which the mechanics
+  # under it cannot say. The expression below says what this computes; only a
+  # person can say that the roster is the source of truth and that being wrong
+  # here pages someone who is not on call.
+
+  # A property of the *step*, not of the task it runs — so every kind of step can
+  # carry one. A wait is often the step most in need of explaining, because what
+  # it is waiting for is nowhere in the file.
+  - id: settle
+    description: Give the read replica a moment to catch up with the write we just read past.
+    sleep: 1s
+
+  # A loop can carry one too. `for_each` says what it iterates; it cannot say
+  # that the order is deliberate and that the list is short on purpose.
+  - id: notify
+    description: One at a time, in roster order, so the first responder is paged before the backup.
+    for_each:
+      items: ${vars.roster}
+      as: person
+      steps:
+        - id: page
+          log:
+            message: ${"paging %s".format([person])}
+
+  # It belongs directly under `id:`, and not under the task's own key. The keys
+  # there are that task's inputs, so a `description` written among them would be
+  # asking for an input by that name — which is a different thing entirely, and
+  # for most tasks an error.
+  - id: report
+    description: What a human sees in the log when this workload finishes.
+    log:
+      message: ${"paged %d people".format([size(vars.roster)])}

@@ -497,3 +497,22 @@ $ flow tasks
 `flow validate` runs the same semantic validation the language server reports, so
 if a file is clean there and not in your editor, the editor is looking at a
 different file than you think.
+
+## Agents
+
+An AI agent editing Flowfiles is not an editor client, and pointing one at
+`flow lsp` is the wrong shape: LSP answers questions about a buffer at a
+position, and an agent has no cursor. It wants the same guarantees through a
+protocol built for it, which is `flow mcp` — one tool per RPC with schemas
+derived from the protobuf schema, `flowstate_run_local` to rehearse a file in
+process, and read-only resources carrying the DSL reference, the task catalog,
+and the examples.
+
+The validation is the same validation. `flow validate`, the language server's
+`flowfile` diagnostics, and `flowstate_validate` are one implementation with
+three front doors, so an agent and the person reviewing its pull request cannot
+be told different things about the same file.
+
+Client configuration — Claude Code, Claude Desktop, and the generic stdio shape —
+is in [CLI.md](CLI.md#flow-mcp-the-same-surface-for-an-agent), along with what a
+local run may reach and the authoring loop the surface is shaped around.

@@ -1,0 +1,14 @@
+# Formatting a string is an expression, not a task.
+#
+# The profile ships CEL's strings extension, so `format` is an operator on a string
+# wherever a value belongs. What that buys over the `printf:` task it replaced is a
+# specification: `format` is defined at the CEL level and pinned by the profile, which
+# a task wrapping Go's fmt could never be.
+edition: v2026.2
+name: string-formatting
+vars:
+  name: ${"flowstate"}
+steps:
+  - id: greeting
+    log:
+      message: ${"hello %s, you have %d step(s) left".format([vars.name, 0])}

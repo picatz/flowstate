@@ -1,0 +1,75 @@
+# A run answers with something, and `outputs:` is where the file says what.
+#
+# Steps produce a transcript — every step's outputs, keyed by the step that produced
+# them — and a transcript is not a result. `outputs:` names the few values this
+# workflow promises to report, computed once, after every step has finished, in the
+# run's own scope: `${steps.<id>.<output>}`, `${vars.<name>}`, and the arguments the
+# run was started with as `${inputs.<name>}`.
+#
+# They arrive as `run_outputs` beside the transcript, from either driver:
+#
+#   flow run local examples/computed-outputs/workflow.yaml
+#   flow run local examples/computed-outputs/workflow.yaml -o json | jq .runOutputs
+#   flow get <id> -o json | jq .runOutputs
+#
+# An output that cannot be computed fails the run. That is deliberate rather than
+# strict: an output is the answer somebody asked for, so a run that cannot produce
+# its answer has not succeeded.
+#
+# Every input here has a default, so the example runs with no arguments at all — and
+# says something different when given some:
+#
+#   flow run local examples/computed-outputs/workflow.yaml --input release=2026.9.0
+edition: v2026.2
+name: computed-outputs
+
+inputs:
+  release:
+    type: string
+    default: 2026.8.1
+    description: the release being placed
+
+  # A `list` input, supplied on the command line as JSON — `--input targets='["a"]'`
+  # — because a list is not a thing a shell word can be. A `struct` input works the
+  # same way, which is what `--input-file` is for once the arguments stop being flat.
+  targets:
+    type: list
+    default: [alpha, beta, gamma]
+
+outputs:
+  # An argument, echoed back. Worth doing: an output is what a caller reads, and a
+  # caller who ran this from a script does not necessarily still hold what it sent.
+  release:
+    value: ${inputs.release}
+    description: the release this run placed
+
+  # A value computed from a step. A loop reports every iteration through its own
+  # `results`, which outlives the block — so counting them here is counting what
+  # actually happened rather than what was asked for.
+  hosts_placed:
+    value: ${size(steps.roll_out.results)}
+    description: how many hosts the run reached
+
+  # Steps and inputs in one expression, which is the shape most results have: what
+  # was asked for, and what came of it.
+  summary:
+    value: ${"placed %s on %d host(s)".format([inputs.release, size(steps.roll_out.results)])}
+
+steps:
+  - id: roll_out
+    for_each:
+      items: ${inputs.targets}
+      as: host
+      steps:
+        - id: place
+          log:
+            # `host` is bound by the loop and stays bare; `inputs.release` is a fact
+            # about the run and is rooted. Both are in scope here.
+            message: ${host + ' <- ' + inputs.release}
+
+  # The run still narrates itself for a person watching. That is a different thing
+  # from the result: this line goes to stderr and vanishes, and the outputs above are
+  # data a caller can address by name.
+  - id: report
+    log:
+      message: ${"rollout finished for %s".format([inputs.release])}

@@ -1,0 +1,18 @@
+edition: v2026.2
+name: headers-and-nested-outputs
+vars:
+  nested: "${{'outer': {'inner': 'value'}}}"
+steps:
+  - id: web
+    http:
+      method: GET
+      url: https://httpbin.org/anything
+      headers:
+        X-From: Flowstate
+        X-Env: dev
+  - id: report_status
+    log:
+      message: ${string(steps.web.status_code)}
+  - id: pick
+    log:
+      message: ${vars.nested['outer']['inner']}

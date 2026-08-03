@@ -1642,7 +1642,13 @@ flow plugins -o json | jq -r '.plugins[] | select(.tasks[].name == "example.gree
 			"flowstate_run_local executes a submitted Flowfile here, the way `flow run local` " +
 			"does. What such a run may reach is decided by the flags this process is started " +
 			"with and by nothing a client sends: with no flags, egress is denied and no secret " +
-			"scheme is registered.",
+			"scheme is registered.\n\n" +
+			"Beside the tools, the server publishes read-only resources: the whole DSL " +
+			"reference at flowstate://docs/dsl, the task catalog as JSON at " +
+			"flowstate://catalog/tasks, and every example Flowfile under " +
+			"flowstate://docs/examples/ — embedded at build time, so an agent can read the " +
+			"language and working references without a checkout nearby. See docs/CLI.md " +
+			"for client configuration.",
 		Args: cobra.NoArgs,
 		RunE: runMCP,
 		Example: `# Serve the MCP tools on stdio (an MCP client launches this):

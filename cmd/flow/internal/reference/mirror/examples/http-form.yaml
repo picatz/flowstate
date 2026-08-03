@@ -1,0 +1,23 @@
+# A url-encoded form body, which is what OAuth token endpoints and older APIs
+# expect. `form` encodes the values and sets
+# Content-Type: application/x-www-form-urlencoded.
+#
+# Like `json`, it is mutually exclusive with the other two body inputs. Unlike
+# `body`, the encoding and the header are handled rather than left to the author.
+edition: v2026.2
+name: http-form
+steps:
+  - id: token
+    http:
+      method: POST
+      url: https://httpbin.org/post
+      form:
+        grant_type: client_credentials
+        # Values needing escaping are escaped: this scope is one value containing
+        # spaces, not three parameters.
+        scope: read:things write:things
+      parse_json: true
+
+  - id: report
+    log:
+      message: ${"the endpoint received content type %s".format([steps.token.json.headers['Content-Type']])}

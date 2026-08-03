@@ -1,0 +1,15 @@
+# Steps run in the order they are written, and every one of them can read the same
+# values. A value named once at the top is how two steps agree about it — there is no
+# step whose job is to hold a value, because a value is not something a step produces.
+edition: v2026.2
+name: hello-world-multi-step
+vars:
+  greeting: hello world
+steps:
+  - id: greet
+    log:
+      message: ${vars.greeting}
+
+  - id: shout
+    log:
+      message: ${vars.greeting.upperAscii()}

@@ -236,7 +236,7 @@ func connectMCP(t *testing.T, posture *cobra.Command) *mcp.ClientSession {
 
 	srv := mcp.NewServer(&mcp.Implementation{Name: "flowstate", Version: "test"}, nil)
 
-	addMCPTools(srv, server.New(nil), func() flowstatev1connect.WorkflowServiceClient {
+	addMCPCapabilities(srv, server.New(nil), func() flowstatev1connect.WorkflowServiceClient {
 		t.Error("a local tool dialed the server")
 
 		return nil

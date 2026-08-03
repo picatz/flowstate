@@ -1,0 +1,34 @@
+# By default the http task returns `status_code`, `body` and `headers` as this step's
+# outputs, which later steps read as `${steps.web.status_code}`. The optional `outputs`
+# input replaces those with exactly the values this step should return, keeping only
+# what later steps need in the workflow's payloads.
+#
+# Expressions in `outputs` are evaluated after the response arrives, and reach it
+# through `response.*`: `${response.status_code}`, `${response.body}`. Rooted because
+# those names are the *system's* rather than yours — the set can grow without capturing
+# a name you were already using, and a loop binding called `body` around this step
+# cannot be mistaken for the response. The json library is available for picking fields
+# out of a JSON body.
+#
+# Note the two spellings are different things: `response.body` is this response, read
+# here; `steps.web.body` is this step's output, read later.
+edition: v2026.2
+name: http-output-shaping
+# `outputs` is evaluated where it is written, so the names in scope there are the
+# ones in scope here: `response` for what came back, plus everything the file
+# already had — the workflow's vars below, a step's own vars, and a loop's binding.
+vars:
+  source: catalog
+steps:
+  - id: web
+    http:
+      method: GET
+      url: https://httpbin.org/json
+      # ${...} marks a CEL expression, as everywhere else in a Flowfile; a bare
+      # string would be a literal. Quote it because YAML would otherwise read
+      # the colons inside as mapping syntax.
+      outputs: "${ {'status': response.status_code, 'title': json_parse(response.body)['slideshow']['title'], 'source': vars.source} }"
+
+  - id: report
+    log:
+      message: ${"got %d for %s from %s".format([steps.web.status, steps.web.title, steps.web.source])}
