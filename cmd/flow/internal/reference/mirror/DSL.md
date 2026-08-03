@@ -2104,20 +2104,54 @@ If it later turns out that operators want to filter on it, the honest shape is a
 projected into visibility, which is the search-attributes row of ARCHITECTURE.md's
 table and costs no reader anything.
 
+### Cancelling compensates; terminating does not
+
+`flow cancel` takes a run back. That is not a second feature bolted beside the first
+— it is the same compensations, in the same reverse registration order, reported in
+the same sentence. Whatever an author learned from a run that failed is what a run
+somebody stopped will do.
+
+Two things about it are genuinely different, and both follow from what a
+cancellation *is*.
+
+**It runs in a scope the cancellation does not reach.** Temporal refuses any
+activity scheduled on a cancelled workflow context, immediately and before it
+reaches a worker, so compensating on that context would attempt every entry, have
+every one refused in transit, and report a run that could not undo anything it had
+in fact never tried. The compensations therefore run on
+`workflow.NewDisconnectedContext`, and on `context.WithoutCancel` in the local
+driver — the same idea in each driver's own vocabulary.
+
+**It is bounded by time.** A run that has been told to stop must not then keep
+working indefinitely, and somebody is waiting. `v1.UndoBudget` — two minutes — is
+the whole budget for the compensations together, not a quota per step: one that
+returns quickly leaves its unused share to the ones behind it. A compensation the
+budget leaves no room for is reported as *not attempted*, in those words, rather
+than dropped from the account or reported as having failed. Those are three
+different facts for whoever is deciding what to clean up by hand, and only the
+first is true when the budget runs out.
+
+A saga whose compensations each take minutes is being told by that number that
+`flow cancel` is not the verb for it. Raising it is a one-line change in
+`pkg/flowstate/v1/undo.go` and both drivers follow, which is the point of it being
+there.
+
+**`flow terminate` still runs none of this**, and the two verbs needed no flag to
+tell them apart: Temporal terminate executes no workflow code at all, so the
+distinction the CLI already drew — one lets a workload release what it holds, the
+other does not — lands exactly on the two mechanisms. Its help text has always said
+so.
+
+The run still ends CANCELED. Compensating changes the state of the world, not what
+the run was, and a workload somebody stopped on purpose that starts reporting a
+failure sends whoever finds it later looking for a fault that never happened. The
+summary rides the cancellation's details, because a cancelled workflow is closed
+with a command whose only payload is that.
+
 ### What this slice does not do, and why
 
-Four narrowings, each of which is a design that has to be argued rather than guessed.
-
-**Cancellation does not compensate.** `flow cancel` and `flow terminate` stop a run
-without taking anything back, and this is stated rather than left to be discovered.
-Temporal cancellation arrives as a cancelled workflow context, and every activity
-scheduled on one is refused immediately — so compensating a cancellation means running
-on `workflow.NewDisconnectedContext` with a deadline of its own, and deciding what
-happens when that deadline is also exceeded. The local driver's equivalent does not
-exist yet at all. And a terminate is by definition the case where nothing further runs.
-That is the harder half of the ARCHITECTURE.md row this feature sits under
-("Cancellation scopes"), and the failure half needs no cancellation scope whatever,
-which is why it can land first and alone.
+Three narrowings, each of which is a design that has to be argued rather than
+guessed.
 
 **`undo:` is refused inside a `for_each` body and a `parallel:` branch.** This is
 invariant 3, not effort. Compensations run in reverse registration order, and
@@ -2154,7 +2188,6 @@ day it was added. The reasoning for each is written on the messages themselves.
 ### Still open
 
 - Compensation of concurrent work, which needs the ordering key above.
-- Compensation on cancellation, which needs a disconnected scope on both drivers.
 - Reporting what was compensated through `Get` rather than only in the failure text, so
   `flow get` can show it without anyone parsing a sentence.
 - A compensation for a step that failed *partway*, which today is refused by saying the

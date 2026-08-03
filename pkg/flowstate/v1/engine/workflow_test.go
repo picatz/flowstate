@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -14,6 +15,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"go.temporal.io/sdk/converter"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/workflow"
 	"google.golang.org/protobuf/proto"
@@ -812,6 +814,68 @@ func TestRunWorkflowUndo(t *testing.T) {
 
 			require.Equal(t, test.Recorded, recorded(),
 				"the effects that happened, and their order, are not what compensating should have produced")
+		})
+	}
+}
+
+// TestRunWorkflowUndoOnCancellation is the durable half of the cancellation cases.
+//
+// The local driver runs the identical [tests.UndoCancellationCases]. This is the
+// path where the two drivers have the least in common: what a compensation has to
+// escape here is a workflow context Temporal has cancelled, and every activity
+// scheduled on one is refused before it reaches a worker. So the failure mode this
+// guards against is not "the wrong things were undone" — it is a run that reports
+// having tried to undo everything and in fact attempted none of it, which the
+// `Recorded` assertion catches and a summary assertion alone would not.
+//
+// The cancellation is delivered by a delayed callback at a minute, which is the
+// same instrument `cancel_test.go` uses. Time in the test environment is virtual,
+// so the steps run at zero and the run is parked on its hour-long wait long before
+// it arrives — deterministic rather than raced.
+func TestRunWorkflowUndoOnCancellation(t *testing.T) {
+	for index, outline := range tests.UndoCancellationCases(undoPlaceholderBase) {
+		t.Run(outline.Name, func(t *testing.T) {
+			base, recorded := tests.NewUndoServer(t)
+			test := tests.UndoCancellationCases(base)[index]
+
+			testSuite := &testsuite.WorkflowTestSuite{}
+			env := testSuite.NewTestWorkflowEnvironment()
+			env.RegisterWorkflow(engine.Run)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
+
+			// `flow cancel`, arriving while the run is parked.
+			env.RegisterDelayedCallback(env.CancelWorkflow, time.Minute)
+
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow})
+			require.True(t, env.IsWorkflowCompleted(),
+				"a cancelled run never stopped, so its compensations never finished")
+
+			err := env.GetWorkflowError()
+			require.Error(t, err, "a cancelled run reported success")
+
+			// The distinction the feature rests on. Compensating changes the state of
+			// the world, not what the run was: a workload somebody stopped on purpose
+			// that starts reporting FAILED sends whoever finds it looking for a fault
+			// that never happened. Temporal decides this from the error's type, which
+			// is why `compensate` returns a fresh cancellation rather than wrapping.
+			var canceled *temporal.CanceledError
+			require.ErrorAs(t, err, &canceled,
+				"a stopped run stopped reading as cancelled once it compensated: %v", err)
+
+			// The summary rides the cancellation's details, because a cancelled
+			// workflow closes with a command whose only payload is that. An operator
+			// asking what was cleaned up gets it from there.
+			var summary string
+			if canceled.HasDetails() {
+				require.NoError(t, canceled.Details(&summary))
+			}
+			require.Equal(t, test.Summary, summary,
+				"the cancelled run does not carry the account of what was compensated")
+
+			require.Equal(t, test.Recorded, recorded(),
+				"the effects that happened, and their order, are not what compensating a cancelled run should have produced")
 		})
 	}
 }

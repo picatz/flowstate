@@ -159,9 +159,12 @@ func (s *FlowstateServer) Signal(ctx context.Context, req *connect.Request[v1.Si
 //
 // Cooperative, which is the whole difference from [FlowstateServer.Terminate]:
 // the run is told to stop and gets to finish responding, so a workload that has
-// to release a lock or undo half a deployment still does. The cost is that a run
-// wedged on something that never returns may not stop at all — that is when
-// terminate is the answer, and not before.
+// to release a lock or undo half a deployment still does. Literally so — a step
+// declaring an `undo:` is compensated on the way out, in reverse order and within
+// `v1.UndoBudget`, which is the one thing terminate can never do because it
+// executes no workflow code at all. The cost is that a run wedged on something
+// that never returns may not stop at all — that is when terminate is the answer,
+// and not before.
 func (s *FlowstateServer) Cancel(ctx context.Context, req *connect.Request[v1.CancelRequest]) (*connect.Response[v1.CancelResponse], error) {
 	if err := v1.Validate(req.Msg); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)

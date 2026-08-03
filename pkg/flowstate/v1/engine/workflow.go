@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"go.temporal.io/sdk/temporal"
@@ -407,20 +408,36 @@ func Run(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error
 // compensate takes back what the run already did, and returns the failure it will
 // report.
 //
-// # Not for a cancellation
+// # A cancellation compensates too, in a scope it cannot reach
 //
-// A cancelled run passes through untouched, and that is the boundary of this
-// slice rather than an oversight. Compensating a cancellation is the harder half:
-// every activity scheduled on a cancelled workflow context is refused immediately,
-// so the compensations would have to run on a disconnected context with a deadline
-// of its own, and an operator who typed `flow terminate` has asked for the opposite
-// of "do some more work first". Both are real designs. Neither is this one, and
-// docs/DSL.md says so in as many words rather than leaving it to be inferred from
-// a run that quietly cleaned up nothing.
+// `flow cancel` is the verb whose whole promise is that a workload gets to release
+// what it holds on the way out, so a cancelled saga takes itself back. What makes
+// this the harder half is that the context the cancellation arrives on is the one
+// every compensation would be scheduled on, and Temporal refuses an activity
+// scheduled on a cancelled context immediately. Compensating on `ctx` would report
+// a run that could not undo anything, having never attempted any of it.
 //
-// [stepFailed] already refuses to wrap a cancellation for the neighbouring reason
-// — Temporal decides CANCELED from the error's type — so what arrives here as a
-// cancellation is exactly what arrives there as one.
+// So the compensations run on `workflow.NewDisconnectedContext`, which the
+// cancellation does not reach, bounded by [v1.UndoBudget] — a run told to stop must
+// not then work indefinitely, and the local driver reads the same constant for the
+// same reason. The bound is spent across the compensations together: what is left
+// of it narrows each activity's own ceiling, and an entry the budget leaves no room
+// for is recorded as [v1.ErrUndoBudget] rather than dropped.
+//
+// `flow terminate` still runs none of this, and that is the distinction the two
+// verbs already carried: Temporal terminate executes no workflow code at all, so
+// the CLI's two spellings land exactly on the two semantics with no flag invented
+// for it.
+//
+// [stepFailed] refuses to wrap a cancellation for the neighbouring reason —
+// Temporal decides CANCELED from the error's type — so what arrives here as a
+// cancellation is exactly what arrives there as one, and what leaves here must
+// still be one. That is why this does not reach for [v1.UndoRunError] the way the
+// failure path does: `fmt.Errorf("%w…")` would keep the type findable by
+// `errors.As` and *also* throw the summary away, because a cancelled workflow is
+// closed with a CancelWorkflowExecution command whose only payload is the error's
+// details. Returning a fresh cancellation carrying the summary as its details puts
+// it in history, where `flow get` reads it.
 //
 // # Failing after compensating is still failing
 //
@@ -430,14 +447,20 @@ func Run(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error
 // and that is why there is no third status — see docs/DSL.md, and invariant 10 for
 // what a new one would cost every reader of a closed run.
 func compensate(ctx workflow.Context, exec *executor, err error) error {
-	if temporal.IsCanceledError(err) || exec.undo.Len() == 0 {
+	if exec.undo.Len() == 0 {
 		return err
+	}
+
+	if temporal.IsCanceledError(err) {
+		return compensateCancelled(ctx, exec)
 	}
 
 	workflow.GetLogger(ctx).Info("compensating a failed run",
 		"pending", exec.undo.Len(), "error", err.Error())
 
-	results := v1.RunUndoLog(exec.undo, exec.runUndoTask)
+	results := v1.RunUndoLog(exec.undo, func(entry *v1.PendingUndo) error {
+		return exec.runUndoTask(ctx, entry, 0)
+	})
 
 	// Composed from the inner failure's own message, exactly as failedAt does, so
 	// the run's failure reads as one sentence rather than restating this driver's
@@ -455,6 +478,45 @@ func compensate(ctx workflow.Context, exec *executor, err error) error {
 	}
 
 	return v1.UndoRunError(err, results)
+}
+
+// compensateCancelled takes back what a cancelled run did, and returns the
+// cancellation it still reports.
+//
+// The deadline is computed from `workflow.Now`, which is the replay-safe clock:
+// on a replay it answers with the recorded time rather than the wall clock, so the
+// same compensations are attempted and the same ones are skipped. `time.Now` here
+// would be a straightforward invariant-4 violation — the second-worst kind, since
+// it would only diverge on the replays of runs that were cancelled.
+//
+// The remaining budget is re-read before each entry rather than divided up in
+// advance. A compensation that finishes quickly leaves its unused share to the
+// ones behind it, which is what makes the number a budget for the run rather than
+// a quota per step.
+func compensateCancelled(ctx workflow.Context, exec *executor) error {
+	logger := workflow.GetLogger(ctx)
+	logger.Info("compensating a cancelled run", "pending", exec.undo.Len())
+
+	// The scope the cancellation does not reach. The cancel func is deliberately
+	// discarded: nothing here should be able to cancel this context, and the
+	// deadline below is what ends it.
+	uctx, _ := workflow.NewDisconnectedContext(ctx)
+	deadline := workflow.Now(uctx).Add(v1.UndoBudget)
+
+	results := v1.RunUndoLogWithin(exec.undo,
+		func() time.Duration { return deadline.Sub(workflow.Now(uctx)) },
+		func(entry *v1.PendingUndo, within time.Duration) error {
+			return exec.runUndoTask(uctx, entry, within)
+		})
+
+	summary := v1.UndoSummary(results)
+	logger.Info("compensated a cancelled run", "summary", summary)
+
+	// A fresh cancellation rather than the one that arrived, carrying the summary
+	// as its details — see this function's caller for why wrapping cannot work
+	// here. The run still closes CANCELED, which is decided by `errors.As` finding
+	// a `*temporal.CanceledError`, and this is one.
+	return temporal.NewCanceledError(summary)
 }
 
 // resumeFrames returns the position a run resumes from.

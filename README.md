@@ -412,7 +412,9 @@ Behavior worth knowing:
   order, because steps depend forwards. Its inputs are resolved the moment the step
   succeeds, which is why `${steps.register.id}` — a step naming itself — means something
   here and nowhere else. The run still reports FAILED afterwards; what it undid is in the
-  failure. See `examples/saga-provisioning/`.
+  failure. `flow cancel` triggers the same compensations, in the same order, under a
+  bounded budget — that run ends CANCELED, and `flow terminate` compensates nothing at
+  all, which is the difference between the two verbs. See `examples/saga-provisioning/`.
 - These behave identically under `flow run local` and durable execution. Local retries are
   in-process and therefore not durable — a crash loses them — but the observable outcome
   matches, which is what makes a local run worth trusting.

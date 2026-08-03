@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"go.temporal.io/sdk/temporal"
@@ -365,9 +366,29 @@ func (e *executor) dispatch(
 // The activity options are the ones a step with no `retry:` and no `timeout:`
 // gets, from `activityOptionsFor(nil)`. The local driver reaches the same defaults
 // through `runStepWithPolicy` with a nil policy, from the same constants.
-func (e *executor) runUndoTask(entry *v1.PendingUndo) error {
+//
+// The context is a parameter rather than `e.ctx` because a compensation triggered
+// by a cancellation must not run on the cancelled context — see [compensate],
+// which passes a disconnected one. `within` narrows the overall bound to what is
+// left of [v1.UndoBudget] on that path, and is zero on the failure path, where the
+// step defaults are the whole answer.
+func (e *executor) runUndoTask(wctx workflow.Context, entry *v1.PendingUndo, within time.Duration) error {
 	task := entry.GetTask()
-	ctx := workflow.WithActivityOptions(e.ctx, activityOptionsFor(nil))
+
+	opts := activityOptionsFor(nil)
+	if within > 0 {
+		// Narrowed and never widened: a budget with more room left than a step's
+		// own ceiling does not entitle a compensation to more time than any other
+		// task gets.
+		if within < opts.ScheduleToCloseTimeout {
+			opts.ScheduleToCloseTimeout = within
+		}
+		if within < opts.StartToCloseTimeout {
+			opts.StartToCloseTimeout = within
+		}
+	}
+
+	ctx := workflow.WithActivityOptions(wctx, opts)
 
 	var out v1.Node_Outputs
 	var scope *v1.Scope
