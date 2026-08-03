@@ -903,7 +903,7 @@ steps:
 edition: v2026.2
 `)
 	// Confirm the premise: this document does not compile.
-	require.NotEmpty(t, diagnose(newDocument("file:///x", 1, src)),
+	require.NotEmpty(t, diagnose(newDocument("file:///x", 1, src, nil)),
 		"premise: the half-typed document should have problems")
 
 	c := newClient(t)

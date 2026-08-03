@@ -185,7 +185,7 @@ func completeAt(doc *document, pos lsp.Position) *lsp.CompletionList {
 	col := doc.index.byteOfUTF16(pos.Line, pos.Character)
 	before := line[:min(col, len(line))]
 
-	steps := scanOutline(doc.index)
+	steps := scanOutline(doc.index, doc.tasks)
 	current, earlier := stepScope(steps, pos.Line)
 	path := keyPath(doc.index, pos.Line)
 	key, valuePos := keyAndPosition(line, col)
@@ -208,10 +208,10 @@ func completeAt(doc *document, pos lsp.Position) *lsp.CompletionList {
 
 	// The cursor is where a key goes.
 	switch {
-	case insideATask(path):
+	case insideATask(path, doc.tasks):
 		// The keys under a task's own name are its inputs, which come from its
 		// schema rather than from this package's table.
-		return list(inputCandidates(word, replace, current))
+		return list(inputCandidates(word, replace, current, doc.tasks))
 	case endsWith(path, "retry"):
 		return list(dslCandidates("retry", word, replace))
 	case endsWith(path, "for_each"):
@@ -225,7 +225,7 @@ func completeAt(doc *document, pos lsp.Position) *lsp.CompletionList {
 		// they are the same kind of thing: both are ways to finish this line. The
 		// registry supplies one half and the table the other, which is why a task
 		// added to the registry becomes completable with no change here.
-		return list(append(dslCandidates("steps", word, replace), taskCandidates(word, replace)...))
+		return list(append(dslCandidates("steps", word, replace), taskCandidates(word, replace, doc.tasks)...))
 	case len(path) == 0:
 		return list(dslCandidates("", word, replace))
 	}
@@ -242,11 +242,11 @@ func completeAt(doc *document, pos lsp.Position) *lsp.CompletionList {
 // "unknown task" has a token to land on, whereas there is nothing to complete
 // under a task with no schema. Suggesting the enclosing level's keys there would
 // offer `id:` as an input.
-func insideATask(path []string) bool {
+func insideATask(path []string, tasks *v1.Registry) bool {
 	if len(path) == 0 {
 		return false
 	}
-	_, known := v1.LookupTask(path[len(path)-1])
+	_, known := tasks.Lookup(path[len(path)-1])
 	return known
 }
 
@@ -366,7 +366,7 @@ func referenceScope(doc *document, pos lsp.Position, clock bool, current *outlin
 	if from := stepAtIfParsed(doc, pos); from != nil {
 		scope = scopeFromModel(doc, from)
 	} else {
-		scope = scopeFromOutline(earlier, currentIndent)
+		scope = scopeFromOutline(earlier, currentIndent, doc.tasks)
 	}
 
 	// The workflow's own vars, which belong to the file rather than to a step and
@@ -467,7 +467,7 @@ func scopeFromModel(doc *document, from *parsedStep) refScope {
 		if s.id == "" || !visibleFrom(s, from) {
 			continue
 		}
-		scope.steps = append(scope.steps, stepCandidate(s))
+		scope.steps = append(scope.steps, stepCandidate(s, doc.tasks))
 	}
 
 	// A `vars:` on an enclosing block binds for that block's whole body, so a step
@@ -537,7 +537,7 @@ func varDoc(e *entry) string {
 // by a key inside the block above, and a scan that guessed at one would offer a
 // bare name in the one namespace where a wrong candidate cannot be told from a
 // right one.
-func scopeFromOutline(earlier []*outlineStep, currentIndent int) refScope {
+func scopeFromOutline(earlier []*outlineStep, currentIndent int, tasks *v1.Registry) refScope {
 	// The enclosing blocks are the nearest preceding step at each shallower
 	// indentation.
 	ancestors := map[*outlineStep]bool{}
@@ -556,7 +556,7 @@ func scopeFromOutline(earlier []*outlineStep, currentIndent int) refScope {
 			continue
 		}
 		c := refCandidate{name: s.id, kind: lsp.CIKVariable, detail: "step"}
-		if def, ok := v1.LookupTask(s.taskName); ok {
+		if def, ok := tasks.Lookup(s.taskName); ok {
 			c.detail = def.Name
 			c.docs = fmt.Sprintf("Runs the %s task.", def.Name)
 			c.outputs = taskOutputs(def)
@@ -567,7 +567,7 @@ func scopeFromOutline(earlier []*outlineStep, currentIndent int) refScope {
 }
 
 // stepCandidate describes one step as a reference candidate.
-func stepCandidate(s *parsedStep) refCandidate {
+func stepCandidate(s *parsedStep, tasks *v1.Registry) refCandidate {
 	c := refCandidate{name: s.id, kind: lsp.CIKVariable, detail: s.kind()}
 
 	switch {
@@ -589,7 +589,7 @@ func stepCandidate(s *parsedStep) refCandidate {
 		c.docs = "A parallel block. Its branches' step outputs merge into this scope once it joins, so name those steps under the root, not this one."
 
 	default:
-		if def, ok := v1.LookupTask(s.taskName); ok {
+		if def, ok := tasks.Lookup(s.taskName); ok {
 			c.detail = def.Name
 			c.docs = fmt.Sprintf("Runs the %s task.", def.Name)
 			c.outputs = taskOutputs(def)
@@ -829,9 +829,9 @@ func sortAt(slot int, name string) string {
 // wrong when a task name was a *value* under `task:`, and neither reads as wrong
 // on its own — a missing SortText is an absent field, not a visible mistake, and
 // it sorted the whole registry above `id`.
-func taskCandidates(prefix string, replace lsp.Range) []lsp.CompletionItem {
+func taskCandidates(prefix string, replace lsp.Range, tasks *v1.Registry) []lsp.CompletionItem {
 	var items []lsp.CompletionItem
-	for _, def := range v1.DefaultRegistry().All() {
+	for _, def := range tasks.All() {
 		if !strings.HasPrefix(def.Name, prefix) {
 			continue
 		}
@@ -851,11 +851,11 @@ func taskCandidates(prefix string, replace lsp.Range) []lsp.CompletionItem {
 
 // inputCandidates offers the inputs the enclosing step's task declares, required
 // ones first, omitting those already written.
-func inputCandidates(prefix string, replace lsp.Range, step *outlineStep) []lsp.CompletionItem {
+func inputCandidates(prefix string, replace lsp.Range, step *outlineStep, tasks *v1.Registry) []lsp.CompletionItem {
 	if step == nil {
 		return nil
 	}
-	def, ok := v1.LookupTask(step.taskName)
+	def, ok := tasks.Lookup(step.taskName)
 	if !ok || def.Inputs == nil {
 		return nil
 	}

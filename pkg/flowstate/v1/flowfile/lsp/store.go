@@ -4,6 +4,8 @@ import (
 	"sync"
 
 	"github.com/sourcegraph/go-lsp"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
 // maxDocumentBytes bounds how much of a document the server will analyze.
@@ -26,6 +28,14 @@ type document struct {
 	version int
 	text    string
 
+	// tasks is the registry every answer about this document is derived from.
+	// Never nil: [newDocument] substitutes [v1.DefaultRegistry] so that no
+	// reader has to decide what an absent registry means.
+	//
+	// Carried on the document rather than read from the package, because the
+	// registry a server answers from is the server's — see [FlowfileServer.Tasks].
+	tasks *v1.Registry
+
 	index *lineIndex
 
 	// parsed is the positional model, nil when the text does not parse.
@@ -41,11 +51,15 @@ type document struct {
 
 // newDocument analyzes text once, so that each request reads results rather than
 // recomputing them.
-func newDocument(uri lsp.DocumentURI, version int, text string) *document {
+func newDocument(uri lsp.DocumentURI, version int, text string, tasks *v1.Registry) *document {
+	if tasks == nil {
+		tasks = v1.DefaultRegistry()
+	}
 	doc := &document{
 		uri:      uri,
 		version:  version,
 		text:     text,
+		tasks:    tasks,
 		index:    newLineIndex(text),
 		tooLarge: len(text) > maxDocumentBytes,
 	}
@@ -63,8 +77,8 @@ type documentStore struct {
 }
 
 // open records a newly opened document and returns it.
-func (s *documentStore) open(uri lsp.DocumentURI, version int, text string) *document {
-	doc := newDocument(uri, version, text)
+func (s *documentStore) open(uri lsp.DocumentURI, version int, text string, tasks *v1.Registry) *document {
+	doc := newDocument(uri, version, text, tasks)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.docs == nil {
@@ -89,7 +103,7 @@ func (s *documentStore) open(uri lsp.DocumentURI, version int, text string) *doc
 // change, applying a range computed against text the store never had would corrupt
 // it outright. Document versions are monotonic per the spec, so comparing them
 // restores the ordering the wrapper discarded.
-func (s *documentStore) change(uri lsp.DocumentURI, version int, changes []lsp.TextDocumentContentChangeEvent) *document {
+func (s *documentStore) change(uri lsp.DocumentURI, version int, changes []lsp.TextDocumentContentChangeEvent, tasks *v1.Registry) *document {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -116,7 +130,7 @@ func (s *documentStore) change(uri lsp.DocumentURI, version int, changes []lsp.T
 		text = text[:start] + c.Text + text[end:]
 	}
 
-	doc := newDocument(uri, version, text)
+	doc := newDocument(uri, version, text, tasks)
 	if s.docs == nil {
 		s.docs = make(map[lsp.DocumentURI]*document)
 	}

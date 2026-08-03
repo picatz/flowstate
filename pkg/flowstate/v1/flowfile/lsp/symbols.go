@@ -1,7 +1,6 @@
 package lsp
 
 import (
-	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/sourcegraph/go-lsp"
 )
 
@@ -48,7 +47,7 @@ func documentSymbols(doc *document) []lsp.SymbolInformation {
 		container := s.kind()
 		if s.taskEntry != nil {
 			container = s.taskName
-			if _, known := v1.LookupTask(s.taskName); !known && s.taskName != "" {
+			if _, known := doc.tasks.Lookup(s.taskName); !known && s.taskName != "" {
 				container = s.taskName + " (unknown task)"
 			}
 		}

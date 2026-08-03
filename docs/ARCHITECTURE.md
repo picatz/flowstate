@@ -403,12 +403,20 @@ registry is the whole of the seam, and it was the whole of the gap — `Host.Reg
 takes one, and a host registered into a registry made for the occasion launches
 plugins that pass their health checks and answer `unknown task`.
 
-One asymmetry is left, deliberately. A process that has not launched the plugins does
-not know their tasks, so `flow validate` in a terminal and the language server in an
-editor still answer `unknown task` for one, while a worker runs it correctly. Closing
-that means executing plugin binaries to check a file, which is not something an
-editor should do on a keystroke; `flow plugins` is the surface that launches them
-when somebody has asked for it.
+One asymmetry is left, deliberately, and it is now closable rather than fixed. A
+process that has not launched the plugins does not know their tasks, so `flow
+validate` in a terminal and a plain `flow lsp` in an editor answer `unknown task`
+for one while a worker runs it correctly. Closing it means executing plugin
+binaries to check a file, which is not something an editor may decide to do on a
+keystroke, and not something a repository somebody cloned may decide at all — so
+the only thing that turns it on is a person passing `flow lsp --plugin-dir` on the
+command line their editor starts the server with. Then the same host, the same
+discovery and the same `Host.Register` run at startup, and the registry the host
+registered into is handed to the language server rather than reached for
+(`lsp.FlowfileServer.Tasks`), which is what keeps *which* registry a property of
+how the process was launched. Without the flag the answer is unchanged, because a
+server that recognised a task its author's worker may not have would move the
+error from an editor to production.
 
 What a plugin cannot do is escape policy. It resolves secrets only for schemes the
 deployment permitted, receives the tenant a workload belongs to rather than choosing

@@ -11,6 +11,8 @@ import (
 
 	"github.com/sourcegraph/go-lsp"
 	"github.com/sourcegraph/jsonrpc2"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
 // A FlowfileServer answers Language Server Protocol requests about Flowfiles.
@@ -27,6 +29,23 @@ type FlowfileServer struct {
 	// token or a webhook URL, and a language server's log is not a place those
 	// should end up. Positions, URIs, and counts are logged instead.
 	Logger *slog.Logger
+
+	// Tasks is the registry every answer is derived from — task names in
+	// completion, signatures on hover, which step keys the outline treats as
+	// work. When nil, [v1.DefaultRegistry] is used, which is the built-in task
+	// set plus whatever this process registered into it at start-up.
+	//
+	// It is a field rather than a package-level lookup because what a server
+	// knows about is a property of how it was launched. `flow lsp --plugin-dir`
+	// opens a plugin host, registers what it found, and hands the registry here;
+	// without the flag this is the built-in set and a plugin's task is unknown,
+	// which is the same answer `flow validate` gives in a process that launched
+	// nothing.
+	//
+	// The registry is read, never written. It is set before the first request
+	// and shared with whatever else reads it, so a server must not register into
+	// it.
+	Tasks *v1.Registry
 
 	docs documentStore
 
@@ -137,7 +156,7 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 		if err := decode(req, &params); err != nil {
 			return nil, err
 		}
-		doc := s.docs.open(params.TextDocument.URI, params.TextDocument.Version, params.TextDocument.Text)
+		doc := s.docs.open(params.TextDocument.URI, params.TextDocument.Version, params.TextDocument.Text, s.tasks())
 		s.publish(ctx, conn, doc)
 		return nil, nil
 
@@ -146,7 +165,7 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 		if err := decode(req, &params); err != nil {
 			return nil, err
 		}
-		doc := s.docs.change(params.TextDocument.URI, params.TextDocument.Version, params.ContentChanges)
+		doc := s.docs.change(params.TextDocument.URI, params.TextDocument.Version, params.ContentChanges, s.tasks())
 		if doc == nil {
 			// A stale edit, already superseded. Publishing diagnostics computed
 			// from it would replace the newer document's report with an older one.
@@ -388,6 +407,18 @@ func (s *FlowfileServer) notify(ctx context.Context, conn *jsonrpc2.Conn, params
 }
 
 // logger returns the configured logger, or the default one.
+// tasks returns the registry this server answers from.
+//
+// The nil case is the zero value's, which is a usable server over the built-in
+// task set — the harness and every test that does not care about plugins builds
+// one that way.
+func (s *FlowfileServer) tasks() *v1.Registry {
+	if s.Tasks != nil {
+		return s.Tasks
+	}
+	return v1.DefaultRegistry()
+}
+
 func (s *FlowfileServer) logger() *slog.Logger {
 	if s.Logger != nil {
 		return s.Logger

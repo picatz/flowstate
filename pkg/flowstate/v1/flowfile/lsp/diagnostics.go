@@ -281,7 +281,7 @@ func checkExpressions(doc *document, set *diagnosticSet) []lsp.Range {
 	}
 
 	for _, s := range doc.parsed.steps {
-		def, taskKnown := v1.LookupTask(s.taskName)
+		def, taskKnown := doc.tasks.Lookup(s.taskName)
 
 		for _, in := range s.expressionEntries() {
 			// An input the task evaluates itself carries expression source
@@ -431,7 +431,7 @@ func rangeOfFlowfileDiagnostic(doc *document, d flowfile.Diagnostic) lsp.Range {
 			// with what was written under it: `mesage: hello` has a perfectly good
 			// value. Which case this is comes from the schema — the field is either
 			// declared or it is not — rather than from reading the message.
-			if def, known := v1.LookupTask(step.taskName); known && step.input(d.Field) != nil {
+			if def, known := doc.tasks.Lookup(step.taskName); known && step.input(d.Field) != nil {
 				if findField(def.Inputs, d.Field) == nil {
 					return e.keyRange
 				}
@@ -464,7 +464,7 @@ func stepProblemRange(doc *document, step *parsedStep) lsp.Range {
 	if idSuspect(doc, step) {
 		return idRange
 	}
-	if _, known := v1.LookupTask(step.taskName); !known && step.taskEntry != nil {
+	if _, known := doc.tasks.Lookup(step.taskName); !known && step.taskEntry != nil {
 		// The key *is* the task name now, so the range that used to need finding
 		// is simply where the source already is.
 		return step.taskEntry.keyRange

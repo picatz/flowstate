@@ -178,3 +178,57 @@ func TestTheWorkerTakesThePluginFlags(t *testing.T) {
 		}
 	}
 }
+
+// TestTheLanguageServerTakesThePluginFlags is the same wiring check for the
+// editor's side of the seam.
+//
+// Its own test rather than another entry in the loop above, because the reason
+// differs and the reasons are the point. A worker and a server take these flags
+// so a deployment can be configured; `flow lsp` takes them so that one person,
+// on their own machine, can tell their editor about plugins they have installed
+// — which is why the flag is the only way in and there is no configuration
+// request or workspace setting that reaches the same code.
+func TestTheLanguageServerTakesThePluginFlags(t *testing.T) {
+	var cmd *cobra.Command
+	for _, c := range newRootCommand().Commands() {
+		if c.Name() == "lsp" {
+			cmd = c
+
+			break
+		}
+	}
+	require.NotNil(t, cmd, "there is no lsp command")
+
+	for _, name := range []string{"plugin-dir", "plugin", "plugin-scheme", "allow-insecure-plugin-dir"} {
+		assert.NotNil(t, cmd.Flags().Lookup(name),
+			"`flow lsp` does not take --%s, so an author cannot tell their editor "+
+				"about a plugin their worker runs", name)
+	}
+}
+
+// TestTheLanguageServerFailsLoudlyWhenAPluginWillNotStart.
+//
+// Degrading quietly to no plugins is the state this whole path exists to end: an
+// editor underlining tasks that run perfectly well on a worker, with nothing
+// anywhere saying why. So a pinned plugin with no binary behind it stops the
+// command before a byte of protocol is exchanged, exactly as it stops a worker.
+func TestTheLanguageServerFailsLoudlyWhenAPluginWillNotStart(t *testing.T) {
+	cmd := &cobra.Command{}
+	addOutputFlag(cmd)
+	addPluginFlags(cmd)
+
+	require.NoError(t, cmd.Flags().Set("plugin-dir", t.TempDir()))
+	require.NoError(t, cmd.Flags().Set("plugin", "ghost"))
+
+	var out, errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	cmd.SetContext(t.Context())
+
+	err := runLSP(cmd, nil)
+	require.Error(t, err,
+		"a plugin the operator pinned was missing and the server started anyway, "+
+			"which is the silent half-configured state this is meant to prevent")
+	assert.Contains(t, err.Error(), "ghost",
+		"the failure does not name the plugin that was not there")
+}

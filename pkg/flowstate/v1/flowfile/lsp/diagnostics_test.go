@@ -528,7 +528,7 @@ func TestExamplesAreClean(t *testing.T) {
 			data, err := os.ReadFile(path)
 			require.NoError(t, err)
 
-			doc := newDocument(lsp.DocumentURI("file://"+path), 1, string(data))
+			doc := newDocument(lsp.DocumentURI("file://"+path), 1, string(data), nil)
 			assert.Empty(t, messages(diagnose(doc)))
 		})
 	}

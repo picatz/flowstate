@@ -5,6 +5,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
 // These tests pin the positional model, because every feature's precision depends
@@ -31,7 +33,7 @@ steps:
         X-Trace: ${steps.first.result}
       outputs: "{'code': status_code}"
 `
-	doc := newDocument("file:///model.yaml", 1, src)
+	doc := newDocument("file:///model.yaml", 1, src, nil)
 	require.NoError(t, doc.parseErr)
 	require.NotNil(t, doc.parsed)
 
@@ -241,7 +243,7 @@ edition: v2026.2
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			doc := newDocument("file:///shape.yaml", 1, tt.src)
+			doc := newDocument("file:///shape.yaml", 1, tt.src, nil)
 			require.NoError(t, doc.parseErr, "this shape should parse as YAML")
 			require.NotNil(t, doc.parsed)
 			tt.check(t, doc)
@@ -267,7 +269,7 @@ steps:
     http:
       url: https://example.com
 edition: v2026.2
-`)
+`, nil)
 	require.NoError(t, doc.parseErr)
 	step := doc.parsed.step("a")
 	require.NotNil(t, step)
@@ -337,7 +339,7 @@ edition: v2026.2
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := scanOutline(newLineIndex(tt.src))
+			got := scanOutline(newLineIndex(tt.src), v1.DefaultRegistry())
 			require.Len(t, got, len(tt.want))
 			for i, want := range tt.want {
 				assert.Equal(t, want.id, got[i].id, "step %d id", i)
