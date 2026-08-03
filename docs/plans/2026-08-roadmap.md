@@ -163,7 +163,20 @@ Nexus; remote plugin distribution; child workflows / Update / heartbeats / per-s
 | Day 3 | B2 both-driver execution, C1 versioning enforcement, Z10 signal-carry bounds/GC, D2 tracing interceptor + spans, E2 fmt, new fuzz targets, Z4/Z5/Z11 small fixes |
 | Day 4 | B3 reachable + examples, C2 durable example coverage, C3 nested secrets, E1 code actions (rewriter now safe), E3–E5, F2/F3 |
 | Day 5 | G2 generated docs + CI pins, D3 observability lab, stretch: Schedules |
-| Days 6–7 | Buffer; clean-clone verification of pushed branches (CLAUDE.md); examples debt (plugin-task example, `timed_out` example, per-example READMEs); written issues for every deferral; VISION entries moved for shipped items |
+| Days 6–7 | Buffer; clean-clone verification of pushed branches (CLAUDE.md); ~~examples debt (plugin-task example, `timed_out` example, per-example READMEs)~~ **shipped**; written issues for every deferral; VISION entries moved for shipped items |
+
+The examples debt closed as three things rather than the three it named.
+`examples/wait-timeout/` runs a gate to its deadline on both drivers, which also
+gave the local harness its first unattended path through a `wait_for_signal:` step.
+`examples/plugins/greet/` is the plugin surface's worked example, deliberately one
+directory outside `examples/*/workflow.yaml` — a file naming `example.greet` is
+*meant* to be refused by the eight glob-driven checks that judge that corpus with
+the built-in registry, so it is enumerated by name from the one package that can
+build a plugin and launch it, and the package fails rather than skips if a run that
+could have executed it did not. READMEs went only where a directory holds something
+the Flowfile cannot explain: the plugin example, and the two `auth-policy.yaml`
+files. Everywhere else the workflow's own comments already say it, and a second copy
+is a thing to leave stale.
 
 ## Risks
 - **Schema churn**: all proto changes concentrate in B1; one schema owner; `buf generate` transiently breaks every importer (CLAUDE.md warns).

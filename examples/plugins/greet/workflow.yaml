@@ -1,0 +1,45 @@
+edition: v2026.2
+name: plugin-greeting
+description: Calls a task a plugin provides, as though it were built in.
+
+# A plugin task is written the way a built-in one is, with a dot in its name:
+# `example.greet:` is the `greet` task of the `example` plugin. The dot is what
+# keeps the two namespaces apart — no built-in has one and every plugin task does —
+# so installing a plugin can never change what an existing `http:` step does.
+#
+# Everything else here is ordinary. The inputs below are checked against a schema
+# the engine has never compiled: it learns the shape of `name`, `greeting`,
+# `message` and `length` from descriptors the plugin ships in its manifest and
+# hands over when a worker launches it. That is why `flow validate` type-checks
+# `${steps.hello.length}` as a number without this repository knowing anything
+# about it.
+#
+# This example needs setup a Flowfile cannot carry — a built plugin binary, and a
+# worker told where to look — so it has a README beside it. Read that first.
+
+vars:
+  who: world
+
+steps:
+  - id: hello
+    example.greet:
+      name: ${vars.who}
+      greeting: Hello
+
+  # The plugin's answer, back in the run's scope under the step's id, addressable
+  # like any other step's outputs. It crossed a process boundary to get here.
+  - id: announce
+    log:
+      message: ${steps.hello.message}
+
+outputs:
+  greeting:
+    value: ${steps.hello.message}
+    description: what the plugin said
+
+  # A number, from the plugin's own output message. Worth having: it is the field
+  # that proves the descriptors travelled — a value the engine treats as an integer
+  # although nothing in this build has ever seen the schema declaring it one.
+  length:
+    value: ${steps.hello.length}
+    description: how long the greeting is

@@ -1,0 +1,72 @@
+edition: v2026.2
+name: wait-timeout
+description: Lets an approval lapse, and carries on down the other branch.
+
+# `approval-gate` shows the gate being answered. This one shows what happens when
+# nobody answers it, which is the case the schema was shaped around: a wait reports
+# how it ended rather than failing, so an approval that ran out of time is an
+# ordinary branch instead of an error somebody has to tolerate.
+#
+# That distinction is worth being concrete about. If a lapsed wait failed the step,
+# an author would reach for `continue_on_error:` — and would then be unable to tell
+# a gate nobody answered from a gate that broke, because both arrive as a tolerated
+# failure with a message. Here the two are different things: a wait that broke fails
+# the run, and a wait that lapsed produces `timed_out: true` and lets the file decide.
+#
+# Nothing is ever sent to this run, and the timeout is seconds rather than the day
+# `approval-gate` allows, so it finishes on its own:
+#
+#   flow run local examples/wait-timeout/workflow.yaml
+#
+# Sending the signal is what turns it back into the other example:
+#
+#   flow run local examples/wait-timeout/workflow.yaml \
+#     --signal release-approved='{"approved": true}'
+
+steps:
+  - id: request
+    log:
+      message: asking for approval to publish, and not waiting long
+
+  # The gate, with a deadline. A wait with no `timeout:` blocks for as long as the
+  # run lasts, which is right for an approval that genuinely must block until a
+  # person acts; a deadline is right whenever the workload has something sensible to
+  # do when no one does.
+  #
+  # Short because this is an example. The shape is the same at a day or a fortnight:
+  # the wait is state on the execution substrate, so the workers that started it can
+  # all be replaced before it ends.
+  - id: approval
+    wait_for_signal:
+      name: release-approved
+      timeout: 2s
+
+  # `timed_out` is what the engine observed, so it is always there to branch on —
+  # unlike anything under `payload`, which exists only if a sender sent it. That is
+  # why this arm is the one that runs here: no signal arrives, the deadline passes,
+  # and the run keeps going.
+  - id: postponed
+    if: ${steps.approval.timed_out}
+    log:
+      message: nobody approved in time, so the release stays queued
+      level: warn
+
+  # The arm that would have run had anyone answered. `has()` asks whether the sender
+  # supplied a key without asserting that they did, which is what makes it safe on a
+  # wait that lapsed: the payload is then an empty mapping rather than nothing, so
+  # there is still something to look inside.
+  - id: publish
+    if: ${has(steps.approval.payload.approved) && steps.approval.payload.approved}
+    log:
+      message: approved, publishing the release
+
+outputs:
+  # The outcome as data rather than as a line in a log. A caller that started this
+  # run reads how the gate ended without having to parse anything a person was meant
+  # to read.
+  #
+  # Quoted because of YAML rather than because of the expression: a plain scalar
+  # cannot contain a colon followed by a space, and a conditional has one.
+  outcome:
+    value: '${steps.approval.timed_out ? "lapsed" : "answered"}'
+    description: whether the approval was answered or ran out of time

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -29,9 +30,11 @@ import (
 // manufacture disagreements it then reported as the drivers'. So the classification
 // and the stand-in live here, where both drivers' packages already import them.
 //
-// The local harness still carries its own copies at the time of writing; these are
-// deliberately the same shapes, so that adopting them is a deletion rather than a
-// rewrite.
+// The local harness carried its own copies for a while, deliberately the same
+// shapes so that adopting them would be a deletion rather than a rewrite. It has
+// adopted them, and that is what it was: both harnesses now read one answer to
+// which example reaches the network, which one waits to be told something, and
+// which one finishes on its own.
 
 // ExampleInputsFile is the name of the file an example's arguments are written in,
 // beside its `workflow.yaml`.
@@ -295,6 +298,49 @@ func ReachesTheNetwork(nodes []*v1.Node) bool {
 func WaitsForASignal(nodes []*v1.Node) bool {
 	return AnyStep(nodes, func(node *v1.Node) bool {
 		return node.GetWait().GetSignal() != nil
+	})
+}
+
+// LapsesWithin reports whether every signal wait in the workflow has a timeout,
+// and one no longer than the caller is prepared to wait — so a run nobody sends
+// anything to reaches its end inside that budget.
+//
+// The question a harness has to answer about a gate is not "does this wait" but
+// "will this finish if I answer nothing, before I give up on it", and both halves
+// are load-bearing. A wait with no `timeout:` blocks for as long as the run lasts,
+// which is right for an approval that must block until a person acts and wrong to
+// start unattended. A wait with one produces `timed_out: true` when the deadline
+// passes and the run carries on down whichever branch the file wrote — which is
+// what `wait-timeout` demonstrates, and a run a harness can start and simply wait
+// out.
+//
+// The budget is the caller's rather than a constant here, because it is a property
+// of the harness: `approval-gate` lapses after a day, which is a lapse in every
+// sense except the one a test can sit through. Asking "does it lapse" alone reported
+// it as unattended and hung the run against its own bound — a bound reached is not
+// the same as a question answered.
+//
+// Asked of every wait rather than of any, because a file with two gates finishes
+// only if both do; an [AnyStep] here would call a workflow unattended on the
+// strength of the one gate that happens to have a deadline.
+//
+// False when there is no signal wait at all: there is then no gate to lapse, and a
+// caller asking this is asking about a workflow whose answer [WaitsForASignal]
+// decides first.
+func LapsesWithin(nodes []*v1.Node, budget time.Duration) bool {
+	if !WaitsForASignal(nodes) {
+		return false
+	}
+
+	return !AnyStep(nodes, func(node *v1.Node) bool {
+		wait := node.GetWait()
+		if wait.GetSignal() == nil {
+			return false
+		}
+
+		timeout := wait.GetTimeout().AsDuration()
+
+		return timeout <= 0 || timeout > budget
 	})
 }
 
