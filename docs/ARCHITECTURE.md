@@ -232,7 +232,7 @@ Rows marked **(done)** are implemented; the rest are the shape the surface shoul
 | Bounded concurrency | `for_each` with `max_parallel:`, fanning out over a computed list **(done)** |
 | Concurrent branches | `parallel:` branch groups, joined before dependents run **(done)** |
 | Best-effort steps | per-step `continue_on_error:`, recording the failure as `${steps.<id>.error}` **(done)** |
-| Activity heartbeats | progress reporting for long-running tasks |
+| Activity heartbeats | every task activity heartbeats on a ten-second ticker carrying the phase the task has reached **(done)**; periodic rather than per-phase, because a heartbeat *timeout* has to exceed the longest legitimate gap between beats and a per-phase beat would make that the whole request. The phase is a `v1.Phase`, a closed vocabulary with no constructor — heartbeat details are written into history, so invariant 7 applies and the type refuses the leak rather than a reviewer catching it. This is also how a cancellation reaches a running activity at all, which is what makes the cancellation wait in the row above short |
 | Task queues | routing steps to specialized or plugin workers |
 | Priorities and rate limits | a run is scheduled under a fairness key taken from its authenticated tenant, so one tenant's large workload cannot crowd out another's **(done)**; per-step controls still to come |
 | **Nexus** | cross-namespace and cross-team calls — both consuming and *exposing* operations |

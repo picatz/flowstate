@@ -31,11 +31,14 @@ func TestDefaultActivityOptionsAreUnchangedByTheMove(t *testing.T) {
 		StartToCloseTimeout:    2 * time.Minute,
 		ScheduleToCloseTimeout: 10 * time.Minute,
 
-		// Not part of the move — a later, deliberate change, kept in this literal
+		// Not part of the move — later, deliberate changes, kept in this literal
 		// because the point of pinning the whole struct is that every field a step
 		// runs under is written down somewhere a diff has to touch.
-		// [TestAStepWaitsForItsOwnCancellation] is where the reasoning lives.
+		// [TestAStepWaitsForItsOwnCancellation] is where the reasoning lives, and
+		// these two are one feature: the heartbeat is how a cancellation reaches a
+		// running activity at all, so it is what makes waiting for one short.
 		WaitForCancellation: true,
+		HeartbeatTimeout:    30 * time.Second,
 
 		RetryPolicy: &temporal.RetryPolicy{
 			InitialInterval:        time.Second,
