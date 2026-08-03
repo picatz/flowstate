@@ -46,6 +46,86 @@ left — streaming Watch, Nexus, remote plugin distribution, `flow test`, the
 `Value`/literal TODO, tree-sitter grammar, Windows CI, and the smaller carried
 items).
 
+**Then the session kept going**, and the deferral list above is most of what it
+spent itself on:
+
+| PR | What |
+|---|---|
+| #136 | this ledger, caught up with the branch |
+| #137 | the three examples the house rule was owed — plugin, wait-timeout, saga — and the harness honesty to match, after one of them reached the real httpbin.org from inside a suite that believed everything was pointed at a stand-in |
+| #138 | **logs over OTLP**, the third signal, with a step's line carrying the trace it belongs to |
+| #139 | **schedules** — `triggers:` in a file, seven RPCs, `flow schedule`, tenancy doubled |
+| #140 | **saga compensation** — `undo:`, the failure half |
+| #141 | **cancellation compensation** — the other half, plus two Codex P1 findings |
+
+Three of those deserve their reasoning recorded, because in each case the
+interesting decision is not the feature.
+
+`undo:` is spelled `undo:` and not `on_failure:`, which was the working name for
+months and is in this document above. A step's compensation runs when *that step
+succeeded* and something later failed — so `on_failure:` names the one case it
+never runs in. A name that is wrong in the common case is a name that teaches the
+feature backwards.
+
+The cancellation half was deferred out of #140 deliberately and turned out to be
+the more urgent one, because it was already promised. `flow cancel --help` said "a
+workload that has to release a lock or undo a partial change still does", the
+stdout said "it runs its cleanup before finishing", and `docs/DSL.md` said the
+opposite of both while the engine did neither. A capability three surfaces
+describe and no code performs is worse than an absent one: it is the sentence that
+makes an operator stop looking for what is still allocated.
+
+And the second Codex finding on #141 is the best bug of the day, because nothing
+in the diff was wrong. `WaitForCancellation` is false by Temporal's default, which
+resolves an activity future when cancellation is *requested* rather than when the
+activity has stopped — so compensation could start while the forward work was
+still in flight, and `delete` could complete and be reported as "undid" while the
+`create` it was undoing was still on its way to succeeding. Correct compensation,
+correct ordering, correct summary, and a resource left allocated under a sentence
+saying it was not. The lesson generalises past sagas: a run that reports CANCELED
+while its effects are still happening is making the same class of claim as a run
+that reports cleanup it never did.
+
+## What is next, and why it is not more features
+
+An audit of the *surface* rather than the backlog, taken at the end of this
+session:
+
+- `Node.kind` has exactly four shapes — `task`, `for_each`, `parallel`, `wait`.
+  There is no composition primitive at all: no `call:`, no `uses:`, no import.
+  Every Flowfile is a flat, standalone list of steps.
+- The built-in task registry has two entries, `log` and `http`. Everything else is
+  a plugin.
+- There is no `flow test`, no `flow list --filter`, and nothing heartbeats.
+
+Which says something the issue list does not: **Flowstate is finished as an engine
+for one run and empty as a platform for many.** Everything a single run does is
+expressible, durable, governed, and observable. Nothing about an organisation's
+*second* workflow is — it copies the first.
+
+That is a structural gap rather than a missing feature, so it gets more expensive
+with every feature that encrusts the flat step list. It is also unblocked: typed
+`inputs:`/`outputs:` landed in #123 and are exactly the signature a call needs,
+and a called workflow has the same driver split `task` already has — a nested run
+locally, a nested executor durably.
+
+So the next flagship is **`call:` — a step that runs another workflow**, resolved
+at compile time and carried whole (a run's specification is frozen at submit, so
+resolving by name at runtime would make a durable run depend on a mutable external
+definition), bound by `with:` against the callee's declared inputs, seeing nothing
+of the caller's scope, and bounded by total expanded nodes rather than by
+resolution depth — a diamond of includes multiplies breadth, which is the same
+shape as the billion-laughs bound the YAML reader already carries.
+
+After it, in order: **`flow test`** (a reusable workflow nobody can test is one
+nobody will reuse), **operability at scale** (search attributes and `flow list
+--filter`, which a memo cannot give; activity heartbeats, the missing half of
+#131), and then the debt in #134 before it compounds.
+
+Explicitly not next, though each is real: Nexus, remote plugin distribution,
+WASM, entity workflows, payload encryption. None of them is what stops a second
+workflow being written today.
+
 ## Context
 
 Flowstate is ~50 PRs old: a durable, policy-governed workflow engine (YAML+CEL DSL → protobuf spec → Temporal) with two agreeing execution drivers, a connect-go control plane, LSP, MCP, TUI, plugin system, and an identity/secrets substrate. The owner asked for a step-back plan for the coming week covering every surface (DSL, engine, Temporal, OTel, TUI, CLI, API/RPC/proto-first, LSP, MCP) plus agentic self-improvement — and, explicitly, checking everything so the plan contains concrete bug fixes, not just features, and fixing doc bit-rot.
@@ -152,7 +232,7 @@ DSL.md's own Phase 2. Today runs can't be parameterized (`RunRequest` carries on
 3. **Docs parity**: `flow mcp` client-config snippets (LSP has five editors' worth; MCP has zero).
 
 ## Explicitly NOT this week
-Nexus; remote plugin distribution; child workflows / Update / heartbeats / per-step queues & priorities; `on_failure:` saga (wants inputs/outputs — design note only); streaming Watch RPC; Principal↔WorkloadIdentity unification and the three task shapes (written issues); tree-sitter grammar; Windows CI. **Stretch if B lands early: Schedules** (`triggers:` + `flow schedule`).
+Nexus; remote plugin distribution; child workflows / Update / heartbeats / per-step queues & priorities; ~~`on_failure:` saga (wants inputs/outputs — design note only)~~ — **shipped as `undo:`**, both halves, in #140 and #141; the rename is argued in the ledger above; streaming Watch RPC; Principal↔WorkloadIdentity unification and the three task shapes (written issues); tree-sitter grammar; Windows CI. ~~**Stretch if B lands early: Schedules**~~ — **shipped** in #139.
 
 ## Sequencing
 
