@@ -194,6 +194,7 @@ func temporalConfig(ctx context.Context, flags temporalFlags) (temporalclient.Co
 		Namespace:      flags.namespace,
 		Profile:        flags.profile,
 		MetricsHandler: metricsHandler,
+		Interceptors:   temporalClientInterceptors(),
 	}
 
 	if flags.verbose {
@@ -312,6 +313,7 @@ func runWorker(cmd *cobra.Command, args []string) error {
 
 	w := worker.New(c, flags.taskQueue, worker.Options{
 		DeploymentOptions: deployment,
+		Interceptors:      temporalWorkerInterceptors(),
 	})
 
 	engine.Register(w, runtime)

@@ -19,6 +19,7 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/contrib/opentelemetry"
+	"go.temporal.io/sdk/interceptor"
 )
 
 // The telemetry that was imported and emitted nothing.
@@ -198,6 +199,104 @@ func initTelemetry(ctx context.Context) (client.MetricsHandler, func(context.Con
 	}
 
 	return handler, shutdown, nil
+}
+
+// The Temporal half of the same trace.
+//
+// otelconnect carries a trace from the person who typed `flow run` to the
+// server's RPC handler, and that is where it used to stop: the server calls
+// ExecuteWorkflow on a Temporal client that knew nothing about the span it was
+// inside, so the workflow and its activities began a trace of their own. Two
+// disconnected traces for one causal chain is the thing a trace id exists to
+// prevent.
+//
+// The join is Temporal's own interceptor, not one written here. Their SDK
+// serializes a span context into a Temporal header, carries it through the
+// workflow task and back out onto every activity and child workflow, and
+// re-parents on replay without minting spans a replay would duplicate. That
+// contract is theirs to keep working — VISION.md says so in as many words — and
+// reimplementing it would mean owning the replay-safety of somebody else's
+// scheduler.
+//
+// It goes on both sides, and both are load-bearing:
+//
+//   - **Client options**, so ExecuteWorkflow writes the caller's span into the
+//     workflow's header. Without this, the worker has nothing to continue.
+//   - **Worker options**, so the workflow and activity that run it read that
+//     header back and become children. Without this, the header arrives and
+//     nobody opens it.
+//
+// Installed only when telemetry is configured. An interceptor built against the
+// no-op provider would not export anything, but it would still marshal a span
+// context into a Temporal header on every single workflow started by a binary
+// nobody asked to trace — invariant 8 says a first run costs nothing, and a
+// header written into durable history is not nothing.
+
+// temporalTracingInterceptor builds the SDK's tracing interceptor, or nil when
+// telemetry is not configured.
+//
+// Call it *after* [startTelemetry]. The tracer is taken from the global provider
+// at construction and kept, which is the same ordering trap otelconnect has in
+// cmd/flow/client.go: built first, it holds the no-op provider for the life of
+// the process. Nothing memoizes the result, and nothing needs to — unlike the
+// exporters, an interceptor owns no goroutine, no connection, and no buffer, so
+// the second one `flow server` builds costs a struct rather than a second
+// telemetry pipeline.
+//
+// A warning rather than a refusal when it cannot be built, for the reason the
+// client half gives: the command somebody asked for is `flow worker`, not `flow
+// worker with tracing`.
+func temporalTracingInterceptor() interceptor.Interceptor {
+	if !telemetryConfigured() {
+		return nil
+	}
+
+	// The zero options on purpose. Tracer comes from the global provider this
+	// package has already configured, and the propagator defaults to W3C trace
+	// context plus baggage — the same composite [initTelemetry] registers
+	// globally, so the header Temporal carries and the header otelconnect
+	// injects speak the same format.
+	tracing, err := opentelemetry.NewTracingInterceptor(opentelemetry.TracerOptions{})
+	if err != nil {
+		log.Printf("WARNING: telemetry is configured but the Temporal tracing interceptor "+
+			"could not be built, so workflow and activity spans will not join the caller's "+
+			"trace: %v", err)
+
+		return nil
+	}
+
+	return tracing
+}
+
+// temporalClientInterceptors is what a Temporal client should be dialed with.
+//
+// Empty when telemetry is unconfigured, which is what makes the wiring in
+// main.go a single unconditional field rather than a branch: the decision lives
+// here, next to the variable that makes it.
+func temporalClientInterceptors() []interceptor.ClientInterceptor {
+	tracing := temporalTracingInterceptor()
+	if tracing == nil {
+		return nil
+	}
+
+	return []interceptor.ClientInterceptor{tracing}
+}
+
+// temporalWorkerInterceptors is the same interceptor on the other side of the
+// task queue, where the header the client wrote is read back.
+//
+// Built separately rather than converted from the client's, because the two are
+// installed on different objects at different moments — `flow worker` dials a
+// client and builds a worker, `flow server` builds no worker at all — and one
+// interceptor value shared between them would only look like it was saving
+// something.
+func temporalWorkerInterceptors() []interceptor.WorkerInterceptor {
+	tracing := temporalTracingInterceptor()
+	if tracing == nil {
+		return nil
+	}
+
+	return []interceptor.WorkerInterceptor{tracing}
 }
 
 // telemetryState is the process's one initialization, and the flush that

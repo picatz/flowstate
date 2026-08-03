@@ -40,6 +40,7 @@ import (
 
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/contrib/envconfig"
+	"go.temporal.io/sdk/interceptor"
 )
 
 // DefaultAddress is the frontend address used when nothing is configured, which
@@ -77,6 +78,21 @@ type Config struct {
 	// measured all of it and the options never carried a handler, so every
 	// number was discarded.
 	MetricsHandler client.MetricsHandler
+
+	// Interceptors are installed on every client this configuration dials.
+	//
+	// The one that matters today is Temporal's own tracing interceptor, which
+	// writes the caller's span context into the header a workflow is started
+	// with — the half that makes a trace beginning at `flow run` continue into
+	// the workflow rather than stopping at the server. Nil is the unconfigured
+	// deployment and costs nothing.
+	//
+	// It lives on Config rather than being passed to Dial because Dial is not
+	// the only place a client is born: [NewPool] dials one per mapped Temporal
+	// namespace from this same value. A parameter would have instrumented the
+	// fallback client and left every tenant's namespace untraced — the same
+	// shape of gap MetricsHandler was added to close.
+	Interceptors []interceptor.ClientInterceptor
 }
 
 // Options resolves c into Temporal client options.
@@ -116,6 +132,11 @@ func (c Config) Options() (client.Options, error) {
 	if c.MetricsHandler != nil {
 		opts.MetricsHandler = c.MetricsHandler
 	}
+
+	// Appended rather than assigned: environment configuration does not set
+	// interceptors today, and a future SDK that does should not have them
+	// silently dropped by this package.
+	opts.Interceptors = append(opts.Interceptors, c.Interceptors...)
 
 	return opts, nil
 }

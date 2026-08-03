@@ -37,14 +37,33 @@ func (a taskActivities) context(ctx context.Context, identity *v1.WorkloadIdenti
 	})
 }
 
+// The two authorized entry points are also the two that know where they are.
+//
+// They are handed the step's id, so their spans carry it — which is the
+// attribute that turns "some task failed" into "this step failed", and the one
+// the pre-scope activities in activities.go cannot supply. Nothing about the
+// identity is written to the span: a subject and an issuer identify a person or
+// a workload to anyone reading the collector, and a trace does not need them to
+// say which step ran. See the span rules in activities.go.
+
 func (a taskActivities) TaskAuthorized(ctx context.Context, task *v1.Task, identity *v1.WorkloadIdentity, workflowName, runID, stepID string) (*v1.Node_Outputs, error) {
+	ctx, span := startTaskSpan(ctx, task, stepID)
+	defer span.End()
+
 	ctx = a.context(withActivityLogger(ctx), identity, workflowName, runID, stepID)
 	out, err := task.Eval(ctx, nil)
+	recordTaskOutcome(span, err)
+
 	return out, activityError(task.GetName(), err)
 }
 
 func (a taskActivities) TaskInScopeAuthorized(ctx context.Context, task *v1.Task, scope *v1.Scope, identity *v1.WorkloadIdentity, workflowName, runID, stepID string) (*v1.Node_Outputs, error) {
+	ctx, span := startTaskSpan(ctx, task, stepID)
+	defer span.End()
+
 	ctx = a.context(withActivityLogger(ctx), identity, workflowName, runID, stepID)
 	out, err := task.EvalInScope(ctx, scope)
+	recordTaskOutcome(span, err)
+
 	return out, activityError(task.GetName(), err)
 }

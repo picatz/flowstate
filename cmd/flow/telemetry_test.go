@@ -16,6 +16,8 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 	noopTrace "go.opentelemetry.io/otel/trace/noop"
+	"go.temporal.io/sdk/interceptor"
+	"go.temporal.io/sdk/worker"
 )
 
 // Telemetry lives in process-wide globals — the OTel providers, the text-map
@@ -351,4 +353,86 @@ func TestClientCommandInjectsNothingWhenTelemetryIsOff(t *testing.T) {
 	default:
 		t.Fatal("the stub server was never reached")
 	}
+}
+
+// TestTemporalInterceptorsAbsentWhenTelemetryIsOff is invariant 8 on the
+// Temporal side, and it is not only about overhead.
+//
+// An interceptor built against no-op providers exports nothing, so the cost of
+// installing one unconditionally looks like zero — except that it still
+// serializes a span context into a Temporal header on every workflow a binary
+// nobody configured starts, and that header is written into durable history.
+// Off has to mean off there too.
+func TestTemporalInterceptorsAbsentWhenTelemetryIsOff(t *testing.T) {
+	isolateTelemetry(t)
+	telemetryOff(t)
+
+	require.Empty(t, temporalClientInterceptors(),
+		"an unconfigured binary installed a Temporal client interceptor")
+	require.Empty(t, temporalWorkerInterceptors(),
+		"an unconfigured binary installed a Temporal worker interceptor")
+
+	// And the dial options a command actually builds carry none, which is the
+	// assertion that survives somebody rewiring main.go.
+	cfg, err := temporalConfig(t.Context(), temporalFlags{})
+	require.NoError(t, err)
+	require.Empty(t, cfg.Interceptors)
+
+	opts, err := cfg.Options()
+	require.NoError(t, err)
+	require.Empty(t, opts.Interceptors)
+}
+
+// TestTemporalInterceptorsPresentWhenConfigured is the other direction, through
+// the same path a command takes.
+//
+// [temporalConfig] is called rather than the helper alone because the ordering
+// is the part that has been wrong before: the interceptor takes its tracer from
+// the global provider at construction, so building it before [startTelemetry]
+// would hold the no-op one for the life of the process. Going through
+// temporalConfig asserts that the command's own sequence gets this right.
+func TestTemporalInterceptorsPresentWhenConfigured(t *testing.T) {
+	// The collector first, so its cleanup runs after the flush this registers:
+	// cleanups are last-in-first-out, and flushing into a closed collector is a
+	// logged error about nothing.
+	telemetryTo(t)
+	isolateTelemetry(t)
+
+	cfg, err := temporalConfig(t.Context(), temporalFlags{})
+	require.NoError(t, err)
+	require.Len(t, cfg.Interceptors, 1,
+		"ExecuteWorkflow must be intercepted, or the workflow starts a trace of its own")
+
+	opts, err := cfg.Options()
+	require.NoError(t, err)
+	require.Len(t, opts.Interceptors, 1, "the interceptor must reach the options the client is dialed with")
+
+	// The worker half, which is the one that reads back what the client wrote.
+	// Both are asserted because either alone is silent: a header nobody writes
+	// and a header nobody opens look identical from a collector.
+	workerInterceptors := temporalWorkerInterceptors()
+	require.Len(t, workerInterceptors, 1)
+	require.NotNil(t, worker.Options{Interceptors: workerInterceptors}.Interceptors)
+}
+
+// TestTemporalTracingInterceptorServesBothSides pins the property that keeps
+// this one construction path rather than two.
+//
+// Temporal's tracing interceptor implements both halves of the contract, so the
+// client and the worker install the same kind of thing. If a future SDK split
+// them, this is the test that says so before somebody discovers it as a trace
+// that stops at the task queue.
+func TestTemporalTracingInterceptorServesBothSides(t *testing.T) {
+	// The collector first; see the note on the test above.
+	telemetryTo(t)
+	isolateTelemetry(t)
+
+	_, err := startTelemetry(t.Context())
+	require.NoError(t, err)
+
+	tracing := temporalTracingInterceptor()
+	require.NotNil(t, tracing)
+
+	var _ interceptor.ClientInterceptor = tracing
+	var _ interceptor.WorkerInterceptor = tracing
 }

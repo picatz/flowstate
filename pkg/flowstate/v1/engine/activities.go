@@ -2,8 +2,14 @@ package engine
 
 import (
 	"context"
+	"slices"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/temporal"
 )
 
@@ -68,6 +74,9 @@ func WorkflowVars(ctx context.Context, declared *v1.Scope) (*v1.Scope, error) {
 // activity, which keeps the payload small and avoids carrying growing prior
 // outputs across every step.
 func Task(ctx context.Context, task *v1.Task) (*v1.Node_Outputs, error) {
+	ctx, span := startTaskSpan(ctx, task, "")
+	defer span.End()
+
 	// Inputs are pre-resolved by the workflow, so no scope is needed; task
 	// implementations read the supplied literals.
 	//
@@ -77,6 +86,8 @@ func Task(ctx context.Context, task *v1.Task) (*v1.Node_Outputs, error) {
 	// bridge present on two of three paths is a message that vanishes for a reason
 	// nobody would connect to it.
 	out, err := task.Eval(withActivityLogger(ctx), nil)
+	recordTaskOutcome(span, err)
+
 	return out, activityError(task.GetName(), err)
 }
 
@@ -86,7 +97,12 @@ func Task(ctx context.Context, task *v1.Task) (*v1.Node_Outputs, error) {
 // Retained so that a workflow started before scopes existed continues to run; new
 // runs schedule TaskInScope instead.
 func TaskWithPrev(ctx context.Context, task *v1.Task, prev *v1.Workflow_StepOutputs) (*v1.Node_Outputs, error) {
+	ctx, span := startTaskSpan(ctx, task, "")
+	defer span.End()
+
 	out, err := task.Eval(withActivityLogger(ctx), prev)
+	recordTaskOutcome(span, err)
+
 	return out, activityError(task.GetName(), err)
 }
 
@@ -104,7 +120,12 @@ func TaskWithPrev(ctx context.Context, task *v1.Task, prev *v1.Workflow_StepOutp
 // cannot be resolved before the activity is scheduled — and they may still name a
 // binding from the loop the step sits in.
 func TaskInScope(ctx context.Context, task *v1.Task, scope *v1.Scope) (*v1.Node_Outputs, error) {
+	ctx, span := startTaskSpan(ctx, task, "")
+	defer span.End()
+
 	out, err := task.EvalInScope(withActivityLogger(ctx), scope)
+	recordTaskOutcome(span, err)
+
 	return out, activityError(task.GetName(), err)
 }
 
@@ -154,4 +175,132 @@ func activityError(taskName string, err error) error {
 			temporal.ApplicationErrorOptions{Cause: err})
 	}
 	return temporal.NewNonRetryableApplicationError(message, kind.String(), err)
+}
+
+// The first-party spans, and the two rules that decide their whole shape.
+//
+// **Activity side only.** Temporal's tracing interceptor opens the workflow and
+// activity spans, and this adds one inside each activity naming what the step is
+// actually doing. Nothing here is reachable from workflow code, which is
+// invariant 4: a span minted during replay is minted again on every replay, and
+// the only code allowed to know when that is happening is Temporal's own
+// interceptor. Every caller below is an activity function.
+//
+// **No value ever becomes an attribute.** Invariant 7 is not "be careful with
+// secrets", it is that a span is exported to a collector, indexed, and read by
+// people and systems with no relationship to the run — so the *only* things
+// written here are names and classifications the schema already treats as
+// public: the task's name, the step's id, the attempt number, and the scheme and
+// name of a secret *reference*. Never an input, never an output, never a
+// response body, and — the one that is easy to get wrong — never an error
+// message, because a task's error can quote what it was given. The failure
+// status therefore carries the error's *classification* and nothing else, and
+// the error is not recorded as a span event, since RecordError writes the
+// message into one.
+
+// tracerName is the instrumentation scope these spans are attributed to.
+const tracerName = "github.com/picatz/flowstate/pkg/flowstate/v1/engine"
+
+// startTaskSpan opens the span covering one task execution.
+//
+// The provider is read per call rather than captured in a package variable, for
+// the reason cmd/flow keeps rediscovering: an instrument built before telemetry
+// is configured holds the no-op provider forever, and a worker's registration
+// happens at whatever moment the process assembles itself.
+//
+// stepID is empty on the entry points that do not carry one — the pre-scope
+// activities take the task alone — so the attribute is omitted rather than
+// written blank. An empty attribute is worse than a missing one: it reads as a
+// step whose id is the empty string.
+func startTaskSpan(ctx context.Context, task *v1.Task, stepID string) (context.Context, trace.Span) {
+	ctx, span := otel.GetTracerProvider().Tracer(tracerName).Start(ctx,
+		"flowstate.task/"+task.GetName(), trace.WithSpanKind(trace.SpanKindInternal))
+
+	if !span.IsRecording() {
+		// Nothing configured a provider, so the cheapest possible path: no
+		// attribute built, no task walked. This is the zero-config case, which
+		// is every first run.
+		return ctx, span
+	}
+
+	attrs := []attribute.KeyValue{attribute.String("flowstate.task.name", task.GetName())}
+
+	if stepID != "" {
+		attrs = append(attrs, attribute.String("flowstate.step.id", stepID))
+	}
+
+	// The attempt is the substrate's, so it is asked of the substrate rather
+	// than threaded through: a retried activity is a second span, and without
+	// this they are indistinguishable in a trace. Guarded because these
+	// functions are ordinary Go functions the local driver could one day call,
+	// and activity.GetInfo panics outside an activity context.
+	if activity.IsActivity(ctx) {
+		attrs = append(attrs, attribute.Int("flowstate.attempt", int(activity.GetInfo(ctx).Attempt)))
+	}
+
+	attrs = append(attrs, secretReferenceAttributes(task)...)
+	span.SetAttributes(attrs...)
+
+	return ctx, span
+}
+
+// secretReferenceAttributes names the secrets a task will resolve, without
+// resolving anything.
+//
+// This is the observability that secret resolution can honestly have from here.
+// A reference is what the worker is handed; the value is produced deep inside
+// the task's own evaluation, in a package this one does not own, and is held in
+// a closure precisely so nothing can reach it by reflection. Naming the
+// reference answers the question a trace is actually asked — *which* secret did
+// this step read, and did the one that was denied get asked for at all — and
+// answering it costs nothing that can leak, because a [v1.SecretRef] is a scheme
+// and a name and contains no material by construction.
+//
+// Sorted, because the inputs are a map and a set of attributes that reorders
+// between two runs of the same step is a diff for anyone comparing traces.
+func secretReferenceAttributes(task *v1.Task) []attribute.KeyValue {
+	var refs []string
+	for _, value := range task.GetInputs() {
+		// GetSecretRef is the only place a reference can be: a Value is an
+		// expression, a literal, an error, or a reference, and a literal is a
+		// CEL value that cannot contain one. So there is no recursion to do
+		// here, and no chance of walking into a literal's contents — which is
+		// the walk that would leak.
+		ref := value.GetSecretRef()
+		if ref == nil {
+			continue
+		}
+
+		refs = append(refs, ref.GetScheme()+":"+ref.GetName())
+	}
+
+	if len(refs) == 0 {
+		return nil
+	}
+
+	slices.Sort(refs)
+
+	return []attribute.KeyValue{
+		attribute.StringSlice("flowstate.secret.refs", refs),
+		attribute.Int("flowstate.secret.ref.count", len(refs)),
+	}
+}
+
+// recordTaskOutcome marks a failed span with what kind of failure it was.
+//
+// The classification and not the message, and not [trace.Span.RecordError],
+// which would write the message into an exception event. `${steps.<id>.error}`
+// is rendered from whatever the task said, and a task can say a great deal —
+// an http task's error names the URL it called, a plugin's names whatever the
+// plugin wrote. That text belongs in the run's own history, which is read by
+// somebody holding the run, and not in a span, which is read by a collector.
+//
+// The kind is the same one [activityError] hands Temporal, so a span's status
+// and the retry decision cannot disagree about what happened.
+func recordTaskOutcome(span trace.Span, err error) {
+	if err == nil || !span.IsRecording() {
+		return
+	}
+
+	span.SetStatus(codes.Error, v1.ClassifyError(err).String())
 }
