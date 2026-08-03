@@ -790,6 +790,113 @@ message Node {
     keys: {string: {min_len: 1}}
     max_pairs: 64
   }];
+
+  // Undo is how this step is taken back when a *later* step fails and the run
+  // cannot continue — the saga compensation for whatever this step did.
+  //
+  // It hangs off the step rather than being a handler list at the workflow level
+  // because the undo and the do are one decision. The thing to be deleted is named
+  // by the outputs of the step that created it, so a list somewhere else would have
+  // to reach back across the file for every value it needs, and a reviewer would
+  // have to read two places to answer "does this get cleaned up". One place, and
+  // one fewer control-flow construct (DSL.md's rule 10).
+  //
+  // Field 10 rather than an arm of the `kind` oneof, because a compensation is not
+  // a kind of work a step does. It is a property of a step that does some other
+  // kind, exactly as `policy` and `condition` are.
+  Compensation undo = 10;
+}
+
+// Compensation is what undoes one step.
+//
+// # A task, not a node
+//
+// The field is a [Task] and not a [Node], and that is the load-bearing choice in
+// this message rather than an economy. Three things follow from it, each of which
+// would otherwise be a rule somebody has to enforce:
+//
+//   - A compensation cannot itself be compensated. There is nowhere to write a
+//     nested `undo`, so an infinite compensation loop is not something a
+//     specification can express — better than a bound on one.
+//   - A compensation cannot loop, branch, or wait. Those are the node kinds, and
+//     each of them is a position a run could suspend at; compensation runs in the
+//     segment that failed and does not suspend (see [RunState.pending_undo]), so a
+//     kind that needs a resume position could not honour that.
+//   - A compensation has no `id`, so it can never appear in `steps.<id>` and no
+//     expression can depend on one having run.
+//
+// # No policy field, deliberately
+//
+// A compensation is retried and bounded exactly as a step with no `retry:` and no
+// `timeout:` is — the engine's defaults, from the same constants both drivers read
+// (`retrydefaults.go`). A `policy` field here would be a bound nothing reaches
+// until an author writes one, and CLAUDE.md's rule about those is that they are
+// bounds nothing tests. Adding the field later is additive; guessing its semantics
+// now is not.
+message Compensation {
+  // Task is the work that undoes the step.
+  //
+  // Its inputs are resolved at the moment the step *succeeds*, not at the moment
+  // compensation runs — see [PendingUndo.task] for why that is the whole design.
+  Task task = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED
+  ];
+}
+
+// PendingUndo is one compensation a run has registered and not yet run.
+//
+// # Resolved on registration, not on failure
+//
+// The task here carries *values*, not expressions over a scope that may no longer
+// exist. A step's `undo:` is resolved the instant that step succeeds, in that
+// step's own scope with its own outputs added, and what is stored is the result.
+//
+// Three problems disappear at once, and each of them is real:
+//
+//   - Compaction. A run that continues as new carries only the step outputs its
+//     *remaining* steps can still reference (`compactOutputsForRemainingSteps`).
+//     A deferred compensation expression would be a fifth reference site that walk
+//     does not know about, and the failure mode is the one that walk has already
+//     had twice: an output pruned, and a run that fails after a handover on a
+//     specification that never changed. A resolved value references nothing.
+//   - Determinism. Running a compensation schedules an activity and evaluates
+//     nothing, so nothing about compensating is new workflow-side work
+//     (ARCHITECTURE.md invariant 4).
+//   - Meaning. `${steps.provision.id}` inside an undo means the id that step
+//     produced, at the moment it produced it. Resolving later would let it mean
+//     whatever the scope held after some other step overwrote things.
+//
+// The cost is stated rather than hidden: what a compensation would have computed
+// from the *failure* — which step failed, what it said — is not available to it,
+// because at registration time the failure has not happened. That is a deliberate
+// narrowing and DSL.md argues it as one.
+//
+// # Size (ARCHITECTURE.md invariant 9)
+//
+// These ride in [RunState], so `CheckRunStateSize` weighs them at every
+// Continue-As-New along with everything else — it calls `proto.Size` on the whole
+// message rather than summing the fields it knows about, so this field was bounded
+// on the day it was added and nobody has to remember to count it. A run with an
+// undo on every step carries one resolved task per succeeded step, and
+// `Workflow.steps` is capped at 100.
+message PendingUndo {
+  // StepId is the step this undoes, for the sentence a failed run reports and for
+  // nothing else — nothing dispatches on it.
+  string step_id = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+    }
+  ];
+
+  // Task is the compensation with its inputs already resolved.
+  Task task = 2 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED
+  ];
 }
 
 // SecretRef names a secret without containing it.
@@ -2282,6 +2389,26 @@ message RunState {
   // would give if asked, so an old state and a new reader agree without a
   // compatibility arm.
   RunOutputs run_outputs = 10;
+
+  // PendingUndo are the compensations registered by steps that have already
+  // succeeded, in the order they were registered.
+  //
+  // Carried because a saga is exactly the workload that outlives one segment: a
+  // provisioning run that suspends after step two and fails at step three has to
+  // undo work done by a segment that is no longer executing. Nothing else can know
+  // about it — history is not replayed after a Continue-As-New, which is the whole
+  // point of the seam.
+  //
+  // Append-only within a run, and consumed exactly once: a segment either finishes
+  // the run, suspends (appending what it registered), or fails — and only the
+  // failing segment runs these, after which the run ends. There is no path where a
+  // segment compensates and then continues, which is what makes "a compensation
+  // runs at most once" a property of the shape rather than a flag somebody checks.
+  //
+  // Absent on a run started before this field existed, which reads as "nothing to
+  // undo" — the truth for such a run, since no specification it could be executing
+  // had an `undo:` to register (invariant 10, with no compatibility arm needed).
+  repeated PendingUndo pending_undo = 11;
 }
 
 // SignalRequest delivers a signal to a waiting run.

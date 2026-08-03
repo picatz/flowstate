@@ -194,6 +194,24 @@ func stepToYAML(node *v1.Node) (yaml.MapSlice, error) {
 		return nil, fmt.Errorf("step %q: has no %s", node.GetId(), stepKindList())
 	}
 
+	// Last, under the work it undoes, because that is where a reader wants it: the
+	// step says what it does and then how to take it back. It is also the order the
+	// parser accepts, so `flow fix` moves nothing already written this way.
+	if undo := node.GetUndo(); undo != nil {
+		task := undo.GetTask()
+		if task.GetName() == "" {
+			return nil, fmt.Errorf("step %q undo: compensation has no task", node.GetId())
+		}
+		inputs, err := taskInputsToYAML(task)
+		if err != nil {
+			return nil, fmt.Errorf("step %q undo: %w", node.GetId(), err)
+		}
+		step = append(step, yaml.MapItem{
+			Key:   "undo",
+			Value: yaml.MapSlice{{Key: task.GetName(), Value: inputs}},
+		})
+	}
+
 	return step, nil
 }
 

@@ -60,6 +60,17 @@ type executor struct {
 	// of it: a copy per level would leave the query reading the root's copy, which
 	// is the one that stops moving the moment the run descends into anything.
 	progress *progress
+
+	// undo collects the compensation of every step that succeeds, so a run that
+	// later fails can take them back in reverse order.
+	//
+	// Shared by pointer with every nested executor, exactly as `signals` is: a
+	// compensation is registered for the *run*, and a copy per level would either
+	// lose one or run it twice. Nothing nested registers into it today —
+	// [v1.CheckUndoPlacement] refuses an `undo:` below the top level — so the
+	// sharing is what keeps that from being an assumption the day the restriction
+	// lifts.
+	undo *v1.UndoLog
 }
 
 // signalCarry holds the run's early-arriving signals.
@@ -77,6 +88,15 @@ func (e *executor) runNodes(nodes []*v1.Node, depth int) error {
 
 	for i := start; i < len(nodes); i++ {
 		node := nodes[i]
+
+		// Refused before the step runs rather than after it succeeds, so a workload
+		// this engine cannot honour does not perform half of itself first. The local
+		// driver refuses at the identical point; `flow validate` refuses it earlier
+		// still, with a position, which is where an author actually meets it.
+		if err := v1.CheckUndoPlacement(node, depth > 0); err != nil {
+			return stepFailed(err, "step %q", node.GetId())
+		}
+
 		e.setFrame(depth, i)
 		e.progress.enter(depth, node.GetId())
 
@@ -158,14 +178,62 @@ func (e *executor) runNodeWithVars(node *v1.Node, depth int, descend bool) error
 		return nodeFailed(err)
 	}
 	if inner == e.scope {
-		return e.runNode(node, depth, descend)
+		if err := e.runNode(node, depth, descend); err != nil {
+			return err
+		}
+
+		return e.registerUndo(node, inner)
 	}
 
 	outer := e.scope
 	e.scope = inner
 	defer func() { e.scope = outer }()
 
-	return e.runNode(node, depth, descend)
+	if err := e.runNode(node, depth, descend); err != nil {
+		return err
+	}
+
+	return e.registerUndo(node, inner)
+}
+
+// registerUndo records how to take this step back, now that it has succeeded.
+//
+// Here rather than in runNodes for the reason the `vars:` block is evaluated here:
+// the inner scope is live at this point, so a compensation reads the step's own
+// bare `vars:` exactly as the step's inputs could. One statement further out they
+// are gone, and the local driver would see a name this one does not.
+//
+// A failure to resolve one is a failure of this step. It reaches the same
+// `continue_on_error:` check every other failure of this step reaches — and where
+// that does not tolerate it, it ends the run before anything is built on top of an
+// effect that has no way back.
+//
+// Nothing is registered when the node was skipped by its condition (runNodes never
+// gets here), when it failed (the error path above returns first), or when it
+// declares no `undo:`. Those three are the whole of "which steps get compensated",
+// and both drivers reach them through the same call.
+func (e *executor) registerUndo(node *v1.Node, scope *v1.Scope) error {
+	if node.GetUndo() == nil {
+		return nil
+	}
+
+	// Resolved against the scope with the step's own outputs added, which is what
+	// makes `${steps.<id>.<output>}` mean something inside its own undo. Read back
+	// out of the executor's map rather than threaded, because runNode writes them
+	// there and nothing hands them back.
+	//
+	// Evaluation in workflow code, which invariant 4 permits and this driver already
+	// does for every condition, every loop's `items:` and most task inputs. What it
+	// buys is that *running* a compensation evaluates nothing at all — see
+	// [v1.PendingUndo].
+	entry, err := v1.UndoRegistrationFor(
+		context.Background(), node, scope, scope.GetOutputs().GetStepValues()[node.GetId()])
+	if err != nil {
+		return nodeFailed(err)
+	}
+	e.undo.Register(entry)
+
+	return nil
 }
 
 // runNode executes a single node.
@@ -238,19 +306,9 @@ func (e *executor) runTask(node *v1.Node, task *v1.Task) error {
 			// being resolved locally at each end.
 			Profile: e.scope.GetProfile(),
 		}
-		if needsAuthority {
-			evalErr = workflow.ExecuteActivity(stepCtx, "TaskInScopeAuthorized", resolved, compact,
-				e.identity, e.spec.GetName(), e.runID, node.GetId()).Get(stepCtx, &out)
-		} else {
-			evalErr = workflow.ExecuteActivity(stepCtx, TaskInScope, resolved, compact).Get(stepCtx, &out)
-		}
+		evalErr = e.dispatch(stepCtx, resolved, compact, needsAuthority, node.GetId(), &out)
 	} else {
-		if needsAuthority {
-			evalErr = workflow.ExecuteActivity(stepCtx, "TaskAuthorized", resolved,
-				e.identity, e.spec.GetName(), e.runID, node.GetId()).Get(stepCtx, &out)
-		} else {
-			evalErr = workflow.ExecuteActivity(stepCtx, Task, resolved).Get(stepCtx, &out)
-		}
+		evalErr = e.dispatch(stepCtx, resolved, nil, needsAuthority, node.GetId(), &out)
 	}
 	if evalErr != nil {
 		return nodeFailed(evalErr)
@@ -258,6 +316,87 @@ func (e *executor) runTask(node *v1.Node, task *v1.Task) error {
 
 	e.scope.Outputs.StepValues[node.GetId()] = &out
 	return nil
+}
+
+// dispatch schedules the activity for one resolved task.
+//
+// Four activities rather than one, on two axes: whether the task resolves
+// expressions of its own against a scope, and whether it acts under the run's
+// identity. Extracted so there is one place that maps a task onto them — a
+// compensation goes through the same four arms as an ordinary step, and a
+// compensation that quietly lost the authority arm would be a step that could read
+// a secret to create something and not to delete it.
+//
+// A nil scope selects the arms that carry none.
+func (e *executor) dispatch(
+	ctx workflow.Context,
+	resolved *v1.Task,
+	scope *v1.Scope,
+	needsAuthority bool,
+	stepID string,
+	out *v1.Node_Outputs,
+) error {
+	if scope != nil {
+		if needsAuthority {
+			return workflow.ExecuteActivity(ctx, "TaskInScopeAuthorized", resolved, scope,
+				e.identity, e.spec.GetName(), e.runID, stepID).Get(ctx, out)
+		}
+
+		return workflow.ExecuteActivity(ctx, TaskInScope, resolved, scope).Get(ctx, out)
+	}
+
+	if needsAuthority {
+		return workflow.ExecuteActivity(ctx, "TaskAuthorized", resolved,
+			e.identity, e.spec.GetName(), e.runID, stepID).Get(ctx, out)
+	}
+
+	return workflow.ExecuteActivity(ctx, Task, resolved).Get(ctx, out)
+}
+
+// runUndoTask runs one registered compensation as an activity.
+//
+// Nothing is evaluated here, which is the whole point of resolving a compensation
+// when its step succeeded rather than when the run fails: undoing is scheduling,
+// and scheduling is not new workflow-side nondeterminism (invariant 4). The scope
+// carries the profile and nothing else — the only inputs still unresolved are the
+// ones a task evaluates against its own response, and those need no run scope in
+// either driver.
+//
+// The activity options are the ones a step with no `retry:` and no `timeout:`
+// gets, from `activityOptionsFor(nil)`. The local driver reaches the same defaults
+// through `runStepWithPolicy` with a nil policy, from the same constants.
+func (e *executor) runUndoTask(entry *v1.PendingUndo) error {
+	task := entry.GetTask()
+	ctx := workflow.WithActivityOptions(e.ctx, activityOptionsFor(nil))
+
+	var out v1.Node_Outputs
+	var scope *v1.Scope
+	if v1.TaskNeedsPrevOutputs(task.GetName()) {
+		scope = &v1.Scope{Profile: e.spec.GetProfile()}
+	}
+
+	err := e.dispatch(ctx, task, scope, v1.TaskNeedsAuthority(task), entry.GetStepId(), &out)
+	if err == nil {
+		return nil
+	}
+
+	// Reduced to the driver-independent sentence before it leaves, exactly as a
+	// tolerated step failure is (see [failedStepOutputs]).
+	//
+	// It has to happen here rather than in [v1.RunUndoLog], and that is not
+	// tidiness. What arrives from an activity is Temporal's envelope — scheduled
+	// event ids, a worker identity, the classification restated at every level —
+	// and `errors.As` will not find a `*v1.TaskError` through it, so the shared
+	// renderer would fall back to the envelope's own words. The summary a
+	// compensated run reports would then be a *different string* on the two
+	// drivers, and unstable between durable runs on top of that, which is the exact
+	// defect `steperror.go` exists to describe.
+	recorded, _ := recordedStepError(err)
+
+	// A plain error, deliberately: what is left is the sentence, and rewrapping it
+	// in anything this driver understands would give the shared renderer something
+	// to find and re-render.
+	return errors.New(recorded)
 }
 
 // runForEach runs a loop body once per item, sequentially or with bounded
@@ -347,6 +486,7 @@ func (e *executor) runIteration(loop *v1.ForEach, iterator string, item *v1.Valu
 		// for the whole run.
 		signals:  e.signals,
 		progress: e.progress,
+		undo:     e.undo,
 	}
 	if descend {
 		nested.resume = e.resume
@@ -397,6 +537,7 @@ func (e *executor) runIterationsConcurrently(loop *v1.ForEach, iterator string, 
 					scope:    e.scope.WithLocal(iterator, items[i]).WithOutputs(cloneOutputs(e.scope.GetOutputs())),
 					budget:   e.budget,
 					signals:  e.signals,
+					undo:     e.undo,
 
 					// Deliberately not carried. Iterations run at once, so a
 					// worker writing its own step in would be reporting a
@@ -450,6 +591,7 @@ func (e *executor) runParallel(parallel *v1.Parallel, depth int) error {
 				scope:    e.scope.WithOutputs(branchOutputs),
 				budget:   e.budget,
 				signals:  e.signals,
+				undo:     e.undo,
 
 				// Not carried, for the same reason a concurrent iteration does
 				// not carry it: no one branch is the run's position.

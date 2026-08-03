@@ -1883,6 +1883,284 @@ surfaces grow past flags. The plan/apply gate binds `terminate` now and
 golden tests. `flow mcp` follows the catalog and `Host.Register`, because an
 agent surface generated from services is only as complete as the services.
 
+## The fifth round: taking it back
+
+Compensation is the first thing in this document that is not about *saying* something
+more clearly. It is a capability the engine did not have: a run that fails halfway
+through a sequence of effects leaves the effects behind, and no Flowfile could say
+what to do about that. Temporal's substrate for it — activities that run while a
+workflow is unwinding — has been there all along; the missing half was entirely the
+language.
+
+The corpus has named this as an acceptance target since [the corpus
+section](#the-corpus-is-the-acceptance-list) was written ("saga/compensation"), and
+`undo` has been [a reserved word](#the-disposition-table) since Phase 1 precisely so
+that it could arrive without breaking anyone who had registered a task by the name.
+This is that word being spent. `examples/saga-provisioning/` is the corpus entry
+graduating into CI, which is what the acceptance rule means by landed.
+
+### It is `undo:`, not `on_failure:`
+
+[ARCHITECTURE.md](ARCHITECTURE.md)'s primitives table said `on_failure:` and issue
+#135 was filed under that name, and both are wrong about what this does — which is
+worth saying at length exactly once, because the wrong name would have taught every
+author the wrong model on their first reading.
+
+`on_failure:` describes a handler for *this step's* failure. That is not what
+compensation is. A step's compensation runs when the step **succeeded** and something
+*later* failed; a step that failed compensates nothing at all. So `on_failure:` on a
+step names the one case in which the block never runs. An author meeting it would
+reasonably write a notification there, or a retry, or a fallback — and every one of
+those is a different feature that already exists (`continue_on_error:`, `retry:`,
+`if: ${steps.x.error != ''}`).
+
+`undo:` says what the block is: how to take this step back. It reads correctly in the
+position it is written, it does not collide with any of the three existing
+error-handling surfaces, and it is the spelling this document already used in Phase 4.
+The table row and the issue are the outliers, and the table row is now corrected.
+
+The cost of being right about this is one line in a parser, so the argument is cheap
+to reverse if it turns out to be wrong. What is not cheap to reverse is a name a
+thousand files were written against.
+
+### Per-step, not a workflow-level handler list
+
+The alternative shape is a `compensations:` block at the workflow level — a list of
+handlers, each naming the step it undoes. It was rejected on three counts.
+
+**The undo and the do are one decision.** What a compensation deletes is named by the
+outputs of the step that created it, so a handler list has to reach back across the
+file for every value it needs, and a reviewer asking "does this get cleaned up?" has
+to read two places and hold them together. Writing them adjacently is not a style
+preference: it is the only arrangement in which forgetting one is visible.
+
+**A handler list is a second control-flow construct.** [Constitution rule
+10](#the-constitution) — fewer orthogonal primitives beat many convenient ones — and a
+list at the workflow level immediately needs its own answers to ordering, to
+conditions, and to what a handler for a step that never ran does. A block on the step
+inherits all of those from the step.
+
+**It would have to re-derive what ran.** Which steps to compensate is not a property
+of the file; it is a property of the run. A list written in the file describes
+intentions, and the engine would have to reconcile it against what actually happened
+— which is the reconciliation the per-step form does not need, because a compensation
+is registered *by* the step succeeding.
+
+### Registered on success, and only on success
+
+A step's `undo:` becomes pending at the moment the step's outputs are recorded. Three
+consequences, each of which is a decision rather than a fallout:
+
+**A skipped step registers nothing.** `if: false` means the step did not happen, so
+there is nothing to take back. Anything else would have the engine undoing work
+nobody did.
+
+**A failed step registers nothing** — including one whose failure `continue_on_error:`
+tolerated. This is the uncomfortable one and it is deliberate. A step that failed may
+have applied part of its effect: the `POST` that created the resource and then timed
+out is exactly the case, and it is *the* case the interaction-shape table in
+ARCHITECTURE.md is about. The engine cannot see which half happened. Compensating
+would be as likely to delete something that was never created — failing loudly, in a
+compensation, at the worst possible moment — as to clean up. So the engine does not
+guess, and the file has a way to say what it knows instead: a step whose partial
+effects need undoing should be split so that the effect and its confirmation are
+separate steps, or made idempotent so that undoing it twice is safe.
+
+**A run that succeeds compensates nothing.** Obvious, and worth a test in the negative
+direction anyway: an implementation that registered compensations and ran them at the
+end would pass every failure case and delete the work of every healthy run in
+production. `tests/undo.go` has that case for exactly this reason, which is the same
+lesson as "test that A cannot reach B" wearing different clothes.
+
+### Reverse order, of registration
+
+Compensations run last-registered-first. Steps build on each other going forwards — a
+volume is created inside a network that was created before it — so undoing has to go
+backwards, or the network's teardown runs while the volume still lives in it and
+fails for a reason that is entirely the engine's fault.
+
+The interesting part is the ordering *key*, because two plausible ones are wrong.
+
+Not declaration order: a step skipped by its `if:` and a step that failed are both in
+the declaration list and neither registered anything, so a walk over the file would
+undo things that never happened.
+
+Not completion *time*: nothing in workflow code may read a clock (invariant 4), and a
+timestamp would not survive replay if it did.
+
+Registration order is a sequence the engine appends to as steps succeed. It replays
+identically, it carries across a Continue-As-New as a list, and it is a fact about the
+run rather than about the file.
+
+### The scope a compensation sees, and *when* it sees it
+
+A compensation's inputs are resolved **at the moment its step succeeds**, not at the
+moment the compensation runs. What the engine stores is a task with values in it.
+This is the load-bearing decision of the whole design and it answers three questions
+at once.
+
+**Compaction.** A run that continues as new carries forward only the step outputs its
+*remaining* steps can still reference. A compensation whose expressions were evaluated
+later would be a fifth reference site that walk has to know about — and that walk has
+already been wrong twice in exactly this way, once about a step's `vars:` and once
+about a reference in map-key position, each time producing a run that failed after a
+handover on a specification that never changed. A resolved value references nothing,
+so there is nothing to prune and nothing to teach the compactor.
+
+**Determinism.** Running a compensation schedules an activity and evaluates no CEL at
+all. Compensating adds no new workflow-side evaluation, which is invariant 4 satisfied
+by construction rather than by care.
+
+**Meaning.** `${steps.provision.id}` inside an undo means the id that step produced,
+at the moment it produced it. Resolving later would let it mean whatever the scope
+happened to hold after everything else had run.
+
+What it sees is therefore exactly what the step itself could see — `vars.*`,
+`inputs.*`, every earlier step, the step's own bare `vars:`, an enclosing binding —
+**plus the step's own outputs**. That last part is the one addition, and it is the
+reference an undo almost always wants:
+
+```yaml
+- id: network
+  http:
+    method: POST
+    url: https://api.example.com/networks
+    outputs: '${ {"id": response.json.id} }'
+  undo:
+    http:
+      method: DELETE
+      url: ${"https://api.example.com/networks/" + steps.network.id}
+```
+
+A step naming itself is a forward reference everywhere else in a Flowfile and `flow
+validate` refuses it as one. Inside its own `undo:` it is the ordinary case, because
+by the time the block runs the step has finished. The validator models what the engine
+does rather than applying the general rule, and there is a test whose whole job is
+that.
+
+**What it deliberately cannot see is the failure.** Not the failing step's id, not its
+error. At registration time none of that has happened. The narrowing is worth having
+rather than working around: a compensation that branched on which later step failed
+would be control flow hiding inside an undo, and the language already has a place for
+control flow. What the *reader* of a failed run needs from the failure — which
+compensations ran, and which did not — is in the failure message, which is the next
+section.
+
+### A compensation that fails does not stop the others
+
+Undoing three things where the second cannot be undone must still undo the first and
+the third. Stopping at the first failure leaves *more* behind than continuing, which
+is the opposite of the point, and makes how much is left behind depend on which
+compensation happened to break.
+
+So every registered compensation is attempted, and the failures are reported together.
+The run's failure grows one clause:
+
+```
+step "attach": task "http" failed (Upstream): …; compensation ran in reverse order:
+could not undo "volume": task "http" failed (Upstream): …, undid "network"
+```
+
+Successes are named rather than left implied by silence, because the person reading
+that sentence is deciding what they now have to clean up by hand, and "the network came
+off" is the half of the answer that lets them stop looking.
+
+That sentence has exactly one renderer, `v1.UndoSummary`, in the package both drivers
+import. It is the same discipline `${steps.<id>.error}` is held to and for the same
+reason ([`steperror.go`](../pkg/flowstate/v1/steperror.go) tells that story at length):
+a value an author reads has to be the same value wherever the workload ran.
+
+### Two things that must never happen
+
+**An infinite compensation loop is unrepresentable, not bounded.** A compensation is a
+`Task`, not a `Node`, so there is nowhere in the schema to write an `undo:` on one. A
+compensation is never itself compensated, and no bound is needed because there is no
+recursion to bound. This is why the schema field is not simply another `Node` — that
+would have been more uniform and would have required a rule.
+
+**A compensation runs at most once**, and this too is a property of the shape. A
+segment either finishes the run, suspends, or fails; only the failing segment runs
+compensations, and the run ends when it does. There is no path on which a segment
+compensates and then continues, so nothing has to be marked as consumed, and a replay
+of the failing segment replays the same activities Temporal already recorded.
+
+### A compensated run reports FAILED
+
+No new status. Two arguments, and the second is the one that decides it.
+
+**A new status is a wire change with a long tail.** `RunState` and the RPC surface are
+read by more than this repository (invariant 10), Temporal's own closed-status enum has
+no such member so it would have to be synthesised from a memo, and every reader — `flow
+get`, `flow list`, `flow watch`, the MCP tool table, a dashboard someone wrote — would
+have to learn a third answer to "did it work".
+
+**It would also be wrong.** A run that failed and cleaned up after itself has still
+failed: the work it was asked to do did not happen. What compensation changes is the
+state of the world, not the outcome of the run. The genuinely new information is *what
+was undone*, and that is a property of this particular failure rather than a category
+of run — which is why it lives in the failure message.
+
+If it later turns out that operators want to filter on it, the honest shape is a label
+projected into visibility, which is the search-attributes row of ARCHITECTURE.md's
+table and costs no reader anything.
+
+### What this slice does not do, and why
+
+Four narrowings, each of which is a design that has to be argued rather than guessed.
+
+**Cancellation does not compensate.** `flow cancel` and `flow terminate` stop a run
+without taking anything back, and this is stated rather than left to be discovered.
+Temporal cancellation arrives as a cancelled workflow context, and every activity
+scheduled on one is refused immediately — so compensating a cancellation means running
+on `workflow.NewDisconnectedContext` with a deadline of its own, and deciding what
+happens when that deadline is also exceeded. The local driver's equivalent does not
+exist yet at all. And a terminate is by definition the case where nothing further runs.
+That is the harder half of the ARCHITECTURE.md row this feature sits under
+("Cancellation scopes"), and the failure half needs no cancellation scope whatever,
+which is why it can land first and alone.
+
+**`undo:` is refused inside a `for_each` body and a `parallel:` branch.** This is
+invariant 3, not effort. Compensations run in reverse registration order, and
+registration order inside concurrent work is not the same on the two drivers: the local
+driver runs branches and iterations sequentially in declaration order, deliberately, so
+that a local run is comparable, while the durable driver runs them at once. A saga
+spanning a fan-out would therefore rehearse in one order and run in another — a local
+run lying about precisely the property sagas exist to get right. Fixing it means
+ordering by something both drivers can agree on, which is a declaration path rather than
+a sequence, and deciding what "reverse" means across branches that are unordered by
+construction. Neither answer is obvious and neither is guessed at here. The refusal is a
+positioned diagnostic that says which, and the two execution drivers refuse it too, so a
+specification that never came from a Flowfile cannot slip past.
+
+**`undo:` is refused on a step that is not a task.** A wait and a `parallel:` block have
+no effect of their own to take back, and a loop's effects belong to the tasks in its
+body — which cannot carry an `undo:` under the rule above, so writing one on the loop
+would look like it compensated them and would not.
+
+**A compensation has no `retry:` or `timeout:` of its own.** It gets the defaults a step
+with neither gets, from the same constants both drivers read. A `policy` field would be
+a bound nothing reaches until somebody writes one, and CLAUDE.md's rule about those is
+that they are bounds nothing tests. Adding it later is additive.
+
+### The schema, in one paragraph
+
+`Node.undo` is a `Compensation`, which holds one `Task`. `RunState.pending_undo` is a
+list of `PendingUndo`, each a step id and a resolved task — add-only, absent on a run
+started before the field existed, which reads correctly as "nothing to undo" with no
+compatibility arm needed. Both ride `CheckRunStateSize`, which weighs the whole message
+rather than the fields somebody remembered to count, so the new field was bounded on the
+day it was added. The reasoning for each is written on the messages themselves.
+
+### Still open
+
+- Compensation of concurrent work, which needs the ordering key above.
+- Compensation on cancellation, which needs a disconnected scope on both drivers.
+- Reporting what was compensated through `Get` rather than only in the failure text, so
+  `flow get` can show it without anyone parsing a sentence.
+- A compensation for a step that failed *partway*, which today is refused by saying the
+  engine will not guess. The shape that would make it expressible is a step declaring
+  its effect idempotent, which is a claim about the world that only an author can make.
+
 ## Order of work
 
 Each phase lands green and reachable from a Flowfile.

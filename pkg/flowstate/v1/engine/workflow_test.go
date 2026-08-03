@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"testing"
@@ -765,4 +766,141 @@ func TestRunWorkflowNestedErrorText(t *testing.T) {
 			require.Empty(t, cmp.Diff(test.ExpectedOutputs, &out, protocmp.Transform()))
 		})
 	}
+}
+
+// undoPlaceholderBase is a base URL used only to enumerate the shared saga cases.
+//
+// `.invalid` is reserved by RFC 2606 and resolves nowhere, so a case list built
+// with it and then accidentally *run* fails rather than reaching something real.
+const undoPlaceholderBase = "http://undo.invalid"
+
+// TestRunWorkflowUndo is the durable half of the saga cases.
+//
+// The local driver runs the identical [tests.UndoCases]. Compensation is where the
+// two have the most reason to be written separately — here an undo is an activity
+// scheduled by a workflow already on its way to failing — so what an author can see
+// about it is exactly what has to be pinned in both places: which steps get undone,
+// in what order, what a failing compensation does to the rest, and the sentence the
+// failed run reports.
+//
+// A recording server per case, because what is asserted is a sequence of requests
+// and a shared one would make each case depend on which ran before it.
+func TestRunWorkflowUndo(t *testing.T) {
+	for index, outline := range tests.UndoCases(undoPlaceholderBase) {
+		t.Run(outline.Name, func(t *testing.T) {
+			base, recorded := tests.NewUndoServer(t)
+			test := tests.UndoCases(base)[index]
+
+			testSuite := &testsuite.WorkflowTestSuite{}
+			env := testSuite.NewTestWorkflowEnvironment()
+			env.RegisterWorkflow(engine.Run)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
+
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow})
+			require.True(t, env.IsWorkflowCompleted())
+
+			err := env.GetWorkflowError()
+			if !test.Fails {
+				require.NoError(t, err, "the run was expected to succeed")
+			} else {
+				require.Error(t, err, "the run was expected to fail")
+				require.Contains(t, err.Error(), test.Summary,
+					"the failure does not carry the account of what was compensated")
+			}
+
+			require.Equal(t, test.Recorded, recorded(),
+				"the effects that happened, and their order, are not what compensating should have produced")
+		})
+	}
+}
+
+// TestRunWorkflowUndoPlacement pins the shapes the durable engine refuses.
+//
+// The local driver refuses the same ones through the same call, which is what
+// makes this a driver-agreement case rather than a test of one engine: a shape
+// accepted here and refused there — or the reverse — would be a rehearsal that
+// disagrees with production about whether a saga is expressible at all.
+func TestRunWorkflowUndoPlacement(t *testing.T) {
+	for _, test := range tests.UndoPlacementCases(undoPlaceholderBase) {
+		t.Run(test.Name, func(t *testing.T) {
+			testSuite := &testsuite.WorkflowTestSuite{}
+			env := testSuite.NewTestWorkflowEnvironment()
+			env.RegisterWorkflow(engine.Run)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
+
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow})
+			require.True(t, env.IsWorkflowCompleted())
+
+			err := env.GetWorkflowError()
+			require.Error(t, err, "a compensation the engine cannot honour was accepted")
+			require.Contains(t, err.Error(), "`undo:` is only supported on",
+				"the refusal does not say what is wrong with where the compensation is written")
+		})
+	}
+}
+
+// TestPendingCompensationsSurviveContinueAsNew is the case only the durable driver
+// can ask, and the one a saga most depends on.
+//
+// A provisioning workload is exactly the shape that suspends: it does some work,
+// crosses the step budget, and fails later — in a segment that replays none of the
+// history where the work happened. If the registered compensations did not ride
+// `RunState`, the failing segment would have nothing to take back and would report a
+// clean failure over a half-built world.
+//
+// Driven through the executor's own budget seam rather than by hand, with a budget
+// of one so the handover happens between the two provisioning steps.
+func TestPendingCompensationsSurviveContinueAsNew(t *testing.T) {
+	base, recorded := tests.NewUndoServer(t)
+	cases := tests.UndoCases(base)
+	test := cases[0]
+	require.Equal(t, "compensations run in reverse order when a later step fails", test.Name,
+		"this test is written against the first shared case; the list was reordered")
+
+	// The test environment does not continue a workflow as new for real: it reports
+	// the ContinueAsNew error, and the next segment is started from the state it
+	// carried. Feeding that state back in is what makes this a test of the carry
+	// rather than of one segment.
+	state := &v1.RunState{Workflow: test.Workflow, StepsBudget: 1}
+
+	var (
+		err       error
+		segments  int
+		lastError error
+	)
+	for segments = 0; segments < 10; segments++ {
+		testSuite := &testsuite.WorkflowTestSuite{}
+		env := testSuite.NewTestWorkflowEnvironment()
+		env.RegisterWorkflow(engine.Run)
+		env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
+		env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+		env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
+
+		env.ExecuteWorkflow(engine.Run, state)
+		require.True(t, env.IsWorkflowCompleted())
+
+		err = env.GetWorkflowError()
+		var continued *workflow.ContinueAsNewError
+		if !errors.As(err, &continued) {
+			lastError = err
+
+			break
+		}
+
+		next := &v1.RunState{}
+		require.NoError(t, converter.GetDefaultDataConverter().FromPayloads(continued.Input, &next))
+		state = next
+	}
+
+	require.Positive(t, segments,
+		"the run never suspended, so this proves nothing the single-segment case did not")
+	require.Error(t, lastError, "the run was expected to fail")
+	require.Contains(t, lastError.Error(), test.Summary,
+		"a run that suspended before it failed did not take back what earlier segments did")
+	require.Equal(t, test.Recorded, recorded(),
+		"the effects that happened, and their order, are not what compensating should have produced")
 }

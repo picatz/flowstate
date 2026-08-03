@@ -91,6 +91,15 @@ func TestDSLKeysMatchTheDSL(t *testing.T) {
 						MaxInterval:        durationpb.New(60_000_000_000),
 					},
 				},
+				// A compensation, so `undo:` is a key this fixture actually reaches.
+				// The test compares against what Marshal emits from this workflow, so
+				// a field the fixture leaves unset is invisible to both directions of
+				// the comparison — which is how three wait keys were once missing
+				// while this was green.
+				Undo: &v1.Compensation{Task: &v1.Task{
+					Name:   "log",
+					Inputs: map[string]*v1.Value{"message": v1.NewValue("undone")},
+				}},
 				Kind: &v1.Node_Task{Task: &v1.Task{
 					Name:   "log",
 					Inputs: map[string]*v1.Value{"message": v1.NewValue("hi")},
@@ -1206,6 +1215,9 @@ steps:
       max_interval: 1m
     log:
       message: hi
+    undo:
+      log:
+        message: undone
   - id: loop
     for_each:
       items: ${['a', 'b']}
