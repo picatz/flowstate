@@ -1081,6 +1081,7 @@ Run `flow <command> --help` for the full flags of any of these.
 | --- | --- |
 | `flow validate <file...>` | Check Flowfiles without executing them. Reports the line and column of each problem. `--output json` or `jsonl` carries the diagnostics as data. |
 | `flow fix <path...>` | Rewrite Flowfiles from a retired spelling into the current one, preserving comments and formatting. `--check` reports and writes nothing, exiting non-zero if there is work. |
+| `flow fmt <path...>` | Rewrite Flowfiles into the form `flowfile.Marshal` writes. Unlike `flow fix`, this does not preserve comments, blank lines, key order, or quote style — it renders from the parsed workflow, not the source text. `--check` reports and writes nothing; `--stdout` writes one file's result to standard output. A file that does not parse is left untouched. |
 | `flow run <file>` | Submit a workflow to a server, which runs it durably, and follow the run until it finishes. |
 | `flow run local <file>` | Run a workflow in this process, with no server and no Temporal. Answers signal gates from `--signal name=json`. `--output json` or `jsonl` carries the same document `flow run` writes. |
 | `flow get <id>` | Report what a run is doing, and its outputs if it finished. Status on stderr, outputs on stdout, so `flow get id \| jq` sees only the data. |

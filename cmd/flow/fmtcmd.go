@@ -1,0 +1,218 @@
+package main
+
+import (
+	"bytes"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+
+	"github.com/spf13/cobra"
+
+	"github.com/picatz/flowstate/cmd/flow/internal/ui"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
+)
+
+// `flow fmt` is [flowfile.Marshal] exposed as a formatter, the way `gofmt` is a
+// command wrapped around go/printer.
+//
+// It is not a text rewriter. `flow fix` edits a file's source lines in place, so a
+// comment above a step and the blank line after it survive being run through —
+// this instead reads a file into a [v1.Workflow] and renders that back out from
+// nothing. Marshal's own doc comment says why one line supplies both directions'
+// contract: `flow fmt` and the language server both rely on Marshal(Unmarshal(x))
+// meaning the same thing as x, and neither relies on it meaning the same *bytes*.
+//
+// What is lost running a real file through it: every comment, every blank line,
+// the order YAML mapping keys were written in (task inputs and `vars:` entries
+// come back sorted), which quote style a string literal used (a CEL string
+// literal is written back with double quotes regardless of how it was typed), and
+// whether the file ended in a trailing newline (it always will afterward). What
+// survives: the shape of every step, every value, and — because Marshal is the
+// same function `flow fix` writes its output through — a file this produces
+// compiles under the same edition it started in. Running this over a commented,
+// hand-formatted file is a one-time, reviewable loss of that formatting, not
+// something to run routinely the way `gofmt` is; `--check` is for confirming a
+// file was already put through this and left alone since, not for demanding every
+// contributor's YAML match a house style this command cannot preserve.
+//
+// It refuses to touch a file that will not parse. Reporting a syntax error and
+// leaving the file exactly as it was is the same rule `flow fix` follows: a file
+// that looks handled and is not is worse than one nothing happened to.
+
+// fmtOptions are the flags `flow fmt` takes.
+type fmtOptions struct {
+	// check reports which files would change without writing anything, and
+	// exits non-zero if any would. This is the form CI runs.
+	check bool
+
+	// stdout writes the result to standard output instead of back to the file,
+	// which is how a single file is piped somewhere else.
+	stdout bool
+}
+
+// newFmtCommand builds the `flow fmt` command.
+func newFmtCommand() *cobra.Command {
+	var opts fmtOptions
+
+	cmd := &cobra.Command{
+		Use:   "fmt [path...]",
+		Short: "Rewrite Flowfiles into the form flowfile.Marshal writes",
+		Long: "Rewrite a Flowfile from its parsed form rather than editing its source text, the way " +
+			"`flow fix` does. A directory is walked for .yaml and .yml files.\n\n" +
+			"This is not comment-preserving or whitespace-preserving: every comment, every blank " +
+			"line, the order a mapping's keys were written in, and a string literal's quote style " +
+			"are all normalized away, because they are not part of the parsed workflow this reads a " +
+			"file into. Running it over a hand-formatted, commented file is a one-time, reviewable " +
+			"loss of that formatting — check the diff before committing it, the same as any other " +
+			"rewrite.\n\n" +
+			"A file that does not parse is reported with its position and left untouched.",
+		Args:          cobra.MinimumNArgs(1),
+		SilenceErrors: true,
+		// A file that needs reformatting is not a command someone invoked
+		// wrongly, and printing the usage block after the diagnostics reads as
+		// though it were.
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runFmt(cmd, args, opts)
+		},
+		Example: `# Rewrite one file in place:
+flow fmt workflow.yaml
+
+# Rewrite a whole directory:
+flow fmt examples/
+
+# Report which files would change without writing, for CI:
+flow fmt --check examples/
+
+# Write the result somewhere else:
+flow fmt --stdout old.yaml > new.yaml`,
+	}
+
+	cmd.Flags().BoolVar(&opts.check, "check", false,
+		"report which files would change and exit non-zero if any would, without writing")
+	cmd.Flags().BoolVar(&opts.stdout, "stdout", false,
+		"write the result to standard output instead of back to the file")
+
+	return cmd
+}
+
+// errFmtIncomplete reports that some file could not be formatted, or that
+// --check found work to do. It carries no message because the detail has
+// already been printed.
+var errFmtIncomplete = errors.New("fmt did not finish")
+
+// runFmt formats each path given.
+func runFmt(cmd *cobra.Command, paths []string, opts fmtOptions) error {
+	if opts.stdout && opts.check {
+		return errors.New("--stdout and --check ask for different things: one writes the result, the other only reports")
+	}
+
+	// collectFlowfiles is `flow fix`'s: a directory is walked for .yaml and
+	// .yml files, and a file named explicitly is taken as given whatever it is
+	// called.
+	files, err := collectFlowfiles(paths)
+	if err != nil {
+		return err
+	}
+	if opts.stdout && len(files) != 1 {
+		return fmt.Errorf("--stdout writes one document, but %d files were named", len(files))
+	}
+
+	// Reports go to stderr and the rewritten document to stdout under
+	// --stdout, for the same reason `flow fix --stdout` splits the two: a
+	// pipeline reading the document must never see a diagnostic as its first
+	// line.
+	surface := newSurface(cmd)
+
+	out := surface.Out
+	reports, reportTheme := surface.Err, surface.ErrTheme
+	if !opts.stdout {
+		reports, reportTheme = surface.Out, surface.Theme
+	}
+
+	var (
+		refused bool
+		pending bool
+	)
+	for _, path := range files {
+		result, err := fmtOne(out, reports, reportTheme, path, opts)
+		if err != nil {
+			return err
+		}
+		refused = refused || result.refused
+		pending = pending || (result.changed && opts.check)
+	}
+
+	if refused || pending {
+		return errFmtIncomplete
+	}
+	return nil
+}
+
+// A fmtOutcome is what one file's formatting amounted to.
+type fmtOutcome struct {
+	// changed reports that the file was rewritten, or would be under --check.
+	changed bool
+
+	// refused reports that the file could not be parsed, so nothing was
+	// written.
+	refused bool
+}
+
+// fmtOne formats a single file.
+func fmtOne(out, reports io.Writer, theme ui.Theme, path string, opts fmtOptions) (fmtOutcome, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmtOutcome{}, fmt.Errorf("error reading %s: %w", path, err)
+	}
+
+	workflow, err := flowfile.Unmarshal(data)
+	if err != nil {
+		// A file that does not compile has no workflow for Marshal to render,
+		// so there is nothing safe to write. Reported and left alone, the same
+		// as `flow fix` leaves a shape it refuses.
+		fmt.Fprintf(reports, "%s: %v\n", theme.Muted.Render(path), err)
+		return fmtOutcome{refused: true}, nil
+	}
+
+	formatted, err := flowfile.Marshal(workflow)
+	if err != nil {
+		// A workflow this build compiled but cannot write back out — a literal
+		// string containing ${, or an expression written with a macro cel-go
+		// cannot render as source — is not safe to guess at either.
+		fmt.Fprintf(reports, "%s: %v\n", theme.Muted.Render(path), err)
+		return fmtOutcome{refused: true}, nil
+	}
+
+	changed := !bytes.Equal(data, formatted)
+	outcome := fmtOutcome{changed: changed}
+
+	if opts.stdout {
+		_, err := out.Write(formatted)
+		return outcome, err
+	}
+
+	if !changed {
+		fmt.Fprintf(reports, "%s: %s\n", theme.Muted.Render(path), theme.Muted.Render("already formatted"))
+		return outcome, nil
+	}
+
+	fmt.Fprintf(reports, "%s: %s\n", theme.Muted.Render(path), theme.Muted.Render("reformatted"))
+
+	if opts.check {
+		return outcome, nil
+	}
+
+	// Written through the file's own mode, so formatting a file does not
+	// change who can read it.
+	info, err := os.Stat(path)
+	if err != nil {
+		return outcome, fmt.Errorf("error reading mode of %s: %w", path, err)
+	}
+	if err := os.WriteFile(path, formatted, info.Mode().Perm()); err != nil {
+		return outcome, fmt.Errorf("error writing %s: %w", path, err)
+	}
+	return outcome, nil
+}

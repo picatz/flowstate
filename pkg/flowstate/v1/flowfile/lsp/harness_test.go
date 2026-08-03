@@ -200,6 +200,16 @@ func (c *client) definition(uri string, line, char int) []lsp.Location {
 	return result
 }
 
+// format requests a full-document formatting edit.
+func (c *client) format(uri string) []lsp.TextEdit {
+	c.t.Helper()
+	var result []lsp.TextEdit
+	require.NoError(c.t, c.conn.Call(c.t.Context(), "textDocument/formatting", lsp.DocumentFormattingParams{
+		TextDocument: lsp.TextDocumentIdentifier{URI: lsp.DocumentURI(uri)},
+	}, &result))
+	return result
+}
+
 // symbols requests the document outline.
 func (c *client) symbols(uri string) []lsp.SymbolInformation {
 	c.t.Helper()

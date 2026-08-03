@@ -13,6 +13,7 @@ that only ever offers things the engine will accept.
 | **Completion** | Task names where a step's keys go, alongside `id`/`if`/`timeout` and the other kinds; input keys under the task's own name, required ones first, already-written ones omitted; the names in scope inside `${...}` (see the scoping rules below); and the document's own keys (`id`, `if`, `timeout`, `retry`, `for_each`, `parallel`, …). |
 | **Go to definition** | Jump from a `${steps.<id>.<output>}` reference to that step's `id:` declaration. |
 | **Document symbols** | An outline of the workflow's steps, each labelled with the task it runs, and for a nested step the block it belongs to. |
+| **Formatting** | Rewrites the whole document into the form `flow fmt` and `flowfile.Marshal` write. This is not comment-preserving or whitespace-preserving — it renders from the parsed workflow rather than editing source text, so a comment, a blank line, a mapping's key order, and a string literal's quote style are all normalized away. A document that does not compile draws no edit at all, never a partial or guessed one. Because of the rewrite, this is opt-in in most editors' configuration rather than run on every save; see the per-editor notes below for how to bind it deliberately. |
 
 Everything above is read from the task registry and the Protobuf schema at the
 moment you ask for it, so a task added to the engine shows up in your editor with
@@ -91,8 +92,8 @@ server only improves the position — including where the validator names an ele
 of a list it has no coordinates for, so the squiggle lands on the element rather
 than on the whole value.
 
-Not implemented, and deliberately not advertised: formatting, rename, code actions,
-references, and workspace symbols. The server also never type-checks expressions —
+Not implemented, and deliberately not advertised: rename, code actions, references,
+and workspace symbols. The server also never type-checks expressions —
 it only parses them — because a step's output types are not statically known for
 every task, and a wrong squiggle under working code is worse than no squiggle.
 
@@ -440,6 +441,15 @@ Open a Flowfile and try each of these:
    jump to that step's `id:`.
 5. **Outline.** Open your editor's symbol list. Each step appears, labelled with
    its task.
+6. **Formatting.** Run your editor's "Format Document" command on a file with a
+   comment or two in it. The comments disappear and the document comes back as
+   `flow fmt` would write it — that is the whole-document rewrite the capability
+   table describes, not a bug. Because of that rewrite, none of the editor
+   configurations above bind this to format-on-save; invoke it deliberately
+   (`:lua vim.lsp.buf.format()` in Neovim, `:format` in Helix, the Command
+   Palette's "Format Document" in VS Code, `M-x eglot-format-buffer` in Emacs) and
+   review the diff before committing it, the same as running `flow fmt` from the
+   command line.
 
 If nothing happens, check that the server starts and answers at all. The `sleep`
 matters: the server exits as soon as its input closes, so a plain heredoc ends the

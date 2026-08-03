@@ -34,6 +34,7 @@ func TestInitializeAdvertisesOnlyWhatIsImplemented(t *testing.T) {
 	assert.True(t, got.HoverProvider)
 	assert.True(t, got.DefinitionProvider)
 	assert.True(t, got.DocumentSymbolProvider)
+	assert.True(t, got.DocumentFormattingProvider)
 	require.NotNil(t, got.CompletionProvider)
 	assert.Contains(t, got.CompletionProvider.TriggerCharacters, ".")
 	assert.Contains(t, got.CompletionProvider.TriggerCharacters, ":")
@@ -43,7 +44,6 @@ func TestInitializeAdvertisesOnlyWhatIsImplemented(t *testing.T) {
 	assert.False(t, got.ReferencesProvider)
 	assert.False(t, got.RenameProvider)
 	assert.False(t, got.CodeActionProvider)
-	assert.False(t, got.DocumentFormattingProvider)
 	assert.False(t, got.WorkspaceSymbolProvider)
 	assert.Nil(t, got.SignatureHelpProvider)
 	assert.Nil(t, got.CodeLensProvider)
@@ -57,11 +57,12 @@ func TestInitializeAdvertisesOnlyWhatIsImplemented(t *testing.T) {
 // changes when this server gains a feature, and a feature is exactly when somebody
 // is already editing this file.
 var implementedCapabilities = map[string]string{
-	"TextDocumentSync":       "textDocument/didOpen",
-	"HoverProvider":          "textDocument/hover",
-	"CompletionProvider":     "textDocument/completion",
-	"DefinitionProvider":     "textDocument/definition",
-	"DocumentSymbolProvider": "textDocument/documentSymbol",
+	"TextDocumentSync":           "textDocument/didOpen",
+	"HoverProvider":              "textDocument/hover",
+	"CompletionProvider":         "textDocument/completion",
+	"DefinitionProvider":         "textDocument/definition",
+	"DocumentSymbolProvider":     "textDocument/documentSymbol",
+	"DocumentFormattingProvider": "textDocument/formatting",
 }
 
 // TestNoCapabilityIsAdvertisedWithoutAHandler is the check the list above cannot be
@@ -243,6 +244,7 @@ func TestRequestsForUnknownDocumentAreEmpty(t *testing.T) {
 	assert.Empty(t, c.complete("file:///never-opened.yaml", 0, 0).Items)
 	assert.Empty(t, c.definition("file:///never-opened.yaml", 0, 0))
 	assert.Empty(t, c.symbols("file:///never-opened.yaml"))
+	assert.Empty(t, c.format("file:///never-opened.yaml"))
 }
 
 // TestConcurrentRequests exercises the store and the analysis under the concurrency

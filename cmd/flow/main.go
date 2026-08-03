@@ -1616,6 +1616,10 @@ flow lsp`,
 	fixCmd := newFixCommand()
 	fixCmd.GroupID = "workflow"
 	rootCmd.AddCommand(fixCmd)
+
+	fmtCmd := newFmtCommand()
+	fmtCmd.GroupID = "workflow"
+	rootCmd.AddCommand(fmtCmd)
 	rootCmd.AddCommand(tasksCmd)
 	rootCmd.AddCommand(pluginsCmd)
 	rootCmd.AddCommand(mcpCmd)

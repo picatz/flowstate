@@ -232,6 +232,25 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 		}
 		return documentSymbols(doc), nil
 
+	case "textDocument/formatting":
+		var params lsp.DocumentFormattingParams
+		if err := decode(req, &params); err != nil {
+			return nil, err
+		}
+		doc, ok := s.docs.get(params.TextDocument.URI)
+		if !ok {
+			return []lsp.TextEdit{}, nil
+		}
+		edits := formatEdits(doc)
+		if edits == nil {
+			// A document that does not compile draws no edits — never a partial
+			// or guessed one — so this is the empty list rather than nil: the
+			// same "nothing to do" an already-formatted document returns, which
+			// is the honest answer either way.
+			edits = []lsp.TextEdit{}
+		}
+		return edits, nil
+
 	case "$/cancelRequest", "$/setTrace", "$/logTrace", "workspace/didChangeConfiguration",
 		"workspace/didChangeWatchedFiles":
 		// Accepted and ignored. Cancellation is not honored because every
@@ -275,8 +294,9 @@ func capabilities() lsp.ServerCapabilities {
 			// dot, and within a libs list.
 			TriggerCharacters: []string{":", " ", ".", "{", "[", ",", "-"},
 		},
-		DefinitionProvider:     true,
-		DocumentSymbolProvider: true,
+		DefinitionProvider:         true,
+		DocumentSymbolProvider:     true,
+		DocumentFormattingProvider: true,
 	}
 }
 
