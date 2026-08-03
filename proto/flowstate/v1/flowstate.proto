@@ -176,6 +176,280 @@ message Workflow {
       max_pairs: 64
     }
   ];
+
+  // DeclaredInputs are the parameters a run may be started with, each declared
+  // with a name and a type.
+  //
+  // A workflow that cannot be parameterized has to be *edited* to be reused: the
+  // same file with one URL changed becomes a second file, and the second one
+  // drifts from the first. These are what let one file serve both runs, which is
+  // also what makes a workflow something an agent or a schedule can invoke rather
+  // than something a person forks.
+  //
+  // # Declarations, not a map
+  //
+  // Field 4 was `map<string, Value> inputs` and is reserved above, which is most
+  // of the argument already: a bare map is a shape held open, and every consumer
+  // of it has to invent the same missing half for itself. The consumers that want
+  // this want *different* halves — the language server type-checks an expression
+  // against the environment a run will actually have, `flow run --input k=v` has
+  // to turn a command line's strings into typed values, a schedule binds its
+  // arguments once and statically, and a Nexus operation has a signature — and
+  // not one of them can be built over a map whose values are whatever arrived.
+  // Declaring the shape once, here, is what lets all four read the same answer
+  // instead of drifting apart holding four guesses.
+  //
+  // # Named for what it holds
+  //
+  // Not `inputs`. That name is reserved above by *name* as well as by number, for
+  // a reason that has not expired: there is no custom data converter, so a
+  // specification is stored in history through ProtoJSON, by field name, and an
+  // `inputs` of a new shape would be read out of an old history as the old one.
+  //
+  // The name is honest anyway, because these are not the values. What a caller
+  // passes is [RunRequest.inputs]; what the specification carries is the
+  // declaration of what may be passed. A run carries both, they are different
+  // things, and they are wanted at different moments — the declaration when the
+  // file is written and type-checked, the values when a run is submitted.
+  //
+  // # Size (invariant 9)
+  //
+  // These ride in the specification, so `CheckSpecSize` weighs them at submit and
+  // `CheckRunStateSize` weighs them again through [RunState.workflow] at every
+  // Continue-As-New. Both call `proto.Size` on the whole message rather than
+  // summing the fields they know about, so a field added here is bounded on the
+  // day it is added and nobody has to remember to count it.
+  repeated InputDeclaration declared_inputs = 8 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).repeated = {max_items: 64}
+  ];
+
+  // DeclaredOutputs are the values a finished run reports: named expressions,
+  // evaluated once the steps are done.
+  //
+  // Nothing carries a value out of a run today. `vars:` names a value inside the
+  // file, and the retirement edition took away `cel:`, which was the one step
+  // whose purpose was to shape a final answer — so a run's result is now the
+  // union of whatever its steps happened to produce. That is a transcript, not a
+  // result: whoever reads the run has to already know which step's which output
+  // was the point, which is exactly the knowledge a caller on the other side of
+  // an RPC does not have.
+  //
+  // # Why the computed values are a different message
+  //
+  // These are declarations and travel with the specification; what a particular
+  // run computed is [RunOutputs] and belongs to that run. Widening one message to
+  // carry both would make every reader check which half it was holding, and would
+  // put an expression and its result in the same field — the shape that makes it
+  // possible to confuse "what this workflow promises" with "what this run
+  // returned". Two messages also keep the addition additive on both sides: a
+  // field added to either is free, where widening either would be breaking.
+  //
+  // The expression is evaluated by the run, at the end, in the run's own scope —
+  // it is not a value a caller supplies, which is the mirror image of the rule on
+  // [RunRequest.inputs] and worth reading beside it. Which names that scope holds
+  // (`steps`, `vars`, `inputs`) is the compiler's business, not the schema's.
+  repeated OutputDeclaration declared_outputs = 9 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).repeated = {max_items: 64}
+  ];
+}
+
+// InputDeclaration is one parameter a run may be started with: what it is
+// called, what a value for it must be, whether it may be left out, and what it
+// is for.
+//
+// # What the schema checks, and what the compiler checks
+//
+// The schema checks what a single declaration can be wrong about on its own: the
+// name is a CEL identifier of bounded length, the type is a defined value other
+// than unspecified, the description fits. Everything that is a fact about a *set*
+// of declarations, or about a name CEL's lexer will not accept, is the
+// compiler's — protovalidate rules are per-field and RE2 has no negative
+// lookahead, so a rule spelled here that cannot hold is worse than no rule, per
+// this file's own history with nineteen of them.
+//
+// Deferred to the compiler, deliberately and in one list so nobody has to
+// rediscover it:
+//
+//   - Two declarations may not share a name. A repeated field cannot say so.
+//   - The names `true`, `false`, `null` and `in` are refused. They are CEL lexer
+//     tokens, so `inputs.in` is a syntax error in the grammar itself rather than
+//     an unknown field — the same four that are refused as step ids, and for the
+//     same reason. The other seventeen CEL reserved words are fine here (see
+//     `name` below).
+//   - A `default` must be a literal, not an expression and not a secret
+//     reference. [Value] is a oneof and protovalidate rules attach to fields, so
+//     "which arm" is not something this file can require.
+//   - A required input with a default is a contradiction, and one of the two is
+//     a mistake worth naming rather than resolving by precedence.
+//   - Whether a submitted value matches the declared type, which is the check
+//     at submit — see [RunRequest.inputs].
+message InputDeclaration {
+  // Type is the shape a value must have to be accepted.
+  //
+  // An enum rather than a type *expression* like [TaskField.type], and the
+  // difference between those two fields is the difference between what they are
+  // for. A TaskField is documentation: it is rendered for a person or an agent
+  // reading the catalog, and `list[string]` is the right answer there because it
+  // is what an author would say. This one is *enforced*, at submit, against a
+  // value some caller chose — so it has to be a closed set the schema can
+  // constrain and every consumer can switch on. Spelling it as a string would put
+  // a parser for the same small type language into the CLI, the server, the
+  // language server and the compiler, which is the "one value written down four
+  // times" failure this repository keeps finding in other clothes.
+  //
+  // These are the six of [Value.Type] that describe *data*, with the same names
+  // and the same numbers. The two left out are TYPE_EXPR and TYPE_ERROR, and they
+  // are precisely the two that are not data: an expression is something a run
+  // evaluates, and a caller does not get to send one. Sharing numbers does not
+  // make the enums interchangeable — the sets differ, so a conversion between
+  // them is a switch somebody wrote and somebody reviewed, never a cast.
+  //
+  // A parameterized type — a list *of* what — is not expressible here yet, on
+  // purpose. An element type that nothing checks is decoration, which is the rule
+  // that put this whole surface in Phase 2 with its checker; and an added enum
+  // value or an added field is free later, where a wrong one is not.
+  enum Type {
+    TYPE_UNSPECIFIED = 0;
+    TYPE_STRING = 1;
+    TYPE_INT = 2;
+    TYPE_FLOAT = 3;
+    TYPE_BOOL = 4;
+    TYPE_STRUCT = 5;
+    TYPE_LIST = 6;
+  }
+
+  // Name is what the input is called, and how an expression reaches it:
+  // `${inputs.<name>}`.
+  //
+  // Stricter than a step id's pattern, which takes dashes for historical latitude
+  // and then has the compiler refuse the ones CEL cannot read. There is no
+  // history here, so the boundary refuses them outright: this pattern *is* a CEL
+  // identifier.
+  //
+  // Rooting under `inputs` is what keeps the rest of the question small, the same
+  // way `steps.<id>` did (invariant 2). A name here is a field selection rather
+  // than an identifier, so seventeen of CEL's twenty-one reserved words are legal
+  // — `namespace`, `loop`, `if` and the rest — and only the four lexer tokens are
+  // not. Nothing needs refusing against `steps`, `vars` or `now` either: an input
+  // called `steps` is `inputs.steps`, which cannot collide with anything, which is
+  // the entire reason ambient namespaces get a root.
+  string name = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+      pattern: "^[A-Za-z_][A-Za-z0-9_]*$" // A CEL identifier, so `inputs.<name>` parses.
+    }
+  ];
+
+  // Type is what a submitted value must be, checked at submit rather than where
+  // the value is first read. A run that is going to be refused for a bad argument
+  // should be refused while the caller is still there to be told, not three steps
+  // in with two requests already sent.
+  Type type = 2 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).enum = {
+      defined_only: true
+      not_in: [0]
+    }
+  ];
+
+  // Required reports that a run cannot start without this input.
+  //
+  // The default is false, which means optional, which is the safe direction for a
+  // field being added to a schema: a declaration written before anyone thought
+  // about optionality does not silently start refusing runs. Fail-closed lives at
+  // the other end of this surface — an *undeclared* input is refused, and a value
+  // of the wrong type is refused — where the thing being denied is something a
+  // caller sent rather than something an author forgot.
+  bool required = 3;
+
+  // Default is the value used when the caller passes nothing.
+  //
+  // A [Value] rather than a string, so that a default for an int input is an int
+  // and nobody writes a second coercion path for defaults alongside the one for
+  // submitted values. It must be a literal: an expression here would be evaluated
+  // somewhere, and the only place with a scope to evaluate it in is the run,
+  // which would make a default a different kind of thing from the value it stands
+  // in for. The compiler enforces that, per the list on the message above.
+  Value default = 4;
+
+  // Description is prose for whoever is supplying the value — a person reading
+  // `flow run --help`, an agent choosing arguments, an editor's hover. It is the
+  // only part of a declaration written *for the caller* rather than for the
+  // machine, which is why it is worth carrying rather than leaving in a comment
+  // the compiler throws away.
+  optional string description = 5 [(buf.validate.field).string = {max_len: 256}];
+}
+
+// OutputDeclaration is one value a finished run reports: a name, and the
+// expression that produces it.
+//
+// The expression is evaluated by the run, in the run's own scope, after its steps
+// have finished — so this is the one place in the schema where an author's
+// expression is deliberately what is stored, as against [RunRequest.inputs] where
+// an expression is deliberately what is refused. The two rules point the same
+// way: an expression may come from the file, which is reviewed and compiled, and
+// never from a caller.
+//
+// Deferred to the compiler for the same reasons as [InputDeclaration]: that two
+// declarations do not share a name, and that the expression's references resolve
+// against the scope a finished run actually has.
+message OutputDeclaration {
+  // Name is what the value is called in the run's result.
+  //
+  // Same pattern as an input's, and for a weaker reason — nothing selects an
+  // output through CEL today. It is held to the same shape anyway so that the two
+  // halves of one contract cannot disagree about what a name is, and so that a
+  // later `${outputs.<name>}` or a cross-file signature check is not a break.
+  string name = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+      pattern: "^[A-Za-z_][A-Za-z0-9_]*$"
+    }
+  ];
+
+  // Value is the expression evaluated to produce this output.
+  Value value = 2 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED
+  ];
+
+  // Description is prose for whoever reads the result.
+  optional string description = 3 [(buf.validate.field).string = {max_len: 256}];
+}
+
+// RunOutputs is what one run computed for its declared outputs.
+//
+// Its own message rather than a widening of [Workflow.StepOutputs], which is a
+// different question with a similar shape: step outputs are every value the run
+// produced, keyed by the step that produced it, and these are the few values the
+// *workflow* said it would report. A caller wanting the answer should not have to
+// know the run's internal structure to find it, and a reader of either message
+// should never have to ask which of the two it is holding.
+//
+// Carried in [RunState] as well as returned, because a run that suspends has to
+// keep what it has computed; and weighed there by `CheckRunStateSize`, which
+// measures the whole message (invariant 9).
+message RunOutputs {
+  // Values are the declared outputs, keyed by the name their declaration gave.
+  //
+  // A map rather than a repeated message: order is a property of the declaration
+  // list, which is already ordered, and a result is looked up by name.
+  map<string, Value> values = 1 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).map = {
+      keys: {string: {min_len: 1}}
+      max_pairs: 64
+    }
+  ];
 }
 
 // Node represents a step in the workflow. Each node can be a task or another type of operation.
@@ -1211,6 +1485,44 @@ message RunRequest {
     (buf.validate.field).required = true,
     (google.api.field_behavior) = REQUIRED
   ];
+
+  // Inputs are the arguments this run is started with, keyed by the name an
+  // [InputDeclaration] on the workflow gave.
+  //
+  // # Values, never expressions
+  //
+  // Every [Value] here must be a literal. Not a convention — the security posture
+  // of the whole surface. These arrive from whoever can call Run, which is the
+  // definition of an untrusted party, and an expression accepted from there is
+  // code the server would evaluate on its own behalf, in a scope holding the
+  // run's own values. An expression is something a file says, and a file is
+  // reviewed and compiled; this is data a caller sends. `secret_ref` is refused
+  // for the neighbouring reason: a caller naming a secret would be choosing which
+  // credential the run resolves, which is a decision that belongs to the
+  // specification and its policy.
+  //
+  // The oneof cannot say which arm is allowed — protovalidate rules attach to
+  // fields — so the server enforces it at submit, together with the rest of the
+  // check against the declarations: every required input present, no undeclared
+  // name, every value of the declared type, defaults filled in for what was left
+  // out. Fail closed on each: a run that would be wrong is refused while the
+  // caller is still there to be told.
+  //
+  // # Size (invariant 9)
+  //
+  // These become part of the run's state, so they are weighed by
+  // `CheckRunStateSize` at every Continue-As-New along with everything else the
+  // run carries — `proto.Size` on the whole message, so nothing has to be added
+  // to a tally by hand. The submit-time check is `CheckSpecSize` on the workflow;
+  // a caller who could push a run past the blob limit with arguments alone would
+  // have found the hang that invariant exists to convert into an answer.
+  map<string, Value> inputs = 2 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).map = {
+      keys: {string: {min_len: 1}}
+      max_pairs: 64
+    }
+  ];
 }
 
 // RunResponse is the response message for a workflow run.
@@ -1311,6 +1623,18 @@ message GetResponse {
   // reasoning progress is; empty for a running run means nothing is mid-retry,
   // which is itself the answer — the run is waiting or between steps, not stuck.
   repeated PendingActivity pending_activities = 9;
+
+  // Outputs are the values the workflow declared it would report, computed by
+  // this run — the answer, as against the transcript `outputs` above holds.
+  //
+  // A new field beside the existing oneof rather than a third arm in it: the
+  // oneof answers "did it fail", which is a different question from "what did it
+  // produce", and a run can perfectly well have both a status and a result. Unset
+  // means the workflow declared no outputs, or the run has not finished, or the
+  // run was started before this existed — all three of which are honestly
+  // "nothing to report" rather than "an empty result", which is why there is no
+  // empty message to distinguish them.
+  RunOutputs run_outputs = 10;
 }
 
 // PendingActivity is one activity Temporal is retrying, projected from its
@@ -1578,6 +1902,33 @@ message RunState {
   map<string, Value> vars = 8 [(buf.validate.field).map = {
     keys: {string: {min_len: 1}}
   }];
+
+  // Inputs are the arguments the run was started with, already checked against
+  // the workflow's declarations and with defaults filled in.
+  //
+  // Carried rather than re-derived, for the reason `vars` above is: the checking
+  // and the defaulting happen once, at submit, and a later segment must see the
+  // same values the first one did. Re-applying a default in a later segment would
+  // mean a declaration edited between deploys could change an argument underneath
+  // a run in flight, which is the class of thing invariant 10 exists to stop.
+  //
+  // Add-only and absent-tolerant, like everything else here. A run started before
+  // this field existed reads back with it empty, which is exactly right — that run
+  // has no arguments — so nothing has to distinguish "old writer" from "no
+  // inputs", and no number is ever reused. Values only; see [RunRequest.inputs].
+  map<string, Value> inputs = 9 [(buf.validate.field).map = {
+    keys: {string: {min_len: 1}}
+    max_pairs: 64
+  }];
+
+  // Outputs are the run's declared outputs once computed.
+  //
+  // Empty until the run reaches the end of its steps, and empty forever for a
+  // workflow that declares none. Absent on a run started before this field
+  // existed, which reads as "no declared outputs" — the same answer that run
+  // would give if asked, so an old state and a new reader agree without a
+  // compatibility arm.
+  RunOutputs run_outputs = 10;
 }
 
 // SignalRequest delivers a signal to a waiting run.

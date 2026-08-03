@@ -1869,6 +1869,57 @@ nothing carries one out of the run. That does not change the rule this phase exi
 hold, which is that a declared type without a checker is decoration. It changes the
 cost of the phase slipping, which is worth knowing before it does.
 
+*Since written:* **the schema half of `inputs:`/`outputs:` has landed, and nothing
+else has.** `Workflow.declared_inputs` and `Workflow.declared_outputs` exist, as do
+`InputDeclaration` (name, type, required, default, description),
+`OutputDeclaration` (name, expression, description), `RunOutputs`,
+`RunRequest.inputs`, `RunState.inputs`/`RunState.run_outputs`, and
+`GetResponse.run_outputs`. **No Flowfile can express any of it, no compiler reads
+it, and no driver evaluates it** — `flow validate` still answers `unknown key
+"inputs"`, exactly as it did the day this section was written. Written down here
+because a schema that carries a capability reads, from the outside, like a language
+that has one, and this file's own rule is that a capability is not a feature until
+a Flowfile can reach it.
+
+The spelling it is landing under, so that the schema and the surface cannot be
+designed twice:
+
+```yaml
+inputs:
+  region:
+    type: string
+    required: true
+    description: which region to deploy to
+  retries:
+    type: int
+    default: 3
+
+outputs:
+  url:
+    value: ${steps.deploy.response.body.url}
+    description: where the thing ended up
+```
+
+Two blocks at the workflow level, beside `vars:`. An input is read as
+`${inputs.<name>}` — grouped under an object root, per invariant 2 and for the
+reason `steps.` and `vars.` are: a root makes a collision with a step id or a var
+unrepresentable rather than a rule somebody has to write, and it turns a name into
+a field selection, so seventeen of CEL's twenty-one reserved words are legal input
+names for free. The four that are not (`true`, `false`, `null`, `in`) are lexer
+tokens and are refused by the compiler with a diagnostic naming the declaration,
+the same way they are refused as step ids.
+
+A declared type is an enum in the schema rather than a type *expression* like the
+one `flow tasks` prints, because this one is enforced against a value a caller
+chose and the catalog's is rendered for a reader. What the schema checks is one
+declaration at a time — name shape, a defined type, lengths. What the compiler owes
+is everything about a *set*: no two declarations sharing a name, the four lexer
+tokens, a default that is a literal rather than an expression, and the
+contradiction of a required input carrying one. And what the server owes at submit
+is the caller's half — every required input present, nothing undeclared, every
+value of its declared type, values and never expressions — refused while the caller
+is still there to be told.
+
 **Phase 3 — composition and the dev loop.** `call:` to child workflows, cross-file
 signature checking, `flow dev`, `flow test` (after the taint work above).
 
