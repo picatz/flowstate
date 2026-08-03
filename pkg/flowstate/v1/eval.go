@@ -957,15 +957,54 @@ func EvalConditionInScope(ctx context.Context, condition *Value, scope *Scope) (
 // succeeds on the second attempt succeeds in both places — rather than to make
 // local execution reliable.
 func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scope *Scope) (*Node_Outputs, error) {
+	// Resolved here, above the loop, because this is the position the durable
+	// driver resolves at: in workflow code, before an activity is scheduled
+	// (`engine/execute.go`'s runTask). Inputs are part of the *specification*, so
+	// an expression that cannot be evaluated fails the same way every time — and
+	// resolving inside the loop made that deterministic failure a retryable one.
+	// A `for_each` body's `${item.missing}` was attempted five times over fifteen
+	// seconds of backoff locally and failed instantly in production, which is the
+	// rehearsal disagreeing about both the outcome's timing and the number of
+	// times a dependency is touched on the way to it.
+	//
+	// Unconditional, where it used to happen only for a scope that bound names
+	// (in [Task.EvalInScope]). That guard is why the same file recorded two
+	// different sentences: at a top-level step, with nothing bound, the task
+	// resolved its own inputs and reported a classified `task "log" failed
+	// (InvalidInput): field "message": …`, while the durable driver — which does
+	// not have the guard — reported `input "message": …`. Two sentences and two
+	// error kinds for one mistake, so the one an author's `if:` compared depended
+	// on where the workload ran.
+	//
+	// Inputs a task evaluates for itself are untouched by this and stay per
+	// attempt under both drivers; see [ResolvableInputs].
+	resolved, err := ResolveTaskInputs(ctx, task, scope)
+	if err != nil {
+		return nil, err
+	}
+
 	// The same number the durable driver uses, from the same constant. This was
 	// `1` here and five there, so a step with no `retry:` behaved differently in
 	// the place that exists to rehearse the other.
 	attempts := RetryAttemptsFor(policy.GetRetry())
 
-	var err error
+	// And the same two timeouts, through the same precedence. The local driver
+	// applied a bound only where a step declared one, so a task that hangs hung
+	// the whole run — the durable driver has never been able to do that, because
+	// Temporal refuses an activity with no timeout at all.
+	timeouts := StepTimeoutsFor(policy, StepTimeoutsFromContext(ctx))
+	if timeouts.ScheduleToClose > 0 {
+		// Derived here rather than around the whole run, so that exhausting it is
+		// an ordinary step failure `continue_on_error:` may tolerate — runNodes
+		// asks the *run's* context whether it is cancelled, and this one is not it.
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeouts.ScheduleToClose)
+		defer cancel()
+	}
+
 	for attempt := 1; ; attempt++ {
 		var out *Node_Outputs
-		out, err = runStepAttempt(ctx, task, policy, scope)
+		out, err = runStepAttempt(ctx, resolved, timeouts.StartToClose, scope)
 		if err == nil {
 			return out, nil
 		}
@@ -997,9 +1036,16 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 	}
 }
 
-// runStepAttempt performs one attempt, bounded by the step's timeout.
-func runStepAttempt(ctx context.Context, task *Task, policy *StepPolicy, scope *Scope) (*Node_Outputs, error) {
-	if timeout := policy.GetTimeout().AsDuration(); timeout > 0 {
+// runStepAttempt performs one attempt, bounded by the per-attempt timeout.
+//
+// The bound is passed in rather than read from the step's policy, because a step
+// that declares no `timeout:` still has one — [DefaultStartToCloseTimeout], the
+// same bound Temporal applies to every attempt at every activity. This used to ask
+// the policy directly and do nothing when it was silent, which is the whole of how
+// a hung task could hang a local run forever while production failed it after two
+// minutes.
+func runStepAttempt(ctx context.Context, task *Task, timeout time.Duration, scope *Scope) (*Node_Outputs, error) {
+	if timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
@@ -1048,10 +1094,20 @@ func (t *Task) Eval(ctx context.Context, prevStepOutputs *Workflow_StepOutputs) 
 // EvalInScope executes the task against a scope, which is how a loop body's
 // inputs and a task's own expressions reference the current item.
 //
-// Expression inputs are resolved into a copy of the task before execution, which
-// is the single place resolution happens for the local driver — the durable driver
-// resolves the same way before scheduling an activity, so both agree on what a
-// task receives.
+// Expression inputs are resolved into a copy of the task before execution, for the
+// callers that reach a task without having resolved them: the durable driver's
+// activity, which receives a scope built on another machine, and direct callers of
+// [Task.Eval]. A step running under the local driver arrives with its inputs
+// already resolved — [runStepWithPolicy] does it above the retry loop, at the
+// position the durable driver resolves at — so this is a second, idempotent pass
+// over literals for that path.
+//
+// The `BindsNames` guard is why it cannot be the *only* resolution point for the
+// local driver. A scope binding no names skips it, leaving the task to evaluate
+// its own inputs, and a task reports that failure as a classified `task "log"
+// failed (InvalidInput): field "message": …` where the durable driver reports
+// `input "message": …`. Same file, same mistake, two sentences and two error
+// kinds.
 func (t *Task) EvalInScope(ctx context.Context, scope *Scope) (*Node_Outputs, error) {
 	if t == nil {
 		return nil, fmt.Errorf("task cannot be nil")

@@ -104,6 +104,201 @@ func TestAStepThatAsksForOneAttemptGetsOne(t *testing.T) {
 	}
 }
 
+// TestADeterministicInputFailureIsNotRetried is the retry half of the
+// input-resolution divergence.
+//
+// A task's inputs come from the specification, so an expression that cannot be
+// evaluated cannot evaluate on the second attempt either. The durable driver
+// resolves them in workflow code before scheduling anything, so it fails once and
+// instantly. The local driver resolved them inside the retry loop — through
+// [v1.Task.EvalInScope], which only pre-resolves for a scope that binds names —
+// and an unclassified resolution error is [v1.ErrorKindInternal], which is
+// retryable. So the same file failed after five attempts and fifteen seconds of
+// backoff locally against one instant failure in production.
+//
+// The workflow declares a `vars:` block for exactly that reason: it is what makes
+// the scope bind a name, which is the arrangement that took the retried path.
+// Timed rather than counted, because there is nothing to count — the failure
+// happens before any task runs, so the only observable is how long the run took
+// to admit it.
+func TestADeterministicInputFailureIsNotRetried(t *testing.T) {
+	t.Parallel()
+
+	started := time.Now()
+
+	_, err := v1.Run(t.Context(), &v1.Workflow{
+		Name:    "an-input-that-cannot-work",
+		Profile: v1.CurrentProfile,
+		// Bare presence is the point: a scope binding any name is what used to
+		// route resolution through the retry loop.
+		Vars: map[string]*v1.Value{"anything": v1.NewLiteral(1)},
+		Steps: []*v1.Node{{
+			Id: "call",
+			Kind: &v1.Node_Task{Task: &v1.Task{Name: "log", Inputs: map[string]*v1.Value{
+				"message": v1.NewExpr("['a'][5]"),
+			}}},
+		}},
+	})
+	require.Error(t, err, "a step whose input cannot be evaluated succeeded")
+	require.ErrorContains(t, err, `input "message"`,
+		"the failure is not the one this test is about")
+
+	// The shipped defaults would spend 1+2+4+8 seconds on the four retries. Well
+	// under that and well over anything a resolution takes, so neither a loaded
+	// machine nor a fast one can land on the wrong side.
+	assert.Less(t, time.Since(started), 2*time.Second,
+		"a deterministic input failure was retried locally, which the durable driver "+
+			"cannot do — it resolves inputs before scheduling anything")
+}
+
+// TestALocalStepIsBoundedByTheDefaultAttemptTimeout is the timeout half.
+//
+// Temporal refuses an activity with no timeout, so every durable step has always
+// been bounded at [v1.DefaultStartToCloseTimeout] per attempt. The local driver
+// applied a bound only where the step declared one, so a task that hangs hung the
+// run — with no diagnostic, which makes it indistinguishable from a workload that
+// is merely slow. Production fails that step after two minutes.
+//
+// The bound under test is the *default*, so the test lowers the default rather
+// than declaring a step timeout — declaring one would exercise the path that
+// always worked. [v1.ContextWithStepTimeouts] is the local driver's equivalent of
+// the worker configuration the durable driver reads this from.
+func TestALocalStepIsBoundedByTheDefaultAttemptTimeout(t *testing.T) {
+	allowLoopback(t)
+
+	var requests atomic.Int64
+
+	hangs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		// Held until the client gives up, which is what a hung dependency is.
+		<-r.Context().Done()
+	}))
+	t.Cleanup(hangs.Close)
+
+	ctx := v1.ContextWithStepTimeouts(t.Context(), v1.StepTimeouts{
+		StartToClose: 100 * time.Millisecond,
+	})
+
+	started := time.Now()
+
+	_, err := v1.Run(ctx, &v1.Workflow{
+		Name:    "against-something-that-never-answers",
+		Profile: v1.CurrentProfile,
+		Steps: []*v1.Node{{
+			Id: "call",
+			Kind: &v1.Node_Task{Task: &v1.Task{Name: "http", Inputs: map[string]*v1.Value{
+				"url": v1.NewLiteral(hangs.URL),
+			}}},
+			// One attempt, so what is measured is the attempt bound rather than
+			// the sum of five of them.
+			Policy: &v1.StepPolicy{Retry: &v1.RetryPolicy{MaxAttempts: 1}},
+		}},
+	})
+	require.Error(t, err, "a step against a server that never answers completed")
+	require.Equal(t, int64(1), requests.Load(), "the step never reached the server")
+
+	assert.Less(t, time.Since(started), 5*time.Second,
+		"the local driver waited on a hung task with no bound, where a worker would "+
+			"have failed the step after %s", v1.DefaultStartToCloseTimeout)
+}
+
+// TestALocalStepIsBoundedAcrossItsAttempts is the second of the two bounds, and
+// the one a per-attempt timeout cannot stand in for.
+//
+// `ScheduleToClose` bounds a step's attempts *and* the waits between them, so a
+// step whose dependency fails every time cannot spend an attempt budget's worth of
+// backoff. The local driver had neither bound; with the attempt counts now
+// agreeing, the missing overall one is what a long backoff escapes through.
+func TestALocalStepIsBoundedAcrossItsAttempts(t *testing.T) {
+	allowLoopback(t)
+
+	var requests atomic.Int64
+
+	failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(failing.Close)
+
+	// Each attempt is instant and each wait is a quarter second, so the budget
+	// below is spent on waiting — which is exactly what the overall bound is for
+	// and what a per-attempt bound cannot see.
+	ctx := v1.ContextWithStepTimeouts(t.Context(), v1.StepTimeouts{
+		ScheduleToClose: 400 * time.Millisecond,
+	})
+
+	started := time.Now()
+
+	_, err := v1.Run(ctx, &v1.Workflow{
+		Name:    "a-budget-spent-on-waiting",
+		Profile: v1.CurrentProfile,
+		Steps: []*v1.Node{{
+			Id: "call",
+			Kind: &v1.Node_Task{Task: &v1.Task{Name: "http", Inputs: map[string]*v1.Value{
+				"url": v1.NewLiteral(failing.URL),
+			}}},
+			Policy: &v1.StepPolicy{Retry: &v1.RetryPolicy{
+				InitialInterval: durationpb.New(250 * time.Millisecond),
+				MaxInterval:     durationpb.New(250 * time.Millisecond),
+			}},
+		}},
+	})
+	require.Error(t, err, "a step against a server answering 503 succeeded")
+
+	assert.Less(t, requests.Load(), int64(v1.DefaultMaxAttempts),
+		"the step spent its whole attempt budget, so nothing bounded it overall")
+	assert.Less(t, time.Since(started), 3*time.Second,
+		"the step outlived the overall bound it was given")
+}
+
+// TestStepTimeoutsFollowTheDurableDriversPrecedence pins the rule both drivers
+// now read from one function.
+//
+// The direction that matters most is the last row: a declared timeout must widen
+// the overall bound to fit the attempts it allows, or a step would be cut short by
+// a ceiling derived from defaults rather than by its own policy.
+func TestStepTimeoutsFollowTheDurableDriversPrecedence(t *testing.T) {
+	t.Parallel()
+
+	base := v1.DefaultStepTimeouts()
+
+	for _, test := range []struct {
+		name   string
+		policy *v1.StepPolicy
+		want   v1.StepTimeouts
+	}{
+		{
+			name:   "nothing declared takes both defaults",
+			policy: nil,
+			want:   base,
+		},
+		{
+			name:   "a short timeout replaces the attempt bound only",
+			policy: &v1.StepPolicy{Timeout: durationpb.New(30 * time.Second)},
+			want:   v1.StepTimeouts{StartToClose: 30 * time.Second, ScheduleToClose: base.ScheduleToClose},
+		},
+		{
+			name:   "a long timeout widens the overall bound to fit its attempts",
+			policy: &v1.StepPolicy{Timeout: durationpb.New(5 * time.Minute)},
+			want:   v1.StepTimeouts{StartToClose: 5 * time.Minute, ScheduleToClose: 25 * time.Minute},
+		},
+		{
+			name: "a declared attempt count is what the overall bound is sized by",
+			policy: &v1.StepPolicy{
+				Timeout: durationpb.New(5 * time.Minute),
+				Retry:   &v1.RetryPolicy{MaxAttempts: 1},
+			},
+			want: v1.StepTimeouts{StartToClose: 5 * time.Minute, ScheduleToClose: base.ScheduleToClose},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, test.want, v1.StepTimeoutsFor(test.policy, base))
+		})
+	}
+}
+
 // allowLoopback registers an http task permitting loopback for the duration of
 // the test, restoring the original afterwards.
 //
