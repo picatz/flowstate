@@ -1,0 +1,43 @@
+edition: v2026.2
+name: vcs-log-and-diff
+description: Reads a public repository's recent history and diffs two of its tags, using the "vcs" plugin (go-git).
+
+# vcs.log and vcs.diff are the vcs plugin's tasks - pkg/flowstate/v1/plugin/
+# examples/flowstate-plugin-example is the worked example for how a plugin
+# task is written, and plugins/vcs is this repository's own real one. The
+# dot in the task name is what keeps a plugin's tasks apart from every
+# built-in: no built-in has one, and every plugin task does.
+#
+# Both tasks clone the repository themselves, inside the one activity that
+# runs the step, and return content - commit metadata, a unified diff -
+# never a path into a workspace a later step could read. See
+# plugins/vcs/doc.go, "why there is no vcs.clone," for the whole argument;
+# it is a security decision, not a missing feature.
+
+vars:
+  repo: https://github.com/octocat/Hello-World.git
+
+steps:
+  - id: history
+    vcs.log:
+      url: ${vars.repo}
+      max_commits: 5
+
+  - id: changes
+    vcs.diff:
+      url: ${vars.repo}
+      base: HEAD~1
+      head: HEAD
+
+  - id: announce
+    log:
+      message: "${'%s - %d commits read, most recent %s'.format([vars.repo, steps.history.commits.size(), steps.history.commits[0].sha])}"
+
+outputs:
+  latest_commit_message:
+    value: ${steps.history.commits[0].message}
+    description: the most recent commit's own message, read from a repository this build never compiled anything about
+
+  files_changed:
+    value: ${steps.changes.files.size()}
+    description: how many files the last commit touched

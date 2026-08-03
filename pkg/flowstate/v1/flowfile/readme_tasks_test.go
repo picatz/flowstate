@@ -191,7 +191,18 @@ func TestREADMENamesEveryCELLibrary(t *testing.T) {
 }
 
 // exampleLink matches a link to an example directory in examples/README.md.
-var exampleLink = regexp.MustCompile(`\(([a-z0-9-]+)/?\)`)
+//
+// The whole markdown link, not just a parenthesised word. It used to be the
+// latter, which meant any ordinary prose in a round bracket was read as a link to
+// an example — describing a task as built on `(go-git)`, or a verb as `(read)`,
+// failed this test with a complaint about a stale link to a directory nobody had
+// ever mentioned. The diagnostic was confidently wrong, which is worse than
+// silence, and it punished writing rather than catching a mistake.
+//
+// A link target containing a slash is still deliberately unmatched, which is what
+// keeps `[plugins/greet](plugins/greet/)` out of the set: those sit a directory
+// deeper on purpose, and the glob below only walks one level.
+var exampleLink = regexp.MustCompile(`\[[^\]]+\]\(([a-z0-9-]+)/?\)`)
 
 // TestExamplesREADMEListsEveryExample keeps the examples index complete.
 //

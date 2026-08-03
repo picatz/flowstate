@@ -1,0 +1,14 @@
+version: v1
+managed:
+  enabled: true
+  override:
+    GO_PACKAGE:
+      flowstate/v1/flowstate.proto: github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1
+# See plugins/vcs/buf.gen.yaml for the full regeneration recipe and why it
+# needs to borrow the repository root's buf.work.yaml for one command - the
+# same reasoning applies here unchanged.
+plugins:
+  - plugin: go
+    out: gen
+    opt:
+      - paths=source_relative
