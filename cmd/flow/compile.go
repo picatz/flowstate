@@ -103,7 +103,7 @@ func runCompile(cmd *cobra.Command, args []string) error {
 		// invocation rather than about a workflow, and listing it beside "this step
 		// references a step that does not exist" would put a mistake fixed in the
 		// shell in among mistakes fixed in the file.
-		return fmt.Errorf("error reading workflow file: %w", err)
+		return fmt.Errorf("error reading %s: %w", path, err)
 	}
 
 	// The handler over no Temporal client, exactly as `flow mcp` builds it: Compile
