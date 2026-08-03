@@ -124,6 +124,75 @@ func TestWatchViewShowsProgressAsItArrives(t *testing.T) {
 	require.False(t, final.quit, "the run finishing was recorded as the person quitting")
 }
 
+// TestWatchViewShowsThePositionAdvancing is the same claim as the test above, made
+// about the thing a run actually does while nothing else changes.
+//
+// Every answer here is RUNNING, with the same run id and no outputs — which is what a
+// run looks like for all of its life but the last poll. A view that drew only what the
+// status and the outputs carry would repaint one identical screen throughout and then
+// jump to COMPLETED, so asserting the positions in order is asserting that the live
+// view is live.
+func TestWatchViewShowsThePositionAdvancing(t *testing.T) {
+	surface, _, _ := terminalSurface(80, 24, colorprofile.NoTTY)
+	poller := &scriptedPoller{answers: []pollAnswer{
+		runningAt("checkout"),
+		runningAt("build"),
+		runningAt("deploy", "each", "upload"),
+		finishedPoll("checkout", "build", "deploy"),
+	}}
+
+	// Slow enough that each answer gets a frame of its own; bubbletea coalesces
+	// redraws, and a run this short would otherwise reach its end inside one.
+	tm := teatest.NewTestModel(t,
+		newWatchModel(t.Context(), surface, poller, 20*time.Millisecond, "flowstate-workflow-3f7c", nil),
+		teatest.WithInitialTermSize(80, 24))
+
+	tm.WaitFinished(t, teatest.WithFinalTimeout(20*time.Second))
+
+	drawn := readAll(t, tm.FinalOutput(t))
+
+	requireInOrder(t, drawn,
+		"on checkout",
+		"on build",
+		// The path into the step, so two iterations of a loop do not read alike.
+		// Matched without the "on " a frame earlier: a terminal is repainted
+		// differentially, so an unchanged prefix is left where it is and only the
+		// tail is written — the screen says "on deploy > each > upload" and the byte
+		// stream carries the part of it that changed.
+		"deploy > each > upload",
+		"COMPLETED",
+	)
+}
+
+// TestWatchViewShowsWhatIsBeingRetried is the difference between "working" and
+// "stuck", on the surface somebody stares at while wondering which one they have.
+//
+// The attempt count and the last failure both, because either alone leaves the
+// question open: a count says something is wrong and not what, and a message with no
+// count reads as one bad moment rather than as a step that cannot get past it.
+func TestWatchViewShowsWhatIsBeingRetried(t *testing.T) {
+	surface, _, _ := terminalSurface(80, 24, colorprofile.NoTTY)
+	model := newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second, "flowstate-workflow-3f7c", nil)
+
+	folded := fold(t, model,
+		tea.WindowSizeMsg{Width: 80, Height: 24},
+		watchStateMsg{at: observed, response: retryingAt("deploy", 4, "connection refused").response},
+	)
+
+	drawn := viewOf(folded)
+	require.Contains(t, drawn, "on deploy", "the step being retried was not named")
+	require.Contains(t, drawn, "attempt 4",
+		"an attempt count climbing under an unchanging RUNNING was left off the screen")
+	require.Contains(t, drawn, "connection refused",
+		"the reason the step keeps failing was left off the screen")
+
+	// And it goes away when the run stops retrying, rather than persisting as a
+	// warning about something that has already recovered.
+	recovered := fold(t, folded, watchStateMsg{at: observed, response: runningAt("deploy").response})
+	require.NotContains(t, viewOf(recovered), "attempt 4",
+		"a retry that had recovered was still on screen")
+}
+
 // requireInOrder asserts that each string first appears after the one before it.
 func requireInOrder(t *testing.T, drawn string, want ...string) {
 	t.Helper()

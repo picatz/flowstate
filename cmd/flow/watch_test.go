@@ -13,6 +13,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -77,6 +78,43 @@ func response(status v1.RunResponse_Status, steps ...string) *v1.GetResponse {
 	}
 
 	return msg
+}
+
+// runningAt is a running run reporting where it has got to, the way the server
+// answers one: a top-level step, and the path into it where there is one.
+//
+// Built as a whole GetResponse rather than as a position alone, because what is
+// under test is a poll — a position arrives beside a status and a run id, and a
+// change detector that only sees one of them is the bug these tests exist for.
+func runningAt(stepID string, path ...string) pollAnswer {
+	answer := runningPoll()
+	answer.response.Progress = &v1.RunProgress{StepId: stepID, Path: path}
+
+	return answer
+}
+
+// retryingAt is a running run whose current activity keeps failing.
+//
+// The attempt count and the message are what Temporal reports and what the server
+// projects; a next-attempt time is added by [scheduledIn] where a test is about the
+// countdown rather than about the retry.
+func retryingAt(stepID string, attempt int32, failure string) pollAnswer {
+	answer := runningAt(stepID)
+	answer.response.PendingActivities = []*v1.PendingActivity{{
+		Attempt:     attempt,
+		LastFailure: failure,
+	}}
+
+	return answer
+}
+
+// scheduledIn sets when the pending activity's next attempt is due.
+func scheduledIn(answer pollAnswer, wait time.Duration) pollAnswer {
+	for _, pending := range answer.response.GetPendingActivities() {
+		pending.NextAttemptScheduledTime = timestamppb.New(observed.Add(wait))
+	}
+
+	return answer
 }
 
 // failedResponse builds a run that ended badly, carrying its message.
@@ -198,6 +236,108 @@ func TestWatchReportsTheFirstAnswerAsAChange(t *testing.T) {
 
 	// And the same answer again is not news.
 	require.False(t, state.absorb(observed, bare, nil).Changed)
+}
+
+// TestWatchCountsAPositionChangeAsAChange is the regression direction for the whole
+// feature.
+//
+// A run moving from one step to the next keeps its status, its run id and — until it
+// finishes — its outputs, so a change detector built from those three sees nothing at
+// all. The "nothing has changed yet" rule then suppresses exactly the news a live view
+// exists to deliver: the plain shape prints one line at the start of a run and nothing
+// again until it ends, and the view repaints an identical screen.
+func TestWatchCountsAPositionChangeAsAChange(t *testing.T) {
+	state := newWatchState("flowstate-workflow-3f7c", nil)
+
+	require.True(t, state.absorb(observed, runningAt("checkout").response, nil).Changed,
+		"the first answer went unreported")
+
+	// The same answer again is not news, which is what makes the assertion below a
+	// claim about the position rather than about every poll.
+	require.False(t, state.absorb(observed, runningAt("checkout").response, nil).Changed)
+
+	require.True(t, state.absorb(observed, runningAt("build").response, nil).Changed,
+		"a run that moved to another step was reported as unchanged, so a live view "+
+			"showed the step it had left")
+	require.Equal(t, "build", state.position)
+
+	// And into a step, which is where a run spends the interesting part of a loop.
+	require.True(t, state.absorb(observed, runningAt("deploy", "each", "upload").response, nil).Changed)
+	require.Equal(t, "deploy > each > upload", state.position,
+		"the path into the step was dropped, so every iteration of a loop reads the same")
+}
+
+// TestWatchCountsARetryAsAChangeButNotItsCountdown is the join between "report every
+// change" and "report only changes".
+//
+// A climbing attempt count is news — it is the difference between a slow step and a
+// stuck one. The countdown to the next attempt is not: it falls by the poll interval
+// on every answer, so keying on it makes every poll a change, which is a line per
+// second in a CI log and the `flow get` loop this command replaces.
+func TestWatchCountsARetryAsAChangeButNotItsCountdown(t *testing.T) {
+	state := newWatchState("flowstate-workflow-3f7c", nil)
+
+	state.absorb(observed, runningAt("deploy").response, nil)
+
+	require.True(t, state.absorb(observed, retryingAt("deploy", 2, "connection refused").response, nil).Changed,
+		"a step that started failing was reported as unchanged")
+	require.True(t, state.absorb(observed, retryingAt("deploy", 3, "connection refused").response, nil).Changed,
+		"an attempt count climbing under an unchanging status went unreported, which is "+
+			"the signature of a stuck run")
+	require.True(t, state.absorb(observed, retryingAt("deploy", 3, "no route to host").response, nil).Changed,
+		"the failure changed and the reader was not told")
+
+	// The countdown alone, twice, at two different values.
+	same := scheduledIn(retryingAt("deploy", 3, "no route to host"), 30*time.Second)
+	require.False(t, state.absorb(observed, same.response, nil).Changed,
+		"a countdown ticking was reported as the run having changed")
+
+	sooner := scheduledIn(retryingAt("deploy", 3, "no route to host"), 5*time.Second)
+	require.False(t, state.absorb(observed, sooner.response, nil).Changed,
+		"a countdown ticking was reported as the run having changed")
+
+	// It is still rendered, measured against the moment the answer was observed
+	// rather than whenever this happens to be drawn.
+	require.Equal(t, []string{"retrying, attempt 3: no route to host (next attempt in 5s)"},
+		state.pending)
+}
+
+// TestWatchPlainLinesSayWhereTheRunIsAndWhatFailed is requirement three's half of the
+// feature: a script, a CI job and a screen reader get the same account, one line per
+// change, on stderr.
+//
+// The position and the retry are both on the line, because this shape's discipline is
+// one line per change and a step that is failing is one change rather than two.
+func TestWatchPlainLinesSayWhereTheRunIsAndWhatFailed(t *testing.T) {
+	poller := &scriptedPoller{answers: []pollAnswer{
+		runningAt("checkout"),
+		runningAt("checkout"),
+		runningAt("build"),
+		retryingAt("deploy", 4, "connection refused"),
+		retryingAt("deploy", 4, "connection refused"),
+		finishedPoll("checkout", "build", "deploy"),
+	}}
+	surface, out, errOut := plainSurface()
+
+	require.NoError(t, followPlainly(t.Context(), surface, FormatText, poller, time.Millisecond,
+		"flowstate-workflow-3f7c", nil))
+
+	lines := reportedLines(errOut.String())
+	require.Len(t, lines, 4,
+		"one line per change, and a change is a move as well as a status:\n%s", errOut.String())
+
+	require.Contains(t, lines[0], "on checkout")
+	require.Contains(t, lines[1], "on build",
+		"a run moved between steps and the account said nothing")
+	require.Contains(t, lines[2], "on deploy")
+	require.Contains(t, lines[2], "attempt 4",
+		"an attempt count climbing was left off, so a stuck run reads as a slow one")
+	require.Contains(t, lines[2], "connection refused",
+		"the reason the step keeps failing was left off")
+	require.Contains(t, lines[3], "COMPLETED")
+
+	require.NotContains(t, out.String(), "on build",
+		"the account was written to stdout, which corrupts anything piping the outputs")
 }
 
 // TestWatchStopsOnEveryTerminalStatusAndKeepsGoingOtherwise covers the table rather

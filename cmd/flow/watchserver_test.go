@@ -1,0 +1,225 @@
+package main
+
+import (
+	"context"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"testing"
+	"time"
+
+	"connectrpc.com/connect"
+	"github.com/stretchr/testify/require"
+	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/log"
+	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/worker"
+	"google.golang.org/protobuf/types/known/durationpb"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
+)
+
+// The join nothing else covers: a real run, a real query, the real server, the real
+// wire, and this command's renderer at the end of it.
+//
+// Everything else in watch_test.go answers from a fake, which is right for the state
+// machine and useless for this particular claim. The renderer used to be exercised
+// entirely by responses these tests built themselves — a shape nothing produced, at
+// the time — and that is exactly the arrangement in which a field can be renamed, left
+// unset by the server, or filled with something other than what a test assumed, while
+// every test stays green. So one test asks a running workload where it is and prints
+// the answer through the same code `flow watch` prints it through.
+//
+// It costs a Temporal dev server, which is why it is behind -short like every other
+// dev-server test in this repo. CI runs the full suite, so it is not optional there.
+
+// TestWatchFollowsARealRunningExecution drives a watch against a workload that is
+// genuinely parked on a step.
+//
+// The workflow does one step and then waits, so there is a position that changes and a
+// run that stays RUNNING while it does — which is the state this whole feature is
+// about, and the one a fake can only assert about itself.
+func TestWatchFollowsARealRunningExecution(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping: needs a Temporal dev server; CI runs the full suite")
+	}
+
+	temporal := startTemporalForTest(t)
+
+	w := worker.New(temporal, engine.RunTaskQueueName, worker.Options{})
+	engine.Register(w)
+	require.NoError(t, w.Start())
+	t.Cleanup(w.Stop)
+
+	flowstate := server.New(temporal)
+
+	mux := http.NewServeMux()
+	mux.Handle(flowstatev1connect.NewWorkflowServiceHandler(flowstate))
+	httpServer := httptest.NewServer(mux)
+	t.Cleanup(httpServer.Close)
+
+	// Started through the service rather than through Temporal directly, so the run
+	// this watches is the kind of run the service creates — the memo it filters by
+	// included.
+	started, err := flowstate.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+		Workflow: &v1.Workflow{
+			Name: "parked",
+			Steps: []*v1.Node{
+				{
+					Id: "first",
+					Kind: &v1.Node_Task{Task: &v1.Task{
+						Name:   "log",
+						Inputs: map[string]*v1.Value{"message": v1.NewLiteral("hello")},
+					}},
+				},
+				{
+					Id: "waiting",
+					Kind: &v1.Node_Wait{Wait: &v1.Wait{
+						// Long enough that the run is reliably still on it while
+						// this watches, and bounded so a failing test does not leave
+						// a worker holding a run for an hour.
+						Kind: &v1.Wait_Duration{Duration: durationpb.New(90 * time.Second)},
+					}},
+				},
+			},
+		},
+	}))
+	require.NoError(t, err)
+
+	workflowID := started.Msg.GetWorkflowId()
+
+	// Terminated however this ends, including a failure, so the dev server is not
+	// left holding a run for the rest of the process.
+	t.Cleanup(func() {
+		_, _ = flowstate.Terminate(context.Background(), connect.NewRequest(&v1.TerminateRequest{
+			WorkflowId: workflowID,
+		}))
+	})
+
+	// Bounded, because the run itself never finishes inside this test: the watch is
+	// stopped from inside the poller once it has reported a position twice, and the
+	// deadline is the backstop for a worker that never answers.
+	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
+	defer cancel()
+
+	poller := &movedOn{
+		inner: clientPoller{
+			workflowID: workflowID,
+			server:     serverFlags{address: httpServer.URL},
+		},
+		stop: cancel,
+	}
+
+	surface, out, errOut := plainSurface()
+
+	// The plain shape, because it is the one whose whole output is assertable: the
+	// live view draws the same state through the same helpers, and its own tests
+	// cover the drawing.
+	require.NoError(t, followPlainly(ctx, surface, FormatText, poller, minWatchInterval,
+		workflowID, nil))
+
+	require.Equal(t, []string{"first", "waiting"}, poller.distinct(),
+		"a real run was not observed moving between steps, so nothing here joins up; saw %v",
+		poller.positions)
+
+	// The step ids an author wrote, having travelled from the workflow's own query
+	// through Describe, the service, the schema and the wire onto two lines of prose —
+	// one per move, which is the discipline this shape holds.
+	account := errOut.String()
+	lines := reportedLines(account)
+	require.Len(t, lines, 2,
+		"a real run on two steps under one status produced %d line(s):\n%s", len(lines), account)
+	require.Contains(t, lines[0], "on first")
+	require.Contains(t, lines[1], "on waiting",
+		"the run moved and the account said nothing, which is the whole feature")
+
+	for _, line := range lines {
+		require.Contains(t, line, "RUNNING")
+		require.Contains(t, line, workflowID)
+	}
+
+	// And it is still an account rather than an answer: a run that has produced
+	// nothing writes nothing to stdout.
+	require.Empty(t, out.String(),
+		"a run still going wrote outputs it does not have")
+}
+
+// movedOn polls for real and stops the watch once the run has been seen on two
+// different steps, plus one poll.
+//
+// Two steps rather than one, because the claim is that a *live* view is live: a single
+// position proves the field arrives, and a run observed on one step and then another
+// proves the thing that made this worth building. The extra poll is because
+// followPlainly checks for cancellation *before* folding an answer in — an interrupted
+// poll is the watcher stopping, not the run changing — so stopping on the sighting
+// itself would end the watch before that position had been reported to anybody.
+type movedOn struct {
+	inner clientPoller
+	stop  context.CancelFunc
+
+	// positions are what the server actually answered, in order and with repeats,
+	// kept so a test that fails can say what it saw rather than only that it did not
+	// see what it wanted.
+	positions []string
+}
+
+func (p *movedOn) Poll(ctx context.Context) (*v1.GetResponse, error) {
+	response, err := p.inner.Poll(ctx)
+
+	position := positionPath(response.GetProgress())
+	if position == "" {
+		return response, err
+	}
+
+	p.positions = append(p.positions, position)
+
+	if len(p.distinct()) >= 2 && p.positions[len(p.positions)-1] == p.positions[len(p.positions)-2] {
+		p.stop()
+	}
+
+	return response, err
+}
+
+// distinct is the positions seen, in order, without the repeats.
+func (p *movedOn) distinct() []string {
+	var seen []string
+	for _, position := range p.positions {
+		if len(seen) == 0 || seen[len(seen)-1] != position {
+			seen = append(seen, position)
+		}
+	}
+
+	return seen
+}
+
+// startTemporalForTest boots a dev server for one test and returns a client for it.
+//
+// One server for the one test that needs it, unlike the server package — which shares
+// a server across a whole package of them and pays for it with a TestMain. A second
+// test here that needs Temporal is the point at which that trade changes.
+func startTemporalForTest(t *testing.T) client.Client {
+	t.Helper()
+
+	// Bounds startup only: the SDK uses this context to download the executable if it
+	// is not cached and to wait for the server to answer. The process it starts
+	// outlives the context and is stopped by the cleanup below.
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+
+	devServer, err := testsuite.StartDevServer(ctx, testsuite.DevServerOptions{
+		ClientOptions: &client.Options{
+			// Warnings and errors only: a server that comes up wrong says so, and
+			// everything below that is noise in the log of a test that passed.
+			Logger: log.NewStructuredLogger(slog.New(slog.NewTextHandler(
+				os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))),
+		},
+	})
+	require.NoError(t, err, "starting a Temporal dev server")
+	t.Cleanup(func() { _ = devServer.Stop() })
+
+	return devServer.Client()
+}
