@@ -191,10 +191,16 @@ func TestCompileRefusesAnOutputFormatItDoesNotHave(t *testing.T) {
 // rather than a diagnostic — reporting it as one would file "you typed the wrong path"
 // beside "this step references a step that does not exist".
 func TestCompileReportsAFileItCannotRead(t *testing.T) {
-	out, _, err := compileOutput(t, filepath.Join(t.TempDir(), "nothing-here.yaml"))
+	path := filepath.Join(t.TempDir(), "nothing-here.yaml")
+
+	out, _, err := compileOutput(t, path)
 	require.Error(t, err)
 
-	assert.Contains(t, err.Error(), "error reading workflow file")
+	// The path itself, not a generic noun. `flow compile` takes one file and the
+	// commands beside it take several, so a reader who mistyped one of four needs
+	// to be told which — and "Flowfile" is the word every other surface uses for
+	// it, per docs/CLI.md's one-vocabulary rule.
+	assert.Contains(t, err.Error(), "error reading "+path)
 	assert.Empty(t, out)
 }
 

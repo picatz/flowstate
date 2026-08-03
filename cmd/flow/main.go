@@ -830,7 +830,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	for _, path := range args {
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return fmt.Errorf("error reading workflow file: %w", err)
+			return fmt.Errorf("error reading %s: %w", path, err)
 		}
 
 		diagnostics, err := flowfile.ValidateSource(data)
@@ -889,7 +889,7 @@ func validateMachine(cmd *cobra.Command, args []string, format OutputFormat) err
 	for _, path := range args {
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return fmt.Errorf("error reading workflow file: %w", err)
+			return fmt.Errorf("error reading %s: %w", path, err)
 		}
 
 		diagnostics, err := flowfile.ValidateSource(data)
@@ -947,7 +947,7 @@ var errValidationFailed = errors.New("validation failed")
 func loadWorkflow(path string) (*v1.Workflow, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("error reading workflow file: %w", err)
+		return nil, fmt.Errorf("error reading %s: %w", path, err)
 	}
 
 	workflow, err := flowfile.Unmarshal(data)

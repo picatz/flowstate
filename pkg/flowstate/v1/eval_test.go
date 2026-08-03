@@ -67,7 +67,7 @@ func TestRunWorkflowControlFlow(t *testing.T) {
 }
 
 // TestRunWorkflowPolicy covers conditions and per-step policy in the local
-// driver. The same cases run against the Temporal driver in the engine package,
+// driver. The same cases run against the durable driver in the engine package,
 // which is what keeps the two from diverging.
 func TestRunWorkflowPolicy(t *testing.T) {
 	failedSteps := tests.PolicyCaseFailedSteps()
@@ -94,7 +94,7 @@ func TestRunWorkflowPolicy(t *testing.T) {
 
 // TestRunWorkflowWait covers durable waiting in the local driver.
 //
-// The same cases run against the Temporal driver in the engine package. Waiting is
+// The same cases run against the durable driver in the engine package. Waiting is
 // where the two drivers are most different underneath — a timer here is a sleep in
 // a process, and there it is state on a server — so it is where holding them to
 // one set of expectations matters most.
@@ -146,7 +146,7 @@ func TestNestedValueIsReachableByIndex(t *testing.T) {
 
 // TestRunWorkflowVars covers the workflow's `vars:` block in the local driver.
 //
-// The same cases run against the Temporal driver in the engine package. That matters
+// The same cases run against the durable driver in the engine package. That matters
 // more here than for most features, because the two drivers reach this state by
 // different routes: locally the vars are evaluated in process before the first step,
 // durably they are evaluated in an activity and then carried across Continue-As-New.
@@ -202,7 +202,7 @@ func TestRunWorkflowInputsRefused(t *testing.T) {
 // TestRunWorkflowResponseScope covers what an http step's `expect:` and `outputs:`
 // can see, in the local driver.
 //
-// The same cases run against the Temporal driver in the engine package, and the reason
+// The same cases run against the durable driver in the engine package, and the reason
 // is the one the shared package exists for read backwards: what these guard is not a
 // difference between the drivers but a difference between two positions in one file,
 // and both drivers reach both positions through the same task. A set that ran here
