@@ -538,10 +538,9 @@ func runServer(cmd *cobra.Command, args []string) error {
 	}
 	defer closePlugins()
 
-	interceptor, err := validate.NewInterceptor()
-	if err != nil {
-		return fmt.Errorf("error creating validation interceptor: %w", err)
-	}
+	// No error to handle since connectrpc.com/validate v0.6.0: the interceptor
+	// builds its validator lazily on first use, so construction cannot fail.
+	interceptor := validate.NewInterceptor()
 
 	otelInterceptor, err := otelconnect.NewInterceptor()
 	if err != nil {
