@@ -2,7 +2,6 @@ package lsp
 
 import (
 	"fmt"
-	"slices"
 	"strings"
 
 	"buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
@@ -16,17 +15,6 @@ import (
 // the task's registry entry. There is no table here to fall out of date, and
 // nothing this file can say that the engine would not also enforce, because both
 // read the same schema.
-
-// dynamicValueMessages are the messages that carry a CEL value, and so fields whose
-// type a Flowfile author sees as "whatever the expression yields".
-//
-// There are two because the schema uses both: its own wrapper, and CEL's, which the
-// http task's parsed `json` output is. Neither name means anything in the DSL — an
-// author has no `Value` type to reason about — so both render as `any`.
-var dynamicValueMessages = []protoreflect.FullName{
-	"flowstate.v1.Value",
-	"google.api.expr.v1alpha1.Value",
-}
 
 // fieldNames returns the input or output names a message declares, in field
 // number order, which is the order the schema author chose.
@@ -55,37 +43,6 @@ func findField(md protoreflect.MessageDescriptor, name string) protoreflect.Fiel
 // a CEL value is dynamic.
 func typeName(fd protoreflect.FieldDescriptor) string {
 	return v1.InputTypeName(fd)
-}
-
-// scalarTypeName names the type of a single value of the field's element type.
-func scalarTypeName(fd protoreflect.FieldDescriptor) string {
-	switch fd.Kind() {
-	case protoreflect.StringKind:
-		return "string"
-	case protoreflect.BoolKind:
-		return "bool"
-	case protoreflect.BytesKind:
-		return "bytes"
-	case protoreflect.Int32Kind, protoreflect.Int64Kind, protoreflect.Sint32Kind,
-		protoreflect.Sint64Kind, protoreflect.Sfixed32Kind, protoreflect.Sfixed64Kind:
-		return "int"
-	case protoreflect.Uint32Kind, protoreflect.Uint64Kind, protoreflect.Fixed32Kind,
-		protoreflect.Fixed64Kind:
-		return "uint"
-	case protoreflect.FloatKind, protoreflect.DoubleKind:
-		return "double"
-	case protoreflect.EnumKind:
-		return string(fd.Enum().Name())
-	case protoreflect.MessageKind, protoreflect.GroupKind:
-		if slices.Contains(dynamicValueMessages, fd.Message().FullName()) {
-			// A CEL value: the concrete type is whatever the expression
-			// produces, which is exactly what "any" tells the author.
-			return "any"
-		}
-		return string(fd.Message().Name())
-	default:
-		return fd.Kind().String()
-	}
 }
 
 // fieldRules returns the protovalidate rules attached to a field, or nil.

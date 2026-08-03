@@ -142,13 +142,26 @@ needs the identical pin, for the identical reason:
 
     GOTOOLCHAIN=go1.26.5 go run honnef.co/go/tools/cmd/staticcheck@2026.1 ./...
 
-staticcheck is advisory in CI (`continue-on-error: true`) until 2026-08-04, the
-same 48-hour window every newly-added check gets: the govulncheck lesson above
-applies just as well to a linter nobody has run against this tree before — a
-finding on landing is not necessarily a finding in your diff. The bounded fuzz
-smoke job (`GOMEMLIMIT=512MiB go test -parallel 1 -fuzztime 30s
-./pkg/flowstate/v1/flowfile/`, per the fuzzing recipe above) is advisory on the
-same schedule, to absorb infrastructure flake — not to excuse ignoring an actual
+staticcheck is required in CI, and the tree is at zero findings. It landed
+advisory (`continue-on-error: true`) for the 48-hour window every newly-added
+check gets, because the govulncheck lesson above applies just as well to a linter
+nobody has run against this tree before — a finding on landing is not necessarily
+a finding in your diff. That window closed with the 22 it found settled on their
+merits, so a finding now *is* one your diff introduced.
+
+Where a finding is the point of the code, silence it in place with
+`//lint:ignore <check> <reason>` and a real reason — not `//nolint:`, which
+nothing here reads, and which sat uselessly over two nil-context tests for
+exactly as long as nobody ran staticcheck. The reasons that survive are all one
+shape: the check describes a mistake, and the test is *making* that mistake on
+purpose to prove it is handled — marshaling a struct with nothing exported,
+passing a nil context, spelling `%s` rather than calling `String()` so that the
+verb an operator's log line uses is the one under test. Never quiet one of those
+by changing what it asserts.
+
+The bounded fuzz smoke job (`GOMEMLIMIT=512MiB go test -parallel 1 -fuzztime 30s
+./pkg/flowstate/v1/flowfile/`, per the fuzzing recipe above) is still advisory on
+that schedule, to absorb infrastructure flake — not to excuse ignoring an actual
 crasher the fuzzer finds, which is a real defect to triage.
 
 ## Both execution drivers must agree

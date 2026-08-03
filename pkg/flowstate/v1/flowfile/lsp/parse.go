@@ -727,7 +727,7 @@ func fillParsedStep(s *parsedStep, entries []*entry) {
 // same rule YAML itself used to decide the line was not part of it.
 func assignStepRanges(ix *lineIndex, steps []*parsedStep, stepsIndent int) {
 	for i, s := range steps {
-		endLine := ix.lineCount() - 1
+		var endLine int
 		if i+1 < len(steps) {
 			endLine = steps[i+1].rng.Start.Line - 1
 		} else {

@@ -190,16 +190,17 @@ jobs:
       - name: Vulnerability scan
         run: go run golang.org/x/vuln/cmd/govulncheck@${{ env.GOVULNCHECK_VERSION }} ./...
 
-  # Advisory for 48h from landing (until 2026-08-04): the govulncheck lesson
-  # generalizes to any newly-added check — a check nobody has run against this
-  # tree yet can go red on code nobody touched, and a red build everyone learns to
-  # ignore is worse than no build. `continue-on-error` surfaces the findings
-  # without blocking merges while that settles; after 2026-08-04 this job is
-  # promoted to required the same way the others are.
+  # Required, as of the end of its 48h advisory window. It landed advisory because
+  # the govulncheck lesson generalizes to any newly-added check — a check nobody
+  # has run against this tree yet can go red on code nobody touched, and a red
+  # build everyone learns to ignore is worse than no build. The window did what it
+  # was for: the 22 findings it surfaced were read and settled on their merits —
+  # dead code deleted, one duplicated helper removed, and the handful that were
+  # the point of a test kept with a `//lint:ignore` saying why. The tree is at
+  # zero, so from here a finding is something this diff introduced.
   staticcheck:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    continue-on-error: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -220,10 +221,10 @@ jobs:
   # that existed first, plus the three the roadmap called for — CEL compile,
   # MCP tool-argument decode, plugin descriptor parsing — each its own step so one
   # hanging does not hide the others' output. Four times 30s is still comfortably
-  # under this job's five-minute budget alongside checkout and setup. Advisory for
-  # the same 48h window as staticcheck (until 2026-08-04) to absorb flake in a job
-  # this new — but a crasher the fuzzer actually finds is a real finding, not
-  # flake, and must be triaged rather than re-run away; `continue-on-error` here
+  # under this job's five-minute budget alongside checkout and setup. Advisory
+  # until 2026-08-04 — the same 48h window staticcheck above has now finished — to
+  # absorb flake in a job this new. But a crasher the fuzzer actually finds is a
+  # real finding, not flake, and must be triaged rather than re-run away; `continue-on-error` here
   # covers infrastructure noise, not a standing invitation to ignore a found
   # corpus entry.
   fuzz-smoke:

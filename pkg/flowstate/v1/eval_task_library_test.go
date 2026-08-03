@@ -5,25 +5,13 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/google/go-cmp/cmp"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
-	"google.golang.org/protobuf/testing/protocmp"
 	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/dynamicpb"
 )
-
-func checkProtoEqual(t *testing.T, expected, actual proto.Message) {
-	t.Helper()
-	require.True(
-		t,
-		proto.Equal(expected, actual),
-		"Expected output does not match actual output:\n%s",
-		cmp.Diff(expected, actual, protocmp.Transform()),
-	)
-}
 
 // A loopback server, not a real one on the internet.
 //

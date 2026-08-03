@@ -7,14 +7,14 @@
 // would serve the reference on a maintainer's laptop and a "not found" for
 // everybody else. The documents are therefore compiled in.
 //
-// go:embed cannot reach outside the package directory, so the compiled-in copies
-// live here in mirror/ rather than being embedded from docs/ and examples/ in
-// place. That is a value written down twice, which this repository treats as a
-// defect wherever it is left unchecked — so it is checked: `go generate ./...`
-// rewrites the mirror from the originals, and TestTheMirrorMatchesTheRepository
-// fails when it has drifted, which is the same mechanism `buf generate` plus
-// `git diff --exit-code` uses on the generated protobuf code. The copy is the
-// artifact; the originals stay the source.
+// The go:embed directive cannot reach outside the package directory, so the
+// compiled-in copies live here in mirror/ rather than being embedded from docs/
+// and examples/ in place. That is a value written down twice, which this
+// repository treats as a defect wherever it is left unchecked — so it is
+// checked: `go generate ./...` rewrites the mirror from the originals, and
+// TestTheMirrorMatchesTheRepository fails when it has drifted, which is the same
+// mechanism `buf generate` plus `git diff --exit-code` uses on the generated
+// protobuf code. The copy is the artifact; the originals stay the source.
 //
 // The tradeoff that remains, and it is real: what is served is frozen at build
 // time. A binary from March answers with March's DSL.md. That is the honest

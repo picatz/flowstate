@@ -190,6 +190,10 @@ func Test_Secret_neverLeaksThroughSerialization(t *testing.T) {
 
 	t.Run("json.Marshal of a struct with an unexported secret", func(t *testing.T) {
 		// encoding/json ignores unexported fields, so nothing is emitted at all.
+		// That is the shape being checked — a holder with nothing exported is
+		// what staticcheck flags as a pointless marshal, and what a caller who
+		// tucked a secret out of reach actually wrote.
+		//lint:ignore SA9005 marshaling a holder with no exported fields is the case under test
 		out, err := json.Marshal(struct{ token Secret }{secret})
 		require.NoError(t, err)
 		requireNoLeak(t, "json.Marshal unexported", string(out))

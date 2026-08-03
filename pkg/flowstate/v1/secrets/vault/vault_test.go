@@ -1041,7 +1041,7 @@ func Test_Provider_Resolve_transportFailures(t *testing.T) {
 
 		ref := secrets.NewRef(provider.Scheme(), "apps/api#token")
 
-		//nolint:staticcheck // passing a nil context is the mistake being tested.
+		//lint:ignore SA1012 passing nil is the mistake under test; the refusal is the assertion
 		_, err := provider.Resolve(nil, secrets.Request{Namespace: "team-a", Ref: ref})
 		require.ErrorContains(t, err, "requires a context")
 	})

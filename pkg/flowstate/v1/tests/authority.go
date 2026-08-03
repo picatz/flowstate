@@ -588,9 +588,15 @@ func AssertNoLeak(tb testing.TB, out *v1.Workflow_StepOutputs, material string) 
 	type holder struct{ outputs *v1.Workflow_StepOutputs }
 
 	renderings := map[string]string{
-		"%v on the outputs":      fmt.Sprintf("%v", out),
-		"%+v on the outputs":     fmt.Sprintf("%+v", out),
-		"%#v on the outputs":     fmt.Sprintf("%#v", out),
+		"%v on the outputs":  fmt.Sprintf("%v", out),
+		"%+v on the outputs": fmt.Sprintf("%+v", out),
+		"%#v on the outputs": fmt.Sprintf("%#v", out),
+		// `out.String()` would be the same string and a different test. What is
+		// under test is the verb, not the method: a log line writes `%s` and fmt
+		// decides what to call, so calling String() here would assert only that
+		// the method redacts and stop covering the path an operator's formatter
+		// actually takes.
+		//lint:ignore S1025 the %s verb is one of the containment shapes, not a roundabout String()
 		"%s on the outputs":      fmt.Sprintf("%s", out),
 		"%v on a struct":         fmt.Sprintf("%v", holder{outputs: out}),
 		"%+v on a struct":        fmt.Sprintf("%+v", holder{outputs: out}),

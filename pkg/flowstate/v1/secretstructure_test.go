@@ -136,13 +136,19 @@ func TestNestedSecretIsNotInAnyRenderingOfTheInputs(t *testing.T) {
 		"%v on the task":        fmt.Sprintf("%v", task),
 		"%+v on the task":       fmt.Sprintf("%+v", task),
 		"%#v on the task":       fmt.Sprintf("%#v", task),
-		"%s on the task":        fmt.Sprintf("%s", task),
-		"%v on a struct":        fmt.Sprintf("%v", holder{task: task}),
-		"%+v on a struct":       fmt.Sprintf("%+v", holder{task: task}),
-		"%#v on a struct":       fmt.Sprintf("%#v", holder{task: task}),
-		"%v on a slice":         fmt.Sprintf("%v", []holder{{task: task}}),
-		"%+v on a slice":        fmt.Sprintf("%+v", []holder{{task: task}}),
-		"%#v on a slice":        fmt.Sprintf("%#v", []holder{{task: task}}),
+		// `task.String()` would be the same string and a different test. What is
+		// under test is the verb, not the method: a log line writes `%s` and fmt
+		// decides what to call, so calling String() here would assert only that
+		// the method redacts — which the row above and below already cover — and
+		// stop covering the path an operator's formatter actually takes.
+		//lint:ignore S1025 the %s verb is one of the containment shapes, not a roundabout String()
+		"%s on the task":  fmt.Sprintf("%s", task),
+		"%v on a struct":  fmt.Sprintf("%v", holder{task: task}),
+		"%+v on a struct": fmt.Sprintf("%+v", holder{task: task}),
+		"%#v on a struct": fmt.Sprintf("%#v", holder{task: task}),
+		"%v on a slice":   fmt.Sprintf("%v", []holder{{task: task}}),
+		"%+v on a slice":  fmt.Sprintf("%+v", []holder{{task: task}}),
+		"%#v on a slice":  fmt.Sprintf("%#v", []holder{{task: task}}),
 	}
 	for name, rendered := range renderings {
 		if strings.Contains(rendered, material) {

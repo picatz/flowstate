@@ -38,7 +38,7 @@ var taskTableRow = regexp.MustCompile("(?m)^\\| `([a-z_]+)`\\s*\\|([^|]*)\\|([^|
 // celLibraryClaim isolates the README sentence that enumerates the extension
 // libraries, so the assertion is about that list rather than about the words in
 // it appearing somewhere in the file.
-var celLibraryClaim = regexp.MustCompile("CEL extension libraries: ([^.]*)\\.")
+var celLibraryClaim = regexp.MustCompile(`CEL extension libraries: ([^.]*)\.`)
 
 // backtickedName finds each `name` inside a table cell.
 var backtickedName = regexp.MustCompile("`([a-z_]+)`")
