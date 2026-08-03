@@ -5,14 +5,20 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"sync"
 	"time"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	logglobal "go.opentelemetry.io/otel/log/global"
 	"go.opentelemetry.io/otel/propagation"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -70,22 +76,28 @@ const telemetryFlushTimeout = 5 * time.Second
 
 // telemetryConfigured reports whether the operator pointed telemetry anywhere.
 //
-// The standard variables, any one of them: the general endpoint, or either
-// signal-specific one somebody sets when traces and metrics go to different
-// collectors. All three, because the OTLP exporters each read their own
+// The standard variables, any one of them: the general endpoint, or any of the
+// signal-specific ones somebody sets when traces, metrics and logs go to
+// different collectors. All four, because the OTLP exporters each read their own
 // signal's variable and fall back to the general one — so a predicate naming
 // fewer than they read answers "unconfigured" for a configuration they would
 // have honoured, and the operator gets silence from a binary they told where to
 // send things. Traces-only is the deployment that failed this way: the SDK
 // would have exported them and this said no.
 //
-// OTEL_EXPORTER_OTLP_LOGS_ENDPOINT is deliberately absent. Nothing here exports
-// logs yet, so honouring it would start a tracer and a meter on the strength of
-// a variable about neither.
+// OTEL_EXPORTER_OTLP_LOGS_ENDPOINT used to be excluded, and the exclusion was
+// right for as long as it lasted: honouring a variable about logs would have
+// started a tracer and a meter and nothing else, because nothing here exported
+// logs. [initTelemetry] now builds a log exporter alongside the other two, so
+// the variable names a signal this binary actually sends and the reason to
+// ignore it is gone. Logs-only is a real deployment — a fleet whose logs go to a
+// collector and whose traces do not — and it must not be told it configured
+// nothing.
 func telemetryConfigured() bool {
 	return os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") != "" ||
 		os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") != "" ||
-		os.Getenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT") != ""
+		os.Getenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT") != "" ||
+		os.Getenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT") != ""
 }
 
 // telemetryResource describes what is emitting, so a collector can group by it.
@@ -164,6 +176,11 @@ func initTelemetry(ctx context.Context) (client.MetricsHandler, func(context.Con
 		return nil, nil, fmt.Errorf("configuring the metric exporter: %w", err)
 	}
 
+	logExporter, err := otlploghttp.New(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("configuring the log exporter: %w", err)
+	}
+
 	tracerProvider := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(traceExporter),
 		sdktrace.WithResource(res),
@@ -172,12 +189,25 @@ func initTelemetry(ctx context.Context) (client.MetricsHandler, func(context.Con
 		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExporter)),
 		sdkmetric.WithResource(res),
 	)
+	loggerProvider := sdklog.NewLoggerProvider(
+		sdklog.WithProcessor(sdklog.NewBatchProcessor(logExporter)),
+		sdklog.WithResource(res),
+	)
 
 	// The globals, because that is where otelconnect looks. It was installed
 	// against the global providers all along; this is the half that makes the
 	// installation mean something.
 	otel.SetTracerProvider(tracerProvider)
 	otel.SetMeterProvider(meterProvider)
+
+	// Logs have a global of their own, in their own package, because the log API
+	// is still pre-stable and lives outside go.opentelemetry.io/otel. Registered
+	// for the same reason as the other two and one more: a bridge built in a
+	// package that cannot see this one — the engine's activity logger, in
+	// pkg/flowstate/v1/engine — reaches an exporter only through this global.
+	// Unset, it is a no-op that discards, which is what keeps that bridge free
+	// in a binary nobody configured.
+	logglobal.SetLoggerProvider(loggerProvider)
 
 	// W3C trace context plus baggage, the composite everything else in the
 	// ecosystem defaults to. Trace context is what carries the span across the
@@ -206,10 +236,79 @@ func initTelemetry(ctx context.Context) (client.MetricsHandler, func(context.Con
 		once.Do(func() {
 			_ = tracerProvider.Shutdown(ctx)
 			_ = meterProvider.Shutdown(ctx)
+			// Logs batch exactly as spans do, so the last lines a process writes
+			// — which are the ones saying why it is leaving — are precisely the
+			// ones an unflushed provider drops. This is the same flush, not a
+			// second path: every exit already reaches here.
+			_ = loggerProvider.Shutdown(ctx)
 		})
 	}
 
 	return handler, shutdown, nil
+}
+
+// The third signal, and the two honest limits on it.
+//
+// Logs used to reach stderr and stop there, which is why the observability lab
+// had to carry a file into its collector: an operator running a collector had
+// one ingress for traces and metrics and a second, file-shaped one for logs.
+// [initTelemetry] now builds an OTLP log exporter beside the other two and
+// registers a logger provider globally, and [telemetryLogHandler] is how a
+// process's slog output reaches it.
+//
+// Added rather than exchanged. The stderr handler stays exactly where it was and
+// the bridge goes beside it through [v1.MultiHandler], because the operator who
+// adds a collector is watching a terminal at that moment — losing that output in
+// return for one they cannot read until the collector is up is the wrong trade,
+// and it is the trade a handler swap silently makes.
+//
+// **What correlates and what does not.** The bridge reads the span from the
+// context the record is emitted with, so a record carries a trace id exactly
+// when its call site passes a context that is inside a span:
+//
+//   - A `log:` step **correlates on the worker**. The task emits through
+//     `LogAttrs(ctx, …)` and the activity's context carries the span Temporal's
+//     tracing interceptor opened, so a step's line and the step's span share a
+//     trace id. That is the pairing the lab could not do before.
+//   - A `log:` step in `flow run local` **does not**, and cannot: the local
+//     driver runs no RPC and opens no span, so there is no trace for the line to
+//     belong to. The record is still exported, with a context and no span in it.
+//   - The server's and worker's **own** lines do not. [infraLogger] is called at
+//     start-up and shutdown and logs through `Info`/`Warn` rather than the
+//     `Context` variants, and those moments are outside any request's span
+//     anyway. They are exported and searchable; they are not clickable from a
+//     trace.
+//
+// Said out loud rather than implied, because "logs are correlated" is the kind of
+// claim a dashboard is built on: a link from a span to a log line that is only
+// sometimes there is worse than a link nobody promised.
+
+// telemetryScope names this binary as the source of its log records.
+//
+// The instrumentation scope, which is what a collector groups records by beneath
+// the resource — one name for both bridges, so a query does not have to know
+// which of them a line came through.
+const telemetryScope = "github.com/picatz/flowstate/cmd/flow"
+
+// telemetryLogHandler returns next with the OTLP bridge beside it, or next
+// unchanged when telemetry is not configured.
+//
+// Unchanged is the literal word: zero configuration must leave the caller
+// holding the exact handler it built, not a fan-out of one, because a fan-out of
+// one is still a wrapper somebody has to reason about and still a place a record
+// can be dropped.
+//
+// Built fresh per call rather than memoized. The bridge captures a logger from
+// the global provider at construction, so one built before [startTelemetry] ran
+// would be pinned to whatever was global at that moment — the same ordering trap
+// the otelconnect interceptor and the Temporal tracing interceptor both have,
+// and cheaper to avoid than to document.
+func telemetryLogHandler(next slog.Handler) slog.Handler {
+	if !telemetryConfigured() {
+		return next
+	}
+
+	return v1.MultiHandler(next, otelslog.NewHandler(telemetryScope))
 }
 
 // The Temporal half of the same trace.

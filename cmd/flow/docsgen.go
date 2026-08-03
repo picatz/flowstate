@@ -712,9 +712,15 @@ func documentedEnvironmentVariables() []environmentVariable {
 			read:    "cmd/flow/telemetry.go",
 		},
 		{
+			name:    "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+			value:   "unset",
+			purpose: "The same, for a deployment sending logs somewhere different. Logs are exported through the OTLP log exporter beside stderr, never instead of it — so a collector is a destination gained, not exchanged.",
+			read:    "cmd/flow/telemetry.go",
+		},
+		{
 			name:    "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
 			value:   "unset",
-			purpose: "The same, for a deployment sending metrics somewhere different. Either variable being set enables telemetry.",
+			purpose: "The same, for a deployment sending metrics somewhere different. Any one of these variables being set enables telemetry.",
 			read:    "cmd/flow/telemetry.go",
 		},
 		{

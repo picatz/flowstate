@@ -202,8 +202,8 @@
     {
       "type": "logs",
       "id": 9,
-      "title": "Server and worker (stderr, via the collector)",
-      "description": "slog's logfmt, parsed at query time rather than at ingest. These lines carry no trace id yet — that arrives with the OTLP log exporter — so correlate on the workflow id, which both the logs and the Temporal UI use.",
+      "title": "Server, worker and steps (over OTLP)",
+      "description": "Log records shipped over OTLP, not lines tailed out of a file — so no query-time parsing, and attributes arrive as attributes. A `log:` step's record carries the trace and span ids of the step it ran in, which is what makes the TraceID field link straight to Tempo. The services' own start-up and shutdown lines are emitted outside any span and carry no trace id; find those by service and time.",
       "datasource": { "type": "loki", "uid": "flowstate-loki" },
       "gridPos": { "h": 10, "w": 24, "x": 0, "y": 19 },
       "options": { "showTime": true, "wrapLogMessage": true, "sortOrder": "Descending" },
@@ -211,7 +211,7 @@
         {
           "refId": "A",
           "datasource": { "type": "loki", "uid": "flowstate-loki" },
-          "expr": "{service_name=~\"flowstate-.*\"} | logfmt"
+          "expr": "{service_name=~\"flowstate-.*\"}"
         }
       ]
     }

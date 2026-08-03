@@ -5,6 +5,7 @@ import (
 	"log/slog"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/log"
 )
@@ -22,12 +23,41 @@ import (
 // Only activities. Workflow code replays, so a line emitted there would be written once
 // per replay, and Temporal's own workflow logger exists to suppress exactly that — but
 // no task runs in workflow code, so the case does not arise and nothing here handles it.
+//
+// The OTLP bridge goes beside it, and this is the one place in the repo where log-to-trace
+// correlation is real. A `log:` step emits through `LogAttrs(ctx, …)`, and an activity's
+// context carries the span Temporal's tracing interceptor opened — so the bridge reads a
+// span context off it and stamps the record's trace and span ids. A step's line and the
+// step's span then share a trace id, which is what makes a log panel clickable from a
+// trace instead of joinable only by workflow id.
+//
+// It is a fan-out rather than a replacement because Temporal's tagging is not redundant
+// with it: the workflow id, run id, activity type and attempt are how somebody finds the
+// run in the Temporal UI, and a trace id is how they find it in Tempo. Neither substitutes
+// for the other, and the record that carries only one of them is the one that is hard to
+// chase.
+//
+// The bridge is built unconditionally and costs nothing unconfigured: it resolves the
+// global logger provider, which is a no-op that discards until `flow`'s telemetry
+// initialization registers a real one — and that only happens when the operator set
+// OTEL_EXPORTER_OTLP_*. Invariant 8 holds without this package having to read an
+// environment variable it has no business reading.
 
 // withActivityLogger returns a context whose `log:` steps reach Temporal's logger for
-// this activity.
+// this activity, and a collector when one is configured.
 func withActivityLogger(ctx context.Context) context.Context {
-	return v1.ContextWithLogger(ctx, slog.New(&activityLogHandler{to: activity.GetLogger(ctx)}))
+	return v1.ContextWithLogger(ctx, slog.New(v1.MultiHandler(
+		&activityLogHandler{to: activity.GetLogger(ctx)},
+		otelslog.NewHandler(activityLogScope),
+	)))
 }
+
+// activityLogScope names this package as the source of the records it bridges.
+//
+// The instrumentation scope a collector groups by beneath the resource. Distinct from the
+// CLI's own scope on purpose: a line from a step and a line from the worker process are
+// different things to look at, and the scope is where that distinction survives.
+const activityLogScope = "github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 
 // activityLogHandler forwards slog records to Temporal's logger.
 //

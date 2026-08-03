@@ -34,9 +34,10 @@ x-flowstate: &flowstate
     dockerfile: examples/observability/Dockerfile
   image: flowstate-lab:dev
   environment: &flowstate-env
-    # The one variable that turns telemetry on. Both signals travel over OTLP
-    # HTTP, which is the protocol cmd/flow/telemetry.go's exporters speak, so
-    # this is the collector's 4318 rather than its 4317.
+    # The one variable that turns telemetry on. All three signals travel over
+    # OTLP HTTP, which is the protocol cmd/flow/telemetry.go's exporters speak,
+    # so this is the collector's 4318 rather than its 4317. Logs joined traces
+    # and metrics here: nothing in this file has to carry them any more.
     OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
     # The binary compiles in service.name=flowstate; resource detection reads the
     # environment last, so this wins. Worth setting: the host's `flow run` keeps
@@ -44,11 +45,6 @@ x-flowstate: &flowstate
     # — the person, the server, and the worker.
     OTEL_SERVICE_NAME: flowstate-server
     OTEL_RESOURCE_ATTRIBUTES: deployment.environment=lab
-  volumes:
-    # Where stderr goes, and where the collector's filelog receiver reads it
-    # back. See README.md, "How logs get to Loki", for why this rather than the
-    # Loki docker driver or a mount of /var/lib/docker/containers.
-    - flowstate-logs:/var/log/flowstate
   # The binary flushes its last spans and metrics on the way out, and that flush
   # is bounded at five seconds. A grace period shorter than that would kill the
   # process during precisely the flush a lab exists to demonstrate.
@@ -76,16 +72,16 @@ services:
       FLOWSTATE_ADDRESS: 0.0.0.0:9233
     # --insecure-no-auth: every caller is anonymous. Acceptable only because the
     # published port is loopback-only. The server says so in its own logs on
-    # every start, which you will see in Grafana.
+    # every start, which you will see in Grafana and in `docker compose logs`.
     #
-    # `exec` is load-bearing: it replaces the shell, so `flow` is pid 1 and
-    # receives the SIGTERM `docker compose down` sends. A pipeline into `tee`
-    # would leave the shell as pid 1, and a shell does not forward signals — the
-    # process would be killed at the grace period instead of flushing its last
-    # spans, which is the one moment a lab most wants a trace from.
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - exec flow server --address=temporal:7233 --insecure-no-auth --verbose >> /var/log/flowstate/server.log 2>&1
+    # No shell and no redirection any more. Both were here to get stderr into a
+    # file the collector could tail, and the binary sends its logs over OTLP now
+    # — so `flow` is pid 1 because it is the entrypoint, rather than because an
+    # `exec` was carefully spelled to make it one, and it receives the SIGTERM
+    # `docker compose down` sends for the same reason. The flush on the way out
+    # is what pushes the last spans, points and log records.
+    # Arguments only: the image's ENTRYPOINT is already `flow`.
+    command: ["server", "--address=temporal:7233", "--insecure-no-auth", "--verbose"]
     ports:
       - "127.0.0.1:9233:9233"
 
@@ -102,9 +98,7 @@ services:
     # constantly and there are no workloads to protect, which is what makes
     # accepting the exposure honest here and dishonest anywhere else. README.md
     # shows the two flags that pin it instead.
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - exec flow worker --address=temporal:7233 --allow-unversioned-interpreter --verbose >> /var/log/flowstate/worker.log 2>&1
+    command: ["worker", "--address=temporal:7233", "--allow-unversioned-interpreter", "--verbose"]
 
   # ----------------------------------------------------------------- Temporal
 
@@ -153,9 +147,6 @@ services:
     command: ["--config=/etc/otelcol/config.yaml"]
     volumes:
       - ./otel-collector/config.yaml:/etc/otelcol/config.yaml:ro
-      # Read-only, and shared with the two Flowstate services: the collector
-      # tails what they write, and cannot write to it.
-      - flowstate-logs:/var/log/flowstate:ro
     ports:
       - "127.0.0.1:4317:4317" # OTLP/gRPC
       - "127.0.0.1:4318:4318" # OTLP/HTTP — what `flow` speaks
@@ -256,7 +247,6 @@ services:
       - prometheus
 
 volumes:
-  flowstate-logs:
   temporal-data:
   tempo-data:
   loki-data:

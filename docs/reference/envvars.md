@@ -38,6 +38,7 @@ Where a variable is the default of a flag, the flag wins when both are given.
 | `FLOWSTATE_TOKEN_FILE` | `unset` | Default for `--token-file`: a file holding the bearer token, re-read per request so a rotated token is picked up without a restart. | `cmd/flow/client.go` |
 | `FLOWSTATE_VERBOSE_LOGGING` | `false` | Default for `--verbose`. Read as a condition rather than as a string, so it does not appear as a flag default in the CLI reference. | `cmd/flow/main.go` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `unset` | Turns telemetry on and says where it goes. Unset means no exporter, no goroutines, no network. | `cmd/flow/telemetry.go` |
-| `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | `unset` | The same, for a deployment sending metrics somewhere different. Either variable being set enables telemetry. | `cmd/flow/telemetry.go` |
+| `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` | `unset` | The same, for a deployment sending logs somewhere different. Logs are exported through the OTLP log exporter beside stderr, never instead of it — so a collector is a destination gained, not exchanged. | `cmd/flow/telemetry.go` |
+| `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | `unset` | The same, for a deployment sending metrics somewhere different. Any one of these variables being set enables telemetry. | `cmd/flow/telemetry.go` |
 | `OTEL_EXPORTER_OTLP_*` | `—` | Headers, protocol, timeouts and the rest: read by the OTLP exporters themselves rather than re-spelled here, so anything else OTLP-speaking is configured the same way. | `go.opentelemetry.io/otel exporters` |
 | `TEMPORAL_TASK_QUEUE` | `flowstate-run-task-queue` | Default for `--task-queue`: the queue workers serve and workflows are routed to. | `cmd/flow/main.go` |

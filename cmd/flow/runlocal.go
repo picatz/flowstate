@@ -87,9 +87,14 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	// `log:` steps go to stderr, where the run's own commentary already goes, so the
 	// result on stdout stays a single JSON document a pipe can read. A workflow that
 	// narrates itself must not break `flow run local ... | jq`.
+	//
+	// And to a collector when one is configured, so that the two drivers agree about
+	// where a `log:` line ends up: the durable driver exports the same records from
+	// the worker. What differs is the trace id, and unavoidably — a local run makes
+	// no RPC and opens no span, so its records have no trace to belong to.
 	surface := newSurface(cmd)
 	ctx = v1.ContextWithLogger(ctx,
-		slog.New(newRunLogHandler(surface.Err, surface.ErrTheme)))
+		slog.New(telemetryLogHandler(newRunLogHandler(surface.Err, surface.ErrTheme))))
 
 	started := time.Now()
 
