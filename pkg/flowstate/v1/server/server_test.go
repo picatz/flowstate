@@ -135,8 +135,7 @@ func TestFlowstateServer(t *testing.T) {
 	temporal, _ := newTemporalNamespace(t)
 	startWorker(t, temporal)
 
-	interceptor, err := validate.NewInterceptor()
-	require.NoError(t, err)
+	interceptor := validate.NewInterceptor()
 
 	otelInterceptor, err := otelconnect.NewInterceptor()
 	require.NoError(t, err)
