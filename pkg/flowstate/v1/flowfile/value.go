@@ -314,6 +314,17 @@ func (c *compiler) literal(n ast.Node, path string, r ref) *expr.Value {
 		}
 		return &expr.Value{Kind: &expr.Value_StringValue{StringValue: node.Value}}
 	case *ast.LiteralNode:
+		// A block scalar is a string like any other, so it carries the same rule:
+		// text that opens a fence is not literal text, whatever it is nested in.
+		// [compiler.scalarString] applies this where a block scalar is a value on
+		// its own; without it here, the same document with the block scalar one
+		// level down — a `note: |` inside a `json:` mapping — ships the `${...}`
+		// as characters and says nothing, which leaves the author no reason to
+		// doubt the file.
+		if err := fenceError(blockText(node)); err != nil {
+			c.report(spanOfNode(n), r, "%s", err)
+			return nil
+		}
 		return &expr.Value{Kind: &expr.Value_StringValue{StringValue: blockText(node)}}
 	case *ast.IntegerNode:
 		switch v := node.Value.(type) {

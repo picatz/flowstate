@@ -1699,20 +1699,25 @@ func (f *fixer) rootResponseScalar(node *ast.StringNode) {
 	}
 
 	line := f.line(span.Start.Line)
-	from := span.Start.Column - 1
-	if from < 0 || from+len(want) > len(line) || line[from:from+len(want)] != want {
+	from, located := byteOffsetOfColumn(line, span.Start.Column)
+	if !located {
+		return
+	}
+	if from+len(want) > len(line) || line[from:from+len(want)] != want {
 		// Quoted, most likely: `outputs: "${ … }"` puts the value one column right of
-		// where the scalar's own span starts. Searching for it is safe here because
-		// the text being replaced is the whole expression rather than a token that
-		// could appear twice.
-		at := strings.Index(line, want)
+		// where the scalar's own span starts. The search begins at the value's own
+		// column rather than at the start of the line, for the same reason
+		// [fixer.rootScalar] does: a line can hold more than one expression — a
+		// comment, or another value in flow style — and the whole point of having a
+		// position is not to rewrite one of those instead.
+		at := strings.Index(line[from:], want)
 		if at < 0 {
 			f.refuse(node,
 				"this value is not shaped so its response references can be rewritten safely; root them by hand")
 
 			return
 		}
-		from = at
+		from += at
 	}
 
 	f.lines[span.Start.Line-1] = line[:from] + replacement + line[from+len(want):]
@@ -1750,10 +1755,10 @@ func (f *fixer) rootScalar(node *ast.StringNode, steps map[string]bool) {
 	want, replacement := fenceOpen+inner+fenceClose, fenceOpen+rooted+fenceClose
 
 	// Located from the value's own column rather than by searching the line, so a
-	// fence written in a comment earlier on the same line cannot be the one
-	// rewritten.
-	from := span.Start.Column - 1
-	if from < 0 || from > len(line) {
+	// fence written earlier on the same line — in a comment, or in another value in
+	// flow style — cannot be the one rewritten.
+	from, located := byteOffsetOfColumn(line, span.Start.Column)
+	if !located {
 		return
 	}
 	at := strings.Index(line[from:], want)
@@ -1770,6 +1775,37 @@ func (f *fixer) rootScalar(node *ast.StringNode, steps map[string]bool) {
 		Line:    span.Start.Line,
 		Message: fmt.Sprintf("step references rooted under `%s`", v1.StepsRoot),
 	})
+}
+
+// byteOffsetOfColumn converts a 1-based code-point column into a byte index into
+// line, and reports whether the column is on the line at all.
+//
+// The parser counts a column in code points — `{p: "🎵é", q: "${a.b}"}` puts `q`'s
+// value at column 18 of a line 24 bytes long — while a Go string is indexed in
+// bytes. Subtracting one from the column and indexing with it is the same number
+// only for an ASCII line, and it is wrong in the direction that matters: the offset
+// lands *left* of the value, so a splice located "from the value's own column"
+// starts its search before the value, and an identical `${...}` written earlier on
+// the line is the one rewritten. That is precisely the case the column was being
+// used to rule out. See the same unit mismatch in [rootedUnder], and [markerSpan],
+// which has always counted runes.
+func byteOffsetOfColumn(line string, column int) (int, bool) {
+	if column < 1 {
+		return 0, false
+	}
+	remaining := column - 1
+	for offset := range line {
+		if remaining == 0 {
+			return offset, true
+		}
+		remaining--
+	}
+	if remaining == 0 {
+		// One past the last rune: the end of the line, which is where a span may
+		// legitimately start when nothing was written.
+		return len(line), true
+	}
+	return 0, false
 }
 
 // noteCommentsMentioningExpressions points at prose that talks about code the

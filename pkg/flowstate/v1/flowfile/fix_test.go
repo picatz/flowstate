@@ -1360,3 +1360,124 @@ steps:
 		})
 	}
 }
+
+// TestFixSplicesAtTheValueAndNotAnEarlierFenceOnTheLine is the second half of the
+// same unit mismatch, one layer out from the expression: the *line* is spliced at a
+// byte index taken from a column the parser counts in code points.
+//
+// Both splice sites locate the value by its own column, and both say why in a
+// comment: a line can hold more than one `${...}` — a trailing comment, or another
+// value written in flow style — and rewriting the wrong one is `flow fix` corrupting
+// a valid file, which is the one thing it must never do. With a multi-byte character
+// earlier on the line the offset lands short of the value, so the search starts
+// *before* it and an identical fence written earlier is the one that gets rewritten.
+// The undershoot is exactly the number of extra bytes, so it takes a handful of
+// four-byte characters to reach back over a neighbour.
+//
+// Each case pairs the file with its ASCII twin, so what is asserted is that a
+// non-ASCII character changes nothing about which value moves. Byte-for-byte,
+// because the whole question is which fence moved.
+func TestFixSplicesAtTheValueAndNotAnEarlierFenceOnTheLine(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name   string
+		source string
+		want   string
+	}{
+		{
+			// rootScalar. The decoy is an `outputs:` expression, which is a
+			// deferred input: the http task evaluates it against the response, so
+			// `a.said` there is not a step reference and must be left exactly as
+			// written. It was rewritten into `steps.a.said` — a name that scope
+			// does not have — while the value the rewriter was actually looking at
+			// kept its bare reference.
+			name: "a step reference beside a deferred output",
+			source: `edition: 2026.1
+name: t
+steps:
+  - id: a
+    log:
+      message: one
+  - id: post
+    http: {url: "https://example.com", outputs: {n🎵🎵🎵🎵🎵🎵🎵🎵🎵🎵: "${a.said}"}, headers: {H: "${a.said}"}}
+`,
+			want: `edition: v2026.2
+name: t
+steps:
+  - id: a
+    log:
+      message: one
+  - id: post
+    http: {url: "https://example.com", outputs: {n🎵🎵🎵🎵🎵🎵🎵🎵🎵🎵: "${a.said}"}, headers: {H: "${steps.a.said}"}}
+`,
+		},
+		{
+			name: "the same file in ASCII",
+			source: `edition: 2026.1
+name: t
+steps:
+  - id: a
+    log:
+      message: one
+  - id: post
+    http: {url: "https://example.com", outputs: {n: "${a.said}"}, headers: {H: "${a.said}"}}
+`,
+			want: `edition: v2026.2
+name: t
+steps:
+  - id: a
+    log:
+      message: one
+  - id: post
+    http: {url: "https://example.com", outputs: {n: "${a.said}"}, headers: {H: "${steps.a.said}"}}
+`,
+		},
+		{
+			// rootResponseScalar, whose fallback made the same mistake without any
+			// help from Unicode: when the check at the column failed — as it does
+			// for every quoted value, since the span starts at the quote — it
+			// searched the whole line from the start. The first `${body}` on the
+			// line is in `headers:`, where a response name is not in scope at all.
+			name: "a response reference beside a header holding the same text",
+			source: `edition: 2026.1
+name: t
+steps:
+  - id: post
+    http: {url: "https://example.com", headers: {H🎵🎵🎵🎵🎵🎵🎵🎵🎵🎵: "${body}"}, outputs: {n: "${body}"}}
+`,
+			want: `edition: v2026.2
+name: t
+steps:
+  - id: post
+    http: {url: "https://example.com", headers: {H🎵🎵🎵🎵🎵🎵🎵🎵🎵🎵: "${body}"}, outputs: {n: "${response.body}"}}
+`,
+		},
+		{
+			name: "the same response file in ASCII",
+			source: `edition: 2026.1
+name: t
+steps:
+  - id: post
+    http: {url: "https://example.com", headers: {H: "${body}"}, outputs: {n: "${body}"}}
+`,
+			want: `edition: v2026.2
+name: t
+steps:
+  - id: post
+    http: {url: "https://example.com", headers: {H: "${body}"}, outputs: {n: "${response.body}"}}
+`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			result, err := flowfile.Fix([]byte(test.source))
+			require.NoError(t, err)
+			require.Empty(t, result.Refusals)
+
+			assert.Equal(t, test.want, string(result.Source),
+				"the splice was located at a byte index taken from a code-point column, so a fence earlier on the line was rewritten instead of the value")
+		})
+	}
+}

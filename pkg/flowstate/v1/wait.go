@@ -277,8 +277,15 @@ func SignalNames(spec *Workflow) []string {
 // ValidateWait reports whether a wait can be executed as written.
 //
 // It covers what the schema's own rules cannot: that a timeout is meaningless on
-// a `sleep`, where the duration is already the bound. Reporting it is worth more
-// than ignoring it, because an author who wrote one believes it does something.
+// a `sleep`, where the duration is already the bound, and on a `wait_until`, where
+// the moment is. Reporting it is worth more than ignoring it, because an author who
+// wrote one believes it does something.
+//
+// A `wait_until` carrying one is not reachable from a Flowfile — the parser sets a
+// timeout only under `wait_for_signal:` — but a spec submitted to the Run RPC is
+// built by hand, and both drivers ignored the field there: `timed_out` stayed false
+// however long the wait ran. A caller who set it and branched on `timed_out` was
+// waiting on something that could never happen.
 func ValidateWait(wait *Wait) error {
 	if wait == nil {
 		return fmt.Errorf("wait is missing")
@@ -297,6 +304,9 @@ func ValidateWait(wait *Wait) error {
 	case *Wait_Until:
 		if kind.Until == nil {
 			return fmt.Errorf("wait_until has no expression")
+		}
+		if wait.GetTimeout() != nil {
+			return fmt.Errorf("wait_until has a timeout, which does nothing: the moment is already how long it waits")
 		}
 		return nil
 
