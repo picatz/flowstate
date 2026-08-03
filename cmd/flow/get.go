@@ -245,6 +245,21 @@ func pendingActivityLines(pending []*v1.PendingActivity, now time.Time) []string
 				line += fmt.Sprintf(" (next attempt in %s)", wait.Round(time.Second))
 			}
 		}
+
+		// What the attempt running right now last said it was doing, which is the
+		// difference between "this has been going for four minutes" and knowing
+		// which end of it is slow.
+		//
+		// Appended last, after the failure and the countdown, because those two
+		// describe attempts that are over and this describes the one that is not.
+		// Absent when the attempt is waiting to be retried rather than running,
+		// when it has not reported yet, or when the worker predates the field —
+		// none of which is "doing nothing", so nothing is printed rather than a
+		// word that would claim one of them.
+		if phase := activity.GetPhase(); phase != "" {
+			line += ", " + phase
+		}
+
 		lines = append(lines, line)
 	}
 

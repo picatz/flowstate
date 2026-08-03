@@ -45,6 +45,9 @@ func TestEveryPhaseReportedIsOneOfTheDeclaredOnes(t *testing.T) {
 
 	root := repoRoot(t)
 
+	// Which declared phases were seen at a call site, for the reverse check below.
+	reported := map[string]bool{}
+
 	var checked int
 	require.NoError(t, filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
@@ -87,6 +90,7 @@ func TestEveryPhaseReportedIsOneOfTheDeclaredOnes(t *testing.T) {
 			require.True(t, declared[name],
 				"%s reports %q, which is not one of the declared phases in progress.go",
 				path, name)
+			reported[name] = true
 
 			return true
 		})
@@ -99,6 +103,19 @@ func TestEveryPhaseReportedIsOneOfTheDeclaredOnes(t *testing.T) {
 	// was actually found.
 	require.GreaterOrEqual(t, checked, 2,
 		"no ReportProgress call was found in the tree, so this asserted nothing")
+
+	// And the other direction, which is the one that went wrong: every declared
+	// phase must be reported from somewhere. A phase nobody sets is a heartbeat
+	// carrying the empty string — cancellation still gets delivered, so nothing
+	// looks broken, and the diagnosis the phase was added for silently is not
+	// there. `PhaseCallingPlugin` shipped in exactly that state and was caught in
+	// review rather than by a test, which is what this is.
+	for name := range declared {
+		require.True(t, reported[name],
+			"phase %s is declared in progress.go and never reported anywhere; a phase "+
+				"nothing sets is a heartbeat carrying nothing, which looks identical to "+
+				"one that works", name)
+	}
 }
 
 // isReportProgress reports whether a call expression names ReportProgress, in

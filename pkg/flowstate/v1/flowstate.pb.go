@@ -3657,8 +3657,32 @@ type PendingActivity struct {
 	// NextAttemptScheduledTime is when the next attempt is due. Unset when an
 	// attempt is running right now.
 	NextAttemptScheduledTime *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=next_attempt_scheduled_time,json=nextAttemptScheduledTime,proto3" json:"next_attempt_scheduled_time,omitempty"`
-	unknownFields            protoimpl.UnknownFields
-	sizeCache                protoimpl.SizeCache
+	// Phase is what the running attempt last said it was doing — `requesting`
+	// while a request is out, `reading the response` once a peer has answered,
+	// `calling the plugin` around a plugin's RPC.
+	//
+	// This is the field that separates "this step has been running for four
+	// minutes" from knowing which end of it is slow, and the two phases an http
+	// request moves through fail differently: stuck requesting is a peer that has
+	// said nothing, stuck reading is a peer that answered and then stopped
+	// talking.
+	//
+	// Unset in three situations that a reader must not confuse with a fourth.
+	// The attempt may be between its start and its first report; it may be
+	// waiting to be retried, in which case nothing is running to have a phase at
+	// all; or the worker may be older than this field. None of those means "the
+	// step is doing nothing", and a renderer that printed a blank phase as an
+	// absence of work would be inventing one.
+	//
+	// The vocabulary is closed on purpose, and that is a security property rather
+	// than a style. This is projected from an activity heartbeat, heartbeats are
+	// written into workflow history, and history is durable and broadly readable —
+	// so a phase built from a task's inputs would be invariant 7's exact failure.
+	// The worker enforces it with a type that has no constructor; see
+	// `v1.Phase` and the AST check beside it.
+	Phase         string `protobuf:"bytes,4,opt,name=phase,proto3" json:"phase,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PendingActivity) Reset() {
@@ -3710,6 +3734,13 @@ func (x *PendingActivity) GetNextAttemptScheduledTime() *timestamppb.Timestamp {
 		return x.NextAttemptScheduledTime
 	}
 	return nil
+}
+
+func (x *PendingActivity) GetPhase() string {
+	if x != nil {
+		return x.Phase
+	}
+	return ""
 }
 
 // RunProgress is where a run has got to, answered by the running workflow itself.
@@ -7720,11 +7751,12 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"\vrun_outputs\x18\n" +
 	" \x01(\v2\x18.flowstate.v1.RunOutputsR\n" +
 	"runOutputsB\r\n" +
-	"\x04kind\x12\x05\xbaH\x02\b\x01\"\xa9\x01\n" +
+	"\x04kind\x12\x05\xbaH\x02\b\x01\"\xbf\x01\n" +
 	"\x0fPendingActivity\x12\x18\n" +
 	"\aattempt\x18\x01 \x01(\x05R\aattempt\x12!\n" +
 	"\flast_failure\x18\x02 \x01(\tR\vlastFailure\x12Y\n" +
-	"\x1bnext_attempt_scheduled_time\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\x18nextAttemptScheduledTime\"c\n" +
+	"\x1bnext_attempt_scheduled_time\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\x18nextAttemptScheduledTime\x12\x14\n" +
+	"\x05phase\x18\x04 \x01(\tR\x05phase\"c\n" +
 	"\vRunProgress\x12\x17\n" +
 	"\astep_id\x18\x01 \x01(\tR\x06stepId\x12\x12\n" +
 	"\x04path\x18\x02 \x03(\tR\x04path\x12'\n" +

@@ -16,9 +16,11 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/temporalclient"
+	commonpb "go.temporal.io/api/common/v1"
 	"go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/temporal"
 )
 
@@ -594,6 +596,31 @@ func failureMessage(
 	return status.String()
 }
 
+// heartbeatPhase reads the phase a running attempt last heartbeated.
+//
+// Empty for every shape of "nothing to say": an attempt that has not reported
+// yet, an attempt waiting to be retried and therefore not running at all, a
+// worker older than the field, or details this cannot decode. Those are different
+// facts, and none of them is "the step is doing nothing" — which is why the schema
+// says so on the field rather than leaving a renderer to guess.
+//
+// A decode failure is silence rather than an error, deliberately. This is an aside
+// about a running attempt on a response whose subject is the run: a `flow get`
+// that failed because a heartbeat payload was written by something encoding
+// differently would be refusing to answer a question it can answer.
+func heartbeatPhase(details *commonpb.Payloads) string {
+	if details == nil || len(details.GetPayloads()) == 0 {
+		return ""
+	}
+
+	var phase string
+	if err := converter.GetDefaultDataConverter().FromPayload(details.GetPayloads()[0], &phase); err != nil {
+		return ""
+	}
+
+	return phase
+}
+
 // getWorkflowExecutionStatus maps the Temporal workflow execution status to Flowstate's run response status.
 func getWorkflowExecutionStatus(resp *workflowservice.DescribeWorkflowExecutionResponse) v1.RunResponse_Status {
 	return runStatus(resp.GetWorkflowExecutionInfo().GetStatus())
@@ -734,6 +761,19 @@ func pendingActivities(resp *workflowservice.DescribeWorkflowExecutionResponse) 
 		if scheduled := info.GetScheduledTime(); scheduled != nil {
 			pending.NextAttemptScheduledTime = scheduled
 		}
+
+		// What the running attempt last said it was doing. Without this the phase a
+		// worker heartbeats reaches Temporal and stops there — readable with the
+		// `temporal` CLI and invisible through Flowstate, which is the same as not
+		// having it for anyone inside the tenancy boundary this service exists to
+		// enforce.
+		//
+		// A decode failure is silence rather than an error, and deliberately. This
+		// is an aside about a running attempt on a response whose subject is the
+		// run: a `flow get` that failed because a heartbeat payload was written by
+		// something that encodes differently would be refusing to answer a question
+		// it can answer.
+		pending.Phase = heartbeatPhase(info.GetHeartbeatDetails())
 
 		out = append(out, pending)
 	}

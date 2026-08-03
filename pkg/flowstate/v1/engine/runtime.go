@@ -37,6 +37,14 @@ func (a taskActivities) context(ctx context.Context, identity *v1.WorkloadIdenti
 	})
 }
 
+// Both heartbeat, exactly as the three in activities.go do, and that is not
+// symmetry for its own sake: `HeartbeatTimeout` is set on *every* activity's
+// options, so an entry point that does not heartbeat is one whose healthy
+// long-running requests are failed at thirty seconds and retried. These two are
+// precisely the paths a slow request is most likely to take — a task needing
+// authority is a task talking to something that authenticates it — so leaving them
+// out would have broken the case the timeout exists to serve.
+//
 // The two authorized entry points are also the two that know where they are.
 //
 // They are handed the step's id, so their spans carry it — which is the
@@ -50,6 +58,9 @@ func (a taskActivities) TaskAuthorized(ctx context.Context, task *v1.Task, ident
 	ctx, span := startTaskSpan(ctx, task, stepID)
 	defer span.End()
 
+	ctx, stop := withHeartbeat(ctx)
+	defer stop()
+
 	ctx = a.context(withActivityLogger(ctx), identity, workflowName, runID, stepID)
 	out, err := task.Eval(ctx, nil)
 	recordTaskOutcome(span, err)
@@ -60,6 +71,9 @@ func (a taskActivities) TaskAuthorized(ctx context.Context, task *v1.Task, ident
 func (a taskActivities) TaskInScopeAuthorized(ctx context.Context, task *v1.Task, scope *v1.Scope, identity *v1.WorkloadIdentity, workflowName, runID, stepID string) (*v1.Node_Outputs, error) {
 	ctx, span := startTaskSpan(ctx, task, stepID)
 	defer span.End()
+
+	ctx, stop := withHeartbeat(ctx)
+	defer stop()
 
 	ctx = a.context(withActivityLogger(ctx), identity, workflowName, runID, stepID)
 	out, err := task.EvalInScope(ctx, scope)
