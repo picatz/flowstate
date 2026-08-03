@@ -1,38 +1,50 @@
 # Flowstate — One-Week Plan (2026-08-03 → 2026-08-09): bugs, features, examples, tests, docs
 
-## Status: executed (2026-08-03)
+## Status: executed, then continued (2026-08-03)
 
-The must-land set and the Day 1–5 waves all shipped, as thirty commits on this
-branch — `git log 997fe32..68e648f` is the record, and each commit message names
-the item it lands. What the checklists below promise is done unless it appears in
-the ledger that follows; the workstream sections are kept as written so the plan
-and its execution can be compared.
+The week's plan shipped as PR #123 — thirty-one commits, each a green stopping
+point. The follow-on session then closed the three items #123 deferred, took
+staticcheck to zero, and cleared the dependency backlog. The workstream sections
+below are kept as written so the plan and its execution can be compared; this
+ledger is what actually happened.
 
-**Shipped**: Z1–Z11 (all eleven verified bugs, plus two found wider during the
-fix: the ASCII whole-line fallback in `rootResponseScalar`, and the cancelled
-local run that tolerated its way to success); G1 and G2 (corrections sweep, then
-`docs/reference/` generated and CI-pinned, with the env-var enumeration held to
-the tree by AST walk in both directions); A1–A5; B1–B3 (`inputs:`/`outputs:`
-end-to-end: schema, both drivers, CLI, MCP, two CI-run examples); C1–C3
-(versioning gate with `--allow-unversioned-interpreter`, the durable example
-harness forcing Continue-As-New over all 23 examples with exact driver
-agreement, nested secret references via `Value.Structure`); D1–D3 (client-side
-traces with flush on every exit path, the Temporal tracing interceptor and
-activity spans with containment tests, the observability lab); E1–E5 (LSP code
-actions and formatting, `flow fmt`, `flow compile` was NOT shipped — see
-deferred — `flow lsp --plugin-dir` was NOT shipped — see deferred, TUI live
-progress consumption shipped after the week, see E5); F1–F3 (`flowstate_run_local`,
-resources, client docs); three new fuzz targets; the runage clock-injection
-flake fix.
+**Shipped in #123**: Z1–Z11 (all eleven verified bugs, plus two found wider
+during the fix: the ASCII whole-line fallback in `rootResponseScalar`, and the
+cancelled local run that tolerated its way to success); G1 and G2 (corrections
+sweep, then `docs/reference/` generated and CI-pinned, with the env-var
+enumeration held to the tree by an AST walk in both directions); A1–A5; B1–B3
+(`inputs:`/`outputs:` end-to-end: schema, both drivers, CLI, MCP, two CI-run
+examples); C1–C3 (versioning gate with `--allow-unversioned-interpreter`, the
+durable example harness forcing Continue-As-New over all 23 examples with exact
+driver agreement, nested secret references via `Value.Structure`); D1–D3
+(client-side traces with flush on every exit path, the Temporal tracing
+interceptor and activity spans with containment tests, the observability lab);
+E1 and E2 (LSP code actions and formatting, `flow fmt`); F1–F3
+(`flowstate_run_local`, MCP resources, client docs); three new fuzz targets.
 
-**Deferred, with owners' notes in the ledger**: `flow compile` verb (E3), `flow
-lsp --plugin-dir` (E4) — squeezed out by the wave that shipped code actions and
-fmt; they are small, unblocked, and first in line next week. TUI live-progress
-consumption (E5) was on that list and has since landed; see E5 below. Schedules (the stretch) did not start. Everything in "Explicitly
-NOT this week" stayed not-this-week; written issues for the deferral list are
-still owed. Also owed from handoffs: collapsing `renderLiteral` onto an exported
-value-to-native conversion, and per-phase compile-span attributes if anyone
-wants them.
+**Shipped after it, as separate PRs**, closing everything #123 deferred:
+
+| PR | What |
+|---|---|
+| #129 | **E3** — `flow compile`, the verb for "what does this file become" |
+| #132 | **E4** — `flow lsp --plugin-dir`, opt-in plugin awareness at startup |
+| #131 | **E5** — the watch TUI consuming the progress the server already answered |
+| #130 | staticcheck to zero and made required, a day before its advisory window closed |
+| #127 | `actions/checkout` and `actions/setup-go`, across all five jobs rather than the three dependabot could see |
+| #128 | eleven module bumps, including the `connectrpc.com/validate` v0.6.0 break |
+
+Two Codex review findings on #123 were fixed before it merged: the MCP result cap
+was bypassable through a run's declared outputs (measured at 2 MB against a
+256 KiB bound), and `telemetryConfigured` named two of the three endpoint
+variables the OTLP exporters read, so a traces-only deployment got silence.
+
+**Still open**, now tracked as issues rather than only here: #133 (Update, child
+workflows, heartbeats, per-step queues and priorities), #134 (the two spellings
+of caller identity, the three shapes of a task), #135 (saga compensation —
+unblocked now that `inputs:`/`outputs:` exist and probably the highest-value item
+left — streaming Watch, Nexus, remote plugin distribution, `flow test`, the
+`Value`/literal TODO, tree-sitter grammar, Windows CI, and the smaller carried
+items).
 
 ## Context
 
