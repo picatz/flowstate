@@ -86,7 +86,7 @@ func runGet(cmd *cobra.Command, args []string) error {
 	// the other.
 	fmt.Fprintf(surface.Err, "%s workflow %s run %s%s%s\n",
 		surface.ErrTheme.Pill(statusTone(msg.GetStatus()), statusLabel(msg.GetStatus())),
-		msg.GetWorkflowId(), msg.GetRunId(), runAge(msg),
+		msg.GetWorkflowId(), msg.GetRunId(), runAge(msg, time.Now()),
 		runPosition(surface.ErrTheme, msg.GetProgress()))
 
 	// The why beneath the where. Position says which step a running run is on;
@@ -138,7 +138,7 @@ func runGet(cmd *cobra.Command, args []string) error {
 //
 // Empty when there is no start time, which is what an older server answers. A CLI that
 // printed "0s" there would be inventing a fact about a run it was told nothing about.
-func runAge(msg *v1.GetResponse) string {
+func runAge(msg *v1.GetResponse, now time.Time) string {
 	if msg.GetStartTime() == nil {
 		return ""
 	}
@@ -148,7 +148,10 @@ func runAge(msg *v1.GetResponse) string {
 		return fmt.Sprintf(" (took %s)", roundedDuration(closed.AsTime().Sub(started)))
 	}
 
-	return fmt.Sprintf(" (running for %s)", roundedDuration(time.Since(started)))
+	// The caller supplies the clock rather than this reading it, because a
+	// running run's age is measured against *some* moment, and a test that
+	// cannot say which moment can only assert it within a racy window.
+	return fmt.Sprintf(" (running for %s)", roundedDuration(now.Sub(started)))
 }
 
 // roundedDuration renders a duration at a precision somebody reads rather than
