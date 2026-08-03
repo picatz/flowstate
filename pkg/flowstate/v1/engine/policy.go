@@ -37,10 +37,41 @@ const (
 // fires precisely when workers are saturated or briefly unavailable — turning a
 // recoverable capacity problem into a failed workflow. The two timeouts set here
 // bound the work itself, which is what callers actually care about.
+//
+// # WaitForCancellation, and why it is not a preference
+//
+// Temporal's default is false, which means an activity future resolves as soon as
+// cancellation is *requested* rather than when the activity has stopped. The
+// workflow then believes the step is over while the worker is still running it.
+//
+// That is wrong on its own terms — a run reporting CANCELED while its side effects
+// are still happening is the same class of lie as a run reporting cleanup it never
+// did — and it is actively dangerous for a saga. Compensation for a cancelled run
+// starts the moment the forward work reports cancellation, so with this false the
+// undo races the step it is undoing: `delete` can be issued, complete, and be
+// reported as "undid" while the `create` it was undoing is still in flight and
+// about to succeed. The summary then says the resource came off and the resource
+// is allocated, which is worse than saying nothing at all, because it is the
+// sentence that makes somebody stop looking.
+//
+// So the run waits for what it started. If the activity honours cancellation it
+// stops promptly; if it ignores it, the wait is bounded by the timeouts above and
+// `flow terminate` is the verb for that case — which is precisely what the two
+// verbs have always meant, and what `flow cancel`'s help says.
+//
+// An activity that finishes *successfully* after the cancellation arrives is
+// reported as having succeeded, which is the outcome a saga wants: the step
+// registers its compensation, and the compensation then takes it back. The
+// alternative — discarding a completion that already happened — would leave the
+// effect in the world with nothing registered to undo it.
+//
+// Like NonRetryableErrorTypes below, this is never overridable by a step's own
+// policy. Whether a workload's effects have actually stopped is not a preference.
 func defaultActivityOptions() workflow.ActivityOptions {
 	return workflow.ActivityOptions{
 		StartToCloseTimeout:    defaultStartToCloseTimeout,
 		ScheduleToCloseTimeout: defaultScheduleToCloseTimeout,
+		WaitForCancellation:    true,
 		RetryPolicy: &temporal.RetryPolicy{
 			InitialInterval:        defaultRetryInitialInterval,
 			BackoffCoefficient:     defaultRetryBackoff,
@@ -59,6 +90,12 @@ func defaultActivityOptions() workflow.ActivityOptions {
 // list is never overridable: whether a failure *can* succeed on another attempt
 // is a property of the failure, not a preference, and letting a workflow declare
 // otherwise would mean retrying operations known to be unrepeatable.
+//
+// `WaitForCancellation` is not overridable either, and for the same shape of
+// reason — whether a step's effects have actually stopped when the run says they
+// have is not something a file gets an opinion about. Nothing below touches it;
+// this says so, because "not overridable" being true only by omission is how it
+// stops being true.
 func activityOptionsFor(policy *v1.StepPolicy) workflow.ActivityOptions {
 	opts := defaultActivityOptions()
 	if policy == nil {

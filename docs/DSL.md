@@ -2122,6 +2122,22 @@ in fact never tried. The compensations therefore run on
 `workflow.NewDisconnectedContext`, and on `context.WithoutCancel` in the local
 driver — the same idea in each driver's own vocabulary.
 
+**It waits for the step it is undoing.** Temporal's default is to resolve an
+activity as soon as cancellation is *requested*, not when the activity has
+stopped — which would have compensation race the forward work it is taking back.
+A `delete` could be issued, complete, and be reported as "undid" while the
+`create` it undid was still in flight and about to succeed: a summary saying the
+resource came off, and a resource that is still allocated. So a cancelled run
+waits for what it started, bounded by the step's own timeouts. A step that
+finishes *successfully* after the cancellation arrives counts as having
+succeeded, registers its compensation, and is then taken back — which is the
+outcome a saga wants, because the alternative leaves the effect in the world with
+nothing registered to undo it.
+
+The practical consequence is that `flow cancel` on a run mid-step is not
+instantaneous. That is what cooperative cancellation means, and `flow terminate`
+is the verb for when it is not enough.
+
 **It is bounded by time.** A run that has been told to stop must not then keep
 working indefinitely, and somebody is waiting. `v1.UndoBudget` — two minutes — is
 the whole budget for the compensations together, not a quota per step: one that
