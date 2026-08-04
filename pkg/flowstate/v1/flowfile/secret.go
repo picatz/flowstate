@@ -54,6 +54,15 @@ const (
 	// secretNotEvaluable is a field the workflow evaluates itself: a step's
 	// condition, or a loop's items.
 	secretNotEvaluable
+
+	// A call's `with:` has no placement of its own here, unlike every other
+	// position a reference is refused from: [compiler.callArgumentValue] checks
+	// for a marker — bare or nested — before ever reaching [compiler.value],
+	// so this switch never sees one from that position to refuse. See
+	// [notAcrossCallHelp] for the message, and callArgumentValue for why the
+	// check has to happen before the whole-value/nested distinction this type
+	// exists to draw: an argument is never "the whole value of a task input"
+	// in the first place, so none of the other reasons describe it honestly.
 )
 
 // Why a reference can be out of place. Each says what is actually true of the
@@ -96,6 +105,20 @@ const (
 
 	malformedCallHelp = "secret() takes one reference, written out, like ${secret('env:API_KEY')}; " +
 		"a computed reference cannot be checked when the workflow is compiled"
+
+	// notAcrossCallHelp is deliberately specific rather than a reuse of
+	// notEvaluableHelp: `with:` is not a field the workflow evaluates for its
+	// own purposes the way a condition is, so the generic reason would be true
+	// of the wrong thing. What is actually true here is a boundary — an
+	// argument is resolved in the caller's scope and crosses as an ordinary
+	// value, and a reference is not one: it names something that does not
+	// exist until a worker resolves it. Refused rather than modeled, because
+	// the alternative needs a declared input to mean "a string, or a reference
+	// that resolves to one" — a type nobody has designed — while refusing costs
+	// nothing a workflow could not already do: the callee's own task can write
+	// ${secret(...)} directly, in the file that actually uses it.
+	notAcrossCallHelp = "a secret reference cannot cross a call boundary; pass it to the task that " +
+		"needs it inside the callee, or declare the input there"
 )
 
 // secret compiles a ${secret(...)} marker into a reference, or reports why it

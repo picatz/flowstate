@@ -1,6 +1,8 @@
 package lsp
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -147,8 +149,38 @@ func TestDSLKeysMatchTheDSL(t *testing.T) {
 					Timeout: durationpb.New(3_600_000_000_000),
 				}},
 			},
+			{
+				// `call:` and `with:`, so this fixture reaches both keys. The
+				// callee is written to a real file below rather than only held in
+				// memory, because the round trip this test performs — Marshal,
+				// then re-parse the result — has to resolve the path Marshal
+				// writes back out, the same as it would for an author's file.
+				Id: "provision",
+				Kind: &v1.Node_Call{Call: &v1.Call{
+					Workflow: &v1.Workflow{
+						Name:    "callee",
+						Profile: v1.CurrentProfile,
+						DeclaredInputs: []*v1.InputDeclaration{
+							{Name: "who", Type: v1.InputDeclaration_TYPE_STRING, Required: true},
+						},
+						Steps: []*v1.Node{{Id: "greet", Kind: &v1.Node_Task{Task: &v1.Task{Name: "log"}}}},
+					},
+					Source:    "./callee.yaml",
+					Arguments: map[string]*v1.Value{"who": v1.NewValue("world")},
+				}},
+			},
 		},
 	}
+
+	// The callee `call:` names, on disk — Marshal writes back the path an author
+	// wrote, never the embedded copy (see marshal.go), so re-parsing that output
+	// needs a real file there to resolve it against, the same as it would for a
+	// Flowfile someone actually wrote.
+	dir := t.TempDir()
+	calleeSrc, err := flowfile.Marshal(workflow.GetSteps()[len(workflow.GetSteps())-1].GetCall().GetWorkflow())
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "callee.yaml"), calleeSrc, 0o644))
+	path := filepath.Join(dir, "workflow.yaml")
 
 	rendered, err := flowfile.Marshal(workflow)
 	require.NoError(t, err, "the DSL round trip must work for this test to mean anything")
@@ -168,7 +200,8 @@ func TestDSLKeysMatchTheDSL(t *testing.T) {
 	// accepting `edition:` fails here, which is exactly the service the stale check
 	// performs for every other key.
 	source := string(rendered)
-	_, err = flowfile.Unmarshal([]byte(source))
+	require.NoError(t, os.WriteFile(path, rendered, 0o644))
+	_, _, err = flowfile.ParseAt([]byte(source), path)
 	require.NoError(t, err, "the DSL must accept the document this table is compared against:\n%s", source)
 
 	// The keys the DSL actually writes, as a set: the same key legitimately appears
@@ -218,6 +251,16 @@ func TestDSLKeysMatchTheDSL(t *testing.T) {
 	for _, node := range workflow.GetSteps() {
 		for name := range node.GetVars() {
 			authored[name] = true
+		}
+		// A call's arguments are author-named the same way `vars:` entries are —
+		// `who:` here is a name `with:` binds, not a key the grammar has an
+		// opinion about — and so is the callee's own declared input of the same
+		// name, one level down.
+		for name := range node.GetCall().GetArguments() {
+			authored[name] = true
+		}
+		for _, declaration := range node.GetCall().GetWorkflow().GetDeclaredInputs() {
+			authored[declaration.GetName()] = true
 		}
 	}
 
@@ -1241,6 +1284,10 @@ steps:
     wait_for_signal:
       name: deploy-approved
       timeout: 24h
+  - id: provision
+    call: ./callee.yaml
+    with:
+      tenant: acme
 `
 	c := newClient(t)
 	c.initialize()

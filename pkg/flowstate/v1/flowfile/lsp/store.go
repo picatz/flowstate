@@ -1,6 +1,8 @@
 package lsp
 
 import (
+	"net/url"
+	"strings"
 	"sync"
 
 	"github.com/sourcegraph/go-lsp"
@@ -47,6 +49,76 @@ type document struct {
 	// tooLarge reports that the text exceeded maxDocumentBytes and was not
 	// parsed at all.
 	tooLarge bool
+}
+
+// filesystemPath returns doc's location as a path a `call:` step can be
+// resolved against, when its URI names one.
+//
+// Only the `file://` scheme has one: an untitled buffer, or a document an
+// extension synthesizes over some other scheme, has no directory a relative
+// path could mean anything against, and [flowfile.ValidateSourceAt] refuses a
+// `call:` in that case with a diagnostic saying so — the same answer every
+// other bytes-only caller of this package gives.
+//
+// Parsed as a URI rather than trimmed as a prefix, because a `file://` URI is
+// not a path with a scheme stapled on the front: a real editor sends one
+// percent-encoded — a space as `%20`, a `#` in a filename as `%23`, a
+// non-ASCII character as its UTF-8 percent escapes — and trimming the prefix
+// leaves every one of those still escaped, so a `call:` step beside a file
+// whose name needs any of them resolves against a path that does not exist.
+// An authority is legal too: `file://host/path` names a UNC-style location,
+// and Windows spells a drive letter either `file:///C:/path` (the drive
+// after an empty authority, with the leading slash net/url keeps) or, from
+// some clients, `file://C:/path` (the drive letter parsed as the authority).
+// Both are handled below; a genuine remote authority — anything else — is
+// refused the same as no path at all, since nothing here can read it.
+func (doc *document) filesystemPath() (string, bool) {
+	u, err := url.Parse(string(doc.uri))
+	if err != nil || u.Scheme != "file" {
+		return "", false
+	}
+
+	host := u.Host
+	path := u.Path
+
+	// `file://C:/path`: net/url reads everything up to the next `/` as the
+	// authority, and a single letter followed by `:` is not a host anything
+	// speaks — it is a drive letter LSP clients sometimes emit this way.
+	if isWindowsDrive(host) {
+		return host + path, true
+	}
+
+	// An empty authority is the ordinary form; `localhost` names this
+	// machine explicitly, which means the same thing. Anything else is a
+	// real remote authority — a UNC share, another machine entirely — which
+	// this process has no path to open regardless of what it decodes to.
+	if host != "" && !strings.EqualFold(host, "localhost") {
+		return "", false
+	}
+	if path == "" {
+		return "", false
+	}
+
+	// `file:///C:/path`: the authority is empty (three slashes), and the
+	// drive letter is the first path segment with net/url's leading slash
+	// still in front of it — `/C:/path` rather than the `C:/path` a Windows
+	// API takes.
+	if len(path) >= 3 && isWindowsDrive(path[1:3]) {
+		path = path[1:]
+	}
+
+	return path, true
+}
+
+// isWindowsDrive reports whether s is a bare drive letter and colon, `C:` —
+// the whole of what distinguishes a Windows drive from an ordinary URI
+// authority or path segment, in either position `filesystemPath` meets one.
+func isWindowsDrive(s string) bool {
+	if len(s) != 2 || s[1] != ':' {
+		return false
+	}
+	c := s[0]
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
 }
 
 // newDocument analyzes text once, so that each request reads results rather than

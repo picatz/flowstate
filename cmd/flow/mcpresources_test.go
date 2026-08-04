@@ -195,6 +195,22 @@ func TestTheCatalogResourceIsTheCatalogTheToolAnswers(t *testing.T) {
 // no longer validates would be a resource teaching a form `flow validate`
 // refuses — the most expensive kind of stale documentation, because the agent
 // reading it trusts it more than its own draft.
+// examplesNeedingAFile names an example whose `workflow.yaml` alone cannot
+// compile, because it names a sibling file by a relative path and this
+// resource serves exactly one document's bytes.
+//
+// A `call:` step is resolved at compile time against the directory of the file
+// that names it — see `v1.Call`'s doc on why filesystem access stays at the
+// client compiling a Flowfile — and an MCP resource has no such directory: it
+// is embedded content read as bytes, the same boundary [parseFlowfileSource]
+// documents for submitted source. `call-a-workflow` is the first example this
+// applies to, and it is exercised in full — both files, compiled together —
+// by the flowfile and examples test suites, which read it from the real
+// filesystem the resource embedding is built from.
+var examplesNeedingAFile = map[string]bool{
+	"call-a-workflow": true,
+}
+
 func TestEveryExampleResourceIsAValidFlowfile(t *testing.T) {
 	t.Parallel()
 
@@ -204,6 +220,10 @@ func TestEveryExampleResourceIsAValidFlowfile(t *testing.T) {
 	require.NotEmpty(t, names)
 
 	for _, name := range names {
+		if examplesNeedingAFile[name] {
+			continue
+		}
+
 		result, err := session.ReadResource(t.Context(), &mcp.ReadResourceParams{
 			URI: mcpExamplePrefix + name,
 		})

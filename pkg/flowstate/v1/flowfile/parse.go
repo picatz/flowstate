@@ -3,6 +3,7 @@ package flowfile
 import (
 	"fmt"
 	"maps"
+	"os"
 	"slices"
 	"strings"
 
@@ -61,11 +62,18 @@ var (
 
 	// stepPropertyKeys say which step this is, how it runs, and what it is for —
 	// everything except what work it does.
-	stepPropertyKeys = []string{"id", "description", "if", "vars", "timeout", "retry", "continue_on_error", "undo"}
+	//
+	// `with` is here rather than in nodeKindKeys because it is not itself a kind
+	// of work — `call:` is — in the same sense `steps:` is not what makes a
+	// `for_each` a loop. It binds the callee's declared inputs, and only means
+	// anything beside `call:`; [validate.go] is where a `with:` on any other kind
+	// of step is refused, since that is a property of the *file* and belongs
+	// there rather than here.
+	stepPropertyKeys = []string{"id", "description", "if", "vars", "timeout", "retry", "continue_on_error", "undo", "with"}
 
 	// nodeKindKeys are the kinds of work that are not a task, and so name a node
 	// kind in the schema rather than anything in the registry.
-	nodeKindKeys = []string{"for_each", "parallel", "sleep", "wait_until", "wait_for_signal"}
+	nodeKindKeys = []string{"for_each", "parallel", "sleep", "wait_until", "wait_for_signal", "call"}
 
 	retryKeys   = []string{"attempts", "interval", "backoff", "max_interval"}
 	forEachKeys = []string{"items", "as", "max_parallel", "steps"}
@@ -271,7 +279,48 @@ func StepTaskKeys(keys []string) []string {
 // caller can report all of them at once. A failure to parse the YAML itself is
 // returned as the parser's own error, which already carries a position and an
 // excerpt of the offending line.
+//
+// Compiled from bytes with no file identity, so a `call:` step in this file
+// cannot be resolved — there is no directory to resolve it relative to — and is
+// refused with a diagnostic saying so. Use [ParseFile] to compile a file that
+// may contain one.
 func Parse(data []byte) (*v1.Workflow, *Positions, error) {
+	return parse(data, "", nil, new(int))
+}
+
+// ParseFile compiles a Flowfile read from disk, exactly as [Parse] does, but
+// additionally resolves any `call:` step relative to path's own directory.
+//
+// A call is the only part of the grammar that reads another file, and doing so
+// here — at whichever client is compiling this one — is the point: see the
+// package doc on `v1.Call` for why filesystem access belongs at the edge that
+// already has an author's files, and never at a worker.
+func ParseFile(path string) (*v1.Workflow, *Positions, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	return parse(data, path, nil, new(int))
+}
+
+// ParseAt is [Parse] for bytes that did not come from path but should be
+// treated as if they were about to be written there — an editor's in-memory
+// buffer for a file that may hold unsaved changes, most notably. A `call:` step
+// resolves relative to path's directory exactly as it would under [ParseFile];
+// what differs is that data, not whatever path currently holds on disk, is
+// compiled as this file's own content. A callee a call reaches is still read
+// from disk, because a callee is a *different* file's content and this
+// function has no in-memory version of it to prefer.
+func ParseAt(data []byte, path string) (*v1.Workflow, *Positions, error) {
+	return parse(data, path, nil, new(int))
+}
+
+// parse is the whole of what both [Parse] and [ParseFile] do, plus what a
+// nested call needs and an ordinary file never supplies: the chain of files
+// already being compiled, for cycle detection across files, and the running
+// total of nodes a call has compiled so far, shared across the whole tree —
+// see call.go.
+func parse(data []byte, path string, callStack []string, callBudget *int) (*v1.Workflow, *Positions, error) {
 	if len(data) > maxBytes {
 		return nil, nil, Diagnostics{{
 			Line:   1,
@@ -287,7 +336,13 @@ func Parse(data []byte) (*v1.Workflow, *Positions, error) {
 		return nil, nil, err
 	}
 
-	c := &compiler{pos: newPositions(), anchors: make(map[string]ast.Node)}
+	c := &compiler{
+		pos:        newPositions(),
+		anchors:    make(map[string]ast.Node),
+		filePath:   path,
+		callStack:  callStack,
+		callBudget: callBudget,
+	}
 	workflow := c.compile(file)
 	if len(c.diags) > 0 {
 		return nil, nil, c.sorted()
@@ -308,6 +363,22 @@ type compiler struct {
 	depth      int
 	nodes      int
 	overflowed bool
+
+	// filePath is this file's own location, for resolving a `call:` step's path
+	// relative to its directory. Empty when this file was compiled from bytes
+	// with no path — see [Parse] — in which case a `call:` here is refused.
+	filePath string
+
+	// callStack is the chain of files already being compiled to reach this one,
+	// outermost first, not including this file itself. Checked in call.go
+	// against the file a `call:` step would read, so a cycle across files is
+	// caught the same way an anchor referring to its own value already is.
+	callStack []string
+
+	// callBudget is the total compiled node count across every callee resolved
+	// so far in this file's whole call tree, shared by pointer with every
+	// nested compile — see [maxCallExpansionNodes].
+	callBudget *int
 }
 
 // enter accounts for descending into one more value, and reports whether the
@@ -1043,6 +1114,11 @@ func (c *compiler) step(n ast.Node, path string) *v1.Node {
 			if wait := c.waitForSignal(kind.value, kindPath, r); wait != nil {
 				step.Kind = &v1.Node_Wait{Wait: wait}
 			}
+		case "call":
+			withField, hasWith := fields.get("with")
+			if call := c.call(kind.value, path, kindPath, r, withField, hasWith); call != nil {
+				step.Kind = &v1.Node_Call{Call: call}
+			}
 		default:
 			// A task: the key is its name, the value is its inputs. That is the
 			// whole of the flattening — what used to be three levels of scaffolding
@@ -1053,6 +1129,19 @@ func (c *compiler) step(n ast.Node, path string) *v1.Node {
 		c.report(spanOfNode(kinds[1].key), r,
 			"has both %s and %s; a step does exactly one kind of work, so split it into two steps",
 			kinds[0].name, kinds[1].name)
+	}
+
+	// `with:` binds a callee's declared inputs, so it means nothing beside any
+	// other kind of work — the same way `steps:` means nothing beside a task.
+	// Reported here rather than silently accepted, for the reason every unknown
+	// or misplaced key is: an author who moved a call's arguments onto some
+	// other step gets no signal that they no longer bind anything.
+	if len(kinds) != 1 || kinds[0].name != "call" {
+		if f, found := fields.get("with"); found {
+			c.report(spanOfNode(f.key), r,
+				"`with:` binds a called workflow's declared inputs and is only meaningful "+
+					"beside `call:`, which this step does not have")
+		}
 	}
 
 	if f, found := fields.get("if"); found {

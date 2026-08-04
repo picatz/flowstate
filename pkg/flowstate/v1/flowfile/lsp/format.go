@@ -3,6 +3,7 @@ package lsp
 import (
 	"github.com/sourcegraph/go-lsp"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
@@ -25,7 +26,15 @@ import (
 // real answer rather than being unable to tell "nothing to change" from
 // "couldn't tell".
 func formatEdits(doc *document) []lsp.TextEdit {
-	workflow, err := flowfile.Unmarshal([]byte(doc.text))
+	var (
+		workflow *v1.Workflow
+		err      error
+	)
+	if path, ok := doc.filesystemPath(); ok {
+		workflow, _, err = flowfile.ParseAt([]byte(doc.text), path)
+	} else {
+		workflow, err = flowfile.Unmarshal([]byte(doc.text))
+	}
 	if err != nil {
 		return nil
 	}

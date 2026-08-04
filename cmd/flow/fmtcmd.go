@@ -220,7 +220,10 @@ func fmtOne(out, reports io.Writer, theme ui.Theme, path string, opts fmtOptions
 		return fmtOutcome{}, fmt.Errorf("error reading %s: %w", path, err)
 	}
 
-	workflow, err := flowfile.Unmarshal(data)
+	// File-aware, so a `call:` step resolves relative to this file's own
+	// directory rather than being refused for having no location to resolve
+	// against.
+	workflow, _, err := flowfile.ParseFile(path)
 	if err != nil {
 		// A file that does not compile has no workflow for Marshal to render,
 		// so there is nothing safe to write. Reported and left alone, the same

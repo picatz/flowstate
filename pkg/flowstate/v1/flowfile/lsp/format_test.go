@@ -134,12 +134,21 @@ func TestFormattingRoundTripsExamples(t *testing.T) {
 			t.Parallel()
 
 			data := readWorkflowFile(t, path)
-			workflow, err := flowfile.Unmarshal(data)
+			// The real, absolute path rather than a synthetic one: `call-a-
+			// workflow` names a sibling file relative to its own directory, and a
+			// URI that does not correspond to where the file actually lives would
+			// resolve that path against nothing. flowfile.ParseFile is what `flow
+			// validate` and `flow fmt` both compile the example through, so want
+			// is computed the same way this server's own path-aware branch
+			// computes it.
+			abs, err := filepath.Abs(path)
+			require.NoError(t, err)
+			workflow, _, err := flowfile.ParseFile(abs)
 			require.NoError(t, err)
 			want, err := flowfile.Marshal(workflow)
 			require.NoError(t, err)
 
-			uri := "file:///" + name + "/workflow.yaml"
+			uri := "file://" + abs
 			c := newClient(t)
 			c.initialize()
 			c.open(uri, string(data))

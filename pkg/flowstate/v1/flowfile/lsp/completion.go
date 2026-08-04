@@ -124,6 +124,9 @@ var dslKeys = map[string][]dslKey{
 		{name: "wait_for_signal", detail: "string or map", docs: "Wait for a named signal, which is how a human approval reaches a workload. " +
 			"Write `wait_for_signal: deploy-approved`, or a mapping with `name:` and `timeout:`. " +
 			"What the sender sent becomes this step's outputs. " + oneStepKind},
+		{name: "call", detail: "string", docs: "Run another Flowfile as a step, resolved relative to *this file's* own directory at compile time. " + oneStepKind + "\n\n" +
+			"The callee runs isolated: its steps see only its bound arguments (`with:`) and the profile — not this file's steps or `vars:`. " +
+			"What it declares in its own `outputs:` comes back under this step's id, the way a task's would."},
 		{name: "if", detail: "expression", docs: "A condition deciding whether the step runs, written as `${...}`. A step that is skipped produces no outputs."},
 		{name: "vars", detail: "map", docs: "Names values for this step, read *bare*: `${modified}`.\n\n" +
 			"Bare rather than rooted because these are author-chosen and lexically local — the same standing as the name a loop binds — where the workflow's `vars:` are ambient and so are rooted. " +
@@ -141,6 +144,9 @@ var dslKeys = map[string][]dslKey{
 			"Its inputs are resolved the moment the step succeeds, in that step's scope with its own outputs added — so `${" + v1.StepsRoot + ".<this step>.<output>}` is the reference to use, and it is the one place a step may name itself. " +
 			"A run that failed and compensated still reports FAILED; what it undid is in the failure.\n\n" +
 			"Top-level task steps only in this version. Inside a `for_each` body or a `parallel:` branch it is refused, because the order work registers in there is not the same under `flow run local` as it is durably."},
+		{name: "with", detail: "map", docs: "Arguments binding the callee's declared `inputs:`, resolved in *this* file's scope — the same scope a task's inputs are resolved in. " +
+			"Only meaningful beside `call:`. Checked against what the callee declares when this file is compiled: a missing required input or an argument it does not declare is refused here, not at run time.\n\n" +
+			"A secret reference may not be bound through `with:` — pass it to the task that needs it inside the callee instead."},
 	},
 	"wait_for_signal": {
 		{name: "name", detail: "string", docs: "The signal this step waits for, and what a sender addresses with `flow signal <workflow-id> <name>`."},

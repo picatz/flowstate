@@ -23,7 +23,25 @@ type Case struct {
 	// about something else, which is every case that predates `inputs:`.
 	Inputs map[string]*v1.Value
 	// ExpectedOutputs is the expected outputs of the workflow steps after execution.
+	//
+	// Ignored when ExpectFailure is set — a case whose point is that the *run*
+	// fails outright (rather than a step's failure being tolerated into an
+	// `error` output) has no outputs to compare.
 	ExpectedOutputs *v1.Workflow_StepOutputs
+
+	// ExpectFailure marks a case whose workflow must not complete at all — a
+	// depth refused, a placement the engine cannot honour — as distinct from a
+	// step failure tolerated via `continue_on_error`, which is an ordinary case
+	// asserted through ExpectedOutputs like any other.
+	ExpectFailure bool
+
+	// ExpectedOutputsPredicate checks a run's outputs when the exact value is
+	// not what is under test — a run-time CEL error's precise wording, say,
+	// which is a property of the expression evaluator rather than of the two
+	// drivers agreeing with each other. Takes priority over ExpectedOutputs
+	// when set, and is only ever compared against outputs from a run that
+	// succeeded (ExpectFailure and this are mutually exclusive).
+	ExpectedOutputsPredicate func(*v1.Workflow_StepOutputs) bool
 }
 
 // NewHTTPServer starts a server returning deterministic responses for the http

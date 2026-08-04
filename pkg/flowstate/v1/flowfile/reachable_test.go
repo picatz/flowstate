@@ -1,7 +1,6 @@
 package flowfile_test
 
 import (
-	"os"
 	"path/filepath"
 	"sort"
 	"testing"
@@ -172,12 +171,7 @@ func forEachExampleNode(t *testing.T, visit func(example string, node *v1.Node))
 	}
 
 	for _, path := range paths {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("reading %s: %v", path, err)
-		}
-
-		workflow, err := flowfile.Unmarshal(data)
+		workflow, _, err := flowfile.ParseFile(path)
 		if err != nil {
 			t.Fatalf("%s does not compile: %v", path, err)
 		}
