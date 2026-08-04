@@ -88,5 +88,5 @@ needs a file saying what it requires.
 
 The examples marked as needing network reach `httpbin.org`. They will fail without internet
 access, and the `http` task's egress policy denies internal addresses by default — see
-[Governed network access](../README.md#governed-network-access) if you point one at a
+[Governed network access](../README.md#what-it-can-do) if you point one at a
 service on `localhost`.
