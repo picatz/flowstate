@@ -152,11 +152,17 @@ default (unset) case the file actually runs with.
 `username` is validated like every other input: non-empty when set (an
 explicitly empty string is rejected rather than silently treated the same
 as unset - see `resolveUsername`), bounded in length, and refused outright
-if it contains a control character, a bare `CR`, or a bare `LF` - a
-username reaches an HTTP `Authorization` header verbatim
-(`net/http.Request.SetBasicAuth`), and a `CR`/`LF` there could inject a
-second header or split the request into something else entirely.
-Refused, never stripped, for the same reason every other attacker-adjacent
+if it contains a `:`, a control character, a bare `CR`, or a bare `LF`. The
+colon rule is not stylistic: `net/http.Request.SetBasicAuth` builds
+`"username:password"` and Basic-auth parsing splits on the *first* colon,
+so a colon in `username` would silently absorb part of `token` into what
+the server reads as the password instead - a different, wrong credential
+pair, not a syntax error. `net/http`'s own `SetBasicAuth` documentation
+states the constraint directly. A `CR`/`LF` is refused for the separate
+reason that a username reaches an HTTP `Authorization` header verbatim,
+where either could inject a second header or split the request into
+something else entirely. Refused, never stripped, for the same reason
+every other attacker-adjacent
 field in this plugin is (see `validateTreePath`'s own doc comment) -
 proven to actually refuse, not merely declared to: see "What was proven to
 bite," below.
@@ -413,6 +419,40 @@ assertion - not only the ones CLAUDE.md's own house gate demanded up front:
    what `githttp.BasicAuth` was merely constructed with - for both the
    default and an overridden username, on both the read path
    (`listRemoteRefs`) and the write path's own clone step (`cloneBounded`).
+8. **The username colon refusal**, found in review (Codex, PR #186) against
+   this file's own *previous* doc comment, which reasoned that a colon in
+   `username` was "the password's problem, not this field's" - wrong: since
+   `net/http.Request.SetBasicAuth` builds `"username:password"` and
+   Basic-auth parsing splits on the *first* colon it finds, a username of
+   `"alice:admin"` paired with token `"secret"` arrives at a real server as
+   username `"alice"`, password `"admin:secret"` - a silent, confusing
+   authentication failure, not a rearrangement. The doc comment was rewritten
+   to state the real rule rather than leave the wrong reasoning beside a
+   correct-by-luck check, and `resolveUsername` now refuses a colon
+   outright. `TestResolveUsernameRefusesAColon` was run against the check
+   disabled and confirmed red before restoring;
+   `TestUnvalidatedColonWouldSilentlySplitTheCredentialPair` demonstrates the
+   split concretely, using the exact standard-library round trip
+   (`SetBasicAuth` then `BasicAuth`) any real server's parsing would perform.
+9. **The unconditional write-token requirement, actually enforced.** Also
+   found in review (Codex, PR #186): this README claimed "writing always
+   needs a credential" while `tokenFromValue(nil)` legitimately returning
+   `""` for an unset input let both clone and push omit `Auth` entirely -
+   fail-open code underneath fail-closed prose, and a clean instance of the
+   house rule that a claim in prose must be enforced by code, not the other
+   way round. `doCommitPush` now refuses an empty token, named as the input
+   it is, before its first network call. Proven two ways:
+   `TestDoCommitPushRefusesAMissingTokenBeforeAnyDial` points a real local
+   server's own TCP listener at the call and asserts it accepted *zero*
+   connections - not merely that an error came back, which a check placed
+   anywhere before the point of failure would also produce - run against the
+   check disabled and confirmed red (one connection was accepted) before
+   restoring; and
+   `TestGitLsRemoteSucceedsWithoutATokenAgainstThePublicPath` guards the
+   other direction, so the same fix never spreads to `git.ls_remote`'s
+   documented anonymous-read shape - proven to matter by temporarily adding
+   the identical unconditional check to `listRemoteRefs`, confirming that
+   test alone goes red, and removing it again.
 
 ## SDK gaps found while building this
 

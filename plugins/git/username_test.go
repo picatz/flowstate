@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -57,6 +59,49 @@ func TestResolveUsernameRefusesHeaderInjection(t *testing.T) {
 		if _, err := resolveUsername(raw); err == nil {
 			t.Fatalf("resolveUsername(%q): got no error, want one - this value reaches an HTTP header verbatim", raw)
 		}
+	}
+}
+
+// TestResolveUsernameRefusesAColon is the credential-split finding:
+// net/http's own SetBasicAuth documentation says a username may not
+// contain a colon, and the reason is concrete, not merely a stdlib
+// pedantry - Basic-auth parsing splits the decoded "username:password" at
+// the *first* colon, so a colon in username silently absorbs part of
+// token into what the server reads as the password instead. Refused
+// outright rather than left to fail confusingly against a real remote.
+func TestResolveUsernameRefusesAColon(t *testing.T) {
+	for _, raw := range []string{"alice:admin", ":", "a:b:c", "user:"} {
+		if _, err := resolveUsername(raw); err == nil {
+			t.Fatalf("resolveUsername(%q): got no error, want one - a colon splits the Basic-auth credential pair wrong", raw)
+		}
+	}
+}
+
+// TestUnvalidatedColonWouldSilentlySplitTheCredentialPair is not a test of
+// this plugin's own code - it is the concrete demonstration behind
+// TestResolveUsernameRefusesAColon's refusal, using exactly the standard
+// library call this plugin's transport makes (net/http.Request.SetBasicAuth)
+// and exactly the standard library call any real git server's Basic-auth
+// parsing makes (net/http.Request.BasicAuth) to show what refusing a colon
+// actually prevents: username "alice:admin" paired with token "secret"
+// would arrive at a server as username "alice", password "admin:secret" -
+// not three fields, not an error, a different two-field split than the one
+// the workflow author intended.
+func TestUnvalidatedColonWouldSilentlySplitTheCredentialPair(t *testing.T) {
+	req, err := http.NewRequest(http.MethodGet, "http://example.invalid/", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.SetBasicAuth("alice:admin", "secret")
+
+	gotUser, gotPass, ok := req.BasicAuth()
+	if !ok {
+		t.Fatal("BasicAuth: no credentials found")
+	}
+	if gotUser != "alice" || gotPass != "admin:secret" {
+		t.Fatalf("SetBasicAuth(%q, %q) round-tripped as user=%q pass=%q, want user=%q pass=%q - "+
+			"this is exactly the silent split this plugin's own colon refusal exists to prevent",
+			"alice:admin", "secret", gotUser, gotPass, "alice", "admin:secret")
 	}
 }
 
@@ -116,6 +161,53 @@ func newAuthCaptureServer(t *testing.T) (*url.URL, *authCapture) {
 		t.Fatalf("url.Parse(%q): %v", srv.URL, err)
 	}
 	return u, capture
+}
+
+// countingListener wraps a net.Listener to count every accepted TCP
+// connection - a lower-level, harder-to-fool signal than counting HTTP
+// requests a handler saw, since a raw connection attempt (a TCP SYN this
+// process's dialer sent) counts even if the request built on top of it
+// never finished, or this plugin's own client gave up before an HTTP
+// request was ever framed. This is the actual claim
+// "refused before any network access" is making: not zero completed
+// requests, zero connection attempts, at the socket this test's server
+// owns.
+type countingListener struct {
+	net.Listener
+	accepted int32
+}
+
+func (l *countingListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err == nil {
+		atomic.AddInt32(&l.accepted, 1)
+	}
+	return c, err
+}
+
+// newCountingServer starts a local HTTP server whose only job is answering
+// "how many TCP connections has anyone opened to you" - used to prove a
+// refusal happens before this plugin's transport ever dials out, which
+// [newAuthCaptureServer]'s HTTP-level capture cannot prove on its own (a
+// connection that never became a well-formed HTTP request would never
+// reach that handler, and would still be a network attempt this plugin
+// was supposed to have refused before making).
+func newCountingServer(t *testing.T) (*url.URL, *countingListener) {
+	t.Helper()
+
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	counting := &countingListener{Listener: srv.Listener}
+	srv.Listener = counting
+	srv.Start()
+	t.Cleanup(srv.Close)
+
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("url.Parse(%q): %v", srv.URL, err)
+	}
+	return u, counting
 }
 
 // TestListRemoteRefsSendsTheDefaultUsername proves the default reaches the
@@ -201,6 +293,38 @@ func TestCloneBoundedSendsAnOverriddenUsername(t *testing.T) {
 		t.Fatal("the server never saw a Basic-auth header")
 	}
 	if username != "x-bitbucket-api-token-auth" {
-		t.Fatalf("username on the wire = %q, want the override %q", username, "x-bitbucket-api-token-auth")
+		t.Fatalf("clone username on the wire = %q, want the override %q", username, "x-bitbucket-api-token-auth")
+	}
+}
+
+// TestDoCommitPushRefusesAMissingTokenBeforeAnyDial is Codex's P2-2 finding
+// on PR #186, proven to bite: the README says a write always needs a
+// credential, and tokenFromValue(nil) legitimately returning "" for an
+// unset input must not let that turn into an anonymous push some
+// misconfigured https server would simply accept. This asserts a stronger
+// claim than "doCommitPush returned an error" - it points doCommitPush at
+// a real local server and checks that server's own TCP listener never
+// accepted a single connection, so the refusal is proven to happen before
+// the first dial, not merely before a push completes.
+func TestDoCommitPushRefusesAMissingTokenBeforeAnyDial(t *testing.T) {
+	u, counting := newCountingServer(t)
+
+	_, err := doCommitPush(context.Background(), commitPushParams{
+		url: u, branch: "main", baseRef: "main",
+		message: "x", files: map[string]string{"a.txt": "a\n"},
+		authorName: "A", authorEmail: "a@example.com", when: time.Now().UTC(),
+		// token deliberately omitted (nil) - the exact shape
+		// tokenFromValue(nil) produces for an unset `token:` input.
+	})
+	if err == nil {
+		t.Fatal("doCommitPush with no token was accepted; a write must refuse one before any network access")
+	}
+	if !strings.Contains(err.Error(), "token is required") {
+		t.Errorf("error does not name the missing input; err: %v", err)
+	}
+
+	if got := atomic.LoadInt32(&counting.accepted); got != 0 {
+		t.Fatalf("doCommitPush accepted %d connection(s) at the remote before refusing a missing token, want 0 - "+
+			"the refusal must happen before the first dial, not merely before a push completes", got)
 	}
 }

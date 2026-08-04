@@ -164,7 +164,7 @@ func TestCommitPushIdempotentRetryWithTimestamp(t *testing.T) {
 		authorName:  "Test",
 		authorEmail: "test@example.com",
 		when:        time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-		token:       nil,
+		token:       func() string { return "test-token" },
 	}
 
 	first, err := doCommitPush(context.Background(), params)
@@ -218,6 +218,7 @@ func TestCommitPushIdempotentRetryWithoutTimestamp(t *testing.T) {
 		files:       map[string]string{"hello.txt": "hello\n"},
 		authorName:  "Test",
 		authorEmail: "test@example.com",
+		token:       func() string { return "test-token" },
 		// when deliberately left at time.Time{}'s zero value here would
 		// make the two calls deterministic by accident; each call instead
 		// gets its own distinct, explicit wall-clock-like timestamp, so the
@@ -279,6 +280,7 @@ func TestCommitPushBranchNameRetryAfterUnrecordedSuccessDoesNotStackACommit(t *t
 		baseRef: "main", // a movable name, not a fixed sha - the case this test exists for
 		message: "add hello", files: map[string]string{"hello.txt": "hello\n"},
 		authorName: "A", authorEmail: "a@example.com", when: time.Now().UTC(),
+		token: func() string { return "test-token" },
 	}
 
 	first, err := doCommitPush(context.Background(), params)
@@ -326,6 +328,7 @@ func TestCommitPushGenuineNoOpConverges(t *testing.T) {
 		url: fileURL(t, remote), branch: "main", baseRef: base.String(),
 		message: "no-op", files: map[string]string{"seed.txt": "seed\n"}, // identical to what is already there
 		authorName: "A", authorEmail: "a@example.com", when: time.Now().UTC(),
+		token: func() string { return "test-token" },
 	})
 	if err != nil {
 		t.Fatalf("doCommitPush: %v", err)
@@ -376,11 +379,13 @@ func TestCommitPushRefusesAConcurrentMove(t *testing.T) {
 		url: fileURL(t, remote), branch: "main", baseRef: base.String(),
 		message: "winner", files: map[string]string{"a.txt": "a\n"},
 		authorName: "A", authorEmail: "a@example.com", when: time.Now().UTC(),
+		token: func() string { return "test-token" },
 	}
 	loser := commitPushParams{
 		url: fileURL(t, remote), branch: "main", baseRef: base.String(),
 		message: "loser", files: map[string]string{"b.txt": "b\n"}, // different content: never the same sha as winner's
 		authorName: "B", authorEmail: "b@example.com", when: time.Now().Add(time.Second).UTC(),
+		token: func() string { return "test-token" },
 	}
 
 	won, err := doCommitPush(context.Background(), winner)
@@ -428,6 +433,7 @@ func TestCommitPushRefusesAPathEscapingTheTreeViaPatch(t *testing.T) {
 		url: fileURL(t, remote), branch: "main", baseRef: base.String(),
 		message: "escape attempt", patch: patch,
 		authorName: "A", authorEmail: "a@example.com", when: time.Now().UTC(),
+		token: func() string { return "test-token" },
 	})
 	if err == nil {
 		t.Fatal("a patch naming \"../outside.txt\" was accepted; it must be refused")
@@ -450,6 +456,7 @@ func TestCommitPushRefusesAWriteUnderDotGit(t *testing.T) {
 		message:    "hook attempt",
 		files:      map[string]string{".git/hooks/pre-commit": "#!/bin/sh\necho pwned\n"},
 		authorName: "A", authorEmail: "a@example.com", when: time.Now().UTC(),
+		token: func() string { return "test-token" },
 	})
 	if err == nil {
 		t.Fatal("a files entry under \".git/\" was accepted; it must be refused")
@@ -482,6 +489,7 @@ func TestCommitPushRefusesWritingThroughAnExistingSymlink(t *testing.T) {
 		message:    "write through symlink",
 		files:      map[string]string{"link/escaped.txt": "x\n"},
 		authorName: "A", authorEmail: "a@example.com", when: time.Now().UTC(),
+		token: func() string { return "test-token" },
 	})
 	if err == nil {
 		t.Fatal("a write through an existing symlink entry was accepted; it must be refused")
@@ -506,6 +514,7 @@ func TestCommitPushRefusesASubmoduleInBaseRef(t *testing.T) {
 		message:    "write through submodule",
 		files:      map[string]string{"vendor/lib/new-file.txt": "x\n"},
 		authorName: "A", authorEmail: "a@example.com", when: time.Now().UTC(),
+		token: func() string { return "test-token" },
 	})
 	if err == nil {
 		t.Fatal("a write through an existing submodule entry was accepted; it must be refused")
@@ -534,6 +543,7 @@ func TestCommitPushPatchBoundIsReached(t *testing.T) {
 		url: fileURL(t, remote), branch: "main", baseRef: base.String(),
 		message: "too big", patch: string(oversized),
 		authorName: "A", authorEmail: "a@example.com", when: time.Now().UTC(),
+		token: func() string { return "test-token" },
 	})
 	if err == nil {
 		t.Fatal("a patch over maxPatchBytes was accepted")
@@ -564,6 +574,7 @@ func TestCommitPushCleansUpOnFailure(t *testing.T) {
 		url: fileURL(t, remote), branch: "main", baseRef: base.String(),
 		message: "escape attempt", files: map[string]string{"../outside.txt": "x\n"},
 		authorName: "A", authorEmail: "a@example.com", when: time.Now().UTC(),
+		token: func() string { return "test-token" },
 	})
 	if err == nil {
 		t.Fatal("a files path of \"../outside.txt\" was accepted; it must be refused")

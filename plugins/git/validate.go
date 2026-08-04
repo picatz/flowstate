@@ -150,13 +150,23 @@ func validateRevision(field, raw string) (string, error) {
 // The value this returns ends up in an HTTP Authorization header
 // (net/http.Request.SetBasicAuth base64-encodes "username:password" and
 // sets it verbatim), so it is bound and checked for exactly what that
-// header format cannot tolerate: a colon would ordinarily split the field
-// wrong, but SetBasicAuth's own encoding makes that the *password's*
-// problem, not this field's - what a username genuinely cannot carry is a
-// literal CR or LF (either would let a value try to inject a second header
-// or split the request into something else entirely) or any other control
-// character, none of which any real forge username or documented literal
-// (GitHub's convention, GitLab's "oauth2", Bitbucket's
+// header format cannot tolerate. A colon is refused outright, not treated
+// as the password's problem: net/http's own SetBasicAuth documentation
+// states plainly that "the provided username and password... may not
+// contain a colon", and the standard says why - Basic-auth parsing splits
+// the decoded "username:password" pair at the *first* colon it finds, so a
+// username of "alice:admin" paired with a token "secret" does not become
+// three fields, it becomes exactly two: username "alice", password
+// "admin:secret". Authentication then fails against whatever real
+// credential the workflow author meant to send, silently and confusingly -
+// the request still reaches the server, still carries a syntactically
+// valid Basic-auth header, and is refused as a bad credential rather than
+// as a malformed one, which is a much harder failure to diagnose than a
+// clear refusal at this layer. A literal CR or LF is refused for the
+// separate reason that either could inject a second header or split the
+// request into something else entirely, and every other control character
+// is refused alongside them, none of which any real forge username or
+// documented literal (GitHub's convention, GitLab's "oauth2", Bitbucket's
 // "x-bitbucket-api-token-auth") ever contains. Refused outright, not
 // stripped - see validateTreePath's own doc comment for why refusing
 // rather than sanitising is this plugin's rule for every field that is
@@ -168,6 +178,13 @@ func resolveUsername(raw string) (string, error) {
 	}
 	if len(raw) > maxUsernameBytes {
 		return "", fmt.Errorf("username is %d bytes, over the %d byte limit", len(raw), maxUsernameBytes)
+	}
+	if strings.Contains(raw, ":") {
+		return "", fmt.Errorf(
+			"username must not contain \":\" - net/http's SetBasicAuth encodes \"username:password\" " +
+				"and Basic-auth parsing splits on the *first* colon, so a colon in username would " +
+				"silently absorb part of token into the username instead, splitting the credential " +
+				"pair wrong rather than merely rearranging it")
 	}
 	for _, r := range raw {
 		if r == 0 || unicode.IsControl(r) {

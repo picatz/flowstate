@@ -132,7 +132,39 @@ type commitPushParams struct {
 // mechanics, taking already-validated parameters. See gitCommitPush for the
 // task-facing wrapper that validates a Flowfile step's raw inputs into a
 // commitPushParams.
+//
+// The token check below - refusing before cloneBounded's first dial, the
+// very first place this function could otherwise reach the network - is
+// deliberately here rather than only in gitCommitPush, even though
+// gitCommitPush is `commit_push`'s only production caller. Putting it here
+// too is what makes "a write always needs a credential" (see the README,
+// "Authentication") a property of the one function that actually writes,
+// rather than a rule a second caller could route around by skipping
+// gitCommitPush's own check - and it is what lets a test drive this exact
+// refusal, and assert that no connection was ever attempted, through the
+// same bypass every other test in this package already uses (see
+// commitPushParams's own doc comment) instead of needing a second,
+// parallel test path through gitCommitPush's https-only gate.
 func doCommitPush(ctx context.Context, p commitPushParams) (*gitv1.CommitPushOutputs, error) {
+	if tokenValueOf(p.token) == "" {
+		// Unlike git.ls_remote, where an unset token means "this repository
+		// is public" (see refs.go), a write has no anonymous-capable
+		// reading: no forge accepts an anonymous push, so this is refused
+		// unconditionally rather than left to fail - or, worse, quietly
+		// succeed - once clone or push actually reaches the network. An
+		// https server misconfigured to accept anonymous receive-pack
+		// would accept an unauthenticated write outright, which is exactly
+		// the fail-open shape this check exists to prevent: the rule "a
+		// write always needs a credential" has to be enforced here, in
+		// code, before a single byte reaches the network, or it is a claim
+		// in a README and not a rule at all.
+		return nil, sdk.InvalidInput(
+			"token is required for git.commit_push - unlike git.ls_remote, a write is never " +
+				"anonymous: no forge accepts an anonymous push, and this task refuses to attempt " +
+				"one rather than let an unauthenticated write reach a misconfigured remote that " +
+				"would accept it")
+	}
+
 	flowstatev1.ReportProgress(ctx, flowstatev1.PhaseRequesting)
 
 	repo, err := cloneBounded(ctx, cloneOptions{url: p.url, depth: defaultCloneDepth, token: p.token, username: p.username})
