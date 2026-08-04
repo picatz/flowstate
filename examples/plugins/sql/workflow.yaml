@@ -1,0 +1,61 @@
+edition: v2026.2
+name: sql-query
+description: Reads bounded, typed rows from a sqlite database using the "sql" plugin's sql.query task - a parameterized WHERE clause, a required row bound, and a result a later step can filter with CEL.
+
+# sql.query is one of two tasks the "sql" plugin provides; the other,
+# sql.exec, writes one or more statements as a single transaction - see
+# transfer.yaml. The dot in "sql.query" is what marks this as a plugin task
+# rather than a built-in: no built-in task has one. The engine has never
+# compiled sql.v1.QueryInputs; it learns the shape from descriptors this
+# plugin ships in its manifest at launch. See plugins/sql for the source and
+# plugins/sql/README.md for what this plugin needs configured on the worker
+# before this file can run for real (a sqlite database file with an
+# "accounts" table, and SQL_DSN naming it).
+#
+# Requires configuration - a real database and a resolvable dsn secret - so
+# it never runs by accident. See plugins/sql/README.md, "Trying this
+# example."
+
+vars:
+  min_balance_cents: 0
+
+steps:
+  - id: accounts
+    sql.query:
+      engine: ENGINE_SQLITE
+      # A secret reference, resolved inside the task, never a literal
+      # connection string - see plugins/sql/README.md, "Secrets," for what
+      # SQL_SECRET_DSN (or whatever this deployment's provider names it)
+      # resolves to. This is the only line that would change to point the
+      # same call at postgres instead: engine: ENGINE_POSTGRES and a dsn
+      # secret naming a postgres connection string.
+      dsn: ${secret('env:SQL_DSN')}
+      query: "SELECT id, name, balance_cents FROM accounts WHERE balance_cents >= ? ORDER BY id"
+      # The only way a value from vars reaches the database: bound as a
+      # parameter, never spliced into query text above - see
+      # plugins/sql/doc.go, "Parameterized only, structurally."
+      params:
+        - ${vars.min_balance_cents}
+      # Required: there is no default. A result with more rows than this
+      # is refused outright, naming the bound, rather than returned as a
+      # silently truncated prefix - see plugins/sql/doc.go, "Bounded
+      # results."
+      max_rows: 1000
+
+  - id: announce
+    log:
+      # rows is a list of maps CEL can filter and index by column name,
+      # exactly like any other step output - the #177 convergence
+      # plugins/sql/doc.go calls out as this plugin's headline property.
+      # filter() here is the same expression style QueryOutputs.rows's own
+      # doc comment in sql.proto uses as its worked example.
+      message: "${'%d account(s) at or above %d cents; %d of them are exactly at zero'.format([steps.accounts.row_count, vars.min_balance_cents, steps.accounts.rows.filter(r, r.balance_cents == 0).size()])}"
+
+outputs:
+  accounts:
+    value: ${steps.accounts.rows}
+    description: every account row at or above min_balance_cents, typed for a later step's own CEL expression
+
+  row_count:
+    value: ${steps.accounts.row_count}
+    description: how many rows came back - never more than max_rows, and never a truncated prefix of more that did

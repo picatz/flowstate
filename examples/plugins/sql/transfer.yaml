@@ -1,0 +1,101 @@
+edition: v2026.2
+name: sql-transfer
+description: Moves money between two accounts using the "sql" plugin's sql.exec task - four statements, one transaction, committed or rolled back together inside this single step, provably idempotent on retry.
+
+# sql.exec is the write half of the "sql" plugin: every statement in
+# `statements:` runs inside one transaction that begins and ends inside this
+# one activity invocation - see plugins/sql/doc.go, "Transactions end where
+# the activity ends." There is no BEGIN task and no COMMIT task in this
+# plugin's schema, on purpose: the debit and the credit below either both
+# take effect or neither does, and there is no spelling in this file that
+# could hold the transaction open across a second step.
+#
+# idempotency_key is bound as an ordinary parameter, not a special field -
+# see plugins/sql/doc.go, "Idempotency keys as ordinary params." A retried
+# call (the engine retries a step whose attempt failed for a reason that
+# looks transient, or after a commit acknowledgement was lost - see
+# sdk.OutcomeUnknown) sends the same key, and this file has to make that
+# retry a genuine no-op, not merely insert a ledger row nobody reads.
+#
+# # Why an ON CONFLICT DO NOTHING insert is not enough on its own
+#
+# An earlier version of this file inserted a ledger row keyed on
+# idempotency_key with ON CONFLICT (idempotency_key) DO NOTHING and left
+# the two balance UPDATEs unconditional, reasoning that a duplicate insert
+# would be silently absorbed. That reasoning was wrong, and worth stating
+# plainly rather than quietly fixing: ON CONFLICT DO NOTHING suppresses
+# only the INSERT itself. Both UPDATE statements below it still ran
+# unconditionally on a retry, moving the money a second time - the exact
+# bug idempotency keys exist to prevent, taught by the example meant to
+# demonstrate preventing it.
+#
+# The fix every statement below implements: accounts_ledger carries an
+# `applied` flag (0 by default), and both balance UPDATEs are guarded by
+# `WHERE ... AND EXISTS (SELECT 1 FROM accounts_ledger WHERE
+# idempotency_key = ? AND applied = 0)`, with the ledger flipped to
+# `applied = 1` as this transaction's last statement. A fresh key: the
+# insert claims the row (applied stays 0), both guards pass, both balances
+# move, and the flag flips true before commit. A replayed key after a
+# lost acknowledgement: the insert hits its conflict and changes nothing,
+# the ledger row already has applied = 1, so both guards evaluate false and
+# neither UPDATE's WHERE clause matches a row - the balances are untouched,
+# and only the harmless "set applied = 1" statement (already true) runs
+# again. See plugins/sql/exec_test.go's
+# TestSQLTransferPatternMovesMoneyExactlyOnceAcrossARetry, which runs this
+# exact four-statement pattern against sqlite twice with the same key and
+# asserts both balances moved on the first call and stayed put on the
+# second - the point of an idempotency claim is a test proving it, not a
+# comment asserting it.
+#
+# Requires configuration - a real database with accounts and
+# accounts_ledger(idempotency_key TEXT PRIMARY KEY, applied INTEGER NOT
+# NULL DEFAULT 0) tables, and a resolvable dsn secret - so it never runs by
+# accident. See plugins/sql/README.md, "Trying this example."
+#
+# Written for ENGINE_POSTGRES, with $1, $2, ... placeholders - pgx does not
+# rewrite `?` the way this file's own sqlite-flavored sibling
+# (workflow.yaml) uses, so a query written for one engine's placeholder
+# syntax is not portable to the other unchanged (see plugins/sql/README.md,
+# "Drivers," for the placeholder note this file's own review corrected).
+
+inputs:
+  from_account_id:
+    type: int
+    required: true
+    description: the account debited
+  to_account_id:
+    type: int
+    required: true
+    description: the account credited
+  amount_cents:
+    type: int
+    required: true
+    description: how much moves, in cents (must be positive)
+  idempotency_key:
+    type: string
+    required: true
+    description: a value unique to this transfer request, so a retried call converges rather than moving the money twice
+
+steps:
+  - id: transfer
+    sql.exec:
+      engine: ENGINE_POSTGRES
+      dsn: ${secret('env:SQL_DSN')}
+      statements:
+        - sql: "INSERT INTO accounts_ledger (idempotency_key) VALUES ($1) ON CONFLICT (idempotency_key) DO NOTHING"
+          params: ${[inputs.idempotency_key]}
+        - sql: "UPDATE accounts SET balance_cents = balance_cents - $1 WHERE id = $2 AND EXISTS (SELECT 1 FROM accounts_ledger WHERE idempotency_key = $3 AND applied = 0)"
+          params: ${[inputs.amount_cents, inputs.from_account_id, inputs.idempotency_key]}
+        - sql: "UPDATE accounts SET balance_cents = balance_cents + $1 WHERE id = $2 AND EXISTS (SELECT 1 FROM accounts_ledger WHERE idempotency_key = $3 AND applied = 0)"
+          params: ${[inputs.amount_cents, inputs.to_account_id, inputs.idempotency_key]}
+        - sql: "UPDATE accounts_ledger SET applied = 1 WHERE idempotency_key = $1"
+          params: ${[inputs.idempotency_key]}
+
+  - id: announce
+    log:
+      message: "${'moved %d cents from account %d to account %d across %d statement(s), one transaction'.format([inputs.amount_cents, inputs.from_account_id, inputs.to_account_id, steps.transfer.statement_count])}"
+
+outputs:
+  rows_affected:
+    value: ${steps.transfer.total_rows_affected}
+    description: 4 on a fresh transfer (insert, debit, credit, flag), 1 on a converged retry (only the harmless flag-set touches a row)
