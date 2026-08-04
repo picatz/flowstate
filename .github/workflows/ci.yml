@@ -138,6 +138,15 @@ jobs:
       - name: Examples are in the current edition
         run: go run ./cmd/flow fix --check examples/*/workflow.yaml
 
+      # `flow test` is the reachability gate for #155: at least one example's
+      # own *.test.yaml runs here, so "a workflow can test itself" is a claim
+      # this job checks rather than one the design doc merely makes.
+      # examples/call-a-workflow is the one that matters most — it stubs the
+      # tasks inside a *called* workflow, which is the composition #155 exists
+      # to make trustworthy.
+      - name: Example workflows pass their own tests
+        run: go run ./cmd/flow test examples/
+
       # The observability lab is eight services of other people's software, so
       # standing it up here would make this repository's build depend on seven
       # registries and a Temporal cluster coming up in time. What is checked is

@@ -1,0 +1,8 @@
+tests:
+  - name: a 24h sleep resolves under the virtual clock
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [pause, after]

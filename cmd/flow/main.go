@@ -1790,6 +1790,13 @@ flow lsp --plugin-dir ./plugins`,
 	fmtCmd.GroupID = "workflow"
 	rootCmd.AddCommand(fmtCmd)
 
+	// Beside `run local`, which is the other verb answering a question about a
+	// workflow's own behavior rather than about its file — `run local` answers
+	// "what does this do", this answers "does it do what it promised" (#155).
+	testCmd := newTestCommand()
+	testCmd.GroupID = "workflow"
+	rootCmd.AddCommand(testCmd)
+
 	// Beside `validate`, which is the command it is most often confused with and
 	// the one an author reaches for first: same file, same compiler, different
 	// question — whether it is correct, and what it becomes.

@@ -762,6 +762,14 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 		return nil, fmt.Errorf("workflow cannot be nil or empty")
 	}
 
+	// Registered for the whole run, not per wait: a [VirtualClock] must not see
+	// this goroutine as "gone" between two waits, or a second, unrelated
+	// participant's own wait (`flow test`'s scripted signal delivery, running
+	// concurrently) would see the clock as fully parked and advance out from
+	// under it. See [EnterClock].
+	leaveClock := EnterClock(ctx)
+	defer leaveClock()
+
 	stepOutputs := &Workflow_StepOutputs{
 		StepValues: make(map[string]*Node_Outputs),
 	}
@@ -1297,10 +1305,15 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 		if delay <= 0 {
 			delay = retryDelay(policy.GetRetry(), attempt)
 		}
+		// Through ctx's clock rather than time.After directly, for the same
+		// reason a wait node is (see wait_local.go): a retry backoff is still
+		// a duration this driver blocks on, and `flow test` needs a case
+		// whose stub fails on the first attempt and succeeds on a later one
+		// to run at test speed rather than spend the backoff for real.
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(delay):
+		case <-ClockFromContext(ctx).After(delay):
 		}
 	}
 }
