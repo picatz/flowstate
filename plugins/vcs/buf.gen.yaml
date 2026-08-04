@@ -1,0 +1,44 @@
+version: v1
+# managed mode's only job here is telling buf what flowstate/v1/flowstate.proto's
+# go_package is, so it can resolve the import our own vcs.proto makes - this
+# plugin never generates code for that file. Everything about our own package
+# is already spelled out by vcs.proto's own go_package option.
+managed:
+  enabled: true
+  override:
+    GO_PACKAGE:
+      flowstate/v1/flowstate.proto: github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1
+# Generated with the locally installed protoc-gen-go rather than a remote
+# plugin, so regenerating needs no network - the same choice
+# flowstate-plugin-example makes and for the same reason. flowstate.proto
+# itself is not regenerated here: it is included only so buf can resolve the
+# import, and this plugin never emits Go types for the engine's own schema.
+#
+# # Regenerating
+#
+# buf refuses a workspace directory that reaches outside the directory it was
+# invoked against (`buf.work.yaml: directory "../../proto" is invalid: ... is
+# outside the context directory`), and this plugin's proto genuinely needs the
+# root repository's proto/flowstate/v1/flowstate.proto beside its own - it is
+# where flowstate.v1.Value, the type a secret reference travels as, is
+# defined. The only way to put both in one buf workspace is to run buf from a
+# directory that contains both, which means the repository root, which means
+# borrowing its buf.work.yaml for the duration of one command:
+#
+#   go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11
+#
+#   # from the repository root, with protoc-gen-go on $PATH:
+#   printf 'version: v1\ndirectories:\n  - proto\n  - plugins/vcs/proto\n' > buf.work.yaml
+#   go run github.com/bufbuild/buf/cmd/buf@v1.72.0 generate \
+#     --template plugins/vcs/buf.gen.yaml --path plugins/vcs/proto/vcs -o plugins/vcs
+#   git checkout -- buf.work.yaml
+#
+# Reported to the plugin author as friction worth fixing: see the plugin's
+# README, "SDK and tooling gaps found while building this."
+plugins:
+  - plugin: go
+    out: gen
+    opt:
+      - paths=source_relative
+# Regeneration note: protoc-gen-go must be installed and on $PATH first:
+#   go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11

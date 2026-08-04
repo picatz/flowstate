@@ -44,19 +44,22 @@ $ flow validate examples/hello-world/workflow.yaml
 | [scheduled-report](scheduled-report) | `triggers:` — the cadence a file declares, which `flow schedule create` turns into a schedule and `flow run` ignores | no |
 | [observability](observability) | The docker-compose observability lab: one trace id from `flow run` through Grafana Tempo to the Temporal UI | no |
 | [plugins/greet](plugins/greet/) | A task a plugin provides, written `example.greet:` and type-checked against the plugin's own schema — needs a built plugin and a worker, so read its README | no |
+| [plugins/vcs](plugins/vcs/) | `vcs.log` and `vcs.diff` — version-control tasks (go-git) that clone in memory, per invocation, and return content rather than a workspace path — needs a built plugin and a worker, so read its README | yes |
+| [plugins/github](plugins/github/) | `github.pull_request_get` (read) and `github.issue_comment` (a mutation, in a separate parameterized file so it cannot run by accident) — needs a built plugin, a worker, and for the comment file a credential, so read its README | yes |
 
-Four of these hold more than a `workflow.yaml`, and those four have a `README.md`
+Six of these hold more than a `workflow.yaml`, and those six have a `README.md`
 saying what the rest of the directory is for: [http-secret](http-secret) and
 [http-federated](http-federated) ship the policy that authorizes what their step does,
-[plugins/greet](plugins/greet/) needs a plugin built and a worker told where to find it,
-and [observability](observability) is a whole docker-compose lab. Everywhere else the
-workflow's own comments are the documentation, and a README repeating them would be one
-more thing to leave stale.
+[plugins/greet](plugins/greet/), [plugins/vcs](plugins/vcs/), and
+[plugins/github](plugins/github/) each need a plugin built and a worker told where to
+find it, and [observability](observability) is a whole docker-compose lab. Everywhere
+else the workflow's own comments are the documentation, and a README repeating them
+would be one more thing to leave stale.
 
-`plugins/greet` also sits a directory deeper than the rest, which is deliberate:
-everything matching `examples/*/workflow.yaml` is checked with the built-in task
-registry, and a file naming a plugin's task is meant to be refused by a process that has
-not loaded that plugin. Its README says more.
+`plugins/greet`, `plugins/vcs`, and `plugins/github` also sit a directory deeper than
+the rest, which is deliberate: everything matching `examples/*/workflow.yaml` is
+checked with the built-in task registry, and a file naming a plugin's task is meant to
+be refused by a process that has not loaded that plugin. Their READMEs say more.
 
 Where a directory holds an `inputs.json` beside its `workflow.yaml`, that file is what
 the example is run with — by you and by CI, through the same flag:

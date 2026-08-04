@@ -2260,6 +2260,87 @@ message ValidationReport {
   repeated DiagnosticReport files = 1;
 }
 
+// FixChange is one edit `flow fix` made, or would make under `--check`.
+//
+// A schema type for the same reason [Diagnostic] is: `flow fix --output json`
+// hands this to whatever is driving the CLI, and a hand-invented shape would give
+// `--output json` two meanings on one binary.
+message FixChange {
+  // Line is the 1-based line the change was made at.
+  uint32 line = 1;
+
+  // Message says what changed, in the terms an author wrote the file in.
+  string message = 2 [(buf.validate.field).required = true];
+}
+
+// FixReport is what `flow fix` (or `flow fix --check`) did to one file.
+//
+// Per file rather than per invocation, on the same reasoning as [DiagnosticReport]:
+// `flow fix a.yaml b.yaml` touches two files and a consumer wants to know which
+// report belongs to which. `Changed` answers "would git see a diff" on its own,
+// because a file with nothing to change produces neither a change nor a refusal
+// and would otherwise look indistinguishable from one that was never reached.
+message FixReport {
+  // File is the path as it was given on the command line, so a reader can find it
+  // again without resolving anything.
+  string file = 1 [(buf.validate.field).required = true];
+
+  // Changed reports that the file was rewritten, or would be under `--check`.
+  bool changed = 2;
+
+  // Changes is every edit made, in source order. Empty when nothing changed.
+  repeated FixChange changes = 3;
+
+  // Refusals are the places the rewriter could not act on safely, positioned where
+  // a position exists. A file with refusals is not finished whatever `Changed`
+  // says, because the parts that were not refused may still have been rewritten.
+  repeated Diagnostic refusals = 4;
+
+  // Notes are places worth a human's eye that are not problems and do not affect
+  // whether the file is finished — a comment mentioning a step that has moved, for
+  // instance. Distinct from Refusals for the reason `flow fix` draws that line
+  // itself: a caller must not fail a build on one of these.
+  repeated Diagnostic notes = 5;
+}
+
+// FmtReport is what `flow fmt` (or `flow fmt --check`) did to one file.
+//
+// `flow fmt` is not comment- or position-preserving the way `flow fix` is — it
+// reads a file into a workflow and renders that back out from nothing — so a
+// refusal here is "this file did not parse (or could not be rendered back out)"
+// rather than one shape among several, and rarely carries a position of its own
+// beyond what the parser's own error already gives.
+message FmtReport {
+  // File is the path as it was given on the command line.
+  string file = 1 [(buf.validate.field).required = true];
+
+  // Changed reports that the file was reformatted, or would be under `--check`.
+  bool changed = 2;
+
+  // Refusals are the reasons the file was left untouched: it did not parse, or the
+  // workflow it parsed into cannot be rendered back out. Positioned where the
+  // parser could position it, unpositioned where the failure is only a message.
+  repeated Diagnostic refusals = 3;
+}
+
+// FixReports is what `flow fix` produced, across every file it was given.
+//
+// The same reason [ValidationReport] exists beside [DiagnosticReport]: `json` is
+// one document per invocation and `jsonl` is one per line, and fixing three files
+// produces three [FixReport]s — which is three lines of `jsonl` and, without
+// something to hold them, three documents where `json` promises one.
+message FixReports {
+  // Files is one report per file given, in the order they were given.
+  repeated FixReport files = 1;
+}
+
+// FmtReports is what `flow fmt` produced, across every file it was given, on the
+// same reasoning as [FixReports].
+message FmtReports {
+  // Files is one report per file given, in the order they were given.
+  repeated FmtReport files = 1;
+}
+
 // RunState is the durable workflow state used by the Temporal Run entrypoint.
 // It allows the workflow to continue-as-new while carrying only the minimal
 // required subset of previously produced outputs for the remaining steps.

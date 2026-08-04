@@ -11,7 +11,18 @@ check:
 		exit 1; \
 	fi
 	GOMEMLIMIT=2GiB go test -race -timeout 900s ./...
+	@# The plugins are separate modules, so `./...` above does not reach them.
+	@# A plugin that does not compile would leave every check above green.
+	@for module in plugins/*/; do \
+		[ -f "$$module/go.mod" ] || continue; \
+		echo "==> $$module"; \
+		( cd "$$module" && go build ./... && go vet ./... && \
+			GOMEMLIMIT=2GiB go test -race -timeout 300s ./... ) || exit 1; \
+		fmt_out="$$(gofmt -l $$module)"; \
+		if [ -n "$$fmt_out" ]; then echo "gofmt: $$fmt_out"; exit 1; fi; \
+	done
 	go run ./cmd/flow fix --check examples/*/workflow.yaml
+	docker compose -f examples/observability/docker-compose.yaml config -q
 	go run ./cmd/flow docs generate && git diff --exit-code -- docs/reference/
 	go generate ./cmd/flow/internal/reference && git diff --exit-code -- cmd/flow/internal/reference/
 	go run github.com/bufbuild/buf/cmd/buf@v1.72.0 lint

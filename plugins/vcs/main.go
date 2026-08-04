@@ -1,0 +1,65 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"os"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
+
+	vcsv1 "github.com/picatz/flowstate/plugins/vcs/gen/vcs/v1"
+)
+
+func main() {
+	if err := installEgressPolicy(); err != nil {
+		fmt.Fprintf(os.Stderr, "vcs: %v\n", err)
+		os.Exit(1)
+	}
+
+	sdk.Main(sdk.Plugin{
+		Name:        "vcs",
+		Version:     "0.1.0",
+		Description: "Reads a repository's commit history and diffs two revisions of it, over git (go-git). No shared workspace, no subprocesses.",
+
+		Secrets: &sdk.Secrets{
+			Schemes: []string{secretScheme},
+			Resolve: resolveSecret,
+		},
+
+		Tasks: []sdk.Task{
+			{
+				Name:    "log",
+				Summary: "A bounded slice of a repository's commit history.",
+				Input:   &vcsv1.LogInputs{},
+				Output:  &vcsv1.LogOutputs{},
+				Fn:      vcsLog,
+			},
+			{
+				Name:    "diff",
+				Summary: "The changes between two revisions of a repository, as a unified diff and a per-file summary.",
+				Input:   &vcsv1.DiffInputs{},
+				Output:  &vcsv1.DiffOutputs{},
+				Fn:      vcsDiff,
+			},
+		},
+
+		Health: checkHealth,
+	})
+}
+
+// checkHealth reports whether this plugin can serve.
+//
+// There is no long-lived backend connection to check - every clone is a
+// fresh, self-contained request - so the only thing worth reporting here is
+// whether the egress policy this process built at startup is the one every
+// task is actually using, which installEgressPolicy already guarantees by
+// the time Main is reached. A real "can I reach GitHub/GitLab/wherever"
+// check would be a check on the *remote* this run happens to name, which
+// is not this plugin's to assume - a health check answers "is this plugin
+// able to serve," not "is the internet up."
+func checkHealth(_ context.Context) error {
+	if egressPolicy == nil {
+		return fmt.Errorf("egress policy was never installed")
+	}
+	return nil
+}

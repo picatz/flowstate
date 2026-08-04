@@ -1,0 +1,70 @@
+syntax = "proto3";
+
+package github.v1;
+
+option go_package = "github.com/picatz/flowstate/plugins/github/gen/github/v1;githubv1";
+
+import "flowstate/v1/flowstate.proto";
+
+// This plugin's own task schema. Everything here is intentionally named
+// after GitHub's own vocabulary - a pull request, an issue comment - rather
+// than a portable term, because this build proves one forge operation
+// end to end rather than a portable forge vocabulary. See the plugin's
+// README, "Naming: why github.* and not forge.*," for the schema change
+// that would be needed before these could honestly be forge.* instead.
+
+// PullRequestGetInputs asks for one pull request's current state.
+message PullRequestGetInputs {
+  // Owner and Repo name the repository, e.g. "octocat" and "hello-world".
+  string owner = 1;
+  string repo = 2;
+
+  // Number is the pull request number.
+  int64 number = 3;
+
+  // Token authenticates the request. Unset means an unauthenticated request,
+  // which GitHub permits for a public repository at a much lower rate limit.
+  // A literal string here is refused - see auth.go.
+  flowstate.v1.Value token = 4;
+
+  // BaseUrl overrides the API base for GitHub Enterprise Server, e.g.
+  // "https://github.example.com/api/v3". Unset means github.com.
+  string base_url = 5;
+}
+
+// PullRequestGetOutputs is what GitHub answered.
+message PullRequestGetOutputs {
+  string title = 1;
+  string body = 2;
+  string state = 3; // "open", "closed"
+  bool merged = 4;
+  string mergeable_state = 5; // GitHub's own enum, passed through as text: "clean", "dirty", "blocked", "unknown", ...
+  string head_ref = 6;
+  string head_sha = 7;
+  string base_ref = 8;
+  string html_url = 9;
+}
+
+// IssueCommentInputs posts a comment on an issue or a pull request - the same
+// endpoint on GitHub's API, since a pull request is an issue with extra
+// fields there.
+message IssueCommentInputs {
+  string owner = 1;
+  string repo = 2;
+
+  // Number is the issue or pull request number.
+  int64 number = 3;
+
+  // Body is the comment's Markdown text.
+  string body = 4;
+
+  flowstate.v1.Value token = 5;
+  string base_url = 6;
+}
+
+// IssueCommentOutputs is the comment GitHub created.
+message IssueCommentOutputs {
+  int64 comment_id = 1;
+  string html_url = 2;
+  string created_at = 3; // RFC 3339
+}

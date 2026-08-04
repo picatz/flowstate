@@ -1303,6 +1303,16 @@ flow lsp`,
 	rootCmd.PersistentFlags().BoolP("verbose", "v",
 		os.Getenv("FLOWSTATE_VERBOSE_LOGGING") == "true", "enable verbose logging")
 
+	// --no-color forces the same no-colour path NO_COLOR already takes, through the
+	// same plumbing rather than a second one: [environForSurface] folds it into the
+	// environment [ui.Detect] resolves from, so it degrades stdout, stderr, and the
+	// `flow watch` TUI's styling exactly as NO_COLOR does — and, being the more
+	// explicit ask, wins over NO_COLOR, CLICOLOR_FORCE, and everything else in the
+	// environment.
+	rootCmd.PersistentFlags().Bool("no-color", false,
+		"disable colour on every stream, the same way NO_COLOR does — the most explicit ask, "+
+			"so it wins over CLICOLOR_FORCE and the terminal's own capabilities")
+
 	// Run command, which executes a workflow using the Flowstate service.
 	runCmd := &cobra.Command{
 		Use:   "run [workflow-file]",
@@ -1833,6 +1843,6 @@ func main() {
 	flushTelemetry()
 
 	if err != nil {
-		os.Exit(exitCode)
+		os.Exit(exitCodeFor(err))
 	}
 }
