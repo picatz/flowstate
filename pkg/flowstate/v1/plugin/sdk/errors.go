@@ -22,6 +22,7 @@ import (
 //	NotFound          the secret or resource does not exist          permanent
 //	PermissionDenied  the backend refused                            permanent
 //	InvalidInput      the inputs or the reference are wrong          permanent
+//	Conflict          a compare-and-swap lost to a concurrent writer  permanent
 //	Failed            it failed, and another attempt will too        permanent
 //	Unavailable       the backend could not be reached, or timed out retryable
 //
@@ -50,6 +51,24 @@ func InvalidInput(format string, args ...any) error {
 	return &classified{code: connect.CodeInvalidArgument, err: fmt.Errorf(format, args...)}
 }
 
+// Conflict reports that a compare-and-swap write lost to a concurrent writer:
+// the resource this task was about to update has moved since the caller last
+// observed it. It is permanent in the sense that matters for retrying - the
+// same request sent again races the same way and can lose again - but unlike
+// [Failed], the fix is not "try again," it is "re-fetch, recompute, and
+// choose deliberately whether to retry." A workflow that wants that choice
+// dispatches on this classification specifically rather than treating it as
+// an ordinary failure.
+//
+// The first caller is plugins/git's git.commit_push: a push whose
+// compare-and-swap against base_ref finds the remote branch already moved
+// returns this, distinct from [Failed], precisely so a Flowfile's `dispatch:`
+// can react to "someone else wrote here first" differently than to "this
+// broke."
+func Conflict(format string, args ...any) error {
+	return &classified{code: connect.CodeAborted, err: fmt.Errorf(format, args...)}
+}
+
 // Failed reports a failure that another attempt will not fix, for a cause none
 // of the more specific constructors describes.
 func Failed(format string, args ...any) error {
@@ -64,6 +83,14 @@ func Failed(format string, args ...any) error {
 // times it is retried; a connection reset is this.
 func Unavailable(format string, args ...any) error {
 	return &classified{code: connect.CodeUnavailable, retryable: true, err: fmt.Errorf(format, args...)}
+}
+
+// IsConflict reports whether err is (or wraps) a [Conflict] classification -
+// the predicate a plugin's own tests, or a caller deciding how to log a
+// failure, use instead of matching on message text, which is free to change.
+func IsConflict(err error) bool {
+	var c *classified
+	return errors.As(err, &c) && c.code == connect.CodeAborted
 }
 
 // classified is an error carrying how the engine should treat it.
