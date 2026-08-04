@@ -90,6 +90,15 @@ type TaskDef struct {
 	// the authenticated workload identity and exact execution position. Secret
 	// resolution and JIT credential exchange both need that authority, while an
 	// ordinary task stays on the legacy activity name for replay compatibility.
+	//
+	// A plugin task declares its own secret-accepting inputs on a different
+	// field entirely — TaskManifest.secret_inputs, plumbed through
+	// plugin.Plugin.taskDef — and does not add its names here. That is not an
+	// oversight: TaskNeedsAuthority scans a task's actual invocation for a held
+	// SecretRef regardless of which input carries it or what a TaskDef declared
+	// about that input, so a plugin task with a secret input is already routed
+	// to the identity-aware activity by the same scan a built-in task's
+	// `bearer:` is, with nothing further to declare here.
 	AuthorityInputs []string
 
 	// NestedSecretInputs names the inputs whose entries the task applies itself,

@@ -1,0 +1,38 @@
+edition: v2026.2
+name: git-ls-remote
+description: Reads a public repository's branch refs using the "git" plugin's git.ls_remote task - the one read task this example runs by default, with no credential and no clone.
+
+# git.ls_remote is one of two tasks the "git" plugin provides; the other,
+# git.commit_push, writes a commit and needs a credential and real inputs -
+# see commit-push.yaml and the README before running that half.
+#
+# The dot in "git.ls_remote" is what marks this as a plugin task rather than
+# a built-in: no built-in task has one. The engine has never compiled
+# git.v1.LsRemoteInputs; it learns the shape from descriptors this plugin
+# ships in its manifest at launch. See plugins/git for the source and
+# plugins/git/README.md for what git.commit_push does and why it lives in a
+# separate file.
+
+vars:
+  repo: https://github.com/octocat/Hello-World.git
+
+steps:
+  - id: refs
+    git.ls_remote:
+      url: ${vars.repo}
+      prefix: "refs/heads/"
+      # No token: a public repository's refs are readable unauthenticated.
+      # Compare this to commit-push.yaml, where writing requires one.
+
+  - id: announce
+    log:
+      message: "${'%s - %d branch refs found, including %s at %s'.format([vars.repo, steps.refs.refs.size(), steps.refs.refs[0].name, steps.refs.refs[0].sha])}"
+
+outputs:
+  branch_count:
+    value: ${steps.refs.refs.size()}
+    description: how many branch refs this repository currently advertises
+
+  first_branch_sha:
+    value: ${steps.refs.refs[0].sha}
+    description: the content this task binds to, rather than a name a later force-push could move

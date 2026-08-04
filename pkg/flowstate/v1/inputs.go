@@ -82,7 +82,7 @@ func BindRunInputs(wf *Workflow, submitted map[string]*Value) (map[string]*Value
 		// default is part of the specification and a specification can be built by
 		// hand: `flow validate` refuses a mistyped default in a Flowfile, and this is
 		// what refuses one in a message that never was a Flowfile.
-		if err := checkInputValue(name, declaration, value); err != nil {
+		if err := CheckInputValue(name, declaration, value); err != nil {
 			return nil, err
 		}
 
@@ -104,11 +104,20 @@ func CheckInputDefault(declaration *InputDeclaration) error {
 		return nil
 	}
 
-	return checkInputValue(declaration.GetName(), declaration, declaration.GetDefault())
+	return CheckInputValue(declaration.GetName(), declaration, declaration.GetDefault())
 }
 
-// checkInputValue refuses a value that is not a literal of the declared type.
-func checkInputValue(name string, declaration *InputDeclaration, value *Value) error {
+// CheckInputValue refuses a value that is not a literal of the declared type.
+//
+// Exported for the same reason [CheckInputDefault] is: a `with:` argument a
+// call step binds is checked against the callee's declaration by this exact
+// function, at compile time, in `flowfile/validate_call.go` — the same rule
+// [BindRunInputs] enforces at submit, reached once rather than written twice.
+// A literal argument that is the wrong type is refused here, before a run
+// starts and before any of its own earlier steps have had an effect; an
+// expression is left to [BindRunInputs] to refuse at the moment it is
+// resolved to one, since its type is not known until then.
+func CheckInputValue(name string, declaration *InputDeclaration, value *Value) error {
 	switch kind := value.GetKind().(type) {
 	case *Value_Literal:
 		// Below.

@@ -319,6 +319,20 @@ func fakeManifest(mode string) (*pluginv1.PluginManifest, error) {
 		}}
 		return base, nil
 
+	case "secret-task", "secret-task-error":
+		// Declares one input, "message", as accepting a host secret reference —
+		// the manifest field TestResolvePluginSecretInputs* and
+		// TestPluginTaskResolvesAndScrubsHostSecret exist to exercise.
+		base.Capabilities = []pluginv1.Capability{pluginv1.Capability_CAPABILITY_TASKS}
+		base.Tasks = []*pluginv1.TaskManifest{{
+			Name:          "task",
+			Summary:       "echoes what it received, to prove what crossed the boundary",
+			InputMessage:  "flowstate.v1.Task.Log.Inputs",
+			OutputMessage: "flowstate.v1.Task.Log.Outputs",
+			SecretInputs:  []string{"message"},
+		}}
+		return base, nil
+
 	default:
 		// The general-purpose fake: both capabilities, a scheme named after
 		// itself, and one task.
@@ -478,6 +492,30 @@ func (s *fakeTaskService) Execute(ctx context.Context, req *connect.Request[plug
 		// not cover the error path, so this is what proves the host bounds it
 		// anyway.
 		return nil, connect.NewError(connect.CodeInternal, errors.New(strings.Repeat("z", 512<<10)))
+
+	case "secret-task":
+		// By the time this runs, the host has already resolved `message` from
+		// whatever reference it named into the value below — this fake never
+		// sees a [flowstatev1.SecretRef]. It reports whether it received one at
+		// all, and echoes it back the way a careless or hostile plugin might,
+		// which is what proves the host scrubs its own response.
+		received := req.Msg.GetTask().GetInputs()["message"].GetLiteral().GetStringValue()
+		return connect.NewResponse(&pluginv1.ExecuteResponse{
+			Outputs: &flowstatev1.Node_Outputs{
+				NamedValues: map[string]*flowstatev1.Value{
+					"received": flowstatev1.NewLiteral(received != ""),
+					"echo":     flowstatev1.NewLiteral(received),
+				},
+			},
+		}), nil
+
+	case "secret-task-error":
+		// Reflects the resolved value into an RPC failure, the way a backend's
+		// own error message might quote a request back — the hazard the host's
+		// scrubbing of the *error* path exists for, mirroring what the http
+		// task's own scrubber protects against a reflecting server.
+		received := req.Msg.GetTask().GetInputs()["message"].GetLiteral().GetStringValue()
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("backend said: %s", received))
 	}
 
 	// Echo back what came in, plus what the request carried about the workload,

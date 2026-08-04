@@ -735,6 +735,7 @@ message Node {
     ForEach for_each = 5;
     Parallel parallel = 6;
     Wait wait = 7;
+    Call call = 11;
   }
 
   // Condition determines whether the step runs.
@@ -1208,6 +1209,112 @@ message Parallel {
       max_items: 100
     }
   ];
+}
+
+// Call runs another workflow as a step.
+//
+// This is how a Flowfile stops being a single file. Before it, an organisation's
+// second workflow copied its first: there was no way to factor a sequence out, no
+// way to version one, and no way to test one apart from the thing that used it.
+//
+// # Resolved when the file is compiled, carried whole
+//
+// A `Call` holds the callee's *specification*, not a reference to it. The
+// resolution — reading `./provision.yaml`, compiling it, checking its arguments —
+// happens once, in the client, when a Flowfile becomes a Workflow.
+//
+// That is not an optimisation, it is invariant 10. A run's specification is frozen
+// when it is submitted and carried across every Continue-As-New in its chain; a
+// call resolved by name at execution time would make a durable run depend on a
+// definition someone can edit while it is in flight, so a workload could mean one
+// thing in its first segment and another in its last. It would also put a
+// filesystem read inside a worker, which is the second reason: the server and the
+// worker never resolve a path, so there is no traversal surface there to defend.
+// The client that reads the author's files is the one place that can.
+//
+// The cost is honest and worth stating: a specification carrying its callees is
+// bigger than one naming them, and it counts against [CheckSpecSize] like
+// everything else. A workflow too large to submit is refused with the same
+// message it would have been refused with if somebody had pasted the same steps
+// in by hand — which is the right answer, because that is what this is.
+//
+// # A nested run, not an inlining
+//
+// The callee's steps are kept as a workflow rather than spliced into the caller's
+// list, and each of the three reasons is something inlining loses.
+//
+// A position stays a path. `deploy > provision > network` is where a run is, and
+// a flattened list would report `provision-network` — a name nobody wrote, in a
+// file nobody can open. Diagnostics and failures name the callee the same way.
+//
+// The isolation below is real rather than achieved by renaming. And a call remains
+// a *place* the engine can decide to execute differently: running one as a Temporal
+// child workflow, with its own history and its own versioning, is additive from
+// here and impossible after inlining.
+//
+// # What a callee can see
+//
+// Its `inputs:`, and nothing else. Not the caller's steps, not the caller's
+// `vars:`, not a loop binding it happens to sit inside.
+//
+// That is the whole point rather than a restriction. A workflow that can read its
+// caller's scope is not a unit — it cannot be understood, tested, or reused apart
+// from the file that calls it, which is what a call was meant to make possible. It
+// is also a security property once workflows are shared: a library workflow cannot
+// read the values its caller resolved, including any it resolved from a secret.
+//
+// What comes back is what the callee `outputs:` declares, under the step's id. A
+// callee that declares no outputs is a step that produces none — legal, and the
+// right shape for a workflow called for its effects.
+message Call {
+  // Workflow is the callee, already compiled.
+  //
+  // Whole rather than referenced, for the reasons on the message above. It carries
+  // its own `inputs:` declarations, which is what `arguments` below are checked
+  // against — so a call type-checks in an editor, before anything runs.
+  Workflow workflow = 1 [(buf.validate.field).required = true];
+
+  // Arguments bind the callee's declared inputs, by name.
+  //
+  // Values, never expressions evaluated by the callee. They are resolved in the
+  // *caller's* scope — where `${steps.build.digest}` means something — and what
+  // crosses the boundary is the result. A callee evaluating an expression handed
+  // to it would be reading a scope it is not allowed to see, through a string.
+  //
+  // Every declared input the callee requires must be bound, and binding one it
+  // does not declare is refused. Both are decided when the file is compiled, with
+  // a position, rather than when the run reaches the step.
+  map<string, Value> arguments = 2 [(buf.validate.field).map = {
+    max_pairs: 100
+    keys: {
+      string: {
+        min_len: 1
+        max_len: 128
+      }
+    }
+  }];
+
+  // Source is where the callee was read from, as written in the file.
+  //
+  // Carried for diagnostics and for `flow compile` output, so a reader of a
+  // compiled specification can see which file a nested workflow came from. It is
+  // never resolved again — nothing reads a path from here — which is why it is a
+  // plain string with no validation beyond a length: it is a record of what
+  // happened, not an instruction.
+  string source = 3 [(buf.validate.field).string = {max_len: 1024}];
+
+  // SourceDigest is a content digest of the callee file's bytes, taken at the
+  // same moment the resolver reads them, formatted `sha256:<hex>`.
+  //
+  // Recorded rather than verified, exactly as `source` is: neither is
+  // resolved again by anything that reads a compiled specification. What it
+  // buys is provenance an operator can audit after the fact — "this run
+  // called provision-tenant.yaml at sha256:…" is answerable from a run record
+  // alone, without the file that produced it necessarily being reachable, or
+  // unchanged, by the time anyone asks. A platform sharing modules across
+  // tenants is exactly the setting where "which bytes actually ran" needs an
+  // answer that outlives the file.
+  string source_digest = 4 [(buf.validate.field).string = {max_len: 128}];
 }
 
 // StepPolicy controls the execution of a single step.
@@ -2260,6 +2367,87 @@ message ValidationReport {
   repeated DiagnosticReport files = 1;
 }
 
+// FixChange is one edit `flow fix` made, or would make under `--check`.
+//
+// A schema type for the same reason [Diagnostic] is: `flow fix --output json`
+// hands this to whatever is driving the CLI, and a hand-invented shape would give
+// `--output json` two meanings on one binary.
+message FixChange {
+  // Line is the 1-based line the change was made at.
+  uint32 line = 1;
+
+  // Message says what changed, in the terms an author wrote the file in.
+  string message = 2 [(buf.validate.field).required = true];
+}
+
+// FixReport is what `flow fix` (or `flow fix --check`) did to one file.
+//
+// Per file rather than per invocation, on the same reasoning as [DiagnosticReport]:
+// `flow fix a.yaml b.yaml` touches two files and a consumer wants to know which
+// report belongs to which. `Changed` answers "would git see a diff" on its own,
+// because a file with nothing to change produces neither a change nor a refusal
+// and would otherwise look indistinguishable from one that was never reached.
+message FixReport {
+  // File is the path as it was given on the command line, so a reader can find it
+  // again without resolving anything.
+  string file = 1 [(buf.validate.field).required = true];
+
+  // Changed reports that the file was rewritten, or would be under `--check`.
+  bool changed = 2;
+
+  // Changes is every edit made, in source order. Empty when nothing changed.
+  repeated FixChange changes = 3;
+
+  // Refusals are the places the rewriter could not act on safely, positioned where
+  // a position exists. A file with refusals is not finished whatever `Changed`
+  // says, because the parts that were not refused may still have been rewritten.
+  repeated Diagnostic refusals = 4;
+
+  // Notes are places worth a human's eye that are not problems and do not affect
+  // whether the file is finished — a comment mentioning a step that has moved, for
+  // instance. Distinct from Refusals for the reason `flow fix` draws that line
+  // itself: a caller must not fail a build on one of these.
+  repeated Diagnostic notes = 5;
+}
+
+// FmtReport is what `flow fmt` (or `flow fmt --check`) did to one file.
+//
+// `flow fmt` is not comment- or position-preserving the way `flow fix` is — it
+// reads a file into a workflow and renders that back out from nothing — so a
+// refusal here is "this file did not parse (or could not be rendered back out)"
+// rather than one shape among several, and rarely carries a position of its own
+// beyond what the parser's own error already gives.
+message FmtReport {
+  // File is the path as it was given on the command line.
+  string file = 1 [(buf.validate.field).required = true];
+
+  // Changed reports that the file was reformatted, or would be under `--check`.
+  bool changed = 2;
+
+  // Refusals are the reasons the file was left untouched: it did not parse, or the
+  // workflow it parsed into cannot be rendered back out. Positioned where the
+  // parser could position it, unpositioned where the failure is only a message.
+  repeated Diagnostic refusals = 3;
+}
+
+// FixReports is what `flow fix` produced, across every file it was given.
+//
+// The same reason [ValidationReport] exists beside [DiagnosticReport]: `json` is
+// one document per invocation and `jsonl` is one per line, and fixing three files
+// produces three [FixReport]s — which is three lines of `jsonl` and, without
+// something to hold them, three documents where `json` promises one.
+message FixReports {
+  // Files is one report per file given, in the order they were given.
+  repeated FixReport files = 1;
+}
+
+// FmtReports is what `flow fmt` produced, across every file it was given, on the
+// same reasoning as [FixReports].
+message FmtReports {
+  // Files is one report per file given, in the order they were given.
+  repeated FmtReport files = 1;
+}
+
 // RunState is the durable workflow state used by the Temporal Run entrypoint.
 // It allows the workflow to continue-as-new while carrying only the minimal
 // required subset of previously produced outputs for the remaining steps.
@@ -2338,6 +2526,44 @@ message Frame {
   // this level, so a resumed run still reports every iteration's results and not
   // only those from the run that finished the loop.
   repeated Workflow.StepOutputs results = 3;
+
+  // CallOutputs holds the step outputs a called workflow's own steps had
+  // produced when a run suspended partway through it, for a frame standing
+  // inside a call.
+  //
+  // A call is transparent to suspension (see the executor's suspend rule), so a
+  // callee's steps may span a Continue-As-New exactly as a top-level sequential
+  // loop's do. The callee runs in its own isolated scope, though — that is the
+  // entire point of [CallScope] — so unlike a top-level segment, whose step
+  // outputs live in RunState.outputs, a callee's step outputs exist nowhere
+  // else. Without this they would vanish at the handover and the resumed
+  // segment would fail on the callee's own later steps referencing its
+  // earlier ones, on a specification that never changed.
+  //
+  // Absent for every frame that predates this field, which reads as an empty
+  // callee scope — correct, because no run written before this field existed
+  // could have been suspended inside a call; the capability did not exist yet.
+  Workflow.StepOutputs call_outputs = 4;
+
+  // CallVars holds the callee's own `vars:` block, evaluated once when the
+  // call began, for a frame standing inside a call whose callee declares any.
+  //
+  // Computed once and carried rather than re-evaluated on each resumed
+  // segment, for the identical reason a top-level run's own vars are: a
+  // Continue-As-New may hand a later segment to a different interpreter
+  // version under auto-upgrade (see docs/ARCHITECTURE.md's versioning
+  // section), and a profile pins which functions exist rather than how
+  // cel-go implements them. Re-evaluating inline would let the *same*
+  // expression compute two different answers across one call, on a
+  // specification that never changed — precisely the hazard
+  // `engine.WorkflowVars` exists to remove at the top level. A callee's vars
+  // get no weaker a guarantee merely for being nested.
+  //
+  // Absent for every frame that predates this field, or whose callee
+  // declares no `vars:` at all — both read as "nothing bound", which is
+  // correct in the first case for the reason call_outputs's is, and correct
+  // in the second because there is nothing to evaluate.
+  map<string, Value> call_vars = 5;
 }
 
 message RunState {

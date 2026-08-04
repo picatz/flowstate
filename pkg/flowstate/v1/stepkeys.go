@@ -53,6 +53,13 @@ var grammarStepKeys = []string{
 	"sleep",
 	"wait_until",
 	"wait_for_signal",
+	"call",
+
+	// The arguments a `call:` binds the callee's declared inputs with. Only
+	// meaningful beside `call:`, exactly as `steps:` is only meaningful beside
+	// `for_each:` — but a step property nonetheless, in the same sense `undo:`
+	// is: not itself a kind of work.
+	"with",
 
 	// Retired at edition v2026.2, and reserved rather than released.
 	//
@@ -84,7 +91,6 @@ var grammarStepKeys = []string{
 // here by being a *step key* in a design that named it as one, not by appearing
 // in a list of things the engine will eventually do.
 var futureStepKeys = []string{
-	"call",
 	"needs",
 }
 

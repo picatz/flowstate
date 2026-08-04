@@ -308,11 +308,13 @@ is one rule with consequences — the fuller reasoning lives in
 - **Exit status is a contract with three values.** `0`: the command succeeded
   and the answer is not a refusal. `1`: the command worked and the answer is a
   refusal or a finding — diagnostics found, a check failed, a run that finished
-  as a failure. `2`: the invocation itself was wrong. A program branches on
-  these; prose never replaces them. The `2` branch is contract and not yet
-  binary: today `cmd/flow/main.go` exits 1 for invocation errors too, so until
-  the classification lands — with a golden test on each branch — automation
-  should treat nonzero as one value.
+  as a failure. `2`: the invocation itself was wrong — an unknown flag, an
+  unknown command, the wrong number of arguments. A program branches on these;
+  prose never replaces them. The classification is the same one `isUsageError`
+  in `cmd/flow/execute.go` already draws to decide whether the report ends with
+  "Try `flow --help`", read a second time rather than computed twice — a golden
+  test on each branch (`cmd/flow/execute_test.go`) pins that a usage error exits
+  2, a refusal or a finding exits 1, and a clean run exits 0.
 - **Pure verbs stay pure.** `validate`, every `--check`, and every read are
   side-effect-free so a program — or an agent — can loop on them unattended.
   Mutations sit behind explicit confirmation in non-interactive streams.
@@ -406,6 +408,12 @@ the refusal says, so an agent corrects the right thing.
 
 ### Configuring a client
 
+This section is for wiring an MCP client — an editor, a desktop app, a CLI
+agent — into `flow mcp`. It is a different audience from
+[AGENTS.md](../AGENTS.md) at the repository root, which is for an agent
+*developing* Flowstate itself; this one is for anyone *using* the binary
+Flowstate ships, from any repository.
+
 **Claude Code**, which takes the command and its flags directly:
 
 ```sh
@@ -415,6 +423,23 @@ claude mcp add flowstate -- flow mcp
 claude mcp add flowstate -- flow mcp \
   --address flowstate.internal:9233 \
   --egress-policy /etc/flowstate/egress.yaml
+```
+
+That writes to Claude Code's own config; the equivalent, checked into a
+project so a team shares one setup, is a `.mcp.json` at the repository root:
+
+```json
+{
+  "mcpServers": {
+    "flowstate": {
+      "command": "flow",
+      "args": ["mcp", "--egress-policy", "/etc/flowstate/egress.yaml"],
+      "env": {
+        "FLOWSTATE_ADDRESS": "flowstate.internal:9233"
+      }
+    }
+  }
+}
 ```
 
 **Claude Desktop**, in `claude_desktop_config.json` — `~/Library/Application
@@ -432,6 +457,17 @@ Support/Claude/` on macOS, `%APPDATA%\Claude\` on Windows:
     }
   }
 }
+```
+
+**OpenAI Codex CLI**, in `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.flowstate]
+command = "flow"
+args = ["mcp", "--egress-policy", "/etc/flowstate/egress.yaml"]
+
+[mcp_servers.flowstate.env]
+FLOWSTATE_ADDRESS = "flowstate.internal:9233"
 ```
 
 **Any other stdio client** takes the same three things, whatever it calls the

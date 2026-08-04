@@ -1,0 +1,45 @@
+# A callee: an ordinary Flowfile, with nothing about it that says it will be
+# called rather than run directly. `flow run local
+# examples/call-a-workflow/workflows/provision-tenant.yaml --input tenant=acme`
+# works exactly as any other workflow's does — a call resolves this file's
+# `inputs:` and `outputs:` the same way a run started directly does, through the
+# same functions, which is what makes a workflow's answer identical either way.
+edition: v2026.2
+name: provision-tenant
+
+inputs:
+  tenant:
+    type: string
+    required: true
+    description: which tenant to provision
+
+# Two steps rather than one, deliberately: a call is transparent to suspension
+# (see docs/DSL.md's `call:` section), so a long-running caller may suspend and
+# resume in the middle of a callee's own steps exactly as it would between two
+# of its own top-level ones. `regions`'s own output, read by `provision` a step
+# later, is what makes that observable — a resumed segment that lost it would
+# fail here on a reference to a step that already ran, rather than merely
+# producing a slightly different answer.
+steps:
+  - id: regions
+    for_each:
+      items: ${['eu-west-1', 'us-east-1']}
+      as: region
+      steps:
+        - id: checked
+          log:
+            message: "${'region available: ' + region}"
+
+  - id: provision
+    log:
+      message: ${'provisioning ' + inputs.tenant + ' across ' + string(size(steps.regions.results)) + ' regions'}
+      fields:
+        tenant: ${inputs.tenant}
+
+outputs:
+  url:
+    value: ${'https://' + inputs.tenant + '.internal.example.com'}
+    description: where the provisioned tenant can be reached
+  region_count:
+    value: ${size(steps.regions.results)}
+    description: how many regions were checked

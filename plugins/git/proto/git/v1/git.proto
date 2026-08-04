@@ -1,0 +1,162 @@
+syntax = "proto3";
+
+package git.v1;
+
+option go_package = "github.com/picatz/flowstate/plugins/git/gen/git/v1;gitv1";
+
+import "flowstate/v1/flowstate.proto";
+
+// This plugin's own task schema: the rich, unapologetically git-specific
+// half of the factoring described in issue #149 - "git.*" here, the small
+// portable core in "vcs.*" (this repository's sibling plugin, plugins/vcs).
+// Nothing here pretends to be backend-agnostic: a sha is a content hash
+// because that is what git has, a branch is `refs/heads/<name>`, and a patch
+// is the unified-diff format git itself emits.
+//
+// See doc.go for why write operations - absent from plugins/vcs by design -
+// exist here, and why they take the shape they do: one activity, one write,
+// content in and content out, never a workspace handed between steps.
+
+// LsRemoteInputs asks for the refs a remote currently advertises, without
+// cloning anything - the same network round trip a clone's first step makes,
+// stopped there.
+message LsRemoteInputs {
+  // Url is the repository to query, https:// only. See doc.go for why this
+  // plugin does not yet accept ssh:// - a deliberate, reported gap, not an
+  // oversight.
+  string url = 1;
+
+  // Prefix filters which refs are returned - "refs/heads/" for branches only,
+  // "refs/tags/" for tags only. Empty returns every ref the remote
+  // advertises.
+  string prefix = 2;
+
+  // Token is a secret reference for HTTPS authentication, resolved inside
+  // this task and never logged. A literal string here is refused.
+  flowstate.v1.Value token = 3;
+}
+
+// RemoteRef is one ref a remote advertised, bound to its content: a workflow
+// that reads `refs.name` alongside `refs.sha` is binding to what the ref
+// pointed at when this task ran, not merely repeating a movable name a later
+// force-push or branch reset could quietly change out from under it.
+message RemoteRef {
+  string name = 1;
+  string sha = 2;
+}
+
+// LsRemoteOutputs is the bounded set of refs found.
+message LsRemoteOutputs {
+  repeated RemoteRef refs = 1;
+
+  // Truncated reports whether the remote advertised more refs than the
+  // bound this task enforces (see maxRemoteRefs).
+  bool truncated = 2;
+}
+
+// CommitPushInputs describes one write: materialize a tree from base_ref,
+// apply files and/or a patch to it, commit the result, and push it to
+// branch - all inside the one activity invocation that runs this task. See
+// doc.go, "One activity, one write," for the full argument.
+message CommitPushInputs {
+  // Url is the repository to write to, https:// only.
+  string url = 1;
+
+  // Branch is always explicit - never defaulted to the remote's HEAD, since
+  // pushing somewhere the workflow did not name is exactly the foot-gun this
+  // field's own requiredness exists to prevent. Written as a short branch
+  // name (no "refs/heads/" prefix); this task always writes to
+  // "refs/heads/<branch>".
+  string branch = 2;
+
+  // BaseRef is the remote commit this change was computed against - what
+  // `vcs.diff`, a coding agent, or a previous step read before deciding what
+  // to change. Required, for the same reason branch is: this task never
+  // guesses a starting point. Accepts anything go-git's revision parser
+  // does (a branch, a tag, or a commit sha).
+  string base_ref = 3;
+
+  // Message is the new commit's message.
+  string message = 4;
+
+  // Files is path -> new file content. A path already present in base_ref
+  // is overwritten (its regular/executable mode is preserved; a path this
+  // creates fresh is always mode Regular); a path not present is created.
+  // Text content only in this version - see doc.go for the binary gap.
+  // Every path is validated: no absolute path, no ".." segment, nothing
+  // under ".git/", and nothing that would write through a symlink base_ref
+  // already has at a leading path segment.
+  //
+  // A path may be named by files or by patch, never both: this task refuses
+  // that as ambiguous rather than defining an order between them, since a
+  // silent "whichever applies last wins" would hide one input quietly
+  // overriding the other for the same path. There is no layering to reason
+  // about - see doc.go, "files and patch do not layer," for why that is the
+  // safer contract, not a missing feature.
+  map<string, string> files = 5;
+
+  // Patch is a unified diff (the same format vcs.diff produces and a coding
+  // agent can emit), applied to base_ref's tree. Bounded in size (see
+  // maxPatchBytes) and parsed and applied entirely in memory - see doc.go,
+  // "Why go-git and go-gitdiff, not git apply," for why this needs a
+  // second, small dependency go-git itself does not provide. A modification
+  // patch that omits mode header lines (the ordinary case) preserves the
+  // touched path's existing mode; deletions are validated against base_ref's
+  // actual content, the same as every other fragment - a patch whose
+  // context does not match, or that names a path base_ref does not have, is
+  // refused rather than silently deleting whatever is there now.
+  string patch = 6;
+
+  // AuthorName and AuthorEmail name the commit's author and committer -
+  // this task does not distinguish them. Both are required together, or
+  // both left empty (in which case a placeholder identity is used).
+  string author_name = 7;
+  string author_email = 8;
+
+  // Timestamp, RFC 3339, makes commit construction fully deterministic: the
+  // same inputs given twice produce the identical sha, which is what turns a
+  // retried push into arithmetic rather than a guess - see doc.go, "The
+  // idempotency trick." Left empty, the activity's own wall clock is used,
+  // and retry-safety falls back to comparing the would-be commit's parent,
+  // tree, and message against what is already on the remote branch, rather
+  // than comparing shas directly.
+  string timestamp = 9;
+
+  // Token is a secret reference for HTTPS authentication, resolved inside
+  // this task and never logged, and never carried in url itself. A literal
+  // string here is refused.
+  flowstate.v1.Value token = 10;
+}
+
+// CommitPushOutputs is the result of one write.
+message CommitPushOutputs {
+  // Sha is the commit this invocation created (or, when landed_previously is
+  // true, the commit an earlier attempt already created) - the content a
+  // later step should bind to, rather than re-reading `branch` and trusting
+  // it has not moved again since.
+  string sha = 1;
+
+  // LandedPreviously is true when this invocation made no new push because
+  // the intended change was already present - either as a commit the remote
+  // branch already carried (the exact same sha, when Timestamp made the
+  // commit deterministic, or a different sha with the same parent, tree,
+  // and message otherwise - see doc.go, "The idempotency trick"), or
+  // because the tree this call would have produced already matches
+  // base_ref's own tree (see doc.go, "Content-level idempotency," and
+  // Changed below) - the case a movable base_ref (a branch name, most
+  // commonly) reaches after an earlier attempt's push went unacknowledged:
+  // base_ref itself resolves past that attempt's own commit, so nothing
+  // about resolving it again reveals that anything happened, and the
+  // signal has to come from the tree instead.
+  bool landed_previously = 2;
+
+  // Changed reports whether this call's inputs, applied to base_ref,
+  // actually produce a tree different from base_ref's own - false for both
+  // a retry that a movable base_ref silently absorbed and an ordinary
+  // no-op call whose files/patch describe content base_ref already has.
+  // Both are the same well-defined case: nothing to commit, so nothing was
+  // pushed, and sha is base_ref's own resolved commit rather than a newly
+  // created one. True whenever a real change did land, whether by this call
+  // or (landed_previously) an earlier one.
+  bool changed = 3;
+}

@@ -299,8 +299,58 @@ type TaskManifest struct {
 	// Recorded rather than assumed, because a field whose enforcement is assumed
 	// rather than checked is how `expect:` got its own reputation.
 	ExpressionInputs []string `protobuf:"bytes,9,rep,name=expression_inputs,json=expressionInputs,proto3" json:"expression_inputs,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// SecretInputs names the inputs this task accepts a host secret reference
+	// through — a Flowfile writes `${secret('vault:prod/api#token')}`, and this
+	// is what tells the host it may resolve one into this input rather than
+	// refusing it.
+	//
+	// # Why the host resolves rather than the plugin
+	//
+	// A plugin can already resolve references under a scheme *it* provides — see
+	// SecretService. That is a different direction: a plugin task consuming a
+	// secret the *host* manages, such as one the workflow author addresses with
+	// the engine's own `vault:` or `env:` provider. Letting the plugin ask the
+	// host to resolve an arbitrary reference would make every plugin a confused
+	// deputy, fanning the engine's providers, tenancy scoping, and audit out to
+	// every plugin process rather than keeping them in the one place a
+	// deployment configures and reviews them.
+	//
+	// So the host resolves a reference named here before the request crosses
+	// into the plugin process at all, exactly where and how it resolves one for
+	// a built-in task's own secret input: inside the activity, under the
+	// caller's authenticated identity and namespace, through the deployment's
+	// configured providers. The plugin receives a value, never a reference and
+	// never provider access — which is what keeps a plugin from fishing for a
+	// secret a Flowfile never routed to it.
+	//
+	// # This guarantee is scoped to a local transport
+	//
+	// Handing the plugin a resolved value rather than a reference is safe today
+	// because "the plugin" means a process on the same machine, reached over a
+	// filesystem socket only this worker can open — there is exactly one policy
+	// enforcement point between the secret store and the value's only reader.
+	// A remote plugin endpoint (tracked as issue #151) breaks that: resolving
+	// here and sending the value over a network hands a credential to a third
+	// party's process, which is disclosure rather than execution. Extending the
+	// transport to a remote endpoint must NOT reuse this resolve-then-send path
+	// without a per-endpoint secret-release policy — deny by default — deciding
+	// first whether that endpoint may receive the value at all; no such policy
+	// exists yet, and until it does a remote transport must refuse every
+	// secret_inputs reference rather than resolve one. See the same note at the
+	// host's choke point, [resolvePluginSecretInputs] in plugin/task.go, which is
+	// where a future remote-transport change would have to pass.
+	//
+	// # Fail closed, both directions
+	//
+	// A reference in an input not named here is refused — as a task error,
+	// since (like expression_inputs above) a process that has not launched the
+	// plugin cannot check this at `flow validate` time. And an input named here
+	// that still holds an unresolved reference when the request would otherwise
+	// cross into the plugin is refused rather than forwarded: the plugin
+	// process must never see a [flowstate.v1.SecretRef], only the value.
+	SecretInputs  []string `protobuf:"bytes,10,rep,name=secret_inputs,json=secretInputs,proto3" json:"secret_inputs,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *TaskManifest) Reset() {
@@ -392,6 +442,13 @@ func (x *TaskManifest) GetNeedsScope() bool {
 func (x *TaskManifest) GetExpressionInputs() []string {
 	if x != nil {
 		return x.ExpressionInputs
+	}
+	return nil
+}
+
+func (x *TaskManifest) GetSecretInputs() []string {
+	if x != nil {
+		return x.SecretInputs
 	}
 	return nil
 }
@@ -783,7 +840,22 @@ type ExecuteResponse struct {
 	// exists because only the plugin knows whether its backend failure was
 	// transient. The engine defaults to not retrying, so a plugin that says nothing
 	// gets the safe answer.
-	Retryable     bool `protobuf:"varint,2,opt,name=retryable,proto3" json:"retryable,omitempty"`
+	Retryable bool `protobuf:"varint,2,opt,name=retryable,proto3" json:"retryable,omitempty"`
+	// UnknownOutcome reports that whether the operation took effect is unknown —
+	// the request may have reached the backend and failed only to answer, so
+	// retrying could perform it a second time. Meaningful only alongside
+	// retryable = false, and only when the RPC failed: it is the plugin's own
+	// version of the http task's own "sent, then lost the response" case, which
+	// the engine reports as permanent for the same reason — an unknown outcome
+	// is not a failure another attempt could clear up, it is an operation that
+	// may already have happened, and the author is the one who gets to decide
+	// what to do about it.
+	UnknownOutcome bool `protobuf:"varint,3,opt,name=unknown_outcome,json=unknownOutcome,proto3" json:"unknown_outcome,omitempty"`
+	// RetryAfter says how long to wait before another attempt, when retryable is
+	// true and the plugin's own backend named a preferred delay — a 429 or a 503
+	// carrying one, the same reason the http task honors a `Retry-After` header
+	// rather than guessing. Unset lets the engine apply its own backoff.
+	RetryAfter    *durationpb.Duration `protobuf:"bytes,4,opt,name=retry_after,json=retryAfter,proto3" json:"retry_after,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -832,6 +904,20 @@ func (x *ExecuteResponse) GetRetryable() bool {
 	return false
 }
 
+func (x *ExecuteResponse) GetUnknownOutcome() bool {
+	if x != nil {
+		return x.UnknownOutcome
+	}
+	return false
+}
+
+func (x *ExecuteResponse) GetRetryAfter() *durationpb.Duration {
+	if x != nil {
+		return x.RetryAfter
+	}
+	return nil
+}
+
 var File_flowstate_plugin_v1_plugin_proto protoreflect.FileDescriptor
 
 const file_flowstate_plugin_v1_plugin_proto_rawDesc = "" +
@@ -844,7 +930,7 @@ const file_flowstate_plugin_v1_plugin_proto_rawDesc = "" +
 	"\fcapabilities\x18\x04 \x03(\x0e2\x1f.flowstate.plugin.v1.CapabilityB\n" +
 	"\xbaH\a\x92\x01\x04\b\x01\x10\x10R\fcapabilities\x128\n" +
 	"\aschemes\x18\x05 \x03(\tB\x1e\xbaH\x1b\x92\x01\x18\x10 \"\x14r\x12\x10\x01\x18 2\f^[a-z0-9-]+$R\aschemes\x12A\n" +
-	"\x05tasks\x18\x06 \x03(\v2!.flowstate.plugin.v1.TaskManifestB\b\xbaH\x05\x92\x01\x02\x10@R\x05tasks\"\xae\x03\n" +
+	"\x05tasks\x18\x06 \x03(\v2!.flowstate.plugin.v1.TaskManifestB\b\xbaH\x05\x92\x01\x02\x10@R\x05tasks\"\xdd\x03\n" +
 	"\fTaskManifest\x127\n" +
 	"\x04name\x18\x01 \x01(\tB#\xe2A\x01\x02\xbaH\x1c\xc8\x01\x01r\x17\x10\x01\x18@2\x11^[a-z][a-z0-9_]*$R\x04name\x12\"\n" +
 	"\asummary\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\asummary\x12)\n" +
@@ -855,7 +941,9 @@ const file_flowstate_plugin_v1_plugin_proto_rawDesc = "" +
 	"\x0fdeferred_inputs\x18\a \x03(\tB\b\xbaH\x05\x92\x01\x02\x10\x10R\x0edeferredInputs\x12\x1f\n" +
 	"\vneeds_scope\x18\b \x01(\bR\n" +
 	"needsScope\x125\n" +
-	"\x11expression_inputs\x18\t \x03(\tB\b\xbaH\x05\x92\x01\x02\x10\x10R\x10expressionInputs\"=\n" +
+	"\x11expression_inputs\x18\t \x03(\tB\b\xbaH\x05\x92\x01\x02\x10\x10R\x10expressionInputs\x12-\n" +
+	"\rsecret_inputs\x18\n" +
+	" \x03(\tB\b\xbaH\x05\x92\x01\x02\x10\x10R\fsecretInputs\"=\n" +
 	"\x0fDescribeRequest\x12*\n" +
 	"\fhost_version\x18\x01 \x01(\tB\a\xbaH\x04r\x02\x18@R\vhostVersion\"_\n" +
 	"\x10DescribeResponse\x12K\n" +
@@ -883,10 +971,13 @@ const file_flowstate_plugin_v1_plugin_proto_rawDesc = "" +
 	"\xe2A\x01\x02\xbaH\x03\xc8\x01\x01R\x04task\x12)\n" +
 	"\x05scope\x18\x02 \x01(\v2\x13.flowstate.v1.ScopeR\x05scope\x12:\n" +
 	"\bidentity\x18\x03 \x01(\v2\x1e.flowstate.v1.WorkloadIdentityR\bidentity\x12&\n" +
-	"\tnamespace\x18\x04 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\tnamespace\"e\n" +
+	"\tnamespace\x18\x04 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\tnamespace\"\xca\x01\n" +
 	"\x0fExecuteResponse\x124\n" +
 	"\aoutputs\x18\x01 \x01(\v2\x1a.flowstate.v1.Node.OutputsR\aoutputs\x12\x1c\n" +
-	"\tretryable\x18\x02 \x01(\bR\tretryable*V\n" +
+	"\tretryable\x18\x02 \x01(\bR\tretryable\x12'\n" +
+	"\x0funknown_outcome\x18\x03 \x01(\bR\x0eunknownOutcome\x12:\n" +
+	"\vretry_after\x18\x04 \x01(\v2\x19.google.protobuf.DurationR\n" +
+	"retryAfter*V\n" +
 	"\n" +
 	"Capability\x12\x1a\n" +
 	"\x16CAPABILITY_UNSPECIFIED\x10\x00\x12\x16\n" +
@@ -947,19 +1038,20 @@ var file_flowstate_plugin_v1_plugin_proto_depIdxs = []int32{
 	16, // 8: flowstate.plugin.v1.ExecuteRequest.scope:type_name -> flowstate.v1.Scope
 	13, // 9: flowstate.plugin.v1.ExecuteRequest.identity:type_name -> flowstate.v1.WorkloadIdentity
 	17, // 10: flowstate.plugin.v1.ExecuteResponse.outputs:type_name -> flowstate.v1.Node.Outputs
-	4,  // 11: flowstate.plugin.v1.PluginService.Describe:input_type -> flowstate.plugin.v1.DescribeRequest
-	6,  // 12: flowstate.plugin.v1.PluginService.Health:input_type -> flowstate.plugin.v1.HealthRequest
-	8,  // 13: flowstate.plugin.v1.SecretService.Resolve:input_type -> flowstate.plugin.v1.ResolveRequest
-	10, // 14: flowstate.plugin.v1.TaskService.Execute:input_type -> flowstate.plugin.v1.ExecuteRequest
-	5,  // 15: flowstate.plugin.v1.PluginService.Describe:output_type -> flowstate.plugin.v1.DescribeResponse
-	7,  // 16: flowstate.plugin.v1.PluginService.Health:output_type -> flowstate.plugin.v1.HealthResponse
-	9,  // 17: flowstate.plugin.v1.SecretService.Resolve:output_type -> flowstate.plugin.v1.ResolveResponse
-	11, // 18: flowstate.plugin.v1.TaskService.Execute:output_type -> flowstate.plugin.v1.ExecuteResponse
-	15, // [15:19] is the sub-list for method output_type
-	11, // [11:15] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	14, // 11: flowstate.plugin.v1.ExecuteResponse.retry_after:type_name -> google.protobuf.Duration
+	4,  // 12: flowstate.plugin.v1.PluginService.Describe:input_type -> flowstate.plugin.v1.DescribeRequest
+	6,  // 13: flowstate.plugin.v1.PluginService.Health:input_type -> flowstate.plugin.v1.HealthRequest
+	8,  // 14: flowstate.plugin.v1.SecretService.Resolve:input_type -> flowstate.plugin.v1.ResolveRequest
+	10, // 15: flowstate.plugin.v1.TaskService.Execute:input_type -> flowstate.plugin.v1.ExecuteRequest
+	5,  // 16: flowstate.plugin.v1.PluginService.Describe:output_type -> flowstate.plugin.v1.DescribeResponse
+	7,  // 17: flowstate.plugin.v1.PluginService.Health:output_type -> flowstate.plugin.v1.HealthResponse
+	9,  // 18: flowstate.plugin.v1.SecretService.Resolve:output_type -> flowstate.plugin.v1.ResolveResponse
+	11, // 19: flowstate.plugin.v1.TaskService.Execute:output_type -> flowstate.plugin.v1.ExecuteResponse
+	16, // [16:20] is the sub-list for method output_type
+	12, // [12:16] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_plugin_v1_plugin_proto_init() }

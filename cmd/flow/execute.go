@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -124,15 +125,63 @@ func renderError(surface *ui.UI, err error) {
 	fmt.Fprint(w, b.String())
 }
 
-// isUsageError reports whether cobra refused the command line rather than the
-// command failing.
+// usageError marks an error this repo constructs as itself an invocation
+// mistake — the command line was wrong and nothing ran — rather than something a
+// command discovered about the file or workflow it was given.
 //
-// Matched on the text because cobra does not give these a type — there is nothing
-// to match on with errors.As, and an errors.As against an interface every error
-// satisfies would look like a check and be none. That is fragile in the direction
-// costing least: a miss loses one line of advice, and there is no wrong advice it
-// can produce, since every other error prints exactly this report without it.
+// The division of labour with the prefix list below is exact and deliberate.
+// Cobra's own refusals (an unknown flag, the wrong number of arguments) get no
+// type from cobra, so they are matched on the wording it is known to use today —
+// fragile in the one direction that costs least, since a miss there only drops a
+// line of advice and an exit code, and every prefix is pinned by
+// TestCobraUsageErrorsMatchIsUsageError so a cobra upgrade that reworded one is
+// caught rather than silently accepted. Nothing this repo constructs may lean on
+// that list: a command validating its own flags controls its own wording, so it
+// has no excuse to be one string edit away from silently losing its
+// classification. It marks itself instead.
+//
+// Marking, not replacing: Unwrap and Error both forward to the wrapped error
+// unchanged, so wrapping never alters the message a person or a script reads —
+// only what [isUsageError] answers about it.
+//
+// The boundary that decides which errors get marked: a rejection of the
+// invocation — a flag combination that cannot both be honoured, a value a flag
+// does not accept — is marked. A rejection of the *file* a command was pointed
+// at — a Flowfile that does not parse, one `flow validate` finds a diagnostic
+// in — is never marked, because the command line asking for that check was
+// correct; what it found was the answer.
+type usageError struct {
+	err error
+}
+
+// newUsageError marks err as an invocation mistake, or returns nil unchanged —
+// mirroring fmt.Errorf and every other error constructor here, so a caller can
+// write `return newUsageError(fmt.Errorf(...))` without a separate nil check.
+func newUsageError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &usageError{err: err}
+}
+
+func (e *usageError) Error() string { return e.err.Error() }
+func (e *usageError) Unwrap() error { return e.err }
+
+// isUsageError reports whether the command line itself was wrong — cobra
+// refused it, or a command's own flag validation did — rather than the command
+// running and finding something to refuse.
+//
+// Typed errors first: anything this repo constructs that means "the invocation
+// was wrong" says so with [newUsageError], checked with errors.As so a wrap
+// anywhere in the chain is still found. Cobra's own errors carry no type, so
+// they fall through to the wording match below — see [usageError]'s doc for why
+// that split is exact rather than incidental.
 func isUsageError(err error) bool {
+	var marked *usageError
+	if errors.As(err, &marked) {
+		return true
+	}
+
 	text := err.Error()
 	for _, prefix := range []string{
 		"unknown command",
@@ -151,9 +200,32 @@ func isUsageError(err error) bool {
 	return false
 }
 
-// exitCode is the status a failed command leaves behind.
+// The exit codes a failed command leaves behind, exactly the three docs/CLI.md
+// promises: 0 for success (never assigned here, since this file is only reached on
+// failure), 1 for a command that ran and found something to refuse, and 2 for a
+// command line that was wrong before anything ran.
 //
-// One, always. A command line's exit status is read by `&&` and by CI, and a
-// vocabulary of codes is only useful if every caller knows it — which nobody does
-// for a tool this size, so the distinctions would be paid for and never read.
-const exitCode = 1
+// The distinction earns its keep at exactly one call site — a script or a CI job
+// that wants to tell "the workflow failed" from "I typed the flag wrong" apart —
+// and costs nothing anywhere else, because [isUsageError] already existed to put
+// the one piece of knowable advice in the report. [exitCodeFor] is the same
+// classification read a second time rather than a second one computed, which is
+// what keeps this from becoming a value that can disagree with the report above it.
+const (
+	exitCodeFailure = 1
+	exitCodeUsage   = 2
+)
+
+// exitCodeFor is the status main leaves the process in for a command that returned
+// err.
+//
+// Kept beside [isUsageError] rather than folded into [renderError], because the
+// report and the status are two different consumers of one classification — a
+// person reads the advice, a script reads the number — and a change to one must
+// not silently change the other without a test noticing both.
+func exitCodeFor(err error) int {
+	if isUsageError(err) {
+		return exitCodeUsage
+	}
+	return exitCodeFailure
+}

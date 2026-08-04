@@ -190,6 +190,28 @@ func stepToYAML(node *v1.Node) (yaml.MapSlice, error) {
 		}
 		step = append(step, yaml.MapItem{Key: key, Value: value})
 
+	case *v1.Node_Call:
+		// Written as the path an author wrote, never as the callee it resolved
+		// to. The compiled node carries the whole callee inline (see [v1.Call]'s
+		// doc on why), but that is what compiling means, not what writing means
+		// — round-tripping the embedded copy back out would turn `call:
+		// ./tenant.yaml` into the tenant workflow's entire body pasted in place,
+		// which `flow fmt` on any file with a call would silently rewrite into
+		// something enormous and no longer pointing at the file it named.
+		source := kind.Call.GetSource()
+		if source == "" {
+			return nil, fmt.Errorf("step %q: call has no source path to write", node.GetId())
+		}
+		step = append(step, yaml.MapItem{Key: "call", Value: source})
+
+		if args := kind.Call.GetArguments(); len(args) > 0 {
+			value, err := varsToYAML(args)
+			if err != nil {
+				return nil, fmt.Errorf("step %q with: %w", node.GetId(), err)
+			}
+			step = append(step, yaml.MapItem{Key: "with", Value: value})
+		}
+
 	default:
 		return nil, fmt.Errorf("step %q: has no %s", node.GetId(), stepKindList())
 	}

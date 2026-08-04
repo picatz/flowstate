@@ -28,6 +28,21 @@ func diagnosticsFor(t *testing.T, src string) []string {
 	ds, err := flowfile.ValidateSource([]byte(src))
 	require.NoError(t, err, "the file does not compile, so this says nothing about validation")
 
+	return diagnosticStrings(ds)
+}
+
+// diagnosticsForAt is [diagnosticsFor] for a file that may contain a `call:`
+// step, resolved relative to path's directory.
+func diagnosticsForAt(t *testing.T, src string, path string) []string {
+	t.Helper()
+
+	ds, err := flowfile.ValidateSourceAt([]byte(src), path)
+	require.NoError(t, err, "the file does not compile, so this says nothing about validation")
+
+	return diagnosticStrings(ds)
+}
+
+func diagnosticStrings(ds flowfile.Diagnostics) []string {
 	out := make([]string, 0, len(ds))
 	for _, d := range ds {
 		out = append(out, d.Error())
@@ -334,7 +349,7 @@ func TestTypeCheckingIsQuietOnTheCorpus(t *testing.T) {
 			data, err := os.ReadFile(path)
 			require.NoError(t, err)
 
-			assert.Empty(t, diagnosticsFor(t, string(data)),
+			assert.Empty(t, diagnosticsForAt(t, string(data), path),
 				"a shipped example was reported, and it runs in CI, so it is not the example that is wrong")
 		})
 	}

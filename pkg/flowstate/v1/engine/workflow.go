@@ -270,7 +270,7 @@ func Run(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error
 		undo: v1.NewUndoLog(st.GetPendingUndo()),
 	}
 
-	err := exec.runNodes(st.Workflow.GetSteps(), 0)
+	err := exec.runNodes(st.Workflow.GetSteps(), 0, 0)
 	switch {
 	case err == nil:
 		// The declared outputs, evaluated once — here, inline, in workflow code.
@@ -914,6 +914,19 @@ func collectNodeRefs(node *v1.Node, prev *v1.Workflow_StepOutputs, refs map[stri
 		// deadline the previous step computed" — and a run that suspended before
 		// the wait needs that output to still be there when it resumes.
 		collectValueRefs(kind.Wait.GetUntil(), prev, refs)
+
+	case *v1.Node_Call:
+		// Arguments only, never the callee's own body. An argument is resolved
+		// in the *caller's* scope — `${steps.build.digest}` bound to the
+		// callee's `tenant:` input — so a reference there is exactly as live as
+		// one in a task's inputs. The callee's steps run in the isolated scope
+		// [v1.CallScope] builds, which is a different namespace than `prev`
+		// entirely; walking into it here would either find nothing (the names
+		// don't exist in this map) or, worse, collide with a caller step that
+		// happens to share an id.
+		for _, value := range kind.Call.GetArguments() {
+			collectValueRefs(value, prev, refs)
+		}
 	}
 }
 

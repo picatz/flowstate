@@ -197,10 +197,7 @@ func TestEveryExampleRunsDurably(t *testing.T) {
 	for _, path := range paths {
 		name := filepath.Base(filepath.Dir(path))
 
-		data, err := os.ReadFile(path)
-		require.NoError(t, err)
-
-		wf, err := flowfile.Unmarshal(data)
+		wf, _, err := flowfile.ParseFile(path)
 		require.NoError(t, err, "%s does not compile", name)
 
 		if reason, ok := exampleDurableSkips[name]; ok {

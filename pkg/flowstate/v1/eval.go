@@ -790,7 +790,7 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 	// then nothing below this line does anything.
 	undo := NewUndoLog(nil)
 
-	if err := runNodes(ctx, w.Steps, scope, undo, false); err != nil {
+	if err := runNodes(ctx, w.Steps, scope, undo, false, 0); err != nil {
 		// The run cannot continue, so whatever already happened is taken back —
 		// reverse order, every entry attempted, one summary appended to the failure.
 		// [RunUndoLog] owns all three of those rules and the durable driver reaches
@@ -845,7 +845,7 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 // this level whether it is one a compensation may be written at — see
 // [CheckUndoPlacement], which refuses the nested case rather than silently
 // dropping it.
-func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, nested bool) error {
+func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, nested bool, depth int) error {
 	for _, node := range nodes {
 		// Refused before the step runs rather than after it succeeds, so a workload
 		// the engine cannot honour does not perform half of itself first.
@@ -865,7 +865,7 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, n
 			continue
 		}
 
-		outputs, err := runNodeWithVars(nodeCtx, node, scope, undo)
+		outputs, err := runNodeWithVars(nodeCtx, node, scope, undo, depth)
 		if err != nil {
 			// Cancellation is not a step failure, so `continue_on_error` does not
 			// get to tolerate it — the durable driver says the same thing at the
@@ -913,13 +913,13 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, n
 // Evaluated after the condition deliberately: `if:` decides whether the step runs
 // at all, so a var it declares does not exist yet when the question is asked —
 // and a var whose expression would fail must not fail a step that is skipped.
-func runNodeWithVars(ctx context.Context, node *Node, scope *Scope, undo *UndoLog) (*Node_Outputs, error) {
+func runNodeWithVars(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, depth int) (*Node_Outputs, error) {
 	inner, err := EvalStepVars(ctx, node, scope)
 	if err != nil {
 		return nil, err
 	}
 
-	outputs, err := runNode(ctx, node, inner)
+	outputs, err := runNode(ctx, node, inner, depth)
 	if err != nil {
 		return nil, err
 	}
@@ -995,23 +995,86 @@ func runUndoOnCancel(ctx context.Context, w *Workflow, undo *UndoLog) []UndoResu
 }
 
 // runNode executes one node and returns the outputs it records.
-func runNode(ctx context.Context, node *Node, scope *Scope) (*Node_Outputs, error) {
+func runNode(ctx context.Context, node *Node, scope *Scope, depth int) (*Node_Outputs, error) {
 	switch n := node.Kind.(type) {
 	case *Node_Task:
 		return runStepWithPolicy(ctx, n.Task, node.GetPolicy(), scope)
 
 	case *Node_ForEach:
-		return runForEach(ctx, n.ForEach, scope)
+		return runForEach(ctx, n.ForEach, scope, depth)
 
 	case *Node_Parallel:
-		return nil, runParallel(ctx, n.Parallel, scope)
+		return nil, runParallel(ctx, n.Parallel, scope, depth)
 
 	case *Node_Wait:
 		return runWait(ctx, node, n.Wait, scope)
 
+	case *Node_Call:
+		return runCall(ctx, n.Call, scope, depth+1)
+
 	default:
 		return nil, fmt.Errorf("unsupported node kind: %T", n)
 	}
+}
+
+// runCall runs a called workflow and returns what it declared it answers with.
+//
+// The three rules a call has to obey are [CallScope], [CallOutputs] and
+// [CheckCallDepth], all of which live in call.go because the durable driver obeys
+// the same three. What is here is the one thing this driver does differently:
+// running the callee's steps is a function call, where durably it is the same
+// executor descending a level.
+//
+// The callee's own `vars:` are evaluated here, in process, exactly as the top
+// level's are in [eval] — [EvalWorkflowVars] needs nothing this driver cannot
+// give it inline, unlike the durable driver, which must reach it through an
+// activity and then carry the answer across any Continue-As-New the call
+// spans (see `Frame.call_vars`'s doc). A local run never continues as new, so
+// there is nothing to carry here and evaluating it fresh every time this call
+// is reached costs nothing durably meaningful.
+//
+// `nested` is true for the body, which is what stops a called workflow from
+// carrying an `undo:` on one of its steps — the same refusal a loop body and a
+// parallel branch get, for the same unresolved reason about ordering across a
+// boundary. A nil undo log is passed for the same purpose: a compensation
+// registered inside a call has nowhere agreed to go yet.
+func runCall(ctx context.Context, call *Call, scope *Scope, depth int) (*Node_Outputs, error) {
+	if err := CheckCallDepth(depth); err != nil {
+		return nil, err
+	}
+
+	callee := call.GetWorkflow()
+
+	arguments, err := ResolveCallArguments(ctx, call.GetArguments(), scope)
+	if err != nil {
+		return nil, err
+	}
+
+	// The explicit-profile form ([EvalVars]) rather than [EvalWorkflowVars],
+	// which reads the profile off the workflow itself: a callee that names no
+	// profile of its own inherits the caller's, per [CalleeProfile], and using
+	// the workflow's bare (empty) field here would evaluate its vars against
+	// [OriginalProfile] instead — a different vocabulary from the one its
+	// steps, scoped moments later through the same [CalleeProfile] call
+	// inside [CallScope], actually run under.
+	vars, err := EvalVars(ctx, CalleeProfile(scope, callee), callee.GetVars())
+	if err != nil {
+		return nil, fmt.Errorf("calling %q: %w", callee.GetName(), err)
+	}
+
+	inner, err := CallScope(scope, callee, arguments, vars)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := runNodes(ctx, callee.GetSteps(), inner, nil, true, depth); err != nil {
+		// Named, because a failure inside a called workflow reported without
+		// saying which one leaves a reader looking through the caller for a step
+		// that is not there.
+		return nil, fmt.Errorf("workflow %q: %w", callee.GetName(), err)
+	}
+
+	return CallOutputs(ctx, callee, inner)
 }
 
 // runForEach runs a loop body once per item.
@@ -1021,7 +1084,7 @@ func runNode(ctx context.Context, node *Node, scope *Scope) (*Node_Outputs, erro
 // without reproducing anything an author can act on — and sequential execution
 // makes a local run's output deterministic, which is what makes it useful for
 // comparison.
-func runForEach(ctx context.Context, loop *ForEach, scope *Scope) (*Node_Outputs, error) {
+func runForEach(ctx context.Context, loop *ForEach, scope *Scope, depth int) (*Node_Outputs, error) {
 	items, err := ResolveItems(ctx, loop, scope)
 	if err != nil {
 		return nil, err
@@ -1047,7 +1110,7 @@ func runForEach(ctx context.Context, loop *ForEach, scope *Scope) (*Node_Outputs
 
 		// nil log and nested: a compensation may not be written in a loop body, and
 		// [CheckUndoPlacement] refuses one rather than this level quietly ignoring it.
-		if err := runNodes(ctx, loop.GetBody(), iterationScope, nil, true); err != nil {
+		if err := runNodes(ctx, loop.GetBody(), iterationScope, nil, true, depth); err != nil {
 			return nil, fmt.Errorf("iteration %d: %w", i, err)
 		}
 
@@ -1076,7 +1139,7 @@ func onlyBodyOutputs(body []*Node, scope *Workflow_StepOutputs) *Workflow_StepOu
 // iterations do: determinism. Because branches may not depend on each other's
 // outputs, running them in order produces the same result the durable driver
 // reaches concurrently.
-func runParallel(ctx context.Context, parallel *Parallel, scope *Scope) error {
+func runParallel(ctx context.Context, parallel *Parallel, scope *Scope, depth int) error {
 	before := &Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}}
 	for k, v := range scope.GetOutputs().GetStepValues() {
 		before.StepValues[k] = v
@@ -1096,7 +1159,7 @@ func runParallel(ctx context.Context, parallel *Parallel, scope *Scope) error {
 		// went missing in the first place: it names the two fields somebody was
 		// thinking about, and silently omits every other one the type grows.
 		branchScope := scope.WithOutputs(branchOutputs)
-		if err := runNodes(ctx, branch.GetSteps(), branchScope, nil, true); err != nil {
+		if err := runNodes(ctx, branch.GetSteps(), branchScope, nil, true, depth); err != nil {
 			return fmt.Errorf("branch %d: %w", i, err)
 		}
 

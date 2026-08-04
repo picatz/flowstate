@@ -1,0 +1,75 @@
+edition: v2026.2
+name: git-commit-push
+description: Commits one file to a branch and pushes it using the "git" plugin's git.commit_push task. Requires inputs; never runs by accident.
+
+# git.commit_push is a mutation - unlike this directory's other file,
+# workflow.yaml, running this pushes a real commit to a real branch of a
+# real repository. It is written with required `inputs:` rather than a
+# hard-coded url/branch, specifically so it cannot run with no arguments the
+# way every other example in this repository is designed to - see
+# examples/README.md's own rule about that, and its one exception: "an
+# example whose subject is a required input needs a file saying what it
+# requires." This one's subject is a mutation, which is exactly the case for
+# requiring input rather than assuming a default.
+#
+# base_ref is required, never defaulted to the branch's own current tip -
+# see plugins/git/doc.go for why: this task compare-and-swaps the push
+# against exactly this value, and a caller that does not know it is not
+# ready to write yet. Read it first with git.ls_remote (see workflow.yaml)
+# or vcs.log, then pass what that returned.
+#
+# A retry of this exact same run (same base_ref, same content, same
+# timestamp) is safe - see plugins/git/doc.go, "The idempotency trick" - and
+# a genuinely concurrent write to the same branch is refused with a distinct
+# error a workflow can dispatch: on, never silently forced.
+
+inputs:
+  url:
+    type: string
+    required: true
+    description: "the repository to write to, e.g. https://github.com/your-org/your-repo.git"
+  branch:
+    type: string
+    required: true
+    description: the branch to push to (a plain name, e.g. "main" - this task writes to refs/heads/<branch> itself)
+  base_ref:
+    type: string
+    required: true
+    description: the commit this change was computed against - read it first with git.ls_remote or vcs.log
+  message:
+    type: string
+    required: true
+    description: the new commit's message
+  content:
+    type: string
+    required: true
+    description: "the new content for a fixed path this example writes: FLOWSTATE_EXAMPLE.md"
+
+steps:
+  - id: commit
+    git.commit_push:
+      url: ${inputs.url}
+      branch: ${inputs.branch}
+      base_ref: ${inputs.base_ref}
+      message: ${inputs.message}
+      # A files map's keys are ordinary YAML mapping keys, not expressions -
+      # only a value is `${...}`-interpolated - which is why the path this
+      # example writes is a fixed literal rather than a fourth input.
+      files:
+        FLOWSTATE_EXAMPLE.md: ${inputs.content}
+      # A secret reference, resolved inside the task, never a literal - see
+      # plugins/git/README.md, "Authentication."
+      token: ${secret('git:token')}
+
+outputs:
+  sha:
+    value: ${steps.commit.sha}
+    description: the commit this run created (or, on a safe retry, the commit an earlier attempt already created)
+
+  landed_previously:
+    value: ${steps.commit.landed_previously}
+    description: true when this run made no new push because the intended change was already there
+
+  changed:
+    value: ${steps.commit.changed}
+    description: false when base_ref already carried this exact change - a plain no-op, or a retry a movable base_ref (like this example's branch) silently absorbed; see plugins/git/doc.go, "Content-level idempotency"

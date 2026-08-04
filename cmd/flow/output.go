@@ -95,8 +95,12 @@ func resolveOutputFormat(cmd *cobra.Command) (OutputFormat, error) {
 		names = append(names, string(accepted))
 	}
 
-	return "", fmt.Errorf("--output %q is not a format this understands; use one of %s",
-		requested, strings.Join(names, ", "))
+	// A flag that parsed but names something this command does not accept is an
+	// invocation mistake, not a finding about whatever the command was pointed
+	// at — nothing has run yet — so it is marked the same way a usage error
+	// cobra itself would refuse is, per [usageError].
+	return "", newUsageError(fmt.Errorf("--output %q is not a format this understands; use one of %s",
+		requested, strings.Join(names, ", ")))
 }
 
 // Machine reports whether the format is for a program rather than a person.
@@ -356,5 +360,27 @@ func newSurface(cmd *cobra.Command) *ui.UI {
 		return ui.Plain(cmd.OutOrStdout(), cmd.ErrOrStderr())
 	}
 
-	return ui.New(os.Stdin, out, errOut, os.Environ())
+	return ui.New(os.Stdin, out, errOut, environForSurface(cmd))
+}
+
+// environForSurface is the process environment [ui.Detect] resolves colour,
+// background and symbols from, with `--no-color` folded in.
+//
+// Folded in rather than given a second mechanism: [ui.Capabilities.Profile] is
+// already NO_COLOR's own plumbing, `colorprofile.Detect` already treats it as the
+// one setting nothing else overrides, and a flag that instead flipped a field on
+// [ui.Capabilities] after the fact would be a second way to reach the same
+// decision — the kind of duplication CLAUDE.md's "one vocabulary" section warns a
+// concept spelled twice always drifts. Appended last, so it wins over whatever the
+// environment already carries: `--no-color` is the most explicit ask there is, and
+// a flag typed on this invocation must not lose to a variable exported for every
+// invocation.
+func environForSurface(cmd *cobra.Command) []string {
+	environ := os.Environ()
+
+	if noColor, _ := cmd.Flags().GetBool("no-color"); noColor {
+		environ = append(environ, "NO_COLOR=1")
+	}
+
+	return environ
 }
