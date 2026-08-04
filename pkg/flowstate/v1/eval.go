@@ -480,6 +480,35 @@ func NewLiteralMap(m map[string]any) *Value {
 	}
 }
 
+// newLiteralFromUint64 converts an unsigned value to the Int64Value CEL
+// uses, or an error value when it does not fit.
+//
+// Found by way of `flow test`'s stub `returns:` (#155): goccy/go-yaml decodes
+// a plain non-negative YAML integer — `status: 200` — into a Go `uint64`
+// rather than `int`, and [NewLiteral]'s switch had no case for any unsigned
+// width at all. It did not error either — it fell to the default case, which
+// *does* return an error value, but one recorded on the [Value] and never
+// surfaced anywhere a caller who only wanted an integer would think to look:
+// the key silently carried an error instead of 200, EvalRunOutputs found
+// nothing there, and `steps.fetch.status` failed with "no such attribute"
+// rather than with anything naming the real cause. A test file's stub
+// returning any plain integer was broken from the moment stubs existed, and
+// nothing caught it until the run-fails-silently defect this package's own
+// [assertExpectation] fix (#155, P1-1) stopped absorbing the failure.
+func newLiteralFromUint64(v uint64) *Value {
+	if v > math.MaxInt64 {
+		return &Value{
+			Kind: &Value_Error_{
+				Error: &Value_Error{
+					Message: fmt.Sprintf("flowstatev1: %d overflows the int64 every CEL integer is represented as", v),
+					Code:    Value_Error_CODE_INTERNAL,
+				},
+			},
+		}
+	}
+	return NewLiteral(int64(v))
+}
+
 func NewLiteral(val any) *Value {
 	switch v := val.(type) {
 	case string:
@@ -532,6 +561,22 @@ func NewLiteral(val any) *Value {
 				},
 			},
 		}
+	case int8:
+		return NewLiteral(int64(v))
+	case int16:
+		return NewLiteral(int64(v))
+	case int32:
+		return NewLiteral(int64(v))
+	case uint:
+		return newLiteralFromUint64(uint64(v))
+	case uint8:
+		return NewLiteral(int64(v))
+	case uint16:
+		return NewLiteral(int64(v))
+	case uint32:
+		return NewLiteral(int64(v))
+	case uint64:
+		return newLiteralFromUint64(v)
 	case bool:
 		return &Value{
 			Kind: &Value_Literal{
@@ -665,7 +710,8 @@ func NewValue(v any) *Value {
 		return val
 	case map[string]any:
 		return NewLiteralMap(val)
-	case string, int, float64, float32, int64, bool, *expr.Value:
+	case string, int, float64, float32, int64, bool, *expr.Value,
+		int8, int16, int32, uint, uint8, uint16, uint32, uint64:
 		return NewLiteral(val)
 	case []any:
 		return NewLiteralList(val...)
@@ -766,8 +812,12 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 	// this goroutine as "gone" between two waits, or a second, unrelated
 	// participant's own wait (`flow test`'s scripted signal delivery, running
 	// concurrently) would see the clock as fully parked and advance out from
-	// under it. See [EnterClock].
-	leaveClock := EnterClock(ctx)
+	// under it. See [EnterClock]. Registered through [EnterClockForWholeRun]
+	// rather than [EnterClock] directly, so that when an outer caller already
+	// holds the run's participant — `flow test` does, from before it starts
+	// delivering scripted signals — this does not register a redundant second
+	// one that would keep the clock from ever advancing on the run's own waits.
+	leaveClock := EnterClockForWholeRun(ctx)
 	defer leaveClock()
 
 	stepOutputs := &Workflow_StepOutputs{

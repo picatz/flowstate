@@ -189,6 +189,15 @@ func waitLocally(ctx context.Context, clock Clock, d time.Duration) (*Node_Outpu
 // derived context on the clock's signal is what lets [SignalWaiter.WaitForSignal]
 // still unblock the same way it always has, without every implementation of
 // that interface having to learn about a clock of its own.
+//
+// This goroutine's own registration with clock is withdrawn for the whole of
+// the blocking receive below, timed or not — see [LeaveClockWhile]. Waiting
+// for a signal is waiting on something the clock does not control, so this
+// goroutine never parks on it the way a [Clock.After] caller does; without
+// withdrawing, a [VirtualClock] with nothing else running could never see
+// every participant parked, and could never advance to deliver whatever
+// `flow test`'s own scripted signal sender is waiting to send — the run
+// would hang rather than resolve.
 func waitForSignalLocally(ctx context.Context, clock Clock, signal *Signal, timeout time.Duration) (*Node_Outputs, error) {
 	name := signal.GetName()
 
@@ -198,6 +207,9 @@ func waitForSignalLocally(ctx context.Context, clock Clock, signal *Signal, time
 	}
 
 	if timeout <= 0 {
+		rejoin := LeaveClockWhile(ctx)
+		defer rejoin()
+
 		payload, err := waiter.WaitForSignal(ctx, name)
 		if err != nil {
 			return nil, err
@@ -208,6 +220,21 @@ func waitForSignalLocally(ctx context.Context, clock Clock, signal *Signal, time
 	waitCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	// The helper goroutine below is registered as a clock participant here,
+	// on this goroutine, before anything is given up — not inside the
+	// goroutine itself, and not after spawning it. `go func(){...}` only
+	// queues the goroutine; nothing here waits for the scheduler to actually
+	// start running it before this goroutine's own LeaveClockWhile, a few
+	// lines down, gives up its slot. Registering the replacement afterward
+	// (or worse, from inside the not-yet-running goroutine) would leave a
+	// window where the clock's own participant count is one short of the
+	// truth — long enough, on an unlucky schedule, for a [VirtualClock] to
+	// see every *currently counted* participant parked and advance straight
+	// past this wait's own timeout to whatever the next deadline is, which
+	// is exactly the bug this ordering exists to close: the timeout would
+	// lose a race it should always win against anything scheduled later.
+	helperLeave := EnterClock(ctx)
+
 	// timedOut is closed exactly when the clock's own deadline is what ended
 	// waitCtx, as opposed to the caller's context being cancelled for an
 	// unrelated reason (the run stopping) — the same distinction the previous,
@@ -216,6 +243,8 @@ func waitForSignalLocally(ctx context.Context, clock Clock, signal *Signal, time
 	// cannot report on its own.
 	timedOut := make(chan struct{})
 	go func() {
+		defer helperLeave()
+
 		select {
 		case <-clock.After(timeout):
 			close(timedOut)
@@ -223,6 +252,12 @@ func waitForSignalLocally(ctx context.Context, clock Clock, signal *Signal, time
 		case <-waitCtx.Done():
 		}
 	}()
+
+	// This goroutine's own participation is given up only now — after the
+	// helper's replacement registration above already exists, so the two
+	// are never simultaneously absent.
+	rejoin := LeaveClockWhile(ctx)
+	defer rejoin()
 
 	payload, err := waiter.WaitForSignal(waitCtx, name)
 	if err == nil {

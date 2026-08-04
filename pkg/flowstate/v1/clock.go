@@ -122,6 +122,75 @@ func EnterClock(ctx context.Context) (leave func()) {
 	return p.Leave
 }
 
+// clockRunParticipantHeldKey marks a context whose run-level clock participant
+// is already registered by an outer caller.
+type clockRunParticipantHeldKey struct{}
+
+// NewContextWithHeldRunParticipant records that the run's single whole-run
+// clock participant is already held by the caller, so [EnterClockForWholeRun]
+// — what [eval] calls — does not register a second one of its own.
+//
+// `flow test` is the only caller. It registers the run as a participant before
+// it begins delivering scripted signals and holds that registration until the
+// run returns, which closes the startup window that would otherwise exist: a
+// signal scripted for a virtual instant the run has not reached yet parks on
+// the clock as soon as the harness starts it, and if that signal were the
+// clock's only participant — because the run had not yet reached a wait and
+// registered — the clock would advance straight to that instant and deliver
+// the signal early, before the run's first `wait_for_signal:` timeout was even
+// pending. Holding the run's participant from the outside keeps the clock from
+// advancing on a scripted signal alone until the run itself is genuinely
+// parked too.
+func NewContextWithHeldRunParticipant(ctx context.Context) context.Context {
+	return context.WithValue(ctx, clockRunParticipantHeldKey{}, struct{}{})
+}
+
+// EnterClockForWholeRun registers the run's single whole-run clock participant
+// and returns the matching leave — unless the context says an outer caller
+// already holds it (see [NewContextWithHeldRunParticipant]), in which case it
+// does nothing and that outer caller's own leave is what eventually withdraws
+// the run. This is what [eval] calls for the run as a whole; a per-wait
+// participant such as a signal timeout's helper goroutine still uses
+// [EnterClock] directly, because it is a genuinely distinct participant.
+func EnterClockForWholeRun(ctx context.Context) (leave func()) {
+	if _, held := ctx.Value(clockRunParticipantHeldKey{}).(struct{}); held {
+		return func() {}
+	}
+	return EnterClock(ctx)
+}
+
+// LeaveClockWhile withdraws the calling goroutine's own registration with
+// ctx's clock for the duration of something that blocks on a real, external
+// event rather than on virtual time — an untimed `wait_for_signal:`, whose
+// only way to unblock is a payload arriving, is the one caller today
+// ([waitForSignalLocally]). Returns the func that re-registers, to be called
+// once the blocking call returns.
+//
+// # Why this has to exist
+//
+// [VirtualClock] only ever advances once every registered participant is
+// parked on a timer or gone (see [VirtualClock.advanceLocked]). A goroutine
+// blocked in a real channel receive is not parked on the clock — it never
+// called [VirtualClock.After] — so as long as it stays counted as a
+// participant, the clock can never see "everyone is parked" and never
+// advances, however many *other* participants (a `flow test` signal script,
+// say) are sitting on their own timers waiting for exactly that. Nothing
+// will ever deliver anything, and the run hangs forever: not a slow test, an
+// actually-stuck one, since nothing here reads a wall clock as a backstop.
+//
+// Leaving for the duration is what removes the goroutine from that count
+// while it is doing something the clock cannot help resolve; rejoining
+// afterward is what keeps the whole-run bookkeeping in [eval] correct for
+// whatever the run does next.
+func LeaveClockWhile(ctx context.Context) (rejoin func()) {
+	p, ok := ClockFromContext(ctx).(ClockParticipant)
+	if !ok {
+		return func() {}
+	}
+	p.Leave()
+	return p.Enter
+}
+
 // virtualTimer is one pending deadline registered with a [VirtualClock].
 type virtualTimer struct {
 	deadline time.Time

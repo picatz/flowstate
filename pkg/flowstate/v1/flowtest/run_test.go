@@ -99,6 +99,9 @@ outputs:
 tests:
   - name: expects the wrong greeting
     workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        returns: {}
     expect:
       outputs:
         greeting: "bye"

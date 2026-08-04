@@ -3,6 +3,7 @@ package flowtest
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -71,13 +72,6 @@ func runCase(testFile string, test *Test) *v1.TestCase {
 		result.Duration = durationpb.New(time.Since(started))
 	}()
 
-	workflowPath := WorkflowPath(testFile, test)
-	workflow, _, err := flowfile.ParseFile(workflowPath)
-	if err != nil {
-		result.Error = fmt.Sprintf("loading workflow %q: %v", test.Workflow, err)
-		return result
-	}
-
 	stubs, err := compileStubs(test.Stubs)
 	if err != nil {
 		result.Error = err.Error()
@@ -87,8 +81,22 @@ func runCase(testFile string, test *Test) *v1.TestCase {
 	registryMu.Lock()
 	defer registryMu.Unlock()
 
+	// Swapped in before the workflow is even parsed, not just before it runs:
+	// a stub may name a task this build does not otherwise register — a
+	// plugin task's name — and the compiler refuses a step naming a task it
+	// cannot find *at parse time*, before this function would otherwise get a
+	// chance to make one up. Registering the synthetic shape first is what
+	// makes stubbing a plugin task's name actually usable rather than merely
+	// advertised.
 	restore := swapRegistry(stubs)
 	defer restore()
+
+	workflowPath := WorkflowPath(testFile, test)
+	workflow, _, err := flowfile.ParseFile(workflowPath)
+	if err != nil {
+		result.Error = fmt.Sprintf("loading workflow %q: %v", test.Workflow, err)
+		return result
+	}
 
 	clock := v1.NewVirtualClock(epoch)
 	ctx := v1.NewContextWithClock(context.Background(), clock)
@@ -96,7 +104,25 @@ func runCase(testFile string, test *Test) *v1.TestCase {
 	signals := v1.NewLocalSignals()
 	ctx = v1.NewContextWithSignalWaiter(ctx, signals)
 
-	stopScripts, scriptErr := scriptSignals(clock, signals, test.Signals)
+	// Hold the run's own clock participant before any scripted signal can park,
+	// and tell eval (through the context) not to register a second one of its
+	// own. Without this, a signal scripted for a virtual instant the run has
+	// not reached yet would, in the window before the run reaches its first
+	// wait, be the clock's only participant — and the clock would advance
+	// straight to that instant and deliver the signal early, defeating a
+	// `wait_for_signal:` timeout the signal was scripted to arrive after. Held
+	// until RunWithInputs returns; released after stopScripts so signal
+	// goroutines wind down first. See [v1.NewContextWithHeldRunParticipant].
+	clock.Enter()
+	defer clock.Leave()
+	ctx = v1.NewContextWithHeldRunParticipant(ctx)
+
+	// runFinished is closed the moment RunWithInputs returns, so a scripted
+	// signal whose moment never arrives during the run does not deliver into
+	// an empty room after the fact — see [scriptSignals].
+	runFinished := make(chan struct{})
+
+	stopScripts, scriptErr := scriptSignals(runFinished, clock, signals, test.Signals)
 	defer stopScripts()
 	if scriptErr != nil {
 		result.Error = scriptErr.Error()
@@ -106,6 +132,7 @@ func runCase(testFile string, test *Test) *v1.TestCase {
 	inputs := v1.NewNamedValues(test.Inputs)
 
 	outputs, runErr := v1.RunWithInputs(ctx, workflow, inputs)
+	close(runFinished)
 
 	result.Failures = assertExpectation(&test.Expect, outputs, runErr)
 	result.Passed = len(result.Failures) == 0
@@ -113,8 +140,19 @@ func runCase(testFile string, test *Test) *v1.TestCase {
 	return result
 }
 
-// swapRegistry replaces the named tasks in [v1.DefaultRegistry] with stubs,
-// and returns a func restoring what was there before.
+// swapRegistry replaces every task in [v1.DefaultRegistry] for the duration
+// of one case — stubbed tasks with their stub, and every other registered
+// task with a function that fails closed — and returns a func restoring what
+// was there before.
+//
+// Every task, not just the stubbed ones. `flow test`'s whole promise is no
+// network and no Temporal (#155): a task this case never bothered to stub
+// must not fall through to its real Fn, because a real `http` task reaches
+// the real network the instant a workflow's step reaches it — silently, on
+// the one path this command exists to make sure never has to be trusted by
+// accident. An omitted stub is exactly as much a test author's mistake as an
+// unmatched `where:` is (see [stubbedTask.fn]), and gets the same answer: the
+// case fails, naming the task, rather than doing whatever the real one does.
 //
 // The registry-swap pattern the repo's own tests already use for the same
 // reason (`allowLoopback` in pkg/flowstate/v1/tests/tests.go): the local
@@ -133,23 +171,32 @@ func swapRegistry(stubs map[string]*stubbedTask) func() {
 	}
 	originals := make(map[string]saved, len(stubs))
 
-	for name, stubbed := range stubs {
-		def, existed := registry.Lookup(name)
-		originals[name] = saved{def: def, existed: existed}
+	// Every task this build already registers gets its Fn replaced, stubbed
+	// or not, which is what makes "no stub, no network" a property of the
+	// whole registry rather than of whichever names a case happened to
+	// mention.
+	for _, def := range registry.All() {
+		originals[def.Name] = saved{def: def, existed: true}
 
 		replacement := def
-		if !existed {
-			// A stub for a task this build does not register at all — a
-			// plugin task, say — still needs a shape the engine can dispatch
-			// to; a bare definition with no declared input/output schema is
-			// enough for RunWithInputs to reach the stub's Fn, and stubbing a
-			// name production also has no task for is the author's mistake to
-			// discover from the case failing, not this package's to refuse
-			// before the fact.
-			replacement = v1.TaskDef{Name: name}
+		if stub, ok := stubs[def.Name]; ok {
+			replacement.Fn = stub.fn(def.Name)
+		} else {
+			replacement.Fn = unstubbedTaskFn(def.Name)
 		}
-		replacement.Fn = stubbed.fn(replacement.Name)
 		_ = registry.Register(replacement)
+	}
+
+	// A stub naming a task this build does not register at all — a plugin
+	// task, say — still needs a shape the engine can dispatch to and the
+	// compiler can compile a step against; a bare definition with no
+	// declared input/output schema is enough for both.
+	for name, stub := range stubs {
+		if _, already := originals[name]; already {
+			continue
+		}
+		originals[name] = saved{existed: false}
+		_ = registry.Register(v1.TaskDef{Name: name, Fn: stub.fn(name)})
 	}
 
 	return func() {
@@ -165,11 +212,42 @@ func swapRegistry(stubs map[string]*stubbedTask) func() {
 	}
 }
 
-// scriptSignals starts one goroutine per scripted signal, each registered as
-// a [v1.ClockParticipant] so the clock cannot advance past a send it has not
-// made yet, and returns a func that waits for all of them to finish (a case
-// that never reaches its own wait must not leave these running past it).
-func scriptSignals(clock *v1.VirtualClock, signals *v1.LocalSignals, scripts []SignalScript) (stop func(), err error) {
+// unstubbedTaskFn is what a registered task's Fn becomes for the duration of
+// a case that declares no stub for it: a failure naming the task, rather than
+// whatever the real one would have done.
+func unstubbedTaskFn(name string) v1.TaskFunc {
+	return func(ctx context.Context, inputs map[string]*v1.Value, scope *v1.Scope) (*v1.Node_Outputs, error) {
+		return nil, v1.NewTaskError(name, v1.ErrorKindInvalidInput, fmt.Errorf(
+			"flow test: task %q was invoked, but this case declares no stub for it; "+
+				"add a `stubs:` entry naming %q — flow test never lets an unstubbed task run for real",
+			name, name))
+	}
+}
+
+// scriptSignals starts one goroutine per scripted signal and returns a func
+// that waits for all of them to finish (a case that never reaches its own
+// wait must not leave these running past it).
+//
+// Each goroutine is a [v1.ClockParticipant] ([v1.VirtualClock.Enter]) that
+// parks on [v1.VirtualClock.After] for its own scheduled offset rather than
+// forcing the clock forward itself ([v1.VirtualClock.Advance] would resolve a
+// send the instant this goroutine is scheduled, in real time, regardless of
+// what virtual moment the run has actually reached). Parking is what lets the
+// clock's own auto-advance — the same mechanism a workload's `sleep:` and
+// `wait_for_signal:` timeout already register with — decide, among every
+// pending deadline across the whole case, which fires first: a signal
+// scheduled after a wait's own timeout arrives *after* that wait has already
+// lapsed, because the timeout's earlier deadline is what the clock advances
+// to first; two signals scripted out of declaration order still arrive in
+// timestamp order, because the clock always fires the earliest pending
+// deadline next, never the one that happened to park first.
+//
+// runFinished is closed once the run itself has returned. A goroutine still
+// parked on a moment later than anything the run itself ever advanced to
+// stops waiting and delivers nothing — a signal scripted for after the
+// workflow already finished is simply never sent, matching what a sender
+// pointed at a workload that is no longer running would actually manage.
+func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals *v1.LocalSignals, scripts []SignalScript) (stop func(), err error) {
 	if len(scripts) == 0 {
 		return func() {}, nil
 	}
@@ -198,9 +276,31 @@ func scriptSignals(clock *v1.VirtualClock, signals *v1.LocalSignals, scripts []S
 		clock.Enter()
 		go func(j job) {
 			defer clock.Leave()
-			clock.Advance(epoch.Add(j.at))
+			defer func() { done <- struct{}{} }()
+
+			select {
+			case <-clock.After(j.at):
+			case <-runFinished:
+				// The run ended before the clock ever advanced to this
+				// signal's moment — nothing is left to deliver to.
+				return
+			}
+
+			// The run may have finished in the instant between the clock
+			// releasing this goroutine and this check — the two race
+			// legitimately (advancing the clock and returning from
+			// RunWithInputs happen on different goroutines) — so it is
+			// checked again, non-blocking, right before the send that
+			// matters: delivering into a room that is already empty is not
+			// wrong, exactly, but "never delivered" should mean that outside
+			// of a race this narrow too.
+			select {
+			case <-runFinished:
+				return
+			default:
+			}
+
 			_ = signals.Deliver(j.name, &v1.Node_Outputs{NamedValues: v1.NewNamedValues(j.payload)})
-			done <- struct{}{}
 		}(j)
 	}
 
@@ -213,15 +313,41 @@ func scriptSignals(clock *v1.VirtualClock, signals *v1.LocalSignals, scripts []S
 
 // assertExpectation compares a run's outcome against what the case declared,
 // returning one diagnostic per unmet expectation.
+//
+// # An unexpected failure is always a failure of the case
+//
+// A run erroring out is the verdict only where a case explicitly said it
+// could — `expect.failed: true`. Without that, a run that errors is not a
+// case with nothing to report: it is a case that asserted something about
+// outputs, or steps, or nothing in particular, and never got the chance,
+// because the workflow crashed, an input was invalid, or a task an author
+// forgot to stub failed closed (see [unstubbedTaskFn]). Reporting nothing
+// there would make a crash indistinguishable from a pass, which is the one
+// failure mode a test framework may not have — a green test that should be
+// red is worse than a framework that cannot run at all, because the second
+// one is at least visibly broken.
 func assertExpectation(want *Expectation, outputs *v1.Workflow_StepOutputs, runErr error) []*v1.Diagnostic {
 	var failures []*v1.Diagnostic
 
 	failed := runErr != nil
-	if want.Failed != nil && *want.Failed != failed {
+	switch {
+	case want.Failed != nil && *want.Failed != failed:
+		// An explicit expectation, in either direction, that did not hold:
+		// expected to fail and did not, or expected to succeed and did not.
 		failures = append(failures, &v1.Diagnostic{
 			Field: "expect.failed",
 			Message: fmt.Sprintf("expected the run to report failed=%t, got failed=%t (error: %v)",
 				*want.Failed, failed, runErr),
+		})
+	case want.Failed == nil && failed:
+		// No expectation named this outcome as possible, so the case gets
+		// the same answer an explicit "expected to succeed" would: the run's
+		// error, reported as a failure of the case rather than absorbed
+		// silently because nothing was left to compare against.
+		failures = append(failures, &v1.Diagnostic{
+			Field: "expect.failed",
+			Message: fmt.Sprintf(
+				"the run failed unexpectedly, and this case's expect.failed was not set to declare that it should: %v", runErr),
 		})
 	}
 	if want.ErrorContains != "" {
@@ -385,14 +511,48 @@ func literalToGo(v *expr.Value) (any, error) {
 }
 
 // looseEqual compares a YAML-decoded expectation against a value that came
-// back out of CEL, tolerant of the numeric type differences the two
-// encodings disagree about (YAML gives an integer literal `int`; CEL gives
-// `int64`) without being tolerant of an actual type mismatch — a string
-// "1" and a number 1 are still different answers.
+// back out of CEL, tolerant of the numeric *type* differences the two
+// encodings disagree about (YAML's decoder picks whichever integer type a
+// literal happens to fit — `int`, or a narrower `uint8` for a small
+// non-negative one; CEL always gives `int64`) without being tolerant of
+// either an actual type mismatch (a string "1" and a number 1 are still
+// different answers) or of losing precision to get there.
+//
+// Two integral values are compared as integers, exactly, never through
+// float64 — an int64 has 63 bits of mantissa and a float64 has 52, so
+// converting both sides to compare them is not a loosening, it is a second,
+// silent rounding that can make two genuinely different values compare
+// equal. 9007199254740992 and 9007199254740993 are both representable as
+// int64 and both round to the same float64; a case pinning one and getting
+// the other must fail, not pass by way of the comparison itself losing the
+// difference the case exists to catch.
 func looseEqual(want, got any) bool {
-	if wf, ok := asFloat(want); ok {
-		if gf, ok := asFloat(got); ok {
+	if wi, ok := asInt64(want); ok {
+		if gi, ok := asInt64(got); ok {
+			return wi == gi
+		}
+		// One side is integral and the other is not representable as an
+		// int64 — a genuine float on the other side, most likely — so a
+		// float comparison is the honest one left, not a workaround.
+		if gf, ok := asFloatOnly(got); ok {
+			return float64(wi) == gf
+		}
+		return false
+	}
+	if wu, ok := asUint64(want); ok {
+		// Only reached when want overflows int64 — a uint64 above 1<<63 — so
+		// the comparison stays exact only when got is in the same range;
+		// anything else already answers false rather than rounding through
+		// a float to find out.
+		gu, ok := asUint64(got)
+		return ok && wu == gu
+	}
+	if wf, ok := asFloatOnly(want); ok {
+		if gf, ok := asFloatOnly(got); ok {
 			return wf == gf
+		}
+		if gi, ok := asInt64(got); ok {
+			return wf == float64(gi)
 		}
 		return false
 	}
@@ -426,18 +586,65 @@ func looseEqual(want, got any) bool {
 	}
 }
 
-// asFloat reports whether v is one of the numeric types [looseEqual] treats
-// as comparable across encodings, and its value as a float64.
-func asFloat(v any) (float64, bool) {
+// asInt64 reports whether v is an integral value representable exactly as an
+// int64, and its value. Every signed width and every unsigned width narrow
+// enough to always fit (uint8/uint16/uint32) qualify unconditionally; a plain
+// uint or uint64 qualifies only when its value does not exceed
+// [math.MaxInt64] — a large one falls through to [asUint64] instead of being
+// truncated here.
+func asInt64(v any) (int64, bool) {
 	switch n := v.(type) {
 	case int:
-		return float64(n), true
+		return int64(n), true
+	case int8:
+		return int64(n), true
+	case int16:
+		return int64(n), true
 	case int32:
-		return float64(n), true
+		return int64(n), true
 	case int64:
-		return float64(n), true
+		return n, true
+	case uint8:
+		return int64(n), true
+	case uint16:
+		return int64(n), true
+	case uint32:
+		return int64(n), true
+	case uint:
+		if uint64(n) > math.MaxInt64 {
+			return 0, false
+		}
+		return int64(n), true
 	case uint64:
-		return float64(n), true
+		if n > math.MaxInt64 {
+			return 0, false
+		}
+		return int64(n), true
+	default:
+		return 0, false
+	}
+}
+
+// asUint64 reports whether v is an integral value representable as a uint64,
+// and its value — reached only for a value [asInt64] refused, which today
+// means an unsigned value above [math.MaxInt64].
+func asUint64(v any) (uint64, bool) {
+	switch n := v.(type) {
+	case uint:
+		return uint64(n), true
+	case uint64:
+		return n, true
+	default:
+		return 0, false
+	}
+}
+
+// asFloatOnly reports whether v is a genuine floating-point value — as
+// opposed to [asInt64], which never matches one, so the two together
+// partition every numeric type [looseEqual] compares without an overlap that
+// could pick the lossy path when an exact one was available.
+func asFloatOnly(v any) (float64, bool) {
+	switch n := v.(type) {
 	case float32:
 		return float64(n), true
 	case float64:

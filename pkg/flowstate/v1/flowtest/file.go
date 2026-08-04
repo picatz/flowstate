@@ -230,6 +230,15 @@ func Load(path string) (*File, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 
+	// Checked against the parsed AST, before yaml.Unmarshal below is asked to
+	// do anything: Unmarshal resolves every alias into the destination value
+	// as it decodes, which means a billion-laughs document is already fully
+	// expanded in memory by the time any bound written against the decoded
+	// value could run. See [checkExpansionBounds].
+	if err := checkExpansionBounds(data); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+
 	var file File
 	if err := yaml.UnmarshalWithOptions(data, &file, yaml.Strict()); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
