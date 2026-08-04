@@ -131,12 +131,13 @@ func (p *Plugin) taskFunc(manifest *pluginv1.TaskManifest) flowstatev1.TaskFunc 
 
 		resp, err := inst.clients.task.Execute(callCtx, connect.NewRequest(request))
 		if err != nil {
-			// Scrubbed before it is classified or wrapped, so that a resolved
-			// secret a peer reflected back through an RPC failure — the same
-			// hazard the http task's own scrubber exists for — cannot reach the
-			// task error this becomes, which is surfaced to users and written to
-			// workflow history.
-			return nil, taskError(qualified, p.name, scrubber.ScrubError(err))
+			// Classified before it is scrubbed — see [taskError] for why the
+			// order is load-bearing — and scrubbed before it is wrapped, so
+			// that a resolved secret a peer reflected back through an RPC
+			// failure — the same hazard the http task's own scrubber exists
+			// for — cannot reach the task error this becomes, which is
+			// surfaced to users and written to workflow history.
+			return nil, taskError(qualified, p.name, err, scrubber)
 		}
 
 		outputs := resp.Msg.GetOutputs()
@@ -288,6 +289,17 @@ func scrubLiteral(scrubber *secrets.Scrubber, lit *expr.Value) {
 	switch kind := lit.GetKind().(type) {
 	case *expr.Value_StringValue:
 		kind.StringValue = scrubber.Scrub(kind.StringValue)
+	case *expr.Value_BytesValue:
+		// A plugin that decodes a secret input into bytes and returns it in a
+		// bytes output ships the credential to history unredacted unless this
+		// case exists — bytes are not a string, so the case above never
+		// matches, and there is otherwise nothing here that looks at them at
+		// all. [secrets.Scrubber]'s registered forms already include base64
+		// and hex, so a value transported as bytes and one transported as text
+		// are matched the same way; only the field kind holding it differs.
+		if scrubbed := scrubber.Scrub(string(kind.BytesValue)); scrubbed != string(kind.BytesValue) {
+			kind.BytesValue = []byte(scrubbed)
+		}
 	case *expr.Value_ListValue:
 		for _, element := range kind.ListValue.GetValues() {
 			scrubLiteral(scrubber, element)
@@ -301,13 +313,45 @@ func scrubLiteral(scrubber *secrets.Scrubber, lit *expr.Value) {
 }
 
 // taskError classifies a plugin's task failure into the engine's own error
-// kinds, which is what decides whether the step is attempted again.
+// kinds, which is what decides whether the step is attempted again, and
+// scrubs it before it becomes something surfaced to users and written to
+// workflow history.
 //
 // A plugin can say so explicitly, by failing the RPC with an ExecuteResponse
 // attached as an error detail: only the plugin knows whether its backend's
 // failure was transient, and the schema puts that answer on the response's
 // retryable and unknown_outcome fields. Without one, the Connect code is
 // mapped to the closest kind.
+//
+// # Classify before scrubbing, never after
+//
+// [secrets.Scrubber.ScrubError] deliberately returns a value with no Unwrap
+// and no errors.As — that is what stops Temporal's failure converter from
+// walking back to the unredacted original (see the note on ScrubError itself).
+// The cost of that guarantee is that nothing downstream can reach the
+// *connect.Error underneath a scrubbed one either: [kindForCode] and
+// [verdictFromDetails] both use errors.As, and once err has been through
+// ScrubError there is nothing left for them to find. Classifying err — the
+// unscrubbed original — before scrubbing it is therefore not an optimization,
+// it is the only order that keeps classification working at all, and the one
+// caller that matters most is the one this bug would corrupt silently:
+// [flowstatev1.ErrorKindUpstreamUnknown] degrading to a retryable
+// [flowstatev1.ErrorKindInternal] the moment a plugin's failure message
+// happens to contain the very secret that made this a failure, which is
+// exactly backwards — an unknown outcome is the one case where retrying is
+// worse than doing nothing, and it is the case a leak would silently disarm.
+//
+// The verdict extracted from the detail is booleans and a bounded duration,
+// never a string, so there is nothing in it for the scrubber to have missed;
+// if a future field on ExecuteResponse ever carries text, it must be scrubbed
+// before it reaches anything this function returns, the same as
+// [scrubPluginOutputs] already does for a task's ordinary outputs.
+//
+// What crosses from err into the result is data, not the error itself: kind,
+// retryable, and retry_after are read and copied, and the only thing wrapped
+// into the returned [flowstatev1.TaskError] is the scrubbed message — so a
+// caller that unwraps this can never reach the original no matter what
+// classified it.
 //
 // Note one deliberate gap. The schema says a plugin that says nothing should get
 // the non-retrying answer, but the engine's error kinds have no member meaning
@@ -319,7 +363,7 @@ func scrubLiteral(scrubber *secrets.Scrubber, lit *expr.Value) {
 // engine already applies to its own unclassified errors. Plugins built with the
 // SDK always answer explicitly, so this applies only to one that returns a bare
 // error.
-func taskError(task, plugin string, err error) error {
+func taskError(task, plugin string, err error, scrubber *secrets.Scrubber) error {
 	kind := kindForCode(err)
 
 	verdict, said := verdictFromDetails(err)
@@ -352,7 +396,12 @@ func taskError(task, plugin string, err error) error {
 		}
 	}
 
-	taskErr := flowstatev1.NewTaskError(task, kind, fmt.Errorf("plugin %q: %w", plugin, err))
+	// Everything above read err as it arrived from the wire. Nothing below may
+	// read it again: the only thing that reaches the returned error from here
+	// on is the scrubbed message.
+	scrubbed := scrubber.ScrubError(err)
+
+	taskErr := flowstatev1.NewTaskError(task, kind, fmt.Errorf("plugin %q: %w", plugin, scrubbed))
 	if said && verdict.retryable {
 		taskErr.RetryAfter = verdict.retryAfter
 	}
