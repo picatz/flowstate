@@ -408,6 +408,12 @@ the refusal says, so an agent corrects the right thing.
 
 ### Configuring a client
 
+This section is for wiring an MCP client — an editor, a desktop app, a CLI
+agent — into `flow mcp`. It is a different audience from
+[AGENTS.md](../AGENTS.md) at the repository root, which is for an agent
+*developing* Flowstate itself; this one is for anyone *using* the binary
+Flowstate ships, from any repository.
+
 **Claude Code**, which takes the command and its flags directly:
 
 ```sh
@@ -417,6 +423,23 @@ claude mcp add flowstate -- flow mcp
 claude mcp add flowstate -- flow mcp \
   --address flowstate.internal:9233 \
   --egress-policy /etc/flowstate/egress.yaml
+```
+
+That writes to Claude Code's own config; the equivalent, checked into a
+project so a team shares one setup, is a `.mcp.json` at the repository root:
+
+```json
+{
+  "mcpServers": {
+    "flowstate": {
+      "command": "flow",
+      "args": ["mcp", "--egress-policy", "/etc/flowstate/egress.yaml"],
+      "env": {
+        "FLOWSTATE_ADDRESS": "flowstate.internal:9233"
+      }
+    }
+  }
+}
 ```
 
 **Claude Desktop**, in `claude_desktop_config.json` — `~/Library/Application
@@ -434,6 +457,17 @@ Support/Claude/` on macOS, `%APPDATA%\Claude\` on Windows:
     }
   }
 }
+```
+
+**OpenAI Codex CLI**, in `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.flowstate]
+command = "flow"
+args = ["mcp", "--egress-policy", "/etc/flowstate/egress.yaml"]
+
+[mcp_servers.flowstate.env]
+FLOWSTATE_ADDRESS = "flowstate.internal:9233"
 ```
 
 **Any other stdio client** takes the same three things, whatever it calls the
