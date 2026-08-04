@@ -807,7 +807,88 @@ type InputDeclaration struct {
 	// only part of a declaration written *for the caller* rather than for the
 	// machine, which is why it is worth carrying rather than leaving in a comment
 	// the compiler throws away.
-	Description   *string `protobuf:"bytes,5,opt,name=description,proto3,oneof" json:"description,omitempty"`
+	Description *string `protobuf:"bytes,5,opt,name=description,proto3,oneof" json:"description,omitempty"`
+	// Example is an illustrative value for this input, never applied at runtime.
+	//
+	// `default` and `example` used to be one field, because `default` was the only
+	// way to make a workflow runnable unattended — so a required-feeling input like
+	// "who is asking" ended up with a specific person as its default, which is
+	// incoherent: there is no sensible absent value for who is asking, only a
+	// plausible one to paste. The two are different things. A default is applied
+	// when a caller supplies nothing, and is legitimate only when absence itself
+	// has a meaning (`region: us-east-1`). An example is what a caller unsure what
+	// to send would copy, is legal on a required input precisely because a required
+	// input cannot have a default, and is checked against this declaration's own
+	// type and constraints when the specification compiles — a stale example that
+	// no longer satisfies its own `must:` is a diagnostic, not a value nobody
+	// notices went wrong. It is never bound to a run; it exists for an editor's
+	// hover, a generated doc, and a machine caller's schema.
+	Example *Value `protobuf:"bytes,6,opt,name=example,proto3" json:"example,omitempty"`
+	// Sensitive marks a value as private but not secret: a salary in an approval, a
+	// customer's email — something a run legitimately computes on and that
+	// legitimately rides in history, but that should not be casually pasted into a
+	// terminal, a log, or an agent's answer. A view renders `[redacted: <name>]` by
+	// default with an explicit reveal, and a machine output includes the value only
+	// when asked for it.
+	//
+	// This is display etiquette and nothing more. It is not containment: the value
+	// is an ordinary part of the run's history exactly like any other input, and
+	// anyone with access to that history reads it in the clear, the same way they
+	// read any other input. A secret reference is different: it keeps the value
+	// *out* of history entirely, resolving it only inside the activity that needs
+	// it — that is containment, and this is not it. Marking sensitive a value that
+	// must never reach an operator's screen at all is a mistake; that value is a
+	// secret reference, not this.
+	Sensitive bool `protobuf:"varint,7,opt,name=sensitive,proto3" json:"sensitive,omitempty"`
+	// Pattern is an RE2 regular expression a `type: string` value must fully
+	// match. The compiler refuses it on a declaration of any other type, the same
+	// way it refuses a `min_items` on one that is not a list — a rule on a type it
+	// cannot apply to is worse than no rule, per this schema's own history with
+	// rules that could never hold.
+	//
+	// Named and shaped to match `buf.validate`'s `string.pattern` one for one, so
+	// that a constraint written here and one arriving from an imported `.proto`
+	// file's own annotations are the same artifact underneath.
+	Pattern *string `protobuf:"bytes,8,opt,name=pattern,proto3,oneof" json:"pattern,omitempty"`
+	// MinLen and MaxLen bound a `type: string` value's length, counted in runes.
+	// Either may be given alone. Named after `buf.validate`'s `string.min_len` and
+	// `string.max_len`, for the reason `pattern` above is.
+	MinLen *uint64 `protobuf:"varint,9,opt,name=min_len,json=minLen,proto3,oneof" json:"min_len,omitempty"`
+	MaxLen *uint64 `protobuf:"varint,10,opt,name=max_len,json=maxLen,proto3,oneof" json:"max_len,omitempty"`
+	// Min and Max bound a `type: int` or `type: float` value. Either may be given
+	// alone. One field serves both declared types rather than the four
+	// `buf.validate` keeps per width, because this schema's numeric inputs are
+	// already the two kinds [InputDeclaration.Type] names and a DSL author writes
+	// one number regardless of which.
+	Min *float64 `protobuf:"fixed64,11,opt,name=min,proto3,oneof" json:"min,omitempty"`
+	Max *float64 `protobuf:"fixed64,12,opt,name=max,proto3,oneof" json:"max,omitempty"`
+	// MinItems and MaxItems bound a `type: list` value's length. Either may be
+	// given alone. Named after `buf.validate`'s `repeated.min_items` and
+	// `repeated.max_items`.
+	MinItems *uint64 `protobuf:"varint,13,opt,name=min_items,json=minItems,proto3,oneof" json:"min_items,omitempty"`
+	MaxItems *uint64 `protobuf:"varint,14,opt,name=max_items,json=maxItems,proto3,oneof" json:"max_items,omitempty"`
+	// Unique reports that a `type: list` value's elements must all differ from one
+	// another, compared the way two [Value] literals compare for equality. Named
+	// after `buf.validate`'s `repeated.unique`. The compiler refuses it on a
+	// declaration of any other type.
+	Unique bool `protobuf:"varint,15,opt,name=unique,proto3" json:"unique,omitempty"`
+	// Must is a CEL predicate over `this`, the value being checked, for a rule the
+	// declarative keys above cannot state — the escape hatch `buf.validate` itself
+	// keeps behind its own standard-rule vocabulary, and for the identical reason:
+	// making an author spell `size(this) > 0 && size(this) <= 100` for every
+	// bounded list is the ergonomic failure the keys above exist to prevent, so
+	// this exists only for what they genuinely cannot say.
+	//
+	// Compiled and type-checked when the specification loads — not when a run
+	// submits one — so a bad expression is a defect in the specification itself,
+	// caught the same way a mistyped default is. Evaluated under this schema's
+	// standard CEL cost bound at every point a value is checked against it, because
+	// a specification (and the `must:` inside it) can arrive over the RPC and is
+	// therefore untrusted input like any other stored expression here. It may not
+	// reference `now` or call anything nondeterministic: a constraint has to answer
+	// the same way on every replay and at every one of this declaration's
+	// enforcement points, which an expression reading the clock cannot promise.
+	Must          *string `protobuf:"bytes,16,opt,name=must,proto3,oneof" json:"must,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -877,6 +958,83 @@ func (x *InputDeclaration) GetDescription() string {
 	return ""
 }
 
+func (x *InputDeclaration) GetExample() *Value {
+	if x != nil {
+		return x.Example
+	}
+	return nil
+}
+
+func (x *InputDeclaration) GetSensitive() bool {
+	if x != nil {
+		return x.Sensitive
+	}
+	return false
+}
+
+func (x *InputDeclaration) GetPattern() string {
+	if x != nil && x.Pattern != nil {
+		return *x.Pattern
+	}
+	return ""
+}
+
+func (x *InputDeclaration) GetMinLen() uint64 {
+	if x != nil && x.MinLen != nil {
+		return *x.MinLen
+	}
+	return 0
+}
+
+func (x *InputDeclaration) GetMaxLen() uint64 {
+	if x != nil && x.MaxLen != nil {
+		return *x.MaxLen
+	}
+	return 0
+}
+
+func (x *InputDeclaration) GetMin() float64 {
+	if x != nil && x.Min != nil {
+		return *x.Min
+	}
+	return 0
+}
+
+func (x *InputDeclaration) GetMax() float64 {
+	if x != nil && x.Max != nil {
+		return *x.Max
+	}
+	return 0
+}
+
+func (x *InputDeclaration) GetMinItems() uint64 {
+	if x != nil && x.MinItems != nil {
+		return *x.MinItems
+	}
+	return 0
+}
+
+func (x *InputDeclaration) GetMaxItems() uint64 {
+	if x != nil && x.MaxItems != nil {
+		return *x.MaxItems
+	}
+	return 0
+}
+
+func (x *InputDeclaration) GetUnique() bool {
+	if x != nil {
+		return x.Unique
+	}
+	return false
+}
+
+func (x *InputDeclaration) GetMust() string {
+	if x != nil && x.Must != nil {
+		return *x.Must
+	}
+	return ""
+}
+
 // OutputDeclaration is one value a finished run reports: a name, and the
 // expression that produces it.
 //
@@ -902,7 +1060,20 @@ type OutputDeclaration struct {
 	// Value is the expression evaluated to produce this output.
 	Value *Value `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
 	// Description is prose for whoever reads the result.
-	Description   *string `protobuf:"bytes,3,opt,name=description,proto3,oneof" json:"description,omitempty"`
+	Description *string `protobuf:"bytes,3,opt,name=description,proto3,oneof" json:"description,omitempty"`
+	// Must is a CEL predicate over `this`, the value this output's own expression
+	// produced, checked once that expression has been evaluated — so a workflow
+	// cannot report a value that violates its own contract, which is what makes
+	// consuming a library workflow's result safe. Same rules as
+	// [InputDeclaration.must]: compiled and type-checked when the specification
+	// loads, evaluated under the standard CEL cost bound, and refused if it
+	// references `now` or calls anything else nondeterministic.
+	Must *string `protobuf:"bytes,4,opt,name=must,proto3,oneof" json:"must,omitempty"`
+	// Sensitive marks this output's value the way [InputDeclaration.sensitive]
+	// marks an input's — display etiquette, never containment. See that field's
+	// doc comment for the honesty this comes with; nothing about the two differs
+	// beyond which side of a run they describe.
+	Sensitive     bool `protobuf:"varint,5,opt,name=sensitive,proto3" json:"sensitive,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -956,6 +1127,20 @@ func (x *OutputDeclaration) GetDescription() string {
 		return *x.Description
 	}
 	return ""
+}
+
+func (x *OutputDeclaration) GetMust() string {
+	if x != nil && x.Must != nil {
+		return *x.Must
+	}
+	return ""
+}
+
+func (x *OutputDeclaration) GetSensitive() bool {
+	if x != nil {
+		return x.Sensitive
+	}
+	return false
 }
 
 // RunOutputs is what one run computed for its declared outputs.
@@ -8416,14 +8601,26 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"\tVarsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12)\n" +
 	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01B\x0e\n" +
-	"\f_descriptionJ\x04\b\x04\x10\x05R\x06inputs\"\xa7\x03\n" +
+	"\f_descriptionJ\x04\b\x04\x10\x05R\x06inputs\"\xcb\x06\n" +
 	"\x10InputDeclaration\x12?\n" +
 	"\x04name\x18\x01 \x01(\tB+\xe2A\x01\x02\xbaH$\xc8\x01\x01r\x1f\x10\x01\x18\x80\x012\x18^[A-Za-z_][A-Za-z0-9_]*$R\x04name\x12J\n" +
 	"\x04type\x18\x02 \x01(\x0e2#.flowstate.v1.InputDeclaration.TypeB\x11\xe2A\x01\x02\xbaH\n" +
 	"\xc8\x01\x01\x82\x01\x04\x10\x01 \x00R\x04type\x12\x1a\n" +
 	"\brequired\x18\x03 \x01(\bR\brequired\x12-\n" +
 	"\adefault\x18\x04 \x01(\v2\x13.flowstate.v1.ValueR\adefault\x12/\n" +
-	"\vdescription\x18\x05 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02H\x00R\vdescription\x88\x01\x01\"z\n" +
+	"\vdescription\x18\x05 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02H\x00R\vdescription\x88\x01\x01\x12-\n" +
+	"\aexample\x18\x06 \x01(\v2\x13.flowstate.v1.ValueR\aexample\x12\x1c\n" +
+	"\tsensitive\x18\a \x01(\bR\tsensitive\x12\x1d\n" +
+	"\apattern\x18\b \x01(\tH\x01R\apattern\x88\x01\x01\x12\x1c\n" +
+	"\amin_len\x18\t \x01(\x04H\x02R\x06minLen\x88\x01\x01\x12\x1c\n" +
+	"\amax_len\x18\n" +
+	" \x01(\x04H\x03R\x06maxLen\x88\x01\x01\x12\x15\n" +
+	"\x03min\x18\v \x01(\x01H\x04R\x03min\x88\x01\x01\x12\x15\n" +
+	"\x03max\x18\f \x01(\x01H\x05R\x03max\x88\x01\x01\x12 \n" +
+	"\tmin_items\x18\r \x01(\x04H\x06R\bminItems\x88\x01\x01\x12 \n" +
+	"\tmax_items\x18\x0e \x01(\x04H\aR\bmaxItems\x88\x01\x01\x12\x16\n" +
+	"\x06unique\x18\x0f \x01(\bR\x06unique\x12\x17\n" +
+	"\x04must\x18\x10 \x01(\tH\bR\x04must\x88\x01\x01\"z\n" +
 	"\x04Type\x12\x14\n" +
 	"\x10TYPE_UNSPECIFIED\x10\x00\x12\x0f\n" +
 	"\vTYPE_STRING\x10\x01\x12\f\n" +
@@ -8433,13 +8630,29 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"\tTYPE_BOOL\x10\x04\x12\x0f\n" +
 	"\vTYPE_STRUCT\x10\x05\x12\r\n" +
 	"\tTYPE_LIST\x10\x06B\x0e\n" +
-	"\f_description\"\xcc\x01\n" +
+	"\f_descriptionB\n" +
+	"\n" +
+	"\b_patternB\n" +
+	"\n" +
+	"\b_min_lenB\n" +
+	"\n" +
+	"\b_max_lenB\x06\n" +
+	"\x04_minB\x06\n" +
+	"\x04_maxB\f\n" +
+	"\n" +
+	"_min_itemsB\f\n" +
+	"\n" +
+	"_max_itemsB\a\n" +
+	"\x05_must\"\x8c\x02\n" +
 	"\x11OutputDeclaration\x12?\n" +
 	"\x04name\x18\x01 \x01(\tB+\xe2A\x01\x02\xbaH$\xc8\x01\x01r\x1f\x10\x01\x18\x80\x012\x18^[A-Za-z_][A-Za-z0-9_]*$R\x04name\x125\n" +
 	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueB\n" +
 	"\xe2A\x01\x02\xbaH\x03\xc8\x01\x01R\x05value\x12/\n" +
-	"\vdescription\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02H\x00R\vdescription\x88\x01\x01B\x0e\n" +
-	"\f_description\"\xae\x01\n" +
+	"\vdescription\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02H\x00R\vdescription\x88\x01\x01\x12\x17\n" +
+	"\x04must\x18\x04 \x01(\tH\x01R\x04must\x88\x01\x01\x12\x1c\n" +
+	"\tsensitive\x18\x05 \x01(\bR\tsensitiveB\x0e\n" +
+	"\f_descriptionB\a\n" +
+	"\x05_must\"\xae\x01\n" +
 	"\n" +
 	"RunOutputs\x12P\n" +
 	"\x06values\x18\x01 \x03(\v2$.flowstate.v1.RunOutputs.ValuesEntryB\x12\xe2A\x01\x01\xbaH\v\x9a\x01\b\x10@\"\x04r\x02\x10\x01R\x06values\x1aN\n" +
@@ -9158,197 +9371,198 @@ var file_flowstate_v1_flowstate_proto_depIdxs = []int32{
 	10,  // 5: flowstate.v1.Workflow.triggers:type_name -> flowstate.v1.Triggers
 	0,   // 6: flowstate.v1.InputDeclaration.type:type_name -> flowstate.v1.InputDeclaration.Type
 	27,  // 7: flowstate.v1.InputDeclaration.default:type_name -> flowstate.v1.Value
-	27,  // 8: flowstate.v1.OutputDeclaration.value:type_name -> flowstate.v1.Value
-	92,  // 9: flowstate.v1.RunOutputs.values:type_name -> flowstate.v1.RunOutputs.ValuesEntry
-	11,  // 10: flowstate.v1.Triggers.schedule:type_name -> flowstate.v1.ScheduleTrigger
-	127, // 11: flowstate.v1.ScheduleTrigger.every:type_name -> google.protobuf.Duration
-	127, // 12: flowstate.v1.ScheduleTrigger.jitter:type_name -> google.protobuf.Duration
-	1,   // 13: flowstate.v1.ScheduleTrigger.overlap:type_name -> flowstate.v1.ScheduleTrigger.Overlap
-	34,  // 14: flowstate.v1.Node.task:type_name -> flowstate.v1.Task
-	22,  // 15: flowstate.v1.Node.for_each:type_name -> flowstate.v1.ForEach
-	23,  // 16: flowstate.v1.Node.parallel:type_name -> flowstate.v1.Parallel
-	16,  // 17: flowstate.v1.Node.wait:type_name -> flowstate.v1.Wait
-	24,  // 18: flowstate.v1.Node.call:type_name -> flowstate.v1.Call
-	27,  // 19: flowstate.v1.Node.condition:type_name -> flowstate.v1.Value
-	25,  // 20: flowstate.v1.Node.policy:type_name -> flowstate.v1.StepPolicy
-	94,  // 21: flowstate.v1.Node.vars:type_name -> flowstate.v1.Node.VarsEntry
-	13,  // 22: flowstate.v1.Node.undo:type_name -> flowstate.v1.Compensation
-	34,  // 23: flowstate.v1.Compensation.task:type_name -> flowstate.v1.Task
-	34,  // 24: flowstate.v1.PendingUndo.task:type_name -> flowstate.v1.Task
-	127, // 25: flowstate.v1.Wait.duration:type_name -> google.protobuf.Duration
-	27,  // 26: flowstate.v1.Wait.until:type_name -> flowstate.v1.Value
-	17,  // 27: flowstate.v1.Wait.signal:type_name -> flowstate.v1.Signal
-	127, // 28: flowstate.v1.Wait.timeout:type_name -> google.protobuf.Duration
-	52,  // 29: flowstate.v1.SignalSender.identity:type_name -> flowstate.v1.WorkloadIdentity
-	128, // 30: flowstate.v1.SignalSender.accepted_at:type_name -> google.protobuf.Timestamp
-	93,  // 31: flowstate.v1.PendingSignal.payload:type_name -> flowstate.v1.Node.Outputs
-	18,  // 32: flowstate.v1.PendingSignal.sender:type_name -> flowstate.v1.SignalSender
-	93,  // 33: flowstate.v1.SignalDelivery.payload:type_name -> flowstate.v1.Node.Outputs
-	18,  // 34: flowstate.v1.SignalDelivery.sender:type_name -> flowstate.v1.SignalSender
-	88,  // 35: flowstate.v1.Scope.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
-	96,  // 36: flowstate.v1.Scope.vars:type_name -> flowstate.v1.Scope.VarsEntry
-	97,  // 37: flowstate.v1.Scope.ambient_vars:type_name -> flowstate.v1.Scope.AmbientVarsEntry
-	98,  // 38: flowstate.v1.Scope.inputs:type_name -> flowstate.v1.Scope.InputsEntry
-	27,  // 39: flowstate.v1.ForEach.items:type_name -> flowstate.v1.Value
-	12,  // 40: flowstate.v1.ForEach.body:type_name -> flowstate.v1.Node
-	99,  // 41: flowstate.v1.Parallel.branches:type_name -> flowstate.v1.Parallel.Branch
-	6,   // 42: flowstate.v1.Call.workflow:type_name -> flowstate.v1.Workflow
-	100, // 43: flowstate.v1.Call.arguments:type_name -> flowstate.v1.Call.ArgumentsEntry
-	127, // 44: flowstate.v1.StepPolicy.timeout:type_name -> google.protobuf.Duration
-	26,  // 45: flowstate.v1.StepPolicy.retry:type_name -> flowstate.v1.RetryPolicy
-	127, // 46: flowstate.v1.RetryPolicy.initial_interval:type_name -> google.protobuf.Duration
-	127, // 47: flowstate.v1.RetryPolicy.max_interval:type_name -> google.protobuf.Duration
-	129, // 48: flowstate.v1.Value.expr:type_name -> google.api.expr.v1alpha1.ParsedExpr
-	130, // 49: flowstate.v1.Value.literal:type_name -> google.api.expr.v1alpha1.Value
-	101, // 50: flowstate.v1.Value.error:type_name -> flowstate.v1.Value.Error
-	15,  // 51: flowstate.v1.Value.secret_ref:type_name -> flowstate.v1.SecretRef
-	102, // 52: flowstate.v1.Value.structure:type_name -> flowstate.v1.Value.Structure
-	30,  // 53: flowstate.v1.TaskCatalog.tasks:type_name -> flowstate.v1.TaskDescription
-	29,  // 54: flowstate.v1.TaskCatalog.cel_functions:type_name -> flowstate.v1.CELFunction
-	33,  // 55: flowstate.v1.TaskDescription.inputs:type_name -> flowstate.v1.TaskField
-	33,  // 56: flowstate.v1.TaskDescription.outputs:type_name -> flowstate.v1.TaskField
-	32,  // 57: flowstate.v1.PluginCatalog.plugins:type_name -> flowstate.v1.PluginDescription
-	30,  // 58: flowstate.v1.PluginDescription.tasks:type_name -> flowstate.v1.TaskDescription
-	108, // 59: flowstate.v1.Task.inputs:type_name -> flowstate.v1.Task.InputsEntry
-	6,   // 60: flowstate.v1.RunRequest.workflow:type_name -> flowstate.v1.Workflow
-	119, // 61: flowstate.v1.RunRequest.inputs:type_name -> flowstate.v1.RunRequest.InputsEntry
-	5,   // 62: flowstate.v1.RunResponse.status:type_name -> flowstate.v1.RunResponse.Status
-	120, // 63: flowstate.v1.RunResponse.error:type_name -> flowstate.v1.RunResponse.Error
-	88,  // 64: flowstate.v1.RunResponse.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
-	5,   // 65: flowstate.v1.GetResponse.status:type_name -> flowstate.v1.RunResponse.Status
-	120, // 66: flowstate.v1.GetResponse.error:type_name -> flowstate.v1.RunResponse.Error
-	88,  // 67: flowstate.v1.GetResponse.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
-	128, // 68: flowstate.v1.GetResponse.start_time:type_name -> google.protobuf.Timestamp
-	128, // 69: flowstate.v1.GetResponse.close_time:type_name -> google.protobuf.Timestamp
-	40,  // 70: flowstate.v1.GetResponse.progress:type_name -> flowstate.v1.RunProgress
-	39,  // 71: flowstate.v1.GetResponse.pending_activities:type_name -> flowstate.v1.PendingActivity
-	9,   // 72: flowstate.v1.GetResponse.run_outputs:type_name -> flowstate.v1.RunOutputs
-	128, // 73: flowstate.v1.PendingActivity.next_attempt_scheduled_time:type_name -> google.protobuf.Timestamp
-	41,  // 74: flowstate.v1.DiagnosticReport.diagnostics:type_name -> flowstate.v1.Diagnostic
-	42,  // 75: flowstate.v1.ValidationReport.files:type_name -> flowstate.v1.DiagnosticReport
-	44,  // 76: flowstate.v1.FixReport.changes:type_name -> flowstate.v1.FixChange
-	41,  // 77: flowstate.v1.FixReport.refusals:type_name -> flowstate.v1.Diagnostic
-	41,  // 78: flowstate.v1.FixReport.notes:type_name -> flowstate.v1.Diagnostic
-	41,  // 79: flowstate.v1.FmtReport.refusals:type_name -> flowstate.v1.Diagnostic
-	45,  // 80: flowstate.v1.FixReports.files:type_name -> flowstate.v1.FixReport
-	46,  // 81: flowstate.v1.FmtReports.files:type_name -> flowstate.v1.FmtReport
-	41,  // 82: flowstate.v1.TestCase.failures:type_name -> flowstate.v1.Diagnostic
-	127, // 83: flowstate.v1.TestCase.duration:type_name -> google.protobuf.Duration
-	49,  // 84: flowstate.v1.TestReport.cases:type_name -> flowstate.v1.TestCase
-	50,  // 85: flowstate.v1.TestReports.files:type_name -> flowstate.v1.TestReport
-	121, // 86: flowstate.v1.WorkloadIdentity.claims:type_name -> flowstate.v1.WorkloadIdentity.ClaimsEntry
-	88,  // 87: flowstate.v1.Frame.results:type_name -> flowstate.v1.Workflow.StepOutputs
-	88,  // 88: flowstate.v1.Frame.call_outputs:type_name -> flowstate.v1.Workflow.StepOutputs
-	122, // 89: flowstate.v1.Frame.call_vars:type_name -> flowstate.v1.Frame.CallVarsEntry
-	6,   // 90: flowstate.v1.RunState.workflow:type_name -> flowstate.v1.Workflow
-	88,  // 91: flowstate.v1.RunState.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
-	53,  // 92: flowstate.v1.RunState.frames:type_name -> flowstate.v1.Frame
-	52,  // 93: flowstate.v1.RunState.identity:type_name -> flowstate.v1.WorkloadIdentity
-	19,  // 94: flowstate.v1.RunState.pending_signals:type_name -> flowstate.v1.PendingSignal
-	123, // 95: flowstate.v1.RunState.vars:type_name -> flowstate.v1.RunState.VarsEntry
-	124, // 96: flowstate.v1.RunState.inputs:type_name -> flowstate.v1.RunState.InputsEntry
-	9,   // 97: flowstate.v1.RunState.run_outputs:type_name -> flowstate.v1.RunOutputs
-	14,  // 98: flowstate.v1.RunState.pending_undo:type_name -> flowstate.v1.PendingUndo
-	93,  // 99: flowstate.v1.SignalRequest.payload:type_name -> flowstate.v1.Node.Outputs
-	5,   // 100: flowstate.v1.RunSummary.status:type_name -> flowstate.v1.RunResponse.Status
-	128, // 101: flowstate.v1.RunSummary.start_time:type_name -> google.protobuf.Timestamp
-	128, // 102: flowstate.v1.RunSummary.close_time:type_name -> google.protobuf.Timestamp
-	62,  // 103: flowstate.v1.ListResponse.runs:type_name -> flowstate.v1.RunSummary
-	64,  // 104: flowstate.v1.ValidateRequest.files:type_name -> flowstate.v1.SourceFile
-	43,  // 105: flowstate.v1.ValidateResponse.report:type_name -> flowstate.v1.ValidationReport
-	64,  // 106: flowstate.v1.CompileRequest.file:type_name -> flowstate.v1.SourceFile
-	6,   // 107: flowstate.v1.CompileResponse.workflow:type_name -> flowstate.v1.Workflow
-	42,  // 108: flowstate.v1.CompileResponse.report:type_name -> flowstate.v1.DiagnosticReport
-	28,  // 109: flowstate.v1.GetCatalogResponse.catalog:type_name -> flowstate.v1.TaskCatalog
-	128, // 110: flowstate.v1.ScheduleActionResult.schedule_time:type_name -> google.protobuf.Timestamp
-	128, // 111: flowstate.v1.ScheduleActionResult.actual_time:type_name -> google.protobuf.Timestamp
-	128, // 112: flowstate.v1.ScheduleSummary.next_run_time:type_name -> google.protobuf.Timestamp
-	11,  // 113: flowstate.v1.ScheduleDescription.trigger:type_name -> flowstate.v1.ScheduleTrigger
-	128, // 114: flowstate.v1.ScheduleDescription.next_run_times:type_name -> google.protobuf.Timestamp
-	71,  // 115: flowstate.v1.ScheduleDescription.recent_runs:type_name -> flowstate.v1.ScheduleActionResult
-	125, // 116: flowstate.v1.ScheduleDescription.inputs:type_name -> flowstate.v1.ScheduleDescription.InputsEntry
-	6,   // 117: flowstate.v1.CreateScheduleRequest.workflow:type_name -> flowstate.v1.Workflow
-	126, // 118: flowstate.v1.CreateScheduleRequest.inputs:type_name -> flowstate.v1.CreateScheduleRequest.InputsEntry
-	73,  // 119: flowstate.v1.CreateScheduleResponse.schedule:type_name -> flowstate.v1.ScheduleDescription
-	72,  // 120: flowstate.v1.ListSchedulesResponse.schedules:type_name -> flowstate.v1.ScheduleSummary
-	73,  // 121: flowstate.v1.DescribeScheduleResponse.schedule:type_name -> flowstate.v1.ScheduleDescription
-	91,  // 122: flowstate.v1.Workflow.StepOutputs.step_values:type_name -> flowstate.v1.Workflow.StepOutputs.StepValuesEntry
-	9,   // 123: flowstate.v1.Workflow.StepOutputs.run_outputs:type_name -> flowstate.v1.RunOutputs
-	27,  // 124: flowstate.v1.Workflow.VarsEntry.value:type_name -> flowstate.v1.Value
-	93,  // 125: flowstate.v1.Workflow.StepOutputs.StepValuesEntry.value:type_name -> flowstate.v1.Node.Outputs
-	27,  // 126: flowstate.v1.RunOutputs.ValuesEntry.value:type_name -> flowstate.v1.Value
-	95,  // 127: flowstate.v1.Node.Outputs.named_values:type_name -> flowstate.v1.Node.Outputs.NamedValuesEntry
-	27,  // 128: flowstate.v1.Node.VarsEntry.value:type_name -> flowstate.v1.Value
-	27,  // 129: flowstate.v1.Node.Outputs.NamedValuesEntry.value:type_name -> flowstate.v1.Value
-	27,  // 130: flowstate.v1.Scope.VarsEntry.value:type_name -> flowstate.v1.Value
-	27,  // 131: flowstate.v1.Scope.AmbientVarsEntry.value:type_name -> flowstate.v1.Value
-	27,  // 132: flowstate.v1.Scope.InputsEntry.value:type_name -> flowstate.v1.Value
-	12,  // 133: flowstate.v1.Parallel.Branch.steps:type_name -> flowstate.v1.Node
-	27,  // 134: flowstate.v1.Call.ArgumentsEntry.value:type_name -> flowstate.v1.Value
-	3,   // 135: flowstate.v1.Value.Error.code:type_name -> flowstate.v1.Value.Error.Code
-	103, // 136: flowstate.v1.Value.Structure.list:type_name -> flowstate.v1.Value.Structure.List
-	104, // 137: flowstate.v1.Value.Structure.map:type_name -> flowstate.v1.Value.Structure.Map
-	27,  // 138: flowstate.v1.Value.Structure.List.values:type_name -> flowstate.v1.Value
-	105, // 139: flowstate.v1.Value.Structure.Map.entries:type_name -> flowstate.v1.Value.Structure.Map.EntriesEntry
-	27,  // 140: flowstate.v1.Value.Structure.Map.EntriesEntry.value:type_name -> flowstate.v1.Value
-	27,  // 141: flowstate.v1.Task.InputsEntry.value:type_name -> flowstate.v1.Value
-	4,   // 142: flowstate.v1.Task.Log.Inputs.level:type_name -> flowstate.v1.Task.Log.Level
-	111, // 143: flowstate.v1.Task.Log.Inputs.fields:type_name -> flowstate.v1.Task.Log.Inputs.FieldsEntry
-	114, // 144: flowstate.v1.Task.HTTP.Inputs.headers:type_name -> flowstate.v1.Task.HTTP.Inputs.HeadersEntry
-	27,  // 145: flowstate.v1.Task.HTTP.Inputs.bearer:type_name -> flowstate.v1.Value
-	115, // 146: flowstate.v1.Task.HTTP.Inputs.outputs:type_name -> flowstate.v1.Task.HTTP.Inputs.OutputsEntry
-	116, // 147: flowstate.v1.Task.HTTP.Inputs.query:type_name -> flowstate.v1.Task.HTTP.Inputs.QueryEntry
-	27,  // 148: flowstate.v1.Task.HTTP.Inputs.json:type_name -> flowstate.v1.Value
-	117, // 149: flowstate.v1.Task.HTTP.Inputs.form:type_name -> flowstate.v1.Task.HTTP.Inputs.FormEntry
-	27,  // 150: flowstate.v1.Task.HTTP.Inputs.expect:type_name -> flowstate.v1.Value
-	118, // 151: flowstate.v1.Task.HTTP.Outputs.headers:type_name -> flowstate.v1.Task.HTTP.Outputs.HeadersEntry
-	130, // 152: flowstate.v1.Task.HTTP.Outputs.json:type_name -> google.api.expr.v1alpha1.Value
-	27,  // 153: flowstate.v1.Task.HTTP.Inputs.OutputsEntry.value:type_name -> flowstate.v1.Value
-	27,  // 154: flowstate.v1.Task.HTTP.Inputs.QueryEntry.value:type_name -> flowstate.v1.Value
-	27,  // 155: flowstate.v1.Task.HTTP.Inputs.FormEntry.value:type_name -> flowstate.v1.Value
-	27,  // 156: flowstate.v1.RunRequest.InputsEntry.value:type_name -> flowstate.v1.Value
-	27,  // 157: flowstate.v1.Frame.CallVarsEntry.value:type_name -> flowstate.v1.Value
-	27,  // 158: flowstate.v1.RunState.VarsEntry.value:type_name -> flowstate.v1.Value
-	27,  // 159: flowstate.v1.RunState.InputsEntry.value:type_name -> flowstate.v1.Value
-	27,  // 160: flowstate.v1.ScheduleDescription.InputsEntry.value:type_name -> flowstate.v1.Value
-	27,  // 161: flowstate.v1.CreateScheduleRequest.InputsEntry.value:type_name -> flowstate.v1.Value
-	35,  // 162: flowstate.v1.WorkflowService.Run:input_type -> flowstate.v1.RunRequest
-	37,  // 163: flowstate.v1.WorkflowService.Get:input_type -> flowstate.v1.GetRequest
-	55,  // 164: flowstate.v1.WorkflowService.Signal:input_type -> flowstate.v1.SignalRequest
-	61,  // 165: flowstate.v1.WorkflowService.List:input_type -> flowstate.v1.ListRequest
-	57,  // 166: flowstate.v1.WorkflowService.Cancel:input_type -> flowstate.v1.CancelRequest
-	59,  // 167: flowstate.v1.WorkflowService.Terminate:input_type -> flowstate.v1.TerminateRequest
-	65,  // 168: flowstate.v1.WorkflowService.Validate:input_type -> flowstate.v1.ValidateRequest
-	67,  // 169: flowstate.v1.WorkflowService.Compile:input_type -> flowstate.v1.CompileRequest
-	69,  // 170: flowstate.v1.WorkflowService.GetCatalog:input_type -> flowstate.v1.GetCatalogRequest
-	74,  // 171: flowstate.v1.WorkflowService.CreateSchedule:input_type -> flowstate.v1.CreateScheduleRequest
-	76,  // 172: flowstate.v1.WorkflowService.ListSchedules:input_type -> flowstate.v1.ListSchedulesRequest
-	78,  // 173: flowstate.v1.WorkflowService.DescribeSchedule:input_type -> flowstate.v1.DescribeScheduleRequest
-	80,  // 174: flowstate.v1.WorkflowService.DeleteSchedule:input_type -> flowstate.v1.DeleteScheduleRequest
-	82,  // 175: flowstate.v1.WorkflowService.PauseSchedule:input_type -> flowstate.v1.PauseScheduleRequest
-	84,  // 176: flowstate.v1.WorkflowService.ResumeSchedule:input_type -> flowstate.v1.ResumeScheduleRequest
-	86,  // 177: flowstate.v1.WorkflowService.TriggerSchedule:input_type -> flowstate.v1.TriggerScheduleRequest
-	36,  // 178: flowstate.v1.WorkflowService.Run:output_type -> flowstate.v1.RunResponse
-	38,  // 179: flowstate.v1.WorkflowService.Get:output_type -> flowstate.v1.GetResponse
-	56,  // 180: flowstate.v1.WorkflowService.Signal:output_type -> flowstate.v1.SignalResponse
-	63,  // 181: flowstate.v1.WorkflowService.List:output_type -> flowstate.v1.ListResponse
-	58,  // 182: flowstate.v1.WorkflowService.Cancel:output_type -> flowstate.v1.CancelResponse
-	60,  // 183: flowstate.v1.WorkflowService.Terminate:output_type -> flowstate.v1.TerminateResponse
-	66,  // 184: flowstate.v1.WorkflowService.Validate:output_type -> flowstate.v1.ValidateResponse
-	68,  // 185: flowstate.v1.WorkflowService.Compile:output_type -> flowstate.v1.CompileResponse
-	70,  // 186: flowstate.v1.WorkflowService.GetCatalog:output_type -> flowstate.v1.GetCatalogResponse
-	75,  // 187: flowstate.v1.WorkflowService.CreateSchedule:output_type -> flowstate.v1.CreateScheduleResponse
-	77,  // 188: flowstate.v1.WorkflowService.ListSchedules:output_type -> flowstate.v1.ListSchedulesResponse
-	79,  // 189: flowstate.v1.WorkflowService.DescribeSchedule:output_type -> flowstate.v1.DescribeScheduleResponse
-	81,  // 190: flowstate.v1.WorkflowService.DeleteSchedule:output_type -> flowstate.v1.DeleteScheduleResponse
-	83,  // 191: flowstate.v1.WorkflowService.PauseSchedule:output_type -> flowstate.v1.PauseScheduleResponse
-	85,  // 192: flowstate.v1.WorkflowService.ResumeSchedule:output_type -> flowstate.v1.ResumeScheduleResponse
-	87,  // 193: flowstate.v1.WorkflowService.TriggerSchedule:output_type -> flowstate.v1.TriggerScheduleResponse
-	178, // [178:194] is the sub-list for method output_type
-	162, // [162:178] is the sub-list for method input_type
-	162, // [162:162] is the sub-list for extension type_name
-	162, // [162:162] is the sub-list for extension extendee
-	0,   // [0:162] is the sub-list for field type_name
+	27,  // 8: flowstate.v1.InputDeclaration.example:type_name -> flowstate.v1.Value
+	27,  // 9: flowstate.v1.OutputDeclaration.value:type_name -> flowstate.v1.Value
+	92,  // 10: flowstate.v1.RunOutputs.values:type_name -> flowstate.v1.RunOutputs.ValuesEntry
+	11,  // 11: flowstate.v1.Triggers.schedule:type_name -> flowstate.v1.ScheduleTrigger
+	127, // 12: flowstate.v1.ScheduleTrigger.every:type_name -> google.protobuf.Duration
+	127, // 13: flowstate.v1.ScheduleTrigger.jitter:type_name -> google.protobuf.Duration
+	1,   // 14: flowstate.v1.ScheduleTrigger.overlap:type_name -> flowstate.v1.ScheduleTrigger.Overlap
+	34,  // 15: flowstate.v1.Node.task:type_name -> flowstate.v1.Task
+	22,  // 16: flowstate.v1.Node.for_each:type_name -> flowstate.v1.ForEach
+	23,  // 17: flowstate.v1.Node.parallel:type_name -> flowstate.v1.Parallel
+	16,  // 18: flowstate.v1.Node.wait:type_name -> flowstate.v1.Wait
+	24,  // 19: flowstate.v1.Node.call:type_name -> flowstate.v1.Call
+	27,  // 20: flowstate.v1.Node.condition:type_name -> flowstate.v1.Value
+	25,  // 21: flowstate.v1.Node.policy:type_name -> flowstate.v1.StepPolicy
+	94,  // 22: flowstate.v1.Node.vars:type_name -> flowstate.v1.Node.VarsEntry
+	13,  // 23: flowstate.v1.Node.undo:type_name -> flowstate.v1.Compensation
+	34,  // 24: flowstate.v1.Compensation.task:type_name -> flowstate.v1.Task
+	34,  // 25: flowstate.v1.PendingUndo.task:type_name -> flowstate.v1.Task
+	127, // 26: flowstate.v1.Wait.duration:type_name -> google.protobuf.Duration
+	27,  // 27: flowstate.v1.Wait.until:type_name -> flowstate.v1.Value
+	17,  // 28: flowstate.v1.Wait.signal:type_name -> flowstate.v1.Signal
+	127, // 29: flowstate.v1.Wait.timeout:type_name -> google.protobuf.Duration
+	52,  // 30: flowstate.v1.SignalSender.identity:type_name -> flowstate.v1.WorkloadIdentity
+	128, // 31: flowstate.v1.SignalSender.accepted_at:type_name -> google.protobuf.Timestamp
+	93,  // 32: flowstate.v1.PendingSignal.payload:type_name -> flowstate.v1.Node.Outputs
+	18,  // 33: flowstate.v1.PendingSignal.sender:type_name -> flowstate.v1.SignalSender
+	93,  // 34: flowstate.v1.SignalDelivery.payload:type_name -> flowstate.v1.Node.Outputs
+	18,  // 35: flowstate.v1.SignalDelivery.sender:type_name -> flowstate.v1.SignalSender
+	88,  // 36: flowstate.v1.Scope.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
+	96,  // 37: flowstate.v1.Scope.vars:type_name -> flowstate.v1.Scope.VarsEntry
+	97,  // 38: flowstate.v1.Scope.ambient_vars:type_name -> flowstate.v1.Scope.AmbientVarsEntry
+	98,  // 39: flowstate.v1.Scope.inputs:type_name -> flowstate.v1.Scope.InputsEntry
+	27,  // 40: flowstate.v1.ForEach.items:type_name -> flowstate.v1.Value
+	12,  // 41: flowstate.v1.ForEach.body:type_name -> flowstate.v1.Node
+	99,  // 42: flowstate.v1.Parallel.branches:type_name -> flowstate.v1.Parallel.Branch
+	6,   // 43: flowstate.v1.Call.workflow:type_name -> flowstate.v1.Workflow
+	100, // 44: flowstate.v1.Call.arguments:type_name -> flowstate.v1.Call.ArgumentsEntry
+	127, // 45: flowstate.v1.StepPolicy.timeout:type_name -> google.protobuf.Duration
+	26,  // 46: flowstate.v1.StepPolicy.retry:type_name -> flowstate.v1.RetryPolicy
+	127, // 47: flowstate.v1.RetryPolicy.initial_interval:type_name -> google.protobuf.Duration
+	127, // 48: flowstate.v1.RetryPolicy.max_interval:type_name -> google.protobuf.Duration
+	129, // 49: flowstate.v1.Value.expr:type_name -> google.api.expr.v1alpha1.ParsedExpr
+	130, // 50: flowstate.v1.Value.literal:type_name -> google.api.expr.v1alpha1.Value
+	101, // 51: flowstate.v1.Value.error:type_name -> flowstate.v1.Value.Error
+	15,  // 52: flowstate.v1.Value.secret_ref:type_name -> flowstate.v1.SecretRef
+	102, // 53: flowstate.v1.Value.structure:type_name -> flowstate.v1.Value.Structure
+	30,  // 54: flowstate.v1.TaskCatalog.tasks:type_name -> flowstate.v1.TaskDescription
+	29,  // 55: flowstate.v1.TaskCatalog.cel_functions:type_name -> flowstate.v1.CELFunction
+	33,  // 56: flowstate.v1.TaskDescription.inputs:type_name -> flowstate.v1.TaskField
+	33,  // 57: flowstate.v1.TaskDescription.outputs:type_name -> flowstate.v1.TaskField
+	32,  // 58: flowstate.v1.PluginCatalog.plugins:type_name -> flowstate.v1.PluginDescription
+	30,  // 59: flowstate.v1.PluginDescription.tasks:type_name -> flowstate.v1.TaskDescription
+	108, // 60: flowstate.v1.Task.inputs:type_name -> flowstate.v1.Task.InputsEntry
+	6,   // 61: flowstate.v1.RunRequest.workflow:type_name -> flowstate.v1.Workflow
+	119, // 62: flowstate.v1.RunRequest.inputs:type_name -> flowstate.v1.RunRequest.InputsEntry
+	5,   // 63: flowstate.v1.RunResponse.status:type_name -> flowstate.v1.RunResponse.Status
+	120, // 64: flowstate.v1.RunResponse.error:type_name -> flowstate.v1.RunResponse.Error
+	88,  // 65: flowstate.v1.RunResponse.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
+	5,   // 66: flowstate.v1.GetResponse.status:type_name -> flowstate.v1.RunResponse.Status
+	120, // 67: flowstate.v1.GetResponse.error:type_name -> flowstate.v1.RunResponse.Error
+	88,  // 68: flowstate.v1.GetResponse.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
+	128, // 69: flowstate.v1.GetResponse.start_time:type_name -> google.protobuf.Timestamp
+	128, // 70: flowstate.v1.GetResponse.close_time:type_name -> google.protobuf.Timestamp
+	40,  // 71: flowstate.v1.GetResponse.progress:type_name -> flowstate.v1.RunProgress
+	39,  // 72: flowstate.v1.GetResponse.pending_activities:type_name -> flowstate.v1.PendingActivity
+	9,   // 73: flowstate.v1.GetResponse.run_outputs:type_name -> flowstate.v1.RunOutputs
+	128, // 74: flowstate.v1.PendingActivity.next_attempt_scheduled_time:type_name -> google.protobuf.Timestamp
+	41,  // 75: flowstate.v1.DiagnosticReport.diagnostics:type_name -> flowstate.v1.Diagnostic
+	42,  // 76: flowstate.v1.ValidationReport.files:type_name -> flowstate.v1.DiagnosticReport
+	44,  // 77: flowstate.v1.FixReport.changes:type_name -> flowstate.v1.FixChange
+	41,  // 78: flowstate.v1.FixReport.refusals:type_name -> flowstate.v1.Diagnostic
+	41,  // 79: flowstate.v1.FixReport.notes:type_name -> flowstate.v1.Diagnostic
+	41,  // 80: flowstate.v1.FmtReport.refusals:type_name -> flowstate.v1.Diagnostic
+	45,  // 81: flowstate.v1.FixReports.files:type_name -> flowstate.v1.FixReport
+	46,  // 82: flowstate.v1.FmtReports.files:type_name -> flowstate.v1.FmtReport
+	41,  // 83: flowstate.v1.TestCase.failures:type_name -> flowstate.v1.Diagnostic
+	127, // 84: flowstate.v1.TestCase.duration:type_name -> google.protobuf.Duration
+	49,  // 85: flowstate.v1.TestReport.cases:type_name -> flowstate.v1.TestCase
+	50,  // 86: flowstate.v1.TestReports.files:type_name -> flowstate.v1.TestReport
+	121, // 87: flowstate.v1.WorkloadIdentity.claims:type_name -> flowstate.v1.WorkloadIdentity.ClaimsEntry
+	88,  // 88: flowstate.v1.Frame.results:type_name -> flowstate.v1.Workflow.StepOutputs
+	88,  // 89: flowstate.v1.Frame.call_outputs:type_name -> flowstate.v1.Workflow.StepOutputs
+	122, // 90: flowstate.v1.Frame.call_vars:type_name -> flowstate.v1.Frame.CallVarsEntry
+	6,   // 91: flowstate.v1.RunState.workflow:type_name -> flowstate.v1.Workflow
+	88,  // 92: flowstate.v1.RunState.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
+	53,  // 93: flowstate.v1.RunState.frames:type_name -> flowstate.v1.Frame
+	52,  // 94: flowstate.v1.RunState.identity:type_name -> flowstate.v1.WorkloadIdentity
+	19,  // 95: flowstate.v1.RunState.pending_signals:type_name -> flowstate.v1.PendingSignal
+	123, // 96: flowstate.v1.RunState.vars:type_name -> flowstate.v1.RunState.VarsEntry
+	124, // 97: flowstate.v1.RunState.inputs:type_name -> flowstate.v1.RunState.InputsEntry
+	9,   // 98: flowstate.v1.RunState.run_outputs:type_name -> flowstate.v1.RunOutputs
+	14,  // 99: flowstate.v1.RunState.pending_undo:type_name -> flowstate.v1.PendingUndo
+	93,  // 100: flowstate.v1.SignalRequest.payload:type_name -> flowstate.v1.Node.Outputs
+	5,   // 101: flowstate.v1.RunSummary.status:type_name -> flowstate.v1.RunResponse.Status
+	128, // 102: flowstate.v1.RunSummary.start_time:type_name -> google.protobuf.Timestamp
+	128, // 103: flowstate.v1.RunSummary.close_time:type_name -> google.protobuf.Timestamp
+	62,  // 104: flowstate.v1.ListResponse.runs:type_name -> flowstate.v1.RunSummary
+	64,  // 105: flowstate.v1.ValidateRequest.files:type_name -> flowstate.v1.SourceFile
+	43,  // 106: flowstate.v1.ValidateResponse.report:type_name -> flowstate.v1.ValidationReport
+	64,  // 107: flowstate.v1.CompileRequest.file:type_name -> flowstate.v1.SourceFile
+	6,   // 108: flowstate.v1.CompileResponse.workflow:type_name -> flowstate.v1.Workflow
+	42,  // 109: flowstate.v1.CompileResponse.report:type_name -> flowstate.v1.DiagnosticReport
+	28,  // 110: flowstate.v1.GetCatalogResponse.catalog:type_name -> flowstate.v1.TaskCatalog
+	128, // 111: flowstate.v1.ScheduleActionResult.schedule_time:type_name -> google.protobuf.Timestamp
+	128, // 112: flowstate.v1.ScheduleActionResult.actual_time:type_name -> google.protobuf.Timestamp
+	128, // 113: flowstate.v1.ScheduleSummary.next_run_time:type_name -> google.protobuf.Timestamp
+	11,  // 114: flowstate.v1.ScheduleDescription.trigger:type_name -> flowstate.v1.ScheduleTrigger
+	128, // 115: flowstate.v1.ScheduleDescription.next_run_times:type_name -> google.protobuf.Timestamp
+	71,  // 116: flowstate.v1.ScheduleDescription.recent_runs:type_name -> flowstate.v1.ScheduleActionResult
+	125, // 117: flowstate.v1.ScheduleDescription.inputs:type_name -> flowstate.v1.ScheduleDescription.InputsEntry
+	6,   // 118: flowstate.v1.CreateScheduleRequest.workflow:type_name -> flowstate.v1.Workflow
+	126, // 119: flowstate.v1.CreateScheduleRequest.inputs:type_name -> flowstate.v1.CreateScheduleRequest.InputsEntry
+	73,  // 120: flowstate.v1.CreateScheduleResponse.schedule:type_name -> flowstate.v1.ScheduleDescription
+	72,  // 121: flowstate.v1.ListSchedulesResponse.schedules:type_name -> flowstate.v1.ScheduleSummary
+	73,  // 122: flowstate.v1.DescribeScheduleResponse.schedule:type_name -> flowstate.v1.ScheduleDescription
+	91,  // 123: flowstate.v1.Workflow.StepOutputs.step_values:type_name -> flowstate.v1.Workflow.StepOutputs.StepValuesEntry
+	9,   // 124: flowstate.v1.Workflow.StepOutputs.run_outputs:type_name -> flowstate.v1.RunOutputs
+	27,  // 125: flowstate.v1.Workflow.VarsEntry.value:type_name -> flowstate.v1.Value
+	93,  // 126: flowstate.v1.Workflow.StepOutputs.StepValuesEntry.value:type_name -> flowstate.v1.Node.Outputs
+	27,  // 127: flowstate.v1.RunOutputs.ValuesEntry.value:type_name -> flowstate.v1.Value
+	95,  // 128: flowstate.v1.Node.Outputs.named_values:type_name -> flowstate.v1.Node.Outputs.NamedValuesEntry
+	27,  // 129: flowstate.v1.Node.VarsEntry.value:type_name -> flowstate.v1.Value
+	27,  // 130: flowstate.v1.Node.Outputs.NamedValuesEntry.value:type_name -> flowstate.v1.Value
+	27,  // 131: flowstate.v1.Scope.VarsEntry.value:type_name -> flowstate.v1.Value
+	27,  // 132: flowstate.v1.Scope.AmbientVarsEntry.value:type_name -> flowstate.v1.Value
+	27,  // 133: flowstate.v1.Scope.InputsEntry.value:type_name -> flowstate.v1.Value
+	12,  // 134: flowstate.v1.Parallel.Branch.steps:type_name -> flowstate.v1.Node
+	27,  // 135: flowstate.v1.Call.ArgumentsEntry.value:type_name -> flowstate.v1.Value
+	3,   // 136: flowstate.v1.Value.Error.code:type_name -> flowstate.v1.Value.Error.Code
+	103, // 137: flowstate.v1.Value.Structure.list:type_name -> flowstate.v1.Value.Structure.List
+	104, // 138: flowstate.v1.Value.Structure.map:type_name -> flowstate.v1.Value.Structure.Map
+	27,  // 139: flowstate.v1.Value.Structure.List.values:type_name -> flowstate.v1.Value
+	105, // 140: flowstate.v1.Value.Structure.Map.entries:type_name -> flowstate.v1.Value.Structure.Map.EntriesEntry
+	27,  // 141: flowstate.v1.Value.Structure.Map.EntriesEntry.value:type_name -> flowstate.v1.Value
+	27,  // 142: flowstate.v1.Task.InputsEntry.value:type_name -> flowstate.v1.Value
+	4,   // 143: flowstate.v1.Task.Log.Inputs.level:type_name -> flowstate.v1.Task.Log.Level
+	111, // 144: flowstate.v1.Task.Log.Inputs.fields:type_name -> flowstate.v1.Task.Log.Inputs.FieldsEntry
+	114, // 145: flowstate.v1.Task.HTTP.Inputs.headers:type_name -> flowstate.v1.Task.HTTP.Inputs.HeadersEntry
+	27,  // 146: flowstate.v1.Task.HTTP.Inputs.bearer:type_name -> flowstate.v1.Value
+	115, // 147: flowstate.v1.Task.HTTP.Inputs.outputs:type_name -> flowstate.v1.Task.HTTP.Inputs.OutputsEntry
+	116, // 148: flowstate.v1.Task.HTTP.Inputs.query:type_name -> flowstate.v1.Task.HTTP.Inputs.QueryEntry
+	27,  // 149: flowstate.v1.Task.HTTP.Inputs.json:type_name -> flowstate.v1.Value
+	117, // 150: flowstate.v1.Task.HTTP.Inputs.form:type_name -> flowstate.v1.Task.HTTP.Inputs.FormEntry
+	27,  // 151: flowstate.v1.Task.HTTP.Inputs.expect:type_name -> flowstate.v1.Value
+	118, // 152: flowstate.v1.Task.HTTP.Outputs.headers:type_name -> flowstate.v1.Task.HTTP.Outputs.HeadersEntry
+	130, // 153: flowstate.v1.Task.HTTP.Outputs.json:type_name -> google.api.expr.v1alpha1.Value
+	27,  // 154: flowstate.v1.Task.HTTP.Inputs.OutputsEntry.value:type_name -> flowstate.v1.Value
+	27,  // 155: flowstate.v1.Task.HTTP.Inputs.QueryEntry.value:type_name -> flowstate.v1.Value
+	27,  // 156: flowstate.v1.Task.HTTP.Inputs.FormEntry.value:type_name -> flowstate.v1.Value
+	27,  // 157: flowstate.v1.RunRequest.InputsEntry.value:type_name -> flowstate.v1.Value
+	27,  // 158: flowstate.v1.Frame.CallVarsEntry.value:type_name -> flowstate.v1.Value
+	27,  // 159: flowstate.v1.RunState.VarsEntry.value:type_name -> flowstate.v1.Value
+	27,  // 160: flowstate.v1.RunState.InputsEntry.value:type_name -> flowstate.v1.Value
+	27,  // 161: flowstate.v1.ScheduleDescription.InputsEntry.value:type_name -> flowstate.v1.Value
+	27,  // 162: flowstate.v1.CreateScheduleRequest.InputsEntry.value:type_name -> flowstate.v1.Value
+	35,  // 163: flowstate.v1.WorkflowService.Run:input_type -> flowstate.v1.RunRequest
+	37,  // 164: flowstate.v1.WorkflowService.Get:input_type -> flowstate.v1.GetRequest
+	55,  // 165: flowstate.v1.WorkflowService.Signal:input_type -> flowstate.v1.SignalRequest
+	61,  // 166: flowstate.v1.WorkflowService.List:input_type -> flowstate.v1.ListRequest
+	57,  // 167: flowstate.v1.WorkflowService.Cancel:input_type -> flowstate.v1.CancelRequest
+	59,  // 168: flowstate.v1.WorkflowService.Terminate:input_type -> flowstate.v1.TerminateRequest
+	65,  // 169: flowstate.v1.WorkflowService.Validate:input_type -> flowstate.v1.ValidateRequest
+	67,  // 170: flowstate.v1.WorkflowService.Compile:input_type -> flowstate.v1.CompileRequest
+	69,  // 171: flowstate.v1.WorkflowService.GetCatalog:input_type -> flowstate.v1.GetCatalogRequest
+	74,  // 172: flowstate.v1.WorkflowService.CreateSchedule:input_type -> flowstate.v1.CreateScheduleRequest
+	76,  // 173: flowstate.v1.WorkflowService.ListSchedules:input_type -> flowstate.v1.ListSchedulesRequest
+	78,  // 174: flowstate.v1.WorkflowService.DescribeSchedule:input_type -> flowstate.v1.DescribeScheduleRequest
+	80,  // 175: flowstate.v1.WorkflowService.DeleteSchedule:input_type -> flowstate.v1.DeleteScheduleRequest
+	82,  // 176: flowstate.v1.WorkflowService.PauseSchedule:input_type -> flowstate.v1.PauseScheduleRequest
+	84,  // 177: flowstate.v1.WorkflowService.ResumeSchedule:input_type -> flowstate.v1.ResumeScheduleRequest
+	86,  // 178: flowstate.v1.WorkflowService.TriggerSchedule:input_type -> flowstate.v1.TriggerScheduleRequest
+	36,  // 179: flowstate.v1.WorkflowService.Run:output_type -> flowstate.v1.RunResponse
+	38,  // 180: flowstate.v1.WorkflowService.Get:output_type -> flowstate.v1.GetResponse
+	56,  // 181: flowstate.v1.WorkflowService.Signal:output_type -> flowstate.v1.SignalResponse
+	63,  // 182: flowstate.v1.WorkflowService.List:output_type -> flowstate.v1.ListResponse
+	58,  // 183: flowstate.v1.WorkflowService.Cancel:output_type -> flowstate.v1.CancelResponse
+	60,  // 184: flowstate.v1.WorkflowService.Terminate:output_type -> flowstate.v1.TerminateResponse
+	66,  // 185: flowstate.v1.WorkflowService.Validate:output_type -> flowstate.v1.ValidateResponse
+	68,  // 186: flowstate.v1.WorkflowService.Compile:output_type -> flowstate.v1.CompileResponse
+	70,  // 187: flowstate.v1.WorkflowService.GetCatalog:output_type -> flowstate.v1.GetCatalogResponse
+	75,  // 188: flowstate.v1.WorkflowService.CreateSchedule:output_type -> flowstate.v1.CreateScheduleResponse
+	77,  // 189: flowstate.v1.WorkflowService.ListSchedules:output_type -> flowstate.v1.ListSchedulesResponse
+	79,  // 190: flowstate.v1.WorkflowService.DescribeSchedule:output_type -> flowstate.v1.DescribeScheduleResponse
+	81,  // 191: flowstate.v1.WorkflowService.DeleteSchedule:output_type -> flowstate.v1.DeleteScheduleResponse
+	83,  // 192: flowstate.v1.WorkflowService.PauseSchedule:output_type -> flowstate.v1.PauseScheduleResponse
+	85,  // 193: flowstate.v1.WorkflowService.ResumeSchedule:output_type -> flowstate.v1.ResumeScheduleResponse
+	87,  // 194: flowstate.v1.WorkflowService.TriggerSchedule:output_type -> flowstate.v1.TriggerScheduleResponse
+	179, // [179:195] is the sub-list for method output_type
+	163, // [163:179] is the sub-list for method input_type
+	163, // [163:163] is the sub-list for extension type_name
+	163, // [163:163] is the sub-list for extension extendee
+	0,   // [0:163] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_flowstate_proto_init() }

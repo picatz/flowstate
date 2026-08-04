@@ -46,7 +46,13 @@ func EvalRunOutputs(ctx context.Context, wf *Workflow, scope *Scope) (*RunOutput
 		if _, isExpr := value.GetKind().(*Value_Expr); !isExpr {
 			// A literal output is a constant answer, which is a strange thing to
 			// write and a legal one. Passed through rather than refused, the same way
-			// a literal `vars:` entry is.
+			// a literal `vars:` entry is — but still checked against its own
+			// declaration's `must:`, because a literal that violates its own contract
+			// is exactly as much of a mistake as a computed one.
+			if err := CheckOutputConstraint(declaration, value); err != nil {
+				return nil, err
+			}
+
 			values[name] = value
 
 			continue
@@ -60,7 +66,18 @@ func EvalRunOutputs(ctx context.Context, wf *Workflow, scope *Scope) (*RunOutput
 		if err != nil {
 			return nil, fmt.Errorf("output %q: converting result: %w", name, err)
 		}
-		values[name] = &Value{Kind: &Value_Literal{Literal: literal}}
+		computed := &Value{Kind: &Value_Literal{Literal: literal}}
+
+		if err := CheckOutputConstraint(declaration, computed); err != nil {
+			// A workflow claiming a `must:` on its own answer has that answer
+			// checked before it is reported — the same rule a submitted input
+			// gets, pointed the other way: a run that cannot produce a value
+			// satisfying its own declaration has not succeeded, per this
+			// function's own doc comment.
+			return nil, err
+		}
+
+		values[name] = computed
 	}
 
 	return &RunOutputs{Values: values}, nil

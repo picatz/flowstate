@@ -65,6 +65,17 @@ func BindRunInputs(wf *Workflow, submitted map[string]*Value) (map[string]*Value
 	for _, declaration := range wf.GetDeclaredInputs() {
 		name := declaration.GetName()
 
+		// Checked before anything below reads a value: "rules compile when
+		// configuration loads, not when a request arrives" applies here even
+		// though there is no separate load moment for a hand-built specification
+		// — this is the earliest point every caller reaches, so it is where the
+		// fail-closed rule is enforced for one. `flow validate` runs the
+		// identical check earlier still, against a position, for a file that
+		// went through the compiler.
+		if err := CheckInputConstraintShape(declaration); err != nil {
+			return nil, err
+		}
+
 		value, supplied := submitted[name]
 		if !supplied {
 			switch {
@@ -83,6 +94,9 @@ func BindRunInputs(wf *Workflow, submitted map[string]*Value) (map[string]*Value
 		// hand: `flow validate` refuses a mistyped default in a Flowfile, and this is
 		// what refuses one in a message that never was a Flowfile.
 		if err := CheckInputValue(name, declaration, value); err != nil {
+			return nil, err
+		}
+		if err := CheckInputConstraints(name, declaration, value); err != nil {
 			return nil, err
 		}
 
@@ -104,7 +118,36 @@ func CheckInputDefault(declaration *InputDeclaration) error {
 		return nil
 	}
 
-	return CheckInputValue(declaration.GetName(), declaration, declaration.GetDefault())
+	if err := CheckInputValue(declaration.GetName(), declaration, declaration.GetDefault()); err != nil {
+		return err
+	}
+
+	return CheckInputConstraints(declaration.GetName(), declaration, declaration.GetDefault())
+}
+
+// CheckInputExample reports whether a declaration's example is a literal of
+// the declared type that satisfies the declaration's own constraints.
+//
+// Exported for the same reason [CheckInputDefault] is, and checked the same
+// way: an example is part of the specification too, so a stale one — a
+// `must:` tightened after the example was written, a type changed underneath
+// it — is a defect in the file rather than something a reader discovers by
+// noticing it lied. Never bound to a run: [BindRunInputs] never reads this
+// field, which is the whole difference between an example and a default.
+func CheckInputExample(declaration *InputDeclaration) error {
+	if declaration.GetExample() == nil {
+		return nil
+	}
+
+	if err := CheckInputValue(declaration.GetName(), declaration, declaration.GetExample()); err != nil {
+		return fmt.Errorf("example: %w", err)
+	}
+
+	if err := CheckInputConstraints(declaration.GetName(), declaration, declaration.GetExample()); err != nil {
+		return fmt.Errorf("example: %w", err)
+	}
+
+	return nil
 }
 
 // CheckInputValue refuses a value that is not a literal of the declared type.

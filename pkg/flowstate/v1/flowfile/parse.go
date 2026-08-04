@@ -57,8 +57,11 @@ var (
 	// mappings keyed by the name being declared, so these are the keys *under* a
 	// name rather than the names themselves — which are the author's and are checked
 	// as names, not as keys.
-	inputKeys  = []string{"type", "required", "default", "description"}
-	outputKeys = []string{"value", "description"}
+	inputKeys = []string{
+		"type", "required", "default", "description", "example", "sensitive",
+		"pattern", "min_len", "max_len", "min", "max", "min_items", "max_items", "unique", "must",
+	}
+	outputKeys = []string{"value", "description", "must", "sensitive"}
 
 	// stepPropertyKeys say which step this is, how it runs, and what it is for —
 	// everything except what work it does.
@@ -702,6 +705,80 @@ func (c *compiler) declaredInput(e entry, parent string) *v1.InputDeclaration {
 		}
 	}
 
+	if f, found := fields.get("example"); found {
+		examplePath := fieldPath(path, "example")
+		// An ordinary value, the same fence rule `default:` follows: an example is
+		// never applied at runtime, but it is still checked against the
+		// declaration's own type and constraints — see [Validate] — so it stays a
+		// value rather than an expression for the identical reason a default does.
+		declaration.Example = c.inputValue(f.value, examplePath,
+			ref{path: examplePath, label: "input " + e.name + " example"})
+	}
+
+	if f, found := fields.get("sensitive"); found {
+		sensitivePath := fieldPath(path, "sensitive")
+		if sensitive, ok := c.boolean(f.value, sensitivePath,
+			ref{path: sensitivePath, label: "input " + e.name + " sensitive"}); ok {
+			declaration.Sensitive = sensitive
+		}
+	}
+
+	if f, found := fields.get("pattern"); found {
+		patternPath := fieldPath(path, "pattern")
+		if pattern, ok := c.text(f.value, patternPath,
+			ref{path: patternPath, label: "input " + e.name + " pattern"}); ok {
+			declaration.Pattern = proto.String(pattern)
+		}
+	}
+	if f, found := fields.get("min_len"); found {
+		p := fieldPath(path, "min_len")
+		if v, ok := c.unsignedWhole(f.value, p, ref{path: p, label: "input " + e.name + " min_len"}); ok {
+			declaration.MinLen = proto.Uint64(v)
+		}
+	}
+	if f, found := fields.get("max_len"); found {
+		p := fieldPath(path, "max_len")
+		if v, ok := c.unsignedWhole(f.value, p, ref{path: p, label: "input " + e.name + " max_len"}); ok {
+			declaration.MaxLen = proto.Uint64(v)
+		}
+	}
+	if f, found := fields.get("min"); found {
+		p := fieldPath(path, "min")
+		if v, ok := c.number(f.value, p, ref{path: p, label: "input " + e.name + " min"}); ok {
+			declaration.Min = proto.Float64(v)
+		}
+	}
+	if f, found := fields.get("max"); found {
+		p := fieldPath(path, "max")
+		if v, ok := c.number(f.value, p, ref{path: p, label: "input " + e.name + " max"}); ok {
+			declaration.Max = proto.Float64(v)
+		}
+	}
+	if f, found := fields.get("min_items"); found {
+		p := fieldPath(path, "min_items")
+		if v, ok := c.unsignedWhole(f.value, p, ref{path: p, label: "input " + e.name + " min_items"}); ok {
+			declaration.MinItems = proto.Uint64(v)
+		}
+	}
+	if f, found := fields.get("max_items"); found {
+		p := fieldPath(path, "max_items")
+		if v, ok := c.unsignedWhole(f.value, p, ref{path: p, label: "input " + e.name + " max_items"}); ok {
+			declaration.MaxItems = proto.Uint64(v)
+		}
+	}
+	if f, found := fields.get("unique"); found {
+		p := fieldPath(path, "unique")
+		if v, ok := c.boolean(f.value, p, ref{path: p, label: "input " + e.name + " unique"}); ok {
+			declaration.Unique = v
+		}
+	}
+	if f, found := fields.get("must"); found {
+		p := fieldPath(path, "must")
+		if v, ok := c.text(f.value, p, ref{path: p, label: "input " + e.name + " must"}); ok {
+			declaration.Must = proto.String(v)
+		}
+	}
+
 	return declaration
 }
 
@@ -768,6 +845,19 @@ func (c *compiler) declaredOutput(e entry, parent string) *v1.OutputDeclaration 
 		if description, ok := c.text(f.value, descriptionPath,
 			ref{path: descriptionPath, label: "output " + e.name + " description"}); ok {
 			declaration.Description = proto.String(description)
+		}
+	}
+
+	if f, found := fields.get("must"); found {
+		p := fieldPath(path, "must")
+		if v, ok := c.text(f.value, p, ref{path: p, label: "output " + e.name + " must"}); ok {
+			declaration.Must = proto.String(v)
+		}
+	}
+	if f, found := fields.get("sensitive"); found {
+		p := fieldPath(path, "sensitive")
+		if v, ok := c.boolean(f.value, p, ref{path: p, label: "output " + e.name + " sensitive"}); ok {
+			declaration.Sensitive = v
 		}
 	}
 

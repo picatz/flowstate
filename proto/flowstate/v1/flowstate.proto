@@ -453,6 +453,95 @@ message InputDeclaration {
   // machine, which is why it is worth carrying rather than leaving in a comment
   // the compiler throws away.
   optional string description = 5 [(buf.validate.field).string = {max_len: 256}];
+
+  // Example is an illustrative value for this input, never applied at runtime.
+  //
+  // `default` and `example` used to be one field, because `default` was the only
+  // way to make a workflow runnable unattended — so a required-feeling input like
+  // "who is asking" ended up with a specific person as its default, which is
+  // incoherent: there is no sensible absent value for who is asking, only a
+  // plausible one to paste. The two are different things. A default is applied
+  // when a caller supplies nothing, and is legitimate only when absence itself
+  // has a meaning (`region: us-east-1`). An example is what a caller unsure what
+  // to send would copy, is legal on a required input precisely because a required
+  // input cannot have a default, and is checked against this declaration's own
+  // type and constraints when the specification compiles — a stale example that
+  // no longer satisfies its own `must:` is a diagnostic, not a value nobody
+  // notices went wrong. It is never bound to a run; it exists for an editor's
+  // hover, a generated doc, and a machine caller's schema.
+  Value example = 6;
+
+  // Sensitive marks a value as private but not secret: a salary in an approval, a
+  // customer's email — something a run legitimately computes on and that
+  // legitimately rides in history, but that should not be casually pasted into a
+  // terminal, a log, or an agent's answer. A view renders `[redacted: <name>]` by
+  // default with an explicit reveal, and a machine output includes the value only
+  // when asked for it.
+  //
+  // This is display etiquette and nothing more. It is not containment: the value
+  // is an ordinary part of the run's history exactly like any other input, and
+  // anyone with access to that history reads it in the clear, the same way they
+  // read any other input. A secret reference is different: it keeps the value
+  // *out* of history entirely, resolving it only inside the activity that needs
+  // it — that is containment, and this is not it. Marking sensitive a value that
+  // must never reach an operator's screen at all is a mistake; that value is a
+  // secret reference, not this.
+  bool sensitive = 7;
+
+  // Pattern is an RE2 regular expression a `type: string` value must fully
+  // match. The compiler refuses it on a declaration of any other type, the same
+  // way it refuses a `min_items` on one that is not a list — a rule on a type it
+  // cannot apply to is worse than no rule, per this schema's own history with
+  // rules that could never hold.
+  //
+  // Named and shaped to match `buf.validate`'s `string.pattern` one for one, so
+  // that a constraint written here and one arriving from an imported `.proto`
+  // file's own annotations are the same artifact underneath.
+  optional string pattern = 8;
+
+  // MinLen and MaxLen bound a `type: string` value's length, counted in runes.
+  // Either may be given alone. Named after `buf.validate`'s `string.min_len` and
+  // `string.max_len`, for the reason `pattern` above is.
+  optional uint64 min_len = 9;
+  optional uint64 max_len = 10;
+
+  // Min and Max bound a `type: int` or `type: float` value. Either may be given
+  // alone. One field serves both declared types rather than the four
+  // `buf.validate` keeps per width, because this schema's numeric inputs are
+  // already the two kinds [InputDeclaration.Type] names and a DSL author writes
+  // one number regardless of which.
+  optional double min = 11;
+  optional double max = 12;
+
+  // MinItems and MaxItems bound a `type: list` value's length. Either may be
+  // given alone. Named after `buf.validate`'s `repeated.min_items` and
+  // `repeated.max_items`.
+  optional uint64 min_items = 13;
+  optional uint64 max_items = 14;
+
+  // Unique reports that a `type: list` value's elements must all differ from one
+  // another, compared the way two [Value] literals compare for equality. Named
+  // after `buf.validate`'s `repeated.unique`. The compiler refuses it on a
+  // declaration of any other type.
+  bool unique = 15;
+
+  // Must is a CEL predicate over `this`, the value being checked, for a rule the
+  // declarative keys above cannot state — the escape hatch `buf.validate` itself
+  // keeps behind its own standard-rule vocabulary, and for the identical reason:
+  // making an author spell `size(this) > 0 && size(this) <= 100` for every
+  // bounded list is the ergonomic failure the keys above exist to prevent, so
+  // this exists only for what they genuinely cannot say.
+  //
+  // Compiled and type-checked when the specification loads — not when a run
+  // submits one — so a bad expression is a defect in the specification itself,
+  // caught the same way a mistyped default is. Evaluated under this schema's
+  // standard CEL cost bound at every point a value is checked against it, because
+  // a specification (and the `must:` inside it) can arrive over the RPC and is
+  // therefore untrusted input like any other stored expression here. It may not
+  // reference `now` or call anything nondeterministic: a constraint has to answer
+  // the same way on every replay and at every one of this declaration's
+  // enforcement points, which an expression reading the clock cannot promise.
+  optional string must = 16;
 }
 
 // OutputDeclaration is one value a finished run reports: a name, and the
@@ -493,6 +582,21 @@ message OutputDeclaration {
 
   // Description is prose for whoever reads the result.
   optional string description = 3 [(buf.validate.field).string = {max_len: 256}];
+
+  // Must is a CEL predicate over `this`, the value this output's own expression
+  // produced, checked once that expression has been evaluated — so a workflow
+  // cannot report a value that violates its own contract, which is what makes
+  // consuming a library workflow's result safe. Same rules as
+  // [InputDeclaration.must]: compiled and type-checked when the specification
+  // loads, evaluated under the standard CEL cost bound, and refused if it
+  // references `now` or calls anything else nondeterministic.
+  optional string must = 4;
+
+  // Sensitive marks this output's value the way [InputDeclaration.sensitive]
+  // marks an input's — display etiquette, never containment. See that field's
+  // doc comment for the honesty this comes with; nothing about the two differs
+  // beyond which side of a run they describe.
+  bool sensitive = 5;
 }
 
 // RunOutputs is what one run computed for its declared outputs.

@@ -13,14 +13,16 @@
 # before it that registered a compensation get taken back — in reverse,
 # because the payment was only taken *because* the stock was already held.
 #
-# The ordinary path, which succeeds and reports what it did:
+# The ordinary path, which succeeds and reports what it did — `order_id:` is
+# required, so an argument for it is needed the way `parameterized-deploy`
+# needs `service:`:
 #
-#   flow run local examples/order-fulfillment/workflow.yaml
+#   flow run local examples/order-fulfillment/workflow.yaml --input order_id=ORD-48213
 #
 # The path this example exists for — ask it to simulate the carrier being
 # unable to take the order, and read the last line of the failure:
 #
-#   flow run local examples/order-fulfillment/workflow.yaml --input carrier_outage=true
+#   flow run local examples/order-fulfillment/workflow.yaml --input order_id=ORD-48213 --input carrier_outage=true
 #   ...
 #   step "arrange_shipment": task "http" failed (InvalidInput): ...; compensation
 #   ran in reverse order: undid "charge_payment", undid "reserve_inventory"
@@ -36,17 +38,24 @@
 # same two paths unwind the same way, from whichever worker is running the
 # segment that fails:
 #
-#   flow run examples/order-fulfillment/workflow.yaml
-#   flow run examples/order-fulfillment/workflow.yaml --input carrier_outage=true
+#   flow run examples/order-fulfillment/workflow.yaml --input order_id=ORD-48213
+#   flow run examples/order-fulfillment/workflow.yaml --input order_id=ORD-48213 --input carrier_outage=true
 edition: v2026.2
 name: order-fulfillment
 description: Reserve stock, charge a card, arrange shipping — and undo the first two if the third can't happen.
 
 inputs:
+  # No sensible absent value — an order id names one order, the same way an
+  # expense report's requester names one person — so this is required, with
+  # an `example:` a reader can paste rather than a `default:` implying one
+  # order is the ordinary one.
   order_id:
     type: string
-    default: ORD-48213
+    required: true
+    example: ORD-48213
     description: the order being fulfilled
+  # A feature flag, and false — the ordinary path — is exactly the sensible
+  # absent value a default should carry.
   carrier_outage:
     type: bool
     default: false
