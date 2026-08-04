@@ -1,0 +1,168 @@
+syntax = "proto3";
+
+package sql.v1;
+
+option go_package = "github.com/picatz/flowstate/plugins/sql/gen/sql/v1;sqlv1";
+
+import "flowstate/v1/flowstate.proto";
+
+// This plugin's own task schema: sql.query (read, bounded) and sql.exec
+// (write, one activity = at most one transaction) - see doc.go for the full
+// design, in particular why there is no spelling anywhere in this schema
+// that lets a value become SQL text rather than a bound parameter.
+
+// Engine names the SQL dialect and driver a call speaks. Drivers are
+// compile-time citizens of this plugin (issue #181's driver-vs-plugin rule:
+// same verbs + same semantics + different wire = a driver of one plugin;
+// different idioms or semantics = a sibling plugin) - so this enum is
+// exactly the set of engines this build was compiled with, and naming one
+// this build lacks is refused with a positioned diagnostic listing the
+// choices, the same way any other enum field is.
+enum Engine {
+  ENGINE_UNSPECIFIED = 0;
+
+  // Pure-Go, embedded, no server: github.com/picatz/flowstate/plugins/sql's
+  // own tests run against this engine, in-process, with nothing to stand up
+  // - see doc.go, "Why sqlite is enumerated first."
+  ENGINE_SQLITE = 1;
+
+  // Pure-Go over the network: github.com/jackc/pgx/v5, the enterprise
+  // target issue #181 names first for production use.
+  ENGINE_POSTGRES = 2;
+}
+
+// QueryInputs describes one bounded, read-only query.
+message QueryInputs {
+  // Engine selects the dialect and driver this call speaks. Required: there
+  // is no default engine, because a default would mean guessing which SQL
+  // dialect a query string is written in.
+  Engine engine = 1;
+
+  // Dsn is this call's connection string. It is declared in this task's
+  // secret_inputs (see main.go), so a Flowfile writes
+  // `dsn: ${secret('...')}` and this task receives the resolved value,
+  // never the reference - the host resolves it before this task ever runs.
+  // A literal is accepted but strongly discouraged (see doc.go, "Secrets"),
+  // for the same reason codex.exec's api_key is: this task cannot always
+  // tell a resolved secret from an author's own literal once both arrive as
+  // the same value shape.
+  flowstate.v1.Value dsn = 2;
+
+  // Query is the SQL text this call executes, verbatim. It is never
+  // string-formatted, concatenated, or templated by this plugin - a
+  // parameter placeholder (`?` for sqlite, `$1`, `$2`, ... for postgres) is
+  // the only way a value from params ever reaches the database, and there
+  // is no other spelling in this schema that lets a value become part of
+  // the query text itself. See doc.go, "Parameterized only, structurally."
+  string query = 3;
+
+  // Params binds one value per placeholder in query, in order, exactly as
+  // the underlying driver binds a prepared statement's parameters - never
+  // substituted into the query string by this plugin. A CEL expression here
+  // produces a parameter value; it cannot produce SQL text, because nothing
+  // in this schema reads params back into query.
+  repeated flowstate.v1.Value params = 4;
+
+  // MaxRows bounds how many rows this call may return. Required: there is
+  // no default, because a query with no row bound is a query this plugin
+  // refuses to shape an opinion about on a workflow author's behalf. A
+  // result that would exceed this bound is refused outright - naming the
+  // bound - rather than returned as a silently truncated prefix; see
+  // doc.go, "Bounded results, and what a truncated one means here."
+  int32 max_rows = 5;
+}
+
+// QueryOutputs is one call's bounded, typed result set.
+message QueryOutputs {
+  // Rows is the result set, one entry per row, each a map from column name
+  // to the driver-reported value converted to a CEL scalar (or null) - see
+  // rows.go. Carried as flowstate.v1.Value (built with sdk.Literal) rather
+  // than a repeated message of this plugin's own, the same reason
+  // plugins/codex's ExecOutputs.files_changed is: [sdk.EncodeOutputs] does
+  // not convert a list of a plugin-defined message type, and every row's
+  // shape is decided by the query, not by anything this schema could fix in
+  // advance. A CEL expression over a step's output reasons over this the
+  // same way it would over any other list of maps:
+  // `${steps.lookup.rows.filter(r, r.balance_cents > 0)}`.
+  flowstate.v1.Value rows = 1;
+
+  // RowCount is len(rows), reported separately so a workflow does not need
+  // to evaluate rows.size() just to check whether anything came back.
+  int32 row_count = 2;
+
+  // Columns names each column, in the driver's own reported order - useful
+  // for a query whose result can legitimately be empty (row_count == 0),
+  // where rows alone carries no column information at all.
+  repeated string columns = 3;
+}
+
+// ExecInputs describes one write: one or more statements, run as one
+// transaction that begins and ends inside this single activity invocation.
+// See doc.go, "Transactions end where the activity ends" - there is no
+// input anywhere in this schema that could hold a transaction open past
+// this call returning, because a step is an activity that can be retried
+// and resumed on a different worker, and a transaction spanning that is
+// worktree-state in database costume.
+message ExecInputs {
+  // Engine selects the dialect and driver this call speaks, exactly as
+  // QueryInputs.engine does.
+  Engine engine = 1;
+
+  // Dsn is this call's connection string, exactly as QueryInputs.dsn is -
+  // declared in secret_inputs, resolved by the host before this task runs.
+  flowstate.v1.Value dsn = 2;
+
+  // Statements runs in order, inside one transaction: every statement
+  // commits together or none does. A statement that fails rolls the whole
+  // call back - there is no partial-commit mode. At least one statement is
+  // required.
+  //
+  // Carried as flowstate.v1.Value (built with sdk.Literal, read with
+  // statementsFromValue in exec.go) rather than a repeated message of this
+  // plugin's own, for the same reason sql.proto's own comment on
+  // QueryOutputs.rows gives: [sdk.DecodeInputs] does not convert a
+  // repeated field of a plugin-defined message type any more than
+  // [sdk.EncodeOutputs] converts one on the way out - this is that same
+  // documented limitation (plugins/codex/exec.go's own comment on
+  // files_changed) encountered on the input side instead of the output
+  // side. A Flowfile writes this as an ordinary CEL list of maps:
+  //
+  //   statements:
+  //     - sql: "INSERT INTO accounts (id, balance_cents) VALUES (?, ?)"
+  //       params: [1, 1000]
+  //     - sql: "UPDATE accounts SET balance_cents = balance_cents - ? WHERE id = ?"
+  //       params: [100, 1]
+  //
+  // Each entry is a map with two keys: "sql" (string, required, the exact
+  // same verbatim-text rule query: follows) and "params" (a list, bound the
+  // same way QueryInputs.params is - independently of any other
+  // statement's own params).
+  flowstate.v1.Value statements = 3;
+}
+
+// ExecOutputs is one call's write result.
+message ExecOutputs {
+  // TotalRowsAffected sums every statement's own reported row count. A
+  // driver that cannot report a row count for some statement kind (a DDL
+  // statement, for instance) contributes 0 for that statement, not an
+  // error - the same "this is a fact about the statement, not this task
+  // failing to read something" reasoning plugins/codex's token-usage fields
+  // use.
+  int64 total_rows_affected = 1;
+
+  // LastInsertId is the sqlite engine's own rowid from the final
+  // statement's own INSERT, when it performed one. Always 0 for
+  // ENGINE_POSTGRES: database/sql's LastInsertId is unsupported by pgx (the
+  // wire protocol has no equivalent RPC), and the idiomatic replacement -
+  // an `INSERT ... RETURNING id` statement whose result a workflow reads -
+  // is sql.query's job, not this field's; see doc.go and the README for
+  // this gap stated plainly rather than papered over with a fabricated
+  // value.
+  int64 last_insert_id = 2;
+
+  // StatementCount is len(statements) from the request, reported for a
+  // caller that wants to confirm every statement it sent actually ran
+  // (this task never runs a subset: either every statement in the
+  // transaction commits, or the call fails and none of them do).
+  int32 statement_count = 3;
+}

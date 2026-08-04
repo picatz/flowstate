@@ -1,0 +1,63 @@
+edition: v2026.2
+name: sql-transfer
+description: Moves money between two accounts using the "sql" plugin's sql.exec task - two statements, one transaction, committed or rolled back together inside this single step.
+
+# sql.exec is the write half of the "sql" plugin: every statement in
+# `statements:` runs inside one transaction that begins and ends inside this
+# one activity invocation - see plugins/sql/doc.go, "Transactions end where
+# the activity ends." There is no BEGIN task and no COMMIT task in this
+# plugin's schema, on purpose: the debit and the credit below either both
+# take effect or neither does, and there is no spelling in this file that
+# could hold the transaction open across a second step.
+#
+# idempotency_key is bound as an ordinary parameter, not a special field -
+# see plugins/sql/doc.go, "Idempotency keys as ordinary params." A retried
+# call (the engine retries a step whose attempt failed for a reason that
+# looks transient) sends the same key, and the accounts_ledger table's own
+# unique constraint on it is what makes a retry converge to a no-op instead
+# of moving the money twice - the INSERT here is deliberately
+# "ON CONFLICT (idempotency_key) DO NOTHING" shaped for exactly that reason.
+#
+# Requires configuration - a real database with accounts and
+# accounts_ledger tables, and a resolvable dsn secret - so it never runs by
+# accident. See plugins/sql/README.md, "Trying this example."
+
+inputs:
+  from_account_id:
+    type: int
+    required: true
+    description: the account debited
+  to_account_id:
+    type: int
+    required: true
+    description: the account credited
+  amount_cents:
+    type: int
+    required: true
+    description: how much moves, in cents (must be positive)
+  idempotency_key:
+    type: string
+    required: true
+    description: a value unique to this transfer request, so a retried call converges rather than moving the money twice
+
+steps:
+  - id: transfer
+    sql.exec:
+      engine: ENGINE_POSTGRES
+      dsn: ${secret('env:SQL_DSN')}
+      statements:
+        - sql: "INSERT INTO accounts_ledger (idempotency_key) VALUES (?) ON CONFLICT (idempotency_key) DO NOTHING"
+          params: ${[inputs.idempotency_key]}
+        - sql: "UPDATE accounts SET balance_cents = balance_cents - ? WHERE id = ?"
+          params: ${[inputs.amount_cents, inputs.from_account_id]}
+        - sql: "UPDATE accounts SET balance_cents = balance_cents + ? WHERE id = ?"
+          params: ${[inputs.amount_cents, inputs.to_account_id]}
+
+  - id: announce
+    log:
+      message: "${'moved %d cents from account %d to account %d across %d statement(s), one transaction'.format([inputs.amount_cents, inputs.from_account_id, inputs.to_account_id, steps.transfer.statement_count])}"
+
+outputs:
+  rows_affected:
+    value: ${steps.transfer.total_rows_affected}
+    description: the sum of every statement's own reported row count - 3 on a fresh transfer, fewer on a converged retry whose ledger insert did nothing
