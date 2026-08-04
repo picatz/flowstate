@@ -3,6 +3,7 @@ package flowtest_test
 import (
 	"fmt"
 	"net"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -407,4 +408,72 @@ tests:
 		"9007199254740992 and 9007199254740993 compared equal — the comparison is losing precision through float64")
 	require.Len(t, c.GetFailures(), 1)
 	require.Equal(t, "expect.outputs", c.GetFailures()[0].GetField())
+}
+
+// TestIsolationHoldsUnderConcurrentRunFile is issue #195's regression: the
+// no-network guarantee has to be a property of the run, not of a window in
+// which a process-global registry happens to be swapped.
+//
+// Before the per-case registry ([v1.NewContextWithRegistry]), two RunFile
+// calls racing each other could each observe the other's swap window, and what
+// escaped was a real task doing real work — a genuine DNS lookup out of an
+// http step whose case had stubbed it. The old design could not fix this by
+// locking harder: the critical sections were already serialized, and the leak
+// happened anyway.
+//
+// Deliberately runs many cases concurrently and asserts every one of them
+// failed *closed* — the unstubbed task refused by name — rather than reaching
+// a network. An unreachable-by-design host is used so that a leak fails loudly
+// (a DNS error naming the host) instead of hanging.
+func TestIsolationHoldsUnderConcurrentRunFile(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/workflow.yaml", `
+edition: v2026.2
+name: unstubbed
+steps:
+  - id: fetch
+    http:
+      method: GET
+      url: https://isolation-must-hold.invalid/probe
+`)
+	writeFile(t, dir+"/x.test.yaml", `
+tests:
+  - name: an unstubbed task fails closed and never reaches the network
+    workflow: ./workflow.yaml
+    expect:
+      failed: true
+      error_contains: "declares no stub"
+`)
+
+	const racers = 24
+	var wg sync.WaitGroup
+	failures := make(chan string, racers)
+
+	for i := 0; i < racers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			report := flowtest.RunFile(dir + "/x.test.yaml")
+			if refused := report.GetRefused(); refused != "" {
+				failures <- "refused: " + refused
+				return
+			}
+			for _, c := range report.GetCases() {
+				if !c.GetPassed() {
+					failures <- fmt.Sprintf("case %q failed: %v", c.GetName(), c.GetFailures())
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(failures)
+
+	var got []string
+	for f := range failures {
+		got = append(got, f)
+	}
+	require.Empty(t, got, "isolation leaked under concurrent RunFile: %v", got)
 }

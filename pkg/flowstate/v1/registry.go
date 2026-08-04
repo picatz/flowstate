@@ -381,6 +381,11 @@ func IsBuiltinTask(name string) bool {
 //
 // The engine uses this to decide how to treat a step's inputs without knowing
 // anything about specific tasks.
+//
+// This reads [DefaultRegistry] and takes no context, so it answers what this
+// *build* provides. Anything on the execution path — where a definition's Fn is
+// about to be called — must use [LookupTaskIn] instead, so that a run given its
+// own registry runs that registry's tasks. See [NewContextWithRegistry].
 func LookupTask(name string) (TaskDef, bool) {
 	return DefaultRegistry().Lookup(name)
 }
@@ -388,6 +393,67 @@ func LookupTask(name string) (TaskDef, bool) {
 // TaskNames returns the names of the built-in tasks, sorted.
 func TaskNames() []string {
 	return DefaultRegistry().Names()
+}
+
+// registryContextKey carries a per-run [Registry] override.
+type registryContextKey struct{}
+
+// NewContextWithRegistry returns a context whose runs resolve tasks through
+// registry rather than through [DefaultRegistry].
+//
+// This exists because isolation cannot be built out of mutating a process
+// global. `flow test` promises that no task runs for real — no network, no side
+// effects — and the only way to keep that promise for a run is to hand *that
+// run* the set of tasks it may execute, rather than swapping the global set out
+// from under every other goroutine in the process and hoping the timing holds.
+// It does not hold: two concurrent runs, or one run racing anything else that
+// reads the registry, can each observe the other's window, and what escapes is a
+// real task doing real work (see issue #195, where a real DNS lookup escaped a
+// test whose http task was supposedly stubbed).
+//
+// A context registry is consulted only by [LookupTaskIn] — the execution path.
+// Every other reader, including the compiler and the validator, keeps asking
+// what the build provides through [LookupTask]: they ask about *shapes*, which
+// are a property of the build, and a per-run override of a shape would let a
+// file compile against one definition and run against another.
+//
+// Production never sets one. With no registry on the context, [LookupTaskIn] is
+// [LookupTask], which is what keeps the durable driver and every ordinary local
+// run reading exactly the registry they read before this existed.
+func NewContextWithRegistry(ctx context.Context, registry *Registry) context.Context {
+	return context.WithValue(ctx, registryContextKey{}, registry)
+}
+
+// RegistryFromContext returns the registry a context carries, and whether one
+// was set.
+func RegistryFromContext(ctx context.Context) (*Registry, bool) {
+	registry, ok := ctx.Value(registryContextKey{}).(*Registry)
+	return registry, ok && registry != nil
+}
+
+// LookupTaskIn returns the task definition a *run* should execute under name:
+// the one its context's registry provides, or the build's own when the context
+// carries none.
+//
+// The execution path uses this and nothing else, so that what a run executes is
+// decided by what that run was given rather than by what the process-wide
+// registry happens to hold at the instant the step is reached.
+func LookupTaskIn(ctx context.Context, name string) (TaskDef, bool) {
+	if registry, ok := RegistryFromContext(ctx); ok {
+		return registry.Lookup(name)
+	}
+	return LookupTask(name)
+}
+
+// TaskNamesIn returns the task names available to a run, sorted — its context's
+// registry, or the build's own. Used by the unknown-task diagnostic, so that a
+// run told to use a particular registry is told what *that* registry offers
+// rather than a list it cannot reach.
+func TaskNamesIn(ctx context.Context) []string {
+	if registry, ok := RegistryFromContext(ctx); ok {
+		return registry.Names()
+	}
+	return TaskNames()
 }
 
 // ResolvableInputs partitions a task's inputs into those the engine should

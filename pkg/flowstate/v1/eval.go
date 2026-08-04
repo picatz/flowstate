@@ -1454,10 +1454,15 @@ func (t *Task) EvalInScope(ctx context.Context, scope *Scope) (*Node_Outputs, er
 	if t == nil {
 		return nil, fmt.Errorf("task cannot be nil")
 	}
-	def, ok := LookupTask(t.Name)
+	// LookupTaskIn, not LookupTask: this is the one place a task's Fn is
+	// actually called, so what runs must be decided by the registry *this run*
+	// was given rather than by whatever the process-wide registry holds at this
+	// instant. With no registry on the context — production, and every ordinary
+	// local run — this is exactly LookupTask. See [NewContextWithRegistry].
+	def, ok := LookupTaskIn(ctx, t.Name)
 	if !ok {
 		return nil, NewTaskError(t.Name, ErrorKindUnknownTask, fmt.Errorf(
-			"unknown task %q (available: %s)", t.Name, strings.Join(TaskNames(), ", ")))
+			"unknown task %q (available: %s)", t.Name, strings.Join(TaskNamesIn(ctx), ", ")))
 	}
 	return def.Fn(ctx, t.Inputs, scope)
 }

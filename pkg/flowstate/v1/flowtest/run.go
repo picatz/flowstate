@@ -101,6 +101,11 @@ func runCase(testFile string, test *Test) *v1.TestCase {
 	clock := v1.NewVirtualClock(epoch)
 	ctx := v1.NewContextWithClock(context.Background(), clock)
 
+	// The run executes against its own registry, not the process-wide one:
+	// stubs answer, everything else fails closed, and no other goroutine's
+	// timing can put a real task's Fn in this run's path. See [caseRegistry].
+	ctx = v1.NewContextWithRegistry(ctx, caseRegistry(stubs))
+
 	signals := v1.NewLocalSignals()
 	ctx = v1.NewContextWithSignalWaiter(ctx, signals)
 
@@ -171,28 +176,16 @@ func swapRegistry(stubs map[string]*stubbedTask) func() {
 	}
 	originals := make(map[string]saved, len(stubs))
 
-	// Every task this build already registers gets its Fn replaced, stubbed
-	// or not, which is what makes "no stub, no network" a property of the
-	// whole registry rather than of whichever names a case happened to
-	// mention.
-	for _, def := range registry.All() {
-		originals[def.Name] = saved{def: def, existed: true}
-
-		replacement := def
-		if stub, ok := stubs[def.Name]; ok {
-			replacement.Fn = stub.fn(def.Name)
-		} else {
-			replacement.Fn = unstubbedTaskFn(def.Name)
-		}
-		_ = registry.Register(replacement)
-	}
-
 	// A stub naming a task this build does not register at all — a plugin
-	// task, say — still needs a shape the engine can dispatch to and the
-	// compiler can compile a step against; a bare definition with no
-	// declared input/output schema is enough for both.
+	// task, say — still needs a shape the *compiler* can compile a step
+	// against, and the compiler reads the build's registry rather than a run's
+	// (see [v1.NewContextWithRegistry] for why shapes stay a property of the
+	// build). Only these synthetic names are registered globally, and only so
+	// that parsing succeeds; what actually executes comes from the per-case
+	// registry [caseRegistry] builds, which every real task's entry in this
+	// global registry is left completely untouched by.
 	for name, stub := range stubs {
-		if _, already := originals[name]; already {
+		if _, already := registry.Lookup(name); already {
 			continue
 		}
 		originals[name] = saved{existed: false}
@@ -210,6 +203,47 @@ func swapRegistry(stubs map[string]*stubbedTask) func() {
 			// resolving to a task that does not exist anywhere else.
 		}
 	}
+}
+
+// caseRegistry returns the registry one case executes against: every task this
+// build registers, with its Fn replaced by the case's stub or by a fail-closed
+// refusal, plus a synthetic definition for any stubbed name the build does not
+// have.
+//
+// A fresh registry per case rather than a mutation of the shared one. That is
+// what makes `flow test`'s central promise — no task runs for real — a
+// structural property instead of a timing-dependent one: the run is handed this
+// registry on its context ([v1.NewContextWithRegistry]), so nothing another
+// goroutine does to [v1.DefaultRegistry] can put a real Fn in this run's path,
+// and nothing this case does can leak into anyone else's. Issue #195 is what
+// happens without it — a real DNS lookup escaped a supposedly stubbed http task
+// under concurrency, because a swapped global is only ever swapped for a window.
+func caseRegistry(stubs map[string]*stubbedTask) *v1.Registry {
+	registry := v1.NewRegistry()
+
+	// Every task this build registers, stubbed or not, which is what makes
+	// "no stub, no network" a property of the whole registry rather than of
+	// whichever names a case happened to mention.
+	for _, def := range v1.DefaultRegistry().All() {
+		replacement := def
+		if stub, ok := stubs[def.Name]; ok {
+			replacement.Fn = stub.fn(def.Name)
+		} else {
+			replacement.Fn = unstubbedTaskFn(def.Name)
+		}
+		_ = registry.Register(replacement)
+	}
+
+	// A stubbed name this build does not register at all — a plugin task's
+	// name. A bare definition is enough for the engine to dispatch to it.
+	for name, stub := range stubs {
+		if _, already := registry.Lookup(name); already {
+			continue
+		}
+		_ = registry.Register(v1.TaskDef{Name: name, Fn: stub.fn(name)})
+	}
+
+	return registry
 }
 
 // unstubbedTaskFn is what a registered task's Fn becomes for the duration of
