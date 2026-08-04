@@ -1,0 +1,98 @@
+edition: v2026.2
+name: data-enrichment
+description: >-
+  Fans out over a worklist with bounded concurrency, retries the records
+  worth retrying, and reports exactly which ones it could not enrich.
+
+# The worklist here is short so the example finishes; the shape does not
+# change at four records or four million. Each record goes through the same
+# lookup, `max_parallel` bounds how many are in flight at once so this cannot
+# open more connections than the enrichment service can take, and `retry`
+# gives a record that failed for a reason that might not recur another
+# chance before this run gives up on it. None of that survives a crash in a
+# shell script looping over `curl` — the loop's position, which records are
+# already done, and which attempt a retry is on all live nowhere but a
+# variable in a process. Here they are state on the execution substrate:
+# `flow run local` runs this in one process for convenience, and the same
+# file run durably can lose the worker mid-loop and pick the next record up
+# on whatever worker replaces it, `max_parallel` and all.
+#
+#   flow run local examples/data-enrichment/workflow.yaml -o json | jq .runOutputs
+#
+# One record, "flagged", stands in for the one every worklist has: the
+# lookup that will never succeed, because there is nothing wrong with the
+# request. Change it to see the ordinary path with nothing to report:
+#
+#   flow run local examples/data-enrichment/workflow.yaml --input records='["alpha","beta"]'
+
+inputs:
+  records:
+    type: list
+    default: [alpha, beta, gamma, flagged]
+    description: identifiers to enrich
+
+steps:
+  - id: enrich
+    for_each:
+      items: ${inputs.records}
+      as: record
+      # Two in flight at a time. Local runs still execute one record after
+      # another regardless of this number, so a comparison between the two
+      # drivers is a comparison of the same nine attempts, not of however many
+      # the durable one happened to run concurrently.
+      max_parallel: 2
+      steps:
+        - id: lookup
+          description: >-
+            Enrich one record. "flagged" simulates one the service
+            permanently rejects, retried the same as everything else and
+            failing every attempt, on purpose.
+          continue_on_error: true
+          retry:
+            attempts: 3
+            interval: 200ms
+            backoff: 2.0
+            max_interval: 2s
+          timeout: 10s
+          http:
+            method: GET
+            url: https://httpbin.org/get
+            query:
+              record: ${record}
+            # `expect` decides success the same way the enrichment service
+            # would: this request answers 200 regardless of which record was
+            # asked for, so "flagged" is rejected here, by the workflow,
+            # exactly as it would be by a real service that has that record
+            # marked bad. The failure this produces is permanent — the
+            # request was never wrong to make — so `retry` above `never
+            # rescues it, the same way a 4xx does not get retried by default.
+            expect: ${record != 'flagged' && response.status_code == 200}
+            outputs: '${ {"id": record} }'
+
+  - id: report
+    log:
+      message: >-
+        ${"enrichment finished for %d of %d record(s)".format([
+          size(steps.enrich.results.filter(r, has(r.lookup.id))),
+          size(inputs.records)])}
+
+outputs:
+  # A step that failed carries no `id` — it never reached the `outputs`
+  # expression above, because `expect` decided before that point was reached
+  # — so this list is exactly the records a lookup actually completed for.
+  enriched:
+    value: ${steps.enrich.results.filter(r, has(r.lookup.id)).map(r, r.lookup.id)}
+    description: records the lookup completed for
+  # A failed iteration's own result carries no identifier to read back, so
+  # this is `inputs.records` with whatever *did* get enriched taken back out
+  # — the set of records this run attempted and did not finish, named rather
+  # than counted, which is the one thing a caller deciding whether to retry
+  # the batch actually needs.
+  failed:
+    value: >-
+      ${inputs.records.filter(r,
+        !(r in steps.enrich.results.filter(rr, has(rr.lookup.id)).map(rr, rr.lookup.id)))}
+    description: records this run could not enrich, after retries
+  attempted:
+    value: ${size(inputs.records)}
+    description: how many records this run was given

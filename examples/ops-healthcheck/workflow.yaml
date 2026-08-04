@@ -1,0 +1,86 @@
+edition: v2026.2
+name: ops-healthcheck
+description: >-
+  Probes a handful of services at once, tolerates the ones that are down, and
+  answers with exactly what a pager or a status dashboard needs to read.
+
+# A cron job that curls three endpoints and exits non-zero on the first
+# failure tells you one thing is down and nothing about the other two — and
+# if the box running it reboots mid-check, there is no run to look at
+# afterwards, only whatever got written to a log before it disappeared. This
+# checks all three regardless of what any one of them answers, and the run
+# itself — not a side-effect of it — is the thing a dashboard or a pager reads.
+#
+# `checks` below runs the three probes at once with `parallel:`, and each one
+# carries `continue_on_error: true`: a service being down is the reason this
+# workflow exists, not a reason for it to fail. The `search` probe is pointed
+# at a permanent 503 so the file has something to tolerate every time it runs,
+# the same way `conditional-and-retry`'s `notify` step always fails on
+# purpose.
+#
+#   flow run local examples/ops-healthcheck/workflow.yaml -o json | jq .runOutputs
+#
+# Durably, this is the shape behind a scheduled health check: `triggers:` (see
+# `examples/scheduled-report`) fires this file on a cadence, and a firing that
+# started before a worker fleet redeploy finishes on whatever worker picks it
+# up afterwards, with the same three answers it would have produced without
+# the redeploy.
+
+steps:
+  - id: checks
+    parallel:
+      - steps:
+          - id: checkout
+            description: the checkout service
+            timeout: 10s
+            continue_on_error: true
+            http:
+              method: GET
+              url: https://httpbin.org/status/200
+
+      - steps:
+          - id: payments
+            description: the payments service
+            timeout: 10s
+            continue_on_error: true
+            http:
+              method: GET
+              url: https://httpbin.org/status/200
+
+      - steps:
+          - id: search
+            description: the search service — shipped down, so there is always something to tolerate
+            timeout: 10s
+            continue_on_error: true
+            http:
+              method: GET
+              url: https://httpbin.org/status/503
+
+  - id: summary
+    log:
+      message: >-
+        ${"checkout=" + (has(steps.checkout.error) ? "down" : string(steps.checkout.status_code)) +
+          " payments=" + (has(steps.payments.error) ? "down" : string(steps.payments.status_code)) +
+          " search=" + (has(steps.search.error) ? "down" : string(steps.search.status_code))}
+
+outputs:
+  # Named rather than counted so a pager reads *what* to page about without
+  # re-deriving it from a status code. `continue_on_error` is what makes
+  # `has(steps.<id>.error)` the right question here: a probe that failed has
+  # `error` and no `status_code`, a probe that succeeded has the reverse, and
+  # nothing about that depends on which of the three finished first.
+  unhealthy_services:
+    value: >-
+      ${(has(steps.checkout.error) ? ["checkout"] : []) +
+        (has(steps.payments.error) ? ["payments"] : []) +
+        (has(steps.search.error) ? ["search"] : [])}
+    description: services whose probe did not come back healthy
+  healthy_count:
+    value: >-
+      ${(has(steps.checkout.error) ? 0 : 1) +
+        (has(steps.payments.error) ? 0 : 1) +
+        (has(steps.search.error) ? 0 : 1)}
+    description: how many of the three probes reported healthy
+  page_required:
+    value: ${has(steps.checkout.error) || has(steps.payments.error) || has(steps.search.error)}
+    description: whether an on-call human should be paged
