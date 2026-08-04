@@ -1,8 +1,11 @@
 # flowstate-plugin-git
 
-Git-specific version-control tasks for Flowstate: `git.ls_remote` (read) and
-`git.commit_push` (write), built on [go-git](https://github.com/go-git/go-git)
-and [go-gitdiff](https://github.com/bluekeyes/go-gitdiff) - two pure-Go
+Git-specific version-control tasks for Flowstate: `git.ls_remote` (refs, no
+clone), `git.log` and `git.read_file` (the read/audit tier - bounded commit
+history and one file's content, each a fresh clone per call), and
+`git.commit_push` (write), built on
+[go-git](https://github.com/go-git/go-git) and
+[go-gitdiff](https://github.com/bluekeyes/go-gitdiff) - two pure-Go
 dependencies, chosen so this plugin never execs a `git` binary, a hook, or
 any other subprocess. See [`doc.go`](doc.go) for the full argument, including
 where this plugin's design departs from issue #149's own write-operations
@@ -13,13 +16,16 @@ This is the rich, git-specific half of the factoring issue #149 settled;
 backend-agnostic core (`vcs.log`, `vcs.diff`). See `plugins/vcs/doc.go` for
 the argument that named the split.
 
-An example that runs the read task lives at
+An example that runs the read tasks lives at
 [`examples/plugins/git`](../../examples/plugins/git); read that first if you
-want to see it work rather than read about it. Three files live there: a
+want to see it work rather than read about it. Four files live there: a
 public read that runs with no arguments (`workflow.yaml`), the identical
 read against a private repository with one more field filled in
-(`ls-remote-private.yaml`), and the write task (`commit-push.yaml`) - the
-last two are parameterized and cannot run by accident.
+(`ls-remote-private.yaml`), the read/audit tier chained into a real audit
+question - who last touched a file, and what does it contain now
+(`log-and-read-file.yaml`, also runs with no arguments) - and the write task
+(`commit-push.yaml`) - the private-read and write files are parameterized
+and cannot run by accident.
 
 ## Building
 
@@ -32,20 +38,42 @@ go build -o /path/to/plugins/flowstate-plugin-git ./plugins/git
 | Task | Reads/Writes | Idempotent | Needs a credential |
 | --- | --- | --- | --- |
 | `git.ls_remote` | reads | yes | only for a private repository |
+| `git.log` | reads | yes | only for a private repository |
+| `git.read_file` | reads | yes | only for a private repository |
 | `git.commit_push` | writes | **yes, by construction** | always |
 
 `git.commit_push` is the centerpiece: one activity does materialize -> apply
 -> commit -> push. See "Design decisions" below for why it is idempotent
 despite being a write - that property is the whole design, not a footnote.
 
+`git.log` and `git.read_file` are this plugin's read/audit tier - the
+exploratory operations a security engineer (or an agent doing the same job)
+needs to answer questions about a repository without writing to it:
+`git.log` is a bounded slice of commit history reachable from a ref,
+including each commit's author, committer, full message, and parents, with
+an optional `path` filter (`git log -- <path>`) and `since` cutoff;
+`git.read_file` is one file's content, size, mode, and whether it looks
+binary, at one ref. Both are genuinely stateless and clone only the
+shallowest window each call actually needs - `git.log` fetches
+`max_commits + 1` (see `log.go`'s `fetchDepthForMaxCommits`), and
+`git.read_file` fetches depth 1, since reading one file at one ref never
+needs history at all (see `validate.go`'s `readFileCloneDepth`). Neither
+splits into smaller tasks the way `git.commit_push` deliberately does not
+either - see "Where is `git add`" and doc.go for why a write needs one
+activity with no workspace handed between steps; a read has no such
+constraint, and `git.log`/`git.read_file` compose cleanly as two ordinary,
+independent steps precisely because each is a single, complete, stateless
+clone-and-read.
+
 ## Authentication
 
-Both tasks accept a `token` input, always as a secret reference -
-`${secret('git:some-name')}` - never a literal. `git.ls_remote` treats an
-unset token as an unauthenticated request, which works for any public
-repository - see `examples/plugins/git/workflow.yaml`. Reading a private one
-is the exact same task with the exact same schema; the only difference is
-this one field being set - see `ls-remote-private.yaml`.
+All four tasks accept a `token` input, always as a secret reference -
+`${secret('git:some-name')}` - never a literal. `git.ls_remote`, `git.log`,
+and `git.read_file` all treat an unset token as an unauthenticated request,
+which works for any public repository - see
+`examples/plugins/git/workflow.yaml` and `log-and-read-file.yaml`. Reading a
+private one is the exact same task with the exact same schema; the only
+difference is this one field being set - see `ls-remote-private.yaml`.
 `git.commit_push`, in contrast, requires a token unconditionally: no forge
 accepts an anonymous push over HTTPS, so writing always needs a credential,
 whichever repository it targets - see `commit-push.yaml`.
@@ -129,9 +157,10 @@ public documentation, not guessed:
 
 ## Choosing the username
 
-Both tasks accept an optional `username` input, paired with `token` as the
-HTTP Basic-auth credentials `clone.go`, `commit_push.go`, and `refs.go` all
-send. Left unset, it resolves to `x-access-token` - the literal every
+All four tasks accept an optional `username` input, paired with `token` as
+the HTTP Basic-auth credentials `clone.go`, `commit_push.go`, `log.go`,
+`read_file.go`, and `refs.go` all send. Left unset, it resolves to
+`x-access-token` - the literal every
 version of this plugin sent unconditionally before this input existed, so a
 Flowfile written against an earlier version of this schema behaves
 byte-identically today; adding this field never changed anyone's existing
@@ -270,11 +299,40 @@ closes today. Said plainly here rather than left for someone to discover,
 per doc.go's own "Bounds this plugin cannot fully close."
 
 **Every output carries a sha.** `git.ls_remote` returns each ref's current
-hash alongside its name, and `git.commit_push` returns the commit it created
-(or that a previous attempt already created). A workflow that binds to the
-sha, not the movable name, cannot be quietly redirected by a later force-push
-or branch reset - the same lesson a mutable release tag teaches in a forge
-API.
+hash alongside its name, `git.log` returns `resolved_ref` (what a relative
+ref like "main" actually meant) alongside every commit's own sha, and
+`git.commit_push` returns the commit it created (or that a previous attempt
+already created). A workflow that binds to the sha, not the movable name,
+cannot be quietly redirected by a later force-push or branch reset - the
+same lesson a mutable release tag teaches in a forge API.
+
+**`git.log` and `git.read_file` are bounded on every resource an
+attacker-chosen repository controls.** A repository this task reads is
+untrusted input the same way `git.commit_push`'s `base_ref` tree is - see
+CLAUDE.md's "Bound anything that consumes untrusted input." `git.log` bounds
+commit *count* (`max_commits`, ceiling `maxMaxCommits`, refused rather than
+silently clamped over it), per-commit *message size*
+(`maxLogMessageBytes`), and, independently of both, the *sum* of every
+message returned (`maxTotalLogMessageBytes`) - a history with many
+merely-large messages, each under the per-entry cap, is refused the same way
+one pathological message is, because count and per-entry size alone do not
+bound their product's *reach* against the ratio an attacker actually
+controls (a commit message has no natural size limit). `git.read_file`
+bounds file content (`maxReadFileBytes`) by refusing outright, never
+truncating, when a blob exceeds it - a truncated file that looks whole is a
+worse failure than a clear refusal naming the actual size. Both reuse
+`packBoundedStorer` (`packbound.go`) for the clone itself, the same
+packfile-inflation bound `git.commit_push` and `git.ls_remote` already
+depend on.
+
+**`git.read_file` refuses a traversal path outright, the same check
+`git.commit_push` writes through.** `path` is validated with the same
+`validateTreePath` `git.commit_push`'s own `files`/`patch` paths go through
+- no absolute path, no `..` segment, nothing under a `.git` path segment -
+refused with a positioned diagnostic rather than sanitised, for the same
+reason `validateTreePath`'s own doc comment gives: a path from a workflow or
+a coding agent is attacker-adjacent input this plugin does not get to guess
+about, whether it is about to be written or merely read.
 
 **No signing in this slice.** `sign:`/`verify:` inputs for a signed commit
 are explicitly deferred to a follow-up (issue #163) and not started here.
@@ -495,9 +553,19 @@ tree a change actually touches the way `git clone --filter=blob:none` or a
 sparse checkout would. A monorepo whose full tree is enormous hits a real
 ceiling here - not a bug this plugin has, a property of the library it is
 built on - and this plugin's own bounds (`maxCloneDepth`, `maxResponseBytes`,
-`maxInflatedBytes`, `maxFiles`, `maxFileBytes`, `maxTotalFileBytes`) will
-refuse a request that exceeds them rather than attempt a clone or a tree
-rebuild that could exhaust a worker's memory trying to serve one. Said
+`maxInflatedBytes`, `maxFiles`, `maxFileBytes`, `maxTotalFileBytes`,
+`maxMaxCommits`, `maxTotalLogMessageBytes`, `maxReadFileBytes`) will refuse a
+request that exceeds them rather than attempt a clone or a tree rebuild that
+could exhaust a worker's memory trying to serve one. `git.log` and
+`git.read_file` are deliberately the *cheapest* callers of `cloneBounded` in
+this plugin against a large repository: `git.read_file` always clones at
+depth 1 (`readFileCloneDepth`) - one file at one ref never needs history -
+and `git.log`'s own depth is `max_commits + 1`, never the fixed
+`defaultCloneDepth` `git.commit_push` uses to resolve `base_ref`. A `path`
+filter on `git.log` narrows *which* commits within that fetched window are
+returned, never how deep the window itself reaches - a commit older than
+that window that touched `path` is not found, and `truncated: true` is how
+that is reported honestly rather than silently under-answering. Said
 plainly here, as an operating constraint someone provisioning a worker for
 this plugin should know before pointing it at their largest repository, not
 discovered from a worker that fell over.

@@ -143,6 +143,165 @@ message CommitPushInputs {
   string username = 11;
 }
 
+// Signature is a commit's author or committer line: who, and when.
+message Signature {
+  string name = 1;
+  string email = 2;
+
+  // When is RFC 3339, in the zone the commit recorded.
+  string when = 3;
+}
+
+// Commit is one entry of a repository's history, read by git.log. Richer
+// than plugins/vcs's own Commit (which has no committer or parent hashes),
+// deliberately - see git.proto's own top comment: this plugin is the
+// unapologetically git-specific half of the factoring issue #149 settled,
+// and a committer line distinct from the author, and a commit's parents, are
+// exactly the kind of git-object-model detail that belongs here rather than
+// in the backend-agnostic core.
+message Commit {
+  // Sha is the commit's full hex object id.
+  string sha = 1;
+
+  // Author is read from the commit's author line - unverified, since anyone
+  // with push access to the remote controls what it says.
+  Signature author = 2;
+
+  // Committer is read from the commit's committer line, distinct from
+  // Author whenever the commit was authored by one person and applied
+  // (rebased, cherry-picked, merged) by another.
+  Signature committer = 3;
+
+  // Message is the commit's full message, bounded per-entry (see
+  // maxLogMessageBytes) and, across every entry LogOutputs returns, bounded
+  // again in total (see maxTotalLogMessageBytes) - a commit message has no
+  // natural size limit, and a repository this task reads is attacker-chosen
+  // input, so both bounds exist independently: one entry cannot be
+  // pathologically large, and many merely-large entries cannot sum to an
+  // unbounded response either.
+  string message = 4;
+
+  // ParentHashes are this commit's parents' full hex object ids, in the
+  // order the commit object itself records them - empty for a root commit,
+  // more than one for a merge.
+  repeated string parent_hashes = 5;
+}
+
+// LogInputs asks for a bounded slice of a repository's commit history -
+// git.log's own audit primitive: who changed what, and what they said about
+// it.
+message LogInputs {
+  // Url is the repository to read, https:// only.
+  string url = 1;
+
+  // Ref is the branch, tag, or commit-ish to start from - anything go-git's
+  // own revision parser accepts. Empty means the remote's default branch
+  // (its HEAD).
+  string ref = 2;
+
+  // MaxCommits bounds how many commits are returned. Zero means this task's
+  // own default (see defaultMaxCommits); anything over the task's ceiling
+  // (maxMaxCommits) is refused rather than silently clamped - a silently
+  // clamped bound looks like a working request that quietly returns less
+  // than it was asked for.
+  int32 max_commits = 3;
+
+  // Path, if set, limits results to commits that touched this path -
+  // equivalent to `git log -- <path>`. This task only ever searches within
+  // the shallow window it cloned (see doc.go's own note on this task, "A
+  // path filter searches only the fetched window"): a commit older than
+  // that window that touched path is not found, and is exactly what
+  // Truncated in the output exists to report honestly rather than silently
+  // under-answering.
+  string path = 4;
+
+  // Since, RFC 3339, limits results to commits authored at or after this
+  // time - equivalent to `git log --since`.
+  string since = 5;
+
+  // Token is a secret reference for HTTPS authentication against a private
+  // repository, resolved inside this task and never logged. A literal
+  // string here is refused.
+  flowstate.v1.Value token = 6;
+
+  // Username is the HTTP Basic-auth username paired with token - see
+  // LsRemoteInputs.username for the full doc comment and default.
+  string username = 7;
+}
+
+// LogOutputs is a bounded slice of history.
+message LogOutputs {
+  // Commits are the entries found, most recent first, capped at max_commits
+  // and at maxTotalLogMessageBytes, whichever this call's history hits
+  // first.
+  repeated Commit commits = 1;
+
+  // ResolvedRef is the exact commit ref named, as a full sha - what a
+  // relative ref like "main" or "HEAD~3" actually meant at the moment this
+  // ran.
+  string resolved_ref = 2;
+
+  // Truncated reports whether more matching history existed beyond what was
+  // returned - by max_commits, by the total message-byte budget, or by the
+  // shallow window this task cloned when path was set - so a workflow can
+  // tell "this is all of it" from "this is as much as this call reached."
+  bool truncated = 3;
+}
+
+// ReadFileInputs asks for one file's content at one ref - the audit
+// counterpart to LogInputs: git.log finds which commit last touched a path
+// and who did it; git.read_file reads what is there now (or at any other
+// ref).
+message ReadFileInputs {
+  // Url is the repository to read, https:// only.
+  string url = 1;
+
+  // Ref is the branch, tag, or commit-ish to read path at. Empty means the
+  // remote's default branch (its HEAD).
+  string ref = 2;
+
+  // Path is the file's path within the tree at ref - relative, never
+  // absolute, never containing a ".." segment or a ".git" path segment (see
+  // validateTreePath, shared with git.commit_push's own path checks).
+  // Refused outright rather than sanitised when it does not meet that
+  // shape.
+  string path = 3;
+
+  // Token is a secret reference for HTTPS authentication. See
+  // LogInputs.token.
+  flowstate.v1.Value token = 4;
+
+  // Username is the HTTP Basic-auth username paired with token - see
+  // LsRemoteInputs.username.
+  string username = 5;
+}
+
+// ReadFileOutputs is one file's content at one ref.
+message ReadFileOutputs {
+  // Content is the file's raw bytes, bounded (see maxReadFileBytes) and
+  // never truncated: a file over the bound is refused with a diagnostic
+  // naming its actual size, because a truncated file that looks whole is
+  // worse than a refusal a workflow author can act on.
+  bytes content = 1;
+
+  // Size is the file's actual size in bytes, from the blob's own object
+  // header - reported even though Content never truncates, so a workflow
+  // can log or reason about a file's size without decoding Content itself.
+  int64 size = 2;
+
+  // Mode is the tree entry's git mode, in git's own zero-padded octal
+  // format ("0100644" regular, "0100755" executable, "0120000" symlink) -
+  // see plumbing/filemode.FileMode.String.
+  string mode = 3;
+
+  // Binary reports whether this task's own heuristic (a NUL byte within the
+  // first bytesToSniffForBinary bytes, the same heuristic git itself uses)
+  // judged the content binary - advisory, not authoritative: a file with no
+  // NUL in that window is reported as text even if it is not, and Content
+  // always carries the file's real bytes either way.
+  bool binary = 4;
+}
+
 // CommitPushOutputs is the result of one write.
 message CommitPushOutputs {
   // Sha is the commit this invocation created (or, when landed_previously is

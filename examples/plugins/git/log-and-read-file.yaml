@@ -1,0 +1,71 @@
+edition: v2026.2
+name: git-log-and-read-file
+description: Audits one file in a public repository - who last changed it, what every commit that touched it said, and what it actually contains now - using the "git" plugin's read tier (git.log, git.read_file). Runs with no arguments.
+
+# git.log and git.read_file are this plugin's read/audit tier - the
+# exploratory half of what git.* provides, alongside git.ls_remote (refs, no
+# clone) and the one write task, git.commit_push. Both clone the repository
+# themselves, inside the one activity that runs the step, and return
+# content - commit metadata, a file's bytes - never a path into a workspace a
+# later step could read. See plugins/git/doc.go, "why there is no vcs.clone"
+# in the sibling plugins/vcs (the same reasoning applies here), for the
+# argument; it is a security decision, not a missing feature.
+#
+# This file is the audit shape a security engineer (or an agent doing the
+# same job) actually reaches for: git.log answers "who touched this path,
+# and what did they say about it" without ever writing to the repository;
+# git.read_file answers "what does it contain right now." Together they are
+# the read-only half of the review a human would otherwise do with `git log
+# -- <path>` followed by `cat <path>` - except this plugin fetches only the
+# shallow window each call actually needs (see plugins/git/validate.go,
+# readFileCloneDepth and fetchDepthForMaxCommits), never a full clone, which
+# is what makes both tasks safe to point at a repository whose full history
+# is too large to ever clone completely.
+
+vars:
+  repo: https://github.com/octocat/Hello-World.git
+  path: README
+
+steps:
+  - id: history
+    git.log:
+      url: ${vars.repo}
+      path: ${vars.path}
+      max_commits: 5
+      # No ref: means "the remote's default branch" - the same default
+      # git.ls_remote's own examples leave unnamed. No token: this
+      # repository is public; see ls-remote-private.yaml for the one field
+      # that changes against a private one, unchanged for this task too.
+
+  - id: content
+    git.read_file:
+      url: ${vars.repo}
+      path: ${vars.path}
+      # ref: left unset here too - reading "what does it say now" means the
+      # same default branch history just walked, not a fixed commit,
+      # exactly the way a human running `cat` after `git log` would expect.
+
+  - id: announce
+    log:
+      message: "${'%s at %s - last touched by %s in %s (\"%s\"), now %d bytes'.format([vars.path, vars.repo, steps.history.commits[0].author.name, steps.history.commits[0].sha, steps.history.commits[0].message, steps.content.size])}"
+
+outputs:
+  last_editor:
+    value: ${steps.history.commits[0].author.name}
+    description: who git.log says touched this path most recently - the author line, unverified, since anyone with push access controls what it says
+
+  last_touch_sha:
+    value: ${steps.history.commits[0].sha}
+    description: the commit this task binds to, rather than a branch name a later force-push could move
+
+  history_size:
+    value: ${steps.history.commits.size()}
+    description: how many of this path's commits git.log found, capped at max_commits (see LogOutputs.truncated for whether more exist)
+
+  current_content:
+    value: ${steps.content.content}
+    description: the file's exact bytes right now, read by git.read_file at the same default ref git.log just walked
+
+  current_is_binary:
+    value: ${steps.content.binary}
+    description: git.read_file's own NUL-byte heuristic - false here, since README is plain text
