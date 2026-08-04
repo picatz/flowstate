@@ -148,9 +148,16 @@ func TestWithLocalSignalsDelivers(t *testing.T) {
 
 	// Already waiting when the run starts, which is what lets a gate reached later
 	// find its answer rather than blocking on something that already happened.
-	payload, err := waiter.WaitForSignal(t.Context(), "deploy-approved")
+	payload, sender, err := waiter.WaitForSignal(t.Context(), "deploy-approved")
 	require.NoError(t, err)
 	require.True(t, payload.GetNamedValues()["approved"].GetLiteral().GetBoolValue())
+
+	// A local delivery is always attributed to [v1.LocalSignalSender]: there is
+	// no authenticated caller behind a `--signal` flag for anything else to
+	// attest, and it must never look like a production, server-attested one.
+	require.True(t, sender.GetLocal(), "a local signal was not marked local")
+	require.Empty(t, sender.GetIdentity().GetSubject(),
+		"a local signal carries an identity, which nothing authenticated to produce")
 }
 
 // TestWithLocalSignalsAttachesAWaiterRegardless checks that a run with no answers

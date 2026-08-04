@@ -14,6 +14,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/testing/protocmp"
 	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
@@ -165,23 +166,67 @@ func TestWaitSleep(t *testing.T) {
 	}
 }
 
+// testSignalDelivery builds the [v1.SignalDelivery] the server would send for
+// a signal carrying payload, attested to subject.
+//
+// Every durable signal test builds this rather than a bare [v1.Node_Outputs],
+// because that bare shape is no longer what travels the wire: `FlowstateServer.Signal`
+// always sends a [v1.SignalDelivery], and a test that signalled the old shape
+// would decode into a zero-value delivery — an empty payload and no sender —
+// which would silently stop testing the payload path at all rather than fail
+// loudly.
+func testSignalDelivery(subject string, payload map[string]*v1.Value) *v1.SignalDelivery {
+	return &v1.SignalDelivery{
+		Payload: &v1.Node_Outputs{NamedValues: payload},
+		Sender: &v1.SignalSender{
+			Identity:   &v1.WorkloadIdentity{Subject: subject, Namespace: "team-a"},
+			AcceptedAt: timestamppb.Now(),
+		},
+	}
+}
+
+// senderSubject reads `${<id>.sender.identity.subject}` back out of a wait's
+// outputs, the way a workflow expression would.
+func senderSubject(t *testing.T, outputs *v1.Node_Outputs) string {
+	t.Helper()
+
+	sender := outputs.GetNamedValues()[v1.SenderOutput].GetLiteral().GetMapValue()
+	require.NotNil(t, sender, "the wait produced no sender mapping")
+
+	for _, entry := range sender.GetEntries() {
+		if entry.GetKey().GetStringValue() != "identity" {
+			continue
+		}
+		for _, field := range entry.GetValue().GetMapValue().GetEntries() {
+			if field.GetKey().GetStringValue() == "subject" {
+				return field.GetValue().GetStringValue()
+			}
+		}
+	}
+
+	t.Fatalf("the sender mapping has no identity.subject")
+	return ""
+}
+
 // TestWaitForSignal checks the approval gate: a run blocks until something
-// outside it says to proceed, and what the sender sent becomes the step's
-// outputs.
+// outside it says to proceed, what the sender sent becomes the step's outputs
+// under `payload`, and who the *server* attested becomes the step's outputs
+// under `sender` — the fix for #194: a self-asserted `by` inside the payload is
+// evidence, never identity, and must not be confused with the attested sender.
 func TestWaitForSignal(t *testing.T) {
 	t.Parallel()
 
 	env := newWaitEnv(t)
 
 	// Sent after the run has started and reached the gate. In workflow time this
-	// is a person approving a deploy.
+	// is a person approving a deploy — self-asserting a *different* name in the
+	// payload's own `by` field, which is exactly the confusion #194 is about: the
+	// attested sender below must not agree with it.
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow("deploy-approved", &v1.Node_Outputs{
-			NamedValues: map[string]*v1.Value{
-				"approved": v1.NewLiteral(true),
-				"by":       v1.NewLiteral("someone@example.com"),
-			},
-		})
+		env.SignalWorkflow("deploy-approved", testSignalDelivery("real-approver@example.com", map[string]*v1.Value{
+			"approved": v1.NewLiteral(true),
+			"by":       v1.NewLiteral("someone-else@example.com"),
+		}))
 	}, time.Minute)
 
 	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: &v1.Workflow{
@@ -206,12 +251,22 @@ func TestWaitForSignal(t *testing.T) {
 	// ${approval.payload.approved} the spelling and what keeps a sender from
 	// naming anything outside it.
 	require.True(t, payloadField(t, approval, "approved").GetBoolValue())
-	require.Equal(t, "someone@example.com", payloadField(t, approval, "by").GetStringValue())
+	require.Equal(t, "someone-else@example.com", payloadField(t, approval, "by").GetStringValue())
 
 	// And not at the top level, which is the property being protected.
 	require.NotContains(t, approval.GetNamedValues(), "approved",
 		"a sender's key reached the step's own output namespace")
 	require.False(t, approval.GetNamedValues()[v1.TimedOutOutput].GetLiteral().GetBoolValue())
+
+	// The attested identity is the engine's own, unrelated to whatever the
+	// payload's `by` field claimed.
+	require.Equal(t, "real-approver@example.com", senderSubject(t, approval),
+		"the attested sender disagreed with what the engine was actually told")
+
+	// The shared half of the #194 fix: an attested delivery must report itself
+	// as attested, with the shape [tests.AssertSignalSenderShape] checks. The
+	// local half of this same assertion lives in wait_local_test.go.
+	tests.AssertSignalSenderShape(t, approval, false)
 
 	require.NotNil(t, outputs.GetStepValues()["deploy"], "the gated step did not run after approval")
 }
@@ -294,9 +349,9 @@ func TestWaitForSignalArrivingEarly(t *testing.T) {
 
 	// Immediately, before the run has got anywhere near the gate.
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow("deploy-approved", &v1.Node_Outputs{
-			NamedValues: map[string]*v1.Value{"approved": v1.NewLiteral(true)},
-		})
+		env.SignalWorkflow("deploy-approved", testSignalDelivery("early-approver@example.com", map[string]*v1.Value{
+			"approved": v1.NewLiteral(true),
+		}))
 	}, 0)
 
 	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: &v1.Workflow{
@@ -336,11 +391,16 @@ func TestWaitForSignalSurvivesContinueAsNew(t *testing.T) {
 			logStep("one", "1"),
 			logStep("two", "2"),
 			signalStep("approval", "deploy-approved", 0),
-			// Gated on what the approval carried, which is the user-visible
-			// requirement: not merely that the gate opened, but that what the
-			// approver sent is still readable by a later step several suspends
-			// away.
-			gatedOn(logStep("deploy", "deploying"), "approval.payload.approved"),
+			// Gated on both halves of what the approval carried, which is the
+			// user-visible requirement: not merely that the gate opened, but that
+			// what the approver sent — and who the engine attested sent it — are
+			// still readable by a later step several suspends away. Referencing
+			// `sender` here is also what makes it survive compaction: an output
+			// field nothing downstream names is legitimately prunable at
+			// Continue-As-New (see compactOutputsForRemainingSteps), exactly as
+			// `payload.approved` would be if this condition did not name it.
+			gatedOn(logStep("deploy", "deploying"),
+				`approval.payload.approved && approval.sender.identity.subject != ""`),
 		},
 	}
 
@@ -348,9 +408,9 @@ func TestWaitForSignalSurvivesContinueAsNew(t *testing.T) {
 	// gate.
 	first := newWaitEnv(t)
 	first.RegisterDelayedCallback(func() {
-		first.SignalWorkflow("deploy-approved", &v1.Node_Outputs{
-			NamedValues: map[string]*v1.Value{"approved": v1.NewLiteral(true)},
-		})
+		first.SignalWorkflow("deploy-approved", testSignalDelivery("carried-approver@example.com", map[string]*v1.Value{
+			"approved": v1.NewLiteral(true),
+		}))
 	}, 0)
 
 	first.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: spec, StepsBudget: 1})
@@ -378,6 +438,9 @@ func TestWaitForSignalSurvivesContinueAsNew(t *testing.T) {
 	require.True(t,
 		carried.GetPendingSignals()[0].GetPayload().GetNamedValues()["approved"].GetLiteral().GetBoolValue(),
 		"the carried signal lost its payload")
+	require.Equal(t, "carried-approver@example.com",
+		carried.GetPendingSignals()[0].GetSender().GetIdentity().GetSubject(),
+		"the carried signal lost its attested sender — a suspend must not be a way to launder identity")
 
 	// The resumed runs consume it and never block, even though nothing signals
 	// them at all. A budget of one step means several more suspends before the
@@ -390,6 +453,8 @@ func TestWaitForSignalSurvivesContinueAsNew(t *testing.T) {
 	require.NotNil(t, approval, "the gate's outputs were not carried to the step that needed them")
 	require.True(t, payloadField(t, approval, "approved").GetBoolValue(),
 		"the approval arrived but what the approver sent was lost")
+	require.Equal(t, "carried-approver@example.com", senderSubject(t, approval),
+		"the attested sender did not survive being carried across Continue-As-New")
 
 	require.NotNil(t, outputs.GetStepValues()["deploy"],
 		"the resumed run never got past the gate it had already been approved through")
@@ -627,9 +692,9 @@ func TestACarriedSignalReachesAWaitInsideALoop(t *testing.T) {
 	// One step of budget, so the run suspends after `one` and before the loop.
 	first := newWaitEnv(t)
 	first.RegisterDelayedCallback(func() {
-		first.SignalWorkflow("deploy-approved", &v1.Node_Outputs{
-			NamedValues: map[string]*v1.Value{"approved": v1.NewLiteral(true)},
-		})
+		first.SignalWorkflow("deploy-approved", testSignalDelivery("loop-approver@example.com", map[string]*v1.Value{
+			"approved": v1.NewLiteral(true),
+		}))
 	}, 0)
 
 	first.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: spec, StepsBudget: 1})
@@ -709,9 +774,9 @@ func TestACarriedSignalReachesAWaitInsideAParallelBranch(t *testing.T) {
 
 	first := newWaitEnv(t)
 	first.RegisterDelayedCallback(func() {
-		first.SignalWorkflow("deploy-approved", &v1.Node_Outputs{
-			NamedValues: map[string]*v1.Value{"approved": v1.NewLiteral(true)},
-		})
+		first.SignalWorkflow("deploy-approved", testSignalDelivery("branch-approver@example.com", map[string]*v1.Value{
+			"approved": v1.NewLiteral(true),
+		}))
 	}, 0)
 
 	first.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: spec, StepsBudget: 1})

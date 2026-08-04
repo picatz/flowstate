@@ -11,6 +11,7 @@ import (
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -125,6 +126,16 @@ func memoTenant(memo *common.Memo) (string, error) {
 // This is how a human approval reaches a workload. The run may have been waiting
 // for a week and may have been continued as new several times since it started;
 // neither is visible to a sender, who addresses the workload rather than a run.
+//
+// The workload receives two separate things, never merged into one. Payload is
+// the sender's own claim, forwarded verbatim — it is evidence, not identity.
+// Sender is this handler's own attestation of who sent it, built from exactly
+// what [FlowstateServer.authorizeRun] already established about the caller a few
+// lines above: the same identity a run's own [v1.WorkloadIdentity] is built
+// from, at the same call. [v1.SignalRequest] has no field a caller could use to
+// set this — the schema itself is the refusal — so there is nothing here to
+// overwrite; the sender the workflow sees is always this handler's own, never
+// anything the request carried.
 func (s *FlowstateServer) Signal(ctx context.Context, req *connect.Request[v1.SignalRequest]) (*connect.Response[v1.SignalResponse], error) {
 	if err := v1.Validate(req.Msg); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
@@ -148,7 +159,19 @@ func (s *FlowstateServer) Signal(ctx context.Context, req *connect.Request[v1.Si
 		payload = &v1.Node_Outputs{NamedValues: map[string]*v1.Value{}}
 	}
 
-	if err := temporal.SignalWorkflow(ctx, workflowID, runID, req.Msg.GetName(), payload); err != nil {
+	// identityFor reads the authenticated caller from ctx — the same call and
+	// the same source a run's own identity comes from at Run — so a signal's
+	// sender is established exactly as trustworthily as a run's own caller is.
+	// It costs nothing beyond what authorizeRun above already paid for: no
+	// second round trip, no re-derivation from anything the request said.
+	sender := &v1.SignalSender{
+		Identity:   s.identityFor(ctx),
+		AcceptedAt: timestamppb.Now(),
+	}
+
+	delivery := &v1.SignalDelivery{Payload: payload, Sender: sender}
+
+	if err := temporal.SignalWorkflow(ctx, workflowID, runID, req.Msg.GetName(), delivery); err != nil {
 		return nil, actOnRunError("delivering a signal to", workflowID, runID, err)
 	}
 

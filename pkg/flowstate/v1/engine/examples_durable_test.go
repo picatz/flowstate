@@ -84,8 +84,12 @@ const unattendedGateBudget = 30 * time.Second
 //
 // The payloads are the ones the examples themselves document, from the `flow signal`
 // line in their own comments, rather than something invented to make an assertion
-// pass. `flow run local --signal deploy-approved='{"approved": true, "by": ...}'` is
-// the local spelling of the same answer.
+// pass. `flow run local --signal deploy-approved='{"approved": true}'` is the local
+// spelling of the same answer — no `by:` field, which is the #194 fix this example
+// exists to teach: who approved a gate is `steps.approval.sender`, attested by the
+// server (simulated here by runExampleDurably, which builds the same
+// [v1.SignalDelivery] `FlowstateServer.Signal` would), never something the payload
+// gets to claim.
 //
 // Missing an entry is a failure, not a skip: [TestEveryExampleRunsDurably] refuses
 // an example that waits for a signal this table cannot answer, so a new gate example
@@ -95,7 +99,6 @@ var exampleSignals = map[string]map[string]*v1.Node_Outputs{
 	"approval-gate": {
 		"deploy-approved": {NamedValues: map[string]*v1.Value{
 			"approved": v1.NewLiteral(true),
-			"by":       v1.NewLiteral("someone@example.com"),
 		}},
 	},
 }
@@ -465,7 +468,22 @@ func runExampleDurably(
 	// step, an `approval-gate` run crosses several boundaries before it reaches the
 	// gate, so this exercises the carry rather than a channel receive.
 	for signal, payload := range signals {
-		require.NoError(t, c.SignalWorkflow(ctx, id, "", signal, payload),
+		// A [v1.SignalDelivery], matching exactly what `FlowstateServer.Signal`
+		// sends over this same channel — this harness bypasses the server (it
+		// executes the workflow directly), so it has to build what the server
+		// would have attested rather than the raw payload alone, or the example
+		// corpus would stop exercising the sender path entirely.
+		delivery := &v1.SignalDelivery{
+			Payload: payload,
+			Sender: &v1.SignalSender{
+				Identity: &v1.WorkloadIdentity{
+					Subject:   "examples",
+					Issuer:    "flowstate:test",
+					Namespace: "",
+				},
+			},
+		}
+		require.NoError(t, c.SignalWorkflow(ctx, id, "", signal, delivery),
 			"signalling %s with %q", name, signal)
 	}
 
@@ -644,6 +662,17 @@ func stableOutputs(outputs *v1.Workflow_StepOutputs) *v1.Workflow_StepOutputs {
 
 	for _, step := range clone.GetStepValues() {
 		delete(step.GetNamedValues(), "headers")
+
+		// The one field the two drivers are supposed to disagree about. A local
+		// run genuinely has no authenticated caller — runExampleLocally delivers
+		// through [v1.LocalSignals], attributed to [v1.LocalSignalSender] — while
+		// runExampleDurably simulates what FlowstateServer.Signal attests for a
+		// real caller. Comparing it byte-for-byte would fail every gated example
+		// on the one difference this whole feature exists to produce; stripped
+		// here on the same reasoning as "headers" above, and the content is
+		// still exercised directly in TestWaitForSignal and
+		// TestApprovalGateEndToEnd.
+		delete(step.GetNamedValues(), v1.SenderOutput)
 
 		for _, value := range step.GetNamedValues() {
 			sortMapEntries(value.GetLiteral())

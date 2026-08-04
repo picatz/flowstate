@@ -79,16 +79,16 @@ func (e *executor) waitForSignal(node *v1.Node, signal *v1.Signal, timeout time.
 	// channel before an earlier run suspended and carried here in the run's
 	// state. Without this, approving a gate early — which is ordinary behavior —
 	// would leave the run waiting for something that already happened.
-	if payload, ok := e.takePendingSignal(name); ok {
+	if payload, sender, ok := e.takePendingSignal(name); ok {
 		workflow.GetLogger(e.ctx).Info("step consumed a signal that arrived earlier",
 			"id", node.GetId(), "signal", name)
-		e.recordOutputs(node, v1.SignalOutputs(payload, false))
+		e.recordOutputs(node, v1.SignalOutputs(payload, sender, false))
 		return nil
 	}
 
 	channel := workflow.GetSignalChannel(e.ctx, name)
 
-	var payload v1.Node_Outputs
+	var delivery v1.SignalDelivery
 
 	// One selector for both shapes, and cancellation is a case in it.
 	//
@@ -105,7 +105,7 @@ func (e *executor) waitForSignal(node *v1.Node, signal *v1.Signal, timeout time.
 	var received bool
 	selector := workflow.NewSelector(e.ctx)
 	selector.AddReceive(channel, func(c workflow.ReceiveChannel, _ bool) {
-		received = c.Receive(e.ctx, &payload)
+		received = c.Receive(e.ctx, &delivery)
 	})
 	selector.AddReceive(e.ctx.Done(), func(workflow.ReceiveChannel, bool) {})
 	if timeout > 0 {
@@ -137,11 +137,11 @@ func (e *executor) waitForSignal(node *v1.Node, signal *v1.Signal, timeout time.
 
 		workflow.GetLogger(e.ctx).Info("wait timed out",
 			"id", node.GetId(), "signal", name, "timeout", timeout)
-		e.recordOutputs(node, v1.SignalOutputs(nil, true))
+		e.recordOutputs(node, v1.SignalOutputs(nil, nil, true))
 		return nil
 	}
 
-	e.recordOutputs(node, v1.SignalOutputs(&payload, false))
+	e.recordOutputs(node, v1.SignalOutputs(delivery.GetPayload(), delivery.GetSender(), false))
 
 	return nil
 }
@@ -154,9 +154,9 @@ func (e *executor) recordOutputs(node *v1.Node, outputs *v1.Node_Outputs) {
 
 // takePendingSignal consumes an early-arriving signal, if one is held for this
 // name.
-func (e *executor) takePendingSignal(name string) (*v1.Node_Outputs, bool) {
+func (e *executor) takePendingSignal(name string) (*v1.Node_Outputs, *v1.SignalSender, bool) {
 	if e.signals == nil {
-		return nil, false
+		return nil, nil, false
 	}
 
 	for i, pending := range e.signals.pending {
@@ -166,10 +166,10 @@ func (e *executor) takePendingSignal(name string) (*v1.Node_Outputs, bool) {
 		// Consumed, so a second wait on the same name blocks rather than being
 		// satisfied twice by one signal.
 		e.signals.pending = append(e.signals.pending[:i:i], e.signals.pending[i+1:]...)
-		return pending.GetPayload(), true
+		return pending.GetPayload(), pending.GetSender(), true
 	}
 
-	return nil, false
+	return nil, nil, false
 }
 
 // drainSignals collects signals that have arrived but not been waited for, so
@@ -203,8 +203,8 @@ func drainSignals(ctx workflow.Context, spec *v1.Workflow, carried []*v1.Pending
 				return pending
 			}
 
-			var payload v1.Node_Outputs
-			if !channel.ReceiveAsync(&payload) {
+			var delivery v1.SignalDelivery
+			if !channel.ReceiveAsync(&delivery) {
 				break
 			}
 
@@ -213,7 +213,8 @@ func drainSignals(ctx workflow.Context, spec *v1.Workflow, carried []*v1.Pending
 
 			pending = append(pending, &v1.PendingSignal{
 				Name:    name,
-				Payload: &payload,
+				Payload: delivery.GetPayload(),
+				Sender:  delivery.GetSender(),
 			})
 		}
 	}

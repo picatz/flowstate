@@ -10,6 +10,7 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
 
@@ -208,7 +209,140 @@ func TestApprovalGateEndToEnd(t *testing.T) {
 	require.True(t, payloadField(t, outputs["approval"], "approved").GetBoolValue(),
 		"what the approver sent did not reach the workload")
 
+	// The #194 fix: the server attests a sender, from what it actually
+	// established about the caller, distinct from the payload's self-asserted
+	// `by`. No principal was installed on this request's context, so identity
+	// reads unauthenticated — but the sender is still the server's own account
+	// (not local, timestamped, this tenant's namespace), which is what a real
+	// dev deployment with no identity provider in front of it looks like: a
+	// signal reached the RPC, and *something* attested it, even if that
+	// something has no subject to name.
+	require.Equal(t, "team-a", senderField(t, outputs["approval"], "namespace"),
+		"the attested sender did not carry the tenant the server itself established")
+	require.NotEmpty(t, senderField(t, outputs["approval"], "accepted_at"),
+		"the attested sender carries no accepted_at")
+	require.NotEqual(t, "someone@example.com", senderField(t, outputs["approval"], "subject"),
+		"the payload's self-asserted \"by\" leaked into the attested sender's identity")
+
 	require.NotNil(t, outputs["deploy"], "the gated step did not run after approval")
+}
+
+// TestSignalAttestsTheAuthenticatedCallerNotAnythingItClaims is the forged-
+// sender direction: proof that a caller cannot make the workload believe
+// anything about who sent a signal beyond what the server itself established
+// through [server.FlowstateServer.authorizeRun] and identityFor.
+//
+// Two forgery attempts travel in the same request. The payload — the one part
+// of a [v1.SignalRequest] a caller controls — names a key literally spelled
+// "sender" carrying a fabricated identity, echoing the exact confusion #194 is
+// about. And the request is sent by a principal whose real, verified subject is
+// "real-caller@example.com", so the test can tell "the payload's claim" apart
+// from "the server's own attestation" rather than both happening to be empty.
+func TestSignalAttestsTheAuthenticatedCallerNotAnythingItClaims(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTenantFixture(t)
+
+	started, err := fixture.teamA.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+		Workflow: gatedWorkflow(),
+	}))
+	require.NoError(t, err)
+
+	workflowID := started.Msg.GetWorkflowId()
+
+	require.Eventually(t, func() bool {
+		resp, err := fixture.teamA.Get(t.Context(), connect.NewRequest(&v1.GetRequest{
+			WorkflowId: workflowID,
+		}))
+		return err == nil && resp.Msg.GetStatus() == v1.RunResponse_STATUS_RUNNING
+	}, 30*time.Second, 100*time.Millisecond, "the run never reached a running state")
+
+	// The context this request carries a real, authenticated principal on —
+	// exactly what a caller cannot forge, which is the whole point: the
+	// server's attestation must come from here, never from the payload below.
+	ctx := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+		Issuer:  "https://issuer.example.com",
+		Subject: "real-caller@example.com",
+	})
+
+	_, err = fixture.teamA.Signal(ctx, connect.NewRequest(&v1.SignalRequest{
+		WorkflowId: workflowID,
+		Name:       "deploy-approved",
+		Payload: &v1.Node_Outputs{
+			NamedValues: map[string]*v1.Value{
+				"approved": v1.NewLiteral(true),
+				// The forgery: a payload key spelled exactly like the attested
+				// output's own name, carrying a fabricated identity. Nothing in
+				// [v1.SignalRequest] lets a caller set an actual sender field —
+				// the schema itself is the refusal — so this is the only lever
+				// available to a hostile caller, and it must not work.
+				"sender": v1.NewLiteral("forged-identity@attacker.example.com"),
+			},
+		},
+	}))
+	require.NoError(t, err)
+
+	var final *connect.Response[v1.GetResponse]
+	require.Eventually(t, func() bool {
+		resp, err := fixture.teamA.Get(t.Context(), connect.NewRequest(&v1.GetRequest{
+			WorkflowId: workflowID,
+		}))
+		if err != nil || resp.Msg.GetStatus() != v1.RunResponse_STATUS_COMPLETED {
+			return false
+		}
+		final = resp
+		return true
+	}, 60*time.Second, 200*time.Millisecond, "the run did not complete after being approved")
+
+	approval := final.Msg.GetOutputs().GetStepValues()["approval"]
+	require.NotNil(t, approval, "the gate recorded no outputs")
+
+	// The attested sender is the real, authenticated caller — proof the forged
+	// direction was refused rather than merely untried.
+	require.Equal(t, "real-caller@example.com", senderField(t, approval, "subject"),
+		"the attested sender was not the request's authenticated caller")
+	require.False(t, senderField(t, approval, "local") == "true",
+		"a signal delivered through the server was reported as an unattested local one")
+
+	// The forged claim is still readable, but only inside `payload`, where it
+	// is nothing more than a string a sender happened to send — never believed
+	// as an identity.
+	require.Equal(t, "forged-identity@attacker.example.com",
+		payloadField(t, approval, "sender").GetStringValue(),
+		"a sender may name a key \"sender\" inside its own payload; it must never be read as the attested one")
+}
+
+// senderField reads one entry out of a wait's `sender.identity` mapping, or the
+// two sibling fields sitting beside it — see [v1.SenderOutput].
+//
+// A single lookup that flattens `identity`'s nested map together with `local`
+// and `accepted_at`, because every caller of this in this file wants exactly
+// one of those four names and none of them cares that two live one level
+// deeper than the other two.
+func senderField(t *testing.T, outputs *v1.Node_Outputs, name string) string {
+	t.Helper()
+
+	sender := outputs.GetNamedValues()[v1.SenderOutput].GetLiteral().GetMapValue()
+	require.NotNil(t, sender, "the wait produced no sender mapping")
+
+	for _, entry := range sender.GetEntries() {
+		switch entry.GetKey().GetStringValue() {
+		case "identity":
+			for _, field := range entry.GetValue().GetMapValue().GetEntries() {
+				if field.GetKey().GetStringValue() == name {
+					return field.GetValue().GetStringValue()
+				}
+			}
+		case name:
+			if entry.GetValue().GetBoolValue() {
+				return "true"
+			}
+			return entry.GetValue().GetStringValue()
+		}
+	}
+
+	t.Fatalf("the sender mapping has no field named %q", name)
+	return ""
 }
 
 // TestSignalRejectsAMalformedRequest checks that validation runs before anything
