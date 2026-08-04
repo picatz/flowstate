@@ -15,9 +15,11 @@ the argument that named the split.
 
 An example that runs the read task lives at
 [`examples/plugins/git`](../../examples/plugins/git); read that first if you
-want to see it work rather than read about it. The write task's example is a
-separate, parameterized file in the same directory - it cannot run by
-accident.
+want to see it work rather than read about it. Three files live there: a
+public read that runs with no arguments (`workflow.yaml`), the identical
+read against a private repository with one more field filled in
+(`ls-remote-private.yaml`), and the write task (`commit-push.yaml`) - the
+last two are parameterized and cannot run by accident.
 
 ## Building
 
@@ -40,9 +42,13 @@ despite being a write - that property is the whole design, not a footnote.
 
 Both tasks accept a `token` input, always as a secret reference -
 `${secret('git:some-name')}` - never a literal. `git.ls_remote` treats an
-unset token as an unauthenticated request; `git.commit_push` requires one for
-any repository that accepts pushes from the internet (which is to say,
-almost always).
+unset token as an unauthenticated request, which works for any public
+repository - see `examples/plugins/git/workflow.yaml`. Reading a private one
+is the exact same task with the exact same schema; the only difference is
+this one field being set - see `ls-remote-private.yaml`.
+`git.commit_push`, in contrast, requires a token unconditionally: no forge
+accepts an anonymous push over HTTPS, so writing always needs a credential,
+whichever repository it targets - see `commit-push.yaml`.
 
 A reference's *name* is ignored; this plugin resolves the one credential its
 own environment names:
@@ -51,8 +57,98 @@ own environment names:
 GIT_SECRET_<NAME>=<https-password>
 ```
 
-Used as the password half of HTTP Basic auth - the same shape GitHub,
-GitLab, and Gitea all accept for a token over HTTPS.
+Used, unconditionally, as the *password* half of HTTP Basic auth
+(`githttp.BasicAuth{Username: "x-access-token", Password: <resolved token>}`,
+which go-git turns into a plain `http.Request.SetBasicAuth` call - see
+`clone.go`, `commit_push.go`, and `refs.go`). The username this plugin sends
+is a fixed literal, `x-access-token`, never something a workflow controls -
+see "Which git server?" below for exactly which providers that is verified
+to work against, and where it is not.
+
+## Which git server?
+
+This plugin speaks git's own smart-HTTP protocol through go-git, and go-git's
+`BasicAuth` is nothing forge-specific - reading its source
+(`plumbing/transport/http/common.go`), `SetAuth` is one call,
+`r.SetBasicAuth(a.Username, a.Password)`, the same standard HTTP Basic
+authentication (RFC 7617) any HTTPS server understands. Nothing in this
+plugin or in go-git recognizes GitHub, GitLab, Gitea, or Bitbucket by name,
+inspects a hostname, or branches on which forge it is talking to - that is
+the actual design property worth naming plainly: **there is no provider
+lock-in in `git.*`.** Any server that speaks the git-over-HTTPS protocol and
+accepts a token as an HTTP Basic-auth password works with this plugin,
+including one this plugin's author has never heard of. A provider's own
+peculiarities - its REST API shape, its idea of a pull request, its specific
+webhook payloads - are exactly what a *forge* plugin like `plugins/github`
+exists for; `git.*` never grows a provider-specific input to accommodate one,
+on purpose.
+
+What differs between providers is not this plugin's protocol, but what a
+provider's own server *validates* about the username half of that same
+standard HTTP Basic-auth exchange - and this plugin sends a fixed one
+(`x-access-token`), never something a workflow can override (see
+"A schema gap" below). Verified from each provider's own current public
+documentation, not guessed:
+
+- **GitHub.** A personal access token (classic or fine-grained) is the
+  password; the username is not checked at all. GitHub's own docs on
+  personal access tokens state it directly: "Although you are required to
+  enter your username along with your personal access token, the username is
+  not used to authenticate you. Instead, the personal access token is used to
+  authenticate you" - an empty username is rejected, but any non-empty value
+  works. `x-access-token` (this plugin's fixed username) is fine.
+- **GitLab.** Same shape, confirmed by GitLab's own personal access token
+  documentation, which states the git username "Must not be an empty string"
+  and that GitLab does not validate its value beyond that. `oauth2` is
+  GitLab's own conventional choice for its docs' examples, but it is a
+  convention, not a requirement - any non-empty username, including
+  `x-access-token`, is accepted.
+- **Bitbucket Cloud.** Different, and the one place this plugin's fixed
+  username matters: Bitbucket validates the username. Atlassian's own
+  current documentation on API tokens (the mechanism that replaced app
+  passwords, which stopped working entirely on June 9, 2026) gives two
+  choices - the account's real, case-sensitive Bitbucket username, or the
+  fixed literal string `x-bitbucket-api-token-auth` as a documented
+  alternative. `x-access-token` (what this plugin actually sends) is neither,
+  so **`git.commit_push` and `git.ls_remote` with a token do not work against
+  Bitbucket Cloud today** - see "A schema gap," directly below, for what
+  would need to change and why this plugin does not silently paper over it.
+- **Gitea.** Not fully verified, and said so rather than guessed: Gitea's own
+  API documentation shows a token as the *username* with a fixed password
+  (`token:x-oauth-basic`), or a real username with a token as password, but
+  does not state - the way GitHub's and GitLab's docs explicitly do - whether
+  an arbitrary, non-account username paired with a token as the *password*
+  (the shape this plugin sends) is accepted or validated. Untested against a
+  real Gitea instance as part of this work; treat Gitea compatibility as
+  unconfirmed until someone verifies it directly, not as "probably fine
+  because GitHub and GitLab are."
+
+## A schema gap: no way to name the username
+
+`git.commit_push` and `git.ls_remote` both hardcode the HTTP Basic-auth
+username to the literal `x-access-token`, in `clone.go`, `commit_push.go`,
+and `refs.go`. There is no `username` input anywhere in `git.proto` - a
+workflow can choose *which* secret token resolves, but not what username it
+is paired with. GitHub and GitLab do not care (see above), so this has been
+invisible against the two providers this plugin has actually been exercised
+against. Bitbucket Cloud does care, and this plugin's fixed username is
+neither of the two values Bitbucket accepts - so today, there is no way to
+express "write to a Bitbucket Cloud repository" through this schema at all,
+for any value of `token`.
+
+This is reported here rather than hacked around by, say, sniffing the
+hostname and switching the literal based on it - that would be exactly the
+provider-detection this plugin's whole design deliberately avoids (see
+"Which git server?" above), and hostname sniffing is also simply wrong for a
+self-hosted GitLab, Gitea, or Bitbucket Server instance, none of which live
+at a recognizable public hostname. The honest fix is a real schema change: an
+optional `username` input on both tasks, defaulting to `x-access-token` when
+unset so every example and workflow written against this version keeps
+working unchanged, and left for the workflow author to override for a
+provider (or a self-hosted instance) that needs something else. Not made
+here - this pass is examples and documentation, not a schema change - and
+recorded here so it is a decision someone makes on purpose, not a gap
+discovered by a failed push against Bitbucket.
 
 ## Security properties, and what holds by construction
 
@@ -346,6 +442,10 @@ fell over.
 
 - **SSH remotes.** See "Security properties," above - a real, additive gap,
   not a one-line allowlist entry.
+- **A `username` input.** See "A schema gap," above - both tasks send a
+  fixed HTTP Basic-auth username, which is invisible against GitHub and
+  GitLab (neither validates it) and a real, verified incompatibility against
+  Bitbucket Cloud (which does).
 - **Submodules and binary files.** No submodule is accepted or produced
   anywhere; `files:` content is text only (a proto `string`, not `bytes`) -
   a binary file changed only through `patch:`'s own binary-fragment support
