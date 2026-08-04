@@ -15,9 +15,11 @@ the argument that named the split.
 
 An example that runs the read task lives at
 [`examples/plugins/git`](../../examples/plugins/git); read that first if you
-want to see it work rather than read about it. The write task's example is a
-separate, parameterized file in the same directory - it cannot run by
-accident.
+want to see it work rather than read about it. Three files live there: a
+public read that runs with no arguments (`workflow.yaml`), the identical
+read against a private repository with one more field filled in
+(`ls-remote-private.yaml`), and the write task (`commit-push.yaml`) - the
+last two are parameterized and cannot run by accident.
 
 ## Building
 
@@ -40,9 +42,13 @@ despite being a write - that property is the whole design, not a footnote.
 
 Both tasks accept a `token` input, always as a secret reference -
 `${secret('git:some-name')}` - never a literal. `git.ls_remote` treats an
-unset token as an unauthenticated request; `git.commit_push` requires one for
-any repository that accepts pushes from the internet (which is to say,
-almost always).
+unset token as an unauthenticated request, which works for any public
+repository - see `examples/plugins/git/workflow.yaml`. Reading a private one
+is the exact same task with the exact same schema; the only difference is
+this one field being set - see `ls-remote-private.yaml`.
+`git.commit_push`, in contrast, requires a token unconditionally: no forge
+accepts an anonymous push over HTTPS, so writing always needs a credential,
+whichever repository it targets - see `commit-push.yaml`.
 
 A reference's *name* is ignored; this plugin resolves the one credential its
 own environment names:
@@ -51,8 +57,115 @@ own environment names:
 GIT_SECRET_<NAME>=<https-password>
 ```
 
-Used as the password half of HTTP Basic auth - the same shape GitHub,
-GitLab, and Gitea all accept for a token over HTTPS.
+Used, unconditionally, as the *password* half of HTTP Basic auth
+(`githttp.BasicAuth{Username: <resolved username>, Password: <resolved
+token>}`, which go-git turns into a plain `http.Request.SetBasicAuth` call -
+see `clone.go`, `commit_push.go`, and `refs.go`). The username defaults to
+the literal `x-access-token` and is overridable via the optional `username`
+input - see "Which git server?" below for exactly which providers the
+default is verified to work against, and "Choosing the username" for when
+and how to override it.
+
+## Which git server?
+
+This plugin speaks git's own smart-HTTP protocol through go-git, and go-git's
+`BasicAuth` is nothing forge-specific - reading its source
+(`plumbing/transport/http/common.go`), `SetAuth` is one call,
+`r.SetBasicAuth(a.Username, a.Password)`, the same standard HTTP Basic
+authentication (RFC 7617) any HTTPS server understands. Nothing in this
+plugin or in go-git recognizes GitHub, GitLab, Gitea, or Bitbucket by name,
+inspects a hostname, or branches on which forge it is talking to - that is
+the actual design property worth naming plainly: **there is no provider
+lock-in in `git.*`.** Any server that speaks the git-over-HTTPS protocol and
+accepts a token as an HTTP Basic-auth password works with this plugin,
+including one this plugin's author has never heard of. A provider's own
+peculiarities - its REST API shape, its idea of a pull request, its specific
+webhook payloads - are exactly what a *forge* plugin like `plugins/github`
+exists for; `git.*` never grows a provider-specific input to accommodate one,
+on purpose.
+
+What differs between providers is not this plugin's protocol, but what a
+provider's own server *validates* about the username half of that same
+standard HTTP Basic-auth exchange - which is exactly what the optional
+`username` input (default `x-access-token`; see "Choosing the username",
+below) exists to let a workflow answer per provider, rather than this
+plugin guessing on its behalf. Verified from each provider's own current
+public documentation, not guessed:
+
+- **GitHub.** A personal access token (classic or fine-grained) is the
+  password; the username is not checked at all. GitHub's own docs on
+  personal access tokens state it directly: "Although you are required to
+  enter your username along with your personal access token, the username is
+  not used to authenticate you. Instead, the personal access token is used to
+  authenticate you" - an empty username is rejected, but any non-empty value
+  works. The default, `x-access-token`, is fine; `username` never needs
+  setting for GitHub.
+- **GitLab.** Same shape, confirmed by GitLab's own personal access token
+  documentation, which states the git username "Must not be an empty string"
+  and that GitLab does not validate its value beyond that. `oauth2` is
+  GitLab's own conventional choice for its docs' examples, but it is a
+  convention, not a requirement - any non-empty username, including the
+  default, is accepted.
+- **Bitbucket Cloud.** Different, and the one provider where `username` must
+  be set explicitly: Bitbucket validates it. Atlassian's own current
+  documentation on API tokens (the mechanism that replaced app passwords,
+  which stopped working entirely on June 9, 2026) gives two choices - the
+  account's real, case-sensitive Bitbucket username, or the fixed literal
+  string `x-bitbucket-api-token-auth` as a documented alternative. The
+  default this plugin sends when `username` is left unset, `x-access-token`,
+  is neither, so **reading or writing against Bitbucket Cloud needs
+  `username` set to one of those two values** - see "Choosing the username,"
+  below, and the commented example line in
+  `examples/plugins/git/ls-remote-private.yaml`.
+- **Gitea.** Not fully verified, and said so rather than guessed: Gitea's own
+  API documentation shows a token as the *username* with a fixed password
+  (`token:x-oauth-basic`), or a real username with a token as password, but
+  does not state - the way GitHub's and GitLab's docs explicitly do - whether
+  an arbitrary, non-account username paired with a token as the *password*
+  (the shape this plugin sends) is accepted or validated. Untested against a
+  real Gitea instance as part of this work; treat Gitea compatibility as
+  unconfirmed until someone verifies it directly, not as "probably fine
+  because GitHub and GitLab are."
+
+## Choosing the username
+
+Both tasks accept an optional `username` input, paired with `token` as the
+HTTP Basic-auth credentials `clone.go`, `commit_push.go`, and `refs.go` all
+send. Left unset, it resolves to `x-access-token` - the literal every
+version of this plugin sent unconditionally before this input existed, so a
+Flowfile written against an earlier version of this schema behaves
+byte-identically today; adding this field never changed anyone's existing
+behavior, only what a workflow can now ask for instead.
+
+Most providers never look at this value at all (see "Which git server?",
+above): GitHub and GitLab both explicitly document that the username is not
+validated, so the default is correct there and there is normally nothing to
+set. Bitbucket Cloud is the verified exception - its current API-token
+scheme wants either the account's real, case-sensitive username or the
+documented literal `x-bitbucket-api-token-auth`, neither of which is
+`x-access-token` - so writing to or reading a private Bitbucket Cloud
+repository needs `username` set explicitly to one of those two values. See
+`examples/plugins/git/ls-remote-private.yaml` for a Bitbucket-shaped
+`username:` line, commented out with this same explanation, next to the
+default (unset) case the file actually runs with.
+
+`username` is validated like every other input: non-empty when set (an
+explicitly empty string is rejected rather than silently treated the same
+as unset - see `resolveUsername`), bounded in length, and refused outright
+if it contains a `:`, a control character, a bare `CR`, or a bare `LF`. The
+colon rule is not stylistic: `net/http.Request.SetBasicAuth` builds
+`"username:password"` and Basic-auth parsing splits on the *first* colon,
+so a colon in `username` would silently absorb part of `token` into what
+the server reads as the password instead - a different, wrong credential
+pair, not a syntax error. `net/http`'s own `SetBasicAuth` documentation
+states the constraint directly. A `CR`/`LF` is refused for the separate
+reason that a username reaches an HTTP `Authorization` header verbatim,
+where either could inject a second header or split the request into
+something else entirely. Refused, never stripped, for the same reason
+every other attacker-adjacent
+field in this plugin is (see `validateTreePath`'s own doc comment) -
+proven to actually refuse, not merely declared to: see "What was proven to
+bite," below.
 
 ## Security properties, and what holds by construction
 
@@ -293,6 +406,53 @@ assertion - not only the ones CLAUDE.md's own house gate demanded up front:
    `TestBuildChangeSetFilesNewPathIsRegular` stayed green throughout,
    proving a brand-new path still gets the ordinary default rather than
    inheriting a mode from somewhere it should not.
+7. **The username header-injection refusal.** `resolveUsername`'s control-
+   character check was disabled (`if false && (...)`).
+   `TestResolveUsernameRefusesHeaderInjection` immediately failed - a
+   username carrying `"\r\nX-Injected: evil"` was accepted rather than
+   refused. Restoring the check made it pass again. Separately,
+   `TestListRemoteRefsSendsTheDefaultUsername`,
+   `TestListRemoteRefsSendsAnOverriddenUsername`,
+   `TestCloneBoundedSendsTheDefaultUsername`, and
+   `TestCloneBoundedSendsAnOverriddenUsername` assert on the actual HTTP
+   Basic-auth header a real local `net/http/httptest` server sees - not on
+   what `githttp.BasicAuth` was merely constructed with - for both the
+   default and an overridden username, on both the read path
+   (`listRemoteRefs`) and the write path's own clone step (`cloneBounded`).
+8. **The username colon refusal**, found in review (Codex, PR #186) against
+   this file's own *previous* doc comment, which reasoned that a colon in
+   `username` was "the password's problem, not this field's" - wrong: since
+   `net/http.Request.SetBasicAuth` builds `"username:password"` and
+   Basic-auth parsing splits on the *first* colon it finds, a username of
+   `"alice:admin"` paired with token `"secret"` arrives at a real server as
+   username `"alice"`, password `"admin:secret"` - a silent, confusing
+   authentication failure, not a rearrangement. The doc comment was rewritten
+   to state the real rule rather than leave the wrong reasoning beside a
+   correct-by-luck check, and `resolveUsername` now refuses a colon
+   outright. `TestResolveUsernameRefusesAColon` was run against the check
+   disabled and confirmed red before restoring;
+   `TestUnvalidatedColonWouldSilentlySplitTheCredentialPair` demonstrates the
+   split concretely, using the exact standard-library round trip
+   (`SetBasicAuth` then `BasicAuth`) any real server's parsing would perform.
+9. **The unconditional write-token requirement, actually enforced.** Also
+   found in review (Codex, PR #186): this README claimed "writing always
+   needs a credential" while `tokenFromValue(nil)` legitimately returning
+   `""` for an unset input let both clone and push omit `Auth` entirely -
+   fail-open code underneath fail-closed prose, and a clean instance of the
+   house rule that a claim in prose must be enforced by code, not the other
+   way round. `doCommitPush` now refuses an empty token, named as the input
+   it is, before its first network call. Proven two ways:
+   `TestDoCommitPushRefusesAMissingTokenBeforeAnyDial` points a real local
+   server's own TCP listener at the call and asserts it accepted *zero*
+   connections - not merely that an error came back, which a check placed
+   anywhere before the point of failure would also produce - run against the
+   check disabled and confirmed red (one connection was accepted) before
+   restoring; and
+   `TestGitLsRemoteSucceedsWithoutATokenAgainstThePublicPath` guards the
+   other direction, so the same fix never spreads to `git.ls_remote`'s
+   documented anonymous-read shape - proven to matter by temporarily adding
+   the identical unconditional check to `listRemoteRefs`, confirming that
+   test alone goes red, and removing it again.
 
 ## SDK gaps found while building this
 

@@ -22,12 +22,15 @@ $ flow validate examples/hello-world/workflow.yaml
 | [string-formatting](string-formatting) | `format()` from the profile, building a message from a var | no |
 | [conditional-and-retry](conditional-and-retry) | `if:`, `timeout:`, `retry:` and `continue_on_error:` per step, tolerating a step that really does fail | no |
 | [fan-out-and-parallel](fan-out-and-parallel) | `for_each` fan-out over a computed list, and concurrent `parallel:` branches | no |
+| [ops-healthcheck](ops-healthcheck) | Three services probed at once with `parallel:`, `continue_on_error:` tolerating the one that is down, and structured outputs shaped for a pager | yes |
+| [data-enrichment](data-enrichment) | `for_each` over a worklist with bounded `max_parallel`, per-item `retry:`, and which records could not be enriched named in `outputs:` | yes |
 | [workflow-vars](workflow-vars) | `vars:` at the top of a file, read as `vars.<name>`, beside a loop's bare binding | no |
 | [step-vars](step-vars) | `vars:` on a step and on a loop, bare and private to what declares them | no |
 | [expressions](expressions) | Expressions as values: a step's own `vars:`, and one dialect an `if:` reaches too | no |
 | [approval-gate](approval-gate) | `wait_for_signal:` as a human approval gate, and branching on `payload` versus `timed_out` | no |
 | [wait-timeout](wait-timeout) | The same gate going unanswered: `timeout:` lapses, `timed_out` is true, and the run carries on rather than failing | no |
 | [wait-until-a-moment](wait-until-a-moment) | `wait_until:` a computed moment, with `now` and the duration builders | no |
+| [expense-approval](expense-approval) | Two `wait_for_signal:` gates in sequence — a manager approval that escalates to finance ops on timeout, fail-closed if neither ever answers | no |
 | [headers-and-nested](headers-and-nested) | Request headers, and selecting into a nested result | yes |
 | [http-json](http-json) | Parsing a JSON body with `json_parse`, named once in a step's `vars:` | yes |
 | [http-query-and-json](http-query-and-json) | `query:` parameters, a structured `json:` body, and `parse_json:` | yes |
@@ -40,6 +43,7 @@ $ flow validate examples/hello-world/workflow.yaml
 | [edition-and-descriptions](edition-and-descriptions) | `description:` as a property of the step, and the required `edition:` naming the grammar the file is written in | no |
 | [parameterized-deploy](parameterized-deploy) | `inputs:` — typed arguments with defaults and a required one, read from an `if:`, a step's `vars:`, and a task input | yes |
 | [saga-provisioning](saga-provisioning) | `undo:` — saga compensation: three steps, a failure on the third, and the first two taken back in reverse order. The one example that ends in a failed run, on purpose | yes |
+| [order-fulfillment](order-fulfillment) | The same compensation over a business transaction — reserve stock, charge a card, undo both when the carrier step is asked to fail | yes |
 | [computed-outputs](computed-outputs) | `outputs:` — what the run answers with, computed from its steps and its arguments | no |
 | [call-a-workflow](call-a-workflow) | `call:` — running another Flowfile as a step, isolated from the caller, with `with:` binding its declared inputs and its `outputs:` read back under the step id | no |
 | [scheduled-report](scheduled-report) | `triggers:` — the cadence a file declares, which `flow schedule create` turns into a schedule and `flow run` ignores | no |
@@ -49,17 +53,21 @@ $ flow validate examples/hello-world/workflow.yaml
 | [plugins/github](plugins/github/) | `github.pull_request_get` (read) and `github.issue_comment` (a mutation, in a separate parameterized file so it cannot run by accident) — needs a built plugin, a worker, and for the comment file a credential, so read its README | yes |
 | [plugins/git](plugins/git/) | `git.ls_remote` (read) and `git.commit_push` (a mutation, in a separate parameterized file so it cannot run by accident) — one activity, compare-and-swapped against `base_ref`, never forced — needs a built plugin, a worker, and for the write file a credential, so read its README | yes |
 
-Seven of these hold more than a `workflow.yaml`, and those seven have a `README.md`
+Eleven of these hold more than a `workflow.yaml`, and those eleven have a `README.md`
 saying what the rest of the directory is for: [http-secret](http-secret) and
 [http-federated](http-federated) ship the policy that authorizes what their step does,
 [plugins/greet](plugins/greet/), [plugins/vcs](plugins/vcs/),
 [plugins/github](plugins/github/), and [plugins/git](plugins/git/) each need a plugin
-built and a worker told where to find it, and [observability](observability) is a whole
-docker-compose lab. Everywhere else the workflow's own comments are the documentation,
-and a README repeating them would be one more thing to leave stale — which is also why
-[call-a-workflow](call-a-workflow) holds two files and has none: the second one is a
-Flowfile, called by the first, and its own comments are exactly as much documentation
-as any other example's.
+built and a worker told where to find it, [observability](observability) is a whole
+docker-compose lab, and [expense-approval](expense-approval),
+[ops-healthcheck](ops-healthcheck), [data-enrichment](data-enrichment), and
+[order-fulfillment](order-fulfillment) each carry a README naming the one durability
+property the example demonstrates and the two-command local-then-durable contrast, per
+the examples charter (#165). Everywhere else the workflow's own comments are the
+documentation, and a README repeating them would be one more thing to leave stale —
+which is also why [call-a-workflow](call-a-workflow) holds two files and has none: the
+second one is a Flowfile, called by the first, and its own comments are exactly as much
+documentation as any other example's.
 
 `plugins/greet`, `plugins/vcs`, `plugins/github`, and `plugins/git` also sit a directory
 deeper than the rest, which is deliberate: everything matching `examples/*/workflow.yaml`
@@ -80,5 +88,5 @@ needs a file saying what it requires.
 
 The examples marked as needing network reach `httpbin.org`. They will fail without internet
 access, and the `http` task's egress policy denies internal addresses by default — see
-[Governed network access](../README.md#governed-network-access) if you point one at a
+[Governed network access](../README.md#what-it-can-do) if you point one at a
 service on `localhost`.

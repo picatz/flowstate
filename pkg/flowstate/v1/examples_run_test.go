@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
@@ -289,6 +290,46 @@ func TestEveryNetworkedExampleRuns(t *testing.T) {
 					"step %q produced no outputs", step.GetId())
 			}
 		})
+
+		// An example's default arguments are one path through it; a variant is
+		// another, reached only by overriding an input the defaults leave alone
+		// — order-fulfillment's compensation is the case this exists for, since
+		// nothing about the default run ever fails. See [tests.ExampleVariants].
+		for _, variant := range tests.ExampleVariants(name) {
+			variantInputs := variant.WithOverrides(inputs)
+
+			// Cloned rather than shared with the primary run above: both run in
+			// parallel, and a spec is something an executor reads from while it
+			// runs — two goroutines doing that over one pointer is exactly the
+			// race `-race` exists to catch, the same reason the durable harness
+			// clones per run below.
+			variantSpec, ok := proto.Clone(wf).(*v1.Workflow)
+			require.True(t, ok)
+
+			t.Run(name+"/"+variant.Name, func(t *testing.T) {
+				t.Parallel()
+
+				ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
+				defer cancel()
+				ctx = v1.ContextWithTaskRuntime(ctx, v1.TaskRuntime{
+					Store: secretStore, Policy: secretPolicy, Broker: broker,
+					Identity: auth.WorkloadIdentity{Subject: "examples", Issuer: "flowstate:test"},
+					Step:     auth.StepRef{Workflow: wf.GetName(), Run: "example-run-" + variant.Name},
+				})
+
+				_, err := v1.RunWithInputs(ctx, variantSpec, variantInputs)
+
+				if variant.Fails != "" {
+					require.Error(t, err, "%s/%s is meant to fail and did not", name, variant.Name)
+					require.Contains(t, err.Error(), variant.Fails,
+						"%s/%s failed, but not in the way it exists to demonstrate", name, variant.Name)
+
+					return
+				}
+
+				require.NoError(t, err, "%s/%s validates but does not run", name, variant.Name)
+			})
+		}
 	}
 
 	// Same reason the offline test counts: a predicate that stopped matching would

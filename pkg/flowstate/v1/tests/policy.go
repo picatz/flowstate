@@ -276,6 +276,46 @@ func PolicyCaseFailedSteps() map[string]string {
 	}
 }
 
+// ToleratedSuccessHasGuardCases pin the semantics `has(steps.<id>.error)` must
+// have when the tolerated step it names actually succeeded — see issue #176.
+//
+// A `continue_on_error` step that succeeds records no `error` field at all
+// (there was nothing to record), so `has()` on that field has to answer `false`
+// rather than fail the expression outright. That distinction — a step present
+// with an absent field versus a step genuinely missing — is exactly what
+// [v1.EvalIdent]-style resolution decides once a name reaches `has()`, and the
+// durable driver additionally routes every field reference through
+// Continue-As-New compaction on its way there. This set pins the *value* both
+// drivers must agree on before any handover is involved at all; the seam-specific
+// case that this must survive Continue-As-New compaction lives beside the durable
+// driver in `engine`, because only that driver ever compacts
+// (`TestContinueAsNewCarriesATolerantStepReferencedOnlyByAnAbsentField`).
+//
+// `pins` gives the strong form of the assertion: the guard's negation is checked
+// too, so a failure here distinguishes "has() said true" from "conditions never
+// ran at all" instead of leaving either to guess.
+func ToleratedSuccessHasGuardCases() []Case {
+	return []Case{
+		{
+			Name: "has() on a tolerated step's absent error field reads false once it succeeds",
+			Workflow: &v1.Workflow{
+				Name: "has-guard-tolerated-success",
+				Steps: append([]*v1.Node{
+					{
+						Id:     "checkout",
+						Policy: &v1.StepPolicy{ContinueOnError: true},
+						Kind: &v1.Node_Task{Task: &v1.Task{
+							Name:   "log",
+							Inputs: map[string]*v1.Value{"message": v1.NewLiteral("ok")},
+						}},
+					},
+				}, pins("summary", "!has(steps.checkout.error)")...),
+			},
+			ExpectedOutputs: held("checkout", "summary"),
+		},
+	}
+}
+
 // ErrorTextCases pin what `${steps.<id>.error}` actually says, in both drivers.
 //
 // The other policy cases assert that a tolerated failure *happened* — which step

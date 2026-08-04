@@ -517,3 +517,69 @@ func ExampleFailure(name string) (string, bool) {
 
 	return want, expected
 }
+
+// ExampleVariant is an additional invocation of an example beyond its default
+// run — an override to one or more of its bound inputs, and, when the override
+// is meant to make the run fail, the text that failure has to carry.
+//
+// [exampleFailures] answers whether an example's *default* arguments are meant
+// to fail; this answers the same question for a run reached only by flipping
+// an input the default arguments leave alone. order-fulfillment ships with
+// `carrier_outage` defaulting to false — "paste this and watch it work" is the
+// rule every example follows — so the compensation path, the property the
+// example exists to demonstrate, is never reached by a harness that only ever
+// binds an example's own defaults. A second invocation is the only way to
+// reach it, and it needs its own entry because it needs its own inputs.
+type ExampleVariant struct {
+	// Name distinguishes this run from the example's default one, in a
+	// subtest's name and in a durable run's workflow id.
+	Name string
+
+	// Overrides sit on top of the example's own bound inputs — its declared
+	// defaults, or whatever its inputs.json answers — so a variant only has to
+	// name what it changes rather than restate everything.
+	Overrides map[string]*v1.Value
+
+	// Fails is the text the run's failure must carry, in v1.UndoSummary's
+	// rendering — the same contract exampleFailures holds its one entry to.
+	// Empty for a variant that is meant to succeed like the ordinary run.
+	Fails string
+}
+
+// WithOverrides returns bound inputs with this variant's overrides applied, so
+// a caller does not have to know an example's other declarations to run one.
+func (v ExampleVariant) WithOverrides(bound map[string]*v1.Value) map[string]*v1.Value {
+	merged := make(map[string]*v1.Value, len(bound)+len(v.Overrides))
+	for name, value := range bound {
+		merged[name] = value
+	}
+	for name, value := range v.Overrides {
+		merged[name] = value
+	}
+
+	return merged
+}
+
+// exampleVariants names an example against the additional invocations worth
+// running beyond its default one.
+//
+// One entry, for the reason exampleFailures has one: it is meant to stay hard
+// to add to, so an entry here is a real gap in what the default run reaches
+// rather than a way to make an assertion pass.
+var exampleVariants = map[string][]ExampleVariant{
+	"order-fulfillment": {
+		{
+			Name:      "carrier-outage",
+			Overrides: map[string]*v1.Value{"carrier_outage": v1.NewLiteral(true)},
+			Fails:     `; compensation ran in reverse order: undid "charge_payment", undid "reserve_inventory"`,
+		},
+	},
+}
+
+// ExampleVariants reports the additional invocations an example needs beyond
+// its default run, for the same reason [ExampleFailure] answers whether the
+// default one is meant to fail: one table, shared by both harnesses, so a
+// classification cannot disagree with itself.
+func ExampleVariants(name string) []ExampleVariant {
+	return exampleVariants[name]
+}

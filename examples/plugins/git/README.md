@@ -1,19 +1,27 @@
 # Tasks a plugin provides: git.ls_remote and git.commit_push
 
-This directory has two files:
+This directory has three files, chosen to walk the three auth shapes this
+plugin's two tasks actually have - public read, private read, and write -
+rather than only the one that happens to need no credential:
 
 - [`workflow.yaml`](workflow.yaml) reads a real, public repository's branch
-  refs with `git.ls_remote:` - read-only, needs no credential, and safe to
-  run as written, with no arguments, the way every ordinary example in this
-  repository is.
+  refs with `git.ls_remote:` - no `token:`, and safe to run as written, with
+  no arguments, the way every ordinary example in this repository is.
+- [`ls-remote-private.yaml`](ls-remote-private.yaml) is the *same* call
+  against a private repository - same task, same schema, one more field
+  (`token:`) filled in. It cannot run by accident: there is no default
+  private repository to read, and no default credential.
 - [`commit-push.yaml`](commit-push.yaml) pushes a real commit with
-  `git.commit_push:` - a mutation, requires `inputs:` naming a real
-  repository, branch, and base ref, and a credential. It cannot run by
-  accident: there is no default url, branch, or base_ref to write to.
+  `git.commit_push:` - `token:` here is never optional, because no forge
+  accepts an anonymous push. It cannot run by accident either: there is no
+  default url, branch, or base ref to write to.
 
-Both are tasks the `git` plugin provides - see [`plugins/git`](../../../plugins/git)
-for the source, and its `README.md` for the security properties this plugin
-holds by construction and what it deliberately does not do yet.
+All three are tasks the `git` plugin provides - see
+[`plugins/git`](../../../plugins/git) for the source, and its `README.md`
+for the security properties this plugin holds by construction, "Which git
+server?" for what provider-agnosticism means concretely (and does not,
+today, for Bitbucket Cloud - a reported gap, not a silent one), and what
+else this plugin deliberately does not do yet.
 
 A commit made this way against a local repository fixture is exactly what
 `plugins/git`'s own tests exercise (see its README, "What was proven to
@@ -40,6 +48,21 @@ $ flow run examples/plugins/git/workflow.yaml
 This makes a real, unauthenticated request to the GitHub API/git smart-HTTP
 endpoint - it will fail without internet access, the same as any of the
 network examples one level up.
+
+## Running the private-read example
+
+Needs a real credential and a real private repository this token can read:
+
+```console
+$ export GIT_SECRET_TOKEN=ghp_...
+$ flow run examples/plugins/git/ls-remote-private.yaml \
+    --input url=https://github.com/your-org/your-private-repo.git
+```
+
+Compare this file to `workflow.yaml` line by line: the only difference is
+`token: ${secret('git:token')}` on the `git.ls_remote:` step. Nothing about
+the task, its other inputs, or its outputs changes between a public and a
+private repository - see `plugins/git/README.md`, "Authentication."
 
 ## Running the write example
 
@@ -75,10 +98,10 @@ See [`examples/README.md`](../../README.md) for the fuller argument.
 `TestAFlowfileCanNameTheGitPluginsTasks`, in
 [`plugins/git/reachable`](../../../plugins/git/reachable), builds this
 plugin as a real, separately compiled binary, opens a
-[`plugin.Host`](../../../pkg/flowstate/v1/plugin) over it, and validates
-both files here from disk before and after registration - each refused with
+[`plugin.Host`](../../../pkg/flowstate/v1/plugin) over it, and validates all
+three files here from disk before and after registration - each refused with
 a diagnostic naming its task beforehand, accepted afterward, inputs checked
 against the descriptors the plugin actually shipped. It does not run
 `git.ls_remote` or `git.commit_push` for real - both reach the real network,
-and pushing a commit needs a credential and a target this test has no
-business holding or choosing on a human's behalf.
+and reading a private repository or pushing a commit needs a credential and
+a target this test has no business holding or choosing on a human's behalf.

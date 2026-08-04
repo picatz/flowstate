@@ -1,0 +1,125 @@
+edition: v2026.2
+name: expense-approval
+description: >-
+  An expense report waits for a manager's sign-off, and escalates to finance
+  ops instead of sitting forever if the manager never answers.
+
+# `approval-gate` shows one gate, answered or not. A real approval chain is
+# rarely one person: a manager who does not respond in time is not the end of
+# the request, it is the reason someone else gets asked. That is the shape
+# here — two gates, the second reached only if the first lapses — and the
+# whole thing survives however long it takes, across as many worker restarts
+# as happen in between, because neither wait holds a process open. A cron job
+# polling "has anyone approved this yet" would have to persist that question
+# itself and re-derive who to ask next on every tick; here the engine already
+# knows, because the wait *is* the state.
+#
+# Both timeouts below are seconds, not the days a real policy would use, so
+# this is something to run rather than something to stare at:
+#
+#   flow run local examples/expense-approval/workflow.yaml
+#
+# Nobody answers there, so both gates lapse and the report ends up denied —
+# the fail-closed default for a request nobody ever acted on. Answer the first
+# gate to see the ordinary path:
+#
+#   flow run local examples/expense-approval/workflow.yaml \
+#     --signal manager-approved='{"approved": true}'
+#
+# Or let the manager gate lapse and answer the escalation instead, to see the
+# path that only exists because of the timeout:
+#
+#   flow run local examples/expense-approval/workflow.yaml \
+#     --signal finance-approved='{"approved": true}'
+#
+# `flow run local` accepts every `--signal` up front, so supplying an answer to
+# a gate this run never reaches is harmless — the shape of a real deployment,
+# where a manager and a finance approver could both be handed the means to
+# answer before either wait starts.
+
+inputs:
+  employee:
+    type: string
+    default: jordan@example.com
+    description: who filed the expense report
+  amount:
+    type: float
+    default: 482.50
+    description: the amount being claimed, in USD
+
+steps:
+  - id: submit
+    log:
+      message: >-
+        ${"%s filed an expense report for $%.2f".format([inputs.employee, inputs.amount])}
+
+  # The first gate. Seconds here so the example finishes; the number a real
+  # policy would write is hours, and nothing else about the file changes to
+  # get there.
+  - id: manager_review
+    wait_for_signal:
+      name: manager-approved
+      timeout: 4s
+
+  # The escalation is a real step, not a comment saying one should exist —
+  # this is the difference between "escalates" and "eventually times out
+  # silently". A person reading a log of this run sees a report that was
+  # asked about twice, not a report that vanished.
+  - id: escalate
+    if: ${steps.manager_review.timed_out}
+    log:
+      level: warn
+      message: >-
+        ${"manager did not respond in time; escalating %s's report to finance ops".format([inputs.employee])}
+
+  # The second gate only exists on the path where the first one lapsed — an
+  # approved or explicitly rejected report has nothing left to escalate, and
+  # `if:` is what keeps this step from running on that path at all.
+  - id: finance_review
+    if: ${steps.manager_review.timed_out}
+    wait_for_signal:
+      name: finance-approved
+      timeout: 3s
+
+  # `has()` guards every read of a payload that might not exist — a lapsed
+  # gate carries no payload, and the manager gate not having timed out means
+  # `finance_review` was skipped and produced no outputs at all. The `&&`
+  # chain is ordered so a false left side is what stops CEL from evaluating a
+  # right side that would otherwise reach a step that never ran.
+  - id: reimburse
+    if: >-
+      ${(has(steps.manager_review.payload.approved) && steps.manager_review.payload.approved) ||
+        (steps.manager_review.timed_out && has(steps.finance_review.payload.approved) && steps.finance_review.payload.approved)}
+    log:
+      message: ${"reimbursing %s $%.2f".format([inputs.employee, inputs.amount])}
+
+  # Denied covers three different reasons under one branch: somebody said no,
+  # or nobody ever said anything. A read of `outcome` below tells them apart;
+  # what they share is that the money does not move.
+  - id: deny
+    if: >-
+      ${(has(steps.manager_review.payload.approved) && !steps.manager_review.payload.approved) ||
+        (steps.manager_review.timed_out && has(steps.finance_review.payload.approved) && !steps.finance_review.payload.approved) ||
+        (steps.manager_review.timed_out && steps.finance_review.timed_out)}
+    log:
+      level: warn
+      message: ${"%s's expense report was not approved".format([inputs.employee])}
+
+outputs:
+  # Deliberately more detailed than "approved: bool" — a caller reading this
+  # after the fact (a payroll job, an auditor) needs to know *which* gate
+  # decided it, and "denied_no_response" is a materially different fact from
+  # "denied" for anyone deciding whether to ask again.
+  outcome:
+    value: >-
+      ${(has(steps.manager_review.payload.approved) && steps.manager_review.payload.approved)
+        ? "approved_by_manager"
+        : (steps.manager_review.timed_out && has(steps.finance_review.payload.approved) && steps.finance_review.payload.approved)
+          ? "approved_after_escalation"
+          : (steps.manager_review.timed_out && steps.finance_review.timed_out)
+            ? "denied_no_response"
+            : "denied"}
+    description: which gate decided the report, or why neither did
+  amount:
+    value: ${inputs.amount}
+    description: the amount this run decided about

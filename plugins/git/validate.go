@@ -64,6 +64,23 @@ const (
 	// error path cannot bypass.
 	maxResponseBytes = 128 << 20 // 128 MiB
 	requestTimeout   = 2 * time.Minute
+
+	// maxUsernameBytes bounds the username input before it ever reaches
+	// net/http.Request.SetBasicAuth - generous relative to any real forge
+	// username or literal (Bitbucket's own documented alternative,
+	// "x-bitbucket-api-token-auth", is 26 bytes), small enough that a
+	// workflow cannot make this plugin build an oversized Authorization
+	// header.
+	maxUsernameBytes = 256
+
+	// defaultBasicAuthUsername is what this plugin has always sent as the
+	// HTTP Basic-auth username - every version before the username input
+	// existed, unconditionally - and is what an unset username input still
+	// resolves to, so a Flowfile written against an earlier version of this
+	// schema behaves byte-identically today. See README.md, "Choosing the
+	// username," for why most providers never look at this value at all,
+	// and the one verified case (Bitbucket Cloud) that does.
+	defaultBasicAuthUsername = "x-access-token"
 )
 
 // validateRepositoryURL refuses anything but a plain https:// URL with no
@@ -119,6 +136,62 @@ func validateRevision(field, raw string) (string, error) {
 	for _, r := range raw {
 		if r == 0 || unicode.IsControl(r) {
 			return "", fmt.Errorf("%s contains a control character, which no git revision does", field)
+		}
+	}
+	return raw, nil
+}
+
+// resolveUsername turns a task's raw username input into the value this
+// plugin actually pairs with token as HTTP Basic-auth credentials: raw
+// unchanged when non-empty (validated below), or [defaultBasicAuthUsername]
+// when raw is empty - which is what makes leaving username unset in a
+// Flowfile behave identically to a file written before this input existed.
+//
+// The value this returns ends up in an HTTP Authorization header
+// (net/http.Request.SetBasicAuth base64-encodes "username:password" and
+// sets it verbatim), so it is bound and checked for exactly what that
+// header format cannot tolerate. A colon is refused outright, not treated
+// as the password's problem: net/http's own SetBasicAuth documentation
+// states plainly that "the provided username and password... may not
+// contain a colon", and the standard says why - Basic-auth parsing splits
+// the decoded "username:password" pair at the *first* colon it finds, so a
+// username of "alice:admin" paired with a token "secret" does not become
+// three fields, it becomes exactly two: username "alice", password
+// "admin:secret". Authentication then fails against whatever real
+// credential the workflow author meant to send, silently and confusingly -
+// the request still reaches the server, still carries a syntactically
+// valid Basic-auth header, and is refused as a bad credential rather than
+// as a malformed one, which is a much harder failure to diagnose than a
+// clear refusal at this layer. A literal CR or LF is refused for the
+// separate reason that either could inject a second header or split the
+// request into something else entirely, and every other control character
+// is refused alongside them, none of which any real forge username or
+// documented literal (GitHub's convention, GitLab's "oauth2", Bitbucket's
+// "x-bitbucket-api-token-auth") ever contains. Refused outright, not
+// stripped - see validateTreePath's own doc comment for why refusing
+// rather than sanitising is this plugin's rule for every field that is
+// attacker-adjacent input, which a task input a coding agent could compute
+// always is.
+func resolveUsername(raw string) (string, error) {
+	if raw == "" {
+		return defaultBasicAuthUsername, nil
+	}
+	if len(raw) > maxUsernameBytes {
+		return "", fmt.Errorf("username is %d bytes, over the %d byte limit", len(raw), maxUsernameBytes)
+	}
+	if strings.Contains(raw, ":") {
+		return "", fmt.Errorf(
+			"username must not contain \":\" - net/http's SetBasicAuth encodes \"username:password\" " +
+				"and Basic-auth parsing splits on the *first* colon, so a colon in username would " +
+				"silently absorb part of token into the username instead, splitting the credential " +
+				"pair wrong rather than merely rearranging it")
+	}
+	for _, r := range raw {
+		if r == 0 || unicode.IsControl(r) {
+			return "", fmt.Errorf(
+				"username contains a control character (byte %#x) - it reaches an HTTP "+
+					"Authorization header, where a CR or LF could inject a second header or split "+
+					"the request; refused rather than stripped", r)
 		}
 	}
 	return raw, nil

@@ -47,10 +47,21 @@ func installEgressPolicy() error {
 // ordinary field regardless of what calls Println on it, and a closure is
 // the one shape reflection cannot follow. See clone_test.go for the
 // containment-shape tests this exists to pass.
+//
+// username is a plain field, deliberately: it is never secret material (see
+// resolveUsername's own doc comment - it is a forge-facing identity string,
+// not a credential), so it carries none of token's containment concern.
+// Callers are expected to have already run it through [resolveUsername], so
+// it is always the value this invocation should actually send - never
+// empty, since resolveUsername turns an unset input into
+// [defaultBasicAuthUsername] before cloneOptions is ever built. cloneBounded
+// still falls back to that default itself if it somehow is empty, the same
+// fail-safe direction as every other default in this plugin.
 type cloneOptions struct {
-	url   *url.URL
-	depth int
-	token func() string // nil or returns "" when the repository is public
+	url      *url.URL
+	depth    int
+	token    func() string // nil or returns "" when the repository is public
+	username string        // resolved; see resolveUsername
 }
 
 func (opts cloneOptions) tokenValue() string {
@@ -86,8 +97,12 @@ func cloneBounded(ctx context.Context, opts cloneOptions) (*git.Repository, erro
 	}
 
 	if token := opts.tokenValue(); token != "" {
+		username := opts.username
+		if username == "" {
+			username = defaultBasicAuthUsername
+		}
 		cloneOpts.Auth = &githttp.BasicAuth{
-			Username: "x-access-token",
+			Username: username,
 			Password: token,
 		}
 	}
