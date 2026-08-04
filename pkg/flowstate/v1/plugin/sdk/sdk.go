@@ -251,6 +251,18 @@ type Task struct {
 	// the wire for nothing.
 	NeedsScope bool
 
+	// SecretInputs names the inputs this task accepts a host secret reference
+	// through — a Flowfile writing `${secret('vault:prod/api#token')}` into
+	// this input is honored, and one written into any other input is refused.
+	//
+	// The host resolves the reference before this task ever runs: Fn always
+	// receives a value, never a [flowstatev1.SecretRef], because the whole
+	// point of naming an input here is that the plugin process never holds a
+	// reference or provider access of its own. See the manifest field this
+	// becomes, `TaskManifest.secret_inputs`, for why the host resolves rather
+	// than the plugin asking it to.
+	SecretInputs []string
+
 	// Fn executes the task.
 	Fn TaskFunc
 }
@@ -682,6 +694,7 @@ func (t Task) manifest() (*pluginv1.TaskManifest, error) {
 		DeferredInputs:   slices.Clone(t.DeferredInputs),
 		ExpressionInputs: slices.Clone(t.ExpressionInputs),
 		NeedsScope:       t.NeedsScope,
+		SecretInputs:     slices.Clone(t.SecretInputs),
 	}, nil
 }
 
@@ -927,6 +940,11 @@ func (s *taskService) Execute(ctx context.Context, req *connect.Request[pluginv1
 		return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf(
 			"this plugin does not provide task %q", truncate(name, 64)))
 	}
+
+	// Installed on every call, whether or not the request named an identity:
+	// see [CallerFromContext] for why an absent identity is still a caller
+	// found, carrying an empty namespace.
+	ctx = contextWithCaller(ctx, req.Msg.GetIdentity(), req.Msg.GetNamespace())
 
 	outputs, err := task.Fn(ctx, req.Msg.GetTask().GetInputs(), req.Msg.GetScope())
 	if err != nil {

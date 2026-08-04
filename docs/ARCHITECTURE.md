@@ -423,6 +423,61 @@ deployment permitted, receives the tenant a workload belongs to rather than choo
 one, and its network access is the worker's to govern. A plugin is an extension of
 the engine's capability, not an exemption from its rules.
 
+**A plugin *task* consuming a host secret is the reverse direction, and the host
+resolves it, not the plugin.** `SecretService` above is a plugin answering for a
+scheme it owns; a plugin task with an ordinary `${secret('vault:...')}` input needs
+the opposite seam, and the wrong shape for it is a new RPC letting a plugin ask the
+host to resolve an arbitrary reference — that makes every plugin a confused deputy
+and puts policy in N places instead of one. So a `TaskManifest` names its
+`secret_inputs`, and the worker resolves a reference into one of them *before*
+calling the plugin's `Execute` — the same activity-side moment, the same providers,
+the same tenancy scoping a built-in task's own secret input goes through. The
+plugin process receives a value over the socket, never a reference and never
+provider access, and every resolved value is registered with the activity's
+scrubber so an echo cannot reach a step output or a task error. An input a
+`TaskManifest` did not name is refused rather than resolved, fail-closed in both
+directions. That hand-off is sound only because "the plugin" is a process on the
+same machine, reached over a socket only the worker can open — a future remote
+plugin endpoint must not resolve-then-send the same way without a per-endpoint
+release policy deciding first whether that endpoint may receive the value at all.
+
+**Scrubbing is a containment tier for accidents, and it is worth being exact about
+which failures it does and does not cover, because the two look similar until
+something is actually adversarial.** The scrubber matches known plaintext — the
+resolved value and a handful of encodings it might pick up in transit — against
+text on its way out of the activity. That catches the honest case: a plugin whose
+backend reflects a token back in an error, or a task that echoes an input it was
+never trying to hide, the same accident the http task's own response scrubbing
+exists for. It does nothing against a plugin that transforms the value on purpose
+— base64, hex, a hash, splitting it across two output fields and letting a later
+step recombine them — because a transform defeats substring matching by
+construction, not by an oversight the matcher could be tuned to close. That is the
+same critique this repo's own research levels at GitHub Actions' log masking:
+`::add-mask::` is exactly this kind of literal-value redaction, and it is
+well-documented as defeated by re-encoding the masked value before printing it.
+Flowstate's scrubber is not exempt from that critique, and pretending otherwise by
+"hardening" it — chasing more encodings, more transforms — would spend effort
+on a tier it was never meant to occupy while leaving the actual gap open.
+
+The containment for a plugin that is actively adversarial is not the scrubber at
+all. It is that a plugin is trusted code the moment it is launched, running with
+the worker's own process authority — the isolation a separate process buys is
+against a crash or a resource leak, not against code that is doing exactly what
+its author wrote on purpose — so the control that matters is deciding which
+binaries get launched in the first place. Today that is `flow worker
+--plugin-dir` naming an explicit local path an operator controls; the direction
+being tracked (issue #146) is making that gate — an operator vetting or signing
+what runs before a binary is trusted with a socket at all — a first-class,
+declared part of the deployment rather than "whatever is on the search path."
+`secret_inputs` and the scrubber narrow *what a vetted plugin can reach and leak
+by accident*; they are not, and are not trying to be, what stands between a
+worker and a plugin binary nobody should have trusted running as though it were
+trustworthy.
+
+A plugin task also receives the caller's identity and namespace — the wire always
+carried them, and `sdk.CallerFromContext` is what reads them without widening every
+task's function signature to carry a value most tasks never need.
+
 ### Tenancy
 
 Multiple teams sharing a deployment need their workloads, secrets, and egress kept apart. A
