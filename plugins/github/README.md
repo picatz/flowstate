@@ -18,6 +18,126 @@ if you want to see it work rather than read about it.
 go build -o /path/to/plugins/flowstate-plugin-github ./plugins/github
 ```
 
+## Examples, kept honest
+
+Both files below are pasted in whole, not summarized, and
+`TestReadmeExamplesMatchTheFilesOnDisk` in this package holds them to the real
+files byte for byte in both directions - a file added under
+[`examples/plugins/github`](../../examples/plugins/github) with no matching
+block here fails the build, same as a block that drifts from its file. The
+convention: an HTML comment naming the file, on the line immediately before
+the fence.
+
+<!-- example: examples/plugins/github/workflow.yaml -->
+```yaml
+edition: v2026.2
+name: github-pull-request-get
+description: Reads a public pull request's state using the "github" plugin - the one read task this example runs by default.
+
+# github.pull_request_get is one of two tasks the "github" plugin provides;
+# the other, github.issue_comment, posts a comment and needs a credential -
+# see comment-inputs.json and the README before running that half.
+#
+# The dot in "github.pull_request_get" is what marks this as a plugin task
+# rather than a built-in: no built-in task has one. The engine has never
+# compiled github.v1.PullRequestGetInputs; it learns the shape from
+# descriptors this plugin ships in its manifest at launch. See
+# plugins/github for the source and plugins/github/README.md for the
+# authentication modes it supports, in the order this plugin prefers them.
+
+vars:
+  owner: golang
+  repo: go
+  # A pull request old enough to be merged and stable, so this example's
+  # output does not change out from under it.
+  number: 1
+
+steps:
+  - id: pr
+    github.pull_request_get:
+      owner: ${vars.owner}
+      repo: ${vars.repo}
+      number: ${vars.number}
+      # No token: a public repository's pull requests are readable
+      # unauthenticated, at a much lower rate limit. Compare this to
+      # comment-inputs.json, where posting a comment requires one.
+
+  - id: announce
+    log:
+      message: "${'pull request #%d (%s) - %s'.format([vars.number, steps.pr.state, steps.pr.title])}"
+
+outputs:
+  title:
+    value: ${steps.pr.title}
+    description: the pull request's title, read from GitHub's API without this build knowing its schema
+
+  state:
+    value: ${steps.pr.state}
+    description: "open or closed"
+
+  head_sha:
+    value: ${steps.pr.head_sha}
+    description: the commit at the tip of the pull request's branch
+```
+
+<!-- example: examples/plugins/github/issue-comment.yaml -->
+```yaml
+edition: v2026.2
+name: github-issue-comment
+description: Posts a real comment on a real issue or pull request using the "github" plugin's one non-idempotent task. Requires inputs; never runs by accident.
+
+# github.issue_comment is a mutation - unlike this directory's other file,
+# workflow.yaml, running this posts a real, visible comment. It is written
+# with required `inputs:` rather than a hard-coded owner/repo/number,
+# specifically so it cannot run with no arguments the way every other
+# example in this repository is designed to - see examples/README.md's own
+# rule about that, and its one exception: "an example whose subject is a
+# required input needs a file saying what it requires." This one's subject
+# is a mutation, which is exactly the case for requiring input rather than
+# assuming a default.
+#
+# See errors.go in plugins/github for why a failure here that leaves this
+# plugin unable to tell whether the comment was actually created is never
+# retried automatically - the same reasoning the core http task's
+# retry_on_unknown_outcome exists for.
+
+inputs:
+  owner:
+    type: string
+    required: true
+    description: repository owner, e.g. "octocat"
+  repo:
+    type: string
+    required: true
+    description: repository name, e.g. "hello-world"
+  number:
+    type: int
+    required: true
+    description: the issue or pull request number to comment on
+  body:
+    type: string
+    required: true
+    description: the comment's Markdown text
+
+steps:
+  - id: comment
+    github.issue_comment:
+      owner: ${inputs.owner}
+      repo: ${inputs.repo}
+      number: ${inputs.number}
+      body: ${inputs.body}
+      # A secret reference, resolved inside the task, never a literal - see
+      # plugins/github/README.md, "Authentication," for how this plugin
+      # answers it: a GitHub App installation token when one is configured,
+      # a personal access token otherwise.
+      token: ${secret('github:token')}
+
+outputs:
+  comment_url:
+    value: ${steps.comment.html_url}
+    description: where to see what this run just posted
+```
+
 ## Why go-github, and not a hand-rolled client
 
 `plugins/vcs` never execs `git` and never takes a git-client dependency,
