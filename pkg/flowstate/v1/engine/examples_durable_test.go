@@ -118,7 +118,8 @@ var exampleSignals = map[string]map[string]*v1.Node_Outputs{
 // entry here for a file that would block — `approval-gate` lapses after a day — is
 // refused below instead of suspending the suite until its own timeout.
 var exampleLapsingGates = map[string]string{
-	"wait-timeout": "the lapse is the subject: answering the gate would run the other branch",
+	"wait-timeout":     "the lapse is the subject: answering the gate would run the other branch",
+	"expense-approval": "both gates lapse by default (denied_no_response), the fail-closed branch the example exists to show; answering either would run the other paths",
 }
 
 // exampleDurableSkips names an example this harness genuinely cannot run durably,
