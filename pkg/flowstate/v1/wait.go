@@ -137,18 +137,24 @@ func SignalOutputs(payload *Node_Outputs, sender *SignalSender, timedOut bool) *
 // signalSenderValue renders a [SignalSender] as the map an expression reads
 // under [SenderOutput].
 //
-// A nil sender — a timed-out wait with nothing pending, or a [PendingSignal]
-// carried from before this field existed — renders as the same shape an
-// attested sender does, with every field at its zero value, so
-// `${approval.sender.identity.subject}` resolves rather than fails on a
-// missing `sender` regardless of which case produced the wait's outputs.
-//
-// Built field by field in a fixed order rather than through [NewLiteralMap]:
-// that helper ranges over a Go map, whose iteration order Go deliberately
-// randomizes, and this value is serialized into the run's state and carried
-// across every Continue-As-New — the identical determinism hazard
-// [SignalOutputs] already sorts the payload mapping to avoid.
+// A nil sender renders with every identity field empty and `local: true` —
+// never the same shape a genuinely attested-but-anonymous caller produces
+// (`local: false` with an empty subject, which is what an unattested identity
+// provider still yields through a real server). Nil means the engine has
+// nothing at all to say about who sent this, and three cases produce it: a
+// timed-out wait with nothing pending, a [PendingSignal] carried from before
+// this field existed, and a signal that arrived in the pre-#194 wire shape (a
+// bare [Node_Outputs], decoded by the engine's compatibility fallback — see
+// engine/signal_compat.go). All three are the same fact from a workflow
+// author's point of view — nothing here was attested — so they read the same
+// way, and none of them may be mistaken for a real identity that merely
+// happens to be blank.
 func signalSenderValue(sender *SignalSender) *Value {
+	local := sender.GetLocal()
+	if sender == nil {
+		local = true
+	}
+
 	identity := sender.GetIdentity()
 
 	identityEntries := []*expr.MapValue_Entry{
@@ -171,7 +177,7 @@ func signalSenderValue(sender *SignalSender) *Value {
 			},
 		},
 		{Key: NewLiteral("accepted_at").GetLiteral(), Value: NewLiteral(acceptedAt).GetLiteral()},
-		{Key: NewLiteral("local").GetLiteral(), Value: NewLiteral(sender.GetLocal()).GetLiteral()},
+		{Key: NewLiteral("local").GetLiteral(), Value: NewLiteral(local).GetLiteral()},
 	}
 
 	return &Value{

@@ -190,6 +190,11 @@ func Run(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error
 
 	ctx = workflow.WithActivityOptions(ctx, defaultActivityOptions())
 
+	// Every signal channel this run ever opens — here and for the rest of the
+	// function, including drainSignals below — must be able to decode a signal
+	// sent in either wire shape #194 straddles. See withSignalDeliveryCompat.
+	ctx = withSignalDeliveryCompat(ctx)
+
 	logger := workflow.GetLogger(ctx)
 
 	// Registered before anything else happens, including the vars activity below.

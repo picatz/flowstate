@@ -1067,15 +1067,22 @@ message SignalSender {
 
   // Local marks a signal delivered to a local run (`flow run local --signal`
   // or `flow test`'s scripted signals), which has no authenticated caller at
-  // all — there is no server in front of it to attest anything.
+  // all — there is no server in front of it to attest anything. Set only by
+  // [LocalSignalSender]; the durable driver never sets it true.
   //
-  // This is the difference between three situations that would otherwise look
-  // identical from inside a workflow: an old signal that predates this field,
-  // a signal a misconfigured deployment failed to attest, and a local run that
-  // was never going to have an attested sender in the first place. `local:
-  // true` names the third case explicitly rather than leaving it to be
-  // confused with the other two — a local run must never look like an
-  // attested production one.
+  // A wait's rendered `sender.local` output (see wait.go's signalSenderValue)
+  // is `true` for this case *and* for every other case where nothing was
+  // attested at all — this message absent entirely, which covers a signal
+  // that predates this field, a timed-out wait with nothing pending, and the
+  // engine's own compatibility fallback for a signal that arrived in the
+  // pre-#194 wire shape (engine/signal_compat.go). All of those are the same
+  // fact from a workflow author's point of view — nobody attested this — and
+  // must read the same way, distinct from an attested-but-anonymous caller
+  // (this message present, Local false, Identity.Subject merely empty because
+  // no identity provider is configured). This field's own wire value only
+  // ever means "the local driver," never "nothing was attested"; the broader
+  // reading exists solely in the rendered output, precisely so a workflow
+  // author can trust `!sender.local` as "the server accepted this."
   bool local = 3;
 }
 
