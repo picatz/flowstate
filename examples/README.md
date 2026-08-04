@@ -46,19 +46,20 @@ $ flow validate examples/hello-world/workflow.yaml
 | [plugins/greet](plugins/greet/) | A task a plugin provides, written `example.greet:` and type-checked against the plugin's own schema — needs a built plugin and a worker, so read its README | no |
 | [plugins/vcs](plugins/vcs/) | `vcs.log` and `vcs.diff` — version-control tasks (go-git) that clone in memory, per invocation, and return content rather than a workspace path — needs a built plugin and a worker, so read its README | yes |
 | [plugins/github](plugins/github/) | `github.pull_request_get` (read) and `github.issue_comment` (a mutation, in a separate parameterized file so it cannot run by accident) — needs a built plugin, a worker, and for the comment file a credential, so read its README | yes |
+| [plugins/git](plugins/git/) | `git.ls_remote` (read) and `git.commit_push` (a mutation, in a separate parameterized file so it cannot run by accident) — one activity, compare-and-swapped against `base_ref`, never forced — needs a built plugin, a worker, and for the write file a credential, so read its README | yes |
 
-Six of these hold more than a `workflow.yaml`, and those six have a `README.md`
+Seven of these hold more than a `workflow.yaml`, and those seven have a `README.md`
 saying what the rest of the directory is for: [http-secret](http-secret) and
 [http-federated](http-federated) ship the policy that authorizes what their step does,
-[plugins/greet](plugins/greet/), [plugins/vcs](plugins/vcs/), and
-[plugins/github](plugins/github/) each need a plugin built and a worker told where to
-find it, and [observability](observability) is a whole docker-compose lab. Everywhere
-else the workflow's own comments are the documentation, and a README repeating them
-would be one more thing to leave stale.
+[plugins/greet](plugins/greet/), [plugins/vcs](plugins/vcs/),
+[plugins/github](plugins/github/), and [plugins/git](plugins/git/) each need a plugin
+built and a worker told where to find it, and [observability](observability) is a whole
+docker-compose lab. Everywhere else the workflow's own comments are the documentation,
+and a README repeating them would be one more thing to leave stale.
 
-`plugins/greet`, `plugins/vcs`, and `plugins/github` also sit a directory deeper than
-the rest, which is deliberate: everything matching `examples/*/workflow.yaml` is
-checked with the built-in task registry, and a file naming a plugin's task is meant to
+`plugins/greet`, `plugins/vcs`, `plugins/github`, and `plugins/git` also sit a directory
+deeper than the rest, which is deliberate: everything matching `examples/*/workflow.yaml`
+is checked with the built-in task registry, and a file naming a plugin's task is meant to
 be refused by a process that has not loaded that plugin. Their READMEs say more.
 
 Where a directory holds an `inputs.json` beside its `workflow.yaml`, that file is what

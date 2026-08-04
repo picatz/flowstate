@@ -1,0 +1,263 @@
+// Package reachable proves that examples/plugins/git's workflow files can
+// actually reach the "git" plugin - the property CLAUDE.md requires of every
+// capability ("a capability is not done until it is reachable from a
+// Flowfile").
+//
+// This is deliberately its own package, in its own directory, rather than a
+// _test.go file beside main.go - exactly the reason plugins/vcs/reachable
+// gives, which applies unchanged here: main.go imports this plugin's own
+// generated types (gitv1.LsRemoteInputs and so on), and a test file in that
+// package would register "git/v1/git.proto" in this test binary's own
+// global proto registry before the test ever ran, which is exactly the trap
+// that made an earlier version of plugins/vcs's own test pass for the wrong
+// reason (see that package's doc comment for the full story). This package
+// imports the plugin SDK's host side and nothing under plugins/git/gen, so
+// its own registry starts exactly as bare as a real worker's does.
+package reachable
+
+import (
+	"context"
+	"log/slog"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin"
+)
+
+// gitModule is this plugin's own module path, built as a real, separately
+// compiled binary.
+const gitModule = "github.com/picatz/flowstate/plugins/git"
+
+// exampleDir is where the example workflow files live, relative to this
+// package.
+const exampleDir = "../../../examples/plugins/git"
+
+// TestAFlowfileCanNameTheGitPluginsTasks is deliberately one test -
+// registering into [flowstatev1.DefaultRegistry] is a one-way door with no
+// Unregister, so at most one test in this binary may do it. See
+// plugins/vcs/reachable's identical test for the full argument; this one
+// covers both of this plugin's example files (the runnable read example and
+// the parameterized write example) rather than one.
+func TestAFlowfileCanNameTheGitPluginsTasks(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a real plugin binary; skipped under -short, run in CI and by `make check`")
+	}
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("the Go toolchain is not available, so this plugin cannot be built")
+	}
+
+	dir := t.TempDir()
+	binaryPath := filepath.Join(dir, plugin.BinaryPrefix+"git")
+	buildPlugin(t, binaryPath)
+
+	readSource := readExample(t, "workflow.yaml")
+	writeSource := readExample(t, "commit-push.yaml")
+
+	for _, name := range []string{"git.ls_remote", "git.commit_push"} {
+		if _, ok := flowstatev1.LookupTask(name); ok {
+			t.Fatalf("%q is already in the default registry before this test registered it, "+
+				"so nothing below distinguishes a working seam from a task that was always there", name)
+		}
+	}
+
+	beforeRead, err := flowfile.ValidateSource(readSource)
+	if err != nil {
+		t.Fatalf("ValidateSource(workflow.yaml): unexpected error: %v", err)
+	}
+	if len(beforeRead) == 0 {
+		t.Fatal("the validator accepted workflow.yaml naming a task no registry holds")
+	}
+	if !strings.Contains(diagnosticText(beforeRead), "git.ls_remote") {
+		t.Errorf("the diagnostics do not name %q; diagnostics:\n%s", "git.ls_remote", diagnosticText(beforeRead))
+	}
+
+	beforeWrite, err := flowfile.ValidateSource(writeSource)
+	if err != nil {
+		t.Fatalf("ValidateSource(commit-push.yaml): unexpected error: %v", err)
+	}
+	if len(beforeWrite) == 0 {
+		t.Fatal("the validator accepted commit-push.yaml naming a task no registry holds")
+	}
+	if !strings.Contains(diagnosticText(beforeWrite), "git.commit_push") {
+		t.Errorf("the diagnostics do not name %q; diagnostics:\n%s", "git.commit_push", diagnosticText(beforeWrite))
+	}
+
+	host := openHost(t, plugin.Config{
+		SearchPath:          []string{dir},
+		HandshakeTimeout:    10 * time.Second,
+		DescribeTimeout:     10 * time.Second,
+		CallTimeout:         10 * time.Second,
+		HealthTimeout:       5 * time.Second,
+		ShutdownGrace:       5 * time.Second,
+		DisableHealthChecks: true,
+		Logger:              testLogger(t),
+	})
+
+	if err := host.Register(flowstatev1.DefaultRegistry(), nil); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	t.Run("the validator accepts the real read example", func(t *testing.T) {
+		diags, err := flowfile.ValidateSource(readSource)
+		if err != nil {
+			t.Fatalf("ValidateSource: unexpected error: %v", err)
+		}
+		if len(diags) != 0 {
+			t.Errorf("this plugin's tasks are registered and `flow validate` still refuses "+
+				"examples/plugins/git/workflow.yaml: %s", diagnosticText(diags))
+		}
+	})
+
+	t.Run("the validator accepts the real write example", func(t *testing.T) {
+		diags, err := flowfile.ValidateSource(writeSource)
+		if err != nil {
+			t.Fatalf("ValidateSource: unexpected error: %v", err)
+		}
+		if len(diags) != 0 {
+			t.Errorf("this plugin's tasks are registered and `flow validate` still refuses "+
+				"examples/plugins/git/commit-push.yaml: %s", diagnosticText(diags))
+		}
+	})
+
+	t.Run("the read task's schema is checked like a built-in's", func(t *testing.T) {
+		// prefix is a string in git.v1.LsRemoteInputs; the only way the
+		// validator can know that is the descriptor this plugin shipped
+		// over its socket at launch, reconstructed by the host.
+		wrongType, err := flowfile.ValidateSource([]byte(strings.Replace(
+			string(readSource), `prefix: "refs/heads/"`, "prefix: 5", 1)))
+		if err != nil {
+			t.Fatalf("ValidateSource: unexpected error: %v", err)
+		}
+		if len(wrongType) == 0 {
+			t.Error("an int was accepted for prefix, which the plugin declares as string")
+		}
+	})
+
+	t.Run("the task's qualifier comes from discovery, not from what the plugin calls itself", func(t *testing.T) {
+		spoofDir := t.TempDir()
+		spoofed := filepath.Join(spoofDir, plugin.BinaryPrefix+"notgit")
+		if err := copyFile(binaryPath, spoofed); err != nil {
+			t.Fatalf("copying the plugin binary under another name: %v", err)
+		}
+
+		spoofHost := openHost(t, plugin.Config{
+			SearchPath:          []string{spoofDir},
+			HandshakeTimeout:    10 * time.Second,
+			DescribeTimeout:     10 * time.Second,
+			CallTimeout:         10 * time.Second,
+			HealthTimeout:       5 * time.Second,
+			ShutdownGrace:       5 * time.Second,
+			DisableHealthChecks: true,
+			Logger:              testLogger(t),
+		})
+
+		p, ok := spoofHost.Lookup("notgit")
+		if !ok {
+			t.Fatal("the renamed binary was not launched")
+		}
+		if got := p.Manifest().GetName(); got != "git" {
+			t.Fatalf("the renamed binary's own manifest name = %q, want %q", got, "git")
+		}
+
+		registry := flowstatev1.NewRegistry()
+		if err := spoofHost.Register(registry, nil); err != nil {
+			t.Fatalf("Register: %v", err)
+		}
+
+		if _, ok := registry.Lookup("git.ls_remote"); ok {
+			t.Error("a plugin launched as \"notgit\" registered a task under \"git.ls_remote\" - " +
+				"its self-declared name overrode discovery")
+		}
+		if _, ok := registry.Lookup("notgit.ls_remote"); !ok {
+			t.Error("a plugin discovered as \"notgit\" did not register \"notgit.ls_remote\"")
+		}
+	})
+}
+
+func buildPlugin(t *testing.T, output string) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "go", "build", "-o", output, gitModule)
+	if wd, err := os.Getwd(); err == nil {
+		cmd.Dir = wd
+	}
+
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("building the git plugin: %v: %s", err, out)
+	}
+}
+
+func readExample(t *testing.T, name string) []byte {
+	t.Helper()
+
+	data, err := os.ReadFile(filepath.Join(exampleDir, name))
+	if err != nil {
+		t.Fatalf("reading the example workflow: %v", err)
+	}
+	return data
+}
+
+func copyFile(src, dst string) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, info.Mode())
+}
+
+func openHost(t *testing.T, cfg plugin.Config) *plugin.Host {
+	t.Helper()
+
+	host, err := plugin.NewHost(cfg)
+	if err != nil {
+		t.Fatalf("NewHost: %v", err)
+	}
+
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		host.Close(ctx)
+	})
+
+	if err := host.Open(context.Background()); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	return host
+}
+
+func diagnosticText(diags flowfile.Diagnostics) string {
+	var b strings.Builder
+	for _, d := range diags {
+		b.WriteString(d.Message)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func testLogger(t *testing.T) *slog.Logger {
+	t.Helper()
+	return slog.New(slog.NewTextHandler(testWriter{t}, &slog.HandlerOptions{Level: slog.LevelDebug}))
+}
+
+type testWriter struct{ t *testing.T }
+
+func (w testWriter) Write(p []byte) (int, error) {
+	w.t.Helper()
+	defer func() { _ = recover() }()
+	w.t.Log(strings.TrimRight(string(p), "\n"))
+	return len(p), nil
+}
