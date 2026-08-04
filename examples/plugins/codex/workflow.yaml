@@ -1,0 +1,40 @@
+edition: v2026.2
+name: codex-exec
+description: Runs one bounded OpenAI Codex agentic turn with the "codex" plugin - a read-only question, no filesystem or network access granted to the agent.
+
+# codex.exec is the "codex" plugin's one task - a single bounded run of
+# OpenAI Codex over the codex CLI. The dot in "codex.exec" is what marks
+# this as a plugin task rather than a built-in: no built-in task has one.
+# The engine has never compiled codex.v1.ExecInputs; it learns the shape
+# from descriptors this plugin ships in its manifest at launch. See
+# plugins/codex for the source and plugins/codex/README.md for what this
+# plugin needs configured on the worker before this file can run for real.
+#
+# sandbox_mode is written explicitly here as SANDBOX_MODE_READ_ONLY, even
+# though that is also this task's own default when the input is left unset
+# - see codex.proto's own doc comment on the enum for why an author should
+# still write it: a Flowfile that names its own sandbox is legible without
+# reading this plugin's source to know what "unset" means today.
+
+vars:
+  prompt: "In one sentence, what does the term \"idempotent\" mean in the context of a retried HTTP request?"
+
+steps:
+  - id: ask
+    codex.exec:
+      prompt: ${vars.prompt}
+      sandbox_mode: SANDBOX_MODE_READ_ONLY
+      api_key: ${secret('env:OPENAI_API_KEY')}
+
+  - id: announce
+    log:
+      message: "${'codex answered in %d output token(s): %s'.format([steps.ask.output_tokens, steps.ask.final_message])}"
+
+outputs:
+  final_message:
+    value: ${steps.ask.final_message}
+    description: the agent's own answer to the prompt
+
+  output_tokens:
+    value: ${steps.ask.output_tokens}
+    description: tokens the model spent producing that answer

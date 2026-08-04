@@ -1,0 +1,197 @@
+syntax = "proto3";
+
+package codex.v1;
+
+option go_package = "github.com/picatz/flowstate/plugins/codex/gen/codex/v1;codexv1";
+
+import "flowstate/v1/flowstate.proto";
+
+// This plugin's own task schema: one bounded, agentic execution of OpenAI
+// Codex, over github.com/picatz/openai/codex - itself a wrapper around the
+// `codex` CLI binary (see doc.go, "Why this plugin execs a subprocess," for
+// why that is acceptable here when it is exactly what plugins/vcs's own doc.go
+// refuses).
+//
+// # Why one task, not several
+//
+// codex.exec is deliberately the whole surface. A codex run is a single
+// bounded unit of work from a workflow's point of view - a prompt goes in, a
+// turn's worth of agent activity happens (which may itself run shell
+// commands, edit files, call tools), and a result comes out. There is no
+// "codex.start_thread" plus "codex.continue_thread" pair, for the same
+// no-shared-workspace reason plugins/vcs has no vcs.clone: a thread ID that
+// outlived one activity invocation would be a handle into state this process
+// does not keep, backed by nothing once the activity that created it is gone.
+// A future version could accept a `thread_id` to resume a previous turn - the
+// underlying library already supports it (Args.ThreadID) - but that is a
+// deliberate, larger design (what does "resume" mean across a worker
+// restart, or on a different worker entirely?) left for when it is needed
+// rather than added speculatively here.
+
+// SandboxMode mirrors the codex CLI's own three sandbox levels, spelled out
+// explicitly so that a Flowfile author has to name one rather than getting
+// whatever this plugin happened to default to.
+//
+// SANDBOX_MODE_UNSPECIFIED is deliberately not "whatever is most permissive."
+// This plugin's own default (see exec.go, defaultSandboxMode) is the most
+// restricted level, READ_ONLY - fail closed, the same direction CLAUDE.md
+// asks of every policy surface in this repository. An author who wants codex
+// to write files has to say so.
+enum SandboxMode {
+  SANDBOX_MODE_UNSPECIFIED = 0;
+
+  // The agent can read the working directory and run commands, but cannot
+  // write to the filesystem or reach the network from a shell it starts.
+  SANDBOX_MODE_READ_ONLY = 1;
+
+  // The agent can write within the working directory codex was given, in
+  // addition to everything READ_ONLY allows.
+  SANDBOX_MODE_WORKSPACE_WRITE = 2;
+
+  // No sandbox: the agent can read, write, and reach the network as the
+  // worker process itself can. Never this plugin's default; an author must
+  // opt into it explicitly, and see the README for why a workflow using it
+  // is only as contained as the worker running it.
+  SANDBOX_MODE_DANGER_FULL_ACCESS = 3;
+}
+
+// ExecInputs describes one bounded agentic run.
+message ExecInputs {
+  // Prompt is the instruction given to the agent. Required: an empty prompt
+  // is a task with nothing to do, refused rather than sent to the CLI to
+  // fail on its own terms.
+  string prompt = 1;
+
+  // Model selects the model identifier codex runs the agent with. Empty
+  // means the CLI's own configured default.
+  string model = 2;
+
+  // SandboxMode bounds what the agent may do to the filesystem and network
+  // for the duration of this run. See the enum's own doc comment: the
+  // default when this is left unspecified is the most restricted level, not
+  // the most permissive.
+  SandboxMode sandbox_mode = 3;
+
+  // WorkingContext, when set, is the directory codex is given as its
+  // working directory (the CLI's own --cd). It must resolve inside the
+  // directory an operator configured with FLOWSTATE_CODEX_WORKDIR_ROOT (see
+  // binary.go) - explicit, operator-controlled configuration, never a path a
+  // Flowfile can point anywhere on the worker's filesystem. Unset means no
+  // working directory is passed, and codex runs against a CLI-chosen
+  // default with nothing of this run's to write to even in
+  // WORKSPACE_WRITE mode.
+  string working_context = 4;
+
+  // ApiKey authenticates this run against OpenAI. It is declared in this
+  // task's secret_inputs (see main.go), so a Flowfile writes
+  // `api_key: ${secret('...')}` and this task receives the resolved value,
+  // never the reference - the host resolves it before this task ever runs.
+  // See doc.go, "Secrets," for what that does and does not guarantee.
+  flowstate.v1.Value api_key = 5;
+
+  // MaxOutputBytes bounds the combined size of every text field this task
+  // reads out of the run's event stream - the final message, each event's
+  // own summary, and the computed patch - before this task's own ceiling
+  // (see bounds.go, maxMaxOutputBytes) is applied regardless. Zero means
+  // this task's own default.
+  int32 max_output_bytes = 6;
+
+  // MaxEvents bounds how many of the run's events are summarized in the
+  // output. codex.exec never returns the raw event stream - see
+  // EventSummary's own doc comment for why - and this is the cap on how
+  // many summarized entries it keeps. Zero means this task's own default.
+  int32 max_events = 7;
+
+  // AllowNetwork requests network access for the agent's own shell commands
+  // while sandbox_mode is SANDBOX_MODE_WORKSPACE_WRITE (codex's own
+  // sandbox_workspace_write.network_access config key, applied per run via
+  // a `-c` override - see config.go). Ignored when sandbox_mode is
+  // READ_ONLY (nothing to grant network to) or DANGER_FULL_ACCESS (already
+  // unrestricted).
+  //
+  // This is not this task's to grant unconditionally: it can only narrow
+  // within what the operator's own policy permits (see policy.go,
+  // "monotonic narrowing" - the same #172/GHA lesson CLAUDE.md's own
+  // invariants draw on for a workflow that can restrict a grant but never
+  // widen one past what deployment configuration allows). Requesting true
+  // when the operator's policy has not allowed it is refused as
+  // sdk.InvalidInput naming this field, not silently downgraded to false.
+  bool allow_network = 8;
+}
+
+// ExecOutputs is one run's bounded result.
+message ExecOutputs {
+  // FinalMessage is the agent's last agent_message text, bounded (see
+  // bounds.go). Empty when the run produced no agent message at all - a
+  // run that only edited files and never wrote a closing summary is not an
+  // error.
+  string final_message = 1;
+
+  // Patch is a unified diff of every file the run changed under
+  // working_context, in the currency plugins/vcs's own DiffOutputs.patch
+  // uses, and the exact input shape plugins/git's own git.commit_push task
+  // accepts as its own `patch` input (CommitPushInputs.patch,
+  // plugins/git/proto/git/v1/git.proto) - a unified diff, bounded, applied
+  // entirely in memory. This is the #162 agentic-loop contract: an agent's
+  // changes flow from this task's output straight into a commit without a
+  // shared checkout anywhere between them.
+  // Populated only when working_context was set and sandbox_mode allowed a
+  // write (WORKSPACE_WRITE or DANGER_FULL_ACCESS); empty otherwise, since a
+  // READ_ONLY run cannot have changed anything to diff. Bounded the same
+  // way plugins/vcs/diff.go bounds its own patch output.
+  string patch = 2;
+
+  // FilesChanged summarizes each changed file independently of patch's own
+  // truncation, the same reasoning plugins/vcs/proto gives for keeping
+  // Files apart from Patch: a rename-heavy run can have many file entries
+  // and a small patch, or vice versa.
+  //
+  // Carried as flowstate.v1.Value (built with sdk.Literal) rather than a
+  // repeated message of this plugin's own, because [sdk.EncodeOutputs] does
+  // not convert a list of a plugin-defined message type - see values.go's
+  // own encodeScalar, which converts only flowstate.v1.Value and
+  // google.api.expr.v1alpha1.Value for a MessageKind field. Each entry is a
+  // map with the same three keys plugins/vcs/proto's own FileChange message
+  // has: "path", "old_path" (set only for a rename; codex's own library
+  // never reports one - see events.go), and "change_type" ("added",
+  // "modified", or "deleted").
+  flowstate.v1.Value files_changed = 3;
+
+  // ThreadId is the identifier codex assigned this run, from the CLI's own
+  // thread.started event. Reported for an operator's own correlation - this
+  // task does not use it to resume anything (see the package doc, "why one
+  // task, not several").
+  string thread_id = 4;
+
+  // InputTokens, CachedInputTokens, and OutputTokens report token usage as
+  // the CLI's own turn.completed event carried it. All zero when the CLI
+  // never emitted a usage report (a run that failed before completing a
+  // turn, for instance) - that is a fact about the run, not this task
+  // failing to read something.
+  int64 input_tokens = 5;
+  int64 cached_input_tokens = 6;
+  int64 output_tokens = 7;
+
+  // Events is a bounded summary of what happened during the run, capped at
+  // max_events entries and carried as flowstate.v1.Value for the same
+  // reason files_changed is (see that field's own comment). This is
+  // deliberately not the run's raw event stream: a codex turn can emit an
+  // unbounded number of item.started/item.updated/item.completed events -
+  // one command execution alone updates repeatedly as a long-running shell
+  // command produces output - and returning each one as a step output
+  // would let an attacker-influenced prompt (or an unusually chatty turn)
+  // inflate a workflow's own history without limit, the same shape
+  // CLAUDE.md's bounding guidance describes for a paged listing or a YAML
+  // alias. Each entry is a map with two keys: "kind" (the event's item
+  // type - "agent_message", "command_execution", "file_change",
+  // "mcp_tool_call", "web_search", "reasoning", "todo_list", "error", or
+  // "unknown" - exactly what the codex CLI's own event stream names, so
+  // this schema does not need to change every time the CLI adds an item
+  // kind) and "summary" (a bounded, one-line description; see events.go).
+  flowstate.v1.Value events = 8;
+
+  // Truncated reports whether any of final_message, patch, or events was
+  // cut short of the run's actual output, so a workflow can tell "this is
+  // everything" from "this is as much as this task's bounds allowed."
+  bool truncated = 9;
+}
