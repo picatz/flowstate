@@ -40,14 +40,34 @@ const (
 	maxMaxRows = 100_000
 
 	// maxRowBytes bounds one row's own decoded size (the sum of its column
-	// values' encoded lengths), and maxResultBytes bounds the running total
-	// across every row read so far - both checked while rows are still being
-	// scanned, before the result is ever assembled into an output. See
-	// doc.go, "Bounded results," for why this and the wire-level bound in
-	// driver.go are different bounds catching different things, and for
-	// what this plugin could not close for either engine.
+	// values' encoded lengths, plus the structural overhead below), and
+	// maxResultBytes bounds the running total across every row read so far
+	// - both checked while rows are still being scanned, before the result
+	// is ever assembled into an output. See doc.go, "Bounded results," for
+	// why this and the wire-level bound in driver.go are different bounds
+	// catching different things, and for what this plugin could not close
+	// for either engine.
 	maxRowBytes    = 1 << 20  // 1 MiB
 	maxResultBytes = 16 << 20 // 16 MiB
+
+	// perRowOverheadBytes and perCellOverheadBytes account for what a
+	// row's own map(string]any costs beyond the sum of its values' encoded
+	// lengths - the gap TestSQLQueryRefusesAWideAllNullRowOnStructureAlone
+	// exists to close. A column holding NULL or a tiny scalar reports ~0
+	// bytes from convertColumnValue, but every column still costs a map
+	// entry: a string key header, an `any` interface header (type pointer
+	// + data pointer), and the runtime's own per-entry bucket bookkeeping -
+	// real allocation that a byte count of *values alone* is blind to. A
+	// hundred thousand rows with hundreds of NULL columns can consume
+	// gigabytes of actual heap while resultBytes, without this, sits at
+	// zero - the exact bypass a query returning wide, sparse rows would
+	// otherwise have through the byte ceiling. These are conservative
+	// estimates of Go's own runtime.hmap/runtime.string overhead on a
+	// 64-bit build, not an exact accounting - the point is that the bound
+	// can no longer be reached at zero cost, not that it predicts resident
+	// memory to the byte.
+	perRowOverheadBytes  = 64
+	perCellOverheadBytes = 40
 
 	// maxWireBytes bounds bytes read from a postgres connection's own
 	// network socket, for the duration of one call - see driver.go's dialer

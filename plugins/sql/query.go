@@ -64,13 +64,17 @@ func sqlQuery(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flow
 	}
 	defer db.Close()
 
-	rows, err := db.QueryContext(callCtx, in.GetQuery(), args...)
+	rows, cleanup, err := readOnlyRows(callCtx, db, in.GetEngine(), in.GetQuery(), args)
 	if err != nil {
 		return nil, classifyQueryError(err, scrubber)
 	}
+	// cleanup must run after rows.Close() - see readOnlyRows's own doc
+	// comment - so it is deferred first (LIFO: rows.Close() below runs
+	// before this does).
+	defer func() { _ = cleanup() }()
 	defer rows.Close()
 
-	columns, results, err := scanBoundedRows(rows, maxRows)
+	columns, results, err := scanBoundedRows(rows, maxRows, maxRowBytes, maxResultBytes)
 	if err != nil {
 		return nil, scrubber.ScrubError(err)
 	}

@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
@@ -21,9 +22,20 @@ import (
 // driver's own cursor and refuses if the (maxRows+1)th exists, which bounds
 // what this task ever holds in memory or returns without touching the SQL
 // the author wrote.
-func scanBoundedRows(rows *sql.Rows, maxRows int) (columns []string, out []map[string]any, err error) {
+//
+// maxRowBytes and maxResultBytes are parameters rather than the package
+// constants of the same name directly, so a test can exercise the
+// structural-overhead accounting below (bounds.go's perRowOverheadBytes,
+// perCellOverheadBytes) against a cheap, small fixture instead of needing
+// to actually construct a multi-megabyte result to prove the bound is
+// reachable - see rows_test.go. Production calls (query.go) pass the
+// package constants.
+func scanBoundedRows(rows *sql.Rows, maxRows, maxRowBytes, maxResultBytes int) (columns []string, out []map[string]any, err error) {
 	columns, err = rows.Columns()
 	if err != nil {
+		return nil, nil, err
+	}
+	if err := refuseDuplicateColumns(columns); err != nil {
 		return nil, nil, err
 	}
 
@@ -49,28 +61,33 @@ func scanBoundedRows(rows *sql.Rows, maxRows int) (columns []string, out []map[s
 		}
 
 		row := make(map[string]any, len(columns))
-		rowBytes := 0
+		// perRowOverheadBytes accounts for the map's own allocation, before
+		// any entry is added - see bounds.go's own doc comment on why a
+		// row's structural cost is counted at all, not only its values'.
+		rowBytes := perRowOverheadBytes
 		for i, col := range columns {
 			converted, n, err := convertColumnValue(dest[i])
 			if err != nil {
 				return nil, nil, fmt.Errorf("column %q: %w", col, err)
 			}
 			row[col] = converted
-			rowBytes += n
+			rowBytes += perCellOverheadBytes + n
 		}
 
 		if rowBytes > maxRowBytes {
 			return nil, nil, sdk.Failed(
-				"row %d decoded to %d bytes, over the %d byte per-row ceiling this task enforces; "+
-					"refusing to return a truncated row - select fewer or narrower columns",
+				"row %d decoded to %d bytes (including this task's own per-cell and per-row "+
+					"structural accounting - see bounds.go), over the %d byte per-row ceiling this "+
+					"task enforces; refusing to return a truncated row - select fewer or narrower columns",
 				count, rowBytes, maxRowBytes)
 		}
 		resultBytes += rowBytes
 		if resultBytes > maxResultBytes {
 			return nil, nil, sdk.Failed(
-				"the result decoded to over %d bytes across %d rows, the ceiling this task enforces "+
-					"on a result's total decoded size; refusing to return a truncated result - narrow "+
-					"the query or lower max_rows",
+				"the result decoded to over %d bytes across %d rows (including this task's own "+
+					"per-cell and per-row structural accounting - see bounds.go), the ceiling this "+
+					"task enforces on a result's total decoded size; refusing to return a truncated "+
+					"result - narrow the query or lower max_rows",
 				maxResultBytes, count+1)
 		}
 
@@ -82,6 +99,48 @@ func scanBoundedRows(rows *sql.Rows, maxRows int) (columns []string, out []map[s
 	}
 
 	return columns, out, nil
+}
+
+// refuseDuplicateColumns reports a positioned error naming every duplicate
+// column name in a result set, rather than letting scanBoundedRows silently
+// overwrite one column's value with another's in the row map it builds.
+//
+// A join is the ordinary way to reach this: `SELECT a.id, b.id FROM a JOIN
+// b ...` reports two columns both named "id" (columns still lists both,
+// per QueryOutputs.columns's own doc comment), and without this check the
+// second "id" written into row["id"] would silently replace the first -
+// a workflow reading r.id would get whichever column this task happened to
+// scan last, never told the value it wanted was gone. Refused instead, so
+// the fix is visible at the query (an explicit alias) rather than a
+// decision made downstream on a value that quietly wasn't the one asked
+// for.
+func refuseDuplicateColumns(columns []string) error {
+	seen := make(map[string]int, len(columns))
+	var duplicates []string
+	for _, col := range columns {
+		seen[col]++
+		if seen[col] == 2 {
+			duplicates = append(duplicates, col)
+		}
+	}
+	if len(duplicates) == 0 {
+		return nil
+	}
+	return sdk.InvalidInput(
+		"the result has more than one column named %s; this task returns rows as a map, which "+
+			"cannot hold two values under one key - alias the duplicate(s) in the query (e.g. "+
+			"\"SELECT a.id, b.id AS b_id FROM ...\") so every column name is unique",
+		strings.Join(quoteEach(duplicates), ", "))
+}
+
+// quoteEach wraps each string in double quotes, for a diagnostic listing
+// several names at once.
+func quoteEach(ss []string) []string {
+	out := make([]string, len(ss))
+	for i, s := range ss {
+		out[i] = fmt.Sprintf("%q", s)
+	}
+	return out
 }
 
 // convertColumnValue turns one driver-scanned column value into a type

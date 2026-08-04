@@ -68,6 +68,33 @@
 // those, proven to bite by deliberately leaking the DSN and watching the
 // test go red before the fix, then green after.
 //
+// # Enforced read-only, not merely documented
+//
+// sql.query is documented and classified as read-only, which matters
+// because the host retries a read-only task automatically on a transient
+// failure - and a retried "read" that could actually write would let a
+// lost-response retry apply that write a second time. An earlier version
+// of this plugin only had the documentation and the classification: Fn
+// called database/sql's own QueryContext directly, which happily runs and
+// autocommits an UPDATE ... RETURNING (or, on sqlite, a second statement
+// smuggled in after a `;`) exactly as it would a SELECT. Caught in review,
+// fixed in readonly.go: every sql.query call now runs under an
+// engine-enforced read-only mode - sqlite gets `PRAGMA query_only = ON` on
+// the one connection the call uses, postgres gets a transaction opened with
+// sql.TxOptions.ReadOnly (which pgx's stdlib driver turns into the wire
+// equivalent of BEGIN ... READ ONLY) - so a write reaching this task is
+// refused by the database itself, not by this plugin's own guess at
+// whether a query string looks like one. Deliberately not solved by
+// inspecting the query text for a write keyword: a detector is a second,
+// incomplete parser standing in for the one authority that actually knows
+// the grammar, and a construct it does not recognize walks straight
+// through - the same reasoning that keeps this plugin from ever trying to
+// detect "is this identifier safe" for the dynamic-identifiers gap above.
+// See query_test.go / readonly_test.go for both directions: an UPDATE or a
+// DELETE submitted through sql.query is refused (and leaves no trace - the
+// refusal is proven by re-reading the row afterward, not just by the call
+// returning an error), and an ordinary SELECT still works.
+//
 // # Bounded results, and what a truncated one means here
 //
 // max_rows is required on every sql.query call, with a hard ceiling
@@ -119,6 +146,33 @@
 //     backstop under the postgres wire bound and as the primary defense for
 //     sqlite.
 //
+// The decoded-byte accounting above shipped counting only the bytes
+// convertColumnValue reports for a column's own value, which is exactly
+// zero for NULL and for most small scalars - caught in review: a row of
+// many NULL or tiny columns costs almost nothing by that measure while
+// still allocating a real Go map with a real entry per column, so a result
+// with a hundred thousand rows of hundreds of NULL columns could consume
+// gigabytes of actual heap while resultBytes sat at zero, bypassing
+// maxResultBytes entirely. Fixed by counting the structural cost too -
+// bounds.go's perRowOverheadBytes and perCellOverheadBytes, added for every
+// row and every column regardless of what a column's own value reports -
+// so a wide, sparse result can no longer reach the bound at zero
+// accounted cost. See rows_test.go's
+// TestScanBoundedRowsRefusesAWideAllNullRowOnStructureAlone (proving the
+// exact bypass shape is now caught) and
+// TestScanBoundedRowsStructuralOverheadIsReachedExactly (proving the bound
+// is reached, not merely never exceeded - CLAUDE.md's own "assert a bound
+// was reached" rule for paged listings, applied here to a byte ceiling).
+//
+// A second, unrelated correctness gap in the same function was caught
+// alongside it: a result with two columns of the same name (an unaliased
+// join, `SELECT a.id, b.id FROM a JOIN b ...`) silently let the second
+// overwrite the first in the row map scanBoundedRows builds, while columns
+// still reported both names - a workflow reading r.id would get whichever
+// one this task happened to scan last, never told the other value was
+// gone. refuseDuplicateColumns (rows.go) now refuses this outright, naming
+// every duplicate, before a single row is ever scanned.
+//
 // # Transactions end where the activity ends
 //
 // One sql.exec call is at most one transaction, and that transaction
@@ -141,13 +195,27 @@
 //     rather than reaching back into a transaction that no longer exists.
 //   - Idempotency keys as ordinary params: a workflow that might retry a
 //     write includes a key value (a UUID it generated, an order ID) as a
-//     bound parameter and gives the target table a unique constraint on it -
-//     `INSERT ... ON CONFLICT (idempotency_key) DO NOTHING` for postgres, its
-//     sqlite equivalent for the other engine - so a retried sql.exec call
-//     converges to a no-op rather than a duplicate row. This plugin does not
-//     do this automatically, because whether a caller wants convergence-by-
-//     constraint or a hard failure on retry is the workflow's decision, not
-//     this task's.
+//     bound parameter and gives a ledger table a unique constraint on it, so
+//     a retried sql.exec call can detect whether this is a fresh attempt or
+//     a replay. This plugin does not do this automatically, because whether
+//     a caller wants convergence-by-constraint or a hard failure on retry is
+//     the workflow's decision, not this task's - but the shape that actually
+//     converges is worth being precise about, because the wrong-looking
+//     version of it shipped in this plugin's own first example and was
+//     caught in review, not by a test that ran until then: an
+//     `INSERT ... ON CONFLICT (idempotency_key) DO NOTHING` alone suppresses
+//     only the ledger insert on a replay - every *other* statement in the
+//     same call still runs unconditionally, so a two-statement transfer
+//     "guarded" only by that insert moves the money again on retry. The
+//     insert has to be a claim, and every write that follows has to be
+//     guarded by checking whether *this* call was the one that won the
+//     claim (`WHERE ... AND EXISTS (SELECT 1 FROM ledger WHERE
+//     idempotency_key = ? AND applied = 0)`, with a final statement marking
+//     the claim applied) - see examples/plugins/sql/transfer.yaml's own doc
+//     comment, "Why an ON CONFLICT DO NOTHING insert is not enough on its
+//     own," and exec_test.go's TestSQLTransferPatternMovesMoneyExactlyOnceAcrossARetry,
+//     which runs the corrected pattern twice with the same key and asserts
+//     the balances moved exactly once.
 //   - [sdk.OutcomeUnknown] for the case a retry cannot safely resolve on its
 //     own at all: a commit acknowledgement lost to a network failure right
 //     as this call asked the backend to make a write durable. See errors.go's

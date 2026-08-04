@@ -179,3 +179,109 @@ func TestSQLExecReportsLastInsertID(t *testing.T) {
 		t.Errorf("last_insert_id = %d, want 1", id)
 	}
 }
+
+// TestSQLTransferPatternMovesMoneyExactlyOnceAcrossARetry is the P1-1
+// regression test: examples/plugins/sql/transfer.yaml's own four-statement
+// pattern (an idempotency-key claim, two guarded balance updates, and a
+// flag flip - see that file's own doc comment for "why an ON CONFLICT DO
+// NOTHING insert is not enough on its own"), run twice with the identical
+// idempotency_key through the real sql.exec task function against sqlite,
+// the hermetic engine this module's tests can actually stand up (see
+// doc.go, "Why sqlite is enumerated first" - transfer.yaml itself targets
+// ENGINE_POSTGRES and uses $1-style placeholders, which this test cannot
+// run without a live server; it proves the identical *pattern* instead,
+// translated to sqlite's `?` placeholders, which is what an idempotency
+// claim actually rests on - the guard logic, not the engine).
+//
+// An earlier version of transfer.yaml suppressed only the ledger INSERT on
+// conflict and left both balance UPDATEs unconditional - this test is what
+// that version would have failed: the second call's balances would have
+// moved a second time. See doc.go's own "Transactions end where the
+// activity ends" for why sql.exec's retry story depends on this working,
+// not merely reading as though it should.
+func TestSQLTransferPatternMovesMoneyExactlyOnceAcrossARetry(t *testing.T) {
+	dsn := testDSN(t)
+	mustExecDirect(t, dsn,
+		`CREATE TABLE accounts (id INTEGER PRIMARY KEY, balance_cents INTEGER)`,
+		`CREATE TABLE accounts_ledger (idempotency_key TEXT PRIMARY KEY, applied INTEGER NOT NULL DEFAULT 0)`,
+		`INSERT INTO accounts (id, balance_cents) VALUES (1, 1000), (2, 2000)`,
+	)
+
+	const idempotencyKey = "transfer-42"
+	const amountCents = 250
+
+	transfer := func() *flowstatev1.Node_Outputs {
+		outputs, err := sqlExec(context.Background(), inputsFor(map[string]any{
+			"engine": "ENGINE_SQLITE",
+			"dsn":    dsn,
+			"statements": []any{
+				map[string]any{
+					"sql":    "INSERT INTO accounts_ledger (idempotency_key) VALUES (?) ON CONFLICT (idempotency_key) DO NOTHING",
+					"params": []any{idempotencyKey},
+				},
+				map[string]any{
+					"sql":    "UPDATE accounts SET balance_cents = balance_cents - ? WHERE id = ? AND EXISTS (SELECT 1 FROM accounts_ledger WHERE idempotency_key = ? AND applied = 0)",
+					"params": []any{amountCents, 1, idempotencyKey},
+				},
+				map[string]any{
+					"sql":    "UPDATE accounts SET balance_cents = balance_cents + ? WHERE id = ? AND EXISTS (SELECT 1 FROM accounts_ledger WHERE idempotency_key = ? AND applied = 0)",
+					"params": []any{amountCents, 2, idempotencyKey},
+				},
+				map[string]any{
+					"sql":    "UPDATE accounts_ledger SET applied = 1 WHERE idempotency_key = ?",
+					"params": []any{idempotencyKey},
+				},
+			},
+		}), nil)
+		if err != nil {
+			t.Fatalf("sqlExec (transfer pattern): unexpected error: %v", err)
+		}
+		return outputs
+	}
+
+	balances := func() (from, to int) {
+		db, err := sql.Open("sqlite", dsn)
+		if err != nil {
+			t.Fatalf("opening db to verify: %v", err)
+		}
+		defer db.Close()
+		if err := db.QueryRowContext(context.Background(), "SELECT balance_cents FROM accounts WHERE id = 1").Scan(&from); err != nil {
+			t.Fatalf("reading account 1 balance: %v", err)
+		}
+		if err := db.QueryRowContext(context.Background(), "SELECT balance_cents FROM accounts WHERE id = 2").Scan(&to); err != nil {
+			t.Fatalf("reading account 2 balance: %v", err)
+		}
+		return from, to
+	}
+
+	first := transfer()
+	if n := first.GetNamedValues()["total_rows_affected"].GetLiteral().GetInt64Value(); n != 4 {
+		t.Errorf("first call total_rows_affected = %d, want 4 (insert, debit, credit, flag)", n)
+	}
+	fromAfterFirst, toAfterFirst := balances()
+	if fromAfterFirst != 1000-amountCents {
+		t.Fatalf("account 1 balance after first transfer = %d, want %d", fromAfterFirst, 1000-amountCents)
+	}
+	if toAfterFirst != 2000+amountCents {
+		t.Fatalf("account 2 balance after first transfer = %d, want %d", toAfterFirst, 2000+amountCents)
+	}
+
+	// The retry: same idempotency_key, simulating a replay after this
+	// call's own commit acknowledgement was lost (sdk.OutcomeUnknown,
+	// exec.go).
+	second := transfer()
+	if n := second.GetNamedValues()["total_rows_affected"].GetLiteral().GetInt64Value(); n != 1 {
+		t.Errorf("retried call total_rows_affected = %d, want 1 (only the harmless flag-set touches a "+
+			"row; the insert conflicts and both balance guards evaluate false)", n)
+	}
+
+	fromAfterRetry, toAfterRetry := balances()
+	if fromAfterRetry != fromAfterFirst {
+		t.Errorf("account 1 balance changed on retry: %d -> %d; a replayed idempotency_key must not "+
+			"move money a second time", fromAfterFirst, fromAfterRetry)
+	}
+	if toAfterRetry != toAfterFirst {
+		t.Errorf("account 2 balance changed on retry: %d -> %d; a replayed idempotency_key must not "+
+			"move money a second time", toAfterFirst, toAfterRetry)
+	}
+}

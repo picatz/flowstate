@@ -201,7 +201,7 @@ commit-acknowledgement-lost case - the INSERT that may have committed.
 ```yaml
 edition: v2026.2
 name: sql-transfer
-description: Moves money between two accounts using the "sql" plugin's sql.exec task - two statements, one transaction, committed or rolled back together inside this single step.
+description: Moves money between two accounts using the "sql" plugin's sql.exec task - four statements, one transaction, committed or rolled back together inside this single step, provably idempotent on retry.
 
 # sql.exec is the write half of the "sql" plugin: every statement in
 # `statements:` runs inside one transaction that begins and ends inside this
@@ -214,14 +214,50 @@ description: Moves money between two accounts using the "sql" plugin's sql.exec 
 # idempotency_key is bound as an ordinary parameter, not a special field -
 # see plugins/sql/doc.go, "Idempotency keys as ordinary params." A retried
 # call (the engine retries a step whose attempt failed for a reason that
-# looks transient) sends the same key, and the accounts_ledger table's own
-# unique constraint on it is what makes a retry converge to a no-op instead
-# of moving the money twice - the INSERT here is deliberately
-# "ON CONFLICT (idempotency_key) DO NOTHING" shaped for exactly that reason.
+# looks transient, or after a commit acknowledgement was lost - see
+# sdk.OutcomeUnknown) sends the same key, and this file has to make that
+# retry a genuine no-op, not merely insert a ledger row nobody reads.
+#
+# # Why an ON CONFLICT DO NOTHING insert is not enough on its own
+#
+# An earlier version of this file inserted a ledger row keyed on
+# idempotency_key with ON CONFLICT (idempotency_key) DO NOTHING and left
+# the two balance UPDATEs unconditional, reasoning that a duplicate insert
+# would be silently absorbed. That reasoning was wrong, and worth stating
+# plainly rather than quietly fixing: ON CONFLICT DO NOTHING suppresses
+# only the INSERT itself. Both UPDATE statements below it still ran
+# unconditionally on a retry, moving the money a second time - the exact
+# bug idempotency keys exist to prevent, taught by the example meant to
+# demonstrate preventing it.
+#
+# The fix every statement below implements: accounts_ledger carries an
+# `applied` flag (0 by default), and both balance UPDATEs are guarded by
+# `WHERE ... AND EXISTS (SELECT 1 FROM accounts_ledger WHERE
+# idempotency_key = ? AND applied = 0)`, with the ledger flipped to
+# `applied = 1` as this transaction's last statement. A fresh key: the
+# insert claims the row (applied stays 0), both guards pass, both balances
+# move, and the flag flips true before commit. A replayed key after a
+# lost acknowledgement: the insert hits its conflict and changes nothing,
+# the ledger row already has applied = 1, so both guards evaluate false and
+# neither UPDATE's WHERE clause matches a row - the balances are untouched,
+# and only the harmless "set applied = 1" statement (already true) runs
+# again. See plugins/sql/exec_test.go's
+# TestSQLTransferPatternMovesMoneyExactlyOnceAcrossARetry, which runs this
+# exact four-statement pattern against sqlite twice with the same key and
+# asserts both balances moved on the first call and stayed put on the
+# second - the point of an idempotency claim is a test proving it, not a
+# comment asserting it.
 #
 # Requires configuration - a real database with accounts and
-# accounts_ledger tables, and a resolvable dsn secret - so it never runs by
+# accounts_ledger(idempotency_key TEXT PRIMARY KEY, applied INTEGER NOT
+# NULL DEFAULT 0) tables, and a resolvable dsn secret - so it never runs by
 # accident. See plugins/sql/README.md, "Trying this example."
+#
+# Written for ENGINE_POSTGRES, with $1, $2, ... placeholders - pgx does not
+# rewrite `?` the way this file's own sqlite-flavored sibling
+# (workflow.yaml) uses, so a query written for one engine's placeholder
+# syntax is not portable to the other unchanged (see plugins/sql/README.md,
+# "Drivers," for the placeholder note this file's own review corrected).
 
 inputs:
   from_account_id:
@@ -247,12 +283,14 @@ steps:
       engine: ENGINE_POSTGRES
       dsn: ${secret('env:SQL_DSN')}
       statements:
-        - sql: "INSERT INTO accounts_ledger (idempotency_key) VALUES (?) ON CONFLICT (idempotency_key) DO NOTHING"
+        - sql: "INSERT INTO accounts_ledger (idempotency_key) VALUES ($1) ON CONFLICT (idempotency_key) DO NOTHING"
           params: ${[inputs.idempotency_key]}
-        - sql: "UPDATE accounts SET balance_cents = balance_cents - ? WHERE id = ?"
-          params: ${[inputs.amount_cents, inputs.from_account_id]}
-        - sql: "UPDATE accounts SET balance_cents = balance_cents + ? WHERE id = ?"
-          params: ${[inputs.amount_cents, inputs.to_account_id]}
+        - sql: "UPDATE accounts SET balance_cents = balance_cents - $1 WHERE id = $2 AND EXISTS (SELECT 1 FROM accounts_ledger WHERE idempotency_key = $3 AND applied = 0)"
+          params: ${[inputs.amount_cents, inputs.from_account_id, inputs.idempotency_key]}
+        - sql: "UPDATE accounts SET balance_cents = balance_cents + $1 WHERE id = $2 AND EXISTS (SELECT 1 FROM accounts_ledger WHERE idempotency_key = $3 AND applied = 0)"
+          params: ${[inputs.amount_cents, inputs.to_account_id, inputs.idempotency_key]}
+        - sql: "UPDATE accounts_ledger SET applied = 1 WHERE idempotency_key = $1"
+          params: ${[inputs.idempotency_key]}
 
   - id: announce
     log:
@@ -261,18 +299,16 @@ steps:
 outputs:
   rows_affected:
     value: ${steps.transfer.total_rows_affected}
-    description: the sum of every statement's own reported row count - 3 on a fresh transfer, fewer on a converged retry whose ledger insert did nothing
+    description: 4 on a fresh transfer (insert, debit, credit, flag), 1 on a converged retry (only the harmless flag-set touches a row)
 ```
 
-Note `transfer.yaml` writes each statement's `sql:` using `?` placeholders,
-because it targets `ENGINE_POSTGRES` in the schema but the statement text
-itself is whatever the target actually speaks - pgx's stdlib driver rewrites
-`?` to `$1`, `$2`, ... automatically when a query has no `$`-numbered
-placeholders of its own (`database/sql`'s own convention for a driver that
-supports both), so the same `?` spelling this README's other example uses
-for sqlite works unchanged here too. A query written with explicit `$1`,
-`$2`, ... placeholders works equally well against postgres if a workflow
-author prefers to be explicit about the target dialect.
+Note `transfer.yaml` writes `$1`, `$2`, ... placeholders, not the `?` this
+README's sqlite example uses - pgx does **not** rewrite `?` into postgres's
+own numbered placeholder syntax (an earlier version of this file claimed it
+did; that claim was wrong, caught in review, and corrected here rather than
+left standing). Each engine's own native placeholder syntax is what the SQL
+text has to use; nothing in this plugin translates between them, and a
+query written for one engine is not portable to the other unchanged.
 
 ## Drivers
 
