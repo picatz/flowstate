@@ -72,15 +72,25 @@ const ExampleInputsFile = "inputs.json"
 // two would drift the first time an example's declarations changed: the file is what
 // a reader runs, so a harness disagreeing with it tests something nobody can
 // reproduce.
-func ExampleInputs(tb testing.TB, workflowPath string) map[string]*v1.Value {
-	tb.Helper()
-
+//
+// The error is returned rather than fatal — this used to be tb.Fatalf in three
+// places, on an unreadable file, a document that is not a JSON object, and a
+// number with a fractional part — for the identical reason [BindExampleInputs]
+// returns rather than requires its own: a caller in a per-example loop (#183's
+// [TestEveryExampleRunsDurably]) means to report one bad fixture and move on to
+// the next example, and Fatalf is FailNow, which a fatal call three frames below
+// a checked `if err != nil; continue` still is. A malformed inputs.json used to
+// take every alphabetically later example down with it exactly the way an
+// unregistered wait_for_signal example did — the same defect, one layer deeper,
+// because the guard at the call site cannot fire for an error that never reaches
+// it.
+func ExampleInputs(workflowPath string) (map[string]*v1.Value, error) {
 	data, err := os.ReadFile(filepath.Join(filepath.Dir(workflowPath), ExampleInputsFile))
 	if os.IsNotExist(err) {
-		return nil
+		return nil, nil
 	}
 	if err != nil {
-		tb.Fatalf("reading %s beside %s: %v", ExampleInputsFile, workflowPath, err)
+		return nil, fmt.Errorf("reading %s beside %s: %w", ExampleInputsFile, workflowPath, err)
 	}
 
 	decoder := json.NewDecoder(bytes.NewReader(data))
@@ -88,7 +98,7 @@ func ExampleInputs(tb testing.TB, workflowPath string) map[string]*v1.Value {
 
 	var fields map[string]any
 	if err := decoder.Decode(&fields); err != nil {
-		tb.Fatalf("%s has an %s that is not a JSON object: %v",
+		return nil, fmt.Errorf("%s has an %s that is not a JSON object: %w",
 			filepath.Dir(workflowPath), ExampleInputsFile, err)
 	}
 
@@ -97,7 +107,7 @@ func ExampleInputs(tb testing.TB, workflowPath string) map[string]*v1.Value {
 		if number, ok := value.(json.Number); ok {
 			whole, err := number.Int64()
 			if err != nil {
-				tb.Fatalf("input %q is not a whole number: %v", name, err)
+				return nil, fmt.Errorf("input %q is not a whole number: %w", name, err)
 			}
 			inputs[name] = v1.NewLiteral(whole)
 
@@ -106,7 +116,7 @@ func ExampleInputs(tb testing.TB, workflowPath string) map[string]*v1.Value {
 		inputs[name] = v1.NewValue(value)
 	}
 
-	return inputs
+	return inputs, nil
 }
 
 // BindExampleInputs answers an example's declared `inputs:` from its inputs.json and
@@ -124,7 +134,10 @@ func ExampleInputs(tb testing.TB, workflowPath string) map[string]*v1.Value {
 func BindExampleInputs(tb testing.TB, wf *v1.Workflow, workflowPath string) (map[string]*v1.Value, error) {
 	tb.Helper()
 
-	supplied := ExampleInputs(tb, workflowPath)
+	supplied, err := ExampleInputs(workflowPath)
+	if err != nil {
+		return nil, err
+	}
 
 	bound, err := v1.BindRunInputs(wf, supplied)
 	if err == nil {
@@ -419,7 +432,11 @@ func AnyStep(nodes []*v1.Node, pred func(*v1.Node) bool) bool {
 //     entry and every one of those requests has to be pointed, not just the first.
 //   - A step's own var, read bare — `${target_url}`, never `${vars.target_url}`,
 //     per the `vars:` field's own doc comment — traces back to that var's own
-//     literal, in scope only for the step that bound it.
+//     literal. In scope for the step that bound it and, when that step is a
+//     for_each or a parallel, for the body nested inside it too: both executors
+//     evaluate a block's own vars into the same scope its nested steps run in, so
+//     a for_each whose own `vars:` holds a literal url a nested task reads bare
+//     is exactly as traceable as the loop's iterator is.
 //
 // Anything else — items computed at run time, a var holding something other than
 // a literal string, a select chain more than one field deep, an expression this
@@ -452,8 +469,10 @@ type binding struct {
 	items *celpb.Value
 
 	// value is a step's own var, set when the binding came from that step's
-	// `vars:`. In scope only for the step that bound it: unlike a loop iterator
-	// it does not carry into pointAtStandIn's recursion at all.
+	// `vars:`. In scope for the step that bound it, and for whatever that step
+	// recurses into below — a for_each's or a parallel's own vars reach their
+	// body the same way a loop iterator does, per pointAtStandIn's comment on
+	// `bindings` — but not for a sibling later in the same node list.
 	value *v1.Value
 }
 
@@ -465,10 +484,13 @@ func pointAtStandIn(nodes []*v1.Node, standIn *url.URL, loops []binding) []strin
 
 	for _, node := range nodes {
 		// A step's own vars are bound bare — `${name}`, never `${vars.name}` — and
-		// in scope only for this step's own task and undo: not for anything nested
-		// inside it, and not for anything after it. So they are added to the
-		// bindings this one node's own lookups see and never threaded into a
-		// recursive call.
+		// both executors evaluate a for_each's or a parallel's own body inside that
+		// same node's scope, so a var the node declares for itself is in scope for
+		// what is nested inside it too — not only for its own task and undo. It
+		// still does not outlive the node: a sibling step later in the same list
+		// never sees it, which is why this is added to bindings rather than to
+		// loops itself, and why bindings — not loops — is threaded into whatever
+		// this node recurses into below.
 		bindings := loops
 		if len(node.GetVars()) > 0 {
 			bindings = make([]binding, 0, len(loops)+len(node.GetVars()))
@@ -504,14 +526,14 @@ func pointAtStandIn(nodes []*v1.Node, standIn *url.URL, loops []binding) []strin
 				iterator = "item"
 			}
 
-			child := make([]binding, 0, len(loops)+1)
-			child = append(child, loops...)
+			child := make([]binding, 0, len(bindings)+1)
+			child = append(child, bindings...)
 			child = append(child, binding{name: iterator, items: fe.GetItems().GetLiteral()})
 
 			unpointable = append(unpointable, pointAtStandIn(fe.GetBody(), standIn, child)...)
 		case *v1.Node_Parallel:
 			for _, branch := range kind.Parallel.GetBranches() {
-				unpointable = append(unpointable, pointAtStandIn(branch.GetSteps(), standIn, loops)...)
+				unpointable = append(unpointable, pointAtStandIn(branch.GetSteps(), standIn, bindings)...)
 			}
 		}
 	}
@@ -591,10 +613,18 @@ func pointTaskURL(task *v1.Task, standIn *url.URL, bindings []binding) (string, 
 			if literal := b.value.GetLiteral(); literal != nil && rewriteURLLiteral(literal, standIn) {
 				return "", true
 			}
+			// Naming the var's own expression, not only its name, when it has one —
+			// `base: ${steps.discover.json.primary_url}` is what actually made this
+			// var untraceable, and a diagnosis that stops at "base is not a literal"
+			// makes an author go find that binding themselves.
+			varText := "not a literal url string"
+			if varExpr := b.value.GetExpr(); varExpr != nil {
+				varText = "`" + describeExpr(varExpr) + "`, not a literal"
+			}
 			return fmt.Sprintf(
-				" has `url: %s`, which traces to the step's own var %q — but that var is not a "+
-					"literal url string, so this walk cannot rewrite it; give it a literal, or teach "+
-					"PointAtStandIn the shape it uses", text, ident.GetName()), false
+				" has `url: %s`, which traces to the step's own var %q — but that var is %s, so "+
+					"this walk cannot rewrite it; give it a literal, or teach PointAtStandIn the "+
+					"shape it uses", text, ident.GetName(), varText), false
 		}
 	}
 

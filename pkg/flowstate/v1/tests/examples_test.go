@@ -229,3 +229,109 @@ func TestPointAtStandInStillHandlesLiterals(t *testing.T) {
 		t.Fatalf("literal urls, including an undo's, should still be pointable, got: %v", got)
 	}
 }
+
+// TestPointAtStandInForEachOwnVarsReachTheBody is PR #196's P2-1: a for_each
+// whose own `vars:` holds a literal url, read bare by a nested task, the way
+// both executors evaluate it — the block's own vars are in scope for its body,
+// not only for the block's own task and undo. Before the fix, the recursive
+// call rebuilt the child binding set from `loops` rather than `bindings`, so a
+// for_each's own vars never survived the step into its body and a genuinely
+// rewritable example reported unpointable.
+func TestPointAtStandInForEachOwnVarsReachTheBody(t *testing.T) {
+	t.Parallel()
+
+	nodes := []*v1.Node{
+		{
+			Id:   "check-each-service",
+			Vars: map[string]*v1.Value{"base": v1.NewLiteral("https://svc.example/health")},
+			Kind: &v1.Node_ForEach{
+				ForEach: &v1.ForEach{
+					Items:    v1.NewLiteralList("checkout", "billing"),
+					Iterator: "service",
+					Body: []*v1.Node{
+						// Bare "base", not "vars.base" — the for_each's own var, read the
+						// way Node.vars's doc comment says every step var is read.
+						{Id: "check", Kind: httpTaskExpr("base")},
+					},
+				},
+			},
+		},
+	}
+
+	got := tests.PointAtStandIn(nodes, "http://127.0.0.1:9999")
+	if len(got) != 0 {
+		t.Fatalf("a for_each's own var should reach its body, got unpointable: %v", got)
+	}
+
+	if v := nodes[0].GetVars()["base"].GetLiteral().GetStringValue(); v != "http://127.0.0.1:9999/health" {
+		t.Errorf("the for_each's own var was not rewritten onto the stand-in: %q", v)
+	}
+}
+
+// TestPointAtStandInParallelOwnVarsReachTheBranches is the parallel half of
+// the same defect: a parallel node's own `vars:` has to reach every branch's
+// steps, not just the parallel node's own (nonexistent) task.
+func TestPointAtStandInParallelOwnVarsReachTheBranches(t *testing.T) {
+	t.Parallel()
+
+	nodes := []*v1.Node{
+		{
+			Id:   "check-services",
+			Vars: map[string]*v1.Value{"base": v1.NewLiteral("https://svc.example/health")},
+			Kind: &v1.Node_Parallel{
+				Parallel: &v1.Parallel{
+					Branches: []*v1.Parallel_Branch{
+						{Steps: []*v1.Node{{Id: "check-checkout", Kind: httpTaskExpr("base")}}},
+						{Steps: []*v1.Node{{Id: "check-billing", Kind: httpTaskExpr("base")}}},
+					},
+				},
+			},
+		},
+	}
+
+	got := tests.PointAtStandIn(nodes, "http://127.0.0.1:9999")
+	if len(got) != 0 {
+		t.Fatalf("a parallel's own var should reach every branch, got unpointable: %v", got)
+	}
+
+	if v := nodes[0].GetVars()["base"].GetLiteral().GetStringValue(); v != "http://127.0.0.1:9999/health" {
+		t.Errorf("the parallel's own var was not rewritten onto the stand-in: %q", v)
+	}
+}
+
+// TestPointAtStandInForEachOwnVarsRefusedWhenNotLiteral is the negative half:
+// a for_each's own var reaching its body does not mean the walk invents a
+// rewrite where there is nothing literal to rewrite — the refusal still fires,
+// and still names the expression, when the var is itself computed.
+func TestPointAtStandInForEachOwnVarsRefusedWhenNotLiteral(t *testing.T) {
+	t.Parallel()
+
+	nodes := []*v1.Node{
+		{Id: "discover", Kind: httpTask("https://directory.example/services")},
+		{
+			Id:   "check-each-service",
+			Vars: map[string]*v1.Value{"base": v1.NewExpr("steps.discover.json.primary_url")},
+			Kind: &v1.Node_ForEach{
+				ForEach: &v1.ForEach{
+					Items:    v1.NewLiteralList("checkout", "billing"),
+					Iterator: "service",
+					Body: []*v1.Node{
+						{Id: "check", Kind: httpTaskExpr("base")},
+					},
+				},
+			},
+		},
+	}
+
+	got := tests.PointAtStandIn(nodes, "http://127.0.0.1:9999")
+	if len(got) != 1 {
+		t.Fatalf("expected exactly the computed var's step reported, got: %v", got)
+	}
+	if !strings.Contains(got[0], "base") {
+		t.Errorf("diagnosis does not name the var it traced to: %q", got[0])
+	}
+	if !strings.Contains(got[0], "steps.discover.json.primary_url") {
+		t.Errorf("the underlying var's own expression is not surfaced anywhere in the "+
+			"diagnosis, so an author cannot see why it is not a literal: %q", got[0])
+	}
+}
