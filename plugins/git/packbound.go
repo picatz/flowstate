@@ -11,6 +11,20 @@ import (
 // total over every object go-git's packfile parser materializes while
 // parsing one clone's pack stream, refusing once that total crosses max.
 //
+// This counts bytes decompressed FROM A REMOTE during that one clone call,
+// and nothing else. It is not a general-purpose "objects written to this
+// storage" meter: clone.go's cloneBoundedWithInflationCap installs a fresh
+// packBoundedStorer for the duration of git.CloneContext only, then
+// unwraps repo.Storer back to the plain *memory.Storage before handing the
+// repository back, specifically so that later local writes - this plugin's
+// own new tree and commit objects, in commit_push.go's rebuildTree and
+// writeCommit - are never counted against a budget that describes what a
+// remote sent. A wrapper left installed past the clone would make this
+// bound wrong in both directions: it could refuse a legitimate clone
+// followed by an ordinary commit, and the number would stop meaning what
+// its own name says. See TestDoCommitPushDoesNotCountItsOwnObjectsAgainstTheInflationBound
+// in commit_push_test.go for the regression this scoping exists to prevent.
+//
 // # The gap this closes, and the one it does not
 //
 // installEgressPolicy already bounds the *wire* bytes of a clone: every HTTP

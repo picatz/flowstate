@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/url"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -587,6 +588,63 @@ func TestCommitPushCleansUpOnFailure(t *testing.T) {
 	if len(after) > len(before) {
 		t.Fatalf("a failed doCommitPush left %d new entries in %s - this plugin is supposed to touch no filesystem path at all",
 			len(after)-len(before), os.TempDir())
+	}
+}
+
+// TestDoCommitPushDoesNotCountItsOwnObjectsAgainstTheInflationBound is the
+// regression Codex's review of PR #197 found real (plugins/git/packbound.go,
+// then): packBoundedStorer's running total is supposed to describe bytes
+// decompressed *from a remote* during one clone, not bytes this plugin
+// itself writes afterward. Before clone.go's cloneBoundedWithInflationCap
+// unwrapped repo.Storer once the clone finished, rebuildTree's and
+// writeCommit's own new tree/blob/commit objects (commit_push.go) kept
+// incrementing the same total a hostile remote's pack would have - so a
+// clone that landed comfortably under the cap, immediately followed by an
+// ordinary commit, could be refused as a "remote decompression bomb" that
+// never happened. Wrong in both directions: it rejects valid work, and the
+// number stops meaning what its own name says.
+//
+// The proof: a cap sized so the seed commit alone (a few bytes) clears it
+// with room to spare, but the seed commit *plus* this call's own new file
+// content would not - if that new content were still being counted, this
+// call would be refused. It must succeed instead. The new file content
+// (well over the cap, comfortably under this plugin's own
+// maxFiles/maxFileBytes/maxTotalFileBytes ceilings, which are the actual,
+// separate bound on what this task itself may write) is what makes the two
+// cases distinguishable: a bug that still counted local writes and a fix
+// that does not would disagree on this call's outcome, not just on some
+// internal counter neither production code nor this test can otherwise see.
+func TestDoCommitPushDoesNotCountItsOwnObjectsAgainstTheInflationBound(t *testing.T) {
+	remote := newBareRemote(t)
+	base := seedRemote(t, remote, "main")
+
+	const inflationCap = 4 << 10 // 4 KiB - well over the seed commit, well under seed+this call's own content
+
+	newContent := strings.Repeat("x", 64<<10) // 64 KiB - over inflationCap, under maxFileBytes/maxTotalFileBytes
+
+	out, err := doCommitPushWithInflationCap(context.Background(), commitPushParams{
+		url: fileURL(t, remote), branch: "main", baseRef: base.String(),
+		message:    "add a file larger than the clone's own inflation cap",
+		files:      map[string]string{"big.txt": newContent},
+		authorName: "Test", authorEmail: "test@example.com", when: time.Now().UTC(),
+		token: func() string { return "test-token" },
+	}, inflationCap)
+	if err != nil {
+		t.Fatalf("doCommitPushWithInflationCap: unexpected error: %v - a clone under the inflation cap "+
+			"followed by a commit of this plugin's own content must succeed regardless of how large that "+
+			"new content is (subject only to maxFiles/maxFileBytes/maxTotalFileBytes, which this content "+
+			"satisfies), because that content was never bytes a remote sent", err)
+	}
+	if out.Changed == false {
+		t.Fatal("Changed: got false, want true - this call added new content relative to base_ref")
+	}
+
+	gotHash, ok := remoteBranchHash(t, remote, "main")
+	if !ok {
+		t.Fatal("branch main does not exist on the remote after a successful push")
+	}
+	if gotHash.String() != out.Sha {
+		t.Fatalf("remote branch head = %s, want %s (the sha this call reported)", gotHash, out.Sha)
 	}
 }
 

@@ -120,10 +120,37 @@ func cloneBoundedWithInflationCap(ctx context.Context, opts cloneOptions, maxInf
 		}
 	}
 
-	repo, err := git.CloneContext(ctx, newPackBoundedStorer(maxInflated), nil, cloneOpts)
+	packStorer := newPackBoundedStorer(maxInflated)
+	repo, err := git.CloneContext(ctx, packStorer, nil, cloneOpts)
 	if err != nil {
 		return nil, classifyGitError(err)
 	}
+
+	// The accounting above exists only to bound bytes go-git's packfile
+	// parser decompresses from *this remote*, during *this* CloneContext
+	// call. That call is synchronous - every object it was ever going to
+	// write already has been by the time it returns - so there is nothing
+	// left for packBoundedStorer to usefully count from here on. What comes
+	// next in this plugin's only write path (doCommitPush's rebuildTree and
+	// writeCommit, commit_push.go) writes this task's own new tree and
+	// commit objects - built from files/patch content already bounded
+	// separately, by maxFiles/maxFileBytes/maxTotalFileBytes/maxPatchBytes -
+	// through this same repo.Storer. Left wrapped, those local writes would
+	// keep incrementing total against a budget that is supposed to describe
+	// what a remote sent, which is wrong in both directions: a clone that
+	// landed comfortably under the cap, followed by an ordinary commit,
+	// could be refused as a "remote decompression bomb" it never was, and
+	// the number would stop meaning what its own name says.
+	//
+	// Unwrapping the field here - back to the plain *memory.Storage
+	// packStorer was built around, never packStorer itself - is what keeps
+	// that true: every go-git operation this plugin runs against the
+	// returned *git.Repository after this line reads repo.Storer fresh
+	// (Repository.Remote, for instance, builds a new *Remote from the
+	// current field value on every call rather than caching one from clone
+	// time - checked in go-git's own source, not assumed), so nothing here
+	// depends on go-git holding a stale reference to the wrapped storer.
+	repo.Storer = packStorer.Storage
 
 	return repo, nil
 }

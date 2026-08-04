@@ -146,6 +146,23 @@ type commitPushParams struct {
 // commitPushParams's own doc comment) instead of needing a second,
 // parallel test path through gitCommitPush's https-only gate.
 func doCommitPush(ctx context.Context, p commitPushParams) (*gitv1.CommitPushOutputs, error) {
+	return doCommitPushWithInflationCap(ctx, p, maxInflatedBytes)
+}
+
+// doCommitPushWithInflationCap is doCommitPush with the clone's own
+// packfile-inflation bound taken as a parameter rather than the package's
+// maxInflatedBytes constant - the same seam clone.go's
+// cloneBoundedWithInflationCap exists for, threaded one level up so a test
+// can drive the full clone-then-write path (this function's actual
+// production shape) against a small, fast-to-exceed cap. doCommitPush is
+// the only production caller, always with the real constant.
+//
+// See TestDoCommitPushDoesNotCountItsOwnObjectsAgainstTheInflationBound in
+// commit_push_test.go: a small cap here proves rebuildTree's and
+// writeCommit's own writes, below, are never counted against it, because
+// cloneBoundedWithInflationCap already unwrapped repo.Storer before this
+// function ever touches it.
+func doCommitPushWithInflationCap(ctx context.Context, p commitPushParams, maxInflated int64) (*gitv1.CommitPushOutputs, error) {
 	if tokenValueOf(p.token) == "" {
 		// Unlike git.ls_remote, where an unset token means "this repository
 		// is public" (see refs.go), a write has no anonymous-capable
@@ -167,7 +184,7 @@ func doCommitPush(ctx context.Context, p commitPushParams) (*gitv1.CommitPushOut
 
 	flowstatev1.ReportProgress(ctx, flowstatev1.PhaseRequesting)
 
-	repo, err := cloneBounded(ctx, cloneOptions{url: p.url, depth: defaultCloneDepth, token: p.token, username: p.username})
+	repo, err := cloneBoundedWithInflationCap(ctx, cloneOptions{url: p.url, depth: defaultCloneDepth, token: p.token, username: p.username}, maxInflated)
 	if err != nil {
 		return nil, err
 	}
