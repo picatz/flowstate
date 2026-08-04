@@ -136,6 +136,127 @@ steps:
 	require.Contains(t, err.Error(), "climbs above the directory")
 }
 
+// TestCallArgumentTypeChecked pins the typed-function ergonomics standard: a
+// `with:` argument is checked against the callee's declared input type when
+// the file is compiled, not only at submit — a literal is checked exactly,
+// and an expression whose type the profile's own checker can pin down
+// without running it (a closed expression over literals) is checked the same
+// way; anything else stays a run-time question, exactly as it always was.
+func TestCallArgumentTypeChecked(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "callee.yaml", simpleCalleeSource)
+
+	tests := []struct {
+		name    string
+		with    string
+		wantErr string // empty means "accepted"
+	}{
+		{
+			// A literal of the wrong type: `tenant:` is declared string, and 42
+			// is an int. Refused at compile time, not only at submit.
+			name:    "mistyped literal",
+			with:    "tenant: 42",
+			wantErr: `input "tenant" is declared string but was given int`,
+		},
+		{
+			// An expression whose type is not knowable without a scope to
+			// evaluate it against — the ordinary case, and the one that must
+			// stay silent here so it can still be checked at run time.
+			name:    "well-typed expression, deferred to runtime",
+			with:    "tenant: ${'tenant-' + string(1)}",
+			wantErr: "",
+		},
+		{
+			// A *closed* expression — no name it needs a scope for — whose
+			// type the checker can pin down without running it: `1 + 2` is
+			// staticaly an int, bound to a string-declared input.
+			name:    "mistyped but statically typeable expression",
+			with:    "tenant: ${1 + 2}",
+			wantErr: `with.tenant is declared string by workflow "callee", but this expression always produces int`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			caller := writeFile(t, dir, "caller-"+tt.name+".yaml", `edition: v2026.2
+name: caller
+steps:
+  - id: provision
+    call: ./callee.yaml
+    with:
+      `+tt.with+`
+`)
+
+			ds := mustValidate(t, caller)
+			if tt.wantErr == "" {
+				require.Empty(t, ds, "an argument that should have been accepted was flagged: %v", ds)
+				return
+			}
+			require.NotEmpty(t, ds, "a mistyped argument was accepted")
+			require.Contains(t, ds.Error(), tt.wantErr)
+		})
+	}
+}
+
+// TestCallRefusesEscapingThroughASymlink is the real-path version of
+// TestCallRefusesEscapingUpward: a path that never writes `../` and stays
+// lexically inside the calling file's directory, but resolves outside it once
+// an in-directory symlink is followed — the same class of hole as the git
+// plugin's symlink-through-entry, and the lexical `..` check alone cannot see
+// it, because the path as *written* never leaves callerDir at all.
+func TestCallRefusesEscapingThroughASymlink(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	secretPath := writeFile(t, outside, "secret.yaml", simpleCalleeSource)
+
+	link := filepath.Join(dir, "callee.yaml")
+	if err := os.Symlink(secretPath, link); err != nil {
+		// Symlink creation can fail on a filesystem or platform that does not
+		// support it (notably some Windows configurations without elevated
+		// privileges) — skipped rather than failed, per stdlib practice for
+		// exactly this class of test.
+		t.Skipf("cannot create a symlink on this platform: %v", err)
+	}
+
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.2
+name: caller
+steps:
+  - id: provision
+    call: ./callee.yaml
+`)
+
+	_, _, err := flowfile.ParseFile(caller)
+	require.Error(t, err, "a call resolving outside its directory through a symlink was accepted")
+	require.Contains(t, err.Error(), "outside")
+	require.Contains(t, err.Error(), "symlink")
+}
+
+// TestCallAllowsASymlinkThatStaysWithinTheDirectory is the positive direction:
+// a symlink is not refused merely for being one, only for resolving outside
+// callerDir — an in-tree symlink (vendored or shared file layouts sometimes
+// use one) must keep working.
+func TestCallAllowsASymlinkThatStaysWithinTheDirectory(t *testing.T) {
+	dir := t.TempDir()
+	real := writeFile(t, dir, "real-callee.yaml", simpleCalleeSource)
+
+	link := filepath.Join(dir, "callee.yaml")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("cannot create a symlink on this platform: %v", err)
+	}
+
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.2
+name: caller
+steps:
+  - id: provision
+    call: ./callee.yaml
+    with:
+      tenant: acme
+`)
+
+	_, _, err := flowfile.ParseFile(caller)
+	require.NoError(t, err, "a symlink that stays within the calling file's directory was refused")
+}
+
 // TestCallRefusesWithNoPath checks that a `call:` compiled through [flowfile.Parse]
 // (bytes, no location) is refused rather than silently attempted against the
 // working directory.

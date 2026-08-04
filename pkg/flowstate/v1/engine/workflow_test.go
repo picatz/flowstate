@@ -199,6 +199,7 @@ func budgetEnv(t *testing.T) *testsuite.TestWorkflowEnvironment {
 	env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
 	env.OnActivity(engine.TaskWithPrev, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskWithPrev)
 	env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+	env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
 
 	return env
 }
@@ -383,6 +384,128 @@ func TestCallSuspendsMidCalleeAndCarriesItsOutputs(t *testing.T) {
 	// The two drivers must agree, which is invariant 3 stated once more: a run
 	// forced through several Continue-As-New segments is still the same
 	// workload `flow run local` would execute in one.
+	local, err := v1.Run(t.Context(), wf)
+	require.NoError(t, err)
+	require.Empty(t, cmp.Diff(local, &out, protocmp.Transform()))
+}
+
+// TestCallVarsSurviveMidCalleeSuspend is the suspend join for `Frame.call_vars`:
+// a callee whose own `vars:` are read *before* the loop iteration a budget of
+// one suspends inside, and again *after* it resumes — including in the
+// callee's own declared outputs, evaluated in the segment that finishes it.
+//
+// This is the shape that would show a driver re-evaluating the callee's vars
+// on resume instead of carrying the first segment's answer: the loop body
+// before the suspend and the step after it read the identical expression, so
+// if the two segments disagreed about what `vars.prefix` was — the failure
+// mode invariant 4 names for the top-level `vars:` this mirrors — the run's
+// own outputs would contradict themselves rather than merely being wrong.
+func TestCallVarsSurviveMidCalleeSuspend(t *testing.T) {
+	callee := &v1.Workflow{
+		Name:    "callee-vars-can",
+		Profile: v1.CurrentProfile,
+		Vars:    map[string]*v1.Value{"prefix": v1.NewLiteral("eu-")},
+		Steps: []*v1.Node{
+			{
+				Id: "batches",
+				Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+					Items:    v1.NewLiteralList("a", "b"),
+					Iterator: "item",
+					// Read before the budget's suspend point: the first iteration
+					// runs, consumes the budget, and the second resumes in a later
+					// segment — so this is the read a re-evaluation could disagree
+					// with itself about.
+					Body: []*v1.Node{gatedOn(logStep("checked", "ok"), `(vars.prefix + item) in ["eu-a", "eu-b"]`)},
+				}},
+			},
+			// Read again, after the loop has resumed and finished — the second of
+			// the pair that has to agree.
+			gatedOn(logStep("summary", "done"), `vars.prefix == "eu-"`),
+		},
+		DeclaredOutputs: []*v1.OutputDeclaration{
+			{Name: "region", Value: v1.NewExpr(`vars.prefix + "west"`)},
+		},
+	}
+	wf := &v1.Workflow{
+		Name:    "call-vars-can",
+		Profile: v1.CurrentProfile,
+		Steps: []*v1.Node{
+			{
+				Id:   "provision",
+				Kind: &v1.Node_Call{Call: &v1.Call{Workflow: callee}},
+			},
+			gatedOn(logStep("after", "caller resumed"), "has(steps.provision)"),
+		},
+	}
+
+	// A count of how many times the callee's vars were actually evaluated,
+	// across every segment — the sharpest version of this test, because it is
+	// the one assertion a driver that recomputed on every resume instead of
+	// carrying the first segment's answer could not pass by accident. A run
+	// spanning several segments must still evaluate the callee's `vars:`
+	// exactly once, the same guarantee `RunState.Vars` gives the top level's.
+	var evaluations int
+
+	state := &v1.RunState{Workflow: wf, StepsBudget: 1}
+	var out v1.Workflow_StepOutputs
+	for segment := 0; ; segment++ {
+		require.Less(t, segment, 10, "did not converge in a reasonable number of segments")
+
+		testSuite := &testsuite.WorkflowTestSuite{}
+		seg := testSuite.NewTestWorkflowEnvironment()
+		seg.RegisterWorkflow(engine.Run)
+		seg.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
+		seg.OnActivity(engine.TaskWithPrev, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskWithPrev)
+		seg.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+		seg.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).
+			Run(func(mock.Arguments) { evaluations++ }).
+			Return(engine.WorkflowVars)
+		seg.ExecuteWorkflow(engine.Run, state)
+		require.True(t, seg.IsWorkflowCompleted())
+
+		err := seg.GetWorkflowError()
+		if err == nil {
+			require.NoError(t, seg.GetWorkflowResult(&out))
+			break
+		}
+
+		var again *workflow.ContinueAsNewError
+		require.ErrorAs(t, err, &again, "segment %d failed rather than continuing: %v", segment, err)
+
+		state = &v1.RunState{}
+		require.NoError(t, converter.GetDefaultDataConverter().FromPayload(again.Input.GetPayloads()[0], state))
+
+		// Direct inspection of the mechanism, not just the eventual answer: the
+		// carried state itself has to hold the callee's evaluated vars at
+		// whichever frame stands inside the call, so a later segment has
+		// something to restore rather than a reason to recompute. Checked at
+		// least once, on the first handover, where the call is freshest.
+		if segment == 0 {
+			var found bool
+			for _, frame := range state.GetFrames() {
+				if prefix, ok := frame.GetCallVars()["prefix"]; ok {
+					found = true
+					require.Equal(t, "eu-", prefix.GetLiteral().GetStringValue(),
+						"the carried call_vars holds the wrong value for the callee's own var")
+				}
+			}
+			require.True(t, found, "no frame carried the callee's evaluated vars across the handover")
+		}
+	}
+
+	require.Contains(t, out.GetStepValues(), "after", "the caller did not resume past the call")
+	require.Equal(t, "eu-west",
+		out.GetStepValues()["provision"].GetNamedValues()["region"].GetLiteral().GetStringValue(),
+		"the callee's declared output did not see the vars its own steps saw")
+
+	// The decision itself: evaluated once for the whole call, carried across
+	// every segment after — never once per segment, which is what a driver
+	// that trusted re-evaluation instead of `Frame.call_vars` would do.
+	require.Equal(t, 1, evaluations,
+		"the callee's vars were evaluated more than once across the call's segments; "+
+			"they should be evaluated once and carried, exactly like the top level's")
+
+	// Both drivers must agree — the same run in one segment locally.
 	local, err := v1.Run(t.Context(), wf)
 	require.NoError(t, err)
 	require.Empty(t, cmp.Diff(local, &out, protocmp.Transform()))

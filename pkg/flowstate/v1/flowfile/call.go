@@ -80,13 +80,56 @@ func (c *compiler) call(pathNode ast.Node, stepPath, kindPath string, r ref, wit
 	callerDir := filepath.Dir(c.filePath)
 	resolved := filepath.Clean(filepath.Join(callerDir, target))
 
+	// The lexical check above refuses `../` climbing out of callerDir in the
+	// path as *written*, but a path that stays lexically inside it can still
+	// land outside on disk: an in-directory symlink pointing elsewhere follows
+	// right through that check, the same class of hole as the git plugin's
+	// symlink-through-entry. So containment is checked again here, against
+	// where the path actually resolves to once every symlink in it — in
+	// callerDir and in the target — is followed, and refused on the real
+	// location rather than the written one.
+	//
+	// EvalSymlinks requires the path to exist, so a target that is merely
+	// missing (no symlink involved at all) falls through to the read below,
+	// which reports that in the ordinary way; what is refused here is
+	// specifically a real path outside callerDir, not a path that cannot be
+	// resolved at all.
+	if realCallerDir, err := filepath.EvalSymlinks(callerDir); err == nil {
+		if realResolved, err := filepath.EvalSymlinks(resolved); err == nil {
+			rel, relErr := filepath.Rel(realCallerDir, realResolved)
+			escapes := relErr != nil || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(filepath.ToSlash(rel), "../")
+			if escapes {
+				c.report(spanOfNode(pathNode), callRef,
+					"calls %q, which resolves — through a symlink — to %q, outside %q; a call may "+
+						"reach anything at or below its own file's directory and nothing above it, "+
+						"and a symlink does not change what \"at or below\" means", target, realResolved, realCallerDir)
+				return nil
+			}
+
+			// Read via the fully-resolved real path from here on, not the
+			// symlink path just verified: re-deriving it from `resolved` after
+			// the check above would leave a window between the check and the
+			// read for the symlink to be repointed in.
+			resolved = realResolved
+		}
+	}
+
 	// The chain of files compiling this one, including this file itself — so
 	// that a direct self-call (A calls A) is caught by the same walk as a
 	// longer cycle (A calls B calls A), and so the callee inherits the whole
 	// chain rather than starting a new one.
+	//
+	// Canonicalized the same way `resolved` is, best-effort: two different
+	// symlinks aliasing the same real file must compare equal here, or a cycle
+	// walked through one alias and back through another would read as two
+	// distinct files rather than the self-reference it is.
+	self := c.filePath
+	if real, err := filepath.EvalSymlinks(c.filePath); err == nil {
+		self = real
+	}
 	ancestors := make([]string, 0, len(c.callStack)+1)
 	ancestors = append(ancestors, c.callStack...)
-	ancestors = append(ancestors, c.filePath)
+	ancestors = append(ancestors, self)
 
 	if err := v1.CheckCallDepth(len(ancestors)); err != nil {
 		c.report(spanOfNode(pathNode), callRef, "%s", err.Error())

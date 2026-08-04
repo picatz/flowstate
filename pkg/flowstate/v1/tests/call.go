@@ -184,6 +184,54 @@ func CallCases() []Case {
 			},
 		},
 		{
+			// A callee's own `vars:` are evaluated for it — the same block a
+			// direct run of the same file would evaluate — and are visible both
+			// to its steps (bare, `${prefix}`) and to its own declared outputs.
+			// This is the case that would fail if a driver forgot to evaluate a
+			// callee's vars at all: CallScope hands the callee's steps an empty
+			// AmbientVars in that world, and `${prefix}` fails to resolve rather
+			// than merely reading something wrong.
+			Name: "a callee's own vars are usable in its steps and its declared outputs",
+			Workflow: &v1.Workflow{
+				Name:    "call-vars",
+				Profile: v1.CurrentProfile,
+				Steps: append(
+					[]*v1.Node{callNode("provision", varsCallee("callee-vars", "eu-"), nil)},
+					pins("check", `steps.provision.region == "eu-west"`)...,
+				),
+			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"provision": {NamedValues: map[string]*v1.Value{
+					"region": v1.NewLiteral("eu-west"),
+				}},
+				"check": {},
+			}},
+		},
+		{
+			// The collision case: caller and callee both declare a var of the
+			// same name, with different values. A callee reading its own
+			// `vars.prefix` must see *its* value, never the caller's — proving
+			// isolation holds even where a name match could let a leak hide
+			// behind a coincidence, rather than only where the names plainly
+			// differ (the case above).
+			Name: "a callee's own vars win a name collision with the caller's",
+			Workflow: &v1.Workflow{
+				Name:    "call-vars-collision",
+				Profile: v1.CurrentProfile,
+				Vars:    map[string]*v1.Value{"prefix": v1.NewLiteral("do-not-leak-")},
+				Steps: append(
+					[]*v1.Node{callNode("provision", varsCallee("callee-vars-collision", "eu-"), nil)},
+					pins("check", `steps.provision.region == "eu-west"`)...,
+				),
+			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"provision": {NamedValues: map[string]*v1.Value{
+					"region": v1.NewLiteral("eu-west"),
+				}},
+				"check": {},
+			}},
+		},
+		{
 			// Depth is bounded past what any real composition needs — see
 			// [v1.MaxCallDepth] — and refused rather than left to recurse until the
 			// stack ends the process, for a specification that never passed through
@@ -196,6 +244,22 @@ func CallCases() []Case {
 				Steps:   []*v1.Node{callNode("first", deepCallChain(v1.MaxCallDepth+1), nil)},
 			},
 			ExpectFailure: true,
+		},
+	}
+}
+
+// varsCallee returns a callee declaring one var (`prefix`, bound to prefix),
+// read bare by a step and again by a declared output — the shape that only
+// works if the driver evaluated the callee's *own* `vars:` block for it,
+// through the same mechanism a direct run of the file would.
+func varsCallee(name, prefix string) *v1.Workflow {
+	return &v1.Workflow{
+		Name:    name,
+		Profile: v1.CurrentProfile,
+		Vars:    map[string]*v1.Value{"prefix": v1.NewLiteral(prefix)},
+		Steps:   pins("labeled", `(vars.prefix + "west") == "eu-west"`),
+		DeclaredOutputs: []*v1.OutputDeclaration{
+			{Name: "region", Value: v1.NewExpr(`vars.prefix + "west"`)},
 		},
 	}
 }

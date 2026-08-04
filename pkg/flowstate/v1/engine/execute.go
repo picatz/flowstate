@@ -304,16 +304,46 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 		return nodeFailed(err)
 	}
 
-	inner, err := v1.CallScope(e.scope, callee, arguments)
+	calleeDepth := depth + 1
+
+	// Resume mid-call: whatever the callee's own vars evaluated to when the
+	// call began travels in the frame at this level, exactly as its step
+	// outputs do (below) — and for the identical reason the top level's own
+	// `vars:` are computed once through an activity and carried in
+	// `RunState.Vars` rather than re-evaluated inline: a Continue-As-New may
+	// hand a later segment to a different interpreter version under
+	// auto-upgrade, and re-evaluating would let the same expression answer
+	// differently across one call on a specification that never changed. See
+	// `Frame.call_vars`'s doc.
+	//
+	// Read here, ahead of CallScope, rather than folded into the "resuming
+	// mid-call" branch below: a callee reached fresh (not resuming into it at
+	// all) has to evaluate its vars once *before* CallScope builds a scope to
+	// bind them into, so the two paths — resumed and fresh — converge on one
+	// variable before the one CallScope call that follows.
+	var vars map[string]*v1.Value
+	resuming := descend && calleeDepth < len(e.resume)
+	if resuming {
+		vars = e.resume[calleeDepth].GetCallVars()
+	} else if len(callee.GetVars()) > 0 {
+		var evaluated v1.Scope
+		if err := workflow.ExecuteActivity(e.ctx, WorkflowVars, &v1.Scope{
+			AmbientVars: callee.GetVars(),
+			Profile:     v1.CalleeProfile(e.scope, callee),
+		}).Get(e.ctx, &evaluated); err != nil {
+			return nodeFailed(err)
+		}
+		vars = evaluated.GetAmbientVars()
+	}
+
+	inner, err := v1.CallScope(e.scope, callee, arguments, vars)
 	if err != nil {
 		return nodeFailed(err)
 	}
 
-	calleeDepth := depth + 1
-
-	// Resume mid-call: the callee's own step outputs accumulated before the run
-	// suspended travel in the frame at this level, since CallScope's isolation
-	// means they exist nowhere in RunState.outputs.
+	// The callee's own step outputs accumulated before the run suspended,
+	// carried the same way vars just were, since CallScope's isolation means
+	// they exist nowhere in RunState.outputs.
 	//
 	// StepValues is reset to an empty map rather than trusted as non-nil even
 	// when saved itself is non-nil: an empty map has no wire representation in
@@ -322,9 +352,9 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 	// other path to a fresh callee scope goes through [v1.CallScope], which
 	// always allocates one; skipping that here left the executor writing into
 	// a nil map the moment the callee's own first step tried to record its
-	// output — a panic Temporal's test environment retries into what looks
+	// output — a panic Temporal's test environment retried into what looks
 	// indistinguishable from a hang.
-	if descend && calleeDepth < len(e.resume) {
+	if resuming {
 		if saved := e.resume[calleeDepth].GetCallOutputs(); saved != nil {
 			inner.Outputs = saved
 		}
@@ -366,6 +396,7 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 		if errors.Is(err, errContinueAsNew) {
 			if calleeDepth < len(e.frames) {
 				e.frames[calleeDepth].CallOutputs = inner.GetOutputs()
+				e.frames[calleeDepth].CallVars = vars
 			}
 			return err
 		}

@@ -1025,6 +1025,14 @@ func runNode(ctx context.Context, node *Node, scope *Scope, depth int) (*Node_Ou
 // running the callee's steps is a function call, where durably it is the same
 // executor descending a level.
 //
+// The callee's own `vars:` are evaluated here, in process, exactly as the top
+// level's are in [eval] — [EvalWorkflowVars] needs nothing this driver cannot
+// give it inline, unlike the durable driver, which must reach it through an
+// activity and then carry the answer across any Continue-As-New the call
+// spans (see `Frame.call_vars`'s doc). A local run never continues as new, so
+// there is nothing to carry here and evaluating it fresh every time this call
+// is reached costs nothing durably meaningful.
+//
 // `nested` is true for the body, which is what stops a called workflow from
 // carrying an `undo:` on one of its steps — the same refusal a loop body and a
 // parallel branch get, for the same unresolved reason about ordering across a
@@ -1042,7 +1050,19 @@ func runCall(ctx context.Context, call *Call, scope *Scope, depth int) (*Node_Ou
 		return nil, err
 	}
 
-	inner, err := CallScope(scope, callee, arguments)
+	// The explicit-profile form ([EvalVars]) rather than [EvalWorkflowVars],
+	// which reads the profile off the workflow itself: a callee that names no
+	// profile of its own inherits the caller's, per [CalleeProfile], and using
+	// the workflow's bare (empty) field here would evaluate its vars against
+	// [OriginalProfile] instead — a different vocabulary from the one its
+	// steps, scoped moments later through the same [CalleeProfile] call
+	// inside [CallScope], actually run under.
+	vars, err := EvalVars(ctx, CalleeProfile(scope, callee), callee.GetVars())
+	if err != nil {
+		return nil, fmt.Errorf("calling %q: %w", callee.GetName(), err)
+	}
+
+	inner, err := CallScope(scope, callee, arguments, vars)
 	if err != nil {
 		return nil, err
 	}

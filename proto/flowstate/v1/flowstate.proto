@@ -2544,6 +2544,26 @@ message Frame {
   // callee scope — correct, because no run written before this field existed
   // could have been suspended inside a call; the capability did not exist yet.
   Workflow.StepOutputs call_outputs = 4;
+
+  // CallVars holds the callee's own `vars:` block, evaluated once when the
+  // call began, for a frame standing inside a call whose callee declares any.
+  //
+  // Computed once and carried rather than re-evaluated on each resumed
+  // segment, for the identical reason a top-level run's own vars are: a
+  // Continue-As-New may hand a later segment to a different interpreter
+  // version under auto-upgrade (see docs/ARCHITECTURE.md's versioning
+  // section), and a profile pins which functions exist rather than how
+  // cel-go implements them. Re-evaluating inline would let the *same*
+  // expression compute two different answers across one call, on a
+  // specification that never changed — precisely the hazard
+  // `engine.WorkflowVars` exists to remove at the top level. A callee's vars
+  // get no weaker a guarantee merely for being nested.
+  //
+  // Absent for every frame that predates this field, or whose callee
+  // declares no `vars:` at all — both read as "nothing bound", which is
+  // correct in the first case for the reason call_outputs's is, and correct
+  // in the second because there is nothing to evaluate.
+  map<string, Value> call_vars = 5;
 }
 
 message RunState {

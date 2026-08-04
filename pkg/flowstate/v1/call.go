@@ -75,11 +75,30 @@ func ResolveCallArguments(ctx context.Context, arguments map[string]*Value, scop
 	return resolved, nil
 }
 
+// CalleeProfile returns the profile a callee's own expressions are evaluated
+// under: the callee's, where it declares one, and the caller's otherwise.
+//
+// Exported and called from three places that all have to agree — [CallScope],
+// which stamps it on the callee's scope, and the vars evaluation each driver
+// does before that scope exists to evaluate the callee's own `vars:` against.
+// A callee's `vars:` and its steps are one file evaluated under one dialect;
+// computing the profile twice, by two routes, is exactly the shape CLAUDE.md's
+// retry-attempts lesson warns about — a value with one meaning, written down
+// twice, disagreeing with itself the moment a callee that names no profile of
+// its own is called by two callers compiled against different ones.
+func CalleeProfile(caller *Scope, callee *Workflow) string {
+	if profile := callee.GetProfile(); profile != "" {
+		return profile
+	}
+	return caller.GetProfile()
+}
+
 // CallScope returns the scope a called workflow's steps run in.
 //
-// A fresh one, holding the callee's bound arguments and the profile, and nothing
-// else: no caller outputs, no caller `vars:`, no loop binding from the block the
-// call sits in.
+// A fresh one, holding the callee's bound arguments, the callee's own `vars:`
+// (already evaluated — see below), and the profile, and nothing else: no
+// caller outputs, no caller `vars:`, no loop binding from the block the call
+// sits in.
 //
 // That isolation is the feature rather than a limitation of it. A workflow that
 // can read its caller's scope is not a unit — it cannot be read, tested or reused
@@ -91,7 +110,16 @@ func ResolveCallArguments(ctx context.Context, arguments map[string]*Value, scop
 // The profile crosses because it is not data. It names the dialect the expressions
 // are written in, and a callee compiled against one profile and evaluated under
 // another would be a different language with the same syntax.
-func CallScope(caller *Scope, callee *Workflow, arguments map[string]*Value) (*Scope, error) {
+//
+// vars is the callee's own `vars:` block, already evaluated — this function
+// never evaluates it, because *how* to evaluate it safely differs by driver: the
+// local driver may simply call [EvalWorkflowVars] in process, while the durable
+// driver must go through an activity and then carry the answer across any
+// Continue-As-New the call spans, for the same reason [EvalWorkflowVars] is an
+// activity at the top level at all — see the doc on `Frame.call_vars`. Passing
+// nil is correct for a callee that declares no `vars:`, and CallScope does not
+// tell the two cases apart because there is nothing to bind either way.
+func CallScope(caller *Scope, callee *Workflow, arguments, vars map[string]*Value) (*Scope, error) {
 	bound, err := BindRunInputs(callee, arguments)
 	if err != nil {
 		return nil, fmt.Errorf("calling %q: %w", callee.GetName(), err)
@@ -100,13 +128,11 @@ func CallScope(caller *Scope, callee *Workflow, arguments map[string]*Value) (*S
 	// Built from the callee's own profile where it declares one, and the caller's
 	// otherwise. A workflow that names its dialect means it, and a file that does
 	// not is being run as part of the file that called it.
-	profile := callee.GetProfile()
-	if profile == "" {
-		profile = caller.GetProfile()
-	}
+	profile := CalleeProfile(caller, callee)
 
 	scope := NewScope(profile, &Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}})
 	scope.Inputs = bound
+	scope.AmbientVars = vars
 
 	return scope, nil
 }
