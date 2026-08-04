@@ -95,8 +95,12 @@ func resolveOutputFormat(cmd *cobra.Command) (OutputFormat, error) {
 		names = append(names, string(accepted))
 	}
 
-	return "", fmt.Errorf("--output %q is not a format this understands; use one of %s",
-		requested, strings.Join(names, ", "))
+	// A flag that parsed but names something this command does not accept is an
+	// invocation mistake, not a finding about whatever the command was pointed
+	// at — nothing has run yet — so it is marked the same way a usage error
+	// cobra itself would refuse is, per [usageError].
+	return "", newUsageError(fmt.Errorf("--output %q is not a format this understands; use one of %s",
+		requested, strings.Join(names, ", ")))
 }
 
 // Machine reports whether the format is for a program rather than a person.

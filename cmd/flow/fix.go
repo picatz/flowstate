@@ -106,13 +106,17 @@ func runFix(cmd *cobra.Command, paths []string, opts fixOptions) error {
 		return err
 	}
 
+	// Every refusal from here down is about the flags asking for two different
+	// things, decided before a single file is touched — an invocation mistake
+	// rather than a finding about any file named, so each is marked with
+	// newUsageError the same way resolveOutputFormat marks its own.
 	if opts.stdout && opts.check {
-		return errors.New("--stdout and --check ask for different things: one writes the result, the other only reports")
+		return newUsageError(errors.New("--stdout and --check ask for different things: one writes the result, the other only reports"))
 	}
 	if opts.stdout && format.Machine() {
 		// Both want stdout for something different — the rewritten document, or the
 		// report — and only one document belongs on a stream a pipe reads.
-		return fmt.Errorf("--stdout and --output %s both want stdout: one is the rewritten document, the other the report", format)
+		return newUsageError(fmt.Errorf("--stdout and --output %s both want stdout: one is the rewritten document, the other the report", format))
 	}
 
 	files, err := collectFlowfiles(paths)
@@ -120,7 +124,7 @@ func runFix(cmd *cobra.Command, paths []string, opts fixOptions) error {
 		return err
 	}
 	if opts.stdout && len(files) != 1 {
-		return fmt.Errorf("--stdout writes one document, but %d files were named", len(files))
+		return newUsageError(fmt.Errorf("--stdout writes one document, but %d files were named", len(files)))
 	}
 
 	// Reports go to stderr and the rewritten document to stdout, so that
