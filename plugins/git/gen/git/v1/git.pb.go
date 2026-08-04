@@ -37,7 +37,16 @@ type LsRemoteInputs struct {
 	Prefix string `protobuf:"bytes,2,opt,name=prefix,proto3" json:"prefix,omitempty"`
 	// Token is a secret reference for HTTPS authentication, resolved inside
 	// this task and never logged. A literal string here is refused.
-	Token         *v1.Value `protobuf:"bytes,3,opt,name=token,proto3" json:"token,omitempty"`
+	Token *v1.Value `protobuf:"bytes,3,opt,name=token,proto3" json:"token,omitempty"`
+	// Username is the HTTP Basic-auth username paired with token. Empty means
+	// this task's own default, "x-access-token" - the literal every version
+	// before this field existed always sent, so leaving this unset is
+	// byte-identical in behavior to a file written before this field
+	// existed. Most providers never look at this value (see the README,
+	// "Choosing the username") - set it only for one that does, such as
+	// Bitbucket Cloud, which wants either the real account username or the
+	// literal "x-bitbucket-api-token-auth".
+	Username      string `protobuf:"bytes,4,opt,name=username,proto3" json:"username,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -91,6 +100,13 @@ func (x *LsRemoteInputs) GetToken() *v1.Value {
 		return x.Token
 	}
 	return nil
+}
+
+func (x *LsRemoteInputs) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
 }
 
 // RemoteRef is one ref a remote advertised, bound to its content: a workflow
@@ -268,7 +284,11 @@ type CommitPushInputs struct {
 	// Token is a secret reference for HTTPS authentication, resolved inside
 	// this task and never logged, and never carried in url itself. A literal
 	// string here is refused.
-	Token         *v1.Value `protobuf:"bytes,10,opt,name=token,proto3" json:"token,omitempty"`
+	Token *v1.Value `protobuf:"bytes,10,opt,name=token,proto3" json:"token,omitempty"`
+	// Username is the HTTP Basic-auth username paired with token - see
+	// LsRemoteInputs.username for the full doc comment; the same default
+	// ("x-access-token") and the same reasoning apply here unchanged.
+	Username      string `protobuf:"bytes,11,opt,name=username,proto3" json:"username,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -373,6 +393,13 @@ func (x *CommitPushInputs) GetToken() *v1.Value {
 	return nil
 }
 
+func (x *CommitPushInputs) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
 // CommitPushOutputs is the result of one write.
 type CommitPushOutputs struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -462,17 +489,18 @@ var File_git_v1_git_proto protoreflect.FileDescriptor
 
 const file_git_v1_git_proto_rawDesc = "" +
 	"\n" +
-	"\x10git/v1/git.proto\x12\x06git.v1\x1a\x1cflowstate/v1/flowstate.proto\"e\n" +
+	"\x10git/v1/git.proto\x12\x06git.v1\x1a\x1cflowstate/v1/flowstate.proto\"\x81\x01\n" +
 	"\x0eLsRemoteInputs\x12\x10\n" +
 	"\x03url\x18\x01 \x01(\tR\x03url\x12\x16\n" +
 	"\x06prefix\x18\x02 \x01(\tR\x06prefix\x12)\n" +
-	"\x05token\x18\x03 \x01(\v2\x13.flowstate.v1.ValueR\x05token\"1\n" +
+	"\x05token\x18\x03 \x01(\v2\x13.flowstate.v1.ValueR\x05token\x12\x1a\n" +
+	"\busername\x18\x04 \x01(\tR\busername\"1\n" +
 	"\tRemoteRef\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x10\n" +
 	"\x03sha\x18\x02 \x01(\tR\x03sha\"V\n" +
 	"\x0fLsRemoteOutputs\x12%\n" +
 	"\x04refs\x18\x01 \x03(\v2\x11.git.v1.RemoteRefR\x04refs\x12\x1c\n" +
-	"\ttruncated\x18\x02 \x01(\bR\ttruncated\"\x89\x03\n" +
+	"\ttruncated\x18\x02 \x01(\bR\ttruncated\"\xa5\x03\n" +
 	"\x10CommitPushInputs\x12\x10\n" +
 	"\x03url\x18\x01 \x01(\tR\x03url\x12\x16\n" +
 	"\x06branch\x18\x02 \x01(\tR\x06branch\x12\x19\n" +
@@ -485,7 +513,8 @@ const file_git_v1_git_proto_rawDesc = "" +
 	"\fauthor_email\x18\b \x01(\tR\vauthorEmail\x12\x1c\n" +
 	"\ttimestamp\x18\t \x01(\tR\ttimestamp\x12)\n" +
 	"\x05token\x18\n" +
-	" \x01(\v2\x13.flowstate.v1.ValueR\x05token\x1a8\n" +
+	" \x01(\v2\x13.flowstate.v1.ValueR\x05token\x12\x1a\n" +
+	"\busername\x18\v \x01(\tR\busername\x1a8\n" +
 	"\n" +
 	"FilesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +

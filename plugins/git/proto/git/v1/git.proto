@@ -34,6 +34,16 @@ message LsRemoteInputs {
   // Token is a secret reference for HTTPS authentication, resolved inside
   // this task and never logged. A literal string here is refused.
   flowstate.v1.Value token = 3;
+
+  // Username is the HTTP Basic-auth username paired with token. Empty means
+  // this task's own default, "x-access-token" - the literal every version
+  // before this field existed always sent, so leaving this unset is
+  // byte-identical in behavior to a file written before this field
+  // existed. Most providers never look at this value (see the README,
+  // "Choosing the username") - set it only for one that does, such as
+  // Bitbucket Cloud, which wants either the real account username or the
+  // literal "x-bitbucket-api-token-auth".
+  string username = 4;
 }
 
 // RemoteRef is one ref a remote advertised, bound to its content: a workflow
@@ -126,6 +136,11 @@ message CommitPushInputs {
   // this task and never logged, and never carried in url itself. A literal
   // string here is refused.
   flowstate.v1.Value token = 10;
+
+  // Username is the HTTP Basic-auth username paired with token - see
+  // LsRemoteInputs.username for the full doc comment; the same default
+  // ("x-access-token") and the same reasoning apply here unchanged.
+  string username = 11;
 }
 
 // CommitPushOutputs is the result of one write.

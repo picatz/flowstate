@@ -12,6 +12,11 @@ description: Reads a public repository's branch refs using the "git" plugin's gi
 # ships in its manifest at launch. See plugins/git for the source and
 # plugins/git/README.md for what git.commit_push does and why it lives in a
 # separate file.
+#
+# This file is the public half of a pair with ls-remote-private.yaml, in the
+# same directory: same task, same inputs, the only difference is one field.
+# Reading a private repository is never a different task or a richer
+# schema - it is this exact call with `token:` filled in.
 
 vars:
   repo: https://github.com/octocat/Hello-World.git
@@ -21,8 +26,12 @@ steps:
     git.ls_remote:
       url: ${vars.repo}
       prefix: "refs/heads/"
-      # No token: a public repository's refs are readable unauthenticated.
-      # Compare this to commit-push.yaml, where writing requires one.
+      # No token: this repository is public, so its refs are readable
+      # unauthenticated - the only thing that changes for a private one is
+      # this one field. See ls-remote-private.yaml for the identical call
+      # with `token:` filled in, and commit-push.yaml for the one task in
+      # this plugin where a token is not optional at all: writing always
+      # needs a credential, because no forge accepts an anonymous push.
 
   - id: announce
     log:
