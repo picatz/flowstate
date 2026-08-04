@@ -14,7 +14,7 @@ func TestListRemoteRefsFindsTheSeededBranch(t *testing.T) {
 	remote := newBareRemote(t)
 	base := seedRemote(t, remote, "main")
 
-	refs, err := listRemoteRefs(context.Background(), fileURL(t, remote), nil)
+	refs, err := listRemoteRefs(context.Background(), fileURL(t, remote), nil, "")
 	if err != nil {
 		t.Fatalf("listRemoteRefs: %v", err)
 	}
@@ -36,7 +36,7 @@ func TestListRemoteRefsReflectsAMove(t *testing.T) {
 
 	moved := commitWithSymlink(t, remote, "main", base, "link", "elsewhere")
 
-	refs, err := listRemoteRefs(context.Background(), fileURL(t, remote), nil)
+	refs, err := listRemoteRefs(context.Background(), fileURL(t, remote), nil, "")
 	if err != nil {
 		t.Fatalf("listRemoteRefs: %v", err)
 	}

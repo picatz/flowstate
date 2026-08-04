@@ -82,6 +82,11 @@ func gitCommitPush(ctx context.Context, inputs map[string]*flowstatev1.Value, _ 
 		return nil, err
 	}
 
+	username, err := resolveUsername(in.GetUsername())
+	if err != nil {
+		return nil, sdk.InvalidInput("%v", err)
+	}
+
 	out, err := doCommitPush(ctx, commitPushParams{
 		url:         repoURL,
 		branch:      branch,
@@ -93,6 +98,7 @@ func gitCommitPush(ctx context.Context, inputs map[string]*flowstatev1.Value, _ 
 		authorEmail: authorEmail,
 		when:        when,
 		token:       func() string { return token },
+		username:    username,
 	})
 	if err != nil {
 		return nil, err
@@ -119,6 +125,7 @@ type commitPushParams struct {
 	authorEmail string
 	when        time.Time
 	token       func() string
+	username    string // resolved (see resolveUsername); "" is treated as defaultBasicAuthUsername
 }
 
 // doCommitPush is the actual materialize -> apply -> commit -> push
@@ -128,7 +135,7 @@ type commitPushParams struct {
 func doCommitPush(ctx context.Context, p commitPushParams) (*gitv1.CommitPushOutputs, error) {
 	flowstatev1.ReportProgress(ctx, flowstatev1.PhaseRequesting)
 
-	repo, err := cloneBounded(ctx, cloneOptions{url: p.url, depth: defaultCloneDepth, token: p.token})
+	repo, err := cloneBounded(ctx, cloneOptions{url: p.url, depth: defaultCloneDepth, token: p.token, username: p.username})
 	if err != nil {
 		return nil, err
 	}
@@ -227,7 +234,11 @@ func doCommitPush(ctx context.Context, p commitPushParams) (*gitv1.CommitPushOut
 		},
 	}
 	if tok := tokenValueOf(p.token); tok != "" {
-		pushOpts.Auth = &githttp.BasicAuth{Username: "x-access-token", Password: tok}
+		username := p.username
+		if username == "" {
+			username = defaultBasicAuthUsername
+		}
+		pushOpts.Auth = &githttp.BasicAuth{Username: username, Password: tok}
 	}
 
 	err = repo.PushContext(ctx, pushOpts)

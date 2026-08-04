@@ -32,7 +32,13 @@ type remoteRef struct {
 // exposes directly, and commit_push's own compare-and-swap probe (see
 // commit_push.go) depends on it too: both need a ref's current hash without
 // paying for a clone to find out.
-func listRemoteRefs(ctx context.Context, u *url.URL, token func() string) ([]remoteRef, error) {
+//
+// username is expected already resolved (see [resolveUsername]) - never
+// empty by the time it reaches here, the same contract cloneOptions.username
+// keeps. An empty value still falls back to [defaultBasicAuthUsername]
+// rather than sending an empty username, the same fail-safe direction
+// cloneBounded takes.
+func listRemoteRefs(ctx context.Context, u *url.URL, token func() string, username string) ([]remoteRef, error) {
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
@@ -43,7 +49,11 @@ func listRemoteRefs(ctx context.Context, u *url.URL, token func() string) ([]rem
 
 	opts := &git.ListOptions{}
 	if tok := tokenValueOf(token); tok != "" {
-		opts.Auth = &githttp.BasicAuth{Username: "x-access-token", Password: tok}
+		user := username
+		if user == "" {
+			user = defaultBasicAuthUsername
+		}
+		opts.Auth = &githttp.BasicAuth{Username: user, Password: tok}
 	}
 
 	refs, err := remote.ListContext(ctx, opts)
@@ -106,9 +116,14 @@ func gitLsRemote(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *f
 		return nil, err
 	}
 
+	username, err := resolveUsername(in.GetUsername())
+	if err != nil {
+		return nil, sdk.InvalidInput("%v", err)
+	}
+
 	flowstatev1.ReportProgress(ctx, flowstatev1.PhaseRequesting)
 
-	refs, err := listRemoteRefs(ctx, repoURL, func() string { return token })
+	refs, err := listRemoteRefs(ctx, repoURL, func() string { return token }, username)
 	if err != nil {
 		return nil, err
 	}

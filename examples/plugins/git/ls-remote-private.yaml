@@ -36,6 +36,14 @@ steps:
       # the same shape (an HTTPS Basic-auth password) works unchanged across
       # every provider this plugin has been asked to work with.
       token: ${secret('git:token')}
+      # username: left unset here, which resolves to this task's own
+      # default ("x-access-token") - correct for GitHub and GitLab, which
+      # neither one validates. Bitbucket Cloud is the verified exception: it
+      # checks the username, and wants either the real account username or
+      # the literal below. Uncomment this line (and point url at a
+      # Bitbucket Cloud repository) to read one instead - see
+      # plugins/git/README.md, "Choosing the username."
+      # username: x-bitbucket-api-token-auth
 
 outputs:
   branch_count:
