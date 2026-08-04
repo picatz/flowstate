@@ -194,11 +194,23 @@ func TestEveryExampleRunsDurably(t *testing.T) {
 		lapsed   int
 	)
 
+	// Everything up to `ran++` below decides whether an example runs at all, and
+	// every check in it used to be require.* — which is FailNow, which aborts this
+	// *loop*, not just the example under it. One unregistered wait_for_signal
+	// example used to take every alphabetically later example down with it: during
+	// #175 that hid whether three new examples passed until someone physically
+	// moved a directory aside to find out (issue #183). Each check here now
+	// reports with t.Errorf and continues to the next path instead, so a bad
+	// example is a red subtest-equivalent report rather than a truncated corpus.
 	for _, path := range paths {
 		name := filepath.Base(filepath.Dir(path))
 
 		wf, _, err := flowfile.ParseFile(path)
-		require.NoError(t, err, "%s does not compile", name)
+		if err != nil {
+			t.Errorf("%s does not compile: %v", name, err)
+
+			continue
+		}
 
 		if reason, ok := exampleDurableSkips[name]; ok {
 			skipped = append(skipped, name+": "+reason)
@@ -220,18 +232,26 @@ func TestEveryExampleRunsDurably(t *testing.T) {
 		// beside the file a reader actually runs. Two answers drift, and the one
 		// nobody can reproduce is the harness's.
 		inputs, err := tests.BindExampleInputs(t, wf, path)
-		require.NoError(t, err,
-			"%s cannot be started, so it is an example nobody can run", name)
+		if err != nil {
+			t.Errorf("%s cannot be started, so it is an example nobody can run: %v", name, err)
+
+			continue
+		}
 
 		signals := exampleSignals[name]
 		if tests.WaitsForASignal(wf.GetSteps()) {
 			_, lapsing := exampleLapsingGates[name]
 
+			skip := false
 			switch {
 			case len(signals) > 0:
-				require.False(t, lapsing,
-					"%s is in both tables, so it is unclear whether its gate is meant to be "+
+				if lapsing {
+					t.Errorf("%s is in both tables, so it is unclear whether its gate is meant to be "+
 						"answered or to lapse; it can only demonstrate one of them", name)
+					skip = true
+
+					break
+				}
 				answered++
 
 			case lapsing:
@@ -239,19 +259,27 @@ func TestEveryExampleRunsDurably(t *testing.T) {
 				// `timeout:` blocks until the run ends, so an entry claiming a lapse for
 				// one would suspend this example until [exampleRunTimeout] and report a
 				// timeout instead of the mistake.
-				require.True(t, tests.LapsesWithin(wf.GetSteps(), unattendedGateBudget),
-					"%s is listed as lapsing and has a gate this harness cannot sit through: either no "+
+				if !tests.LapsesWithin(wf.GetSteps(), unattendedGateBudget) {
+					t.Errorf("%s is listed as lapsing and has a gate this harness cannot sit through: either no "+
 						"`timeout:` at all, which blocks for as long as the run lasts, or one longer "+
 						"than %s", name, unattendedGateBudget)
+					skip = true
+
+					break
+				}
 				lapsed++
 
 			default:
-				require.Fail(t,
-					"a waiting example is in neither table",
-					"%s waits for a signal and nothing says what should happen to it. Add the payload "+
+				t.Errorf(
+					"%s: a waiting example is in neither table. "+
+						"%[1]s waits for a signal and nothing says what should happen to it. Add the payload "+
 						"its own `flow signal` line documents to exampleSignals, or — if going "+
 						"unanswered is the point — name it in exampleLapsingGates with the reason. "+
 						"Either way the gate is exercised rather than skipped", name)
+				skip = true
+			}
+			if skip {
+				continue
 			}
 		}
 
@@ -260,9 +288,13 @@ func TestEveryExampleRunsDurably(t *testing.T) {
 		// real host, which makes the suite depend on somebody else's service being up
 		// and fails outright on a machine with no egress.
 		if tests.ReachesTheNetwork(wf.GetSteps()) {
-			require.Empty(t, tests.PointAtStandIn(wf.GetSteps(), base),
-				"%s has an http step this test cannot point at the stand-in, so running it would reach "+
-					"the real host; give the step a literal url, or teach PointAtStandIn the shape it uses", name)
+			if unpointable := tests.PointAtStandIn(wf.GetSteps(), base); len(unpointable) > 0 {
+				t.Errorf("%s has an http step this test cannot point at the stand-in, so running it would reach "+
+					"the real host; give the step a literal url, or teach PointAtStandIn the shape it uses: %v",
+					name, unpointable)
+
+				continue
+			}
 		}
 
 		ran++

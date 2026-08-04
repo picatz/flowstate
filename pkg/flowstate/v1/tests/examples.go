@@ -16,6 +16,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/cel-go/cel"
+	celpb "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
@@ -69,15 +72,25 @@ const ExampleInputsFile = "inputs.json"
 // two would drift the first time an example's declarations changed: the file is what
 // a reader runs, so a harness disagreeing with it tests something nobody can
 // reproduce.
-func ExampleInputs(tb testing.TB, workflowPath string) map[string]*v1.Value {
-	tb.Helper()
-
+//
+// The error is returned rather than fatal — this used to be tb.Fatalf in three
+// places, on an unreadable file, a document that is not a JSON object, and a
+// number with a fractional part — for the identical reason [BindExampleInputs]
+// returns rather than requires its own: a caller in a per-example loop (#183's
+// [TestEveryExampleRunsDurably]) means to report one bad fixture and move on to
+// the next example, and Fatalf is FailNow, which a fatal call three frames below
+// a checked `if err != nil; continue` still is. A malformed inputs.json used to
+// take every alphabetically later example down with it exactly the way an
+// unregistered wait_for_signal example did — the same defect, one layer deeper,
+// because the guard at the call site cannot fire for an error that never reaches
+// it.
+func ExampleInputs(workflowPath string) (map[string]*v1.Value, error) {
 	data, err := os.ReadFile(filepath.Join(filepath.Dir(workflowPath), ExampleInputsFile))
 	if os.IsNotExist(err) {
-		return nil
+		return nil, nil
 	}
 	if err != nil {
-		tb.Fatalf("reading %s beside %s: %v", ExampleInputsFile, workflowPath, err)
+		return nil, fmt.Errorf("reading %s beside %s: %w", ExampleInputsFile, workflowPath, err)
 	}
 
 	decoder := json.NewDecoder(bytes.NewReader(data))
@@ -85,7 +98,7 @@ func ExampleInputs(tb testing.TB, workflowPath string) map[string]*v1.Value {
 
 	var fields map[string]any
 	if err := decoder.Decode(&fields); err != nil {
-		tb.Fatalf("%s has an %s that is not a JSON object: %v",
+		return nil, fmt.Errorf("%s has an %s that is not a JSON object: %w",
 			filepath.Dir(workflowPath), ExampleInputsFile, err)
 	}
 
@@ -94,7 +107,7 @@ func ExampleInputs(tb testing.TB, workflowPath string) map[string]*v1.Value {
 		if number, ok := value.(json.Number); ok {
 			whole, err := number.Int64()
 			if err != nil {
-				tb.Fatalf("input %q is not a whole number: %v", name, err)
+				return nil, fmt.Errorf("input %q is not a whole number: %w", name, err)
 			}
 			inputs[name] = v1.NewLiteral(whole)
 
@@ -103,7 +116,7 @@ func ExampleInputs(tb testing.TB, workflowPath string) map[string]*v1.Value {
 		inputs[name] = v1.NewValue(value)
 	}
 
-	return inputs
+	return inputs, nil
 }
 
 // BindExampleInputs answers an example's declared `inputs:` from its inputs.json and
@@ -121,7 +134,10 @@ func ExampleInputs(tb testing.TB, workflowPath string) map[string]*v1.Value {
 func BindExampleInputs(tb testing.TB, wf *v1.Workflow, workflowPath string) (map[string]*v1.Value, error) {
 	tb.Helper()
 
-	supplied := ExampleInputs(tb, workflowPath)
+	supplied, err := ExampleInputs(workflowPath)
+	if err != nil {
+		return nil, err
+	}
 
 	bound, err := v1.BindRunInputs(wf, supplied)
 	if err == nil {
@@ -378,14 +394,15 @@ func AnyStep(nodes []*v1.Node, pred func(*v1.Node) bool) bool {
 }
 
 // PointAtStandIn rewrites every http step's host to the stand-in, keeping the path
-// and the query the example wrote, and returns the ids of the steps it could not
-// point anywhere.
+// and the query the example wrote, and returns a diagnosis for each step it could
+// not point anywhere.
 //
-// Those ids are the whole point of the return value. A url built by an expression
-// has no host to rewrite until it is evaluated, so it would be left as written and
-// the run would reach the real host — which makes a suite depend on somebody else's
-// service and fails outright on a machine with no egress. The caller refuses to run
-// such an example rather than running it against the internet.
+// Those diagnoses are the whole point of the return value. A url built by an
+// expression has no host to rewrite until it is evaluated, so it would be left as
+// written and the run would reach the real host — which makes a suite depend on
+// somebody else's service and fails outright on a machine with no egress. The
+// caller refuses to run such an example rather than running it against the
+// internet.
 //
 // Only the scheme and host move. The path selects the response shape and the query
 // is what `http-query-and-json` is *about*, so a rewrite dropping either would turn
@@ -395,6 +412,41 @@ func AnyStep(nodes []*v1.Node, pred func(*v1.Node) bool) bool {
 // `conditional-and-retry` aims one at a port nothing listens on to show a tolerated
 // failure, and sending it somewhere that answers would delete the only thing that
 // example demonstrates.
+//
+// # An expression is not automatically unpointable
+//
+// A literal `url:` was, until #183, the only shape this could rewrite — so a
+// for_each body whose url varies per item (`url: ${service.url}`, the natural
+// spelling for "one request per endpoint") reported unpointable even though the
+// data behind the expression was written in the file as plain literals. The
+// example that needed exactly that shape was forced into `parallel:` with the
+// endpoints unrolled by hand instead, which is a constraint of this harness, not
+// of the language.
+//
+// So the walk now traces the two ways a step can bind a name for itself, and
+// rewrites the *data* an expression draws from where it can see it:
+//
+//   - A for_each iterator, selected with a field — `${service.url}` — traces back
+//     to the loop's own `items:`. When that is a literal list of maps, every
+//     entry's matching field is rewritten, because a for_each body runs once per
+//     entry and every one of those requests has to be pointed, not just the first.
+//   - A step's own var, read bare — `${target_url}`, never `${vars.target_url}`,
+//     per the `vars:` field's own doc comment — traces back to that var's own
+//     literal. In scope for the step that bound it and, when that step is a
+//     for_each or a parallel, for the body nested inside it too: both executors
+//     evaluate a block's own vars into the same scope its nested steps run in, so
+//     a for_each whose own `vars:` holds a literal url a nested task reads bare
+//     is exactly as traceable as the loop's iterator is.
+//
+// Anything else — items computed at run time, a var holding something other than
+// a literal string, a select chain more than one field deep, an expression this
+// walk does not recognize at all — keeps the honest refusal. What changes is that
+// the refusal names *why*: which expression, on which step, and what this walk
+// could and could not see about it, so an author reads a boundary of the harness
+// rather than suspecting their file. A true line:column would need the file's own
+// [flowfile.Positions], which this function is never handed — it only ever sees
+// the compiled node tree — so the expression's own rendered text stands in as its
+// position here.
 func PointAtStandIn(nodes []*v1.Node, base string) []string {
 	standIn, err := url.Parse(base)
 	if err != nil {
@@ -403,11 +455,54 @@ func PointAtStandIn(nodes []*v1.Node, base string) []string {
 		return httpStepIDs(nodes)
 	}
 
+	return pointAtStandIn(nodes, standIn, nil)
+}
+
+// binding is one name a walk beneath a step can trace a `url:` expression back
+// to — the two shapes [PointAtStandIn]'s doc comment names, kept apart because
+// they are traced differently. Exactly one of items or value is set.
+type binding struct {
+	name string
+
+	// items is a for_each's own ForEach.Items literal — a list of maps, one
+	// consumed per iteration — set when the binding came from a loop iterator.
+	items *celpb.Value
+
+	// value is a step's own var, set when the binding came from that step's
+	// `vars:`. In scope for the step that bound it, and for whatever that step
+	// recurses into below — a for_each's or a parallel's own vars reach their
+	// body the same way a loop iterator does, per pointAtStandIn's comment on
+	// `bindings` — but not for a sibling later in the same node list.
+	value *v1.Value
+}
+
+// pointAtStandIn is [PointAtStandIn] with the enclosing for_each loops' iterator
+// bindings threaded through, so a body step's `${iterator.field}` can be traced
+// back to the loop that bound iterator.
+func pointAtStandIn(nodes []*v1.Node, standIn *url.URL, loops []binding) []string {
 	var unpointable []string
+
 	for _, node := range nodes {
+		// A step's own vars are bound bare — `${name}`, never `${vars.name}` — and
+		// both executors evaluate a for_each's or a parallel's own body inside that
+		// same node's scope, so a var the node declares for itself is in scope for
+		// what is nested inside it too — not only for its own task and undo. It
+		// still does not outlive the node: a sibling step later in the same list
+		// never sees it, which is why this is added to bindings rather than to
+		// loops itself, and why bindings — not loops — is threaded into whatever
+		// this node recurses into below.
+		bindings := loops
+		if len(node.GetVars()) > 0 {
+			bindings = make([]binding, 0, len(loops)+len(node.GetVars()))
+			bindings = append(bindings, loops...)
+			for name, value := range node.GetVars() {
+				bindings = append(bindings, binding{name: name, value: value})
+			}
+		}
+
 		if task := node.GetTask(); task.GetName() == "http" {
-			if !rewriteURL(task, standIn) {
-				unpointable = append(unpointable, node.GetId())
+			if reason, ok := pointTaskURL(task, standIn, bindings); !ok {
+				unpointable = append(unpointable, node.GetId()+reason)
 			}
 		}
 
@@ -416,22 +511,194 @@ func PointAtStandIn(nodes []*v1.Node, base string) []string {
 		// everything at the stand-in — silently, because an unpointed *undo* is not
 		// an unpointed step and nothing counted it.
 		if undo := node.GetUndo().GetTask(); undo.GetName() == "http" {
-			if !rewriteURL(undo, standIn) {
-				unpointable = append(unpointable, node.GetId()+" (undo)")
+			if reason, ok := pointTaskURL(undo, standIn, bindings); !ok {
+				unpointable = append(unpointable, node.GetId()+" (undo)"+reason)
 			}
 		}
 
 		switch kind := node.GetKind().(type) {
 		case *v1.Node_ForEach:
-			unpointable = append(unpointable, PointAtStandIn(kind.ForEach.GetBody(), base)...)
+			fe := kind.ForEach
+
+			iterator := fe.GetIterator()
+			if iterator == "" {
+				// The schema's own default: see ForEach.iterator's doc comment.
+				iterator = "item"
+			}
+
+			child := make([]binding, 0, len(bindings)+1)
+			child = append(child, bindings...)
+			child = append(child, binding{name: iterator, items: fe.GetItems().GetLiteral()})
+
+			unpointable = append(unpointable, pointAtStandIn(fe.GetBody(), standIn, child)...)
 		case *v1.Node_Parallel:
 			for _, branch := range kind.Parallel.GetBranches() {
-				unpointable = append(unpointable, PointAtStandIn(branch.GetSteps(), base)...)
+				unpointable = append(unpointable, pointAtStandIn(branch.GetSteps(), standIn, bindings)...)
 			}
 		}
 	}
 
 	return unpointable
+}
+
+// lookupBinding finds the innermost binding of name, matching the language's own
+// shadowing rule: the schema refuses a step var or a loop iterator that collides
+// with anything already bound (Node.vars's doc comment, "collisions are refused,
+// not resolved"), so a compiled node tree never actually has two live bindings of
+// the same name for this to choose between — but bindings is assembled inner
+// scope last, so taking the last match is the correct read of it regardless.
+func lookupBinding(bindings []binding, name string) (binding, bool) {
+	for i := len(bindings) - 1; i >= 0; i-- {
+		if bindings[i].name == name {
+			return bindings[i], true
+		}
+	}
+	return binding{}, false
+}
+
+// pointTaskURL points one task's `url:` input at the stand-in, either directly —
+// the literal case — or by rewriting the binding an expression traces back to.
+// The second return is false wherever the walk gives up, and the first is a
+// reason to append after the step's id, naming why and, where there is one, the
+// expression itself.
+func pointTaskURL(task *v1.Task, standIn *url.URL, bindings []binding) (string, bool) {
+	input := task.GetInputs()["url"]
+
+	if literal := input.GetLiteral(); literal != nil {
+		if rewriteURLLiteral(literal, standIn) {
+			return "", true
+		}
+		// A literal that is not a rewritable url — not a string, or a string url.Parse
+		// cannot make sense of. Naming the step is enough; there is no expression to
+		// quote.
+		return " has a `url` input this test cannot parse as a url", false
+	}
+
+	root := input.GetExpr().GetExpr()
+	if root == nil {
+		return " has no `url` input to point at the stand-in", false
+	}
+
+	text := describeExpr(input.GetExpr())
+
+	if sel := root.GetSelectExpr(); sel != nil {
+		if ident := sel.GetOperand().GetIdentExpr(); ident != nil {
+			if b, ok := lookupBinding(bindings, ident.GetName()); ok && b.value == nil {
+				// A select off a bound name that is not a step var is, by construction,
+				// a for_each iterator (the only other binding [pointAtStandIn] adds) —
+				// even when its own items are not a literal this walk can rewrite, which
+				// is itself worth saying rather than falling through to the generic
+				// refusal below.
+				if b.items == nil {
+					return fmt.Sprintf(
+						" has `url: %s`, whose `%s` traces to for_each's own `items:` — but items is "+
+							"computed rather than written as data, so there is nothing literal here to "+
+							"rewrite; give the step a literal url, or teach PointAtStandIn the shape it "+
+							"uses", text, ident.GetName()), false
+				}
+				if rewriteItemsField(b.items, sel.GetField(), standIn) {
+					return "", true
+				}
+				return fmt.Sprintf(
+					" has `url: %s`, which traces to the for_each's own items — but not every "+
+						"entry has a literal string %q to rewrite, so this walk cannot point every "+
+						"iteration's request at the stand-in; give every item's %[2]s field a literal, "+
+						"or teach PointAtStandIn the shape it uses", text, sel.GetField()), false
+			}
+		}
+	}
+
+	if ident := root.GetIdentExpr(); ident != nil {
+		if b, ok := lookupBinding(bindings, ident.GetName()); ok && b.value != nil {
+			if literal := b.value.GetLiteral(); literal != nil && rewriteURLLiteral(literal, standIn) {
+				return "", true
+			}
+			// Naming the var's own expression, not only its name, when it has one —
+			// `base: ${steps.discover.json.primary_url}` is what actually made this
+			// var untraceable, and a diagnosis that stops at "base is not a literal"
+			// makes an author go find that binding themselves.
+			varText := "not a literal url string"
+			if varExpr := b.value.GetExpr(); varExpr != nil {
+				varText = "`" + describeExpr(varExpr) + "`, not a literal"
+			}
+			return fmt.Sprintf(
+				" has `url: %s`, which traces to the step's own var %q — but that var is %s, so "+
+					"this walk cannot rewrite it; give it a literal, or teach PointAtStandIn the "+
+					"shape it uses", text, ident.GetName(), varText), false
+		}
+	}
+
+	// Traced nowhere this walk recognizes: an output of an earlier step, a
+	// workflow-level input, a call expression, a select more than one field
+	// deep. Named with the expression's own rendered text, because this
+	// function never sees the file's line and column — only the compiled node
+	// tree flowfile.ParseFile already reduced source positions out of — so the
+	// expression itself is the most precise thing there is to point an author
+	// at.
+	return fmt.Sprintf(
+		" has `url: %s`, an expression this test cannot trace to a literal it can rewrite; give "+
+			"the step a literal url, or teach PointAtStandIn the shape it uses", text), false
+}
+
+// describeExpr renders an expression as it was written, for a diagnostic that
+// has to name one precisely without a source position to point at.
+//
+// [cel.AstToString] is the same renderer flowfile's own compiler uses to
+// normalize an expression's spelling (value.go's normalizeExpr) and to write one
+// back out (marshal.go) — reusing it means this harness's diagnostics describe an
+// expression the same way the compiler itself does, rather than growing a second,
+// possibly-disagreeing unparser.
+func describeExpr(parsed *celpb.ParsedExpr) string {
+	text, err := cel.AstToString(cel.ParsedExprToAst(parsed))
+	if err != nil {
+		return "<expression>"
+	}
+	return text
+}
+
+// rewriteItemsField rewrites one field, in every entry of a for_each's items
+// literal, to the stand-in — or refuses the whole rewrite if any entry cannot
+// supply a literal string for it.
+//
+// All-or-nothing on purpose. A for_each body makes one request per entry, so an
+// item this cannot rewrite is a request that would still reach the real host;
+// pointing nine iterations at the stand-in and silently leaving the tenth aimed
+// at the internet is a worse failure mode than refusing the file outright.
+func rewriteItemsField(items *celpb.Value, field string, standIn *url.URL) bool {
+	list, ok := items.GetKind().(*celpb.Value_ListValue)
+	if !ok {
+		return false
+	}
+	entries := list.ListValue.GetValues()
+	if len(entries) == 0 {
+		return false
+	}
+
+	for _, entry := range entries {
+		m, ok := entry.GetKind().(*celpb.Value_MapValue)
+		if !ok {
+			return false
+		}
+
+		var found bool
+		for _, kv := range m.MapValue.GetEntries() {
+			key, ok := kv.GetKey().GetKind().(*celpb.Value_StringValue)
+			if !ok || key.StringValue != field {
+				continue
+			}
+			if !rewriteURLLiteral(kv.GetValue(), standIn) {
+				return false
+			}
+			found = true
+
+			break
+		}
+		if !found {
+			return false
+		}
+	}
+
+	return true
 }
 
 // httpStepIDs names every http step, at any depth.
@@ -457,15 +724,28 @@ func httpStepIDs(nodes []*v1.Node) []string {
 	return ids
 }
 
-// rewriteURL moves one http task's literal url onto the stand-in's host, and
-// reports whether the step is now pointed somewhere the test controls.
-func rewriteURL(task *v1.Task, standIn *url.URL) bool {
-	literal := task.GetInputs()["url"].GetLiteral().GetStringValue()
-	if literal == "" {
+// rewriteURLLiteral moves one literal url string onto the stand-in's host, in
+// place, and reports whether it is now pointed somewhere the test controls.
+//
+// The one rewrite rule, shared by every literal a url expression can trace back
+// to — a task's own `url:`, a for_each item's field, a step var — rather than a
+// copy of it living in each. Only the scheme and host move, for the reason
+// [PointAtStandIn]'s doc comment gives: the path selects the response shape and
+// the query is what an example may be about. A loopback url is left alone and
+// still counts as pointed, matching `conditional-and-retry`'s reason for having
+// one at all.
+//
+// Mutating the literal in place, rather than replacing the map entry that holds
+// it the way the pre-#183 version did, is what lets this same rule rewrite a
+// for_each item's field: that literal sits inside a repeated structure this
+// function does not otherwise know how to address by key.
+func rewriteURLLiteral(literal *celpb.Value, standIn *url.URL) bool {
+	str, ok := literal.GetKind().(*celpb.Value_StringValue)
+	if !ok || str.StringValue == "" {
 		return false
 	}
 
-	target, err := url.Parse(literal)
+	target, err := url.Parse(str.StringValue)
 	if err != nil || target.Hostname() == "" {
 		return false
 	}
@@ -475,7 +755,7 @@ func rewriteURL(task *v1.Task, standIn *url.URL) bool {
 
 	target.Scheme = standIn.Scheme
 	target.Host = standIn.Host
-	task.Inputs["url"] = v1.NewLiteral(target.String())
+	str.StringValue = target.String()
 
 	return true
 }
