@@ -200,7 +200,7 @@ edition: v2026.2
 			want: []want{{
 				code:       codeFlowfile,
 				severity:   lsp.Error,
-				contains:   "must have one of for_each, parallel, sleep, wait_until, wait_for_signal, http, or log",
+				contains:   "must have one of for_each, parallel, sleep, wait_until, wait_for_signal, call, http, or log",
 				underlines: "a",
 			}},
 		},
@@ -528,7 +528,15 @@ func TestExamplesAreClean(t *testing.T) {
 			data, err := os.ReadFile(path)
 			require.NoError(t, err)
 
-			doc := newDocument(lsp.DocumentURI("file://"+path), 1, string(data), nil)
+			// The real, absolute path rather than the relative one the glob
+			// above returns: a real editor always sends an absolute `file://`
+			// URI, and `call-a-workflow` names a sibling file relative to its
+			// own directory, which only resolves to something real when the
+			// URI does too.
+			abs, err := filepath.Abs(path)
+			require.NoError(t, err)
+
+			doc := newDocument(lsp.DocumentURI("file://"+abs), 1, string(data), nil)
 			assert.Empty(t, messages(diagnose(doc)))
 		})
 	}

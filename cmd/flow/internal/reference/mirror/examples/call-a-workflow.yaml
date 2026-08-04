@@ -1,0 +1,33 @@
+# `call:` runs another Flowfile as a step, isolated from this one, and reads its
+# outputs back the way a task's would.
+#
+# The callee is `./workflows/provision-tenant.yaml`, resolved relative to *this*
+# file's own directory at compile time — not at run time, and never against a
+# workflow name a worker looks up. That is what lets a call type-check before
+# anything runs: the callee's `inputs:` are known the moment this file is read,
+# so `with:` is checked against them the same way a task's inputs are checked
+# against its registry entry.
+#
+# The callee cannot see anything of this file's: not `steps.provision`'s
+# neighbors, not this workflow's own `vars:`, nothing. Its only view in is
+# `with:`, resolved here in *this* file's scope and bound to its declared
+# `inputs:` — the same isolation a function call gives a callee over reading
+# its caller's locals.
+edition: v2026.2
+name: call-a-workflow
+
+steps:
+  # `with:` binds the callee's declared inputs — checked against
+  # provision-tenant's `inputs:` when this file is compiled, so binding a name it
+  # does not declare, or leaving out `tenant`, is refused here rather than
+  # partway through a run.
+  - id: provision
+    call: ./workflows/provision-tenant.yaml
+    with:
+      tenant: acme
+
+  # The call's outputs are exactly what the callee declared in its own
+  # `outputs:` — `url` here — read the same way a task's would be.
+  - id: announce
+    log:
+      message: ${'tenant ready at ' + steps.provision.url}

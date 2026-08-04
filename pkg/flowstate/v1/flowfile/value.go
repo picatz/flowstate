@@ -123,6 +123,24 @@ func (c *compiler) exprValue(n ast.Node, path string, r ref) *v1.Value {
 	return c.value(n, path, r, true)
 }
 
+// callArgumentValue compiles one entry of a call's `with:` — a value bound to a
+// callee's declared input, resolved in the caller's scope.
+//
+// Checked for a secret reference first, and refused wherever one is found —
+// whether the entry is a bare ${secret(...)} or one buried inside a structure —
+// rather than delegated to [compiler.value], which would allow the bare case:
+// an argument is an ordinary value the whole way from here to [CallScope],
+// never a reference a worker resolves later, so nothing about "the whole value
+// of a task input" applies to it. See [notAcrossCallHelp] for why this is
+// refused rather than modeled.
+func (c *compiler) callArgumentValue(n ast.Node, path string, r ref) *v1.Value {
+	if resolved := c.resolveQuiet(n); resolved != nil && c.holdsSecretMarker(resolved) {
+		c.report(spanOfNode(resolved), r, "%s", notAcrossCallHelp)
+		return nil
+	}
+	return c.value(n, path, r, false)
+}
+
 // value compiles one node into a schema Value.
 //
 // It returns nil after reporting a diagnostic, so a caller building a message must

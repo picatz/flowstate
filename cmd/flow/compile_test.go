@@ -218,10 +218,7 @@ func TestCompileCompilesEveryExample(t *testing.T) {
 
 	for _, path := range paths {
 		t.Run(filepath.Base(filepath.Dir(path)), func(t *testing.T) {
-			data, err := os.ReadFile(path)
-			require.NoError(t, err)
-
-			want, err := flowfile.Unmarshal(data)
+			want, _, err := flowfile.ParseFile(path)
 			require.NoError(t, err)
 
 			out, errOut, err := compileOutput(t, path)

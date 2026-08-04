@@ -758,6 +758,11 @@ func runLocalToolHandler(posture *cobra.Command) mcp.ToolHandler {
 // diagnostics are joined verbatim because each one already begins with its
 // position — line:column — and position is the whole reason to return them to
 // something that is about to rewrite the file.
+//
+// Source submitted this way has no location of its own, so a `call:` step in it
+// is refused with a diagnostic saying so rather than resolved — there is no
+// directory to resolve it relative to, and inventing one would make the answer
+// depend on a path nobody submitted.
 func parseFlowfileSource(source []byte) (*v1.Workflow, error) {
 	workflow, err := flowfile.Unmarshal(source)
 	if err != nil {

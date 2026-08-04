@@ -2446,6 +2446,136 @@ written, deliberately naive inverse, checks that the result no longer compiles, 
 requires the rewriter to reproduce the original byte for byte. That is stronger than
 migrating the examples once, because it re-runs on every example added since.
 
+## The sixth round: calling one workflow from another
+
+### The spelling
+
+```yaml
+- id: provision
+  call: ./workflows/provision-tenant.yaml
+  with:
+    tenant: ${inputs.tenant}
+```
+
+`call:` names a Flowfile, resolved relative to the *calling file's own directory* at
+compile time — never at run time, and never by a name a worker looks up. `with:` binds
+the callee's declared `inputs:`, resolved in the *caller's* scope, exactly the way a
+task's inputs are: `${steps.build.digest}` on the right of a `with:` entry means what it
+would mean anywhere else in the caller's file. Both the requirement and the shape are
+checked when the file is compiled — a missing required input, an argument naming
+something the callee never declared, a path that cannot be resolved — with a position,
+the same standard every other diagnostic in this file is held to.
+
+### Isolation: a callee is a unit, not a scope extension
+
+A called workflow's steps see its bound arguments and the profile, and nothing else: not
+the caller's other steps, not the caller's `vars:`, not a loop binding the call happens to
+sit inside. That is not a restriction bolted on afterward — it is what makes a call worth
+having. A workflow that could read its caller's scope cannot be understood, tested, or
+reused apart from the file that calls it, which defeats the reason to split one out in
+the first place. It is a security property too, and the sharper one as workflows start
+being shared between teams: a library workflow cannot read the values its caller
+resolved, including any it resolved from a secret.
+
+Which is also why an argument may not be a secret reference. `${secret(...)}` compiles to
+a `SecretRef` that a worker resolves at the one task that needs it, never a value
+anything else reads — and `with:` crosses as an ordinary value from the caller's scope
+into the callee's, evaluated once, before the callee ever runs. A reference handed across
+that boundary would have to be either resolved early (which is exactly the leak `secret()`
+exists to prevent — a secret in workflow history) or carried across untouched (which needs
+a declared input to mean "a string, or a reference that resolves to one," a type nobody
+has designed and no other input in this schema has). So it is refused, at compile time,
+with a position: *"a secret reference cannot cross a call boundary; pass it to the task
+that needs it inside the callee, or declare the input there."* The callee's own task can
+still write `${secret(...)}` directly — nothing about isolation stops that, because the
+reference never left the file that resolves it.
+
+### Compile-time resolution, and why
+
+A call carries the callee's whole compiled specification, not a name or a path resolved
+again later. Three things follow from that, and all three were the point:
+
+- **A run's spec is frozen at submit.** It is carried across every Continue-As-New
+  unchanged, so a call resolved by name at execution time would let a long-running
+  workload mean one thing in its first segment and another in its last, depending on
+  what the callee file said by the time a later segment happened to read it.
+- **No filesystem access at a worker.** The client compiling a Flowfile — an editor, `flow
+  validate`, `flow run` — is the one place that already has an author's files, and the
+  only place a path traversal needs defending. A worker executing a compiled
+  specification never reads a path at all.
+- **A position stays a path.** `deploy > provision > network` names where a failure
+  happened, not a name nobody wrote down. Inlining the callee's steps into the caller's
+  list would have made isolation something achieved by renaming rather than something
+  real, and would have erased the callee as a place in its own right — a nested *run*
+  rather than an inlining is what keeps a call a place the engine can later decide to
+  execute as its own Temporal child workflow, should that ever be worth doing.
+
+Resolution is therefore refused wherever it would depend on anything other than the calling
+file's own position: an absolute path, and any path that climbs above the calling file's
+own directory — both rejected outright rather than sanitised, since the path is
+attacker-shaped input the moment a Flowfile can come from outside a trusted author. A
+cycle across files (`a` calls `b` calls `a`) is caught the same way an anchor referring to
+its own value already is, before the parser would otherwise recurse forever. And the
+total compiled size is bounded by breadth — [`maxCallExpansionNodes`](../pkg/flowstate/v1/flowfile/call.go)
+— because a diamond of calls (`a` calls `b` twice, each of which calls `c` twice) embeds
+four whole copies of `c`'s steps, the same shape a repeated YAML alias has, and nothing
+here deduplicates a callee compiled more than once.
+
+### The suspension rule
+
+A call may suspend. A long-running caller may Continue-As-New in the middle of a
+callee's own steps, exactly as it may between two of its own top-level ones — and the
+callee resumes correctly, in the same position, on whichever worker picks the run back
+up.
+
+That answer was not obvious going in: `parallel:` deliberately cannot suspend, because a
+position inside concurrent work is not a single position to record. A call has no such
+problem — it is sequential control flow, precisely like a top-level list of steps or a
+`for_each` loop that is not running with concurrency — so the reasoning that forbids
+suspending inside `parallel` does not apply to it. And an atomic call, unable to
+suspend at all, would have bought simplicity by defeating the very thing the step
+budget exists for: a workflow calling a workflow that runs a thousand steps would put
+all thousand in one segment, exempting exactly the composition a call is for from the
+bound that keeps a run's history small.
+
+The precise rule, stated where the durable executor decides it: **a call is transparent
+to suspension.** Suspension is legal between a callee's top-level steps whenever the path
+from the run's own top level to that position passes only through calls — nested calls
+included — and positions that could already suspend. A call sitting *inside* a `for_each`
+body or a `parallel` branch remains atomic, exactly as everything else inside those
+constructs already is, because the path to it is no longer transparent by the time it is
+reached.
+
+Nothing new was needed in the schema to say where a suspended run should resume: the
+frame stack already records nesting, so a frame whose position points at a call, with the
+frame below it describing where inside the callee the run had reached, is enough — the
+callee's whole compiled specification travels inside the caller's already, which is the
+compile-time-resolution decision above paying for itself a second time. One field was
+new: `Frame.call_outputs`, add-only, holding the callee's own step outputs accumulated
+before a suspend — because a callee runs in an isolated scope the top-level run's own
+`RunState.outputs` never sees, so without somewhere to put them they would simply vanish
+at the handover, and a resumed segment would fail on the callee's own later steps
+referencing its earlier ones, on a specification that never changed.
+
+### What is refused
+
+- An absolute path, or one that climbs above the calling file's own directory.
+- A cycle across files, however many calls long the chain is.
+- Depth past [`MaxCallDepth`](../pkg/flowstate/v1/call.go) (eight), the same bound both
+  execution drivers enforce at run time for a specification that never passed through a
+  parser at all.
+- `with:` naming an input the callee does not declare, or omitting one the callee
+  requires and has no default for.
+- A secret reference bound through `with:`, bare or nested in a structure.
+- `undo:` on a step inside a callee, for the same reason it is refused inside a loop
+  body or a parallel branch: the ordering across that boundary is unresolved.
+- Calling from a file compiled with no location of its own — bytes submitted over the
+  Compile RPC or the MCP tools, or an editor buffer with no save location — since there
+  is no directory to resolve a relative path against. `flow validate`, `flow run`, `flow
+  fmt`, and the language server all compile from a real file and so all resolve a call;
+  `flow compile` does too, since it is a client with its own files to point at, not a
+  request over a wire another process might have none.
+
 ## The standing rule
 
 Every claim in a design document about what this codebase currently does is a claim,
