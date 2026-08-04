@@ -9,10 +9,17 @@ description: Calls a task a plugin provides, as though it were built in.
 #
 # Everything else here is ordinary. The inputs below are checked against a schema
 # the engine has never compiled: it learns the shape of `name`, `greeting`,
-# `message` and `length` from descriptors the plugin ships in its manifest and
-# hands over when a worker launches it. That is why `flow validate` type-checks
-# `${steps.hello.length}` as a number without this repository knowing anything
-# about it.
+# `token`, `message`, `length` and `authenticated` from descriptors the plugin
+# ships in its manifest and hands over when a worker launches it. That is why
+# `flow validate` type-checks `${steps.hello.length}` as a number without this
+# repository knowing anything about it.
+#
+# `token` is written the ordinary way a secret is written anywhere else in a
+# Flowfile — `${secret('env:...')}` — even though it ends up inside a plugin
+# process. The worker resolves the reference before the request crosses into
+# the plugin at all, under the same `env:` provider a built-in task's own
+# secret input would use; the plugin declared `token` as one of its task's
+# SecretInputs, and receives a value, never the reference.
 #
 # This example needs setup a Flowfile cannot carry — a built plugin binary, and a
 # worker told where to look — so it has a README beside it. Read that first.
@@ -25,6 +32,7 @@ steps:
     example.greet:
       name: ${vars.who}
       greeting: Hello
+      token: ${secret('env:GREET_TOKEN')}
 
   # The plugin's answer, back in the run's scope under the step's id, addressable
   # like any other step's outputs. It crossed a process boundary to get here.
@@ -43,3 +51,10 @@ outputs:
   length:
     value: ${steps.hello.length}
     description: how long the greeting is
+
+  # Proof that the host's secret reached the plugin's task, without carrying the
+  # secret itself into this run's outputs — which, like every run output, is
+  # durable workflow history.
+  authenticated:
+    value: ${steps.hello.authenticated}
+    description: whether the plugin received a token

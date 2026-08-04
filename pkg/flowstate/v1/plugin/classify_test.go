@@ -11,6 +11,7 @@ import (
 
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 )
 
 // TestKindForCode checks the mapping from a plugin's status code onto the
@@ -162,7 +163,7 @@ func TestTaskErrorKeepsTheCause(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			err := taskError("some_task", "some-plugin", test.err)
+			err := taskError("some_task", "some-plugin", test.err, secrets.NewScrubber())
 
 			var taskErr *flowstatev1.TaskError
 			if !errors.As(err, &taskErr) {

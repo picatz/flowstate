@@ -3,8 +3,10 @@ package sdk
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 )
@@ -22,13 +24,16 @@ import (
 //	NotFound          the secret or resource does not exist          permanent
 //	PermissionDenied  the backend refused                            permanent
 //	InvalidInput      the inputs or the reference are wrong          permanent
-//	Failed            it failed, and another attempt will too        permanent
+//	Failed            it failed, and another attempt will not fix it permanent
+//	OutcomeUnknown    it may or may not have taken effect            permanent
 //	Unavailable       the backend could not be reached, or timed out retryable
 //
 // Only [Unavailable] is retried. Everything else describes a state the next
 // attempt finds unchanged, and retrying it spends a step's attempt budget on a
 // question whose answer cannot change — worse than useless when the task is not
-// idempotent.
+// idempotent. [OutcomeUnknown] is the sharpest case of that: retrying it is not
+// retrying a failure, it is attempting an operation that may have already
+// succeeded a second time.
 //
 // None of these should be given a secret value to interpolate. An error from a
 // plugin is surfaced to users and written to workflow history, which is durable
@@ -56,6 +61,26 @@ func Failed(format string, args ...any) error {
 	return &classified{code: connect.CodeUnknown, err: fmt.Errorf(format, args...)}
 }
 
+// OutcomeUnknown reports that a request may have reached the backend and taken
+// effect, and only the answer was lost — a timeout awaiting a response, a
+// connection reset mid-flight. It is permanent for the same reason the engine's
+// own [flowstatev1.ErrorKindUpstreamUnknown] is: an unknown outcome is not a
+// failure another attempt could clear up, it is an operation that may already
+// have happened, and retrying a non-idempotent one is how one charge becomes
+// two. The step fails once and the workflow's author decides, which they can do
+// and the engine cannot.
+//
+// Distinct from [Failed], which the host used to be the only permanent
+// classification a plugin could reach for here — and which maps to
+// [flowstatev1.ErrorKindInvalidInput] for the reason documented where the host
+// classifies a plugin's failure: every other permanent kind names a specific
+// cause, and claiming one of those for a plugin's unqualified "it failed" would
+// misname the reason. [Failed] still means that. This means something more
+// specific and more consequential: not merely permanent, but retry-hostile.
+func OutcomeUnknown(format string, args ...any) error {
+	return &classified{code: connect.CodeUnknown, unknownOutcome: true, err: fmt.Errorf(format, args...)}
+}
+
 // Unavailable reports that something this plugin depends on could not be
 // reached, or did not answer in time. It is the one retryable classification.
 //
@@ -66,11 +91,36 @@ func Unavailable(format string, args ...any) error {
 	return &classified{code: connect.CodeUnavailable, retryable: true, err: fmt.Errorf(format, args...)}
 }
 
+// UnavailableAfter is [Unavailable] with a preferred delay before the next
+// attempt, for a backend that named one — a 429 or a 503 carrying a
+// Retry-After, the same reason the engine's own http task honors that header
+// rather than guessing. The host maps it onto the step's [TaskError.RetryAfter],
+// the same field a built-in task's own retry hint travels through.
+//
+// A non-positive retryAfter is the same as calling [Unavailable]: a delay of
+// zero or less is not a preference, and forwarding one would ask the engine to
+// retry in the past.
+func UnavailableAfter(retryAfter time.Duration, format string, args ...any) error {
+	c := &classified{code: connect.CodeUnavailable, retryable: true, err: fmt.Errorf(format, args...)}
+	if retryAfter > 0 {
+		c.retryAfter = retryAfter
+	}
+	return c
+}
+
 // classified is an error carrying how the engine should treat it.
 type classified struct {
 	code      connect.Code
 	retryable bool
 	err       error
+
+	// unknownOutcome marks a permanent failure as retry-hostile rather than
+	// merely permanent; see [OutcomeUnknown].
+	unknownOutcome bool
+
+	// retryAfter is the delay a backend asked for, carried only when positive;
+	// see [UnavailableAfter].
+	retryAfter time.Duration
 }
 
 // Error implements the error interface.
@@ -104,6 +154,8 @@ func asConnectError(err error) error {
 	}
 
 	code, retryable := connect.CodeUnknown, false
+	var unknownOutcome bool
+	var retryAfter time.Duration
 
 	var known *classified
 	var wrapped *connect.Error
@@ -111,6 +163,8 @@ func asConnectError(err error) error {
 	switch {
 	case errors.As(err, &known):
 		code, retryable = known.code, known.retryable
+		unknownOutcome = known.unknownOutcome
+		retryAfter = known.retryAfter
 	case errors.As(err, &wrapped):
 		// A connect error with context wrapped around it: the author chose the
 		// code, so it is kept, and the safe verdict on retrying is added.
@@ -119,7 +173,15 @@ func asConnectError(err error) error {
 
 	converted := connect.NewError(code, err)
 
-	detail, detailErr := connect.NewErrorDetail(&pluginv1.ExecuteResponse{Retryable: retryable})
+	response := &pluginv1.ExecuteResponse{
+		Retryable:      retryable,
+		UnknownOutcome: unknownOutcome,
+	}
+	if retryAfter > 0 {
+		response.RetryAfter = durationpb.New(retryAfter)
+	}
+
+	detail, detailErr := connect.NewErrorDetail(response)
 	if detailErr == nil {
 		converted.AddDetail(detail)
 	}
