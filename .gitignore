@@ -39,3 +39,4 @@ go.work
 # checked in.
 .claude/worktrees/
 
+.worktrees/
