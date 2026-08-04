@@ -1,0 +1,135 @@
+# Reserve stock, take payment, hand the order to a carrier — and if the
+# carrier can't take it, give back exactly what was taken: the charge and the
+# hold on the stock, in that order.
+#
+# `saga-provisioning` is the same mechanism over infrastructure; this is the
+# same mechanism over a business transaction, which is the case `undo:` was
+# written for in the first place. The property worth seeing is what a
+# half-finished checkout is not allowed to do: keep a customer's money for
+# stock that was never shipped. A process that crashes after charging the
+# card and before booking the carrier would need its own code to notice and
+# reverse that later; here the compensations are already registered the
+# moment each step that owns one succeeds, so whichever step fails, the ones
+# before it that registered a compensation get taken back — in reverse,
+# because the payment was only taken *because* the stock was already held.
+#
+# The ordinary path, which succeeds and reports what it did:
+#
+#   flow run local examples/order-fulfillment/workflow.yaml
+#
+# The path this example exists for — ask it to simulate the carrier being
+# unable to take the order, and read the last line of the failure:
+#
+#   flow run local examples/order-fulfillment/workflow.yaml --input carrier_outage=true
+#   ...
+#   step "arrange_shipment": task "http" failed (InvalidInput): ...; compensation
+#   ran in reverse order: undid "charge_payment", undid "reserve_inventory"
+#
+# `flow cancel` on a run partway through does the same thing, in the same
+# order, for the same reason: whatever this run already did to the customer's
+# card and the warehouse's stock has to come back regardless of why the run
+# is stopping. `flow terminate` does not run any of it, which is the
+# difference the two verbs have always meant.
+#
+# Run durably instead of in this process (needs a Temporal dev server,
+# `flow worker`, and `flow server` — see the main README's Quickstart) and the
+# same two paths unwind the same way, from whichever worker is running the
+# segment that fails:
+#
+#   flow run examples/order-fulfillment/workflow.yaml
+#   flow run examples/order-fulfillment/workflow.yaml --input carrier_outage=true
+edition: v2026.2
+name: order-fulfillment
+description: Reserve stock, charge a card, arrange shipping — and undo the first two if the third can't happen.
+
+inputs:
+  order_id:
+    type: string
+    default: ORD-48213
+    description: the order being fulfilled
+  carrier_outage:
+    type: bool
+    default: false
+    description: simulate no carrier being able to take the order, to see the hold and the charge undone
+
+steps:
+  # Reserved first and released last: the stock is what everything else in
+  # this run depends on existing, so undoing it has to wait until whatever
+  # was built on top of it — the charge — has already been taken back.
+  - id: reserve_inventory
+    description: hold the stock so this order cannot be oversold while payment and shipping are arranged
+    http:
+      method: GET
+      url: https://httpbin.org/get
+      query:
+        reserve: inventory
+        order: ${inputs.order_id}
+      parse_json: true
+      outputs: '${ {"id": "res-" + response.json.args.order} }'
+    undo:
+      http:
+        method: GET
+        url: https://httpbin.org/get
+        query:
+          release: ${steps.reserve_inventory.id}
+
+  # `${steps.reserve_inventory.id}` here is an ordinary backward reference —
+  # this step reads an earlier one's output, ok anywhere in the file. The
+  # same name inside `reserve_inventory`'s own `undo:` above is not: a step
+  # reading itself parses only inside its own `undo:`, because only there is
+  # the value already known to exist.
+  - id: charge_payment
+    description: charge the card now that the stock is actually held, never before
+    http:
+      method: GET
+      url: https://httpbin.org/get
+      query:
+        charge: payment
+        reservation: ${steps.reserve_inventory.id}
+      parse_json: true
+      outputs: '${ {"id": "chg-" + response.json.args.reservation} }'
+    undo:
+      # The compensation that matters most in this file. A shipment that
+      # cannot be arranged must not mean a payment that stays taken — this is
+      # what "undo runs in reverse" is actually for, not the general
+      # principle so much as this one refund.
+      http:
+        method: GET
+        url: https://httpbin.org/get
+        query:
+          refund: ${steps.charge_payment.id}
+
+  # No `undo:` here — nothing after this step can fail on its behalf, because
+  # this is the last step with a compensable effect. `confirm` below only
+  # narrates; if it were the one that failed, this step's success would still
+  # need undoing, which is exactly the case `undo:` exists for regardless of
+  # which later step is the one that fails.
+  #
+  # `carrier_outage` decides the outcome through `expect:` rather than
+  # through the URL, on purpose: `url:` here is a literal, and the CI harness
+  # that points these requests at a stand-in during tests can only rewrite a
+  # literal host — an expression building the URL from an input would leave
+  # it pointed at the real one. `expect:` has no such constraint, so it is
+  # where a workflow's own logic decides what counts as success without
+  # touching what gets requested.
+  - id: arrange_shipment
+    description: hand the order to a carrier — the step this example fails on, when asked to
+    http:
+      method: GET
+      url: https://httpbin.org/status/200
+      expect: ${!inputs.carrier_outage && response.status_code == 200}
+
+  - id: confirm
+    log:
+      message: ${"order %s confirmed and handed to a carrier".format([inputs.order_id])}
+
+outputs:
+  order_id:
+    value: ${inputs.order_id}
+    description: the order this run processed
+  reservation:
+    value: ${steps.reserve_inventory.id}
+    description: the inventory hold this order made
+  charge:
+    value: ${steps.charge_payment.id}
+    description: the payment charged for this order
