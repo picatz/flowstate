@@ -86,6 +86,23 @@ file - and the response-byte cap, not a true "maximum repository size," is
 the honest backstop for that gap. This is recorded rather than left for
 someone to discover the hard way.
 
+**Packfile inflation.** The response-byte cap above bounds the *compressed*
+bytes a remote sends; it does not bound what those bytes decompress into.
+Git packs each object as its own zlib stream, so a remote can legally answer
+a small, fast response with a pack that inflates to far more memory than it
+ever sent on the wire - a delta or decompression bomb. `clone.go` clones
+into a `packBoundedStorer` (`packbound.go`) that tracks the cumulative
+decompressed size of every object go-git's packfile parser materializes and
+refuses once it crosses `maxInflatedBytes`, naming the bound in its error.
+This closes the *sum-across-objects* case - `packbound.go` documents, and
+`packbound_test.go` proves, that it does not cap any single object's own
+peak size while that one object is being decoded; go-git has no exported
+hook earlier than "the object already exists in memory" (its own
+per-object streaming hook, `lazyObjectWriter`, is unexported and cannot be
+implemented from outside its package - checked directly against go-git's
+source, not assumed). Until that residual is closed, this task should only
+be pointed at remotes the deployment trusts.
+
 **Error classification.** Every operation here is read-only, so there is no
 idempotency concern the way the http task's `retry_on_unknown_outcome`
 exists for - see `errors.go`. What still matters is not retrying a failure

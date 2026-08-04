@@ -9,7 +9,6 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/transport/client"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
-	"github.com/go-git/go-git/v5/storage/memory"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 )
@@ -98,17 +97,33 @@ func (opts cloneOptions) tokenValue() string {
 //     underlying HTTP request this makes is cancelled with it, and this
 //     function returns rather than continuing to fetch into memory nobody
 //     will read.
-//   - Bounded twice over on size: [cloneOptions.depth] bounds the commit
-//     graph go-git asks the remote for, and the egress policy installed in
-//     installEgressPolicy bounds every individual HTTP response along the
-//     way to maxResponseBytes. Depth does not bound the size of any single
-//     blob within that depth - a shallow clone of a repository whose latest
+//   - Bounded three times over on size: [cloneOptions.depth] bounds the
+//     commit graph go-git asks the remote for, the egress policy installed
+//     in installEgressPolicy bounds every individual HTTP response along
+//     the way to maxResponseBytes (the compressed bytes a remote sends),
+//     and the [packBoundedStorer] this function stores into bounds the
+//     decompressed object bytes go-git's packfile parser materializes from
+//     those responses to maxInflatedBytes (see packbound.go for what that
+//     third bound does and does not close - a real residual, documented
+//     rather than hidden). Depth does not bound the size of any single blob
+//     within that depth - a shallow clone of a repository whose latest
 //     commit adds one enormous file is still one enormous file - and this
-//     plugin does not claim otherwise: the response-byte cap is the actual
+//     plugin does not claim otherwise: the byte caps are the actual
 //     backstop for that case, not a true "maximum repository size," and
 //     that gap is recorded in the README rather than left for someone to
 //     discover.
 func cloneBounded(ctx context.Context, opts cloneOptions) (*git.Repository, error) {
+	return cloneBoundedWithInflationCap(ctx, opts, maxInflatedBytes)
+}
+
+// cloneBoundedWithInflationCap is cloneBounded with the packfile-inflation
+// bound taken as a parameter rather than the package's own maxInflatedBytes
+// constant. cloneBounded is the only production caller, always with the real
+// constant; this exists so packbound_test.go can drive a real clone -
+// through the real transport, the real packfile parser, a real local git
+// repository - against a small, fast-to-exceed cap without needing a fixture
+// repository whose decompressed content actually reaches 512 MiB.
+func cloneBoundedWithInflationCap(ctx context.Context, opts cloneOptions, maxInflated int64) (*git.Repository, error) {
 	if opts.depth <= 0 || opts.depth > maxCloneDepth {
 		return nil, fmt.Errorf("clone depth %d is out of bounds (1-%d)", opts.depth, maxCloneDepth)
 	}
@@ -154,7 +169,7 @@ func cloneBounded(ctx context.Context, opts cloneOptions) (*git.Repository, erro
 		}
 	}
 
-	repo, err := git.CloneContext(ctx, memory.NewStorage(), nil, cloneOpts)
+	repo, err := git.CloneContext(ctx, newPackBoundedStorer(maxInflated), nil, cloneOpts)
 	if err != nil {
 		return nil, classifyGitError(err)
 	}

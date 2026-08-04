@@ -9,7 +9,6 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/transport/client"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
-	"github.com/go-git/go-git/v5/storage/memory"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 )
@@ -73,14 +72,28 @@ func (opts cloneOptions) tokenValue() string {
 
 // cloneBounded opens a shallow, in-memory, single-invocation clone - see
 // plugins/vcs/clone.go's cloneBounded for the full argument on why in-memory,
-// why NoCheckout, why AllTags, and the depth-vs-blob-size gap the egress
-// policy's response-byte cap backstops rather than closes. This plugin's own
+// why NoCheckout, why AllTags, the depth-vs-blob-size gap the egress
+// policy's response-byte cap backstops rather than closes, and the storer
+// this now clones into ([packBoundedStorer], packbound.go) that additionally
+// bounds packfile inflation past what the response-byte cap alone reaches.
+// This plugin's own
 // use is narrower than vcs's: it only ever needs to resolve base_ref and
 // build a tree from it, never a branch tip a workflow author named directly,
 // so SingleBranch is left false for the same reason vcs leaves it false -
 // base_ref and, for the retry probe, the target branch, may not be the same
 // ref.
 func cloneBounded(ctx context.Context, opts cloneOptions) (*git.Repository, error) {
+	return cloneBoundedWithInflationCap(ctx, opts, maxInflatedBytes)
+}
+
+// cloneBoundedWithInflationCap is cloneBounded with the packfile-inflation
+// bound taken as a parameter rather than the package's own maxInflatedBytes
+// constant - see plugins/vcs's identical seam for why: it lets
+// packbound_test.go drive a real clone against a small, fast-to-exceed cap
+// without a fixture repository whose decompressed content actually reaches
+// 512 MiB. cloneBounded is the only production caller, always with the real
+// constant.
+func cloneBoundedWithInflationCap(ctx context.Context, opts cloneOptions, maxInflated int64) (*git.Repository, error) {
 	if opts.depth <= 0 || opts.depth > maxCloneDepth {
 		return nil, fmt.Errorf("clone depth %d is out of bounds (1-%d)", opts.depth, maxCloneDepth)
 	}
@@ -107,10 +120,37 @@ func cloneBounded(ctx context.Context, opts cloneOptions) (*git.Repository, erro
 		}
 	}
 
-	repo, err := git.CloneContext(ctx, memory.NewStorage(), nil, cloneOpts)
+	packStorer := newPackBoundedStorer(maxInflated)
+	repo, err := git.CloneContext(ctx, packStorer, nil, cloneOpts)
 	if err != nil {
 		return nil, classifyGitError(err)
 	}
+
+	// The accounting above exists only to bound bytes go-git's packfile
+	// parser decompresses from *this remote*, during *this* CloneContext
+	// call. That call is synchronous - every object it was ever going to
+	// write already has been by the time it returns - so there is nothing
+	// left for packBoundedStorer to usefully count from here on. What comes
+	// next in this plugin's only write path (doCommitPush's rebuildTree and
+	// writeCommit, commit_push.go) writes this task's own new tree and
+	// commit objects - built from files/patch content already bounded
+	// separately, by maxFiles/maxFileBytes/maxTotalFileBytes/maxPatchBytes -
+	// through this same repo.Storer. Left wrapped, those local writes would
+	// keep incrementing total against a budget that is supposed to describe
+	// what a remote sent, which is wrong in both directions: a clone that
+	// landed comfortably under the cap, followed by an ordinary commit,
+	// could be refused as a "remote decompression bomb" it never was, and
+	// the number would stop meaning what its own name says.
+	//
+	// Unwrapping the field here - back to the plain *memory.Storage
+	// packStorer was built around, never packStorer itself - is what keeps
+	// that true: every go-git operation this plugin runs against the
+	// returned *git.Repository after this line reads repo.Storer fresh
+	// (Repository.Remote, for instance, builds a new *Remote from the
+	// current field value on every call rather than caching one from clone
+	// time - checked in go-git's own source, not assumed), so nothing here
+	// depends on go-git holding a stale reference to the wrapped storer.
+	repo.Storer = packStorer.Storage
 
 	return repo, nil
 }

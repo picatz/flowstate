@@ -57,6 +57,17 @@ const (
 	// a "maximum repository size," is the honest bound this plugin can make.
 	maxResponseBytes = 128 << 20 // 128 MiB
 
+	// maxInflatedBytes bounds the sum of every object's decompressed size
+	// that go-git's packfile parser materializes while parsing one clone's
+	// pack stream - see packbound.go for the full argument, including what
+	// this bound does and does not close. Set generously above
+	// maxResponseBytes (a real repository's decompressed content is
+	// ordinarily close to, not many multiples of, its compressed size) so
+	// that an ordinary clone is never the one this refuses, while still
+	// meaningfully capping a pack built to inflate far past what it claimed
+	// to send.
+	maxInflatedBytes = 512 << 20 // 512 MiB
+
 	// requestTimeout backstops a clone or fetch that hangs, and overrides
 	// netpolicy's own [netpolicy.DefaultTimeout] (30s), which is sized for a
 	// single ordinary HTTP request and too tight for a packfile transfer. A
