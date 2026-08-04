@@ -219,11 +219,20 @@ func TestCodexExecAllowsSandboxModeWithinAnOperatorRaisedCeiling(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	t.Setenv(policyEnv, policyPath)
-	t.Setenv(workdirRootEnv, "")
+
+	// A writable run must name where it may write (see
+	// TestWritableSandboxRequiresAWorkingContext), so this ceiling test
+	// supplies one rather than relying on the child inheriting a directory.
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "work"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	t.Setenv(workdirRootEnv, root)
 
 	_, err := codexExec(context.Background(), inputsFor(map[string]any{
-		"prompt":       "hi",
-		"sandbox_mode": "SANDBOX_MODE_WORKSPACE_WRITE",
+		"prompt":          "hi",
+		"sandbox_mode":    "SANDBOX_MODE_WORKSPACE_WRITE",
+		"working_context": "work",
 	}), nil)
 	if err != nil {
 		t.Fatalf("codexExec requesting WORKSPACE_WRITE with an operator policy raising the ceiling: unexpected error: %v", err)

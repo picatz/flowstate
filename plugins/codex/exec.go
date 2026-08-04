@@ -73,6 +73,21 @@ func codexExec(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flo
 		return nil, err
 	}
 
+	// A writable run must say where it may write. Without a working_context
+	// there is no --cd and no cmd.Dir, so the child would inherit this plugin
+	// process's own current directory - which the host sets to the private
+	// plugin socket directory (pkg/flowstate/v1/plugin/launch.go), putting
+	// host-managed files inside a writable agent's reach and entirely outside
+	// the operator's configured root. Refused rather than silently jailed
+	// somewhere invented: a writable run with nowhere declared to write is an
+	// authoring mistake, and the author knows which directory was meant.
+	if sandbox != codexv1.SandboxMode_SANDBOX_MODE_READ_ONLY && workDir == "" {
+		return nil, sdk.InvalidInput(
+			"sandbox_mode %s writes, so working_context is required: name the directory this run "+
+				"may write in (it must resolve inside the worker's configured root), or use "+
+				"SANDBOX_MODE_READ_ONLY", sandbox.String())
+	}
+
 	maxOutput, err := clampMaxOutputBytes(in.GetMaxOutputBytes())
 	if err != nil {
 		return nil, err
@@ -116,9 +131,14 @@ func codexExec(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flo
 	argv := buildArgs(model, sandboxArg, workDir, allowNetwork, mutatingSandbox)
 	env := childEnv(apiKey, codexHome)
 
+	// Recorded before the subprocess runs: afterwards, an edit that was
+	// already there and an edit this run made are indistinguishable. See
+	// workspaceBaseline.
+	baseline := observeWorkspace(runCtx, workDir, sandbox != codexv1.SandboxMode_SANDBOX_MODE_READ_ONLY)
+
 	flowstatev1.ReportProgress(ctx, flowstatev1.PhaseRequesting)
 
-	proc, err := startCodexProcess(runCtx, binPath, argv, env, prompt)
+	proc, err := startCodexProcess(runCtx, binPath, workDir, codexHome, argv, env, prompt)
 	if err != nil {
 		return nil, sdk.Failed("starting codex: %s", scrubber.Scrub(err.Error()))
 	}
@@ -141,11 +161,24 @@ func codexExec(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flo
 		return nil, classifyRunError(err, run.sawSideEffect, mutating, scrubber)
 	}
 
-	patch, filesChanged, patchTruncated := computePatch(runCtx, workDir, mutating, run.filesChanged)
+	patch, filesChanged, patchTruncated := computePatch(runCtx, workDir, mutating, baseline, run.filesChanged)
 
-	finalMessage, finalTruncated := truncateBytes(scrubber.Scrub(run.finalMessage), maxFinalMessageBytes)
+	// max_output_bytes bounds everything this task returns, not each field
+	// separately: the per-field caps below it are ceilings a single field may
+	// not exceed even when the total would allow it, and this is the allowance
+	// they are spent against. Allocated in a fixed order - final message, then
+	// patch, then events - so what survives truncation is deterministic.
+	remaining := maxOutput
 
-	events, eventsTruncated := boundEvents(run.events, maxEvents, maxOutput-len(finalMessage)-len(patch), scrubber)
+	finalMessage, finalTruncated := truncateBytes(scrubber.Scrub(run.finalMessage), min(maxFinalMessageBytes, remaining))
+	remaining -= len(finalMessage)
+
+	if len(patch) > remaining {
+		patch, patchTruncated = truncateBytes(patch, max(remaining, 0))
+	}
+	remaining -= len(patch)
+
+	events, eventsTruncated := boundEvents(run.events, maxEvents, remaining, scrubber)
 
 	truncated := run.streamTruncated || finalTruncated || patchTruncated || eventsTruncated || run.eventsTruncated
 
@@ -275,6 +308,12 @@ func readRun(ctx context.Context, proc *codexProcess, maxEvents int) (runResult,
 
 	if reader.truncated {
 		result.streamTruncated = true
+
+		// Nothing will read this child's stdout again, so it is about to block
+		// forever on a full pipe and Wait would not return until the run
+		// timeout killed it. Killed here instead, which is what makes the
+		// output bound bound the run's duration and not only its bytes.
+		proc.Kill()
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -415,7 +454,12 @@ func boundEvents(lines []eventLine, maxEvents, budget int, scrubber *secrets.Scr
 			break
 		}
 		summary := scrubber.Scrub(line.summary)
-		if budget > 0 && spent+len(summary) > budget {
+		// A non-positive budget means nothing more fits, never "unbounded".
+		// The remainder handed here is what max_output_bytes has left after
+		// the final message and patch, so it legitimately arrives at or below
+		// zero - and treating that as "no limit" is how the one bound a caller
+		// asked for gets exceeded by the field most likely to be large.
+		if budget <= 0 || spent+len(summary) > budget {
 			truncated = true
 			break
 		}

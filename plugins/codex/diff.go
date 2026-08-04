@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -40,8 +41,18 @@ const gitTimeout = 30 * time.Second
 // checkout at all are both treated as "patch not available" rather than as
 // an error, since a working_context is not required to be a git repository
 // - only diffing one requires that.
-func computePatch(ctx context.Context, workDir string, mutating bool, filesChanged []fileChange) (patch string, files []fileChange, truncated bool) {
+func computePatch(ctx context.Context, workDir string, mutating bool, baseline workspaceBaseline, filesChanged []fileChange) (patch string, files []fileChange, truncated bool) {
 	if !mutating || workDir == "" || len(filesChanged) == 0 {
+		return "", filesChanged, false
+	}
+
+	// A patch is only honest when it is *this run's* delta. `git diff HEAD` in
+	// a workspace that already had uncommitted edits reports those too, and
+	// this output feeds git.commit_push directly - so a dirty start would
+	// commit work this run never did. Pre-existing edits cannot be subtracted
+	// after the fact, so this fails closed: no patch, and the caller still
+	// learns what changed from files_changed. See workspaceBaseline.
+	if !baseline.observed || baseline.dirty {
 		return "", filesChanged, false
 	}
 
@@ -58,12 +69,68 @@ func computePatch(ctx context.Context, workDir string, mutating bool, filesChang
 		return "", filesChanged, false
 	}
 
+	// Files the run created are untracked, and `git diff` does not report an
+	// untracked file at all - so without this the patch would silently omit
+	// exactly the new files a downstream commit most needs. --intent-to-add
+	// records their existence without staging content, which is what makes
+	// them appear below as additions. Best-effort like the rest of this
+	// function: if it fails, the tracked changes still diff.
+	_, _, _ = runGitBounded(ctx, gitBin, workDir, maxPatchBytes, "add", "--intent-to-add", "--", ".")
+
 	out, ok, truncatedOutput := runGitBounded(ctx, gitBin, workDir, maxPatchBytes, "diff", "--no-color", "-M", "HEAD")
 	if !ok {
 		return "", filesChanged, false
 	}
 
 	return out, filesChanged, truncatedOutput
+}
+
+// workspaceBaseline is what was true of working_context *before* a run
+// started: whether this plugin managed to look, and whether it found
+// uncommitted changes already there.
+//
+// Recorded before the subprocess starts, because afterwards the two are
+// indistinguishable - an edit already present and an edit the run made look
+// identical to `git diff`, and guessing wrong in the permissive direction is
+// how a downstream commit picks up work nobody asked it to.
+//
+// observed is false when this plugin could not tell (no git binary
+// configured, working_context is not a checkout), which is treated exactly
+// like dirty: patch output is a claim about what a run did, and a claim that
+// cannot be checked is not made.
+type workspaceBaseline struct {
+	observed bool
+	dirty    bool
+}
+
+// observeWorkspace records whether workDir has uncommitted changes before a
+// run begins. See [workspaceBaseline].
+func observeWorkspace(ctx context.Context, workDir string, mutating bool) workspaceBaseline {
+	if !mutating || workDir == "" {
+		return workspaceBaseline{}
+	}
+
+	gitBin := os.Getenv(gitBinaryEnv)
+	if gitBin == "" {
+		return workspaceBaseline{}
+	}
+	info, err := os.Stat(gitBin)
+	if err != nil || info.IsDir() || info.Mode()&0o111 == 0 {
+		return workspaceBaseline{}
+	}
+	if !isGitWorkTree(ctx, gitBin, workDir) {
+		return workspaceBaseline{}
+	}
+
+	// --porcelain reports tracked modifications and untracked files alike,
+	// which is the whole question here: any output at all means something was
+	// already there.
+	out, ok, _ := runGitBounded(ctx, gitBin, workDir, maxPatchBytes, "status", "--porcelain")
+	if !ok {
+		return workspaceBaseline{}
+	}
+
+	return workspaceBaseline{observed: true, dirty: strings.TrimSpace(out) != ""}
 }
 
 // isGitWorkTree reports whether dir is inside a git working tree, so

@@ -133,9 +133,21 @@ func childEnv(apiKey, codexHome string) []string {
 // startCodexProcess launches the codex subprocess, writes prompt to its
 // stdin, and returns a handle whose Stdout can be read for the JSON event
 // stream and whose Wait reports the terminal result.
-func startCodexProcess(ctx context.Context, binPath string, argv, env []string, prompt string) (*codexProcess, error) {
+func startCodexProcess(ctx context.Context, binPath, workDir, fallbackDir string, argv, env []string, prompt string) (*codexProcess, error) {
 	cmd := exec.CommandContext(ctx, binPath, argv...)
 	cmd.Env = env
+
+	// Never inherited. An empty cmd.Dir means "this process's own directory",
+	// which the host sets to the private plugin socket directory - so leaving
+	// it empty would put host-managed files in the child's reach, whatever
+	// --cd says. A writable run always has a workDir by the time it gets here
+	// (exec.go refuses one without); a read-only run without one is pointed at
+	// fallbackDir, this run's own ephemeral CODEX_HOME, which is torn down
+	// with the run.
+	cmd.Dir = workDir
+	if cmd.Dir == "" {
+		cmd.Dir = fallbackDir
+	}
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -175,6 +187,25 @@ func startCodexProcess(ctx context.Context, binPath string, argv, env []string, 
 // stderr has anything in it would misclassify most real subprocess
 // failures. This function always wraps with %w so that gap does not carry
 // over into this plugin's own error path.
+// Kill stops the subprocess without waiting for it to finish on its own.
+//
+// Called when this plugin has stopped reading the child's stdout — the
+// output bound was reached — because at that moment the child is one
+// full pipe buffer away from blocking forever on its next write, and
+// [codexProcess.Wait] cannot return until it exits. Without this, a bound
+// meant to stop a chatty run instead holds the activity open until the
+// whole run timeout expires: the opposite of what bounding it was for.
+//
+// Safe to call more than once and safe to call on a process that has
+// already exited; a kill that finds nothing to kill is not an error worth
+// reporting, since the only thing this needs to guarantee is that nothing
+// is left running.
+func (p *codexProcess) Kill() {
+	if p.cmd.Process != nil {
+		_ = p.cmd.Process.Kill()
+	}
+}
+
 func (p *codexProcess) Wait() error {
 	p.waitOnce.Do(func() {
 		err := p.cmd.Wait()

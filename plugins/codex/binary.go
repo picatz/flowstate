@@ -117,6 +117,10 @@ func resolveWorkingContext(raw string) (string, error) {
 	// "..", so this is the actual containment check - not a string prefix
 	// test, which "/root-evil" passing a prefix check against "/root" is
 	// the classic way to get wrong.
+	// Lexical only, which is why it is not the last word: a directory that is
+	// lexically inside the root can be a symlink whose target is not, and
+	// every later use of this path - the Stat below, and codex's own --cd -
+	// follows that link. Checked again on the resolved paths afterwards.
 	rel, err := filepath.Rel(absRoot, candidate)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", sdk.InvalidInput(
@@ -132,7 +136,29 @@ func resolveWorkingContext(raw string) (string, error) {
 		return "", sdk.InvalidInput("working_context %q is not a directory", truncatePath(raw))
 	}
 
-	return candidate, nil
+	// The containment check that actually holds: both sides canonicalized, so
+	// a symlink pointing out of the root is refused rather than followed. An
+	// ordinary checkout can contain a directory symlink without anyone
+	// intending an escape, so the diagnostic names which property failed.
+	realRoot, err := filepath.EvalSymlinks(absRoot)
+	if err != nil {
+		return "", sdk.Failed("%s (%q) does not resolve: %v", workdirRootEnv, truncatePath(root), err)
+	}
+	realCandidate, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
+		return "", sdk.InvalidInput("working_context %q: %v", truncatePath(raw), err)
+	}
+
+	realRel, err := filepath.Rel(realRoot, realCandidate)
+	if err != nil || realRel == ".." || strings.HasPrefix(realRel, ".."+string(filepath.Separator)) {
+		return "", sdk.InvalidInput(
+			"working_context resolves outside the configured root once symlinks are followed; " +
+				"a path inside the root that links out of it is still outside it")
+	}
+
+	// The resolved path is what is handed onward, so what codex is given is
+	// the directory that was actually checked.
+	return realCandidate, nil
 }
 
 // truncatePath bounds a path before it enters an error message - it may

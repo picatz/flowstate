@@ -46,7 +46,7 @@ func initRepoWithCommit(t *testing.T, gitBin, dir string) {
 }
 
 func TestComputePatchSkipsWhenNotMutating(t *testing.T) {
-	patch, files, truncated := computePatch(context.Background(), t.TempDir(), false,
+	patch, files, truncated := computePatch(context.Background(), t.TempDir(), false, workspaceBaseline{observed: true},
 		[]fileChange{{Path: "a.txt", ChangeType: "update"}})
 	if patch != "" || truncated {
 		t.Fatalf("computePatch with mutating=false = (%q, %v), want (\"\", false)", patch, truncated)
@@ -57,7 +57,7 @@ func TestComputePatchSkipsWhenNotMutating(t *testing.T) {
 }
 
 func TestComputePatchSkipsWithNoFilesChanged(t *testing.T) {
-	patch, _, _ := computePatch(context.Background(), t.TempDir(), true, nil)
+	patch, _, _ := computePatch(context.Background(), t.TempDir(), true, workspaceBaseline{observed: true}, nil)
 	if patch != "" {
 		t.Fatalf("computePatch with no files_changed = %q, want empty", patch)
 	}
@@ -65,7 +65,7 @@ func TestComputePatchSkipsWithNoFilesChanged(t *testing.T) {
 
 func TestComputePatchSkipsWithNoGitBinaryConfigured(t *testing.T) {
 	t.Setenv(gitBinaryEnv, "")
-	patch, _, _ := computePatch(context.Background(), t.TempDir(), true,
+	patch, _, _ := computePatch(context.Background(), t.TempDir(), true, workspaceBaseline{observed: true},
 		[]fileChange{{Path: "a.txt", ChangeType: "update"}})
 	if patch != "" {
 		t.Fatalf("computePatch with no git binary configured = %q, want empty (best-effort, not an error)", patch)
@@ -76,7 +76,7 @@ func TestComputePatchSkipsWhenDirIsNotAGitRepo(t *testing.T) {
 	gitBin := realGitBinary(t)
 	t.Setenv(gitBinaryEnv, gitBin)
 
-	patch, _, _ := computePatch(context.Background(), t.TempDir(), true,
+	patch, _, _ := computePatch(context.Background(), t.TempDir(), true, workspaceBaseline{observed: true},
 		[]fileChange{{Path: "a.txt", ChangeType: "update"}})
 	if patch != "" {
 		t.Fatalf("computePatch against a plain directory = %q, want empty", patch)
@@ -98,7 +98,7 @@ func TestComputePatchRendersAUnifiedDiff(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	patch, files, truncated := computePatch(context.Background(), dir, true,
+	patch, files, truncated := computePatch(context.Background(), dir, true, workspaceBaseline{observed: true},
 		[]fileChange{{Path: "a.txt", ChangeType: "update"}})
 	if truncated {
 		t.Fatal("computePatch reported truncated for a tiny diff")
