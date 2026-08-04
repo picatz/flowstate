@@ -1,0 +1,166 @@
+package flowtest_test
+
+import (
+	"os"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
+)
+
+// TestRunFileBasic exercises the happy path and the "no matching stub"
+// failure mode against pkg/flowstate/v1/flowtest/testdata/basic.
+func TestRunFileBasic(t *testing.T) {
+	t.Parallel()
+
+	report := flowtest.RunFile("testdata/basic/basic.test.yaml")
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 2)
+
+	healthy := report.GetCases()[0]
+	require.Equal(t, "a healthy check reports its status", healthy.GetName())
+	require.True(t, healthy.GetPassed(), "failures: %v", healthy.GetFailures())
+
+	unmatched := report.GetCases()[1]
+	require.Equal(t, "an unmatched stub fails the case with a diagnostic", unmatched.GetName())
+	require.True(t, unmatched.GetPassed(), "failures: %v", unmatched.GetFailures())
+}
+
+// TestRunFileSleepIsInstant is the proof-of-bite from #155: a workflow that
+// sleeps for a day runs, under `flow test`, in well under a second.
+func TestRunFileSleepIsInstant(t *testing.T) {
+	t.Parallel()
+
+	started := time.Now()
+	report := flowtest.RunFile("testdata/sleep/sleep.test.yaml")
+	elapsed := time.Since(started)
+
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 1)
+	require.True(t, report.GetCases()[0].GetPassed(), "failures: %v", report.GetCases()[0].GetFailures())
+	require.Less(t, elapsed, time.Second, "a 24h sleep took %s to test", elapsed)
+}
+
+// TestRunFileGate exercises a scripted signal racing a wait's own timeout, in
+// both directions: delivered before the deadline, and never delivered at
+// all.
+func TestRunFileGate(t *testing.T) {
+	t.Parallel()
+
+	started := time.Now()
+	report := flowtest.RunFile("testdata/gate/gate.test.yaml")
+	elapsed := time.Since(started)
+
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 2)
+	for _, c := range report.GetCases() {
+		require.True(t, c.GetPassed(), "%s: failures: %v", c.GetName(), c.GetFailures())
+	}
+	// The second case's timeout is one real hour on the workflow's own clock;
+	// under the virtual clock both cases together still take well under a
+	// second.
+	require.Less(t, elapsed, time.Second)
+}
+
+// TestRunFileUndo checks that a stub answering a failure exercises real
+// compensation through the real local driver, and that the report's
+// `expect.compensated` reads the undo log's own account.
+func TestRunFileUndo(t *testing.T) {
+	t.Parallel()
+
+	report := flowtest.RunFile("testdata/undo/undo.test.yaml")
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 1)
+	require.True(t, report.GetCases()[0].GetPassed(), "failures: %v", report.GetCases()[0].GetFailures())
+}
+
+// TestRunFileReportsAFailedExpectation checks that a case whose expectation
+// does not hold is reported as failed with a legible diagnostic, rather than
+// a passing case or a hard error — this is what an author actually sees when
+// they write a wrong assertion.
+func TestRunFileReportsAFailedExpectation(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/workflow.yaml", `
+edition: v2026.2
+name: wrong-output
+steps:
+  - id: fetch
+    log:
+      message: hi
+outputs:
+  greeting:
+    value: ${'hi'}
+`)
+	writeFile(t, dir+"/wrong.test.yaml", `
+tests:
+  - name: expects the wrong greeting
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      outputs:
+        greeting: "bye"
+`)
+
+	report := flowtest.RunFile(dir + "/wrong.test.yaml")
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 1)
+
+	c := report.GetCases()[0]
+	require.False(t, c.GetPassed())
+	require.Len(t, c.GetFailures(), 1)
+	require.Equal(t, "expect.outputs", c.GetFailures()[0].GetField())
+	require.Contains(t, c.GetFailures()[0].GetMessage(), "bye")
+}
+
+// TestLoadRejectsAnUnknownField checks that a typo in a test file is reported
+// rather than silently ignored — the same rule CLAUDE.md's "diagnostics are a
+// feature" states for a Flowfile itself: a misspelled key must be reported,
+// not ignored.
+func TestLoadRejectsAnUnknownField(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := dir + "/typo.test.yaml"
+	writeFile(t, path, `
+tests:
+  - name: a test with a typo
+    workflow: ./workflow.yaml
+    expectt:
+      outputs: {}
+`)
+
+	_, err := flowtest.Load(path)
+	require.Error(t, err)
+}
+
+// TestLoadEnforcesBounds checks that the bounds on stubs, signals, and test
+// count are actually reached rather than merely declared — a test file is
+// untrusted input like any Flowfile (CLAUDE.md).
+func TestLoadEnforcesBounds(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+
+	var sb []byte
+	sb = append(sb, "tests:\n  - name: too many stubs\n    workflow: ./workflow.yaml\n    stubs:\n"...)
+	for i := 0; i < flowtest.MaxStubsPerTest+1; i++ {
+		sb = append(sb, "      - task: http\n        returns: {}\n"...)
+	}
+	path := dir + "/too-many-stubs.test.yaml"
+	writeFile(t, path, string(sb))
+
+	_, err := flowtest.Load(path)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "stubs")
+}
+
+func writeFile(t *testing.T, path, contents string) {
+	t.Helper()
+	require.NoError(t, os.WriteFile(path, []byte(contents), 0o644))
+}

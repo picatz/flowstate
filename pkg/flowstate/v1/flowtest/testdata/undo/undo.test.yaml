@@ -1,0 +1,20 @@
+tests:
+  - name: a failure partway through undoes what already succeeded
+    workflow: ./workflow.yaml
+    stubs:
+      - task: http
+        where: inputs.method == "POST" && inputs.url == "https://example.internal/network"
+        returns:
+          status: 200
+      - task: http
+        where: inputs.method == "POST" && inputs.url == "https://example.internal/volumes"
+        fails:
+          kind: Upstream
+          message: quota exceeded
+      - task: http
+        where: inputs.method == "DELETE"
+        returns:
+          status: 200
+    expect:
+      failed: true
+      compensated: [network]

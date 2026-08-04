@@ -1,0 +1,13 @@
+edition: v2026.2
+name: gate
+
+steps:
+  - id: approval
+    wait_for_signal:
+      name: deploy-approved
+      timeout: 1h
+
+  - id: deploy
+    if: ${!approval.timed_out}
+    log:
+      message: deploying

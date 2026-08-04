@@ -1,0 +1,19 @@
+tests:
+  - name: an approval delivered before the timeout releases the gate
+    workflow: ./workflow.yaml
+    signals:
+      - name: deploy-approved
+        at: 5m
+        payload:
+          approved: true
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [approval, deploy]
+
+  - name: an approval that never arrives lapses at the timeout
+    workflow: ./workflow.yaml
+    expect:
+      ran: [approval]
+      skipped: [deploy]

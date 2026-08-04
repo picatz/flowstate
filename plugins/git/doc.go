@@ -223,6 +223,44 @@
 // ssh:// support is real, additive future work, not a one-line allowlist
 // entry.
 //
+// # No provider lock-in, and the one place that used to cost something
+//
+// This plugin's transport is go-git's BasicAuth over the git smart-HTTP
+// protocol - one call, r.SetBasicAuth(username, password), standard HTTP
+// Basic auth (RFC 7617), verified by reading
+// plumbing/transport/http/common.go rather than assumed. Nothing here
+// recognizes GitHub, GitLab, Gitea, or Bitbucket by name or branches on a
+// hostname; any server speaking git-over-HTTPS and accepting a token as a
+// Basic-auth password works, which is the actual design property worth
+// naming: git.* has no provider lock-in, on purpose, and a provider's own
+// peculiarities belong in a forge plugin like plugins/github, never as a
+// provider-specific input bolted onto this one.
+//
+// The username half of that exchange used to be a fixed literal
+// ("x-access-token"), with nothing a workflow could override - a real cost,
+// not a free property, discovered while sourcing exactly which providers
+// validate it. GitHub and GitLab verified not to validate the username at
+// all (see the README, "Which git server?", for the exact source in each
+// provider's own docs), so the fixed literal was invisible against both.
+// Bitbucket Cloud's current API-token scheme does validate it, accepting
+// only the account's real username or the documented literal
+// "x-bitbucket-api-token-auth" - neither of which the old fixed literal
+// was, so git.commit_push and git.ls_remote's token path did not work
+// against Bitbucket Cloud at all.
+//
+// That cost is now paid, not merely reported: both tasks take an optional
+// username input (resolveUsername in validate.go), defaulting to
+// "x-access-token" so a Flowfile written before this field existed keeps
+// behaving byte-identically, and left for a workflow to set explicitly for
+// a provider that cares - see the README, "Choosing the username." The fix
+// is still not a hostname lookup, deliberately: switching the literal based
+// on the URL's host would be exactly the provider detection this section's
+// whole point refuses to add, and would also be simply wrong for a
+// self-hosted GitLab, Gitea, or Bitbucket Server instance living at a
+// hostname this plugin has no way to recognize. A workflow author already
+// knows which provider they are pointed at; this plugin does not need to
+// guess on their behalf, only give them a field to say so.
+//
 // # Bounds this plugin cannot fully close, said plainly
 //
 // clone.go's egress policy bounds compressed bytes read from the transport,

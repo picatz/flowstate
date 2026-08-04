@@ -131,42 +131,48 @@ func (s *LocalSignals) WaitForSignal(ctx context.Context, name string) (*Node_Ou
 }
 
 // runWait executes a wait in the local driver.
+//
+// Every read of "now" and every block goes through ctx's [Clock] —
+// [ClockFromContext] — rather than through time.Now or time.After: the
+// production default is [RealClock], and `flow test` is the only caller that
+// puts anything else there (a [VirtualClock]), which is what lets a `sleep:
+// 24h` step resolve without the test spending 24 hours finding that out.
 func runWait(ctx context.Context, node *Node, wait *Wait, scope *Scope) (*Node_Outputs, error) {
 	if err := ValidateWait(wait); err != nil {
 		return nil, err
 	}
 
+	clock := ClockFromContext(ctx)
+
 	switch kind := wait.GetKind().(type) {
 	case *Wait_Duration:
-		return waitLocally(ctx, kind.Duration.AsDuration())
+		return waitLocally(ctx, clock, kind.Duration.AsDuration())
 
 	case *Wait_Until:
-		deadline, err := EvalWaitDeadline(ctx, kind.Until, scope, time.Now())
+		now := clock.Now()
+		deadline, err := EvalWaitDeadline(ctx, kind.Until, scope, now)
 		if err != nil {
 			return nil, err
 		}
-		return waitLocally(ctx, time.Until(deadline))
+		return waitLocally(ctx, clock, deadline.Sub(now))
 
 	case *Wait_Signal:
-		return waitForSignalLocally(ctx, kind.Signal, wait.GetTimeout().AsDuration())
+		return waitForSignalLocally(ctx, clock, kind.Signal, wait.GetTimeout().AsDuration())
 
 	default:
 		return nil, fmt.Errorf("unsupported wait kind %T", wait.GetKind())
 	}
 }
 
-// waitLocally sleeps, honoring cancellation so that interrupting a local run
-// interrupts it.
-func waitLocally(ctx context.Context, d time.Duration) (*Node_Outputs, error) {
+// waitLocally sleeps against clock, honoring cancellation so that
+// interrupting a local run interrupts it.
+func waitLocally(ctx context.Context, clock Clock, d time.Duration) (*Node_Outputs, error) {
 	if d <= 0 {
 		return TimerOutputs(false), nil
 	}
 
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-
 	select {
-	case <-timer.C:
+	case <-clock.After(d):
 		return TimerOutputs(false), nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -174,7 +180,25 @@ func waitLocally(ctx context.Context, d time.Duration) (*Node_Outputs, error) {
 }
 
 // waitForSignalLocally blocks until a signal arrives or the wait times out.
-func waitForSignalLocally(ctx context.Context, signal *Signal, timeout time.Duration) (*Node_Outputs, error) {
+//
+// The timeout is resolved against clock rather than through
+// context.WithTimeout, which always reads the wall clock — under a
+// [VirtualClock] that would mean a workload's own `wait_for_signal:` timeout
+// could never resolve without the test actually waiting for it in real time,
+// which is exactly the failure the clock exists to remove. Cancelling a
+// derived context on the clock's signal is what lets [SignalWaiter.WaitForSignal]
+// still unblock the same way it always has, without every implementation of
+// that interface having to learn about a clock of its own.
+//
+// This goroutine's own registration with clock is withdrawn for the whole of
+// the blocking receive below, timed or not — see [LeaveClockWhile]. Waiting
+// for a signal is waiting on something the clock does not control, so this
+// goroutine never parks on it the way a [Clock.After] caller does; without
+// withdrawing, a [VirtualClock] with nothing else running could never see
+// every participant parked, and could never advance to deliver whatever
+// `flow test`'s own scripted signal sender is waiting to send — the run
+// would hang rather than resolve.
+func waitForSignalLocally(ctx context.Context, clock Clock, signal *Signal, timeout time.Duration) (*Node_Outputs, error) {
 	name := signal.GetName()
 
 	waiter, ok := SignalWaiterFromContext(ctx)
@@ -182,24 +206,68 @@ func waitForSignalLocally(ctx context.Context, signal *Signal, timeout time.Dura
 		return nil, fmt.Errorf("%w: it waits for %q", ErrNoSignalWaiter, name)
 	}
 
-	waitCtx := ctx
-	if timeout > 0 {
-		var cancel context.CancelFunc
-		waitCtx, cancel = context.WithTimeout(ctx, timeout)
-		defer cancel()
+	if timeout <= 0 {
+		rejoin := LeaveClockWhile(ctx)
+		defer rejoin()
+
+		payload, err := waiter.WaitForSignal(ctx, name)
+		if err != nil {
+			return nil, err
+		}
+		return SignalOutputs(payload, false), nil
 	}
+
+	waitCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// The helper goroutine below is registered as a clock participant here,
+	// on this goroutine, before anything is given up — not inside the
+	// goroutine itself, and not after spawning it. `go func(){...}` only
+	// queues the goroutine; nothing here waits for the scheduler to actually
+	// start running it before this goroutine's own LeaveClockWhile, a few
+	// lines down, gives up its slot. Registering the replacement afterward
+	// (or worse, from inside the not-yet-running goroutine) would leave a
+	// window where the clock's own participant count is one short of the
+	// truth — long enough, on an unlucky schedule, for a [VirtualClock] to
+	// see every *currently counted* participant parked and advance straight
+	// past this wait's own timeout to whatever the next deadline is, which
+	// is exactly the bug this ordering exists to close: the timeout would
+	// lose a race it should always win against anything scheduled later.
+	helperLeave := EnterClock(ctx)
+
+	// timedOut is closed exactly when the clock's own deadline is what ended
+	// waitCtx, as opposed to the caller's context being cancelled for an
+	// unrelated reason (the run stopping) — the same distinction the previous,
+	// wall-clock version of this function drew by checking for
+	// context.DeadlineExceeded specifically, which a derived context.Cancel
+	// cannot report on its own.
+	timedOut := make(chan struct{})
+	go func() {
+		defer helperLeave()
+
+		select {
+		case <-clock.After(timeout):
+			close(timedOut)
+			cancel()
+		case <-waitCtx.Done():
+		}
+	}()
+
+	// This goroutine's own participation is given up only now — after the
+	// helper's replacement registration above already exists, so the two
+	// are never simultaneously absent.
+	rejoin := LeaveClockWhile(ctx)
+	defer rejoin()
 
 	payload, err := waiter.WaitForSignal(waitCtx, name)
 	if err == nil {
 		return SignalOutputs(payload, false), nil
 	}
 
-	// The wait's own timeout expiring is a normal outcome; the caller's context
-	// being cancelled is not. Both arrive here as a context error, so they are
-	// told apart by asking whose context ended — checking only for
-	// DeadlineExceeded would report an interrupted run as a lapsed approval.
-	if ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded) {
+	select {
+	case <-timedOut:
 		return SignalOutputs(nil, true), nil
+	default:
 	}
 
 	return nil, err

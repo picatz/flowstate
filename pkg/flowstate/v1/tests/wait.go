@@ -93,6 +93,37 @@ func WaitCases() []Case {
 			}},
 		},
 		{
+			// A regression guard for the local driver's [v1.Clock] plumbing
+			// (#155): `now`, read inside a wait_until expression, must still
+			// resolve to the real current moment on the default, uninjected
+			// path — not to a stale or zero value a virtual-clock mistake
+			// could otherwise leave behind. Both drivers computing the same
+			// near-future deadline from the same expression is exactly the
+			// time-observability agreement CLAUDE.md's "both execution
+			// drivers must agree" asks for; only the *existence* of a
+			// virtual clock is local-driver-only, not what `now` means by
+			// default.
+			Name: "a wait_until in the near future blocks until then",
+			Workflow: &v1.Workflow{
+				Name: "wait-until-future",
+				Steps: []*v1.Node{
+					{
+						Id: "pause",
+						Kind: &v1.Node_Wait{Wait: &v1.Wait{
+							Kind: &v1.Wait_Until{Until: v1.NewExpr(`now + duration("15ms")`)},
+						}},
+					},
+					says("after", "caught up"),
+				},
+			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"pause": {NamedValues: map[string]*v1.Value{
+					v1.TimedOutOutput: v1.NewLiteral(false),
+				}},
+				"after": {},
+			}},
+		},
+		{
 			Name: "a skipped wait does not wait",
 			Workflow: &v1.Workflow{
 				Name: "wait-skipped",
