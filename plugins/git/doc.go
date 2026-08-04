@@ -45,6 +45,87 @@
 // reliable a signal of "this already landed" as an exact sha match, only one
 // field looser.
 //
+// # Content-level idempotency: what the sha/content probe above cannot see
+//
+// The probe in the previous section compares a candidate commit against the
+// remote branch's *current* tip - which works precisely because base_ref,
+// resolved once per attempt, is assumed to keep meaning the same starting
+// point across a retry. That assumption breaks in exactly the case
+// base_ref's own schema comment advertises as the ergonomic common one: a
+// branch or tag name, rather than a fixed sha. Resolve "main" on attempt
+// one, push, and the branch itself now points at attempt one's own commit;
+// resolve "main" again on a retry - because the caller never saw whether
+// attempt one's push landed - and it resolves to that same commit, not to
+// wherever it was before. baseHash and the branch's known tip are now
+// identical by construction, so the sha/content probe never even reaches
+// its own comparison: there is nothing for it to notice, because nothing
+// about resolving a name a second time carries any memory of what it meant
+// the first time. Building and pushing anyway would stack a second,
+// content-empty commit on top of the first - the CAS lets it through
+// because the branch genuinely does equal this attempt's own (newly
+// resolved) base_ref.
+//
+// The fix is a second, independent check, run before any commit is even
+// built: compare the tree this call's files/patch would produce against
+// base_ref's *own* tree, right after rebuildTree runs. Equal trees mean
+// there is nothing to commit - whatever base_ref already contains already
+// is the change this call describes, whether that is because a retry's
+// movable base_ref quietly absorbed an earlier success or because a caller
+// asked for content that was already there before this call ever started.
+// Both are the same well-defined case (see gitv1.CommitPushOutputs.Changed),
+// and this check reports it before ever constructing a commit object, let
+// alone attempting a push - see commit_push_test.go's
+// TestCommitPushBranchNameRetryAfterUnrecordedSuccessDoesNotStackACommit and
+// TestCommitPushGenuineNoOpConverges, which assert the *set* of commits on
+// the remote is unchanged, not merely that the call reported success - a
+// duplicate, no-op commit wedged in behind an otherwise-correct tip would
+// still look right to a check that only read the branch's head.
+//
+// # files and patch do not layer
+//
+// This asymmetry has no equivalent for patch:, and that is worth saying
+// directly rather than leaving as a silent gap next to files:'s own
+// convergence. A retried patch against a tree that already carries its own
+// change means the patch's own context lines no longer match what is
+// there - buildChangeSet's call into gitdiff.Apply fails on exactly that
+// mismatch, before the tree-equality check above is ever reached, and
+// surfaces as the same InvalidInput a stale or malformed patch always
+// produces. There is no sound way, from inside this plugin, to tell "this
+// patch already landed, verbatim" apart from "this patch's context is
+// stale for some unrelated reason" once the context stops matching either
+// way - so this plugin does not try to. files: converges to success on a
+// repeated call; patch: refuses. Both are documented, in git.proto and in
+// the README, as the real behavior rather than papered over as one uniform
+// story.
+//
+// A related asymmetry, unrelated to retries, is worth being equally direct
+// about: files and patch may each name a path, but never the same one. An
+// earlier version of this schema's own comment claimed patch is applied
+// first and files layered on top of it - implying a files entry could
+// deliberately override what the same patch produced for a path. It never
+// worked that way: buildChangeSet has always refused a path named by both
+// as ambiguous. The refusal is the safer contract, and the fix here is to
+// the schema's wording, not to the behavior - a silent "whichever applies
+// last wins" would hide one input quietly overriding the other for the same
+// path, exactly the kind of thing a coding agent assembling both a patch and
+// a files map from different sources could get wrong without either half
+// noticing.
+//
+// # Where is git add
+//
+// Nothing in this plugin's schema has a "stage" step, because there is no
+// working tree or index to stage anything into - materialize, apply,
+// commit, and push all happen against git *objects* (blobs and trees this
+// plugin builds directly, see tree.go), never against files on disk. The
+// closest analogue to "git add" is simply naming a path in files: or in a
+// patch's own file header: doing so is what adds that path's content to the
+// tree this call builds, in the same activity that commits and pushes it.
+// There is no separate staging step to add one because value assembly - a
+// files map that is exactly the tree diff a caller wants, or a patch a
+// previous step already computed - already *is* the staged state; this task
+// commits it directly rather than accepting a second, redundant
+// instruction to stage what it was just given.
+//
 // # Concurrency: compare-and-swap, never force
 //
 // Every push in this plugin requires the remote branch to currently be

@@ -68,4 +68,8 @@ outputs:
 
   landed_previously:
     value: ${steps.commit.landed_previously}
-    description: true when this run made no new push because the commit was already there
+    description: true when this run made no new push because the intended change was already there
+
+  changed:
+    value: ${steps.commit.changed}
+    description: false when base_ref already carried this exact change - a plain no-op, or a retry a movable base_ref (like this example's branch) silently absorbed; see plugins/git/doc.go, "Content-level idempotency"

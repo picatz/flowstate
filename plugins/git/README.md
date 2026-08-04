@@ -122,6 +122,25 @@ answer during development - caught by
 reason before the fix, then red without it. This plugin now interprets the
 raw octal number directly, as git's own mode encoding.
 
+**A deletion is validated, not taken on faith.** A patch's deletion fragment
+is applied against base_ref's actual current blob at that path with the same
+`gitdiff.Apply` every other fragment goes through - a stale patch (whose
+context no longer matches what is really there) or one naming a path
+base_ref never had at all is refused, named in the diagnostic, rather than
+silently deleting whatever currently occupies that path. Getting this wrong
+is real, unannounced data loss, not a cosmetic bug - see "What was proven to
+bite," below, for the tests that prove the refusal actually fires.
+
+**An overwrite preserves the mode it finds, not a default.** Both write
+paths - a `files:` entry replacing an existing path's content, and a
+content-only patch (one with no mode header lines, the ordinary case) - keep
+that path's existing regular/executable bit rather than silently forcing
+`100644`. `files:` is documented as replacing *content*; a patch that says
+nothing about the mode is a patch that does not change the mode. A brand
+new path - one `files:` creates fresh, or one a patch's own "new file mode"
+line names - still gets its own explicit mode (`Regular` unless the patch
+says otherwise), since there is nothing to inherit.
+
 **Credentials never enter a URL.** `validateRepositoryURL` refuses userinfo
 outright; a token only ever travels as a resolved secret, in memory, used as
 HTTP Basic auth. The one path a URL-embedded credential would otherwise
@@ -170,6 +189,31 @@ the only thing that would otherwise differ. Both paths are tested
 deliberately broken and restored to prove it actually bites - see "What was
 proven to bite," below.
 
+**Content-level idempotency covers what that probe cannot see.** The probe
+above compares against the remote branch's *current* tip, which assumes
+base_ref keeps meaning the same starting point across a retry - an
+assumption a movable base_ref (a branch name, the schema's own advertised
+common case) breaks: after an unrecorded successful push, base_ref itself
+resolves to that push's own commit on the next attempt, so the branch's tip
+and the newly resolved base_ref end up identical and the probe never fires.
+`doCommitPush` closes this with a second, independent check, run *before*
+any commit is built: if applying `files`/`patch` to base_ref's own tree
+reproduces that same tree, there is nothing to commit - report
+`landed_previously: true, changed: false` and the resolved base_ref's own
+sha, with no push attempted. A plain no-op call (content identical to what
+base_ref already has, no retry involved) hits the exact same check, on
+purpose - see doc.go, "Content-level idempotency," and
+`gitv1.CommitPushOutputs.Changed`'s own doc comment.
+
+This has no equivalent for `patch:` - a retried patch against a tree that
+already carries its own change fails the patch's own context match before
+this check is ever reached, surfacing as the ordinary `InvalidInput` a stale
+patch always produces. `files:` converges; `patch:` refuses. Documented as a
+real asymmetry in doc.go, "files and patch do not layer," not resolved into
+one uniform behavior, since there is no sound way to tell "this patch
+already landed" apart from "this patch is stale for an unrelated reason"
+once its context stops matching either way.
+
 **Compare-and-swap, never force.** Every push requires the remote branch to
 be exactly base_ref (go-git's `PushOptions.RequireRemoteRefs`) and never sets
 `Force`. A remote that has moved is refused with [`sdk.Conflict`] - a
@@ -189,8 +233,9 @@ one function (`listRemoteRefs`), used by both.
 ## What was proven to bite
 
 CLAUDE.md's own rule: a bound or a refusal is worth exactly as much as the
-evidence that it was tested to actually refuse, not merely declared. Three
-things were broken, run red, and restored, rather than left as an assertion:
+evidence that it was tested to actually refuse, not merely declared. Every
+item below was broken, run red, and restored, rather than left as an
+assertion - not only the ones CLAUDE.md's own house gate demanded up front:
 
 1. **The no-timestamp idempotency probe.** `commit_push.go`'s
    content-match fallback (`commitMatches`) was disabled with a literal
@@ -220,6 +265,34 @@ things were broken, run red, and restored, rather than left as an assertion:
    needed - the fix (`filemode.FileMode(pf.NewMode)`, a reinterpretation
    rather than a translation) is documented in `tree.go` at the point it
    matters.
+4. **The movable-base_ref idempotency gap** (found in review, by Codex, and
+   verified against this code before a fix was written). The new
+   content-level check in `doCommitPush` was disabled with `&& false`; both
+   `TestCommitPushBranchNameRetryAfterUnrecordedSuccessDoesNotStackACommit`
+   and `TestCommitPushGenuineNoOpConverges` immediately failed on
+   `Changed`/`LandedPreviously`, and the first of the two also asserts the
+   *set* of commits on the remote is unchanged (`remoteCommitShas`,
+   `assertSameCommitSet`) - not merely that the call reported success, since
+   a duplicate no-op commit wedged in behind an otherwise-correct tip would
+   still look right to a check that only read the branch head. Restoring the
+   check made both pass again.
+5. **Deletion validation** (also a review finding). The read-and-`gitdiff.Apply`
+   step in `applyPatchFile`'s delete branch was disabled with an `if false`
+   wrapping it. `TestBuildChangeSetRefusesAStaleContextDeletion` and
+   `TestBuildChangeSetRefusesADeletionOfANonexistentPath` both went red -
+   the stale-context deletion and the nonexistent-path deletion were both
+   silently accepted. Restoring the check made both pass again;
+   `TestBuildChangeSetValidDeletionLands` stayed green throughout, proving
+   the fix does not also refuse an ordinary, correct deletion.
+6. **Mode preservation**, on both write paths. Each of
+   `TestBuildChangeSetPatchPreservesExecutableMode` and
+   `TestBuildChangeSetFilesOverwritePreservesExecutableMode` was run against
+   the previous unconditional-`Regular` behavior (the existing-mode check
+   temporarily disabled) and failed with the executable bit silently
+   stripped; restoring each check made its test pass again, and
+   `TestBuildChangeSetFilesNewPathIsRegular` stayed green throughout,
+   proving a brand-new path still gets the ordinary default rather than
+   inheriting a mode from somewhere it should not.
 
 ## SDK gaps found while building this
 
@@ -237,6 +310,37 @@ merged, and this plugin is not built against its unmerged branch.
 `pkg/flowstate/v1/plugin/sdk` alongside `sdk.IsConflict` (a predicate other
 plugins' tests, or a caller deciding how to log a failure, can use instead of
 matching on message text). This is the first plugin to return it.
+
+## Where is "git add"
+
+There isn't one, and that is not a missing feature. `git.commit_push` has no
+staging step because there is no working tree or index for anything to stage
+into - materialize, apply, commit, and push all happen against git *objects*
+(blobs and trees this plugin builds directly in memory; see `tree.go`),
+never against files on disk. The closest thing to "git add" is simply naming
+a path: in `files:`, or in a patch's own file header. Doing so is what adds
+that path's content to the tree this call builds, in the same activity that
+commits and pushes it - there is no separate instruction to stage what a
+caller was just given, because a `files:` map that already is the tree diff
+a caller wants (or a `patch:` a previous step already computed) already *is*
+the staged state. See `doc.go`, "Where is git add," for the fuller version
+of this.
+
+## Operational scale: what this plugin does not have a ceiling for
+
+go-git has no partial clone. `cloneBounded`'s depth bounds the *commit*
+graph and the egress policy bounds compressed bytes per response, but there
+is no way, with go-git as it exists today, to fetch only the subset of a
+tree a change actually touches the way `git clone --filter=blob:none` or a
+sparse checkout would. A monorepo whose full tree is enormous hits a real
+ceiling here - not a bug this plugin has, a property of the library it is
+built on - and this plugin's own bounds (`maxCloneDepth`, `maxResponseBytes`,
+`maxFiles`, `maxFileBytes`, `maxTotalFileBytes`) will refuse a request that
+exceeds them rather than attempt a clone or a tree rebuild that could exhaust
+a worker's memory trying to serve one. Said plainly here, as an operating
+constraint someone provisioning a worker for this plugin should know before
+pointing it at their largest repository, not discovered from a worker that
+fell over.
 
 ## What was left undone, and why
 

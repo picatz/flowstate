@@ -156,6 +156,38 @@ func doCommitPush(ctx context.Context, p commitPushParams) (*gitv1.CommitPushOut
 		return nil, sdk.InvalidInput("%v", err)
 	}
 
+	// Content-level idempotency, checked *before* any commit is built: if
+	// applying files/patch to base_ref's own tree reproduces that same
+	// tree, there is nothing to commit - base_ref already carries the
+	// change this call describes. See doc.go, "Content-level idempotency,"
+	// for why this has to be a check on its own rather than folded into the
+	// sha/content probe below: that probe compares against the *branch's*
+	// current tip, which is exactly what a movable base_ref (a branch name,
+	// the ergonomic common case) silently reflects right back at
+	// base_ref itself once an earlier attempt's push has landed - resolving
+	// base_ref again on a retry does not return the value this call
+	// started from, it returns wherever the branch is now, so knownTip and
+	// baseHash end up identical and that probe never fires at all. Comparing
+	// trees catches it anyway, without needing base_ref to hold still: a
+	// retry that a movable base_ref has already absorbed produces the exact
+	// same tree as base_ref's own, and so does a plain, unrelated no-op call
+	// - both are the same well-defined case (see gitv1.CommitPushOutputs.Changed's
+	// own doc comment), so both succeed here, with the resolved base_ref's
+	// own commit as sha and no push attempted.
+	//
+	// This has no equivalent for patch: retrying the same patch against a
+	// tree that already carries its change means the patch's own context
+	// lines no longer match - buildChangeSet above already returned an
+	// error in that case (surfaced as sdk.InvalidInput), before this check
+	// is ever reached. files: converges to this success; patch: refuses.
+	// Documented as a real asymmetry, not resolved into one behavior, since
+	// there is no sound way to tell "this patch already landed" apart from
+	// "this patch is stale for an unrelated reason" once its own context
+	// stops matching.
+	if newTreeHash == baseTree.Hash {
+		return &gitv1.CommitPushOutputs{Sha: baseHash.String(), LandedPreviously: true, Changed: false}, nil
+	}
+
 	sig := object.Signature{Name: p.authorName, Email: p.authorEmail, When: p.when}
 	newSha, err := writeCommit(repo.Storer, sig, p.message, newTreeHash, baseHash)
 	if err != nil {
@@ -176,11 +208,11 @@ func doCommitPush(ctx context.Context, p commitPushParams) (*gitv1.CommitPushOut
 	if ref, refErr := repo.Reference(plumbing.ReferenceName("refs/remotes/origin/"+p.branch), true); refErr == nil {
 		knownTip := ref.Hash()
 		if knownTip == newSha {
-			return &gitv1.CommitPushOutputs{Sha: newSha.String(), LandedPreviously: true}, nil
+			return &gitv1.CommitPushOutputs{Sha: newSha.String(), LandedPreviously: true, Changed: true}, nil
 		}
 		if knownTip != baseHash {
 			if landed, landedErr := commitMatches(repo, knownTip, baseHash, newTreeHash, p.message); landedErr == nil && landed {
-				return &gitv1.CommitPushOutputs{Sha: knownTip.String(), LandedPreviously: true}, nil
+				return &gitv1.CommitPushOutputs{Sha: knownTip.String(), LandedPreviously: true, Changed: true}, nil
 			}
 		}
 	}
@@ -201,9 +233,9 @@ func doCommitPush(ctx context.Context, p commitPushParams) (*gitv1.CommitPushOut
 	err = repo.PushContext(ctx, pushOpts)
 	switch {
 	case err == nil:
-		return &gitv1.CommitPushOutputs{Sha: newSha.String(), LandedPreviously: false}, nil
+		return &gitv1.CommitPushOutputs{Sha: newSha.String(), LandedPreviously: false, Changed: true}, nil
 	case errors.Is(err, git.NoErrAlreadyUpToDate):
-		return &gitv1.CommitPushOutputs{Sha: newSha.String(), LandedPreviously: true}, nil
+		return &gitv1.CommitPushOutputs{Sha: newSha.String(), LandedPreviously: true, Changed: true}, nil
 	default:
 		return nil, classifyGitError(err)
 	}

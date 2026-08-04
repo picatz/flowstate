@@ -106,6 +106,44 @@ func fileURL(t *testing.T, dir string) *url.URL {
 	return u
 }
 
+// remoteCommitShas walks branch's entire history in the bare repository at
+// remoteDir and returns every commit's sha, oldest first - the *set* of
+// commits a test checks against, not merely whether the tip moved to the sha
+// a call happened to return. See CLAUDE.md's "test the traversal, not just
+// the step": a duplicate, no-op commit stacked silently on top of a correct
+// tip would still leave the tip "looking right" to a test that only checked
+// the head; walking the whole history is what catches a phantom commit
+// wedged in behind it.
+func remoteCommitShas(t *testing.T, remoteDir, branch string) []string {
+	t.Helper()
+	repo, err := git.PlainOpen(remoteDir)
+	if err != nil {
+		t.Fatalf("PlainOpen: %v", err)
+	}
+	head, err := repo.Reference(plumbing.ReferenceName("refs/heads/"+branch), true)
+	if err != nil {
+		t.Fatalf("Reference(%s): %v", branch, err)
+	}
+	iter, err := repo.Log(&git.LogOptions{From: head.Hash()})
+	if err != nil {
+		t.Fatalf("Log: %v", err)
+	}
+	defer iter.Close()
+
+	var shas []string
+	if err := iter.ForEach(func(c *object.Commit) error {
+		shas = append(shas, c.Hash.String())
+		return nil
+	}); err != nil {
+		t.Fatalf("walking history: %v", err)
+	}
+	// Oldest first, matching how a reader thinks about "history so far."
+	for i, j := 0, len(shas)-1; i < j; i, j = i+1, j-1 {
+		shas[i], shas[j] = shas[j], shas[i]
+	}
+	return shas
+}
+
 // TestCommitPushIdempotentRetryWithTimestamp is finding 1's deterministic
 // half: with timestamp supplied, the same inputs given twice produce the
 // identical sha, and the second call lands nothing new - it finds its own
@@ -212,6 +250,115 @@ func TestCommitPushIdempotentRetryWithoutTimestamp(t *testing.T) {
 	}
 	if gotHash.String() != first.Sha {
 		t.Fatalf("remote branch head = %s, want %s - the retry must not have pushed a second commit", gotHash, first.Sha)
+	}
+}
+
+// TestCommitPushBranchNameRetryAfterUnrecordedSuccessDoesNotStackACommit is
+// Codex's P1-1 finding, proven to bite and then fixed: base_ref given as a
+// movable branch name (the ergonomic, common case, not a fixed sha) means a
+// retry resolves base_ref *again*, and by the time the retry runs, base_ref
+// has already moved to the first attempt's own commit - there is nothing
+// left for the old sha/content probe (which compares against the branch's
+// known tip) to notice, since baseHash and that tip are now the same value.
+// Without the content-level idempotency check in doCommitPush, this second
+// call would build a *second*, no-op commit on top of the first and push it
+// - the CAS lets it through because the branch genuinely does equal the
+// (newly resolved) baseHash.
+//
+// This simulates "the first push succeeded but the caller never saw the
+// result" by simply calling doCommitPush once and, deliberately, only
+// checking the *remote*, never trusting first's own return value for
+// anything but the sha to compare against - the same posture an activity
+// retried after a lost response would have.
+func TestCommitPushBranchNameRetryAfterUnrecordedSuccessDoesNotStackACommit(t *testing.T) {
+	remote := newBareRemote(t)
+	seedRemote(t, remote, "main")
+
+	params := commitPushParams{
+		url: fileURL(t, remote), branch: "main",
+		baseRef: "main", // a movable name, not a fixed sha - the case this test exists for
+		message: "add hello", files: map[string]string{"hello.txt": "hello\n"},
+		authorName: "A", authorEmail: "a@example.com", when: time.Now().UTC(),
+	}
+
+	first, err := doCommitPush(context.Background(), params)
+	if err != nil {
+		t.Fatalf("first doCommitPush: %v", err)
+	}
+	if first.Changed != true || first.LandedPreviously != false {
+		t.Fatalf("first attempt: Changed=%v LandedPreviously=%v, want true/false", first.Changed, first.LandedPreviously)
+	}
+
+	historyAfterFirst := remoteCommitShas(t, remote, "main")
+
+	// The retry: identical params, base_ref="main" included - resolved
+	// fresh, which now means the first attempt's own commit.
+	second, err := doCommitPush(context.Background(), params)
+	if err != nil {
+		t.Fatalf("second (retry) doCommitPush: %v", err)
+	}
+	if second.Changed {
+		t.Fatal("retry after an unrecorded success: Changed = true, want false - nothing new to commit, the change is already there")
+	}
+	if !second.LandedPreviously {
+		t.Fatal("retry after an unrecorded success: LandedPreviously = false, want true")
+	}
+	if second.Sha != first.Sha {
+		t.Fatalf("retry sha = %q, want the first attempt's own sha %q - the retry must resolve to the "+
+			"commit already there, not stack a new one", second.Sha, first.Sha)
+	}
+
+	historyAfterRetry := remoteCommitShas(t, remote, "main")
+	assertSameCommitSet(t, historyAfterFirst, historyAfterRetry)
+}
+
+// TestCommitPushGenuineNoOpConverges is the other half of the same
+// well-defined case: no retry at all, just a caller asking for content
+// base_ref already has. Same code path, same behavior, on purpose - see
+// gitv1.CommitPushOutputs.Changed's own doc comment.
+func TestCommitPushGenuineNoOpConverges(t *testing.T) {
+	remote := newBareRemote(t)
+	base := seedRemote(t, remote, "main") // seedRemote writes seed.txt = "seed\n"
+
+	before := remoteCommitShas(t, remote, "main")
+
+	out, err := doCommitPush(context.Background(), commitPushParams{
+		url: fileURL(t, remote), branch: "main", baseRef: base.String(),
+		message: "no-op", files: map[string]string{"seed.txt": "seed\n"}, // identical to what is already there
+		authorName: "A", authorEmail: "a@example.com", when: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("doCommitPush: %v", err)
+	}
+	if out.Changed {
+		t.Fatal("a no-op call (content identical to base_ref): Changed = true, want false")
+	}
+	if !out.LandedPreviously {
+		t.Fatal("a no-op call: LandedPreviously = false, want true")
+	}
+	if out.Sha != base.String() {
+		t.Fatalf("sha = %q, want base_ref's own resolved commit %q - no new commit should exist to return instead", out.Sha, base)
+	}
+
+	after := remoteCommitShas(t, remote, "main")
+	assertSameCommitSet(t, before, after)
+}
+
+// assertSameCommitSet compares two commit histories as sets (order and
+// duplicates aside, though remoteCommitShas never produces either) - the
+// traversal check CLAUDE.md asks for: a phantom commit wedged in behind an
+// otherwise-correct tip would still pass a check that only looked at the
+// head.
+func assertSameCommitSet(t *testing.T, before, after []string) {
+	t.Helper()
+	if len(before) != len(after) {
+		t.Fatalf("remote history length changed from %d to %d commits - a call that should not have "+
+			"pushed anything added or removed one; before=%v after=%v", len(before), len(after), before, after)
+	}
+	for i := range before {
+		if before[i] != after[i] {
+			t.Fatalf("remote history differs at position %d: %q vs %q; before=%v after=%v", i, before[i], after[i], before, after)
+		}
 	}
 }
 

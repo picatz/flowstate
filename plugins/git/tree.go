@@ -59,7 +59,18 @@ func buildChangeSet(base *object.Tree, files map[string]string, patchText string
 		if total > maxTotalFileBytes {
 			return nil, fmt.Errorf("files totals over the %d byte limit across all entries", maxTotalFileBytes)
 		}
-		changes[path] = pathChange{content: []byte(content), mode: filemode.Regular}
+		// A files entry overwriting a path base_ref already tracks keeps
+		// that path's existing regular/executable mode - files: is
+		// documented as replacing content, not clearing an executable bit a
+		// workflow never asked to touch. A path this creates fresh (or one
+		// whose existing entry is some other mode entirely, which
+		// rebuildTree's own traversal guard below will refuse regardless)
+		// gets the ordinary default.
+		mode := filemode.Regular
+		if existing := existingMode(base, path); existing == filemode.Executable {
+			mode = filemode.Executable
+		}
+		changes[path] = pathChange{content: []byte(content), mode: mode}
 	}
 
 	if patchText == "" {
@@ -114,6 +125,22 @@ func applyPatchFile(base *object.Tree, pf *gitdiff.File, changes map[string]path
 	}
 
 	if pf.IsDelete {
+		// A deletion is validated exactly like every other fragment, not
+		// taken on faith: read the path's current content from base_ref and
+		// run it through gitdiff.Apply, which fails if the patch's context
+		// does not match what is actually there. Without this, a stale
+		// patch - or one naming a path base_ref never had in the first
+		// place - would silently delete whatever currently lives at that
+		// path instead of being refused, which is real, unannounced data
+		// loss rather than a diagnosable mistake.
+		src, err := readBlobBounded(base, oldPath)
+		if err != nil {
+			return fmt.Errorf("patch deletes %q, which does not exist in base_ref: %w", oldPath, err)
+		}
+		var discard bytes.Buffer
+		if err := gitdiff.Apply(&discard, bytes.NewReader(src), pf); err != nil {
+			return fmt.Errorf("patch's deletion of %q does not match base_ref's current content: %w", oldPath, err)
+		}
 		changes[oldPath] = pathChange{delete: true}
 		return nil
 	}
@@ -131,7 +158,21 @@ func applyPatchFile(base *object.Tree, pf *gitdiff.File, changes map[string]path
 	// carries Go's bit meanings rather than git's.
 	newMode := filemode.FileMode(pf.NewMode)
 	if newMode == filemode.Empty {
+		// An ordinary modification patch has no "old mode"/"new mode"
+		// header lines at all - only a mode *change* gets one - so an empty
+		// NewMode here means "this patch does not touch the mode," not
+		// "make it Regular." Defaulting to Regular unconditionally used to
+		// silently strip an executable bit off a script's own content-only
+		// patch; inheriting the touched path's existing mode instead means
+		// a patch that says nothing about the mode changes nothing about
+		// the mode. A genuinely new file (pf.IsNew) has no existing mode to
+		// inherit, so it still falls back to Regular.
 		newMode = filemode.Regular
+		if !pf.IsNew {
+			if existing := existingMode(base, oldPath); existing == filemode.Executable {
+				newMode = filemode.Executable
+			}
+		}
 	}
 	if newMode == filemode.Symlink {
 		return fmt.Errorf("patch entry %q creates a symlink, which this task refuses in every version - "+
@@ -171,6 +212,22 @@ func applyPatchFile(base *object.Tree, pf *gitdiff.File, changes map[string]path
 	changes[newPath] = pathChange{content: dst.Bytes(), mode: newMode}
 
 	return nil
+}
+
+// existingMode reports path's current mode in base, or filemode.Empty if
+// base is nil or has no entry there - the shared lookup buildChangeSet uses
+// to preserve a regular/executable bit across both a files: overwrite and a
+// mode-omitting patch, rather than defaulting every overwrite to Regular
+// regardless of what was there before.
+func existingMode(base *object.Tree, path string) filemode.FileMode {
+	if base == nil {
+		return filemode.Empty
+	}
+	entry, err := base.FindEntry(path)
+	if err != nil {
+		return filemode.Empty
+	}
+	return entry.Mode
 }
 
 func oldOrNew(oldPath, newPath string) string {

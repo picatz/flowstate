@@ -79,20 +79,32 @@ message CommitPushInputs {
   // Message is the new commit's message.
   string message = 4;
 
-  // Files is path -> new file content, applied after any patch. A path
-  // already present in base_ref is overwritten; a path not present is
-  // created. Text content only in this version - see doc.go for the binary
-  // gap. Every path is validated: no absolute path, no ".." segment, nothing
+  // Files is path -> new file content. A path already present in base_ref
+  // is overwritten (its regular/executable mode is preserved; a path this
+  // creates fresh is always mode Regular); a path not present is created.
+  // Text content only in this version - see doc.go for the binary gap.
+  // Every path is validated: no absolute path, no ".." segment, nothing
   // under ".git/", and nothing that would write through a symlink base_ref
   // already has at a leading path segment.
+  //
+  // A path may be named by files or by patch, never both: this task refuses
+  // that as ambiguous rather than defining an order between them, since a
+  // silent "whichever applies last wins" would hide one input quietly
+  // overriding the other for the same path. There is no layering to reason
+  // about - see doc.go, "files and patch do not layer," for why that is the
+  // safer contract, not a missing feature.
   map<string, string> files = 5;
 
   // Patch is a unified diff (the same format vcs.diff produces and a coding
-  // agent can emit) applied to base_ref's tree before files are layered on
-  // top. Bounded in size (see maxPatchBytes) and parsed and applied entirely
-  // in memory - see doc.go, "Why go-git and go-gitdiff, not git apply," for
-  // why this needs a second, small dependency go-git itself does not
-  // provide.
+  // agent can emit), applied to base_ref's tree. Bounded in size (see
+  // maxPatchBytes) and parsed and applied entirely in memory - see doc.go,
+  // "Why go-git and go-gitdiff, not git apply," for why this needs a
+  // second, small dependency go-git itself does not provide. A modification
+  // patch that omits mode header lines (the ordinary case) preserves the
+  // touched path's existing mode; deletions are validated against base_ref's
+  // actual content, the same as every other fragment - a patch whose
+  // context does not match, or that names a path base_ref does not have, is
+  // refused rather than silently deleting whatever is there now.
   string patch = 6;
 
   // AuthorName and AuthorEmail name the commit's author and committer -
@@ -125,11 +137,26 @@ message CommitPushOutputs {
   string sha = 1;
 
   // LandedPreviously is true when this invocation made no new push because
-  // the remote branch already carried the commit this call would have
-  // created - either the exact same sha (Timestamp was given, so the commit
-  // is fully deterministic) or a different sha with the same parent, tree,
-  // and message (Timestamp was empty, so only the wall clock differs). See
-  // doc.go, "The idempotency trick," for why this is what makes a retried
-  // push safe rather than merely probable.
+  // the intended change was already present - either as a commit the remote
+  // branch already carried (the exact same sha, when Timestamp made the
+  // commit deterministic, or a different sha with the same parent, tree,
+  // and message otherwise - see doc.go, "The idempotency trick"), or
+  // because the tree this call would have produced already matches
+  // base_ref's own tree (see doc.go, "Content-level idempotency," and
+  // Changed below) - the case a movable base_ref (a branch name, most
+  // commonly) reaches after an earlier attempt's push went unacknowledged:
+  // base_ref itself resolves past that attempt's own commit, so nothing
+  // about resolving it again reveals that anything happened, and the
+  // signal has to come from the tree instead.
   bool landed_previously = 2;
+
+  // Changed reports whether this call's inputs, applied to base_ref,
+  // actually produce a tree different from base_ref's own - false for both
+  // a retry that a movable base_ref silently absorbed and an ordinary
+  // no-op call whose files/patch describe content base_ref already has.
+  // Both are the same well-defined case: nothing to commit, so nothing was
+  // pushed, and sha is base_ref's own resolved commit rather than a newly
+  // created one. True whenever a real change did land, whether by this call
+  // or (landed_previously) an earlier one.
+  bool changed = 3;
 }

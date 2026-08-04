@@ -226,19 +226,31 @@ type CommitPushInputs struct {
 	BaseRef string `protobuf:"bytes,3,opt,name=base_ref,json=baseRef,proto3" json:"base_ref,omitempty"`
 	// Message is the new commit's message.
 	Message string `protobuf:"bytes,4,opt,name=message,proto3" json:"message,omitempty"`
-	// Files is path -> new file content, applied after any patch. A path
-	// already present in base_ref is overwritten; a path not present is
-	// created. Text content only in this version - see doc.go for the binary
-	// gap. Every path is validated: no absolute path, no ".." segment, nothing
+	// Files is path -> new file content. A path already present in base_ref
+	// is overwritten (its regular/executable mode is preserved; a path this
+	// creates fresh is always mode Regular); a path not present is created.
+	// Text content only in this version - see doc.go for the binary gap.
+	// Every path is validated: no absolute path, no ".." segment, nothing
 	// under ".git/", and nothing that would write through a symlink base_ref
 	// already has at a leading path segment.
+	//
+	// A path may be named by files or by patch, never both: this task refuses
+	// that as ambiguous rather than defining an order between them, since a
+	// silent "whichever applies last wins" would hide one input quietly
+	// overriding the other for the same path. There is no layering to reason
+	// about - see doc.go, "files and patch do not layer," for why that is the
+	// safer contract, not a missing feature.
 	Files map[string]string `protobuf:"bytes,5,rep,name=files,proto3" json:"files,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Patch is a unified diff (the same format vcs.diff produces and a coding
-	// agent can emit) applied to base_ref's tree before files are layered on
-	// top. Bounded in size (see maxPatchBytes) and parsed and applied entirely
-	// in memory - see doc.go, "Why go-git and go-gitdiff, not git apply," for
-	// why this needs a second, small dependency go-git itself does not
-	// provide.
+	// agent can emit), applied to base_ref's tree. Bounded in size (see
+	// maxPatchBytes) and parsed and applied entirely in memory - see doc.go,
+	// "Why go-git and go-gitdiff, not git apply," for why this needs a
+	// second, small dependency go-git itself does not provide. A modification
+	// patch that omits mode header lines (the ordinary case) preserves the
+	// touched path's existing mode; deletions are validated against base_ref's
+	// actual content, the same as every other fragment - a patch whose
+	// context does not match, or that names a path base_ref does not have, is
+	// refused rather than silently deleting whatever is there now.
 	Patch string `protobuf:"bytes,6,opt,name=patch,proto3" json:"patch,omitempty"`
 	// AuthorName and AuthorEmail name the commit's author and committer -
 	// this task does not distinguish them. Both are required together, or
@@ -370,15 +382,29 @@ type CommitPushOutputs struct {
 	// it has not moved again since.
 	Sha string `protobuf:"bytes,1,opt,name=sha,proto3" json:"sha,omitempty"`
 	// LandedPreviously is true when this invocation made no new push because
-	// the remote branch already carried the commit this call would have
-	// created - either the exact same sha (Timestamp was given, so the commit
-	// is fully deterministic) or a different sha with the same parent, tree,
-	// and message (Timestamp was empty, so only the wall clock differs). See
-	// doc.go, "The idempotency trick," for why this is what makes a retried
-	// push safe rather than merely probable.
+	// the intended change was already present - either as a commit the remote
+	// branch already carried (the exact same sha, when Timestamp made the
+	// commit deterministic, or a different sha with the same parent, tree,
+	// and message otherwise - see doc.go, "The idempotency trick"), or
+	// because the tree this call would have produced already matches
+	// base_ref's own tree (see doc.go, "Content-level idempotency," and
+	// Changed below) - the case a movable base_ref (a branch name, most
+	// commonly) reaches after an earlier attempt's push went unacknowledged:
+	// base_ref itself resolves past that attempt's own commit, so nothing
+	// about resolving it again reveals that anything happened, and the
+	// signal has to come from the tree instead.
 	LandedPreviously bool `protobuf:"varint,2,opt,name=landed_previously,json=landedPreviously,proto3" json:"landed_previously,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// Changed reports whether this call's inputs, applied to base_ref,
+	// actually produce a tree different from base_ref's own - false for both
+	// a retry that a movable base_ref silently absorbed and an ordinary
+	// no-op call whose files/patch describe content base_ref already has.
+	// Both are the same well-defined case: nothing to commit, so nothing was
+	// pushed, and sha is base_ref's own resolved commit rather than a newly
+	// created one. True whenever a real change did land, whether by this call
+	// or (landed_previously) an earlier one.
+	Changed       bool `protobuf:"varint,3,opt,name=changed,proto3" json:"changed,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CommitPushOutputs) Reset() {
@@ -425,6 +451,13 @@ func (x *CommitPushOutputs) GetLandedPreviously() bool {
 	return false
 }
 
+func (x *CommitPushOutputs) GetChanged() bool {
+	if x != nil {
+		return x.Changed
+	}
+	return false
+}
+
 var File_git_v1_git_proto protoreflect.FileDescriptor
 
 const file_git_v1_git_proto_rawDesc = "" +
@@ -456,10 +489,11 @@ const file_git_v1_git_proto_rawDesc = "" +
 	"\n" +
 	"FilesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"R\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"l\n" +
 	"\x11CommitPushOutputs\x12\x10\n" +
 	"\x03sha\x18\x01 \x01(\tR\x03sha\x12+\n" +
-	"\x11landed_previously\x18\x02 \x01(\bR\x10landedPreviouslyB\x89\x01\n" +
+	"\x11landed_previously\x18\x02 \x01(\bR\x10landedPreviously\x12\x18\n" +
+	"\achanged\x18\x03 \x01(\bR\achangedB\x89\x01\n" +
 	"\n" +
 	"com.git.v1B\bGitProtoP\x01Z8github.com/picatz/flowstate/plugins/git/gen/git/v1;gitv1\xa2\x02\x03GXX\xaa\x02\x06Git.V1\xca\x02\x06Git\\V1\xe2\x02\x12Git\\V1\\GPBMetadata\xea\x02\aGit::V1b\x06proto3"
 
