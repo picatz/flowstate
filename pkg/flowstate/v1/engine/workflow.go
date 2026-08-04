@@ -661,6 +661,14 @@ func markStepField(refs map[string]map[string]struct{}, step, field string) {
 
 // neededOutputs returns the outputs to carry for one step, or the whole set when
 // anything asked for it whole.
+// A field reference that matches nothing on a step's actual outputs is not the
+// same as no reference at all. A `continue_on_error` step that succeeded has no
+// `error` field, so `has(steps.checkout.error)` finds nothing to keep here — but
+// the step still ran, and on resume its key must resolve as "present, field
+// absent" (has() false) rather than "no such key" (a hard CEL error). So this
+// never reports "nothing needed" for a step a caller already knows was
+// referenced: it always returns a non-nil value, even when every requested field
+// comes up empty, and the step's key survives compaction. See #176.
 func neededOutputs(full *v1.Node_Outputs, fields map[string]struct{}) *v1.Node_Outputs {
 	if _, whole := fields[wholeStep]; whole || len(fields) == 0 {
 		return full
@@ -671,9 +679,6 @@ func neededOutputs(full *v1.Node_Outputs, fields map[string]struct{}) *v1.Node_O
 		if value, has := full.GetNamedValues()[field]; has {
 			nv[field] = value
 		}
-	}
-	if len(nv) == 0 {
-		return nil
 	}
 
 	return &v1.Node_Outputs{NamedValues: nv}
@@ -847,12 +852,12 @@ func compactPrevOutputsForTask(task *v1.Task, prev *v1.Workflow_StepOutputs) *v1
 	trimmed := &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{}}
 	for stepID, fields := range refs {
 		full, ok := prev.StepValues[stepID]
-		if !ok || full == nil || full.NamedValues == nil {
+		if !ok {
 			continue
 		}
-		if needed := neededOutputs(full, fields); needed != nil {
-			trimmed.StepValues[stepID] = needed
-		}
+		// See the matching comment in compactOutputsForRemainingSteps: full may be
+		// nil or empty and the key still has to survive a real reference.
+		trimmed.StepValues[stepID] = neededOutputs(full, fields)
 	}
 	return trimmed
 }
@@ -976,12 +981,15 @@ func compactOutputsForRemainingSteps(
 	trimmed := &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{}}
 	for stepID, fields := range refs {
 		full, ok := prev.StepValues[stepID]
-		if !ok || full == nil || full.NamedValues == nil {
+		if !ok {
 			continue
 		}
-		if needed := neededOutputs(full, fields); needed != nil {
-			trimmed.StepValues[stepID] = needed
-		}
+		// full may be nil, or non-nil with a nil/empty NamedValues map — both are
+		// legitimate shapes for a step that ran and produced no named outputs (a
+		// wait step, or a continue_on_error task with none declared). Both getters
+		// below are nil-receiver safe, and the key still has to survive: see the
+		// comment on neededOutputs.
+		trimmed.StepValues[stepID] = neededOutputs(full, fields)
 	}
 	return trimmed
 }

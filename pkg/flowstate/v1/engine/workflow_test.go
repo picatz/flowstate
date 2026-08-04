@@ -113,6 +113,21 @@ func TestRunWorkflowPolicy(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowHasGuardOnToleratedSuccess runs
+// [tests.ToleratedSuccessHasGuardCases] against the durable driver — the value
+// both drivers must agree `has(steps.<id>.error)` reads once a `continue_on_error`
+// step has actually succeeded, before any Continue-As-New handover is involved.
+// See #176 and, for the seam-specific case this value must also survive
+// compaction across, TestContinueAsNewCarriesATolerantStepReferencedOnlyByAnAbsentField
+// below.
+func TestRunWorkflowHasGuardOnToleratedSuccess(t *testing.T) {
+	for _, test := range tests.ToleratedSuccessHasGuardCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			runWorkflow(t, test.Workflow, test.ExpectedOutputs)
+		})
+	}
+}
+
 // TestRunWorkflowControlFlow runs the shared loop and parallel cases against the
 // durable driver, where iterations and branches are genuinely concurrent.
 func TestRunWorkflowControlFlow(t *testing.T) {
@@ -276,6 +291,99 @@ func TestABudgetSmallerThanTheWorkflowContinuesAsNew(t *testing.T) {
 	// carryover exists to prevent, and one that only appears on the *second* segment.
 	require.Contains(t, next.GetOutputs().GetStepValues(), "a",
 		"the outputs a later step reads were not carried into the next segment")
+}
+
+// TestContinueAsNewCarriesATolerantStepReferencedOnlyByAnAbsentField is issue
+// #176's exact reproduction: `StepsBudget: 1` forcing a handover right after a
+// `parallel:` block, where the only later reference to one of its branches is a
+// field the branch's own successful run never produced.
+//
+// `checkout` is marked `continue_on_error` and succeeds, so its outputs are the
+// empty message `log` always returns — no `error` field. `summary`'s condition
+// names nothing else about it: `!has(steps.checkout.error)`. `neededOutputs`
+// walks that reference, finds no `error` in `checkout`'s actual outputs, and used
+// to report "nothing needed" for the whole step — which `compactOutputsForRemainingSteps`
+// then read as "drop the key", not "keep it with nothing filtered in". The
+// resumed segment evaluated `steps.checkout` against a carried state with no
+// `checkout` key at all: `no such key: checkout`, a hard CEL error, in the exact
+// place `has()` exists to answer `false` instead.
+//
+// Reverting the [neededOutputs] fix turns this red with that exact message; see
+// the fix's own comment on why the key has to survive regardless of which field,
+// if any, matched.
+func TestContinueAsNewCarriesATolerantStepReferencedOnlyByAnAbsentField(t *testing.T) {
+	wf := &v1.Workflow{
+		Name: "compaction-haskey-176",
+		Steps: []*v1.Node{
+			{
+				Id: "checks",
+				Kind: &v1.Node_Parallel{Parallel: &v1.Parallel{
+					Branches: []*v1.Parallel_Branch{
+						{Steps: []*v1.Node{bestEffort(logStep("checkout", "ok"))}},
+					},
+				}},
+			},
+			gatedOn(logStep("summary", "done"), "!has(steps.checkout.error)"),
+		},
+	}
+
+	env := budgetEnv(t)
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: wf, StepsBudget: 1})
+	require.True(t, env.IsWorkflowCompleted())
+
+	err := env.GetWorkflowError()
+	require.Error(t, err, "a budget of one step, with a parallel block first, finished in one segment")
+
+	var continued *workflow.ContinueAsNewError
+	require.ErrorAs(t, err, &continued, "did not continue as new: %v", err)
+
+	var next v1.RunState
+	require.NoError(t, converter.GetDefaultDataConverter().FromPayload(continued.Input.GetPayloads()[0], &next))
+
+	// The seam lands exactly where the issue describes it: right after the
+	// parallel block, with `summary` still to run.
+	require.Contains(t, next.GetOutputs().GetStepValues(), "checkout",
+		"the tolerated step's key was dropped from carryover because the only "+
+			"reference to it — has(steps.checkout.error) — matched no field on its "+
+			"own (empty, successful) outputs; see #176")
+
+	// Drive the resumed segment(s) to completion the way a real worker would,
+	// mirroring the other budget tests in this file.
+	state := &next
+	var out v1.Workflow_StepOutputs
+	for segment := 0; ; segment++ {
+		require.Less(t, segment, 10, "did not converge in a reasonable number of segments")
+
+		seg := budgetEnv(t)
+		seg.ExecuteWorkflow(engine.Run, state)
+		require.True(t, seg.IsWorkflowCompleted())
+
+		segErr := seg.GetWorkflowError()
+		if segErr == nil {
+			require.NoError(t, seg.GetWorkflowResult(&out))
+			break
+		}
+
+		var again *workflow.ContinueAsNewError
+		require.ErrorAsf(t, segErr, &again,
+			"segment %d failed instead of continuing as new: %v", segment, segErr)
+
+		state = &v1.RunState{}
+		require.NoError(t, converter.GetDefaultDataConverter().FromPayload(again.Input.GetPayloads()[0], state))
+	}
+
+	// `summary` ran, which it can only do if `has(steps.checkout.error)`
+	// resolved to `false` rather than erroring the CEL evaluation outright.
+	require.Contains(t, out.GetStepValues(), "summary",
+		"the resumed run did not reach the step gated on has(steps.checkout.error); "+
+			"a dropped key resolves that as a hard CEL error rather than false")
+	require.Contains(t, out.GetStepValues(), "checkout",
+		"the tolerated step's own outputs did not survive to the finished run")
+
+	// Both drivers must agree — the same run in one local-driver segment.
+	local, err := v1.Run(t.Context(), wf)
+	require.NoError(t, err)
+	require.Empty(t, cmp.Diff(local, &out, protocmp.Transform()))
 }
 
 // TestCallSuspendsMidCalleeAndCarriesItsOutputs is the invariant-10 test
