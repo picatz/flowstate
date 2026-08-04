@@ -286,6 +286,32 @@ func libsKey(libs []string) string {
 	return strings.Join(normalized, ",")
 }
 
+// stringsExtensionVersion pins the strings extension library to the version
+// this build was audited against.
+//
+// Unpinned, `ext.Strings()` means "every function, including whatever a future
+// cel-go adds" — its default version is literally MaxUint32. That is the exact
+// bug the profile mechanism exists to prevent: an expression stored in a run's
+// specification silently changing meaning because a dependency bump taught the
+// environment a new function or altered a version-gated behaviour. The profile
+// closes that door for which *libraries* are present; this closes it for what
+// one library *contains*.
+//
+// The gap was found by auditing every CEL surface against every other. All
+// three policy surfaces — netpolicy's rules, auth's assumption rules, auth's
+// secret rules — had already pinned version 5 for exactly this reason, and the
+// workflow core, whose expressions live longest and travel furthest, was the
+// one place left open.
+//
+// Five is the highest version cel-go v0.29.2 implements, so pinning it changes
+// nothing today and is the whole point tomorrow: a cel-go upgrade that ships a
+// version 6 does not reach a workflow until this constant is raised — a
+// reviewed decision with a place for its reasoning, not a side effect of
+// `go get -u`. When raising it, raise the three policy pins in the same commit
+// or say why not; they are the same decision spelled in four places because
+// the packages cannot share a constant without an import cycle.
+const stringsExtensionVersion = 5
+
 // extensionLibraries maps the library names a workflow may enable to the
 // environment options that provide them.
 //
@@ -302,7 +328,7 @@ var extensionLibraries = map[string][]cel.EnvOption{
 	"protos":         {ext.Protos()},
 	"regex":          {cel.OptionalTypes(), ext.Regex()},
 	"sets":           {ext.Sets()},
-	"strings":        {ext.Strings()},
+	"strings":        {ext.Strings(ext.StringsVersion(stringsExtensionVersion))},
 }
 
 // ExtensionLibraries returns the sorted names of the CEL extension libraries a
