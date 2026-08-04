@@ -130,12 +130,22 @@ memoized per process) unless `FLOWSTATE_BACKGROUND` or a `< ANSI` colour profile
 settles it for free — see `ui.go`'s `settledBackground` for the cost this avoids
 (4.02s → 0.02s against a pty that answers nothing).
 
-**Below ANSI, every role collapses to weight.** `styleIf(plain, ...)` returns a
-bare style when the profile can carry no colour, so `Success` is bold-and-nothing-
-else rather than "green, but somehow." Each step down the profile loses emphasis
-and no information, which is the same rule CLAUDE.md's bounding section states for
-resources: know which thing degrades and let it degrade cleanly rather than
-partially.
+**Below ANSI, every role loses its styling entirely — this is what the code does,
+not a description of graceful weight-only degradation.** `styleIf(plain, s)`
+returns a bare `lipgloss.NewStyle()` and discards `s` outright when the profile
+can carry no colour (`theme.go`), so a plain-text stream gets no bold and no
+faint either, not "the same word, still emphasised." That is true even of the two
+roles that carry weight on an ANSI-capable stream — `Strong` and `Header` are
+`Bold(true)`, but `styleIf` strips that along with everything else the moment
+`plain` is true — and it was never true of the outcome roles in the first place:
+`Success`, `Warning`, `Danger`, and `Info` are `Foreground`-only at every colour
+depth, with no bold of their own to fall back to. So there is no intermediate
+"colour is gone but weight remains" tier for any role. This is exactly why the
+no-colour-alone rule in section 5 is load-bearing rather than a belt-and-braces
+extra: at the bottom of the profile ladder, the word and the symbol are the
+*entire* carrier of meaning, with nothing else backing them up. A future change
+that wanted a real weight-only tier would be a deliberate addition to `styleIf` —
+named here as an option, not assumed to exist.
 
 ### Symbols: a fixed set, non-emoji, with ASCII twins
 
@@ -170,7 +180,7 @@ terminal and the detection cannot.
 
 **The tree-structure marks this charter's step view needs** (`│`, `└`, and their
 ASCII twins `|`, `` `- ``) are not yet in `SymbolSet` — see the gap inventory,
-slice 3.
+slice 5.
 
 ### Pills vs. inline glyphs
 
@@ -233,9 +243,19 @@ One line per step: glyph, id, duration right-aligned, phase appended only while
 running. Nesting for `call:` and loop bodies uses box-drawing guides and **never
 flattens** — a step inside a loop stays visually inside it rather than being
 listed alongside its parent's siblings, which is the rule the tree view is bound
-to as soon as the schema can carry the shape (see the gap inventory, slice 7: this
-is not implemented today, and the mockup below is the target it is implemented
-against).
+to as soon as the schema can carry the shape.
+
+**This mockup is a target, not a description of anything running today, and it
+is blocked on two schema prerequisites named precisely rather than assumed
+solvable at render time.** Nesting depends on slice 1/2's graph schema and
+model — reusing the same spec-to-tree join the graph gets, rather than a second
+implementation of it. Per-step duration and per-step terminal status (the
+`✓`/`✗`/`—` on a *finished* step, not only the one currently running) depend on
+slice 3's run-telemetry schema addition, because neither exists on the wire
+today: see the gap inventory for exactly what `RunProgress` and `StepOutputs`
+carry instead. Both are additive, per-invariant-10 schema changes, gated on
+being proposed and landed before slice 9 builds this renderer — see the gap
+inventory for the ordering.
 
 ```
 ✓ RUN  deploy-frontend                         a3f9c21e  (took 2m14s)
@@ -286,8 +306,7 @@ Today's `flow get` and `flow watch` render a subset of this: a pill-opened summa
 line, a muted position line (`positionPath`, joined with `>` rather than drawn as
 a tree), and a flat list of completed step ids with no duration and no nesting
 (`stepLines` in `watchmodel.go`). The gap between that and the mockup above is
-precisely slice 7 of the work plan, and it is gated on a schema question named
-there, not only a rendering one.
+slice 9 of the work plan, blocked on slices 1–3 as stated above.
 
 ### Diagnostics view (`validate`, `fix --check`)
 
@@ -336,7 +355,7 @@ screen wants found first), a warning block for anything Temporal is retrying
 place this view reflows, because a failure message is the reason somebody is
 looking), the step summary described above, and a footer stating what quitting
 does and does not do. This is drawn today; the gap is only the step block's shape,
-covered in section 3's first view and slice 7 below.
+covered in section 3's first view and slice 9 of the gap inventory.
 
 ### List/table view (`flow list`)
 
@@ -372,11 +391,12 @@ surface" section already states the RPC-projection half of this; the point here 
 that the CLI is not even privileged among the renderers. It is the first one that
 existed, not the definition the others approximate.
 
-That has a concrete consequence for this document's step/timeline view: if the
-tree needs a field the schema does not carry — see slice 7 — the fix is a schema
-field every renderer gains at once, per the proto-first rule in `CLAUDE.md`,
-rather than a CLI-only lookup that a future web UI would have to reimplement or
-do without.
+That has a concrete consequence for this document's step/timeline view: the tree
+needs fields the schema does not carry today — see the gap inventory's slices 1
+and 3 — and the fix is a schema field every renderer gains at once, per the
+proto-first rule in `CLAUDE.md`, rather than a CLI-only lookup that a future web
+UI would have to reimplement or do without. The graph model in section 6 is
+built the same way from the start, for the same reason: see 6.1.
 
 **Where this is easy for Flowstate specifically**: the RPCs are already Connect
 services with protobuf request and response types, which is exactly the shape
@@ -479,58 +499,90 @@ bug, for the same reason one level up. An agent iterating on any one layer runs
 that layer's tests — seconds, no terminal, no eyeballing a screen — and only
 climbs a layer once the one below is green.
 
-### 6.1 The graph model, derived from the IR once
+### 6.1 The graph model, proto first
 
-A pure package — `pkg/flowstate/v1/graph`, alongside the other IR-adjacent
-packages (`flowfile`, `engine`) rather than under `cmd/flow`, because an MCP
-server or a future web backend needs this model with no CLI in the process at
-all — turns a compiled `*v1.Workflow` into a renderer-neutral graph:
+**Corrected from an earlier draft of this section, which proposed a hand-written
+Go package as the graph's home.** That draft violated CLAUDE.md's proto-first
+invariant on its own terms: this model is explicitly for CLI, MCP, and web
+consumers, which is precisely the shape the invariant means by "describes things
+that travel," and a type built as a Go struct first guarantees the later
+migration the invariant exists to avoid — a second, competing definition of what
+a graph is the moment a non-Go consumer needs one, with every field renamed by
+hand to match. The graph shape is schema from the start, exactly like
+`RunProgress` and `Diagnostic` already are.
 
-- **Nodes** are steps, each carrying its id, its kind (task name, `for_each`,
-  `parallel`, `call`), and — only when a run is attached, see below — a status
-  and a duration. A node with no run attached carries neither, because a status
-  is a fact about an *attempt*, and a bare spec has not been attempted.
-- **Edges** are typed, not merely present: **sequence** (this step follows that
-  one), **call-expansion** (this step's body is the callee's own graph, computed
-  recursively from the callee's compiled `Workflow`), **loop body** (this step is
-  inside a `for_each`, once, regardless of how many iterations a run performed —
-  the model describes the *spec's* shape, and an iteration count is a run fact
-  layered on afterward), and **parallel branch** (this step is one of several that
-  run concurrently, siblings under one parallel node rather than a sequence).
-- **Depth** is a level, not a coordinate: top-level steps are depth 0, a `call:`'s
-  callee is a subgraph rooted one level down, a loop or parallel body is a
-  subgraph one level down from the step that declares it. This is the same
-  never-flatten rule section 3 states for the step view, generalized: depth *is*
-  the zoom control, and expanding or collapsing a subgraph is moving a step
-  between being drawn as one summary node and being drawn as its own depth level
-  — never a step quietly reappearing at its parent's level, which is the
-  flattening #172 forbids.
+`proto/flowstate/v1/flowstate.proto` gains three additive messages (new
+messages, no changes to anything existing — safe under `buf breaking` the way
+every other addition in this schema is):
 
-The **run-state overlay** is a second, optional input to the same construction
-function — never a second graph type. `NewGraph(spec *v1.Workflow, run
-*v1.RunProgress /* optional */) *Graph` (or the `GetResponse`'s step outputs, for
-a finished run) folds status and duration onto the nodes the spec already
-produced; it cannot add or remove a node, because the set of steps a workflow
-*has* is a property of the spec and a run cannot change it. This is what keeps
-"the workflow's shape" and "what happened this time" from becoming two sources of
-truth that a bug lets disagree.
+- **`GraphNode`**: `id` (the deterministic, path-qualified identifier — see
+  6.2's node-id fix below for why a bare step id is not unique), `label` (the
+  authored step id, for display), `kind` (an enum: `TASK`, `FOR_EACH`,
+  `PARALLEL`, `CALL`), and `depth` (the nesting level, per the depth rule
+  below). What this message does **not** yet carry: a status or a duration.
+  Those are run facts, and no schema field for them exists anywhere in this
+  proto today — see the run-state prerequisite below, which is a fenced-off,
+  separately landed addition rather than something this message grows silently.
+- **`GraphEdge`**: `from`, `to` (both `GraphNode.id` values), and `kind` — an
+  enum of `SEQUENCE` (this step follows that one), `CALL_EXPANSION` (this
+  step's body is the callee's own graph, computed recursively from the callee's
+  compiled `Workflow`), `LOOP_BODY` (this step is inside a `for_each`, once,
+  regardless of how many iterations a run performed — the *spec's* shape, with
+  an iteration count layered on separately if the run-state prerequisite below
+  ever adds one), and `PARALLEL_BRANCH` (this step is one of several siblings
+  under one parallel node rather than a sequence).
+- **`Graph`**: `repeated GraphNode nodes`, `repeated GraphEdge edges`, and the
+  workflow id or path the graph was built from, so a `Graph` value is
+  self-describing rather than needing to be handed back to whoever produced it
+  to be identified.
 
-Pure function of its inputs, therefore deterministic, therefore golden-testable
-with no terminal, no bubbletea, and no server in the loop — the fastest tests in
-this whole feature and the ones every layer above depends on being right first.
+**Depth is a level, not a coordinate**: top-level steps are depth 0, a `call:`'s
+callee is a subgraph rooted one level down, a loop or parallel body is a
+subgraph one level down from the step that declares it. This is the same
+never-flatten rule section 3 states for the step view, generalized: depth *is*
+the zoom control, and expanding or collapsing a subgraph is moving a step
+between being drawn as one summary node and being drawn as its own depth level
+— never a step quietly reappearing at its parent's level, which is the
+flattening #172 forbids.
 
-**This model is what makes the feature programmable, not merely drawable.** An
-MCP client, a VS Code extension, or a future web UI wanting "what does this
-workflow look like" is a client of this package's output, not a client of
-whichever renderer the CLI happens to draw it with — the same "one structure,
-several renderers" argument section 4 makes for the protobuf messages generally.
-Whether that output eventually becomes a schema message of its own (a `Graph`
-proto projected the way `RunProgress` and `Diagnostic` already are) is a real
-future question and is deliberately not answered here: this document names it as
-*the projection this model is heading toward*, per the proto-first rule in
-CLAUDE.md, rather than designing a `.proto` message no renderer yet exists to
-consume. Build the Go model and its consumers first; lift it into the schema when
-a second, non-Go consumer actually needs it over the wire.
+**Go behaviour attaches to the generated types**, per CLAUDE.md's rule that the
+shape comes from the schema and behaviour is hand-written methods on it: a
+`NewGraph(spec *v1.Workflow) *v1.Graph` function, in a hand-written file beside
+the rest of `pkg/flowstate/v1`'s IR-adjacent behaviour (`eval.go`,
+`authority.go`) rather than in a package of its own — there is no longer a
+"pure package" to justify separately once the shape itself is generated code
+that any importer of `pkg/flowstate/v1` already has. `NewGraph` walks a
+compiled `Workflow`'s nodes exactly the way `runForEach`/`runParallel` in
+`eval.go` and the authority walk in `authority.go` already do, and produces a
+`*v1.Graph` value — pure function of its input, deterministic, golden-testable
+with no terminal, no bubbletea, and no server in the loop.
+
+**The run-state overlay is out of scope for this slice, named as its own
+prerequisite rather than glossed over.** An earlier draft of this section
+proposed folding a run's status and duration onto `Graph`'s nodes via a second,
+optional argument to the same constructor — `NewGraph(spec, run
+*RunProgress)`. Checked against what the schema actually carries, that cannot be
+built: `RunProgress` holds only the current top-level `step_id`, a partial
+`path` into it, and a segment-local `completed_steps` count — nothing about any
+*other* step's status or how long it took — and `GetResponse` for a finished run
+is a oneof between `RunOutputs` (values only, no per-step status or timing) and
+an `Error` (which is the whole run's outcome, not a per-step account). There is
+today no schema path to "step X succeeded in 12s while step Y is still running,"
+which is exactly what an overlay needs and exactly what the failed-run
+post-mortem this document sketches in 6.2 requires. That telemetry — per-step
+status, per-step duration, per-step terminal outcome — is therefore its own
+additive schema slice (gap inventory slice 3), landed and reviewed on its own
+before any overlay code is written, and every overlay-producing path in this
+document (6.2's `--run` variant, 6.3's outcome colouring, section 3's
+step/timeline view) is blocked on it. `NewGraph` in this slice takes a spec and
+nothing else.
+
+**This is what makes the feature programmable, not merely drawable.** An MCP
+client, a VS Code extension, or a future web UI wanting "what does this
+workflow look like" reads the identical `*v1.Graph` message the CLI's own
+exporters read in 6.2 — the same "one structure, several renderers" argument
+section 4 makes for the rest of the schema, extended to this feature from its
+first line rather than arrived at after a migration.
 
 ### 6.2 Exports: `flow graph`, mermaid and dot
 
@@ -541,37 +593,63 @@ its output, so a nesting rule fixed in the model is fixed for every export at
 once rather than fixed once per format and drifting the second time someone
 touches only one of them.
 
-**Mermaid** (`--format mermaid`, matching the `--output`/`-o` vocabulary
-`resolveOutputFormat` already owns for every other command — a second flag
-spelling the same idea would be exactly the kind of duplication CLAUDE.md warns
-drifts):
+**Mermaid and dot are `--output` values, not a second flag.** An earlier draft of
+this section introduced `--format mermaid` beside `--output`/`-o` in the same
+document that names per-command bespoke vocabulary a thing this charter refuses
+(section 5) — two flags spelling "how should this be rendered" is exactly that
+kind of duplication, and `resolveOutputFormat` today reads only the `output`
+flag, so `--format` would not even be wired to it. The fix is to extend what
+`--output` accepts for this command specifically: `mermaid` (the default), `dot`,
+and `json` (the `Graph` message itself, protojson, for a consumer building its
+own renderer against the identical schema section 6.1 defines — the same
+argument section 4 makes generally). `flow graph` has no sensible `text` or
+`jsonl` form — a graph is one document, not a table or a stream of records — so
+this is the first command whose accepted `--output` values are not the global
+three. `addOutputFlag`/`resolveOutputFormat` need a small, explicit change to
+support that: a per-command accepted-value list rather than the single package
+global `outputFormats` every command currently validates against, so that `flow
+list -o mermaid` is refused by the command that has no mermaid rendering, per
+`resolveOutputFormat`'s own existing rule that a format a command does not
+accept is refused rather than silently mishandled. This is a small, contained
+piece of the exporter slice, named here so it is not discovered mid-implementation.
 
-- `classDef` per semantic token — `classDef success`, `classDef failure`,
-  `classDef pending`, `classDef running` — styled with the same role names section
-  2 defines, so a class is a name a reader of this document already knows rather
-  than a hex code invented for mermaid alone. Applying `class stepId success`
-  rather than an inline `style` line is what lets mermaid's own theme directive
-  carry light/dark, instead of this exporter hard-coding one background's
-  contrast and being wrong on the other — the same failure mode section 2 rules
-  out for the terminal palette, one layer up.
-- Nesting (`call:` bodies, loop bodies, parallel branches) as mermaid
-  `subgraph`/`end` blocks, one per depth-1 grouping the model produced — never
-  flattened into the parent's node list, per 6.1's depth rule.
-- **Deterministic node ids**: the step id, exactly, never a generated counter —
-  so a diff between two exports of the same workflow at two commits is a diff of
-  what changed, not a diff of every id shifting because a step was inserted
-  earlier in source order.
-- Golden-file tests, byte-stable: `flow graph examples/basic/workflow.yaml
-  --format mermaid` produces the same bytes today and after an unrelated change,
-  checked the way `flow fix`'s and `flow docs generate`'s own outputs are pinned
-  elsewhere in this repo's CI.
+**Node ids are path-qualified, not the bare step id — verified necessary, not
+assumed.** `examples/call-a-workflow/workflow.yaml` has a step named `provision`
+that calls `workflows/provision-tenant.yaml`, whose own steps include one also
+named `provision` — a real, checked-in file, not a hypothetical. Emitting the
+bare step id as the mermaid or dot node id would merge or silently overwrite
+one of those two nodes, since both would render as `provision`. The scheme:
+`GraphNode.id` is the full chain of enclosing step ids from the graph's root to
+this node, joined by a separator no step id can itself contain: `/`, which a
+step id's own schema pattern (`Node.id`, `^[A-Za-z0-9-_]+$` in
+`flowstate.proto`) excludes outright, so the join can never collide with a
+step id that happens to contain the separator — there is no such step id. The
+caller's `provision` node id is `provision` and the callee's is
+`provision/provision`. This is deterministic (the same spec always produces the
+same ids, since it is derived from position in the compiled tree, never
+generated) and stable under reordering elsewhere in the file, since it is
+anchored to the calling chain rather than to appearance order — which is what
+keeps a diff between two exports of the same workflow a diff of what changed
+rather than a diff of every id shifting. `GraphNode.label` stays the bare
+authored id — `provision`, not `provision/provision` — because that is what a
+person reads on the node; the qualified id is the wire identity, never the
+display text.
 
-**Dot** (`--format dot`) is the same discipline against graphviz's own
-vocabulary — `subgraph cluster_<step-id>` for nesting (graphviz requires the
-`cluster_` prefix for a subgraph to render as a bounded box, which is the nearest
-dot equivalent of mermaid's `subgraph`), a `style=filled` and a fixed colour
-attribute per semantic role sourced from the same token names, and the same
-deterministic-id and golden-test requirements.
+Both mermaid and dot draw nesting (`call:` bodies, loop bodies, parallel
+branches) as their own grouping construct — mermaid's `subgraph`/`end`, dot's
+`subgraph cluster_<qualified-id>` (graphviz requires the `cluster_` prefix for a
+subgraph to render as a bounded box) — one per depth-1 grouping the model
+produced, never flattened into the parent's node list, per 6.1's depth rule.
+Mermaid styles nodes with a `classDef` per semantic token (`classDef success`,
+`classDef failure`, `classDef pending`, `classDef running`) applied via `class
+<qualified-id> success` rather than an inline `style` line, which is what lets
+mermaid's own theme directive carry light/dark instead of this exporter
+hard-coding one background's contrast and being wrong on the other; dot uses
+`style=filled` and a fixed colour attribute sourced from the same token names.
+Both formats get golden-file tests, byte-stable: `flow graph
+examples/basic/workflow.yaml -o mermaid` produces the same bytes today and after
+an unrelated change, checked the way `flow fix`'s and `flow docs generate`'s own
+outputs are pinned elsewhere in this repo's CI.
 
 Both exports accept `--depth N` (draw no deeper than N, collapsing anything below
 it to a single summary node reporting how many steps it contains — the same
@@ -584,11 +662,17 @@ command line or driven interactively, which is what keeps `flow graph --depth 1`
 and pressing "collapse" twice in the navigator from being two different mental
 models of the same feature.
 
-A run-state overlay variant (`flow graph <id> --run <run-id>`, or `--run` reading
-the current run the way `flow get`'s `--run-id` does) produces the identical
-export with 6.1's overlay folded in — nodes styled by outcome — which is the
-form worth having for a post-mortem: "show me the shape of this workflow, coloured
-by how the failed run actually went."
+**A run-state overlay variant is designed here and blocked, not built.** `flow
+graph <id> --run <run-id>` (or `--run` reading the current run the way `flow
+get`'s `--run-id` does), producing the identical export with per-node status and
+duration folded in — nodes styled by outcome, the form worth having for a
+post-mortem: "show me the shape of this workflow, coloured by how the failed run
+actually went." This is blocked on the same run-telemetry schema prerequisite
+6.1 names (gap inventory slice 3) for the identical reason: there is no field
+today carrying a finished run's per-step status or duration for this flag to
+read. The flag and its rendering are designed now so the exporter slice does not
+have to be revisited when the telemetry lands; the flag itself does not ship
+until slice 3 does.
 
 ### 6.3 TUI navigator
 
@@ -600,16 +684,46 @@ surfaces are optional" rule requires of any TUI here. A second, separately
 constructed `tea.Program` in a `flow graph --interactive` command would duplicate
 all of that plumbing — the poller, the outage handling `watchmodel.go` already
 gets right, the ctx-cancellation-on-quit behaviour — for no reason the audit could
-find. The navigator is therefore `flow watch --graph` (or a `g` key toggling into
-it from the existing step-list view, both reaching the same model): the same
-`watchModel`, poller, and `watchState` this document's section 3 already
-describes, with a second `View()` shape selected by a mode field, built from the
-6.1 graph model constructed from the same `RunProgress`/`GetResponse` the plain
-view already reads. Whichever a workflow is not currently running, the navigator
-still works against the spec alone (no run attached, per 6.1) — so `flow graph
-<path> --interactive` remains available as the entry point for a workflow that
-has never been run, which is the one case `flow watch` itself does not cover
-since there is nothing to watch.
+find.
+
+**Corrected from an earlier draft, which claimed the navigator builds its graph
+from the same `RunProgress`/`GetResponse` the plain view already reads. Checked
+against the schema, that claim does not hold**: neither message carries the
+compiled `Workflow` a graph is built from (`GetResponse`'s oneof is `Error` or
+`StepOutputs`, and `RunProgress` is the position summary section 6.1 already
+describes — no spec anywhere in either), and no RPC in
+`WorkflowService` returns a run's specification. `flow watch [workflow-id]`
+today has never had the source file in hand; a run knows only its id.
+
+Two ways to fix that, and this document picks one rather than leaving both live.
+**(b) — adding an RPC that hands a compiled spec back by workflow id — is
+rejected here, not merely deferred**, because a workflow spec is not a small,
+low-stakes value to add a new authorized read path for: it is CLAUDE.md's own
+example of what a schema type carries when it is *everything* — task inputs,
+egress rules, secret references — and "add a way to read a run's full spec back
+out" is exactly the kind of capability that needs its own authorization and
+bounding argument (who may read whose spec, and what about it is safe to serve
+to a caller who only holds a workflow id) *before* a graph feature's UI
+convenience earns it a reason to exist. That argument does not belong bolted
+onto this section as a side effect of wanting a nicer flag.
+
+**(a) is the design this document takes: the navigator requires the spec as an
+explicit input.** `flow watch --graph --source <path>` (mnemonic: the same word
+`flow run local` and `flow compile` already use to point at a file) — `--graph`
+without `--source` is refused at the flag-parsing stage, per section 1's
+fail-closed principle, rather than silently drawing an empty or partial graph.
+The navigator's model is `NewGraph` (6.1) applied to compiling `--source`
+locally — the same compile `flow validate`/`flow compile` already perform, no
+new RPC, no new server-side capability — joined against the *position* fields
+`RunProgress` already provides for colouring the live step, and against nothing
+further until the run-telemetry schema (gap inventory slice 3) lands. A
+workflow that has never run works identically: `flow graph <path>
+--interactive` is the entry point that needs no run at all, and it is the same
+code path with `run` simply absent, per 6.1's "run-state overlay is optional"
+design. `flow watch --graph` without `--source` on a workflow whose file the
+caller does not have on disk is, honestly, not yet servable — named here as a
+real limitation of choice (a) rather than hidden by choice (b)'s unresolved
+authorization question.
 
 **Keyboard**, in the vocabulary bubbletea v2 already delivers as `tea.KeyMsg`:
 
@@ -640,12 +754,16 @@ list.
 
 Every part of this view is styled entirely through section 2's tokens — the
 selected node is `Strong`, an expandable-but-collapsed subgraph's summary node is
-`Muted` with the count section 1's budget rule requires stated, and outcome
-colouring reads `Theme.Tone`/`symbols.Mark` exactly as section 3's step view does,
-because this is a second shape for the same facts and a third palette invented
-for it would be precisely the bespoke-per-view styling section 5 refuses.
+`Muted` with the count section 1's budget rule requires stated, and where outcome
+colouring is available at all, it reads `Theme.Tone`/`symbols.Mark` exactly as
+section 3's step view does, because this is a second shape for the same facts and
+a third palette invented for it would be precisely the bespoke-per-view styling
+section 5 refuses.
 
-Mockup, a `promote` call two nodes deep, `each-region` collapsed:
+Mockup, a `promote` call two nodes deep, `each-region` collapsed — **this depicts
+the state once slice 3's run-telemetry schema has landed; against a spec-only or
+pre-slice-3 graph, the finished-step marks and durations below are not yet real
+data and would not yet be drawn**:
 
 ```
 flow watch --graph  deploy-frontend (a3f9c21e)             RUNNING
@@ -659,10 +777,16 @@ flow watch --graph  deploy-frontend (a3f9c21e)             RUNNING
 ↑↓ move   →/enter expand   ←/esc collapse   g jump   +/- depth   q quit
 ```
 
+Before slice 3, the same screen still works — the navigator draws structure
+(nodes, nesting, the selection cursor) from the spec alone, per 6.1's optional
+overlay — it simply has no `✓`/duration to show on a finished step yet, the
+identical limitation section 3 states for the plain step/timeline view.
+
 The selection marker (`┬`/`▶` at the line the cursor is on — ASCII fallback `+`)
 is a fifth kind of mark alongside section 2's existing set, needed only here, and
-belongs in `SymbolSet` beside the tree-structure marks slice 3 of section 7
-already adds — named here so it is not lost between the two sections.
+belongs in `SymbolSet` beside the tree-structure marks the gap inventory's
+symbol slice already adds — named here so it is not lost between the two
+sections.
 
 ### 6.4 Testing at every layer — the development loop this design buys
 
@@ -680,15 +804,36 @@ against a live compile:
   values the 6.1 tests already validated — an exporter test never re-derives a
   model from a spec, so a failure here is unambiguously an exporter defect.
   Seconds, still no terminal.
-- **TUI tests** (6.3) use `github.com/charmbracelet/x/exp/teatest/v2` — the
-  package this repo already depends on and already uses for `flow watch` itself
-  in `cmd/flow/watchmodel_test.go` (`teatest.NewTestModel`, `.Send`, `.Type`,
-  `.WaitFinished`) — driving keystrokes (`tm.Type("j")`, `tm.Send(tea.KeyMsg{...})`
-  for keys `Type` cannot spell, and `tm.Send(tea.MouseClickMsg{...})` for the
-  mouse bindings in 6.3) and asserting the rendered frame against a golden byte
-  string via `teatest.RequireEqualOutput`, the same mechanism `watchmodel_test.go`
-  already exercises for the plain view. No real terminal, no pty — seconds, not
-  minutes.
+- **TUI tests** (6.3) drive the model directly, the way `watchmodel_test.go`
+  already tests the plain view — and specifically **not** via
+  `teatest.RequireEqualOutput`, a byte-stream golden. An earlier draft of this
+  section recommended exactly that, and it is wrong on `watchmodel_test.go`'s
+  own precedent: that file deliberately avoids pinning bubbletea's emitted byte
+  stream, because bubbletea coalesces and differentially repaints frames, which
+  makes the literal bytes on the wire scheduler-dependent — a passing test today
+  and a flaking one tomorrow with no code change, exactly the class of test
+  CLAUDE.md's testing sections warn against trusting. `TestWatchViewShowsThePositionAdvancing`
+  is the named example this is checked against. The mechanism the existing test
+  actually uses, and the one the graph navigator's tests should copy: a `fold`
+  helper (`cmd/flow/watchmodel_test.go`) that threads a model value through a
+  sequence of `tea.Msg`s via `Update` — `current, _ = current.Update(msg)`,
+  since a bubbletea model is a value and `Update` returns a new one each time —
+  and a `viewOf` helper that renders the *resulting* model's `View().Content` as
+  a plain string, asserted against directly (`require.Contains`,
+  `require.Equal`) or via `require.True(t, ok)` on a type-asserted
+  `tm.FinalModel(t).(watchModel)` for a test that needs the program's own event
+  loop rather than a hand-folded sequence. This still uses
+  `github.com/charmbracelet/x/exp/teatest/v2` (`teatest.NewTestModel`, `.Send`,
+  `.Type`, `.WaitFinished`, `.FinalModel`) for the handful of tests that need a
+  real running program — the graph navigator's would too, for the same reason
+  `TestWatchViewShowsProgressAsItArrives` is the one test in that file that
+  drives the real program rather than folding messages by hand: establishing
+  that the poll loop, the renderer, and the terminal state actually agree is not
+  something a folded sequence can prove on its own. What changes from the
+  earlier draft is only the assertion at the end — a rendered `View()` or a
+  final model's fields, never the raw escape-sequence stream. No real terminal,
+  no pty — seconds, not minutes, and no flake from a scheduler this test does
+  not control.
 - **The capability matrix rides the existing token tests.** `NO_COLOR` and the
   ASCII-fallback assertions the graph's marks need are not a new test category:
   they are `TestNoColorKeepsTheWords` and `TestSymbolsDegradeButKeepTheirWidth`
@@ -713,51 +858,91 @@ system itself (`cmd/flow/internal/ui/theme.go`, `symbols.go`, with tests in
 validate`'s diagnostics view, and `flow get`/`flow watch`'s pill-opened summary
 line. What is not: everything below.
 
-1. **The graph model** (section 6.1): `pkg/flowstate/v1/graph`, a pure
-   `NewGraph(spec, run *optional)` deriving nodes, typed edges, and depth levels
-   from a compiled `*v1.Workflow`, with no exporter and no TUI touching it yet.
-   Highest value for the lowest risk in this whole plan: no bubbletea, no
-   terminal, unit tests and goldens only, and it is the dependency every other
-   graph slice below sits on — nothing in 2 or 3 can start correctly before this
-   one is settled and reviewed, per 6.1's ordering argument. This is the
-   recommended first slice of the entire work plan, ahead even of 3–8 below,
-   because it is the one piece of new capability with zero rendering risk.
+1. **The graph schema** (section 6.1): additive `Graph`, `GraphNode`, `GraphEdge`
+   messages in `proto/flowstate/v1/flowstate.proto` — node kind and edge kind
+   enums, the path-qualified `id`/display `label` split section 6.2 requires,
+   `depth`. No run-state fields yet — see slice 3. `buf generate`, `buf
+   breaking` (additive messages are safe by construction, verified rather than
+   assumed), and schema-level tests the way `Diagnostic`'s own shape is tested.
+   This is the first slice of the entire plan: proto-first per CLAUDE.md's
+   invariant 1, and everything else in this section is a consumer of what it
+   defines.
 
-2. **The mermaid and dot exporters** (section 6.2): `flow graph`, reading only
-   the model slice 1 produced. Mermaid first (`classDef`-based token styling,
-   `subgraph` nesting, deterministic step-id node ids), dot second on the same
-   discipline. `--depth`/`--expand` flags, golden-file tests for both formats,
-   plain and with a run-state overlay. No TUI risk: this slice is exporters and
-   golden files only.
+2. **The graph model, Go construction** (section 6.1): `NewGraph(spec
+   *v1.Workflow) *v1.Graph`, a hand-written method attached to the generated
+   types slice 1 produced, living beside `eval.go`/`authority.go` in
+   `pkg/flowstate/v1` rather than in a package of its own. Spec-only — no run
+   argument, since the run-state overlay is blocked on slice 3. Golden-tested
+   against fixed `*v1.Workflow` values, no terminal, no bubbletea, no server.
+   The dependency every other graph slice below sits on; nothing in 4 or 6 can
+   start correctly before this one is settled and reviewed.
 
-3. **Add the tree-structure and selection symbols to `ui.SymbolSet`.** `│`, `└`,
+3. **The run-telemetry schema.** Additive fields — per-step status, per-step
+   duration, per-step terminal outcome — landing wherever the schema review
+   decides they belong (extending `GetResponse`'s finished-run shape, a new
+   message, or something else `buf breaking` accepts as additive; this document
+   deliberately does not pre-decide the exact message shape, only that the
+   fields do not exist anywhere today and must be proposed and reviewed on
+   their own). Verified necessary, not assumed: `RunProgress` carries only the
+   current top-level step, a partial path, and a segment-local completed count;
+   `GetResponse` for a finished run is a oneof between output values and an
+   error, neither of which is a per-step account. This slice blocks the
+   run-state overlay in 6.1/6.2/6.3 *and* the step/timeline tree's per-step
+   duration in section 3 — both are named as blocked on it rather than
+   re-solved independently, since it is one gap with two consumers.
+
+4. **The mermaid and dot exporters** (section 6.2): `flow graph`, extending
+   `--output`/`-o` with `mermaid` (default), `dot`, and `json` values for this
+   command specifically — including the small, explicit change to
+   `resolveOutputFormat`/`addOutputFlag` needed to let one command accept a
+   different value set than the other three, so `flow list -o mermaid` is
+   refused rather than mishandled. Reads only slice 2's model — never re-walks
+   a spec. `classDef`/`style=filled` token styling, `subgraph`/`cluster_`
+   nesting, `--depth`/`--expand`. The `--run` overlay variant is designed but
+   does not ship until slice 3 lands. Golden-file tests, byte-stable. No TUI
+   risk: this slice is exporters and golden files only.
+
+5. **Add the tree-structure and selection symbols to `ui.SymbolSet`.** `│`, `└`,
    `├`, and the navigator's selection mark (`┬`/`▶`, section 6.3), with ASCII
-   twins `|`, `` `- ``, `+-`, `+`. Needed by both the step/timeline tree (slice 6
-   below) and the graph navigator (slice 4); defined once, with the same
+   twins `|`, `` `- ``, `+-`, `+`. Needed by both the step/timeline tree (slice 9
+   below) and the graph navigator (slice 6); defined once, with the same
    single-column-width guarantee `TestSymbolsDegradeButKeepTheirWidth` already
    holds the rest of the set to. File: `cmd/flow/internal/ui/symbols.go`, with a
    widened version of that test.
 
-4. **The TUI navigator** (section 6.3): `flow watch --graph`, the second `View()`
-   mode on the existing `watchModel`, built from slice 1's model constructed
-   against the live `RunProgress`/`GetResponse` — never a second poller or a
-   second `tea.Program`. Keyboard first, then mouse (`tea.MouseModeCellMotion`,
-   `OnMouse`, per 6.3's verified v2 API). Tested with
-   `github.com/charmbracelet/x/exp/teatest/v2` exactly as `watchmodel_test.go`
-   already tests the plain view — no new test infrastructure, only new assertions
-   against it. This is the one slice in the whole plan with real TUI risk, which
-   is why it is sequenced after both the model and the exporters have already
-   proven the underlying structure is right.
+6. **The TUI navigator** (section 6.3): `flow watch --graph --source <path>` —
+   `--source` required, refused without it per section 1's fail-closed rule,
+   since no RPC returns a run's spec and this document deliberately does not
+   add one (see 6.3's reasoning). The second `View()` mode on the existing
+   `watchModel`, built from slice 2's model compiled from `--source` locally
+   and coloured against `RunProgress`'s existing position fields; outcome
+   colouring for finished steps is blocked on slice 3 the same way the exporter
+   overlay is. Never a second poller or a second `tea.Program`. Keyboard first,
+   then mouse (`tea.MouseModeCellMotion`, `OnMouse`, per 6.3's verified v2 API).
+   Tested by driving the model through `Update` and asserting `View()` or the
+   final model's fields — never a `teatest.RequireEqualOutput` byte-stream
+   golden, per 6.4's correction and `watchmodel_test.go`'s own precedent. This
+   is the one slice in the whole plan with real TUI risk, which is why it is
+   sequenced after the schema, the model, and the exporters have already proven
+   the underlying structure is right.
 
-5. **Route `flow fix`'s and `flow fmt`'s remaining plain output through `Theme`.**
-   `fmtOne` in `cmd/flow/fmtcmd.go` and the check-mode summary in `fix.go` print
-   file paths and outcomes without a `theme.Muted`/`theme.Success`/`theme.Danger`
-   wrap anywhere the diagnostics path (`runValidate`) already does. Files:
-   `cmd/flow/fmtcmd.go`, `cmd/flow/fix.go`. Bring both through `newSurface` the
-   way `runValidate` does, with a golden-output test asserting the `NO_COLOR`
-   form is byte-identical to today's.
+7. **Give `flow fix` and `flow fmt` outcome-tone parity with `flow validate`.**
+   Verified against the current code, not the stale claim an earlier draft of
+   this slice made: `runFmt`/`runFix` already call `newSurface` and `fmtOne`/
+   `fixOne` already render every line through `theme.Muted` (`cmd/flow/fmtcmd.go`
+   lines 152, 215 onward; `cmd/flow/fix.go` lines 138, 211 onward) — that
+   migration is done, and an earlier draft's "route through Theme" framing was a
+   no-op this rewrite removes. What remains, checked line by line: every outcome
+   word in both files — a refusal, `"already formatted"`/`"already current"`, a
+   changed-file report — renders in the same `Muted` regardless of whether it is
+   good or bad news, unlike `runValidate`'s `ok` (`Success`) and diagnostic
+   lines. File: `cmd/flow/fmtcmd.go`'s `fmtOne`, `cmd/flow/fix.go`'s `fixOne`.
+   Give a refusal `theme.Danger`, a clean file `theme.Success`, and a changed
+   file (found something to do, under `--check`) `theme.Warning` — the same
+   word-plus-tone pairing section 2 requires elsewhere — with a golden-output
+   test asserting the `NO_COLOR` form stays byte-identical to today's.
 
-6. **Give `flow list` an outcome glyph, not only a coloured word.** Per section
+8. **Give `flow list` an outcome glyph, not only a coloured word.** Per section
    2's colour-is-never-alone rule, `STATUS` in the table today is `Theme.Tone`
    applied to the bare word (`lifecycle.go`'s `listRendering.add`) with no
    `symbols.Mark` beside it — every *other* status-bearing surface (`get`,
@@ -765,43 +950,29 @@ line. What is not: everything below.
    `SYM` or leading-glyph column ahead of `STATUS`; update the golden tests in
    `runlocal_output_test.go`'s siblings that pin this table's shape.
 
-7. **Decide whether the step/timeline tree view (section 3) needs a schema field
-   before it needs a renderer.** This is the slice with a real open question,
-   named rather than quietly assumed: `RunProgress` carries `step_id` and `path`
-   for the run's *current* position only, and `Workflow.StepOutputs.step_values`
-   is a flat `map<string, Node.Outputs>` keyed by step id with no parent pointer
-   and no per-step duration. Section 3's tree mockup needs both — a step's
-   nesting level and how long it took — for every *finished* step, not only the
-   one the run happens to be on right now. Slice 1's graph model already solves
-   the nesting half of this for the graph view; the same join (spec steps back to
-   their defining `call:`/loop block) is very likely reusable here rather than a
-   second implementation of it, which is worth checking before writing a new
-   one. Per-step duration still has no field anywhere, spec or run: either it is
-   computed at render time from timestamps the schema does not carry today, in
-   which case it needs one — a `.proto` change with `buf generate`, per
-   CLAUDE.md's proto-first rule — or it is out of scope for this pass. Resolve
-   the question first; do not build the renderer against a guess.
+9. **Build the step/timeline tree renderer.** Blocked on slice 2 (nesting —
+   reuse the same spec-to-tree join `NewGraph` already performs rather than a
+   second implementation of it) and slice 3 (per-step duration and terminal
+   status for a *finished* step, not only the one currently running — neither
+   exists on the wire before that slice lands). Once both are available:
+   replace `watchmodel.go`'s flat `stepLines` with the nested form from section
+   3's mockup, reusing `positionPath`'s existing path-join logic for the live
+   line. Files: `cmd/flow/watchmodel.go`, `cmd/flow/get.go` (for the non-live
+   `flow get` equivalent), with golden tests for both the unicode and ASCII
+   forms and for a loop deep enough to need two guide levels.
 
-8. **Build the step/timeline tree renderer once slice 7 answers where the data
-   comes from.** Replace `watchmodel.go`'s flat `stepLines` with the nested form
-   from section 3's mockup, reusing `positionPath`'s existing path-join logic for
-   the live line and slice 7's join (or field) for the finished tree. Files:
-   `cmd/flow/watchmodel.go`, `cmd/flow/get.go` (for the non-live `flow get`
-   equivalent), with golden tests for both the unicode and ASCII forms and for a
-   loop deep enough to need two guide levels.
-
-9. **Consider whether `flow get`'s and `flow watch`'s prose deserve the same
-   audit `flow list` already passed.** Both already route status through `Pill`
-   correctly; the remaining question — out of scope for this document to
-   resolve, and named so it is not lost — is whether `pendingActivityLines`'
-   phase sentences and `writeRunOutputs`' output list should also carry inline
-   glyphs for skipped/pending step outputs, once slice 8 gives the tree a place
-   to put them.
+10. **Consider whether `flow get`'s and `flow watch`'s prose deserve the same
+    audit `flow list` already passed.** Both already route status through
+    `Pill` correctly; the remaining question — out of scope for this document
+    to resolve, and named so it is not lost — is whether `pendingActivityLines`'
+    phase sentences and `writeRunOutputs`' output list should also carry inline
+    glyphs for skipped/pending step outputs, once slice 9 gives the tree a
+    place to put them.
 
 None of the above is blocking for a person reading `flow get` or `flow list`
 today — both already read as one program, which is the audit's headline finding
-alongside the gaps. Within the graph work, 1 before 2 before 4 is load-bearing
-(model, then exporters, then the TUI that reuses both) exactly as 6.1–6.3 argue.
-Within the rest, do 3 before 4 and 8 (both need the symbols it adds), and 7
-before 8, since 8 changes what the token set needs to draw and 5–6 do not depend
-on any of it.
+alongside the gaps. The load-bearing order is 1 before 2 before 4 and 6 (schema,
+then model, then its two consumers), 3 before the overlay portions of 4 and 6
+and all of 9 (the telemetry gap has three dependents), and 5 before 6 and 9
+(both need the symbols it adds). 7 and 8 depend on nothing above and can run at
+any point in the sequence; 10 depends only on 9.
