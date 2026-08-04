@@ -223,6 +223,33 @@
 // ssh:// support is real, additive future work, not a one-line allowlist
 // entry.
 //
+// # No provider lock-in, and the one place that costs something
+//
+// This plugin's transport is go-git's BasicAuth over the git smart-HTTP
+// protocol - one call, r.SetBasicAuth(username, password), standard HTTP
+// Basic auth (RFC 7617), verified by reading
+// plumbing/transport/http/common.go rather than assumed. Nothing here
+// recognizes GitHub, GitLab, Gitea, or Bitbucket by name or branches on a
+// hostname; any server speaking git-over-HTTPS and accepting a token as a
+// Basic-auth password works, which is the actual design property worth
+// naming: git.* has no provider lock-in, on purpose, and a provider's own
+// peculiarities belong in a forge plugin like plugins/github, never as a
+// provider-specific input bolted onto this one.
+//
+// The username half of that exchange is a fixed literal ("x-access-token"),
+// never something a workflow controls - and that is where the property
+// costs something concrete rather than staying free. GitHub and GitLab
+// verified not to validate the username at all (see the README, "Which git
+// server?", for the exact source in each provider's own docs), so the fixed
+// literal is invisible against both. Bitbucket Cloud's current API-token
+// scheme does validate it, accepting only the account's real username or
+// the documented literal "x-bitbucket-api-token-auth" - neither of which
+// this plugin sends - so git.commit_push and git.ls_remote's token path do
+// not work against Bitbucket Cloud today. Reported as a schema gap (no
+// username input exists to override the literal) in the README rather than
+// patched by sniffing a hostname, which would be exactly the provider
+// detection this section's whole point refuses to add.
+//
 // # Bounds this plugin cannot fully close, said plainly
 //
 // clone.go's egress policy bounds compressed bytes read from the transport,

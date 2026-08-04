@@ -22,6 +22,17 @@ description: Commits one file to a branch and pushes it using the "git" plugin's
 # timestamp) is safe - see plugins/git/doc.go, "The idempotency trick" - and
 # a genuinely concurrent write to the same branch is refused with a distinct
 # error a workflow can dispatch: on, never silently forced.
+#
+# Unlike git.ls_remote (see workflow.yaml and ls-remote-private.yaml, where a
+# token is optional and only a private repository needs one), `token:` here
+# is not optional in practice: no forge accepts an anonymous push over
+# HTTPS, so writing always needs a credential, whichever repository this
+# points at. It takes the same shape every credential in this plugin does -
+# a secret reference, ${secret('git:name')}, resolved from GIT_SECRET_<NAME>
+# in the worker's own environment, never a literal in this file - see
+# plugins/git/README.md, "Authentication," and "Which git server?" for why
+# that one shape (an HTTPS Basic-auth password) is what every provider this
+# plugin has been asked to work with actually wants.
 
 inputs:
   url:
@@ -57,8 +68,9 @@ steps:
       # example writes is a fixed literal rather than a fourth input.
       files:
         FLOWSTATE_EXAMPLE.md: ${inputs.content}
-      # A secret reference, resolved inside the task, never a literal - see
-      # plugins/git/README.md, "Authentication."
+      # Not optional: a write always needs a credential. A secret reference,
+      # resolved inside the task, never a literal - see plugins/git/README.md,
+      # "Authentication."
       token: ${secret('git:token')}
 
 outputs:

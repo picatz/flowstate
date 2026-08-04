@@ -42,8 +42,9 @@ const exampleDir = "../../../examples/plugins/git"
 // registering into [flowstatev1.DefaultRegistry] is a one-way door with no
 // Unregister, so at most one test in this binary may do it. See
 // plugins/vcs/reachable's identical test for the full argument; this one
-// covers both of this plugin's example files (the runnable read example and
-// the parameterized write example) rather than one.
+// covers all three of this plugin's example files - the runnable public-read
+// example, the parameterized private-read example, and the parameterized
+// write example - rather than one.
 func TestAFlowfileCanNameTheGitPluginsTasks(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds a real plugin binary; skipped under -short, run in CI and by `make check`")
@@ -57,6 +58,7 @@ func TestAFlowfileCanNameTheGitPluginsTasks(t *testing.T) {
 	buildPlugin(t, binaryPath)
 
 	readSource := readExample(t, "workflow.yaml")
+	privateReadSource := readExample(t, "ls-remote-private.yaml")
 	writeSource := readExample(t, "commit-push.yaml")
 
 	for _, name := range []string{"git.ls_remote", "git.commit_push"} {
@@ -75,6 +77,21 @@ func TestAFlowfileCanNameTheGitPluginsTasks(t *testing.T) {
 	}
 	if !strings.Contains(diagnosticText(beforeRead), "git.ls_remote") {
 		t.Errorf("the diagnostics do not name %q; diagnostics:\n%s", "git.ls_remote", diagnosticText(beforeRead))
+	}
+
+	// ls-remote-private.yaml names the same task as workflow.yaml
+	// (git.ls_remote) - proof, before this plugin is even registered, that
+	// this is the auth-shapes pair the two files are meant to be: the same
+	// unregistered task name refused in both, not two different tasks.
+	beforePrivateRead, err := flowfile.ValidateSource(privateReadSource)
+	if err != nil {
+		t.Fatalf("ValidateSource(ls-remote-private.yaml): unexpected error: %v", err)
+	}
+	if len(beforePrivateRead) == 0 {
+		t.Fatal("the validator accepted ls-remote-private.yaml naming a task no registry holds")
+	}
+	if !strings.Contains(diagnosticText(beforePrivateRead), "git.ls_remote") {
+		t.Errorf("the diagnostics do not name %q; diagnostics:\n%s", "git.ls_remote", diagnosticText(beforePrivateRead))
 	}
 
 	beforeWrite, err := flowfile.ValidateSource(writeSource)
@@ -111,6 +128,17 @@ func TestAFlowfileCanNameTheGitPluginsTasks(t *testing.T) {
 		if len(diags) != 0 {
 			t.Errorf("this plugin's tasks are registered and `flow validate` still refuses "+
 				"examples/plugins/git/workflow.yaml: %s", diagnosticText(diags))
+		}
+	})
+
+	t.Run("the validator accepts the real private-read example", func(t *testing.T) {
+		diags, err := flowfile.ValidateSource(privateReadSource)
+		if err != nil {
+			t.Fatalf("ValidateSource: unexpected error: %v", err)
+		}
+		if len(diags) != 0 {
+			t.Errorf("this plugin's tasks are registered and `flow validate` still refuses "+
+				"examples/plugins/git/ls-remote-private.yaml: %s", diagnosticText(diags))
 		}
 	})
 
