@@ -151,9 +151,32 @@ func isUsageError(err error) bool {
 	return false
 }
 
-// exitCode is the status a failed command leaves behind.
+// The exit codes a failed command leaves behind, exactly the three docs/CLI.md
+// promises: 0 for success (never assigned here, since this file is only reached on
+// failure), 1 for a command that ran and found something to refuse, and 2 for a
+// command line that was wrong before anything ran.
 //
-// One, always. A command line's exit status is read by `&&` and by CI, and a
-// vocabulary of codes is only useful if every caller knows it — which nobody does
-// for a tool this size, so the distinctions would be paid for and never read.
-const exitCode = 1
+// The distinction earns its keep at exactly one call site — a script or a CI job
+// that wants to tell "the workflow failed" from "I typed the flag wrong" apart —
+// and costs nothing anywhere else, because [isUsageError] already existed to put
+// the one piece of knowable advice in the report. [exitCodeFor] is the same
+// classification read a second time rather than a second one computed, which is
+// what keeps this from becoming a value that can disagree with the report above it.
+const (
+	exitCodeFailure = 1
+	exitCodeUsage   = 2
+)
+
+// exitCodeFor is the status main leaves the process in for a command that returned
+// err.
+//
+// Kept beside [isUsageError] rather than folded into [renderError], because the
+// report and the status are two different consumers of one classification — a
+// person reads the advice, a script reads the number — and a change to one must
+// not silently change the other without a test noticing both.
+func exitCodeFor(err error) int {
+	if isUsageError(err) {
+		return exitCodeUsage
+	}
+	return exitCodeFailure
+}

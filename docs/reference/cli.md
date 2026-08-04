@@ -41,6 +41,7 @@ flow lsp
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
+| `--no-color` | `bool` | `false` | — | disable colour on every stream, the same way NO_COLOR does — the most explicit ask, so it wins over CLICOLOR_FORCE and the terminal's own capabilities |
 | `-v, --verbose` | `bool` | `false` | — | enable verbose logging |
 
 ## `flow cancel`
@@ -116,6 +117,8 @@ Rewrite Flowfiles written in an older edition of the language into the current o
 
 Shapes that cannot be rewritten without guessing — a task written in flow style, or one standing behind a YAML alias — are reported with their position and left alone, so the file is never silently mangled.
 
+`--output json` or `--output jsonl` turns `--check` into a report a program reads instead of scrapes: what changed or would change, and what was refused, per file. CI that wants structured data rather than stderr text asks for one of those.
+
 Examples:
 
 ```sh
@@ -128,6 +131,9 @@ flow fix examples/
 # Report what would change without writing, for CI:
 flow fix --check examples/
 
+# The same, as a report CI can parse instead of scraping stderr:
+flow fix --check -o jsonl examples/*/workflow.yaml
+
 # Write the result somewhere else:
 flow fix --stdout old.yaml > new.yaml
 ```
@@ -135,6 +141,7 @@ flow fix --stdout old.yaml > new.yaml
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--check` | `bool` | `false` | — | report what would change and exit non-zero if anything would, without writing |
+| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl carry the server's own schema, so a field is addressable by name |
 | `--stdout` | `bool` | `false` | — | write the result to standard output instead of back to the file |
 
 ## `flow fmt`
@@ -151,6 +158,8 @@ This is not comment-preserving or whitespace-preserving: every comment, every bl
 
 A file that does not parse is reported with its position and left untouched.
 
+`--output json` or `--output jsonl` turns `--check` into a report a program reads instead of scrapes: which files would change, and which were refused, per file. CI that wants structured data rather than stderr text asks for one of those.
+
 Examples:
 
 ```sh
@@ -163,6 +172,9 @@ flow fmt examples/
 # Report which files would change without writing, for CI:
 flow fmt --check examples/
 
+# The same, as a report CI can parse instead of scraping stderr:
+flow fmt --check -o jsonl examples/*/workflow.yaml
+
 # Write the result somewhere else:
 flow fmt --stdout old.yaml > new.yaml
 ```
@@ -170,6 +182,7 @@ flow fmt --stdout old.yaml > new.yaml
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--check` | `bool` | `false` | — | report which files would change and exit non-zero if any would, without writing |
+| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl carry the server's own schema, so a field is addressable by name |
 | `--stdout` | `bool` | `false` | — | write the result to standard output instead of back to the file |
 
 ## `flow get`

@@ -11,7 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
-
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
@@ -54,7 +54,10 @@ func newFixCommand() *cobra.Command {
 			"byte for byte as it was.\n\n" +
 			"Shapes that cannot be rewritten without guessing — a task written in flow style, or one " +
 			"standing behind a YAML alias — are reported with their position and left alone, so the " +
-			"file is never silently mangled.",
+			"file is never silently mangled.\n\n" +
+			"`--output json` or `--output jsonl` turns `--check` into a report a program reads " +
+			"instead of scrapes: what changed or would change, and what was refused, per file. CI " +
+			"that wants structured data rather than stderr text asks for one of those.",
 		Args:          cobra.MinimumNArgs(1),
 		SilenceErrors: true,
 		// A file that needs fixing is not a command someone invoked wrongly, and
@@ -72,6 +75,9 @@ flow fix examples/
 # Report what would change without writing, for CI:
 flow fix --check examples/
 
+# The same, as a report CI can parse instead of scraping stderr:
+flow fix --check -o jsonl examples/*/workflow.yaml
+
 # Write the result somewhere else:
 flow fix --stdout old.yaml > new.yaml`,
 	}
@@ -80,6 +86,10 @@ flow fix --stdout old.yaml > new.yaml`,
 		"report what would change and exit non-zero if anything would, without writing")
 	cmd.Flags().BoolVar(&opts.stdout, "stdout", false,
 		"write the result to standard output instead of back to the file")
+
+	// Diagnostics are a schema message, so `-o json`/`-o jsonl` mean here what they
+	// mean on `validate`: the fields are the schema's and addressable by name.
+	addOutputFlag(cmd)
 
 	return cmd
 }
@@ -91,8 +101,18 @@ var errFixIncomplete = errors.New("fix did not finish")
 
 // runFix rewrites each path given.
 func runFix(cmd *cobra.Command, paths []string, opts fixOptions) error {
+	format, err := resolveOutputFormat(cmd)
+	if err != nil {
+		return err
+	}
+
 	if opts.stdout && opts.check {
 		return errors.New("--stdout and --check ask for different things: one writes the result, the other only reports")
+	}
+	if opts.stdout && format.Machine() {
+		// Both want stdout for something different — the rewritten document, or the
+		// report — and only one document belongs on a stream a pipe reads.
+		return fmt.Errorf("--stdout and --output %s both want stdout: one is the rewritten document, the other the report", format)
 	}
 
 	files, err := collectFlowfiles(paths)
@@ -120,16 +140,39 @@ func runFix(cmd *cobra.Command, paths []string, opts fixOptions) error {
 	}
 
 	var (
-		refused bool
-		pending bool
+		refused    bool
+		pending    bool
+		machine    = format.Machine()
+		fixReports []*v1.FixReport
 	)
 	for _, path := range files {
-		result, err := fixOne(out, reports, reportTheme, path, opts)
+		result, err := fixOne(out, reports, reportTheme, path, opts, machine)
 		if err != nil {
 			return err
 		}
 		refused = refused || result.refused
 		pending = pending || (result.changed && opts.check)
+		if machine {
+			fixReports = append(fixReports, result.report)
+		}
+	}
+
+	if machine {
+		// Projected from the same outcome the text form prints, never recomputed —
+		// two readings of one rewrite that could otherwise drift.
+		if format == FormatJSONL {
+			// One line per file, so a consumer reads the first report without
+			// waiting for the last.
+			for _, report := range fixReports {
+				if err := writeJSON(surface, format, report); err != nil {
+					return err
+				}
+			}
+		} else if err := writeJSON(surface, format, &v1.FixReports{Files: fixReports}); err != nil {
+			// One document per invocation, the same as everywhere else `json` means
+			// that in this CLI: fixing three files is still one answer.
+			return err
+		}
 	}
 
 	// Non-zero for either. `--check` finding work is the CI case, and a refusal is
@@ -149,10 +192,21 @@ type fixOutcome struct {
 	// refused reports that some part of the file could not be rewritten safely, so
 	// the file is not finished whatever else happened to it.
 	refused bool
+
+	// report is the same outcome as a schema message, built whether or not a
+	// machine format asked for it — the cost of building the struct is nothing next
+	// to building a rewriter twice, once for a person and once for a program.
+	report *v1.FixReport
 }
 
 // fixOne rewrites a single file.
-func fixOne(out, reports io.Writer, theme ui.Theme, path string, opts fixOptions) (fixOutcome, error) {
+//
+// machine suppresses the human-readable lines this would otherwise write to
+// reports: a machine format renders [fixOutcome.report] itself, and printing both
+// would be the same fact said twice on the same stream.
+func fixOne(out, reports io.Writer, theme ui.Theme, path string, opts fixOptions, machine bool) (fixOutcome, error) {
+	report := &v1.FixReport{File: path}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fixOutcome{}, fmt.Errorf("error reading %s: %w", path, err)
@@ -163,20 +217,33 @@ func fixOne(out, reports io.Writer, theme ui.Theme, path string, opts fixOptions
 		// Not YAML at all. Reported rather than returned, so one unparseable file
 		// does not stop the rest of a directory — but counted as a refusal, because
 		// the file is certainly not in the current edition.
-		fmt.Fprintf(reports, "%s: %v\n", theme.Muted.Render(path), err)
-		return fixOutcome{refused: true}, nil
+		if !machine {
+			fmt.Fprintf(reports, "%s: %v\n", theme.Muted.Render(path), err)
+		}
+		// Unpositioned: this is a fact about the whole document rather than a line
+		// within it, the same distinction [Diagnostic] draws with Line and Column
+		// both zero.
+		report.Refusals = []*v1.Diagnostic{{Message: err.Error()}}
+		return fixOutcome{refused: true, report: report}, nil
 	}
 
 	for _, refusal := range result.Refusals {
-		fmt.Fprintf(reports, "%s:%s\n", theme.Muted.Render(path), refusal.Error())
+		if !machine {
+			fmt.Fprintf(reports, "%s:%s\n", theme.Muted.Render(path), refusal.Error())
+		}
+		report.Refusals = append(report.Refusals, refusal.Proto())
 	}
 	// Notes do not affect the outcome. They are places worth a reader's eye, not
 	// work left undone, and failing on one would let a comment nobody has to change
 	// stop `flow fix . && git commit`.
 	for _, note := range result.Notes {
-		fmt.Fprintf(reports, "%s:%s\n", theme.Muted.Render(path), note.Error())
+		if !machine {
+			fmt.Fprintf(reports, "%s:%s\n", theme.Muted.Render(path), note.Error())
+		}
+		report.Notes = append(report.Notes, note.Proto())
 	}
-	outcome := fixOutcome{changed: result.Changed(), refused: len(result.Refusals) > 0}
+	outcome := fixOutcome{changed: result.Changed(), refused: len(result.Refusals) > 0, report: report}
+	report.Changed = outcome.changed
 
 	if opts.stdout {
 		_, err := out.Write(result.Source)
@@ -184,7 +251,7 @@ func fixOne(out, reports io.Writer, theme ui.Theme, path string, opts fixOptions
 	}
 
 	if !result.Changed() {
-		if !outcome.refused {
+		if !outcome.refused && !machine {
 			fmt.Fprintf(reports, "%s: %s\n",
 				theme.Muted.Render(path), theme.Muted.Render("already current"))
 		}
@@ -192,8 +259,14 @@ func fixOne(out, reports io.Writer, theme ui.Theme, path string, opts fixOptions
 	}
 
 	for _, change := range result.Changes {
-		fmt.Fprintf(reports, "%s:%d: %s\n",
-			theme.Muted.Render(path), change.Line, change.Message)
+		if !machine {
+			fmt.Fprintf(reports, "%s:%d: %s\n",
+				theme.Muted.Render(path), change.Line, change.Message)
+		}
+		report.Changes = append(report.Changes, &v1.FixChange{
+			Line:    uint32(max(change.Line, 0)),
+			Message: change.Message,
+		})
 	}
 
 	if opts.check {

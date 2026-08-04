@@ -10,7 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
-
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
@@ -67,7 +67,10 @@ func newFmtCommand() *cobra.Command {
 			"file into. Running it over a hand-formatted, commented file is a one-time, reviewable " +
 			"loss of that formatting — check the diff before committing it, the same as any other " +
 			"rewrite.\n\n" +
-			"A file that does not parse is reported with its position and left untouched.",
+			"A file that does not parse is reported with its position and left untouched.\n\n" +
+			"`--output json` or `--output jsonl` turns `--check` into a report a program reads " +
+			"instead of scrapes: which files would change, and which were refused, per file. CI " +
+			"that wants structured data rather than stderr text asks for one of those.",
 		Args:          cobra.MinimumNArgs(1),
 		SilenceErrors: true,
 		// A file that needs reformatting is not a command someone invoked
@@ -86,6 +89,9 @@ flow fmt examples/
 # Report which files would change without writing, for CI:
 flow fmt --check examples/
 
+# The same, as a report CI can parse instead of scraping stderr:
+flow fmt --check -o jsonl examples/*/workflow.yaml
+
 # Write the result somewhere else:
 flow fmt --stdout old.yaml > new.yaml`,
 	}
@@ -94,6 +100,11 @@ flow fmt --stdout old.yaml > new.yaml`,
 		"report which files would change and exit non-zero if any would, without writing")
 	cmd.Flags().BoolVar(&opts.stdout, "stdout", false,
 		"write the result to standard output instead of back to the file")
+
+	// Diagnostics are a schema message, so `-o json`/`-o jsonl` mean here what they
+	// mean on `validate` and `fix`: the fields are the schema's and addressable by
+	// name.
+	addOutputFlag(cmd)
 
 	return cmd
 }
@@ -105,8 +116,18 @@ var errFmtIncomplete = errors.New("fmt did not finish")
 
 // runFmt formats each path given.
 func runFmt(cmd *cobra.Command, paths []string, opts fmtOptions) error {
+	format, err := resolveOutputFormat(cmd)
+	if err != nil {
+		return err
+	}
+
 	if opts.stdout && opts.check {
 		return errors.New("--stdout and --check ask for different things: one writes the result, the other only reports")
+	}
+	if opts.stdout && format.Machine() {
+		// Both want stdout for something different — the rewritten document, or
+		// the report — and only one document belongs on a stream a pipe reads.
+		return fmt.Errorf("--stdout and --output %s both want stdout: one is the rewritten document, the other the report", format)
 	}
 
 	// collectFlowfiles is `flow fix`'s: a directory is walked for .yaml and
@@ -133,16 +154,34 @@ func runFmt(cmd *cobra.Command, paths []string, opts fmtOptions) error {
 	}
 
 	var (
-		refused bool
-		pending bool
+		refused    bool
+		pending    bool
+		machine    = format.Machine()
+		fmtReports []*v1.FmtReport
 	)
 	for _, path := range files {
-		result, err := fmtOne(out, reports, reportTheme, path, opts)
+		result, err := fmtOne(out, reports, reportTheme, path, opts, machine)
 		if err != nil {
 			return err
 		}
 		refused = refused || result.refused
 		pending = pending || (result.changed && opts.check)
+		if machine {
+			fmtReports = append(fmtReports, result.report)
+		}
+	}
+
+	if machine {
+		// Projected from the same outcome the text form prints, never recomputed.
+		if format == FormatJSONL {
+			for _, report := range fmtReports {
+				if err := writeJSON(surface, format, report); err != nil {
+					return err
+				}
+			}
+		} else if err := writeJSON(surface, format, &v1.FmtReports{Files: fmtReports}); err != nil {
+			return err
+		}
 	}
 
 	if refused || pending {
@@ -159,10 +198,19 @@ type fmtOutcome struct {
 	// refused reports that the file could not be parsed, so nothing was
 	// written.
 	refused bool
+
+	// report is the same outcome as a schema message, built whether or not a
+	// machine format asked for it.
+	report *v1.FmtReport
 }
 
 // fmtOne formats a single file.
-func fmtOne(out, reports io.Writer, theme ui.Theme, path string, opts fmtOptions) (fmtOutcome, error) {
+//
+// machine suppresses the human-readable lines this would otherwise write to
+// reports, the same rule [fixOne] follows and for the same reason.
+func fmtOne(out, reports io.Writer, theme ui.Theme, path string, opts fmtOptions, machine bool) (fmtOutcome, error) {
+	report := &v1.FmtReport{File: path}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmtOutcome{}, fmt.Errorf("error reading %s: %w", path, err)
@@ -173,8 +221,11 @@ func fmtOne(out, reports io.Writer, theme ui.Theme, path string, opts fmtOptions
 		// A file that does not compile has no workflow for Marshal to render,
 		// so there is nothing safe to write. Reported and left alone, the same
 		// as `flow fix` leaves a shape it refuses.
-		fmt.Fprintf(reports, "%s: %v\n", theme.Muted.Render(path), err)
-		return fmtOutcome{refused: true}, nil
+		if !machine {
+			fmt.Fprintf(reports, "%s: %v\n", theme.Muted.Render(path), err)
+		}
+		report.Refusals = refusalDiagnostics(err)
+		return fmtOutcome{refused: true, report: report}, nil
 	}
 
 	formatted, err := flowfile.Marshal(workflow)
@@ -182,12 +233,16 @@ func fmtOne(out, reports io.Writer, theme ui.Theme, path string, opts fmtOptions
 		// A workflow this build compiled but cannot write back out — a literal
 		// string containing ${, or an expression written with a macro cel-go
 		// cannot render as source — is not safe to guess at either.
-		fmt.Fprintf(reports, "%s: %v\n", theme.Muted.Render(path), err)
-		return fmtOutcome{refused: true}, nil
+		if !machine {
+			fmt.Fprintf(reports, "%s: %v\n", theme.Muted.Render(path), err)
+		}
+		report.Refusals = refusalDiagnostics(err)
+		return fmtOutcome{refused: true, report: report}, nil
 	}
 
 	changed := !bytes.Equal(data, formatted)
-	outcome := fmtOutcome{changed: changed}
+	outcome := fmtOutcome{changed: changed, report: report}
+	report.Changed = changed
 
 	if opts.stdout {
 		_, err := out.Write(formatted)
@@ -195,11 +250,15 @@ func fmtOne(out, reports io.Writer, theme ui.Theme, path string, opts fmtOptions
 	}
 
 	if !changed {
-		fmt.Fprintf(reports, "%s: %s\n", theme.Muted.Render(path), theme.Muted.Render("already formatted"))
+		if !machine {
+			fmt.Fprintf(reports, "%s: %s\n", theme.Muted.Render(path), theme.Muted.Render("already formatted"))
+		}
 		return outcome, nil
 	}
 
-	fmt.Fprintf(reports, "%s: %s\n", theme.Muted.Render(path), theme.Muted.Render("reformatted"))
+	if !machine {
+		fmt.Fprintf(reports, "%s: %s\n", theme.Muted.Render(path), theme.Muted.Render("reformatted"))
+	}
 
 	if opts.check {
 		return outcome, nil
@@ -215,4 +274,26 @@ func fmtOne(out, reports io.Writer, theme ui.Theme, path string, opts fmtOptions
 		return outcome, fmt.Errorf("error writing %s: %w", path, err)
 	}
 	return outcome, nil
+}
+
+// refusalDiagnostics widens an error from Unmarshal or Marshal into the schema
+// type a machine report carries.
+//
+// [flowfile.Unmarshal] returns [flowfile.Diagnostics] with a position for a file
+// that failed to parse; [flowfile.Marshal] returns a bare error for a workflow it
+// cannot render back out. Both are real answers about the file, so both become a
+// diagnostic — positioned where one exists, and as a single unpositioned entry
+// where it does not, the same rule [validateMachine] applies to a parse failure
+// that is not even YAML.
+func refusalDiagnostics(err error) []*v1.Diagnostic {
+	var diagnostics flowfile.Diagnostics
+	if errors.As(err, &diagnostics) {
+		out := make([]*v1.Diagnostic, 0, len(diagnostics))
+		for _, d := range diagnostics {
+			out = append(out, d.Proto())
+		}
+		return out
+	}
+
+	return []*v1.Diagnostic{{Message: err.Error()}}
 }
