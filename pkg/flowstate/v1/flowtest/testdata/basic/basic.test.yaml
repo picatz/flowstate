@@ -1,0 +1,31 @@
+tests:
+  - name: a healthy check reports its status
+    workflow: ./workflow.yaml
+    inputs:
+      tenant: acme
+    stubs:
+      - task: http
+        where: inputs.url == "https://example.internal/status"
+        returns:
+          status: 200
+      - task: log
+        returns: {}
+    expect:
+      outputs:
+        status: 200
+      ran: [fetch, announce]
+
+  - name: an unmatched stub fails the case with a diagnostic
+    workflow: ./workflow.yaml
+    inputs:
+      tenant: acme
+    stubs:
+      - task: http
+        where: inputs.url == "https://nowhere.example/"
+        returns:
+          status: 200
+      - task: log
+        returns: {}
+    expect:
+      failed: true
+      error_contains: "no matching stub"

@@ -2448,6 +2448,67 @@ message FmtReports {
   repeated FmtReport files = 1;
 }
 
+// TestCase is what one test in a `*.test.yaml` file produced.
+//
+// Per case rather than per file, on the same reasoning as [FixReport]: a test
+// file usually holds more than one `tests:` entry, and a reader wants to know
+// which one failed without re-deriving it from an index.
+message TestCase {
+  // Name is the test's own `name:`, so a report reads the same words the
+  // author wrote.
+  string name = 1 [(buf.validate.field).required = true];
+
+  // Passed is true when every expectation in the case held.
+  bool passed = 2;
+
+  // Failures are the expectations that did not hold, positioned to the test
+  // file where an expectation's own position is known — a diagnostic in the
+  // same shape `flow validate` and `flow fix` already report, so a consumer of
+  // `-o json` learns one schema for "something is wrong" across every verb.
+  repeated Diagnostic failures = 3;
+
+  // Error is set instead of Failures when the case could not run to a verdict
+  // at all — the workflow it names failed to compile, a stub described a task
+  // the registry does not have, or the run failed in a way the case did not
+  // declare with `expect.failed` — as distinct from an expectation that ran
+  // and did not hold.
+  string error = 4;
+
+  // Duration is how long the case took to run, in wall-clock time. Never a
+  // reading of virtual time: it is what a person deciding whether the suite
+  // is still fast wants to know, and virtual time inside the run answers a
+  // different question.
+  google.protobuf.Duration duration = 5;
+}
+
+// TestReport is what `flow test` produced for one `*.test.yaml` file.
+//
+// Per file rather than per invocation, on the same reasoning as
+// [DiagnosticReport]: `flow test examples/` discovers more than one file and a
+// consumer wants to know which report belongs to which.
+message TestReport {
+  // File is the path as it was given on the command line, so a reader can
+  // find it again without resolving anything.
+  string file = 1 [(buf.validate.field).required = true];
+
+  // Cases is one result per `tests:` entry in the file, in the order they
+  // were written. Empty when Refused is set — no case was ever reached.
+  repeated TestCase cases = 2;
+
+  // Refused reports that the file itself could not be run as a test file — it
+  // did not parse, or named a workflow that could not be loaded — which is
+  // reported once for the file rather than once per case.
+  string refused = 3;
+}
+
+// TestReports is what `flow test` produced, across every file it discovered,
+// on the same reasoning as [FixReports].
+message TestReports {
+  // Files is one report per test file discovered, in the order they were
+  // found.
+  repeated TestReport files = 1;
+}
+
 // RunState is the durable workflow state used by the Temporal Run entrypoint.
 // It allows the workflow to continue-as-new while carrying only the minimal
 // required subset of previously produced outputs for the remaining steps.

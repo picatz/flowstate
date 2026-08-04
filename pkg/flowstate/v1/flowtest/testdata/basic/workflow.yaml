@@ -1,0 +1,21 @@
+edition: v2026.2
+name: basic
+
+inputs:
+  tenant:
+    type: string
+    required: true
+
+steps:
+  - id: fetch
+    http:
+      method: GET
+      url: https://example.internal/status
+
+  - id: announce
+    log:
+      message: ${'tenant ' + inputs.tenant + ' checked'}
+
+outputs:
+  status:
+    value: ${steps.fetch.status}

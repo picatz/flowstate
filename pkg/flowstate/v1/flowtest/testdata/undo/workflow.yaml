@@ -1,0 +1,17 @@
+edition: v2026.2
+name: undo-example
+
+steps:
+  - id: network
+    http:
+      method: POST
+      url: https://example.internal/network
+    undo:
+      http:
+        method: DELETE
+        url: https://example.internal/network
+
+  - id: volume
+    http:
+      method: POST
+      url: https://example.internal/volumes

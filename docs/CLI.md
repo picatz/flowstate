@@ -514,6 +514,46 @@ everything observable is what makes the rehearsal worth doing —
 [CLAUDE.md](../CLAUDE.md) has why that agreement is enforced rather than hoped
 for — but agreement about behavior is not a claim about durability.
 
+## `flow test`: the local driver only, on purpose
+
+`flow test` (design: #155) runs a workflow's own `*.test.yaml` files — stubbed
+task responses in place of the real registry, scripted signals, a virtual
+clock — entirely through the local driver, in process. That is a deliberate
+boundary, not a gap to fill in later.
+
+The whole reason this command exists is the feedback loop GitHub Actions never
+had: *edit, run, read the result*, in well under a second, with nothing to
+provision. Running cases against a dev Temporal server would answer a
+different, real question — does this survive Continue-As-New, does a durable
+timer actually fire, does versioning behave — at the cost of the property that
+makes `flow test` worth reaching for on every edit: no infrastructure, and no
+wait. `flow run` against a dev server is where that question belongs; `flow
+test` does not try to also be it.
+
+What has to stay true regardless of which driver a workload eventually runs
+under is *what a workflow can observe of time*, not how fast a test suite
+gets there. A [`v1.VirtualClock`](../pkg/flowstate/v1/clock.go) exists so the
+*local* driver can advance instantly to the next deadline once nothing else is
+runnable — the same trick Temporal's own test environment already gives the
+*durable* driver, which is why nothing new was needed on that side. The
+production default on both is real time; a `*.test.yaml` run is the only
+caller that ever injects the virtual one, through
+[`v1.NewContextWithClock`](../pkg/flowstate/v1/clock.go). Any case where the
+two drivers could disagree about what `now` means, or about whether a wait
+actually blocks for what it says, is covered by a shared case in
+`pkg/flowstate/v1/tests` that both drivers run — see `WaitCases` in
+`pkg/flowstate/v1/tests/wait.go` — which is what keeps "the local driver got
+faster" from quietly becoming "the local driver stopped rehearsing production."
+
+Stubbing happens at the task boundary and nowhere lower: a step's `if:`,
+`retry:`, loops, and `undo:` registration all run for real, through the
+ordinary local driver, and only the effect a task would have outside the
+process is replaced. A stub can replace a task *inside a called workflow* —
+the call itself still runs for real — which is what makes `flow test` able to
+exercise composition rather than only a single file in isolation; see
+`examples/call-a-workflow/workflow.test.yaml` for a worked case, run in CI by
+the `Example workflows pass their own tests` job.
+
 ## What this means for a change
 
 A change to this surface is finished when:

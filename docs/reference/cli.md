@@ -913,6 +913,37 @@ flow terminate flowstate-workflow-3f7c --reason "stuck on a dependency that is n
 | `--run-id <string>` | `string` | — | — | pin the request to one run of the workload; unset addresses whichever run is current |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
 
+## `flow test`
+
+Run a workflow's own *.test.yaml files
+
+```
+flow test [path...] [flags]
+```
+
+Discover and run *.test.yaml files, each declaring a workflow, arguments to run it with, task responses to stub in place of the real registry, scripted signals, and what the run must produce. Every case runs through the local driver, in process: no network, no Temporal server, and a virtual clock so a workflow that sleeps for a day resolves in under a second.
+
+A named file is taken as given. A directory is walked for *.test.yaml files.
+
+`--output json` or `--output jsonl` reports what ran as a schema message instead of text, for CI that wants structured data rather than stderr text.
+
+Examples:
+
+```sh
+# Run every test beside the workflows in a directory:
+flow test examples/
+
+# Run one test file:
+flow test deploy.test.yaml
+
+# As a report CI can parse instead of scraping stderr:
+flow test -o jsonl examples/
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl carry the server's own schema, so a field is addressable by name |
+
 ## `flow validate`
 
 Check workflows for problems without running them

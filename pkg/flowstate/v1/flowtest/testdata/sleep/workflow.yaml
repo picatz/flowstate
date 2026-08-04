@@ -1,0 +1,10 @@
+edition: v2026.2
+name: sleep-a-day
+
+steps:
+  - id: pause
+    sleep: 24h
+
+  - id: after
+    log:
+      message: resumed
