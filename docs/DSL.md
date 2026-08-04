@@ -1364,7 +1364,9 @@ steps:
             message: "${'paging %s: %s %s is rolling'.format([person, vars.service, vars.version])}"
             fields:
               deployment: ${steps.submit.deployment}
-              approved_by: ${steps.approval.payload.by}
+              # sender, not payload: who approved this is attested by the
+              # server, never a field the approver typed in — see #194.
+              approved_by: ${steps.approval.sender.identity.subject}
 ```
 
 Worth noticing what is absent: no `cel:`, no `expr:` nested inside anything, no

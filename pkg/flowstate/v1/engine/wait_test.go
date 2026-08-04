@@ -14,6 +14,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/testing/protocmp"
 	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
@@ -165,23 +166,147 @@ func TestWaitSleep(t *testing.T) {
 	}
 }
 
+// testSignalDelivery builds the [v1.SignalDelivery] the server would send for
+// a signal carrying payload, attested to subject.
+//
+// Every durable signal test builds this rather than a bare [v1.Node_Outputs],
+// because that bare shape is no longer what travels the wire: `FlowstateServer.Signal`
+// always sends a [v1.SignalDelivery], and a test that signalled the old shape
+// would decode into a zero-value delivery — an empty payload and no sender —
+// which would silently stop testing the payload path at all rather than fail
+// loudly.
+func testSignalDelivery(subject string, payload map[string]*v1.Value) *v1.SignalDelivery {
+	return &v1.SignalDelivery{
+		Payload: &v1.Node_Outputs{NamedValues: payload},
+		Sender: &v1.SignalSender{
+			Identity:   &v1.WorkloadIdentity{Subject: subject, Namespace: "team-a"},
+			AcceptedAt: timestamppb.Now(),
+		},
+	}
+}
+
+// senderSubject reads `${<id>.sender.identity.subject}` back out of a wait's
+// outputs, the way a workflow expression would.
+func senderSubject(t *testing.T, outputs *v1.Node_Outputs) string {
+	t.Helper()
+
+	sender := outputs.GetNamedValues()[v1.SenderOutput].GetLiteral().GetMapValue()
+	require.NotNil(t, sender, "the wait produced no sender mapping")
+
+	for _, entry := range sender.GetEntries() {
+		if entry.GetKey().GetStringValue() != "identity" {
+			continue
+		}
+		for _, field := range entry.GetValue().GetMapValue().GetEntries() {
+			if field.GetKey().GetStringValue() == "subject" {
+				return field.GetValue().GetStringValue()
+			}
+		}
+	}
+
+	t.Fatalf("the sender mapping has no identity.subject")
+	return ""
+}
+
+// senderLocal reads `${<id>.sender.local}` back out of a wait's outputs.
+func senderLocal(t *testing.T, outputs *v1.Node_Outputs) bool {
+	t.Helper()
+
+	sender := outputs.GetNamedValues()[v1.SenderOutput].GetLiteral().GetMapValue()
+	require.NotNil(t, sender, "the wait produced no sender mapping")
+
+	for _, entry := range sender.GetEntries() {
+		if entry.GetKey().GetStringValue() == "local" {
+			return entry.GetValue().GetBoolValue()
+		}
+	}
+
+	t.Fatalf("the sender mapping has no \"local\" field")
+	return false
+}
+
+// TestWaitForSignalAcceptsTheLegacyWireShape is the #199 P1 fix, proven to
+// bite: a signal sent as a bare Node_Outputs — exactly what every server sent
+// before #194, and exactly what a signal already recorded in an execution's
+// history from before that field existed still looks like — must not be
+// dropped as a corrupted signal by a worker now running code that expects
+// [v1.SignalDelivery].
+//
+// Before engine/signal_compat.go existed, this test hung: Temporal's default
+// converter rejects the "namedValues" field against SignalDelivery's schema
+// (no field by that name), channelImpl.Receive treats that as a corrupted
+// signal, drops it, and keeps waiting — so the workflow never saw the
+// approval at all and the wait ran out its timeout doing nothing.
+func TestWaitForSignalAcceptsTheLegacyWireShape(t *testing.T) {
+	t.Parallel()
+
+	env := newWaitEnv(t)
+
+	// Sent as the bare shape every pre-#194 server used — never wrapped in a
+	// SignalDelivery, which is exactly what a server mid-rollout still running
+	// the old binary (or an already-recorded history entry) produces.
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow("deploy-approved", &v1.Node_Outputs{
+			NamedValues: map[string]*v1.Value{
+				"approved": v1.NewLiteral(true),
+			},
+		})
+	}, time.Minute)
+
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: &v1.Workflow{
+		Name: "gated-legacy-shape",
+		Steps: []*v1.Node{
+			logStep("request", "requesting approval"),
+			signalStep("approval", "deploy-approved", 2*time.Minute),
+			logStep("deploy", "deploying"),
+		},
+	}})
+
+	require.True(t, env.IsWorkflowCompleted())
+	require.NoError(t, env.GetWorkflowError())
+
+	var outputs v1.Workflow_StepOutputs
+	require.NoError(t, env.GetWorkflowResult(&outputs))
+
+	approval := outputs.GetStepValues()["approval"]
+	require.NotNil(t, approval, "the wait produced no outputs at all")
+
+	// The payload is intact — the whole point of falling back rather than
+	// dropping the signal.
+	require.True(t, payloadField(t, approval, "approved").GetBoolValue(),
+		"the legacy signal's payload was lost")
+	require.False(t, approval.GetNamedValues()[v1.TimedOutOutput].GetLiteral().GetBoolValue(),
+		"the wait timed out, meaning the legacy-shape signal was never delivered at all")
+
+	// And it reads as unattested — never as an attested-but-anonymous sender,
+	// which is what an empty-but-present SignalSender would look like.
+	require.Empty(t, senderSubject(t, approval))
+	require.True(t, senderLocal(t, approval),
+		"a legacy-shape signal was not marked unattested")
+
+	require.NotNil(t, outputs.GetStepValues()["deploy"],
+		"the gated step did not run, so the legacy signal did not actually unblock the wait")
+}
+
 // TestWaitForSignal checks the approval gate: a run blocks until something
-// outside it says to proceed, and what the sender sent becomes the step's
-// outputs.
+// outside it says to proceed, what the sender sent becomes the step's outputs
+// under `payload`, and who the *server* attested becomes the step's outputs
+// under `sender` — the fix for #194: a self-asserted `by` inside the payload is
+// evidence, never identity, and must not be confused with the attested sender.
 func TestWaitForSignal(t *testing.T) {
 	t.Parallel()
 
 	env := newWaitEnv(t)
 
 	// Sent after the run has started and reached the gate. In workflow time this
-	// is a person approving a deploy.
+	// is a person approving a deploy — self-asserting a *different* name in the
+	// payload's own `by` field, which is exactly the confusion #194 is about: the
+	// attested sender below must not agree with it.
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow("deploy-approved", &v1.Node_Outputs{
-			NamedValues: map[string]*v1.Value{
-				"approved": v1.NewLiteral(true),
-				"by":       v1.NewLiteral("someone@example.com"),
-			},
-		})
+		env.SignalWorkflow("deploy-approved", testSignalDelivery("real-approver@example.com", map[string]*v1.Value{
+			"approved": v1.NewLiteral(true),
+			"by":       v1.NewLiteral("someone-else@example.com"),
+		}))
 	}, time.Minute)
 
 	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: &v1.Workflow{
@@ -206,12 +331,22 @@ func TestWaitForSignal(t *testing.T) {
 	// ${approval.payload.approved} the spelling and what keeps a sender from
 	// naming anything outside it.
 	require.True(t, payloadField(t, approval, "approved").GetBoolValue())
-	require.Equal(t, "someone@example.com", payloadField(t, approval, "by").GetStringValue())
+	require.Equal(t, "someone-else@example.com", payloadField(t, approval, "by").GetStringValue())
 
 	// And not at the top level, which is the property being protected.
 	require.NotContains(t, approval.GetNamedValues(), "approved",
 		"a sender's key reached the step's own output namespace")
 	require.False(t, approval.GetNamedValues()[v1.TimedOutOutput].GetLiteral().GetBoolValue())
+
+	// The attested identity is the engine's own, unrelated to whatever the
+	// payload's `by` field claimed.
+	require.Equal(t, "real-approver@example.com", senderSubject(t, approval),
+		"the attested sender disagreed with what the engine was actually told")
+
+	// The shared half of the #194 fix: an attested delivery must report itself
+	// as attested, with the shape [tests.AssertSignalSenderShape] checks. The
+	// local half of this same assertion lives in wait_local_test.go.
+	tests.AssertSignalSenderShape(t, approval, false)
 
 	require.NotNil(t, outputs.GetStepValues()["deploy"], "the gated step did not run after approval")
 }
@@ -294,9 +429,9 @@ func TestWaitForSignalArrivingEarly(t *testing.T) {
 
 	// Immediately, before the run has got anywhere near the gate.
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow("deploy-approved", &v1.Node_Outputs{
-			NamedValues: map[string]*v1.Value{"approved": v1.NewLiteral(true)},
-		})
+		env.SignalWorkflow("deploy-approved", testSignalDelivery("early-approver@example.com", map[string]*v1.Value{
+			"approved": v1.NewLiteral(true),
+		}))
 	}, 0)
 
 	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: &v1.Workflow{
@@ -336,11 +471,16 @@ func TestWaitForSignalSurvivesContinueAsNew(t *testing.T) {
 			logStep("one", "1"),
 			logStep("two", "2"),
 			signalStep("approval", "deploy-approved", 0),
-			// Gated on what the approval carried, which is the user-visible
-			// requirement: not merely that the gate opened, but that what the
-			// approver sent is still readable by a later step several suspends
-			// away.
-			gatedOn(logStep("deploy", "deploying"), "approval.payload.approved"),
+			// Gated on both halves of what the approval carried, which is the
+			// user-visible requirement: not merely that the gate opened, but that
+			// what the approver sent — and who the engine attested sent it — are
+			// still readable by a later step several suspends away. Referencing
+			// `sender` here is also what makes it survive compaction: an output
+			// field nothing downstream names is legitimately prunable at
+			// Continue-As-New (see compactOutputsForRemainingSteps), exactly as
+			// `payload.approved` would be if this condition did not name it.
+			gatedOn(logStep("deploy", "deploying"),
+				`approval.payload.approved && approval.sender.identity.subject != ""`),
 		},
 	}
 
@@ -348,9 +488,9 @@ func TestWaitForSignalSurvivesContinueAsNew(t *testing.T) {
 	// gate.
 	first := newWaitEnv(t)
 	first.RegisterDelayedCallback(func() {
-		first.SignalWorkflow("deploy-approved", &v1.Node_Outputs{
-			NamedValues: map[string]*v1.Value{"approved": v1.NewLiteral(true)},
-		})
+		first.SignalWorkflow("deploy-approved", testSignalDelivery("carried-approver@example.com", map[string]*v1.Value{
+			"approved": v1.NewLiteral(true),
+		}))
 	}, 0)
 
 	first.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: spec, StepsBudget: 1})
@@ -378,6 +518,9 @@ func TestWaitForSignalSurvivesContinueAsNew(t *testing.T) {
 	require.True(t,
 		carried.GetPendingSignals()[0].GetPayload().GetNamedValues()["approved"].GetLiteral().GetBoolValue(),
 		"the carried signal lost its payload")
+	require.Equal(t, "carried-approver@example.com",
+		carried.GetPendingSignals()[0].GetSender().GetIdentity().GetSubject(),
+		"the carried signal lost its attested sender — a suspend must not be a way to launder identity")
 
 	// The resumed runs consume it and never block, even though nothing signals
 	// them at all. A budget of one step means several more suspends before the
@@ -390,9 +533,72 @@ func TestWaitForSignalSurvivesContinueAsNew(t *testing.T) {
 	require.NotNil(t, approval, "the gate's outputs were not carried to the step that needed them")
 	require.True(t, payloadField(t, approval, "approved").GetBoolValue(),
 		"the approval arrived but what the approver sent was lost")
+	require.Equal(t, "carried-approver@example.com", senderSubject(t, approval),
+		"the attested sender did not survive being carried across Continue-As-New")
 
 	require.NotNil(t, outputs.GetStepValues()["deploy"],
 		"the resumed run never got past the gate it had already been approved through")
+}
+
+// TestPendingSignalWithoutSenderResumesAsUnattested is the old-writer,
+// new-reader half of the #199 fix, pinned the way invariant 10 asks for.
+//
+// A RunState carrying a PendingSignal with no Sender is not a hypothetical: it
+// is byte-for-byte what an interpreter running before #194 wrote, and what a
+// signal already recorded in an execution's history from before then still
+// looks like. This constructs that RunState directly — Sender left nil, the
+// same shape protojson.Marshal produces for an unset message field with no
+// extra work — and hands it to *this* build's interpreter the way the
+// auto-upgrade seam at Continue-As-New would, without ever going through a
+// live signal delivery. The resumed run must still find its payload, must
+// still complete, and must report the pending signal as unattested rather
+// than erroring on a field that never existed when it was written.
+func TestPendingSignalWithoutSenderResumesAsUnattested(t *testing.T) {
+	t.Parallel()
+
+	spec := &v1.Workflow{
+		Name: "resumed-with-a-pre-attestation-pending-signal",
+		Steps: []*v1.Node{
+			signalStep("approval", "deploy-approved", 0),
+			gatedOn(logStep("deploy", "deploying"), "approval.payload.approved"),
+		},
+	}
+
+	state := &v1.RunState{
+		Workflow: spec,
+		PendingSignals: []*v1.PendingSignal{
+			{
+				Name: "deploy-approved",
+				Payload: &v1.Node_Outputs{NamedValues: map[string]*v1.Value{
+					"approved": v1.NewLiteral(true),
+				}},
+				// No Sender: exactly what an old writer's RunState looks like.
+			},
+		},
+	}
+
+	env := newWaitEnv(t)
+	env.ExecuteWorkflow(engine.Run, state)
+
+	require.True(t, env.IsWorkflowCompleted())
+	require.NoError(t, env.GetWorkflowError(),
+		"a PendingSignal missing the field this build added failed the run instead of "+
+			"reading it as absent")
+
+	var outputs v1.Workflow_StepOutputs
+	require.NoError(t, env.GetWorkflowResult(&outputs))
+
+	approval := outputs.GetStepValues()["approval"]
+	require.NotNil(t, approval, "the pending signal was never consumed")
+	require.True(t, payloadField(t, approval, "approved").GetBoolValue(),
+		"the pending signal's payload was lost")
+
+	require.Empty(t, senderSubject(t, approval))
+	require.True(t, senderLocal(t, approval),
+		"a pending signal carried from before sender attestation existed was not read as unattested")
+
+	require.NotNil(t, outputs.GetStepValues()["deploy"],
+		"the gated step did not run after the pending signal was consumed")
 }
 
 // resumeToCompletion runs a carried state, following every further suspend, and
@@ -627,9 +833,9 @@ func TestACarriedSignalReachesAWaitInsideALoop(t *testing.T) {
 	// One step of budget, so the run suspends after `one` and before the loop.
 	first := newWaitEnv(t)
 	first.RegisterDelayedCallback(func() {
-		first.SignalWorkflow("deploy-approved", &v1.Node_Outputs{
-			NamedValues: map[string]*v1.Value{"approved": v1.NewLiteral(true)},
-		})
+		first.SignalWorkflow("deploy-approved", testSignalDelivery("loop-approver@example.com", map[string]*v1.Value{
+			"approved": v1.NewLiteral(true),
+		}))
 	}, 0)
 
 	first.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: spec, StepsBudget: 1})
@@ -709,9 +915,9 @@ func TestACarriedSignalReachesAWaitInsideAParallelBranch(t *testing.T) {
 
 	first := newWaitEnv(t)
 	first.RegisterDelayedCallback(func() {
-		first.SignalWorkflow("deploy-approved", &v1.Node_Outputs{
-			NamedValues: map[string]*v1.Value{"approved": v1.NewLiteral(true)},
-		})
+		first.SignalWorkflow("deploy-approved", testSignalDelivery("branch-approver@example.com", map[string]*v1.Value{
+			"approved": v1.NewLiteral(true),
+		}))
 	}, 0)
 
 	first.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: spec, StepsBudget: 1})

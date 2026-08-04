@@ -42,7 +42,7 @@ steps:
   - id: deploy
     if: ${has(steps.approval.payload.approved) && steps.approval.payload.approved}
     log:
-      message: ${"deploying, approved by %s".format([steps.approval.payload.by])}
+      message: ${"deploying, approved by %s".format([steps.approval.sender.identity.subject])}
 
   - id: expired
     if: ${steps.approval.timed_out}
@@ -50,16 +50,26 @@ steps:
       message: nobody approved in time
 ```
 
+`steps.approval.sender` is not something the approver typed in — it is who the server
+authenticated the signal as, attached by `FlowstateServer.Signal` and impossible for a
+caller to set. A payload is evidence; a sender is identity — see
+[CLAUDE.md's boundary doctrine](CLAUDE.md) for why the two are never merged.
+
 Run it in this process — no Temporal, no server — and answer the gate yourself:
 
 ```console
-$ flow run local --signal deploy-approved='{"approved": true, "by": "jordan@example.com"}' \
+$ flow run local --signal deploy-approved='{"approved": true}' \
     examples/approval-gate/workflow.yaml
 INFO requesting approval to deploy v1.4.2
-INFO deploying, approved by jordan@example.com
+INFO deploying, approved by
 COMPLETED workflow approval-gate
 {"stepValues":{...},"runOutputs":null}
 ```
+
+A local run has no authenticated caller — nothing signed in, no server in front of it —
+so `steps.approval.sender.identity.subject` reads empty and `steps.approval.sender.local`
+reads `true`. That is the honest local answer, not a bug: a local run must never look like
+an attested production one.
 
 Hand the same file to a server backed by Temporal, and approve it from another terminal —
 a worker restart in between changes nothing, because nothing local was holding the wait:
@@ -68,11 +78,17 @@ a worker restart in between changes nothing, because nothing local was holding t
 $ flow run examples/approval-gate/workflow.yaml &
 started flowstate-workflow-50b9abd6-0c0a-4870-bc01-d9a86fa80508; ...
 $ flow signal flowstate-workflow-50b9abd6-0c0a-4870-bc01-d9a86fa80508 deploy-approved \
-    --data '{"approved": true, "by": "jordan@example.com"}'
+    --data '{"approved": true}'
 delivered deploy-approved to flowstate-workflow-50b9abd6-0c0a-4870-bc01-d9a86fa80508
 COMPLETED workflow flowstate-workflow-50b9abd6-0c0a-4870-bc01-d9a86fa80508 run ... after approval, deploy, request, settle
 {"stepValues":{...},"runOutputs":null}
 ```
+
+Here, run through a real server, `steps.approval.sender.identity.subject` is whoever the
+server authenticated the `flow signal` request as — a real deployment sits an identity
+provider in front of it; this one has none configured, so it authenticates as nobody in
+particular and the field reads empty too, but `steps.approval.sender.local` reads `false`:
+attested by the server, not merely unattested like the local run above.
 
 Same file, same steps, same final document — down to the byte, because both drivers render
 the run through one renderer. That agreement is enforced, not hoped for; see

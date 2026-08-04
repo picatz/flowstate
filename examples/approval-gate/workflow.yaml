@@ -10,7 +10,14 @@ description: Waits for a human to approve a deploy, then acts on what they said.
 #
 # Unblock a run of this with:
 #
-#   flow signal <workflow-id> deploy-approved --data '{"approved": true, "by": "someone@example.com"}'
+#   flow signal <workflow-id> deploy-approved --data '{"approved": true}'
+#
+# Notice there is no "who approved this" in that payload. That used to be a `by:`
+# field the sender typed in themselves — which meant anyone allowed to send this
+# signal could claim to be anyone. `steps.approval.sender` below is not that: it
+# is who the server actually authenticated the request as, attached by
+# `FlowstateServer.Signal` and impossible for a caller to set. A payload is
+# evidence; a sender is identity.
 
 steps:
   - id: request
@@ -33,23 +40,28 @@ steps:
   # A wait reports how it ended rather than failing, so a lapsed approval is an
   # ordinary branch and not an error to be tolerated.
   #
-  # Two namespaces, and the split is deliberate. `timed_out` is what the engine
-  # observed and is always there; everything under `payload` is what the sender
-  # asserted, so it is rooted where a sender cannot reach anything else.
+  # Three namespaces, and the split is deliberate. `timed_out` is what the engine
+  # observed and is always there; `payload` is what the sender asserted, rooted
+  # where a sender cannot reach anything else; `sender` is who the *server*
+  # attested sent it — never settable by the sender, never merged into `payload`.
+  # The rule that generalizes: anything the system knows, the system states;
+  # anything the caller says, the caller owns.
   #
   # A payload key is only there if a sender sent it, and naming one that is absent
   # fails the run with an unresolved reference. `has()` asks without asserting, and
   # is safe on a wait that timed out — the payload is then an empty mapping rather
-  # than nothing, so there is still something to look inside.
+  # than nothing, so there is still something to look inside. `sender` is always
+  # present, even on a timeout — its `identity.subject` just reads empty then,
+  # since nobody sent anything to attest.
   - id: deploy
     if: ${has(steps.approval.payload.approved) && steps.approval.payload.approved}
     log:
-      message: ${"deploying, approved by %s".format([steps.approval.payload.by])}
+      message: ${"deploying, approved by %s".format([steps.approval.sender.identity.subject])}
 
   - id: rejected
     if: ${has(steps.approval.payload.approved) && !steps.approval.payload.approved}
     log:
-      message: someone declined the deploy
+      message: ${"%s declined the deploy".format([steps.approval.sender.identity.subject])}
 
   - id: expired
     if: ${steps.approval.timed_out}

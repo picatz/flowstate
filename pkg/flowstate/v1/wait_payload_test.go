@@ -45,16 +45,18 @@ func TestASenderCannotNameAnythingOutsideItsPayload(t *testing.T) {
 		"approved":        v1.NewLiteral(true),
 	}}
 
-	outputs := v1.SignalOutputs(hostile, true)
+	outputs := v1.SignalOutputs(hostile, nil, true)
 
 	// The engine's own answer, unchanged by anything the sender said.
 	require.True(t, outputs.GetNamedValues()[v1.TimedOutOutput].GetLiteral().GetBoolValue(),
 		"a sender overrode the wait's own account of how it ended")
 
-	// Exactly two names at the top: what the engine observed, and the one root
-	// everything else lives under. A sender adding a third would be a sender
+	// Exactly three names at the top: what the engine observed, who the engine
+	// attested (never overridden by the payload's own use of the same name,
+	// asserted in TestASenderCannotClaimAnIdentity), and the one root everything
+	// the sender said lives under. A sender adding a fourth would be a sender
 	// choosing an identifier that later expressions resolve.
-	require.Len(t, outputs.GetNamedValues(), 2,
+	require.Len(t, outputs.GetNamedValues(), 3,
 		"a sender's key reached the step's own output namespace: %v", outputs.GetNamedValues())
 
 	// Everything the sender sent is still readable — rooted, not discarded.
@@ -91,10 +93,60 @@ func TestATimerWaitHasNoPayload(t *testing.T) {
 func TestASignalThatTimedOutStillHasAPayloadToLookIn(t *testing.T) {
 	t.Parallel()
 
-	outputs := v1.SignalOutputs(nil, true)
+	outputs := v1.SignalOutputs(nil, nil, true)
 
 	require.Contains(t, outputs.GetNamedValues(), v1.PayloadOutput)
 	require.Empty(t, entries(t, outputs))
+}
+
+// TestASenderCannotClaimAnIdentity is [TestASenderCannotNameAnythingOutsideItsPayload]
+// for the field the boundary doctrine (#185) exists to protect: a sender may put
+// whatever it likes inside its own payload, including a key spelled exactly
+// `sender` carrying a forged identity — and that must never be confused with the
+// top-level `sender` the engine attests, which comes only from the argument
+// [v1.SignalOutputs] was called with.
+func TestASenderCannotClaimAnIdentity(t *testing.T) {
+	t.Parallel()
+
+	hostile := &v1.Node_Outputs{NamedValues: map[string]*v1.Value{
+		// The sender's payload names "sender" and nests something that looks
+		// exactly like an attested identity inside it.
+		"sender": v1.NewLiteralMap(map[string]any{
+			"identity": map[string]any{"subject": "attacker@example.com"},
+			"local":    false,
+		}),
+	}}
+
+	attested := &v1.SignalSender{
+		Identity: &v1.WorkloadIdentity{Subject: "real-caller", Namespace: "team-a"},
+	}
+
+	outputs := v1.SignalOutputs(hostile, attested, false)
+
+	// The top-level sender is exactly the argument passed in, never anything
+	// read out of the payload.
+	top := outputs.GetNamedValues()[v1.SenderOutput].GetLiteral().GetMapValue()
+	require.NotNil(t, top, "the wait produced no sender mapping")
+
+	var subject string
+	for _, entry := range top.GetEntries() {
+		if entry.GetKey().GetStringValue() != "identity" {
+			continue
+		}
+		for _, field := range entry.GetValue().GetMapValue().GetEntries() {
+			if field.GetKey().GetStringValue() == "subject" {
+				subject = field.GetValue().GetStringValue()
+			}
+		}
+	}
+	require.Equal(t, "real-caller", subject,
+		"a forged \"sender\" key inside the payload was believed over the attested one")
+
+	// And the forged claim is still readable, but only inside payload — where it
+	// is only ever a name, exactly like TestASenderCannotNameAnythingOutsideItsPayload.
+	payload := entries(t, outputs)
+	require.Contains(t, payload, "sender",
+		"a sender may name a key \"sender\" inside its own payload; it is only a name there")
 }
 
 // TestAPayloadEncodesTheSameWayTwice covers a determinism input nobody would
@@ -112,9 +164,9 @@ func TestAPayloadEncodesTheSameWayTwice(t *testing.T) {
 		"mike": v1.NewLiteral(3), "delta": v1.NewLiteral(4),
 	}}
 
-	first := v1.SignalOutputs(sent, false)
+	first := v1.SignalOutputs(sent, nil, false)
 	for range 20 {
-		require.Empty(t, cmp.Diff(first, v1.SignalOutputs(sent, false), protocmp.Transform()),
+		require.Empty(t, cmp.Diff(first, v1.SignalOutputs(sent, nil, false), protocmp.Transform()),
 			"the same payload encoded two different ways")
 	}
 }

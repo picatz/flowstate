@@ -205,7 +205,7 @@ func TestAPinnedRunTakesTheCurrentVersionAtContinueAsNew(t *testing.T) {
 	setCurrentVersion(t, temporal, deployment, buildTwo)
 
 	// Only now does the gate open, which is what causes the suspension.
-	require.NoError(t, temporal.SignalWorkflow(t.Context(), run.GetID(), "", "one", &v1.Node_Outputs{}))
+	require.NoError(t, temporal.SignalWorkflow(t.Context(), run.GetID(), "", "one", &v1.SignalDelivery{Payload: &v1.Node_Outputs{}}))
 
 	// Continue-As-New starts a new run under the same workflow id, so the run id
 	// changing is the event, and it is the only externally visible one.
@@ -220,7 +220,7 @@ func TestAPinnedRunTakesTheCurrentVersionAtContinueAsNew(t *testing.T) {
 	// The falsifying step. From here nothing build one can do matters.
 	stopOne()
 
-	require.NoError(t, temporal.SignalWorkflow(t.Context(), run.GetID(), "", "two", &v1.Node_Outputs{}))
+	require.NoError(t, temporal.SignalWorkflow(t.Context(), run.GetID(), "", "two", &v1.SignalDelivery{Payload: &v1.Node_Outputs{}}))
 
 	var outputs v1.Workflow_StepOutputs
 	requireRunCompletes(t, temporal, run, &outputs)

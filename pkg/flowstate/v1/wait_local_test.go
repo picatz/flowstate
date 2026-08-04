@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
 )
 
 // gatedLocalWorkflow waits for an approval and then acts on what it carried.
@@ -87,6 +88,11 @@ func TestLocalSignalReleasesAGate(t *testing.T) {
 		require.NotNil(t, approval)
 		require.True(t, payloadField(t, approval, "approved").GetBoolValue())
 		require.False(t, approval.GetNamedValues()[v1.TimedOutOutput].GetLiteral().GetBoolValue())
+
+		// The shared half of the #194 fix: a local delivery must report itself
+		// as local, never as an attested production sender. The durable half of
+		// this same assertion lives in engine/wait_test.go.
+		tests.AssertSignalSenderShape(t, approval, true)
 
 		require.NotNil(t, got.outputs.GetStepValues()["deploy"],
 			"the gated step did not run after approval")

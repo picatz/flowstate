@@ -40,8 +40,27 @@ var ErrNoSignalWaiter = errors.New("flowstate: this workload waits for a signal,
 // what it was given until someone asks.
 type SignalWaiter interface {
 	// WaitForSignal blocks until a signal of the given name is available, and
-	// returns what it carried.
-	WaitForSignal(ctx context.Context, name string) (*Node_Outputs, error)
+	// returns what it carried and who it is from.
+	//
+	// The sender is always [LocalSignalSender]: a local run has no authenticated
+	// caller for anything to attest, and every implementation of this interface
+	// exists only to deliver signals to one. See [LocalSignalSender] for why that
+	// is a distinct, honest value rather than an empty [SignalSender] that would
+	// read the same as a signal recorded before sender attestation existed.
+	WaitForSignal(ctx context.Context, name string) (*Node_Outputs, *SignalSender, error)
+}
+
+// LocalSignalSender is the sender every local delivery carries.
+//
+// A local run — `flow run local --signal` or a `flow test` script — has no
+// authenticated caller at all: there is no server in front of it to establish
+// one. Reporting an empty [SignalSender] would be indistinguishable from a
+// signal that predates sender attestation, or one a misconfigured deployment
+// failed to attest — three different situations a workflow author cannot tell
+// apart from `${approval.sender}` alone. `Local: true` names this one
+// explicitly, so a local run's gate output never looks like a production one.
+func LocalSignalSender() *SignalSender {
+	return &SignalSender{Local: true}
 }
 
 // signalWaiterKey is the context key carrying the waiter.
@@ -66,7 +85,7 @@ func SignalWaiterFromContext(ctx context.Context) (SignalWaiter, bool) {
 // them while the run executes on another goroutine.
 type LocalSignals struct {
 	mu     sync.Mutex
-	queues map[string]chan *Node_Outputs
+	queues map[string]chan *SignalDelivery
 }
 
 // NewLocalSignals returns an empty [LocalSignals]. The zero value works too.
@@ -84,17 +103,17 @@ const localSignalQueueDepth = 64
 // A buffered channel is what makes an early signal work: it is held until a step
 // asks for it, which is the behavior the durable driver has because Temporal
 // buffers signals for a run.
-func (s *LocalSignals) queue(name string) chan *Node_Outputs {
+func (s *LocalSignals) queue(name string) chan *SignalDelivery {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.queues == nil {
-		s.queues = make(map[string]chan *Node_Outputs)
+		s.queues = make(map[string]chan *SignalDelivery)
 	}
 
 	queue, ok := s.queues[name]
 	if !ok {
-		queue = make(chan *Node_Outputs, localSignalQueueDepth)
+		queue = make(chan *SignalDelivery, localSignalQueueDepth)
 		s.queues[name] = queue
 	}
 
@@ -103,6 +122,9 @@ func (s *LocalSignals) queue(name string) chan *Node_Outputs {
 
 // Deliver hands a signal to whatever is waiting for it, or holds it until
 // something does.
+//
+// Always attributed to [LocalSignalSender] — there is no authenticated caller
+// behind a local delivery for anything else to attest.
 func (s *LocalSignals) Deliver(name string, payload *Node_Outputs) error {
 	if payload == nil {
 		// An empty payload rather than nil, so the waiting step's outputs exist
@@ -111,8 +133,10 @@ func (s *LocalSignals) Deliver(name string, payload *Node_Outputs) error {
 		payload = &Node_Outputs{NamedValues: map[string]*Value{}}
 	}
 
+	delivery := &SignalDelivery{Payload: payload, Sender: LocalSignalSender()}
+
 	select {
-	case s.queue(name) <- payload:
+	case s.queue(name) <- delivery:
 		return nil
 	default:
 		return fmt.Errorf(
@@ -121,12 +145,12 @@ func (s *LocalSignals) Deliver(name string, payload *Node_Outputs) error {
 }
 
 // WaitForSignal implements [SignalWaiter].
-func (s *LocalSignals) WaitForSignal(ctx context.Context, name string) (*Node_Outputs, error) {
+func (s *LocalSignals) WaitForSignal(ctx context.Context, name string) (*Node_Outputs, *SignalSender, error) {
 	select {
-	case payload := <-s.queue(name):
-		return payload, nil
+	case delivery := <-s.queue(name):
+		return delivery.GetPayload(), delivery.GetSender(), nil
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return nil, nil, ctx.Err()
 	}
 }
 
@@ -210,11 +234,11 @@ func waitForSignalLocally(ctx context.Context, clock Clock, signal *Signal, time
 		rejoin := LeaveClockWhile(ctx)
 		defer rejoin()
 
-		payload, err := waiter.WaitForSignal(ctx, name)
+		payload, sender, err := waiter.WaitForSignal(ctx, name)
 		if err != nil {
 			return nil, err
 		}
-		return SignalOutputs(payload, false), nil
+		return SignalOutputs(payload, sender, false), nil
 	}
 
 	waitCtx, cancel := context.WithCancel(ctx)
@@ -259,14 +283,14 @@ func waitForSignalLocally(ctx context.Context, clock Clock, signal *Signal, time
 	rejoin := LeaveClockWhile(ctx)
 	defer rejoin()
 
-	payload, err := waiter.WaitForSignal(waitCtx, name)
+	payload, sender, err := waiter.WaitForSignal(waitCtx, name)
 	if err == nil {
-		return SignalOutputs(payload, false), nil
+		return SignalOutputs(payload, sender, false), nil
 	}
 
 	select {
 	case <-timedOut:
-		return SignalOutputs(nil, true), nil
+		return SignalOutputs(nil, nil, true), nil
 	default:
 	}
 

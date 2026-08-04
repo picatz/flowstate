@@ -36,6 +36,15 @@ description: >-
 # a gate this run never reaches is harmless — the shape of a real deployment,
 # where a manager and a finance approver could both be handed the means to
 # answer before either wait starts.
+#
+# Notice neither `--signal` above says who is answering. That is deliberate: who
+# approved a gate is `steps.<gate>.sender`, attested by the server from the
+# authenticated caller that sent the signal — never something the payload gets to
+# claim. This is also what makes separation of duties expressible, the property
+# an expense policy actually needs: a rule like
+# `steps.manager_review.sender.identity.subject != inputs.employee` would refuse
+# letting someone approve their own report, and it is unwritable from a
+# self-asserted payload field.
 
 inputs:
   employee:
@@ -91,7 +100,12 @@ steps:
       ${(has(steps.manager_review.payload.approved) && steps.manager_review.payload.approved) ||
         (steps.manager_review.timed_out && has(steps.finance_review.payload.approved) && steps.finance_review.payload.approved)}
     log:
-      message: ${"reimbursing %s $%.2f".format([inputs.employee, inputs.amount])}
+      message: >-
+        ${(has(steps.manager_review.payload.approved) && steps.manager_review.payload.approved)
+          ? "reimbursing %s $%.2f, approved by %s".format(
+              [inputs.employee, inputs.amount, steps.manager_review.sender.identity.subject])
+          : "reimbursing %s $%.2f, approved by finance (%s) after the manager did not respond".format(
+              [inputs.employee, inputs.amount, steps.finance_review.sender.identity.subject])}
 
   # Denied covers three different reasons under one branch: somebody said no,
   # or nobody ever said anything. A read of `outcome` below tells them apart;
@@ -123,3 +137,13 @@ outputs:
   amount:
     value: ${inputs.amount}
     description: the amount this run decided about
+  approved_by:
+    value: >-
+      ${(has(steps.manager_review.payload.approved) && steps.manager_review.payload.approved)
+        ? steps.manager_review.sender.identity.subject
+        : (steps.manager_review.timed_out && has(steps.finance_review.payload.approved) && steps.finance_review.payload.approved)
+          ? steps.finance_review.sender.identity.subject
+          : ""}
+    description: >-
+      who the server attested approved this, empty when nobody did — never a
+      payload field, which is a claim rather than an attestation
