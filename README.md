@@ -290,4 +290,5 @@ does not carry. The essentials:
 With no configuration at all, Flowstate connects to a local development server — self-hosted
 is the default, and Temporal Cloud is opt-in configuration rather than a prerequisite. A
 credential is never sent over plain HTTP to anywhere but this machine: `flow` refuses rather
-than warns.
+than warns, unless an operator sets `FLOWSTATE_INSECURE_PLAINTEXT_TOKEN=true` to say that
+something else — a sidecar, a service mesh — is terminating TLS in front of it.
