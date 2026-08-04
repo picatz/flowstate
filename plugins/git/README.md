@@ -495,12 +495,31 @@ tree a change actually touches the way `git clone --filter=blob:none` or a
 sparse checkout would. A monorepo whose full tree is enormous hits a real
 ceiling here - not a bug this plugin has, a property of the library it is
 built on - and this plugin's own bounds (`maxCloneDepth`, `maxResponseBytes`,
-`maxFiles`, `maxFileBytes`, `maxTotalFileBytes`) will refuse a request that
-exceeds them rather than attempt a clone or a tree rebuild that could exhaust
-a worker's memory trying to serve one. Said plainly here, as an operating
-constraint someone provisioning a worker for this plugin should know before
-pointing it at their largest repository, not discovered from a worker that
-fell over.
+`maxInflatedBytes`, `maxFiles`, `maxFileBytes`, `maxTotalFileBytes`) will
+refuse a request that exceeds them rather than attempt a clone or a tree
+rebuild that could exhaust a worker's memory trying to serve one. Said
+plainly here, as an operating constraint someone provisioning a worker for
+this plugin should know before pointing it at their largest repository, not
+discovered from a worker that fell over.
+
+**Packfile inflation.** `maxResponseBytes` bounds the *compressed* bytes a
+remote sends over HTTP; it says nothing about what those bytes decompress
+into. A git pack stores each object as its own zlib stream, so a small,
+fast response can legally inflate to far more memory than it ever sent on
+the wire - a delta or decompression bomb, the gap issue #171 tracked.
+`cloneBounded` now clones into a `packBoundedStorer` (`packbound.go`) that
+tracks the cumulative decompressed size of every object go-git's packfile
+parser materializes and refuses once it crosses `maxInflatedBytes`, naming
+the bound. This closes the *sum-across-objects* case, proven in
+`packbound_test.go` by asserting peak allocation, not just the eventual
+error. It does not close the *single-object* case: go-git exposes no
+public hook earlier than "the object already exists in memory" (its own
+per-object streaming hook is unexported and unreachable from outside its
+package - checked against go-git's source, not assumed), so one
+pathological object can still cost this process that object's own real
+size before the bound catches it, a residual `packbound_test.go` proves
+rather than hides. Until that residual is closed, this plugin should only
+be pointed at remotes the deployment trusts.
 
 ## What was left undone, and why
 

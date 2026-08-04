@@ -65,6 +65,12 @@ const (
 	maxResponseBytes = 128 << 20 // 128 MiB
 	requestTimeout   = 2 * time.Minute
 
+	// maxInflatedBytes bounds the sum of every object's decompressed size
+	// that go-git's packfile parser materializes while parsing one clone's
+	// pack stream - see packbound.go for the full argument, including what
+	// this bound does and does not close. Mirrors plugins/vcs's own value.
+	maxInflatedBytes = 512 << 20 // 512 MiB
+
 	// maxUsernameBytes bounds the username input before it ever reaches
 	// net/http.Request.SetBasicAuth - generous relative to any real forge
 	// username or literal (Bitbucket's own documented alternative,

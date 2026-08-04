@@ -251,6 +251,18 @@ JWT-minting request and every go-github call - so the response-byte cap and
 the (deny-by-default) egress rules cover the GitHub Enterprise Server case
 too, not only github.com.
 
+**Not a clone-based plugin.** Issue #171 tracked a packfile-inflation bound
+across "all three clone-based plugins (vcs, github, git)"; checked directly
+against this module's own dependencies, this plugin has no go-git import at
+all and never fetches or parses a git pack - every operation here is a
+go-github REST call, already covered by the response-byte cap above (which,
+for ordinary JSON bodies, bounds decompressed content directly, unlike a
+git pack's independent per-object compression). There is no packfile
+inflation surface here to close, so this plugin carries no
+`packBoundedStorer`. It should still only be pointed at a GitHub host
+(github.com or an Enterprise Server instance) the deployment trusts, the
+same operational baseline as any credentialed integration.
+
 ## Naming: why github.* and not forge.*
 
 This engagement's design review settled on a naming discipline: `vcs.*` for
