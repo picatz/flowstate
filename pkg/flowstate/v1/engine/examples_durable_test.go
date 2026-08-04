@@ -295,7 +295,7 @@ func TestEveryExampleRunsDurably(t *testing.T) {
 			// `RunState.pending_undo` is the field that makes it work, and a run that
 			// never suspends never reads it.
 			if want, fails := tests.ExampleFailure(name); fails {
-				assertFailingExampleAgrees(t, devServer.Client(), name, want,
+				assertFailingExampleAgrees(t, devServer.Client(), "example-failing-"+name, name, want,
 					localSpec, suspendingSpec, inputs, authority, signals)
 
 				mu.Lock()
@@ -369,6 +369,20 @@ func TestEveryExampleRunsDurably(t *testing.T) {
 					"step %q produced no outputs", step.GetId())
 			}
 		})
+
+		// An example's default arguments are one path through it. order-fulfillment's
+		// compensation — the property that example exists to demonstrate — is
+		// reached only by overriding `carrier_outage`, which the default run never
+		// does, so it needs its own invocation the way [tests.ExampleFailure]'s one
+		// entry gets one for free. See [tests.ExampleVariants].
+		for _, variant := range tests.ExampleVariants(name) {
+			t.Run(name+"/"+variant.Name, func(t *testing.T) {
+				t.Parallel()
+
+				runVariantDurably(t, devServer.Client(), name, variant,
+					cloneSpec(t, wf), cloneSpec(t, wf), inputs, authority, signals)
+			})
+		}
 	}
 
 	// A predicate that stopped matching, a rename, or a glob that went stale would
@@ -763,10 +777,14 @@ func TestAnExampleWithNoInputsFileIsRefusedRatherThanCapped(t *testing.T) {
 // every step and the compensations registered by earlier segments have to survive
 // a Continue-As-New to run at all. That is the property the local driver cannot
 // have and the reason this harness exists.
+// id is the durable run's workflow id — "example-failing-"+name for an
+// example's own default arguments, and a name carrying the variant too when
+// what makes the run fail is an override rather than the example as shipped
+// (see [runVariantDurably]), so the two never collide in one namespace.
 func assertFailingExampleAgrees(
 	t *testing.T,
 	c client.Client,
-	name, want string,
+	id, name, want string,
 	localSpec, durableSpec *v1.Workflow,
 	inputs map[string]*v1.Value,
 	authority tests.Authority,
@@ -782,7 +800,7 @@ func assertFailingExampleAgrees(
 	defer cancel()
 
 	run, err := c.ExecuteWorkflow(ctx,
-		client.StartWorkflowOptions{ID: "example-failing-" + name, TaskQueue: engine.RunTaskQueueName},
+		client.StartWorkflowOptions{ID: id, TaskQueue: engine.RunTaskQueueName},
 		engine.Run,
 		&v1.RunState{
 			Workflow:    durableSpec,
@@ -800,6 +818,38 @@ func assertFailingExampleAgrees(
 	require.ErrorContains(t, durableErr, want,
 		"%s fails differently on the two drivers, so a local run does not tell an author "+
 			"what production will clean up", name)
+}
+
+// runVariantDurably runs one of an example's additional invocations — see
+// [tests.ExampleVariants] — across both drivers, in its own namespace so it
+// cannot collide with the example's own default run.
+//
+// Only the failing shape is implemented, because it is the only one a variant
+// has needed so far: an input override that reaches a compensation path the
+// default arguments never do. A variant meant to succeed instead would want
+// the same whole-file local-vs-durable comparison the default run already
+// gets above; add that branch when a variant exists that needs it; over
+// [assertFailingExampleAgrees] is the pattern this example already covers, so
+// it is what is reused here.
+func runVariantDurably(
+	t *testing.T,
+	c client.Client,
+	name string,
+	variant tests.ExampleVariant,
+	localSpec, durableSpec *v1.Workflow,
+	inputs map[string]*v1.Value,
+	authority tests.Authority,
+	signals map[string]*v1.Node_Outputs,
+) {
+	t.Helper()
+
+	require.NotEmpty(t, variant.Fails,
+		"%s/%s is a variant with nothing to assert; a variant meant to succeed needs its own "+
+			"comparison, which this helper does not implement yet", name, variant.Name)
+
+	assertFailingExampleAgrees(t, c,
+		"example-failing-"+name+"-"+variant.Name, name+"/"+variant.Name, variant.Fails,
+		localSpec, durableSpec, variant.WithOverrides(inputs), authority, signals)
 }
 
 // runFailingExampleLocally is [runExampleLocally] for a run that is expected to

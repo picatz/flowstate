@@ -30,6 +30,14 @@
 # card and the warehouse's stock has to come back regardless of why the run
 # is stopping. `flow terminate` does not run any of it, which is the
 # difference the two verbs have always meant.
+#
+# Run durably instead of in this process (needs a Temporal dev server,
+# `flow worker`, and `flow server` — see the main README's Quickstart) and the
+# same two paths unwind the same way, from whichever worker is running the
+# segment that fails:
+#
+#   flow run examples/order-fulfillment/workflow.yaml
+#   flow run examples/order-fulfillment/workflow.yaml --input carrier_outage=true
 edition: v2026.2
 name: order-fulfillment
 description: Reserve stock, charge a card, arrange shipping — and undo the first two if the third can't happen.

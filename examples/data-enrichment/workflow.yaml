@@ -19,9 +19,25 @@ description: >-
 #
 #   flow run local examples/data-enrichment/workflow.yaml -o json | jq .runOutputs
 #
-# One record, "flagged", stands in for the one every worklist has: the
-# lookup that will never succeed, because there is nothing wrong with the
-# request. Change it to see the ordinary path with nothing to report:
+# Run it durably instead — against a worker and a server rather than in this
+# process — and the loop survives losing that worker mid-batch, the same
+# file and the same policy, resumed on whatever worker replaces it:
+#
+#   flow run examples/data-enrichment/workflow.yaml
+#
+# (needs `flow server` and `flow worker` running; see the main README's
+# Quickstart)
+#
+# Two things fail on purpose here, and not the same way. "flagged" is a
+# record `expect` rejects — a permanent judgement about the request itself,
+# never retried, the same as a 4xx is not retried by default. `vendor_status`
+# below is a different shape entirely: a transient 503, which *is* retried,
+# because an outage might clear before the third attempt. Seeing both side by
+# side is the point: `retry:` exists for the second shape and does nothing
+# for the first, and a file that only ever exercised the permanent one would
+# leave `attempts: 3` looking like it does something it does not.
+#
+# Change the worklist to see the ordinary path with nothing to report:
 #
 #   flow run local examples/data-enrichment/workflow.yaml --input records='["alpha","beta"]'
 
@@ -69,12 +85,34 @@ steps:
             expect: ${record != 'flagged' && response.status_code == 200}
             outputs: '${ {"id": record} }'
 
+  # A vendor lookup this run also depends on, hit once rather than per
+  # record — which is what lets it point at an address of its own instead of
+  # sharing `lookup`'s. It fails with a 503, a status the http task classifies
+  # as transient and retries: unlike "flagged" above, this one's `retry:`
+  # genuinely gets to run — three real attempts, with the same backoff — before
+  # the outage outlasts the policy and this step is tolerated the same way.
+  - id: vendor_status
+    description: >-
+      A transient vendor outage, unlike "flagged": retried for real, up to
+      three times, rather than rejected on the first attempt.
+    continue_on_error: true
+    retry:
+      attempts: 3
+      interval: 200ms
+      backoff: 2.0
+      max_interval: 2s
+    timeout: 10s
+    http:
+      method: GET
+      url: https://httpbin.org/status/503
+
   - id: report
     log:
       message: >-
-        ${"enrichment finished for %d of %d record(s)".format([
+        ${"enrichment finished for %d of %d record(s), vendor status %s".format([
           size(steps.enrich.results.filter(r, has(r.lookup.id))),
-          size(inputs.records)])}
+          size(inputs.records),
+          has(steps.vendor_status.error) ? "unavailable after retries" : string(steps.vendor_status.status_code)])}
 
 outputs:
   # A step that failed carries no `id` — it never reached the `outputs`
@@ -96,3 +134,6 @@ outputs:
   attempted:
     value: ${size(inputs.records)}
     description: how many records this run was given
+  vendor_outage_tolerated:
+    value: ${has(steps.vendor_status.error)}
+    description: whether the transient vendor outage outlasted its three retries

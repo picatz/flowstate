@@ -36,6 +36,25 @@ $ flow run local examples/expense-approval/workflow.yaml \
     --signal manager-approved='{"approved": true}'
 ```
 
+And the same file, run durably instead of in this process (needs a Temporal dev
+server, `flow worker`, and `flow server` — see the main README's Quickstart):
+
+```console
+$ flow run examples/expense-approval/workflow.yaml
+started flowstate-workflow-...; come back to it with `flow watch flowstate-workflow-...`
+```
+
+Then, from another terminal, addressing the id the first command printed:
+
+```console
+$ flow signal <workflow-id> manager-approved --data '{"approved": true}'
+```
+
+`flow signal` is the durable spelling of `--signal`, addressed to a workload
+already waiting rather than answered before it starts — which is the part a local
+run cannot show at all, since a local run is a process with nobody left to send
+anything to once it has started.
+
 ## The interesting lines
 
 - **`timeout: 4s` on `manager_review`.** Short because this is an example to run

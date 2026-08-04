@@ -25,9 +25,18 @@ $ flow run local examples/ops-healthcheck/workflow.yaml -o json | jq .runOutputs
 ```
 
 Nothing else changes to run this durably: the same file, submitted to a worker
-instead of executed in this process, checks the same three services and answers with
-the same shape — a schedule created with `flow schedule create` is what turns "run
-this once" into "run this every five minutes forever," not a rewrite of the file.
+instead of executed in this process (needs a Temporal dev server, `flow worker`, and
+`flow server` — see the main README's Quickstart), checks the same three services
+and answers with the same shape:
+
+```console
+$ flow run examples/ops-healthcheck/workflow.yaml -o json | jq .runOutputs
+```
+
+A schedule created with `flow schedule create examples/ops-healthcheck/workflow.yaml`
+is what turns "run this once" into "run this every five minutes forever," not a
+rewrite of the file — see `examples/scheduled-report` for the `triggers:` block that
+would sit above `steps:` here to declare the cadence.
 
 ## The interesting lines
 

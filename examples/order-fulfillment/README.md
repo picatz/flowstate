@@ -35,10 +35,24 @@ two steps' effects come back:
 $ flow run local examples/order-fulfillment/workflow.yaml --input carrier_outage=true
 ```
 
-Both are the same file. Run durably, a failure partway through this saga unwinds the
-same way, from whichever worker happens to be running it when `arrange_shipment`
-fails — nothing about the compensation depends on it being the same worker that ran
-`reserve_inventory` in the first place.
+Both are the same file. Run durably instead of in this process (needs a Temporal
+dev server, `flow worker`, and `flow server` — see the main README's Quickstart)
+and a failure partway through this saga unwinds the same way, from whichever
+worker happens to be running it when `arrange_shipment` fails — nothing about the
+compensation depends on it being the same worker that ran `reserve_inventory` in
+the first place:
+
+```console
+$ flow run examples/order-fulfillment/workflow.yaml
+$ flow run examples/order-fulfillment/workflow.yaml --input carrier_outage=true
+```
+
+The compensation is exercised durably across a forced hand-over in this
+portfolio's own test suite, not only asserted here in prose — see
+`TestEveryExampleRunsDurably/order-fulfillment/carrier-outage` in
+`pkg/flowstate/v1/engine`, which submits this file with `carrier_outage=true`,
+forces a Continue-As-New between every step, and checks the failure both drivers
+report names the same two compensations in the same order.
 
 ## The interesting lines
 
