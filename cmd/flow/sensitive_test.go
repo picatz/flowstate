@@ -68,11 +68,18 @@ func TestRedactGetResponseFailsClosedWithNoWorkflow(t *testing.T) {
 	h := holder{Response: redacted}
 	slice := []*v1.GetResponse{redacted}
 
+	// The %s verb is spelled rather than String() called, deliberately: an
+	// operator's log line spells the verb, so the verb is what has to be proven
+	// safe. Calling String() here would assert something adjacent to, and not
+	// the same as, the path that actually leaks.
+	//lint:ignore S1025 see above — %s is the path under test, not a shortcut for String()
+	asVerb := fmt.Sprintf("%s", redacted)
+
 	for _, rendered := range []string{
 		fmt.Sprintf("%v", redacted),
 		fmt.Sprintf("%+v", redacted),
 		fmt.Sprintf("%#v", redacted),
-		fmt.Sprintf("%s", redacted),
+		asVerb,
 		fmt.Sprintf("%v", h),
 		fmt.Sprintf("%+v", h),
 		fmt.Sprintf("%v", slice),
