@@ -3,6 +3,7 @@ package flowfile_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -196,6 +197,73 @@ steps:
 			require.Contains(t, ds.Error(), tt.wantErr)
 		})
 	}
+}
+
+// TestCallArgumentOverTheElementBoundRefused is #206's worst-case finding: a
+// literal `with:` argument over the server-wide element bound used to pass
+// `flow validate` cleanly, because checkCallArgumentType's own
+// v1.CheckInputConstraints only walked a value's lists when the callee's
+// declaration carried a `must:`/`unique:` — an unconstrained list input's
+// size was never checked at the call boundary at all. Left unrefused, this
+// argument would only fail once BindRunInputs saw it, which for a call means
+// mid-run, possibly after earlier steps already had side effects. Reusing the
+// identical bound at the call boundary catches it at compile time instead.
+func TestCallArgumentOverTheElementBoundRefused(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "callee.yaml", `edition: v2026.2
+name: callee
+inputs:
+  records:
+    type: list
+steps:
+  - id: a
+    log:
+      message: hi
+`)
+
+	oversizedList := "[" + strings.Repeat("0, ", 10_000) + "0]"
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.2
+name: caller
+steps:
+  - id: provision
+    call: ./callee.yaml
+    with:
+      records: `+oversizedList+`
+`)
+
+	ds := mustValidate(t, caller)
+	require.NotEmpty(t, ds, "a literal with: argument over the element bound was accepted at compile time")
+	require.Contains(t, ds.Error(), "records")
+	require.Contains(t, ds.Error(), "list elements")
+}
+
+// TestCallArgumentAtTheElementBoundAccepted is the boundary: exactly the
+// element bound's worth of items is satisfiable, so it must not be refused.
+func TestCallArgumentAtTheElementBoundAccepted(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "callee.yaml", `edition: v2026.2
+name: callee
+inputs:
+  records:
+    type: list
+steps:
+  - id: a
+    log:
+      message: hi
+`)
+
+	exactList := "[" + strings.Repeat("0, ", 9_999) + "0]" // 9,999 + 1 = 10,000
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.2
+name: caller
+steps:
+  - id: provision
+    call: ./callee.yaml
+    with:
+      records: `+exactList+`
+`)
+
+	ds := mustValidate(t, caller)
+	require.Empty(t, ds, "a literal with: argument of exactly the element bound was refused: %v", ds)
 }
 
 // TestCallRefusesEscapingThroughASymlink is the real-path version of

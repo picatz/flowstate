@@ -170,6 +170,83 @@ func TestConstraintShapeRefusesAMismatchedKey(t *testing.T) {
 	assert.Contains(t, err.Error(), "string input")
 }
 
+// TestConstraintShapeRefusesMinItemsAboveTheCap is Codex's first finding on
+// #206: maxListElements (10,000) now refuses *every* bound input regardless
+// of what it declares, so a declaration whose own min_items sits above that
+// cap can never be satisfied — anything over 10,000 elements is refused
+// before checkListConstraints ever runs, and anything at or under 10,000
+// fails the declared minimum. This is the same class as the neighbouring
+// min_items > max_items check: an impossible declaration caught when it
+// loads rather than when a run happens to exercise it, so the message names
+// both numbers.
+func TestConstraintShapeRefusesMinItemsAboveTheCap(t *testing.T) {
+	t.Parallel()
+
+	decl := &v1.InputDeclaration{Name: "records", Type: v1.InputDeclaration_TYPE_LIST, MinItems: u64Ptr(10_001)}
+
+	err := v1.CheckInputConstraintShape(decl)
+	require.Error(t, err, "an unsatisfiable min_items above the server-wide element cap was accepted")
+	assert.Contains(t, err.Error(), "records")
+	assert.Contains(t, err.Error(), "10001")
+	assert.Contains(t, err.Error(), "10000")
+}
+
+// TestConstraintShapeAcceptsAMinItemsAtTheCap is the boundary: exactly
+// maxListElements is satisfiable (a list of exactly that many elements binds
+// clean, per TestBindRunInputsAcceptsAnUnconstrainedListExactlyAtTheBound),
+// so min_items at the cap must not be refused.
+func TestConstraintShapeAcceptsAMinItemsAtTheCap(t *testing.T) {
+	t.Parallel()
+
+	decl := &v1.InputDeclaration{Name: "records", Type: v1.InputDeclaration_TYPE_LIST, MinItems: u64Ptr(10_000)}
+
+	assert.NoError(t, v1.CheckInputConstraintShape(decl), "min_items exactly at the server-wide cap was refused")
+}
+
+// TestConstraintShapeAcceptsASaneMinItems is the ordinary non-regression
+// case: a ordinary, small min_items must keep validating.
+func TestConstraintShapeAcceptsASaneMinItems(t *testing.T) {
+	t.Parallel()
+
+	decl := &v1.InputDeclaration{Name: "records", Type: v1.InputDeclaration_TYPE_LIST, MinItems: u64Ptr(3)}
+
+	assert.NoError(t, v1.CheckInputConstraintShape(decl), "a sane min_items was refused")
+}
+
+// TestCheckInputDefaultRefusesAnOversizedLiteral is Codex's second finding on
+// #206: BindRunInputs' new element bound was not mirrored by the author-time
+// literal validators, so a Flowfile with an oversized literal default: passed
+// flow validate and only failed once a run actually started. CheckInputDefault
+// now reaches the identical bound (through CheckInputConstraints), because an
+// unconstrained list's element count was never walked by CheckInputValue or
+// the old CheckInputConstraints on its own.
+func TestCheckInputDefaultRefusesAnOversizedLiteral(t *testing.T) {
+	t.Parallel()
+
+	decl := &v1.InputDeclaration{
+		Name: "records", Type: v1.InputDeclaration_TYPE_LIST,
+		Default: v1.NewLiteralList(manyItems(10_001)...),
+	}
+
+	err := v1.CheckInputDefault(decl)
+	require.Error(t, err, "a literal default over the element bound was accepted at author time")
+	assert.Contains(t, err.Error(), "records")
+	assert.Contains(t, err.Error(), "list elements")
+}
+
+// TestCheckInputDefaultAcceptsASaneLiteral is the non-regression case: an
+// ordinary, small literal default must keep validating.
+func TestCheckInputDefaultAcceptsASaneLiteral(t *testing.T) {
+	t.Parallel()
+
+	decl := &v1.InputDeclaration{
+		Name: "records", Type: v1.InputDeclaration_TYPE_LIST,
+		Default: v1.NewLiteralList("a", "b", "c"),
+	}
+
+	assert.NoError(t, v1.CheckInputDefault(decl), "a sane literal default was refused")
+}
+
 // TestBindRunInputsRefusesABadDeclarationBeforeAnyValue proves the shape check
 // runs at BindRunInputs even for a specification that never passed through
 // flow validate — a hand-built Workflow message reaching the server directly.
@@ -371,7 +448,7 @@ func TestBindRunInputsRefusesAStructWithAnOversizedNestedList(t *testing.T) {
 
 // TestBindRunInputsRefusesManySmallListsSummingOverTheBound is the direction a
 // per-list bound would let through: no single list here is anywhere near
-// maxConstraintListElements, but the total across the struct is — which is
+// maxListElements, but the total across the struct is — which is
 // exactly the case CLAUDE.md's billion-laughs reasoning says a per-list check
 // misses.
 func TestBindRunInputsRefusesManySmallListsSummingOverTheBound(t *testing.T) {
@@ -397,7 +474,7 @@ func TestBindRunInputsRefusesManySmallListsSummingOverTheBound(t *testing.T) {
 
 // TestBindRunInputsRefusesADeeplyNestedStruct is the depth bound, proven
 // distinct from the element-count bound: this value never comes close to
-// maxConstraintListElements, so only nesting depth can be what refuses it,
+// maxListElements, so only nesting depth can be what refuses it,
 // and the message must say so rather than repeating the list-elements
 // wording.
 func TestBindRunInputsRefusesADeeplyNestedStruct(t *testing.T) {
@@ -470,6 +547,139 @@ func TestCheckOutputConstraintAcceptsAConformingNestedStruct(t *testing.T) {
 	value := v1.NewLiteralMap(map[string]any{"child": nestedStruct(10, manyItems(9_000))})
 
 	assert.NoError(t, v1.CheckOutputConstraint(decl, value))
+}
+
+// unconstrainedListInput declares a list-typed input carrying no `must:` and
+// no `unique:` at all — the exact shape #204 found the constraint-only bound
+// left open, since [checkConstraintValueBound] only ran when one of those was
+// declared.
+func unconstrainedListInput(name string) *v1.InputDeclaration {
+	return &v1.InputDeclaration{Name: name, Type: v1.InputDeclaration_TYPE_LIST}
+}
+
+// TestBindRunInputsRefusesAnOversizedUnconstrainedList is #204's exact gap: no
+// must:, no unique:, nothing that would have routed this value through
+// checkConstraintValueBound before this change — and BindRunInputs still
+// refuses it, because the bound is now unconditional rather than gated on a
+// declaration carrying a constraint.
+func TestBindRunInputsRefusesAnOversizedUnconstrainedList(t *testing.T) {
+	t.Parallel()
+
+	decl := unconstrainedListInput("items")
+	wf := constrainedWorkflow(decl)
+
+	_, err := v1.BindRunInputs(wf, map[string]*v1.Value{"items": v1.NewLiteralList(manyItems(10_001)...)})
+	require.Error(t, err, "an oversized list with no declared constraint was accepted")
+	assert.Contains(t, err.Error(), "items")
+	assert.Contains(t, err.Error(), "list elements")
+}
+
+// TestBindRunInputsAcceptsAnUnconstrainedListExactlyAtTheBound and
+// TestBindRunInputsRefusesAnUnconstrainedListOneOverTheBound together prove
+// the bound is *reached*, not merely respected (CLAUDE.md: `<= bound` is also
+// satisfied by a check that gives up early) — a value of exactly
+// maxListElements elements binds clean, and one element more is refused,
+// with no must:/unique: declared either way.
+func TestBindRunInputsAcceptsAnUnconstrainedListExactlyAtTheBound(t *testing.T) {
+	t.Parallel()
+
+	decl := unconstrainedListInput("items")
+	wf := constrainedWorkflow(decl)
+
+	bound, err := v1.BindRunInputs(wf, map[string]*v1.Value{"items": v1.NewLiteralList(manyItems(10_000)...)})
+	require.NoError(t, err, "a list of exactly the bound's worth of elements was refused")
+	assert.NotNil(t, bound["items"])
+}
+
+func TestBindRunInputsRefusesAnUnconstrainedListOneOverTheBound(t *testing.T) {
+	t.Parallel()
+
+	decl := unconstrainedListInput("items")
+	wf := constrainedWorkflow(decl)
+
+	_, err := v1.BindRunInputs(wf, map[string]*v1.Value{"items": v1.NewLiteralList(manyItems(10_001)...)})
+	require.Error(t, err, "one element over the bound, with no constraint declared, was accepted")
+	assert.Contains(t, err.Error(), "list elements")
+}
+
+// TestBindRunInputsRefusesManyUnconstrainedListsSummingOverTheBound is the
+// total-across-the-value direction with no must:/unique: anywhere: one
+// struct-typed input nesting twenty lists, each individually far under
+// maxListElements, whose sum across the whole value exceeds it — the
+// unconstrained mirror of TestBindRunInputsRefusesManySmallListsSummingOverTheBound,
+// which proves the identical shape but only for a declaration carrying a
+// must:.
+func TestBindRunInputsRefusesManyUnconstrainedListsSummingOverTheBound(t *testing.T) {
+	t.Parallel()
+
+	decl := &v1.InputDeclaration{Name: "payload", Type: v1.InputDeclaration_TYPE_STRUCT}
+	wf := constrainedWorkflow(decl)
+
+	fields := map[string]any{}
+	for i := 0; i < 20; i++ {
+		fields[fmt.Sprintf("list%d", i)] = manyItems(600) // 20 * 600 = 12,000 > 10,000
+	}
+	value := v1.NewLiteralMap(fields)
+
+	_, err := v1.BindRunInputs(wf, map[string]*v1.Value{"payload": value})
+	require.Error(t, err, "many unconstrained lists, each individually under the bound, summing over it, were accepted")
+	assert.Contains(t, err.Error(), "payload")
+	assert.Contains(t, err.Error(), "list elements")
+}
+
+// TestBindRunInputsRefusesAnUnconstrainedStructWithAnOversizedNestedList is
+// the nested direction with no must: declared: a type: struct input carrying
+// an oversized list nested inside it is refused exactly as the must:-gated
+// path already was.
+func TestBindRunInputsRefusesAnUnconstrainedStructWithAnOversizedNestedList(t *testing.T) {
+	t.Parallel()
+
+	decl := &v1.InputDeclaration{Name: "payload", Type: v1.InputDeclaration_TYPE_STRUCT}
+	wf := constrainedWorkflow(decl)
+
+	value := v1.NewLiteralMap(map[string]any{"items": manyItems(10_001)})
+
+	_, err := v1.BindRunInputs(wf, map[string]*v1.Value{"payload": value})
+	require.Error(t, err, "an unconstrained struct whose nested list exceeds the element bound was accepted")
+	assert.Contains(t, err.Error(), "payload")
+	assert.Contains(t, err.Error(), "list elements")
+}
+
+// TestBindRunInputsAcceptsAnOrdinaryUnconstrainedList is the regression case:
+// a normal, reasonably sized list input with no declared constraint must
+// still bind and run end to end. The bound exists to stop a caller-chosen
+// list from reaching the evaluator unbounded, not to make an everyday
+// for_each fanout impossible.
+func TestBindRunInputsAcceptsAnOrdinaryUnconstrainedList(t *testing.T) {
+	t.Parallel()
+
+	wf := &v1.Workflow{
+		Name:           "ordinary-fanout",
+		Profile:        v1.CurrentProfile,
+		DeclaredInputs: []*v1.InputDeclaration{unconstrainedListInput("regions")},
+		Steps: []*v1.Node{{
+			Id: "each",
+			Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+				Items:    v1.NewExpr("inputs.regions"),
+				Iterator: "region",
+				Body: []*v1.Node{{
+					Id:   "log",
+					Kind: &v1.Node_Task{Task: &v1.Task{Name: "log", Inputs: map[string]*v1.Value{"message": v1.NewExpr("region")}}},
+				}},
+			}},
+		}},
+	}
+
+	regions := []any{"us-east-1", "us-west-2", "eu-west-1", "eu-central-1", "ap-southeast-1"}
+
+	bound, err := v1.BindRunInputs(wf, map[string]*v1.Value{"regions": v1.NewLiteralList(regions...)})
+	require.NoError(t, err, "an ordinary, reasonably sized fanout list was refused")
+	assert.NotNil(t, bound["regions"])
+
+	out, err := v1.RunWithInputs(t.Context(), wf, map[string]*v1.Value{"regions": v1.NewLiteralList(regions...)})
+	require.NoError(t, err, "an ordinary fanout workflow did not run end to end")
+	results := out.GetStepValues()["each"].GetNamedValues()["results"].GetLiteral().GetListValue().GetValues()
+	assert.Len(t, results, len(regions), "the loop did not run once per region")
 }
 
 func strPtr(s string) *string   { return &s }
