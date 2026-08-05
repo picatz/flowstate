@@ -1,8 +1,9 @@
-# Tasks a plugin provides: git.ls_remote and git.commit_push
+# Tasks a plugin provides: git.ls_remote, git.log, git.read_file, and git.commit_push
 
-This directory has three files, chosen to walk the three auth shapes this
-plugin's two tasks actually have - public read, private read, and write -
-rather than only the one that happens to need no credential:
+This directory has four files, chosen to walk the auth shapes and the
+read/write split this plugin's four tasks actually have - public read,
+private read, read/audit, and write - rather than only the one that happens
+to need no credential:
 
 - [`workflow.yaml`](workflow.yaml) reads a real, public repository's branch
   refs with `git.ls_remote:` - no `token:`, and safe to run as written, with
@@ -11,12 +12,18 @@ rather than only the one that happens to need no credential:
   against a private repository - same task, same schema, one more field
   (`token:`) filled in. It cannot run by accident: there is no default
   private repository to read, and no default credential.
+- [`log-and-read-file.yaml`](log-and-read-file.yaml) is this plugin's
+  read/audit tier: `git.log` (bounded commit history, including messages)
+  and `git.read_file` (one file's content at one ref), chained into the
+  audit a security engineer actually runs - who last touched a file, and
+  what does it contain now. No `token:`, safe to run as written, with no
+  arguments.
 - [`commit-push.yaml`](commit-push.yaml) pushes a real commit with
   `git.commit_push:` - `token:` here is never optional, because no forge
   accepts an anonymous push. It cannot run by accident either: there is no
   default url, branch, or base ref to write to.
 
-All three are tasks the `git` plugin provides - see
+All four are tasks the `git` plugin provides - see
 [`plugins/git`](../../../plugins/git) for the source, and its `README.md`
 for the security properties this plugin holds by construction, "Which git
 server?" for what provider-agnosticism means concretely (and does not,
@@ -64,6 +71,25 @@ Compare this file to `workflow.yaml` line by line: the only difference is
 the task, its other inputs, or its outputs changes between a public and a
 private repository - see `plugins/git/README.md`, "Authentication."
 
+## Running the read/audit-tier example
+
+```console
+$ mkdir -p ./plugins
+$ go -C plugins/git build -o ../../plugins/flowstate-plugin-git .
+$ flow plugins --plugin-dir ./plugins
+$ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins &
+$ flow server &
+$ flow run examples/plugins/git/log-and-read-file.yaml
+```
+
+Also a real, unauthenticated request - no `token:`, safe to run as written.
+`git.log` walks a bounded, path-filtered slice of history (`max_commits: 5`,
+`path: README`); `git.read_file` reads that same path's current content at
+the same default ref. Both clone only the shallow window each call actually
+needs - see `plugins/git/README.md`, "Operational scale," for why that
+matters against a repository whose full history is too large to ever clone
+completely.
+
 ## Running the write example
 
 Do not run this against a repository you do not want a real commit pushed
@@ -99,9 +125,10 @@ See [`examples/README.md`](../../README.md) for the fuller argument.
 [`plugins/git/reachable`](../../../plugins/git/reachable), builds this
 plugin as a real, separately compiled binary, opens a
 [`plugin.Host`](../../../pkg/flowstate/v1/plugin) over it, and validates all
-three files here from disk before and after registration - each refused with
-a diagnostic naming its task beforehand, accepted afterward, inputs checked
-against the descriptors the plugin actually shipped. It does not run
-`git.ls_remote` or `git.commit_push` for real - both reach the real network,
-and reading a private repository or pushing a commit needs a credential and
-a target this test has no business holding or choosing on a human's behalf.
+four files here from disk before and after registration - each refused with
+a diagnostic naming its task(s) beforehand, accepted afterward, inputs
+checked against the descriptors the plugin actually shipped. It does not run
+`git.ls_remote`, `git.log`, `git.read_file`, or `git.commit_push` for real -
+all four reach the real network, and reading a private repository or pushing
+a commit needs a credential and a target this test has no business holding
+or choosing on a human's behalf.

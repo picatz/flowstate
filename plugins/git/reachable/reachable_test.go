@@ -42,9 +42,10 @@ const exampleDir = "../../../examples/plugins/git"
 // registering into [flowstatev1.DefaultRegistry] is a one-way door with no
 // Unregister, so at most one test in this binary may do it. See
 // plugins/vcs/reachable's identical test for the full argument; this one
-// covers all three of this plugin's example files - the runnable public-read
-// example, the parameterized private-read example, and the parameterized
-// write example - rather than one.
+// covers all four of this plugin's example files - the runnable public-read
+// example, the parameterized private-read example, the read/audit tier
+// example (git.log and git.read_file), and the parameterized write example -
+// rather than one.
 func TestAFlowfileCanNameTheGitPluginsTasks(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds a real plugin binary; skipped under -short, run in CI and by `make check`")
@@ -59,9 +60,10 @@ func TestAFlowfileCanNameTheGitPluginsTasks(t *testing.T) {
 
 	readSource := readExample(t, "workflow.yaml")
 	privateReadSource := readExample(t, "ls-remote-private.yaml")
+	logAndReadFileSource := readExample(t, "log-and-read-file.yaml")
 	writeSource := readExample(t, "commit-push.yaml")
 
-	for _, name := range []string{"git.ls_remote", "git.commit_push"} {
+	for _, name := range []string{"git.ls_remote", "git.log", "git.read_file", "git.commit_push"} {
 		if _, ok := flowstatev1.LookupTask(name); ok {
 			t.Fatalf("%q is already in the default registry before this test registered it, "+
 				"so nothing below distinguishes a working seam from a task that was always there", name)
@@ -92,6 +94,20 @@ func TestAFlowfileCanNameTheGitPluginsTasks(t *testing.T) {
 	}
 	if !strings.Contains(diagnosticText(beforePrivateRead), "git.ls_remote") {
 		t.Errorf("the diagnostics do not name %q; diagnostics:\n%s", "git.ls_remote", diagnosticText(beforePrivateRead))
+	}
+
+	beforeLogAndReadFile, err := flowfile.ValidateSource(logAndReadFileSource)
+	if err != nil {
+		t.Fatalf("ValidateSource(log-and-read-file.yaml): unexpected error: %v", err)
+	}
+	if len(beforeLogAndReadFile) == 0 {
+		t.Fatal("the validator accepted log-and-read-file.yaml naming tasks no registry holds")
+	}
+	if !strings.Contains(diagnosticText(beforeLogAndReadFile), "git.log") {
+		t.Errorf("the diagnostics do not name %q; diagnostics:\n%s", "git.log", diagnosticText(beforeLogAndReadFile))
+	}
+	if !strings.Contains(diagnosticText(beforeLogAndReadFile), "git.read_file") {
+		t.Errorf("the diagnostics do not name %q; diagnostics:\n%s", "git.read_file", diagnosticText(beforeLogAndReadFile))
 	}
 
 	beforeWrite, err := flowfile.ValidateSource(writeSource)
@@ -139,6 +155,17 @@ func TestAFlowfileCanNameTheGitPluginsTasks(t *testing.T) {
 		if len(diags) != 0 {
 			t.Errorf("this plugin's tasks are registered and `flow validate` still refuses "+
 				"examples/plugins/git/ls-remote-private.yaml: %s", diagnosticText(diags))
+		}
+	})
+
+	t.Run("the validator accepts the real read/audit-tier example", func(t *testing.T) {
+		diags, err := flowfile.ValidateSource(logAndReadFileSource)
+		if err != nil {
+			t.Fatalf("ValidateSource: unexpected error: %v", err)
+		}
+		if len(diags) != 0 {
+			t.Errorf("this plugin's tasks are registered and `flow validate` still refuses "+
+				"examples/plugins/git/log-and-read-file.yaml: %s", diagnosticText(diags))
 		}
 	})
 

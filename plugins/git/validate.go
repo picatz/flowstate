@@ -57,6 +57,57 @@ const (
 	// many refs the remote actually advertised.
 	maxRemoteRefs = 1000
 
+	// defaultMaxCommits and maxMaxCommits bound git.log's own output size,
+	// independent of clone depth: a repository fetched to a shallow depth
+	// but asked to report only 10 commits should report 10, not spend the
+	// request budget serializing however many the clone happened to reach.
+	// maxMaxCommits is the ceiling max_commits cannot cross - the resource
+	// an attacker-chosen repository's own history length controls, bounded
+	// so a workflow author cannot ask this task to walk and serialize an
+	// unbounded amount of it.
+	defaultMaxCommits = 20
+	maxMaxCommits     = 200
+
+	// maxLogMessageBytes bounds one commit's message in git.log's output,
+	// and maxTotalLogMessageBytes bounds the sum across every commit
+	// returned, independent of maxMaxCommits*maxLogMessageBytes: a commit
+	// message has no natural size limit, and the repository this task reads
+	// is attacker-chosen input the same way base_ref's own tree is for
+	// commit_push - see maxMessageBytes's own doc comment for the write
+	// side of that same reasoning. The total bound is what makes many
+	// merely-large messages (each under the per-entry cap, several hundred
+	// of them) refused the same way one pathologically large one is,
+	// stopping collection early and reporting truncated: true rather than
+	// serializing an unbounded response one entry at a time.
+	maxLogMessageBytes      = 4096
+	maxTotalLogMessageBytes = 256 << 10 // 256 KiB
+
+	// maxLogPathBytes bounds git.log's optional path filter before it is
+	// used to build a PathFilter closure - the same "bound before the real
+	// use sees it" reasoning validateRevision documents.
+	maxLogPathBytes = 4096
+
+	// readFileCloneDepth is the depth git.read_file asks go-git to fetch:
+	// exactly the tip of every ref/branch/tag the clone requests, since
+	// reading one file at one ref never needs history - only the tree that
+	// commit points to. The cheapest clone go-git can do for this
+	// operation, per CLAUDE.md's "massive scale repos" guidance.
+	readFileCloneDepth = 1
+
+	// maxReadFileBytes bounds a file git.read_file returns. Refused, never
+	// truncated, when a blob exceeds it - a truncated file that looks whole
+	// is a worse failure mode than a clear refusal naming the actual size,
+	// since a workflow (or a human) reading a silently truncated file has
+	// no way to tell it apart from the real, complete content.
+	maxReadFileBytes = 8 << 20 // 8 MiB
+
+	// bytesToSniffForBinary bounds how much of a file's content
+	// isLikelyBinary examines before giving up and calling it text - the
+	// same window (the first 8000 bytes) git itself uses for this exact
+	// heuristic (buffer_is_binary in git's own convert.c), so this task's
+	// "binary" judgement agrees with plain `git` on the same content.
+	bytesToSniffForBinary = 8000
+
 	// maxResponseBytes and requestTimeout mirror plugins/vcs's own clone.go -
 	// see there for the full argument, including the gap CLAUDE.md's own
 	// connect-go example names: this bounds the transport every byte
@@ -145,6 +196,71 @@ func validateRevision(field, raw string) (string, error) {
 		}
 	}
 	return raw, nil
+}
+
+// validateOptionalRevision is validateRevision with raw == "" accepted -
+// git.log's and git.read_file's own ref input, where empty means "the
+// remote's HEAD" rather than a mistake, unlike commit_push's base_ref
+// (always explicit; see CommitPushInputs.base_ref's own doc comment for why
+// that field never defaults).
+func validateOptionalRevision(field, raw string) (string, error) {
+	if raw == "" {
+		return "", nil
+	}
+	return validateRevision(field, raw)
+}
+
+// clampMaxCommits applies git.log's default and ceiling to a requested
+// count - the same refuse-rather-than-clamp reasoning plugins/vcs's own
+// clampMaxCommits documents: a silently reduced bound looks like a working
+// request that quietly returned less than it was asked for.
+func clampMaxCommits(requested int32) (int, error) {
+	if requested == 0 {
+		return defaultMaxCommits, nil
+	}
+	if requested < 0 {
+		return 0, fmt.Errorf("max_commits must not be negative")
+	}
+	if requested > maxMaxCommits {
+		return 0, fmt.Errorf("max_commits is %d, over the %d ceiling this task enforces", requested, maxMaxCommits)
+	}
+	return int(requested), nil
+}
+
+// validateLogPath bounds and lightly sanity-checks git.log's optional path
+// filter. Unlike validateTreePath (commit_push's own path checks), this is
+// deliberately not a full tree-path grammar: a log path filter is matched
+// against history, never used to write anywhere, so the traversal and
+// ".git"-segment refusals that matter for a write have no equivalent risk
+// here - only size and control characters, the same two properties
+// validateRevision bounds for the same reason.
+func validateLogPath(raw string) (string, error) {
+	if raw == "" {
+		return "", nil
+	}
+	if len(raw) > maxLogPathBytes {
+		return "", fmt.Errorf("path is %d bytes, over the %d byte limit", len(raw), maxLogPathBytes)
+	}
+	for _, r := range raw {
+		if r == 0 || unicode.IsControl(r) {
+			return "", fmt.Errorf("path contains a control character, which no git tree path does")
+		}
+	}
+	return raw, nil
+}
+
+// parseSince parses git.log's optional since filter, refusing rather than
+// ignoring a value that does not parse - the same reasoning parseTimestamp
+// documents for commit_push's own timestamp input.
+func parseSince(raw string) (time.Time, error) {
+	if raw == "" {
+		return time.Time{}, nil
+	}
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("since %q is not RFC 3339: %w", raw, err)
+	}
+	return t, nil
 }
 
 // resolveUsername turns a task's raw username input into the value this

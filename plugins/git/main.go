@@ -19,7 +19,7 @@ func main() {
 	sdk.Main(sdk.Plugin{
 		Name:        "git",
 		Version:     "0.1.0",
-		Description: "Reads a remote's refs and writes a commit to a branch, over git (go-git). One activity, one write - see doc.go.",
+		Description: "Reads a remote's refs, history, and file content, and writes a commit to a branch, over git (go-git). One activity, one write - see doc.go.",
 
 		Secrets: &sdk.Secrets{
 			Schemes: []string{secretScheme},
@@ -33,6 +33,20 @@ func main() {
 				Input:   &gitv1.LsRemoteInputs{},
 				Output:  &gitv1.LsRemoteOutputs{},
 				Fn:      gitLsRemote,
+			},
+			{
+				Name:    "log",
+				Summary: "A bounded slice of a repository's commit history reachable from ref, including each commit's author, committer, message, and parents.",
+				Input:   &gitv1.LogInputs{},
+				Output:  &gitv1.LogOutputs{},
+				Fn:      gitLog,
+			},
+			{
+				Name:    "read_file",
+				Summary: "One file's content, size, mode, and whether it is binary, at one ref.",
+				Input:   &gitv1.ReadFileInputs{},
+				Output:  &gitv1.ReadFileOutputs{},
+				Fn:      gitReadFile,
 			},
 			{
 				Name:    "commit_push",
