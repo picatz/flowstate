@@ -367,5 +367,39 @@ func InputRefusalCases() []Refusal {
 			Inputs:   map[string]*v1.Value{"region": v1.NewLiteral("eu-west-1")},
 			Contains: "declares no `inputs:` at all",
 		},
+		{
+			// #204: a list-typed input with no `must:`/`unique:` declared at all —
+			// the exact gap PR #205's constraint-only bound left open, because a
+			// `for_each` or an `if:` reaches the identical CEL evaluator over the
+			// identical caller-chosen list without ever passing through a
+			// constraint check. This declaration has neither, so before the fix
+			// this list reached the workflow's steps completely unbounded; after
+			// it, BindRunInputs refuses it before anything runs.
+			Name: "an oversized list input with no declared constraint is refused",
+			Workflow: declares("inputs-unconstrained-list",
+				[]*v1.InputDeclaration{input("items", v1.InputDeclaration_TYPE_LIST, true, nil)},
+				nil,
+				&v1.Node{
+					Id: "each",
+					Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+						Items:    v1.NewExpr("inputs.items"),
+						Iterator: "item",
+						Body:     []*v1.Node{says("noop", "hi")},
+					}},
+				},
+			),
+			Inputs:   map[string]*v1.Value{"items": v1.NewLiteralList(manyInts(10_001)...)},
+			Contains: "list elements",
+		},
 	}
+}
+
+// manyInts returns n small integers as []any, for building an oversized list
+// literal without repeating the loop at every call site that needs one.
+func manyInts(n int) []any {
+	items := make([]any, n)
+	for i := range items {
+		items[i] = i
+	}
+	return items
 }
