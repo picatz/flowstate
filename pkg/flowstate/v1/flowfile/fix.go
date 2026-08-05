@@ -173,6 +173,15 @@ func fixOnce(data []byte) (FixResult, error) {
 		return FixResult{}, err
 	}
 
+	if refusal, refused := refuseUnrecognizedDocument(file); refused {
+		// Left byte for byte alone: no anchors are collected, no expression is
+		// rooted, no edition is stamped. Everything below this exists to migrate a
+		// Flowfile, and a document that is not one gets none of it — see
+		// [refuseUnrecognizedDocument] for why an edition stamp in particular is the
+		// one edit this repo cannot afford to make by mistake.
+		return FixResult{Source: data, Refusals: []Diagnostic{refusal}}, nil
+	}
+
 	f := &fixer{
 		lines:           splitLines(data),
 		trailingNewline: bytes.HasSuffix(data, []byte("\n")),
@@ -351,6 +360,190 @@ func (f *fixer) note(line, column int, format string, args ...any) {
 		Column:  column,
 		Message: fmt.Sprintf(format, args...),
 	})
+}
+
+// recognizedTopLevelKeys are the top-level keys that mark a document as one
+// `flow fix` knows how to act on.
+//
+// A Flowfile declares `steps:`. A Flowfile *test* — a `*.test.yaml` — declares
+// `tests:` instead and has no `steps:` of its own; it is in fact the file whose
+// missing `edition:` motivated this list existing at all (see issue #203). Both
+// take an edition stamp, so both belong here.
+var recognizedTopLevelKeys = []string{"steps", "tests"}
+
+// refuseUnrecognizedDocument reports whether a parsed file is something `flow
+// fix` has no business rewriting, and builds the diagnostic saying so.
+//
+// # Why a positive allowlist
+//
+// The obvious rule — refuse a document with no `steps:` — is wrong, and wrong in
+// the direction that matters: a Flowfile test has no `steps:` at all, so that
+// rule refuses to fix the one file issue #203 reports as already drifted, while
+// doing nothing to stop an edition stamp landing in an egress policy or an
+// auth/trust policy. Both of those are parsed `yaml.Strict()` specifically
+// because they are fail-closed security controls, so the added key does not
+// just look wrong — `ParseConfig` refuses to load the file afterward, silently,
+// because `flow fix` exits 0.
+//
+// So this is a positive allowlist instead: a document is recognized because it
+// declares one of [recognizedTopLevelKeys], not because it fails to look like
+// something else. A new document shape that lands in this tree tomorrow is
+// refused until someone teaches this list about it, rather than silently
+// edited the moment it appears — the same fail-closed direction every other
+// policy surface in this repo takes.
+//
+// # Why not the filename
+//
+// `.test.yaml` is a convention an author chose, not a contract the parser
+// enforces, so this reads the document's own top-level keys and never the path
+// it was read from. Deciding what a file *is* from what it is *called* is the
+// same class of mistake CLAUDE.md already records twice: the rewriter knowing
+// less about the document than the language does.
+//
+// # Why this cannot also refuse a malformed Flowfile
+//
+// The test is deliberately loose in one direction: a document need only declare
+// the key, not have it well-formed. A Flowfile with a `steps:` that is empty,
+// wrongly typed, or otherwise broken is still a Flowfile — fixing what can be
+// fixed in a file that does not yet compile is the entire point of this
+// command, and a stricter test here would start refusing the files `flow fix`
+// exists to help.
+func refuseUnrecognizedDocument(file *ast.File) (Diagnostic, bool) {
+	for _, doc := range file.Docs {
+		if doc.Body == nil {
+			continue
+		}
+
+		mapping := asMapping(doc.Body)
+		if mapping == nil {
+			return Diagnostic{
+				Line: 1, Column: 1,
+				Message: fmt.Sprintf(
+					"this document is %s at the top level, neither `steps:` (a Flowfile) nor `tests:` "+
+						"(a Flowfile test); flow fix only rewrites those, and has left it untouched",
+					describeNode(doc.Body)),
+			}, true
+		}
+
+		if hasRecognizedKey(mapping) {
+			continue
+		}
+
+		span := Span{}
+		if len(mapping.Values) > 0 {
+			span = spanOfNode(mapping.Values[0].Key)
+		}
+		line, column := 1, 1
+		if span.IsValid() {
+			line, column = span.Start.Line, span.Start.Column
+		}
+
+		return Diagnostic{
+			Line: line, Column: column,
+			Message: fmt.Sprintf(
+				"this document has neither `steps:` nor `tests:` at the top level (its own keys are %s), "+
+					"so it does not look like a Flowfile or a Flowfile test; flow fix only rewrites those, "+
+					"and has left it untouched",
+				describeTopLevelKeys(mapping)),
+		}, true
+	}
+
+	return Diagnostic{}, false
+}
+
+// LooksLikeFlowfile reports whether data's top-level document shape is one
+// [Fix] would act on: a Flowfile (`steps:`) or a Flowfile test (`tests:`),
+// using the same allowlist [refuseUnrecognizedDocument] enforces from inside
+// Fix itself.
+//
+// It exists for a caller that has to decide, before ever handing a file to
+// Fix, which files under a directory are worth sweeping — `flow fix --check`
+// walking a whole examples/ tree, say, that holds Flowfiles beside an egress
+// policy, an auth policy, and unrelated YAML (docker-compose.yaml, Grafana
+// provisioning) that were never Flowfiles to begin with. Reading the shape
+// here lets that walk select only the files this package migrates, silently,
+// rather than handing every one of them to Fix and collecting a refusal for
+// each — which is correct for a sweep but wrong for a file named explicitly,
+// which is why this is not how a named path is decided; a named path always
+// reaches Fix directly, and Fix's own refusal is what tells its author it was
+// not a Flowfile at all.
+//
+// Malformed YAML, and anything larger than [maxBytes], answers false rather
+// than erroring: a sweep silently passing over a file it cannot parse is the
+// same "not for me" answer as passing over one that parses into some other
+// shape. A caller that wants the parse error reported hands the file to Fix
+// instead, which returns it.
+//
+// Only the first document is read, matching every other place in this package
+// that a Flowfile is one document (see [Fix]'s comment on why compile assumes
+// it): a file this sweep should select is the ordinary single-document case,
+// and a multi-document oddity is exactly the kind of shape this function
+// answers false on rather than guesses about.
+func LooksLikeFlowfile(data []byte) bool {
+	if len(data) > maxBytes {
+		return false
+	}
+	file, err := parser.ParseBytes(data, 0)
+	if err != nil || len(file.Docs) == 0 || file.Docs[0].Body == nil {
+		return false
+	}
+	mapping := asMapping(file.Docs[0].Body)
+	return mapping != nil && hasRecognizedKey(mapping)
+}
+
+// asMapping returns a node as a mapping, unwrapping an anchor and normalizing
+// the single-entry shape the parser hands back for a document with one key.
+func asMapping(n ast.Node) *ast.MappingNode {
+	switch node := unwrapAnchor(n).(type) {
+	case *ast.MappingNode:
+		return node
+	case *ast.MappingValueNode:
+		return &ast.MappingNode{Values: []*ast.MappingValueNode{node}}
+	default:
+		return nil
+	}
+}
+
+// hasRecognizedKey reports whether a mapping declares one of
+// [recognizedTopLevelKeys] directly.
+//
+// A merge key is not resolved here the way [fixer.mergedDeclaresEdition] resolves
+// one for `edition:`. That method exists because failing to find a merged
+// edition would let the rewriter *downgrade* a file — stamping in a spelling it
+// should have left alone. The failure mode here runs the other way: this
+// function decides whether to touch the file at all, and "cannot tell" already
+// answers refuse, which is the safe direction regardless of what a merge might
+// be hiding.
+func hasRecognizedKey(mapping *ast.MappingNode) bool {
+	for _, v := range mapping.Values {
+		if name, ok := keyNameOf(v.Key); ok && slices.Contains(recognizedTopLevelKeys, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// describeTopLevelKeys names a mapping's own keys the way an author wrote them,
+// for a diagnostic that says what a refused document looks like instead of a
+// Flowfile.
+func describeTopLevelKeys(mapping *ast.MappingNode) string {
+	if len(mapping.Values) == 0 {
+		return "none"
+	}
+	var names []string
+	for _, v := range mapping.Values {
+		if name, ok := keyNameOf(v.Key); ok {
+			names = append(names, "`"+name+":`")
+			continue
+		}
+		if _, isMerge := v.Key.(*ast.MergeKeyNode); isMerge {
+			names = append(names, "`<<:`")
+		}
+	}
+	if len(names) == 0 {
+		return "none this can name"
+	}
+	return strings.Join(names, ", ")
 }
 
 // workflow walks a document body, rewriting its steps and its edition marker.

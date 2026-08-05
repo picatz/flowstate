@@ -21,7 +21,7 @@ check:
 		fmt_out="$$(gofmt -l $$module)"; \
 		if [ -n "$$fmt_out" ]; then echo "gofmt: $$fmt_out"; exit 1; fi; \
 	done
-	go run ./cmd/flow fix --check examples/*/workflow.yaml
+	go run ./cmd/flow fix --check examples/
 	go run ./cmd/flow test examples/
 	docker compose -f examples/observability/docker-compose.yaml config -q
 	go run ./cmd/flow docs generate && git diff --exit-code -- docs/reference/

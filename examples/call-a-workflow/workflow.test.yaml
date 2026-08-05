@@ -9,6 +9,7 @@
 # unreliable. A workflow whose callee makes a real network request would stub
 # that task exactly the same way: one `stubs:` entry, matched by task name,
 # answered wherever the call reaches it.
+edition: v2026.2
 tests:
   - name: provisioning a tenant announces where it landed
     workflow: ./workflow.yaml
