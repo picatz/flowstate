@@ -1079,6 +1079,82 @@ func TestClientPollerLeavesAnUnsetRunIDAbsent(t *testing.T) {
 	require.Nil(t, fake.gotGet.RunId, "an empty run id was sent instead of none at all")
 }
 
+// TestClientPollerFailsClosedWithNoSpec is `flow watch <id>`'s case: it asks about
+// a run it did not start, on a separate invocation from whatever did, so it never
+// holds the workflow specification that declared these outputs. CLAUDE.md's
+// fail-closed rule says the safe answer to "cannot determine" is redact, and this
+// checks the actual secret string is absent from the polled response, not merely
+// that a marker is present.
+func TestClientPollerFailsClosedWithNoSpec(t *testing.T) {
+	fake := &fakeWorkflowService{
+		getResponse: &v1.GetResponse{
+			Status: v1.RunResponse_STATUS_COMPLETED,
+			RunOutputs: &v1.RunOutputs{Values: map[string]*v1.Value{
+				"token": v1.NewLiteral("shh-do-not-print-me"),
+			}},
+		},
+	}
+	address := serveFake(t, fake)
+
+	got, err := clientPoller{
+		workflowID: "flowstate-workflow-3f7c",
+		server:     serverFlags{address: address},
+	}.Poll(t.Context())
+	require.NoError(t, err)
+
+	require.NotContains(t, got.GetRunOutputs().GetValues()["token"].GetLiteral().GetStringValue(),
+		"shh-do-not-print-me")
+	require.Equal(t, "[redacted: token]",
+		got.GetRunOutputs().GetValues()["token"].GetLiteral().GetStringValue())
+}
+
+// TestClientPollerRevealsWithFlagAndPrecisionWithSpec checks both non-default
+// paths: reveal defeats redaction, and a poller holding the specification `flow
+// run` just submitted redacts only what it declared sensitive, leaving the rest —
+// the non-regression direction — untouched.
+func TestClientPollerRevealsWithFlagAndPrecisionWithSpec(t *testing.T) {
+	fake := &fakeWorkflowService{
+		getResponse: &v1.GetResponse{
+			Status: v1.RunResponse_STATUS_COMPLETED,
+			RunOutputs: &v1.RunOutputs{Values: map[string]*v1.Value{
+				"token": v1.NewLiteral("shh-do-not-print-me"),
+				"url":   v1.NewLiteral("https://example.com/build/12"),
+			}},
+		},
+	}
+	address := serveFake(t, fake)
+
+	spec := &v1.Workflow{
+		DeclaredOutputs: []*v1.OutputDeclaration{
+			{Name: "token", Sensitive: true},
+			{Name: "url"},
+		},
+	}
+
+	got, err := clientPoller{
+		workflowID: "flowstate-workflow-3f7c",
+		server:     serverFlags{address: address},
+		spec:       spec,
+	}.Poll(t.Context())
+	require.NoError(t, err)
+
+	require.Equal(t, "[redacted: token]",
+		got.GetRunOutputs().GetValues()["token"].GetLiteral().GetStringValue())
+	require.Equal(t, "https://example.com/build/12",
+		got.GetRunOutputs().GetValues()["url"].GetLiteral().GetStringValue(),
+		"a value the specification did not mark sensitive must render unchanged")
+
+	revealed, err := clientPoller{
+		workflowID: "flowstate-workflow-3f7c",
+		server:     serverFlags{address: address},
+		reveal:     true,
+	}.Poll(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, "shh-do-not-print-me",
+		revealed.GetRunOutputs().GetValues()["token"].GetLiteral().GetStringValue(),
+		"--reveal-sensitive must show the real value even with no specification in hand")
+}
+
 // TestClientPollerDoesNotWaitForeverOnAStalledServer is the regression test for a
 // bound that could never start.
 //

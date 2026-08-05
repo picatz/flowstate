@@ -118,6 +118,19 @@ func BindRunInputs(wf *Workflow, submitted map[string]*Value) (map[string]*Value
 		if err := CheckInputValue(name, declaration, value); err != nil {
 			return nil, err
 		}
+
+		// #204 found the element bound was gated on a declaration carrying
+		// `must:`/`unique:`, so a list-typed (or struct-typed, carrying a
+		// nested list) input with *no* constraint declared reached `if:`,
+		// `for_each`, and every other CEL expression over it exactly as
+		// unbounded. [CheckInputConstraints] now applies
+		// [checkInputListElementBound] unconditionally, before its `must:`
+		// check, to every literal it is handed — which closes the gap here
+		// and, by the same call, at a literal `default:`/`example:` and a
+		// call boundary's literal `with:` argument, since all of those reach
+		// the identical function. See [checkInputListElementBound] and
+		// [maxListElements] for the resource, the reused walker, and why the
+		// limit is what it is.
 		if err := CheckInputConstraints(name, declaration, value); err != nil {
 			return nil, err
 		}

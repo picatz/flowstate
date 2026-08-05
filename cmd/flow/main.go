@@ -432,8 +432,16 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 	interval, _ := cmd.Flags().GetDuration("interval")
 	plain, _ := cmd.Flags().GetBool("plain")
 
+	// Unlike `flow watch` on a later invocation, `flow run` just parsed and
+	// submitted workflow itself, so the poller redacts precisely against its
+	// own declarations instead of falling back to the fail-closed case.
+	reveal := revealSensitiveRequested(cmd)
+	if reveal {
+		noteRevealedSensitiveValues(surface)
+	}
+
 	return watchRun(cmd.Context(), surface, format,
-		clientPoller{workflowID: workflowID, server: serverFlagsOf(cmd)},
+		clientPoller{workflowID: workflowID, server: serverFlagsOf(cmd), spec: workflow, reveal: reveal},
 		clampWatchInterval(interval), plain, workflowID, startedRun(started.Msg))
 }
 
@@ -1380,7 +1388,7 @@ flow run local examples/hello-world/workflow.yaml | jq .stepValues.hello.namedVa
 flow run local examples/hello-world/workflow.yaml -o json | jq -r .status
 
 # Run a workflow with an approval gate, answering the gate up front:
-flow run local examples/approval-gate/workflow.yaml --signal deploy-approved='{"approved": true}'
+flow run local examples/approval-gate/workflow.yaml --input-file examples/approval-gate/inputs.json --signal deploy-approved='{"approved": true}'
 
 # Run a workflow that takes arguments, and read what it answered with:
 flow run local examples/computed-outputs/workflow.yaml --input release=2026.9.0 -o json | jq .runOutputs`,
@@ -1388,6 +1396,7 @@ flow run local examples/computed-outputs/workflow.yaml --input release=2026.9.0 
 
 	addOutputFlag(runLocalCmd)
 	addInputFlags(runLocalCmd)
+	addRevealSensitiveFlag(runLocalCmd)
 
 	// Supplying signals up front is what makes an approval gate something an author
 	// can exercise on their laptop rather than first meeting in production. A local
@@ -1560,6 +1569,7 @@ flow get flowstate-workflow-3f7c --run-id 0198f1e2-...`,
 	}
 
 	addOutputFlag(getCmd)
+	addRevealSensitiveFlag(getCmd)
 
 	getCmd.Flags().String("run-id", "",
 		"ask about one attempt of the workload; unset asks about whichever is current")
@@ -1588,7 +1598,7 @@ flow signal deploy-abc123 deploy-approved --data '{"approved": false}'
 flow signal deploy-abc123 deploy-approved
 
 # Answer the same gate on a local run, which is given its answers up front:
-flow run local examples/approval-gate/workflow.yaml --signal deploy-approved='{"approved": true}'`,
+flow run local examples/approval-gate/workflow.yaml --input-file examples/approval-gate/inputs.json --signal deploy-approved='{"approved": true}'`,
 	}
 
 	signalCmd.Flags().String("data", "",

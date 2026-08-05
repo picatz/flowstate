@@ -260,6 +260,32 @@ inputs:
 			want: `is declared int but was given string`,
 		},
 		{
+			// #206's first finding: a min_items above the server-wide element cap
+			// (10,000) can never be satisfied, since every list over 10,000 is
+			// refused before this constraint runs. Caught by flow validate the same
+			// way min_items > max_items already is.
+			name: "min_items above the server-wide element cap is reported",
+			src: `
+inputs:
+  records:
+    type: list
+    min_items: 10001
+`,
+			want: "min_items (10001) is greater than 10000",
+		},
+		{
+			// #206's second finding: a literal default over the element cap used to
+			// pass flow validate and only fail once BindRunInputs saw it at submit.
+			src: `
+inputs:
+  records:
+    type: list
+    default: [` + strings.Repeat("0, ", 10_000) + `0]
+`,
+			name: "a literal default over the server-wide element cap is reported",
+			want: "list elements",
+		},
+		{
 			name: "an undeclared input reference is reported",
 			src: `
 inputs:

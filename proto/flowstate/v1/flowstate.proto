@@ -474,9 +474,7 @@ message InputDeclaration {
   // Sensitive marks a value as private but not secret: a salary in an approval, a
   // customer's email — something a run legitimately computes on and that
   // legitimately rides in history, but that should not be casually pasted into a
-  // terminal, a log, or an agent's answer. A view renders `[redacted: <name>]` by
-  // default with an explicit reveal, and a machine output includes the value only
-  // when asked for it.
+  // terminal, a log, or an agent's answer.
   //
   // This is display etiquette and nothing more. It is not containment: the value
   // is an ordinary part of the run's history exactly like any other input, and
@@ -486,6 +484,19 @@ message InputDeclaration {
   // it — that is containment, and this is not it. Marking sensitive a value that
   // must never reach an operator's screen at all is a mistake; that value is a
   // secret reference, not this.
+  //
+  // # What this currently does on an *input*, precisely
+  //
+  // Nothing yet, and saying so is the point: a flag documented to redact, that
+  // does not, is worse than no flag, because it is trusted. Declared *outputs*
+  // are redacted everywhere Flowstate renders them; an input is not, because
+  // there is currently only one surface that renders a bound input value at all
+  // — `flow schedule describe` — and [ScheduleDescription] carries the
+  // workflow's *name* rather than its specification, so nothing on that path can
+  // tell which of a schedule's inputs were declared sensitive. Whoever closes
+  // that decides where the redaction belongs: almost certainly the server, which
+  // is the only party that holds both the schedule and the spec. Tracked at
+  // https://github.com/picatz/flowstate/issues/211.
   bool sensitive = 7;
 
   // Pattern is an RE2 regular expression a `type: string` value must fully

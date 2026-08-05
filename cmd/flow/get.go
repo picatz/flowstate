@@ -50,7 +50,17 @@ func runGet(cmd *cobra.Command, args []string) error {
 		return refusedRun("reading", workflowID, server, err)
 	}
 
-	msg := response.Msg
+	// `flow get` asks about a run by id alone, on a separate invocation from
+	// whatever started it — it never holds the workflow specification that
+	// declared which of these outputs are sensitive. That is exactly the
+	// fail-closed case [redactGetResponse] documents: workflow is nil, so every
+	// declared output is withheld unless --reveal-sensitive asked otherwise.
+	reveal := revealSensitiveRequested(cmd)
+	if reveal {
+		noteRevealedSensitiveValues(surface)
+	}
+
+	msg := redactGetResponse(response.Msg, nil, reveal)
 
 	// A machine reader gets the whole answer as one document — status, both ids,
 	// outputs, and the failure if there was one — rather than the outputs alone

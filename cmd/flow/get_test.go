@@ -43,6 +43,7 @@ func getCommand(t *testing.T) (*cobra.Command, *strings.Builder, *strings.Builde
 	cmd.Flags().String("run-id", "", "")
 	addOutputFlag(cmd)
 	addServerFlags(cmd)
+	addRevealSensitiveFlag(cmd)
 	cmd.SetContext(t.Context())
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)
@@ -112,6 +113,12 @@ func TestGetReportsWhatTheRunAnswered(t *testing.T) {
 	serveFake(t, fake)
 	cmd, out, errOut := getCommand(t)
 
+	// `flow get` asks about a run by id alone and never holds the workflow
+	// specification that declared these outputs, so it fails closed by
+	// default (see TestGetRedactsRunOutputsByDefault) — --reveal-sensitive is
+	// what this test's own subject (that a value is written as itself) needs.
+	require.NoError(t, cmd.Flags().Set(revealSensitiveFlagName, "true"))
+
 	require.NoError(t, runGet(cmd, []string{"flowstate-workflow-3f7c"}))
 
 	require.Contains(t, errOut.String(), "outputs", "the run's declared outputs were not named")
@@ -124,6 +131,202 @@ func TestGetReportsWhatTheRunAnswered(t *testing.T) {
 		"the human section was written to stdout, where the answer document lives")
 	require.Contains(t, out.String(), `"deploy"`,
 		"the transcript stopped being written when the answer started being")
+}
+
+// TestGetRedactsRunOutputsByDefault is the fail-closed case CLAUDE.md's "fail
+// closed" section requires: `flow get` never holds the workflow specification
+// that declared these outputs, so it cannot determine which of them, if any, are
+// `sensitive: true` — and the safe answer to "cannot determine" is to redact, not
+// to reveal. This holds even for a value nothing ever declared sensitive, which is
+// the whole point: without a specification in hand there is no "non-sensitive" to
+// tell it apart from.
+//
+// The actual secret string must be absent from the rendered bytes, on both
+// streams — not merely a marker present, which is a different and weaker
+// assertion that a value printed twice could still satisfy.
+func TestGetRedactsRunOutputsByDefault(t *testing.T) {
+	fake := &fakeWorkflowService{
+		getResponse: &v1.GetResponse{
+			WorkflowId: "flowstate-workflow-3f7c",
+			RunId:      "0198f1e2-0000-7000-8000-000000000000",
+			Status:     v1.RunResponse_STATUS_COMPLETED,
+			Kind: &v1.GetResponse_Outputs{
+				Outputs: &v1.Workflow_StepOutputs{
+					RunOutputs: &v1.RunOutputs{Values: map[string]*v1.Value{
+						"url": v1.NewLiteral("https://example.com/build/12"),
+					}},
+				},
+			},
+			RunOutputs: &v1.RunOutputs{Values: map[string]*v1.Value{
+				"url": v1.NewLiteral("https://example.com/build/12"),
+			}},
+		},
+	}
+	serveFake(t, fake)
+	cmd, out, errOut := getCommand(t)
+
+	require.NoError(t, runGet(cmd, []string{"flowstate-workflow-3f7c"}))
+
+	require.NotContains(t, errOut.String(), "https://example.com/build/12",
+		"the real value must not appear on stderr when no specification could vouch for it")
+	require.NotContains(t, out.String(), "https://example.com/build/12",
+		"the real value must not appear on stdout either — machine output is not exempt")
+	require.Contains(t, errOut.String(), "[redacted: url]",
+		"the honest marker the schema promises should say which output was withheld")
+}
+
+// TestGetRedactsStepTranscriptForStepComputedSensitiveOutput is the Codex finding
+// on PR #212, exercised through the actual CLI verb rather than the helper
+// directly: `flow get` never holds a workflow specification, so a value fed to a
+// declared output through a step — `outputs.token.value: ${steps.fetch.token}`
+// with `sensitive: true` — used to render in the clear in the step transcript
+// even though the same value was withheld at the name it surfaced under in
+// `run_outputs`. Both streams and the machine format are checked, because a
+// person reading stderr, a person reading stdout, and a program reading JSON are
+// three different readers this bug reached.
+func TestGetRedactsStepTranscriptForStepComputedSensitiveOutput(t *testing.T) {
+	newFake := func() *fakeWorkflowService {
+		return &fakeWorkflowService{
+			getResponse: &v1.GetResponse{
+				WorkflowId: "flowstate-workflow-3f7c",
+				RunId:      "0198f1e2-0000-7000-8000-000000000000",
+				Status:     v1.RunResponse_STATUS_COMPLETED,
+				Kind: &v1.GetResponse_Outputs{
+					Outputs: &v1.Workflow_StepOutputs{
+						RunOutputs: &v1.RunOutputs{Values: map[string]*v1.Value{
+							"token": v1.NewLiteral("sk-live-0123456789abcdef"),
+						}},
+						StepValues: map[string]*v1.Node_Outputs{
+							"fetch": {NamedValues: map[string]*v1.Value{
+								"token": v1.NewLiteral("sk-live-0123456789abcdef"),
+							}},
+						},
+					},
+				},
+				RunOutputs: &v1.RunOutputs{Values: map[string]*v1.Value{
+					"token": v1.NewLiteral("sk-live-0123456789abcdef"),
+				}},
+			},
+		}
+	}
+
+	t.Run("text", func(t *testing.T) {
+		fake := newFake()
+		serveFake(t, fake)
+		cmd, out, errOut := getCommand(t)
+
+		require.NoError(t, runGet(cmd, []string{"flowstate-workflow-3f7c"}))
+
+		require.NotContains(t, errOut.String(), "sk-live-0123456789abcdef",
+			"the real value must not appear on stderr's outputs summary")
+		require.NotContains(t, out.String(), "sk-live-0123456789abcdef",
+			"the real value must not appear in the step transcript on stdout — this is the Codex gap")
+		require.Contains(t, out.String(), `"fetch"`,
+			"the step still ran and the transcript should say so, only with the value withheld")
+	})
+
+	t.Run("json", func(t *testing.T) {
+		fake := newFake()
+		serveFake(t, fake)
+		cmd, out, _ := getCommand(t)
+		require.NoError(t, cmd.Flags().Set("output", "json"))
+
+		require.NoError(t, runGet(cmd, []string{"flowstate-workflow-3f7c"}))
+
+		require.NotContains(t, out.String(), "sk-live-0123456789abcdef",
+			"a machine reader must not recover the value from the step transcript either")
+	})
+}
+
+// TestGetRevealSensitiveShowsValues checks the one deliberate escape hatch:
+// --reveal-sensitive shows the real value, and a stderr note records that it was
+// used.
+func TestGetRevealSensitiveShowsValues(t *testing.T) {
+	fake := &fakeWorkflowService{
+		getResponse: &v1.GetResponse{
+			WorkflowId: "flowstate-workflow-3f7c",
+			RunId:      "0198f1e2-0000-7000-8000-000000000000",
+			Status:     v1.RunResponse_STATUS_COMPLETED,
+			Kind: &v1.GetResponse_Outputs{
+				Outputs: &v1.Workflow_StepOutputs{
+					RunOutputs: &v1.RunOutputs{Values: map[string]*v1.Value{
+						"url": v1.NewLiteral("https://example.com/build/12"),
+					}},
+				},
+			},
+			RunOutputs: &v1.RunOutputs{Values: map[string]*v1.Value{
+				"url": v1.NewLiteral("https://example.com/build/12"),
+			}},
+		},
+	}
+	serveFake(t, fake)
+	cmd, _, errOut := getCommand(t)
+	require.NoError(t, cmd.Flags().Set(revealSensitiveFlagName, "true"))
+
+	require.NoError(t, runGet(cmd, []string{"flowstate-workflow-3f7c"}))
+
+	require.Contains(t, errOut.String(), "https://example.com/build/12",
+		"--reveal-sensitive must show the real value")
+	require.Contains(t, errOut.String(), "--reveal-sensitive",
+		"revealing a declared-sensitive value should leave a note on stderr recording it was asked for")
+}
+
+// TestGetJSONOutputRedactsToo is the requirement that machine-readable output is
+// redacted by default exactly as the human form is: JSON is what gets piped into
+// logs and CI artifacts, which is precisely where a value should not land because
+// somebody assumed only the human form needed protecting.
+func TestGetJSONOutputRedactsToo(t *testing.T) {
+	fake := &fakeWorkflowService{
+		getResponse: &v1.GetResponse{
+			WorkflowId: "flowstate-workflow-3f7c",
+			RunId:      "0198f1e2-0000-7000-8000-000000000000",
+			Status:     v1.RunResponse_STATUS_COMPLETED,
+			Kind: &v1.GetResponse_Outputs{
+				Outputs: &v1.Workflow_StepOutputs{
+					RunOutputs: &v1.RunOutputs{Values: map[string]*v1.Value{
+						"url": v1.NewLiteral("https://example.com/build/12"),
+					}},
+				},
+			},
+			RunOutputs: &v1.RunOutputs{Values: map[string]*v1.Value{
+				"url": v1.NewLiteral("https://example.com/build/12"),
+			}},
+		},
+	}
+	serveFake(t, fake)
+	cmd, out, _ := getCommand(t)
+	require.NoError(t, cmd.Flags().Set("output", "json"))
+
+	require.NoError(t, runGet(cmd, []string{"flowstate-workflow-3f7c"}))
+
+	require.NotContains(t, out.String(), "https://example.com/build/12",
+		"a machine reader must not recover the value a human reader is denied")
+	require.Contains(t, out.String(), "[redacted: url]")
+}
+
+// TestGetNonSensitiveInputUnaffected is the non-regression direction on a surface
+// that *does* have a specification to consult: with none of the workflow's
+// outputs declared sensitive, redaction must not appear at all. `flow get` itself
+// has no specification (see TestGetRedactsRunOutputsByDefault for that surface's
+// own fail-closed default); this exercises the shared helper the way a caller
+// that does hold one uses it.
+func TestGetNonSensitiveInputUnaffected(t *testing.T) {
+	workflow := &v1.Workflow{
+		DeclaredOutputs: []*v1.OutputDeclaration{
+			{Name: "url"},
+		},
+	}
+	response := &v1.GetResponse{
+		RunOutputs: &v1.RunOutputs{Values: map[string]*v1.Value{
+			"url": v1.NewLiteral("https://example.com/build/12"),
+		}},
+	}
+
+	redacted := redactGetResponse(response, workflow, false)
+
+	require.Equal(t, "https://example.com/build/12",
+		redacted.GetRunOutputs().GetValues()["url"].GetLiteral().GetStringValue(),
+		"a value nothing declared sensitive must render unchanged")
 }
 
 // TestGetOnARunningRunProducesNoOutputs checks the honest answer to "what did it
