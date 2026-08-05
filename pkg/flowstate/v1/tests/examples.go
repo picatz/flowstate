@@ -105,11 +105,25 @@ func ExampleInputs(workflowPath string) (map[string]*v1.Value, error) {
 	inputs := make(map[string]*v1.Value, len(fields))
 	for name, value := range fields {
 		if number, ok := value.(json.Number); ok {
-			whole, err := number.Int64()
-			if err != nil {
-				return nil, fmt.Errorf("input %q is not a whole number: %w", name, err)
+			// Read as written, the same rule ExampleInputs's own doc comment
+			// states: a whole number is an int declaration's argument, and one
+			// with a fraction is a float declaration's — `482.50` for an
+			// `amount:` input has to survive this decode as a float rather than
+			// being refused, the same way a caller's own `--input amount=482.50`
+			// does through cmd/flow's parser. This harness does not see the
+			// declaration to disambiguate a *whole* float from an int the way
+			// that parser does, so a whole number stays int64 here; only a
+			// fractional one is read as a float.
+			if whole, err := number.Int64(); err == nil {
+				inputs[name] = v1.NewLiteral(whole)
+
+				continue
 			}
-			inputs[name] = v1.NewLiteral(whole)
+			f, err := number.Float64()
+			if err != nil {
+				return nil, fmt.Errorf("input %q is not a number this harness can read: %w", name, err)
+			}
+			inputs[name] = v1.NewLiteral(f)
 
 			continue
 		}

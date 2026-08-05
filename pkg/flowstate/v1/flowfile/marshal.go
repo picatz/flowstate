@@ -580,6 +580,43 @@ func declaredInputsToYAML(declarations []*v1.InputDeclaration) (yaml.MapSlice, e
 		if declaration.Description != nil {
 			entry = append(entry, yaml.MapItem{Key: "description", Value: declaration.GetDescription()})
 		}
+		if declaration.GetExample() != nil {
+			value, err := inputValueToYAML(declaration.GetExample())
+			if err != nil {
+				return nil, fmt.Errorf("input %q example: %w", declaration.GetName(), err)
+			}
+			entry = append(entry, yaml.MapItem{Key: "example", Value: value})
+		}
+		if declaration.GetSensitive() {
+			entry = append(entry, yaml.MapItem{Key: "sensitive", Value: true})
+		}
+		if declaration.Pattern != nil {
+			entry = append(entry, yaml.MapItem{Key: "pattern", Value: declaration.GetPattern()})
+		}
+		if declaration.MinLen != nil {
+			entry = append(entry, yaml.MapItem{Key: "min_len", Value: declaration.GetMinLen()})
+		}
+		if declaration.MaxLen != nil {
+			entry = append(entry, yaml.MapItem{Key: "max_len", Value: declaration.GetMaxLen()})
+		}
+		if declaration.Min != nil {
+			entry = append(entry, yaml.MapItem{Key: "min", Value: declaration.GetMin()})
+		}
+		if declaration.Max != nil {
+			entry = append(entry, yaml.MapItem{Key: "max", Value: declaration.GetMax()})
+		}
+		if declaration.MinItems != nil {
+			entry = append(entry, yaml.MapItem{Key: "min_items", Value: declaration.GetMinItems()})
+		}
+		if declaration.MaxItems != nil {
+			entry = append(entry, yaml.MapItem{Key: "max_items", Value: declaration.GetMaxItems()})
+		}
+		if declaration.GetUnique() {
+			entry = append(entry, yaml.MapItem{Key: "unique", Value: true})
+		}
+		if declaration.Must != nil {
+			entry = append(entry, yaml.MapItem{Key: "must", Value: declaration.GetMust()})
+		}
 
 		out = append(out, yaml.MapItem{Key: declaration.GetName(), Value: entry})
 	}
@@ -600,6 +637,12 @@ func declaredOutputsToYAML(declarations []*v1.OutputDeclaration) (yaml.MapSlice,
 		entry := yaml.MapSlice{{Key: "value", Value: value}}
 		if declaration.Description != nil {
 			entry = append(entry, yaml.MapItem{Key: "description", Value: declaration.GetDescription()})
+		}
+		if declaration.Must != nil {
+			entry = append(entry, yaml.MapItem{Key: "must", Value: declaration.GetMust()})
+		}
+		if declaration.GetSensitive() {
+			entry = append(entry, yaml.MapItem{Key: "sensitive", Value: true})
 		}
 
 		out = append(out, yaml.MapItem{Key: declaration.GetName(), Value: entry})

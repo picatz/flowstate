@@ -419,6 +419,35 @@ func (c *compiler) integer(n ast.Node, path string, r ref, low, high int64) (int
 	return int32(value), true
 }
 
+// unsignedWhole reads a non-negative whole number, for the schema's uint64
+// bound fields — min_len, max_len, min_items, max_items — where a fraction or
+// a negative count is a mistake worth naming rather than truncating.
+func (c *compiler) unsignedWhole(n ast.Node, path string, r ref) (uint64, bool) {
+	n = c.resolve(n, path, r)
+	if n == nil {
+		return 0, false
+	}
+	c.pos.record(path, spanOfNode(n))
+
+	number, ok := n.(*ast.IntegerNode)
+	if !ok {
+		c.report(spanOfNode(n), r, "must be a whole number, but %s was written here", describeNode(n))
+		return 0, false
+	}
+
+	switch v := number.Value.(type) {
+	case uint64:
+		return v, true
+	case int64:
+		if v < 0 {
+			c.report(spanOfNode(n), r, "must not be negative, but %d was written here", v)
+			return 0, false
+		}
+		return uint64(v), true
+	}
+	return 0, false
+}
+
 // number reads a value the schema types as a floating-point number, accepting the
 // whole numbers YAML would otherwise give a different type.
 func (c *compiler) number(n ast.Node, path string, r ref) (float64, bool) {

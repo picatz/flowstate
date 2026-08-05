@@ -17,13 +17,13 @@ description: >-
 # file run durably can lose the worker mid-loop and pick the next record up
 # on whatever worker replaces it, `max_parallel` and all.
 #
-#   flow run local examples/data-enrichment/workflow.yaml -o json | jq .runOutputs
+#   flow run local examples/data-enrichment/workflow.yaml --input-file examples/data-enrichment/inputs.json -o json | jq .runOutputs
 #
 # Run it durably instead — against a worker and a server rather than in this
 # process — and the loop survives losing that worker mid-batch, the same
 # file and the same policy, resumed on whatever worker replaces it:
 #
-#   flow run examples/data-enrichment/workflow.yaml
+#   flow run examples/data-enrichment/workflow.yaml --input-file examples/data-enrichment/inputs.json
 #
 # (needs `flow server` and `flow worker` running; see the main README's
 # Quickstart)
@@ -42,9 +42,15 @@ description: >-
 #   flow run local examples/data-enrichment/workflow.yaml --input records='["alpha","beta"]'
 
 inputs:
+  # A worklist is a batch, the same shape as an expense report's requester:
+  # there is no sensible absent value for "which records", only a
+  # representative one to paste — so this is required, with the example
+  # above still the value the CI harness (and the commands above) run with.
   records:
     type: list
-    default: [alpha, beta, gamma, flagged]
+    required: true
+    example: [alpha, beta, gamma, flagged]
+    min_items: 1
     description: identifiers to enrich
 
 steps:

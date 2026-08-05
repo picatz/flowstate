@@ -32,8 +32,10 @@ import (
 // segment saw. Re-deriving them per segment would let a declaration edited between
 // deploys change an argument underneath a run in flight.
 
-// BindRunInputs checks a run's submitted arguments against what the workflow
-// declares and returns the values the run will actually see.
+// BindRunInputs validates a workflow's declarations — both its declared
+// inputs' shapes and its declared outputs' `must:` shapes — and checks a
+// run's submitted arguments against what the workflow declares, returning
+// the values the run will actually see.
 //
 // The returned map holds one entry per declaration the run has a value for:
 // whatever the caller supplied, or the declaration's default where they supplied
@@ -43,7 +45,27 @@ import (
 //
 // Every failure names the input it is about and what to do instead, because these
 // are read by a person running a command as often as by a program.
+//
+// The output-declaration check runs first, before a single input is bound and
+// well before any step executes, because this is the one function every
+// submit path already calls: the server binds through it at both `Run` and
+// `CreateSchedule`, and `flow run local` reaches it before its first step —
+// the same "one function, two callers" shape this file's package doc
+// describes for inputs. Without this, a hand-built [Workflow] that never
+// passed through `flow validate` — the parser calls
+// [CheckOutputConstraintShape] itself, but only there — has its output
+// `must:` compiled for the first time inside [EvalRunOutputs], after every
+// step has already run and produced whatever side effects it has. Checking
+// the shape here, before execution starts, is what turns a malformed output
+// `must:` into a submission refused rather than a result discovered too late
+// to matter.
 func BindRunInputs(wf *Workflow, submitted map[string]*Value) (map[string]*Value, error) {
+	for _, declaration := range wf.GetDeclaredOutputs() {
+		if err := CheckOutputConstraintShape(declaration); err != nil {
+			return nil, err
+		}
+	}
+
 	declared := make(map[string]*InputDeclaration, len(wf.GetDeclaredInputs()))
 	for _, declaration := range wf.GetDeclaredInputs() {
 		declared[declaration.GetName()] = declaration
@@ -65,6 +87,17 @@ func BindRunInputs(wf *Workflow, submitted map[string]*Value) (map[string]*Value
 	for _, declaration := range wf.GetDeclaredInputs() {
 		name := declaration.GetName()
 
+		// Checked before anything below reads a value: "rules compile when
+		// configuration loads, not when a request arrives" applies here even
+		// though there is no separate load moment for a hand-built specification
+		// — this is the earliest point every caller reaches, so it is where the
+		// fail-closed rule is enforced for one. `flow validate` runs the
+		// identical check earlier still, against a position, for a file that
+		// went through the compiler.
+		if err := CheckInputConstraintShape(declaration); err != nil {
+			return nil, err
+		}
+
 		value, supplied := submitted[name]
 		if !supplied {
 			switch {
@@ -83,6 +116,9 @@ func BindRunInputs(wf *Workflow, submitted map[string]*Value) (map[string]*Value
 		// hand: `flow validate` refuses a mistyped default in a Flowfile, and this is
 		// what refuses one in a message that never was a Flowfile.
 		if err := CheckInputValue(name, declaration, value); err != nil {
+			return nil, err
+		}
+		if err := CheckInputConstraints(name, declaration, value); err != nil {
 			return nil, err
 		}
 
@@ -104,7 +140,36 @@ func CheckInputDefault(declaration *InputDeclaration) error {
 		return nil
 	}
 
-	return CheckInputValue(declaration.GetName(), declaration, declaration.GetDefault())
+	if err := CheckInputValue(declaration.GetName(), declaration, declaration.GetDefault()); err != nil {
+		return err
+	}
+
+	return CheckInputConstraints(declaration.GetName(), declaration, declaration.GetDefault())
+}
+
+// CheckInputExample reports whether a declaration's example is a literal of
+// the declared type that satisfies the declaration's own constraints.
+//
+// Exported for the same reason [CheckInputDefault] is, and checked the same
+// way: an example is part of the specification too, so a stale one — a
+// `must:` tightened after the example was written, a type changed underneath
+// it — is a defect in the file rather than something a reader discovers by
+// noticing it lied. Never bound to a run: [BindRunInputs] never reads this
+// field, which is the whole difference between an example and a default.
+func CheckInputExample(declaration *InputDeclaration) error {
+	if declaration.GetExample() == nil {
+		return nil
+	}
+
+	if err := CheckInputValue(declaration.GetName(), declaration, declaration.GetExample()); err != nil {
+		return fmt.Errorf("example: %w", err)
+	}
+
+	if err := CheckInputConstraints(declaration.GetName(), declaration, declaration.GetExample()); err != nil {
+		return fmt.Errorf("example: %w", err)
+	}
+
+	return nil
 }
 
 // CheckInputValue refuses a value that is not a literal of the declared type.

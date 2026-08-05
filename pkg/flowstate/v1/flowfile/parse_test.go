@@ -897,6 +897,42 @@ steps:
       message: hi
 `,
 		},
+		{
+			name: "input constraints, example and sensitive",
+			src: `edition: v2026.2
+name: constrained
+inputs:
+  email:
+    type: string
+    required: true
+    example: someone@example.com
+    sensitive: true
+    pattern: ^[^@]+@[^@]+$
+    min_len: 3
+    max_len: 128
+  replicas:
+    type: int
+    default: 1
+    min: 1
+    max: 50
+  regions:
+    type: list
+    required: true
+    example: [us-east-1]
+    min_items: 1
+    max_items: 10
+    unique: true
+outputs:
+  tracking:
+    value: ${inputs.email}
+    must: this != ""
+    sensitive: true
+steps:
+  - id: a
+    log:
+      message: ${inputs.email}
+`,
+		},
 	}
 
 	for _, tt := range tests {

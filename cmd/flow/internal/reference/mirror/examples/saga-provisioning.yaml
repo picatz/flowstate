@@ -6,9 +6,11 @@
 # it compiles. What is worth seeing is the other half — what the run leaves behind
 # when a step in the middle of it cannot be made to work.
 #
-# Run it and read the last line of the failure:
+# Run it and read the last line of the failure — `tenant:` is required, so one
+# of `--input tenant=acme` or `--input-file` naming the inputs.json beside this
+# file is needed, the same way `parameterized-deploy` needs `service:`:
 #
-#     flow run local examples/saga-provisioning/workflow.yaml
+#     flow run local examples/saga-provisioning/workflow.yaml --input tenant=acme
 #     ...
 #     step "attach": task "http" failed (Upstream): ... ; compensation ran in
 #     reverse order: undid "volume", undid "network"
@@ -34,9 +36,13 @@ name: saga-provisioning
 description: Provision a tenant, fail partway, and undo what already succeeded.
 
 inputs:
+  # No sensible absent value — "which tenant" always names one, the same shape
+  # as expense-approval's requester — so this is required, with an `example:`
+  # to paste rather than a `default:` implying one tenant is the ordinary one.
   tenant:
     type: string
-    default: acme
+    required: true
+    example: acme
     description: which tenant is being provisioned
 
 steps:

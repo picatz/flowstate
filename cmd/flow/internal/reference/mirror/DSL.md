@@ -2312,6 +2312,35 @@ derived from the descriptor), declared outputs are reported as `runOutputs` by
 `check:`, `env.Check` in the LSP, typed hover, and the `secret:` taint — the rest
 of this phase, not the tail of this item.
 
+*Since written, again:* **scalar constraints landed on `InputDeclaration` and
+`OutputDeclaration` ahead of #177's message types, per that issue's own
+re-sequencing.** `InputDeclaration` gained a declarative standard-rule vocabulary
+mapped 1:1 onto `buf.validate`'s own names — `pattern`, `min_len`, `max_len` for a
+string, `min`/`max` for an int or float, `min_items`/`max_items`/`unique` for a
+list — plus `must:`, a CEL predicate over `this` kept strictly as the escape hatch
+the standard rules exist to make unnecessary for the common case. Both messages
+gained `must:`; `InputDeclaration` additionally gained `example:` (illustrative,
+never applied at runtime, checked against the declaration's own type and
+constraints at compile so a stale example is a diagnostic) and `sensitive:`
+(display etiquette — not containment, and the docs say so plainly — for a view to
+redact by default). Enforced at every surface the design named: statically on a
+literal at author time (`flow validate`, with a position), at submit through
+`BindRunInputs` (the primary fail-closed gate), at a `call:` boundary's `with:`
+argument, and on a declared output's own computed value before it is reported —
+one function per concern (`pkg/flowstate/v1/constraints.go`), read from all four.
+`must:` is cost-bounded through the same `Evaluator` every other expression in
+this schema uses, and refuses `now` and any other nondeterministic reference with
+a positioned diagnostic naming why, so both drivers and replay agree on what was
+ever valid. The examples portfolio was swept accordingly: an input with no
+sensible absent value (a requester, an amount, an order id, a tenant name, a
+worklist) is now
+required with an `example:` rather than defaulting to one specific value, and the
+CI harness binds those examples from `inputs.json` beside the workflow the same
+way `parameterized-deploy` always has. What remains open from this slice: message
+types themselves (#177 proper, which this now inherits a tested constraint layer
+into) and the render half of `sensitive:` in the CLI's own views, which sits
+outside the schema and compiler this section describes.
+
 One limit worth writing down where the spelling is, because it is not obvious from
 the blocks: the workflow-level `vars:` block cannot read `${inputs.<name>}`. Vars
 are evaluated once before the first step, against a scope holding literals,

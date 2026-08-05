@@ -1,7 +1,10 @@
 package flowstatev1_test
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -102,4 +105,76 @@ func TestADefaultThatIsMistypedIsRefusedAtSubmitToo(t *testing.T) {
 	_, err := v1.BindRunInputs(spec, nil)
 	require.Error(t, err, "a default of the wrong type was accepted because nobody sent a value")
 	require.Contains(t, err.Error(), "is declared int but was given string")
+}
+
+// TestBindRunInputsRefusesAWorkflowWithAMalformedOutputMust is the second
+// Codex finding: CheckOutputConstraintShape's only caller used to be the
+// flowfile parser, so a hand-built Workflow that never passed through `flow
+// validate` had its output must: compiled for the first time inside
+// EvalRunOutputs — after every step already ran. BindRunInputs now runs the
+// output shape check itself, so a hand-built spec is refused here, at
+// submit, before anything executes.
+func TestBindRunInputsRefusesAWorkflowWithAMalformedOutputMust(t *testing.T) {
+	t.Parallel()
+
+	spec := &v1.Workflow{
+		Name: "bad-output",
+		Steps: []*v1.Node{{
+			Id:   "a",
+			Kind: &v1.Node_Task{Task: &v1.Task{Name: "log", Inputs: map[string]*v1.Value{"message": v1.NewLiteral("hi")}}},
+		}},
+		DeclaredOutputs: []*v1.OutputDeclaration{
+			{Name: "answer", Value: v1.NewLiteral("ok"), Must: strPtr(`this.matches(`)},
+		},
+	}
+
+	_, err := v1.BindRunInputs(spec, nil)
+	require.Error(t, err, "a workflow whose output must: does not compile was accepted at submit")
+	require.Contains(t, err.Error(), "answer")
+}
+
+// TestASideEffectDoesNotOccurWhenOutputMustCannotCompile is the point of the
+// finding: it is not enough that submitting the bad spec errors — the old
+// code errored too, just after every step's side effects had already
+// happened. This proves the request the step makes never goes out at all,
+// by counting it.
+func TestASideEffectDoesNotOccurWhenOutputMustCannotCompile(t *testing.T) {
+	allowLoopback(t)
+
+	var posts atomic.Int64
+	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			posts.Add(1)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	t.Cleanup(endpoint.Close)
+
+	spec := &v1.Workflow{
+		Name:    "bad-output-with-a-step",
+		Profile: v1.CurrentProfile,
+		Steps: []*v1.Node{{
+			Id: "charge",
+			Kind: &v1.Node_Task{Task: &v1.Task{Name: "http", Inputs: map[string]*v1.Value{
+				"method": v1.NewLiteral(http.MethodPost),
+				"url":    v1.NewLiteral(endpoint.URL + "/charge"),
+			}}},
+		}},
+		DeclaredOutputs: []*v1.OutputDeclaration{
+			// Malformed the same way the shape-check test above is: a `must:`
+			// that does not compile. Before the fix, this was only discovered
+			// in EvalRunOutputs, after the "charge" step above had already run.
+			{Name: "answer", Value: v1.NewLiteral("ok"), Must: strPtr(`this.matches(`)},
+		},
+	}
+
+	_, err := v1.Run(t.Context(), spec)
+	require.Error(t, err, "a workflow whose output must: does not compile was allowed to run")
+	require.Contains(t, err.Error(), "answer")
+
+	require.Equal(t, int64(0), posts.Load(),
+		"the step's request went out %d time(s) before the malformed output was ever checked; "+
+			"it must be refused before execution starts, not discovered after a side effect happened",
+		posts.Load())
 }

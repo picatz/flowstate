@@ -111,9 +111,42 @@ func validateDeclaredInputs(wf *v1.Workflow) Diagnostics {
 		}
 
 		ds = append(ds, validateInputDefault(declaration, field)...)
+		ds = append(ds, validateInputConstraintShape(declaration, field)...)
+		ds = append(ds, validateInputExample(declaration, field)...)
 	}
 
 	return ds
+}
+
+// validateInputConstraintShape reports what is wrong with a declaration's
+// standard-rule constraints and its `must:` as *written* — a key that does
+// not apply to the declared type, an unusable pattern, a `must:` that will
+// not compile — before any value is checked against them.
+//
+// This is [v1.CheckInputConstraintShape], the identical check [BindRunInputs]
+// runs at submit, run here where there is a position to report it against:
+// "rules compile and type-check when configuration loads" means, for a file,
+// when it is validated.
+func validateInputConstraintShape(declaration *v1.InputDeclaration, field string) Diagnostics {
+	if err := v1.CheckInputConstraintShape(declaration); err != nil {
+		return Diagnostics{{Field: field, Message: err.Error()}}
+	}
+	return nil
+}
+
+// validateInputExample reports what is wrong with a declaration's `example:`
+// — a literal that does not match the declared type, or one that violates
+// the declaration's own constraints. The same check [v1.CheckInputExample]
+// runs, so an example that rots after a `must:` is tightened is caught here
+// rather than discovered by a reader who trusted it.
+func validateInputExample(declaration *v1.InputDeclaration, field string) Diagnostics {
+	if declaration.GetExample() == nil {
+		return nil
+	}
+	if err := v1.CheckInputExample(declaration); err != nil {
+		return Diagnostics{{Field: field + ".example", Message: err.Error()}}
+	}
+	return nil
 }
 
 // validateInputDefault reports what is wrong with one declaration's default.
@@ -234,6 +267,14 @@ func validateDeclaredOutputs(wf *v1.Workflow, scope refScope, index int) Diagnos
 		// every step: a reference to the last step is correct here and would be a
 		// forward reference anywhere else.
 		ds = append(ds, validateInputRefs("", field, declaration.GetValue(), scope, index, wf)...)
+
+		// An output's own `must:` is checked against the value the run computes,
+		// which does not exist yet — so what is checkable now is only that the
+		// expression itself compiles and type-checks as a bool predicate, the
+		// same load-time half [validateInputConstraintShape] runs for an input.
+		if err := v1.CheckOutputConstraintShape(declaration); err != nil {
+			ds = append(ds, Diagnostic{Field: field, Message: err.Error()})
+		}
 	}
 
 	return ds

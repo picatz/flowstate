@@ -15,21 +15,24 @@ description: >-
 # knows, because the wait *is* the state.
 #
 # Both timeouts below are seconds, not the days a real policy would use, so
-# this is something to run rather than something to stare at:
+# this is something to run rather than something to stare at. `employee:` and
+# `amount:` are required — there is no sensible default for either, per the
+# `inputs:` block below — so every invocation names the inputs.json beside
+# this file, the same way `parameterized-deploy` names `service:`:
 #
-#   flow run local examples/expense-approval/workflow.yaml
+#   flow run local examples/expense-approval/workflow.yaml --input-file examples/expense-approval/inputs.json
 #
 # Nobody answers there, so both gates lapse and the report ends up denied —
 # the fail-closed default for a request nobody ever acted on. Answer the first
 # gate to see the ordinary path:
 #
-#   flow run local examples/expense-approval/workflow.yaml \
+#   flow run local examples/expense-approval/workflow.yaml --input-file examples/expense-approval/inputs.json \
 #     --signal manager-approved='{"approved": true}'
 #
 # Or let the manager gate lapse and answer the escalation instead, to see the
 # path that only exists because of the timeout:
 #
-#   flow run local examples/expense-approval/workflow.yaml \
+#   flow run local examples/expense-approval/workflow.yaml --input-file examples/expense-approval/inputs.json \
 #     --signal finance-approved='{"approved": true}'
 #
 # `flow run local` accepts every `--signal` up front, so supplying an answer to
@@ -47,13 +50,25 @@ description: >-
 # self-asserted payload field.
 
 inputs:
+  # No default: there is no sensible absent value for "who is asking", only a
+  # plausible one to paste — which is what `example:` is for. `sensitive: true`
+  # is display etiquette rather than containment (see the field's own doc
+  # comment): this value is an ordinary part of the run's history like any
+  # other input, and anyone with history access reads it in the clear. What
+  # changes is that `flow get` and the TUI redact it by default.
   employee:
     type: string
-    default: jordan@example.com
+    required: true
+    example: jordan@example.com
+    sensitive: true
+    pattern: "^[^@]+@[^@]+$"
     description: who filed the expense report
   amount:
     type: float
-    default: 482.50
+    required: true
+    example: 482.50
+    sensitive: true
+    min: 0
     description: the amount being claimed, in USD
 
 steps:
