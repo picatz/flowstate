@@ -212,6 +212,7 @@ flow get flowstate-workflow-3f7c --run-id 0198f1e2-...
 |---|---|---|---|---|
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl carry the server's own schema, so a field is addressable by name |
+| `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only — the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
 | `--run-id <string>` | `string` | — | — | ask about one attempt of the workload; unset asks about whichever is current |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
 
@@ -456,6 +457,7 @@ flow mcp --secret-env API_KEY --auth-policy policy.yaml
 | `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to an access policy whose secrets rules authorize local runs served to an agent |
 | `--egress-policy <string>` | `string` | — | `FLOWSTATE_EGRESS_POLICY` | path to an egress policy (YAML) governing the http task (default $FLOWSTATE_EGRESS_POLICY); when set it replaces the default policy entirely, and FLOWSTATE_ALLOW_LOOPBACK_EGRESS is ignored — a file that wants loopback says allow_loopback: true |
 | `--identity-key <string>` | `string` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets |
+| `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only — the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
 | `--run-local-timeout <duration>` | `duration` | `2m0s` | — | how long a flowstate_run_local call may execute for before the run is stopped and reported as timed out |
 | `--secret-dir <string>` | `string` | — | `FLOWSTATE_SECRET_DIR` | directory containing file: secrets (default $FLOWSTATE_SECRET_DIR) |
 | `--secret-dir-namespaced` | `bool` | `false` | — | resolve file: secrets below a separate <secret-dir>/<namespace>/ directory |
@@ -541,6 +543,7 @@ flow validate examples/hello-world/workflow.yaml
 | `--interval <duration>` | `duration` | `1s` | — | how often to ask the server, clamped to a floor of 250ms |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl carry the server's own schema, so a field is addressable by name |
 | `--plain` | `bool` | `false` | — | print one line per change instead of drawing a live view, even on a terminal |
+| `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only — the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
 
 ## `flow run local`
@@ -594,6 +597,7 @@ flow run local examples/computed-outputs/workflow.yaml --input release=2026.9.0 
 | `--input <string,...>` | `stringArray` | — | — | an argument this run is started with, as name=value (repeatable). The workflow's `inputs:` declaration decides how the value is read: an int is parsed as a number, a bool as true/false, and a list or struct as JSON |
 | `--input-file <string>` | `string` | — | — | a JSON object of arguments, keyed by input name. Values arrive with the types JSON gives them; a --input flag of the same name wins over the file |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl carry the server's own schema, so a field is addressable by name |
+| `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only — the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
 | `--secret-dir <string>` | `string` | — | `FLOWSTATE_SECRET_DIR` | directory containing file: secrets (default $FLOWSTATE_SECRET_DIR) |
 | `--secret-dir-namespaced` | `bool` | `false` | — | resolve file: secrets below a separate <secret-dir>/<namespace>/ directory |
 | `--secret-env <string,...>` | `stringSlice` | — | `FLOWSTATE_SECRET_ENV_ALLOW` | environment secret names this process may resolve (comma-separated or repeatable; values come from FLOWSTATE_SECRET_<NAME>) |
@@ -1010,6 +1014,7 @@ flow watch flowstate-workflow-3f7c >/dev/null && ./promote.sh
 | `--interval <duration>` | `duration` | `1s` | — | how often to ask the server, clamped to a floor of 250ms |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl carry the server's own schema, so a field is addressable by name |
 | `--plain` | `bool` | `false` | — | print one line per change instead of drawing a live view, even on a terminal |
+| `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only — the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
 | `--run-id <string>` | `string` | — | — | pin the watch to one run of the workload; unset follows whichever run is current |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
 

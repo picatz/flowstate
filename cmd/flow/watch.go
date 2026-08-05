@@ -91,6 +91,21 @@ type clientPoller struct {
 	// after its command has returned control to the follow loop and has no
 	// command to ask.
 	server serverFlags
+
+	// spec is the workflow specification this run was started from, when this
+	// poller's caller happens to hold one. `flow run` parsed the file and
+	// submitted it in this same process, so it passes it here and every
+	// declared-sensitive output is redacted precisely. `flow watch <id>` is a
+	// separate, later invocation that never had the file — it leaves this nil,
+	// which is the fail-closed case [redactGetResponse] documents: every
+	// declared output is withheld because nothing here can say which ones the
+	// workflow actually marked.
+	spec *v1.Workflow
+
+	// reveal is --reveal-sensitive, read once by the command that built this
+	// poller. The one thing that defeats both the precise and the fail-closed
+	// path above.
+	reveal bool
 }
 
 func (p clientPoller) Poll(ctx context.Context) (*v1.GetResponse, error) {
@@ -104,7 +119,7 @@ func (p clientPoller) Poll(ctx context.Context) (*v1.GetResponse, error) {
 		return nil, classifyPollError(p.workflowID, p.server, err)
 	}
 
-	return response.Msg, nil
+	return redactGetResponse(response.Msg, p.spec, p.reveal), nil
 }
 
 // transientError marks a poll failure worth asking about again.
@@ -202,6 +217,12 @@ func addFollowFlags(cmd *cobra.Command) {
 	// a flag.
 	cmd.Flags().Bool("plain", false,
 		"print one line per change instead of drawing a live view, even on a terminal")
+
+	// Shared for the same reason the two flags above are: `flow run` and
+	// `flow watch` follow a run through the same [clientPoller], so the escape
+	// hatch that decides whether it redacts declared-sensitive outputs has to be
+	// one flag rather than two that could drift apart.
+	addRevealSensitiveFlag(cmd)
 }
 
 // newWatchCommand builds the watch sub-command.
@@ -272,10 +293,20 @@ func runWatch(cmd *cobra.Command, args []string) error {
 			"omit it to follow whichever attempt is current", err)
 	}
 
+	surface := newSurface(cmd)
+
+	// `flow watch` asks about a run it did not start, by id alone — no spec to
+	// consult, so [clientPoller] fails closed and withholds every declared
+	// output unless told otherwise.
+	reveal := revealSensitiveRequested(cmd)
+	if reveal {
+		noteRevealedSensitiveValues(surface)
+	}
+
 	// Nothing known yet: `flow watch` is asked about a run it did not start, so the
 	// first poll is the first thing it learns.
-	return watchRun(cmd.Context(), newSurface(cmd), format,
-		clientPoller{workflowID: workflowID, runID: runID, server: serverFlagsOf(cmd)},
+	return watchRun(cmd.Context(), surface, format,
+		clientPoller{workflowID: workflowID, runID: runID, server: serverFlagsOf(cmd), reveal: reveal},
 		clampWatchInterval(interval), plain, workflowID, nil)
 }
 
