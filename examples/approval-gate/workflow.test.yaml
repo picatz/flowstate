@@ -5,6 +5,7 @@
 # nothing attested it — the honest limit the workflow's own header comment
 # names. `deploy` itself is unreachable from this file for exactly that
 # reason; see #206.
+edition: v2026.2
 tests:
   - name: an approved payload is still refused without an attested sender
     workflow: ./workflow.yaml
