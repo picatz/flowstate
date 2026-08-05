@@ -208,3 +208,43 @@ steps:
 	assert.Contains(t, string(result.Source), "log:\n      message: hi")
 	assert.Contains(t, string(result.Source), "edition: "+flowfile.CurrentEdition)
 }
+
+// TestFixRefusesADocumentWhoseOnlyKeysAreNameAndDescription covers the gap the
+// "every key is a workflow key" branch of the allowlist would otherwise leave.
+//
+// `name:` and `description:` are spelled by nearly every configuration format
+// there is, so a document declaring only those two is not a Flowfile that has
+// yet to grow steps — it is a stranger whose keys happen to collide with ours.
+// Accepting it would stamp an edition into somebody else's file, which is the
+// whole defect #203 exists to fix, in a smaller and later-arriving form.
+//
+// The companion direction is TestFixStillFixesAZeroStepFlowfile below: the
+// narrowing must not cost the real edge case the branch was added for.
+func TestFixRefusesADocumentWhoseOnlyKeysAreNameAndDescription(t *testing.T) {
+	t.Parallel()
+
+	src := "name: something\ndescription: a config that is not a workflow\n"
+
+	result, err := flowfile.Fix([]byte(src))
+	require.NoError(t, err)
+
+	assert.NotEmpty(t, result.Refusals, "a document of only name: and description: must be refused")
+	assert.False(t, result.Changed(), "a refused document must not be rewritten")
+	assert.Equal(t, src, string(result.Source), "a refused document must come back byte-for-byte")
+}
+
+// TestFixStillFixesAZeroStepFlowfile is the direction the narrowing above must
+// not break: `edition:` is distinctive, so a legal Flowfile that declares no
+// steps is still recognized and still fixed.
+func TestFixStillFixesAZeroStepFlowfile(t *testing.T) {
+	t.Parallel()
+
+	result, err := flowfile.Fix([]byte("name: t\n"))
+	require.NoError(t, err)
+	assert.NotEmpty(t, result.Refusals, "name: alone is not distinctive enough to qualify")
+
+	current, err := flowfile.Fix([]byte("edition: v2026.2\nname: t\n"))
+	require.NoError(t, err)
+	assert.Empty(t, current.Refusals, "edition: is distinctive, so a zero-step Flowfile is still recognized")
+	assert.False(t, current.Changed())
+}

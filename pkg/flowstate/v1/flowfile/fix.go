@@ -371,6 +371,19 @@ func (f *fixer) note(line, column int, format string, args ...any) {
 // take an edition stamp, so both belong here.
 var recognizedTopLevelKeys = []string{"steps", "tests"}
 
+// distinctiveWorkflowKeys are the top-level keys that, in a document made
+// entirely of [workflowKeys], are evidence it is a Flowfile rather than a
+// coincidence — see [hasRecognizedKey], which requires one of these before it
+// will accept a document that declares neither `steps:` nor `tests:`.
+//
+// `name:` and `description:` are deliberately absent. Both are spelled by
+// nearly every configuration format there is, so a document declaring only
+// those two is not a Flowfile missing its steps; it is a stranger whose two
+// keys happen to collide with ours. Everything listed here means something
+// specific to this language and would be an odd thing for another format to
+// say.
+var distinctiveWorkflowKeys = []string{"edition", "steps", "tests", "inputs", "outputs", "vars", "triggers"}
+
 // refuseUnrecognizedDocument reports whether a parsed file is something `flow
 // fix` has no business rewriting, and builds the diagnostic saying so.
 //
@@ -524,6 +537,16 @@ func asMapping(n ast.Node) *ast.MappingNode {
 // (`egress:`, `issuers:`, `secrets:`, `federation:`), so an egress policy or an
 // auth/trust policy still has no key that qualifies it.
 //
+// It is narrowed one step further than that, though, because `name:` and
+// `description:` are not evidence of anything. Every configuration format in
+// the world spells those, so a document declaring only those two would qualify
+// under a bare "all keys are workflow keys" test and be stamped — a smaller
+// version of the same mistake, waiting for a config file nobody has written
+// yet. So the second branch additionally requires at least one key that no
+// other format would use in this combination ([distinctiveWorkflowKeys]): the
+// zero-step file above carries `edition:` and still passes, and a document of
+// nothing but `name:` and `description:` is refused like any other stranger.
+//
 // A merge key is not resolved here the way [fixer.mergedDeclaresEdition] resolves
 // one for `edition:`. That method exists because failing to find a merged
 // edition would let the rewriter *downgrade* a file — stamping in a spelling it
@@ -534,7 +557,7 @@ func asMapping(n ast.Node) *ast.MappingNode {
 // keys, since a merge could easily be bringing in nothing more exotic than
 // shared `vars:`.
 func hasRecognizedKey(mapping *ast.MappingNode) bool {
-	sawAny := false
+	sawDistinctive := false
 	allWorkflowKeys := true
 	for _, v := range mapping.Values {
 		if _, isMerge := v.Key.(*ast.MergeKeyNode); isMerge {
@@ -545,15 +568,17 @@ func hasRecognizedKey(mapping *ast.MappingNode) bool {
 			allWorkflowKeys = false
 			continue
 		}
-		sawAny = true
 		if slices.Contains(recognizedTopLevelKeys, name) {
 			return true
+		}
+		if slices.Contains(distinctiveWorkflowKeys, name) {
+			sawDistinctive = true
 		}
 		if !slices.Contains(workflowKeys, name) {
 			allWorkflowKeys = false
 		}
 	}
-	return sawAny && allWorkflowKeys
+	return sawDistinctive && allWorkflowKeys
 }
 
 // describeTopLevelKeys names a mapping's own keys the way an author wrote them,
