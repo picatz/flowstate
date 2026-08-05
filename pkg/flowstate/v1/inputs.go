@@ -32,8 +32,10 @@ import (
 // segment saw. Re-deriving them per segment would let a declaration edited between
 // deploys change an argument underneath a run in flight.
 
-// BindRunInputs checks a run's submitted arguments against what the workflow
-// declares and returns the values the run will actually see.
+// BindRunInputs validates a workflow's declarations — both its declared
+// inputs' shapes and its declared outputs' `must:` shapes — and checks a
+// run's submitted arguments against what the workflow declares, returning
+// the values the run will actually see.
 //
 // The returned map holds one entry per declaration the run has a value for:
 // whatever the caller supplied, or the declaration's default where they supplied
@@ -43,7 +45,27 @@ import (
 //
 // Every failure names the input it is about and what to do instead, because these
 // are read by a person running a command as often as by a program.
+//
+// The output-declaration check runs first, before a single input is bound and
+// well before any step executes, because this is the one function every
+// submit path already calls: the server binds through it at both `Run` and
+// `CreateSchedule`, and `flow run local` reaches it before its first step —
+// the same "one function, two callers" shape this file's package doc
+// describes for inputs. Without this, a hand-built [Workflow] that never
+// passed through `flow validate` — the parser calls
+// [CheckOutputConstraintShape] itself, but only there — has its output
+// `must:` compiled for the first time inside [EvalRunOutputs], after every
+// step has already run and produced whatever side effects it has. Checking
+// the shape here, before execution starts, is what turns a malformed output
+// `must:` into a submission refused rather than a result discovered too late
+// to matter.
 func BindRunInputs(wf *Workflow, submitted map[string]*Value) (map[string]*Value, error) {
+	for _, declaration := range wf.GetDeclaredOutputs() {
+		if err := CheckOutputConstraintShape(declaration); err != nil {
+			return nil, err
+		}
+	}
+
 	declared := make(map[string]*InputDeclaration, len(wf.GetDeclaredInputs()))
 	for _, declaration := range wf.GetDeclaredInputs() {
 		declared[declaration.GetName()] = declaration

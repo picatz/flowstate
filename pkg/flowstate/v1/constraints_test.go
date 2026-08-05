@@ -1,6 +1,7 @@
 package flowstatev1_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -299,6 +300,158 @@ func TestMustRefusesAnOversizedList(t *testing.T) {
 	require.Error(t, err, "a list past the element bound reached the evaluator")
 	assert.Contains(t, err.Error(), "items")
 	assert.Less(t, elapsed, time.Second, "the bound itself must be checked before any expensive work")
+}
+
+// manyItems returns a []any of n small ints, for building oversized list
+// literals without repeating the loop at every call site.
+func manyItems(n int) []any {
+	items := make([]any, n)
+	for i := range items {
+		items[i] = i
+	}
+	return items
+}
+
+// nestedStruct builds a value nested depth levels deep in single-key maps,
+// bottoming out in leaf — the shape a depth-bound test needs, distinct from
+// the shape an element-count test needs, since neither bound can see the
+// other's dimension.
+func nestedStruct(depth int, leaf any) any {
+	v := leaf
+	for i := 0; i < depth; i++ {
+		v = map[string]any{"child": v}
+	}
+	return v
+}
+
+// TestBindRunInputsRefusesAStructWithAnOversizedNestedList is Codex's exact
+// finding: checkConstraintListBound used to run only when
+// decl.GetType() == TYPE_LIST, so a type: struct input's must: reached an
+// arbitrarily large list nested inside it uncounted. Gated on the declared
+// type, this value was never bounded at all before BindRunInputs handed it
+// to the evaluator.
+func TestBindRunInputsRefusesAStructWithAnOversizedNestedList(t *testing.T) {
+	t.Parallel()
+
+	decl := &v1.InputDeclaration{
+		Name: "payload", Type: v1.InputDeclaration_TYPE_STRUCT,
+		Must: strPtr(`this.items.all(x, x >= 0)`),
+	}
+	wf := constrainedWorkflow(decl)
+
+	value := v1.NewLiteralMap(map[string]any{"items": manyItems(10_001)})
+
+	start := time.Now()
+	_, err := v1.BindRunInputs(wf, map[string]*v1.Value{"payload": value})
+	elapsed := time.Since(start)
+
+	require.Error(t, err, "a struct whose nested list exceeds the element bound reached the evaluator")
+	assert.Contains(t, err.Error(), "payload")
+	assert.Contains(t, err.Error(), "list elements")
+	assert.Less(t, elapsed, time.Second, "the bound itself must be checked before any expensive work")
+}
+
+// TestBindRunInputsRefusesManySmallListsSummingOverTheBound is the direction a
+// per-list bound would let through: no single list here is anywhere near
+// maxConstraintListElements, but the total across the struct is — which is
+// exactly the case CLAUDE.md's billion-laughs reasoning says a per-list check
+// misses.
+func TestBindRunInputsRefusesManySmallListsSummingOverTheBound(t *testing.T) {
+	t.Parallel()
+
+	decl := &v1.InputDeclaration{
+		Name: "payload", Type: v1.InputDeclaration_TYPE_STRUCT,
+		Must: strPtr(`true`),
+	}
+	wf := constrainedWorkflow(decl)
+
+	fields := map[string]any{}
+	for i := 0; i < 20; i++ {
+		fields[fmt.Sprintf("list%d", i)] = manyItems(600) // 20 * 600 = 12,000 > 10,000
+	}
+	value := v1.NewLiteralMap(fields)
+
+	_, err := v1.BindRunInputs(wf, map[string]*v1.Value{"payload": value})
+	require.Error(t, err, "many lists each individually under the bound, summing over it, were accepted")
+	assert.Contains(t, err.Error(), "payload")
+	assert.Contains(t, err.Error(), "list elements")
+}
+
+// TestBindRunInputsRefusesADeeplyNestedStruct is the depth bound, proven
+// distinct from the element-count bound: this value never comes close to
+// maxConstraintListElements, so only nesting depth can be what refuses it,
+// and the message must say so rather than repeating the list-elements
+// wording.
+func TestBindRunInputsRefusesADeeplyNestedStruct(t *testing.T) {
+	t.Parallel()
+
+	decl := &v1.InputDeclaration{
+		Name: "payload", Type: v1.InputDeclaration_TYPE_STRUCT,
+		Must: strPtr(`true`),
+	}
+	wf := constrainedWorkflow(decl)
+
+	value := v1.NewLiteralMap(map[string]any{
+		"child": nestedStruct(40, "leaf"),
+	})
+
+	_, err := v1.BindRunInputs(wf, map[string]*v1.Value{"payload": value})
+	require.Error(t, err, "a value nested past the depth bound was accepted")
+	assert.Contains(t, err.Error(), "payload")
+	assert.Contains(t, err.Error(), "nests")
+	assert.NotContains(t, err.Error(), "list elements",
+		"a depth refusal must not be worded as an element-count refusal; they are different resources")
+}
+
+// TestBindRunInputsAcceptsAStructJustUnderBothBounds proves the bound is not
+// simply refusing everything: a struct nested well under the depth bound,
+// carrying well under the element bound's worth of list elements, binds
+// clean.
+func TestBindRunInputsAcceptsAStructJustUnderBothBounds(t *testing.T) {
+	t.Parallel()
+
+	decl := &v1.InputDeclaration{
+		Name: "payload", Type: v1.InputDeclaration_TYPE_STRUCT,
+		Must: strPtr(`true`),
+	}
+	wf := constrainedWorkflow(decl)
+
+	// Depth 10, well under the 32-level bound; 9,000 list elements, well
+	// under the 10,000 bound.
+	value := v1.NewLiteralMap(map[string]any{
+		"child": nestedStruct(10, manyItems(9_000)),
+	})
+
+	bound, err := v1.BindRunInputs(wf, map[string]*v1.Value{"payload": value})
+	require.NoError(t, err, "a struct well under both bounds was refused")
+	assert.NotNil(t, bound["payload"])
+}
+
+// TestCheckOutputConstraintRefusesAnOversizedNestedList is the output half of
+// TestBindRunInputsRefusesAStructWithAnOversizedNestedList: a step can
+// produce a large nested list just as a caller can send one, and
+// CheckOutputConstraint applies the identical bound.
+func TestCheckOutputConstraintRefusesAnOversizedNestedList(t *testing.T) {
+	t.Parallel()
+
+	decl := &v1.OutputDeclaration{Name: "result", Must: strPtr(`this.items.all(x, x >= 0)`)}
+	value := v1.NewLiteralMap(map[string]any{"items": manyItems(10_001)})
+
+	err := v1.CheckOutputConstraint(decl, value)
+	require.Error(t, err, "an output whose nested list exceeds the element bound reached the evaluator")
+	assert.Contains(t, err.Error(), "result")
+	assert.Contains(t, err.Error(), "list elements")
+}
+
+// TestCheckOutputConstraintAcceptsAConformingNestedStruct is the output
+// acceptance direction, mirroring the input one.
+func TestCheckOutputConstraintAcceptsAConformingNestedStruct(t *testing.T) {
+	t.Parallel()
+
+	decl := &v1.OutputDeclaration{Name: "result", Must: strPtr(`true`)}
+	value := v1.NewLiteralMap(map[string]any{"child": nestedStruct(10, manyItems(9_000))})
+
+	assert.NoError(t, v1.CheckOutputConstraint(decl, value))
 }
 
 func strPtr(s string) *string   { return &s }

@@ -354,10 +354,12 @@ func CheckInputConstraints(name string, decl *InputDeclaration, value *Value) er
 		return nil
 	}
 
-	if decl.GetType() == InputDeclaration_TYPE_LIST {
-		if err := checkConstraintListBound(name, lit); err != nil {
-			return err
-		}
+	// Run unconditionally rather than gated on decl.GetType() == TYPE_LIST: a
+	// struct-typed input's `must:` reaches lists nested inside it just as
+	// cheaply as a list-typed input's does, and gating on the declared type is
+	// exactly what let a struct's nested list through uncounted.
+	if err := checkConstraintValueBound("input", name, lit); err != nil {
+		return err
 	}
 
 	ast, err := CompileMustExpression(decl.GetMust(), decl.GetType())
@@ -398,7 +400,7 @@ func CheckOutputConstraint(decl *OutputDeclaration, value *Value) error {
 		return nil
 	}
 
-	if err := checkConstraintListBound(decl.GetName(), lit); err != nil {
+	if err := checkConstraintValueBound("output", decl.GetName(), lit); err != nil {
 		return err
 	}
 
@@ -527,27 +529,63 @@ func numericLiteralValue(lit *expr.Value) (float64, bool) {
 	}
 }
 
-// maxConstraintListElements bounds how many elements a list-typed input's
-// `unique:` check and `must:` expression may examine.
+// maxConstraintListElements bounds how many list elements a `unique:` check
+// or a `must:` expression may examine, *summed across the whole value* —
+// every element in every list reachable by walking the value, not the
+// length of any one list in isolation.
 //
-// Both are quadratic, or worse, in the list's length by construction:
-// `unique:` compares every pair, and a `must:` predicate can fold over the
-// list inside a nested comprehension, the shape [TestEvaluatorCostLimit]
-// proves the base evaluator's cost limit trips fast for — but that budget is
-// abstract cost units tracked *during* evaluation, and a large enough input
-// value spends real wall-clock time accumulating cost before the budget is
-// reached (observed directly: a single non-nested `this.all(x, x >= 0)` over
-// a 100,000-element list ran for over thirty seconds before this bound
-// existed). The value is a caller's own choice — [BindRunInputs] runs this
-// synchronously inside the RPC handler, before [CheckSubmissionSize] gets a
-// chance to weigh the submitted inputs at all — so the resource actually
-// being bounded here is element count, not bytes and not cost units, per
-// this repository's rule: bound the resource the party you do not trust
-// controls, and count what they actually spend.
+// That total-rather-than-per-list shape is the fix for the bug this bound
+// used to have: it was checked only against a literal declared
+// `type: list`, so a `type: struct` input's `must:` reached an arbitrarily
+// large list nested a level or two inside a map and it was never counted.
+// Gating on the *declared* type was the mistake — the resource this bounds
+// is how many elements a `must:` expression can be made to examine, and a
+// struct's nested lists cost exactly as much to walk as a top-level one
+// does. So [checkConstraintValueBound] walks the whole value regardless of
+// declared type and adds every list element it finds to one running total,
+// the same way this repository's billion-laughs bound on YAML alias
+// expansion counts total nodes rather than chain depth: a struct holding a
+// hundred lists of a few thousand elements each is exactly the shape a
+// per-list bound lets through and a total bound catches.
+//
+// Both `unique:` and `must:` are quadratic, or worse, in element count by
+// construction: `unique:` compares every pair, and a `must:` predicate can
+// fold over a list inside a nested comprehension, the shape
+// [TestEvaluatorCostLimit] proves the base evaluator's cost limit trips fast
+// for — but that budget is abstract cost units tracked *during* evaluation,
+// and a large enough input value spends real wall-clock time accumulating
+// cost before the budget is reached (observed directly: a single
+// non-nested `this.all(x, x >= 0)` over a 100,000-element list ran for over
+// thirty seconds before this bound existed). The value is a caller's own
+// choice — [BindRunInputs] runs this synchronously inside the RPC handler,
+// before [CheckSubmissionSize] gets a chance to weigh the submitted inputs
+// at all — so the resource actually being bounded here is element count,
+// not bytes and not cost units, per this repository's rule: bound the
+// resource the party you do not trust controls, and count what they
+// actually spend.
 const maxConstraintListElements = 10_000
 
-// checkConstraintListBound refuses a list value too long for unique or must:
-// to examine cheaply, naming the bound so a caller knows what to shrink.
+// maxConstraintValueDepth bounds how deeply nested a value's lists and
+// structs may be while [checkConstraintValueBound] walks it.
+//
+// This is a different resource than maxConstraintListElements, and CLAUDE.md
+// is explicit that bounding one does not bound the other: a value can nest a
+// single element a hundred thousand levels deep, never tripping an element
+// count, while still exhausting the walker's own call stack — depth and
+// breadth are independent attacker-controlled dimensions, so each gets its
+// own bound and its own message, rather than one being asked to stand in for
+// the other. Set to match [maxActivationDepth]'s reasoning and value: deep
+// enough for anything a person writes by hand, shallow enough that recursion
+// bounded by it cannot exhaust a goroutine's stack.
+const maxConstraintValueDepth = 32
+
+// checkConstraintListBound refuses a list value too long for unique: to
+// examine cheaply, naming the bound so a caller knows what to shrink.
+//
+// unique: only ever runs against the top-level list a list-typed
+// declaration carries directly — there is no nested case to walk into, so
+// this stays a flat check rather than calling
+// [checkConstraintValueBound]'s walk.
 func checkConstraintListBound(name string, lit *expr.Value) error {
 	list, ok := lit.GetKind().(*expr.Value_ListValue)
 	if !ok {
@@ -559,6 +597,68 @@ func checkConstraintListBound(name string, lit *expr.Value) error {
 				"a list this large cannot be checked cheaply, and the caller's own choice of length "+
 				"is not a cost this server bounds any other way", name, n, maxConstraintListElements)
 	}
+	return nil
+}
+
+// checkConstraintValueBound refuses a value whose `must:` a caller could
+// make expensive to check: either because the total number of list elements
+// reachable by walking it — through any nesting of lists and structs —
+// exceeds [maxConstraintListElements], or because the value nests deeper
+// than [maxConstraintValueDepth]. kind is "input" or "output", so the
+// message names the right side of the constraint.
+//
+// Called unconditionally whenever a declaration has a `must:`, regardless of
+// declared type: a list bound gated on `decl.GetType() == TYPE_LIST` is
+// exactly the bug this replaces, since a struct-typed value's `must:` can
+// still reach an arbitrarily large nested list.
+func checkConstraintValueBound(kind, name string, lit *expr.Value) error {
+	total := 0
+	return walkConstraintValue(kind, name, lit, 0, &total)
+}
+
+// walkConstraintValue recursively counts list elements into *total and
+// refuses once the running total exceeds maxConstraintListElements or the
+// recursion exceeds maxConstraintValueDepth — the two bounds are checked
+// independently, at every level, so neither resource can hide behind the
+// other.
+func walkConstraintValue(kind, name string, v *expr.Value, depth int, total *int) error {
+	if v == nil {
+		return nil
+	}
+
+	if depth > maxConstraintValueDepth {
+		return fmt.Errorf(
+			"%s %q nests %d levels deep, over the %d a `unique:` or `must:` constraint may descend "+
+				"into; a value nested this deeply cannot be walked cheaply, and the caller's own choice "+
+				"of nesting is not a cost this server bounds any other way", kind, name, depth, maxConstraintValueDepth)
+	}
+
+	switch k := v.GetKind().(type) {
+	case *expr.Value_ListValue:
+		for _, el := range k.ListValue.GetValues() {
+			*total++
+			if *total > maxConstraintListElements {
+				return fmt.Errorf(
+					"%s %q has at least %d list elements across its whole value, over the %d a `unique:` "+
+						"or `must:` constraint may examine in total; a value this large cannot be checked "+
+						"cheaply, and the caller's own choice of size is not a cost this server bounds any "+
+						"other way", kind, name, *total, maxConstraintListElements)
+			}
+			if err := walkConstraintValue(kind, name, el, depth+1, total); err != nil {
+				return err
+			}
+		}
+	case *expr.Value_MapValue:
+		for _, entry := range k.MapValue.GetEntries() {
+			if err := walkConstraintValue(kind, name, entry.GetKey(), depth+1, total); err != nil {
+				return err
+			}
+			if err := walkConstraintValue(kind, name, entry.GetValue(), depth+1, total); err != nil {
+				return err
+			}
+		}
+	}
+
 	return nil
 }
 
