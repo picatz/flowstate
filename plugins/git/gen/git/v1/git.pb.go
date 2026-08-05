@@ -400,6 +400,532 @@ func (x *CommitPushInputs) GetUsername() string {
 	return ""
 }
 
+// Signature is a commit's author or committer line: who, and when.
+type Signature struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Email string                 `protobuf:"bytes,2,opt,name=email,proto3" json:"email,omitempty"`
+	// When is RFC 3339, in the zone the commit recorded.
+	When          string `protobuf:"bytes,3,opt,name=when,proto3" json:"when,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Signature) Reset() {
+	*x = Signature{}
+	mi := &file_git_v1_git_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Signature) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Signature) ProtoMessage() {}
+
+func (x *Signature) ProtoReflect() protoreflect.Message {
+	mi := &file_git_v1_git_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Signature.ProtoReflect.Descriptor instead.
+func (*Signature) Descriptor() ([]byte, []int) {
+	return file_git_v1_git_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *Signature) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *Signature) GetEmail() string {
+	if x != nil {
+		return x.Email
+	}
+	return ""
+}
+
+func (x *Signature) GetWhen() string {
+	if x != nil {
+		return x.When
+	}
+	return ""
+}
+
+// Commit is one entry of a repository's history, read by git.log. Richer
+// than plugins/vcs's own Commit (which has no committer or parent hashes),
+// deliberately - see git.proto's own top comment: this plugin is the
+// unapologetically git-specific half of the factoring issue #149 settled,
+// and a committer line distinct from the author, and a commit's parents, are
+// exactly the kind of git-object-model detail that belongs here rather than
+// in the backend-agnostic core.
+type Commit struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Sha is the commit's full hex object id.
+	Sha string `protobuf:"bytes,1,opt,name=sha,proto3" json:"sha,omitempty"`
+	// Author is read from the commit's author line - unverified, since anyone
+	// with push access to the remote controls what it says.
+	Author *Signature `protobuf:"bytes,2,opt,name=author,proto3" json:"author,omitempty"`
+	// Committer is read from the commit's committer line, distinct from
+	// Author whenever the commit was authored by one person and applied
+	// (rebased, cherry-picked, merged) by another.
+	Committer *Signature `protobuf:"bytes,3,opt,name=committer,proto3" json:"committer,omitempty"`
+	// Message is the commit's full message, bounded per-entry (see
+	// maxLogMessageBytes) and, across every entry LogOutputs returns, bounded
+	// again in total (see maxTotalLogMessageBytes) - a commit message has no
+	// natural size limit, and a repository this task reads is attacker-chosen
+	// input, so both bounds exist independently: one entry cannot be
+	// pathologically large, and many merely-large entries cannot sum to an
+	// unbounded response either.
+	Message string `protobuf:"bytes,4,opt,name=message,proto3" json:"message,omitempty"`
+	// ParentHashes are this commit's parents' full hex object ids, in the
+	// order the commit object itself records them - empty for a root commit,
+	// more than one for a merge.
+	ParentHashes  []string `protobuf:"bytes,5,rep,name=parent_hashes,json=parentHashes,proto3" json:"parent_hashes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Commit) Reset() {
+	*x = Commit{}
+	mi := &file_git_v1_git_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Commit) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Commit) ProtoMessage() {}
+
+func (x *Commit) ProtoReflect() protoreflect.Message {
+	mi := &file_git_v1_git_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Commit.ProtoReflect.Descriptor instead.
+func (*Commit) Descriptor() ([]byte, []int) {
+	return file_git_v1_git_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *Commit) GetSha() string {
+	if x != nil {
+		return x.Sha
+	}
+	return ""
+}
+
+func (x *Commit) GetAuthor() *Signature {
+	if x != nil {
+		return x.Author
+	}
+	return nil
+}
+
+func (x *Commit) GetCommitter() *Signature {
+	if x != nil {
+		return x.Committer
+	}
+	return nil
+}
+
+func (x *Commit) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *Commit) GetParentHashes() []string {
+	if x != nil {
+		return x.ParentHashes
+	}
+	return nil
+}
+
+// LogInputs asks for a bounded slice of a repository's commit history -
+// git.log's own audit primitive: who changed what, and what they said about
+// it.
+type LogInputs struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Url is the repository to read, https:// only.
+	Url string `protobuf:"bytes,1,opt,name=url,proto3" json:"url,omitempty"`
+	// Ref is the branch, tag, or commit-ish to start from - anything go-git's
+	// own revision parser accepts. Empty means the remote's default branch
+	// (its HEAD).
+	Ref string `protobuf:"bytes,2,opt,name=ref,proto3" json:"ref,omitempty"`
+	// MaxCommits bounds how many commits are returned. Zero means this task's
+	// own default (see defaultMaxCommits); anything over the task's ceiling
+	// (maxMaxCommits) is refused rather than silently clamped - a silently
+	// clamped bound looks like a working request that quietly returns less
+	// than it was asked for.
+	MaxCommits int32 `protobuf:"varint,3,opt,name=max_commits,json=maxCommits,proto3" json:"max_commits,omitempty"`
+	// Path, if set, limits results to commits that touched this path -
+	// equivalent to `git log -- <path>`. This task only ever searches within
+	// the shallow window it cloned (see doc.go's own note on this task, "A
+	// path filter searches only the fetched window"): a commit older than
+	// that window that touched path is not found, and is exactly what
+	// Truncated in the output exists to report honestly rather than silently
+	// under-answering.
+	Path string `protobuf:"bytes,4,opt,name=path,proto3" json:"path,omitempty"`
+	// Since, RFC 3339, limits results to commits authored at or after this
+	// time - equivalent to `git log --since`.
+	Since string `protobuf:"bytes,5,opt,name=since,proto3" json:"since,omitempty"`
+	// Token is a secret reference for HTTPS authentication against a private
+	// repository, resolved inside this task and never logged. A literal
+	// string here is refused.
+	Token *v1.Value `protobuf:"bytes,6,opt,name=token,proto3" json:"token,omitempty"`
+	// Username is the HTTP Basic-auth username paired with token - see
+	// LsRemoteInputs.username for the full doc comment and default.
+	Username      string `protobuf:"bytes,7,opt,name=username,proto3" json:"username,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LogInputs) Reset() {
+	*x = LogInputs{}
+	mi := &file_git_v1_git_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LogInputs) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LogInputs) ProtoMessage() {}
+
+func (x *LogInputs) ProtoReflect() protoreflect.Message {
+	mi := &file_git_v1_git_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LogInputs.ProtoReflect.Descriptor instead.
+func (*LogInputs) Descriptor() ([]byte, []int) {
+	return file_git_v1_git_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *LogInputs) GetUrl() string {
+	if x != nil {
+		return x.Url
+	}
+	return ""
+}
+
+func (x *LogInputs) GetRef() string {
+	if x != nil {
+		return x.Ref
+	}
+	return ""
+}
+
+func (x *LogInputs) GetMaxCommits() int32 {
+	if x != nil {
+		return x.MaxCommits
+	}
+	return 0
+}
+
+func (x *LogInputs) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+func (x *LogInputs) GetSince() string {
+	if x != nil {
+		return x.Since
+	}
+	return ""
+}
+
+func (x *LogInputs) GetToken() *v1.Value {
+	if x != nil {
+		return x.Token
+	}
+	return nil
+}
+
+func (x *LogInputs) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+// LogOutputs is a bounded slice of history.
+type LogOutputs struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Commits are the entries found, most recent first, capped at max_commits
+	// and at maxTotalLogMessageBytes, whichever this call's history hits
+	// first.
+	Commits []*Commit `protobuf:"bytes,1,rep,name=commits,proto3" json:"commits,omitempty"`
+	// ResolvedRef is the exact commit ref named, as a full sha - what a
+	// relative ref like "main" or "HEAD~3" actually meant at the moment this
+	// ran.
+	ResolvedRef string `protobuf:"bytes,2,opt,name=resolved_ref,json=resolvedRef,proto3" json:"resolved_ref,omitempty"`
+	// Truncated reports whether more matching history existed beyond what was
+	// returned - by max_commits, by the total message-byte budget, or by the
+	// shallow window this task cloned when path was set - so a workflow can
+	// tell "this is all of it" from "this is as much as this call reached."
+	Truncated     bool `protobuf:"varint,3,opt,name=truncated,proto3" json:"truncated,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LogOutputs) Reset() {
+	*x = LogOutputs{}
+	mi := &file_git_v1_git_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LogOutputs) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LogOutputs) ProtoMessage() {}
+
+func (x *LogOutputs) ProtoReflect() protoreflect.Message {
+	mi := &file_git_v1_git_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LogOutputs.ProtoReflect.Descriptor instead.
+func (*LogOutputs) Descriptor() ([]byte, []int) {
+	return file_git_v1_git_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *LogOutputs) GetCommits() []*Commit {
+	if x != nil {
+		return x.Commits
+	}
+	return nil
+}
+
+func (x *LogOutputs) GetResolvedRef() string {
+	if x != nil {
+		return x.ResolvedRef
+	}
+	return ""
+}
+
+func (x *LogOutputs) GetTruncated() bool {
+	if x != nil {
+		return x.Truncated
+	}
+	return false
+}
+
+// ReadFileInputs asks for one file's content at one ref - the audit
+// counterpart to LogInputs: git.log finds which commit last touched a path
+// and who did it; git.read_file reads what is there now (or at any other
+// ref).
+type ReadFileInputs struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Url is the repository to read, https:// only.
+	Url string `protobuf:"bytes,1,opt,name=url,proto3" json:"url,omitempty"`
+	// Ref is the branch, tag, or commit-ish to read path at. Empty means the
+	// remote's default branch (its HEAD).
+	Ref string `protobuf:"bytes,2,opt,name=ref,proto3" json:"ref,omitempty"`
+	// Path is the file's path within the tree at ref - relative, never
+	// absolute, never containing a ".." segment or a ".git" path segment (see
+	// validateTreePath, shared with git.commit_push's own path checks).
+	// Refused outright rather than sanitised when it does not meet that
+	// shape.
+	Path string `protobuf:"bytes,3,opt,name=path,proto3" json:"path,omitempty"`
+	// Token is a secret reference for HTTPS authentication. See
+	// LogInputs.token.
+	Token *v1.Value `protobuf:"bytes,4,opt,name=token,proto3" json:"token,omitempty"`
+	// Username is the HTTP Basic-auth username paired with token - see
+	// LsRemoteInputs.username.
+	Username      string `protobuf:"bytes,5,opt,name=username,proto3" json:"username,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReadFileInputs) Reset() {
+	*x = ReadFileInputs{}
+	mi := &file_git_v1_git_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReadFileInputs) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReadFileInputs) ProtoMessage() {}
+
+func (x *ReadFileInputs) ProtoReflect() protoreflect.Message {
+	mi := &file_git_v1_git_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReadFileInputs.ProtoReflect.Descriptor instead.
+func (*ReadFileInputs) Descriptor() ([]byte, []int) {
+	return file_git_v1_git_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *ReadFileInputs) GetUrl() string {
+	if x != nil {
+		return x.Url
+	}
+	return ""
+}
+
+func (x *ReadFileInputs) GetRef() string {
+	if x != nil {
+		return x.Ref
+	}
+	return ""
+}
+
+func (x *ReadFileInputs) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+func (x *ReadFileInputs) GetToken() *v1.Value {
+	if x != nil {
+		return x.Token
+	}
+	return nil
+}
+
+func (x *ReadFileInputs) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+// ReadFileOutputs is one file's content at one ref.
+type ReadFileOutputs struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Content is the file's raw bytes, bounded (see maxReadFileBytes) and
+	// never truncated: a file over the bound is refused with a diagnostic
+	// naming its actual size, because a truncated file that looks whole is
+	// worse than a refusal a workflow author can act on.
+	Content []byte `protobuf:"bytes,1,opt,name=content,proto3" json:"content,omitempty"`
+	// Size is the file's actual size in bytes, from the blob's own object
+	// header - reported even though Content never truncates, so a workflow
+	// can log or reason about a file's size without decoding Content itself.
+	Size int64 `protobuf:"varint,2,opt,name=size,proto3" json:"size,omitempty"`
+	// Mode is the tree entry's git mode, in git's own zero-padded octal
+	// format ("0100644" regular, "0100755" executable, "0120000" symlink) -
+	// see plumbing/filemode.FileMode.String.
+	Mode string `protobuf:"bytes,3,opt,name=mode,proto3" json:"mode,omitempty"`
+	// Binary reports whether this task's own heuristic (a NUL byte within the
+	// first bytesToSniffForBinary bytes, the same heuristic git itself uses)
+	// judged the content binary - advisory, not authoritative: a file with no
+	// NUL in that window is reported as text even if it is not, and Content
+	// always carries the file's real bytes either way.
+	Binary        bool `protobuf:"varint,4,opt,name=binary,proto3" json:"binary,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReadFileOutputs) Reset() {
+	*x = ReadFileOutputs{}
+	mi := &file_git_v1_git_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReadFileOutputs) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReadFileOutputs) ProtoMessage() {}
+
+func (x *ReadFileOutputs) ProtoReflect() protoreflect.Message {
+	mi := &file_git_v1_git_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReadFileOutputs.ProtoReflect.Descriptor instead.
+func (*ReadFileOutputs) Descriptor() ([]byte, []int) {
+	return file_git_v1_git_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *ReadFileOutputs) GetContent() []byte {
+	if x != nil {
+		return x.Content
+	}
+	return nil
+}
+
+func (x *ReadFileOutputs) GetSize() int64 {
+	if x != nil {
+		return x.Size
+	}
+	return 0
+}
+
+func (x *ReadFileOutputs) GetMode() string {
+	if x != nil {
+		return x.Mode
+	}
+	return ""
+}
+
+func (x *ReadFileOutputs) GetBinary() bool {
+	if x != nil {
+		return x.Binary
+	}
+	return false
+}
+
 // CommitPushOutputs is the result of one write.
 type CommitPushOutputs struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -436,7 +962,7 @@ type CommitPushOutputs struct {
 
 func (x *CommitPushOutputs) Reset() {
 	*x = CommitPushOutputs{}
-	mi := &file_git_v1_git_proto_msgTypes[4]
+	mi := &file_git_v1_git_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -448,7 +974,7 @@ func (x *CommitPushOutputs) String() string {
 func (*CommitPushOutputs) ProtoMessage() {}
 
 func (x *CommitPushOutputs) ProtoReflect() protoreflect.Message {
-	mi := &file_git_v1_git_proto_msgTypes[4]
+	mi := &file_git_v1_git_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -461,7 +987,7 @@ func (x *CommitPushOutputs) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommitPushOutputs.ProtoReflect.Descriptor instead.
 func (*CommitPushOutputs) Descriptor() ([]byte, []int) {
-	return file_git_v1_git_proto_rawDescGZIP(), []int{4}
+	return file_git_v1_git_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *CommitPushOutputs) GetSha() string {
@@ -518,7 +1044,42 @@ const file_git_v1_git_proto_rawDesc = "" +
 	"\n" +
 	"FilesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"l\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"I\n" +
+	"\tSignature\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
+	"\x05email\x18\x02 \x01(\tR\x05email\x12\x12\n" +
+	"\x04when\x18\x03 \x01(\tR\x04when\"\xb5\x01\n" +
+	"\x06Commit\x12\x10\n" +
+	"\x03sha\x18\x01 \x01(\tR\x03sha\x12)\n" +
+	"\x06author\x18\x02 \x01(\v2\x11.git.v1.SignatureR\x06author\x12/\n" +
+	"\tcommitter\x18\x03 \x01(\v2\x11.git.v1.SignatureR\tcommitter\x12\x18\n" +
+	"\amessage\x18\x04 \x01(\tR\amessage\x12#\n" +
+	"\rparent_hashes\x18\x05 \x03(\tR\fparentHashes\"\xc1\x01\n" +
+	"\tLogInputs\x12\x10\n" +
+	"\x03url\x18\x01 \x01(\tR\x03url\x12\x10\n" +
+	"\x03ref\x18\x02 \x01(\tR\x03ref\x12\x1f\n" +
+	"\vmax_commits\x18\x03 \x01(\x05R\n" +
+	"maxCommits\x12\x12\n" +
+	"\x04path\x18\x04 \x01(\tR\x04path\x12\x14\n" +
+	"\x05since\x18\x05 \x01(\tR\x05since\x12)\n" +
+	"\x05token\x18\x06 \x01(\v2\x13.flowstate.v1.ValueR\x05token\x12\x1a\n" +
+	"\busername\x18\a \x01(\tR\busername\"w\n" +
+	"\n" +
+	"LogOutputs\x12(\n" +
+	"\acommits\x18\x01 \x03(\v2\x0e.git.v1.CommitR\acommits\x12!\n" +
+	"\fresolved_ref\x18\x02 \x01(\tR\vresolvedRef\x12\x1c\n" +
+	"\ttruncated\x18\x03 \x01(\bR\ttruncated\"\x8f\x01\n" +
+	"\x0eReadFileInputs\x12\x10\n" +
+	"\x03url\x18\x01 \x01(\tR\x03url\x12\x10\n" +
+	"\x03ref\x18\x02 \x01(\tR\x03ref\x12\x12\n" +
+	"\x04path\x18\x03 \x01(\tR\x04path\x12)\n" +
+	"\x05token\x18\x04 \x01(\v2\x13.flowstate.v1.ValueR\x05token\x12\x1a\n" +
+	"\busername\x18\x05 \x01(\tR\busername\"k\n" +
+	"\x0fReadFileOutputs\x12\x18\n" +
+	"\acontent\x18\x01 \x01(\fR\acontent\x12\x12\n" +
+	"\x04size\x18\x02 \x01(\x03R\x04size\x12\x12\n" +
+	"\x04mode\x18\x03 \x01(\tR\x04mode\x12\x16\n" +
+	"\x06binary\x18\x04 \x01(\bR\x06binary\"l\n" +
 	"\x11CommitPushOutputs\x12\x10\n" +
 	"\x03sha\x18\x01 \x01(\tR\x03sha\x12+\n" +
 	"\x11landed_previously\x18\x02 \x01(\bR\x10landedPreviously\x12\x18\n" +
@@ -538,26 +1099,37 @@ func file_git_v1_git_proto_rawDescGZIP() []byte {
 	return file_git_v1_git_proto_rawDescData
 }
 
-var file_git_v1_git_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_git_v1_git_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_git_v1_git_proto_goTypes = []any{
 	(*LsRemoteInputs)(nil),    // 0: git.v1.LsRemoteInputs
 	(*RemoteRef)(nil),         // 1: git.v1.RemoteRef
 	(*LsRemoteOutputs)(nil),   // 2: git.v1.LsRemoteOutputs
 	(*CommitPushInputs)(nil),  // 3: git.v1.CommitPushInputs
-	(*CommitPushOutputs)(nil), // 4: git.v1.CommitPushOutputs
-	nil,                       // 5: git.v1.CommitPushInputs.FilesEntry
-	(*v1.Value)(nil),          // 6: flowstate.v1.Value
+	(*Signature)(nil),         // 4: git.v1.Signature
+	(*Commit)(nil),            // 5: git.v1.Commit
+	(*LogInputs)(nil),         // 6: git.v1.LogInputs
+	(*LogOutputs)(nil),        // 7: git.v1.LogOutputs
+	(*ReadFileInputs)(nil),    // 8: git.v1.ReadFileInputs
+	(*ReadFileOutputs)(nil),   // 9: git.v1.ReadFileOutputs
+	(*CommitPushOutputs)(nil), // 10: git.v1.CommitPushOutputs
+	nil,                       // 11: git.v1.CommitPushInputs.FilesEntry
+	(*v1.Value)(nil),          // 12: flowstate.v1.Value
 }
 var file_git_v1_git_proto_depIdxs = []int32{
-	6, // 0: git.v1.LsRemoteInputs.token:type_name -> flowstate.v1.Value
-	1, // 1: git.v1.LsRemoteOutputs.refs:type_name -> git.v1.RemoteRef
-	5, // 2: git.v1.CommitPushInputs.files:type_name -> git.v1.CommitPushInputs.FilesEntry
-	6, // 3: git.v1.CommitPushInputs.token:type_name -> flowstate.v1.Value
-	4, // [4:4] is the sub-list for method output_type
-	4, // [4:4] is the sub-list for method input_type
-	4, // [4:4] is the sub-list for extension type_name
-	4, // [4:4] is the sub-list for extension extendee
-	0, // [0:4] is the sub-list for field type_name
+	12, // 0: git.v1.LsRemoteInputs.token:type_name -> flowstate.v1.Value
+	1,  // 1: git.v1.LsRemoteOutputs.refs:type_name -> git.v1.RemoteRef
+	11, // 2: git.v1.CommitPushInputs.files:type_name -> git.v1.CommitPushInputs.FilesEntry
+	12, // 3: git.v1.CommitPushInputs.token:type_name -> flowstate.v1.Value
+	4,  // 4: git.v1.Commit.author:type_name -> git.v1.Signature
+	4,  // 5: git.v1.Commit.committer:type_name -> git.v1.Signature
+	12, // 6: git.v1.LogInputs.token:type_name -> flowstate.v1.Value
+	5,  // 7: git.v1.LogOutputs.commits:type_name -> git.v1.Commit
+	12, // 8: git.v1.ReadFileInputs.token:type_name -> flowstate.v1.Value
+	9,  // [9:9] is the sub-list for method output_type
+	9,  // [9:9] is the sub-list for method input_type
+	9,  // [9:9] is the sub-list for extension type_name
+	9,  // [9:9] is the sub-list for extension extendee
+	0,  // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_git_v1_git_proto_init() }
@@ -571,7 +1143,7 @@ func file_git_v1_git_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_git_v1_git_proto_rawDesc), len(file_git_v1_git_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   6,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

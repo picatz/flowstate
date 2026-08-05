@@ -1,8 +1,45 @@
 // Command flowstate-plugin-git provides git-specific version-control tasks:
-// reading a remote's refs without cloning (git.ls_remote) and writing a
-// commit to a branch in one activity (git.commit_push), all over the git
-// smart-HTTP protocol via go-git - a pure-Go implementation, so nothing here
-// ever execs a git binary, a hook, or any other subprocess.
+// reading a remote's refs without cloning (git.ls_remote), a read/audit tier
+// (git.log, git.read_file), and writing a commit to a branch in one activity
+// (git.commit_push), all over the git smart-HTTP protocol via go-git - a
+// pure-Go implementation, so nothing here ever execs a git binary, a hook,
+// or any other subprocess.
+//
+// # The read/audit tier: git.log and git.read_file
+//
+// Both are exactly what git.commit_push is not: genuinely stateless, and
+// composable as two ordinary, independent Flowfile steps because of it.
+// git.log answers "who changed this, and what did they say" (a bounded
+// slice of history, author distinct from committer, the full message,
+// parent hashes, an optional path filter and since cutoff); git.read_file
+// answers "what is there now" (one file's content, size, mode, and whether
+// it looks binary, at one ref). Neither needs commit_push's own "one
+// activity, one write" discipline, because neither has a workspace to hand
+// between steps in the first place - each clones fresh, reads, and returns
+// content, the same shape plugins/vcs's vcs.log and vcs.diff already use for
+// their own reads. git.log is this plugin's own richer, git-specific
+// counterpart to vcs.log: a committer line distinct from the author, and a
+// commit's parent hashes, that vcs.log's backend-agnostic Commit schema has
+// no room for - see git.proto's own top comment for why that duplication is
+// deliberate, not an oversight.
+//
+// A path filter searches only the fetched window: git.log's own clone depth
+// is derived from max_commits (see log.go's fetchDepthForMaxCommits), not
+// from what path might need. A commit older than that shallow window that
+// touched path exists but is never seen, and truncated: true is how that is
+// reported honestly rather than silently under-answering - the same
+// shallow-clone limitation errors.go's classifyGitError already names for
+// git.commit_push's own base_ref resolution ("no such revision within the
+// depth this task fetched").
+//
+// This split - two composable reads, one indivisible write - is exactly the
+// asymmetry "One activity, one write," below, argues for on the write side:
+// a write needs the discipline because there is no durable workspace
+// between activities to stage a multi-step write into; a read has no such
+// constraint; splitting git.commit_push into separate stage/commit/push
+// tasks would need a workspace this system does not have, and was
+// considered and rejected for exactly that reason - see that section for
+// the full argument, which applies unchanged.
 //
 // # Why "git" and not "vcs"
 //
