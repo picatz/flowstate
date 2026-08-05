@@ -302,6 +302,12 @@ func CheckInputConstraintShape(decl *InputDeclaration) error {
 		return fmt.Errorf("input %q min_items (%d) is greater than max_items (%d), so no list can satisfy both",
 			name, decl.GetMinItems(), decl.GetMaxItems())
 	}
+	if decl.MinItems != nil && decl.GetMinItems() > maxListElements {
+		return fmt.Errorf("input %q min_items (%d) is greater than %d, the most list elements this server "+
+			"binds a run input to; no list can ever satisfy both, since every list over %d elements is "+
+			"refused before this constraint runs",
+			name, decl.GetMinItems(), maxListElements, maxListElements)
+	}
 
 	if decl.Must != nil {
 		if _, err := CompileMustExpression(decl.GetMust(), t); err != nil {
@@ -350,16 +356,24 @@ func CheckInputConstraints(name string, decl *InputDeclaration, value *Value) er
 		return err
 	}
 
-	if decl.Must == nil {
-		return nil
+	// Bounded here, unconditionally, regardless of whether `must:`/`unique:`
+	// is declared — the same #204 gap [BindRunInputs] closes for a submitted
+	// input applies identically to a literal checked at author time, because
+	// every caller of this function reaches here with a literal value: a
+	// submitted (or defaulted) run input through [BindRunInputs], a literal
+	// `default:`/`example:` through [CheckInputDefault]/[CheckInputExample],
+	// and a literal `with:` argument through `flowfile/validate_call.go`. A
+	// second bound duplicated at each of those call sites could disagree with
+	// this one; reusing [checkInputListElementBound] — the identical walker
+	// and constant [BindRunInputs] uses — is what keeps them from ever being
+	// able to. Only a literal is checked: an expression's value is not known
+	// until [BindRunInputs] resolves it, so there is nothing here yet to walk.
+	if err := checkInputListElementBound(name, lit); err != nil {
+		return err
 	}
 
-	// Run unconditionally rather than gated on decl.GetType() == TYPE_LIST: a
-	// struct-typed input's `must:` reaches lists nested inside it just as
-	// cheaply as a list-typed input's does, and gating on the declared type is
-	// exactly what let a struct's nested list through uncounted.
-	if err := checkConstraintValueBound("input", name, lit); err != nil {
-		return err
+	if decl.Must == nil {
+		return nil
 	}
 
 	ast, err := CompileMustExpression(decl.GetMust(), decl.GetType())
@@ -546,9 +560,13 @@ func numericLiteralValue(lit *expr.Value) (float64, bool) {
 // the wall-clock time. Whether that list arrived via a declared `must:` or
 // via a plain `for_each` changes nothing about how expensive it is to walk,
 // so this one constant now bounds both: [checkConstraintValueBound] applies
-// it wherever a `must:`/`unique:` is declared, and [BindRunInputs] applies it
-// to *every* submitted (or defaulted) input value regardless — see that
-// function's own call for the reasoning that closes the gap.
+// it for an output's `must:`, and [CheckInputConstraints] applies it to
+// *every* literal it is handed regardless of whether `must:`/`unique:` is
+// declared — which reaches it for every submitted (or defaulted) run input
+// through [BindRunInputs], and for every literal `default:`, `example:`, and
+// call-boundary `with:` argument checked at author time, since all of those
+// call [CheckInputConstraints] too. See that function's own call for the
+// reasoning that closes the gap.
 //
 // That total-rather-than-per-list shape is also the fix for a bug this bound
 // used to have: it was checked only against a literal declared `type: list`,
@@ -589,8 +607,8 @@ func numericLiteralValue(lit *expr.Value) (float64, bool) {
 const maxListElements = 10_000
 
 // maxConstraintValueDepth bounds how deeply nested a value's lists and
-// structs may be while [checkConstraintValueBound] (and, for every submitted
-// input, [BindRunInputs] directly) walks it.
+// structs may be while [checkConstraintValueBound] (and, for every literal
+// [CheckInputConstraints] is handed, [checkInputListElementBound]) walks it.
 //
 // This is a different resource than maxListElements, and CLAUDE.md is
 // explicit that bounding one does not bound the other: a value can nest a
@@ -631,18 +649,14 @@ func checkConstraintListBound(name string, lit *expr.Value) error {
 // [maxConstraintValueDepth]. kind is "input" or "output", so the message
 // names the right side of the constraint.
 //
-// Called unconditionally whenever a declaration has a `must:`, regardless of
-// declared type: a list bound gated on `decl.GetType() == TYPE_LIST` is
-// exactly the bug this replaces, since a struct-typed value's `must:` can
-// still reach an arbitrarily large nested list.
-//
-// [BindRunInputs] also calls [walkConstraintValue] directly, through
-// [checkInputListElementBound], for every value it binds — not only ones
-// with a `must:`/`unique:` declared — which is the general fix #204 asked
-// for. This function stays as the must:/unique:-specific entry point so its
-// existing callers ([CheckInputConstraints], [CheckOutputConstraint]) are
-// undisturbed; both paths walk the identical value with the identical
-// bounds, because they are the identical resource.
+// Called from [CheckOutputConstraint] whenever an output declares `must:`.
+// The input side used to call this the same way, gated on `decl.Must != nil`
+// — exactly the bug this replaces, since a struct-typed value's `must:` can
+// reach an arbitrarily large nested list regardless of declared type — but
+// [CheckInputConstraints] now calls [checkInputListElementBound]
+// unconditionally instead, so this function stays only as the output-side
+// entry point; both still walk the identical value with [walkConstraintValue]
+// and the identical bounds, because they are the identical resource.
 func checkConstraintValueBound(kind, name string, lit *expr.Value) error {
 	total := 0
 	return walkConstraintValue(kind, name, lit, 0, &total)
@@ -650,16 +664,20 @@ func checkConstraintValueBound(kind, name string, lit *expr.Value) error {
 
 // checkInputListElementBound is [checkConstraintValueBound] reached without
 // requiring a `must:`/`unique:` to have been declared — the general case
-// #204 found missing. [BindRunInputs] calls this for every input value it
-// binds, whether the caller supplied it or a declaration's own default
-// filled it in, because a submitted (or defaulted) list reaches `if:`,
+// #204 found missing. [CheckInputConstraints] calls this for every literal
+// input value it is handed, unconditionally — whether it arrived through
+// [BindRunInputs] (a caller's submitted argument, or a declaration's own
+// default filling in for one left out), through [CheckInputDefault] or
+// [CheckInputExample] checking a literal at author time, or through a call
+// boundary's literal `with:` argument — because a list reaches `if:`,
 // `for_each`, and every other CEL expression over it exactly as cheaply or
-// expensively regardless of whether a constraint happens to be declared —
-// gating the walk on `must:`/`unique:` being present is precisely the gap
-// that let an unconstrained list-typed input through unbounded. Reuses
+// expensively regardless of whether a constraint happens to be declared, or
+// whether the value is being checked at submit or at author time. Gating the
+// walk on `must:`/`unique:` being present is precisely the gap that let an
+// unconstrained list-typed input through unbounded. Reuses
 // [walkConstraintValue] rather than a second walker, per this repository's
-// rule that one resource gets one bound: the constraint path and this path
-// must never be able to disagree about how many elements a value carries.
+// rule that one resource gets one bound: every path that reaches this must
+// never be able to disagree about how many elements a value carries.
 func checkInputListElementBound(name string, lit *expr.Value) error {
 	total := 0
 	return walkConstraintValue("input", name, lit, 0, &total)

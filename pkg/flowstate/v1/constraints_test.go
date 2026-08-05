@@ -170,6 +170,83 @@ func TestConstraintShapeRefusesAMismatchedKey(t *testing.T) {
 	assert.Contains(t, err.Error(), "string input")
 }
 
+// TestConstraintShapeRefusesMinItemsAboveTheCap is Codex's first finding on
+// #206: maxListElements (10,000) now refuses *every* bound input regardless
+// of what it declares, so a declaration whose own min_items sits above that
+// cap can never be satisfied — anything over 10,000 elements is refused
+// before checkListConstraints ever runs, and anything at or under 10,000
+// fails the declared minimum. This is the same class as the neighbouring
+// min_items > max_items check: an impossible declaration caught when it
+// loads rather than when a run happens to exercise it, so the message names
+// both numbers.
+func TestConstraintShapeRefusesMinItemsAboveTheCap(t *testing.T) {
+	t.Parallel()
+
+	decl := &v1.InputDeclaration{Name: "records", Type: v1.InputDeclaration_TYPE_LIST, MinItems: u64Ptr(10_001)}
+
+	err := v1.CheckInputConstraintShape(decl)
+	require.Error(t, err, "an unsatisfiable min_items above the server-wide element cap was accepted")
+	assert.Contains(t, err.Error(), "records")
+	assert.Contains(t, err.Error(), "10001")
+	assert.Contains(t, err.Error(), "10000")
+}
+
+// TestConstraintShapeAcceptsAMinItemsAtTheCap is the boundary: exactly
+// maxListElements is satisfiable (a list of exactly that many elements binds
+// clean, per TestBindRunInputsAcceptsAnUnconstrainedListExactlyAtTheBound),
+// so min_items at the cap must not be refused.
+func TestConstraintShapeAcceptsAMinItemsAtTheCap(t *testing.T) {
+	t.Parallel()
+
+	decl := &v1.InputDeclaration{Name: "records", Type: v1.InputDeclaration_TYPE_LIST, MinItems: u64Ptr(10_000)}
+
+	assert.NoError(t, v1.CheckInputConstraintShape(decl), "min_items exactly at the server-wide cap was refused")
+}
+
+// TestConstraintShapeAcceptsASaneMinItems is the ordinary non-regression
+// case: a ordinary, small min_items must keep validating.
+func TestConstraintShapeAcceptsASaneMinItems(t *testing.T) {
+	t.Parallel()
+
+	decl := &v1.InputDeclaration{Name: "records", Type: v1.InputDeclaration_TYPE_LIST, MinItems: u64Ptr(3)}
+
+	assert.NoError(t, v1.CheckInputConstraintShape(decl), "a sane min_items was refused")
+}
+
+// TestCheckInputDefaultRefusesAnOversizedLiteral is Codex's second finding on
+// #206: BindRunInputs' new element bound was not mirrored by the author-time
+// literal validators, so a Flowfile with an oversized literal default: passed
+// flow validate and only failed once a run actually started. CheckInputDefault
+// now reaches the identical bound (through CheckInputConstraints), because an
+// unconstrained list's element count was never walked by CheckInputValue or
+// the old CheckInputConstraints on its own.
+func TestCheckInputDefaultRefusesAnOversizedLiteral(t *testing.T) {
+	t.Parallel()
+
+	decl := &v1.InputDeclaration{
+		Name: "records", Type: v1.InputDeclaration_TYPE_LIST,
+		Default: v1.NewLiteralList(manyItems(10_001)...),
+	}
+
+	err := v1.CheckInputDefault(decl)
+	require.Error(t, err, "a literal default over the element bound was accepted at author time")
+	assert.Contains(t, err.Error(), "records")
+	assert.Contains(t, err.Error(), "list elements")
+}
+
+// TestCheckInputDefaultAcceptsASaneLiteral is the non-regression case: an
+// ordinary, small literal default must keep validating.
+func TestCheckInputDefaultAcceptsASaneLiteral(t *testing.T) {
+	t.Parallel()
+
+	decl := &v1.InputDeclaration{
+		Name: "records", Type: v1.InputDeclaration_TYPE_LIST,
+		Default: v1.NewLiteralList("a", "b", "c"),
+	}
+
+	assert.NoError(t, v1.CheckInputDefault(decl), "a sane literal default was refused")
+}
+
 // TestBindRunInputsRefusesABadDeclarationBeforeAnyValue proves the shape check
 // runs at BindRunInputs even for a specification that never passed through
 // flow validate — a hand-built Workflow message reaching the server directly.

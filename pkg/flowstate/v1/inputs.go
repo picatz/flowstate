@@ -119,26 +119,18 @@ func BindRunInputs(wf *Workflow, submitted map[string]*Value) (map[string]*Value
 			return nil, err
 		}
 
-		// Bounded here, unconditionally, before [CheckInputConstraints] — which
-		// only walks a value's lists when the declaration carries a `must:` or
-		// `unique:` (see [checkConstraintValueBound]). #204 found that gate was
-		// the gap: a list-typed (or struct-typed, carrying a nested list) input
-		// with *no* constraint declared reaches `if:`, `for_each`, and every
-		// other CEL expression over it exactly as unbounded, because none of
-		// those call sites route through a constraint check at all. This is the
-		// one choke point every submit path already passes through — the RPC's
-		// `Run`, `CreateSchedule`, the local driver, and a call boundary's
-		// arguments all reach here — so it is where the bound belongs rather
-		// than at each consumer, which is exactly how the constraint-only gate
-		// missed every other path in the first place. See
-		// [checkInputListElementBound] and [maxListElements] for the resource,
-		// the reused walker, and why the limit is what it is.
-		if lit := value.GetLiteral(); lit != nil {
-			if err := checkInputListElementBound(name, lit); err != nil {
-				return nil, err
-			}
-		}
-
+		// #204 found the element bound was gated on a declaration carrying
+		// `must:`/`unique:`, so a list-typed (or struct-typed, carrying a
+		// nested list) input with *no* constraint declared reached `if:`,
+		// `for_each`, and every other CEL expression over it exactly as
+		// unbounded. [CheckInputConstraints] now applies
+		// [checkInputListElementBound] unconditionally, before its `must:`
+		// check, to every literal it is handed — which closes the gap here
+		// and, by the same call, at a literal `default:`/`example:` and a
+		// call boundary's literal `with:` argument, since all of those reach
+		// the identical function. See [checkInputListElementBound] and
+		// [maxListElements] for the resource, the reused walker, and why the
+		// limit is what it is.
 		if err := CheckInputConstraints(name, declaration, value); err != nil {
 			return nil, err
 		}
