@@ -307,6 +307,18 @@ func fixOne(out, reports io.Writer, theme ui.Theme, path string, opts fixOptions
 // [flowfile.Fix] enforces from the inside, read here so a walk never hands a
 // policy file to the rewriter to begin with, and a sweep over a mixed directory
 // does not surface a refusal for every file in it that was never a Flowfile.
+//
+// [flowfile.LooksLikeFlowfile] answers false for two different reasons, and a
+// sweep must not treat them alike: a document that parses fine into some other
+// recognized shape (a policy file, docker-compose.yaml) is correctly passed
+// over in silence, but a document that does not parse as YAML *at all* is not
+// "recognizably something else" — it is broken, and broken is exactly what a
+// sweep must surface rather than swallow, the same way a named path already
+// does through [flowfile.Fix]'s own refusal. So a file the shape check rejects
+// gets one more look, through [flowfile.IsMalformedYAML], before it is dropped;
+// a file that fails to parse is added anyway; [fixOne] then hands it to
+// [flowfile.Fix], whose own refusal reports the parse error with the file's
+// name attached.
 func collectFlowfiles(paths []string) ([]string, error) {
 	var out []string
 	for _, path := range paths {
@@ -331,7 +343,7 @@ func collectFlowfiles(paths []string) ([]string, error) {
 				if err != nil {
 					return fmt.Errorf("error reading %s: %w", p, err)
 				}
-				if flowfile.LooksLikeFlowfile(data) {
+				if flowfile.LooksLikeFlowfile(data) || flowfile.IsMalformedYAML(data) {
 					out = append(out, p)
 				}
 			}

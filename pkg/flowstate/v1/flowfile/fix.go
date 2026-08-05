@@ -504,6 +504,33 @@ func LooksLikeFlowfile(data []byte) bool {
 	return mapping != nil && hasRecognizedKey(mapping)
 }
 
+// IsMalformedYAML reports whether data is small enough to have been a
+// candidate for [LooksLikeFlowfile] at all, and fails to parse as YAML
+// outright — as opposed to parsing fine into some other, unrecognized shape.
+//
+// It exists to give a directory walk a second question to ask, because
+// [LooksLikeFlowfile] answers false for two situations a sweep must not treat
+// alike: a document that parses into something that is legitimately not a
+// Flowfile (an egress policy, a docker-compose file), which a sweep is right
+// to pass over in silence, and a document that does not parse at all, which
+// is the one shape a directory walk must never quietly drop — an author who
+// broke their workflow.yaml's syntax is exactly who needs told. A file named
+// directly on the command line always reaches [Fix], which reports this same
+// failure; this function lets a sweep give an unparseable file that chance
+// too, rather than filtering it out before Fix ever sees it.
+//
+// Oversized input answers false, matching [LooksLikeFlowfile]: a file too
+// large to be a candidate is left to whatever glob named it explicitly, not
+// reported here, so the two functions never disagree about the boundary
+// they share.
+func IsMalformedYAML(data []byte) bool {
+	if len(data) > maxBytes {
+		return false
+	}
+	_, err := parser.ParseBytes(data, 0)
+	return err != nil
+}
+
 // asMapping returns a node as a mapping, unwrapping an anchor and normalizing
 // the single-entry shape the parser hands back for a document with one key.
 func asMapping(n ast.Node) *ast.MappingNode {
