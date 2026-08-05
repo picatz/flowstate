@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -70,6 +71,39 @@ func TestGitReadFileDefaultsRefToHead(t *testing.T) {
 	}
 	if string(out.Content) != "seed\n" {
 		t.Fatalf("content = %q, want %q", out.Content, "seed\n")
+	}
+}
+
+// TestGitReadFileResolvesAShaOlderThanTheDefaultDepthOneWindow is the P2
+// regression test for git.read_file's half of the "ref: cannot resolve what
+// the task advertises" finding, and the audit chain
+// examples/plugins/git/log-and-read-file.yaml is built to demonstrate: a
+// commit several pushes older than HEAD - the kind of sha a previous git.log
+// call itself would return - must still resolve, even though
+// readFileCloneDepth (1) alone would only ever reach the tip. Before the
+// fix, doReadFile cloned at depth 1 regardless of ref, so this sha - never
+// the tip of any fetched branch - was absent from the store entirely and
+// resolveOptionalRef reported it as a missing revision, not merely an
+// oversized request refused on its own honest terms.
+func TestGitReadFileResolvesAShaOlderThanTheDefaultDepthOneWindow(t *testing.T) {
+	remote := newBareRemote(t)
+	seedRemote(t, remote, "main")
+	work := newSeededWorkingClone(t, remote, "main")
+
+	when := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	oldSha := pushCommit(t, work, remote, "main", "policy.txt", "v1\n",
+		"add the policy", "A", "a@example.com", "A", "a@example.com", when)
+	for i := 0; i < 5; i++ {
+		pushCommit(t, work, remote, "main", "other.txt", fmt.Sprintf("content %d", i), fmt.Sprintf("commit %d", i),
+			"A", "a@example.com", "A", "a@example.com", when.Add(time.Duration(i+1)*time.Minute))
+	}
+
+	out, err := doReadFile(context.Background(), readFileParams{url: fileURL(t, remote), ref: oldSha.String(), path: "policy.txt"})
+	if err != nil {
+		t.Fatalf("doReadFile at a historical sha 5 commits behind HEAD: %v - the audit chain git.log -> git.read_file requires resolving a sha git.log itself could have returned", err)
+	}
+	if string(out.Content) != "v1\n" {
+		t.Fatalf("content = %q, want %q (the file's content at oldSha, not HEAD's)", out.Content, "v1\n")
 	}
 }
 

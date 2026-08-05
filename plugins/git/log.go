@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/go-git/go-git/v5"
@@ -106,7 +108,21 @@ func doLog(ctx context.Context, p logParams) (*gitv1.LogOutputs, error) {
 	// found, and this is exactly what Truncated exists to report honestly -
 	// see README.md, "Operational scale," for the equivalent limit
 	// git.commit_push's own base_ref resolution already has.
+	//
+	// An explicit ref is the one case that widens this: fetchDepthForMaxCommits
+	// only reasons about walking history forward from the default branch's own
+	// tip, but a named ref can be arbitrarily older than that window - the
+	// commit a previous git.log call itself returned, for instance. Rather
+	// than fetch that ref specifically (which go-git's clone/fetch API has no
+	// clean way to do for an arbitrary commit-ish, only a named branch/tag),
+	// this deepens to the plugin's own existing clone-depth ceiling
+	// (maxCloneDepth, the same bound git.commit_push's base_ref resolution
+	// already uses) whenever a caller names a ref at all - never for the
+	// common empty-ref call, so the shallow default stays shallow.
 	fetchDepth := fetchDepthForMaxCommits(p.maxCommits)
+	if p.ref != "" {
+		fetchDepth = maxCloneDepth
+	}
 
 	repo, err := cloneBounded(ctx, cloneOptions{url: p.url, depth: fetchDepth, token: p.token, username: p.username})
 	if err != nil {
@@ -122,7 +138,8 @@ func doLog(ctx context.Context, p logParams) (*gitv1.LogOutputs, error) {
 
 	logOpts := &git.LogOptions{From: startHash}
 	if p.path != "" {
-		logOpts.PathFilter = func(candidate string) bool { return candidate == p.path }
+		path := p.path
+		logOpts.PathFilter = func(candidate string) bool { return pathMatchesFilter(candidate, path) }
 	}
 	if !p.since.IsZero() {
 		since := p.since
@@ -135,7 +152,7 @@ func doLog(ctx context.Context, p logParams) (*gitv1.LogOutputs, error) {
 	}
 	defer commitIter.Close()
 
-	commits, truncated, err := collectLogCommits(commitIter, p.maxCommits)
+	commits, truncated, err := collectLogCommits(repo, commitIter, p.maxCommits)
 	if err != nil {
 		return nil, classifyGitError(err)
 	}
@@ -181,7 +198,18 @@ func resolveOptionalRef(repo *git.Repository, ref string) (plumbing.Hash, error)
 // exist independently (see validate.go's own doc comment on
 // maxTotalLogMessageBytes): a repository with few, enormous commit messages
 // can exceed the byte budget long before it exceeds the count.
-func collectLogCommits(iter object.CommitIter, maxCommits int) ([]*gitv1.Commit, bool, error) {
+//
+// A third way collection can stop is the shallow clone's own fetch boundary,
+// rather than either bound above: with a sparse path filter, the walk can run
+// out of commits to consider before it ever reaches maxCommits or the byte
+// budget, simply because the shallow window it fetched ran out. go-git's own
+// commit walker surfaces that as plumbing.ErrObjectNotFound the moment it
+// tries to step past the boundary commit into a parent this clone never
+// fetched - see repoHasShallowBoundary's own doc comment for why that error,
+// specifically, is the honest signal to convert into truncated: true rather
+// than either a hard failure or a false truncated: false. Passed repo, not
+// merely iter, so that check can consult repo.Storer directly.
+func collectLogCommits(repo *git.Repository, iter object.CommitIter, maxCommits int) ([]*gitv1.Commit, bool, error) {
 	var (
 		commits    []*gitv1.Commit
 		truncated  bool
@@ -215,17 +243,64 @@ func collectLogCommits(iter object.CommitIter, maxCommits int) ([]*gitv1.Commit,
 		})
 		return nil
 	})
-	if err != nil && err != storer.ErrStop {
-		return nil, false, err
+	if err == nil || err == storer.ErrStop {
+		return commits, truncated, nil
 	}
-	return commits, truncated, nil
+	if errors.Is(err, plumbing.ErrObjectNotFound) && repoHasShallowBoundary(repo) {
+		// The walk did not run out of history - it ran out of what this
+		// shallow clone fetched. A commit at the true end of history has no
+		// parent hashes at all (iter.ForEach would then reach a clean EOF,
+		// the first branch above); a commit whose parent hashes exist but
+		// whose parent objects do not is exactly what a shallow fetch
+		// boundary looks like, and repoHasShallowBoundary confirms this
+		// clone actually has one, rather than assuming from this error
+		// shape alone. Report honestly: there was more history a deeper
+		// fetch could have found, so truncated is true even though neither
+		// maxCommits nor the byte budget was what stopped this call.
+		return commits, true, nil
+	}
+	return nil, false, err
 }
 
+// repoHasShallowBoundary reports whether repo's own object store recorded any
+// shallow-boundary commits - go-git's own bookkeeping (equivalent to git's
+// .git/shallow) for exactly the commits a shallow fetch cut off from their
+// real parents. Not every storer.Storer implementation tracks this (the
+// interface embeds only EncodedObjectStorer and ReferenceStorer), but
+// cloneBounded's own packBoundedStorer always unwraps to a plain
+// *memory.Storage (see clone.go), which does - so this holds for every
+// repository this plugin ever builds.
+func repoHasShallowBoundary(repo *git.Repository) bool {
+	ss, ok := repo.Storer.(storer.ShallowStorer)
+	if !ok {
+		return false
+	}
+	shallow, err := ss.Shallow()
+	return err == nil && len(shallow) > 0
+}
+
+// pathMatchesFilter reports whether candidate is path itself, or a path
+// beneath the directory path names - the same semantics `git log -- <path>`
+// has, where naming a directory includes everything under it. The separator
+// is checked explicitly, not merely a prefix: strings.HasPrefix(candidate,
+// path) alone would make path "auth" also match "authz/token.go", a
+// different path this filter must not silently report on.
+func pathMatchesFilter(candidate, path string) bool {
+	return candidate == path || strings.HasPrefix(candidate, path+"/")
+}
+
+// signatureOf formats sig.When in the zone git itself recorded, never
+// normalized to UTC - Signature.when's own schema doc promises RFC 3339 "in
+// the recorded zone," and go-git's own decoder (object.Signature.Decode)
+// already parses the raw "+hhmm"/"-hhmm" offset into sig.When's Location via
+// time.FixedZone, so formatting it directly (not sig.When.UTC()) is what
+// keeps that promise: a commit authored at -07:00 comes back as -07:00, not
+// silently normalized to Z.
 func signatureOf(sig object.Signature) *gitv1.Signature {
 	return &gitv1.Signature{
 		Name:  sig.Name,
 		Email: sig.Email,
-		When:  sig.When.UTC().Format("2006-01-02T15:04:05Z07:00"),
+		When:  sig.When.Format("2006-01-02T15:04:05Z07:00"),
 	}
 }
 

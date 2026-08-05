@@ -54,16 +54,24 @@ including each commit's author, committer, full message, and parents, with
 an optional `path` filter (`git log -- <path>`) and `since` cutoff;
 `git.read_file` is one file's content, size, mode, and whether it looks
 binary, at one ref. Both are genuinely stateless and clone only the
-shallowest window each call actually needs - `git.log` fetches
-`max_commits + 1` (see `log.go`'s `fetchDepthForMaxCommits`), and
-`git.read_file` fetches depth 1, since reading one file at one ref never
-needs history at all (see `validate.go`'s `readFileCloneDepth`). Neither
-splits into smaller tasks the way `git.commit_push` deliberately does not
-either - see "Where is `git add`" and doc.go for why a write needs one
-activity with no workspace handed between steps; a read has no such
-constraint, and `git.log`/`git.read_file` compose cleanly as two ordinary,
-independent steps precisely because each is a single, complete, stateless
-clone-and-read.
+shallowest window each call actually needs for the *default* ref (the
+remote's own HEAD) - `git.log` fetches `max_commits + 1` (see `log.go`'s
+`fetchDepthForMaxCommits`), and `git.read_file` fetches depth 1, since
+reading one file at the tip never needs history at all (see `validate.go`'s
+`readFileCloneDepth`). Naming an explicit ref - anything go-git's own
+revision parser accepts, including an older sha a previous `git.log` call
+itself returned - deepens both to `maxCloneDepth` instead, so the schema's
+own advertised contract (any branch, tag, or commit-ish) and what actually
+resolves agree; see `doLog` and `doReadFileWithMax`'s own doc comments for
+why that widening only ever fires for an explicit ref, never the common
+default-ref call. Neither splits into smaller tasks the way `git.commit_push`
+deliberately does not either - see "Where is `git add`" and doc.go for why a
+write needs one activity with no workspace handed between steps; a read has
+no such constraint, and `git.log`/`git.read_file` compose cleanly as two
+ordinary, independent steps precisely because each is a single, complete,
+stateless clone-and-read - `log-and-read-file.yaml` binds `git.read_file`'s
+`ref` to the exact sha `git.log` found, so the two steps read the same
+commit rather than "then" and "now."
 
 ## Authentication
 
@@ -511,6 +519,54 @@ assertion - not only the ones CLAUDE.md's own house gate demanded up front:
    documented anonymous-read shape - proven to matter by temporarily adding
    the identical unconditional check to `listRemoteRefs`, confirming that
    test alone goes red, and removing it again.
+10. **Four review findings against the read tier** (Codex, PR #202), all
+    verified against the code before being fixed:
+    - `collectLogCommits` set `truncated: true` only when `max_commits` or
+      the message-byte budget stopped collection - never when the shallow
+      clone's own fetch boundary did, which a sparse `path` filter reaches
+      routinely. Worse than the false `truncated: false` the finding named:
+      go-git's own commit walker actually errors out
+      (`plumbing.ErrObjectNotFound`) the moment it steps past the boundary
+      into a parent this clone never fetched, so `doLog` surfaced an opaque
+      failure instead. `collectLogCommits` now recognizes that specific
+      error, confirms the clone actually has a shallow boundary
+      (`repoHasShallowBoundary`, via `repo.Storer`'s own shallow-commit
+      bookkeeping) before treating it as one, and reports `truncated: true`
+      rather than failing or under-answering.
+      `TestGitLogReportsTruncatedWhenPathFilterReachesShallowBoundary` ran
+      red (`doLog: object not found`) before the fix;
+      `TestGitLogReportsNotTruncatedWhenPathFilteredHistoryGenuinelyEnds`
+      is the opposite direction, so the fix is not merely "always true."
+    - `path`'s `PathFilter` matched only an exact string, so `path: auth`
+      matched nothing under `auth/` - `git log -- <path>`'s own documented
+      semantics include descendants. `pathMatchesFilter` now matches the
+      exact path or anything beneath it, with the separator checked
+      explicitly so `path: auth` still does not also match a sibling like
+      `authz/token.go` - the "obvious wrong implementation" a bare
+      `strings.HasPrefix` would be.
+      `TestPathMatchesFilterMatchesDescendantsNotSiblings` and
+      `TestGitLogPathFilterMatchesDescendantsOfADirectory` cover both
+      directions.
+    - `ref` advertises any branch, tag, or commit-ish, but `git.log` and
+      `git.read_file` both cloned at a fixed, small depth regardless of
+      `ref`, so an explicitly named older sha - exactly what a previous
+      `git.log` call itself returns - resolved as missing. Both now deepen
+      to `maxCloneDepth` whenever a caller names a ref at all, never for the
+      common empty-ref (HEAD) call, so the shallow default stays shallow.
+      `log-and-read-file.yaml` now binds `git.read_file`'s `ref` to the sha
+      `git.log` found, exercising the chain end to end rather than reading
+      the default branch's tip twice under two names.
+      `TestGitLogResolvesAShaOlderThanMaxCommitsWindow` and
+      `TestGitReadFileResolvesAShaOlderThanTheDefaultDepthOneWindow` cover
+      the two tasks separately.
+    - `signatureOf` normalized every timestamp to UTC
+      (`sig.When.UTC().Format(...)`), discarding the offset git actually
+      recorded, though the schema promises RFC 3339 "in the recorded zone."
+      go-git's own decoder already parses the raw offset into a
+      `time.FixedZone` - the fix is simply not calling `.UTC()`.
+      `TestGitLogPreservesTheAuthorsRecordedTimezoneOffset` asserts the
+      returned string ends in the original `-07:00`, not merely that it
+      parses as RFC 3339 (which `Z` also would).
 
 ## SDK gaps found while building this
 
@@ -558,17 +614,24 @@ built on - and this plugin's own bounds (`maxCloneDepth`, `maxResponseBytes`,
 request that exceeds them rather than attempt a clone or a tree rebuild that
 could exhaust a worker's memory trying to serve one. `git.log` and
 `git.read_file` are deliberately the *cheapest* callers of `cloneBounded` in
-this plugin against a large repository: `git.read_file` always clones at
-depth 1 (`readFileCloneDepth`) - one file at one ref never needs history -
-and `git.log`'s own depth is `max_commits + 1`, never the fixed
-`defaultCloneDepth` `git.commit_push` uses to resolve `base_ref`. A `path`
-filter on `git.log` narrows *which* commits within that fetched window are
-returned, never how deep the window itself reaches - a commit older than
+this plugin against a large repository, for the default ref: `git.read_file`
+clones at depth 1 (`readFileCloneDepth`) - the tip of a fetched branch never
+needs history - and `git.log`'s own depth is `max_commits + 1`, never the
+fixed `defaultCloneDepth` `git.commit_push` uses to resolve `base_ref`. Both
+deepen to `maxCloneDepth` instead whenever a caller names an explicit ref, so
+a historical sha - the audit chain `log-and-read-file.yaml` demonstrates -
+actually resolves rather than being reported missing; see `doLog` and
+`doReadFileWithMax`'s own doc comments. A `path` filter on `git.log` matches
+the exact path or any path beneath it (`git log -- <path>`'s own semantics -
+naming a directory includes everything under it, never a sibling that merely
+shares a name prefix), narrowing *which* commits within the fetched window
+are returned, never how deep the window itself reaches - a commit older than
 that window that touched `path` is not found, and `truncated: true` is how
-that is reported honestly rather than silently under-answering. Said
-plainly here, as an operating constraint someone provisioning a worker for
-this plugin should know before pointing it at their largest repository, not
-discovered from a worker that fell over.
+that is reported honestly, including when collection runs out of the
+window itself rather than out of history (`collectLogCommits`), rather than
+silently under-answering. Said plainly here, as an operating constraint
+someone provisioning a worker for this plugin should know before pointing it
+at their largest repository, not discovered from a worker that fell over.
 
 **Packfile inflation.** `maxResponseBytes` bounds the *compressed* bytes a
 remote sends over HTTP; it says nothing about what those bytes decompress

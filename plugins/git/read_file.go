@@ -93,7 +93,23 @@ func doReadFileWithMax(ctx context.Context, p readFileParams, maxBytes int64) (*
 	// history, only the tree the resolved commit points to - the shallowest
 	// clone go-git can do for this operation. See validate.go's own doc
 	// comment on readFileCloneDepth.
-	repo, err := cloneBounded(ctx, cloneOptions{url: p.url, depth: readFileCloneDepth, token: p.token, username: p.username})
+	//
+	// That reasoning only holds for the default ref (the remote's own HEAD).
+	// An explicit ref may be any commit-ish the schema advertises - including
+	// an older sha a previous git.log call itself returned - and a depth-1
+	// clone never contains anything but the tip commit of each fetched
+	// branch/tag. Rather than report a legitimate historical revision as
+	// missing (breaking the exact audit chain git.log -> git.read_file this
+	// task exists to support), deepen to the plugin's own existing
+	// clone-depth ceiling (maxCloneDepth - the same bound git.log now uses
+	// for the identical reason, log.go's doLog) whenever a caller names a ref
+	// at all. Never widened for the common empty-ref call, so the shallow
+	// default this comment above describes stays exactly that shallow.
+	depth := readFileCloneDepth
+	if p.ref != "" {
+		depth = maxCloneDepth
+	}
+	repo, err := cloneBounded(ctx, cloneOptions{url: p.url, depth: depth, token: p.token, username: p.username})
 	if err != nil {
 		return nil, err
 	}

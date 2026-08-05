@@ -134,6 +134,38 @@ func TestGitLogReturnsCommitDetails(t *testing.T) {
 	}
 }
 
+// TestGitLogPreservesTheAuthorsRecordedTimezoneOffset is the P2 regression
+// test: Signature.when's own schema doc promises RFC 3339 "in the recorded
+// zone," and a commit authored at a non-UTC offset must come back with that
+// same offset, not normalized to Z - asserting the offset survives
+// round-trip, not merely that the string parses as RFC 3339 (which "Z" also
+// does, and would let a UTC-normalizing bug pass silently).
+func TestGitLogPreservesTheAuthorsRecordedTimezoneOffset(t *testing.T) {
+	remote := newBareRemote(t)
+	seedRemote(t, remote, "main")
+	work := newSeededWorkingClone(t, remote, "main")
+
+	pacific := time.FixedZone("", -7*60*60) // -07:00, deliberately not UTC
+	when := time.Date(2026, 3, 4, 9, 30, 0, 0, pacific)
+	pushCommit(t, work, remote, "main", "deploy.txt", "v3\n",
+		"roll the deploy key",
+		"Author Person", "author@example.com",
+		"Author Person", "author@example.com",
+		when)
+
+	out, err := doLog(context.Background(), logParams{url: fileURL(t, remote), ref: "main", maxCommits: 10})
+	if err != nil {
+		t.Fatalf("doLog: %v", err)
+	}
+	got := out.Commits[0].Author.When
+	if !strings.HasSuffix(got, "-07:00") {
+		t.Fatalf("author.when = %q, want it to end in \"-07:00\" - the offset git actually recorded, not normalized to Z", got)
+	}
+	if strings.HasSuffix(got, "Z") {
+		t.Fatalf("author.when = %q, was normalized to UTC (\"Z\") - the recorded -07:00 offset was discarded", got)
+	}
+}
+
 // TestGitLogReportsTruncatedWhenHistoryExceedsMaxCommits proves the
 // max_commits bound is actually reached, not merely never exceeded: a
 // repository with more history than max_commits must report the full
@@ -258,6 +290,143 @@ func TestGitLogPathFilterFindsOnlyTouchingCommits(t *testing.T) {
 	}
 }
 
+// TestGitLogReportsTruncatedWhenPathFilterReachesShallowBoundary is the
+// regression test for the P1 finding: a shallow, path-filtered history must
+// not report completeness it cannot know. maxCommits (5) is never reached by
+// count - only one commit ever touches the filtered path, and it sits well
+// outside the shallow window this call fetches (fetchDepthForMaxCommits(5) =
+// 6, so only the 6 most recent commits are ever cloned) - so collection runs
+// out of fetched commits, not out of history, before either the count or
+// byte bound ever fires. Before the fix, collectLogCommits let go-git's own
+// commit walker error out with plumbing.ErrObjectNotFound the moment it
+// tried to step past the boundary into a parent this clone never fetched,
+// which doLog then surfaced as an opaque failure rather than an honest
+// truncated: true - see CLAUDE.md's own "a shallow, path-filtered history
+// reports completeness it cannot know."
+func TestGitLogReportsTruncatedWhenPathFilterReachesShallowBoundary(t *testing.T) {
+	const totalCommits = 10
+	const maxCommits = 5 // fetchDepthForMaxCommits(5) = 6, less than totalCommits+1 = 11
+
+	remote := newBareRemote(t)
+	seedRemote(t, remote, "main")
+	work := newSeededWorkingClone(t, remote, "main")
+
+	when := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	// Commit 0 (the oldest of these, right after the seed) is the only one
+	// that touches the filtered path - well outside the 6-commit shallow
+	// window this call fetches, since 9 more commits (1..9) are pushed after
+	// it, all touching a different path.
+	pushCommit(t, work, remote, "main", "auth/policy.rego", "allow if role == admin\n",
+		"add the admin policy", "A", "a@example.com", "A", "a@example.com", when)
+	for i := 1; i < totalCommits; i++ {
+		pushCommit(t, work, remote, "main", "other.txt", fmt.Sprintf("content %d", i), fmt.Sprintf("commit %d", i),
+			"A", "a@example.com", "A", "a@example.com", when.Add(time.Duration(i)*time.Minute))
+	}
+
+	out, err := doLog(context.Background(), logParams{url: fileURL(t, remote), ref: "", maxCommits: maxCommits, path: "auth/policy.rego"})
+	if err != nil {
+		t.Fatalf("doLog: %v", err)
+	}
+	if len(out.Commits) != 0 {
+		t.Fatalf("len(commits) = %d, want 0 - the only commit that touches the path sits outside the shallow window this call fetched", len(out.Commits))
+	}
+	if !out.Truncated {
+		t.Fatal("Truncated: got false, want true - collection ran out of the shallow clone's own fetch window, not out of history, and must say so honestly rather than claiming completeness it cannot know")
+	}
+}
+
+// TestGitLogReportsNotTruncatedWhenPathFilteredHistoryGenuinelyEnds is the
+// opposite direction of the regression test above, so the fix is not merely
+// "always report truncated: true once a path filter is set": a repository
+// whose entire history is fetched (fetchDepth comfortably exceeds the total
+// commit count, so the clone reaches the true root, never a shallow
+// boundary) must still report truncated: false when the filtered path's
+// only matching commit is found well within max_commits.
+func TestGitLogReportsNotTruncatedWhenPathFilteredHistoryGenuinelyEnds(t *testing.T) {
+	remote := newBareRemote(t)
+	seedRemote(t, remote, "main")
+	work := newSeededWorkingClone(t, remote, "main")
+
+	when := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	touchingSha := pushCommit(t, work, remote, "main", "auth/policy.rego", "allow if role == admin\n",
+		"add the admin policy", "A", "a@example.com", "A", "a@example.com", when)
+	pushCommit(t, work, remote, "main", "other.txt", "content\n", "unrelated change",
+		"A", "a@example.com", "A", "a@example.com", when.Add(time.Minute))
+
+	// maxCommits (20) is well above the fetchDepthForMaxCommits(20) = 21
+	// depth this clones, and this repository has only 3 commits total
+	// (seed + 2), so the clone reaches the genuine root - no shallow
+	// boundary exists to reach.
+	out, err := doLog(context.Background(), logParams{url: fileURL(t, remote), ref: "", maxCommits: 20, path: "auth/policy.rego"})
+	if err != nil {
+		t.Fatalf("doLog: %v", err)
+	}
+	if out.Truncated {
+		t.Fatal("Truncated: got true, want false - this history is short enough that the clone reached its genuine root, not a shallow boundary")
+	}
+	if len(out.Commits) != 1 || out.Commits[0].Sha != touchingSha.String() {
+		t.Fatalf("commits = %v, want exactly [%s]", out.Commits, touchingSha)
+	}
+}
+
+// TestPathMatchesFilterMatchesDescendantsNotSiblings is the P2 regression
+// test: `path: auth` must match everything under auth/ (git log -- auth's
+// own semantics), and must not also match a sibling directory whose name
+// merely starts with the same characters, like authz/ - the "obvious wrong
+// implementation" a bare strings.HasPrefix check would be. Both directions
+// in one table so neither can be fixed at the expense of the other.
+func TestPathMatchesFilterMatchesDescendantsNotSiblings(t *testing.T) {
+	tests := []struct {
+		name      string
+		candidate string
+		path      string
+		want      bool
+	}{
+		{"exact file match", "auth/policy.rego", "auth/policy.rego", true},
+		{"descendant of a directory", "auth/policy.rego", "auth", true},
+		{"nested descendant of a directory", "auth/sub/policy.rego", "auth", true},
+		{"sibling directory sharing a prefix, not a descendant", "authz/token.go", "auth", false},
+		{"sibling file sharing a prefix, not a descendant", "authz.go", "auth", false},
+		{"unrelated path", "README.md", "auth", false},
+		{"exact directory-shaped path, no trailing content", "auth", "auth", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := pathMatchesFilter(tt.candidate, tt.path); got != tt.want {
+				t.Errorf("pathMatchesFilter(%q, %q) = %v, want %v", tt.candidate, tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestGitLogPathFilterMatchesDescendantsOfADirectory is
+// TestGitLogPathFilterFindsOnlyTouchingCommits's own directory-filter
+// counterpart, run through doLog rather than pathMatchesFilter directly: a
+// commit under auth/ must be found, and a commit under the sibling authz/
+// directory must not be, when path is the bare directory name "auth".
+func TestGitLogPathFilterMatchesDescendantsOfADirectory(t *testing.T) {
+	remote := newBareRemote(t)
+	seedRemote(t, remote, "main")
+	work := newSeededWorkingClone(t, remote, "main")
+
+	when := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	touchingSha := pushCommit(t, work, remote, "main", "auth/policy.rego", "allow if role == admin\n",
+		"tighten the admin policy", "A", "a@example.com", "A", "a@example.com", when)
+	pushCommit(t, work, remote, "main", "authz/token.go", "package authz\n",
+		"add the token helper", "A", "a@example.com", "A", "a@example.com", when.Add(time.Minute))
+
+	out, err := doLog(context.Background(), logParams{url: fileURL(t, remote), ref: "main", maxCommits: 20, path: "auth"})
+	if err != nil {
+		t.Fatalf("doLog: %v", err)
+	}
+	if len(out.Commits) != 1 {
+		t.Fatalf("len(commits) = %d, want 1 (only auth/policy.rego is under \"auth\"; authz/token.go is a sibling, not a descendant)", len(out.Commits))
+	}
+	if out.Commits[0].Sha != touchingSha.String() {
+		t.Fatalf("commits[0].sha = %s, want %s", out.Commits[0].Sha, touchingSha)
+	}
+}
+
 // TestGitLogDefaultsRefToHead proves an empty ref resolves the remote's own
 // HEAD, not a mistake.
 func TestGitLogDefaultsRefToHead(t *testing.T) {
@@ -295,6 +464,34 @@ func TestGitLogSinceFiltersOlderCommits(t *testing.T) {
 	}
 	if out.Commits[0].Sha != newSha.String() {
 		t.Fatalf("commits[0].sha = %s, want %s", out.Commits[0].Sha, newSha)
+	}
+}
+
+// TestGitLogResolvesAShaOlderThanMaxCommitsWindow is git.log's own half of
+// the "ref: cannot resolve what the task advertises" finding: LogInputs.ref
+// advertises any branch, tag, or commit-ish, but fetchDepthForMaxCommits ties
+// the default fetch window to max_commits alone, so an explicitly named
+// older sha (max_commits set low, deliberately smaller than how far back
+// this sha sits) must still resolve rather than being reported missing.
+func TestGitLogResolvesAShaOlderThanMaxCommitsWindow(t *testing.T) {
+	remote := newBareRemote(t)
+	seedRemote(t, remote, "main")
+	work := newSeededWorkingClone(t, remote, "main")
+
+	when := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	oldSha := pushCommit(t, work, remote, "main", "f.txt", "v1\n", "the commit this call resolves",
+		"A", "a@example.com", "A", "a@example.com", when)
+	for i := 0; i < 10; i++ { // 10 commits after oldSha, well past a max_commits: 2 window
+		pushCommit(t, work, remote, "main", "f.txt", fmt.Sprintf("content %d", i), fmt.Sprintf("commit %d", i),
+			"A", "a@example.com", "A", "a@example.com", when.Add(time.Duration(i+1)*time.Minute))
+	}
+
+	out, err := doLog(context.Background(), logParams{url: fileURL(t, remote), ref: oldSha.String(), maxCommits: 2})
+	if err != nil {
+		t.Fatalf("doLog resolving a sha 10 commits older than max_commits' own window: %v", err)
+	}
+	if out.ResolvedRef != oldSha.String() {
+		t.Fatalf("resolved_ref = %s, want %s", out.ResolvedRef, oldSha)
 	}
 }
 
