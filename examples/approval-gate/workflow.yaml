@@ -92,18 +92,27 @@ inputs:
   # real needs the run's starter identity in scope, which is #206's second gap
   # and is not fixable from inside a Flowfile today. This is the honest limit,
   # spelled out rather than hidden behind a check that merely looks complete.
+  #
+  # Neither is marked `sensitive:`, deliberately, and the reason is worth
+  # stating because reaching for it here is the natural mistake. An approval
+  # trail is the one thing about this run that has to stay legible: who asked,
+  # who signed off. Redacting it in `flow get` would hide exactly the evidence
+  # an auditor opens the run to read. `sensitive:` is for a value that is
+  # nobody's business on a terminal — a token, a key — not for an identifier
+  # whose whole purpose is to be attributable. Marking these and then printing
+  # one in `request`'s log line below would be incoherent besides: `sensitive:`
+  # governs how Flowstate renders a *declared* value, and has nothing to say
+  # about a message a workflow chose to write.
   requested_by:
     type: string
     required: true
     example: jordan@example.com
-    sensitive: true
     pattern: "^[^@]+@[^@]+$"
     description: who is requesting this deploy — caller-supplied, not attested
   expected_approver:
     type: string
     required: true
     example: sre-lead@example.com
-    sensitive: true
     pattern: "^[^@]+@[^@]+$"
     description: >-
       who this run expects to approve it — caller-supplied, checked against
