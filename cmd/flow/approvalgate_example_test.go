@@ -55,7 +55,6 @@ func TestApprovalGateHelpExamplesActuallyRun(t *testing.T) {
 	}
 }
 
-
 // approvalGateExampleLine finds the one line in example that runs the
 // approval-gate workflow, failing loudly if the example no longer contains
 // one — so a future rewrite of the Example: text does not silently stop
