@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -147,4 +149,139 @@ func TestRedactedMarkerIsHonestAndUnmistakable(t *testing.T) {
 	require.Equal(t, "[redacted: api_key]", marker)
 	require.Contains(t, marker, "redacted")
 	require.Contains(t, marker, "api_key")
+}
+
+// codexStepComputedSensitiveResponse builds the exact shape Codex found on PR
+// #212: a declared output computed from a step's own output —
+// `outputs.token.value: ${steps.fetch.token}` with `sensitive: true` — so the
+// raw secret sits in three places at once, exactly as a completed run answers in
+// production: the top-level [v1.RunOutputs], the nested
+// [v1.Workflow_StepOutputs.RunOutputs] the oneof carries beside the transcript,
+// and the transcript itself, at the step that computed it.
+//
+// A second, unrelated step and a second, non-sensitive declared output ride
+// along so a test can tell "the transcript is gone because it is untouched" from
+// "the transcript is gone because nothing declared here is sensitive."
+func codexStepComputedSensitiveResponse() (*v1.Workflow, *v1.GetResponse) {
+	workflow := &v1.Workflow{
+		DeclaredOutputs: []*v1.OutputDeclaration{
+			{Name: "token", Sensitive: true},
+			{Name: "region"},
+		},
+	}
+
+	runOutputs := &v1.RunOutputs{Values: map[string]*v1.Value{
+		"token":  v1.NewLiteral(secretString),
+		"region": v1.NewLiteral("us-east-1"),
+	}}
+
+	response := &v1.GetResponse{
+		RunOutputs: proto.Clone(runOutputs).(*v1.RunOutputs),
+		Kind: &v1.GetResponse_Outputs{
+			Outputs: &v1.Workflow_StepOutputs{
+				RunOutputs: proto.Clone(runOutputs).(*v1.RunOutputs),
+				StepValues: map[string]*v1.Node_Outputs{
+					"fetch": {NamedValues: map[string]*v1.Value{
+						"token": v1.NewLiteral(secretString),
+					}},
+					"place": {NamedValues: map[string]*v1.Value{
+						"region": v1.NewLiteral("us-east-1"),
+					}},
+				},
+			},
+		},
+	}
+
+	return workflow, response
+}
+
+// TestRedactGetResponseRedactsStepTranscriptForStepComputedSensitiveOutput is the
+// Codex finding on PR #212, reproduced directly: `redactRunOutputsValues`
+// withheld `token` at the name it surfaced under and left the same raw value in
+// the step transcript one line down, in the clear. The real value must be
+// absent from the whole message — checked here by marshaling it exactly as the
+// MCP surface does (`protojson`) and asserting the bytes never contain it,
+// rather than asserting a marker is merely present somewhere, which a value
+// printed twice could still satisfy.
+func TestRedactGetResponseRedactsStepTranscriptForStepComputedSensitiveOutput(t *testing.T) {
+	workflow, response := codexStepComputedSensitiveResponse()
+
+	redacted := redactGetResponse(response, workflow, false)
+
+	require.Equal(t, "[redacted: token]",
+		redacted.GetRunOutputs().GetValues()["token"].GetLiteral().GetStringValue())
+	require.Equal(t, "[redacted: token]",
+		redacted.GetOutputs().GetRunOutputs().GetValues()["token"].GetLiteral().GetStringValue())
+
+	fetched := redacted.GetOutputs().GetStepValues()["fetch"].GetNamedValues()["token"].GetLiteral().GetStringValue()
+	require.NotEqual(t, secretString, fetched,
+		"the raw value must not survive in the step transcript that fed the sensitive output")
+	require.Contains(t, fetched, "redacted",
+		"withheld silently is worse than withheld with a marker — CLAUDE.md's fail-closed section")
+
+	// This file's chosen design (Option A, see redactStepValues's own comment)
+	// is blunt on purpose: the whole transcript is withheld once any declared
+	// output is sensitive, not only the step that happens to feed it. Proving
+	// that "place" — which fed only the non-sensitive "region" — is withheld
+	// too is what tells this test apart from one that merely checked the one
+	// entry the bug report named.
+	placed := redacted.GetOutputs().GetStepValues()["place"].GetNamedValues()["region"].GetLiteral().GetStringValue()
+	require.NotEqual(t, "us-east-1", placed,
+		"Option A withholds the whole transcript, including steps unrelated to the sensitive output")
+
+	// The declared answer for the name nothing marked sensitive is untouched —
+	// this design is blunt about the transcript and precise about the answer.
+	require.Equal(t, "us-east-1",
+		redacted.GetRunOutputs().GetValues()["region"].GetLiteral().GetStringValue())
+
+	encoded, err := protojson.Marshal(redacted)
+	require.NoError(t, err)
+	require.NotContains(t, string(encoded), secretString,
+		"the secret must be absent from the exact bytes the MCP surface serializes")
+}
+
+// TestRedactGetResponseRevealShowsStepTranscript checks the escape hatch covers
+// the transcript exactly as it covers the named answer: --reveal-sensitive
+// shows both, because a caller who asked for it by name gets what they asked
+// for.
+func TestRedactGetResponseRevealShowsStepTranscript(t *testing.T) {
+	workflow, response := codexStepComputedSensitiveResponse()
+
+	redacted := redactGetResponse(response, workflow, true)
+
+	require.Equal(t, secretString,
+		redacted.GetOutputs().GetStepValues()["fetch"].GetNamedValues()["token"].GetLiteral().GetStringValue())
+}
+
+// TestRedactStepValuesLeavesTranscriptUntouchedWhenNothingIsSensitive is the
+// over-redaction direction CLAUDE.md warns a fix can hide behind: a rewrite that
+// wipes the whole transcript unconditionally would still pass the Codex
+// reproduction above. This is the workflow with a real specification that
+// declares no sensitive output at all — the same "empty, non-nil set" case
+// [sensitiveOutputNames] documents — and the transcript a step computed a
+// non-sensitive output from must render exactly as produced.
+func TestRedactStepValuesLeavesTranscriptUntouchedWhenNothingIsSensitive(t *testing.T) {
+	workflow := &v1.Workflow{
+		DeclaredOutputs: []*v1.OutputDeclaration{{Name: "region"}},
+	}
+	response := &v1.GetResponse{
+		RunOutputs: &v1.RunOutputs{Values: map[string]*v1.Value{
+			"region": v1.NewLiteral("us-east-1"),
+		}},
+		Kind: &v1.GetResponse_Outputs{
+			Outputs: &v1.Workflow_StepOutputs{
+				StepValues: map[string]*v1.Node_Outputs{
+					"place": {NamedValues: map[string]*v1.Value{
+						"region": v1.NewLiteral("us-east-1"),
+					}},
+				},
+			},
+		},
+	}
+
+	redacted := redactGetResponse(response, workflow, false)
+
+	require.Equal(t, "us-east-1",
+		redacted.GetOutputs().GetStepValues()["place"].GetNamedValues()["region"].GetLiteral().GetStringValue(),
+		"a specification that declared nothing sensitive must leave the transcript exactly as produced")
 }

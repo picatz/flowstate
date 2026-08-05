@@ -570,6 +570,58 @@ steps:
 	require.Equal(t, secret, answer.Run.RunOutputs.Values["token"].Literal["stringValue"])
 }
 
+// TestTheRunLocalToolRedactsAStepComputedSensitiveOutput is the Codex finding on
+// PR #212, exercised end to end through this tool: `outputs.token.value:
+// ${steps.fetch.payload.token}` with `sensitive: true` withholds `token` at the
+// name it surfaces under, and the same raw value used to still ship in the
+// clear one line down, in `outputs.stepValues.fetch` — the transcript this same
+// tool result carries beside the answer. `wait_for_signal` supplies the step
+// output here rather than the http task, so the test needs no network: the
+// signal's payload is exactly as caller-controlled as an HTTP response body is,
+// which is what makes it the same shape as the bug report's `${steps.fetch.token}`.
+func TestTheRunLocalToolRedactsAStepComputedSensitiveOutput(t *testing.T) {
+	t.Parallel()
+
+	session := connectMCP(t, defaultLocalRunPosture())
+
+	const secret = "sk-live-0123456789abcdef"
+
+	result, answer := callRunLocal(t, session, map[string]any{
+		"source": `edition: v2026.2
+name: secret-from-a-step
+outputs:
+  token:
+    value: ${steps.fetch.payload.token}
+    sensitive: true
+  region:
+    value: ${"us-east-1"}
+steps:
+  - id: fetch
+    wait_for_signal:
+      name: credentials-ready
+      timeout: 30s
+`,
+		"signals": map[string]any{
+			"credentials-ready": map[string]any{"token": secret},
+		},
+	})
+	require.False(t, result.IsError, "the workflow failed: %s", result.Content[0].(*mcp.TextContent).Text)
+
+	rawText := result.Content[0].(*mcp.TextContent).Text
+	require.NotContains(t, rawText, secret,
+		"the raw value must be absent from the whole tool result, including the step transcript — "+
+			"not only from the name it surfaced under as a declared output")
+
+	require.Equal(t, "[redacted: token]", answer.Run.RunOutputs.Values["token"].Literal["stringValue"])
+	require.Equal(t, "us-east-1", answer.Run.RunOutputs.Values["region"].Literal["stringValue"],
+		"a value the source did not mark sensitive must render unchanged")
+
+	fetched, ok := answer.Run.Outputs.StepValues["fetch"]
+	require.True(t, ok, "the step still ran and the transcript should say so: %+v", answer.Run.Outputs)
+	require.NotEqual(t, secret, fmt.Sprintf("%v", fetched.NamedValues["payload"].Literal),
+		"the step's own transcript entry must not carry the raw value either")
+}
+
 // TestTheRunLocalToolRefusesArgumentsTheSourceDoesNotDeclare is the negative
 // direction, and the one that decides whether `inputs` is a contract or a hole:
 // the names a call may pass are the names the submitted source declared, and the

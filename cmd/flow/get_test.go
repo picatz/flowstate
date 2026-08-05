@@ -175,6 +175,69 @@ func TestGetRedactsRunOutputsByDefault(t *testing.T) {
 		"the honest marker the schema promises should say which output was withheld")
 }
 
+// TestGetRedactsStepTranscriptForStepComputedSensitiveOutput is the Codex finding
+// on PR #212, exercised through the actual CLI verb rather than the helper
+// directly: `flow get` never holds a workflow specification, so a value fed to a
+// declared output through a step — `outputs.token.value: ${steps.fetch.token}`
+// with `sensitive: true` — used to render in the clear in the step transcript
+// even though the same value was withheld at the name it surfaced under in
+// `run_outputs`. Both streams and the machine format are checked, because a
+// person reading stderr, a person reading stdout, and a program reading JSON are
+// three different readers this bug reached.
+func TestGetRedactsStepTranscriptForStepComputedSensitiveOutput(t *testing.T) {
+	newFake := func() *fakeWorkflowService {
+		return &fakeWorkflowService{
+			getResponse: &v1.GetResponse{
+				WorkflowId: "flowstate-workflow-3f7c",
+				RunId:      "0198f1e2-0000-7000-8000-000000000000",
+				Status:     v1.RunResponse_STATUS_COMPLETED,
+				Kind: &v1.GetResponse_Outputs{
+					Outputs: &v1.Workflow_StepOutputs{
+						RunOutputs: &v1.RunOutputs{Values: map[string]*v1.Value{
+							"token": v1.NewLiteral("sk-live-0123456789abcdef"),
+						}},
+						StepValues: map[string]*v1.Node_Outputs{
+							"fetch": {NamedValues: map[string]*v1.Value{
+								"token": v1.NewLiteral("sk-live-0123456789abcdef"),
+							}},
+						},
+					},
+				},
+				RunOutputs: &v1.RunOutputs{Values: map[string]*v1.Value{
+					"token": v1.NewLiteral("sk-live-0123456789abcdef"),
+				}},
+			},
+		}
+	}
+
+	t.Run("text", func(t *testing.T) {
+		fake := newFake()
+		serveFake(t, fake)
+		cmd, out, errOut := getCommand(t)
+
+		require.NoError(t, runGet(cmd, []string{"flowstate-workflow-3f7c"}))
+
+		require.NotContains(t, errOut.String(), "sk-live-0123456789abcdef",
+			"the real value must not appear on stderr's outputs summary")
+		require.NotContains(t, out.String(), "sk-live-0123456789abcdef",
+			"the real value must not appear in the step transcript on stdout — this is the Codex gap")
+		require.Contains(t, out.String(), `"fetch"`,
+			"the step still ran and the transcript should say so, only with the value withheld")
+	})
+
+	t.Run("json", func(t *testing.T) {
+		fake := newFake()
+		serveFake(t, fake)
+		cmd, out, _ := getCommand(t)
+		require.NoError(t, cmd.Flags().Set("output", "json"))
+
+		require.NoError(t, runGet(cmd, []string{"flowstate-workflow-3f7c"}))
+
+		require.NotContains(t, out.String(), "sk-live-0123456789abcdef",
+			"a machine reader must not recover the value from the step transcript either")
+	})
+}
+
 // TestGetRevealSensitiveShowsValues checks the one deliberate escape hatch:
 // --reveal-sensitive shows the real value, and a stderr note records that it was
 // used.

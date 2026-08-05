@@ -56,6 +56,19 @@ import (
 // deliberately not fail-closed in that one case, because a value the file never
 // declared sensitive is not this file's business to guess about; see
 // [sensitiveOutputNames]'s own comment.
+//
+// # The transcript, which is not [v1.RunOutputs]
+//
+// Everything above redacted [v1.RunOutputs] — the run's answer, by declared name.
+// It did nothing to [v1.Workflow_StepOutputs.StepValues], the transcript of every
+// step's own outputs that the same call sites render beside the answer. Codex
+// found the gap on PR #212: a sensitive output computed from a step —
+// `outputs.token.value: ${steps.fetch.token}` with `sensitive: true` — was
+// withheld at the name it surfaced under and left in the clear, unredacted, in
+// the step transcript one line down, which is probably the *common* case rather
+// than a corner one. [redactStepValues] is the fix, and its own comment argues
+// for redacting the whole transcript rather than tracing which step fed which
+// sensitive output — read it before assuming a narrower fix would do.
 const redactedMarkerFormat = "[redacted: %s]"
 
 // redactedMarker is the text a redacted value renders as — [v1.InputDeclaration]'s
@@ -152,17 +165,119 @@ func redactRunOutputs(outputs *v1.RunOutputs, sensitive map[string]bool, reveal 
 	return &v1.RunOutputs{Values: redactRunOutputsValues(outputs.GetValues(), sensitive, reveal)}
 }
 
+// stepTranscriptMarker is what every named value in the step transcript renders
+// as once it is withheld — see [redactStepValues] for when that is.
+const stepTranscriptMarker = "step transcript withheld: workflow declares a sensitive output"
+
+// redactStepValues implements this file's answer to the gap Codex found on PR
+// #212: a declared output computed from a step's output — `outputs.token.value:
+// ${steps.fetch.token}` with `sensitive: true` — was withheld at the *name* it
+// surfaced under in [v1.RunOutputs], while the same raw value still shipped, in
+// the clear, in [v1.Workflow_StepOutputs.StepValues] — the transcript `flow get`,
+// `flow watch`, `flow run local` and the MCP result all render beside it. Every
+// one of those readers is an untrusted-consumer surface exactly like a terminal,
+// so the bypass was not a corner case; a declared output computed from a step is
+// the ordinary shape a Flowfile takes.
+//
+// # Two designs, and why this one
+//
+// The precise alternative is to parse each sensitive output's `value` expression,
+// collect its `steps.<id>.<name>` references (the machinery already exists —
+// `flowfile`'s reference checking, `collectFreeIdentifiers` in
+// pkg/flowstate/v1/constraints.go) and redact exactly those entries. It reads
+// better: a transcript with one sensitive output would still show every other
+// step untouched.
+//
+// It also has a trap that makes it the wrong choice here. Tracing catches only a
+// *direct* reference. A value that reaches a sensitive output indirectly — routed
+// through another step's output, or assigned to a step's own `vars:` and read
+// back from there — has no `steps.<id>.<name>` selector in the sensitive output's
+// own expression at all, so the trace finds nothing to redact and the raw value
+// renders anyway. Worse than a blunt rule: the UI would imply coverage ("this
+// file traces sensitive data") over a case it silently does not catch, which is
+// exactly the shape CLAUDE.md's "fail closed" section warns against — a mechanism
+// that looks precise and is not is more dangerous than one that is honestly
+// blunt, because a reader trusts the one that looks precise.
+//
+// Making the precise version fail closed on anything it cannot trace — an
+// unparseable expression, an indirect reference, anything unexpected — collapses
+// it to this rule's behavior for that response anyway, on every path an author is
+// actually likely to hit (a step feeding another step, or a `vars:` assignment,
+// are ordinary Flowfile shapes, not edge cases). So the fallback would be doing
+// most of the real work, while the traced path bought only the cases where a
+// sensitive output happens to read a step directly — the minority, per the
+// Codex finding itself ("most outputs are computed from steps").
+//
+// So: this redacts the *whole* step transcript — every named value on every
+// step — the moment any declared output is marked `sensitive: true` (or the
+// fail-closed case: no specification to consult at all, same as
+// [redactRunOutputsValues]). It does not attempt to say which step actually fed
+// the sensitive output, because that is exactly the claim the traced version
+// could not keep honestly. The cost is real and stated here rather than
+// papered over: a caller reading `.outputs.stepValues` loses the transcript of
+// a run that produced one sensitive output among many unrelated ones, not only
+// the one value that mattered. What survives is the *shape* — which step ids
+// ran, and which named outputs each produced — because that information is
+// already implied by the workflow specification itself (an author who wrote the
+// file already knows its step ids and output names); only the values change,
+// to [stepTranscriptMarker], so `flow watch`'s step-progress display still shows
+// a run advancing rather than going dark the moment a workflow declares anything
+// sensitive.
+func redactStepValues(values map[string]*v1.Node_Outputs, sensitive map[string]bool, reveal bool) map[string]*v1.Node_Outputs {
+	if reveal || len(values) == 0 {
+		return values
+	}
+
+	// sensitive == nil is the fail-closed case: withhold everything. A non-nil,
+	// non-empty set means at least one declared output is sensitive: withhold
+	// everything anyway, on purpose — see this function's own comment for why a
+	// per-name trace is not attempted. Only a non-nil, *empty* set — a real
+	// specification that declared nothing sensitive — leaves the transcript
+	// untouched.
+	if sensitive != nil && len(sensitive) == 0 {
+		return values
+	}
+
+	redacted := make(map[string]*v1.Node_Outputs, len(values))
+	for stepID, outputs := range values {
+		named := outputs.GetNamedValues()
+		redactedNamed := make(map[string]*v1.Value, len(named))
+		for name := range named {
+			redactedNamed[name] = redactedValue(stepTranscriptMarker)
+		}
+		redacted[stepID] = &v1.Node_Outputs{NamedValues: redactedNamed}
+	}
+
+	return redacted
+}
+
+// redactStepOutputs applies [redactStepValues] to one [*v1.Workflow_StepOutputs],
+// leaving [v1.Workflow_StepOutputs.RunOutputs] to its own caller — see
+// [redactGetResponse], which redacts that field separately so both places
+// [v1.RunOutputs] travels stay in agreement.
+func redactStepOutputs(outputs *v1.Workflow_StepOutputs, sensitive map[string]bool, reveal bool) *v1.Workflow_StepOutputs {
+	if outputs == nil {
+		return nil
+	}
+
+	outputs.StepValues = redactStepValues(outputs.GetStepValues(), sensitive, reveal)
+
+	return outputs
+}
+
 // redactGetResponse returns a [*v1.GetResponse] with every declared run output this
 // call site cannot vouch for replaced by its marker, in both places the answer
-// travels.
+// travels, and with the step transcript withheld entirely when any of them
+// applies — see [redactStepValues] for why the transcript gets the blunt
+// treatment rather than a precise one.
 //
-// Both, because server.go sets [v1.GetResponse.RunOutputs] and the nested
-// [v1.Workflow_StepOutputs.RunOutputs] inside the completed-run oneof to the same
-// run's answer — "one finished run reads the same document," which CLAUDE.md's
-// "both execution drivers must agree" section states for the two drivers and this
-// schema states for the two fields carrying one value. Redacting only one would
-// leave a caller who reads `.outputs.runOutputs` instead of the top-level field
-// seeing the real value.
+// Both places the answer travels, because server.go sets [v1.GetResponse.RunOutputs]
+// and the nested [v1.Workflow_StepOutputs.RunOutputs] inside the completed-run oneof
+// to the same run's answer — "one finished run reads the same document," which
+// CLAUDE.md's "both execution drivers must agree" section states for the two
+// drivers and this schema states for the two fields carrying one value. Redacting
+// only one would leave a caller who reads `.outputs.runOutputs` instead of the
+// top-level field seeing the real value.
 //
 // workflow is the specification whose declarations should be trusted; nil is the
 // fail-closed case this file's package comment explains: an older run whose spec
@@ -199,6 +314,7 @@ func redactGetResponse(response *v1.GetResponse, workflow *v1.Workflow, reveal b
 
 	if outs, ok := clone.Kind.(*v1.GetResponse_Outputs); ok && outs.Outputs != nil {
 		outs.Outputs.RunOutputs = redactRunOutputs(outs.Outputs.RunOutputs, sensitive, false)
+		outs.Outputs = redactStepOutputs(outs.Outputs, sensitive, false)
 	}
 
 	return clone
