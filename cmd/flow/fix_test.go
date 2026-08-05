@@ -740,34 +740,32 @@ func TestFixDirectoryWalkReportsMalformedFlowfilesRatherThanSkippingThem(t *test
 	}
 }
 
-// TestFixDirectoryWalkStillSkipsPolicyAndObservabilityFilesSilently pins the
-// exact count #209 introduced the walk to hit: the shipped examples/ tree
-// holds 3 real policy files and 7 non-Flowfile YAML documents under
+// TestFixDirectoryWalkStillSkipsPolicyAndObservabilityFilesSilently is the
+// regression the malformed-YAML fix must not cause: teaching the walk to report
+// a file that does not parse at all must not start it reporting on files that
+// parse fine into some other recognized shape. The shipped examples/ tree holds
+// 3 real policy files and 7 non-Flowfile YAML documents under
 // examples/observability/ (docker-compose.yaml and each collector/dashboard
-// config), all of which parse as YAML fine and are none of them a Flowfile —
-// so all 10 must still be skipped silently by the walk, both before and after
-// teaching it to report a file that does not parse at all. This is the
-// regression the malformed-YAML fix must not cause: reporting on unparseable
-// files must not start reporting on files that parse fine into some other
-// recognized shape.
+// config), none of them a Flowfile, all of which must stay silently skipped.
+//
+// It asserts the *skip list*, deliberately, and not a total count. This test
+// was written pinning "the walk reports exactly 44 files" and failed the moment
+// #202 merged and added one example — reporting a defect in a branch that had
+// only gained a legitimate new Flowfile. That is the same drift
+// [TestEverySubcommandHasAWorkedExample] refuses a hardcoded floor for: a total
+// changes every time somebody adds an example, so it makes adding one look like
+// breakage, while saying nothing about the property actually at risk. What is at
+// risk is precisely that these ten documents stay silent, and that is what is
+// pinned. A non-empty walk is asserted too, so a walk that silently reported
+// nothing at all could not pass by skipping everything.
 func TestFixDirectoryWalkStillSkipsPolicyAndObservabilityFilesSilently(t *testing.T) {
 	out, _, err := runFixCommand(t, "--check", "../../examples")
 	if err != nil {
-		t.Logf("flow fix --check examples/ exited non-zero (%v); fine as long as the count and skip list below hold", err)
+		t.Logf("flow fix --check examples/ exited non-zero (%v); fine as long as the skip list below holds", err)
 	}
 
-	const wantReported = 44
-	got := 0
-	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
-		if line != "" {
-			got++
-		}
-	}
-	if got != wantReported {
-		t.Errorf("flow fix --check examples/ reported on %d files, want %d "+
-			"(54 total .yaml/.yml under examples/, minus 3 policy files and "+
-			"7 non-Flowfile observability configs that must stay silently skipped)",
-			got, wantReported)
+	if strings.TrimSpace(out) == "" {
+		t.Fatal("flow fix --check examples/ reported on nothing at all; the walk must still find the tree's Flowfiles")
 	}
 
 	for _, name := range []string{
