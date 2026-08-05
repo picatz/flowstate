@@ -505,22 +505,55 @@ func asMapping(n ast.Node) *ast.MappingNode {
 }
 
 // hasRecognizedKey reports whether a mapping declares one of
-// [recognizedTopLevelKeys] directly.
+// [recognizedTopLevelKeys] directly, or declares nothing but keys the Flowfile
+// grammar itself allows at the top level.
+//
+// The second half exists for a real edge case, not a hypothetical one: a
+// Flowfile that declares no steps at all — `edition: v2026.2\nname: t\n` and
+// nothing else — is a legal, if useless, workflow ([compiler] reads `steps:`
+// with `fields.get`, so its absence is not an error), and
+// TestFixLeavesACurrentFileByteForByte already fixed one before this allowlist
+// existed. `steps:`/`tests:` alone as the only signal would refuse it, because
+// a file this small carries neither. So a document also passes when every key
+// it declares is drawn from [workflowKeys] — the schema's own list of what a
+// Flowfile may say at the top level — even though none of the keys present
+// happens to be `steps:` or `tests:`.
+//
+// This does not reopen the hole the allowlist exists to close: none of
+// `workflowKeys` overlaps a single key any policy file in this tree declares
+// (`egress:`, `issuers:`, `secrets:`, `federation:`), so an egress policy or an
+// auth/trust policy still has no key that qualifies it.
 //
 // A merge key is not resolved here the way [fixer.mergedDeclaresEdition] resolves
 // one for `edition:`. That method exists because failing to find a merged
 // edition would let the rewriter *downgrade* a file — stamping in a spelling it
 // should have left alone. The failure mode here runs the other way: this
-// function decides whether to touch the file at all, and "cannot tell" already
-// answers refuse, which is the safe direction regardless of what a merge might
-// be hiding.
+// function decides whether to touch the file at all, so a merge key is treated
+// as neutral — it neither qualifies a document by itself (this walk cannot see
+// what it resolves to) nor disqualifies one that is otherwise all recognized
+// keys, since a merge could easily be bringing in nothing more exotic than
+// shared `vars:`.
 func hasRecognizedKey(mapping *ast.MappingNode) bool {
+	sawAny := false
+	allWorkflowKeys := true
 	for _, v := range mapping.Values {
-		if name, ok := keyNameOf(v.Key); ok && slices.Contains(recognizedTopLevelKeys, name) {
+		if _, isMerge := v.Key.(*ast.MergeKeyNode); isMerge {
+			continue
+		}
+		name, ok := keyNameOf(v.Key)
+		if !ok {
+			allWorkflowKeys = false
+			continue
+		}
+		sawAny = true
+		if slices.Contains(recognizedTopLevelKeys, name) {
 			return true
 		}
+		if !slices.Contains(workflowKeys, name) {
+			allWorkflowKeys = false
+		}
 	}
-	return false
+	return sawAny && allWorkflowKeys
 }
 
 // describeTopLevelKeys names a mapping's own keys the way an author wrote them,
