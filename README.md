@@ -27,20 +27,51 @@ thread open for it, because the wait is state on Temporal rather than a worker:
 ```yaml
 edition: v2026.2
 name: approval-gate
-description: Wait for a human to approve a deploy, then act on what they said.
+description: >-
+  Waits for a human to approve a deploy, then acts on what an attested sender
+  actually sent — and refuses to deploy when nothing attested that.
+
+inputs:
+  version:
+    type: string
+    required: true
+    example: v1.4.2
+    pattern: '^v?[0-9]+\.[0-9]+\.[0-9]+$'
+  environment:
+    type: string
+    required: true
+    example: production
+    must: 'this in ["staging", "production"]'
+  requested_by:
+    type: string
+    required: true
+    example: jordan@example.com
+  expected_approver:
+    type: string
+    required: true
+    example: sre-lead@example.com
 
 steps:
   - id: request
     log:
-      message: requesting approval to deploy v1.4.2
+      message: >-
+        ${"%s requests deploying %s to %s".format(
+            [inputs.requested_by, inputs.version, inputs.environment])}
 
   - id: approval
     wait_for_signal:
       name: deploy-approved
       timeout: 24h
 
+  # Fires only when the payload said yes *and* the sender was really attested
+  # as the approver this run named — not a local run, not an unauthenticated
+  # request, not the same identity that requested the deploy.
   - id: deploy
-    if: ${has(steps.approval.payload.approved) && steps.approval.payload.approved}
+    if: >-
+      ${has(steps.approval.payload.approved) && steps.approval.payload.approved &&
+        !steps.approval.sender.local &&
+        steps.approval.sender.identity.subject == inputs.expected_approver &&
+        steps.approval.sender.identity.subject != inputs.requested_by}
     log:
       message: ${"deploying, approved by %s".format([steps.approval.sender.identity.subject])}
 
@@ -55,40 +86,85 @@ authenticated the signal as, attached by `FlowstateServer.Signal` and impossible
 caller to set. A payload is evidence; a sender is identity — see
 [CLAUDE.md's boundary doctrine](CLAUDE.md) for why the two are never merged.
 
+**Read this before copying it into production.** `deploy` above gates on that attested
+sender, which is real: `steps.approval.sender.identity.subject` cannot be forged by whoever
+sends the signal. What it does not do is authorize *who* may send `deploy-approved` in the
+first place — any caller who can reach the run in its tenant can, matched approver or
+not — and `expected_approver`/`requested_by` are supplied by whoever starts the run, so a
+requester can name themselves as the expected approver and pass both checks. Refusing that
+needs the run's starter identity in scope, which no expression can see today. Both gaps,
+plus the fact that the check lives in a file its own author can edit, are tracked at
+[#206](https://github.com/picatz/flowstate/issues/206); durable, binding enforcement is
+deployment-side policy ([#187](https://github.com/picatz/flowstate/issues/187)), not a
+cleverer `if:`. What is real today — durable waiting and an unforgeable sender — is worth
+having and worth demonstrating; it is just not an approval control on its own.
+
 Run it in this process — no Temporal, no server — and answer the gate yourself:
 
 ```console
-$ flow run local --signal deploy-approved='{"approved": true}' \
-    examples/approval-gate/workflow.yaml
-INFO requesting approval to deploy v1.4.2
-INFO deploying, approved by
+$ flow run local examples/approval-gate/workflow.yaml \
+    --input-file examples/approval-gate/inputs.json \
+    --signal deploy-approved='{"approved": true}'
+INFO jordan@example.com requests deploying v1.4.2 to production
+WARN refusing to deploy v1.4.2: approved, but the sender was not attested at all (a local run has no authenticated caller)
 COMPLETED workflow approval-gate
-{"stepValues":{...},"runOutputs":null}
+outputs
+  approver_subject 
+  decision refused_unattested_or_mismatched_approver
+{"stepValues":{...}, "runOutputs":{"values":{"approver_subject":{"literal":{"stringValue":""}}, "decision":{"literal":{"stringValue":"refused_unattested_or_mismatched_approver"}}}}}
 ```
 
-A local run has no authenticated caller — nothing signed in, no server in front of it —
-so `steps.approval.sender.identity.subject` reads empty and `steps.approval.sender.local`
-reads `true`. That is the honest local answer, not a bug: a local run must never look like
-an attested production one.
+A local run has no authenticated caller — nothing signed in, no server in front of it — so
+`steps.approval.sender.identity.subject` reads empty and `steps.approval.sender.local` reads
+`true`, and the gate refuses even a payload that said yes. That is the honest local answer,
+not a bug: a local run must never look like an attested production one, and this gate is
+built to tell the difference rather than paper over it.
+
+A version outside the declared pattern is refused before that first step ever runs:
+
+```console
+$ flow run local examples/approval-gate/workflow.yaml \
+    --input version=latest --input environment=production \
+    --input requested_by=jordan@example.com --input expected_approver=sre-lead@example.com \
+    --signal deploy-approved='{"approved": true}'
+ERROR
+input "version" must match pattern "^v?[0-9]+\\.[0-9]+\\.[0-9]+$"; got "latest"
+arguments are given with --input name=value or --input-file inputs.json
+exit status 1
+```
 
 Hand the same file to a server backed by Temporal, and approve it from another terminal —
 a worker restart in between changes nothing, because nothing local was holding the wait:
 
 ```console
-$ flow run examples/approval-gate/workflow.yaml &
-started flowstate-workflow-50b9abd6-0c0a-4870-bc01-d9a86fa80508; ...
-$ flow signal flowstate-workflow-50b9abd6-0c0a-4870-bc01-d9a86fa80508 deploy-approved \
+$ flow run examples/approval-gate/workflow.yaml --input-file examples/approval-gate/inputs.json
+started flowstate-workflow-b1184ac4-3c1d-4b0a-a695-9a822d26513b; come back to it with `flow watch flowstate-workflow-b1184ac4-3c1d-4b0a-a695-9a822d26513b`
+RUNNING workflow flowstate-workflow-b1184ac4-3c1d-4b0a-a695-9a822d26513b run 019fd2e8-c51a-7bb8-bcfe-d0052b361a51 on request
+RUNNING workflow flowstate-workflow-b1184ac4-3c1d-4b0a-a695-9a822d26513b run 019fd2e8-c51a-7bb8-bcfe-d0052b361a51 on settle
+RUNNING workflow flowstate-workflow-b1184ac4-3c1d-4b0a-a695-9a822d26513b run 019fd2e8-c51a-7bb8-bcfe-d0052b361a51 on approval
+
+$ flow signal flowstate-workflow-b1184ac4-3c1d-4b0a-a695-9a822d26513b deploy-approved \
     --data '{"approved": true}'
-delivered deploy-approved to flowstate-workflow-50b9abd6-0c0a-4870-bc01-d9a86fa80508
-COMPLETED workflow flowstate-workflow-50b9abd6-0c0a-4870-bc01-d9a86fa80508 run ... after approval, deploy, request, settle
-{"stepValues":{...},"runOutputs":null}
+delivered deploy-approved to flowstate-workflow-b1184ac4-3c1d-4b0a-a695-9a822d26513b
+
+COMPLETED workflow flowstate-workflow-b1184ac4-3c1d-4b0a-a695-9a822d26513b run 019fd2e8-c51a-7bb8-bcfe-d0052b361a51 after approval, deploy_refused, request, settle
+outputs
+  approver_subject anonymous
+  decision refused_unattested_or_mismatched_approver
+{"stepValues":{...}, "runOutputs":{"values":{"approver_subject":{"literal":{"stringValue":"anonymous"}}, "decision":{"literal":{"stringValue":"refused_unattested_or_mismatched_approver"}}}}}
 ```
 
-Here, run through a real server, `steps.approval.sender.identity.subject` is whoever the
-server authenticated the `flow signal` request as — a real deployment sits an identity
-provider in front of it; this one has none configured, so it authenticates as nobody in
-particular and the field reads empty too, but `steps.approval.sender.local` reads `false`:
-attested by the server, not merely unattested like the local run above.
+Here, run through a real server (`--insecure-no-auth`, so every caller is anonymous — see
+the warning `flow server` prints), `steps.approval.sender.local` reads `false`: attested by
+the server, not merely unattested like the local run above. But `deploy` still refuses,
+because this deployment has no real identity provider in front of it — the server
+authenticates the `flow signal` request as the fixed subject `anonymous`
+(`issuer: flowstate:insecure-anonymous`), which is attested and real, and still does not
+equal `expected_approver: sre-lead@example.com`. That is not a limitation of this
+particular run; it is what "no identity provider configured" always attests, so a check
+against a specific expected identity is only ever satisfiable once a deployment puts a real
+one in front of the server — the honest reason this repo's own dev setup cannot produce a
+"deployed" transcript, and should not be made to by loosening the check.
 
 Same file, same steps, same final document — down to the byte, because both drivers render
 the run through one renderer. That agreement is enforced, not hoped for; see
