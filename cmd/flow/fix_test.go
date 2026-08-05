@@ -570,6 +570,221 @@ steps:
 	})
 }
 
+// notAFlowfile is a document with a top-level shape this repo's real policy
+// files share — a mapping declaring neither `steps:` nor `tests:` — without
+// depending on the shipped examples existing at a particular relative path.
+const notAFlowfile = `egress:
+  schemes: [https]
+`
+
+// TestFixRefusesANonFlowfileAndExitsNonZero is issue #203's fix at the CLI
+// boundary: a document `flow fix` does not recognize is refused, left byte for
+// byte, and the run still fails — because "silently accepted" is exactly the
+// defect, and a refusal that exited zero would be no safer than the bug it
+// replaces.
+func TestFixRefusesANonFlowfileAndExitsNonZero(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFixture(t, dir, "policy.yaml", notAFlowfile)
+
+	out, _, err := runFixCommand(t, path)
+	if err == nil {
+		t.Fatalf("a document that is not a Flowfile was silently accepted:\n%s", out)
+	}
+
+	if got := string(readFixture(t, path)); got != notAFlowfile {
+		t.Errorf("a refused document was rewritten anyway:\n--- before\n%s\n--- after\n%s", notAFlowfile, got)
+	}
+
+	report := reportAt(t, reportsFor(t, out, path), 1, out)
+	if !strings.Contains(report.message, "does not look like a Flowfile") {
+		t.Errorf("the refusal does not say what the file looks like instead of a Flowfile: %q", report.message)
+	}
+}
+
+// TestFixExitCodesDistinguishRefusalFromChangesNeeded is the property #203's
+// correction comment calls out by name: once CI hands `flow fix --check` a
+// whole directory rather than a hand-picked glob, a refusal that reads the
+// same as "changes are needed" would turn every policy file in that directory
+// into a permanent red build. The three outcomes are checked side by side so
+// a future change cannot make two of them read alike without a test noticing.
+//
+// All three exit non-zero except "already current" — refusal and "changes
+// needed" share that exit status today, which is deliberate: `flow fix . &&
+// git commit` must not succeed while *anything* is unfinished, a refusal
+// included. What has to be distinguishable, and is asserted here, is what the
+// run *says*: a refusal names what the file looks like instead of a Flowfile,
+// a pending change names the edit that would be made, and neither is the
+// "already current" message the clean case prints. A caller — CI, or a person
+// reading the log — tells the three apart from the message, not the number.
+func TestFixExitCodesDistinguishRefusalFromChangesNeeded(t *testing.T) {
+	t.Run("refused", func(t *testing.T) {
+		dir := t.TempDir()
+		path := writeFixture(t, dir, "policy.yaml", notAFlowfile)
+
+		out, _, err := runFixCommand(t, "--check", path)
+		if err == nil {
+			t.Fatalf("--check accepted a document that is not a Flowfile:\n%s", out)
+		}
+		if strings.Contains(out, "already current") {
+			t.Errorf("a refusal printed the same message as a clean file:\n%s", out)
+		}
+		if strings.Contains(out, "added, which is now required") {
+			t.Errorf("a refusal read like a pending edition stamp:\n%s", out)
+		}
+		if !strings.Contains(out, "does not look like a Flowfile") {
+			t.Errorf("a refusal did not say what the file looks like instead:\n%s", out)
+		}
+	})
+
+	t.Run("changes needed", func(t *testing.T) {
+		dir := t.TempDir()
+		path := writeFixture(t, dir, "workflow.yaml", oldStyleGreeter)
+
+		out, _, err := runFixCommand(t, "--check", path)
+		if err == nil {
+			t.Fatalf("--check found nothing to do in a pre-edition file:\n%s", out)
+		}
+		if strings.Contains(out, "already current") {
+			t.Errorf("pending changes printed the same message as a clean file:\n%s", out)
+		}
+		if strings.Contains(out, "does not look like a Flowfile") {
+			t.Errorf("pending changes were reported as a refusal:\n%s", out)
+		}
+		if got := string(readFixture(t, path)); got != oldStyleGreeter {
+			t.Errorf("--check wrote to a file it was only asked to report on:\n%s", got)
+		}
+	})
+
+	t.Run("already current", func(t *testing.T) {
+		dir := t.TempDir()
+		path := writeFixture(t, dir, "workflow.yaml", currentGreeter)
+
+		out, _, err := runFixCommand(t, "--check", path)
+		if err != nil {
+			t.Fatalf("--check failed on a file with nothing to change: %v\n%s", err, out)
+		}
+		if !strings.Contains(out, "already current") {
+			t.Errorf("a clean file under --check did not say so:\n%s", out)
+		}
+	})
+}
+
+// TestFixDirectoryWalkSkipsPolicyFilesSilently is the reason widening CI's
+// `flow fix --check` coverage to the whole examples/ tree (#203) does not turn
+// every policy file into a permanent red build: a directory walk selects files
+// by [flowfile.LooksLikeFlowfile] before any of them ever reaches [flowfile.Fix],
+// so a policy file sitting beside a Flowfile is passed over rather than handed
+// to the rewriter and refused. Refusal is still what happens to a policy file
+// *named directly* — see TestFixRefusesANonFlowfileAndExitsNonZero — this test
+// is about the other path into the same file, a sweep that never named it.
+func TestFixDirectoryWalkSkipsPolicyFilesSilently(t *testing.T) {
+	dir := t.TempDir()
+	flowfilePath := writeFixture(t, dir, "workflow.yaml", oldStyleGreeter)
+	policyPath := writeFixture(t, dir, "policy.yaml", notAFlowfile)
+
+	out, _, err := runFixCommand(t, dir)
+	if err != nil {
+		t.Fatalf("a directory holding a Flowfile and a policy file failed: %v\n%s", err, out)
+	}
+
+	if got := string(readFixture(t, flowfilePath)); got == oldStyleGreeter {
+		t.Errorf("the Flowfile in the same directory was not picked up by the walk")
+	}
+	if got := string(readFixture(t, policyPath)); got != notAFlowfile {
+		t.Errorf("a directory walk touched a file that is not a Flowfile:\n--- before\n%s\n--- after\n%s",
+			notAFlowfile, got)
+	}
+	if strings.Contains(out, "policy.yaml") {
+		t.Errorf("a directory walk reported on a file it correctly never touched:\n%s", out)
+	}
+}
+
+// malformedYAML is not a Flowfile, a policy file, or anything else recognized
+// YAML — it does not parse at all. [flowfile.LooksLikeFlowfile] answers false
+// for it the same as for notAFlowfile, which is exactly the ambiguity this
+// fix resolves: unlike notAFlowfile, this is not "recognizably something
+// else", it is broken, and a directory sweep must say so rather than pass
+// over it in silence the way it correctly does for a policy file.
+const malformedYAML = `steps:
+  - id: broken
+    task: [unterminated
+`
+
+// TestFixDirectoryWalkReportsMalformedFlowfilesRatherThanSkippingThem is
+// Codex's P2 on #209: `collectFlowfiles` prefilters a directory sweep with
+// [flowfile.LooksLikeFlowfile], which answers false both for "this is a
+// policy file" and for "this does not parse at all" — so a syntactically
+// broken workflow.yaml used to vanish from `flow fix --check examples/`
+// silently, the one file in a sweep whose author most needs told. A named
+// path already reports this (`fixOne` hands a parse error straight to Fix);
+// a swept one now must too.
+func TestFixDirectoryWalkReportsMalformedFlowfilesRatherThanSkippingThem(t *testing.T) {
+	dir := t.TempDir()
+	brokenPath := writeFixture(t, dir, "workflow.yaml", malformedYAML)
+	validPath := writeFixture(t, dir, filepath.Join("other", "workflow.yaml"), currentGreeter)
+
+	out, _, err := runFixCommand(t, dir)
+	if err == nil {
+		t.Fatalf("a directory holding a broken workflow.yaml was silently accepted:\n%s", out)
+	}
+	if !strings.Contains(out, "workflow.yaml") {
+		t.Errorf("the broken file was not named in the report at all:\n%s", out)
+	}
+	if got := string(readFixture(t, brokenPath)); got != malformedYAML {
+		t.Errorf("a file that failed to parse was rewritten anyway:\n--- before\n%s\n--- after\n%s", malformedYAML, got)
+	}
+	// The valid Flowfile beside it must still be picked up by the same walk —
+	// one broken sibling must not make the walk stop looking at the rest.
+	if got := string(readFixture(t, validPath)); got != currentGreeter {
+		t.Errorf("a valid Flowfile beside a broken one was not left alone as expected (already current):\n%s", got)
+	}
+}
+
+// TestFixDirectoryWalkStillSkipsPolicyAndObservabilityFilesSilently is the
+// regression the malformed-YAML fix must not cause: teaching the walk to report
+// a file that does not parse at all must not start it reporting on files that
+// parse fine into some other recognized shape. The shipped examples/ tree holds
+// 3 real policy files and 7 non-Flowfile YAML documents under
+// examples/observability/ (docker-compose.yaml and each collector/dashboard
+// config), none of them a Flowfile, all of which must stay silently skipped.
+//
+// It asserts the *skip list*, deliberately, and not a total count. This test
+// was written pinning "the walk reports exactly 44 files" and failed the moment
+// #202 merged and added one example — reporting a defect in a branch that had
+// only gained a legitimate new Flowfile. That is the same drift
+// [TestEverySubcommandHasAWorkedExample] refuses a hardcoded floor for: a total
+// changes every time somebody adds an example, so it makes adding one look like
+// breakage, while saying nothing about the property actually at risk. What is at
+// risk is precisely that these ten documents stay silent, and that is what is
+// pinned. A non-empty walk is asserted too, so a walk that silently reported
+// nothing at all could not pass by skipping everything.
+func TestFixDirectoryWalkStillSkipsPolicyAndObservabilityFilesSilently(t *testing.T) {
+	out, _, err := runFixCommand(t, "--check", "../../examples")
+	if err != nil {
+		t.Logf("flow fix --check examples/ exited non-zero (%v); fine as long as the skip list below holds", err)
+	}
+
+	if strings.TrimSpace(out) == "" {
+		t.Fatal("flow fix --check examples/ reported on nothing at all; the walk must still find the tree's Flowfiles")
+	}
+
+	for _, name := range []string{
+		"egress-policy.yaml",
+		"auth-policy.yaml",
+		filepath.Join("observability", "docker-compose.yaml"),
+		filepath.Join("observability", "otel-collector", "config.yaml"),
+		filepath.Join("observability", "prometheus", "prometheus.yml"),
+		filepath.Join("observability", "grafana", "provisioning", "datasources", "datasources.yaml"),
+		filepath.Join("observability", "grafana", "provisioning", "dashboards", "dashboards.yaml"),
+		filepath.Join("observability", "tempo", "tempo.yaml"),
+		filepath.Join("observability", "loki", "loki.yaml"),
+	} {
+		if strings.Contains(out, name) {
+			t.Errorf("the walk reported on %s, which is not a Flowfile and must be skipped silently:\n%s", name, out)
+		}
+	}
+}
+
 // TestFixRewritesWhatItCanBeforeGivingUp is why a refusal is a status rather
 // than a stop.
 //

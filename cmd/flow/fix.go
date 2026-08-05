@@ -293,9 +293,32 @@ func fixOne(out, reports io.Writer, theme ui.Theme, path string, opts fixOptions
 // collectFlowfiles expands the paths given into the files to rewrite.
 //
 // A named file is taken as given, whatever it is called: someone naming a file
-// explicitly has said what they mean. A directory is walked for the extensions a
-// Flowfile is written with, because walking one and rewriting a .json someone
-// left there is not what anyone asked for.
+// explicitly has said what they mean, and it reaches [flowfile.Fix] directly —
+// which is what refuses it, with a diagnostic, if it turns out not to be a
+// Flowfile or a Flowfile test. That is the one place this refusal belongs: a
+// path typed on the command line is a claim, and the claim gets checked.
+//
+// A directory is walked for more than its file extensions. Filtering by
+// `.yaml`/`.yml` alone was once enough, but this tree keeps an egress policy, two
+// auth/trust policies, and unrelated YAML (docker-compose.yaml, Grafana
+// provisioning) beside its Flowfiles, all with the same extensions and none of
+// them a Flowfile — so a sweep also reads each file's shape and selects only
+// what [flowfile.LooksLikeFlowfile] recognizes. This is the same allowlist
+// [flowfile.Fix] enforces from the inside, read here so a walk never hands a
+// policy file to the rewriter to begin with, and a sweep over a mixed directory
+// does not surface a refusal for every file in it that was never a Flowfile.
+//
+// [flowfile.LooksLikeFlowfile] answers false for two different reasons, and a
+// sweep must not treat them alike: a document that parses fine into some other
+// recognized shape (a policy file, docker-compose.yaml) is correctly passed
+// over in silence, but a document that does not parse as YAML *at all* is not
+// "recognizably something else" — it is broken, and broken is exactly what a
+// sweep must surface rather than swallow, the same way a named path already
+// does through [flowfile.Fix]'s own refusal. So a file the shape check rejects
+// gets one more look, through [flowfile.IsMalformedYAML], before it is dropped;
+// a file that fails to parse is added anyway; [fixOne] then hands it to
+// [flowfile.Fix], whose own refusal reports the parse error with the file's
+// name attached.
 func collectFlowfiles(paths []string) ([]string, error) {
 	var out []string
 	for _, path := range paths {
@@ -316,7 +339,13 @@ func collectFlowfiles(paths []string) ([]string, error) {
 			}
 			switch filepath.Ext(p) {
 			case ".yaml", ".yml":
-				out = append(out, p)
+				data, err := os.ReadFile(p)
+				if err != nil {
+					return fmt.Errorf("error reading %s: %w", p, err)
+				}
+				if flowfile.LooksLikeFlowfile(data) || flowfile.IsMalformedYAML(data) {
+					out = append(out, p)
+				}
 			}
 			return nil
 		})

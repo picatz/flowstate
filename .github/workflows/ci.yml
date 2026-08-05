@@ -135,8 +135,18 @@ jobs:
       # already in the current edition, and a PR that leaves one behind should fail
       # here rather than at the next person's `flow fix .`. Not advisory — the
       # examples are clean today, so a failure here is a real regression.
+      #
+      # The whole directory, not `examples/*/workflow.yaml`: that single-level
+      # glob matched 32 of the 54 `.yaml`/`.yml` files under examples/, so every
+      # plugin example and both policy files were never checked — which is how
+      # `examples/call-a-workflow/workflow.test.yaml` drifted for a released
+      # edition before anyone noticed (#203). `flow fix` itself, not this glob,
+      # is what keeps the walk from touching `egress-policy.yaml` or an
+      # auth-policy.yaml: it selects a file by its own top-level shape
+      # (`steps:` or `tests:`), so a policy file or an observability config
+      # under examples/ is never even handed to the rewriter.
       - name: Examples are in the current edition
-        run: go run ./cmd/flow fix --check examples/*/workflow.yaml
+        run: go run ./cmd/flow fix --check examples/
 
       # `flow test` is the reachability gate for #155: at least one example's
       # own *.test.yaml runs here, so "a workflow can test itself" is a claim

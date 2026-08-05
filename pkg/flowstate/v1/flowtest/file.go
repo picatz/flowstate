@@ -61,6 +61,19 @@ const (
 
 // File is a parsed `*.test.yaml`.
 type File struct {
+	// Edition is accepted and otherwise unused.
+	//
+	// `flow fix` stamps `edition:` into any document it recognizes as a Flowfile
+	// or a Flowfile test (see flowfile.Fix), and a `*.test.yaml` is the latter —
+	// it has no `steps:` of its own but is still a document this repo's tooling
+	// migrates forward. Before this field existed, that stamp landed on a
+	// struct parsed with [yaml.Strict], and the file this build had just
+	// "fixed" no longer loaded: `unknown field "edition"`, the exact failure
+	// mode issue #203 records for an egress policy, reproduced here by the fix
+	// for that issue's own drift example. This field exists so that migration
+	// is not itself a bug — see #203's discussion of `examples/call-a-workflow/workflow.test.yaml`.
+	Edition string `yaml:"edition"`
+
 	// Tests are the cases this file declares, in the order they were written —
 	// the order [Run] runs them in and reports them in, so a reader matching a
 	// report back to the file does not have to search for it.
