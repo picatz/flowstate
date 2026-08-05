@@ -1,6 +1,8 @@
 edition: v2026.2
 name: approval-gate
-description: Waits for a human to approve a deploy, then acts on what they said.
+description: >-
+  Waits for a human to approve a deploy, then acts on what an attested sender
+  actually sent — and refuses to deploy when nothing attested that.
 
 # A workload that waits a week for a person and survives every worker restart in
 # between is the thing a CI system cannot copy. There, a job waiting for approval
@@ -18,11 +20,101 @@ description: Waits for a human to approve a deploy, then acts on what they said.
 # is who the server actually authenticated the request as, attached by
 # `FlowstateServer.Signal` and impossible for a caller to set. A payload is
 # evidence; a sender is identity.
+#
+# # Read this before copying it into production (#206)
+#
+# This file gates the `deploy` step on `steps.approval.sender` rather than on the
+# payload alone, which is a real improvement over checking `payload.approved` by
+# itself — but it is not the approval control the name suggests, and three things
+# are true at once:
+#
+#   - What genuinely binds: `steps.approval.sender.identity.subject` is
+#     server-attested and impossible for a caller to set (#194/#199). A check
+#     against it — non-empty, matching `inputs.expected_approver` — is a check
+#     against unforgeable evidence, not a self-asserted claim.
+#   - What does not: there is no signal authorization surface today — anyone who
+#     can reach this run in its tenant can send `deploy-approved`, matched
+#     approver or not, because nothing constrains *who* may deliver a named
+#     signal. `inputs.expected_approver` and `inputs.requested_by` are supplied
+#     by whoever starts the run, so a requester can name themselves as the
+#     expected approver and satisfy both checks below — the run's own starter
+#     identity is not in scope for any expression, so refusing that is not
+#     expressible from inside this file. This is the gate's real limit, not an
+#     oversight this file works around.
+#   - The check lives here, in a file its own author can edit: whoever can weaken
+#     `deploy`'s `if:` to `true`, or delete `wait_for_signal` outright, controls
+#     the control. A workflow cannot author a rule that binds against itself.
+#
+# The fix for all three is deployment-side, not a cleverer expression: signal
+# authorization evaluated where a signal is accepted, the run's starter identity
+# exposed so approver-≠-requester is actually checkable, and task-shape policy
+# (#187) enforced by the worker outside the file. Track that at #206 and #187.
+# What is true today is durable waiting and an unforgeable sender — genuinely
+# useful, worth demonstrating, and worth being honest about the edge of.
+
+inputs:
+  # No default: there is no sensible absent value for the thing being shipped,
+  # only a plausible one to paste — which is what `example:` is for (the
+  # examples sweep behind #205 made exactly this call for `expense-approval`'s
+  # `employee`/`amount`). `v?` takes either spelling a caller is likely to type;
+  # `flow validate` and submit both check it, so `1.4` or `latest` is refused
+  # before a single step runs rather than three steps into a run nobody can
+  # act on.
+  version:
+    type: string
+    required: true
+    example: v1.4.2
+    pattern: '^v?[0-9]+\.[0-9]+\.[0-9]+$'
+    description: the semver version being deployed, with or without a leading "v"
+
+  # `must:` over a closed set rather than a bare string, because "deploy to
+  # whatever string you typed" is not a production-shaped question — a typo'd
+  # environment is refused at submit, the same place a bad version is.
+  environment:
+    type: string
+    required: true
+    example: production
+    must: 'this in ["staging", "production"]'
+    description: which environment this deploy targets
+
+  # Who is asking, and who this run expects to approve it — both supplied by
+  # whoever starts the run, and both checked below against the one thing that
+  # is *not* caller-supplied: `steps.approval.sender.identity.subject`.
+  #
+  # State plainly what that buys and does not. `expected_approver` matching the
+  # attested subject is a real check: the caller declares who they expect, and
+  # the deploy step refuses unless the server's own attestation agrees — a
+  # caller cannot forge that agreement by typing a different subject into the
+  # signal, because the signal payload never carries one. What it does not buy
+  # is separation of duties: both of these are supplied by the same caller who
+  # starts the run, so a requester can set `expected_approver` to their own
+  # identity and pass the `not_self` check below trivially. Refusing that for
+  # real needs the run's starter identity in scope, which is #206's second gap
+  # and is not fixable from inside a Flowfile today. This is the honest limit,
+  # spelled out rather than hidden behind a check that merely looks complete.
+  requested_by:
+    type: string
+    required: true
+    example: jordan@example.com
+    sensitive: true
+    pattern: "^[^@]+@[^@]+$"
+    description: who is requesting this deploy — caller-supplied, not attested
+  expected_approver:
+    type: string
+    required: true
+    example: sre-lead@example.com
+    sensitive: true
+    pattern: "^[^@]+@[^@]+$"
+    description: >-
+      who this run expects to approve it — caller-supplied, checked against
+      the attested sender at the deploy gate, not a control on its own
 
 steps:
   - id: request
     log:
-      message: ${"requesting approval to deploy %s".format(["v1.4.2"])}
+      message: >-
+        ${"%s requests deploying %s to %s".format(
+            [inputs.requested_by, inputs.version, inputs.environment])}
 
   # A short pause, so a notification has landed before anyone is asked to act on
   # it. A durable timer, not a sleeping worker.
@@ -50,20 +142,104 @@ steps:
   # A payload key is only there if a sender sent it, and naming one that is absent
   # fails the run with an unresolved reference. `has()` asks without asserting, and
   # is safe on a wait that timed out — the payload is then an empty mapping rather
-  # than nothing, so there is still something to look inside. `sender` is always
-  # present, even on a timeout — its `identity.subject` just reads empty then,
-  # since nobody sent anything to attest.
+  # than nothing, so there is still something to look inside.
+  #
+  # `deploy` fires only when all three hold: the payload said yes, the sender was
+  # actually attested (not a local run, not an unauthenticated request), and that
+  # attested subject is the one this run declared it expects. A local run —
+  # `flow run local`, `flow test` — has no authenticated caller at all
+  # (`steps.approval.sender.local` reads `true`, `identity.subject` reads empty),
+  # so this branch can never fire outside a real server: that is the honest
+  # consequence of gating on attestation rather than on the payload alone, not a
+  # bug in the example.
   - id: deploy
-    if: ${has(steps.approval.payload.approved) && steps.approval.payload.approved}
+    if: >-
+      ${has(steps.approval.payload.approved) && steps.approval.payload.approved &&
+        !steps.approval.sender.local &&
+        steps.approval.sender.identity.subject != "" &&
+        steps.approval.sender.identity.subject == inputs.expected_approver &&
+        steps.approval.sender.identity.subject != inputs.requested_by}
     log:
-      message: ${"deploying, approved by %s".format([steps.approval.sender.identity.subject])}
+      message: >-
+        ${"deploying %s to %s, approved by %s".format(
+            [inputs.version, inputs.environment, steps.approval.sender.identity.subject])}
+
+  # The payload said yes and the sender check still refused it — either nothing
+  # attested the sender at all (a local run, or a server with no identity
+  # provider configured), the attested subject was not the one this run
+  # declared it expects, or the attested subject is the same one that requested
+  # the deploy (the self-approval this file can refuse only because the caller
+  # happened to be honest about `requested_by` — see the header comment; a
+  # caller who is not honest about it is not stopped by anything here).
+  - id: deploy_refused
+    if: >-
+      ${has(steps.approval.payload.approved) && steps.approval.payload.approved &&
+        !(!steps.approval.sender.local &&
+          steps.approval.sender.identity.subject != "" &&
+          steps.approval.sender.identity.subject == inputs.expected_approver &&
+          steps.approval.sender.identity.subject != inputs.requested_by)}
+    log:
+      level: warn
+      message: >-
+        ${"refusing to deploy %s: approved, but the sender was %s".format(
+            [inputs.version,
+             steps.approval.sender.local
+               ? "not attested at all (a local run has no authenticated caller)"
+               : (steps.approval.sender.identity.subject == ""
+                   ? "attested with no identity at all (a misconfigured identity provider)"
+                   : (steps.approval.sender.identity.subject == inputs.requested_by
+                       ? "the same identity that requested the deploy"
+                       : "attested, but not the expected approver"))])}
 
   - id: rejected
     if: ${has(steps.approval.payload.approved) && !steps.approval.payload.approved}
     log:
-      message: ${"%s declined the deploy".format([steps.approval.sender.identity.subject])}
+      message: >-
+        ${"%s declined the deploy of %s".format(
+            [steps.approval.sender.identity.subject, inputs.version])}
 
   - id: expired
     if: ${steps.approval.timed_out}
     log:
-      message: nobody approved the deploy in time
+      message: ${"nobody approved deploying %s in time".format([inputs.version])}
+
+outputs:
+  # An enterprise reader wants to know which of five things happened and, when
+  # a deploy shipped, who the server says shipped it — this reports both
+  # without anyone having to know which step's log line was the point.
+  decision:
+    value: >-
+      ${(has(steps.approval.payload.approved) && steps.approval.payload.approved &&
+          !steps.approval.sender.local &&
+          steps.approval.sender.identity.subject != "" &&
+          steps.approval.sender.identity.subject == inputs.expected_approver &&
+          steps.approval.sender.identity.subject != inputs.requested_by)
+        ? "deployed"
+        : (has(steps.approval.payload.approved) && steps.approval.payload.approved)
+          ? "refused_unattested_or_mismatched_approver"
+          : (has(steps.approval.payload.approved) && !steps.approval.payload.approved)
+            ? "rejected"
+            : "expired"}
+    description: which branch this run ended on, and why
+  # Populated only when a deploy actually happened — the same pattern
+  # `expense-approval`'s own `approved_by` output uses, and for the same
+  # reason: the raw attested subject is real evidence on a run that reached
+  # `deploy`, but leaking it on a run that did not (where its only meaning is
+  # "which unattested or mismatched caller tried") would report something a
+  # local run and a durable one legitimately attest differently for the exact
+  # same reason `steps.<gate>.sender` itself is - see `stableOutputs` in
+  # pkg/flowstate/v1/engine/examples_durable_test.go, which strips that field
+  # from step comparisons for the identical reason.
+  approver_subject:
+    value: >-
+      ${(has(steps.approval.payload.approved) && steps.approval.payload.approved &&
+          !steps.approval.sender.local &&
+          steps.approval.sender.identity.subject != "" &&
+          steps.approval.sender.identity.subject == inputs.expected_approver &&
+          steps.approval.sender.identity.subject != inputs.requested_by)
+        ? steps.approval.sender.identity.subject
+        : ""}
+    description: >-
+      who the server attests actually deployed this, empty unless a deploy
+      really happened — never a payload field, which is a claim rather than
+      an attestation

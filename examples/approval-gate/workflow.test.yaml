@@ -1,0 +1,94 @@
+# Every case shares the same inputs unless noted: a real caller can never get
+# `steps.approval.sender.local` to read `false` from `flow test` any more than
+# from `flow run local` (both drivers use [v1.LocalSignals]), so what these
+# cases prove is that the gate refuses even a matching, approved payload when
+# nothing attested it — the honest limit the workflow's own header comment
+# names. `deploy` itself is unreachable from this file for exactly that
+# reason; see #206.
+tests:
+  - name: an approved payload is still refused without an attested sender
+    workflow: ./workflow.yaml
+    inputs:
+      version: v1.4.2
+      environment: production
+      requested_by: jordan@example.com
+      expected_approver: sre-lead@example.com
+    signals:
+      - name: deploy-approved
+        payload:
+          approved: true
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [request, settle, approval, deploy_refused]
+      skipped: [deploy, rejected, expired]
+      outputs:
+        decision: refused_unattested_or_mismatched_approver
+        approver_subject: ""
+
+  - name: an explicit rejection is honored
+    workflow: ./workflow.yaml
+    inputs:
+      version: v1.4.2
+      environment: production
+      requested_by: jordan@example.com
+      expected_approver: sre-lead@example.com
+    signals:
+      - name: deploy-approved
+        payload:
+          approved: false
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [request, settle, approval, rejected]
+      skipped: [deploy, deploy_refused, expired]
+      outputs:
+        decision: rejected
+        approver_subject: ""
+
+  - name: nobody answers, and the gate lapses at its own timeout
+    workflow: ./workflow.yaml
+    inputs:
+      version: v1.4.2
+      environment: production
+      requested_by: jordan@example.com
+      expected_approver: sre-lead@example.com
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [request, settle, approval, expired]
+      skipped: [deploy, deploy_refused, rejected]
+      outputs:
+        decision: expired
+        approver_subject: ""
+
+  - name: a version that is not semver is refused before the first step runs
+    workflow: ./workflow.yaml
+    inputs:
+      version: latest
+      environment: production
+      requested_by: jordan@example.com
+      expected_approver: sre-lead@example.com
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      failed: true
+      error_contains: 'must match pattern'
+
+  - name: an environment outside the known set is refused before the first step runs
+    workflow: ./workflow.yaml
+    inputs:
+      version: v1.4.2
+      environment: prod-typo
+      requested_by: jordan@example.com
+      expected_approver: sre-lead@example.com
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      failed: true
+      error_contains: 'must satisfy'
