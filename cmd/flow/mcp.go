@@ -163,7 +163,7 @@ func addMCPTools(
 			Name:        mcpToolName(method.name),
 			Description: mcpDescriptions[method.name],
 			InputSchema: schemaForMessage(method.input),
-		}, mcpHandler(method, local, remote))
+		}, mcpHandler(method, local, remote, posture))
 	}
 
 	srv.AddTool(runLocalTool(), runLocalToolHandler(posture))
@@ -415,6 +415,7 @@ func mcpHandler(
 	method serviceMethod,
 	local *server.FlowstateServer,
 	remote func() flowstatev1connect.WorkflowServiceClient,
+	posture *cobra.Command,
 ) mcp.ToolHandler {
 	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		in := newMessage(method.input)
@@ -432,6 +433,18 @@ func mcpHandler(
 		out, err := method.call(ctx, local, remote, in)
 		if err != nil {
 			return toolError(err), nil
+		}
+
+		// An agent's context is an untrusted-consumer surface exactly like a
+		// terminal, so `flowstate_get` honours `sensitive:` too. This tool
+		// addresses a run by id alone, over a generic RPC dispatch shared by
+		// every method in the service — there is no workflow specification
+		// anywhere in reach here, which is the fail-closed case [sensitive.go]'s
+		// package comment names for `flow get`: workflow is nil, so every
+		// declared output is withheld unless the server was started with
+		// --reveal-sensitive.
+		if response, ok := out.(*v1.GetResponse); ok {
+			out = redactGetResponse(response, nil, revealSensitiveRequested(posture))
 		}
 
 		encoded, err := protojson.MarshalOptions{EmitUnpopulated: true}.Marshal(out)
@@ -597,6 +610,14 @@ func addLocalRunFlags(cmd *cobra.Command) {
 	// workflow is the untrusted input. `sleep: 24h` is a legal Flowfile.
 	cmd.Flags().Duration("run-local-timeout", 2*time.Minute,
 		"how long a flowstate_run_local call may execute for before the run is stopped and reported as timed out")
+
+	// Decided at process start-up rather than per call, for the same reason
+	// every other flag in this function is: a client speaks to this over stdio
+	// and never gets to choose per-call. An operator who starts `flow mcp
+	// --reveal-sensitive` is making one deliberate, written-down decision that
+	// every call this process serves shows declared-sensitive values in the
+	// clear — never a default, and never something a tool argument can turn on.
+	addRevealSensitiveFlag(cmd)
 }
 
 // defaultLocalRunPosture is the deny-by-default posture as a flag set, for
@@ -734,6 +755,14 @@ func runLocalToolHandler(posture *cobra.Command) mcp.ToolHandler {
 		// context, leaving this one clean, and the run is reported FAILED. Only
 		// this context expiring means the call ran out of time.
 		response := localRun(outputs, runErr, ctx.Err(), started, time.Now())
+
+		// An agent's context is an untrusted-consumer surface exactly like a
+		// terminal — a leaked credential in a transcript is a leaked credential —
+		// so this tool result honours `sensitive:` the same way `flow run local`
+		// does. workflow was just parsed from the submitted source, so redaction
+		// here is precise against its own declarations rather than the
+		// fail-closed case a spec-less renderer falls back to; see sensitive.go.
+		response = redactGetResponse(response, workflow, revealSensitiveRequested(posture))
 
 		encoded, err := renderRunLocalResult(response, logs.records())
 		if err != nil {

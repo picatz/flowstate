@@ -501,6 +501,75 @@ steps:
 		"an int input arrived as something other than an int")
 }
 
+// TestTheRunLocalToolRedactsSensitiveOutputs is the MCP half of the gap PR #205
+// left: an agent's context is an untrusted-consumer surface exactly like a
+// terminal, so a value the submitted source declared `sensitive: true` must not
+// come back in the tool's answer any more than `flow run local` prints it. The
+// source is right here in the call, so redaction is precise: the sensitive name
+// is withheld and the other declared output renders unchanged.
+func TestTheRunLocalToolRedactsSensitiveOutputs(t *testing.T) {
+	t.Parallel()
+
+	session := connectMCP(t, defaultLocalRunPosture())
+
+	const secret = "sk-live-0123456789abcdef"
+
+	result, answer := callRunLocal(t, session, map[string]any{
+		"source": fmt.Sprintf(`edition: v2026.2
+name: has-a-secret
+outputs:
+  token:
+    value: ${"%s"}
+    sensitive: true
+  region:
+    value: ${"us-east-1"}
+steps:
+  - id: noop
+    log:
+      message: done
+`, secret),
+	})
+	require.False(t, result.IsError, "the workflow failed: %s", result.Content[0].(*mcp.TextContent).Text)
+
+	rawText := result.Content[0].(*mcp.TextContent).Text
+	require.NotContains(t, rawText, secret,
+		"the actual secret string must be absent from the rendered bytes, not merely covered by a marker")
+
+	require.Equal(t, "[redacted: token]", answer.Run.RunOutputs.Values["token"].Literal["stringValue"])
+	require.Equal(t, "us-east-1", answer.Run.RunOutputs.Values["region"].Literal["stringValue"],
+		"a value the source did not mark sensitive must render unchanged")
+}
+
+// TestTheRunLocalToolRevealSensitiveShowsValues checks the escape hatch on this
+// surface: --reveal-sensitive on the `flow mcp` process, decided once at
+// start-up, shows what the tool would otherwise withhold.
+func TestTheRunLocalToolRevealSensitiveShowsValues(t *testing.T) {
+	t.Parallel()
+
+	posture := defaultLocalRunPosture()
+	require.NoError(t, posture.Flags().Set(revealSensitiveFlagName, "true"))
+
+	session := connectMCP(t, posture)
+
+	const secret = "sk-live-0123456789abcdef"
+
+	_, answer := callRunLocal(t, session, map[string]any{
+		"source": fmt.Sprintf(`edition: v2026.2
+name: has-a-secret
+outputs:
+  token:
+    value: ${"%s"}
+    sensitive: true
+steps:
+  - id: noop
+    log:
+      message: done
+`, secret),
+	})
+
+	require.Equal(t, secret, answer.Run.RunOutputs.Values["token"].Literal["stringValue"])
+}
+
 // TestTheRunLocalToolRefusesArgumentsTheSourceDoesNotDeclare is the negative
 // direction, and the one that decides whether `inputs` is a contract or a hole:
 // the names a call may pass are the names the submitted source declared, and the
@@ -889,4 +958,95 @@ func findCommand(t *testing.T, path string) *cobra.Command {
 		"`flow %s` was not found; the command tree moved", path)
 
 	return cmd
+}
+
+// connectRemoteMCP is [connectMCP] for the tools that are a real RPC rather than
+// the local driver: it wires the server's remote client at a fake WorkflowService
+// instead of erroring the moment one dials out.
+func connectRemoteMCP(t *testing.T, posture *cobra.Command, fake *fakeWorkflowService) *mcp.ClientSession {
+	t.Helper()
+
+	address := serveFake(t, fake)
+
+	srv := mcp.NewServer(&mcp.Implementation{Name: "flowstate", Version: "test"}, nil)
+	addMCPCapabilities(srv, server.New(nil), func() flowstatev1connect.WorkflowServiceClient {
+		return newWorkflowServiceClient(serverFlags{address: address})
+	}, posture)
+
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	go func() { _ = srv.Run(t.Context(), serverTransport) }()
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "test"}, nil)
+	session, err := client.Connect(t.Context(), clientTransport, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	return session
+}
+
+// TestTheGetToolFailsClosedWithNoSpecification is the generic RPC surface's own
+// version of the gap PR #205 left: a `flowstate_get` call addresses a run by id
+// alone, over the same dispatch every RPC shares, and there is no workflow
+// specification anywhere in reach to say which of its declared outputs are
+// sensitive. CLAUDE.md's fail-closed rule applies exactly as it does to `flow
+// get`: every declared output is withheld, and the actual secret string must be
+// absent from the rendered bytes.
+func TestTheGetToolFailsClosedWithNoSpecification(t *testing.T) {
+	const secret = "sk-live-0123456789abcdef"
+
+	fake := &fakeWorkflowService{
+		getResponse: &v1.GetResponse{
+			WorkflowId: "flowstate-workflow-3f7c",
+			Status:     v1.RunResponse_STATUS_COMPLETED,
+			RunOutputs: &v1.RunOutputs{Values: map[string]*v1.Value{
+				"token": v1.NewLiteral(secret),
+			}},
+		},
+	}
+
+	session := connectRemoteMCP(t, defaultLocalRunPosture(), fake)
+
+	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name:      mcpToolName("Get"),
+		Arguments: map[string]any{"workflowId": "flowstate-workflow-3f7c"},
+	})
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+
+	text := result.Content[0].(*mcp.TextContent).Text
+	require.NotContains(t, text, secret,
+		"the actual secret string must be absent from the tool's answer, not merely covered by a marker")
+	require.Contains(t, text, "[redacted: token]")
+}
+
+// TestTheGetToolRevealsWithTheServerFlag checks the escape hatch on the generic
+// RPC surface: --reveal-sensitive on the `flow mcp` process shows what
+// flowstate_get would otherwise withhold, decided once at start-up rather than
+// per call — a client speaking to this over stdio never gets to choose it.
+func TestTheGetToolRevealsWithTheServerFlag(t *testing.T) {
+	const secret = "sk-live-0123456789abcdef"
+
+	fake := &fakeWorkflowService{
+		getResponse: &v1.GetResponse{
+			WorkflowId: "flowstate-workflow-3f7c",
+			Status:     v1.RunResponse_STATUS_COMPLETED,
+			RunOutputs: &v1.RunOutputs{Values: map[string]*v1.Value{
+				"token": v1.NewLiteral(secret),
+			}},
+		},
+	}
+
+	posture := defaultLocalRunPosture()
+	require.NoError(t, posture.Flags().Set(revealSensitiveFlagName, "true"))
+
+	session := connectRemoteMCP(t, posture, fake)
+
+	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name:      mcpToolName("Get"),
+		Arguments: map[string]any{"workflowId": "flowstate-workflow-3f7c"},
+	})
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+
+	require.Contains(t, result.Content[0].(*mcp.TextContent).Text, secret)
 }

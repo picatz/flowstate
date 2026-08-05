@@ -104,6 +104,15 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	outputs, runErr := v1.RunWithInputs(ctx, workflow, inputs)
 	response := localRun(outputs, runErr, cmd.Context().Err(), started, time.Now())
 
+	// This process just parsed workflow itself, so redaction here is precise
+	// against its own `sensitive:` declarations rather than the fail-closed case
+	// a renderer with no specification falls back to — see sensitive.go.
+	reveal := revealSensitiveRequested(cmd)
+	if reveal {
+		noteRevealedSensitiveValues(surface)
+	}
+	response = redactGetResponse(response, workflow, reveal)
+
 	if runErr != nil {
 		// A machine caller is owed a document about the failure, which is the half
 		// of the durable driver's behaviour that was missing here: `flow run -o json`
