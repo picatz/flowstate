@@ -347,6 +347,12 @@ func validateAtDepth(wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnos
 	// same mistake twice in two voices.
 	ds = append(ds, checkExpressionTypes(wf)...)
 
+	// Two sibling steps whose `if:` conditions look like they were meant to be
+	// exact negations of each other, but have drifted apart — see negation.go.
+	// Recurses into every for_each/loop body and parallel branch on its own, so
+	// one call here covers the whole tree the way checkExpressionTypes does.
+	ds = append(ds, checkNegationDrift(wf.GetSteps())...)
+
 	// Tasks and expression references.
 	scope := newRefScope(wf)
 	for i, node := range wf.GetSteps() {
