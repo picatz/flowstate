@@ -104,7 +104,16 @@ tests:
         returns: {}
     expect:
       failed: true
-      error_contains: activation service unavailable
+      # `compensated:` checks membership in any order — the field's own doc
+      # says so — and the point of this case is the *order*: reverse of
+      # registration, across three `call:` boundaries. The failure text
+      # carries the engine's own ordered account directly after the cause,
+      # so one string pins both what failed and access-then-billing-then-
+      # database. Swap any two names and this case fails.
+      error_contains: >-
+        activation service unavailable; compensation ran in reverse order:
+        undid "provision_access", undid "provision_billing", undid
+        "provision_database"
       compensated: [provision_access, provision_billing, provision_database]
 
   - name: activation is deferred when the account manager never confirms go-live
