@@ -511,6 +511,13 @@ func TestFixLeavesACurrentFileByteForByte(t *testing.T) {
 		"edition: v2026.2\nname: t\nsteps: [{id: a, log: {message: hi}}]\n",
 		// A document with no steps at all.
 		"edition: v2026.2\nname: t\n",
+		// A `signals:` block — #206 gap 1's grammar. Nothing in it binds a
+		// name into any expression's scope (unlike `as:`, a step's own
+		// `vars:`, or `now`), so there is no scope rule for a rewriter to get
+		// wrong here the way it did for those; this pins that `flow fix`
+		// leaves the block alone rather than assuming that from the absence
+		// of a bug report.
+		"edition: v2026.2\nname: t\nsteps:\n  - id: approval\n    wait_for_signal:\n      name: deploy-approved\n      timeout: 24h\nsignals:\n  deploy-approved:\n    allow:\n      - subject: \"https://issuer.example.com#release-manager@example.com\"\n      - claims:\n          team: release-managers\n",
 	}
 
 	for _, src := range srcs {
