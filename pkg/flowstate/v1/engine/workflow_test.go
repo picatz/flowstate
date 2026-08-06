@@ -113,6 +113,59 @@ func TestRunWorkflowPolicy(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowTaskPolicy runs #187 slice 1's shared task-shape policy
+// cases ([tests.TaskPolicyCases]) against the durable driver — the same
+// cases [flowstatev1_test.TestRunWorkflowTaskPolicy] runs against the local
+// one, which is what keeps the two agreeing about which dispatches a
+// deployment's policy refuses (invariant 3).
+//
+// Errors round-trip through Temporal's failure conversion here, unlike the
+// local driver's bare Go error chain, so this asserts by text — the same
+// choice [TestRunWorkflowTaskOutputElementBound] already makes for the
+// identical reason (see its own comment: `require.Contains(t, err.Error(),
+// "10000")` rather than errors.As) — rather than pretending a
+// *v1.TaskPolicyDeniedError survives the wire.
+func TestRunWorkflowTaskPolicy(t *testing.T) {
+	for _, tc := range tests.TaskPolicyCases() {
+		t.Run(tc.Name, func(t *testing.T) {
+			policy, err := tc.Policy.Policy()
+			require.NoError(t, err, "every case's policy must itself compile")
+
+			v1.SetDefaultTaskPolicy(policy)
+			t.Cleanup(func() { v1.SetDefaultTaskPolicy(nil) })
+
+			testSuite := &testsuite.WorkflowTestSuite{}
+			env := testSuite.NewTestWorkflowEnvironment()
+			env.RegisterWorkflow(engine.Run)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.TaskWithPrev, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskWithPrev)
+			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: tc.Workflow})
+			require.True(t, env.IsWorkflowCompleted())
+
+			if tc.DeniedTask != "" {
+				workflowErr := env.GetWorkflowError()
+				require.Error(t, workflowErr, "the policy must refuse this dispatch")
+				require.Contains(t, workflowErr.Error(), tc.DeniedTask,
+					"the denial must name the task it refused")
+				require.Contains(t, workflowErr.Error(), string(tc.DeniedReason),
+					"the denial must name why — the rule category the design record's "+
+						"diagnostics rule asks a deployment refusal to state")
+				require.Contains(t, workflowErr.Error(), "task-shape policy",
+					"the denial must read as a deployment refusal, not an ordinary task failure")
+				return
+			}
+
+			require.NoError(t, env.GetWorkflowError())
+
+			var output v1.Workflow_StepOutputs
+			require.NoError(t, env.GetWorkflowResult(&output))
+			require.Empty(t, cmp.Diff(tc.ExpectedOutputs, &output, protocmp.Transform()))
+		})
+	}
+}
+
 // TestRunWorkflowHasGuardOnToleratedSuccess runs
 // [tests.ToleratedSuccessHasGuardCases] against the durable driver — the value
 // both drivers must agree `has(steps.<id>.error)` reads once a `continue_on_error`

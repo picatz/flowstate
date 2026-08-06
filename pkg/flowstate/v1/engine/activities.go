@@ -76,6 +76,17 @@ func Task(ctx context.Context, task *v1.Task) (*v1.Node_Outputs, error) {
 	ctx, span := startTaskSpan(ctx, task, "")
 	defer span.End()
 
+	// The deployment's task-shape policy (#187), checked once per activity
+	// entry — the durable driver's half of "once per dispatch," matching
+	// where the local driver checks, above its own retry loop
+	// (`eval.go`'s runStepWithPolicy). No scope reaches this entry point (it
+	// predates scopes — see [v1.Task.Eval]'s own doc), so identity reads
+	// empty here exactly as it does for any run this old.
+	if err := v1.CheckTaskPolicy(ctx, task.GetName(), nil); err != nil {
+		recordTaskOutcome(span, err)
+		return nil, activityError(task.GetName(), err)
+	}
+
 	// Installed on all three entry points for the reason the logger bridge below
 	// is: which activity carries a step is decided by whether the task evaluates
 	// its own inputs, which is a property of the task and not of how long it takes.
@@ -105,6 +116,13 @@ func TaskWithPrev(ctx context.Context, task *v1.Task, prev *v1.Workflow_StepOutp
 	ctx, span := startTaskSpan(ctx, task, "")
 	defer span.End()
 
+	// See [Task]'s identical check: this entry point predates scopes too, so
+	// identity reads empty here for the same reason.
+	if err := v1.CheckTaskPolicy(ctx, task.GetName(), nil); err != nil {
+		recordTaskOutcome(span, err)
+		return nil, activityError(task.GetName(), err)
+	}
+
 	ctx, stop := withHeartbeat(ctx)
 	defer stop()
 
@@ -130,6 +148,16 @@ func TaskWithPrev(ctx context.Context, task *v1.Task, prev *v1.Workflow_StepOutp
 func TaskInScope(ctx context.Context, task *v1.Task, scope *v1.Scope) (*v1.Node_Outputs, error) {
 	ctx, span := startTaskSpan(ctx, task, "")
 	defer span.End()
+
+	// The deployment's task-shape policy (#187), checked once per activity
+	// entry against the run's real attested identity — this entry point is
+	// the one that carries a [v1.Scope], so unlike [Task]/[TaskWithPrev]
+	// identity here is whatever the run was actually started as (see
+	// varsScope in workflow.go).
+	if err := v1.CheckTaskPolicy(ctx, task.GetName(), scope.GetIdentity()); err != nil {
+		recordTaskOutcome(span, err)
+		return nil, activityError(task.GetName(), err)
+	}
 
 	ctx, stop := withHeartbeat(ctx)
 	defer stop()

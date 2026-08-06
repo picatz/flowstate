@@ -1,0 +1,32 @@
+# A task-shape policy (#187), loaded with:
+#
+#   flow worker --task-policy examples/task-shape-policy/task-policy.yaml
+#   flow run local workflow.yaml --task-policy examples/task-shape-policy/task-policy.yaml
+#
+# This is deployment configuration, never something a Flowfile can grant itself —
+# see workflow.yaml's own header for what that buys against an author who has
+# already deleted every in-file safeguard.
+#
+# Rules are CEL, the same language workflow expressions are written in, compiled
+# and type-checked when this file loads rather than when a task tries to
+# dispatch — a malformed rule is a startup error, never a surprise mid-run.
+#
+# Two attributes in slice 1: `task`, the qualified task name, and `identity`
+# (`identity.subject`, `identity.issuer`, `identity.namespace`, `identity.claims`)
+# — the run's attested WorkloadIdentity, the same shape `run.identity` exposes to
+# an ordinary expression. Typed `inputs.*` access — `inputs.sandbox != "read-only"`
+# — is slice 2, gated on #177's manifest projection.
+deny:
+  # "log" stands in for a task whose blast radius only a security team should
+  # control — a real deployment would name something like `codex.exec` with
+  # `sandbox: danger-full-access`, or `git.commit_push` targeting a protected
+  # branch. Denied for every identity except the platform team's own namespace;
+  # an empty namespace (an unattested caller, or a local run) is denied too,
+  # since "" != "platform" is true.
+  - 'task == "log" && identity.namespace != "platform"'
+
+# No allow: rules here, deliberately. Configuring any would turn this into an
+# allowlist covering *every* task dispatch in the deployment, not only the one
+# rule above names — see [v1.TaskPolicyConfig.Allow]'s own doc. A deny-only
+# policy narrows exactly what it names and leaves everything else exactly as
+# unrestricted as it is with no policy configured at all.

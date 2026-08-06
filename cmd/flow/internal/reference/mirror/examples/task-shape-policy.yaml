@@ -1,0 +1,59 @@
+edition: v2026.2
+name: task-shape-policy
+description: >-
+  A step the author has already weakened to `if: true`, refused anyway by a
+  deployment-side task-shape policy the author cannot see or edit (#187).
+
+# This is #206 gap 3, closed the way `examples/approval-gate`'s own header says it
+# has to be: "Binding that requires policy the workflow's own author does not
+# control at all — deployment-side task-shape policy (#187)."
+#
+# `deploy` below has no gate left at all. There is no `wait_for_signal:`, no
+# `signals:` block, nothing checked against `run.identity` — every in-file control
+# `approval-gate` demonstrates has already been stripped out, which is the whole
+# point: this file represents what a hostile or careless author's edit looks like
+# after they have deleted every safeguard they could reach. `if: true` is not a
+# bug in this example; it is the premise.
+#
+# What still refuses `deploy` is [task-policy.yaml] beside this file — worker
+# configuration this workflow never carries and could not weaken if it tried:
+#
+#   deny:
+#     - 'task == "log" && identity.namespace != "platform"'
+#
+# ("log" stands in for a dangerous task here — the built-in registry this example
+# validates against has no `codex.exec` to name, but the rule reads identically
+# for one: `task == "codex.exec" && inputs.sandbox != "read-only" ? identity.team
+# == "platform" : true` is #187's own worked example.)
+#
+# Run it two ways to see both halves. Without the flag, nothing restricts
+# `deploy` at all — the zero case, unrestricted, exactly like every deployment
+# before this policy existed:
+#
+#   $ flow run local examples/task-shape-policy/workflow.yaml
+#
+# With it, `deploy` is refused even though nothing in *this file* gates it,
+# because a local run has no attested identity at all (`run.local` reads true,
+# every `identity.*` field reads empty) — and `identity.namespace != "platform"`
+# is true for an empty namespace exactly as it is for any other non-platform one:
+#
+#   $ flow run local examples/task-shape-policy/workflow.yaml \
+#       --task-policy examples/task-shape-policy/task-policy.yaml
+#
+# The rehearsal and the worker agree without either of them needing a real
+# identity to prove it: the fail-closed direction is the one that costs nothing
+# to demonstrate.
+#
+#   $ flow worker --task-policy examples/task-shape-policy/task-policy.yaml ...
+#
+# is what a real deployment runs, and is what
+# `engine.TestTaskPolicyIdentityNamespaceDenial` exercises under the durable
+# test harness with a genuinely attested identity on both sides of the rule —
+# the reachability proof this example's comments describe rather than perform,
+# since a Flowfile has no way to carry the worker-side configuration that makes
+# the durable half of this story different from the local one.
+steps:
+  - id: deploy
+    if: true
+    log:
+      message: this must never run outside the platform team's namespace
