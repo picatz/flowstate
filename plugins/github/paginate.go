@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/google/go-github/v75/github"
+	"google.golang.org/protobuf/proto"
 )
 
 // paginateBounded drives one of go-github's page-based list calls,
@@ -21,6 +22,33 @@ import (
 // TestPaginateBoundedStopsAgainstAPeerThatPagesForever for a peer that does
 // exactly this.
 //
+// A third, independent resource needs its own bound too: bytes. maxItems
+// bounds how many entries are retained, and maxRequests bounds how many
+// round trips are spent, but neither bounds how large any one entry is -
+// go-github's raw page types (*github.PullRequest, *github.Issue, ...)
+// carry every field GitHub's API returns, several of them unbounded strings
+// (a body, a title, a set of labels), and the per-response transport cap
+// (maxResponseBytes, client.go) only bounds one response, not the sum this
+// function would otherwise retain across up to maxRequests of them - the
+// exact "bounding one resource does not bound another the peer controls the
+// ratio to" shape CLAUDE.md names: a hostile peer answering with small
+// pages of large records drives requests and items down while driving
+// bytes up. So convert is called on every raw item as soon as it is
+// fetched, converting it to this call's own, much smaller output shape and
+// letting the raw go-github value be garbage-collected immediately after -
+// the retained shape across the whole walk is only ever S, this task's own
+// converted summary type, never T, GitHub's full record. maxResultBytes
+// then bounds the running sum of each converted item's serialized size
+// (proto.Size, the same measure pkg/flowstate/v1/size.go uses for an
+// execution's own answer), and a page that would cross it stops the walk
+// and reports truncated - the same refuse-or-truncate choice
+// PullRequestListOutputs.truncated already exists to report, extended to
+// cover the resource that was missing a bound. See
+// TestPaginateBoundedStopsWhenTheByteBudgetIsWhatBinds for a peer that
+// forces exactly this stop: pages full of large records, well under both
+// the item and request caps, where only the byte budget makes the walk
+// finite.
+//
 // fetch is called with the page to request and this call's own per-page
 // size, and returns that page's items alongside go-github's own *Response.
 // A nil Response, or one with NextPage == 0, ends the walk with truncated
@@ -30,12 +58,14 @@ import (
 // perPage and maxItems are validated by the caller before this function is
 // reached (clampMaxResults, capped again at maxPerPage) - not re-checked
 // here, since this function has no schema-level input of its own.
-func paginateBounded[T any](
+func paginateBounded[T any, S proto.Message](
 	ctx context.Context,
-	perPage, maxItems, maxRequests int,
+	perPage, maxItems, maxRequests, maxResultBytes int,
 	fetch func(ctx context.Context, page, perPage int) ([]T, *github.Response, error),
-) ([]T, bool, error) {
-	var items []T
+	convert func(T) S,
+) ([]S, bool, error) {
+	var items []S
+	var totalBytes int
 	page := 1
 
 	for requests := 0; requests < maxRequests; requests++ {
@@ -44,7 +74,7 @@ func paginateBounded[T any](
 			return nil, false, err
 		}
 
-		for _, item := range got {
+		for _, raw := range got {
 			if len(items) >= maxItems {
 				// Proof that more exists, found before it was ever
 				// collected - the same "check the bound before admitting
@@ -57,7 +87,23 @@ func paginateBounded[T any](
 				// entry genuinely sits in the page already fetched.
 				return items, true, nil
 			}
-			items = append(items, item)
+
+			// Converted immediately, so the raw go-github value (which may
+			// carry a body or other unbounded field this task's own
+			// summary never surfaces) never outlives this iteration.
+			converted := convert(raw)
+			size := proto.Size(converted)
+			if totalBytes+size > maxResultBytes {
+				// The byte budget is what stopped this walk, not the item
+				// or request count - proof that a further entry exists
+				// (this one, already decoded) the same way the maxItems
+				// branch above is: refused rather than admitted, because
+				// admitting it would cross the budget this call promised
+				// to hold to.
+				return items, true, nil
+			}
+			totalBytes += size
+			items = append(items, converted)
 		}
 
 		if resp == nil || resp.NextPage == 0 {

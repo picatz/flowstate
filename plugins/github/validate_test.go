@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // Owner rules and repository rules differ on GitHub, so they get separate
 // tests. An owner (a user or org login) never contains a dot or an
@@ -131,6 +134,80 @@ func TestValidateLabelsBoundsCountAndLength(t *testing.T) {
 	}
 	if err := validateLabels([]string{string(huge)}); err == nil {
 		t.Fatal("validateLabels(oversized entry): got no error, want one")
+	}
+}
+
+func TestValidateBranchFilterAcceptsEmptyAndOrdinaryBranchNames(t *testing.T) {
+	if got, err := validateBranchFilter("base", ""); err != nil || got != "" {
+		t.Fatalf(`validateBranchFilter("base", ""): got (%q, %v), want ("", nil)`, got, err)
+	}
+	for _, v := range []string{
+		"main",
+		"release/v1.2.3",
+		"feature/my-branch_name",
+		"dependabot/go_modules/golang.org/x/net-0.1.0",
+		// GitHub's own "<owner>:<branch>" form for a cross-repository pull
+		// request's head - see PullRequestListInputs.head's own doc
+		// comment.
+		"octocat:my-feature",
+	} {
+		if _, err := validateBranchFilter("head", v); err != nil {
+			t.Errorf("validateBranchFilter(%q): unexpected error: %v", v, err)
+		}
+	}
+}
+
+func TestValidateBranchFilterRefusesOversizedAndControlCharacterValues(t *testing.T) {
+	huge := strings.Repeat("a", maxBranchFilterBytes+1)
+	if _, err := validateBranchFilter("base", huge); err == nil {
+		t.Fatal("validateBranchFilter(oversized): got no error, want one")
+	}
+	for _, v := range []string{"main\x00", "release\nv2", "feature\ttab"} {
+		if _, err := validateBranchFilter("head", v); err == nil {
+			t.Errorf("validateBranchFilter(%q): got no error, want one (control character)", v)
+		}
+	}
+}
+
+func TestValidateIssueSortDefaultsToCreatedAndAcceptsGithubsThreeValues(t *testing.T) {
+	got, err := validateIssueSort("sort", "")
+	if err != nil || got != "created" {
+		t.Fatalf(`validateIssueSort(""): got (%q, %v), want ("created", nil)`, got, err)
+	}
+	for _, v := range []string{"created", "updated", "comments"} {
+		got, err := validateIssueSort("sort", v)
+		if err != nil || got != v {
+			t.Errorf("validateIssueSort(%q): got (%q, %v), want (%q, nil)", v, got, err, v)
+		}
+	}
+}
+
+func TestValidateIssueSortRefusesAnythingElse(t *testing.T) {
+	for _, v := range []string{"CREATED", "priority", " created"} {
+		if _, err := validateIssueSort("sort", v); err == nil {
+			t.Errorf("validateIssueSort(%q): got no error, want one", v)
+		}
+	}
+}
+
+func TestValidateIssueDirectionDefaultsToDescAndAcceptsBothValues(t *testing.T) {
+	got, err := validateIssueDirection("direction", "")
+	if err != nil || got != "desc" {
+		t.Fatalf(`validateIssueDirection(""): got (%q, %v), want ("desc", nil)`, got, err)
+	}
+	for _, v := range []string{"asc", "desc"} {
+		got, err := validateIssueDirection("direction", v)
+		if err != nil || got != v {
+			t.Errorf("validateIssueDirection(%q): got (%q, %v), want (%q, nil)", v, got, err, v)
+		}
+	}
+}
+
+func TestValidateIssueDirectionRefusesAnythingElse(t *testing.T) {
+	for _, v := range []string{"ASC", "ascending", " asc"} {
+		if _, err := validateIssueDirection("direction", v); err == nil {
+			t.Errorf("validateIssueDirection(%q): got no error, want one", v)
+		}
 	}
 }
 

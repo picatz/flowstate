@@ -1130,9 +1130,22 @@ type IssueListInputs struct {
 	// MaxResults bounds how many issues are returned - see
 	// PullRequestListInputs.max_results's own doc comment; the same default
 	// and ceiling apply here.
-	MaxResults    int32     `protobuf:"varint,6,opt,name=max_results,json=maxResults,proto3" json:"max_results,omitempty"`
-	Token         *v1.Value `protobuf:"bytes,7,opt,name=token,proto3" json:"token,omitempty"`
-	BaseUrl       string    `protobuf:"bytes,8,opt,name=base_url,json=baseUrl,proto3" json:"base_url,omitempty"`
+	MaxResults int32     `protobuf:"varint,6,opt,name=max_results,json=maxResults,proto3" json:"max_results,omitempty"`
+	Token      *v1.Value `protobuf:"bytes,7,opt,name=token,proto3" json:"token,omitempty"`
+	BaseUrl    string    `protobuf:"bytes,8,opt,name=base_url,json=baseUrl,proto3" json:"base_url,omitempty"`
+	// Sort orders the result: "created" (the default when unset), "updated",
+	// or "comments" - GitHub's own three values for this endpoint's sort
+	// parameter. Anything else is refused as InvalidInput; this is not a
+	// passthrough string.
+	Sort string `protobuf:"bytes,9,opt,name=sort,proto3" json:"sort,omitempty"`
+	// Direction orders the result ascending or descending: "asc" or "desc".
+	// Unset means this task's own explicit default, "desc" - GitHub's own
+	// default for this endpoint, named here rather than left to whatever
+	// GitHub does unasked, the same reasoning IssueListInputs.state's default
+	// documents. Element zero of Issues is therefore the newest match when
+	// direction is (or defaults to) "desc", and the oldest when it is "asc" -
+	// ask for "asc" to answer "what is the oldest open issue."
+	Direction     string `protobuf:"bytes,10,opt,name=direction,proto3" json:"direction,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1219,6 +1232,20 @@ func (x *IssueListInputs) GetToken() *v1.Value {
 func (x *IssueListInputs) GetBaseUrl() string {
 	if x != nil {
 		return x.BaseUrl
+	}
+	return ""
+}
+
+func (x *IssueListInputs) GetSort() string {
+	if x != nil {
+		return x.Sort
+	}
+	return ""
+}
+
+func (x *IssueListInputs) GetDirection() string {
+	if x != nil {
+		return x.Direction
 	}
 	return ""
 }
@@ -1480,7 +1507,7 @@ const file_github_v1_github_proto_rawDesc = "" +
 	"updated_at\x18\t \x01(\tR\tupdatedAt\x12\x1b\n" +
 	"\tclosed_at\x18\n" +
 	" \x01(\tR\bclosedAt\x12&\n" +
-	"\x0fis_pull_request\x18\v \x01(\bR\risPullRequest\"\xe6\x01\n" +
+	"\x0fis_pull_request\x18\v \x01(\bR\risPullRequest\"\x98\x02\n" +
 	"\x0fIssueListInputs\x12\x14\n" +
 	"\x05owner\x18\x01 \x01(\tR\x05owner\x12\x12\n" +
 	"\x04repo\x18\x02 \x01(\tR\x04repo\x12\x14\n" +
@@ -1490,7 +1517,10 @@ const file_github_v1_github_proto_rawDesc = "" +
 	"\vmax_results\x18\x06 \x01(\x05R\n" +
 	"maxResults\x12)\n" +
 	"\x05token\x18\a \x01(\v2\x13.flowstate.v1.ValueR\x05token\x12\x19\n" +
-	"\bbase_url\x18\b \x01(\tR\abaseUrl\"\xeb\x01\n" +
+	"\bbase_url\x18\b \x01(\tR\abaseUrl\x12\x12\n" +
+	"\x04sort\x18\t \x01(\tR\x04sort\x12\x1c\n" +
+	"\tdirection\x18\n" +
+	" \x01(\tR\tdirection\"\xeb\x01\n" +
 	"\fIssueSummary\x12\x16\n" +
 	"\x06number\x18\x01 \x01(\x03R\x06number\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12\x14\n" +

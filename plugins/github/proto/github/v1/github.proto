@@ -251,6 +251,21 @@ message IssueListInputs {
 
   flowstate.v1.Value token = 7;
   string base_url = 8;
+
+  // Sort orders the result: "created" (the default when unset), "updated",
+  // or "comments" - GitHub's own three values for this endpoint's sort
+  // parameter. Anything else is refused as InvalidInput; this is not a
+  // passthrough string.
+  string sort = 9;
+
+  // Direction orders the result ascending or descending: "asc" or "desc".
+  // Unset means this task's own explicit default, "desc" - GitHub's own
+  // default for this endpoint, named here rather than left to whatever
+  // GitHub does unasked, the same reasoning IssueListInputs.state's default
+  // documents. Element zero of Issues is therefore the newest match when
+  // direction is (or defaults to) "desc", and the oldest when it is "asc" -
+  // ask for "asc" to answer "what is the oldest open issue."
+  string direction = 10;
 }
 
 // IssueSummary is one entry IssueListOutputs returns - see

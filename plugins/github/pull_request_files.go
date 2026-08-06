@@ -75,17 +75,13 @@ func pullRequestFiles(ctx context.Context, inputs map[string]*flowstatev1.Value,
 func doPullRequestFiles(ctx context.Context, client *github.Client, owner, repo string, number, maxResults int) ([]*githubv1.PullRequestFile, bool, error) {
 	perPage := min(maxPerPage, maxResults+1)
 
-	raw, truncated, err := paginateBounded(ctx, perPage, maxResults, maxListRequests,
-		func(ctx context.Context, page, perPage int) ([]*github.CommitFile, *github.Response, error) {
-			return client.PullRequests.ListFiles(ctx, owner, repo, number, &github.ListOptions{Page: page, PerPage: perPage})
-		})
-	if err != nil {
-		return nil, false, err
-	}
-
-	out := make([]*githubv1.PullRequestFile, len(raw))
-	for i, f := range raw {
-		out[i] = &githubv1.PullRequestFile{
+	// convert runs on every raw *github.CommitFile as soon as it is
+	// fetched, so paginateBounded's own byte budget (maxResultBytes) is
+	// spent against this task's own, much smaller summary - never against
+	// go-github's full record. See maxResultBytes's own doc comment
+	// (validate.go).
+	convert := func(f *github.CommitFile) *githubv1.PullRequestFile {
+		return &githubv1.PullRequestFile{
 			Filename:         f.GetFilename(),
 			Status:           f.GetStatus(),
 			Additions:        int32(f.GetAdditions()),
@@ -93,6 +89,14 @@ func doPullRequestFiles(ctx context.Context, client *github.Client, owner, repo 
 			Changes:          int32(f.GetChanges()),
 			PreviousFilename: f.GetPreviousFilename(),
 		}
+	}
+
+	out, truncated, err := paginateBounded(ctx, perPage, maxResults, maxListRequests, maxResultBytes,
+		func(ctx context.Context, page, perPage int) ([]*github.CommitFile, *github.Response, error) {
+			return client.PullRequests.ListFiles(ctx, owner, repo, number, &github.ListOptions{Page: page, PerPage: perPage})
+		}, convert)
+	if err != nil {
+		return nil, false, err
 	}
 	return out, truncated, nil
 }

@@ -3,10 +3,28 @@ package main
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/google/go-github/v75/github"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
+
+// identity is the convert function every test that is not exercising the
+// byte budget itself uses: it turns the raw int into the smallest possible
+// proto.Message (google.protobuf.Int32Value) so proto.Size stays a handful
+// of bytes and never binds ahead of the item/request bounds those tests
+// mean to exercise.
+func identity(i int) *wrapperspb.Int32Value {
+	return wrapperspb.Int32(int32(i))
+}
+
+// unboundedResultBytes is what every test not about the byte budget itself
+// passes as maxResultBytes - large enough that this call's own conversion
+// output never comes close, so those tests keep exercising only the item
+// and request bounds they were written for.
+const unboundedResultBytes = 1 << 30
 
 // pagedInts builds a fetch function serving n consecutive integers (0..n-1)
 // at perPage items per page, exactly the way a cooperative peer answers:
@@ -35,6 +53,35 @@ func pagedInts(n int) (fetch func(ctx context.Context, page, perPage int) ([]int
 	return fetch, requests
 }
 
+// pagedStrings builds a fetch function serving n consecutive pages of
+// itemsPerPage strings, each exactly size bytes - a cooperative peer (every
+// page but the last is full, NextPage == 0 once exhausted) whose records are
+// individually large rather than numerous, the shape
+// TestPaginateBoundedStopsWhenTheByteBudgetIsWhatBinds needs: few enough
+// items and requests to stay far under those bounds, while cumulative bytes
+// alone is what a hostile peer could otherwise inflate without limit.
+func pagedStrings(pages, itemsPerPage, size int) (fetch func(ctx context.Context, page, perPage int) ([]string, *github.Response, error), requests *int) {
+	calls := 0
+	requests = &calls
+	record := strings.Repeat("a", size)
+	fetch = func(_ context.Context, page, _ int) ([]string, *github.Response, error) {
+		calls++
+		if page > pages {
+			return nil, &github.Response{}, nil
+		}
+		items := make([]string, itemsPerPage)
+		for i := range items {
+			items[i] = record
+		}
+		next := 0
+		if page < pages {
+			next = page + 1
+		}
+		return items, &github.Response{NextPage: next}, nil
+	}
+	return fetch, requests
+}
+
 // TestPaginateBoundedReturnsEverythingWhenUnderTheCap proves the ordinary,
 // cooperative case: fewer items exist than maxItems, and the walk reports
 // truncated: false because GitHub itself said there was nothing more
@@ -42,7 +89,7 @@ func pagedInts(n int) (fetch func(ctx context.Context, page, perPage int) ([]int
 func TestPaginateBoundedReturnsEverythingWhenUnderTheCap(t *testing.T) {
 	fetch, requests := pagedInts(7)
 
-	items, truncated, err := paginateBounded(context.Background(), 3, 100, 20, fetch)
+	items, truncated, err := paginateBounded(context.Background(), 3, 100, 20, unboundedResultBytes, fetch, identity)
 	if err != nil {
 		t.Fatalf("paginateBounded: unexpected error: %v", err)
 	}
@@ -66,7 +113,7 @@ func TestPaginateBoundedReturnsEverythingWhenUnderTheCap(t *testing.T) {
 func TestPaginateBoundedHitsTheExactBoundaryWithoutAFalsePositive(t *testing.T) {
 	fetch, _ := pagedInts(10)
 
-	items, truncated, err := paginateBounded(context.Background(), 5, 10, 20, fetch)
+	items, truncated, err := paginateBounded(context.Background(), 5, 10, 20, unboundedResultBytes, fetch, identity)
 	if err != nil {
 		t.Fatalf("paginateBounded: unexpected error: %v", err)
 	}
@@ -84,7 +131,7 @@ func TestPaginateBoundedHitsTheExactBoundaryWithoutAFalsePositive(t *testing.T) 
 func TestPaginateBoundedCapsAtMaxItemsAndReportsTruncated(t *testing.T) {
 	fetch, _ := pagedInts(1000)
 
-	items, truncated, err := paginateBounded(context.Background(), 100, 50, 20, fetch)
+	items, truncated, err := paginateBounded(context.Background(), 100, 50, 20, unboundedResultBytes, fetch, identity)
 	if err != nil {
 		t.Fatalf("paginateBounded: unexpected error: %v", err)
 	}
@@ -117,7 +164,7 @@ func TestPaginateBoundedStopsAgainstAPeerThatPagesForever(t *testing.T) {
 	}
 
 	const maxRequests = 20
-	items, truncated, err := paginateBounded(context.Background(), 100, 1000, maxRequests, fetch)
+	items, truncated, err := paginateBounded(context.Background(), 100, 1000, maxRequests, unboundedResultBytes, fetch, identity)
 	if err != nil {
 		t.Fatalf("paginateBounded: unexpected error: %v", err)
 	}
@@ -142,7 +189,7 @@ func TestPaginateBoundedStopsAgainstAPeerThatPagesForever(t *testing.T) {
 func TestPaginateBoundedStopsAtTheBoundaryWithoutSpendingAnExtraRequest(t *testing.T) {
 	fetch, requests := pagedInts(1000)
 
-	_, truncated, err := paginateBounded(context.Background(), 10, 10, 20, fetch)
+	_, truncated, err := paginateBounded(context.Background(), 10, 10, 20, unboundedResultBytes, fetch, identity)
 	if err != nil {
 		t.Fatalf("paginateBounded: unexpected error: %v", err)
 	}
@@ -163,8 +210,70 @@ func TestPaginateBoundedPropagatesAFetchError(t *testing.T) {
 		return nil, nil, sentinel
 	}
 
-	_, _, err := paginateBounded(context.Background(), 10, 10, 20, fetch)
+	_, _, err := paginateBounded(context.Background(), 10, 10, 20, unboundedResultBytes, fetch, identity)
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("paginateBounded: got error %v, want %v", err, sentinel)
+	}
+}
+
+// TestPaginateBoundedStopsWhenTheByteBudgetIsWhatBinds is the proof
+// CLAUDE.md demands for finding 1: a bound has to be shown *reached*, by
+// the resource it is meant to bound, not merely "not exceeded." The peer
+// here answers with records individually large rather than numerous - ten
+// pages of ten 50 KiB strings each, 100 items and 10 requests total, both
+// far under maxItems (10,000) and maxRequests (1,000) - so if either of
+// those were what stopped collection, this walk would return everything
+// (100 items, 10 requests) and report truncated: false. Instead the byte
+// budget alone forces it to stop early: with each converted
+// *wrapperspb.StringValue costing size+2 bytes (a one-byte field tag, a
+// one-byte varint length prefix for anything under 128 bytes... but these
+// are far larger, so the length prefix itself is multi-byte - computed
+// exactly via proto.Size in the assertion below, not assumed), a budget of
+// 220000 bytes against 50000-byte records admits exactly 4 before the 5th
+// would cross it.
+func TestPaginateBoundedStopsWhenTheByteBudgetIsWhatBinds(t *testing.T) {
+	const (
+		recordSize     = 50 * 1024 // 50 KiB per item - large, not numerous
+		itemsPerPage   = 10
+		pages          = 10 // 100 items total if nothing stopped this early
+		maxResultBytes = 220 * 1024
+	)
+
+	fetch, requests := pagedStrings(pages, itemsPerPage, recordSize)
+
+	convert := func(s string) *wrapperspb.StringValue {
+		return wrapperspb.String(s)
+	}
+
+	// One converted record's own serialized size, computed the same way
+	// paginateBounded computes it - this is what the budget is measured
+	// against, not the raw string length.
+	perItemBytes := proto.Size(convert(strings.Repeat("a", recordSize)))
+	wantItems := maxResultBytes / perItemBytes
+
+	const maxItems = 10000
+	const maxRequests = 1000
+
+	items, truncated, err := paginateBounded(context.Background(), itemsPerPage, maxItems, maxRequests, maxResultBytes, fetch, convert)
+	if err != nil {
+		t.Fatalf("paginateBounded: unexpected error: %v", err)
+	}
+	if !truncated {
+		t.Fatal("truncated = false, want true: the byte budget ran out with more available")
+	}
+	if len(items) != wantItems {
+		t.Fatalf("len(items) = %d, want exactly %d (maxResultBytes / per-item size) - "+
+			"the byte budget is what should stop collection here", len(items), wantItems)
+	}
+	if len(items) >= maxItems {
+		t.Fatalf("len(items) = %d reached maxItems (%d); this test needs the byte budget, not the item bound, to be what binds", len(items), maxItems)
+	}
+	if *requests >= maxRequests {
+		t.Fatalf("requests = %d reached maxRequests (%d); this test needs the byte budget, not the request bound, to be what binds", *requests, maxRequests)
+	}
+	// The peer had more (100 items across 10 pages): prove this walk really
+	// did stop early rather than exhausting the peer's own supply.
+	if len(items) >= pages*itemsPerPage {
+		t.Fatalf("len(items) = %d reached everything the peer had (%d); the byte budget should have stopped this well short", len(items), pages*itemsPerPage)
 	}
 }

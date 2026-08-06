@@ -45,6 +45,14 @@ func issueList(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flo
 	if err != nil {
 		return nil, sdk.InvalidInput("%v", err)
 	}
+	sort, err := validateIssueSort("sort", in.GetSort())
+	if err != nil {
+		return nil, sdk.InvalidInput("%v", err)
+	}
+	direction, err := validateIssueDirection("direction", in.GetDirection())
+	if err != nil {
+		return nil, sdk.InvalidInput("%v", err)
+	}
 	maxResults, err := clampMaxResults(in.GetMaxResults())
 	if err != nil {
 		return nil, sdk.InvalidInput("%v", err)
@@ -66,6 +74,8 @@ func issueList(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flo
 		state:      state,
 		labels:     in.GetLabels(),
 		since:      since,
+		sort:       sort,
+		direction:  direction,
 		maxResults: maxResults,
 	})
 	if err != nil {
@@ -84,6 +94,8 @@ type issueListParams struct {
 	state      string
 	labels     []string
 	since      time.Time
+	sort       string
+	direction  string
 	maxResults int
 }
 
@@ -91,22 +103,13 @@ type issueListParams struct {
 func doIssueList(ctx context.Context, client *github.Client, owner, repo string, p issueListParams) ([]*githubv1.IssueSummary, bool, error) {
 	perPage := min(maxPerPage, p.maxResults+1)
 
-	raw, truncated, err := paginateBounded(ctx, perPage, p.maxResults, maxListRequests,
-		func(ctx context.Context, page, perPage int) ([]*github.Issue, *github.Response, error) {
-			return client.Issues.ListByRepo(ctx, owner, repo, &github.IssueListByRepoOptions{
-				State:       p.state,
-				Labels:      p.labels,
-				Since:       p.since,
-				ListOptions: github.ListOptions{Page: page, PerPage: perPage},
-			})
-		})
-	if err != nil {
-		return nil, false, err
-	}
-
-	out := make([]*githubv1.IssueSummary, len(raw))
-	for i, issue := range raw {
-		out[i] = &githubv1.IssueSummary{
+	// convert runs on every raw *github.Issue as soon as it is fetched, so
+	// paginateBounded's own byte budget (maxResultBytes) is spent against
+	// this task's own, much smaller summary - never against go-github's
+	// full record, which carries a body this summary never surfaces. See
+	// maxResultBytes's own doc comment (validate.go).
+	convert := func(issue *github.Issue) *githubv1.IssueSummary {
+		return &githubv1.IssueSummary{
 			Number:        int64(issue.GetNumber()),
 			Title:         issue.GetTitle(),
 			State:         issue.GetState(),
@@ -116,6 +119,21 @@ func doIssueList(ctx context.Context, client *github.Client, owner, repo string,
 			UpdatedAt:     issue.GetUpdatedAt().Format("2006-01-02T15:04:05Z07:00"),
 			IsPullRequest: issue.IsPullRequest(),
 		}
+	}
+
+	out, truncated, err := paginateBounded(ctx, perPage, p.maxResults, maxListRequests, maxResultBytes,
+		func(ctx context.Context, page, perPage int) ([]*github.Issue, *github.Response, error) {
+			return client.Issues.ListByRepo(ctx, owner, repo, &github.IssueListByRepoOptions{
+				State:       p.state,
+				Labels:      p.labels,
+				Since:       p.since,
+				Sort:        p.sort,
+				Direction:   p.direction,
+				ListOptions: github.ListOptions{Page: page, PerPage: perPage},
+			})
+		}, convert)
+	if err != nil {
+		return nil, false, err
 	}
 	return out, truncated, nil
 }

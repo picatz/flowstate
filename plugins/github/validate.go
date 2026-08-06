@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // Bounds and validation this plugin applies to attacker-chosen input before
@@ -53,6 +54,40 @@ const (
 	// page. See paginate.go's paginateBounded and
 	// paginate_test.go's own peer that does exactly this.
 	maxListRequests = 20
+
+	// maxResultBytes bounds the cumulative serialized size of one listing
+	// task's own converted output (PullRequestSummary / PullRequestFile /
+	// IssueSummary entries, measured via proto.Size) across the whole
+	// walk - the resource maxMaxResults and maxListRequests do not bound
+	// between them. GitHub controls how large any one field is (a title, a
+	// ref, a URL), so a hostile peer can answer with pages of small
+	// records whose string fields are individually large, holding items
+	// and requests well under their own caps while retained bytes grow
+	// without limit - the exact "bounding one resource does not bound
+	// another the peer controls the ratio to" shape CLAUDE.md names. See
+	// paginate.go's paginateBounded, which converts every raw go-github
+	// record to its summary type as soon as it is fetched and lets the raw
+	// value (which may carry an unbounded field this task's own summary
+	// never surfaces, such as an issue body) be discarded immediately, so
+	// this bounds exactly the shape actually retained across the walk -
+	// never go-github's own, much larger, per-record structs. 2 MiB is
+	// deliberately generous next to the ordinary case (a full page of
+	// maxMaxResults entries, each a handful of short strings, comes to a
+	// few hundred KiB) while still finite against the pathological one;
+	// see TestPaginateBoundedStopsWhenTheByteBudgetIsWhatBinds for a peer
+	// that reaches it with both other bounds far from spent.
+	maxResultBytes = 2 << 20 // 2 MiB
+
+	// maxBranchFilterBytes bounds pull_request_list's optional base and head
+	// filters before they reach go-github's own request builder - mirrors
+	// plugins/git's own maxRevisionBytes (validateOptionalRevision) exactly,
+	// value included, per CLAUDE.md's "do not invent a third notion of a
+	// valid ref name": a revision, branch, or ref name means the same thing
+	// in both plugins, so both bound it the same way rather than each
+	// growing its own grammar. See validateBranchFilter's own doc comment
+	// for why this is a length-and-control-character check, not a stricter
+	// shape one.
+	maxBranchFilterBytes = 512
 
 	// maxLabels and maxLabelBytes bound issue_list's optional labels filter
 	// before it is sent to GitHub at all - the same "bound before the real
@@ -158,6 +193,72 @@ func validateState(field, value string) (string, error) {
 		return value, nil
 	default:
 		return "", fmt.Errorf("%s %q is not one of \"open\", \"closed\", \"all\"", field, value)
+	}
+}
+
+// validateBranchFilter bounds and lightly sanity-checks pull_request_list's
+// optional base and head filters before either reaches go-github's own
+// PullRequestListOptions - unvalidated before this, unlike every other
+// input this task takes (owner, repo, labels, max_results all had a bound;
+// these two did not), which let an oversized CEL-computed value become a
+// multi-megabyte request target instead of the InvalidInput this plugin
+// gives every other malformed input.
+//
+// Deliberately as lenient as plugins/git's own validateOptionalRevision -
+// length and no control characters, not a strict ref-name grammar - for the
+// same reason that function gives: a base/head filter is a branch name, and
+// this repository already has one accepted shape for what a branch, ref, or
+// revision name looks like. Inventing a second, stricter one here would
+// mean the two plugins disagree about what a valid ref is, and head in
+// particular is legitimately GitHub's own "<owner>:<branch>" form for a
+// cross-repository pull request (see PullRequestListInputs.head's own doc
+// comment), which a bare branch-name regex would refuse.
+func validateBranchFilter(field, raw string) (string, error) {
+	if raw == "" {
+		return "", nil
+	}
+	if len(raw) > maxBranchFilterBytes {
+		return "", fmt.Errorf("%s is %d bytes, over the %d byte limit", field, len(raw), maxBranchFilterBytes)
+	}
+	for _, r := range raw {
+		if r == 0 || unicode.IsControl(r) {
+			return "", fmt.Errorf("%s contains a control character, which no git branch name does", field)
+		}
+	}
+	return raw, nil
+}
+
+// validateIssueSort normalizes and checks issue_list's optional sort
+// field: empty means GitHub's own default for this endpoint, "created" -
+// named explicitly, the same reasoning validateState documents for state's
+// own default. An enum check, not a passthrough string, the same as
+// validateState - see IssueListInputs.sort's own doc comment for the three
+// values GitHub's issues-listing endpoint actually accepts.
+func validateIssueSort(field, value string) (string, error) {
+	if value == "" {
+		return "created", nil
+	}
+	switch value {
+	case "created", "updated", "comments":
+		return value, nil
+	default:
+		return "", fmt.Errorf("%s %q is not one of \"created\", \"updated\", \"comments\"", field, value)
+	}
+}
+
+// validateIssueDirection normalizes and checks issue_list's optional
+// direction field: empty means GitHub's own default, "desc" - see
+// IssueListInputs.direction's own doc comment for why element zero of a
+// listing is the newest match unless a workflow asks for "asc" explicitly.
+func validateIssueDirection(field, value string) (string, error) {
+	if value == "" {
+		return "desc", nil
+	}
+	switch value {
+	case "asc", "desc":
+		return value, nil
+	default:
+		return "", fmt.Errorf("%s %q is not one of \"asc\", \"desc\"", field, value)
 	}
 }
 

@@ -33,6 +33,14 @@ func pullRequestList(ctx context.Context, inputs map[string]*flowstatev1.Value, 
 	if err != nil {
 		return nil, sdk.InvalidInput("%v", err)
 	}
+	base, err := validateBranchFilter("base", in.GetBase())
+	if err != nil {
+		return nil, sdk.InvalidInput("%v", err)
+	}
+	head, err := validateBranchFilter("head", in.GetHead())
+	if err != nil {
+		return nil, sdk.InvalidInput("%v", err)
+	}
 	maxResults, err := clampMaxResults(in.GetMaxResults())
 	if err != nil {
 		return nil, sdk.InvalidInput("%v", err)
@@ -52,8 +60,8 @@ func pullRequestList(ctx context.Context, inputs map[string]*flowstatev1.Value, 
 
 	prs, truncated, err := doPullRequestList(ctx, client, in.GetOwner(), in.GetRepo(), pullRequestListParams{
 		state:      state,
-		base:       in.GetBase(),
-		head:       in.GetHead(),
+		base:       base,
+		head:       head,
 		maxResults: maxResults,
 	})
 	if err != nil {
@@ -87,22 +95,13 @@ func doPullRequestList(ctx context.Context, client *github.Client, owner, repo s
 	// extra round trip.
 	perPage := min(maxPerPage, p.maxResults+1)
 
-	raw, truncated, err := paginateBounded(ctx, perPage, p.maxResults, maxListRequests,
-		func(ctx context.Context, page, perPage int) ([]*github.PullRequest, *github.Response, error) {
-			return client.PullRequests.List(ctx, owner, repo, &github.PullRequestListOptions{
-				State:       p.state,
-				Base:        p.base,
-				Head:        p.head,
-				ListOptions: github.ListOptions{Page: page, PerPage: perPage},
-			})
-		})
-	if err != nil {
-		return nil, false, err
-	}
-
-	out := make([]*githubv1.PullRequestSummary, len(raw))
-	for i, pr := range raw {
-		out[i] = &githubv1.PullRequestSummary{
+	// convert runs on every raw *github.PullRequest as soon as it is
+	// fetched, so paginateBounded's own byte budget (maxResultBytes) is
+	// spent against this task's own, much smaller summary - never against
+	// go-github's full record, which carries a body this summary never
+	// surfaces. See maxResultBytes's own doc comment (validate.go).
+	convert := func(pr *github.PullRequest) *githubv1.PullRequestSummary {
+		return &githubv1.PullRequestSummary{
 			Number:    int64(pr.GetNumber()),
 			Title:     pr.GetTitle(),
 			State:     pr.GetState(),
@@ -114,6 +113,19 @@ func doPullRequestList(ctx context.Context, client *github.Client, owner, repo s
 			CreatedAt: pr.GetCreatedAt().Format("2006-01-02T15:04:05Z07:00"),
 			UpdatedAt: pr.GetUpdatedAt().Format("2006-01-02T15:04:05Z07:00"),
 		}
+	}
+
+	out, truncated, err := paginateBounded(ctx, perPage, p.maxResults, maxListRequests, maxResultBytes,
+		func(ctx context.Context, page, perPage int) ([]*github.PullRequest, *github.Response, error) {
+			return client.PullRequests.List(ctx, owner, repo, &github.PullRequestListOptions{
+				State:       p.state,
+				Base:        p.base,
+				Head:        p.head,
+				ListOptions: github.ListOptions{Page: page, PerPage: perPage},
+			})
+		}, convert)
+	if err != nil {
+		return nil, false, err
 	}
 	return out, truncated, nil
 }
