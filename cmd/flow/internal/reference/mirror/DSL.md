@@ -2315,6 +2315,33 @@ close it; it closes the specific case where the derived value is what the *next
 iteration* consumes. A general "derived binding" is still `vars:` at the step, and
 still additive.
 
+### Reading a loop's result: `results` and `state`, not the `as:` name
+
+A loop step produces two outputs, read from *outside* it under the step's id like
+any other step's, and their names are system-chosen, not the author's:
+
+- **`${steps.<id>.results}`** — a list, one entry per iteration, each a map of body
+  step id to that step's outputs (identical in shape to a `for_each`'s `results`).
+  This is how a pagination loop gathers every page:
+  `${steps.pages.results.map(p, p.page.commits)}`.
+- **`${steps.<id>.state}`** — the *final* value the carried state held when the loop
+  stopped. Present only when the loop declared `as:`; a stateless loop reports
+  `results` alone.
+
+The name is `state`, deliberately, and **not** the author's `as:` name. This trips
+first-timers, so it is worth stating outright: writing `as: acc` binds `acc` *inside*
+the loop — in the body, `until:` and `update:` — and nowhere else, because a bare
+binding is lexically local to what declares it (principle 5). Outside the loop the
+carried value has no bare name at all; it is one of the loop step's outputs, and the
+loop step calls it `state`. So an accumulate-until loop's answer is
+`${steps.countup.state}`, never `${steps.countup.acc}` — the latter names an output
+the loop does not produce and resolves to nothing. `flow validate` treats a
+reference to `steps.<loop id>.<the as: name>` as the likely mistake it is and points
+at `state`; every other reference to a loop's outputs is left unchecked, because a
+block node's output set is not knowable in full (the same latitude a `for_each`
+gets). `examples/loop-accumulate` reads all three — `results.size()`, `state.n`,
+`state.sum` — in its declared `outputs:`.
+
 ### Bounded, because the author does not control the trip count
 
 `until:` is a promise the loop cannot keep on its own: a cursor that never reports

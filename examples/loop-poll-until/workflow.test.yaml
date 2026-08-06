@@ -1,0 +1,30 @@
+edition: v2026.2
+
+# The stateless loop, from a file, both ways it can end: the endpoint reports
+# ready and the loop stops, or it never does and the loop gives up at its bound —
+# a distinct failure, not a silent stop. The probe is stubbed, so this needs no
+# network and no plugin.
+tests:
+  - name: stops as soon as the endpoint reports ready
+    workflow: ./workflow.yaml
+    stubs:
+      # Ready on the first check. do-while runs the body once, `until:` holds, the
+      # loop stops.
+      - task: http
+        returns:
+          ready: true
+    expect:
+      ran: [poll]
+
+  - name: an endpoint that is never ready gives up at the bound
+    workflow: ./workflow.yaml
+    stubs:
+      # Never ready: `until:` is false every iteration, so the loop runs its whole
+      # budget of five and then fails, saying it exhausted it rather than returning
+      # as though the endpoint had come up.
+      - task: http
+        returns:
+          ready: false
+    expect:
+      failed: true
+      error_contains: "ran its full budget of 5 iterations"

@@ -865,6 +865,31 @@ func validateNamedLoop(stepID string, loop *v1.Loop, enclosing refScope, index i
 		ds = append(ds, validateInputRefs(stepID, "update", loop.GetUpdate(), afterBody, index, wf)...)
 	}
 
+	// A loop inside a loop is refused rather than accepted untested. The engine does
+	// not suspend below the top of a loop body (a nested construct runs at a deeper
+	// suspend level), so an inner loop would run atomically inside each outer
+	// iteration — a shape whose Continue-As-New interaction across two carried-state
+	// frames docs/DSL.md defers and nothing exercises. Accepting it would give an
+	// author de-facto semantics the project will not stand behind; refusing is
+	// additive to lift once that slice lands.
+	//
+	// Same-scope only: the walk descends `for_each` bodies and `parallel` branches
+	// (a loop reached through those shares the outer loop's suspend scope) but not a
+	// `call:` — a callee is an isolated unit with its own frame handling, validated
+	// and executed as its own workflow, so a loop there is top-level within the
+	// callee. That is exactly why the remedy below points at `call:`: wrapping the
+	// inner loop in a called workflow is the supported way to nest one today, proven
+	// on both drivers by the "a loop may call a workflow that itself loops" case in
+	// tests.CallCases.
+	if bodyHasNestedLoop(loop.GetBody()) {
+		ds = append(ds, Diagnostic{
+			Step: stepID, Field: "loop",
+			Message: "a loop inside a loop is not supported in this edition — the Continue-As-New " +
+				"interaction across two carried-state frames is not exercised yet; hoist the inner " +
+				"loop into a called workflow (`call:`) and loop over that, or flatten the two into one",
+		})
+	}
+
 	// The state is bound as a *local*, the same standing a `for_each` iterator gets,
 	// so the body reads it bare and a body step of the same id is unambiguous.
 	bodyScope := enclosing
@@ -872,6 +897,29 @@ func validateNamedLoop(stepID string, loop *v1.Loop, enclosing refScope, index i
 		bodyScope = enclosing.withLocal(state)
 	}
 	return append(ds, validateNested(loop.GetBody(), bodyScope, index, wf, depth)...)
+}
+
+// bodyHasNestedLoop reports whether a loop body directly or transitively contains
+// another `loop:` in the *same* suspend scope — through a `for_each` body or a
+// `parallel` branch, but not through a `call:`, whose callee is an isolated unit.
+func bodyHasNestedLoop(nodes []*v1.Node) bool {
+	for _, node := range nodes {
+		switch kind := node.GetKind().(type) {
+		case *v1.Node_Loop:
+			return true
+		case *v1.Node_ForEach:
+			if bodyHasNestedLoop(kind.ForEach.GetBody()) {
+				return true
+			}
+		case *v1.Node_Parallel:
+			for _, branch := range kind.Parallel.GetBranches() {
+				if bodyHasNestedLoop(branch.GetSteps()) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // validateLoopStateName refuses a loop's carried-state name that could not be read
@@ -1899,6 +1947,27 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, wf *v1.Workflow) (
 	}
 
 	node := nodeWithID(ref.ID, wf)
+
+	// A loop's outputs are `results` and, when it carries state, `state`. Its `as:`
+	// name binds *inside* the loop only — the body, `until:` and `update:` — so from
+	// outside, a reference to `steps.<loop>.<the as: name>` is naming the bound value
+	// by a name it does not have out here, which is the single most likely loop-output
+	// mistake. That one is named and pointed at `state`; every other reference to a
+	// loop's outputs is left unchecked, because a loop's output set is not knowable in
+	// full (a body step may produce anything, surfaced through `results`) — the same
+	// latitude a `for_each` reference gets.
+	if loop := node.GetLoop(); loop != nil {
+		if state := loop.GetState(); state != "" && ref.Output == state {
+			return Diagnostic{
+				Step: stepID, Field: inputName, Value: ref.Output,
+				Message: fmt.Sprintf(
+					"step %q has no output %q; `%s` is the name the loop binds *inside* itself (its `as:`), which does not exist out here — the carried value is read as `%s.%s.state`",
+					ref.ID, ref.Output, ref.Output, v1.StepsRoot, ref.ID),
+			}, true
+		}
+		return Diagnostic{}, false
+	}
+
 	task := node.GetTask()
 	if task == nil {
 		return Diagnostic{}, false

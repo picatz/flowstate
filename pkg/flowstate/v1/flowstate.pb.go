@@ -3030,6 +3030,11 @@ type Loop struct {
 	// [initial] and [update] all unset. Setting one without the others is refused by
 	// the compiler: a name with no initial value, or a value that never changes, is a
 	// mistake worth naming rather than a shape to run.
+	//
+	// The pattern is ignored when unset, because unset is the whole stateless mode: an
+	// empty string is the *absence* of a name, not a malformed one, and applying an
+	// identifier pattern to it would refuse the loop that carries nothing — the mode
+	// examples/loop-poll-until ships.
 	State string `protobuf:"bytes,4,opt,name=state,proto3" json:"state,omitempty"`
 	// Initial is the value [state] holds on the first iteration.
 	//
@@ -9300,14 +9305,14 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"\xc8\x01\x01\x92\x01\x04\b\x01\x10dR\bbranches\x1aA\n" +
 	"\x06Branch\x127\n" +
 	"\x05steps\x18\x01 \x03(\v2\x12.flowstate.v1.NodeB\r\xbaH\n" +
-	"\xc8\x01\x01\x92\x01\x04\b\x01\x10dR\x05steps\"\xbe\x02\n" +
+	"\xc8\x01\x01\x92\x01\x04\b\x01\x10dR\x05steps\"\xc1\x02\n" +
 	"\x04Loop\x125\n" +
 	"\x04body\x18\x01 \x03(\v2\x12.flowstate.v1.NodeB\r\xbaH\n" +
 	"\xc8\x01\x01\x92\x01\x04\b\x01\x10dR\x04body\x125\n" +
 	"\x05until\x18\x02 \x01(\v2\x13.flowstate.v1.ValueB\n" +
 	"\xe2A\x01\x02\xbaH\x03\xc8\x01\x01R\x05until\x122\n" +
-	"\x0emax_iterations\x18\x03 \x01(\x05B\v\xbaH\b\x1a\x06\x18\xa0\x8d\x06(\x00R\rmaxIterations\x128\n" +
-	"\x05state\x18\x04 \x01(\tB\"\xbaH\x1fr\x1d\x18\x80\x012\x18^[A-Za-z_][A-Za-z0-9_]*$R\x05state\x12-\n" +
+	"\x0emax_iterations\x18\x03 \x01(\x05B\v\xbaH\b\x1a\x06\x18\xa0\x8d\x06(\x00R\rmaxIterations\x12;\n" +
+	"\x05state\x18\x04 \x01(\tB%\xbaH\"\xd8\x01\x01r\x1d\x18\x80\x012\x18^[A-Za-z_][A-Za-z0-9_]*$R\x05state\x12-\n" +
 	"\ainitial\x18\x05 \x01(\v2\x13.flowstate.v1.ValueR\ainitial\x12+\n" +
 	"\x06update\x18\x06 \x01(\v2\x13.flowstate.v1.ValueR\x06update\"\xba\x02\n" +
 	"\x04Call\x12:\n" +

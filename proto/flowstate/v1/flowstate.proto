@@ -1704,9 +1704,17 @@ message Loop {
   // [initial] and [update] all unset. Setting one without the others is refused by
   // the compiler: a name with no initial value, or a value that never changes, is a
   // mistake worth naming rather than a shape to run.
-  string state = 4 [(buf.validate.field).string = {
-    max_len: 128
-    pattern: "^[A-Za-z_][A-Za-z0-9_]*$"
+  //
+  // The pattern is ignored when unset, because unset is the whole stateless mode: an
+  // empty string is the *absence* of a name, not a malformed one, and applying an
+  // identifier pattern to it would refuse the loop that carries nothing — the mode
+  // examples/loop-poll-until ships.
+  string state = 4 [(buf.validate.field) = {
+    ignore: IGNORE_IF_UNPOPULATED
+    string: {
+      max_len: 128
+      pattern: "^[A-Za-z_][A-Za-z0-9_]*$"
+    }
   }];
 
   // Initial is the value [state] holds on the first iteration.
