@@ -1,8 +1,9 @@
 # `flow test` runs every `call:` for real, through the same local driver, the
 # same property call-a-workflow's own test file documents - so a stub here
 # answers the `http` task wherever the call reaches it, inside a callee or
-# not, and control flow (including `undo:` on this file's own top-level
-# steps) runs unmodified.
+# not, and control flow (including each provisioner's own `undo:`, registered
+# from inside its callee - see docs/DSL.md's "Compensation composes through a
+# call") runs unmodified.
 edition: v2026.2
 tests:
   - name: a tenant clears quota, is provisioned across three sub-workflows, and activates after its grace period
@@ -33,14 +34,6 @@ tests:
         returns:
           resource_id: access-acme-1
       - task: http
-        where: inputs.url == 'https://provisioning.internal.example.com/activation-slots'
-        returns:
-          slot_id: slot-1
-      - task: http
-        where: inputs.url == 'https://provisioning.internal.example.com/dns-records'
-        returns:
-          record_id: dns-1
-      - task: http
         where: inputs.url == 'https://provisioning.internal.example.com/tenants/activate'
         returns: {}
     expect:
@@ -49,8 +42,6 @@ tests:
         - provision_database
         - provision_billing
         - provision_access
-        - reserve_activation_slot
-        - register_dns
         - activation_window
         - activation_confirmation
         - activate
@@ -62,7 +53,7 @@ tests:
         billing_id: bill-acme-1
         access_id: access-acme-1
 
-  - name: activation failing after the slot and DNS record were reserved undoes DNS then the slot
+  - name: activation failing after all three provisioners succeeded undoes access, then billing, then the database, across each one's own call boundary
     workflow: ./workflow.yaml
     inputs:
       tenant: acme
@@ -78,43 +69,52 @@ tests:
         returns:
           available: true
       - task: http
-        where: inputs.url == 'https://provisioning.internal.example.com/databases'
+        where: inputs.url == 'https://provisioning.internal.example.com/databases' && has(inputs.json.tenant)
         returns:
           resource_id: db-acme-2
       - task: http
-        where: inputs.url == 'https://provisioning.internal.example.com/billing-accounts'
+        where: inputs.url == 'https://provisioning.internal.example.com/billing-accounts' && has(inputs.json.tenant)
         returns:
           resource_id: bill-acme-2
       - task: http
-        where: inputs.url == 'https://provisioning.internal.example.com/access-grants'
+        where: inputs.url == 'https://provisioning.internal.example.com/access-grants' && has(inputs.json.tenant)
         returns:
           resource_id: access-acme-2
-      - task: http
-        where: inputs.url == 'https://provisioning.internal.example.com/activation-slots' && has(inputs.json.tenant)
-        returns:
-          slot_id: slot-2
-      - task: http
-        where: inputs.url == 'https://provisioning.internal.example.com/dns-records' && has(inputs.json.tenant)
-        returns:
-          record_id: dns-2
       - task: http
         where: inputs.url == 'https://provisioning.internal.example.com/tenants/activate'
         fails:
           kind: Upstream
           message: activation service unavailable
-      # The compensations, hit for real once activate fails - the same literal
-      # URL as the reservation above, distinguished by the id travelling in the
-      # body instead of the tenant (see workflow.yaml's own `undo:` comment).
+      # The compensations, hit for real once activate fails - each one the
+      # same literal URL as its own provisioning call above, distinguished by
+      # the resource id travelling in the body instead of the tenant (see
+      # workflows/provision-database.yaml's own `undo:` comment). Each
+      # provisioner's `undo:` registers from inside its own callee and still
+      # undoes in the reverse of the order the three `call:` steps ran in -
+      # access, then billing, then database - proving the compensation
+      # actually crossed each `call:` boundary rather than merely compiling.
       - task: http
-        where: inputs.url == 'https://provisioning.internal.example.com/dns-records' && inputs.json.record_id == 'dns-2'
+        where: inputs.url == 'https://provisioning.internal.example.com/access-grants' && inputs.json.resource_id == 'access-acme-2'
         returns: {}
       - task: http
-        where: inputs.url == 'https://provisioning.internal.example.com/activation-slots' && inputs.json.slot_id == 'slot-2'
+        where: inputs.url == 'https://provisioning.internal.example.com/billing-accounts' && inputs.json.resource_id == 'bill-acme-2'
+        returns: {}
+      - task: http
+        where: inputs.url == 'https://provisioning.internal.example.com/databases' && inputs.json.resource_id == 'db-acme-2'
         returns: {}
     expect:
       failed: true
-      error_contains: activation service unavailable
-      compensated: [register_dns, reserve_activation_slot]
+      # `compensated:` checks membership in any order — the field's own doc
+      # says so — and the point of this case is the *order*: reverse of
+      # registration, across three `call:` boundaries. The failure text
+      # carries the engine's own ordered account directly after the cause,
+      # so one string pins both what failed and access-then-billing-then-
+      # database. Swap any two names and this case fails.
+      error_contains: >-
+        activation service unavailable; compensation ran in reverse order:
+        undid "provision_access", undid "provision_billing", undid
+        "provision_database"
+      compensated: [provision_access, provision_billing, provision_database]
 
   - name: activation is deferred when the account manager never confirms go-live
     workflow: ./workflow.yaml
@@ -141,22 +141,12 @@ tests:
         where: inputs.url == 'https://provisioning.internal.example.com/access-grants'
         returns:
           resource_id: access-acme-3
-      - task: http
-        where: inputs.url == 'https://provisioning.internal.example.com/activation-slots'
-        returns:
-          slot_id: slot-3
-      - task: http
-        where: inputs.url == 'https://provisioning.internal.example.com/dns-records'
-        returns:
-          record_id: dns-3
     expect:
       ran:
         - check_quota
         - provision_database
         - provision_billing
         - provision_access
-        - reserve_activation_slot
-        - register_dns
         - activation_window
         - activation_confirmation
         - activation_deferred

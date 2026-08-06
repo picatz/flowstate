@@ -19,17 +19,23 @@ inputs:
     description: the plan this tenant is being onboarded onto
 
 steps:
-  # No `undo:` here - see provision-database.yaml's own comment and the
-  # parent workflow's header comment for why.
-  - id: provision
+  # `undo:` on this callee's own task - see provision-database.yaml's comment
+  # for why the id is `provision_billing` rather than a generic `provision`,
+  # and the parent workflow's header for the composed shape this is part of.
+  - id: provision_billing
     http:
       method: POST
       url: https://provisioning.internal.example.com/billing-accounts
       json: '${ {"tenant": inputs.tenant, "plan": inputs.plan} }'
       parse_json: true
       outputs: '${ {"resource_id": response.json.resource_id} }'
+    undo:
+      http:
+        method: DELETE
+        url: https://provisioning.internal.example.com/billing-accounts
+        json: '${ {"resource_id": steps.provision_billing.resource_id} }'
 
 outputs:
   resource_id:
-    value: ${steps.provision.resource_id}
-    description: the provisioned billing account's id, needed to deprovision it if a later step in the onboarding saga fails
+    value: ${steps.provision_billing.resource_id}
+    description: the provisioned billing account's id
