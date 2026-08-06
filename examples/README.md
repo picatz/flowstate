@@ -50,7 +50,7 @@ $ flow validate examples/hello-world/workflow.yaml
 | [call-a-workflow](call-a-workflow) | `call:` — running another Flowfile as a step, isolated from the caller, with `with:` binding its declared inputs and its `outputs:` read back under the step id | no |
 | [scheduled-report](scheduled-report) | `triggers:` — the cadence a file declares, which `flow schedule create` turns into a schedule and `flow run` ignores | no |
 | [observability](observability) | The docker-compose observability lab: one trace id from `flow run` through Grafana Tempo to the Temporal UI | no |
-| [embedding](embedding) | Flowstate as a Go library — `pkg/flowstate/embed`: compiling `flowfile/workflow.yaml` from bytes, a custom Go task registered with no `.proto` descriptor, and running it locally or (with `--durable`) against a real Temporal server. A Go program, not a `flow run`able Flowfile alone — read its README | no |
+| [embedding](embedding/README.md) | Flowstate as a Go library — `pkg/flowstate/embed`: compiling `flowfile/workflow.yaml` from bytes, a custom Go task registered with no `.proto` descriptor, and running it locally or (with `--durable`) against a real Temporal server. A Go program, not a `flow run`able Flowfile alone — read its README | no |
 | [plugins/greet](plugins/greet/) | A task a plugin provides, written `example.greet:` and type-checked against the plugin's own schema — needs a built plugin and a worker, so read its README | no |
 | [plugins/vcs](plugins/vcs/) | `vcs.log` and `vcs.diff` — version-control tasks (go-git) that clone in memory, per invocation, and return content rather than a workspace path — needs a built plugin and a worker, so read its README | yes |
 | [plugins/github](plugins/github/) | `github.pull_request_get` (read) and `github.issue_comment` (a mutation, in a separate parameterized file so it cannot run by accident), plus a read/audit tier (`github.pull_request_list`, `github.pull_request_files`, `github.issue_get`, `github.issue_list`) in a review-triage example — needs a built plugin, a worker, and for the comment file a credential, so read its README | yes |
@@ -70,7 +70,7 @@ docker-compose lab, [expense-approval](expense-approval),
 [ops-healthcheck](ops-healthcheck), [data-enrichment](data-enrichment), and
 [order-fulfillment](order-fulfillment) each carry a README naming the one durability
 property the example demonstrates and the two-command local-then-durable contrast, per
-the examples charter (#165), and [embedding](embedding) is a Go program rather than a
+the examples charter (#165), and [embedding](embedding/README.md) is a Go program rather than a
 Flowfile `flow` runs on its own, so its README says how to run it instead. Everywhere
 else the workflow's own comments are the documentation, and a README repeating them
 would be one more thing to leave stale — which is also why
