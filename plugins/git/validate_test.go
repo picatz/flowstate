@@ -42,6 +42,91 @@ func TestValidateRepositoryURLRefusesUserinfo(t *testing.T) {
 	}
 }
 
+// full1, full2, full3 are three distinct, syntactically valid full commit
+// shas used across this file's cursor-shape tests - not real objects in
+// any repository, since validateCursor's own job is checking shape, never
+// resolving anything.
+const (
+	full1 = "a94a8fe5ccb19ba61c4c0873d391e987982fbbd3"
+	full2 = "e41dae53697dee0228afc70ea30f32ceeeac4e26"
+	full3 = "0e8a687e0ac423825196d7c8dcd7d02fe3f96f83"
+)
+
+// TestValidateCursorAcceptsTheFrontierEmittedShape proves the one shape
+// LogInputs.cursor accepts: exactly what encodeCursor (cursor.go) produces
+// - two "|"-separated, comma-joined lists of full lowercase hex shas.
+func TestValidateCursorAcceptsTheFrontierEmittedShape(t *testing.T) {
+	raw := full1 + "," + full2 + "|" + full3
+	got, err := validateCursor(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != raw {
+		t.Fatalf("validateCursor(%q) = %q, want unchanged", raw, got)
+	}
+}
+
+func TestValidateCursorAcceptsEmpty(t *testing.T) {
+	got, err := validateCursor("")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("validateCursor(\"\") = %q, want empty", got)
+	}
+}
+
+// TestValidateCursorRefusesAnythingNotShapedLikeAnEncodedCursor is
+// LogInputs.cursor's own narrowness, checked directly: unlike ref (which
+// accepts anything go-git's revision parser does), a bare single sha (this
+// field's own first version's own shape), a branch name, a revision
+// expression, an uppercase sha, a sha of the wrong length, and a
+// single-section or empty-section value are all refused - a cursor is
+// never something a caller composes, only ever something this task itself
+// previously emitted via encodeCursor.
+func TestValidateCursorRefusesAnythingNotShapedLikeAnEncodedCursor(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		cursor string
+	}{
+		{"bare single sha - this field's own first version's shape", full1},
+		{"short sha", full1[:7]},
+		{"branch name", "main"},
+		{"revision expression", "HEAD~1"},
+		{"uppercase sha", strings.ToUpper(full1) + "|" + full2},
+		{"one character too long", full1 + "a|" + full2},
+		{"one character too short", full1[:39] + "|" + full2},
+		{"non-hex characters at full length", strings.Repeat("g", 40) + "|" + full2},
+		{"only one section", full1 + "," + full2},
+		{"three sections", full1 + "|" + full2 + "|" + full3},
+		{"empty frontier section", "|" + full2},
+		{"empty emitted section", full1 + "|"},
+		{"trailing comma in frontier", full1 + ",|" + full2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := validateCursor(tt.cursor); err == nil {
+				t.Fatalf("validateCursor(%q): got nil error, want a refusal", tt.cursor)
+			}
+		})
+	}
+}
+
+// TestValidateCursorRefusesMoreEntriesThanMaxCursorEntries proves
+// maxCursorEntries is actually enforced at validation time, not merely
+// documented - an incoming cursor naming more commits, total, than this
+// task will ever track is refused the same way one shaped wrong in any
+// other way is, since this task never emits one that does.
+func TestValidateCursorRefusesMoreEntriesThanMaxCursorEntries(t *testing.T) {
+	frontier := make([]string, maxCursorEntries+1)
+	for i := range frontier {
+		frontier[i] = full1
+	}
+	raw := strings.Join(frontier, ",") + "|" + full2
+	if _, err := validateCursor(raw); err == nil {
+		t.Fatal("validateCursor with more entries than maxCursorEntries: got nil error, want a refusal")
+	}
+}
+
 func TestValidateBranchNameAcceptsOrdinaryNames(t *testing.T) {
 	for _, name := range []string{"main", "feature/x", "release-1.0"} {
 		if _, err := validateBranchName(name); err != nil {

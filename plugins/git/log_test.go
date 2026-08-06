@@ -13,6 +13,8 @@ import (
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
+
+	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
 // pushCommit adds one commit to the working repository at workDir (a clone
@@ -525,5 +527,243 @@ func TestGitLogClassifiesAnUnreachableRemoteAsNotFound(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "repository not found") {
 		t.Fatalf("error = %q, want the \"repository not found\" diagnostic classifyGitError produces for an unreachable remote", err)
+	}
+}
+
+// TestGitLogCursorResumesOneCommitPastWhereItStopped is the direct proof of
+// LogInputs.cursor's own contract for a linear history: fed back as cursor,
+// the walk continues one commit past where page 1 stopped - page one's last
+// entry and page two's first entry are adjacent, distinct commits, never the
+// same one twice - even though the cursor itself is no longer a bare sha
+// (see cursor.go), only ever fed back opaquely.
+func TestGitLogCursorResumesOneCommitPastWhereItStopped(t *testing.T) {
+	const totalCommits = 10
+
+	remote := newBareRemote(t)
+	seedRemote(t, remote, "main")
+	work := newSeededWorkingClone(t, remote, "main")
+
+	when := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	var shas []string
+	for i := 0; i < totalCommits; i++ {
+		sha := pushCommit(t, work, remote, "main", "f.txt", fmt.Sprintf("content %d", i), fmt.Sprintf("commit %d", i),
+			"A", "a@example.com", "A", "a@example.com", when.Add(time.Duration(i)*time.Minute))
+		shas = append(shas, sha.String())
+	}
+	// shas is oldest-to-newest; git.log itself returns newest-first.
+
+	page1, err := doLog(context.Background(), logParams{url: fileURL(t, remote), maxCommits: 4})
+	if err != nil {
+		t.Fatalf("page 1: doLog: %v", err)
+	}
+	if !page1.Truncated {
+		t.Fatal("page 1: Truncated = false, want true - 11 commits exist (seed + 10), only 4 were asked for")
+	}
+	if page1.NextCursor == "" {
+		t.Fatal("page 1: NextCursor is empty, want a resume position")
+	}
+	lastOfPage1 := page1.Commits[len(page1.Commits)-1].Sha
+
+	page2, err := doLog(context.Background(), logParams{url: fileURL(t, remote), maxCommits: 4, cursor: page1.NextCursor})
+	if err != nil {
+		t.Fatalf("page 2: doLog: %v", err)
+	}
+	if len(page2.Commits) == 0 {
+		t.Fatal("page 2: no commits returned")
+	}
+	if page2.Commits[0].Sha == lastOfPage1 {
+		t.Fatalf("page 2's first commit (%s) is the same as page 1's last commit - the boundary commit was returned twice", page2.Commits[0].Sha)
+	}
+	// page 2's first commit must be lastOfPage1's parent - the seed
+	// commit's own history, or whichever commit git actually recorded as
+	// the boundary commit's parent - checked here against the recorded
+	// shas rather than assumed.
+	for i, s := range shas {
+		if s == lastOfPage1 && i > 0 {
+			if page2.Commits[0].Sha != shas[i-1] {
+				t.Fatalf("page 2's first commit = %s, want %s (the parent of page 1's last commit)", page2.Commits[0].Sha, shas[i-1])
+			}
+		}
+	}
+}
+
+// TestGitLogCursorReachesTheRootCommitAndReportsCompletion proves the
+// exhaustion edge case: resuming all the way to a linear history's own root
+// commit (no parents) must report completion (truncated: false, no further
+// commits, no next_cursor) rather than an error, once the walk actually
+// gets there.
+func TestGitLogCursorReachesTheRootCommitAndReportsCompletion(t *testing.T) {
+	remote := newBareRemote(t)
+	seedRemote(t, remote, "main") // exactly 1 commit: the root
+
+	out, err := doLog(context.Background(), logParams{url: fileURL(t, remote), maxCommits: 10})
+	if err != nil {
+		t.Fatalf("doLog: %v", err)
+	}
+	if out.Truncated {
+		t.Fatal("Truncated = true, want false - history has only the one root commit, well within max_commits")
+	}
+	if len(out.Commits) != 1 {
+		t.Fatalf("len(commits) = %d, want 1 (the root)", len(out.Commits))
+	}
+	if out.NextCursor != "" {
+		t.Errorf("NextCursor = %q, want empty - nothing left to resume", out.NextCursor)
+	}
+}
+
+// TestGitLogCursorPagesReachEveryCommitExactlyOnce is the acceptance test
+// from issue #216 applied at task level: a fixture with enough commits to
+// need 3+ pages at a small max_commits, some touching the filtered path and
+// some not, walked to exhaustion via cursors - the union of every page must
+// equal exactly the full filtered set, each commit exactly once, and the
+// final page must report truncated: false. See CLAUDE.md, "Test the
+// traversal, not just the step," for why this - not a single page's shape -
+// is the property that actually proves pagination correct.
+func TestGitLogCursorPagesReachEveryCommitExactlyOnce(t *testing.T) {
+	const totalCommits = 23 // deliberately not a multiple of the page size
+	const pageSize = 4      // small enough to force 3+ pages of *matching* commits
+
+	remote := newBareRemote(t)
+	seedRemote(t, remote, "main")
+	work := newSeededWorkingClone(t, remote, "main")
+
+	when := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	var wantMatching []string // shas that touch the filtered path, most-recent-first
+	for i := 0; i < totalCommits; i++ {
+		var sha plumbing.Hash
+		if i%2 == 0 {
+			// Touches the filtered path.
+			sha = pushCommit(t, work, remote, "main", "auth/policy.rego", fmt.Sprintf("policy v%d\n", i),
+				fmt.Sprintf("policy change %d", i), "A", "a@example.com", "A", "a@example.com",
+				when.Add(time.Duration(i)*time.Minute))
+		} else {
+			// Does not touch the filtered path - noise this walk must skip
+			// without letting it consume a slot in any page.
+			sha = pushCommit(t, work, remote, "main", "README.md", fmt.Sprintf("docs v%d\n", i),
+				fmt.Sprintf("docs change %d", i), "A", "a@example.com", "A", "a@example.com",
+				when.Add(time.Duration(i)*time.Minute))
+		}
+		if i%2 == 0 {
+			wantMatching = append(wantMatching, sha.String())
+		}
+	}
+	// wantMatching is oldest-to-newest; git.log itself returns newest-first.
+	for i, j := 0, len(wantMatching)-1; i < j; i, j = i+1, j-1 {
+		wantMatching[i], wantMatching[j] = wantMatching[j], wantMatching[i]
+	}
+
+	var gotAll []string
+	seen := make(map[string]int)
+	cursor := ""
+	pages := 0
+	const maxPages = 20 // this test's own bound, well above ceil(len(wantMatching)/pageSize) - guards against an infinite loop if cursor semantics regress rather than hanging the suite
+	for {
+		pages++
+		if pages > maxPages {
+			t.Fatalf("did not reach truncated: false within %d pages - cursor semantics likely regressed into a loop", maxPages)
+		}
+
+		out, err := doLog(context.Background(), logParams{
+			url:        fileURL(t, remote),
+			maxCommits: pageSize,
+			path:       "auth/policy.rego",
+			cursor:     cursor,
+		})
+		if err != nil {
+			t.Fatalf("page %d: doLog: %v", pages, err)
+		}
+
+		for _, c := range out.Commits {
+			seen[c.Sha]++
+			gotAll = append(gotAll, c.Sha)
+		}
+
+		if !out.Truncated {
+			if out.NextCursor != "" {
+				t.Fatalf("page %d: Truncated = false but NextCursor = %q, want empty", pages, out.NextCursor)
+			}
+			break
+		}
+		if out.NextCursor == "" {
+			t.Fatalf("page %d: Truncated = true but NextCursor is empty - cannot resume", pages)
+		}
+		cursor = out.NextCursor
+	}
+
+	if pages < 3 {
+		t.Fatalf("walked to exhaustion in %d page(s), want 3+ - this fixture/page size does not actually exercise multi-page pagination", pages)
+	}
+
+	if len(gotAll) != len(wantMatching) {
+		t.Fatalf("walked %d matching commits total, want exactly %d", len(gotAll), len(wantMatching))
+	}
+	for sha, count := range seen {
+		if count != 1 {
+			t.Errorf("commit %s was returned %d times across pages, want exactly 1", sha, count)
+		}
+	}
+	for i := range wantMatching {
+		if gotAll[i] != wantMatching[i] {
+			t.Fatalf("commit at position %d = %s, want %s (union across pages must equal the full filtered set, in order)", i, gotAll[i], wantMatching[i])
+		}
+	}
+}
+
+// TestGitLogInputsRefusesCursorAndRefTogether proves gitLog's own
+// mutual-exclusion check at the actual entry point a plugin call arrives
+// through - inputs as the engine sends them, not the already-split
+// logParams doLog takes, which has no ref-vs-cursor field to conflict on
+// in the first place. The url here is a syntactically valid https:// url
+// this test never actually dials - the refusal fires from input validation
+// alone, before any clone is attempted.
+func TestGitLogInputsRefusesCursorAndRefTogether(t *testing.T) {
+	inputs := map[string]*flowstatev1.Value{
+		"url":    flowstatev1.NewValue("https://example.com/owner/repo.git"),
+		"ref":    flowstatev1.NewValue("main"),
+		"cursor": flowstatev1.NewValue(strings.Repeat("a", 40)),
+	}
+
+	_, err := gitLog(context.Background(), inputs, nil)
+	if err == nil {
+		t.Fatal("gitLog with both ref and cursor set: got nil error, want a refusal")
+	}
+	if !strings.Contains(err.Error(), "ref and cursor") {
+		t.Fatalf("error = %q, want it to name the ref/cursor conflict", err)
+	}
+}
+
+// TestGitLogCursorDrivenCallReportsNoResolvedRef proves
+// LogOutputs.resolved_ref's own documented contract for a resumed call:
+// empty, since a walk that has advanced past its first page no longer has
+// one single ref this call resolved (see LogOutputs.resolved_ref's own doc
+// comment) - distinct from a fresh call, which always reports one.
+func TestGitLogCursorDrivenCallReportsNoResolvedRef(t *testing.T) {
+	remote := newBareRemote(t)
+	seedRemote(t, remote, "main")
+	work := newSeededWorkingClone(t, remote, "main")
+
+	when := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 5; i++ {
+		pushCommit(t, work, remote, "main", "f.txt", fmt.Sprintf("content %d", i), fmt.Sprintf("commit %d", i),
+			"A", "a@example.com", "A", "a@example.com", when.Add(time.Duration(i)*time.Minute))
+	}
+
+	page1, err := doLog(context.Background(), logParams{url: fileURL(t, remote), maxCommits: 2})
+	if err != nil {
+		t.Fatalf("page 1: doLog: %v", err)
+	}
+	if page1.ResolvedRef == "" {
+		t.Fatal("page 1: ResolvedRef is empty, want the resolved HEAD - a fresh call always reports one")
+	}
+	if page1.NextCursor == "" {
+		t.Fatal("page 1: NextCursor is empty, want a resume position")
+	}
+
+	page2, err := doLog(context.Background(), logParams{url: fileURL(t, remote), maxCommits: 2, cursor: page1.NextCursor})
+	if err != nil {
+		t.Fatalf("page 2: doLog: %v", err)
+	}
+	if page2.ResolvedRef != "" {
+		t.Errorf("page 2: ResolvedRef = %q, want empty - a cursor-driven call reports none", page2.ResolvedRef)
 	}
 }

@@ -18,12 +18,14 @@ the argument that named the split.
 
 An example that runs the read tasks lives at
 [`examples/plugins/git`](../../examples/plugins/git); read that first if you
-want to see it work rather than read about it. Four files live there: a
+want to see it work rather than read about it. Five files live there: a
 public read that runs with no arguments (`workflow.yaml`), the identical
 read against a private repository with one more field filled in
 (`ls-remote-private.yaml`), the read/audit tier chained into a real audit
 question - who last touched a file, and what does it contain now
-(`log-and-read-file.yaml`, also runs with no arguments) - and the write task
+(`log-and-read-file.yaml`, also runs with no arguments) - `git.log`'s own
+cursor-resume shape, two calls chained through `next_cursor` -> `cursor`
+(`log-resume.yaml`, also runs with no arguments) - and the write task
 (`commit-push.yaml`) - the private-read and write files are parameterized
 and cannot run by accident.
 
@@ -651,6 +653,168 @@ pathological object can still cost this process that object's own real
 size before the bound catches it, a residual `packbound_test.go` proves
 rather than hides. Until that residual is closed, this plugin should only
 be pointed at remotes the deployment trusts.
+
+## Resuming a truncated `git.log`
+
+`truncated: true` used to be a dead end: a caller who received fewer commits
+than existed had no way to ask for the rest (issue #216). `git.log` now
+grows two fields that turn it into an actual resume position:
+
+- **`LogOutputs.next_cursor`** - populated when `Truncated` is true, at
+  least one commit was returned, and this task can both prove there is
+  somewhere left to resume from and afford to encode it. Empty otherwise -
+  see `LogOutputs.next_cursor`'s own doc comment (`git.proto`) for the two
+  narrower cases (a shallow boundary with zero commits; the cursor-size
+  ceiling) that are still `Truncated: true` with nothing resumable attached.
+- **`LogInputs.cursor`** - fed a previous call's own `next_cursor` back,
+  unmodified, and resumes the identical walk exactly where that call
+  stopped: nothing dropped, nothing repeated.
+
+**The cursor is not a single sha - it is a frontier plus an emitted set,
+and that redesign exists because a single sha is provably wrong against a
+merge.** The first version of this field carried one value - the last
+commit returned - and resumed at that commit's own first parent. That is
+correct for a linear chain, but the moment a page boundary lands on or
+after a merge, "first parent only" silently drops every commit reachable
+solely through the merge's second parent and beyond: a **miss**, not a
+duplicate, and exactly the direction a purely linear test fixture cannot
+expose (`TestGitLogCursorPagesReachEveryCommitExactlyOnce`'s own fixture
+never caught it; `TestGitLogCursorReachesEveryCommitAcrossARealMerge`,
+built specifically to construct a real two-parent merge, did - see "What
+was proven to bite," below, for the review that found it).
+
+The fix, in `plugins/git/cursor.go`: `LogInputs.cursor`/`LogOutputs.next_cursor`
+now pack two full-sha lists, `"|"`-separated - **frontier** (every
+not-yet-explored commit a resumed walk still owes an answer for - a merge
+with N parents puts all N here, not just the first) and **emitted** (every
+commit already returned across every earlier page of this same walk, so a
+commit reachable a second time through a RECONVERGING history - two
+branches merged together, sharing an ancestor further back - is recognized
+and skipped rather than returned twice). Both lists, together, are what let
+`multiRootCommitIter` (`cursor.go`) resume a walk correctly against any
+commit graph shape, not merely a linear chain - see that file's own doc
+comment for the full argument, including why frontier alone (without
+emitted) still duplicates on reconvergence.
+
+**The contract is still full-sha-only, deliberately narrower than `ref`,
+just with more of them.** `ref` accepts anything go-git's own revision
+parser does - a branch, a tag, `HEAD~3` - because a workflow author names
+it by hand. Every element of a cursor's own two lists is required to be a
+full, 40-character lowercase hex commit sha (`validateCursor`), because a
+cursor is never something a caller composes: it is always the literal value
+a previous `git.log` call itself emitted, decoded structurally
+(`decodeCursor`) before a single byte of it is trusted for anything else.
+The total number of shas across both lists is bounded
+(`maxCursorEntries`, set equal to `maxCloneDepth`) - an incoming cursor
+naming more than this task will ever track is refused outright, the same
+as one shaped wrong in any other way. `ref` and `cursor` are still refused
+together (`gitLog`), checked against the raw input before `validateCursor`
+even runs, so the conflict is reported regardless of whether the cursor
+half happens to be well-formed.
+
+**A cursor is untrusted input, and resuming re-validates everything.**
+`cursor` reaches this task the same way any other field does - a workflow
+author's literal, or a value a coding agent composed - so it is fully
+decoded and bounded by `validateCursor` before anything else touches it,
+and a resumed call clones through the exact same `validateRepositoryURL`
+and egress policy as a fresh one. A cursor names a position in history; it
+is never a bypass around any check the original query performs.
+
+**Filters compose across pages without gaps or duplicates.** `path` and
+`since` apply to a resumed walk exactly as they would to a fresh one.
+`since` is unchanged (`object.NewCommitLimitIterFromIter`, which consumes
+its source one commit at a time with no lookahead). `path` is not: this
+task no longer uses go-git's own `object.NewCommitPathIterFromIter`, which
+diffs a commit against whatever its source iterator happens to return
+*next* - correct only for a strictly linear, single-root walk, and silently
+wrong (or simply data it has already thrown away - see "What was proven to
+bite") once that source can be a multi-root frontier. `pathFilteringCommitIter`
+(`cursor.go`) diffs a commit against its own actual parents instead, looked
+up directly, with no lookahead into anything.
+`TestGitLogCursorPagesReachEveryCommitExactlyOnce` is the acceptance test
+this claim rests on (CLAUDE.md, "Test the traversal, not just the step"): a
+23-commit fixture, half touching a filtered path and half not, walked to
+exhaustion at `max_commits: 4` (5+ pages), asserting the union of every page
+equals the full filtered set with every commit reached exactly once and the
+final page reporting `truncated: false`.
+
+**A resume can widen its own fetch as it goes deeper into history.** A
+cursor-driven call no longer clones once at a fixed depth: `doLog` retries
+at increasing depth (`resumeCloneDepthSteps`: `maxCloneDepth`,
+`maxCloneDepth*2`, `maxResumeCloneDepth`) whenever the shallower attempt
+cannot make progress on the cursor's own frontier, redoing the whole
+clone-and-walk attempt at each step rather than only re-probing
+reachability (a probe-only retry can still get stuck mid-walk - see
+`TestGitLogCursorResumesLinearHistoryLongerThanTheFirstCloneDepth`'s own
+history, "What was proven to bite," below). This is what lets a linear
+history longer than one `maxCloneDepth` window still page all the way to
+exhaustion, bounded so this can never become an unbounded fetch loop:
+go-git has neither an arbitrary-sha "want" nor an incremental `--deepen`
+(checked against its own source, not assumed - `resumeCloneDepthSteps`'s own
+doc comment), so a fresh, deeper clone is the only way to reach a commit a
+shallower one missed, and `maxResumeCloneDepth` is the hard ceiling on how
+many times that fresh clone gets larger. Once even the largest step still
+cannot resolve anything in the frontier, `git.log` returns a distinct,
+actionable `InvalidInput` naming the ceiling reached and what to do next
+(narrow with `since`/`path`, or accept the walk as complete) - an honest
+refusal, never a broken or silently incomplete page.
+
+**What this does not do.** `examples/plugins/git/log-resume.yaml`
+demonstrates exactly one resume - page one, then page two - not a loop to
+exhaustion: Flowstate's own workflow language has no loop primitive yet
+(issue #157 is still design-only), so walking an entire history to
+completion from a Flowfile is not yet expressible; only Go code (the tests
+above) can do that today. This is issue #216's "layer 1": the task grows a
+resume position a caller driving it from outside (an MCP agent, a script
+calling `flow run` repeatedly) can already thread. "Layer 2" - the language
+itself carrying a cursor from one iteration to the next - is a separate,
+larger piece of work this change does not attempt.
+
+**What was proven to bite (review findings on this feature specifically).**
+Two P1s, both found by review against the very first version of this
+field, which carried a single sha and resumed at that commit's own
+`parents[0]`:
+
+- **Merge parents dropped on resume.** The first-parent-only resume drops
+  everything reachable only through a merge's second parent onward - a
+  MISS. `TestGitLogCursorReachesEveryCommitAcrossARealMerge` constructs a
+  real two-parent merge (`writeSyntheticCommit`, `merge_test.go`, since
+  go-git's own `Repository.Merge` only supports fast-forward) with the page
+  boundary forced onto the merge itself (`max_commits: 1`), walks to
+  exhaustion, and asserts the union is the complete six-commit set exactly
+  once. Confirmed to actually catch the bug it targets: reverting
+  `multiRootCommitIter`'s parent-push to `ParentHashes[0]` only makes this
+  test fail with "walked to exhaustion in 4 page(s), want 6+" (two commits,
+  reachable only through the merge's second parent, silently never
+  returned).
+- **A resumed clone anchored at a fixed depth cannot reach deep history.**
+  Before `resumeCloneDepthSteps` existed, every resumed call cloned at a
+  single fixed depth regardless of how many pages had already gone by, so
+  a linear history longer than that depth could never finish paging - not
+  a slow walk, a permanently stuck one.
+  `TestGitLogCursorResumesLinearHistoryLongerThanTheFirstCloneDepth` proves
+  progressive deepening actually resolves this (a 13-commit history walked
+  to exhaustion with a test-injected depth sequence too small to reach it
+  in one step); `TestGitLogCursorResumeBeyondEveryDepthStepReportsAnHonestError`
+  proves the honest ceiling fires once even the largest step is not
+  enough. Confirmed to catch the original bug: pinning the retry loop to
+  its first depth step only reproduces the original failure exactly - the
+  distinct `InvalidInput` naming the depth ceiling, rather than silent
+  incompleteness, which is itself the fix (an honest refusal beats a
+  broken walk). A related, narrower version of the same class of bug lived
+  one layer up: `collectLogCommits`'s own "peek one past `max_commits` to
+  tell truncation from completion" trick calls `Next()` on the underlying
+  iterator *before* deciding whether to keep the result, so a commit that
+  iterator has already fully resolved (its own children pushed onto the
+  frontier) can be discarded by the caller without ever being returned -
+  silently lost, neither emitted nor pending.
+  `TestGitLogCursorPagesReachEveryCommitExactlyOnce` caught this on a
+  purely linear fixture (no merge involved at all) once the redesign's
+  first draft moved `path` filtering to `pathFilteringCommitIter`: the walk
+  under-counted by exactly the commits lost this way. `collectLogCommits`'s
+  own `discarded` return value and `multiRootCommitIter.PushBack` are the
+  fix - restoring precisely the hash a wrapping layer consumed but never
+  used back onto the frontier before it is read.
 
 ## What was left undone, and why
 

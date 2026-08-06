@@ -94,8 +94,16 @@ func cloneBounded(ctx context.Context, opts cloneOptions) (*git.Repository, erro
 // 512 MiB. cloneBounded is the only production caller, always with the real
 // constant.
 func cloneBoundedWithInflationCap(ctx context.Context, opts cloneOptions, maxInflated int64) (*git.Repository, error) {
-	if opts.depth <= 0 || opts.depth > maxCloneDepth {
-		return nil, fmt.Errorf("clone depth %d is out of bounds (1-%d)", opts.depth, maxCloneDepth)
+	// The ceiling here is maxResumeCloneDepth, not maxCloneDepth: every
+	// caller except a cursor-driven resume (log.go's own
+	// resumeCloneDepthSteps) asks for at most maxCloneDepth and is
+	// unaffected by this being larger; a resume is the one path that
+	// deliberately widens its own request past that as pagination goes
+	// deeper into history, and this is the bound that keeps that widening
+	// itself bounded rather than unbounded - see maxResumeCloneDepth's own
+	// doc comment.
+	if opts.depth <= 0 || opts.depth > maxResumeCloneDepth {
+		return nil, fmt.Errorf("clone depth %d is out of bounds (1-%d)", opts.depth, maxResumeCloneDepth)
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)

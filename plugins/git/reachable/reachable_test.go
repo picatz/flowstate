@@ -42,10 +42,11 @@ const exampleDir = "../../../examples/plugins/git"
 // registering into [flowstatev1.DefaultRegistry] is a one-way door with no
 // Unregister, so at most one test in this binary may do it. See
 // plugins/vcs/reachable's identical test for the full argument; this one
-// covers all four of this plugin's example files - the runnable public-read
+// covers all five of this plugin's example files - the runnable public-read
 // example, the parameterized private-read example, the read/audit tier
-// example (git.log and git.read_file), and the parameterized write example -
-// rather than one.
+// example (git.log and git.read_file), the cursor-resume example
+// (git.log, twice, chained through next_cursor/cursor), and the
+// parameterized write example - rather than one.
 func TestAFlowfileCanNameTheGitPluginsTasks(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds a real plugin binary; skipped under -short, run in CI and by `make check`")
@@ -61,6 +62,7 @@ func TestAFlowfileCanNameTheGitPluginsTasks(t *testing.T) {
 	readSource := readExample(t, "workflow.yaml")
 	privateReadSource := readExample(t, "ls-remote-private.yaml")
 	logAndReadFileSource := readExample(t, "log-and-read-file.yaml")
+	logResumeSource := readExample(t, "log-resume.yaml")
 	writeSource := readExample(t, "commit-push.yaml")
 
 	for _, name := range []string{"git.ls_remote", "git.log", "git.read_file", "git.commit_push"} {
@@ -108,6 +110,17 @@ func TestAFlowfileCanNameTheGitPluginsTasks(t *testing.T) {
 	}
 	if !strings.Contains(diagnosticText(beforeLogAndReadFile), "git.read_file") {
 		t.Errorf("the diagnostics do not name %q; diagnostics:\n%s", "git.read_file", diagnosticText(beforeLogAndReadFile))
+	}
+
+	beforeLogResume, err := flowfile.ValidateSource(logResumeSource)
+	if err != nil {
+		t.Fatalf("ValidateSource(log-resume.yaml): unexpected error: %v", err)
+	}
+	if len(beforeLogResume) == 0 {
+		t.Fatal("the validator accepted log-resume.yaml naming a task no registry holds")
+	}
+	if !strings.Contains(diagnosticText(beforeLogResume), "git.log") {
+		t.Errorf("the diagnostics do not name %q; diagnostics:\n%s", "git.log", diagnosticText(beforeLogResume))
 	}
 
 	beforeWrite, err := flowfile.ValidateSource(writeSource)
@@ -166,6 +179,17 @@ func TestAFlowfileCanNameTheGitPluginsTasks(t *testing.T) {
 		if len(diags) != 0 {
 			t.Errorf("this plugin's tasks are registered and `flow validate` still refuses "+
 				"examples/plugins/git/log-and-read-file.yaml: %s", diagnosticText(diags))
+		}
+	})
+
+	t.Run("the validator accepts the real cursor-resume example", func(t *testing.T) {
+		diags, err := flowfile.ValidateSource(logResumeSource)
+		if err != nil {
+			t.Fatalf("ValidateSource: unexpected error: %v", err)
+		}
+		if len(diags) != 0 {
+			t.Errorf("this plugin's tasks are registered and `flow validate` still refuses "+
+				"examples/plugins/git/log-resume.yaml: %s", diagnosticText(diags))
 		}
 	})
 

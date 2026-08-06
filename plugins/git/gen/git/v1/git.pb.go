@@ -595,7 +595,55 @@ type LogInputs struct {
 	Token *v1.Value `protobuf:"bytes,6,opt,name=token,proto3" json:"token,omitempty"`
 	// Username is the HTTP Basic-auth username paired with token - see
 	// LsRemoteInputs.username for the full doc comment and default.
-	Username      string `protobuf:"bytes,7,opt,name=username,proto3" json:"username,omitempty"`
+	Username string `protobuf:"bytes,7,opt,name=username,proto3" json:"username,omitempty"`
+	// Cursor resumes a prior, truncated call - fed back exactly as
+	// LogOutputs.next_cursor returned it. Opaque to a workflow (nothing
+	// about its contents is meant to be parsed or reasoned about beyond
+	// "pass it back as cursor"), but not a single sha: it packs two
+	// full-sha lists, "|"-separated - the walk's own FRONTIER (every
+	// not-yet-explored commit a resumed walk still owes an answer for) and
+	// EMITTED (every commit already returned across every earlier page of
+	// this same walk). Every filter this call sets (path, since) applies to
+	// the resumed walk exactly as it would to a fresh one.
+	//
+	// Both lists, not one sha, because a single "resume at the last commit's
+	// parent" spelling is provably wrong the moment a page boundary lands on
+	// or after a merge: a merge's history fans out into every parent, and
+	// "parent[0] only" silently drops everything reachable solely through
+	// parent[1] and beyond - a MISS, not a duplicate, and exactly the
+	// direction a purely linear test fixture cannot expose. Frontier is what
+	// lets every one of a merge's parents be explored on resumption; emitted
+	// is what stops a RECONVERGING history (two branches sharing an ancestor
+	// further back, the ordinary shape a merge base takes) from returning
+	// that shared ancestor twice once it is reachable from more than one
+	// still-pending frontier entry. See plugins/git/cursor.go for the full
+	// argument and the exactly-once proof this pair of lists makes possible
+	// against arbitrary graph shapes, not merely a linear chain.
+	//
+	// Cursor is untrusted input the moment it comes back from outside this
+	// task (a caller composes it from a prior response, or an attacker
+	// guesses at one) - so every element of both lists is required to be a
+	// full, 40-character lowercase hex commit sha, and nothing else: not a
+	// branch, not a tag, not "HEAD~5", not a short sha. A revision expression
+	// is exactly the ambiguity ref already owns; accepting one here would let
+	// a "cursor" quietly become a second ref field with different
+	// validation, inviting the two to be confused with each other. The total
+	// number of shas across both lists is bounded (see maxCursorEntries in
+	// plugins/git/validate.go) - a cursor naming more than this task will
+	// ever track is refused outright, the same as one shaped wrong in any
+	// other way. Resuming re-validates everything a fresh call would - the
+	// same url validation, the same egress policy - and re-fetches (see
+	// plugins/git/log.go's own resumeCloneDepthSteps for why a resume may
+	// clone more than once, at increasing depth, before giving up) rather
+	// than trusting anything about what state a prior call left behind - a
+	// cursor names a position in history, never a bypass around any check
+	// the original query performs.
+	//
+	// Cursor and ref are mutually exclusive: a resumed call names cursor
+	// alone, never both, since cursor already carries everything ref would
+	// have named - this task refuses a call that sets both, rather than
+	// silently choosing one.
+	Cursor        string `protobuf:"bytes,8,opt,name=cursor,proto3" json:"cursor,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -679,6 +727,13 @@ func (x *LogInputs) GetUsername() string {
 	return ""
 }
 
+func (x *LogInputs) GetCursor() string {
+	if x != nil {
+		return x.Cursor
+	}
+	return ""
+}
+
 // LogOutputs is a bounded slice of history.
 type LogOutputs struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -688,13 +743,51 @@ type LogOutputs struct {
 	Commits []*Commit `protobuf:"bytes,1,rep,name=commits,proto3" json:"commits,omitempty"`
 	// ResolvedRef is the exact commit ref named, as a full sha - what a
 	// relative ref like "main" or "HEAD~3" actually meant at the moment this
-	// ran.
+	// ran. Empty on a cursor-driven (resumed) call: once a walk has advanced
+	// past its first page, there is no longer one single ref this call
+	// resolved - see LogInputs.cursor's own doc comment for what a resumed
+	// call tracks instead (a frontier, not a single position), and read the
+	// first page's own ResolvedRef for the walk's origin if it matters to
+	// the caller.
 	ResolvedRef string `protobuf:"bytes,2,opt,name=resolved_ref,json=resolvedRef,proto3" json:"resolved_ref,omitempty"`
 	// Truncated reports whether more matching history existed beyond what was
-	// returned - by max_commits, by the total message-byte budget, or by the
-	// shallow window this task cloned when path was set - so a workflow can
-	// tell "this is all of it" from "this is as much as this call reached."
-	Truncated     bool `protobuf:"varint,3,opt,name=truncated,proto3" json:"truncated,omitempty"`
+	// returned - by max_commits, by the total message-byte budget, by the
+	// shallow window this task cloned, or because resuming further would need
+	// a cursor bigger than this task will ever track (see NextCursor) - so a
+	// workflow can tell "this is all of it" from "this is as much as this
+	// call reached."
+	Truncated bool `protobuf:"varint,3,opt,name=truncated,proto3" json:"truncated,omitempty"`
+	// NextCursor is the resume position for the next page, populated exactly
+	// when Truncated is true, Commits is non-empty, and this task can still
+	// prove there is somewhere left to resume from and afford to encode it
+	// (see LogInputs.cursor for what it packs, and cursor.go for the
+	// "exactly once against a merge" argument this whole redesign exists
+	// for). Empty whenever Truncated is false, since there is nothing left
+	// to resume.
+	//
+	// Also empty in two narrower cases, both still honestly reported as
+	// Truncated: true because there genuinely was more this call could not
+	// finish describing, just not with a resumable position attached -
+	//
+	//   - the shallow-boundary case (see Truncated's own doc comment): this
+	//     call reached its own fetch window's edge before finding even one
+	//     matching commit, so there is no position to hand back at all. A
+	//     caller in that position has to widen the window itself (name an
+	//     explicit ref, or raise max_commits) rather than page past it.
+	//   - the cursor-size ceiling (maxCursorEntries, plugins/git/validate.go):
+	//     more history remains, but encoding everywhere left to resume from
+	//     would need more commits than this task will ever track in one
+	//     cursor. A caller in this position has to narrow the walk (path,
+	//     since) so fewer pages are needed to reach the same history, or
+	//     accept this page as the practical end of what this call can walk.
+	//
+	// NextCursor is real commit shas, not a token this task invents from
+	// nothing - fed back as LogInputs.cursor, it resumes the identical walk
+	// (same repository, same filters) exactly where this call stopped,
+	// dropping nothing and repeating nothing. It is still opaque to a
+	// workflow in every other sense: nothing about its shape or contents is
+	// meant to be parsed or reasoned about beyond "pass it back as cursor."
+	NextCursor    string `protobuf:"bytes,4,opt,name=next_cursor,json=nextCursor,proto3" json:"next_cursor,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -748,6 +841,13 @@ func (x *LogOutputs) GetTruncated() bool {
 		return x.Truncated
 	}
 	return false
+}
+
+func (x *LogOutputs) GetNextCursor() string {
+	if x != nil {
+		return x.NextCursor
+	}
+	return ""
 }
 
 // ReadFileInputs asks for one file's content at one ref - the audit
@@ -1054,7 +1154,7 @@ const file_git_v1_git_proto_rawDesc = "" +
 	"\x06author\x18\x02 \x01(\v2\x11.git.v1.SignatureR\x06author\x12/\n" +
 	"\tcommitter\x18\x03 \x01(\v2\x11.git.v1.SignatureR\tcommitter\x12\x18\n" +
 	"\amessage\x18\x04 \x01(\tR\amessage\x12#\n" +
-	"\rparent_hashes\x18\x05 \x03(\tR\fparentHashes\"\xc1\x01\n" +
+	"\rparent_hashes\x18\x05 \x03(\tR\fparentHashes\"\xd9\x01\n" +
 	"\tLogInputs\x12\x10\n" +
 	"\x03url\x18\x01 \x01(\tR\x03url\x12\x10\n" +
 	"\x03ref\x18\x02 \x01(\tR\x03ref\x12\x1f\n" +
@@ -1063,12 +1163,15 @@ const file_git_v1_git_proto_rawDesc = "" +
 	"\x04path\x18\x04 \x01(\tR\x04path\x12\x14\n" +
 	"\x05since\x18\x05 \x01(\tR\x05since\x12)\n" +
 	"\x05token\x18\x06 \x01(\v2\x13.flowstate.v1.ValueR\x05token\x12\x1a\n" +
-	"\busername\x18\a \x01(\tR\busername\"w\n" +
+	"\busername\x18\a \x01(\tR\busername\x12\x16\n" +
+	"\x06cursor\x18\b \x01(\tR\x06cursor\"\x98\x01\n" +
 	"\n" +
 	"LogOutputs\x12(\n" +
 	"\acommits\x18\x01 \x03(\v2\x0e.git.v1.CommitR\acommits\x12!\n" +
 	"\fresolved_ref\x18\x02 \x01(\tR\vresolvedRef\x12\x1c\n" +
-	"\ttruncated\x18\x03 \x01(\bR\ttruncated\"\x8f\x01\n" +
+	"\ttruncated\x18\x03 \x01(\bR\ttruncated\x12\x1f\n" +
+	"\vnext_cursor\x18\x04 \x01(\tR\n" +
+	"nextCursor\"\x8f\x01\n" +
 	"\x0eReadFileInputs\x12\x10\n" +
 	"\x03url\x18\x01 \x01(\tR\x03url\x12\x10\n" +
 	"\x03ref\x18\x02 \x01(\tR\x03ref\x12\x12\n" +
