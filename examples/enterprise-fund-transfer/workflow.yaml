@@ -235,20 +235,49 @@ steps:
       message: >-
         ${"refusing to move %d cents: approved, but the sender was not a valid, separate approver".format([inputs.amount_cents])}
 
+  # The gate was answered - it did not time out - but the payload carried
+  # neither an explicit `approved: true` nor an explicit `approved: false`:
+  # an empty payload, or one missing the `approved` key entirely. Distinct
+  # from `expired` (nothing arrived) and from `rejected` (arrived, said no)
+  # on purpose: conflating "answered with garbage" into "answered with a
+  # timeout" is the bug this step exists to not repeat - an earlier version
+  # of this file's own `decision` output used `!has(payload.approved))` as a
+  # stand-in for "the gate wasn't answered," which is wrong in exactly this
+  # case, since a malformed answer also fails `has()`. Fail-closed, the same
+  # as every other non-approving path: money never moves on a signal this
+  # file cannot make sense of.
+  - id: refused_malformed_payload
+    if: >-
+      ${inputs.amount_cents >= inputs.approval_threshold_cents &&
+        !steps.approval.timed_out &&
+        !(has(steps.approval.payload.approved) && steps.approval.payload.approved) &&
+        !(has(steps.approval.payload.approved) && !steps.approval.payload.approved)}
+    log:
+      level: warn
+      message: >-
+        ${"refusing to move %d cents: the approval signal answered with no usable approved field".format([inputs.amount_cents])}
+
 outputs:
   decision:
     value: >-
       ${inputs.amount_cents < inputs.approval_threshold_cents
         ? "transferred"
-        : (!(has(steps.approval.payload.approved) && steps.approval.payload.approved)
-            ? (has(steps.approval.payload.approved) ? "rejected" : "expired")
-            : (!steps.approval.sender.local && !run.local &&
-                steps.approval.sender.identity.subject != "" &&
-                !(steps.approval.sender.identity.subject == run.identity.subject &&
-                  steps.approval.sender.identity.issuer == run.identity.issuer))
-              ? "transferred"
-              : "refused_unauthorized")}
-    description: what this run decided, and why, in one value
+        : (steps.approval.timed_out
+            ? "expired"
+            : ((has(steps.approval.payload.approved) && steps.approval.payload.approved)
+                ? ((!steps.approval.sender.local && !run.local &&
+                      steps.approval.sender.identity.subject != "" &&
+                      !(steps.approval.sender.identity.subject == run.identity.subject &&
+                        steps.approval.sender.identity.issuer == run.identity.issuer))
+                    ? "transferred"
+                    : "refused_unauthorized")
+                : ((has(steps.approval.payload.approved) && !steps.approval.payload.approved)
+                    ? "rejected"
+                    : "refused_malformed_payload")))}
+    description: >-
+      what this run decided, and why - only `timed_out` ever produces
+      "expired"; a malformed answered payload is its own
+      "refused_malformed_payload", never mistaken for a timeout
 
   debit_reference:
     value: >-

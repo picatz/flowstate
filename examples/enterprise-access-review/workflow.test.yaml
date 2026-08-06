@@ -91,7 +91,49 @@ tests:
             resource: prod-database
             role: admin
             last_used_days_ago: 5
-        unreachable: [carol@example.com]
+        unreachable: [carol@example.com:payroll-service]
+
+  - name: the same grantee's two grants are tracked separately, not cleared by each other
+    workflow: ./workflow.yaml
+    inputs:
+      access_grants:
+        - grantee: alice@example.com
+          resource: prod-database
+          role: admin
+        - grantee: alice@example.com
+          resource: billing-console
+          role: read-only
+      expected_reviewer: compliance-lead@example.com
+    stubs:
+      - task: log
+        returns: {}
+      - task: http
+        where: inputs.query.grantee == 'alice@example.com' && inputs.query.resource == 'prod-database'
+        returns:
+          grantee: alice@example.com
+          resource: prod-database
+          role: admin
+          last_used_days_ago: 5
+      - task: http
+        where: inputs.query.grantee == 'alice@example.com' && inputs.query.resource == 'billing-console'
+        fails:
+          kind: Upstream
+          message: iam service unavailable
+    expect:
+      ran: [gather_evidence, attestation, unattested]
+      outputs:
+        outcome: expired
+        attested_by: ""
+        reviewed_grants:
+          - grantee: alice@example.com
+            resource: prod-database
+            role: admin
+            last_used_days_ago: 5
+        # The bug this case exists to catch: a match on grantee alone would
+        # have cleared BOTH of alice's grants the moment the prod-database
+        # lookup succeeded, reporting the review complete with the
+        # billing-console failure silently dropped.
+        unreachable: [alice@example.com:billing-console]
 
   - name: an empty grant list is refused before the first step runs
     workflow: ./workflow.yaml

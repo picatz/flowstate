@@ -197,6 +197,23 @@ outputs:
       display-redacted by default (see the header comment for what that
       does and does not buy)
 
+  # Matched on the full grant identity - grantee AND resource - not grantee
+  # alone. `access_grants` allows the same grantee to appear more than once
+  # with a different resource (alice@example.com holding both prod-database
+  # and billing-console is an ordinary shape, not an edge case), and a
+  # membership test against grantee alone would clear every one of that
+  # grantee's grants the moment any single lookup for them succeeded - a
+  # partially-failed review reporting itself complete, which is the one
+  # thing this output exists to catch. `.exists()` checks the pair together,
+  # so a grantee with two grants and one failed lookup still names exactly
+  # that grant, not both and not neither.
   unreachable:
-    value: '${inputs.access_grants.filter(g, !(g.grantee in steps.gather_evidence.results.filter(r, has(r.last_used.grantee)).map(r, r.last_used.grantee))).map(g, g.grantee)}'
-    description: grantees whose evidence lookup did not complete, needing manual follow-up
+    value: >-
+      ${inputs.access_grants.filter(g,
+        !steps.gather_evidence.results.filter(r, has(r.last_used.grantee)).exists(r,
+          r.last_used.grantee == g.grantee && r.last_used.resource == g.resource))
+        .map(g, g.grantee + ':' + g.resource)}
+    description: >-
+      "grantee:resource" pairs whose evidence lookup did not complete,
+      needing manual follow-up - not grantee alone, since one grantee may
+      hold several grants and only some may have failed

@@ -97,22 +97,32 @@ steps:
              run.identity.subject == "" ? "an unattested caller" : run.identity.subject,
              inputs.service])}
 
-  # The page. Fifteen minutes is a real first-response window for a sev2; a
-  # sev1 in production would page harder and wait less, which is a policy
-  # decision this file leaves to its caller rather than hardcoding - see
-  # `severity` above, which a real deployment would read here to pick the
-  # timeout, left as a single fixed window in this example for clarity.
-  - id: responder_ack
-    wait_for_signal:
-      name: responder-ack
-      timeout: 15m
-
-  # Evidence gathering runs concurrently with nothing waiting on it to start -
-  # by the time anyone claims the incident, or by the time it escalates, this
-  # has already run. Independent branches with nothing to say to each other,
-  # joined before anything below depends on all three having finished.
-  - id: evidence
+  # The page and the evidence gathering run in the SAME `parallel:` block, as
+  # sibling branches, rather than one after the other - this was wrong in an
+  # earlier version of this file, which put `responder_ack` as its own
+  # top-level step before a separate `evidence` block. Top-level steps run
+  # in order, so that shape made the wait the *first* thing that happened
+  # and evidence gathering only start once someone acked or the fifteen
+  # minutes lapsed - exactly backwards for a runbook whose whole point is
+  # that a responder has something to look at *during* the page, not after
+  # it. A branch's steps flatten into this workflow's ordinary step
+  # namespace the same way a `for_each` body's do not - `steps.responder_ack`,
+  # `steps.logs`, `steps.metrics`, and `steps.recent_deploys` are all
+  # addressable exactly as if they were top-level, which is what lets
+  # `escalate` below keep reading `steps.responder_ack.timed_out` unchanged.
+  #
+  # Fifteen minutes is a real first-response window for a sev2; a sev1 in
+  # production would page harder and wait less, which is a policy decision
+  # this file leaves to its caller rather than hardcoding - see `severity`
+  # above, which a real deployment would read here to pick the timeout, left
+  # as a single fixed window in this example for clarity.
+  - id: page_and_gather_evidence
     parallel:
+      - steps:
+          - id: responder_ack
+            wait_for_signal:
+              name: responder-ack
+              timeout: 15m
       - steps:
           - id: logs
             continue_on_error: true

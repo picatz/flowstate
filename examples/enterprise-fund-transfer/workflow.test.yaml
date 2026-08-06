@@ -32,7 +32,7 @@ tests:
         returns: {}
     expect:
       ran: [request, debit, credit, notify_settlement]
-      skipped: [approval, rejected, expired, refused_unauthorized]
+      skipped: [approval, rejected, expired, refused_unauthorized, refused_malformed_payload]
       outputs:
         decision: transferred
         debit_reference: dbt-1
@@ -93,7 +93,7 @@ tests:
         returns: {}
     expect:
       ran: [request, approval, rejected]
-      skipped: [debit, credit, notify_settlement, expired, refused_unauthorized]
+      skipped: [debit, credit, notify_settlement, expired, refused_unauthorized, refused_malformed_payload]
       outputs:
         decision: rejected
         debit_reference: ""
@@ -111,7 +111,7 @@ tests:
         returns: {}
     expect:
       ran: [request, approval, expired]
-      skipped: [debit, credit, notify_settlement, rejected]
+      skipped: [debit, credit, notify_settlement, rejected, refused_malformed_payload]
       outputs:
         decision: expired
         debit_reference: ""
@@ -135,9 +135,36 @@ tests:
         returns: {}
     expect:
       ran: [request, approval, refused_unauthorized]
-      skipped: [debit, credit, notify_settlement, rejected, expired]
+      skipped: [debit, credit, notify_settlement, rejected, expired, refused_malformed_payload]
       outputs:
         decision: refused_unauthorized
+        debit_reference: ""
+
+  - name: a signal that answers with no approved field is refused, not read as a timeout
+    workflow: ./workflow.yaml
+    inputs:
+      from_account_id: acct-treasury-001
+      to_account_id: acct-supplier-042
+      amount_cents: 5000000
+      approval_threshold_cents: 1000000
+      idempotency_key: transfer-2026-08-06-0007
+    signals:
+      # A payload that arrived - `steps.approval.timed_out` reads false - but
+      # carries nothing this file can act on. The bug this case exists to
+      # catch: an earlier version of `decision` used `!has(payload.approved)`
+      # as a stand-in for "nobody answered," which is also true here even
+      # though somebody very much did.
+      - name: transfer-approved
+        payload:
+          note: wrong shape entirely
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [request, approval, refused_malformed_payload]
+      skipped: [debit, credit, notify_settlement, rejected, expired, refused_unauthorized]
+      outputs:
+        decision: refused_malformed_payload
         debit_reference: ""
 
   - name: an amount below one cent is refused before the first step runs
