@@ -2166,10 +2166,53 @@ failure sends whoever finds it later looking for a fault that never happened. Th
 summary rides the cancellation's details, because a cancelled workflow is closed
 with a command whose only payload is that.
 
+### Compensation composes through a call
+
+A callee's own steps may carry `undo:`, and a compensation they register lands on the
+same run-level [`UndoLog`](../pkg/flowstate/v1/undo.go) a top-level step's would —
+`v1.UndoScopeCall` is one of the two placements `CheckUndoPlacement` allows, alongside
+the run's own top level. Nothing about *how* a compensation reaches the log changed to
+make this true: the durable executor already shared `e.undo` by pointer with the
+executor a call descends into, for the same reason it shares `signals` and `progress`
+across every level — a compensation belongs to the run, not to the level that happens
+to be executing. The only thing that changed is the placement check that used to refuse
+writing one there at all.
+
+That sharing is also why a call spanning a Continue-As-New needs no new field to
+survive it: `RunState.pending_undo` already carries whatever `UndoLog.Pending()` holds
+at the moment a segment suspends, regardless of which level registered each entry, so a
+callee's compensation registered before a suspend is carried exactly as a top-level
+step's would be and is undone in the same reverse order if a later segment fails.
+
+A call is what makes this well defined where a `for_each` and a `parallel:` are not:
+it is sequential, compile-time-vendored control flow. The callee's steps run to
+completion, in declaration order, before the step after the call runs, on both
+drivers — so "reverse of registration order" means the one thing whether or not a call
+boundary sits in the middle of it. Nothing about isolation changes either:
+[`CallScope`](../pkg/flowstate/v1/call.go) still refuses a callee reading the caller's
+steps or vars, a compensation's own scope is still the step's outputs the moment it
+succeeded, and a callee's `undo:` still resolves `${steps.<id>.<output>}` against its
+own outputs exactly as a top-level step's does.
+
+**A call is transparent to a restriction that already applies, not an escape from
+one.** A callee's placement is not unconditionally `UndoScopeCall` — it is
+`callSitePlacement.IntoCall()`, composed with whatever scope the `call:` step
+itself sits in. A call reached from the top level or from another call's body
+composes to `UndoScopeCall`, which is the case above. A call reached from *inside*
+a `for_each` body, a `parallel:` branch, or a `loop:` body composes to that same
+restriction instead, and its callee's `undo:` is refused with that restriction's
+own message — the concurrency one, or the loop one. Without this, a `for_each`
+whose body did nothing but `call:` a workflow with a compensating step would have
+been an unintended way to route a compensation around the exact refusal invariant 3
+exists to enforce: the callee's steps still run once per iteration or once per
+branch, in the same scope that made registration order undefined in the first
+place, whether or not a call sits between the two. One function,
+[`UndoScope.IntoCall`](../pkg/flowstate/v1/undo.go), composes this identically for
+both execution drivers and `flow validate`.
+
 ### What this slice does not do, and why
 
-Three narrowings, each of which is a design that has to be argued rather than
-guessed.
+Two narrowings, each of which is a design that has to be argued rather than guessed.
 
 **`undo:` is refused inside a `for_each` body and a `parallel:` branch.** This is
 invariant 3, not effort. Compensations run in reverse registration order, and
@@ -2182,12 +2225,23 @@ ordering by something both drivers can agree on, which is a declaration path rat
 a sequence, and deciding what "reverse" means across branches that are unordered by
 construction. Neither answer is obvious and neither is guessed at here. The refusal is a
 positioned diagnostic that says which, and the two execution drivers refuse it too, so a
-specification that never came from a Flowfile cannot slip past.
+specification that never came from a Flowfile cannot slip past. A `call:` does not share
+this narrowing — see "Compensation composes through a call" above — because it is not
+concurrent: the reason this refusal exists is exactly the reason it does not apply there.
+
+**`undo:` is refused inside a `loop:` body**, for a different reason than the one above:
+a sequential loop's registration order is perfectly well defined, but what "the
+compensation for iteration 3" resolves against once a later iteration has moved the
+loop's carried state on is not designed yet. This is deferred alongside `loop:`'s other
+carried-state semantics, not folded into the concurrency refusal above, so an author
+told about it is told the truth about why.
 
 **`undo:` is refused on a step that is not a task.** A wait and a `parallel:` block have
 no effect of their own to take back, and a loop's effects belong to the tasks in its
-body — which cannot carry an `undo:` under the rule above, so writing one on the loop
-would look like it compensated them and would not.
+body — which cannot carry an `undo:` under the rules above, so writing one on the loop
+would look like it compensated them and would not. A `call:` step gets its own
+sentence rather than this one: the compensation belongs on the callee's own steps,
+which can carry it now, not on the step that reaches them.
 
 **A compensation has no `retry:` or `timeout:` of its own.** It gets the defaults a step
 with neither gets, from the same constants both drivers read. A `policy` field would be
@@ -2795,8 +2849,19 @@ referencing its earlier ones, on a specification that never changed.
 - `with:` naming an input the callee does not declare, or omitting one the callee
   requires and has no default for.
 - A secret reference bound through `with:`, bare or nested in a structure.
-- `undo:` on a step inside a callee, for the same reason it is refused inside a loop
-  body or a parallel branch: the ordering across that boundary is unresolved.
+- `undo:` on the `call:` step itself — a call has no effect of its own to take back;
+  the compensation belongs on the callee's own steps (below), and the diagnostic says
+  so by name rather than lumping a call in with a wait's or a `parallel:` block's "no
+  effect of their own" wording, which names the wrong construct for it.
+
+`undo:` on a step *inside* a callee is accepted, and composes onto the caller's own
+undo stack — see "Compensation composes through a call" below. This is a change from
+this document's earlier position, which refused it for the same reason a `for_each`
+body and a `parallel:` branch are: it should not have been. A call is sequential,
+compile-time-vendored control flow — the callee's steps run to completion, in
+declaration order, before the step after the call does, on both drivers — so
+registration order across the boundary is exactly as well defined as it is within one
+level, unlike the genuinely concurrent shapes the refusal was written for.
 - Calling from a file compiled with no location of its own — bytes submitted over the
   Compile RPC or the MCP tools, or an editor buffer with no save location — since there
   is no directory to resolve a relative path against. `flow validate`, `flow run`, `flow

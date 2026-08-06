@@ -232,14 +232,23 @@ func Validate(wf *v1.Workflow) Diagnostics {
 		}}
 	}
 
-	return validateAtDepth(wf, 0)
+	return validateAtDepth(wf, 0, v1.UndoScopeTopLevel)
 }
 
 // validateAtDepth is the whole of what [Validate] checks for one workflow, at
 // the call depth ([v1.CheckCallDepth]) it was reached at — zero for the
 // top-level workflow a run submits, and one deeper for every call standing
 // between here and it.
-func validateAtDepth(wf *v1.Workflow, depth int) Diagnostics {
+//
+// placement is this workflow's own undo scope, already composed by the caller
+// through [v1.UndoScope.IntoCall] — [v1.UndoScopeTopLevel] for the run's own
+// top level, [v1.UndoScopeCall] for a callee reached through a call sitting at
+// top level or inside another call, and [v1.UndoScopeConcurrent] /
+// [v1.UndoScopeLoop] for a callee reached through a call that itself sits
+// inside a `for_each` body, a `parallel` branch, or a `loop:` body — a call is
+// transparent to whatever restriction already applies there, not an escape
+// from it. See [validateCallAtDepth], which does the composing.
+func validateAtDepth(wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnostics {
 	var ds Diagnostics
 
 	if wf.GetName() == "" {
@@ -356,7 +365,10 @@ func validateAtDepth(wf *v1.Workflow, depth int) Diagnostics {
 		inner, varDiagnostics := scopeWithStepVars(id, node, scope, i, wf)
 		ds = append(ds, varDiagnostics...)
 
-		ds = append(ds, validateUndo(id, node, inner, i, wf, false)...)
+		// This workflow's own placement, passed in by the caller — the true top
+		// level, or whatever a callee reached through a call composes to; see
+		// [validateAtDepth]'s doc.
+		ds = append(ds, validateUndo(id, node, inner, i, wf, placement)...)
 
 		if task == nil {
 			// A step may be a loop or a parallel block rather than a task. Its
@@ -386,7 +398,7 @@ func validateAtDepth(wf *v1.Workflow, depth int) Diagnostics {
 				ds = append(ds, validateWait(id, kind.Wait, inner, i, wf)...)
 
 			case *v1.Node_Call:
-				ds = append(ds, validateCallAtDepth(id, kind.Call, inner, i, wf, depth+1)...)
+				ds = append(ds, validateCallAtDepth(id, kind.Call, inner, i, wf, depth+1, placement)...)
 
 			default:
 				ds = append(ds, Diagnostic{
@@ -780,7 +792,7 @@ func validateLoop(stepID string, loop *v1.ForEach, enclosing refScope, index int
 	// one line is the whole of what rooting deletes: with the two apart, an
 	// iterator sharing a step's name is no longer ambiguous, so the rule that used
 	// to forbid it has nothing left to prevent.
-	return append(ds, validateNested(loop.GetBody(), enclosing.withLocal(iterator), index, wf, depth)...)
+	return append(ds, validateNested(loop.GetBody(), enclosing.withLocal(iterator), index, wf, depth, v1.UndoScopeConcurrent)...)
 }
 
 // validateNamedLoop checks a `loop:` node: its required body and stop condition,
@@ -896,7 +908,7 @@ func validateNamedLoop(stepID string, loop *v1.Loop, enclosing refScope, index i
 	if hasState {
 		bodyScope = enclosing.withLocal(state)
 	}
-	return append(ds, validateNested(loop.GetBody(), bodyScope, index, wf, depth)...)
+	return append(ds, validateNested(loop.GetBody(), bodyScope, index, wf, depth, v1.UndoScopeLoop)...)
 }
 
 // bodyHasNestedLoop reports whether a loop body directly or transitively contains
@@ -998,7 +1010,7 @@ func validateParallel(stepID string, parallel *v1.Parallel, enclosing refScope, 
 		// Each branch sees only what existed before the block, never a sibling's
 		// steps, which is what validation must model to catch a cross-branch
 		// reference.
-		ds = append(ds, validateNested(branch.GetSteps(), enclosing, index, wf, depth)...)
+		ds = append(ds, validateNested(branch.GetSteps(), enclosing, index, wf, depth, v1.UndoScopeConcurrent)...)
 		for _, node := range branch.GetSteps() {
 			seen[node.GetId()] = true
 		}
@@ -1007,7 +1019,12 @@ func validateParallel(stepID string, parallel *v1.Parallel, enclosing refScope, 
 }
 
 // validateNested checks a nested list of steps against the names visible to it.
-func validateNested(nodes []*v1.Node, enclosing refScope, index int, wf *v1.Workflow, depth int) Diagnostics {
+//
+// placement is the [v1.UndoScope] every step in nodes is checked at — a
+// `for_each` body and a `parallel` branch pass [v1.UndoScopeConcurrent], a
+// `loop:` body passes [v1.UndoScopeLoop]. A callee reached through a `call:`
+// does not come through here at all; see [validateCallAtDepth].
+func validateNested(nodes []*v1.Node, enclosing refScope, index int, wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnostics {
 	var ds Diagnostics
 
 	scope := enclosing.clone()
@@ -1052,10 +1069,10 @@ func validateNested(nodes []*v1.Node, enclosing refScope, index int, wf *v1.Work
 		inner, varDiagnostics := scopeWithStepVars(id, node, scope, index, wf)
 		ds = append(ds, varDiagnostics...)
 
-		// Nested, which is the position a compensation may not be written at — see
-		// [v1.CheckUndoPlacement]. Reported here, where there is a position to put it
-		// on, rather than left to the engine's own refusal at run time.
-		ds = append(ds, validateUndo(id, node, inner, index, wf, true)...)
+		// Reported here, where there is a position to put it on, rather than left to
+		// the engine's own refusal at run time — see [v1.CheckUndoPlacement] for
+		// which placements are allowed.
+		ds = append(ds, validateUndo(id, node, inner, index, wf, placement)...)
 
 		task := node.GetTask()
 		if task == nil {
@@ -1069,7 +1086,7 @@ func validateNested(nodes []*v1.Node, enclosing refScope, index int, wf *v1.Work
 			case *v1.Node_Wait:
 				ds = append(ds, validateWait(id, kind.Wait, inner, index, wf)...)
 			case *v1.Node_Call:
-				ds = append(ds, validateCallAtDepth(id, kind.Call, inner, index, wf, depth+1)...)
+				ds = append(ds, validateCallAtDepth(id, kind.Call, inner, index, wf, depth+1, placement)...)
 			default:
 				ds = append(ds, Diagnostic{
 					Step:    id,
@@ -1159,8 +1176,9 @@ func scopeWithStepVars(id string, node *v1.Node, scope refScope, index int, wf *
 //
 // # Where
 //
-// [v1.CheckUndoPlacement] owns the two placement rules — top-level only, task
-// steps only — because both drivers enforce them too and a rule spelled once
+// [v1.CheckUndoPlacement] owns the placement rules — allowed at the top level and
+// inside a `call:`, refused inside a `for_each` body, a `parallel` branch, or a
+// `loop:` body — because both drivers enforce them too and a rule spelled once
 // cannot disagree with itself. What this adds is a position: an author meets the
 // refusal in their editor, on the `undo:` key, rather than as a run that fails on
 // its first step.
@@ -1180,7 +1198,7 @@ func scopeWithStepVars(id string, node *v1.Node, scope refScope, index int, wf *
 // step's own inputs and for the same reason: their scope is the response, which
 // this validator cannot see, and reporting them would train authors to ignore the
 // tool.
-func validateUndo(id string, node *v1.Node, scope refScope, index int, wf *v1.Workflow, nested bool) Diagnostics {
+func validateUndo(id string, node *v1.Node, scope refScope, index int, wf *v1.Workflow, placement v1.UndoScope) Diagnostics {
 	undo := node.GetUndo()
 	if undo == nil {
 		return nil
@@ -1188,7 +1206,7 @@ func validateUndo(id string, node *v1.Node, scope refScope, index int, wf *v1.Wo
 
 	var ds Diagnostics
 
-	if err := v1.CheckUndoPlacement(node, nested); err != nil {
+	if err := v1.CheckUndoPlacement(node, placement); err != nil {
 		return append(ds, Diagnostic{Step: id, Field: "undo", Message: err.Error()})
 	}
 

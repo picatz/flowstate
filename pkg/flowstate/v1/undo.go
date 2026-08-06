@@ -142,10 +142,11 @@ type UndoResult struct {
 // list. Registration order and not completion *time*: nothing here reads a clock,
 // and a clock would not survive replay anyway.
 //
-// The two orders coincide today because a compensation may only be written on a
-// top-level step, which both drivers run strictly in order — see
-// [CheckUndoPlacement] for why that restriction exists and what it is holding the
-// door open for.
+// The two orders coincide today because a compensation may only be written at
+// [UndoScopeTopLevel] or [UndoScopeCall], and both drivers run those strictly in
+// order — a call's own body runs to completion, in declaration order, before the
+// step after the call does. See [CheckUndoPlacement] for the placements that are
+// refused and why.
 //
 // # A failing compensation does not stop the others
 //
@@ -319,24 +320,87 @@ func withSelfOutputs(scope *Scope, id string, outputs *Node_Outputs) *Workflow_S
 	return merged
 }
 
+// UndoScope is where in the tree a node sits, for the purpose of deciding
+// whether a compensation written on it may be honoured.
+//
+// Four placements, not two, because "nested" used to conflate shapes that
+// disagree about the one thing that matters: whether registration order is
+// well defined across the boundary being crossed.
+//
+//   - [UndoScopeTopLevel] and [UndoScopeCall] both register onto the run's one
+//     [UndoLog], in the sequence steps actually complete in — a call's body
+//     runs to completion before the step after the call does, on both drivers,
+//     so "reverse of registration order" means the same thing whether or not a
+//     call boundary sits in the middle of it. See issue #219's decision:
+//     compose-through, zero new API surface.
+//   - [UndoScopeConcurrent] (`for_each`, `parallel`) is refused. Local runs
+//     iterations and branches sequentially for determinism; the durable driver
+//     may run them at once. A saga spanning a fan-out would undo in one order
+//     locally and another in production.
+//   - [UndoScopeLoop] (`loop:`) is refused too, but for a different reason: a
+//     loop's body carries state between iterations, and what "the compensation
+//     for iteration 3" even resolves against once later iterations have
+//     overwritten that state is not designed yet. Deferred alongside the rest
+//     of `loop:`'s carried-state semantics, not because ordering is
+//     ambiguous — a sequential loop's registration order is perfectly well
+//     defined — but because undoing into carried state is its own design.
+type UndoScope int
+
+const (
+	// UndoScopeTopLevel is a run's own top-level steps.
+	UndoScopeTopLevel UndoScope = iota
+
+	// UndoScopeCall is a callee's steps, reached through a `call:` — sequential,
+	// compile-time-vendored, and composed onto the caller's run-level undo log.
+	UndoScopeCall
+
+	// UndoScopeConcurrent is a `for_each` body or a `parallel` branch, where
+	// registration order is not the same on both drivers.
+	UndoScopeConcurrent
+
+	// UndoScopeLoop is a `loop:` body, whose carried state has no defined undo
+	// semantics yet.
+	UndoScopeLoop
+)
+
+// IntoCall reports the placement a callee's own steps run at, given the
+// placement of the `call:` step that reaches them.
+//
+// Not always [UndoScopeCall]. A call is transparent to whatever restriction
+// already applies to the scope it sits in — it does not launder one away. A
+// call reached from the top level or from another call's body composes onto
+// the same sequential, well-ordered stack ([UndoScopeCall]); a call reached
+// from inside a `for_each` body, a `parallel` branch, or a `loop:` body stays
+// exactly as refused as a bare task step there would be, because nothing about
+// wrapping the concurrent or carried-state work in a call changes why it was
+// refused — a callee's steps still run once per branch, once per iteration, or
+// once per loop pass, in the same scope that made registration order
+// undefined (or carried state ill-defined) in the first place.
+//
+// One rule, called by both execution drivers and the validator, is what keeps
+// a `call:` inside a `for_each` from becoming an escape hatch out of the
+// concurrency refusal on one of them and not the other — see issue #219's
+// review, which found exactly that gap: a naive "descending into a call is
+// always [UndoScopeCall]" let a callee's `undo:` validate and run wherever the
+// call itself was nested, in whatever order the enclosing construct happened
+// to produce.
+func (s UndoScope) IntoCall() UndoScope {
+	switch s {
+	case UndoScopeTopLevel, UndoScopeCall:
+		return UndoScopeCall
+	default:
+		return s
+	}
+}
+
 // CheckUndoPlacement reports whether a node may carry the compensation it does.
 //
-// # Top-level steps only, in this version
+// # Where a compensation may be written
 //
-// A compensation inside a `for_each` body or a `parallel` branch is refused, and
-// the reason is invariant 3 rather than effort. Compensations run in reverse
-// *registration* order, and registration order inside concurrent work is not the
-// same on the two drivers: the local driver runs branches and iterations
-// sequentially in declaration order — deliberately, so a local run is comparable —
-// while the durable driver runs them at once. So a saga spanning a fan-out would
-// undo in one order locally and another in production, which is a local run lying
-// about exactly the thing sagas exist to get right.
-//
-// Fixing that means ordering by something both drivers can agree on — a
-// declaration path rather than a completion sequence — and deciding what "reverse"
-// even means across branches that are unordered by construction. That is a design
-// to be argued, not guessed at, so this version refuses the shape and DSL.md
-// records what the answer would have to look like.
+// A compensation is honoured at the top level and inside a `call:`'s body — see
+// [UndoScope] for why those two share an answer — and refused inside a
+// `for_each` body, a `parallel` branch, or a `loop:` body, each for its own
+// reason, also in [UndoScope]'s doc.
 //
 // # Refused loudly in the engine as well as in the validator
 //
@@ -346,30 +410,53 @@ func withSelfOutputs(scope *Scope, id string, outputs *Node_Outputs) *Workflow_S
 // — a workload that believes it is transactional and is not. CLAUDE.md's rule is
 // that a run which cannot do what it was asked must fail rather than quietly do
 // less.
+//
 // # A task step only
 //
-// The second rule, and a narrower one. `for_each`, `parallel` and the waits are
-// control flow: a wait and a branch group have no effect of their own to take
-// back, and a loop's effects belong to the tasks in its body — which cannot carry
-// an `undo:` under the first rule, so writing one on the loop would look like it
-// compensated them and would not. A task is the only node that does something.
-func CheckUndoPlacement(node *Node, nested bool) error {
+// The second rule, and a narrower one, applies regardless of placement. A `call:`
+// step, `for_each`, `parallel` and the waits are control flow: none of them has an
+// effect of its own to take back. A call's own compensation belongs on the
+// callee's steps, which now carry it and run in reverse across the boundary — see
+// the `Node_Call` case below. A loop's effects belong to the tasks in its body,
+// which cannot carry an `undo:` either, under the placement rule above.
+func CheckUndoPlacement(node *Node, placement UndoScope) error {
 	if node.GetUndo() == nil {
 		return nil
 	}
 
-	if nested {
+	switch placement {
+	case UndoScopeConcurrent:
 		return fmt.Errorf(
-			"`undo:` is only supported on a top-level step, and this one is inside a "+
-				"for_each body or a parallel branch; compensations run in reverse registration "+
-				"order, and the order work registers in inside concurrent control flow is not "+
-				"the same under `flow run local` as it is durably, so a saga written here would "+
-				"be rehearsed in one order and run in another. Move the compensated step out of "+
-				"the block, or undo the block as a whole from the step that follows it (step %q)",
+			"`undo:` is only supported on a top-level step or a step inside a `call:`, and "+
+				"this one is inside a for_each body or a parallel branch; compensations run in "+
+				"reverse registration order, and the order work registers in inside concurrent "+
+				"control flow is not the same under `flow run local` as it is durably, so a saga "+
+				"written here would be rehearsed in one order and run in another. Move the "+
+				"compensated step out of the block, or undo the block as a whole from the step "+
+				"that follows it (step %q)",
+			node.GetId())
+
+	case UndoScopeLoop:
+		return fmt.Errorf(
+			"`undo:` is only supported on a top-level step or a step inside a `call:`, and "+
+				"this one is inside a loop body; a loop carries state between iterations, and "+
+				"what a compensation for one iteration would resolve against once a later "+
+				"iteration has moved that state on is not defined yet. Move the compensated step "+
+				"into a called workflow and undo it there, or undo the loop as a whole from the "+
+				"step that follows it (step %q)",
 			node.GetId())
 	}
 
 	if node.GetTask() == nil {
+		if _, isCall := node.GetKind().(*Node_Call); isCall {
+			return fmt.Errorf(
+				"`undo:` is only supported on a step that runs a task, and step %q is a `call:`; "+
+					"a call has no effect of its own to take back — write the compensation on the "+
+					"callee's own steps, which run in reverse across the call boundary exactly as "+
+					"a top-level step's would",
+				node.GetId())
+		}
+
 		return fmt.Errorf(
 			"`undo:` is only supported on a step that runs a task, and step %q is control "+
 				"flow; a wait and a parallel block have no effect of their own to take back, "+

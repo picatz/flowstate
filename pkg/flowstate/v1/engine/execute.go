@@ -98,11 +98,20 @@ type executor struct {
 	//
 	// Shared by pointer with every nested executor, exactly as `signals` is: a
 	// compensation is registered for the *run*, and a copy per level would either
-	// lose one or run it twice. Nothing nested registers into it today —
-	// [v1.CheckUndoPlacement] refuses an `undo:` below the top level — so the
-	// sharing is what keeps that from being an assumption the day the restriction
-	// lifts.
+	// lose one or run it twice. A callee's steps register into this same log —
+	// [v1.CheckUndoPlacement] allows `undo:` at [v1.UndoScopeCall] — which is what
+	// makes compose-through work with no separate log to merge: there is only ever
+	// one, and it already survives Continue-As-New via `RunState.pending_undo`
+	// (see [Run]).
 	undo *v1.UndoLog
+
+	// undoScope is this executor's placement in [v1.UndoScope]'s terms, checked by
+	// [v1.CheckUndoPlacement] before every node it runs. Set once, when the
+	// executor is constructed, rather than derived from depth: depth counts frame
+	// nesting, which a `for_each` body and a `call` body both add to identically,
+	// while the two disagree completely about whether a compensation belongs
+	// there.
+	undoScope v1.UndoScope
 }
 
 // signalCarry holds the run's early-arriving signals.
@@ -128,7 +137,7 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) error {
 		// this engine cannot honour does not perform half of itself first. The local
 		// driver refuses at the identical point; `flow validate` refuses it earlier
 		// still, with a position, which is where an author actually meets it.
-		if err := v1.CheckUndoPlacement(node, depth > 0); err != nil {
+		if err := v1.CheckUndoPlacement(node, e.undoScope); err != nil {
 			return stepFailed(err, "step %q", node.GetId())
 		}
 
@@ -382,6 +391,17 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 		signals:  e.signals,
 		progress: e.progress,
 		undo:     e.undo,
+
+		// Composed with the scope this call itself sits in, not always
+		// [v1.UndoScopeCall] — see [v1.UndoScope.IntoCall]. A call reached from
+		// the top level or from another call's body runs its callee at
+		// UndoScopeCall, where a compensation composes onto the same run-level
+		// stack a top-level step's would; a call reached from inside a
+		// `for_each` body, a `parallel` branch, or a `loop:` body carries that
+		// restriction straight through its callee, so a call cannot be used to
+		// escape the concurrency or carried-state refusal that already applies
+		// to the scope it sits in.
+		undoScope: e.undoScope.IntoCall(),
 
 		callDepth: e.callDepth + 1,
 	}
@@ -787,6 +807,10 @@ func (e *executor) runLoopIteration(loop *v1.Loop, stateName string, state *v1.V
 		progress: e.progress,
 		undo:     e.undo,
 
+		// A loop body's carried state has no defined undo semantics yet — see
+		// [v1.UndoScopeLoop].
+		undoScope: v1.UndoScopeLoop,
+
 		callDepth: e.callDepth,
 	}
 	if descend {
@@ -853,6 +877,10 @@ func (e *executor) runIteration(loop *v1.ForEach, iterator string, item *v1.Valu
 		progress: e.progress,
 		undo:     e.undo,
 
+		// Registration order inside a `for_each` is not the same on both drivers —
+		// see [v1.UndoScopeConcurrent].
+		undoScope: v1.UndoScopeConcurrent,
+
 		callDepth: e.callDepth,
 	}
 	if descend {
@@ -905,6 +933,7 @@ func (e *executor) runIterationsConcurrently(loop *v1.ForEach, iterator string, 
 					budget:    e.budget,
 					signals:   e.signals,
 					undo:      e.undo,
+					undoScope: v1.UndoScopeConcurrent,
 					callDepth: e.callDepth,
 
 					// Deliberately not carried. Iterations run at once, so a
@@ -960,6 +989,7 @@ func (e *executor) runParallel(parallel *v1.Parallel, depth, susp int) error {
 				budget:    e.budget,
 				signals:   e.signals,
 				undo:      e.undo,
+				undoScope: v1.UndoScopeConcurrent,
 				callDepth: e.callDepth,
 
 				// Not carried, for the same reason a concurrent iteration does
