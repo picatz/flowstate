@@ -1044,18 +1044,22 @@ type InputDeclaration struct {
 	// must never reach an operator's screen at all is a mistake; that value is a
 	// secret reference, not this.
 	//
-	// # What this currently does on an *input*, precisely
+	// # What this does on an *input*, precisely
 	//
-	// Nothing yet, and saying so is the point: a flag documented to redact, that
-	// does not, is worse than no flag, because it is trusted. Declared *outputs*
-	// are redacted everywhere Flowstate renders them; an input is not, because
-	// there is currently only one surface that renders a bound input value at all
-	// — `flow schedule describe` — and [ScheduleDescription] carries the
-	// workflow's *name* rather than its specification, so nothing on that path can
-	// tell which of a schedule's inputs were declared sensitive. Whoever closes
-	// that decides where the redaction belongs: almost certainly the server, which
-	// is the only party that holds both the schedule and the spec. Tracked at
-	// https://github.com/picatz/flowstate/issues/211.
+	// Declared *outputs* are redacted everywhere Flowstate renders them; an input
+	// is rendered on exactly one surface — a schedule's bound arguments, through
+	// `flow schedule describe` and `flow schedule list` — and there a
+	// sensitive-declared value is redacted the same way, server-side, before it
+	// crosses the wire. The redaction lives on the server rather than the client
+	// because the server is the only party that holds both the schedule and the
+	// spec that declared the sensitivity; a `ScheduleDescription` on the wire
+	// carries the already-redacted value, not the raw one for a client to hide.
+	//
+	// What is not yet built is a reveal path: `flow get` has `--reveal-sensitive`,
+	// and the schedule RPCs have no field to carry that request. An operator who
+	// needs the value must read it from wherever it was configured, not from a
+	// describe. That is a display-surface gap, not a containment one — this flag
+	// was never containment (see above).
 	Sensitive bool `protobuf:"varint,7,opt,name=sensitive,proto3" json:"sensitive,omitempty"`
 	// Pattern is an RE2 regular expression a `type: string` value must fully
 	// match. The compiler refuses it on a declaration of any other type, the same
