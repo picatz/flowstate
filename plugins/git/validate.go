@@ -33,6 +33,22 @@ const (
 	defaultCloneDepth = 50
 	maxCloneDepth     = 500
 
+	// maxResumeCloneDepth bounds how deep a cursor-driven resume's own
+	// progressive clone-depth retries may go - see resumeCloneDepthSteps
+	// and doLog's own comment on why a linear history longer than
+	// maxCloneDepth needs more than one shallow-clone attempt to keep
+	// paging to exhaustion: go-git supports neither fetching an arbitrary
+	// commit sha directly nor incremental --deepen (checked against its
+	// own source - see doLog's comment), so the only way to reach a commit
+	// a shallow clone missed is a fresh, deeper one. Larger than
+	// maxCloneDepth - every OTHER caller's own ceiling, unchanged, since
+	// this is the one path that deliberately widens the fetch as
+	// pagination goes deeper into history - but still a fixed, small
+	// multiple of it, not "keep doubling forever": the bound
+	// cloneBoundedWithInflationCap enforces on every clone this plugin
+	// ever makes, including this one.
+	maxResumeCloneDepth = maxCloneDepth * 4
+
 	// maxMessageBytes bounds a commit message this plugin will write. A
 	// message this plugin constructs becomes durable history on the remote,
 	// same reasoning as maxCommitMessageBytes in plugins/vcs applies to one
@@ -215,32 +231,51 @@ func validateOptionalRevision(field, raw string) (string, error) {
 // uses (go-git does not yet support sha-256 repositories).
 const fullShaHexLen = 40
 
+// maxCursorEntries bounds how many commit shas a single cursor may encode
+// in total (frontier entries plus already-emitted entries combined) - see
+// cursor.go's own doc comment for why a cursor now carries more than one
+// sha, and doLog's own comment on where this bound is actually enforced
+// (at the point a NEXT cursor would be constructed, not merely when one
+// arrives - an incoming cursor that itself already exceeds this bound is
+// refused here too, since this task never emits one that does).
+//
+// Set equal to maxCloneDepth: nothing a cursor-driven clone ever fetches
+// has more commits reachable from a single starting point than that, in
+// the overwhelmingly common case of one dominant branch, and once a
+// paginated walk has legitimately emitted that many commits this task
+// stops promising a further cursor rather than encode one this bound
+// cannot vouch for - see doLog's own comment on that refusal, and
+// log_test.go's octopus-merge test for the case that actually reaches it
+// (a single merge wide enough on its own, not merely a long walk).
+const maxCursorEntries = maxCloneDepth
+
 // validateCursor bounds git.log's optional resume position. Unlike
 // validateOptionalRevision (ref's own check, which deliberately accepts
 // anything go-git's revision parser does - a branch, a tag, "HEAD~3"), this
 // is deliberately narrow: a cursor is never something a workflow author or
 // coding agent composes by hand, only ever something this task itself
 // emitted as a previous call's next_cursor - so the one shape it accepts is
-// the one shape this task ever produces, a full 40-character lowercase hex
-// commit sha. Refusing anything else (a short sha, a branch name, "HEAD")
-// closes off a second, differently-validated spelling of ref that would
-// otherwise invite the two to be confused with one another - see
-// LogInputs.cursor's own doc comment for the full argument.
+// the one shape this task ever produces: cursor.go's own frontier|emitted
+// encoding, every element a full 40-character lowercase hex commit sha.
+// Refusing anything else (a short sha, a branch name, "HEAD", a single bare
+// sha the way this field's first version accepted) closes off a second,
+// differently-validated spelling of ref that would otherwise invite the two
+// to be confused with one another - see LogInputs.cursor's own doc comment
+// for the full argument, and cursor.go's for why a bare single sha stopped
+// being enough to resume correctly at all.
 func validateCursor(raw string) (string, error) {
 	if raw == "" {
 		return "", nil
 	}
-	if len(raw) != fullShaHexLen {
-		return "", fmt.Errorf(
-			"cursor must be a full %d-character commit sha (the exact value a previous call's "+
-				"next_cursor returned), got %d characters", fullShaHexLen, len(raw))
+	state, err := decodeCursor(raw)
+	if err != nil {
+		return "", fmt.Errorf("cursor is not a value this task ever emitted: %w", err)
 	}
-	for _, r := range raw {
-		if !isLowerHexDigit(r) {
-			return "", fmt.Errorf(
-				"cursor %q is not a lowercase hex commit sha - it must be byte-identical to a "+
-					"previous call's own next_cursor output, never composed or guessed at", raw)
-		}
+	if n := len(state.frontier) + len(state.emitted); n > maxCursorEntries {
+		return "", fmt.Errorf(
+			"cursor names %d commits total, over the %d this task will track in one resume - "+
+				"see LogOutputs.next_cursor's own doc comment for what to do once a walk reaches this",
+			n, maxCursorEntries)
 	}
 	return raw, nil
 }

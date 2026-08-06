@@ -596,30 +596,48 @@ type LogInputs struct {
 	// Username is the HTTP Basic-auth username paired with token - see
 	// LsRemoteInputs.username for the full doc comment and default.
 	Username string `protobuf:"bytes,7,opt,name=username,proto3" json:"username,omitempty"`
-	// Cursor resumes a prior, truncated call: the oldest sha that call
-	// returned (its own LogOutputs.next_cursor), fed back in. The walk
-	// starts at cursor's PARENT - the commit immediately older than cursor in
-	// the history this task walks - so the commit named by cursor is never
-	// returned twice: page N's last entry and page N+1's first entry are
-	// adjacent, distinct commits, never the same one. Every filter this call
-	// sets (path, since) applies to the resumed walk exactly as it would to a
-	// fresh one, which is what makes paging through a filtered history safe:
-	// each page independently re-applies the filter to its own slice of
-	// history, so the union across every page is exactly the full filtered
-	// set, each commit exactly once.
+	// Cursor resumes a prior, truncated call - fed back exactly as
+	// LogOutputs.next_cursor returned it. Opaque to a workflow (nothing
+	// about its contents is meant to be parsed or reasoned about beyond
+	// "pass it back as cursor"), but not a single sha: it packs two
+	// full-sha lists, "|"-separated - the walk's own FRONTIER (every
+	// not-yet-explored commit a resumed walk still owes an answer for) and
+	// EMITTED (every commit already returned across every earlier page of
+	// this same walk). Every filter this call sets (path, since) applies to
+	// the resumed walk exactly as it would to a fresh one.
+	//
+	// Both lists, not one sha, because a single "resume at the last commit's
+	// parent" spelling is provably wrong the moment a page boundary lands on
+	// or after a merge: a merge's history fans out into every parent, and
+	// "parent[0] only" silently drops everything reachable solely through
+	// parent[1] and beyond - a MISS, not a duplicate, and exactly the
+	// direction a purely linear test fixture cannot expose. Frontier is what
+	// lets every one of a merge's parents be explored on resumption; emitted
+	// is what stops a RECONVERGING history (two branches sharing an ancestor
+	// further back, the ordinary shape a merge base takes) from returning
+	// that shared ancestor twice once it is reachable from more than one
+	// still-pending frontier entry. See plugins/git/cursor.go for the full
+	// argument and the exactly-once proof this pair of lists makes possible
+	// against arbitrary graph shapes, not merely a linear chain.
 	//
 	// Cursor is untrusted input the moment it comes back from outside this
 	// task (a caller composes it from a prior response, or an attacker
-	// guesses at one) - so it is required to be a full, 40-character hex
-	// commit sha, and nothing else: not a branch, not a tag, not "HEAD~5",
-	// not a short sha. A revision expression is exactly the ambiguity ref
-	// already owns; accepting one here would let a "cursor" quietly become a
-	// second ref field with different validation, inviting the two to be
-	// confused with each other. Resuming re-validates everything a fresh call
-	// would - the same url validation, the same egress policy, the same
-	// clone-depth bound (maxCloneDepth, the same ceiling an explicit ref
-	// already deepens to) - a cursor names a position in history, never a
-	// bypass around any check the original query performs.
+	// guesses at one) - so every element of both lists is required to be a
+	// full, 40-character lowercase hex commit sha, and nothing else: not a
+	// branch, not a tag, not "HEAD~5", not a short sha. A revision expression
+	// is exactly the ambiguity ref already owns; accepting one here would let
+	// a "cursor" quietly become a second ref field with different
+	// validation, inviting the two to be confused with each other. The total
+	// number of shas across both lists is bounded (see maxCursorEntries in
+	// plugins/git/validate.go) - a cursor naming more than this task will
+	// ever track is refused outright, the same as one shaped wrong in any
+	// other way. Resuming re-validates everything a fresh call would - the
+	// same url validation, the same egress policy - and re-fetches (see
+	// plugins/git/log.go's own resumeCloneDepthSteps for why a resume may
+	// clone more than once, at increasing depth, before giving up) rather
+	// than trusting anything about what state a prior call left behind - a
+	// cursor names a position in history, never a bypass around any check
+	// the original query performs.
 	//
 	// Cursor and ref are mutually exclusive: a resumed call names cursor
 	// alone, never both, since cursor already carries everything ref would
@@ -725,35 +743,50 @@ type LogOutputs struct {
 	Commits []*Commit `protobuf:"bytes,1,rep,name=commits,proto3" json:"commits,omitempty"`
 	// ResolvedRef is the exact commit ref named, as a full sha - what a
 	// relative ref like "main" or "HEAD~3" actually meant at the moment this
-	// ran.
+	// ran. Empty on a cursor-driven (resumed) call: once a walk has advanced
+	// past its first page, there is no longer one single ref this call
+	// resolved - see LogInputs.cursor's own doc comment for what a resumed
+	// call tracks instead (a frontier, not a single position), and read the
+	// first page's own ResolvedRef for the walk's origin if it matters to
+	// the caller.
 	ResolvedRef string `protobuf:"bytes,2,opt,name=resolved_ref,json=resolvedRef,proto3" json:"resolved_ref,omitempty"`
 	// Truncated reports whether more matching history existed beyond what was
-	// returned - by max_commits, by the total message-byte budget, or by the
-	// shallow window this task cloned when path was set - so a workflow can
-	// tell "this is all of it" from "this is as much as this call reached."
+	// returned - by max_commits, by the total message-byte budget, by the
+	// shallow window this task cloned, or because resuming further would need
+	// a cursor bigger than this task will ever track (see NextCursor) - so a
+	// workflow can tell "this is all of it" from "this is as much as this
+	// call reached."
 	Truncated bool `protobuf:"varint,3,opt,name=truncated,proto3" json:"truncated,omitempty"`
 	// NextCursor is the resume position for the next page, populated exactly
-	// when Truncated is true and Commits is non-empty: the oldest sha this
-	// call reached, Commits' own last entry (this task always returns
-	// most-recent-first) - the exact value LogInputs.cursor expects back to
-	// continue the walk one commit past this one. Empty whenever Truncated is
-	// false, since there is nothing left to resume.
+	// when Truncated is true, Commits is non-empty, and this task can still
+	// prove there is somewhere left to resume from and afford to encode it
+	// (see LogInputs.cursor for what it packs, and cursor.go for the
+	// "exactly once against a merge" argument this whole redesign exists
+	// for). Empty whenever Truncated is false, since there is nothing left
+	// to resume.
 	//
-	// Also empty when Truncated is true but Commits is empty - the
-	// shallow-boundary case (see Truncated's own doc comment): this call
-	// reached its own fetch window's edge before finding even one matching
-	// commit, so there is no "last commit returned" to hand back as a resume
-	// position. A caller in that position has to widen the window itself
-	// (name an explicit ref, or raise max_commits) rather than page past it,
-	// since paging assumes a real position in history to resume from and this
-	// call never reached one.
+	// Also empty in two narrower cases, both still honestly reported as
+	// Truncated: true because there genuinely was more this call could not
+	// finish describing, just not with a resumable position attached -
 	//
-	// NextCursor is a real commit sha, not an opaque token this task
-	// invents - fed back as LogInputs.cursor, it resumes the identical walk
-	// (same repository, same filters) one commit past where this call
-	// stopped. It is still opaque to a workflow in every other sense: nothing
-	// about its shape or contents is meant to be parsed or reasoned about
-	// beyond "pass it back as cursor."
+	//   - the shallow-boundary case (see Truncated's own doc comment): this
+	//     call reached its own fetch window's edge before finding even one
+	//     matching commit, so there is no position to hand back at all. A
+	//     caller in that position has to widen the window itself (name an
+	//     explicit ref, or raise max_commits) rather than page past it.
+	//   - the cursor-size ceiling (maxCursorEntries, plugins/git/validate.go):
+	//     more history remains, but encoding everywhere left to resume from
+	//     would need more commits than this task will ever track in one
+	//     cursor. A caller in this position has to narrow the walk (path,
+	//     since) so fewer pages are needed to reach the same history, or
+	//     accept this page as the practical end of what this call can walk.
+	//
+	// NextCursor is real commit shas, not a token this task invents from
+	// nothing - fed back as LogInputs.cursor, it resumes the identical walk
+	// (same repository, same filters) exactly where this call stopped,
+	// dropping nothing and repeating nothing. It is still opaque to a
+	// workflow in every other sense: nothing about its shape or contents is
+	// meant to be parsed or reasoned about beyond "pass it back as cursor."
 	NextCursor    string `protobuf:"bytes,4,opt,name=next_cursor,json=nextCursor,proto3" json:"next_cursor,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

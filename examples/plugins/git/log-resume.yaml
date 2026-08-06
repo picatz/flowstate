@@ -9,13 +9,17 @@ description: Reads a repository's commit history in two bounded pages using git.
 # for page two. This file demonstrates the fix - `next_cursor` in, `cursor`
 # out - for exactly one resume:
 #
-#   page one:  git.log(max_commits: 3)              -> truncated: true, next_cursor: <sha>
-#   page two:  git.log(max_commits: 3, cursor: <sha>) -> continues one commit past page one
+#   page one:  git.log(max_commits: 3)                  -> truncated: true, next_cursor: <opaque>
+#   page two:  git.log(max_commits: 3, cursor: <opaque>) -> continues exactly where page one stopped
 #
-# `cursor` resumes at the PARENT of the sha it names, never the sha itself -
-# see plugins/git/proto/git/v1/git.proto, LogInputs.cursor, for the exact
-# contract: page one's last commit and page two's first commit are adjacent,
-# distinct commits, never the same one twice.
+# `next_cursor` is opaque to a workflow - never a bare sha to reason about
+# directly (it packs a walk's own pending frontier and everything already
+# returned, so a resume stays correct even across a merge; see
+# plugins/git/proto/git/v1/git.proto, LogInputs.cursor, and
+# plugins/git/cursor.go for the full contract and why a single sha was not
+# enough). Fed back exactly as returned, it resumes the identical walk with
+# nothing dropped and nothing repeated: page one's last commit and page
+# two's first commit are always distinct.
 #
 # What this file deliberately does NOT show: walking to exhaustion. Doing
 # that for real means looping - fetching page after page until
@@ -69,4 +73,4 @@ outputs:
 
   resumed_from:
     value: ${steps.page_one.next_cursor}
-    description: the cursor page_two was resumed from - page_one's own oldest reached sha, empty if page_one was not truncated
+    description: the opaque cursor page_two was resumed from - empty if page_one was not truncated

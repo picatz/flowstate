@@ -531,13 +531,11 @@ func TestGitLogClassifiesAnUnreachableRemoteAsNotFound(t *testing.T) {
 }
 
 // TestGitLogCursorResumesOneCommitPastWhereItStopped is the direct proof of
-// LogInputs.cursor's own contract: fed back as cursor, the walk starts at
-// that commit's parent, so the two pages meet exactly - page one's last
-// entry and page two's first entry are adjacent, distinct commits, and
-// page two's own last entry equals page one's first entry once history
-// is exhausted only if there are exactly enough commits to say so; here
-// there are more, so this only proves the adjacency, not exhaustion (see
-// TestGitLogCursorPagesReachEveryCommitExactlyOnce for that).
+// LogInputs.cursor's own contract for a linear history: fed back as cursor,
+// the walk continues one commit past where page 1 stopped - page one's last
+// entry and page two's first entry are adjacent, distinct commits, never the
+// same one twice - even though the cursor itself is no longer a bare sha
+// (see cursor.go), only ever fed back opaquely.
 func TestGitLogCursorResumesOneCommitPastWhereItStopped(t *testing.T) {
 	const totalCommits = 10
 
@@ -562,12 +560,9 @@ func TestGitLogCursorResumesOneCommitPastWhereItStopped(t *testing.T) {
 		t.Fatal("page 1: Truncated = false, want true - 11 commits exist (seed + 10), only 4 were asked for")
 	}
 	if page1.NextCursor == "" {
-		t.Fatal("page 1: NextCursor is empty, want the last commit page 1 returned")
+		t.Fatal("page 1: NextCursor is empty, want a resume position")
 	}
 	lastOfPage1 := page1.Commits[len(page1.Commits)-1].Sha
-	if page1.NextCursor != lastOfPage1 {
-		t.Fatalf("page 1: NextCursor = %s, want %s (the last, oldest commit this page returned)", page1.NextCursor, lastOfPage1)
-	}
 
 	page2, err := doLog(context.Background(), logParams{url: fileURL(t, remote), maxCommits: 4, cursor: page1.NextCursor})
 	if err != nil {
@@ -592,31 +587,27 @@ func TestGitLogCursorResumesOneCommitPastWhereItStopped(t *testing.T) {
 	}
 }
 
-// TestGitLogCursorNamingTheRootCommitReportsCompletion proves the edge case
-// LogOutputs.next_cursor's own doc comment names for the walk itself
-// (distinct from the shallow-boundary "Commits empty, Truncated true" case):
-// a cursor naming the very first commit in history has no parent to resume
-// from, and this must be reported as completion (truncated: false, no
-// commits, no next_cursor) rather than an error.
-func TestGitLogCursorNamingTheRootCommitReportsCompletion(t *testing.T) {
+// TestGitLogCursorReachesTheRootCommitAndReportsCompletion proves the
+// exhaustion edge case: resuming all the way to a linear history's own root
+// commit (no parents) must report completion (truncated: false, no further
+// commits, no next_cursor) rather than an error, once the walk actually
+// gets there.
+func TestGitLogCursorReachesTheRootCommitAndReportsCompletion(t *testing.T) {
 	remote := newBareRemote(t)
-	root := seedRemote(t, remote, "main")
+	seedRemote(t, remote, "main") // exactly 1 commit: the root
 
-	out, err := doLog(context.Background(), logParams{url: fileURL(t, remote), maxCommits: 10, cursor: root.String()})
+	out, err := doLog(context.Background(), logParams{url: fileURL(t, remote), maxCommits: 10})
 	if err != nil {
-		t.Fatalf("doLog with cursor at the root commit: %v", err)
+		t.Fatalf("doLog: %v", err)
 	}
 	if out.Truncated {
-		t.Error("Truncated = true, want false - the root commit has no parent, so there is nothing left to resume")
+		t.Fatal("Truncated = true, want false - history has only the one root commit, well within max_commits")
 	}
-	if len(out.Commits) != 0 {
-		t.Fatalf("len(commits) = %d, want 0", len(out.Commits))
+	if len(out.Commits) != 1 {
+		t.Fatalf("len(commits) = %d, want 1 (the root)", len(out.Commits))
 	}
 	if out.NextCursor != "" {
-		t.Errorf("NextCursor = %q, want empty", out.NextCursor)
-	}
-	if out.ResolvedRef != root.String() {
-		t.Errorf("ResolvedRef = %s, want %s (the cursor's own sha)", out.ResolvedRef, root)
+		t.Errorf("NextCursor = %q, want empty - nothing left to resume", out.NextCursor)
 	}
 }
 
@@ -741,31 +732,38 @@ func TestGitLogInputsRefusesCursorAndRefTogether(t *testing.T) {
 	}
 }
 
-// TestGitLogCursorTakesPrecedenceOverEmptyRef proves the resolution
-// behavior once a cursor is present takes cursor's own start point (parent
-// of cursor), never ref's - the property
-// TestGitLogInputsRefusesCursorAndRefTogether's refusal exists to keep from
-// ever being ambiguous.
-func TestGitLogCursorTakesPrecedenceOverEmptyRef(t *testing.T) {
+// TestGitLogCursorDrivenCallReportsNoResolvedRef proves
+// LogOutputs.resolved_ref's own documented contract for a resumed call:
+// empty, since a walk that has advanced past its first page no longer has
+// one single ref this call resolved (see LogOutputs.resolved_ref's own doc
+// comment) - distinct from a fresh call, which always reports one.
+func TestGitLogCursorDrivenCallReportsNoResolvedRef(t *testing.T) {
 	remote := newBareRemote(t)
 	seedRemote(t, remote, "main")
 	work := newSeededWorkingClone(t, remote, "main")
 
 	when := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	var last plumbing.Hash
 	for i := 0; i < 5; i++ {
-		last = pushCommit(t, work, remote, "main", "f.txt", fmt.Sprintf("content %d", i), fmt.Sprintf("commit %d", i),
+		pushCommit(t, work, remote, "main", "f.txt", fmt.Sprintf("content %d", i), fmt.Sprintf("commit %d", i),
 			"A", "a@example.com", "A", "a@example.com", when.Add(time.Duration(i)*time.Minute))
 	}
 
-	out, err := doLog(context.Background(), logParams{url: fileURL(t, remote), maxCommits: 10, cursor: last.String()})
+	page1, err := doLog(context.Background(), logParams{url: fileURL(t, remote), maxCommits: 2})
 	if err != nil {
-		t.Fatalf("doLog: %v", err)
+		t.Fatalf("page 1: doLog: %v", err)
 	}
-	if out.ResolvedRef != last.String() {
-		t.Fatalf("ResolvedRef = %s, want %s (the cursor itself, not the branch tip ref would have resolved)", out.ResolvedRef, last)
+	if page1.ResolvedRef == "" {
+		t.Fatal("page 1: ResolvedRef is empty, want the resolved HEAD - a fresh call always reports one")
 	}
-	if len(out.Commits) == 0 || out.Commits[0].Sha == last.String() {
-		t.Fatal("the cursor commit itself was returned - it must not be, only its ancestors")
+	if page1.NextCursor == "" {
+		t.Fatal("page 1: NextCursor is empty, want a resume position")
+	}
+
+	page2, err := doLog(context.Background(), logParams{url: fileURL(t, remote), maxCommits: 2, cursor: page1.NextCursor})
+	if err != nil {
+		t.Fatalf("page 2: doLog: %v", err)
+	}
+	if page2.ResolvedRef != "" {
+		t.Errorf("page 2: ResolvedRef = %q, want empty - a cursor-driven call reports none", page2.ResolvedRef)
 	}
 }
