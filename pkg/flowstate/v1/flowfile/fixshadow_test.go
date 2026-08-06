@@ -145,6 +145,34 @@ steps:
 `,
 		},
 		{
+			// A `loop:`'s carried state is bound bare, the same standing as a
+			// `for_each` item, so a state named for a step is the same corruption in
+			// the new primitive: `cursor` is a step id *and* the loop's state, and
+			// `${cursor}` in the body, `until:` and `update:` is the state — rooted to
+			// `steps.cursor` it becomes a reference to a `log:` step's empty outputs.
+			// Unlike a `for_each` a loop has no default binding, and it is recognised by
+			// `until:`+`steps:` rather than `items:`+`steps:`, so this is the path
+			// [fixer.boundBareNames] and [sees] grew for the loop.
+			name: "a loop's carried state shares a step's id",
+			source: `edition: v2026.2
+name: shadow-loop-state
+steps:
+  - id: cursor
+    log:
+      message: a step whose id is cursor
+  - id: pages
+    loop:
+      as: cursor
+      init: "${''}"
+      update: "${cursor + 'x'}"
+      until: "${size(cursor) >= 3}"
+      steps:
+        - id: inner
+          log:
+            message: "${'cursor is now ' + cursor}"
+`,
+		},
+		{
 			// The exact file DSL.md claims was verified: "a step called `now`, and
 			// a `wait_until: ${now + seconds(1)}` in the same workflow that still
 			// reads the clock rather than the step".

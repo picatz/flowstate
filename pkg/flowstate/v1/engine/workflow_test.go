@@ -1090,6 +1090,41 @@ func TestRunWorkflowCall(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowLoop is the durable half of the `loop:` primitive — see the local
+// driver's TestRunWorkflowLoop. The iteration count, the carried state a loop reports
+// as its `state` output, and the failure at the ceiling all have to hold here exactly
+// as they do locally, since each is a rule loop.go states once for both drivers: the
+// ceiling through [v1.LoopMaxIterations], the exhaustion through
+// [v1.LoopIterationLimitError], the outputs through [v1.LoopStateOutputs].
+func TestRunWorkflowLoop(t *testing.T) {
+	for _, test := range tests.LoopCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			testSuite := &testsuite.WorkflowTestSuite{}
+			env := testSuite.NewTestWorkflowEnvironment()
+			env.RegisterWorkflow(engine.Run)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
+
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow})
+			require.True(t, env.IsWorkflowCompleted())
+
+			err := env.GetWorkflowError()
+			if test.ExpectFailure {
+				require.Error(t, err, "the loop was expected to fail at its ceiling")
+				require.Contains(t, err.Error(), "ran its full budget",
+					"a loop that exhausts its budget must say so distinctly")
+				return
+			}
+			require.NoError(t, err)
+
+			var out v1.Workflow_StepOutputs
+			require.NoError(t, env.GetWorkflowResult(&out))
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, &out, protocmp.Transform()))
+		})
+	}
+}
+
 // TestRunWorkflowToleratedStepFailure is the durable half of the outermost-step
 // cases.
 //

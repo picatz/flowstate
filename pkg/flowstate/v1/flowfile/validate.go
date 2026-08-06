@@ -369,6 +369,11 @@ func validateAtDepth(wf *v1.Workflow, depth int) Diagnostics {
 				// A loop's body outputs do not escape it — only its own `results`
 				// output does — so body step ids must not become referenceable.
 
+			case *v1.Node_Loop:
+				ds = append(ds, validateNamedLoop(id, kind.Loop, inner, i, wf, depth)...)
+				// A loop's body outputs do not escape it either — only its own
+				// `results` (and `state`) outputs do.
+
 			case *v1.Node_Parallel:
 				ds = append(ds, validateParallel(id, kind.Parallel, inner, i, wf, depth)...)
 				// Branch outputs are merged into the enclosing scope once the
@@ -778,6 +783,145 @@ func validateLoop(stepID string, loop *v1.ForEach, enclosing refScope, index int
 	return append(ds, validateNested(loop.GetBody(), enclosing.withLocal(iterator), index, wf, depth)...)
 }
 
+// validateNamedLoop checks a `loop:` node: its required body and stop condition,
+// the consistency of its carried-state triple, the state name against everything a
+// bare binding may not shadow, and the references in its own expressions.
+//
+// The body is checked with the enclosing steps visible plus the carried state's
+// name — a body step may reference a step defined before the loop, and reads the
+// state under its bare name, exactly as a `for_each` body reads its iterator.
+func validateNamedLoop(stepID string, loop *v1.Loop, enclosing refScope, index int, wf *v1.Workflow, depth int) Diagnostics {
+	var ds Diagnostics
+
+	if len(loop.GetBody()) == 0 {
+		ds = append(ds, Diagnostic{Step: stepID, Field: "loop", Message: "steps is required — a loop needs a body to run each iteration"})
+	}
+	if loop.GetUntil() == nil {
+		ds = append(ds, Diagnostic{
+			Step: stepID, Field: "until",
+			Message: "until is required — a loop with no condition on when to stop never stops",
+		})
+	}
+
+	// The carried-state triple stands or falls together: a name with no initial value
+	// has nothing to bind, an initial value with no name is unreachable, and a state
+	// that never updates is a constant dressed as a loop variable. Each is a mistake
+	// worth naming rather than a shape to run — the same reason the schema refuses a
+	// required input carrying a default.
+	state := loop.GetState()
+	hasState := state != ""
+	hasInit := loop.GetInitial() != nil
+	hasUpdate := loop.GetUpdate() != nil
+
+	switch {
+	case !hasState && (hasInit || hasUpdate):
+		which := "init"
+		if hasUpdate {
+			which = "update"
+		}
+		ds = append(ds, Diagnostic{
+			Step: stepID, Field: which,
+			Message: "`" + which + ":` sets the loop's carried state, but the loop names none; add `as:` to name the value the body carries, or remove this",
+		})
+	case hasState && !hasInit:
+		ds = append(ds, Diagnostic{
+			Step: stepID, Field: "as", Value: state,
+			Message: fmt.Sprintf("loop carries state `%s` but has no `init:` to say what it holds on the first iteration", state),
+		})
+	case hasState && !hasUpdate:
+		ds = append(ds, Diagnostic{
+			Step: stepID, Field: "as", Value: state,
+			Message: fmt.Sprintf("loop carries state `%s` but has no `update:` to compute the next iteration's value; a state that never changes is a workflow var, not a loop variable", state),
+		})
+	}
+
+	if hasState {
+		ds = append(ds, validateLoopStateName(stepID, state, enclosing)...)
+	}
+
+	// Reference checks for the loop's own expressions, each against the scope the
+	// engine evaluates it in. `init:` runs before the loop, so it sees the enclosing
+	// scope and not the state it is defining. `until:` and `update:` run after the
+	// body each iteration, so they see the carried state under its bare name *and*
+	// the body's own top-level step outputs — which is what makes `${!steps.page.truncated}`
+	// resolve.
+	if loop.GetInitial() != nil {
+		ds = append(ds, validateInputRefs(stepID, "init", loop.GetInitial(), enclosing, index, wf)...)
+	}
+
+	afterBody := enclosing.clone()
+	if hasState {
+		afterBody = afterBody.withLocal(state)
+	}
+	for _, node := range loop.GetBody() {
+		if id := node.GetId(); id != "" {
+			afterBody.steps[id] = true
+		}
+	}
+	if loop.GetUntil() != nil {
+		ds = append(ds, validateInputRefs(stepID, "until", loop.GetUntil(), afterBody, index, wf)...)
+	}
+	if loop.GetUpdate() != nil {
+		ds = append(ds, validateInputRefs(stepID, "update", loop.GetUpdate(), afterBody, index, wf)...)
+	}
+
+	// The state is bound as a *local*, the same standing a `for_each` iterator gets,
+	// so the body reads it bare and a body step of the same id is unambiguous.
+	bodyScope := enclosing
+	if hasState {
+		bodyScope = enclosing.withLocal(state)
+	}
+	return append(ds, validateNested(loop.GetBody(), bodyScope, index, wf, depth)...)
+}
+
+// validateLoopStateName refuses a loop's carried-state name that could not be read
+// as a bare binding, or that would silently shadow something a bare name may not.
+//
+// The same refusals a `for_each` iterator and a step's own `vars:` key get, and for
+// the same reasons — the state is bound bare, so it shares a namespace with every
+// other bare binding and with the clock, and a bare name may mean one thing at a
+// time.
+func validateLoopStateName(stepID, state string, enclosing refScope) Diagnostics {
+	var ds Diagnostics
+
+	if !isCELIdentifier(state) {
+		ds = append(ds, Diagnostic{
+			Step: stepID, Field: "as", Value: state,
+			Message: fmt.Sprintf("%q is not a valid identifier, so the body could not read it as `${%s}`", state, state),
+		})
+	}
+	if slices.Contains(celReservedIdentifiers, state) {
+		ds = append(ds, Diagnostic{
+			Step: stepID, Field: "as", Value: state,
+			Message: fmt.Sprintf("%q is a CEL reserved word, so ${%s} cannot be parsed", state, state),
+		})
+	}
+	if isDeclarationRoot(state) {
+		ds = append(ds, Diagnostic{
+			Step: stepID, Field: "as", Value: state,
+			Message: shadowsRoot("loop state", state),
+		})
+	}
+	if state == v1.NowIdentifier {
+		ds = append(ds, Diagnostic{
+			Step: stepID, Field: "as", Value: state,
+			Message: fmt.Sprintf(
+				"%q is the built-in naming the moment a wait is evaluated, which a loop's carried state of the same name would shadow inside `wait_until:`; choose another name",
+				state),
+		})
+	}
+	if enclosing.locals[state] {
+		ds = append(ds, Diagnostic{
+			Step: stepID, Field: "as", Value: state,
+			Message: fmt.Sprintf(
+				"`%s` is already bound here by an enclosing loop or step, and a bare name may mean one thing at a time; rename this one, or read the outer value under a different name",
+				state),
+		})
+	}
+
+	return ds
+}
+
 // validateParallel checks a parallel node and its branches.
 func validateParallel(stepID string, parallel *v1.Parallel, enclosing refScope, index int, wf *v1.Workflow, depth int) Diagnostics {
 	var ds Diagnostics
@@ -870,6 +1014,8 @@ func validateNested(nodes []*v1.Node, enclosing refScope, index int, wf *v1.Work
 			switch kind := node.GetKind().(type) {
 			case *v1.Node_ForEach:
 				ds = append(ds, validateLoop(id, kind.ForEach, inner, index, wf, depth)...)
+			case *v1.Node_Loop:
+				ds = append(ds, validateNamedLoop(id, kind.Loop, inner, index, wf, depth)...)
 			case *v1.Node_Parallel:
 				ds = append(ds, validateParallel(id, kind.Parallel, inner, index, wf, depth)...)
 			case *v1.Node_Wait:

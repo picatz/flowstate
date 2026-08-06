@@ -1,0 +1,37 @@
+edition: v2026.2
+
+# Two cases: the loop reaching its `until:` condition normally, and the loop
+# running its whole `max_iterations:` budget without reaching it — which is a
+# distinct failure, not a silent stop. Both run through the local driver with the
+# only task (`log`) stubbed, since `log` returns nothing the loop depends on.
+tests:
+  - name: accumulates a running sum and stops at the target
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [countup]
+      outputs:
+        # Five iterations: the counter runs 1, 2, 3, 4, 5 and stops when it reaches
+        # the target of 5 (do-while, so the fifth iteration runs and then `until:`
+        # holds).
+        iterations: 5
+        final_n: 5
+        # 1 + 2 + 3 + 4: the sum folds each term *before* the iteration whose
+        # counter it names, so the fifth iteration's term is never added.
+        final_sum: 10
+
+  - name: a target beyond the ceiling fails, distinctly, at the bound
+    workflow: ./workflow.yaml
+    # 200 is past the loop's own max_iterations of 100, so the counter can never
+    # reach it: the loop runs its full budget and then reports it exhausted it
+    # without finishing, rather than quietly returning 100 partial results.
+    inputs:
+      target: 200
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      failed: true
+      error_contains: "ran its full budget of 100 iterations"

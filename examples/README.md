@@ -22,6 +22,7 @@ $ flow validate examples/hello-world/workflow.yaml
 | [string-formatting](string-formatting) | `format()` from the profile, building a message from a var | no |
 | [conditional-and-retry](conditional-and-retry) | `if:`, `timeout:`, `retry:` and `continue_on_error:` per step, tolerating a step that really does fail | no |
 | [fan-out-and-parallel](fan-out-and-parallel) | `for_each` fan-out over a computed list, and concurrent `parallel:` branches | no |
+| [loop-accumulate](loop-accumulate) | `loop:` carrying state between iterations until a condition holds, bounded by `max_iterations:`, reporting `results` and `state` | no |
 | [ops-healthcheck](ops-healthcheck) | Three services probed at once with `parallel:`, `continue_on_error:` tolerating the one that is down, and structured outputs shaped for a pager | yes |
 | [data-enrichment](data-enrichment) | `for_each` over a worklist with bounded `max_parallel`, per-item `retry:`, and which records could not be enriched named in `outputs:` | yes |
 | [workflow-vars](workflow-vars) | `vars:` at the top of a file, read as `vars.<name>`, beside a loop's bare binding | no |

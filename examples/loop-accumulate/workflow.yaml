@@ -1,0 +1,65 @@
+edition: v2026.2
+name: loop-accumulate
+description: A bounded loop that folds a running total across iterations, carrying a map as its state and stopping on a condition — the loop primitive shown with no plugin dependency.
+
+# `for_each` maps a body over a list it already holds. This is the other shape:
+# a loop that carries a value from one iteration into the next and decides for
+# itself when it is done. Here the carried value is a small map — a counter and a
+# running sum — which is how a single `state:` holds several fields without a
+# block of named accumulators (see docs/DSL.md, "Why one carried value").
+#
+# The loop is do-while: the body runs, then `until:` is checked, so `until:` can
+# read what the body produced. The counter drives itself through `update:`, so
+# this needs no task that returns a value — `log` (which returns nothing) is
+# enough to show the primitive end to end.
+#
+# `max_iterations:` is the ceiling the author does not otherwise control. This
+# loop always reaches `until:` well before it, but the bound is mandatory: a loop
+# that could run forever is one whose runaway the engine must be able to stop, and
+# hitting the ceiling is a distinct failure rather than a silent stop (see the
+# `loop-accumulate-runaway` case in workflow.test.yaml, which proves it).
+
+inputs:
+  # The counter's stop value. A default makes it optional, so the offline example
+  # run and `flow test`'s happy path both get 5 without supplying anything — while a
+  # test can pass a target larger than `max_iterations:` to prove the ceiling is a
+  # distinct failure rather than a silent stop.
+  target:
+    type: int
+    default: 5
+    description: the value the counter must reach for the loop to stop
+
+steps:
+  - id: countup
+    description: Count from 1, folding a running sum, until the counter reaches the target.
+    loop:
+      # `as:` names the carried value, read bare in the body, `until:` and
+      # `update:` — the same standing a `for_each` binding has.
+      as: acc
+      # The value it holds on the first iteration. Quoted, because the `: ` inside
+      # the map literal is YAML mapping syntax otherwise.
+      init: "${ {'n': 1, 'sum': 0} }"
+      # How it changes each iteration: advance the counter, fold the current term
+      # into the sum. Evaluated after the body, so it can read the body's outputs
+      # as well as the current `acc`.
+      update: "${ {'n': acc.n + 1, 'sum': acc.sum + acc.n} }"
+      # Stop once the counter reaches the target. Checked after the body.
+      until: ${acc.n >= inputs.target}
+      max_iterations: 100
+      steps:
+        - id: term
+          log:
+            message: ${'n=%d, running sum so far=%d'.format([acc.n, acc.sum])}
+
+outputs:
+  iterations:
+    value: ${steps.countup.results.size()}
+    description: how many times the body ran
+
+  final_n:
+    value: ${steps.countup.state.n}
+    description: the counter's value when the loop stopped
+
+  final_sum:
+    value: ${steps.countup.state.sum}
+    description: the running sum at the moment the loop stopped (1+2+3+4, since the sum folds the term *before* each iteration's counter)

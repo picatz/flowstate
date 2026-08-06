@@ -49,6 +49,7 @@ var grammarStepKeys = []string{
 	// Kinds of work that are not tasks. These name a node kind in the schema
 	// rather than anything in the registry, so a task could never provide one.
 	"for_each",
+	"loop",
 	"parallel",
 	"sleep",
 	"wait_until",

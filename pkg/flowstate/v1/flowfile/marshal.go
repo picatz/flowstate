@@ -182,6 +182,13 @@ func stepToYAML(node *v1.Node) (yaml.MapSlice, error) {
 		}
 		step = append(step, yaml.MapItem{Key: "for_each", Value: loop})
 
+	case *v1.Node_Loop:
+		loop, err := loopToYAML(kind.Loop)
+		if err != nil {
+			return nil, fmt.Errorf("step %q loop: %w", node.GetId(), err)
+		}
+		step = append(step, yaml.MapItem{Key: "loop", Value: loop})
+
 	case *v1.Node_Parallel:
 		branches := make([]any, 0, len(kind.Parallel.GetBranches()))
 		for i, branch := range kind.Parallel.GetBranches() {
@@ -312,6 +319,49 @@ func forEachToYAML(loop *v1.ForEach) (yaml.MapSlice, error) {
 	}
 	if maxParallel := loop.GetMaxParallel(); maxParallel != 0 {
 		out = append(out, yaml.MapItem{Key: "max_parallel", Value: maxParallel})
+	}
+
+	steps, err := stepsToYAML(loop.GetBody())
+	if err != nil {
+		return nil, err
+	}
+	return append(out, yaml.MapItem{Key: "steps", Value: steps}), nil
+}
+
+// loopToYAML writes a `loop:` node in the order an author reads it: what it carries,
+// then when it stops, then how far it may go, then its body.
+//
+// `until:` is written fenced as an expression; `init:` and `update:` go through
+// [inputValueToYAML] because either may be a literal or an expression, exactly as a
+// task input is. The order here is the order the acceptance example is written in, so
+// a marshalled loop reads the way an author would have written one.
+func loopToYAML(loop *v1.Loop) (yaml.MapSlice, error) {
+	out := yaml.MapSlice{}
+
+	if state := loop.GetState(); state != "" {
+		out = append(out, yaml.MapItem{Key: "as", Value: state})
+
+		initial, err := inputValueToYAML(loop.GetInitial())
+		if err != nil {
+			return nil, fmt.Errorf("init: %w", err)
+		}
+		out = append(out, yaml.MapItem{Key: "init", Value: initial})
+
+		update, err := inputValueToYAML(loop.GetUpdate())
+		if err != nil {
+			return nil, fmt.Errorf("update: %w", err)
+		}
+		out = append(out, yaml.MapItem{Key: "update", Value: update})
+	}
+
+	until, err := exprValueToYAML(loop.GetUntil())
+	if err != nil {
+		return nil, fmt.Errorf("until: %w", err)
+	}
+	out = append(out, yaml.MapItem{Key: "until", Value: until})
+
+	if maxIterations := loop.GetMaxIterations(); maxIterations != 0 {
+		out = append(out, yaml.MapItem{Key: "max_iterations", Value: maxIterations})
 	}
 
 	steps, err := stepsToYAML(loop.GetBody())
