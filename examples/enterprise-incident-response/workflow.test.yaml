@@ -1,0 +1,121 @@
+# The same honest limit as every gated example in this portfolio: `flow test`
+# has no authenticated caller, so "authorized: true" can never look like a
+# real, separate incident-commander here - only like the refusal. What these
+# cases prove is the shape that does not depend on a real sender: parallel
+# evidence gathering finishing regardless of which page answers, escalation
+# firing exactly when the first page lapses and not otherwise, and an
+# unclaimed incident never reaching a remediation gate it has no business
+# reaching.
+edition: v2026.2
+tests:
+  - name: a promptly claimed incident gathers evidence but cannot record a real authorization here
+    workflow: ./workflow.yaml
+    inputs:
+      incident_id: inc-2026-0142
+      service: checkout-api
+      severity: sev2
+    signals:
+      - name: responder-ack
+        payload:
+          claimed: true
+      - name: remediation-authorized
+        payload:
+          authorized: true
+    stubs:
+      - task: log
+        returns: {}
+      - task: http
+        where: inputs.url == 'https://observability.internal.example.com/logs'
+        returns:
+          summary: elevated 5xx rate since 14:02
+      - task: http
+        where: inputs.url == 'https://observability.internal.example.com/metrics'
+        returns:
+          error_rate: 0.14
+      - task: http
+        where: inputs.url == 'https://observability.internal.example.com/deploys'
+        returns:
+          deployed_version: v3.9.1
+    expect:
+      ran: [page, responder_ack, logs, metrics, recent_deploys, remediation_ack, refused]
+      skipped: [escalate, escalated_ack, claimed, authorized]
+      outputs:
+        outcome: refused
+        authorized_by: ""
+        escalated: false
+
+  - name: nobody claims the incident even after escalation
+    workflow: ./workflow.yaml
+    inputs:
+      incident_id: inc-2026-0143
+      service: checkout-api
+      severity: sev1
+    stubs:
+      - task: log
+        returns: {}
+      - task: http
+        where: inputs.url == 'https://observability.internal.example.com/logs'
+        returns:
+          summary: no anomaly detected
+      - task: http
+        where: inputs.url == 'https://observability.internal.example.com/metrics'
+        returns:
+          error_rate: 0.01
+      - task: http
+        where: inputs.url == 'https://observability.internal.example.com/deploys'
+        returns:
+          deployed_version: v3.9.1
+    expect:
+      ran: [page, responder_ack, logs, metrics, recent_deploys, escalate, escalated_ack]
+      skipped: [claimed, remediation_ack, authorized, refused]
+      outputs:
+        outcome: unclaimed
+        authorized_by: ""
+        escalated: true
+
+  - name: the first page lapses but the escalation is claimed and evidence still finished
+    workflow: ./workflow.yaml
+    inputs:
+      incident_id: inc-2026-0144
+      service: checkout-api
+      severity: sev2
+    signals:
+      - name: responder-ack
+        at: 20m
+        payload:
+          claimed: true
+    stubs:
+      - task: log
+        returns: {}
+      - task: http
+        where: inputs.url == 'https://observability.internal.example.com/logs'
+        returns:
+          summary: elevated latency since 09:11
+      - task: http
+        where: inputs.url == 'https://observability.internal.example.com/metrics'
+        returns:
+          error_rate: 0.06
+      - task: http
+        where: inputs.url == 'https://observability.internal.example.com/deploys'
+        returns:
+          deployed_version: v3.9.0
+    expect:
+      ran: [page, responder_ack, logs, metrics, recent_deploys, escalate, escalated_ack, remediation_ack]
+      skipped: [claimed, authorized, refused]
+      outputs:
+        outcome: claimed_unremediated
+        authorized_by: ""
+        escalated: true
+
+  - name: an unknown severity is refused before the first step runs
+    workflow: ./workflow.yaml
+    inputs:
+      incident_id: inc-2026-0145
+      service: checkout-api
+      severity: sev4
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      failed: true
+      error_contains: "must satisfy"

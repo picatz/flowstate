@@ -1,0 +1,49 @@
+# A reusable precondition, called before any provisioning begins - a read,
+# not an effect, so it needs no `undo:` at all, unlike the three provision-*
+# callees. Also runnable on its own, the same property every callee in this
+# directory has.
+#
+# `expect:` below is real task-level behavior: an out-of-quota answer fails
+# this step exactly as a 4xx would, closing the saga before any provisioning
+# begins. It is also a layer `flow test`'s stub boundary cannot exercise
+# directly - a stub replaces the whole `http` task, including its own
+# `expect:` evaluation, so no combination of `returns:` here can make this
+# line actually run under a test. The sibling `*.test.yaml`'s no-quota case
+# proves the equivalent failure with `fails:` on the stub instead, which is
+# the honest way to exercise "the precondition failed," not "expect: itself
+# evaluated to false" - a real difference this file's own comment would
+# otherwise paper over.
+edition: v2026.2
+name: check-quota
+
+inputs:
+  tenant:
+    type: string
+    required: true
+    example: acme
+    pattern: "^[a-z][a-z0-9-]*$"
+    description: which tenant's quota to check
+
+  plan:
+    type: string
+    required: true
+    example: growth
+    must: 'this in ["starter", "growth", "enterprise"]'
+    description: the plan being requested, since a quota is plan-scoped
+
+steps:
+  - id: check
+    http:
+      method: GET
+      url: https://provisioning.internal.example.com/quota
+      query:
+        tenant: ${inputs.tenant}
+        plan: ${inputs.plan}
+      parse_json: true
+      expect: ${response.status_code == 200 && response.json.available}
+      outputs: '${ {"available": response.json.available} }'
+
+outputs:
+  available:
+    value: ${steps.check.available}
+    description: whether this tenant has quota remaining on the requested plan

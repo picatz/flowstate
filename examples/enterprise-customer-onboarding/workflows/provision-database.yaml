@@ -1,0 +1,36 @@
+# A callee, meant to be called - but also runnable on its own:
+#   flow run local examples/enterprise-customer-onboarding/workflows/provision-database.yaml --input tenant=acme
+# resolves its own `inputs:`/`outputs:` exactly as a call from the parent
+# does, the same property call-a-workflow's own callee demonstrates.
+edition: v2026.2
+name: provision-database
+
+inputs:
+  tenant:
+    type: string
+    required: true
+    example: acme
+    pattern: "^[a-z][a-z0-9-]*$"
+    description: which tenant this database belongs to
+
+steps:
+  # No `undo:` here, and it is not an oversight - see the parent workflow's
+  # header comment. `undo:` is refused both on a `call:` step in the parent
+  # and on a step inside a callee reached through one, so this task's effect
+  # is not compensable through the engine's saga machinery at all while it
+  # is reached this way. Compare provision-database's own effect being
+  # perfectly ordinarily compensable when this same file is run directly,
+  # not through a `call:` - the constraint is specific to composition, not
+  # to what the task does.
+  - id: provision
+    http:
+      method: POST
+      url: https://provisioning.internal.example.com/databases
+      json: '${ {"tenant": inputs.tenant} }'
+      parse_json: true
+      outputs: '${ {"resource_id": response.json.resource_id} }'
+
+outputs:
+  resource_id:
+    value: ${steps.provision.resource_id}
+    description: the provisioned database's id, needed to deprovision it if a later step in the onboarding saga fails

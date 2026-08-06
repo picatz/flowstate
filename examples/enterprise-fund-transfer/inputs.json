@@ -1,0 +1,7 @@
+{
+  "from_account_id": "acct-treasury-001",
+  "to_account_id": "acct-supplier-042",
+  "amount_cents": 250000,
+  "approval_threshold_cents": 1000000,
+  "idempotency_key": "transfer-2026-08-06-0001"
+}

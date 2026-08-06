@@ -1,0 +1,261 @@
+edition: v2026.2
+name: enterprise-fund-transfer
+description: >-
+  Moves money between two ledger accounts, requiring a role-authorized human
+  approval above a threshold, and reversing what already happened if a later
+  step in the settlement fails.
+
+# Three primitives composed for one reason: money that moves has to move
+# exactly once, has to be stoppable by the right person and nobody else, and
+# has to come back if the transfer cannot be completed once part of it has
+# already happened.
+#
+#   idempotency  - every ledger call carries `inputs.idempotency_key` as an
+#                  Idempotency-Key header, the same claim-and-guard shape
+#                  examples/plugins/sql/transfer.yaml uses at the database
+#                  layer. A worker retry (an activity attempt that failed for
+#                  a reason that looks transient, or an ack lost after commit)
+#                  resends the identical key, and the ledger service - not
+#                  this file - is what makes a resend a no-op. This file
+#                  cannot enforce that on its own; see the honest note below.
+#
+#   signals:     - who may answer `transfer-approved` at all, enforced by
+#                  `FlowstateServer.Signal` against the attested sender's
+#                  claims, before Temporal ever sees the signal. Unlike
+#                  approval-gate's single named approver, this names a role
+#                  claim (`role: treasury-approver`) so a whole desk can
+#                  answer without enumerating individuals - the shape a real
+#                  treasury operation actually has.
+#
+#   undo:        - saga compensation. `debit` and `credit` each name the
+#                  reversing call as their own `undo:`; if `notify_settlement`
+#                  fails after both have applied, the engine runs `undo:` in
+#                  reverse order - credit reversed, then debit reversed - the
+#                  same reverse-registration guarantee saga-provisioning
+#                  demonstrates for infrastructure. See that example's header
+#                  for why reverse order is not optional.
+#
+# # What this file does NOT prove (read before reusing it)
+#
+# `idempotency_key` reaching the ledger as a header is real; a ledger that
+# actually honors it - keyed storage, a guard on the write, the exact bug
+# examples/plugins/sql/transfer.yaml's own header documents and fixes at the
+# database layer - is a property of the *service this file calls*, which an
+# orchestration-layer example cannot demonstrate from here. Pair this file's
+# approval-and-compensation shape with that file's transactional idempotency
+# shape for the real thing.
+#
+# Separation of duties here is the same check approval-gate uses:
+# `steps.approval.sender` must be attested (not a local run), must not be the
+# run's own starter (`run.identity`, issuer and subject together - #215), and
+# `signals:` below is what restricts who may send `transfer-approved` at all.
+# What this file does not add beyond approval-gate is a `flow fix`-safe way to
+# stop its own author from deleting `signals:` or loosening `deploy`'s `if:` -
+# see approval-gate's header, gap 3, #187. That gap is identical here.
+
+inputs:
+  from_account_id:
+    type: string
+    required: true
+    example: acct-treasury-001
+    pattern: "^acct-[a-z0-9-]+$"
+    description: the account debited
+
+  to_account_id:
+    type: string
+    required: true
+    example: acct-supplier-042
+    pattern: "^acct-[a-z0-9-]+$"
+    description: the account credited
+
+  amount_cents:
+    type: int
+    required: true
+    example: 250000
+    min: 1
+    description: how much moves, in cents
+
+  approval_threshold_cents:
+    type: int
+    required: true
+    example: 1000000
+    min: 0
+    description: >-
+      transfers at or above this amount require a treasury-approver signal
+      before they move; below it, they settle immediately
+
+  idempotency_key:
+    type: string
+    required: true
+    example: transfer-2026-08-06-0001
+    min_len: 8
+    description: >-
+      unique to this transfer request, sent as the ledger's Idempotency-Key
+      header so a retried step converges instead of moving money twice
+
+# Who may deliver `transfer-approved` at all - a claim, not a named
+# individual, because a treasury desk is a team rather than one person. A
+# sender satisfying this claim is authorized to approve any transfer this
+# workflow definition gates; `run.identity` below is what still refuses the
+# one case a claim alone cannot: the approver being the same caller who
+# started the run.
+signals:
+  transfer-approved:
+    allow:
+      - claims:
+          role: treasury-approver
+
+steps:
+  - id: request
+    log:
+      message: >-
+        ${"%s requests moving %d cents from %s to %s".format(
+            [run.identity.subject == "" ? "an unattested caller" : run.identity.subject,
+             inputs.amount_cents, inputs.from_account_id, inputs.to_account_id])}
+
+  # Reached only above the threshold. `if:` on a wait is what lets a small
+  # transfer skip the gate entirely rather than pay for one it does not need.
+  - id: approval
+    if: ${inputs.amount_cents >= inputs.approval_threshold_cents}
+    wait_for_signal:
+      name: transfer-approved
+      timeout: 4h
+
+  # Cleared to move: either the amount never needed a gate, or the gate was
+  # answered yes by an attested sender who is not this run's own starter.
+  # `debit`, `credit`, and `notify_settlement` all share this exact condition
+  # - approval-gate's `deploy` and `deploy_refused` share theirs the same way,
+  # for the same reason: a step and the branch that explains why it did not
+  # run must never be able to disagree about what happened.
+  - id: debit
+    if: >-
+      ${inputs.amount_cents < inputs.approval_threshold_cents ||
+        (has(steps.approval.payload.approved) && steps.approval.payload.approved &&
+          !steps.approval.sender.local && !run.local &&
+          steps.approval.sender.identity.subject != "" &&
+          !(steps.approval.sender.identity.subject == run.identity.subject &&
+            steps.approval.sender.identity.issuer == run.identity.issuer))}
+    http:
+      method: POST
+      url: ${'https://ledger.internal.example.com/accounts/' + inputs.from_account_id + '/debit'}
+      headers:
+        Idempotency-Key: ${inputs.idempotency_key}
+      json: '${ {"amount_cents": inputs.amount_cents} }'
+      parse_json: true
+      outputs: '${ {"reference": response.json.reference} }'
+    undo:
+      # The reversal carries its own key, derived from the original, so a
+      # compensation that itself gets retried is exactly as idempotent as the
+      # step it is undoing.
+      http:
+        method: POST
+        url: ${'https://ledger.internal.example.com/accounts/' + inputs.from_account_id + '/credit'}
+        headers:
+          Idempotency-Key: ${inputs.idempotency_key + "-undo-debit"}
+        json: '${ {"amount_cents": inputs.amount_cents} }'
+
+  - id: credit
+    if: >-
+      ${inputs.amount_cents < inputs.approval_threshold_cents ||
+        (has(steps.approval.payload.approved) && steps.approval.payload.approved &&
+          !steps.approval.sender.local && !run.local &&
+          steps.approval.sender.identity.subject != "" &&
+          !(steps.approval.sender.identity.subject == run.identity.subject &&
+            steps.approval.sender.identity.issuer == run.identity.issuer))}
+    http:
+      method: POST
+      url: ${'https://ledger.internal.example.com/accounts/' + inputs.to_account_id + '/credit'}
+      headers:
+        Idempotency-Key: ${inputs.idempotency_key}
+      json: '${ {"amount_cents": inputs.amount_cents} }'
+      parse_json: true
+      outputs: '${ {"reference": response.json.reference} }'
+    undo:
+      http:
+        method: POST
+        url: ${'https://ledger.internal.example.com/accounts/' + inputs.to_account_id + '/debit'}
+        headers:
+          Idempotency-Key: ${inputs.idempotency_key + "-undo-credit"}
+        json: '${ {"amount_cents": inputs.amount_cents} }'
+
+  # The step that can still fail after money has moved on both sides - the
+  # settlement record a downstream reconciliation job reads. When it does,
+  # the run cannot continue and the engine undoes `credit` then `debit`, in
+  # that order, the same reverse-registration guarantee saga-provisioning
+  # exercises. No `retry:` here on purpose, so the example's failing case is
+  # reachable in one attempt rather than several.
+  - id: notify_settlement
+    if: >-
+      ${inputs.amount_cents < inputs.approval_threshold_cents ||
+        (has(steps.approval.payload.approved) && steps.approval.payload.approved &&
+          !steps.approval.sender.local && !run.local &&
+          steps.approval.sender.identity.subject != "" &&
+          !(steps.approval.sender.identity.subject == run.identity.subject &&
+            steps.approval.sender.identity.issuer == run.identity.issuer))}
+    http:
+      method: POST
+      url: https://settlements.internal.example.com/notify
+      json: >-
+        ${ {"idempotency_key": inputs.idempotency_key,
+            "debit_reference": steps.debit.reference,
+            "credit_reference": steps.credit.reference} }
+
+  - id: rejected
+    if: >-
+      ${inputs.amount_cents >= inputs.approval_threshold_cents &&
+        has(steps.approval.payload.approved) && !steps.approval.payload.approved}
+    log:
+      level: warn
+      message: ${"transfer of %d cents was rejected".format([inputs.amount_cents])}
+
+  - id: expired
+    if: >-
+      ${inputs.amount_cents >= inputs.approval_threshold_cents && steps.approval.timed_out}
+    log:
+      level: warn
+      message: ${"approval for %d cents lapsed; the transfer did not happen".format([inputs.amount_cents])}
+
+  # The payload said yes and the gate above still refused it - unattested,
+  # not the role the caller expected, or the approver was this run's own
+  # starter. See approval-gate's `deploy_refused` for the finer-grained,
+  # three-way split of this same shape; this file reports one bucket rather
+  # than three for brevity, which is a real gap named in docs/USE_CASES.md.
+  - id: refused_unauthorized
+    if: >-
+      ${inputs.amount_cents >= inputs.approval_threshold_cents &&
+        has(steps.approval.payload.approved) && steps.approval.payload.approved &&
+        !(!steps.approval.sender.local && !run.local &&
+          steps.approval.sender.identity.subject != "" &&
+          !(steps.approval.sender.identity.subject == run.identity.subject &&
+            steps.approval.sender.identity.issuer == run.identity.issuer))}
+    log:
+      level: warn
+      message: >-
+        ${"refusing to move %d cents: approved, but the sender was not a valid, separate approver".format([inputs.amount_cents])}
+
+outputs:
+  decision:
+    value: >-
+      ${inputs.amount_cents < inputs.approval_threshold_cents
+        ? "transferred"
+        : (!(has(steps.approval.payload.approved) && steps.approval.payload.approved)
+            ? (has(steps.approval.payload.approved) ? "rejected" : "expired")
+            : (!steps.approval.sender.local && !run.local &&
+                steps.approval.sender.identity.subject != "" &&
+                !(steps.approval.sender.identity.subject == run.identity.subject &&
+                  steps.approval.sender.identity.issuer == run.identity.issuer))
+              ? "transferred"
+              : "refused_unauthorized")}
+    description: what this run decided, and why, in one value
+
+  debit_reference:
+    value: >-
+      ${(inputs.amount_cents < inputs.approval_threshold_cents ||
+          (has(steps.approval.payload.approved) && steps.approval.payload.approved &&
+            !steps.approval.sender.local && !run.local &&
+            steps.approval.sender.identity.subject != "" &&
+            !(steps.approval.sender.identity.subject == run.identity.subject &&
+              steps.approval.sender.identity.issuer == run.identity.issuer)))
+        ? steps.debit.reference
+        : ""}
+    description: the ledger's debit reference, empty unless the transfer actually cleared

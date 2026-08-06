@@ -1,0 +1,5 @@
+{
+  "incident_id": "inc-2026-0142",
+  "service": "checkout-api",
+  "severity": "sev2"
+}

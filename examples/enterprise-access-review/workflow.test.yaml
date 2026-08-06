@@ -1,0 +1,103 @@
+# Same honest limit approval-gate's own test file names: `flow test` has no
+# authenticated caller, so an "attested: true" payload can never look like a
+# real compliance-reviewer signal here - only like the unattested refusal.
+# What these cases prove is the shape that does not depend on a real sender:
+# bounded fan-out completing (and tolerating one bad grant), and the review
+# correctly refusing to call itself closed without one.
+edition: v2026.2
+tests:
+  - name: evidence is gathered for every grant, but the review closes unattested without a real sender
+    workflow: ./workflow.yaml
+    inputs:
+      access_grants:
+        - grantee: alice@example.com
+          resource: prod-database
+          role: admin
+        - grantee: bob@example.com
+          resource: billing-console
+          role: read-only
+    signals:
+      - name: attestation-recorded
+        payload:
+          attested: true
+    stubs:
+      - task: log
+        returns: {}
+      - task: http
+        where: inputs.query.grantee == 'alice@example.com'
+        returns:
+          grantee: alice@example.com
+          resource: prod-database
+          role: admin
+          last_used_days_ago: 5
+      - task: http
+        where: inputs.query.grantee == 'bob@example.com'
+        returns:
+          grantee: bob@example.com
+          resource: billing-console
+          role: read-only
+          last_used_days_ago: 40
+    expect:
+      ran: [gather_evidence, attestation, unattested]
+      skipped: [recorded]
+      outputs:
+        outcome: unattested
+        attested_by: ""
+        reviewed_grants:
+          - grantee: alice@example.com
+            resource: prod-database
+            role: admin
+            last_used_days_ago: 5
+          - grantee: bob@example.com
+            resource: billing-console
+            role: read-only
+            last_used_days_ago: 40
+        unreachable: []
+
+  - name: a grant whose evidence lookup fails does not stop the rest of the review
+    workflow: ./workflow.yaml
+    inputs:
+      access_grants:
+        - grantee: alice@example.com
+          resource: prod-database
+          role: admin
+        - grantee: carol@example.com
+          resource: payroll-service
+          role: contributor
+    stubs:
+      - task: log
+        returns: {}
+      - task: http
+        where: inputs.query.grantee == 'alice@example.com'
+        returns:
+          grantee: alice@example.com
+          resource: prod-database
+          role: admin
+          last_used_days_ago: 5
+      - task: http
+        where: inputs.query.grantee == 'carol@example.com'
+        fails:
+          kind: Upstream
+          message: iam service unavailable
+    expect:
+      ran: [gather_evidence, attestation, unattested]
+      outputs:
+        outcome: expired
+        attested_by: ""
+        reviewed_grants:
+          - grantee: alice@example.com
+            resource: prod-database
+            role: admin
+            last_used_days_ago: 5
+        unreachable: [carol@example.com]
+
+  - name: an empty grant list is refused before the first step runs
+    workflow: ./workflow.yaml
+    inputs:
+      access_grants: []
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      failed: true
+      error_contains: "must have at least"

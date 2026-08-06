@@ -1,0 +1,6 @@
+{
+  "access_grants": [
+    { "grantee": "alice@example.com", "resource": "prod-database", "role": "admin" },
+    { "grantee": "bob@example.com", "resource": "billing-console", "role": "read-only" }
+  ]
+}
