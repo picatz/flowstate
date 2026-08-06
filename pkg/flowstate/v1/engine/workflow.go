@@ -581,16 +581,14 @@ func failedStepOutputs(err error) *v1.Node_Outputs {
 	return v1.FailedStepOutputs(recorded)
 }
 
-// collectNodeRefs, collectValueRefs, neededOutputs and the wholeStep marker
-// moved to pkg/flowstate/v1/refs.go (v1.CollectNodeRefs, v1.CollectValueRefs,
-// v1.NeededOutputs, v1.WholeStep), because #229's static loop-results
-// suppression needs the identical walk the local driver would otherwise have
-// to reimplement — one CEL-reference walker for both drivers rather than a
-// third one drifting from this one. These names stay as thin wrappers so the
-// tests that call them by their engine-package name (walkers_guard_test.go,
-// compactvars_internal_test.go) are unaffected.
-const wholeStep = v1.WholeStep
-
+// collectNodeRefs, collectValueRefs and neededOutputs moved to
+// pkg/flowstate/v1/refs.go (v1.CollectNodeRefs, v1.CollectValueRefs,
+// v1.NeededOutputs — along with the wholeStep marker itself, v1.WholeStep),
+// because #229's static loop-results suppression needs the identical walk the
+// local driver would otherwise have to reimplement — one CEL-reference walker
+// for both drivers rather than a third one drifting from this one. These names
+// stay as thin wrappers so the tests that call them by their engine-package
+// name (walkers_guard_test.go, compactvars_internal_test.go) are unaffected.
 func collectNodeRefs(node *v1.Node, prev *v1.Workflow_StepOutputs, refs map[string]map[string]struct{}) {
 	v1.CollectNodeRefs(node, prev, refs)
 }

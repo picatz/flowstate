@@ -264,7 +264,7 @@ func TestAccumulateLoopResult(t *testing.T) {
 
 		// A further iteration that pushes the running total over the bound
 		// must fail, naming the bound and a remedy.
-		results, bytes, err = v1.AccumulateLoopResult(results, bytes, bigIteration(4096))
+		_, bytes, err = v1.AccumulateLoopResult(results, bytes, bigIteration(4096))
 		require.Error(t, err, "an iteration that crosses the bound must be refused")
 		require.Greater(t, bytes, v1.MaxLoopResultsBytes,
 			"the failure must correspond to the bound actually having been exceeded, not merely approached")
