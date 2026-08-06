@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -303,6 +305,90 @@ func Test_httpTask_parseJSON(t *testing.T) {
 		id, ok := out.GetNamedValues()["id"]
 		require.True(t, ok)
 		require.Equal(t, float64(7), id.GetLiteral().GetDoubleValue())
+	})
+
+	// TestCheckHTTPResponseElementBound (constraints_task_output_test.go)
+	// pins the bound function itself; this pins that `taskFuncHTTP` actually
+	// reaches it *before* it lets `outputs:` — or `expect:`, evaluated first
+	// — touch the parsed body. A response body well under the byte cap can
+	// still carry more elements than [maxListElements] allows, and both
+	// `expect:` and `outputs:` evaluate a CEL expression directly against
+	// `response.json` inside this same function, before
+	// [checkTaskOutputElementBound] at Task.EvalInScope ever gets a chance to
+	// see the result — #224 review's finding: bounding only the return value
+	// of `def.Fn` is too late for the work `def.Fn` itself does internally.
+	t.Run("an outputs comprehension over an oversized response is refused before it runs", func(t *testing.T) {
+		// One element past the bound: [maxListElements] is only ever reached
+		// once the element count *exceeds* it, so this is the smallest body
+		// that must be refused.
+		var body strings.Builder
+		body.WriteByte('[')
+		for i := 0; i <= maxListElements; i++ {
+			if i > 0 {
+				body.WriteByte(',')
+			}
+			body.WriteString(strconv.Itoa(i))
+		}
+		body.WriteByte(']')
+
+		server, _ := httpTaskServer(t, http.StatusOK, body.String(), nil)
+
+		start := time.Now()
+		_, err := runHTTPTask(t, map[string]any{
+			"url":        server.URL,
+			"parse_json": true,
+			// A genuine comprehension, not a pass-through: this is exactly
+			// the shape ([maxListElements]'s own doc measures at 20k
+			// elements/886ms, 40k/5.27s) that must never be allowed to run
+			// against an oversized response.
+			"outputs": NewExpr("{'evens': response.json.filter(x, int(x) % 2 == 0)}"),
+		})
+		elapsed := time.Since(start)
+
+		require.Error(t, err, "an outputs: comprehension over an oversized response must be refused")
+		require.Less(t, elapsed, time.Second,
+			"the element bound must trip before the comprehension runs, not after")
+
+		require.ErrorContains(t, err, "list elements")
+		require.ErrorContains(t, err, strconv.Itoa(maxListElements))
+		require.ErrorContains(t, err, server.URL, "the refusal must name the response, not the workflow")
+
+		var taskErr *TaskError
+		require.ErrorAs(t, err, &taskErr)
+		require.Equal(t, ErrorKindLimitExceeded, taskErr.Kind)
+		require.False(t, taskErr.Retryable(), "the response's own size cannot change on a retry")
+	})
+
+	// TestCheckHTTPResponseElementBound covers the depth dimension directly;
+	// this pins that an `expect:` — evaluated *before* `outputs:` in
+	// taskFuncHTTP — is stopped by the same bound, at the same point, since
+	// expect: is the earlier of the two comprehension-capable evaluations
+	// that read `response.json`.
+	t.Run("an expect comprehension over an oversized response is refused before it runs", func(t *testing.T) {
+		var body strings.Builder
+		body.WriteByte('[')
+		for i := 0; i <= maxListElements; i++ {
+			if i > 0 {
+				body.WriteByte(',')
+			}
+			body.WriteString(strconv.Itoa(i))
+		}
+		body.WriteByte(']')
+
+		server, _ := httpTaskServer(t, http.StatusOK, body.String(), nil)
+
+		_, err := runHTTPTask(t, map[string]any{
+			"url":        server.URL,
+			"parse_json": true,
+			"expect":     NewExpr("response.json.all(x, int(x) >= 0)"),
+		})
+
+		require.Error(t, err, "an expect: comprehension over an oversized response must be refused")
+		require.ErrorContains(t, err, "list elements")
+
+		var taskErr *TaskError
+		require.ErrorAs(t, err, &taskErr)
+		require.Equal(t, ErrorKindLimitExceeded, taskErr.Kind)
 	})
 }
 

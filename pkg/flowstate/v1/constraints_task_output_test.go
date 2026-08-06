@@ -142,3 +142,54 @@ func TestEvalInScopeAllowsTaskOutputAtBound(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, out)
 }
+
+// TestCheckHTTPResponseElementBound is the unit-level pin for the P1 fix:
+// checkHTTPResponseElementBound, called from taskFuncHTTP before expect:/
+// outputs: ever touch the parsed body — see Test_httpTask_parseJSON's own
+// integration-level cases for the end-to-end wiring and the timing proof.
+func TestCheckHTTPResponseElementBound(t *testing.T) {
+	atBound := NewLiteralList(taskOutputManyItems(maxListElements)...).GetLiteral()
+	require.NoError(t, checkHTTPResponseElementBound("http://example.invalid/data", atBound))
+
+	pastBound := NewLiteralList(taskOutputManyItems(maxListElements + 1)...).GetLiteral()
+	err := checkHTTPResponseElementBound("http://example.invalid/data", pastBound)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "http://example.invalid/data", "the refusal must name the response")
+	assert.Contains(t, err.Error(), "10000")
+
+	var taskErr *TaskError
+	require.ErrorAs(t, err, &taskErr)
+	assert.Equal(t, ErrorKindLimitExceeded, taskErr.Kind)
+	assert.False(t, taskErr.Retryable(), "the response's own size cannot change on a retry")
+
+	deep := NewValue(taskOutputNestedStruct(maxConstraintValueDepth+1, "leaf")).GetLiteral()
+	err = checkHTTPResponseElementBound("http://example.invalid/data", deep)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "levels deep")
+}
+
+// TestTaskOutputAndHTTPResponseBoundMessagesDoNotContradict is the P2
+// regression pin: the two result-side refusals must each stand alone, never
+// wrapping the input-side sentence ("the caller's own choice of size")
+// inside a sentence that says the opposite. #224 review found exactly that
+// contradiction when checkTaskOutputElementBound wrapped
+// walkConstraintValue's own (input-shaped) error with %w.
+func TestTaskOutputAndHTTPResponseBoundMessagesDoNotContradict(t *testing.T) {
+	out := &Node_Outputs{NamedValues: map[string]*Value{
+		"items": NewLiteralList(taskOutputManyItems(maxListElements + 1)...),
+	}}
+	taskErr := checkTaskOutputElementBound("fetch", out)
+	require.Error(t, taskErr)
+	assert.NotContains(t, taskErr.Error(), "caller's own choice",
+		"a task-result refusal must not carry the input-side sentence")
+	assert.NotContains(t, taskErr.Error(), "submitting the whole thing as one input",
+		"a task-result refusal must not carry the input-side remedy")
+
+	pastBound := NewLiteralList(taskOutputManyItems(maxListElements + 1)...).GetLiteral()
+	httpErr := checkHTTPResponseElementBound("http://example.invalid/data", pastBound)
+	require.Error(t, httpErr)
+	assert.NotContains(t, httpErr.Error(), "caller's own choice",
+		"an http-response refusal must not carry the input-side sentence")
+	assert.NotContains(t, httpErr.Error(), "submitting the whole thing as one input",
+		"an http-response refusal must not carry the input-side remedy")
+}
