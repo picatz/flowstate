@@ -93,31 +93,28 @@ if going live fails.
 
 **Primitives:** `call:` into four reusable Flowfiles under `workflows/` (a
 quota precondition and three provisioners, each independently runnable and
-independently testable), `undo:` on two top-level task steps
-(`reserve_activation_slot`, `register_dns`) reversed in order when `activate`
-fails, and `wait_until: ${now + hours(inputs.activation_grace_hours)}` for a
+independently testable), `undo:` on each provisioner's own task step -
+compensation registered *inside* the callee, reversed in order (access, then
+billing, then database) across each `call:` boundary when `activate` fails -
+and `wait_until: ${now + hours(inputs.activation_grace_hours)}` for a
 grace-period timer sized per plan rather than hardcoded.
 
-**A genuine gap, found while building this file:** the first draft put
-`undo:` on each `provision_*` callee's own task step - the natural place to
-compensate "provisioning a database," and syntactically identical to
+**A gap that closed underneath this file:** the first draft put `undo:` on
+each `provision_*` callee's own task step - the natural place to compensate
+"provisioning a database," and syntactically identical to
 [`saga-provisioning`](../examples/saga-provisioning/workflow.yaml)'s own
-pattern one level up. `flow validate` refuses it, on both ends: `undo:` is
-refused on a `call:` step in the caller (it is control flow - the identical
-refusal a `for_each` or `parallel:` step gets, because `undo:` names a
-`Task`, not a `Node`, and a call is not a task), and separately - less
-obviously - on a step *inside* a callee reached through a `call:`, with a
-diagnostic naming why: the engine treats a called workflow's body the same
-way it treats a `for_each` body or a `parallel:` branch for this purpose,
-because compensation order inside concurrent control flow is not guaranteed
-to match between `flow run local` and a durable run. `call:` and `undo:` are
-each real and well-tested on their own; **they do not yet compose with each
-other**, at either end of the boundary. This file's actual compensable
-effects had to be plain top-level task steps instead of anything reached
-through a reusable callee - a real constraint on how compensable
-infrastructure-as-code can be factored into shared building blocks today,
-not a preference. The workflow's own header comment carries the full
-diagnostic text for anyone hitting this next.
+pattern one level up - and `flow validate` refused it on both ends of the
+`call:` boundary, so that draft's actually-compensable effects had to be
+moved out to plain top-level steps instead. #225 closed that gap: a callee's
+own task step may now carry `undo:`, and what it registers joins the same
+run-level undo stack a top-level step's would, undone in reverse across the
+boundary exactly as within one level (docs/DSL.md's "Compensation composes
+through a call"). This file is that change's house-gate example - it shipped
+with the top-level-step workaround, described the gap honestly rather than
+hiding it, and has since been refactored to the composed shape the workaround
+existed only because #225 hadn't landed yet: each provisioner is now a
+self-contained unit, provisioning its own resource and knowing how to take it
+back, reusable by any caller regardless of what else that caller compensates.
 
 **A second, smaller finding:** `check-quota.yaml`'s `expect:` line is real
 production behavior - a task fails closed on an out-of-quota answer, exactly

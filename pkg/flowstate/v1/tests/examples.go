@@ -342,10 +342,15 @@ func NewExamplesHTTPServer(tb testing.TB) (string, func() []string) {
 		write(w, map[string]any{"deployed_version": "v3.9.1"})
 	})
 
-	// enterprise-customer-onboarding: the quota precondition, the three
-	// provisioners `call:` reaches, and the two top-level compensable steps —
-	// each with the DELETE its own `undo:` would hit, even though the default
-	// run this harness compares never fails partway through provisioning.
+	// enterprise-customer-onboarding: the quota precondition and the three
+	// provisioners `call:` reaches, each now carrying its own `undo:` inside
+	// its callee (docs/DSL.md's "Compensation composes through a call",
+	// #225) — the same path answers both the POST that provisions and the
+	// DELETE its own `undo:` would send, since the identifier travels in the
+	// body either way (see workflows/provision-database.yaml's own comment
+	// on why), so there is only one path to serve per resource, even though
+	// the default run this harness compares never fails partway through
+	// provisioning and so never actually sends the DELETE.
 	mux.HandleFunc("/quota", func(w http.ResponseWriter, _ *http.Request) {
 		write(w, map[string]any{"available": true})
 	})
@@ -357,15 +362,6 @@ func NewExamplesHTTPServer(tb testing.TB) (string, func() []string) {
 	})
 	mux.HandleFunc("/access-grants", func(w http.ResponseWriter, _ *http.Request) {
 		write(w, map[string]any{"resource_id": "access-acme-1"})
-	})
-	// The same path answers both the POST that reserves and the DELETE its own
-	// `undo:` sends - the identifier travels in the body either way (see
-	// workflow.yaml's own comment on why), so there is only one path to serve.
-	mux.HandleFunc("/activation-slots", func(w http.ResponseWriter, _ *http.Request) {
-		write(w, map[string]any{"slot_id": "slot-1"})
-	})
-	mux.HandleFunc("/dns-records", func(w http.ResponseWriter, _ *http.Request) {
-		write(w, map[string]any{"record_id": "dns-1"})
 	})
 	mux.HandleFunc("/tenants/activate", func(w http.ResponseWriter, _ *http.Request) {
 		write(w, map[string]any{})
