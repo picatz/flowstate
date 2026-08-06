@@ -18,10 +18,13 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/temporalclient"
 	commonpb "go.temporal.io/api/common/v1"
 	"go.temporal.io/api/enums/v1"
+	"go.temporal.io/api/operatorservice/v1"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/temporal"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -149,6 +152,35 @@ type FlowstateServer struct {
 	identityClaims              []string
 	credentialTargets           []string
 	credentialTargetsConfigured bool
+
+	// searchAttributesRegistered records whether [EnsureSearchAttributesRegistered]
+	// succeeded against this deployment's Temporal namespace before the server
+	// started serving. See [WithSearchAttributesRegistered].
+	searchAttributesRegistered bool
+}
+
+// WithSearchAttributesRegistered tells the server it may project a run's
+// tenant and workflow name into Temporal search attributes at submit time,
+// because [EnsureSearchAttributesRegistered] already confirmed both are
+// registered on this deployment's Temporal namespace.
+//
+// Never set from inside [New] itself, and deliberately not attempted lazily
+// on the request path: registering is one network round trip to the operator
+// API, and Run and CreateSchedule are not the place to pay for a deployment
+// question — they run once per submission, no operator API attempts.
+//
+// Absent this option, the server sets no search attributes at all, which is
+// the zero-configuration answer and the only sound one: Temporal refuses
+// StartWorkflowExecution outright when a search attribute it carries is not
+// registered, so attaching one on the strength of a hopeful registration
+// attempt would turn "operator API unreachable" into "no run can start" —
+// exactly the failure fail-closed elsewhere in this system exists to avoid
+// creating by accident. Filtering is unaffected either way, because
+// [v1.RunFilter] never depends on a search attribute existing — it reads
+// [v1.RunSummary] fields the server already has from the memo and from
+// Temporal's own execution info.
+func WithSearchAttributesRegistered() Option {
+	return func(s *FlowstateServer) { s.searchAttributesRegistered = true }
 }
 
 // namespaceMemoKey is the memo field recording which tenant a run belongs to.
@@ -208,6 +240,98 @@ func signalPolicyMemoEntry(signals map[string]*v1.SignalPolicy) (map[string]any,
 	}
 
 	return map[string]any{signalPolicyMemoKey: encoded}, nil
+}
+
+// namespaceSearchAttribute and workflowNameSearchAttribute are the two
+// Temporal search attributes a run may carry, alongside the memo that always
+// carries the tenant.
+//
+// Both Keyword rather than Text: a Keyword is matched exactly, which is what
+// tenancy and a workflow's declared name are for — Text tokenizes for
+// full-text search, which is the wrong match semantics for either and would
+// let "team-a" match a query meant for "team-ab".
+//
+// Named with a package-specific prefix so a deployment that already runs
+// other Temporal applications sharing this namespace cannot collide with an
+// attribute of its own — `flow` is common enough as a name that Temporal's
+// own examples use it.
+var (
+	namespaceSearchAttribute    = temporal.NewSearchAttributeKeyKeyword("FlowstateNamespace")
+	workflowNameSearchAttribute = temporal.NewSearchAttributeKeyKeyword("FlowstateWorkflowName")
+)
+
+// runSearchAttributes builds the search attributes both [FlowstateServer.Run]
+// and [FlowstateServer.CreateSchedule]'s fired executions carry, when the
+// deployment has registration confirmed — see [WithSearchAttributesRegistered].
+//
+// The one function that turns identity and a workflow's declared name into
+// search attributes, for [signalPolicyMemoEntry]'s exact reason: two
+// encoders drift, and here the failure mode is worse than silent, because an
+// unregistered or misspelled attribute name does not merely fail to filter —
+// it fails the submission outright (see [WithSearchAttributesRegistered]).
+// One function is the only way a scheduled run's fired execution and a
+// direct run's execution are guaranteed to carry identical attributes.
+//
+// Neither value is secret, and neither is derived from a caller-supplied
+// input the memo does not already carry: the namespace is the authenticated
+// identity's own, exactly as the memo already records, and the workflow name
+// is the specification's own required `name` field — constrained by
+// protovalidate to `^[A-Za-z0-9-_]+$`, so it carries nothing a Keyword value
+// or a query literal built from one could misinterpret. Search attributes
+// are Temporal visibility data, exactly as broadly readable as the memo they
+// mirror, so nothing crosses the boundary CLAUDE.md's "Secrets never enter
+// workflow history" describes — see that document before adding a third
+// attribute here, because the rule is about what is *already* public, not
+// about search attributes being safer than history.
+func runSearchAttributes(namespace, workflowName string) temporal.SearchAttributes {
+	return temporal.NewSearchAttributes(
+		namespaceSearchAttribute.ValueSet(namespace),
+		workflowNameSearchAttribute.ValueSet(workflowName),
+	)
+}
+
+// EnsureSearchAttributesRegistered idempotently registers the search
+// attributes Flowstate projects onto a run, against one Temporal namespace.
+//
+// Called once, synchronously, before the server starts serving — see
+// `cmd/flow/main.go`'s `runServer`. Not attempted on the request path and not
+// retried in the background: a registration failure here degrades the
+// deployment to the same in-process, memo-scanning listing Flowstate always
+// had (invariant 8's zero-configuration path, and every deployment before
+// this feature existed), which is a correctness-preserving, purely-slower
+// fallback rather than a broken one. That is "fail-open on FILTERING only,
+// never on tenancy": [FlowstateServer.searchAttributesRegistered] stays
+// false, so [runSearchAttributes] is never called and a run never carries an
+// attribute Temporal has not agreed to accept — see
+// [WithSearchAttributesRegistered] for what happens if it is.
+//
+// Idempotent because a second `flow server` process, or a restart, asks
+// again: Temporal's AddSearchAttributes reports ALREADY_EXISTS for a name
+// already registered, which this treats as success rather than an error the
+// caller has to special-case, and any *other* attribute — Temporal's own
+// built-ins, or one a different application registered — is left alone
+// because the request names only the two Flowstate adds.
+//
+// Not extended to a [temporalclient.Pool]: a deployment that maps tenants
+// onto several Temporal namespaces would need this run once per mapped
+// namespace, which `cmd/flow/main.go` does not do today — an honest cut
+// rather than an oversight. Search attributes are simply never projected in
+// that configuration, and every run still lists correctly through the
+// memo-scanning path that predates this feature; only the indexing benefit
+// is unavailable there.
+func EnsureSearchAttributesRegistered(ctx context.Context, temporalClient client.Client, namespace string) error {
+	_, err := temporalClient.OperatorService().AddSearchAttributes(ctx, &operatorservice.AddSearchAttributesRequest{
+		Namespace: namespace,
+		SearchAttributes: map[string]enums.IndexedValueType{
+			namespaceSearchAttribute.GetName():    enums.INDEXED_VALUE_TYPE_KEYWORD,
+			workflowNameSearchAttribute.GetName(): enums.INDEXED_VALUE_TYPE_KEYWORD,
+		},
+	})
+	if err != nil && status.Code(err) != codes.AlreadyExists {
+		return fmt.Errorf("registering Flowstate's search attributes on namespace %q: %w", namespace, err)
+	}
+
+	return nil
 }
 
 // maxStepsPerRunFromEnv reads the optional step budget.
@@ -409,6 +533,15 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 		// the bucket it is scheduled in, or the first thing anyone writes is the
 		// one that puts them in their own.
 		Priority: fairnessFor(identity.GetNamespace()),
+	}
+
+	// Projected into visibility only when registration was confirmed at
+	// startup — see [WithSearchAttributesRegistered]. Unset otherwise, which
+	// is the zero-configuration answer: an unregistered search attribute
+	// makes Temporal refuse the whole submission, so a deployment that never
+	// registered must never attach one, not even hopefully.
+	if s.searchAttributesRegistered {
+		options.TypedSearchAttributes = runSearchAttributes(identity.GetNamespace(), req.Msg.GetWorkflow().GetName())
 	}
 
 	// Chosen from the identity established by authenticating the caller, never

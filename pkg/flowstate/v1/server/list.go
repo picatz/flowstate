@@ -10,6 +10,7 @@ import (
 	enums "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/workflow/v1"
 	"go.temporal.io/api/workflowservice/v1"
+	"go.temporal.io/sdk/converter"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -259,7 +260,42 @@ func summarize(execution *workflow.WorkflowExecutionInfo) *v1.RunSummary {
 		Status:     runStatus(execution.GetStatus()),
 		StartTime:  start,
 		CloseTime:  close,
+		Name:       workflowNameOf(execution),
 	}
+}
+
+// workflowNameOf reads the workflow's own declared name off a run's search
+// attributes, and reports the empty string when there is none to read.
+//
+// That covers every run this deployment did not index: one submitted before
+// [runSearchAttributes] existed, one submitted while
+// [FlowstateServer.searchAttributesRegistered] was false, and — the case that
+// makes this a decode rather than a lookup — one from any Temporal
+// application sharing the namespace that never set the attribute at all.
+// None of those are errors; a run simply carries what it carries, and an
+// absent name is what [RunFilter]'s `name` comparison sees for it.
+//
+// Decoded with the SDK's own default data converter, matching the encoding
+// side in [runSearchAttributes]/[temporal.SearchAttributeKeyKeyword.ValueSet]
+// exactly — a second decoder that guessed at the payload's encoding would be
+// the shared-encoder lesson violated in the other direction.
+func workflowNameOf(execution *workflow.WorkflowExecutionInfo) string {
+	payload, ok := execution.GetSearchAttributes().GetIndexedFields()[workflowNameSearchAttribute.GetName()]
+	if !ok {
+		return ""
+	}
+
+	var name string
+	if err := converter.GetDefaultDataConverter().FromPayload(payload, &name); err != nil {
+		// A payload under this key that does not decode as a string is not this
+		// deployment's doing — see [workflowNameOf]'s own doc — so the honest
+		// answer is "no name available", the same as when the key is absent,
+		// rather than failing a listing over an attribute this run's writer
+		// used for something else entirely.
+		return ""
+	}
+
+	return name
 }
 
 // runTimes returns when a run began and when it finished.

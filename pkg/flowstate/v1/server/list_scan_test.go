@@ -48,6 +48,39 @@ func otherTenantsRun(t *testing.T, id string) *workflow.WorkflowExecutionInfo {
 	}
 }
 
+// runOwnedByWithName is an execution belonging to owner (empty means the
+// caller's own default tenant, matching how the rest of this file builds
+// "mine"), carrying the FlowstateWorkflowName search attribute exactly as
+// [runSearchAttributes] would have set it.
+//
+// The memo and the search attribute are independent facts about the same
+// run, which is the whole point of the negative-tenancy tests below: a
+// filter matches on the search attribute, and ownership is decided by the
+// memo, and the two must never be allowed to substitute for each other.
+func runOwnedByWithName(t *testing.T, id, owner, name string) *workflow.WorkflowExecutionInfo {
+	t.Helper()
+
+	execution := &workflow.WorkflowExecutionInfo{
+		Execution: &common.WorkflowExecution{WorkflowId: id},
+	}
+
+	if owner != "" {
+		payload, err := converter.GetDefaultDataConverter().ToPayload(owner)
+		require.NoError(t, err)
+		execution.Memo = &common.Memo{Fields: map[string]*common.Payload{namespaceMemoKey: payload}}
+	}
+
+	if name != "" {
+		payload, err := converter.GetDefaultDataConverter().ToPayload(name)
+		require.NoError(t, err)
+		execution.SearchAttributes = &common.SearchAttributes{
+			IndexedFields: map[string]*common.Payload{workflowNameSearchAttribute.GetName(): payload},
+		}
+	}
+
+	return execution
+}
+
 func TestListStopsScanningAndSaysSo(t *testing.T) {
 	t.Parallel()
 
@@ -736,6 +769,182 @@ func TestListPagingReachesEveryMatchingRun(t *testing.T) {
 	}
 	for id := range seen {
 		require.True(t, wanted[id], "run %q came back and does not match the filter", id)
+	}
+}
+
+// TestListPagingReachesEveryRunMatchingByName is [TestListPagingReachesEveryMatchingRun]
+// for the search-attribute-backed field rather than a built-in one: `name`
+// comes off [runSearchAttributes]/[workflowNameOf] instead of the execution's
+// own status, and the join with paging is exactly as capable of hiding a run
+// behind a moved cursor either way — see the file header on why this needs a
+// traversal test rather than a page-shaped one.
+func TestListPagingReachesEveryRunMatchingByName(t *testing.T) {
+	t.Parallel()
+
+	const total, pageSize = 23, 5
+
+	all := make([]*workflow.WorkflowExecutionInfo, 0, total)
+	wanted := map[string]bool{}
+	for i := range total {
+		id := fmt.Sprintf("run-%02d", i)
+
+		name := "nightly-etl"
+		if i%3 == 0 {
+			name = "onboard-tenant"
+			wanted[id] = true
+		}
+
+		all = append(all, runOwnedByWithName(t, id, "", name))
+	}
+
+	require.NotEmpty(t, wanted)
+	require.Less(t, len(wanted), total, "the filter must exclude some runs or this proves nothing")
+
+	temporal := &mocks.Client{}
+	temporal.On("ListWorkflow", mock.Anything, mock.Anything).Return(
+		func(_ context.Context, request *workflowservice.ListWorkflowExecutionsRequest) *workflowservice.ListWorkflowExecutionsResponse {
+			offset := 0
+			if token := request.GetNextPageToken(); len(token) > 0 {
+				parsed, err := strconv.Atoi(string(token))
+				require.NoError(t, err)
+				offset = parsed
+			}
+
+			end := min(offset+int(request.GetPageSize()), len(all))
+
+			resp := &workflowservice.ListWorkflowExecutionsResponse{Executions: all[offset:end]}
+			if end < len(all) {
+				resp.NextPageToken = []byte(strconv.Itoa(end))
+			}
+
+			return resp
+		},
+		nil,
+	)
+
+	server := New(temporal)
+
+	seen := map[string]int{}
+	token := ""
+	pages := 0
+
+	for {
+		response, err := server.List(t.Context(), connect.NewRequest(&v1types.ListRequest{
+			PageSize:  pageSize,
+			PageToken: token,
+			Filter:    `name == "onboard-tenant"`,
+		}))
+		require.NoError(t, err)
+
+		for _, run := range response.Msg.GetRuns() {
+			seen[run.GetWorkflowId()]++
+			require.Equal(t, "onboard-tenant", run.GetName())
+		}
+
+		pages++
+		require.Less(t, pages, 50, "the filtered listing never terminated")
+
+		token = response.Msg.GetNextPageToken()
+		if token == "" {
+			break
+		}
+	}
+
+	require.Len(t, seen, len(wanted),
+		"walking every page did not reach every run matching by name")
+	for id := range wanted {
+		require.Equal(t, 1, seen[id], "matching run %q was skipped or returned twice", id)
+	}
+	for id := range seen {
+		require.True(t, wanted[id], "run %q came back and does not match the filter", id)
+	}
+}
+
+// TestAFilterOnNameCannotEscapeTenancy is the negative-tenancy test for a
+// filter, in the shape [TestListPagingReachesEveryRunAmongOtherTenants]
+// already holds the server to for an unfiltered listing.
+//
+// Both tenants declare workflows sharing the exact same name, so a filter
+// that matched on the search attribute *before* the memo check would return
+// somebody else's runs the instant the caller asked a question their own
+// runs also answer. [FlowstateServer.List] applies [RunFilter.Match] strictly
+// after [ownedBy] — see the comment there — and this is what would catch a
+// change that got the order backwards: every run in this namespace matches
+// the filter, so this test passes only because tenancy, not the filter,
+// decides which of them the caller ever sees.
+func TestAFilterOnNameCannotEscapeTenancy(t *testing.T) {
+	t.Parallel()
+
+	const total, pageSize = 60, 4
+	const sharedName = "nightly-etl"
+
+	all := make([]*workflow.WorkflowExecutionInfo, 0, total)
+	mine := map[string]bool{}
+	for i := range total {
+		id := fmt.Sprintf("run-%02d", i)
+		if i%3 == 0 {
+			all = append(all, runOwnedByWithName(t, id, "", sharedName))
+			mine[id] = true
+			continue
+		}
+		all = append(all, runOwnedByWithName(t, id, "somebody-else", sharedName))
+	}
+
+	temporal := &mocks.Client{}
+	temporal.On("ListWorkflow", mock.Anything, mock.Anything).Return(
+		func(_ context.Context, request *workflowservice.ListWorkflowExecutionsRequest) *workflowservice.ListWorkflowExecutionsResponse {
+			offset := 0
+			if token := request.GetNextPageToken(); len(token) > 0 {
+				parsed, err := strconv.Atoi(string(token))
+				require.NoError(t, err)
+				offset = parsed
+			}
+
+			end := min(offset+int(request.GetPageSize()), len(all))
+
+			resp := &workflowservice.ListWorkflowExecutionsResponse{Executions: all[offset:end]}
+			if end < len(all) {
+				resp.NextPageToken = []byte(strconv.Itoa(end))
+			}
+			return resp
+		},
+		nil,
+	)
+
+	server := New(temporal)
+
+	seen := map[string]int{}
+	token := ""
+	for pages := 0; ; pages++ {
+		require.Less(t, pages, 100, "the listing never terminated")
+
+		response, err := server.List(t.Context(), connect.NewRequest(&v1types.ListRequest{
+			PageSize:  pageSize,
+			PageToken: token,
+			Filter:    fmt.Sprintf(`name == %q`, sharedName),
+		}))
+		require.NoError(t, err)
+
+		for _, run := range response.Msg.GetRuns() {
+			seen[run.GetWorkflowId()]++
+		}
+
+		token = response.Msg.GetNextPageToken()
+		if token == "" {
+			break
+		}
+	}
+
+	// Every one of the caller's own matching runs, exactly once —
+	require.Len(t, seen, len(mine), "a filtered listing did not reach every run the caller owns")
+	for id := range mine {
+		require.Equal(t, 1, seen[id], "run %q was skipped or returned twice", id)
+	}
+
+	// — and none of the other tenant's, even though every one of them matches
+	// the filter too.
+	for id := range seen {
+		require.True(t, mine[id], "a filter that matches on a search attribute returned another tenant's run %q", id)
 	}
 }
 

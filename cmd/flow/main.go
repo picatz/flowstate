@@ -525,6 +525,35 @@ func runServer(cmd *cobra.Command, args []string) error {
 		serverOpts = append(serverOpts, server.WithCredentialTargets(targets...))
 	}
 
+	// Search attributes are registered — idempotently, once, before the server
+	// starts serving — only in the single-namespace configuration. A trust
+	// policy that maps tenants onto several Temporal namespaces would need
+	// this attempted once per mapped namespace, which is not done here; see
+	// [server.EnsureSearchAttributesRegistered]'s doc for why that is an
+	// honest cut and not an oversight. Every deployment keeps listing and
+	// filtering correctly either way — this only decides whether Temporal's
+	// visibility store can additionally be asked to carry the index.
+	//
+	// A failure here is reported and not fatal: it is exactly the case
+	// [server.WithSearchAttributesRegistered] exists to keep out of Run and
+	// CreateSchedule, so a `temporal server start-dev` with no operator setup,
+	// or a production cluster where this identity lacks the operator role,
+	// starts and serves precisely as it always has.
+	if policy == nil || policy.Tenancy == nil {
+		opts, optsErr := cfg.Options()
+		if optsErr != nil {
+			logger.Warn("could not resolve the Temporal namespace to register search attributes on; "+
+				"`flow list --filter` still works, scanning executions rather than querying an index",
+				"error", optsErr)
+		} else if err := server.EnsureSearchAttributesRegistered(cmd.Context(), c, opts.Namespace); err != nil {
+			logger.Warn("could not register Flowstate's search attributes; "+
+				"`flow list --filter` still works, scanning executions rather than querying an index",
+				"error", err)
+		} else {
+			serverOpts = append(serverOpts, server.WithSearchAttributesRegistered())
+		}
+	}
+
 	// A trust policy that maps tenants onto Temporal namespaces needs a client
 	// per namespace it can route to, dialed now so an unreachable namespace fails
 	// the start rather than the first tenant to submit. The server refuses a

@@ -238,6 +238,22 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 			Memo:     actionMemo,
 			Priority: fairnessFor(namespace),
 
+			// Through the exact function [FlowstateServer.Run] uses — see
+			// [runSearchAttributes] — for the identical reason signalEntry
+			// above is: a scheduled run's fired execution and a direct run's
+			// execution must carry the same attributes, or a filter that
+			// matches one silently misses the other. Guarded by the same
+			// registration flag Run checks, and for the same reason: an
+			// unregistered search attribute makes Temporal refuse the
+			// schedule's create outright, so a deployment that never
+			// confirmed registration must never attach one.
+			TypedSearchAttributes: func() sdk.SearchAttributes {
+				if s.searchAttributesRegistered {
+					return runSearchAttributes(namespace, workflow.GetName())
+				}
+				return sdk.SearchAttributes{}
+			}(),
+
 			Args: []any{&v1.RunState{
 				Workflow:    workflow,
 				StepsBudget: int32(s.maxStepsPerRun),

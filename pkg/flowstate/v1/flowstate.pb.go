@@ -6573,7 +6573,18 @@ type RunSummary struct {
 	// StartTime is when the workload began.
 	StartTime *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=start_time,json=startTime,proto3" json:"start_time,omitempty"`
 	// CloseTime is when it finished, unset while it is still running.
-	CloseTime     *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=close_time,json=closeTime,proto3" json:"close_time,omitempty"`
+	CloseTime *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=close_time,json=closeTime,proto3" json:"close_time,omitempty"`
+	// Name is the workflow's own declared name (Workflow.name), not Temporal's
+	// WorkflowType — every run's WorkflowType is "Run", the one interpreter
+	// workflow, so it cannot distinguish "nightly-etl" from "onboard-tenant".
+	//
+	// Populated from the FlowstateWorkflowName search attribute when the
+	// deployment has one registered and the run recorded it; empty otherwise,
+	// which includes every run started before this field existed and every run
+	// in a deployment where registration never succeeded. Absence is not an
+	// error — see server/list.go and runfilter.go, where a filter comparing
+	// against `name` simply does not match a run that carries none.
+	Name          string `protobuf:"bytes,6,opt,name=name,proto3" json:"name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -6641,6 +6652,13 @@ func (x *RunSummary) GetCloseTime() *timestamppb.Timestamp {
 		return x.CloseTime
 	}
 	return nil
+}
+
+func (x *RunSummary) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
 }
 
 // ListResponse returns a page of the caller's runs.
@@ -9662,7 +9680,7 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"\xbaH\a\x1a\x05\x18\xe8\a(\x00R\bpageSize\x12'\n" +
 	"\n" +
 	"page_token\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\tpageToken\x12 \n" +
-	"\x06filter\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\x06filter\"\xf4\x01\n" +
+	"\x06filter\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\x06filter\"\x88\x02\n" +
 	"\n" +
 	"RunSummary\x12\x1f\n" +
 	"\vworkflow_id\x18\x01 \x01(\tR\n" +
@@ -9672,7 +9690,8 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"\n" +
 	"start_time\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tstartTime\x129\n" +
 	"\n" +
-	"close_time\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tcloseTime\"d\n" +
+	"close_time\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tcloseTime\x12\x12\n" +
+	"\x04name\x18\x06 \x01(\tR\x04name\"d\n" +
 	"\fListResponse\x12,\n" +
 	"\x04runs\x18\x01 \x03(\v2\x18.flowstate.v1.RunSummaryR\x04runs\x12&\n" +
 	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"O\n" +
