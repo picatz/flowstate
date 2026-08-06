@@ -109,6 +109,65 @@ message PullRequestListInputs {
 
   // BaseUrl overrides the API base for GitHub Enterprise Server.
   string base_url = 8;
+
+  // Sort orders the result: "created" (the default when unset), "updated",
+  // "popularity", or "long-running" - GitHub's own four values for this
+  // endpoint's sort parameter. Anything else is refused as InvalidInput;
+  // this is not a passthrough string.
+  string sort = 9;
+
+  // Direction orders the result ascending or descending: "asc" or "desc".
+  // Unset means this task's own explicit default, "desc" - GitHub's own
+  // default for this endpoint when sort is "created" or unset - the same
+  // "name the default explicitly" reasoning IssueListInputs.direction's
+  // own doc comment documents.
+  //
+  // Sort "created" with direction "asc" is also the one ordering this task
+  // will resume with Cursor - see Cursor's own doc comment for why.
+  string direction = 10;
+
+  // Cursor resumes a prior, truncated call - fed back exactly as
+  // PullRequestListOutputs.next_cursor returned it. Opaque to a workflow:
+  // nothing about its contents is meant to be parsed or reasoned about
+  // beyond "pass it back as cursor." See PullRequestListOutputs.next_cursor
+  // and plugins/github/cursor.go for the full encoding.
+  //
+  // GitHub's pull-request listing is page-number pagination over a list
+  // that mutates between calls - a pull request opened or closed while a
+  // caller is still paging shifts every later page's contents by one,
+  // unlike git.log's own cursor, which resumes an immutable commit DAG.
+  // This task cannot make the list stop mutating, but it can make new
+  // entries land only at the far end of the walk rather than in the middle
+  // of it: sorted by "created" ascending, a newly opened pull request is
+  // always the newest, so it is always appended after wherever a resumed
+  // walk currently stands, never inserted before it. That is why Cursor is
+  // only ever produced (and only ever accepted back) when Sort is
+  // "created" and Direction is "asc" - see requireStableOrder in
+  // pull_request_list.go. Any other sort/direction still lists pull
+  // requests exactly as before; it just never grows a next_cursor a caller
+  // could resume from.
+  //
+  // Even under that stable order, a pull request CLOSED (or otherwise
+  // removed from the matching set - e.g. a state filter that no longer
+  // matches it) between two calls can still shift a later page's contents
+  // backward by one, which this task's page-plus-skip position has no way
+  // to detect: unlike an insertion, a removal can cause a miss. Ordering by
+  // created-ascending closes the insertion direction of this problem, not
+  // the removal direction - state this precisely to a caller rather than
+  // implying either "resumes exactly like git.log" or "resumes with no
+  // guarantee at all."
+  //
+  // Untrusted input the moment it comes back from outside this task, so it
+  // is bound and validated narrowly - see validateCursor (validate.go) and
+  // decodePageCursor (cursor.go). A cursor issued under different filters
+  // (a different state, base, head, sort, direction, or max_results) is
+  // refused outright rather than silently walking the wrong sequence - see
+  // cursor.go's own doc comment, "why a fingerprint."
+  //
+  // This task has no separate "starting page" input for Cursor to conflict
+  // with the way git.log's own Cursor is mutually exclusive with Ref -
+  // there is nothing else here that names a position to resume from.
+  string cursor = 11;
 }
 
 // PullRequestSummary is one entry PullRequestListOutputs returns -
@@ -138,6 +197,18 @@ message PullRequestListOutputs {
   // paginating GitHub's own API (see maxListRequests) - so a workflow can
   // tell "this is all of it" from "this is as much as this call reached."
   bool truncated = 2;
+
+  // NextCursor is the resume position for the next page, populated exactly
+  // when Truncated is true, PullRequests is non-empty, AND this call's own
+  // Sort/Direction were "created"/"asc" - see PullRequestListInputs.cursor
+  // for why that ordering is what makes a resume trustworthy. Empty
+  // whenever Truncated is false (nothing left to resume) or the ordering
+  // was not the stable one (there is genuinely more, but no position this
+  // task will vouch for resuming into - a caller in that position sets
+  // sort: created and direction: asc to make a truncated result
+  // resumable, the same "narrow the walk" remedy git.log's own
+  // NextCursor's doc comment gives for its own narrower empty cases).
+  string next_cursor = 3;
 }
 
 // PullRequestFilesInputs asks which files one pull request touches - the
@@ -158,6 +229,29 @@ message PullRequestFilesInputs {
 
   flowstate.v1.Value token = 5;
   string base_url = 6;
+
+  // Cursor resumes a prior, truncated call - fed back exactly as
+  // PullRequestFilesOutputs.next_cursor returned it. See
+  // PullRequestListInputs.cursor's own doc comment for the general shape
+  // this shares (page-plus-skip, filter-fingerprinted, opaque).
+  //
+  // Unlike PullRequestListInputs.cursor, this input carries NO ordering
+  // requirement, because none is available: GitHub's own ListFiles
+  // endpoint takes no sort parameter this task could ask it to hold
+  // stable. Its documented order is the order files appear in the pull
+  // request's diff, which is exactly as mutable as the diff itself - a
+  // commit pushed to the pull request between two calls can add, remove,
+  // or reorder files, and this task has no lever to stop that. So this
+  // cursor's contract is honestly weaker than PullRequestListInputs.cursor's:
+  // it resumes NEAR where a truncated call stopped, by page and
+  // within-page position, but a file added or removed between calls may be
+  // missed or (less likely, since a removal shifts positions backward, not
+  // forward) returned twice. Acceptable for the triage read this task is -
+  // "which files changed, roughly" - never claimed as exactly-once. Use
+  // this task's own repeated calls close together in time to keep the risk
+  // small, and re-fetch the whole listing (cursor unset) rather than trust
+  // a stale cursor across a pull request known to have moved.
+  string cursor = 7;
 }
 
 // PullRequestFile is one file GitHub reports as touched by a pull request.
@@ -181,6 +275,15 @@ message PullRequestFilesOutputs {
   // this call returned - see PullRequestListOutputs.truncated's own doc
   // comment; the same reasoning applies here.
   bool truncated = 2;
+
+  // NextCursor is the resume position for the next page, populated exactly
+  // when Truncated is true and Files is non-empty - unconditionally,
+  // unlike PullRequestListOutputs.next_cursor, since this endpoint has no
+  // stable-ordering condition to gate on. See PullRequestFilesInputs.cursor
+  // for the weaker guarantee this carries: resumes NEAR where this call
+  // stopped, not exactly-once against a pull request whose files changed
+  // between calls.
+  string next_cursor = 3;
 }
 
 // IssueGetInputs asks for one issue's current state - the single-record
@@ -266,6 +369,22 @@ message IssueListInputs {
   // direction is (or defaults to) "desc", and the oldest when it is "asc" -
   // ask for "asc" to answer "what is the oldest open issue."
   string direction = 10;
+
+  // Cursor resumes a prior, truncated call - fed back exactly as
+  // IssueListOutputs.next_cursor returned it. See
+  // PullRequestListInputs.cursor's own doc comment for the full argument
+  // this shares essentially unchanged: page-plus-skip pagination over a
+  // list GitHub, not this task, controls, requiring Sort "created" and
+  // Direction "asc" before this task will ever produce or accept one - so
+  // a newly filed issue always appends past wherever a resumed walk
+  // currently stands rather than shifting it - and still unable to detect
+  // an issue removed from the matching set between calls (closed under a
+  // state filter that excludes it, or deleted outright), which can shift a
+  // later page backward and cause a miss even under that stable order.
+  //
+  // As with pull_request_list, there is no separate "starting page" input
+  // here for Cursor to conflict with.
+  string cursor = 11;
 }
 
 // IssueSummary is one entry IssueListOutputs returns - see
@@ -286,6 +405,13 @@ message IssueSummary {
 // IssueListOutputs is a bounded page of matching issues.
 message IssueListOutputs {
   repeated IssueSummary issues = 1;
+
+  // NextCursor is the resume position for the next page, populated exactly
+  // when Truncated is true, Issues is non-empty, AND this call's own
+  // Sort/Direction were "created"/"asc" - see IssueListInputs.cursor and
+  // PullRequestListOutputs.next_cursor's own doc comment for the full
+  // reasoning, which applies here unchanged.
+  string next_cursor = 3;
 
   // Truncated - see PullRequestListOutputs.truncated's own doc comment; the
   // same reasoning applies here.

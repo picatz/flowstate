@@ -89,7 +89,7 @@ func pagedStrings(pages, itemsPerPage, size int) (fetch func(ctx context.Context
 func TestPaginateBoundedReturnsEverythingWhenUnderTheCap(t *testing.T) {
 	fetch, requests := pagedInts(7)
 
-	items, truncated, err := paginateBounded(context.Background(), 3, 100, 20, unboundedResultBytes, fetch, identity)
+	items, truncated, _, _, err := paginateBounded(context.Background(), 1, 0, 3, 100, 20, unboundedResultBytes, fetch, identity)
 	if err != nil {
 		t.Fatalf("paginateBounded: unexpected error: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestPaginateBoundedReturnsEverythingWhenUnderTheCap(t *testing.T) {
 func TestPaginateBoundedHitsTheExactBoundaryWithoutAFalsePositive(t *testing.T) {
 	fetch, _ := pagedInts(10)
 
-	items, truncated, err := paginateBounded(context.Background(), 5, 10, 20, unboundedResultBytes, fetch, identity)
+	items, truncated, _, _, err := paginateBounded(context.Background(), 1, 0, 5, 10, 20, unboundedResultBytes, fetch, identity)
 	if err != nil {
 		t.Fatalf("paginateBounded: unexpected error: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestPaginateBoundedHitsTheExactBoundaryWithoutAFalsePositive(t *testing.T) 
 func TestPaginateBoundedCapsAtMaxItemsAndReportsTruncated(t *testing.T) {
 	fetch, _ := pagedInts(1000)
 
-	items, truncated, err := paginateBounded(context.Background(), 100, 50, 20, unboundedResultBytes, fetch, identity)
+	items, truncated, _, _, err := paginateBounded(context.Background(), 1, 0, 100, 50, 20, unboundedResultBytes, fetch, identity)
 	if err != nil {
 		t.Fatalf("paginateBounded: unexpected error: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestPaginateBoundedStopsAgainstAPeerThatPagesForever(t *testing.T) {
 	}
 
 	const maxRequests = 20
-	items, truncated, err := paginateBounded(context.Background(), 100, 1000, maxRequests, unboundedResultBytes, fetch, identity)
+	items, truncated, _, _, err := paginateBounded(context.Background(), 1, 0, 100, 1000, maxRequests, unboundedResultBytes, fetch, identity)
 	if err != nil {
 		t.Fatalf("paginateBounded: unexpected error: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestPaginateBoundedStopsAgainstAPeerThatPagesForever(t *testing.T) {
 func TestPaginateBoundedStopsAtTheBoundaryWithoutSpendingAnExtraRequest(t *testing.T) {
 	fetch, requests := pagedInts(1000)
 
-	_, truncated, err := paginateBounded(context.Background(), 10, 10, 20, unboundedResultBytes, fetch, identity)
+	_, truncated, _, _, err := paginateBounded(context.Background(), 1, 0, 10, 10, 20, unboundedResultBytes, fetch, identity)
 	if err != nil {
 		t.Fatalf("paginateBounded: unexpected error: %v", err)
 	}
@@ -210,7 +210,7 @@ func TestPaginateBoundedPropagatesAFetchError(t *testing.T) {
 		return nil, nil, sentinel
 	}
 
-	_, _, err := paginateBounded(context.Background(), 10, 10, 20, unboundedResultBytes, fetch, identity)
+	_, _, _, _, err := paginateBounded(context.Background(), 1, 0, 10, 10, 20, unboundedResultBytes, fetch, identity)
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("paginateBounded: got error %v, want %v", err, sentinel)
 	}
@@ -254,7 +254,7 @@ func TestPaginateBoundedStopsWhenTheByteBudgetIsWhatBinds(t *testing.T) {
 	const maxItems = 10000
 	const maxRequests = 1000
 
-	items, truncated, err := paginateBounded(context.Background(), itemsPerPage, maxItems, maxRequests, maxResultBytes, fetch, convert)
+	items, truncated, _, _, err := paginateBounded(context.Background(), 1, 0, itemsPerPage, maxItems, maxRequests, maxResultBytes, fetch, convert)
 	if err != nil {
 		t.Fatalf("paginateBounded: unexpected error: %v", err)
 	}

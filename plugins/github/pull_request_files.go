@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strconv"
 
 	"github.com/google/go-github/v75/github"
 
@@ -46,6 +47,10 @@ func pullRequestFiles(ctx context.Context, inputs map[string]*flowstatev1.Value,
 	if err != nil {
 		return nil, sdk.InvalidInput("%v", err)
 	}
+	cursorRaw, err := validateCursor(in.GetCursor())
+	if err != nil {
+		return nil, sdk.InvalidInput("cursor: %v", err)
+	}
 
 	token, err := tokenFromValue(ctx, in.GetToken())
 	if err != nil {
@@ -59,21 +64,51 @@ func pullRequestFiles(ctx context.Context, inputs map[string]*flowstatev1.Value,
 
 	flowstatev1.ReportProgress(ctx, flowstatev1.PhaseRequesting)
 
-	files, truncated, err := doPullRequestFiles(ctx, client, in.GetOwner(), in.GetRepo(), int(in.GetNumber()), maxResults)
+	files, truncated, nextCursor, err := doPullRequestFiles(ctx, client, in.GetOwner(), in.GetRepo(), int(in.GetNumber()), maxResults, cursorRaw)
 	if err != nil {
 		return nil, classifyReadError(err)
 	}
 
 	return sdk.EncodeOutputs(&githubv1.PullRequestFilesOutputs{
-		Files:     files,
-		Truncated: truncated,
+		Files:      files,
+		Truncated:  truncated,
+		NextCursor: nextCursor,
 	})
+}
+
+// pullRequestFilesFingerprint hashes the filters a github.pull_request_files
+// walk runs under - see issueListFingerprint's own doc comment for why.
+// Deliberately does not include a sort/direction pair the way the other two
+// list tasks' fingerprints do: GitHub's ListFiles endpoint has none - see
+// PullRequestFilesInputs.cursor's own doc comment for the weaker contract
+// that follows from that absence.
+func pullRequestFilesFingerprint(owner, repo string, number, maxResults int) fingerprint {
+	return filterFingerprint(
+		"owner="+owner,
+		"repo="+repo,
+		"number="+strconv.Itoa(number),
+		"max_results="+strconv.Itoa(maxResults),
+	)
 }
 
 // doPullRequestFiles is pullRequestFiles's already-validated network step -
 // see doPullRequestList's own doc comment for why this split exists.
-func doPullRequestFiles(ctx context.Context, client *github.Client, owner, repo string, number, maxResults int) ([]*githubv1.PullRequestFile, bool, error) {
+func doPullRequestFiles(ctx context.Context, client *github.Client, owner, repo string, number, maxResults int, cursor string) ([]*githubv1.PullRequestFile, bool, string, error) {
 	perPage := min(maxPerPage, maxResults+1)
+
+	fingerprint := pullRequestFilesFingerprint(owner, repo, number, maxResults)
+
+	startPage, startSkip := 1, 0
+	if cursor != "" {
+		cur, err := decodePageCursor(cursor)
+		if err != nil {
+			return nil, false, "", sdk.InvalidInput("cursor: %v", err)
+		}
+		if err := requireCursorFingerprint(cur, fingerprint); err != nil {
+			return nil, false, "", sdk.InvalidInput("%v", err)
+		}
+		startPage, startSkip = cur.page, cur.skip
+	}
 
 	// convert runs on every raw *github.CommitFile as soon as it is
 	// fetched, so paginateBounded's own byte budget (maxResultBytes) is
@@ -91,12 +126,22 @@ func doPullRequestFiles(ctx context.Context, client *github.Client, owner, repo 
 		}
 	}
 
-	out, truncated, err := paginateBounded(ctx, perPage, maxResults, maxListRequests, maxResultBytes,
+	out, truncated, nextPage, nextSkip, err := paginateBounded(ctx, startPage, startSkip, perPage, maxResults, maxListRequests, maxResultBytes,
 		func(ctx context.Context, page, perPage int) ([]*github.CommitFile, *github.Response, error) {
 			return client.PullRequests.ListFiles(ctx, owner, repo, number, &github.ListOptions{Page: page, PerPage: perPage})
 		}, convert)
 	if err != nil {
-		return nil, false, err
+		return nil, false, "", err
 	}
-	return out, truncated, nil
+
+	// No ordering condition to gate on here, unlike issue_list and
+	// pull_request_list - see PullRequestFilesOutputs.next_cursor's own
+	// doc comment for why this task emits one unconditionally whenever
+	// truncated and non-empty, with the correspondingly weaker guarantee.
+	var nextCursor string
+	if truncated && len(out) > 0 {
+		nextCursor = encodePageCursor(nextPage, nextSkip, fingerprint)
+	}
+
+	return out, truncated, nextCursor, nil
 }

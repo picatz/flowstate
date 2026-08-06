@@ -97,6 +97,72 @@ const (
 	maxLabelBytes = 100
 )
 
+// maxCursorBytes bounds github.pull_request_list's, github.issue_list's, and
+// github.pull_request_files's optional cursor input before it reaches
+// decodePageCursor - see cursor.go's own doc comment for the format this
+// checks against, and CLAUDE.md's "Bound anything that consumes untrusted
+// input": a cursor is something one of these tasks emitted, never something
+// a caller composes, so this bound exists to refuse garbage cheaply, not to
+// admit a wider shape. decodePageCursor enforces its own, tighter
+// maxCursorInputBytes internally; this constant is validateCursor's own
+// first, even-cheaper check, mirroring the two-layer shape plugins/git's
+// validateCursor and decodeCursor use.
+const maxCursorBytes = 128
+
+// validateCursor bounds and structurally checks a list task's optional
+// resume position. See cursor.go's own doc comment for the format, and
+// plugins/git's own validateCursor for why this is deliberately narrow
+// rather than a passthrough string: the one shape accepted is the one
+// shape a github list task ever produces as its own next_cursor.
+func validateCursor(raw string) (string, error) {
+	if raw == "" {
+		return "", nil
+	}
+	if len(raw) > maxCursorBytes {
+		return "", fmt.Errorf("cursor is %d bytes, over the %d byte limit this task enforces", len(raw), maxCursorBytes)
+	}
+	if _, err := decodePageCursor(raw); err != nil {
+		return "", err
+	}
+	return raw, nil
+}
+
+// validatePullRequestSort normalizes and checks pull_request_list's
+// optional sort field: empty means GitHub's own default for this endpoint,
+// "created" - the same "name the default explicitly" reasoning
+// validateState documents. See PullRequestListInputs.sort's own doc
+// comment for why this exists at all: a cursor-driven walk needs a stable
+// sort order to resume correctly (see requireStableOrder), and "created"
+// ascending is the one this task can ask GitHub to hold.
+func validatePullRequestSort(field, value string) (string, error) {
+	if value == "" {
+		return "created", nil
+	}
+	switch value {
+	case "created", "updated", "popularity", "long-running":
+		return value, nil
+	default:
+		return "", fmt.Errorf("%s %q is not one of \"created\", \"updated\", \"popularity\", \"long-running\"", field, value)
+	}
+}
+
+// validatePullRequestDirection normalizes and checks pull_request_list's
+// optional direction field - see validateIssueDirection's own doc comment
+// for the same reasoning, applied to pull_request_list's own default
+// ("desc," GitHub's default for this endpoint when sort is "created" or
+// unset).
+func validatePullRequestDirection(field, value string) (string, error) {
+	if value == "" {
+		return "desc", nil
+	}
+	switch value {
+	case "asc", "desc":
+		return value, nil
+	default:
+		return "", fmt.Errorf("%s %q is not one of \"asc\", \"desc\"", field, value)
+	}
+}
+
 // ownerPattern and repoPattern are validated because both are later placed
 // into a URL path via go-github's own request builder (never
 // string-concatenated by this plugin - go-github's PullRequests.Get and

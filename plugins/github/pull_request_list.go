@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strconv"
 
 	"github.com/google/go-github/v75/github"
 
@@ -41,9 +42,21 @@ func pullRequestList(ctx context.Context, inputs map[string]*flowstatev1.Value, 
 	if err != nil {
 		return nil, sdk.InvalidInput("%v", err)
 	}
+	sort, err := validatePullRequestSort("sort", in.GetSort())
+	if err != nil {
+		return nil, sdk.InvalidInput("%v", err)
+	}
+	direction, err := validatePullRequestDirection("direction", in.GetDirection())
+	if err != nil {
+		return nil, sdk.InvalidInput("%v", err)
+	}
 	maxResults, err := clampMaxResults(in.GetMaxResults())
 	if err != nil {
 		return nil, sdk.InvalidInput("%v", err)
+	}
+	cursorRaw, err := validateCursor(in.GetCursor())
+	if err != nil {
+		return nil, sdk.InvalidInput("cursor: %v", err)
 	}
 
 	token, err := tokenFromValue(ctx, in.GetToken())
@@ -58,11 +71,14 @@ func pullRequestList(ctx context.Context, inputs map[string]*flowstatev1.Value, 
 
 	flowstatev1.ReportProgress(ctx, flowstatev1.PhaseRequesting)
 
-	prs, truncated, err := doPullRequestList(ctx, client, in.GetOwner(), in.GetRepo(), pullRequestListParams{
+	prs, truncated, nextCursor, err := doPullRequestList(ctx, client, in.GetOwner(), in.GetRepo(), pullRequestListParams{
 		state:      state,
 		base:       base,
 		head:       head,
+		sort:       sort,
+		direction:  direction,
 		maxResults: maxResults,
+		cursor:     cursorRaw,
 	})
 	if err != nil {
 		return nil, classifyReadError(err)
@@ -71,6 +87,7 @@ func pullRequestList(ctx context.Context, inputs map[string]*flowstatev1.Value, 
 	return sdk.EncodeOutputs(&githubv1.PullRequestListOutputs{
 		PullRequests: prs,
 		Truncated:    truncated,
+		NextCursor:   nextCursor,
 	})
 }
 
@@ -83,17 +100,62 @@ type pullRequestListParams struct {
 	state      string
 	base       string
 	head       string
+	sort       string
+	direction  string
 	maxResults int
+	cursor     string // opaque, already structurally validated - see cursor.go
+}
+
+// pullRequestListFingerprint hashes the filters a github.pull_request_list
+// walk runs under - see issueListFingerprint's own doc comment for why.
+func pullRequestListFingerprint(owner, repo string, p pullRequestListParams) fingerprint {
+	return filterFingerprint(
+		"owner="+owner,
+		"repo="+repo,
+		"state="+p.state,
+		"base="+p.base,
+		"head="+p.head,
+		"sort="+p.sort,
+		"direction="+p.direction,
+		"max_results="+strconv.Itoa(p.maxResults),
+	)
 }
 
 // doPullRequestList is pullRequestList's already-validated network step.
-func doPullRequestList(ctx context.Context, client *github.Client, owner, repo string, p pullRequestListParams) ([]*githubv1.PullRequestSummary, bool, error) {
+func doPullRequestList(ctx context.Context, client *github.Client, owner, repo string, p pullRequestListParams) ([]*githubv1.PullRequestSummary, bool, string, error) {
 	// One more than what was asked for, capped at GitHub's own per-page
 	// ceiling: the same "ask for a sentinel extra" shape plugins/git's own
 	// fetchDepthForMaxCommits documents, which is what lets paginateBounded
 	// tell an exact-boundary result apart from a truncated one without an
 	// extra round trip.
 	perPage := min(maxPerPage, p.maxResults+1)
+
+	fingerprint := pullRequestListFingerprint(owner, repo, p)
+
+	// See IssueListInputs.cursor's own doc comment (issue_list.go) for the
+	// full reasoning this mirrors: a cursor is only trustworthy under a
+	// sort order where a newly opened pull request can only ever append
+	// past a walk already in progress. Checked before the cursor is
+	// decoded, for the same "more specific than the generic fingerprint
+	// mismatch" reason issueList documents.
+	if p.cursor != "" && !(p.sort == "created" && p.direction == "asc") {
+		return nil, false, "", sdk.InvalidInput(
+			"cursor requires sort: created and direction: asc - only that order guarantees a newly " +
+				"opened pull request appends past a resumed walk rather than shifting it; see " +
+				"PullRequestListInputs.cursor's own doc comment")
+	}
+
+	startPage, startSkip := 1, 0
+	if p.cursor != "" {
+		cur, err := decodePageCursor(p.cursor)
+		if err != nil {
+			return nil, false, "", sdk.InvalidInput("cursor: %v", err)
+		}
+		if err := requireCursorFingerprint(cur, fingerprint); err != nil {
+			return nil, false, "", sdk.InvalidInput("%v", err)
+		}
+		startPage, startSkip = cur.page, cur.skip
+	}
 
 	// convert runs on every raw *github.PullRequest as soon as it is
 	// fetched, so paginateBounded's own byte budget (maxResultBytes) is
@@ -115,17 +177,25 @@ func doPullRequestList(ctx context.Context, client *github.Client, owner, repo s
 		}
 	}
 
-	out, truncated, err := paginateBounded(ctx, perPage, p.maxResults, maxListRequests, maxResultBytes,
+	out, truncated, nextPage, nextSkip, err := paginateBounded(ctx, startPage, startSkip, perPage, p.maxResults, maxListRequests, maxResultBytes,
 		func(ctx context.Context, page, perPage int) ([]*github.PullRequest, *github.Response, error) {
 			return client.PullRequests.List(ctx, owner, repo, &github.PullRequestListOptions{
 				State:       p.state,
 				Base:        p.base,
 				Head:        p.head,
+				Sort:        p.sort,
+				Direction:   p.direction,
 				ListOptions: github.ListOptions{Page: page, PerPage: perPage},
 			})
 		}, convert)
 	if err != nil {
-		return nil, false, err
+		return nil, false, "", err
 	}
-	return out, truncated, nil
+
+	var nextCursor string
+	if truncated && len(out) > 0 && p.sort == "created" && p.direction == "asc" {
+		nextCursor = encodePageCursor(nextPage, nextSkip, fingerprint)
+	}
+
+	return out, truncated, nextCursor, nil
 }

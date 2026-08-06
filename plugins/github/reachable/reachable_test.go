@@ -71,6 +71,7 @@ func TestAFlowfileCanNameTheGitHubPluginsTasks(t *testing.T) {
 	readOnly := readExample(t, "workflow.yaml")
 	mutation := readExample(t, "issue-comment.yaml")
 	triage := readExample(t, "triage.yaml")
+	listResume := readExample(t, "list-resume.yaml")
 
 	// The premise. Before any host registers this plugin's tasks, a Flowfile
 	// naming them is a Flowfile naming nothing - what every author who has not
@@ -127,6 +128,17 @@ func TestAFlowfileCanNameTheGitHubPluginsTasks(t *testing.T) {
 		}
 	}
 
+	beforeListResume, err := flowfile.ValidateSource(listResume)
+	if err != nil {
+		t.Fatalf("ValidateSource(list-resume.yaml): unexpected error: %v", err)
+	}
+	if len(beforeListResume) == 0 {
+		t.Fatal("the validator accepted list-resume.yaml's steps naming a task no registry holds")
+	}
+	if text := diagnosticText(beforeListResume); !strings.Contains(text, "github.issue_list") {
+		t.Errorf("the diagnostics do not name %q; diagnostics:\n%s", "github.issue_list", text)
+	}
+
 	host := openHost(t, plugin.Config{
 		SearchPath:          []string{dir},
 		HandshakeTimeout:    10 * time.Second,
@@ -173,6 +185,17 @@ func TestAFlowfileCanNameTheGitHubPluginsTasks(t *testing.T) {
 		if len(diags) != 0 {
 			t.Errorf("this plugin's tasks are registered and `flow validate` still refuses "+
 				"examples/plugins/github/triage.yaml: %s", diagnosticText(diags))
+		}
+	})
+
+	t.Run("the validator accepts the cursor-resume example", func(t *testing.T) {
+		diags, err := flowfile.ValidateSource(listResume)
+		if err != nil {
+			t.Fatalf("ValidateSource: unexpected error: %v", err)
+		}
+		if len(diags) != 0 {
+			t.Errorf("this plugin's tasks are registered and `flow validate` still refuses "+
+				"examples/plugins/github/list-resume.yaml: %s", diagnosticText(diags))
 		}
 	})
 

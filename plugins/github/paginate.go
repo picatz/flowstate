@@ -55,26 +55,62 @@ import (
 // == false: GitHub itself said there was nothing more, which this task
 // takes at face value rather than second-guessing.
 //
+// startPage and startSkip resume a prior, truncated walk: fetch the page
+// numbered startPage, then discard its first startSkip already-converted
+// entries before resuming collection - see cursor.go's own doc comment for
+// why a resume can land mid-page (the item or byte bound can bind before a
+// page finishes), not only at a page boundary, and why page-plus-skip, not
+// page alone, is what a github list task's own cursor carries. A fresh,
+// non-resumed call passes startPage 1, startSkip 0.
+//
 // perPage and maxItems are validated by the caller before this function is
 // reached (clampMaxResults, capped again at maxPerPage) - not re-checked
-// here, since this function has no schema-level input of its own.
+// here, since this function has no schema-level input of its own. perPage
+// itself has to stay the same across every call of one walk for startPage
+// and startSkip to keep meaning the same offset into the same sequence -
+// each list task's own cursor fingerprint enforces this indirectly by
+// covering max_results (see cursor.go), which is what perPage is always
+// derived from.
+//
+// Returns nextPage and nextSkip alongside truncated: the position a further
+// call would need to resume this exact walk, valid only when truncated is
+// true. Both are 0 when truncated is false, since there is nothing left to
+// resume.
 func paginateBounded[T any, S proto.Message](
 	ctx context.Context,
-	perPage, maxItems, maxRequests, maxResultBytes int,
+	startPage, startSkip, perPage, maxItems, maxRequests, maxResultBytes int,
 	fetch func(ctx context.Context, page, perPage int) ([]T, *github.Response, error),
 	convert func(T) S,
-) ([]S, bool, error) {
-	var items []S
+) (items []S, truncated bool, nextPage, nextSkip int, err error) {
 	var totalBytes int
-	page := 1
+	page := startPage
+	if page < 1 {
+		page = 1
+	}
 
 	for requests := 0; requests < maxRequests; requests++ {
 		got, resp, err := fetch(ctx, page, perPage)
 		if err != nil {
-			return nil, false, err
+			return nil, false, 0, 0, err
 		}
 
-		for _, raw := range got {
+		// startSkip only ever applies to startPage itself - the one page a
+		// resumed call's cursor named as partially consumed. Every later
+		// page this same call walks starts fresh at index 0. Clamped to
+		// len(got) rather than trusted outright: the page this cursor named
+		// can have shrunk since it was issued (an item at or before the
+		// skip point was deleted on GitHub's side between calls), and
+		// treating that as "this page is now fully consumed" is the
+		// conservative reading - never re-emitting an entry already
+		// returned, at the cost of possibly missing one that moved earlier.
+		// See cursor.go's own doc comment for why this is the one gap even
+		// a stable sort order does not close.
+		skip := 0
+		if requests == 0 {
+			skip = min(startSkip, len(got))
+		}
+
+		for i := skip; i < len(got); i++ {
 			if len(items) >= maxItems {
 				// Proof that more exists, found before it was ever
 				// collected - the same "check the bound before admitting
@@ -84,14 +120,16 @@ func paginateBounded[T any, S proto.Message](
 				// is precisely maxItems, and truly nothing more exists)
 				// come back as truncated: false instead of a false
 				// positive: this branch is only reached when a further
-				// entry genuinely sits in the page already fetched.
-				return items, true, nil
+				// entry genuinely sits in the page already fetched. page
+				// and i (this page, this index) are exactly where a resumed
+				// call needs to pick up.
+				return items, true, page, i, nil
 			}
 
 			// Converted immediately, so the raw go-github value (which may
 			// carry a body or other unbounded field this task's own
 			// summary never surfaces) never outlives this iteration.
-			converted := convert(raw)
+			converted := convert(got[i])
 			size := proto.Size(converted)
 			if totalBytes+size > maxResultBytes {
 				// The byte budget is what stopped this walk, not the item
@@ -100,7 +138,7 @@ func paginateBounded[T any, S proto.Message](
 				// branch above is: refused rather than admitted, because
 				// admitting it would cross the budget this call promised
 				// to hold to.
-				return items, true, nil
+				return items, true, page, i, nil
 			}
 			totalBytes += size
 			items = append(items, converted)
@@ -109,14 +147,14 @@ func paginateBounded[T any, S proto.Message](
 		if resp == nil || resp.NextPage == 0 {
 			// GitHub said that was everything - not merely that this call
 			// stopped looking.
-			return items, false, nil
+			return items, false, 0, 0, nil
 		}
 		if len(items) >= maxItems {
 			// The page ended exactly at the boundary, and GitHub reports a
 			// further page - proof enough that more exists. Fetching it
 			// just to confirm would spend a request this call has already
 			// decided it does not need.
-			return items, true, nil
+			return items, true, resp.NextPage, 0, nil
 		}
 
 		page = resp.NextPage
@@ -127,6 +165,8 @@ func paginateBounded[T any, S proto.Message](
 	// here is unknown - which is exactly why this reports truncated rather
 	// than guessing complete, the same as the shallow-clone-boundary branch
 	// in plugins/git's own collectLogCommits reports truncated rather than
-	// assuming history simply ended.
-	return items, true, nil
+	// assuming history simply ended. page already holds the next page a
+	// resumed call would fetch (advanced at the bottom of the loop body on
+	// every iteration that reached here).
+	return items, true, page, 0, nil
 }
