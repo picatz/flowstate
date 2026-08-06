@@ -363,6 +363,36 @@ const (
 	UndoScopeLoop
 )
 
+// IntoCall reports the placement a callee's own steps run at, given the
+// placement of the `call:` step that reaches them.
+//
+// Not always [UndoScopeCall]. A call is transparent to whatever restriction
+// already applies to the scope it sits in — it does not launder one away. A
+// call reached from the top level or from another call's body composes onto
+// the same sequential, well-ordered stack ([UndoScopeCall]); a call reached
+// from inside a `for_each` body, a `parallel` branch, or a `loop:` body stays
+// exactly as refused as a bare task step there would be, because nothing about
+// wrapping the concurrent or carried-state work in a call changes why it was
+// refused — a callee's steps still run once per branch, once per iteration, or
+// once per loop pass, in the same scope that made registration order
+// undefined (or carried state ill-defined) in the first place.
+//
+// One rule, called by both execution drivers and the validator, is what keeps
+// a `call:` inside a `for_each` from becoming an escape hatch out of the
+// concurrency refusal on one of them and not the other — see issue #219's
+// review, which found exactly that gap: a naive "descending into a call is
+// always [UndoScopeCall]" let a callee's `undo:` validate and run wherever the
+// call itself was nested, in whatever order the enclosing construct happened
+// to produce.
+func (s UndoScope) IntoCall() UndoScope {
+	switch s {
+	case UndoScopeTopLevel, UndoScopeCall:
+		return UndoScopeCall
+	default:
+		return s
+	}
+}
+
 // CheckUndoPlacement reports whether a node may carry the compensation it does.
 //
 // # Where a compensation may be written

@@ -531,6 +531,66 @@ func UndoPlacementCases(base string) []UndoCase {
 			},
 			Fails: true,
 		},
+		{
+			// Test that A cannot reach B, not that A can reach A: every other case
+			// in this set proves a shape is refused when it is written directly;
+			// this one proves the refusal survives a `call:` standing in between.
+			// A callee's compensation composes onto the caller's stack when the
+			// call is reached from the top level or from another call — but a call
+			// reached from *inside* a `for_each` body must not become a way to
+			// route a compensation around the concurrency refusal that already
+			// applies there. See [v1.UndoScope.IntoCall], which composes the
+			// callee's placement with the scope the call itself sits in rather
+			// than always granting [v1.UndoScopeCall].
+			Name: "a call inside a for_each body, whose callee compensates, is refused",
+			Workflow: &v1.Workflow{
+				Name:    "undo-call-inside-for-each",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					{
+						Id: "loop",
+						Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+							Items: v1.NewExpr("['x']"),
+							Body: []*v1.Node{
+								callNode("provision", &v1.Workflow{
+									Name:    "undo-call-inside-for-each-callee",
+									Profile: v1.CurrentProfile,
+									Steps:   []*v1.Node{undoing(records("inner", base, "i"), base, "/do/undo")},
+								}, nil),
+							},
+						}},
+					},
+				},
+			},
+			Fails: true,
+		},
+		{
+			// The same escape hatch, closed for a `parallel:` branch too.
+			Name: "a call inside a parallel branch, whose callee compensates, is refused",
+			Workflow: &v1.Workflow{
+				Name:    "undo-call-inside-parallel",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					{
+						Id: "fan",
+						Kind: &v1.Node_Parallel{Parallel: &v1.Parallel{
+							Branches: []*v1.Parallel_Branch{
+								{
+									Steps: []*v1.Node{
+										callNode("provision", &v1.Workflow{
+											Name:    "undo-call-inside-parallel-callee",
+											Profile: v1.CurrentProfile,
+											Steps:   []*v1.Node{undoing(records("inner", base, "i"), base, "/do/undo")},
+										}, nil),
+									},
+								},
+							},
+						}},
+					},
+				},
+			},
+			Fails: true,
+		},
 	}
 }
 

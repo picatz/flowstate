@@ -232,14 +232,23 @@ func Validate(wf *v1.Workflow) Diagnostics {
 		}}
 	}
 
-	return validateAtDepth(wf, 0)
+	return validateAtDepth(wf, 0, v1.UndoScopeTopLevel)
 }
 
 // validateAtDepth is the whole of what [Validate] checks for one workflow, at
 // the call depth ([v1.CheckCallDepth]) it was reached at — zero for the
 // top-level workflow a run submits, and one deeper for every call standing
 // between here and it.
-func validateAtDepth(wf *v1.Workflow, depth int) Diagnostics {
+//
+// placement is this workflow's own undo scope, already composed by the caller
+// through [v1.UndoScope.IntoCall] — [v1.UndoScopeTopLevel] for the run's own
+// top level, [v1.UndoScopeCall] for a callee reached through a call sitting at
+// top level or inside another call, and [v1.UndoScopeConcurrent] /
+// [v1.UndoScopeLoop] for a callee reached through a call that itself sits
+// inside a `for_each` body, a `parallel` branch, or a `loop:` body — a call is
+// transparent to whatever restriction already applies there, not an escape
+// from it. See [validateCallAtDepth], which does the composing.
+func validateAtDepth(wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnostics {
 	var ds Diagnostics
 
 	if wf.GetName() == "" {
@@ -356,18 +365,10 @@ func validateAtDepth(wf *v1.Workflow, depth int) Diagnostics {
 		inner, varDiagnostics := scopeWithStepVars(id, node, scope, i, wf)
 		ds = append(ds, varDiagnostics...)
 
-		// The true top level (depth zero) or a callee reached through a `call:`
-		// (deeper) — both are [v1.UndoScopeTopLevel]/[v1.UndoScopeCall]
-		// respectively, since a callee's own steps are validated on their own
-		// terms by [validateCallAtDepth] recursing into this same function; see
-		// that function's doc for why that recursion is what makes a callee's
-		// `undo:` validate the same way whether checked standalone or reached
-		// through a caller.
-		topLevelPlacement := v1.UndoScopeTopLevel
-		if depth > 0 {
-			topLevelPlacement = v1.UndoScopeCall
-		}
-		ds = append(ds, validateUndo(id, node, inner, i, wf, topLevelPlacement)...)
+		// This workflow's own placement, passed in by the caller — the true top
+		// level, or whatever a callee reached through a call composes to; see
+		// [validateAtDepth]'s doc.
+		ds = append(ds, validateUndo(id, node, inner, i, wf, placement)...)
 
 		if task == nil {
 			// A step may be a loop or a parallel block rather than a task. Its
@@ -397,7 +398,7 @@ func validateAtDepth(wf *v1.Workflow, depth int) Diagnostics {
 				ds = append(ds, validateWait(id, kind.Wait, inner, i, wf)...)
 
 			case *v1.Node_Call:
-				ds = append(ds, validateCallAtDepth(id, kind.Call, inner, i, wf, depth+1)...)
+				ds = append(ds, validateCallAtDepth(id, kind.Call, inner, i, wf, depth+1, placement)...)
 
 			default:
 				ds = append(ds, Diagnostic{
@@ -1085,7 +1086,7 @@ func validateNested(nodes []*v1.Node, enclosing refScope, index int, wf *v1.Work
 			case *v1.Node_Wait:
 				ds = append(ds, validateWait(id, kind.Wait, inner, index, wf)...)
 			case *v1.Node_Call:
-				ds = append(ds, validateCallAtDepth(id, kind.Call, inner, index, wf, depth+1)...)
+				ds = append(ds, validateCallAtDepth(id, kind.Call, inner, index, wf, depth+1, placement)...)
 			default:
 				ds = append(ds, Diagnostic{
 					Step:    id,

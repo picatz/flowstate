@@ -515,6 +515,85 @@ steps:
 	})
 }
 
+// TestUndoInsideACallInsideConcurrentControlFlowIsRefused is the negative
+// direction [TestUndoInsideACalleeValidates] needs beside it — test that A
+// cannot reach B, not that A can reach A. A callee's `undo:` validates when the
+// `call:` reaching it sits at the top level; this pins that it stays refused
+// when the `call:` itself sits inside a `for_each` body or a `parallel` branch,
+// with the concurrency message rather than a silent accept. A call must not be
+// usable to launder a compensation out of a scope that already refuses one —
+// see [v1.UndoScope.IntoCall], which both drivers and this validator compose
+// through identically.
+func TestUndoInsideACallInsideConcurrentControlFlowIsRefused(t *testing.T) {
+	calleeSrc := `edition: v2026.2
+name: callee
+steps:
+  - id: provision
+    log:
+      message: hi
+    undo:
+      log:
+        message: bye
+`
+
+	t.Run("call inside a for_each body", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "callee.yaml", calleeSrc)
+		caller := writeFile(t, dir, "caller.yaml", `edition: v2026.2
+name: caller
+steps:
+  - id: loop
+    for_each:
+      items: ${[1]}
+      steps:
+        - id: provision
+          call: ./callee.yaml
+`)
+
+		wf, _, err := flowfile.ParseFile(caller)
+		require.NoError(t, err)
+
+		ds := flowfile.Validate(wf)
+		require.NotEmpty(t, ds, "a callee's undo reached through a call inside a for_each body validated and should not have")
+
+		var found bool
+		for _, d := range ds {
+			if strings.Contains(d.Error(), "the order work registers in inside concurrent control flow is not the same") {
+				found = true
+			}
+		}
+		assert.True(t, found, "no diagnostic gave the concurrency reason for refusing the callee's undo; got:\n%s", ds.Error())
+	})
+
+	t.Run("call inside a parallel branch", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "callee.yaml", calleeSrc)
+		caller := writeFile(t, dir, "caller.yaml", `edition: v2026.2
+name: caller
+steps:
+  - id: fan
+    parallel:
+      - steps:
+          - id: provision
+            call: ./callee.yaml
+`)
+
+		wf, _, err := flowfile.ParseFile(caller)
+		require.NoError(t, err)
+
+		ds := flowfile.Validate(wf)
+		require.NotEmpty(t, ds, "a callee's undo reached through a call inside a parallel branch validated and should not have")
+
+		var found bool
+		for _, d := range ds {
+			if strings.Contains(d.Error(), "the order work registers in inside concurrent control flow is not the same") {
+				found = true
+			}
+		}
+		assert.True(t, found, "no diagnostic gave the concurrency reason for refusing the callee's undo; got:\n%s", ds.Error())
+	})
+}
+
 // TestUndoIsReservedAgainstTaskNames keeps the grammar unambiguous.
 //
 // A step key is a property or a task name, told apart by asking the registry,

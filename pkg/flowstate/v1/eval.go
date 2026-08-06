@@ -992,7 +992,7 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, p
 			continue
 		}
 
-		outputs, err := runNodeWithVars(nodeCtx, node, scope, undo, depth)
+		outputs, err := runNodeWithVars(nodeCtx, node, scope, undo, placement, depth)
 		if err != nil {
 			// Cancellation is not a step failure, so `continue_on_error` does not
 			// get to tolerate it — the durable driver says the same thing at the
@@ -1040,13 +1040,13 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, p
 // Evaluated after the condition deliberately: `if:` decides whether the step runs
 // at all, so a var it declares does not exist yet when the question is asked —
 // and a var whose expression would fail must not fail a step that is skipped.
-func runNodeWithVars(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, depth int) (*Node_Outputs, error) {
+func runNodeWithVars(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, placement UndoScope, depth int) (*Node_Outputs, error) {
 	inner, err := EvalStepVars(ctx, node, scope)
 	if err != nil {
 		return nil, err
 	}
 
-	outputs, err := runNode(ctx, node, inner, undo, depth)
+	outputs, err := runNode(ctx, node, inner, undo, placement, depth)
 	if err != nil {
 		return nil, err
 	}
@@ -1122,7 +1122,7 @@ func runUndoOnCancel(ctx context.Context, w *Workflow, undo *UndoLog) []UndoResu
 }
 
 // runNode executes one node and returns the outputs it records.
-func runNode(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, depth int) (*Node_Outputs, error) {
+func runNode(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, placement UndoScope, depth int) (*Node_Outputs, error) {
 	switch n := node.Kind.(type) {
 	case *Node_Task:
 		return runStepWithPolicy(ctx, n.Task, node.GetPolicy(), scope)
@@ -1140,7 +1140,12 @@ func runNode(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, depth
 		return runWait(ctx, node, n.Wait, scope)
 
 	case *Node_Call:
-		return runCall(ctx, n.Call, scope, undo, depth+1)
+		// The callee's own placement composes with the scope this call itself
+		// sits in — see [UndoScope.IntoCall] — rather than always being
+		// [UndoScopeCall]. A call reached from inside a for_each body or a
+		// parallel branch must not become an escape hatch out of the
+		// concurrency refusal just because a call sits between the two.
+		return runCall(ctx, n.Call, scope, undo, placement.IntoCall(), depth+1)
 
 	default:
 		return nil, fmt.Errorf("unsupported node kind: %T", n)
@@ -1168,11 +1173,20 @@ func runNode(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, depth
 // run to completion, in order, before the step that follows the call does, on
 // both drivers — so a compensation the callee registers belongs on the same
 // run-level stack a top-level step's would, and undoes in the same reverse
-// registration order across the boundary. The body runs at [UndoScopeCall], which
-// [CheckUndoPlacement] honours for exactly that reason; it still refuses `undo:`
-// on the `call:` step itself, since a call has no effect of its own — the
-// compensation belongs on the callee's steps, not on the step that reaches them.
-func runCall(ctx context.Context, call *Call, scope *Scope, undo *UndoLog, depth int) (*Node_Outputs, error) {
+// registration order across the boundary.
+//
+// placement is the callee's own body scope, already composed by the caller
+// through [UndoScope.IntoCall] — not always [UndoScopeCall]. A call reached
+// from the top level or from another call's body does run its callee at
+// [UndoScopeCall], which [CheckUndoPlacement] honours for the reason above; a
+// call reached from inside a `for_each` body, a `parallel` branch, or a
+// `loop:` body carries that restriction straight through, because nothing
+// about a call sitting in between changes why the enclosing scope refused
+// `undo:` in the first place. [CheckUndoPlacement] still refuses `undo:` on
+// the `call:` step itself regardless, since a call has no effect of its own —
+// the compensation belongs on the callee's steps, not on the step that
+// reaches them.
+func runCall(ctx context.Context, call *Call, scope *Scope, undo *UndoLog, placement UndoScope, depth int) (*Node_Outputs, error) {
 	if err := CheckCallDepth(depth); err != nil {
 		return nil, err
 	}
@@ -1201,7 +1215,7 @@ func runCall(ctx context.Context, call *Call, scope *Scope, undo *UndoLog, depth
 		return nil, err
 	}
 
-	if err := runNodes(ctx, callee.GetSteps(), inner, undo, UndoScopeCall, depth); err != nil {
+	if err := runNodes(ctx, callee.GetSteps(), inner, undo, placement, depth); err != nil {
 		// Named, because a failure inside a called workflow reported without
 		// saying which one leaves a reader looking through the caller for a step
 		// that is not there.

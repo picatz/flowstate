@@ -392,10 +392,16 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 		progress: e.progress,
 		undo:     e.undo,
 
-		// The callee's steps are sequential, compile-time-vendored control flow, so
-		// a compensation written on one of them composes onto the same run-level
-		// stack a top-level step's would — see [v1.UndoScopeCall].
-		undoScope: v1.UndoScopeCall,
+		// Composed with the scope this call itself sits in, not always
+		// [v1.UndoScopeCall] — see [v1.UndoScope.IntoCall]. A call reached from
+		// the top level or from another call's body runs its callee at
+		// UndoScopeCall, where a compensation composes onto the same run-level
+		// stack a top-level step's would; a call reached from inside a
+		// `for_each` body, a `parallel` branch, or a `loop:` body carries that
+		// restriction straight through its callee, so a call cannot be used to
+		// escape the concurrency or carried-state refusal that already applies
+		// to the scope it sits in.
+		undoScope: e.undoScope.IntoCall(),
 
 		callDepth: e.callDepth + 1,
 	}

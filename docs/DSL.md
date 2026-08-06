@@ -2194,6 +2194,22 @@ steps or vars, a compensation's own scope is still the step's outputs the moment
 succeeded, and a callee's `undo:` still resolves `${steps.<id>.<output>}` against its
 own outputs exactly as a top-level step's does.
 
+**A call is transparent to a restriction that already applies, not an escape from
+one.** A callee's placement is not unconditionally `UndoScopeCall` — it is
+`callSitePlacement.IntoCall()`, composed with whatever scope the `call:` step
+itself sits in. A call reached from the top level or from another call's body
+composes to `UndoScopeCall`, which is the case above. A call reached from *inside*
+a `for_each` body, a `parallel:` branch, or a `loop:` body composes to that same
+restriction instead, and its callee's `undo:` is refused with that restriction's
+own message — the concurrency one, or the loop one. Without this, a `for_each`
+whose body did nothing but `call:` a workflow with a compensating step would have
+been an unintended way to route a compensation around the exact refusal invariant 3
+exists to enforce: the callee's steps still run once per iteration or once per
+branch, in the same scope that made registration order undefined in the first
+place, whether or not a call sits between the two. One function,
+[`UndoScope.IntoCall`](../pkg/flowstate/v1/undo.go), composes this identically for
+both execution drivers and `flow validate`.
+
 ### What this slice does not do, and why
 
 Two narrowings, each of which is a design that has to be argued rather than guessed.
