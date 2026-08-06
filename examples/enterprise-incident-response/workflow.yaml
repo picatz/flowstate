@@ -164,17 +164,15 @@ steps:
       name: responder-ack
       timeout: 30m
 
-  # Whoever actually looked - the first responder if they answered in time,
-  # or whoever answered the escalation - is who the incident is considered
-  # "claimed" by. This is evidence for a human reading the run, not the
-  # remediation decision itself, which is `remediation_ack` below.
+  # Whether *someone* answered the page - not attestation, on purpose. This is
+  # evidence for a human reading the run, not the remediation decision itself
+  # (`remediation_ack` below), so it does not gate on `sender.local`/
+  # `run.local` the way that step's own `authorized` has to: it shares
+  # exactly one question with `remediation_ack`'s own `if:` - did somebody
+  # answer in the first window or the escalation - and asks it the same way.
   - id: claimed
     if: >-
-      ${(!steps.responder_ack.timed_out && !steps.responder_ack.sender.local && !run.local &&
-          steps.responder_ack.sender.identity.subject != "") ||
-        (steps.responder_ack.timed_out && !steps.escalated_ack.timed_out &&
-          !steps.escalated_ack.sender.local && !run.local &&
-          steps.escalated_ack.sender.identity.subject != "")}
+      ${(!steps.responder_ack.timed_out) || (steps.responder_ack.timed_out && !steps.escalated_ack.timed_out)}
     log:
       message: ${inputs.incident_id + " claimed"}
 

@@ -37,8 +37,8 @@ tests:
         returns:
           deployed_version: v3.9.1
     expect:
-      ran: [page, responder_ack, logs, metrics, recent_deploys, remediation_ack, refused]
-      skipped: [escalate, escalated_ack, claimed, authorized]
+      ran: [page, responder_ack, logs, metrics, recent_deploys, claimed, remediation_ack, refused]
+      skipped: [escalate, escalated_ack, authorized]
       outputs:
         outcome: refused
         authorized_by: ""
@@ -100,8 +100,8 @@ tests:
         returns:
           deployed_version: v3.9.0
     expect:
-      ran: [page, responder_ack, logs, metrics, recent_deploys, escalate, escalated_ack, remediation_ack]
-      skipped: [claimed, authorized, refused]
+      ran: [page, responder_ack, logs, metrics, recent_deploys, escalate, escalated_ack, claimed, remediation_ack]
+      skipped: [authorized, refused]
       outputs:
         outcome: claimed_unremediated
         authorized_by: ""

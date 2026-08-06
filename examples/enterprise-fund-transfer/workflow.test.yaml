@@ -20,11 +20,11 @@ tests:
       - task: log
         returns: {}
       - task: http
-        where: inputs.url == 'https://ledger.internal.example.com/accounts/acct-treasury-001/debit'
+        where: inputs.url == 'https://ledger.internal.example.com/debit' && inputs.json.account_id == 'acct-treasury-001'
         returns:
           reference: dbt-1
       - task: http
-        where: inputs.url == 'https://ledger.internal.example.com/accounts/acct-supplier-042/credit'
+        where: inputs.url == 'https://ledger.internal.example.com/credit' && inputs.json.account_id == 'acct-supplier-042'
         returns:
           reference: crd-1
       - task: http
@@ -49,11 +49,11 @@ tests:
       - task: log
         returns: {}
       - task: http
-        where: inputs.url == 'https://ledger.internal.example.com/accounts/acct-treasury-001/debit'
+        where: inputs.url == 'https://ledger.internal.example.com/debit' && inputs.json.account_id == 'acct-treasury-001'
         returns:
           reference: dbt-2
       - task: http
-        where: inputs.url == 'https://ledger.internal.example.com/accounts/acct-supplier-042/credit'
+        where: inputs.url == 'https://ledger.internal.example.com/credit' && inputs.json.account_id == 'acct-supplier-042'
         returns:
           reference: crd-2
       - task: http
@@ -62,12 +62,14 @@ tests:
           kind: Upstream
           message: settlement service unavailable
       # The compensations, hit for real by the local driver once notify_settlement
-      # fails - reversing amounts at the opposite endpoint from the original call.
+      # fails - reversing amounts at the opposite endpoint from the original call,
+      # each account in the body rather than the path (see workflow.yaml's own
+      # `undo:` comment on `debit`).
       - task: http
-        where: inputs.url == 'https://ledger.internal.example.com/accounts/acct-supplier-042/debit'
+        where: inputs.url == 'https://ledger.internal.example.com/debit' && inputs.json.account_id == 'acct-supplier-042'
         returns: {}
       - task: http
-        where: inputs.url == 'https://ledger.internal.example.com/accounts/acct-treasury-001/credit'
+        where: inputs.url == 'https://ledger.internal.example.com/credit' && inputs.json.account_id == 'acct-treasury-001'
         returns: {}
     expect:
       failed: true

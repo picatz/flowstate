@@ -1,5 +1,5 @@
 {
   "tenant": "acme",
   "plan": "growth",
-  "activation_grace_hours": 1
+  "activation_grace_hours": 0
 }

@@ -16,6 +16,7 @@ tests:
         - grantee: bob@example.com
           resource: billing-console
           role: read-only
+      expected_reviewer: compliance-lead@example.com
     signals:
       - name: attestation-recorded
         payload:
@@ -64,6 +65,7 @@ tests:
         - grantee: carol@example.com
           resource: payroll-service
           role: contributor
+      expected_reviewer: compliance-lead@example.com
     stubs:
       - task: log
         returns: {}
@@ -95,6 +97,7 @@ tests:
     workflow: ./workflow.yaml
     inputs:
       access_grants: []
+      expected_reviewer: compliance-lead@example.com
     stubs:
       - task: log
         returns: {}

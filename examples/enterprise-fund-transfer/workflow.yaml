@@ -137,22 +137,24 @@ steps:
             steps.approval.sender.identity.issuer == run.identity.issuer))}
     http:
       method: POST
-      url: ${'https://ledger.internal.example.com/accounts/' + inputs.from_account_id + '/debit'}
+      url: https://ledger.internal.example.com/debit
       headers:
         Idempotency-Key: ${inputs.idempotency_key}
-      json: '${ {"amount_cents": inputs.amount_cents} }'
+      json: '${ {"account_id": inputs.from_account_id, "amount_cents": inputs.amount_cents} }'
       parse_json: true
       outputs: '${ {"reference": response.json.reference} }'
     undo:
       # The reversal carries its own key, derived from the original, so a
       # compensation that itself gets retried is exactly as idempotent as the
-      # step it is undoing.
+      # step it is undoing. It lands on the *credit* endpoint - crediting the
+      # debited account back - rather than a third "reverse" endpoint, the
+      # same account-in-the-body shape as the ordinary steps above.
       http:
         method: POST
-        url: ${'https://ledger.internal.example.com/accounts/' + inputs.from_account_id + '/credit'}
+        url: https://ledger.internal.example.com/credit
         headers:
           Idempotency-Key: ${inputs.idempotency_key + "-undo-debit"}
-        json: '${ {"amount_cents": inputs.amount_cents} }'
+        json: '${ {"account_id": inputs.from_account_id, "amount_cents": inputs.amount_cents} }'
 
   - id: credit
     if: >-
@@ -164,19 +166,19 @@ steps:
             steps.approval.sender.identity.issuer == run.identity.issuer))}
     http:
       method: POST
-      url: ${'https://ledger.internal.example.com/accounts/' + inputs.to_account_id + '/credit'}
+      url: https://ledger.internal.example.com/credit
       headers:
         Idempotency-Key: ${inputs.idempotency_key}
-      json: '${ {"amount_cents": inputs.amount_cents} }'
+      json: '${ {"account_id": inputs.to_account_id, "amount_cents": inputs.amount_cents} }'
       parse_json: true
       outputs: '${ {"reference": response.json.reference} }'
     undo:
       http:
         method: POST
-        url: ${'https://ledger.internal.example.com/accounts/' + inputs.to_account_id + '/debit'}
+        url: https://ledger.internal.example.com/debit
         headers:
           Idempotency-Key: ${inputs.idempotency_key + "-undo-credit"}
-        json: '${ {"amount_cents": inputs.amount_cents} }'
+        json: '${ {"account_id": inputs.to_account_id, "amount_cents": inputs.amount_cents} }'
 
   # The step that can still fail after money has moved on both sides - the
   # settlement record a downstream reconciliation job reads. When it does,

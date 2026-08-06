@@ -90,11 +90,11 @@ tests:
         returns:
           resource_id: access-acme-2
       - task: http
-        where: inputs.url == 'https://provisioning.internal.example.com/activation-slots'
+        where: inputs.url == 'https://provisioning.internal.example.com/activation-slots' && has(inputs.json.tenant)
         returns:
           slot_id: slot-2
       - task: http
-        where: inputs.url == 'https://provisioning.internal.example.com/dns-records'
+        where: inputs.url == 'https://provisioning.internal.example.com/dns-records' && has(inputs.json.tenant)
         returns:
           record_id: dns-2
       - task: http
@@ -102,12 +102,14 @@ tests:
         fails:
           kind: Upstream
           message: activation service unavailable
-      # The compensations, hit for real once activate fails.
+      # The compensations, hit for real once activate fails - the same literal
+      # URL as the reservation above, distinguished by the id travelling in the
+      # body instead of the tenant (see workflow.yaml's own `undo:` comment).
       - task: http
-        where: inputs.url == 'https://provisioning.internal.example.com/dns-records/dns-2'
+        where: inputs.url == 'https://provisioning.internal.example.com/dns-records' && inputs.json.record_id == 'dns-2'
         returns: {}
       - task: http
-        where: inputs.url == 'https://provisioning.internal.example.com/activation-slots/slot-2'
+        where: inputs.url == 'https://provisioning.internal.example.com/activation-slots' && inputs.json.slot_id == 'slot-2'
         returns: {}
     expect:
       failed: true

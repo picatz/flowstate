@@ -101,6 +101,64 @@ var exampleSignals = map[string]map[string]*v1.Node_Outputs{
 			"approved": v1.NewLiteral(true),
 		}},
 	},
+
+	// enterprise-fund-transfer's `approval` gate is reached only above
+	// `approval_threshold_cents`, and this example's own `inputs.json` names an
+	// `amount_cents` below it — so this payload, like approval-gate's own, is
+	// never actually consumed by the comparison run below; it exists because the
+	// gate is structural (`WaitsForASignal` sees the node regardless of `if:`)
+	// and every waiting example must answer in one of these two tables.
+	"enterprise-fund-transfer": {
+		"transfer-approved": {NamedValues: map[string]*v1.Value{
+			"approved": v1.NewLiteral(true),
+		}},
+	},
+
+	// enterprise-access-review's `attestation` gate checks the attested sender
+	// against `inputs.expected_reviewer` — this harness's fixed simulated
+	// identity ("examples"/"flowstate:test") never matches the
+	// "compliance-lead@example.com" this example's own `inputs.json` names, the
+	// same reason approval-gate's own `expected_approver` keeps `deploy`
+	// unreachable here. So `recorded` never fires in this harness either, and
+	// `unattested` runs on both drivers — for a different reason each time
+	// (locally: no attested sender at all; durably: attested, but not the
+	// expected reviewer), which is exactly the shape that keeps the two drivers'
+	// answers identical.
+	"enterprise-access-review": {
+		"attestation-recorded": {NamedValues: map[string]*v1.Value{
+			"attested": v1.NewLiteral(true),
+		}},
+	},
+
+	// enterprise-incident-response has two distinct signal names. `responder-ack`
+	// answers both `responder_ack` and `escalated_ack` — whichever one is
+	// actually reached — and its payload carries no key either step reads, since
+	// being claimed is deliberately not an attestation-gated decision (see
+	// `claimed`'s own comment in the workflow). `remediation-authorized` answers
+	// `remediation_ack`; its `authorized` decision, like fund-transfer's and
+	// access-review's, compares the attested sender against `run.identity` —
+	// this harness signs the run and every signal with the identical identity,
+	// so `authorized` is self-approved and unreachable here, and `refused` runs
+	// on both drivers the same way `unattested` does above.
+	"enterprise-incident-response": {
+		"responder-ack": {NamedValues: map[string]*v1.Value{
+			"claimed": v1.NewLiteral(true),
+		}},
+		"remediation-authorized": {NamedValues: map[string]*v1.Value{
+			"authorized": v1.NewLiteral(true),
+		}},
+	},
+
+	// enterprise-customer-onboarding's `activation_confirmation` gate reads only
+	// `payload.confirmed`, with no `sender.local`/`run.identity` check at all —
+	// deliberately, since it is a go-live confirmation rather than a deploy or a
+	// transfer's authorization — so `activate` fires identically on both
+	// drivers, unlike the three gates above.
+	"enterprise-customer-onboarding": {
+		"activation-confirmed": {NamedValues: map[string]*v1.Value{
+			"confirmed": v1.NewLiteral(true),
+		}},
+	},
 }
 
 // exampleLapsingGates names an example whose gate is meant to go unanswered,

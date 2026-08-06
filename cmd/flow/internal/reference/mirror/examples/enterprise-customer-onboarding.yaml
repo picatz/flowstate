@@ -103,6 +103,15 @@ inputs:
       how long after provisioning completes before the tenant goes live and
       billing starts - the SLA window a real deployment would size per plan
 
+    # `inputs.json` beside this file sets this to 0 - a real value (an
+    # immediate go-live, no grace period) and also the one that lets `flow
+    # run local` and this repo's own example harness finish in seconds
+    # rather than sitting through a real wait. `wait_until:` on a moment
+    # already past releases immediately (see wait-until-a-moment), so 0
+    # hours is not a special case in the engine, only a deliberately small
+    # one here - the same trade-off approval-gate's own header names for its
+    # day-long gate.
+
 # Who may deliver `activation-confirmed` at all, enforced by
 # `FlowstateServer.Signal` before Temporal ever sees the signal - the same
 # `signals:` shape every other example in this portfolio uses, here for the
@@ -151,9 +160,16 @@ steps:
       parse_json: true
       outputs: '${ {"slot_id": response.json.slot_id} }'
     undo:
+      # A literal URL with the slot id in the body, not spliced into the path —
+      # see enterprise-fund-transfer's `debit` step for the identical reasoning:
+      # a URL built by concatenating a step's own output is not a literal
+      # `PointAtStandIn` can rewrite, which is a property of the test harness,
+      # not of this API design, but one worth building around anyway since the
+      # body was always the more ordinary place to put it.
       http:
         method: DELETE
-        url: ${'https://provisioning.internal.example.com/activation-slots/' + steps.reserve_activation_slot.slot_id}
+        url: https://provisioning.internal.example.com/activation-slots
+        json: '${ {"slot_id": steps.reserve_activation_slot.slot_id} }'
 
   - id: register_dns
     http:
@@ -165,7 +181,8 @@ steps:
     undo:
       http:
         method: DELETE
-        url: ${'https://provisioning.internal.example.com/dns-records/' + steps.register_dns.record_id}
+        url: https://provisioning.internal.example.com/dns-records
+        json: '${ {"record_id": steps.register_dns.record_id} }'
 
   # The grace window. A durable timer, not a sleeping worker - the tenant
   # can sit here for two weeks while every worker in the fleet is replaced
