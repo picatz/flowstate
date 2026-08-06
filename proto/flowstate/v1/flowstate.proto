@@ -322,6 +322,141 @@ message Workflow {
   // bytes per run and is weighed by the same `CheckSpecSize` as everything else
   // (invariant 9). That is the price of one compiled artifact, and it is small.
   Triggers triggers = 10 [(google.api.field_behavior) = OPTIONAL];
+
+  // Signals declares, per signal name, who may deliver it — see
+  // [SignalPolicy]. Absent for a name means today's behavior: any
+  // authenticated caller who can address the run in its tenant may deliver
+  // that signal, exactly as before this field existed. Authorization is
+  // therefore opt-in per signal name, deliberately: failing closed on every
+  // existing workflow the day this field appears would turn every signal
+  // user's next `flow signal` into a denial for a policy nobody wrote.
+  //
+  // # Enforced where the signal is accepted, not where it is read
+  //
+  // A workflow can already gate its own logic on `steps.<wait>.sender`, and
+  // that is real — but it is a check the workflow performs, so it is a check
+  // the workflow's own author can skip: delete the `if:`, and the gate is
+  // gone. This field is read by `FlowstateServer.Signal`, before Temporal
+  // ever sees the signal, against the caller's authenticated identity — a
+  // rejected sender never reaches the workflow at all, and gets
+  // `PermissionDenied` synchronously rather than a signal that was silently
+  // dropped or a wait that quietly never resolves. See lifecycle.go's
+  // `Signal` handler.
+  //
+  // # Frozen at submit, like the rest of the specification
+  //
+  // The whole specification is frozen once a run starts (invariant 10) so
+  // that a run means the same thing on its last segment as its first; this
+  // field is no exception; it is extracted into the run's tenancy memo
+  // alongside the namespace at submit and never re-read from the
+  // specification afterward, which is also what makes it cheap to enforce —
+  // the same `DescribeWorkflowExecution` that already establishes tenancy
+  // for every verb in lifecycle.go answers this too, at no extra Temporal
+  // round trip.
+  //
+  // # Per name, not per wait
+  //
+  // A signal may legitimately arrive before the wait that will consume it is
+  // reached — that is what `PendingSignal` carry exists for — so the server
+  // knows the signal's *name* when it must decide, never which wait (if any)
+  // is currently parked on it. The policy is keyed by name for exactly that
+  // reason: it is the only unit the accepting boundary can actually ask
+  // about. A `wait_for_signal:`-local spelling would only be a projection of
+  // this map back onto one call site, and two waits on the same name with
+  // different local policies would be an ambiguity the compiler would have
+  // to refuse — better not to have the ambiguity at all.
+  //
+  // # Bounded (invariant: bound anything that consumes untrusted input)
+  //
+  // A hand-built specification can reach `Run` directly, so this is
+  // untrusted input like the rest of the spec: at most 64 signal names, each
+  // with at most 32 alternative rules ([SignalPolicy.allow]), each rule with
+  // at most 16 claim entries. `CheckSpecSize`/`CheckRunStateSize` also weigh
+  // the whole message via `proto.Size`, so this is bounded twice over — by
+  // shape here, and by total bytes there.
+  map<string, SignalPolicy> signals = 11 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).map = {
+      keys: {
+        string: {
+          min_len: 1
+          max_len: 128
+          pattern: "^[A-Za-z0-9][A-Za-z0-9-_]*$"
+        }
+      }
+      max_pairs: 64
+    }
+  ];
+}
+
+// SignalPolicy constrains who may deliver one named signal to a run.
+//
+// A sender is authorized if it satisfies *any* rule in [allow] — the rules
+// are alternatives, not requirements every one of them must meet. See
+// [SignalPolicyRule] for what one rule may require.
+message SignalPolicy {
+  // Allow lists the alternative rules that may authorize a sender. At least
+  // one, or the policy authorizes nobody, which is indistinguishable from a
+  // typo and is refused by the compiler rather than accepted as (probably
+  // unintended) lockout.
+  repeated SignalPolicyRule allow = 1 [
+    (buf.validate.field).repeated = {
+      min_items: 1
+      max_items: 32
+    }
+  ];
+}
+
+// SignalPolicyRule is one admissible sender, checked against the
+// [SignalSender] the server itself attested — never against anything the
+// signal's payload claims.
+//
+// Every field set on a rule must match (an AND); a rule with nothing set
+// matches every sender, which defeats the point of writing one, so the
+// compiler refuses it. Combine subject *and* claims in one rule to express
+// "this identity, and it must also carry this claim" — that is one list
+// entry, not two policies an author has to keep in sync by hand.
+message SignalPolicyRule {
+  // Subject is an issuer-qualified identity, written as
+  // "<issuer>#<subject>", matched exactly against the attested sender's
+  // `issuer` and `subject` together.
+  //
+  // Issuer-qualified rather than subject alone, on purpose: a subject is
+  // only unique within its issuer (`auth/principal.go`'s own rule, restated
+  // by `examples/approval-gate/workflow.yaml`'s self-approval check for the
+  // identical reason), so two identity providers can each mint a "runner"
+  // subject that must not be treated as the same caller. A rule keyed on
+  // subject alone would authorize the wrong runner's signal under the right
+  // name — the exact multi-IdP ambiguity #215 found in `run.identity`
+  // comparisons, reproduced here if this field accepted a bare subject. Only
+  // the qualified spelling is accepted; there is no subject-only form to be
+  // ambiguous about.
+  string subject = 1 [(buf.validate.field) = {
+    ignore: IGNORE_IF_UNPOPULATED
+    string: {
+      max_len: 320
+      pattern: "^[^#]+#.+$"
+    }
+  }];
+
+  // Namespace restricts to one tenant, matched exactly against the attested
+  // sender's `namespace`.
+  //
+  // Rarely useful alone — every signal is already confined to its run's own
+  // tenant by `authorizeRun`, before this policy is even consulted — but
+  // combines with `claims` to express "anyone in this tenant carrying this
+  // claim" without naming individual subjects.
+  string namespace = 2 [(buf.validate.field).string = {max_len: 128}];
+
+  // Claims are exact-match requirements against the attested sender's
+  // claims: every key here must be present on the sender with this value.
+  // Empty places no claim requirement, so a rule naming only `subject` is
+  // ordinary and common.
+  map<string, string> claims = 3 [(buf.validate.field).map = {
+    max_pairs: 16
+    keys: {string: {min_len: 1, max_len: 128}}
+    values: {string: {max_len: 256}}
+  }];
 }
 
 // InputDeclaration is one parameter a run may be started with: what it is

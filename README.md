@@ -47,6 +47,16 @@ inputs:
     required: true
     example: sre-lead@example.com
 
+# Who may deliver `deploy-approved` at all, enforced server-side against the
+# attested sender before Temporal ever sees the signal — not a payload check,
+# not something this file's own logic can be argued past.
+signals:
+  deploy-approved:
+    allow:
+      - subject: "https://issuer.example.com#sre-lead@example.com"
+      - claims:
+          team: release-managers
+
 steps:
   - id: request
     log:
@@ -94,15 +104,22 @@ caller-supplied claim checked against another caller-supplied claim. Subject alo
 not do: a subject is only unique within its issuer, so two different identity providers
 could each mint an approver with the same subject the run started as, and comparing
 subject alone would refuse that genuinely different approver as if they were the starter.
-What it still does not do is authorize *who* may
-send `deploy-approved` in the first place — any caller who can reach the run in its tenant
-can, matched approver or not, self-approval refused or not. That gap, plus the fact that
-the check lives in a file its own author can edit, are tracked at
-[#206](https://github.com/picatz/flowstate/issues/206); durable, binding enforcement is
-deployment-side policy ([#187](https://github.com/picatz/flowstate/issues/187)), not a
-cleverer `if:`. What is real today — durable waiting, an unforgeable sender, and a real
-self-approval refusal — is worth having and worth demonstrating; it is just not the whole
-of an approval control on its own.
+
+`signals:` above closes the gap that check alone left open: it is enforced by
+`FlowstateServer.Signal`, against the attested sender, before Temporal ever sees the
+signal — so a caller who is authenticated and in the run's tenant, but not named in
+`allow:`, gets `PermissionDenied` synchronously rather than reaching the workflow at
+all. That is a different question from `deploy`'s own `if:`, and a coarser one: it says
+who may answer this gate *at all*, independent of which run, where `deploy`'s check is
+per-run separation of duties. What still does not bind is the file itself — whoever can
+edit this Flowfile can weaken `deploy`'s `if:`, or delete the `signals:` block above it,
+or widen `allow:` to match anyone. Binding that is deployment-side task-shape policy
+([#187](https://github.com/picatz/flowstate/issues/187)), tracked as the one gap
+[#206](https://github.com/picatz/flowstate/issues/206) leaves open: a workflow cannot
+author a rule that binds against its own author. What is real today — durable waiting,
+an unforgeable sender, a real self-approval refusal, and a real constraint on who may
+answer the gate — is worth having and worth demonstrating; it is just not the whole of
+an approval control on its own.
 
 Run it in this process — no Temporal, no server — and answer the gate yourself:
 

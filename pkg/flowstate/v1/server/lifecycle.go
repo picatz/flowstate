@@ -11,6 +11,7 @@ import (
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -102,6 +103,110 @@ func notFound(workflowID string) *connect.Error {
 	return connect.NewError(connect.CodeNotFound, fmt.Errorf("no such run %q", workflowID))
 }
 
+// signalPolicies reads the signal policy a run declared at submit, from the
+// same memo [authorizeRun] already read to establish tenancy — no second
+// Describe, no reach into history.
+//
+// Absent (ok false, err nil) is not an error: it is the overwhelmingly common
+// case, and it means exactly what [v1.SignalPolicyAllows]'s doc comment says
+// the zero case means — no policy was declared for any signal name, so every
+// name stays unconstrained, exactly as every run behaved before this field
+// existed. A run whose memo predates this field reads the identical way,
+// with no compatibility arm needed, because "nothing here" already means the
+// right thing in both cases.
+//
+// A memo key that *is* present but cannot be decoded, or decodes to
+// something that is not a legitimately declared policy, is a different case
+// entirely, and it is answered the other way: an error, never an empty map.
+// Reading "no bytes, so no constraint" — or "empty map, so no constraint" —
+// out of a decode failure would turn "a policy exists but I could not read
+// it" into "no policy exists", which is the one substitution fail-closed
+// forbids.
+//
+// # Why "present but decodes to nothing" is corruption, not the zero case
+//
+// [signalPolicyMemoEntry] — the one function [FlowstateServer.Run] and
+// [FlowstateServer.CreateSchedule] both use to write this key — never writes
+// it for an empty policy map, and [v1.CheckSignalPolicyShape] refuses a
+// `signals:` block that would compile to one. So "the key is present" and "a
+// non-empty, well-formed policy was recorded" are the same fact on every
+// path that legitimately writes this memo. A present key that decodes to an
+// empty map, or to a policy with no rules, or to a rule that authorizes
+// every sender, is therefore not a policy this server ever wrote — it is
+// truncation, a bit flip, or a byte sequence nothing here produced — and is
+// refused exactly like a payload that fails to decode at all.
+func signalPolicies(memo *common.Memo) (map[string]*v1.SignalPolicy, bool, error) {
+	payload, ok := memo.GetFields()[signalPolicyMemoKey]
+	if !ok {
+		return nil, false, nil
+	}
+
+	var encoded []byte
+	if err := converter.GetDefaultDataConverter().FromPayload(payload, &encoded); err != nil {
+		return nil, false, fmt.Errorf("server: reading the signal policy recorded on a run: %w", err)
+	}
+
+	var spec v1.Workflow
+	if err := proto.Unmarshal(encoded, &spec); err != nil {
+		return nil, false, fmt.Errorf("server: decoding the signal policy recorded on a run: %w", err)
+	}
+
+	declared := spec.GetSignals()
+	if err := v1.CheckSignalPolicyShape(declared); err != nil {
+		return nil, false, fmt.Errorf(
+			"server: the signal policy recorded on a run is not a policy this server would have written: %w", err)
+	}
+
+	return declared, true, nil
+}
+
+// authorizeSignal reports whether sender may deliver a signal named name to
+// the run resp describes, enforced here — before the signal ever reaches
+// Temporal — rather than left to a condition the workflow itself might or
+// might not check.
+//
+// # Fail closed, deliberately unevenly
+//
+// A signal name with **no declared policy** is allowed: that is the zero
+// case, argued in full at [v1.SignalPolicyAllows] and at
+// [v1.Workflow.Signals] — authorization is opt-in per name, because the
+// alternative is every existing workflow's next `flow signal` failing the
+// day this shipped, for a policy nobody wrote. Everything else fails closed
+// without exception: a memo that cannot be decoded, or a sender that
+// matches no rule of a policy that *does* exist, is refused. There is no
+// third outcome once a policy is declared.
+func authorizeSignal(resp *workflowservice.DescribeWorkflowExecutionResponse, name string, sender *v1.SignalSender) error {
+	policies, hasMemo, err := signalPolicies(resp.GetWorkflowExecutionInfo().GetMemo())
+	if err != nil {
+		// The memo is there and unreadable — nothing can be concluded about what
+		// this run's policy actually says, so nobody may act on the strength of a
+		// guess. This is the one place "no policy" and "policy unreadable" must
+		// never be confused, so it is answered before the lookup by name below
+		// ever runs.
+		return connect.NewError(connect.CodePermissionDenied,
+			fmt.Errorf("this run's declared signal policy could not be read, so no sender is authorized "+
+				"until it can be: %w", err))
+	}
+	if !hasMemo {
+		// No policy declared for any signal on this run at all — the zero case.
+		return nil
+	}
+
+	policy, declared := policies[name]
+	if !declared {
+		// This run does declare policies, but not for this name — still the zero
+		// case, per name.
+		return nil
+	}
+
+	if v1.SignalPolicyAllows(policy, sender.GetIdentity()) {
+		return nil
+	}
+
+	return connect.NewError(connect.CodePermissionDenied,
+		fmt.Errorf("the authenticated caller is not authorized to deliver signal %q to this run", name))
+}
+
 // memoTenant reads the namespace recorded on a run when it started.
 //
 // Takes the memo rather than a Describe response because a listing carries the
@@ -144,8 +249,11 @@ func (s *FlowstateServer) Signal(ctx context.Context, req *connect.Request[v1.Si
 	workflowID, runID := req.Msg.GetWorkflowId(), req.Msg.GetRunId()
 
 	// Acted on through the client authorization used, so the run signalled is the
-	// run that was checked.
-	temporal, _, err := s.authorizeRun(ctx, workflowID, runID)
+	// run that was checked. resp is the same DescribeWorkflowExecution response
+	// authorizeRun already read to establish tenancy — its memo is where the
+	// signal policy check below reads from too, so authorizing this signal costs
+	// no round trip beyond what tenancy already paid for.
+	temporal, resp, err := s.authorizeRun(ctx, workflowID, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -167,6 +275,16 @@ func (s *FlowstateServer) Signal(ctx context.Context, req *connect.Request[v1.Si
 	sender := &v1.SignalSender{
 		Identity:   s.identityFor(ctx),
 		AcceptedAt: timestamppb.Now(),
+	}
+
+	// #206 gap 1: who may deliver *this name* to *this run*, checked against
+	// the sender just attested above and before Temporal ever sees the
+	// signal. A denial here never reaches the workflow at all — the caller
+	// gets PermissionDenied synchronously, not a signal silently dropped or a
+	// wait that quietly never resolves. See [authorizeSignal] for the
+	// zero-case and fail-closed rules this enforces.
+	if err := authorizeSignal(resp, req.Msg.GetName(), sender); err != nil {
+		return nil, err
 	}
 
 	delivery := &v1.SignalDelivery{Payload: payload, Sender: sender}

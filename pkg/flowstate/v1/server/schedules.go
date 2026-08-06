@@ -167,6 +167,43 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
+	// The declared signal policy, encoded through the exact function [Run]
+	// uses — [signalPolicyMemoEntry] — so a scheduled run and a direct run
+	// enforce identically. This was the hole a scheduled approval gate had:
+	// a schedule's fired execution used to carry only the tenant memo, never
+	// this one, so `Signal` read the fired run's memo, found no policy
+	// entry, and allowed any in-tenant sender — the zero case, reached by a
+	// workflow that had in fact declared a policy. Sharing the one encoding
+	// function with [Run] is what makes that impossible to reintroduce by
+	// editing one path and not the other.
+	signalEntry, err := signalPolicyMemoEntry(workflow.GetSignals())
+	if err != nil {
+		// Symmetric with Run's own refusal: a specification CheckSignalPolicies
+		// and v1.Validate already accepted, but this handler could not encode,
+		// must not create a schedule whose every firing would silently enforce
+		// nothing.
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	// The schedule's own memo (below) governs the Schedule object itself —
+	// what `ownedBy`/`ListSchedules`/`DescribeSchedule` read — and is never
+	// consulted by `Signal`, which authorizes against the *fired execution's*
+	// memo instead (the Action's, further down). The policy entry is written
+	// to both anyway, for the same reason the tenant already is on both: a
+	// schedule and its firings are two different Temporal objects, and
+	// keeping their memos in the same shape means a future reader of either
+	// finds what it expects rather than discovering the split by tracing
+	// through `Signal`.
+	scheduleMemo := map[string]any{namespaceMemoKey: namespace}
+	for k, v := range signalEntry {
+		scheduleMemo[k] = v
+	}
+
+	actionMemo := map[string]any{namespaceMemoKey: namespace}
+	for k, v := range signalEntry {
+		actionMemo[k] = v
+	}
+
 	_, err = temporal.ScheduleClient().Create(ctx, client.ScheduleOptions{
 		ID:      scheduleIDFor(namespace, name),
 		Spec:    spec,
@@ -176,9 +213,7 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 		// The tenant, recorded the same way and under the same key a run records
 		// it, so [ownedBy] answers for a schedule without a second implementation
 		// of what ownership means.
-		Memo: map[string]any{
-			namespaceMemoKey: namespace,
-		},
+		Memo: scheduleMemo,
 
 		Action: &client.ScheduleWorkflowAction{
 			// A readable id rather than a uuid, because unlike a run this workload
@@ -196,10 +231,10 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 			// indistinguishable from one somebody started — which is the point. It
 			// is authorized by the same memo, listed by the same scan, and scheduled
 			// under the same tenant's fairness key, so a schedule firing every
-			// minute cannot crowd out another tenant's work.
-			Memo: map[string]any{
-				namespaceMemoKey: namespace,
-			},
+			// minute cannot crowd out another tenant's work. This is the memo
+			// [authorizeRun]/[authorizeSignal] actually read for every fired
+			// execution — see the comment above signalEntry.
+			Memo:     actionMemo,
 			Priority: fairnessFor(namespace),
 
 			Args: []any{&v1.RunState{

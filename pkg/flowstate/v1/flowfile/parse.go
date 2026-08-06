@@ -51,7 +51,7 @@ const (
 // misspelled `timout:` that is silently ignored does nothing at run time and gives
 // the author no reason to doubt it, which is the worst of both outcomes.
 var (
-	workflowKeys = []string{"edition", "name", "description", "inputs", "outputs", "vars", "steps", "triggers"}
+	workflowKeys = []string{"edition", "name", "description", "inputs", "outputs", "vars", "steps", "triggers", "signals"}
 
 	// The keys of one input declaration and of one output declaration. Both are
 	// mappings keyed by the name being declared, so these are the keys *under* a
@@ -574,6 +574,15 @@ func (c *compiler) compile(file *ast.File) *v1.Workflow {
 	// schedule is `flow schedule create`. See flowfile/triggers.go.
 	if f, found := fields.get("triggers"); found {
 		workflow.Triggers = c.triggers(f.key, f.value, "triggers", ref{path: "triggers", label: "triggers"})
+	}
+
+	// Who may deliver a named signal, read alongside `triggers:` for the same
+	// reason: both are facts about the whole workflow's relationship with the
+	// outside world rather than about any one step, even though what they
+	// constrain — a `wait_for_signal:` — is written further down. See
+	// flowfile/signals.go and [v1.Workflow.Signals].
+	if f, found := fields.get("signals"); found {
+		workflow.Signals = c.signals(f.value, "signals", ref{path: "signals", label: "signals"})
 	}
 
 	// Read before steps, because every step's expressions may reference these and a
