@@ -66,6 +66,33 @@ func TestRunWorkflowControlFlow(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowLoop covers the `loop:` primitive in the local driver.
+//
+// The engine package runs the identical [tests.LoopCases] against the durable
+// driver, which is what holds the two to one answer about how many iterations a
+// loop runs, what state it carries out, and that it fails at its ceiling rather than
+// stopping silently — the disagreements invariant 3 exists to catch, and the reason
+// the ceiling and the exhaustion error live in one place each (loop.go).
+func TestRunWorkflowLoop(t *testing.T) {
+	for _, test := range tests.LoopCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			out, err := v1.Run(t.Context(), test.Workflow)
+			if test.ExpectFailure {
+				require.Error(t, err, "the loop was expected to fail at its ceiling")
+				require.Contains(t, err.Error(), "ran its full budget",
+					"a loop that exhausts its budget must say so distinctly")
+				return
+			}
+			require.NoError(t, err)
+			if test.ExpectedOutputsPredicate != nil {
+				require.True(t, test.ExpectedOutputsPredicate(out), "unexpected outputs: %v", out)
+				return
+			}
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, out, protocmp.Transform()))
+		})
+	}
+}
+
 // TestRunWorkflowPolicy covers conditions and per-step policy in the local
 // driver. The same cases run against the durable driver in the engine package,
 // which is what keeps the two from diverging.

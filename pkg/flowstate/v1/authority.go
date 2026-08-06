@@ -45,6 +45,15 @@ func validateCredentialNodes(nodes []*Node, available map[string]struct{}, targe
 				return err
 			}
 		}
+		if loop := node.GetLoop(); loop != nil {
+			// A literal credential target inside a loop body must be caught by the
+			// same server- and schedule-side preflight every other one is, or it is
+			// only denied after the run starts — possibly after earlier iterations'
+			// side effects have already happened.
+			if err := validateCredentialNodes(loop.GetBody(), available, targets); err != nil {
+				return err
+			}
+		}
 		if parallel := node.GetParallel(); parallel != nil {
 			for _, branch := range parallel.GetBranches() {
 				if err := validateCredentialNodes(branch.GetSteps(), available, targets); err != nil {

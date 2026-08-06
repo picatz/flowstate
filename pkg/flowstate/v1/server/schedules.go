@@ -17,6 +17,7 @@ import (
 	// the Temporal *client* a tenant's schedules live on, and shadowing the package
 	// with the client is how a sentinel comparison silently stops compiling.
 	sdk "go.temporal.io/sdk/temporal"
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -573,13 +574,123 @@ func (s *FlowstateServer) describeSchedule(ctx context.Context, temporal client.
 	// moved — is still describable in every other respect, and failing the whole
 	// description over one field would take the answer away along with the doubt.
 	// What is absent reads as absent, which is invariant 10's own rule.
+	//
+	// A schedule holds its bound inputs *persistently*, for as long as the schedule
+	// exists — unlike a run, which answers a `Get` with its declared outputs but
+	// never its inputs (see [v1.GetResponse]). That makes this the one call site in
+	// the server that renders a bound input value at all, and #211 found it doing so
+	// unconditionally: an input a Flowfile declared `sensitive: true` came back in
+	// the clear. state.GetWorkflow() carries the same [v1.InputDeclaration] the
+	// author wrote, sensitive flag included, so redactInputs applies it before the
+	// value ever reaches [reported] — see that function's own comment for the
+	// fail-closed case this branch's `state != nil` guard already produces for "no
+	// spec at all."
 	if state := storedRunState(description.Schedule.Action); state != nil {
 		reported.WorkflowName = state.GetWorkflow().GetName()
-		reported.Inputs = state.GetInputs()
+		reported.Inputs = redactInputs(state.GetInputs(), sensitiveInputNames(state.GetWorkflow()))
 		reported.Trigger = state.GetWorkflow().GetTriggers().GetSchedule()
 	}
 
 	return reported, nil
+}
+
+// redactedInputMarkerFormat and redactedInputValue mirror
+// cmd/flow/sensitive.go's redactedMarkerFormat / redactedValue exactly —
+// `[redacted: <name>]`, the shape [v1.InputDeclaration.Sensitive]'s own doc
+// comment promises — rather than importing them.
+//
+// They cannot be imported: this package is a dependency of `cmd/flow`, not the
+// other way around, and #211's correction is that the redaction belongs here,
+// server-side, before the value crosses the wire at all — a client-side fix
+// would leave the value in the response body, in proxy logs, and in every other
+// consumer of the RPC (see the DescribeSchedule/ListSchedules doc comments this
+// change updates). Lifting the marker into a shared package both sides import
+// would remove this duplication, but doing that is a cross-package move outside
+// this change's scope (see this branch's own working agreement: touch
+// schedules.go, its tests, and cmd/flow/schedule.go only) and would need
+// coordinating with whoever owns cmd/flow/sensitive.go next, since moving a
+// well-commented constant out from under an in-flight package invites exactly
+// the stale-snapshot confusion CLAUDE.md's "working alongside other agents"
+// section warns about. One duplicated format string, kept byte-for-byte
+// identical on purpose, is the smaller risk.
+const redactedInputMarkerFormat = "[redacted: %s]"
+
+func redactedInputValue(name string) *v1.Value {
+	return &v1.Value{
+		Kind: &v1.Value_Literal{
+			Literal: &expr.Value{
+				Kind: &expr.Value_StringValue{StringValue: fmt.Sprintf(redactedInputMarkerFormat, name)},
+			},
+		},
+	}
+}
+
+// sensitiveInputNames is the set of declared input names a workflow
+// specification marked `sensitive: true`, or nil when no specification is
+// available to consult — the same nil-vs-empty-set distinction
+// cmd/flow/sensitive.go's sensitiveOutputNames documents and for the same
+// reason: nil is the fail-closed case that withholds everything, and an empty,
+// non-nil set is a real specification that declared nothing sensitive, which
+// withholds nothing.
+func sensitiveInputNames(workflow *v1.Workflow) map[string]bool {
+	if workflow == nil {
+		return nil
+	}
+
+	names := make(map[string]bool)
+	for _, declared := range workflow.GetDeclaredInputs() {
+		if declared.GetSensitive() {
+			names[declared.GetName()] = true
+		}
+	}
+
+	return names
+}
+
+// redactInputs returns a schedule's bound inputs with every value this call
+// site cannot vouch for replaced by [redactedInputValue].
+//
+// sensitive nil is the fail-closed case CLAUDE.md's "fail closed" section
+// requires: every value is withheld rather than guessed at, because nothing
+// here can determine which ones the workflow actually marked. In practice
+// [describeSchedule] never reaches this function with sensitive == nil — its
+// caller only calls it inside the `state != nil` branch, and state is exactly
+// what sensitiveInputNames needs a non-nil answer from — but redactInputs stays
+// fail-closed on its own rather than depend on that being true forever, the
+// same discipline sensitiveOutputNames documents for the same shape.
+//
+// A non-nil sensitive redacts precisely the names it names and nothing else,
+// which is also how an older run's or an untagged declaration's inputs pass
+// through unchanged: a name the specification never declared sensitive is not
+// this function's business to guess about.
+//
+// There is deliberately no `reveal` parameter here the way
+// cmd/flow/sensitive.go's redactRunOutputsValues has one:
+// [v1.DescribeScheduleRequest] and [v1.ListSchedulesRequest] have no field to
+// carry an operator's request to see the value, and adding one is a proto
+// change — out of scope for this branch. An operator who needs the value today
+// has to read it from Temporal directly (e.g. `temporal schedule describe`,
+// which is not this server and not scrubbed by it); wiring a `--reveal-sensitive`
+// escape hatch through this RPC is a real, wanted follow-up, just not one this
+// change can do without touching proto/.
+func redactInputs(inputs map[string]*v1.Value, sensitive map[string]bool) map[string]*v1.Value {
+	if len(inputs) == 0 {
+		return inputs
+	}
+
+	failClosed := sensitive == nil
+
+	redacted := make(map[string]*v1.Value, len(inputs))
+	for name, value := range inputs {
+		if failClosed || sensitive[name] {
+			redacted[name] = redactedInputValue(name)
+			continue
+		}
+
+		redacted[name] = value
+	}
+
+	return redacted
 }
 
 // storedRunState reads back the run state a schedule starts each firing with.

@@ -1130,6 +1130,9 @@ func runNode(ctx context.Context, node *Node, scope *Scope, depth int) (*Node_Ou
 	case *Node_ForEach:
 		return runForEach(ctx, n.ForEach, scope, depth)
 
+	case *Node_Loop:
+		return runLoop(ctx, n.Loop, scope, depth)
+
 	case *Node_Parallel:
 		return nil, runParallel(ctx, n.Parallel, scope, depth)
 
@@ -1245,6 +1248,84 @@ func runForEach(ctx context.Context, loop *ForEach, scope *Scope, depth int) (*N
 	}
 
 	return LoopOutputs(iterations), nil
+}
+
+// runLoop runs a loop body repeatedly, carrying state, until its `until:` condition
+// holds or its iteration ceiling is reached.
+//
+// Do-while: the body runs, then `until:` is evaluated against the scope it finished
+// in — so `until:` may read the body's own outputs, which is the whole point, since
+// the stop signal (a page reporting it was not truncated) is something a body step
+// produces and nothing a pre-body check could see.
+//
+// The bound is the first thing checked each iteration, and reaching it fails the run
+// with [LoopIterationLimitError] rather than returning what the loop has so far —
+// the honest outcome for a loop that ran its whole budget without finishing. The
+// durable driver checks the identical bound at the identical point; both read it
+// through [LoopMaxIterations].
+func runLoop(ctx context.Context, loop *Loop, scope *Scope, depth int) (*Node_Outputs, error) {
+	name := loop.GetState()
+	max := LoopMaxIterations(loop)
+
+	// Evaluated once, before the first iteration, against the scope the loop sits in
+	// — the state does not exist yet, which is why this is where it is defined.
+	state, err := LoopInitialState(ctx, loop, scope)
+	if err != nil {
+		return nil, err
+	}
+
+	iterations := make([]*Workflow_StepOutputs, 0)
+
+	for i := 0; ; i++ {
+		if i >= max {
+			// The budget is spent and `until:` never held. A distinct failure, not a
+			// silent stop: the loop did not do what it was asked.
+			return nil, LoopIterationLimitError(max)
+		}
+
+		// Each iteration starts from the outputs visible before the loop, so a body
+		// step cannot see a previous iteration's outputs — the only value threaded
+		// between iterations is the carried state, exactly as a `for_each`'s only
+		// thread is its item.
+		iterationOutputs := &Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}}
+		for k, v := range scope.GetOutputs().GetStepValues() {
+			iterationOutputs.StepValues[k] = v
+		}
+
+		// The carried state is bound bare, the same standing as a loop iterator, so a
+		// body written for a loop that names one reads `${cursor}`. A loop that carries
+		// nothing binds no name and this is a plain output-scope swap.
+		iterationScope := scope
+		if LoopCarriesState(loop) {
+			iterationScope = scope.WithLocal(name, state)
+		}
+		iterationScope = iterationScope.WithOutputs(iterationOutputs)
+
+		// nil log and nested: a compensation may not be written in a loop body, and
+		// [CheckUndoPlacement] refuses one rather than this level quietly ignoring it —
+		// the same refusal a `for_each` body gets.
+		if err := runNodes(ctx, loop.GetBody(), iterationScope, nil, true, depth); err != nil {
+			return nil, fmt.Errorf("iteration %d: %w", i, err)
+		}
+
+		iterations = append(iterations, onlyBodyOutputs(loop.GetBody(), iterationOutputs))
+
+		// `until:` and `update:` both see the body's outputs and the current state, so
+		// they are evaluated against the scope the body finished in.
+		stop, err := EvalLoopUntil(ctx, loop, iterationScope)
+		if err != nil {
+			return nil, fmt.Errorf("iteration %d: %w", i, err)
+		}
+		if stop {
+			return LoopStateOutputs(iterations, state), nil
+		}
+
+		next, err := LoopNextState(ctx, loop, iterationScope)
+		if err != nil {
+			return nil, fmt.Errorf("iteration %d: %w", i, err)
+		}
+		state = next
+	}
 }
 
 // onlyBodyOutputs narrows an iteration's scope to the outputs its own body

@@ -137,6 +137,15 @@ func checkNodeExpressions(nodes []*v1.Node) Diagnostics {
 		case *v1.Node_ForEach:
 			ds = append(ds, typeErrors(id, "items", kind.ForEach.GetItems())...)
 			ds = append(ds, checkNodeExpressions(kind.ForEach.GetBody())...)
+		case *v1.Node_Loop:
+			// Every loop expression is type-checked, so `until: ${1 + true}`, a bad
+			// operator in `init:`/`update:`, or one anywhere in the body is a
+			// validate-time diagnostic rather than a runtime failure that only lands
+			// after the body's side effects have already run.
+			ds = append(ds, typeErrors(id, "until", kind.Loop.GetUntil())...)
+			ds = append(ds, typeErrors(id, "init", kind.Loop.GetInitial())...)
+			ds = append(ds, typeErrors(id, "update", kind.Loop.GetUpdate())...)
+			ds = append(ds, checkNodeExpressions(kind.Loop.GetBody())...)
 		case *v1.Node_Parallel:
 			for _, branch := range kind.Parallel.GetBranches() {
 				ds = append(ds, checkNodeExpressions(branch.GetSteps())...)
