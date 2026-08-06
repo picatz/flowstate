@@ -683,6 +683,92 @@ func checkInputListElementBound(name string, lit *expr.Value) error {
 	return walkConstraintValue("input", name, lit, 0, &total)
 }
 
+// checkTaskOutputElementBound is [checkInputListElementBound]'s counterpart
+// for the other side of a task: what a task's result carries rather than
+// what a caller submitted.
+//
+// #204 closed the caller-input half of this gap — every literal
+// [BindRunInputs] binds is walked by [checkInputListElementBound] regardless
+// of declared type or declared constraint. This is the half that gap left
+// open: a task's own output is a value the *remote* side controls, not the
+// caller — an `http` task's body is bounded in bytes (1 MiB), which a list of
+// small integers turns into on the order of 150,000 elements, fifteen times
+// this server's own input ceiling, and a plugin task's output is bounded in
+// bytes by its transport and not bounded in element count anywhere. Whichever
+// step in the workflow consumes that output — an `if:`, a `for_each`, a
+// `${...}` referencing it — pays the identical quadratic-in-practice CEL cost
+// [maxListElements]'s own doc comment measured, so the resource is the same
+// one and gets the same bound.
+//
+// Called from [Task.EvalInScope], the one place both the local and the
+// durable driver funnel every task's call through — a built-in task's `Fn`
+// and a plugin task's host-function `Fn` alike — so bounding the value there
+// makes both drivers agree by construction rather than by two call sites
+// staying in sync.
+//
+// The total is summed *across every named value* in the output, not reset
+// per name, matching [maxListElements]'s own "total across the whole value"
+// accounting: a task returning ten output fields of a thousand list elements
+// each costs a later expression exactly as much to walk as one field of ten
+// thousand would, and a per-field bound lets the former through. Map keys are
+// walked in sorted order so a run that trips the bound reports the identical
+// count and, via [walkConstraintValue]'s own message, the identical error on
+// every replay — a map iterates in Go in an order this package does not get
+// to depend on.
+//
+// wait/wait_for_signal payloads do not reach this function — they never pass
+// through EvalInScope, and #204's own scoping (recorded in this repository's
+// issue tracker, not restated here) leaves that path to the byte bound and
+// the attested-sender check #194 added, since a signal payload is a different
+// trust boundary than a task's own result.
+//
+// [walkConstraintValue]'s own message is written for a value the *caller*
+// chose the size of ("the caller's own choice of size is not a cost this
+// server bounds any other way") — true for an input, wrong for a task's
+// result, whose size the remote endpoint or plugin chose. So its error is
+// wrapped rather than returned as-is: the count and depth it establishes are
+// kept (via %w, so nothing about the walk's own accounting is duplicated),
+// but the sentence a caller actually reads is this function's own, naming
+// the task and pointing at the remedy that applies to a *result* — narrow
+// the query, page the work across multiple calls, or have the task filter
+// server-side — rather than the input-shaped advice ("page the work across
+// multiple runs") [walkConstraintValue] gives for a caller-submitted value.
+func checkTaskOutputElementBound(taskName string, out *Node_Outputs) error {
+	if out == nil {
+		return nil
+	}
+
+	values := out.GetNamedValues()
+	if len(values) == 0 {
+		return nil
+	}
+
+	names := make([]string, 0, len(values))
+	for name := range values {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	total := 0
+	for _, name := range names {
+		lit := values[name].GetLiteral()
+		if lit == nil {
+			continue
+		}
+		if err := walkConstraintValue("output", name, lit, 0, &total); err != nil {
+			return fmt.Errorf(
+				"task %q returned more data than a later step can evaluate an expression over cheaply "+
+					"(an `if:`, a `for_each`, or a `${...}` reading this result all pay the same cost): %w; "+
+					"this is the size of the task's own result, not anything the workflow submitted — narrow "+
+					"the query, page the work across multiple calls, or have the task filter server-side so "+
+					"only the fields a later step needs come back",
+				taskName, err)
+		}
+	}
+
+	return nil
+}
+
 // walkConstraintValue recursively counts list elements into *total and
 // refuses once the running total exceeds maxListElements or the recursion
 // exceeds maxConstraintValueDepth — the two bounds are checked

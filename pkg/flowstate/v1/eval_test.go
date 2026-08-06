@@ -189,6 +189,31 @@ func TestRunWorkflowVars(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowTaskOutputElementBound covers the local driver's half of the
+// remaining #204 gap: a task's *result*, not a caller's submitted input,
+// carrying more list elements than a later expression can walk cheaply.
+//
+// The same cases run against the durable driver in the engine package — see
+// the identically-named test there. Both reach the bound through the one
+// function every task's call funnels through, [v1.Task.EvalInScope], which is
+// what invariant 3 asks a shared case to hold the two drivers to.
+func TestRunWorkflowTaskOutputElementBound(t *testing.T) {
+	baseURL := tests.NewHTTPServer(t)
+	for _, test := range tests.TaskOutputElementBoundCases(baseURL) {
+		t.Run(test.Name, func(t *testing.T) {
+			out, err := v1.Run(t.Context(), test.Workflow)
+			if test.ExpectFailure {
+				require.Error(t, err, "a task result past the element bound must be refused")
+				require.Contains(t, err.Error(), "10000",
+					"the refusal must name the bound it reached")
+				return
+			}
+			require.NoError(t, err)
+			require.True(t, test.ExpectedOutputsPredicate(out), "unexpected outputs: %v", out)
+		})
+	}
+}
+
 // TestRunWorkflowCall covers `call:` in the local driver.
 //
 // The same cases run against the durable driver in the engine package — see

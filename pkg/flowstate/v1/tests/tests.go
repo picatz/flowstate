@@ -91,6 +91,29 @@ func NewHTTPServer(tb testing.TB) string {
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, strings.Repeat("x", size))
 	})
+	// Returns a JSON array of the requested length, for a case about how many
+	// *elements* a task's result carries rather than how many bytes it — the
+	// resource [checkTaskOutputElementBound] bounds, which /bytes/ above cannot
+	// exercise: a body under the byte cap can still carry tens of thousands of
+	// small elements.
+	mux.HandleFunc("/json-array/", func(w http.ResponseWriter, r *http.Request) {
+		n, err := strconv.Atoi(strings.TrimPrefix(r.URL.Path, "/json-array/"))
+		if err != nil || n < 0 {
+			w.WriteHeader(http.StatusBadRequest)
+
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "[")
+		for i := 0; i < n; i++ {
+			if i > 0 {
+				_, _ = io.WriteString(w, ",")
+			}
+			_, _ = io.WriteString(w, strconv.Itoa(i))
+		}
+		_, _ = io.WriteString(w, "]")
+	})
 	// Returns the request body unchanged, which is the only way a case can watch a
 	// value travel *into* a task's inputs and come back out as an output.
 	//

@@ -1614,5 +1614,31 @@ func (t *Task) EvalInScope(ctx context.Context, scope *Scope) (*Node_Outputs, er
 		return nil, NewTaskError(t.Name, ErrorKindUnknownTask, fmt.Errorf(
 			"unknown task %q (available: %s)", t.Name, strings.Join(TaskNamesIn(ctx), ", ")))
 	}
-	return def.Fn(ctx, t.Inputs, scope)
+	out, err := def.Fn(ctx, t.Inputs, scope)
+	if err != nil || out == nil {
+		return out, err
+	}
+
+	// Bounds what the task's own result carries, not what the caller
+	// submitted — [checkInputListElementBound]/[CheckInputConstraints]
+	// already close that half of #204 at [BindRunInputs]. Every task, built-in
+	// or plugin, returns through this one return statement on both drivers
+	// (the durable driver's activities and the local driver's
+	// [runStepAttempt] both call EvalInScope rather than def.Fn directly), so
+	// bounding it here is the one place that makes both drivers agree by
+	// construction rather than by two call sites staying in sync. See
+	// [checkTaskOutputElementBound]'s own doc for why the message it returns
+	// is not returned as-is, and CLAUDE.md's "Both execution drivers must
+	// agree" for why this lives at the shared choke point rather than in
+	// either driver.
+	//
+	// Classified [ErrorKindLimitExceeded] — the same kind an oversized `http`
+	// response body already gets — so it is non-retryable: the size of a
+	// task's result does not change between attempts, so retrying spends a
+	// worker's time to learn the same thing twice.
+	if err := checkTaskOutputElementBound(t.Name, out); err != nil {
+		return nil, NewTaskError(t.Name, ErrorKindLimitExceeded, err)
+	}
+
+	return out, nil
 }
