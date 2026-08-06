@@ -649,6 +649,22 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 				return nil, NewTaskError("http", ErrorKindInvalidInput, fmt.Errorf(
 					"%s %s: %w", taskInputs.GetMethod(), taskInputs.GetUrl(), err))
 			}
+
+			// Bounded here, before anything below gets a chance to walk it: both
+			// `expect:` (httpExpectationMet, below) and `outputs:` (the
+			// evaluation further down) run a CEL expression directly against
+			// `response.json` *inside this function*, so
+			// [checkTaskOutputElementBound] at [Task.EvalInScope] — which only
+			// sees what this function returns — is too late to stop a
+			// comprehension over an oversized response from ever running. The
+			// byte cap on the body (see [netpolicy.Policy.ReadResponseBody])
+			// bounds bytes, not elements: a body well under it can still carry
+			// tens of thousands of small elements, exactly the asymmetry #204
+			// measured for the input side and #224 review found still open
+			// here for a task's own evaluation of its result.
+			if err := checkHTTPResponseElementBound(taskInputs.GetUrl(), parsedJSON); err != nil {
+				return nil, err
+			}
 		}
 
 		respVars := httpResponseVars(httpResp, respBody, parsedJSON)

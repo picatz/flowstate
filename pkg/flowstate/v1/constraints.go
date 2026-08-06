@@ -659,7 +659,10 @@ func checkConstraintListBound(name string, lit *expr.Value) error {
 // and the identical bounds, because they are the identical resource.
 func checkConstraintValueBound(kind, name string, lit *expr.Value) error {
 	total := 0
-	return walkConstraintValue(kind, name, lit, 0, &total)
+	if v := walkConstraintValue(lit, 0, &total); v != nil {
+		return inputSideConstraintBoundError(kind, name, v)
+	}
+	return nil
 }
 
 // checkInputListElementBound is [checkConstraintValueBound] reached without
@@ -680,35 +683,136 @@ func checkConstraintValueBound(kind, name string, lit *expr.Value) error {
 // never be able to disagree about how many elements a value carries.
 func checkInputListElementBound(name string, lit *expr.Value) error {
 	total := 0
-	return walkConstraintValue("input", name, lit, 0, &total)
+	if v := walkConstraintValue(lit, 0, &total); v != nil {
+		return inputSideConstraintBoundError("input", name, v)
+	}
+	return nil
+}
+
+// checkTaskOutputElementBound is [checkInputListElementBound]'s counterpart
+// for the other side of a task: what a task's result carries rather than
+// what a caller submitted.
+//
+// #204 closed the caller-input half of this gap — every literal
+// [BindRunInputs] binds is walked by [checkInputListElementBound] regardless
+// of declared type or declared constraint. This is the half that gap left
+// open: a task's own output is a value the *remote* side controls, not the
+// caller — an `http` task's body is bounded in bytes (1 MiB), which a list of
+// small integers turns into on the order of 150,000 elements, fifteen times
+// this server's own input ceiling, and a plugin task's output is bounded in
+// bytes by its transport and not bounded in element count anywhere. Whichever
+// step in the workflow consumes that output — an `if:`, a `for_each`, a
+// `${...}` referencing it — pays the identical quadratic-in-practice CEL cost
+// [maxListElements]'s own doc comment measured, so the resource is the same
+// one and gets the same bound.
+//
+// Called from [Task.EvalInScope], the one place both the local and the
+// durable driver funnel every task's call through — a built-in task's `Fn`
+// and a plugin task's host-function `Fn` alike — so bounding the value there
+// makes both drivers agree by construction rather than by two call sites
+// staying in sync. This does *not* cover an `http` task's own `expect:`/
+// `outputs:` evaluation, which runs *inside* `def.Fn`, before this ever sees
+// the result — [checkHTTPResponseElementBound] bounds that half, at the
+// point the response is parsed, for exactly that reason.
+//
+// The total is summed *across every named value* in the output, not reset
+// per name, matching [maxListElements]'s own "total across the whole value"
+// accounting: a task returning ten output fields of a thousand list elements
+// each costs a later expression exactly as much to walk as one field of ten
+// thousand would, and a per-field bound lets the former through. Map keys are
+// walked in sorted order so a run that trips the bound reports the identical
+// count and message on every replay — a map iterates in Go in an order this
+// package does not get to depend on.
+//
+// wait/wait_for_signal payloads do not reach this function — they never pass
+// through EvalInScope, and #204's own scoping (recorded in this repository's
+// issue tracker, not restated here) leaves that path to the byte bound and
+// the attested-sender check #194 added, since a signal payload is a different
+// trust boundary than a task's own result.
+func checkTaskOutputElementBound(taskName string, out *Node_Outputs) error {
+	if out == nil {
+		return nil
+	}
+
+	values := out.GetNamedValues()
+	if len(values) == 0 {
+		return nil
+	}
+
+	names := make([]string, 0, len(values))
+	for name := range values {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	total := 0
+	for _, name := range names {
+		lit := values[name].GetLiteral()
+		if lit == nil {
+			continue
+		}
+		if v := walkConstraintValue(lit, 0, &total); v != nil {
+			return taskOutputConstraintBoundError(taskName, v)
+		}
+	}
+
+	return nil
+}
+
+// constraintBoundViolation is the *data* [walkConstraintValue] finds when a
+// value trips either bound it walks for — never a formatted message.
+//
+// Splitting the finding from its wording is what lets every caller of
+// [walkConstraintValue] describe the *same* violation in the sentence that
+// fits its own resource. [checkInputListElementBound]/[checkConstraintValueBound]
+// are checking a value the *caller* chose the size of, and their message
+// (formatted by [inputSideConstraintBoundError]) says so; [checkTaskOutputElementBound]
+// and [checkHTTPResponseElementBound] are checking a value a *remote
+// endpoint or plugin* chose the size of, and their own formatters say that
+// instead — accurately, rather than by wrapping a sentence written for the
+// other side. Before this split, every caller shared one formatted-error
+// return, and a #224 review found that let a task-output refusal wrap the
+// input-shaped sentence ("the caller's own choice of size") inside a second
+// sentence saying the opposite: two contradictory causes and remedies in one
+// error.
+//
+// Exactly one of Depth or TooManyElements is ever true.
+type constraintBoundViolation struct {
+	// Depth is true when the value nested deeper than [maxConstraintValueDepth];
+	// DepthReached is the depth [walkConstraintValue] was at when it gave up.
+	Depth        bool
+	DepthReached int
+
+	// TooManyElements is true when the running element count exceeded
+	// [maxListElements]; ElementCount is the total at the point it did.
+	TooManyElements bool
+	ElementCount    int
 }
 
 // walkConstraintValue recursively counts list elements into *total and
-// refuses once the running total exceeds maxListElements or the recursion
-// exceeds maxConstraintValueDepth — the two bounds are checked
-// independently, at every level, so neither resource can hide behind the
-// other.
+// reports the first bound tripped — either the running total exceeding
+// [maxListElements] or the recursion exceeding [maxConstraintValueDepth],
+// checked independently at every level so neither resource can hide behind
+// the other — as a [constraintBoundViolation], or nil once the whole value
+// has been walked cheaply.
 //
-// Shared by two call shapes: [checkConstraintValueBound], reached only when
-// a declaration carries `must:`/`unique:`, and [checkInputListElementBound],
-// reached for every input [BindRunInputs] binds regardless. The messages
-// below therefore describe the resource — how many elements a CEL
-// expression over this value can be made to examine — rather than naming
-// only `must:`/`unique:`, since by the time either message is produced the
-// value may have reached here through a plain `for_each` or `if:` with no
-// constraint declared at all.
-func walkConstraintValue(kind, name string, v *expr.Value, depth int, total *int) error {
+// Returns data rather than a formatted error so every caller can word the
+// refusal for its own resource; see [constraintBoundViolation]'s own doc for
+// why that split exists.
+//
+// Shared by every entry point that has to bound how many elements a CEL
+// expression can be made to examine over a value, regardless of whether that
+// value arrived as a caller's submitted input, a declared `must:`/`unique:`
+// target, a task's own result, or an http task's parsed JSON response body —
+// the cost is identical at every one of those origins, so this is the one
+// walker all of them share.
+func walkConstraintValue(v *expr.Value, depth int, total *int) *constraintBoundViolation {
 	if v == nil {
 		return nil
 	}
 
 	if depth > maxConstraintValueDepth {
-		return fmt.Errorf(
-			"%s %q nests %d levels deep, over the %d levels this server can walk cheaply while "+
-				"evaluating an expression over it (`if:`, `for_each`, `must:`, `unique:`); a value nested "+
-				"this deeply is not a cost this server bounds any other way — flatten it, or have a step "+
-				"read it from a reference instead of submitting it nested this deep",
-			kind, name, depth, maxConstraintValueDepth)
+		return &constraintBoundViolation{Depth: true, DepthReached: depth}
 	}
 
 	switch k := v.GetKind().(type) {
@@ -716,30 +820,115 @@ func walkConstraintValue(kind, name string, v *expr.Value, depth int, total *int
 		for _, el := range k.ListValue.GetValues() {
 			*total++
 			if *total > maxListElements {
-				return fmt.Errorf(
-					"%s %q has at least %d list elements across its whole value, over the %d this server "+
-						"can evaluate a CEL expression over cheaply (`if:`, `for_each`, `must:`, `unique:` "+
-						"all pay the same cost); the caller's own choice of size is not a cost this server "+
-						"bounds any other way — page the work across multiple runs, or have a step read the "+
-						"list from a reference instead of submitting the whole thing as one input",
-					kind, name, *total, maxListElements)
+				return &constraintBoundViolation{TooManyElements: true, ElementCount: *total}
 			}
-			if err := walkConstraintValue(kind, name, el, depth+1, total); err != nil {
-				return err
+			if violation := walkConstraintValue(el, depth+1, total); violation != nil {
+				return violation
 			}
 		}
 	case *expr.Value_MapValue:
 		for _, entry := range k.MapValue.GetEntries() {
-			if err := walkConstraintValue(kind, name, entry.GetKey(), depth+1, total); err != nil {
-				return err
+			if violation := walkConstraintValue(entry.GetKey(), depth+1, total); violation != nil {
+				return violation
 			}
-			if err := walkConstraintValue(kind, name, entry.GetValue(), depth+1, total); err != nil {
-				return err
+			if violation := walkConstraintValue(entry.GetValue(), depth+1, total); violation != nil {
+				return violation
 			}
 		}
 	}
 
 	return nil
+}
+
+// inputSideConstraintBoundError renders a [constraintBoundViolation] for a
+// value the *caller* chose the size of: a submitted (or defaulted) run
+// input, or a literal a declared `must:`/`unique:` examines. kind is "input"
+// or "output" — which side of a declaration's own constraint this is, not
+// which side of the trust boundary the value came from; both are still
+// values the workflow's own author supplied, hence "the caller's own choice
+// of size" below.
+//
+// This is the exact wording [walkConstraintValue] itself used to produce
+// inline before the two were split, kept unchanged so the input-side
+// refusal, and the tests pinning it, do not regress.
+func inputSideConstraintBoundError(kind, name string, v *constraintBoundViolation) error {
+	if v.Depth {
+		return fmt.Errorf(
+			"%s %q nests %d levels deep, over the %d levels this server can walk cheaply while "+
+				"evaluating an expression over it (`if:`, `for_each`, `must:`, `unique:`); a value nested "+
+				"this deeply is not a cost this server bounds any other way — flatten it, or have a step "+
+				"read it from a reference instead of submitting it nested this deep",
+			kind, name, v.DepthReached, maxConstraintValueDepth)
+	}
+	return fmt.Errorf(
+		"%s %q has at least %d list elements across its whole value, over the %d this server "+
+			"can evaluate a CEL expression over cheaply (`if:`, `for_each`, `must:`, `unique:` "+
+			"all pay the same cost); the caller's own choice of size is not a cost this server "+
+			"bounds any other way — page the work across multiple runs, or have a step read the "+
+			"list from a reference instead of submitting the whole thing as one input",
+		kind, name, v.ElementCount, maxListElements)
+}
+
+// taskOutputConstraintBoundError renders a [constraintBoundViolation] for a
+// task's own result — [checkTaskOutputElementBound]'s only caller. Unlike
+// [inputSideConstraintBoundError], this never wraps that function's
+// sentence: the two describe opposite causes (the caller's choice vs. the
+// task's own result), and #224 review found wrapping one inside the other
+// produced a refusal that contradicted itself mid-sentence.
+func taskOutputConstraintBoundError(taskName string, v *constraintBoundViolation) error {
+	if v.Depth {
+		return fmt.Errorf(
+			"task %q's result nests %d levels deep, over the %d levels a later step can walk cheaply "+
+				"while evaluating an expression over it (an `if:`, a `for_each`, or a `${...}` reading "+
+				"this result all pay the same cost); this is the shape of the task's own result, not "+
+				"anything the workflow submitted — have the task return a flatter shape, or a reference "+
+				"a later step reads instead of the nested value itself",
+			taskName, v.DepthReached, maxConstraintValueDepth)
+	}
+	return fmt.Errorf(
+		"task %q returned at least %d list elements across its result, over the %d a later step can "+
+			"evaluate an expression over cheaply (an `if:`, a `for_each`, or a `${...}` reading this "+
+			"result all pay the same cost); this is the size of the task's own result, not anything the "+
+			"workflow submitted — narrow the query, page the work across multiple calls, or have the "+
+			"task filter server-side so only the fields a later step needs come back",
+		taskName, v.ElementCount, maxListElements)
+}
+
+// checkHTTPResponseElementBound is [checkTaskOutputElementBound]'s
+// counterpart for the half a task-output check alone cannot reach: the
+// `http` task's own `expect:`/`outputs:` evaluation runs *inside*
+// `taskFuncHTTP`, against the parsed response body, before that function
+// ever returns to [Task.EvalInScope] — so a comprehension in either one
+// (`response.json.filter(...)`, `response.json.all(...)`) pays the
+// quadratic-in-practice CEL cost [maxListElements]'s own doc comment
+// measures *before* the task-output bound is in a position to refuse
+// anything. Called from `taskFuncHTTP` immediately after the body is parsed
+// and before either evaluation runs.
+//
+// url is the request URL, not the task's step id — the same reasoning
+// [taskOutputConstraintBoundError] states: this is the size of what the
+// *remote endpoint* answered with, not a choice the workflow's author made,
+// so the message names the thing that chose the size.
+func checkHTTPResponseElementBound(url string, parsedJSON *expr.Value) error {
+	total := 0
+	v := walkConstraintValue(parsedJSON, 0, &total)
+	if v == nil {
+		return nil
+	}
+	if v.Depth {
+		return NewTaskError("http", ErrorKindLimitExceeded, fmt.Errorf(
+			"the JSON response from %s nests %d levels deep, over the %d levels this server can walk "+
+				"cheaply while evaluating `expect:` or `outputs:` over it; this is the shape the remote "+
+				"endpoint returned, not anything the workflow wrote — narrow the request, or have a "+
+				"later step read the body from a reference instead of walking the whole thing here",
+			url, v.DepthReached, maxConstraintValueDepth))
+	}
+	return NewTaskError("http", ErrorKindLimitExceeded, fmt.Errorf(
+		"the JSON response from %s carries at least %d list elements, over the %d an `expect:` or "+
+			"`outputs:` expression can evaluate cheaply; this is the size of the remote endpoint's "+
+			"response, not anything the workflow wrote — narrow the query, page the request, or ask "+
+			"the endpoint to filter server-side before `expect:`/`outputs:` examines it",
+		url, v.ElementCount, maxListElements))
 }
 
 // checkListConstraints applies min_items, max_items and unique to a list
