@@ -26,7 +26,10 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 )
 
-//go:embed workflow.yaml
+// flowfile/workflow.yaml, not workflow.yaml directly beside this file — see
+// that file's own comment on why it sits a directory deeper.
+//
+//go:embed flowfile/workflow.yaml
 var workflowSource []byte
 
 func main() {
@@ -51,7 +54,7 @@ func run(durable bool) error {
 
 	workflow, diags, err := embed.Compile(workflowSource)
 	if err != nil {
-		return fmt.Errorf("compiling workflow.yaml: %w (diagnostics: %v)", err, diags)
+		return fmt.Errorf("compiling flowfile/workflow.yaml: %w (diagnostics: %v)", err, diags)
 	}
 
 	fmt.Println("== running locally ==")

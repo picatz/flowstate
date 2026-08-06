@@ -17,7 +17,7 @@ local run outputs: map[message:literal:{string_value:"hello, embedder!"}]
 1. Registers a custom Go task, `greet`, with an `embed.Tasks` set — no `.proto`
    descriptor, the nil-descriptor escape hatch `embed.Task` documents. See the
    comment on `registerGreetTask` for what that trades away.
-2. Compiles `workflow.yaml` from bytes with `embed.Compile`, after
+2. Compiles `flowfile/workflow.yaml` from bytes with `embed.Compile`, after
    `Tasks.Install`ing the task set so validation can see it.
 3. Runs the compiled workflow in-process with `embed.RunLocal`.
 4. With `--durable`, also registers a worker and runs the same workflow durably
