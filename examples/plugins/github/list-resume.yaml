@@ -64,12 +64,13 @@ description: Reads a repository's open issues in two bounded pages using github.
 #
 # What this file deliberately does NOT show: walking to exhaustion. Doing
 # that for real means looping - fetching page after page until
-# `truncated: false` - and Flowstate's own workflow language has no loop
-# primitive on `main` yet (a `loop:` primitive is in review as PR #220, not
-# merged). Two fixed steps, page one then page two, is what today's
-# language can express; a workflow that pages an unbounded listing to
-# completion needs that primitive first. The exhaustive-walk tests that
-# prove this plugin's cursor semantics are actually correct - every item
+# `truncated: false`. A `loop:` primitive landed on `main` as PR #220 after
+# this file was first written; converting this example to use it (rather
+# than the two fixed steps below) is left for a follow-up, kept separate
+# from the cursor-integrity fixes this file otherwise documents, so the two
+# changes stay reviewable independently. Two fixed steps, page one then
+# page two, is what this file shows meanwhile. The exhaustive-walk tests
+# that prove this plugin's cursor semantics are actually correct - every item
 # reached, subject to the guarantee stated above, across as many pages as
 # it takes, including a walk where the byte or item bound truncates
 # mid-page - live in Go instead, at TestIssueListCursorWalksToExhaustion and
