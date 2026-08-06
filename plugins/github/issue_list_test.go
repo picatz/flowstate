@@ -50,7 +50,7 @@ func TestDoIssueListMapsSortAndDirectionToTheRightQueryParameters(t *testing.T) 
 		t.Fatalf("validateIssueDirection: unexpected error: %v", err)
 	}
 
-	_, _, err = doIssueList(context.Background(), client, "octocat", "hello-world", issueListParams{
+	_, _, _, err = doIssueList(context.Background(), client, "octocat", "hello-world", issueListParams{
 		state:      "open",
 		sort:       sort,
 		direction:  direction,

@@ -355,6 +355,209 @@ call plugins/git's own `git.ls_remote` makes against `list_tags`/
   question this would - exactly the "an existing task's output plus a filter
   already answers it" refusal above.
 
+## Resuming a truncated listing
+
+`github.pull_request_list`, `github.issue_list`, and
+`github.pull_request_files` all report `truncated: true` when more matched
+than the call returned - `max_results`, the request budget
+(`maxListRequests`), or the byte budget (`maxResultBytes`), whichever binds
+first (see "Bounds this tier enforces" below). Each also accepts `cursor`
+back and returns `next_cursor` on a truncated result, the same "next_cursor
+in, cursor out" shape issue #216 asked every bounded list task in this
+repository to grow, and plugins/git's own `git.log` (PR #217) landed first.
+
+GitHub's own listing endpoints are page-number pagination, not an opaque
+server-side cursor the way `git.log`'s own commit-DAG walk is - a
+repository's issues or pull requests can gain or lose entries between two
+calls, which a commit history (immutable once written) never does. This
+plugin's cursor packs a page number, a within-page skip count (for a resume
+that lands mid-page, not only at a page boundary - see `paginate.go`'s own
+doc comment), and a fingerprint of the filters the walk was running under,
+including `base_url` (`cursor.go`) - opaque to a workflow, and refused
+outright if replayed against different filters, or a different GitHub API
+endpoint, than the call that produced it. That fingerprint check is also
+what makes a cursor's own forward progress worth keeping even across a run
+of pages GitHub answered with zero items apiece (a legitimate response
+shape while a large result set is computed - see `cursorHasResumePosition`
+in `cursor.go`): the position still advanced, and withholding a cursor just
+because nothing was collected yet would be the exact dead end #216 exists
+to close, one call later than the original bug.
+
+That mechanism is honest about what it can and cannot guarantee against a
+mutating list - and the guarantee is narrower than it may first look, in
+both directions:
+
+- **`github.issue_list` and `github.pull_request_list`** require `sort:
+  created` and `direction: asc` alongside `cursor` - refusing one set
+  without the other - because that ordering guarantees a genuinely NEW
+  issue or pull request (whose created time is later than everything a
+  walk has already reached) always appends past it rather than shifting it.
+  That closes only the append-only case. Two gaps remain, both real and
+  both demonstrated as passing tests rather than left to be discovered:
+    - **removal can cause a miss**: an item closed (under a filter that now
+      excludes it) or deleted between two calls shifts every later page
+      backward by one, which this plugin's cursor - a position, not an
+      identity - cannot detect.
+      `TestIssueListCursorCanMissAnItemDeletedBetweenPages` shows it
+      directly.
+    - **an older item newly matching can cause a REPEAT**: "created"
+      ascending says nothing about an item that already existed but did not
+      match this call's own filters until between two calls - a reopened
+      issue or pull request, one newly carrying a requested label, or one
+      whose `updated_at` just crossed a `since` cutoff. Its created time
+      never moved, so it re-enters the matching set at its original,
+      possibly-earlier position, which can sit before the saved cursor and
+      cause a resumed call to repeat an item it already returned.
+      `TestIssueListCursorCanRepeatAReopenedIssueBetweenPages` shows it
+      directly; `TestIssueListCursorToleratesAnInsertionBetweenPages` shows
+      the append-only case the stable sort actually does close, for
+      contrast.
+  Neither gap makes the cursor useless - the common case, nothing in the
+  matching set changing shape between two calls fetched moments apart, is
+  the overwhelming majority - but this is a best-effort resume position for
+  a triage/audit read, not a transactional snapshot, and both gaps are
+  stated in `IssueListInputs.cursor`/`PullRequestListInputs.cursor`'s own
+  doc comments (`proto/github/v1/github.proto`) rather than left implicit.
+- **`github.pull_request_files`** has no ordering lever at all - GitHub's
+  `ListFiles` endpoint takes no `sort` parameter this task could ask it to
+  hold stable, so its own cursor's contract is honestly weaker still: it
+  resumes *near* where a truncated call stopped, and a commit pushed to the
+  pull request between two calls can cause a file to be missed or (less
+  likely) returned twice. Acceptable for the triage read this task is - see
+  `PullRequestFilesInputs.cursor`'s own doc comment for the full argument.
+
+<!-- example: examples/plugins/github/list-resume.yaml -->
+```yaml
+edition: v2026.2
+name: github-list-resume
+description: Reads a repository's open issues in two bounded pages using github.issue_list's cursor input - the resume shape issue #216 asks every bounded list task to grow, closed for this plugin's read/audit-tier listings. Runs with no arguments.
+
+# github.issue_list, github.pull_request_list, and github.pull_request_files
+# all truncate rather than serializing an unbounded response, and all
+# report that honestly as `truncated: true`. Before `next_cursor` existed on
+# this plugin, that boolean was the same dead end plugins/git's own git.log
+# had before PR #217: a caller who received page one of a longer listing
+# had no way to ask for page two. This file demonstrates the fix -
+# `next_cursor` in, `cursor` out - for github.issue_list, this plugin's own
+# instance of the same shape:
+#
+#   page one:  github.issue_list(max_results: 3, sort: created, direction: asc)
+#              -> truncated: true, next_cursor: <opaque>
+#   page two:  github.issue_list(..., cursor: <opaque>)
+#              -> continues exactly where page one stopped
+#
+# GitHub's own listing endpoints are page-number pagination, not an opaque
+# server-side cursor the way plugins/git's own commit-DAG walk is - a
+# repository's issues can gain or lose entries between two calls, which a
+# commit history (immutable once written) never does. This plugin's cursor
+# is honest about that difference rather than pretending git.log's
+# exactly-once guarantee transfers unchanged - see
+# plugins/github/proto/github/v1/github.proto, IssueListInputs.cursor, and
+# plugins/github/cursor.go for the full contract:
+#
+#   - sort: created and direction: asc are REQUIRED alongside cursor (this
+#     task refuses a cursor set without them, and never produces a
+#     next_cursor without them either) - that ordering guarantees a
+#     genuinely NEW issue (created later than everything a walk has already
+#     reached) always appends past it rather than shifting it. That is the
+#     append-only case, and only that case.
+#   - what is NOT closed, in two directions - both real, both demonstrated
+#     as passing tests, neither merely asserted:
+#       - removal can cause a MISS: an issue closed (under a state filter
+#         that now excludes it) or deleted between two calls shifts every
+#         later page backward by one, which this task's cursor - a
+#         position, not an identity - cannot detect
+#         (TestIssueListCursorCanMissAnItemDeletedBetweenPages).
+#       - an OLDER issue newly matching can cause a REPEAT: "created"
+#         ascending says nothing about an issue that already existed but
+#         did not match until between two calls - reopened, newly
+#         carrying a requested label, or an updated_at that just crossed
+#         since. Its created time never moved, so it re-enters the
+#         matching set at its original, possibly-earlier position, ahead
+#         of the saved cursor, and a resumed call repeats it
+#         (TestIssueListCursorCanRepeatAReopenedIssueBetweenPages).
+#     Neither gap makes this cursor useless - it is a best-effort resume
+#     position for a triage/audit read, not a transactional snapshot - but
+#     "created asc closes insertion" is true only for brand-new items, and
+#     this file says so precisely rather than implying more.
+#   - a cursor replayed against different filters (a different owner, repo,
+#     state, label set, sort, direction, max_results, or base_url than the
+#     call that produced it) is refused outright, not silently walked
+#     against the wrong sequence.
+#
+# github.pull_request_list's own cursor works identically (sort: created,
+# direction: asc required). github.pull_request_files's cursor is weaker
+# still: GitHub's ListFiles endpoint has no sort parameter at all, so that
+# task's cursor resumes NEAR where a truncated call stopped with no
+# ordering guarantee to lean on - see PullRequestFilesInputs.cursor's own
+# doc comment.
+#
+# What this file deliberately does NOT show: walking to exhaustion. Doing
+# that for real means looping - fetching page after page until
+# `truncated: false`. A `loop:` primitive landed on `main` as PR #220 after
+# this file was first written; converting this example to use it (rather
+# than the two fixed steps below) is left for a follow-up, kept separate
+# from the cursor-integrity fixes this file otherwise documents, so the two
+# changes stay reviewable independently. Two fixed steps, page one then
+# page two, is what this file shows meanwhile. The exhaustive-walk tests
+# that prove this plugin's cursor semantics are actually correct - every item
+# reached, subject to the guarantee stated above, across as many pages as
+# it takes, including a walk where the byte or item bound truncates
+# mid-page - live in Go instead, at TestIssueListCursorWalksToExhaustion and
+# its neighbors (plugins/github/issue_list_cursor_test.go,
+# plugins/github/pull_request_list_cursor_test.go,
+# plugins/github/pull_request_files_cursor_test.go, and
+# plugins/github/cursor_test.go for the encoding itself), which are free to
+# loop because they are not written in the DSL.
+
+vars:
+  owner: golang
+  repo: go
+
+steps:
+  - id: page_one
+    github.issue_list:
+      owner: ${vars.owner}
+      repo: ${vars.repo}
+      state: open
+      max_results: 3
+      sort: created
+      direction: asc
+      # No cursor: this is a fresh walk, oldest-first.
+
+  - id: page_two
+    github.issue_list:
+      owner: ${vars.owner}
+      repo: ${vars.repo}
+      state: open
+      max_results: 3
+      sort: created
+      direction: asc
+      cursor: ${steps.page_one.next_cursor}
+      # Empty when page_one was not truncated (this task always populates
+      # next_cursor empty in that case) - github.issue_list then treats an
+      # empty cursor exactly like an ordinary fresh call, which the "not
+      # truncated" case having nothing left to resume makes the right
+      # fallback rather than an error.
+
+  - id: announce
+    log:
+      message: "${'page one: %d issue(s) (truncated=%s); page two: %d issue(s) (truncated=%s), resumed at %s'.format([steps.page_one.issues.size(), string(steps.page_one.truncated), steps.page_two.issues.size(), string(steps.page_two.truncated), steps.page_one.next_cursor])}"
+
+outputs:
+  page_one_numbers:
+    value: ${steps.page_one.issues.map(i, i.number)}
+    description: the first page's issue numbers, oldest first (sort created, direction asc)
+
+  page_two_numbers:
+    value: ${steps.page_two.issues.map(i, i.number)}
+    description: the second page's issue numbers - continuing immediately after page_one's last entry (subject to the stated guarantee - see this file's own header comment for what a removal between calls can still do)
+
+  resumed_from:
+    value: ${steps.page_one.next_cursor}
+    description: the opaque cursor page_two was resumed from - empty if page_one was not truncated
+```
+
 ## Bounds this tier enforces, and the resource each one matches
 
 Every list-shaped task here bounds two independent resources GitHub, not
