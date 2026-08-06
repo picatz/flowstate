@@ -1,0 +1,33 @@
+edition: v2026.2
+name: loop-poll-until
+description: A bounded poll with no carried state — repeat a health check until it reports ready, giving up after a fixed number of tries.
+
+# This is the loop's stateless mode: no `as:`, `init:` or `update:`. The loop
+# carries nothing between iterations; it repeats a check and stops on what the
+# check itself reports. `until:` reads the body step's own output — the shape a
+# poll takes: "keep asking until it says ready."
+#
+# `max_iterations:` is the give-up bound. A dependency that never comes ready is
+# not a loop that should run forever, so reaching the ceiling is a distinct
+# failure (see workflow.test.yaml, which drives both a ready endpoint and one that
+# never is).
+#
+# A stateless loop only makes progress when the thing it checks changes on its own
+# — an external endpoint here. Over purely deterministic tasks a stateless loop
+# would report the same thing every iteration, so it would stop on the first or
+# run to the bound; carrying that kind of progress yourself is what `as:` is for
+# (see examples/loop-accumulate).
+
+steps:
+  - id: poll
+    description: Ask the endpoint whether it is ready, and stop once it is.
+    loop:
+      until: ${steps.probe.ready}
+      max_iterations: 5
+      steps:
+        - id: probe
+          http:
+            method: GET
+            url: https://httpbin.org/status/200
+            outputs:
+              ready: ${response.status_code == 200}

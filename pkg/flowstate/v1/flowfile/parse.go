@@ -76,10 +76,11 @@ var (
 
 	// nodeKindKeys are the kinds of work that are not a task, and so name a node
 	// kind in the schema rather than anything in the registry.
-	nodeKindKeys = []string{"for_each", "parallel", "sleep", "wait_until", "wait_for_signal", "call"}
+	nodeKindKeys = []string{"for_each", "loop", "parallel", "sleep", "wait_until", "wait_for_signal", "call"}
 
 	retryKeys   = []string{"attempts", "interval", "backoff", "max_interval"}
 	forEachKeys = []string{"items", "as", "max_parallel", "steps"}
+	loopKeys    = []string{"steps", "until", "max_iterations", "as", "init", "update"}
 	branchKeys  = []string{"steps"}
 )
 
@@ -1197,6 +1198,10 @@ func (c *compiler) step(n ast.Node, path string) *v1.Node {
 			if loop := c.forEach(kind.value, kindPath, r); loop != nil {
 				step.Kind = &v1.Node_ForEach{ForEach: loop}
 			}
+		case "loop":
+			if loop := c.loop(kind.value, kindPath, r); loop != nil {
+				step.Kind = &v1.Node_Loop{Loop: loop}
+			}
 		case "parallel":
 			if parallel := c.parallel(kind.value, kindPath, r); parallel != nil {
 				step.Kind = &v1.Node_Parallel{Parallel: parallel}
@@ -1439,6 +1444,65 @@ func (c *compiler) forEach(n ast.Node, path string, r ref) *v1.ForEach {
 			ref{step: r.step, path: fieldPath(path, "steps"), label: "for_each steps"})
 	} else {
 		c.report(spanOfNode(n), r, "for_each requires steps, the body to run for each item")
+	}
+
+	return loop
+}
+
+// loop compiles a `loop:` and its body.
+//
+// The shape is close to [compiler.forEach] on purpose — a body under `steps:`, a
+// bare binding under `as:` — with the differences a loop needs: `until:` is the stop
+// condition (an expression, like `if:`), `max_iterations:` the ceiling, and
+// `init:`/`update:` the carried value's endpoints. The parser requires the two a
+// loop cannot mean anything without — a body and a stop condition — and leaves the
+// consistency of the state triple to [validateNamedLoop], where a positioned
+// diagnostic can name which of the three is missing.
+func (c *compiler) loop(n ast.Node, path string, r ref) *v1.Loop {
+	fields, ok := c.fields(n, path, r, loopKeys)
+	if !ok {
+		return nil
+	}
+
+	loop := &v1.Loop{}
+
+	if f, found := fields.get("steps"); found {
+		loop.Body = c.steps(f.value, fieldPath(path, "steps"),
+			ref{step: r.step, path: fieldPath(path, "steps"), label: "loop steps"})
+	} else {
+		c.report(spanOfNode(n), r, "loop requires steps, the body to run each iteration")
+	}
+
+	if f, found := fields.get("until"); found {
+		untilPath := fieldPath(path, "until")
+		loop.Until = c.exprValue(f.value, untilPath,
+			ref{step: r.step, path: untilPath, label: "loop until"})
+	} else {
+		c.report(spanOfNode(n), r, "loop requires until, the condition that stops it — a loop with no bound on when it ends never ends")
+	}
+
+	if f, found := fields.get("max_iterations"); found {
+		maxIterations, _ := c.integer(f.value, fieldPath(path, "max_iterations"),
+			ref{step: r.step, path: fieldPath(path, "max_iterations"), label: "loop max_iterations"}, 0, 100000)
+		loop.MaxIterations = maxIterations
+	}
+
+	if f, found := fields.get("as"); found {
+		state, _ := c.text(f.value, fieldPath(path, "as"),
+			ref{step: r.step, path: fieldPath(path, "as"), label: "loop as"})
+		loop.State = state
+	}
+
+	if f, found := fields.get("init"); found {
+		initPath := fieldPath(path, "init")
+		loop.Initial = c.inputValue(f.value, initPath,
+			ref{step: r.step, path: initPath, label: "loop init"})
+	}
+
+	if f, found := fields.get("update"); found {
+		updatePath := fieldPath(path, "update")
+		loop.Update = c.inputValue(f.value, updatePath,
+			ref{step: r.step, path: updatePath, label: "loop update"})
 	}
 
 	return loop

@@ -945,6 +945,13 @@ func (f *fixer) step(n ast.Node, scope stepScope) {
 		case forEachKey:
 			f.renamedKey(v.Value, "iterator", forEachAsKey)
 			f.nested(v.Value, forEachStepsKey, inner.with(iteratorOf(v.Value)))
+		case "loop":
+			// A loop body is descended for the same reason a `for_each`'s is: a task
+			// step inside it still has to be re-flattened, and its expressions rooted,
+			// against a scope that knows the loop's carried state is a bare binding and
+			// not a step id. A loop names no default binding, so nothing is added when it
+			// carries no state.
+			f.nested(v.Value, forEachStepsKey, inner.with(loopBindings(v.Value)...))
 		case "parallel":
 			f.branches(v.Value, inner)
 		}
@@ -997,6 +1004,24 @@ func iteratorOf(forEach ast.Node) string {
 	}
 
 	return v1.DefaultIterator
+}
+
+// loopBindings returns the bare name a loop carries as state, or nothing when it
+// carries none — unlike a `for_each`, a loop has no default binding, so a loop with
+// no `as:` binds nothing at all.
+func loopBindings(loop ast.Node) []string {
+	mapping, ok := unwrapAnchor(loop).(*ast.MappingNode)
+	if !ok {
+		return nil
+	}
+	for _, v := range mapping.Values {
+		if name, keyed := keyNameOf(v.Key); keyed && name == forEachAsKey {
+			if text, scalar := scalarText(v.Value); scalar && text != "" {
+				return []string{text}
+			}
+		}
+	}
+	return nil
 }
 
 // renamedKey rewrites one key of a mapping, leaving its value and the rest of the line
@@ -1733,6 +1758,7 @@ func (f *fixer) resolved(n ast.Node) (ast.Node, bool) {
 func (f *fixer) boundBareNames(node *ast.MappingNode, workflow bool) (vars map[string]bool, iterator string, unresolvable ast.Node) {
 	var (
 		hasItems     bool
+		hasUntil     bool
 		hasSteps     bool
 		unreadableAs ast.Node
 	)
@@ -1746,6 +1772,9 @@ func (f *fixer) boundBareNames(node *ast.MappingNode, workflow bool) (vars map[s
 		switch key {
 		case forEachItemsKey:
 			hasItems = true
+
+		case loopUntilKey:
+			hasUntil = true
 
 		case forEachStepsKey:
 			hasSteps = true
@@ -1784,18 +1813,31 @@ func (f *fixer) boundBareNames(node *ast.MappingNode, workflow bool) (vars map[s
 		}
 	}
 
-	if !hasItems || !hasSteps {
-		// Not a loop's inner mapping. An `as:` elsewhere is somebody's input named
-		// `as`, and claiming it would suppress a rooting for no reason — and an
-		// unreadable one is nothing to refuse over, for that same reason.
-		iterator = ""
-	} else {
+	switch {
+	case hasItems && hasSteps:
+		// A `for_each`'s inner mapping. It always binds a name: the explicit `as:`, or
+		// `item` when it writes none.
 		if unreadableAs != nil {
 			unresolvable = unreadableAs
 		}
 		if iterator == "" {
 			iterator = v1.DefaultIterator
 		}
+
+	case hasUntil && hasSteps:
+		// A `loop:`'s inner mapping. Unlike a `for_each` it has *no* default binding:
+		// a loop that carries no state names nothing, so `iterator` stays whatever the
+		// `as:` said and is empty when there was none. An unreadable `as:` still has to
+		// be refused rather than guessed around, for the same reason a `for_each`'s is.
+		if unreadableAs != nil {
+			unresolvable = unreadableAs
+		}
+
+	default:
+		// Not a block's inner mapping. An `as:` elsewhere is somebody's input named
+		// `as`, and claiming it would suppress a rooting for no reason — and an
+		// unreadable one is nothing to refuse over, for that same reason.
+		iterator = ""
 	}
 
 	return vars, iterator, unresolvable
@@ -1831,7 +1873,12 @@ func sees(steps map[string]bool, value *ast.MappingValueNode, vars map[string]bo
 		// Neither sees the step's own vars.
 		return steps
 
-	case forEachStepsKey:
+	case forEachStepsKey, loopUntilKey, loopUpdateKey:
+		// A block's body (`steps:`) sees the binding; a loop's `until:` and `update:`
+		// see its carried state too, since both are evaluated after the body with the
+		// state still bound. A loop's `init:` is *not* here on purpose — it runs before
+		// the loop, so the state is not bound in it and a bare reference there is a step,
+		// exactly as a `for_each`'s `items:` is.
 		if iterator != "" {
 			return without(steps, map[string]bool{iterator: true})
 		}

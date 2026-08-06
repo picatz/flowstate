@@ -232,6 +232,14 @@ func countBounded(nodes []*v1.Node, budget *int) bool {
 			if !countBounded(kind.ForEach.GetBody(), budget) {
 				return false
 			}
+		case *v1.Node_Loop:
+			// A loop body counts against the call-expansion bound exactly as a
+			// `for_each` body does; without this arm a hand-built `call:` tree hides
+			// unbounded nodes inside loop bodies and the bound this walk enforces is
+			// bypassed.
+			if !countBounded(kind.Loop.GetBody(), budget) {
+				return false
+			}
 		case *v1.Node_Parallel:
 			for _, branch := range kind.Parallel.GetBranches() {
 				if !countBounded(branch.GetSteps(), budget) {

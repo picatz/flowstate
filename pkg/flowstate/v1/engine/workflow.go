@@ -912,6 +912,20 @@ func collectNodeRefs(node *v1.Node, prev *v1.Workflow_StepOutputs, refs map[stri
 			collectNodeRefs(inner, prev, refs)
 		}
 
+	case *v1.Node_Loop:
+		// Every one of a loop's own expressions can name an outer step's output, and
+		// each has to survive the Continue-As-New a long loop suspends across, or the
+		// resumed loop fails to evaluate on a specification that never changed — #176's
+		// exact shape. `init:` is evaluated once before the loop; `until:` and
+		// `update:` after every iteration's body; and the body's own nodes recurse the
+		// same way a `for_each`'s do.
+		collectValueRefs(kind.Loop.GetInitial(), prev, refs)
+		collectValueRefs(kind.Loop.GetUntil(), prev, refs)
+		collectValueRefs(kind.Loop.GetUpdate(), prev, refs)
+		for _, inner := range kind.Loop.GetBody() {
+			collectNodeRefs(inner, prev, refs)
+		}
+
 	case *v1.Node_Parallel:
 		for _, branch := range kind.Parallel.GetBranches() {
 			for _, inner := range branch.GetSteps() {

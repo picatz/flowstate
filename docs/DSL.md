@@ -2212,6 +2212,203 @@ day it was added. The reasoning for each is written on the messages themselves.
   engine will not guess. The shape that would make it expressible is a step declaring
   its effect idempotent, which is a claim about the world that only an author can make.
 
+## The sixth round: a loop that carries state
+
+Everything before this maps, waits, branches, or calls. None of it *iterates with
+memory*: `for_each` runs a body over a list it already holds, and its length is
+fixed before the first iteration; nothing threads a value from iteration N into N+1,
+and nothing repeats until a condition a body step produces comes true. `loop:` is
+that missing shape — the one #216 names as "layer 2", the half its cursor work
+unblocked but could not spell, and the one `examples/plugins/git/git-log-resume.yaml`
+says outright it cannot express: *"walking to exhaustion means looping … and
+Flowstate's own workflow language has no loop primitive yet."*
+
+This is slice 1: a **finite** loop, provable by a bound. It is deliberately smaller
+than the entity loop #105 sketches, and the deferral is argued at the end rather than
+left implicit.
+
+### The spelling
+
+```yaml
+- id: pages
+  loop:
+    as: cursor                          # the value carried between iterations, read bare
+    init: ${''}                         # what it holds first
+    update: ${steps.page.next_cursor}   # what it holds next, from the body's outputs
+    until: ${!steps.page.truncated}     # stop once this holds
+    max_iterations: 500                 # the hard ceiling
+    steps:
+      - id: page
+        git.log:
+          url: ${vars.repo}
+          cursor: ${cursor}
+```
+
+It reads as the sentence it is: *loop, carrying a cursor, from empty, updating to the
+page's next cursor, until the page is not truncated.* The keys are the ones already
+in the language wherever they can be: `steps:` is a block body exactly as it is under
+`for_each` and `parallel`; `as:` names a bare binding exactly as it does under
+`for_each`. Only `until:`, `init:`, `update:` and `max_iterations:` are new, and each
+earns its word by being inexpressible with an existing one (constitution rule 10).
+
+### Do-while, and why the condition is checked after the body
+
+The body runs, **then** `until:` is evaluated — so a loop always runs its body at
+least once, and `until:` reads that body's own outputs. This is not a coin-flip
+between `while` and `do-while`. The entire value of the primitive is that the stop
+signal is something a body step *produces* — a page reporting `truncated: false`, a
+probe reporting success — and a pre-body check could see none of it, because on the
+first iteration no body step has run. A `while` loop here would force every author to
+write a throwaway first fetch outside the loop and a second inside it, which is
+exactly the two-fixed-steps shape `git-log-resume` was stuck at. So the condition
+lives after the body, where the thing it tests exists. `wait_until:` refuses a
+boolean for the mirror-image reason (nothing it waits on changes while it blocks);
+`loop:` requires one, because everything it tests changes every iteration.
+
+### State: one carried value, named bare, updated explicitly
+
+This was the crux, and three decisions settle it.
+
+**One value, not a block of accumulators.** The obvious richer design is a `state:`
+mapping of several named entries, each with its own initial and update. It was
+refused for the reason the `vars:`-sibling question was already refused once: entries
+in a protobuf map have no order, so "may entry B's update read entry A's new value?"
+has no answer the schema can express, and every answer to it (a dependency sort, a
+cycle diagnostic, or silent arbitrary order) is more language than the problem needs.
+A single carried value has no siblings and therefore no ordering question. When
+several fields are wanted, `init:` and `update:` are CEL maps —
+`init: ${ {'n': 1, 'sum': 0} }`, `update: ${ {'n': acc.n + 1, 'sum': acc.sum + acc.n} }`
+— and the whole map is one expression evaluated once per iteration, so the ordering
+question never arises. `examples/loop-accumulate` is the worked map-state case;
+`examples/plugins/git/log-paginate` is the single-string case.
+
+**Bare, not rooted.** The carried value is read `${cursor}`, not `${state.cursor}` or
+`${loop.cursor}`, because it is an author-chosen name bound lexically where the
+expressions that read it are written — the same standing principle 5 already gives a
+`for_each` iterator and a step's own `vars:`. Every rule that protects a bare binding
+protects this one, reused rather than re-derived: `flow validate` refuses a state
+name that is a CEL reserved word, a declaration root (`steps`, `vars`, `inputs`,
+`run`), `now`, or a name an enclosing loop or step already bound — a bare name may
+mean one thing at a time. And `flow fix` was taught the binding
+(`fixer.boundBareNames`, `sees`), so a state named for a step is not rewritten into a
+reference to that step — the corruption CLAUDE.md's "a rewriter has to know what the
+grammar binds" is about, covered by a byte-compare test
+(`TestFixLeavesANameTheGrammarBindsAlone`, the loop case).
+
+**Updated explicitly, because the reader must see what changes.** `init:` and
+`update:` are separate keys rather than magic. `init:` is evaluated once, before the
+loop, against the scope the loop sits in — so it may read `vars.*`, `inputs.*` and
+earlier steps, but not the state it is defining. `update:` is evaluated after the
+body each iteration, in the scope `until:` sees — the body's outputs and the *current*
+state — so it says either "take the value the body produced" (`${steps.page.next_cursor}`)
+or "fold the body's output into an accumulator" (`${acc.sum + acc.n}`). The three
+state keys stand or fall together: a name with no `init:`, an `init:` with no name, or
+a state with no `update:` (a constant dressed as a variable) is each a positioned
+diagnostic, not a shape that runs.
+
+**On #207.** A loop's carried state *does* partially address #207's ask — naming a
+value derived from a body's own steps — because `update:` is exactly that: a named
+value computed from the body's outputs, carried and readable as `${cursor}` or
+`${acc}`. The overlap is honest and worth stating: what #207 wants in the general
+case (naming a derived value at an arbitrary point) is broader, and this does not
+close it; it closes the specific case where the derived value is what the *next
+iteration* consumes. A general "derived binding" is still `vars:` at the step, and
+still additive.
+
+### Reading a loop's result: `results` and `state`, not the `as:` name
+
+A loop step produces two outputs, read from *outside* it under the step's id like
+any other step's, and their names are system-chosen, not the author's:
+
+- **`${steps.<id>.results}`** — a list, one entry per iteration, each a map of body
+  step id to that step's outputs (identical in shape to a `for_each`'s `results`).
+  This is how a pagination loop gathers every page:
+  `${steps.pages.results.map(p, p.page.commits)}`.
+- **`${steps.<id>.state}`** — the *final* value the carried state held when the loop
+  stopped. Present only when the loop declared `as:`; a stateless loop reports
+  `results` alone.
+
+The name is `state`, deliberately, and **not** the author's `as:` name. This trips
+first-timers, so it is worth stating outright: writing `as: acc` binds `acc` *inside*
+the loop — in the body, `until:` and `update:` — and nowhere else, because a bare
+binding is lexically local to what declares it (principle 5). Outside the loop the
+carried value has no bare name at all; it is one of the loop step's outputs, and the
+loop step calls it `state`. So an accumulate-until loop's answer is
+`${steps.countup.state}`, never `${steps.countup.acc}` — the latter names an output
+the loop does not produce and resolves to nothing. `flow validate` treats a
+reference to `steps.<loop id>.<the as: name>` as the likely mistake it is and points
+at `state`; every other reference to a loop's outputs is left unchecked, because a
+block node's output set is not knowable in full (the same latitude a `for_each`
+gets). `examples/loop-accumulate` reads all three — `results.size()`, `state.n`,
+`state.sum` — in its declared `outputs:`.
+
+### Bounded, because the author does not control the trip count
+
+`until:` is a promise the loop cannot keep on its own: a cursor that never reports
+exhaustion, an `update:` that never reaches the condition, is an infinite loop, and
+the resource the author does not fully control is the iteration count — precisely the
+"bound the resource the outside party controls" rule. So the loop is bounded by
+`max_iterations:`, and two properties of that bound are deliberate.
+
+**One constant, both drivers.** The effective ceiling is read through a single
+function, `v1.LoopMaxIterations` (author's value, or `v1.DefaultMaxIterations` when
+unset), which both the local and durable drivers call — a ceiling that was 1000 in
+one and something else in the other would be a loop that halts in rehearsal and runs
+away in production, the exact disagreement invariant 3 forbids, so it lives in one
+place that cannot disagree with itself.
+
+**Hitting it is a distinct failure.** A loop that spends its whole budget without
+`until:` holding did not finish — the pagination never reached the last page — so it
+fails with `v1.LoopIterationLimitError` ("ran its full budget of N iterations without
+the `until:` condition becoming true"), one sentence both drivers report, rather than
+silently returning its partial results as though it were done. Silence there would
+hide exactly the runaway the bound exists to catch. The bound is asserted *reached*,
+not merely not-exceeded (the List lesson): `tests.LoopCases`'s runaway case can only
+end by exhausting its three iterations, and both drivers are held to that failure;
+`examples/loop-accumulate`'s second test case proves it from a Flowfile.
+
+### Both drivers, and determinism
+
+Local (`eval.go` `runLoop`) runs the loop in-process; durable (`engine/execute.go`
+`runLoop`) runs it in the executor and suspends between iterations exactly as a
+`for_each` does — a long loop is where history accumulates, so an iteration boundary
+is a Continue-As-New seam. The shared cases (`pkg/flowstate/v1/tests/loop.go`) run
+under both, with two verified callers (`TestRunWorkflowLoop` in the v1 package and in
+the engine package).
+
+Determinism on replay is what makes the suspend sound, and it turns on one fact: a
+`for_each` re-derives its item from a list the specification still holds, but a loop's
+carried value was computed by `update:` from body outputs that do not survive the
+iteration. So the value itself travels across the seam, in `Frame.loop_state`, as a
+*resolved literal* — `update:` is evaluated in workflow code (invariant 4 permits it,
+as it does a `for_each`'s `items:` and a step's `vars:`), and what is stored is the
+result, so a resumed segment rebinds the value and evaluates nothing to get it. The
+iteration index and accumulated `results` ride the same frame a `for_each` already
+uses. Nothing in the loop reads a clock or a map iteration order; a loop replays to
+the same iteration count and the same state transitions.
+
+### What this slice defers, and why
+
+- **The unbounded entity loop (#105).** A loop that runs forever — an actor
+  consuming a stream, compacting its carried state across every Continue-As-New — is a
+  separate, larger slice. It needs two things a finite loop does not: a **byte bound**
+  on the carried state (a finite loop's state rides `CheckRunStateSize` bounded by the
+  iteration ceiling; an unbounded one's does not, and DSL.md's own `state:` rule says
+  that bound ships *with* the feature), and a **suspend cadence driven from Temporal's
+  history-size hint** rather than a step budget. Both are real design, not effort, and
+  neither is guessed at here.
+- **Nested loops and concurrent iterations.** A loop inside a loop, and a
+  `max_parallel:` on a loop, are both deferred. Concurrent iterations are incoherent
+  with carried state by construction — iteration N+1's state *is* iteration N's output,
+  so they cannot run at once — which is why a loop has no `max_parallel:` at all, and a
+  concurrent variant would need a different meaning for "carry" that is not obvious.
+  Nested loops work as written (the executor recurses), but their suspend/compaction
+  interaction across two `loop_state` frames wants its own cases before it is claimed,
+  so it is neither advertised nor exercised yet.
+- **A pre-body `while`.** Deferred as unnecessary: the do-while covers it (guard the
+  body with an `if:`), and adding a second loop mode is 2ⁿ dialects for a shape the
+  first already reaches.
+
 ## Order of work
 
 Each phase lands green and reachable from a Flowfile.

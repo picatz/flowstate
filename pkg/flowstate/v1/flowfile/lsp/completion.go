@@ -115,6 +115,10 @@ var dslKeys = map[string][]dslKey{
 			"A property of the step rather than of the work it does, so every kind of step can carry one — a `for_each` or a `sleep` as readily as a task. " +
 			"It belongs here, directly under `id`, and not under the task's own key: the keys there are that task's inputs, so a `description` written among them asks for an input by that name."},
 		{name: "for_each", detail: "map", docs: "Repeat a body of steps once per item of a list. " + oneStepKind},
+		{name: "loop", detail: "map", docs: "Repeat a body of steps, carrying a value from one iteration to the next, until a condition holds or `max_iterations:` is reached. " + oneStepKind + "\n\n" +
+			"The body runs, then `until:` is checked — so `until:` reads what the body produced, which is what lets a loop page a cursor until the last page reports it is done. " +
+			"`as:` names the carried value, `init:` is what it holds first, `update:` computes the next from the body's outputs. " +
+			"Reaching `max_iterations:` without `until:` holding is a distinct failure, not a silent stop. Reports `results` (one entry per iteration) and, when it carries state, `state` (the final value)."},
 		{name: "parallel", detail: "list", docs: "Run branches of steps concurrently. " + oneStepKind},
 		{name: "sleep", detail: "duration", docs: "Wait for a duration on a durable timer, written as `30s`, `5m`, `1h`, or `7d`. " +
 			"The run holds nothing while it waits, so a week is as cheap as a second. " + oneStepKind},
@@ -161,6 +165,15 @@ var dslKeys = map[string][]dslKey{
 			"Zero is accepted rather than refused because it is the field's own zero value: a spec built " +
 			"without it and one that sets it to nothing mean the same thing, and the schema says so with `gte: 0`."},
 		{name: "steps", detail: "list", docs: "The body run once per item."},
+	},
+	"loop": {
+		{name: "as", detail: "string", docs: "Names the value carried between iterations, read bare inside the body, `until:` and `update:`: `${cursor}`.\n\n" +
+			"The same standing as a `for_each` binding — author-chosen and lexically local. Optional: a loop that carries nothing omits `as:`, `init:` and `update:` together. A name that collides with an enclosing binding, `now`, or a root is refused."},
+		{name: "init", detail: "expression", docs: "The value the carried state holds on the first iteration, written as `${...}`. Evaluated once before the loop, so it cannot read the state it defines. Required when `as:` is set."},
+		{name: "update", detail: "expression", docs: "Computes the next iteration's carried state from the current one and the body's outputs, written as `${...}` — `${" + v1.StepsRoot + ".page.next_cursor}` or `${acc + n}`. Evaluated after the body. Required when `as:` is set."},
+		{name: "until", detail: "expression", docs: "The stop condition, written as `${...}` producing a boolean. Evaluated after the body each iteration, so it reads the body's own outputs. When it holds, the loop stops."},
+		{name: "max_iterations", detail: "int", docs: "The hard ceiling on how many times the body runs. Omitted or `0` uses the engine's default. Reaching it without `until:` holding fails the run distinctly rather than stopping silently — a loop that could run forever is one the engine must be able to stop."},
+		{name: "steps", detail: "list", docs: "The body run each iteration."},
 	},
 	"parallel": {
 		{name: "steps", detail: "list", docs: "One branch's steps. Each `- steps:` entry is a branch that runs concurrently with the others."},
@@ -230,6 +243,8 @@ func completeAt(doc *document, pos lsp.Position) *lsp.CompletionList {
 		return list(dslCandidates("retry", word, replace))
 	case endsWith(path, "for_each"):
 		return list(dslCandidates("for_each", word, replace))
+	case endsWith(path, "loop"):
+		return list(dslCandidates("loop", word, replace))
 	case endsWith(path, "parallel"):
 		return list(dslCandidates("parallel", word, replace))
 	case endsWith(path, "wait_for_signal"):

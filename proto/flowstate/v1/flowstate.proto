@@ -990,6 +990,7 @@ message Node {
     Parallel parallel = 6;
     Wait wait = 7;
     Call call = 11;
+    Loop loop = 12;
   }
 
   // Condition determines whether the step runs.
@@ -1579,6 +1580,164 @@ message Parallel {
       max_items: 100
     }
   ];
+}
+
+// Loop repeats a body of steps, carrying a value from one iteration to the next,
+// until a condition holds or a hard iteration ceiling is reached.
+//
+// It is the primitive `for_each` is not. `for_each` maps a body over a list it
+// already holds; nothing in it threads a value from iteration N into N+1, and its
+// length is fixed before the first iteration runs. A loop is what expresses "keep
+// going until you are done, and each step decides where the next one starts" — the
+// shape a cursor-paged API has, where you cannot know how many pages there are
+// until a page tells you it was the last one.
+//
+// # Do-while, deliberately
+//
+// The body runs, and *then* [until] is evaluated — so a loop always runs its body
+// at least once, and [until] may read that body's own outputs. That is not an
+// arbitrary choice between while and do-while: the whole point is that the stop
+// condition is something a body step *produces* (a page reporting it was not
+// truncated), which a pre-body check could not see, because on the first iteration
+// no body step has run and nothing it could read exists yet.
+//
+// # The carried value, and why it is one
+//
+// [state] names a single value the body reads under that bare name — the same
+// standing a `for_each` binding has, an author-chosen name bound where the body's
+// expressions are written (docs/DSL.md principle 5). [initial] is what it holds on
+// the first iteration; [update] computes what it holds on the next, from the
+// current value and the body's outputs. All three are optional together: a bounded
+// retry-until loop that carries nothing writes none of them.
+//
+// One carried value rather than a block of several, and that is the smaller
+// language on purpose. A named block of state entries would immediately need an
+// answer to whether one entry may read another — the exact `vars:`-sibling
+// ordering question a protobuf map cannot answer and this repo already refused
+// once ([Workflow.vars]). A single value sidesteps it: when several fields are
+// wanted, [initial] and [update] are CEL maps, and the ordering question never
+// arises because there is one expression, evaluated once per iteration.
+//
+// # Bounded, because the author does not control the trip count
+//
+// [until] is a promise the loop cannot keep on its own — a cursor that never
+// reports exhaustion, an update that never satisfies the condition, is an infinite
+// loop, and the resource an author does not fully control is the iteration count.
+// So a loop is bounded by [max_iterations], read through the one function both
+// drivers call ([LoopMaxIterations]) so the ceiling cannot disagree with itself,
+// and hitting it is a *distinct* failure — the loop reports that it exhausted its
+// budget without [until] ever holding, rather than stopping silently as though it
+// had finished. See [LoopIterationLimitError], the one sentence both drivers
+// report it with.
+//
+// # Results
+//
+// A loop reports its body's per-iteration outputs through `results`, exactly as a
+// `for_each` does — `results[0]` is the first iteration's body outputs, and so on
+// — which is what lets a pagination loop gather every page. When the loop carries
+// state, its final value is also reported as `state`, because an accumulate-until
+// loop's answer *is* that value and it is reachable nowhere else once the loop
+// ends.
+//
+// # What is deferred
+//
+// This is slice 1: a *finite* loop, provable by the bound. An unbounded loop that
+// runs forever compacting its carried state across Continue-As-New — the entity
+// pattern — is a separate, larger slice, because it needs a byte bound on [state]
+// and a suspend cadence driven from history size, neither of which a finite loop
+// needs. Nested loops and a concurrent loop are deferred too; see docs/DSL.md.
+message Loop {
+  // Body is the steps to run each iteration.
+  //
+  // Spelled `steps:` in the DSL, the same key a `for_each` body and a `parallel`
+  // branch use, because it is the same thing: a list of steps that runs as a unit.
+  // Body step outputs do not escape one iteration into the next any more than a
+  // `for_each`'s do — each iteration starts from the outputs visible before the
+  // loop, plus the carried [state] — so the only value threaded between iterations
+  // is the one [update] computes.
+  repeated Node body = 1 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).repeated = {
+      min_items: 1
+      max_items: 100
+    }
+  ];
+
+  // Until is the stop condition, evaluated after the body each iteration and
+  // required to produce a boolean. When it is true the loop stops, reporting normal
+  // completion.
+  //
+  // Evaluated in the scope the body finished in — the body's own step outputs are
+  // visible, and so is [state] under its bare name — which is what makes
+  // `${!steps.page.truncated}` mean "stop once the last page said it was not
+  // truncated". A non-boolean is an error rather than being coerced, the same rule
+  // a step's `if:` follows.
+  Value until = 2 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED
+  ];
+
+  // MaxIterations is the author's hard ceiling on how many times the body runs.
+  //
+  // Zero (or unset) takes [LoopMaxIterations]'s default, which both drivers read
+  // from one constant so the ceiling cannot differ between a local rehearsal and a
+  // durable run. A value above the absolute cap this field allows is refused by the
+  // schema, so the bound the engine enforces is never larger than the one an author
+  // can see written down.
+  //
+  // Reaching it is not a silent stop: the loop fails with [LoopIterationLimitError],
+  // because a loop that ran its whole budget without [until] holding did not do what
+  // it was asked, and reporting success would hide exactly the runaway the bound
+  // exists to catch.
+  int32 max_iterations = 3 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 100000
+  }];
+
+  // State names the value the body carries from one iteration to the next, read
+  // *bare* inside the body, [until] and [update]: `${cursor}`.
+  //
+  // Bare rather than rooted, the same standing as a `for_each` binding and for the
+  // same reason (docs/DSL.md principle 5): it is an author-chosen name bound
+  // lexically where the expressions that read it are written. `flow validate`
+  // refuses a name that collides with an enclosing bare binding, with `now`, or
+  // with a declaration root, exactly as it refuses a colliding loop iterator or
+  // step var — a bare name may mean one thing at a time.
+  //
+  // Optional. A loop that carries nothing — a bounded retry-until — leaves this,
+  // [initial] and [update] all unset. Setting one without the others is refused by
+  // the compiler: a name with no initial value, or a value that never changes, is a
+  // mistake worth naming rather than a shape to run.
+  //
+  // The pattern is ignored when unset, because unset is the whole stateless mode: an
+  // empty string is the *absence* of a name, not a malformed one, and applying an
+  // identifier pattern to it would refuse the loop that carries nothing — the mode
+  // examples/loop-poll-until ships.
+  string state = 4 [(buf.validate.field) = {
+    ignore: IGNORE_IF_UNPOPULATED
+    string: {
+      max_len: 128
+      pattern: "^[A-Za-z_][A-Za-z0-9_]*$"
+    }
+  }];
+
+  // Initial is the value [state] holds on the first iteration.
+  //
+  // Evaluated once, before the loop begins, against the scope the loop node sits in
+  // — so it may read `vars.*`, `inputs.*`, and the outputs of steps that ran before
+  // the loop, but not [state] itself, which does not exist yet. A literal is the
+  // common case (`init: ${''}`); an expression is evaluated like any other.
+  Value initial = 5;
+
+  // Update computes the value [state] holds on the *next* iteration, from the value
+  // it holds now and the body's outputs.
+  //
+  // Evaluated after the body each iteration, in the same scope [until] sees — the
+  // body's step outputs and the current [state] — which is what lets it say
+  // `${steps.page.next_cursor}` (take the next value the body produced) or
+  // `${state + steps.tick.amount}` (fold the body's output into an accumulator).
+  // Required when [state] is set and refused when it is not.
+  Value update = 6;
 }
 
 // Call runs another workflow as a step.
@@ -2995,6 +3154,35 @@ message Frame {
   // correct in the first case for the reason call_outputs's is, and correct
   // in the second because there is nothing to evaluate.
   map<string, Value> call_vars = 5;
+
+  // LoopState is the value a [Loop] was carrying when a run suspended between its
+  // iterations, for a frame standing inside a loop.
+  //
+  // A `for_each` needs no equivalent, because its per-iteration binding is the item
+  // at [NextIteration] of a list [ForEach.items] recomputes on resume — the list is
+  // in the specification. A loop's carried value is not: it is computed by
+  // [Loop.update] from the *previous* iteration's body outputs, which do not escape
+  // the iteration and are gone once it ends. So the value itself has to travel, the
+  // same way [call_outputs] carries a callee's own step outputs across the seam for
+  // the same reason — the state exists nowhere in [RunState.outputs].
+  //
+  // A resolved value, never an expression: [Loop.update] is evaluated in workflow
+  // code at the end of each iteration (invariant 4 permits it, as it does a loop's
+  // `items:` and a step's `vars:`) and what is stored here is the result. So a
+  // resumed segment binds the carried value directly and evaluates nothing to get
+  // it — the same discipline [PendingUndo] follows, and for the same determinism
+  // reason.
+  //
+  // Absent for every frame that predates this field, and for a loop that carries no
+  // state at all — both read as "nothing carried", which is correct: a
+  // retry-until loop binds no name, so there is nothing for a resumed segment to
+  // rebind.
+  //
+  // Weighed by `CheckRunStateSize` along with the rest of [RunState] (invariant 9),
+  // which is the bound a *finite* loop's state needs — it is one value, carried
+  // across at most the loop's bounded iteration count. The unbounded entity loop
+  // that would need a byte bound of its own is deferred; see [Loop].
+  Value loop_state = 6;
 }
 
 message RunState {
