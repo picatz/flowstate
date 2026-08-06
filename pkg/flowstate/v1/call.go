@@ -134,6 +134,15 @@ func CallScope(caller *Scope, callee *Workflow, arguments, vars map[string]*Valu
 	scope.Inputs = bound
 	scope.AmbientVars = vars
 
+	// The run's own starter identity crosses despite the isolation above, because
+	// it is not something the caller's scope resolved — it is a fact about the run
+	// itself, exactly like the profile two lines up. A callee is still a step of
+	// the same run, started by the same caller, so `${run.identity.subject}`
+	// inside a called workflow must answer the same thing it would answer if the
+	// callee's steps were pasted in place rather than called.
+	scope.Identity = caller.GetIdentity()
+	scope.Local = caller.GetLocal()
+
 	return scope, nil
 }
 

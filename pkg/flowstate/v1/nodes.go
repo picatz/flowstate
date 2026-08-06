@@ -81,7 +81,7 @@ func (s *Scope) ActivationWith(ctx context.Context, extra map[string]ref.Val) ce
 		locals[name] = v
 	}
 
-	return Activation(ctx, s.GetProfile(), s.StepOutputs(), refValues(s.GetAmbientVars()), locals, refValues(s.GetInputs()))
+	return Activation(ctx, s.GetProfile(), s.StepOutputs(), refValues(s.GetAmbientVars()), locals, refValues(s.GetInputs()), s.GetIdentity(), s.GetLocal())
 }
 
 // Activation returns the CEL activation for this scope.
@@ -92,10 +92,10 @@ func (s *Scope) ActivationWith(ctx context.Context, extra map[string]ref.Val) ce
 // evaluator names one for how it resolves. They disagree here and only here.
 func (s *Scope) Activation(ctx context.Context) cel.Activation {
 	if s == nil {
-		return Activation(ctx, "", nil, nil, nil, nil)
+		return Activation(ctx, "", nil, nil, nil, nil, nil, false)
 	}
 
-	return Activation(ctx, s.Profile, s.Outputs, refValues(s.GetAmbientVars()), refValues(s.GetVars()), refValues(s.GetInputs()))
+	return Activation(ctx, s.Profile, s.Outputs, refValues(s.GetAmbientVars()), refValues(s.GetVars()), refValues(s.GetInputs()), s.GetIdentity(), s.GetLocal())
 }
 
 // refValues converts a map of schema values to CEL values.
@@ -138,6 +138,8 @@ func (s *Scope) WithLocal(name string, item *Value) *Scope {
 		next.Profile = s.Profile
 		next.AmbientVars = s.AmbientVars
 		next.Inputs = s.Inputs
+		next.Identity = s.Identity
+		next.Local = s.Local
 		for k, v := range s.Vars {
 			next.Vars[k] = v
 		}
@@ -165,6 +167,8 @@ func (s *Scope) WithLocals(locals map[string]*Value) *Scope {
 		next.Profile = s.Profile
 		next.AmbientVars = s.AmbientVars
 		next.Inputs = s.Inputs
+		next.Identity = s.Identity
+		next.Local = s.Local
 		for k, v := range s.Vars {
 			next.Vars[k] = v
 		}
@@ -192,6 +196,8 @@ func (s *Scope) WithAmbientVars(vars map[string]*Value) *Scope {
 		next.Profile = s.Profile
 		next.Vars = s.Vars
 		next.Inputs = s.Inputs
+		next.Identity = s.Identity
+		next.Local = s.Local
 		for k, v := range s.AmbientVars {
 			next.AmbientVars[k] = v
 		}
@@ -477,12 +483,16 @@ func Activation(
 	ambientVars map[string]ref.Val,
 	locals map[string]ref.Val,
 	inputs map[string]ref.Val,
+	identity *WorkloadIdentity,
+	local bool,
 ) cel.Activation {
 	return cel.Activation(&StepsOutputActivation{
 		Prev:        prev,
 		AmbientVars: ambientVars,
 		Locals:      locals,
 		Inputs:      inputs,
+		RunIdentity: identity,
+		RunLocal:    local,
 		Ctx:         ctx,
 		Eval:        DefaultEvaluator(),
 		Profile:     profile,
@@ -534,6 +544,14 @@ func (s *Scope) WithOutputs(outputs *Workflow_StepOutputs) *Scope {
 		// copy, where the symptom was a loop body's task failing to find its iterator
 		// five retries deep.
 		next.Inputs = s.Inputs
+
+		// The run's own starter identity, for the identical reason Inputs is a
+		// share rather than a copy above: it is fixed for the run, and this is
+		// exactly the kind of field CLAUDE.md's own AmbientVars story is about —
+		// added once, and silently dropped from a helper nobody remembered to
+		// update, until a loop body five retries deep could no longer see it.
+		next.Identity = s.Identity
+		next.Local = s.Local
 	}
 	return next
 }

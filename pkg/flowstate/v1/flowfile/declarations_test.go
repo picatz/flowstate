@@ -420,6 +420,46 @@ steps:
 `,
 			want: "is the root the workflow's vars are named under",
 		},
+		{
+			// #206: `run` carries the run's starter identity. The same collision
+			// rule as `inputs`, `vars` and `steps`, for the identical reason — a
+			// step of that id would hide it from every expression after it.
+			name: "a step may not be called run",
+			src: `
+steps:
+  - id: run
+    log:
+      message: hello
+`,
+			want: "is the root the run's starter identity fields are named under",
+		},
+		{
+			name: "a loop may not bind run",
+			src: `
+steps:
+  - id: each
+    for_each:
+      items: ${[1]}
+      as: run
+      steps:
+        - id: body
+          log:
+            message: hello
+`,
+			want: "is the root the run's starter identity fields are named under",
+		},
+		{
+			name: "a step var may not be called run",
+			src: `
+steps:
+  - id: a
+    vars:
+      run: ${1}
+    log:
+      message: hello
+`,
+			want: "is the root the run's starter identity fields are named under",
+		},
 	}
 
 	for _, tt := range tests {

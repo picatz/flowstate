@@ -1327,6 +1327,44 @@ message Scope {
     keys: {string: {min_len: 1}}
     max_pairs: 64
   }];
+
+  // Identity is the attested identity of whoever started this run, exposed to
+  // expressions under the `run` root — `run.identity.subject`,
+  // `run.identity.issuer`, `run.identity.namespace`, `run.identity.claims` —
+  // so a rule can compare the caller who requested the run against the
+  // caller who satisfies a gate later. See [RunState.identity], which this is
+  // copied from and never anything else: a workflow author cannot set this,
+  // and a signal's own sender (see [SignalSender]) cannot either, because
+  // both are attested at a boundary the workflow does not control.
+  //
+  // Deliberately narrower than [WorkloadIdentity] itself: `deployment` is
+  // left off, because it answers "which installation ran this" rather than
+  // "who is this caller", and that is exactly the question CLAUDE.md's
+  // diagnostics rule already answers for a different surface — a fact a
+  // deployment decides, not a fact about the file, does not belong in a
+  // workflow's own logic. An outbound authorization policy already sees it as
+  // `workload.deployment` (see [WorkloadIdentity.deployment]); a workflow
+  // gating on it would be asking a question that belongs one layer down.
+  //
+  // Absent for a run that predates this field, and for every local run — both
+  // read as an identity with every field empty, and [Scope.local] is what
+  // tells those two cases apart from a run the server genuinely attested with
+  // an anonymous identity.
+  WorkloadIdentity identity = 6;
+
+  // Local marks a scope built by the local driver (`flow run local`, `flow
+  // test`), which has no authenticated caller at all — read under
+  // `run.local`. Mirrors [SignalSender.local] for the identical reason: an
+  // empty `run.identity.subject` must never be silently confused with a real
+  // caller who merely authenticated anonymously (no identity provider
+  // configured), so the local driver states outright that nothing here was
+  // attested, rather than leaving an author to infer it from an empty string.
+  //
+  // Never true on any scope the durable driver builds, even when
+  // [Scope.identity] is empty because the run was started without
+  // authentication — that is only possible in development, and it is still a
+  // server attesting an anonymous caller rather than no caller at all.
+  bool local = 7;
 }
 
 // ForEach runs a body of steps once per item of a list.

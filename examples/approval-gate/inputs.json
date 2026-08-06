@@ -1,6 +1,5 @@
 {
   "version": "v1.4.2",
   "environment": "production",
-  "requested_by": "jordan@example.com",
   "expected_approver": "sre-lead@example.com"
 }

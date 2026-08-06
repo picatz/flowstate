@@ -482,6 +482,14 @@ func (e *executor) runTask(node *v1.Node, task *v1.Task) error {
 			// every other position in the file resolves.
 			Inputs: e.scope.GetInputs(),
 
+			// The run's own starter identity, whole, for the identical reason
+			// Inputs is above: `${run.identity.subject}` inside an http task's
+			// `outputs:` is evaluated on whatever worker takes this activity, and
+			// this is the field this whole comment is about — the one Scope grows
+			// and a copy site forgets.
+			Identity: e.scope.GetIdentity(),
+			Local:    e.scope.GetLocal(),
+
 			// Carried across the wire. This scope is what an activity on some other
 			// worker evaluates a task's own expressions against, and that worker's
 			// build may know a different set of profiles than the one that compiled

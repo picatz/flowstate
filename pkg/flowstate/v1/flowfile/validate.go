@@ -479,7 +479,7 @@ func validateWorkflowVars(wf *v1.Workflow) Diagnostics {
 		}
 
 		for _, ref := range bare {
-			if ref == v1.StepsRoot || ref == v1.VarsRoot || ref == v1.InputsRoot {
+			if ref == v1.StepsRoot || ref == v1.VarsRoot || ref == v1.InputsRoot || ref == v1.RunRoot {
 				// A root as an operand, which fails here for the same reason a
 				// selection through it does — and is described by the two loops
 				// above, not by the general "unknown name" sentence.
@@ -1088,7 +1088,7 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 		if scope.locals[ref] {
 			continue
 		}
-		if ref == v1.StepsRoot || ref == v1.VarsRoot || ref == v1.InputsRoot {
+		if ref == v1.StepsRoot || ref == v1.VarsRoot || ref == v1.InputsRoot || ref == v1.RunRoot {
 			// A root written as an operand rather than selected through:
 			// `size(steps)`, or `vars["region"]` where the key is computed. Both
 			// resolve — the activation answers a root whole — so reporting either as
