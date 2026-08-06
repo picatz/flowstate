@@ -1282,6 +1282,14 @@ func runForEach(ctx context.Context, loop *ForEach, scope *Scope, depth int) (*N
 // the honest outcome for a loop that ran its whole budget without finishing. The
 // durable driver checks the identical bound at the identical point; both read it
 // through [LoopMaxIterations].
+//
+// A second bound applies to what the loop accumulates rather than how many times
+// it runs, per #229: `results` is bounded in bytes through [MaxLoopResultsBytes],
+// enforced by [AccumulateLoopResult] at the identical point the durable driver's
+// runLoop enforces it. A local run never suspends or resumes, so it has no
+// Continue-As-New frame to suppress `results` from carrying across — the other
+// half of #229's fix — and holds only this bound; see the package doc on
+// [LoopResumeResults] for why suppression could not live here even if it did.
 func runLoop(ctx context.Context, loop *Loop, scope *Scope, depth int) (*Node_Outputs, error) {
 	name := loop.GetState()
 	max := LoopMaxIterations(loop)
@@ -1293,6 +1301,7 @@ func runLoop(ctx context.Context, loop *Loop, scope *Scope, depth int) (*Node_Ou
 		return nil, err
 	}
 
+	resultsBytes := 0
 	iterations := make([]*Workflow_StepOutputs, 0)
 
 	for i := 0; ; i++ {
@@ -1327,7 +1336,11 @@ func runLoop(ctx context.Context, loop *Loop, scope *Scope, depth int) (*Node_Ou
 			return nil, fmt.Errorf("iteration %d: %w", i, err)
 		}
 
-		iterations = append(iterations, onlyBodyOutputs(loop.GetBody(), iterationOutputs))
+		var sizeErr error
+		iterations, resultsBytes, sizeErr = AccumulateLoopResult(iterations, resultsBytes, onlyBodyOutputs(loop.GetBody(), iterationOutputs))
+		if sizeErr != nil {
+			return nil, fmt.Errorf("iteration %d: %w", i, sizeErr)
+		}
 
 		// `until:` and `update:` both see the body's outputs and the current state, so
 		// they are evaluated against the scope the body finished in.
