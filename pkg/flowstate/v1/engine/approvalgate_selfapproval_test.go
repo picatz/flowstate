@@ -92,12 +92,72 @@ func TestApprovalGateRefusesSelfApproval(t *testing.T) {
 			"self-approval did not take the refusal branch")
 
 		decision := outputs.GetRunOutputs().GetValues()["decision"].GetLiteral().GetStringValue()
-		require.Equal(t, "refused_unattested_or_self_approved", decision)
+		require.Equal(t, "refused_self_approved", decision)
 
 		approver := outputs.GetRunOutputs().GetValues()["approver_subject"].GetLiteral().GetStringValue()
 		require.Empty(t, approver, "approver_subject leaked on a run that never deployed")
 
 		t.Logf("decision=%s approver_subject=%q (self-approval correctly refused)", decision, approver)
+	})
+
+	// #215's first finding: comparing subject alone would refuse this run too,
+	// because the approver's subject is textually identical to the run's
+	// starter subject. The two are different principals -- a subject is only
+	// unique within its issuer (auth/principal.go), and here the issuers
+	// differ -- so this is a genuinely different approver who happens to
+	// share a subject with the starter, and the gate must let it through
+	// rather than mistake the collision for self-approval.
+	t.Run("same subject, different issuer: not self-approval, proceeds", func(t *testing.T) {
+		suite := &testsuite.WorkflowTestSuite{}
+		env := suite.NewTestWorkflowEnvironment()
+
+		env.RegisterWorkflow(engine.Run)
+		env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
+
+		env.RegisterDelayedCallback(func() {
+			env.SignalWorkflow("deploy-approved", &v1.SignalDelivery{
+				Payload: &v1.Node_Outputs{NamedValues: map[string]*v1.Value{
+					"approved": v1.NewLiteral(true),
+				}},
+				Sender: &v1.SignalSender{
+					Identity: &v1.WorkloadIdentity{
+						// Same subject as the run's own starter, below, but a
+						// different issuer -- a different identity provider
+						// minted this "sre-lead@example.com", not the one
+						// that started the run.
+						Subject: "sre-lead@example.com",
+						Issuer:  "other-idp",
+					},
+				},
+			})
+		}, time.Minute)
+
+		env.ExecuteWorkflow(engine.Run, &v1.RunState{
+			Workflow: loadApprovalGate(t),
+			Inputs:   approvalGateInputs(),
+			Identity: &v1.WorkloadIdentity{
+				Subject: "sre-lead@example.com",
+				Issuer:  "flowstate:test",
+			},
+		})
+
+		require.True(t, env.IsWorkflowCompleted())
+		require.NoError(t, env.GetWorkflowError())
+
+		var outputs v1.Workflow_StepOutputs
+		require.NoError(t, env.GetWorkflowResult(&outputs))
+
+		require.NotNil(t, outputs.GetStepValues()["deploy"],
+			"a cross-issuer approver was wrongly refused as a self-approval")
+		require.Nil(t, outputs.GetStepValues()["deploy_refused"])
+
+		decision := outputs.GetRunOutputs().GetValues()["decision"].GetLiteral().GetStringValue()
+		require.Equal(t, "deployed", decision)
+
+		approver := outputs.GetRunOutputs().GetValues()["approver_subject"].GetLiteral().GetStringValue()
+		require.Equal(t, "sre-lead@example.com", approver)
+
+		t.Logf("decision=%s approver_subject=%q (cross-issuer approver correctly allowed)", decision, approver)
 	})
 
 	t.Run("a different attested approver: proceeds", func(t *testing.T) {

@@ -7,7 +7,10 @@
 # reason; see #206. The durable half — an attested sender who is not the run's
 # own starter deploying, and one who is being refused — is exercised in CI by
 # engine/examples_durable_test.go and engine/run_identity_test.go, which is
-# where a real sender and a real run identity can both exist at once.
+# where a real sender and a real run identity can both exist at once, and where
+# the other two refusal decisions -- `refused_mismatched_approver` and
+# `refused_self_approved` (#215) -- are exercised, since both require an
+# attested sender this harness cannot produce.
 edition: v2026.2
 tests:
   - name: an approved payload is still refused without an attested sender
@@ -27,7 +30,7 @@ tests:
       ran: [request, settle, approval, deploy_refused]
       skipped: [deploy, rejected, expired]
       outputs:
-        decision: refused_unattested_or_self_approved
+        decision: refused_unattested
         approver_subject: ""
 
   - name: an explicit rejection is honored

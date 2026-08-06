@@ -29,6 +29,18 @@ description: >-
 # requester can no longer set `expected_approver` to themselves and satisfy the
 # check below, because `run.identity.subject` is the caller the server actually
 # authenticated the *original* request as, not anything this file's inputs say.
+#
+# The self-approval check compares issuer *and* subject, not subject alone
+# (#215). `auth/principal.go` states the rule this restates: a subject is only
+# unique within its issuer, so two different identity providers can each mint a
+# "runner" subject that must not be treated as the same caller —
+# `Principal.ID()` is `issuer + "#" + subject` for exactly this reason. Comparing
+# subject alone means the same thing this file is trying to prevent — a caller
+# approving their own request — but under the *wrong name*: it would also refuse
+# a genuinely different approver who happens to share a subject with the
+# starter across a different issuer. That is fail-closed, but wrong, and wrong
+# in the way that reads as a mystery report in a multi-IdP deployment rather
+# than as a bug anyone can point at.
 # Two things remain true, and this file does not pretend otherwise:
 #
 #   - There is still no signal authorization surface: anyone who can reach this
@@ -81,11 +93,15 @@ inputs:
   # attested subject is a real check: the caller declares who they expect, and
   # the deploy step refuses unless the server's own attestation agrees — a
   # caller cannot forge that agreement by typing a different subject into the
-  # signal, because the signal payload never carries one. Separation of
-  # duties — the approver may not be the requester — no longer rides on this
-  # field at all: it is checked against `run.identity.subject`, the run's own
-  # attested starter (#206), which a caller cannot set to whatever they like
-  # the way they could set an input.
+  # signal, because the signal payload never carries one. `expected_approver`
+  # itself is matched on subject alone, and that is fine: it is a caller's
+  # *expectation*, checked against what the server attested, not the security
+  # boundary. Separation of duties — the approver may not be the requester — no
+  # longer rides on this field at all: it is checked against `run.identity`,
+  # the run's own attested starter (#206), which a caller cannot set to
+  # whatever they like the way they could set an input. That comparison is
+  # issuer *and* subject together, never subject alone (#215) — see the header
+  # comment for why.
   #
   # Not marked `sensitive:`, deliberately, and the reason is worth stating
   # because reaching for it here is the natural mistake. An approval trail is
@@ -151,19 +167,21 @@ steps:
   # was actually attested (not a local run, not an unauthenticated request); that
   # attested subject is the one this run declared it expects; the run itself was
   # attested (not local); and the approver is not the run's own starter — real
-  # separation of duties, checked against `run.identity.subject` rather than a
-  # caller-supplied field. A local run — `flow run local`, `flow test` — has no
-  # authenticated caller at all (`steps.approval.sender.local` and `run.local`
-  # both read `true`, both subjects read empty), so this branch can never fire
-  # outside a real server: that is the honest consequence of gating on
-  # attestation rather than on the payload alone, not a bug in the example.
+  # separation of duties, checked against `run.identity` (issuer *and* subject
+  # together, #215) rather than a caller-supplied field. A local run —
+  # `flow run local`, `flow test` — has no authenticated caller at all
+  # (`steps.approval.sender.local` and `run.local` both read `true`, both
+  # subjects read empty), so this branch can never fire outside a real server:
+  # that is the honest consequence of gating on attestation rather than on the
+  # payload alone, not a bug in the example.
   - id: deploy
     if: >-
       ${has(steps.approval.payload.approved) && steps.approval.payload.approved &&
         !steps.approval.sender.local && !run.local &&
         steps.approval.sender.identity.subject != "" &&
         steps.approval.sender.identity.subject == inputs.expected_approver &&
-        steps.approval.sender.identity.subject != run.identity.subject}
+        !(steps.approval.sender.identity.subject == run.identity.subject &&
+          steps.approval.sender.identity.issuer == run.identity.issuer)}
     log:
       message: >-
         ${"deploying %s to %s, approved by %s".format(
@@ -172,16 +190,18 @@ steps:
   # The payload said yes and the gate above still refused it — either nothing
   # attested the sender or the run at all (a local run, or a server with no
   # identity provider configured), the attested sender was not the one this run
-  # declared it expects, or the attested sender is the run's own starter (the
-  # self-approval this gate now genuinely refuses, rather than merely
-  # documenting as unenforceable — see the header comment).
+  # declared it expects, or the attested sender is the run's own starter — same
+  # issuer *and* subject as `run.identity` (the self-approval this gate now
+  # genuinely refuses, rather than merely documenting as unenforceable — see the
+  # header comment).
   - id: deploy_refused
     if: >-
       ${has(steps.approval.payload.approved) && steps.approval.payload.approved &&
         !(!steps.approval.sender.local && !run.local &&
           steps.approval.sender.identity.subject != "" &&
           steps.approval.sender.identity.subject == inputs.expected_approver &&
-          steps.approval.sender.identity.subject != run.identity.subject)}
+          !(steps.approval.sender.identity.subject == run.identity.subject &&
+            steps.approval.sender.identity.issuer == run.identity.issuer))}
     log:
       level: warn
       message: >-
@@ -208,22 +228,35 @@ steps:
       message: ${"nobody approved deploying %s in time".format([inputs.version])}
 
 outputs:
-  # An enterprise reader wants to know which of five things happened and, when
-  # a deploy shipped, who the server says shipped it — this reports both
+  # An enterprise reader wants to know which of several things happened and,
+  # when a deploy shipped, who the server says shipped it — this reports both
   # without anyone having to know which step's log line was the point.
+  #
+  # Three distinct refusal values rather than one merged
+  # `refused_unattested_or_self_approved` (#215's third finding). An audit
+  # trail that reports "mismatched approver" and "self-approval" and "no
+  # attestation at all" under the same string is lying to whoever reads it
+  # afterwards — those are three different findings, and the reader who opens
+  # this run to see *why* it refused deserves the one that actually happened,
+  # not a value that is merely consistent with several of them. Each is worded
+  # to match the reason `deploy_refused`'s own log line already names, so the
+  # step log and the declared output never disagree about which of the three it
+  # was.
   decision:
     value: >-
-      ${(has(steps.approval.payload.approved) && steps.approval.payload.approved &&
-          !steps.approval.sender.local && !run.local &&
-          steps.approval.sender.identity.subject != "" &&
-          steps.approval.sender.identity.subject == inputs.expected_approver &&
-          steps.approval.sender.identity.subject != run.identity.subject)
-        ? "deployed"
-        : (has(steps.approval.payload.approved) && steps.approval.payload.approved)
-          ? "refused_unattested_or_self_approved"
-          : (has(steps.approval.payload.approved) && !steps.approval.payload.approved)
+      ${!(has(steps.approval.payload.approved) && steps.approval.payload.approved)
+        ? (has(steps.approval.payload.approved)
             ? "rejected"
-            : "expired"}
+            : "expired")
+        : !(!steps.approval.sender.local && !run.local &&
+            steps.approval.sender.identity.subject != "")
+          ? "refused_unattested"
+          : steps.approval.sender.identity.subject != inputs.expected_approver
+            ? "refused_mismatched_approver"
+            : (steps.approval.sender.identity.subject == run.identity.subject &&
+                steps.approval.sender.identity.issuer == run.identity.issuer)
+              ? "refused_self_approved"
+              : "deployed"}
     description: which branch this run ended on, and why
   # Populated only when a deploy actually happened — the same pattern
   # `expense-approval`'s own `approved_by` output uses, and for the same
@@ -240,7 +273,8 @@ outputs:
           !steps.approval.sender.local && !run.local &&
           steps.approval.sender.identity.subject != "" &&
           steps.approval.sender.identity.subject == inputs.expected_approver &&
-          steps.approval.sender.identity.subject != run.identity.subject)
+          !(steps.approval.sender.identity.subject == run.identity.subject &&
+            steps.approval.sender.identity.issuer == run.identity.issuer))
         ? steps.approval.sender.identity.subject
         : ""}
     description: >-

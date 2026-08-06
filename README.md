@@ -67,7 +67,8 @@ steps:
       ${has(steps.approval.payload.approved) && steps.approval.payload.approved &&
         !steps.approval.sender.local && !run.local &&
         steps.approval.sender.identity.subject == inputs.expected_approver &&
-        steps.approval.sender.identity.subject != run.identity.subject}
+        !(steps.approval.sender.identity.subject == run.identity.subject &&
+          steps.approval.sender.identity.issuer == run.identity.issuer)}
     log:
       message: ${"deploying, approved by %s".format([steps.approval.sender.identity.subject])}
 
@@ -86,10 +87,14 @@ evidence; a sender and a run's starter are identity — see
 [CLAUDE.md's boundary doctrine](CLAUDE.md) for why none of the three are ever merged.
 
 **Read this before copying it into production.** `deploy` above gates on two attested
-facts, both real: `steps.approval.sender.identity.subject` cannot be forged by whoever
-sends the signal, and `run.identity.subject` cannot be forged by whoever started the run —
-so `sender != run` is a genuine self-approval refusal, not a caller-supplied claim checked
-against another caller-supplied claim. What it still does not do is authorize *who* may
+facts, both real: `steps.approval.sender.identity` cannot be forged by whoever sends the
+signal, and `run.identity` cannot be forged by whoever started the run — so `sender !=
+run`, compared on issuer *and* subject together, is a genuine self-approval refusal, not a
+caller-supplied claim checked against another caller-supplied claim. Subject alone would
+not do: a subject is only unique within its issuer, so two different identity providers
+could each mint an approver with the same subject the run started as, and comparing
+subject alone would refuse that genuinely different approver as if they were the starter.
+What it still does not do is authorize *who* may
 send `deploy-approved` in the first place — any caller who can reach the run in its tenant
 can, matched approver or not, self-approval refused or not. That gap, plus the fact that
 the check lives in a file its own author can edit, are tracked at
@@ -110,8 +115,8 @@ WARN refusing to deploy v1.4.2: approved, but the sender was not attested at all
 COMPLETED workflow approval-gate
 outputs
   approver_subject 
-  decision refused_unattested_or_self_approved
-{"stepValues":{...}, "runOutputs":{"values":{"approver_subject":{"literal":{"stringValue":""}}, "decision":{"literal":{"stringValue":"refused_unattested_or_self_approved"}}}}}
+  decision refused_unattested
+{"stepValues":{...}, "runOutputs":{"values":{"approver_subject":{"literal":{"stringValue":""}}, "decision":{"literal":{"stringValue":"refused_unattested"}}}}}
 ```
 
 A local run has no authenticated caller — nothing signed in, no server in front of it — so
@@ -137,22 +142,30 @@ exit status 1
 The payoff — the fact a Flowfile could not express until #206 closed this gap — is
 separation of duties itself, checked durably against two independent attestations rather
 than against anything either caller typed in. Run through the durable driver with the run
-started as one identity and the approval signed by that *same* identity, `deploy` is
-refused; signed by a different one that still matches `expected_approver`, it proceeds —
-both exercised on the real example file in CI
-(`engine.TestApprovalGateRefusesSelfApproval`):
+started as one identity and the approval signed by that *same* identity (issuer and
+subject both), `deploy` is refused; signed by a different one that still matches
+`expected_approver`, it proceeds. The comparison is issuer *and* subject together, never
+subject alone: a subject is only unique within its issuer, so an approver whose subject
+happens to collide with the run's starter across a *different* issuer is a genuinely
+different principal, and the gate must not mistake that collision for self-approval
+([#215](https://github.com/picatz/flowstate/issues/215)). All three cases are exercised on
+the real example file in CI (`engine.TestApprovalGateRefusesSelfApproval`):
 
 ```console
 $ go test ./pkg/flowstate/v1/engine/ -run TestApprovalGateRefusesSelfApproval -v
 === RUN   TestApprovalGateRefusesSelfApproval
 === RUN   TestApprovalGateRefusesSelfApproval/the_run's_starter_approves_their_own_request:_refused
     WARN  refusing to deploy v1.4.2: approved, but the sender was the same identity that started this run
-    decision=refused_unattested_or_self_approved approver_subject="" (self-approval correctly refused)
---- PASS: TestApprovalGateRefusesSelfApproval/the_run's_starter_approves_their_own_request:_refused (0.11s)
+    decision=refused_self_approved approver_subject="" (self-approval correctly refused)
+--- PASS: TestApprovalGateRefusesSelfApproval/the_run's_starter_approves_their_own_request:_refused (0.12s)
+=== RUN   TestApprovalGateRefusesSelfApproval/same_subject,_different_issuer:_not_self-approval,_proceeds
+    INFO  deploying v1.4.2 to production, approved by sre-lead@example.com
+    decision=deployed approver_subject="sre-lead@example.com" (cross-issuer approver correctly allowed)
+--- PASS: TestApprovalGateRefusesSelfApproval/same_subject,_different_issuer:_not_self-approval,_proceeds (0.02s)
 === RUN   TestApprovalGateRefusesSelfApproval/a_different_attested_approver:_proceeds
     INFO  deploying v1.4.2 to production, approved by sre-lead@example.com
     decision=deployed approver_subject="sre-lead@example.com" (deploy proceeded)
---- PASS: TestApprovalGateRefusesSelfApproval/a_different_attested_approver:_proceeds (0.01s)
+--- PASS: TestApprovalGateRefusesSelfApproval/a_different_attested_approver:_proceeds (0.02s)
 PASS
 ```
 
@@ -160,11 +173,11 @@ Hand the same file to a server backed by Temporal, and approve it from another t
 a worker restart in between changes nothing, because nothing local was holding the wait. Run
 through a real server with `--insecure-no-auth` (every caller authenticates as the fixed
 subject `anonymous`, `issuer: flowstate:insecure-anonymous` — see the warning `flow server`
-prints), both the run and the signal are attested by the *same* anonymous identity, so
-`steps.approval.sender.identity.subject != run.identity.subject` is false before the
-approver check is even reached: this dev setup cannot produce a "deployed" transcript,
-because it cannot produce two distinct attested identities, which is the honest reason and
-not a limitation of the check.
+prints), both the run and the signal are attested by the *same* anonymous identity — same
+subject *and* same issuer — so the self-approval check is true before the approver check
+is even reached: this dev setup cannot produce a "deployed" transcript, because it cannot
+produce two distinct attested identities, which is the honest reason and not a limitation
+of the check.
 
 Same file, same steps, same final document — down to the byte, because both drivers render
 the run through one renderer. That agreement is enforced, not hoped for; see
