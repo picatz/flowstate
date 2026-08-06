@@ -467,6 +467,13 @@ const (
 
 	// nowBinding is the clock, bound bare and only inside a wait.
 	nowBinding = "now"
+
+	// loopUntilKey and loopUpdateKey are the two loop expressions that see the
+	// carried state (evaluated after the body each iteration); loopInitKey does not,
+	// because it defines the state before the loop begins. A loop is recognised by
+	// carrying `until:` and `steps:`, which `for_each` never does.
+	loopUntilKey  = "until"
+	loopUpdateKey = "update"
 )
 
 // findField returns the field a task declares under the given input name.

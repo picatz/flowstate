@@ -1,0 +1,52 @@
+edition: v2026.2
+
+# Proves the pagination loop walks a history to exhaustion in CI, with no network
+# and without the git plugin installed — by stubbing git.log to hand back a fixed
+# three-page history, each page keyed on the cursor it was called with. This is
+# exactly git.log's real contract (empty cursor = fresh walk, next_cursor fed back
+# to resume, truncated=false on the last page), so the loop drives the stub the
+# same way it drives the plugin.
+tests:
+  - name: pages a stubbed history to exhaustion, every commit exactly once
+    workflow: ./log-paginate.yaml
+    stubs:
+      # Iteration 0: a fresh walk (empty cursor) returns the first two commits and
+      # says there is more.
+      - task: git.log
+        where: "inputs.cursor == ''"
+        returns:
+          commits:
+            - {sha: aaa1}
+            - {sha: aaa2}
+          truncated: true
+          next_cursor: cur-1
+
+      # Iteration 1: resumed at cur-1, the next two commits, still more.
+      - task: git.log
+        where: "inputs.cursor == 'cur-1'"
+        returns:
+          commits:
+            - {sha: aaa3}
+            - {sha: aaa4}
+          truncated: true
+          next_cursor: cur-2
+
+      # Iteration 2: resumed at cur-2, the last commit, and truncated: false — the
+      # end of the history, which is what stops the loop.
+      - task: git.log
+        where: "inputs.cursor == 'cur-2'"
+        returns:
+          commits:
+            - {sha: aaa5}
+          truncated: false
+          next_cursor: ""
+    expect:
+      ran: [pages]
+      outputs:
+        # Three pages fetched: the loop stopped exactly when a page reported the
+        # history was no longer truncated, not before and not after.
+        page_count: 3
+        # Every commit, across every page, in walk order — five in total, none
+        # dropped and none repeated.
+        all_shas: [aaa1, aaa2, aaa3, aaa4, aaa5]
+        every_commit_once: true

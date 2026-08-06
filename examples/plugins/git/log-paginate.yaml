@@ -1,0 +1,74 @@
+edition: v2026.2
+name: git-log-paginate
+description: Pages a repository's entire commit history to exhaustion with a bounded loop, carrying git.log's cursor as state until git.log reports the history is no longer truncated. The layer-2 half of #216 that git-log-resume could only describe.
+
+# `git-log-resume.yaml` beside this file shows git.log's cursor for exactly one
+# resume — page one, then page two — and says outright what it cannot do:
+#
+#   "walking to exhaustion ... means looping ... and Flowstate's own workflow
+#    language has no loop primitive yet (issue #157 ... issue #216 names this gap
+#    explicitly as 'layer 2', the harder half of the fix)."
+#
+# This file is that layer. The loop calls git.log with the carried cursor, stops
+# when a page reports `truncated: false`, and threads each page's `next_cursor`
+# into the next iteration as its state — pages an unbounded history to completion,
+# bounded, every commit reached exactly once.
+#
+#   iteration 0:  cursor = ""              -> a fresh walk from the default branch
+#   iteration 1:  cursor = <page 0's next_cursor>
+#   iteration 2:  cursor = <page 1's next_cursor>
+#   ...until a page comes back truncated: false, or max_iterations is hit.
+#
+# `next_cursor` is opaque (it packs a walk's own frontier so a resume stays correct
+# across merges — see plugins/git/cursor.go); the loop never inspects it, only
+# feeds it back as `cursor` on the next call. An empty cursor on iteration 0 is a
+# fresh call, exactly as git-log-resume relies on.
+#
+# max_iterations is the mandatory bound: git.log's own `truncated` flag is a
+# promise this loop cannot keep on its own — a remote that never stops reporting
+# more would page forever — so the ceiling is what makes the walk provably finite.
+# Reaching it without exhausting the history is a distinct failure, not a silent
+# "done".
+#
+# This runs against a real repository under a worker with the git plugin
+# installed. Its `.test.yaml` proves the pagination logic in CI without a network
+# or the plugin, by stubbing git.log to hand back a fixed three-page history keyed
+# on the cursor it was called with.
+
+vars:
+  repo: https://github.com/octocat/Hello-World.git
+
+steps:
+  - id: pages
+    description: Fetch pages until git.log reports the history is no longer truncated.
+    loop:
+      # The carried state is the cursor. It starts empty — a fresh walk — and each
+      # iteration replaces it with the page's own next_cursor.
+      as: cursor
+      init: ${''}
+      update: ${steps.page.next_cursor}
+      # Stop once a page comes back not truncated: that page is the last one.
+      until: ${!steps.page.truncated}
+      # A large repository's whole history in small pages, with a hard ceiling.
+      max_iterations: 500
+      steps:
+        - id: page
+          git.log:
+            url: ${vars.repo}
+            max_commits: 2
+            # Empty on the first iteration (a fresh walk); the previous page's
+            # next_cursor on every one after.
+            cursor: ${cursor}
+
+outputs:
+  page_count:
+    value: ${steps.pages.results.size()}
+    description: how many pages it took to reach the end of the history
+
+  all_shas:
+    value: ${steps.pages.results.map(p, p.page.commits.map(c, c.sha)).flatten()}
+    description: every commit sha across every page, in walk order
+
+  every_commit_once:
+    value: ${steps.pages.results.map(p, p.page.commits.map(c, c.sha)).flatten().size() == steps.pages.results.map(p, p.page.commits.map(c, c.sha)).flatten().distinct().size()}
+    description: true when no commit was returned by two different pages — the exhaustive walk reached each exactly once

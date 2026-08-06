@@ -425,6 +425,9 @@ func (e *executor) runNode(node *v1.Node, depth, susp int, descend bool) error {
 	case *v1.Node_ForEach:
 		return e.runForEach(node, kind.ForEach, depth, susp, descend)
 
+	case *v1.Node_Loop:
+		return e.runLoop(node, kind.Loop, depth, susp, descend)
+
 	case *v1.Node_Parallel:
 		return e.runParallel(kind.Parallel, depth, susp)
 
@@ -673,6 +676,156 @@ func (e *executor) runForEach(node *v1.Node, loop *v1.ForEach, depth, susp int, 
 	return nil
 }
 
+// runLoop runs a loop body repeatedly, carrying state between iterations, until its
+// `until:` condition holds or its iteration ceiling is reached.
+//
+// The shape mirrors [runForEach] deliberately, because the two suspend and resume
+// through the same frame machinery — a loop is a sequential top-level construct
+// where history accumulates, exactly the place a run is worth suspending at. What
+// differs from a `for_each` is threaded through the frame: a loop's per-iteration
+// binding is not an item of a list the specification still holds, but a value
+// [v1.Loop.update] computed from the previous iteration's body outputs, which are
+// gone once the iteration ends — so the value itself travels in
+// [v1.Frame.LoopState], the same way a call's own step outputs travel in
+// [v1.Frame.CallOutputs] and for the same reason.
+//
+// The bound is checked first each iteration and reaching it fails the run with
+// [v1.LoopIterationLimitError] — the identical outcome the local driver produces at
+// the identical point, both reading the ceiling through [v1.LoopMaxIterations].
+func (e *executor) runLoop(node *v1.Node, loop *v1.Loop, depth, susp int, descend bool) error {
+	name := loop.GetState()
+	max := v1.LoopMaxIterations(loop)
+	inner := depth + 1
+	innerSusp := susp + 1
+
+	// Resume mid-loop when a previous run suspended here: the iteration index, the
+	// results so far, and the carried state all travel in the frame at this level.
+	// Otherwise the state is evaluated fresh from `initial:`, once, before the first
+	// iteration.
+	startItem := 0
+	var results []*v1.Workflow_StepOutputs
+	var state *v1.Value
+	if descend && inner < len(e.resume) {
+		startItem = int(e.resume[inner].GetNextIteration())
+		results = e.resume[inner].GetResults()
+		state = e.resume[inner].GetLoopState()
+	} else {
+		var err error
+		state, err = v1.LoopInitialState(context.Background(), loop, e.scope)
+		if err != nil {
+			return nodeFailed(err)
+		}
+	}
+
+	for i := startItem; ; i++ {
+		if i >= max {
+			// The budget is spent and `until:` never held: a distinct failure, not a
+			// silent stop. The run ends here rather than reporting the partial results
+			// as though the loop had finished.
+			return nodeFailed(v1.LoopIterationLimitError(max))
+		}
+
+		e.setLoopStateFrame(inner, i, results, state)
+
+		iteration, stop, next, err := e.runLoopIteration(loop, name, state, inner, innerSusp, i == startItem && descend)
+		if err != nil {
+			if errors.Is(err, errContinueAsNew) {
+				return err
+			}
+			return stepFailed(err, "iteration %d", i)
+		}
+		results = append(results, iteration)
+
+		if stop {
+			e.truncateFrames(inner)
+			e.scope.Outputs.StepValues[node.GetId()] = v1.LoopStateOutputs(results, state)
+			return nil
+		}
+		state = next
+
+		// A long loop is exactly where history accumulates, so an iteration boundary is
+		// worth suspending at — the position is a single index plus the results and the
+		// carried state, all of which are representable in the frame.
+		if susp == 0 && e.shouldSuspend() {
+			e.setLoopStateFrame(inner, i+1, results, state)
+			return errContinueAsNew
+		}
+	}
+}
+
+// runLoopIteration runs the loop body once, then evaluates the loop's `until:` and
+// `update:` against the scope the body finished in.
+//
+// Returns the iteration's body outputs, whether the loop should stop, and the value
+// its state holds next. The until and update evaluations happen in workflow code,
+// which invariant 4 permits for a loop's own control expressions exactly as it does
+// for a `for_each`'s `items:` — the durable driver already evaluates those inline.
+func (e *executor) runLoopIteration(loop *v1.Loop, stateName string, state *v1.Value, depth, susp int, descend bool) (*v1.Workflow_StepOutputs, bool, *v1.Value, error) {
+	// Each iteration starts from the outputs visible before the loop, so an iteration
+	// cannot observe a previous one — the only thread between them is the carried
+	// state.
+	iterationOutputs := cloneOutputs(e.scope.GetOutputs())
+
+	// The carried state is bound bare, the standing of a loop iterator. A loop that
+	// carries nothing binds no name.
+	scope := e.scope.WithOutputs(iterationOutputs)
+	if v1.LoopCarriesState(loop) {
+		scope = e.scope.WithLocal(stateName, state).WithOutputs(iterationOutputs)
+	}
+
+	nested := &executor{
+		ctx:       e.ctx,
+		spec:      e.spec,
+		identity:  e.identity,
+		runID:     e.runID,
+		scope:     scope,
+		budget:    e.budget,
+		processed: e.processed,
+		frames:    e.frames,
+
+		signals:  e.signals,
+		progress: e.progress,
+		undo:     e.undo,
+
+		callDepth: e.callDepth,
+	}
+	if descend {
+		nested.resume = e.resume
+	}
+
+	err := nested.runNodes(loop.GetBody(), depth, susp)
+	e.processed = nested.processed
+	e.frames = nested.frames
+	if err != nil {
+		return nil, false, nil, err
+	}
+
+	// `until:` and `update:` see the body's outputs and the current state, so they
+	// are evaluated against the scope the body finished in.
+	stop, err := v1.EvalLoopUntil(context.Background(), loop, nested.scope)
+	if err != nil {
+		return nil, false, nil, err
+	}
+
+	// When `until:` holds the loop stops and `update:` is never evaluated — its value
+	// would only be bound into an iteration that will not run. Returning here rather
+	// than after evaluating it matches the local driver exactly (eval.go's runLoop
+	// returns the moment `until:` is true), and it is not a micro-optimisation: a
+	// final-iteration `update:` that cannot resolve — `${steps.page.next_cursor}`
+	// where the last page carries no next cursor — would fail a durable run that the
+	// local rehearsal completes. That divergence is invariant 3's exact shape.
+	if stop {
+		return bodyOutputs(loop.GetBody(), iterationOutputs), true, nil, nil
+	}
+
+	next, err := v1.LoopNextState(context.Background(), loop, nested.scope)
+	if err != nil {
+		return nil, false, nil, err
+	}
+
+	return bodyOutputs(loop.GetBody(), iterationOutputs), false, next, nil
+}
+
 // runIteration executes the loop body once against its own output scope.
 func (e *executor) runIteration(loop *v1.ForEach, iterator string, item *v1.Value, depth, susp int, descend bool) (*v1.Workflow_StepOutputs, error) {
 	// Each iteration starts from the outputs visible before the loop, so an
@@ -872,6 +1025,25 @@ func (e *executor) setLoopFrame(depth, iteration int, results []*v1.Workflow_Ste
 	e.frames[depth] = &v1.Frame{
 		NextIteration: int32(iteration),
 		Results:       results,
+	}
+}
+
+// setLoopStateFrame records a loop's position: the next iteration to run, the
+// results accumulated so far, and the value being carried into that iteration.
+//
+// The carried state is what distinguishes this from [setLoopFrame]: a `for_each`
+// re-derives its item from a list the specification still holds, but a loop's state
+// was computed from body outputs that do not survive the iteration, so it has to be
+// carried explicitly across the suspend.
+func (e *executor) setLoopStateFrame(depth, iteration int, results []*v1.Workflow_StepOutputs, state *v1.Value) {
+	for len(e.frames) <= depth {
+		e.frames = append(e.frames, &v1.Frame{})
+	}
+	e.frames = e.frames[:depth+1]
+	e.frames[depth] = &v1.Frame{
+		NextIteration: int32(iteration),
+		Results:       results,
+		LoopState:     state,
 	}
 }
 

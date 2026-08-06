@@ -165,6 +165,11 @@ type parsedStep struct {
 	forEachEntry  *entry
 	parallelEntry *entry
 
+	// loopEntry is a `loop:` block, whose `as`, `init`, `update`, `until`,
+	// `max_iterations` and `steps` keys are documented at their own level — the same
+	// standing forEachEntry gives a `for_each` block.
+	loopEntry *entry
+
 	// waitUntilEntry is a wait whose value is an expression naming the moment to
 	// wait for.
 	//
@@ -675,6 +680,11 @@ func fillParsedStep(s *parsedStep, entries []*entry) {
 					s.itemsEntry = fe
 				}
 			}
+		case "loop":
+			if s.loopEntry != nil {
+				continue
+			}
+			s.loopEntry = e
 		default:
 			// A task — decided by flowfile.StepTaskKeys, the same call the compiler
 			// makes, so the editor underlines the token `flow validate` names.

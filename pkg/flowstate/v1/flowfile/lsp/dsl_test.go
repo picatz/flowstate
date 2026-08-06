@@ -122,6 +122,21 @@ func TestDSLKeysMatchTheDSL(t *testing.T) {
 				}},
 			},
 			{
+				// A `loop:`, so this fixture reaches its keys — `as`, `init`, `update`,
+				// `until`, `max_iterations`, and its own `steps`. Its expressions read
+				// only the carried state, so it round-trips and validates without
+				// depending on any body output.
+				Id: "poll",
+				Kind: &v1.Node_Loop{Loop: &v1.Loop{
+					State:         "cursor",
+					Initial:       v1.NewExpr("0"),
+					Update:        v1.NewExpr("cursor + 1"),
+					Until:         v1.NewExpr("cursor >= 2"),
+					MaxIterations: 10,
+					Body:          []*v1.Node{{Id: "page", Kind: &v1.Node_Task{Task: &v1.Task{Name: "log"}}}},
+				}},
+			},
+			{
 				Id: "branches",
 				Kind: &v1.Node_Parallel{Parallel: &v1.Parallel{
 					Branches: []*v1.Parallel_Branch{
@@ -1268,6 +1283,17 @@ steps:
       max_parallel: 2
       steps:
         - id: body
+          log:
+            message: hi
+  - id: poll
+    loop:
+      as: cursor
+      init: ${0}
+      update: ${cursor + 1}
+      until: ${cursor >= 2}
+      max_iterations: 10
+      steps:
+        - id: page
           log:
             message: hi
   - id: branches

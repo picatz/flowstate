@@ -336,6 +336,15 @@ func SignalNames(spec *Workflow) []string {
 			case *Node_ForEach:
 				walk(kind.ForEach.GetBody())
 
+			case *Node_Loop:
+				// A `wait_for_signal:` inside a loop body declares a channel like one
+				// anywhere else. Missing it here fails twice over: a `signals:` policy
+				// for that name is rejected as naming a wait nobody wrote, and — because
+				// this list is what a run drains before it suspends — an early signal on
+				// that channel is lost across a Continue-As-New and the resumed loop
+				// blocks on it forever.
+				walk(kind.Loop.GetBody())
+
 			case *Node_Parallel:
 				for _, branch := range kind.Parallel.GetBranches() {
 					walk(branch.GetSteps())
