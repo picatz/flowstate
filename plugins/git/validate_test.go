@@ -42,6 +42,58 @@ func TestValidateRepositoryURLRefusesUserinfo(t *testing.T) {
 	}
 }
 
+// TestValidateCursorAcceptsAFullLowercaseSha proves the one shape
+// LogInputs.cursor accepts: exactly what a previous call's own next_cursor
+// output looks like.
+func TestValidateCursorAcceptsAFullLowercaseSha(t *testing.T) {
+	sha := "a94a8fe5ccb19ba61c4c0873d391e987982fbbd3"
+	got, err := validateCursor(sha)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != sha {
+		t.Fatalf("validateCursor(%q) = %q, want unchanged", sha, got)
+	}
+}
+
+func TestValidateCursorAcceptsEmpty(t *testing.T) {
+	got, err := validateCursor("")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("validateCursor(\"\") = %q, want empty", got)
+	}
+}
+
+// TestValidateCursorRefusesAnythingThatIsNotAFullLowercaseSha is
+// LogInputs.cursor's own narrowness, checked directly: unlike ref (which
+// accepts anything go-git's revision parser does), a short sha, a branch
+// name, a revision expression, an uppercase sha, and a sha of the wrong
+// length are all refused - a cursor is never something a caller composes,
+// only ever something this task itself previously emitted.
+func TestValidateCursorRefusesAnythingThatIsNotAFullLowercaseSha(t *testing.T) {
+	full := "a94a8fe5ccb19ba61c4c0873d391e987982fbbd3"
+	for _, tt := range []struct {
+		name   string
+		cursor string
+	}{
+		{"short sha", full[:7]},
+		{"branch name", "main"},
+		{"revision expression", "HEAD~1"},
+		{"uppercase sha", strings.ToUpper(full)},
+		{"one character too long", full + "a"},
+		{"one character too short", full[:39]},
+		{"non-hex characters at full length", strings.Repeat("g", 40)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := validateCursor(tt.cursor); err == nil {
+				t.Fatalf("validateCursor(%q): got nil error, want a refusal", tt.cursor)
+			}
+		})
+	}
+}
+
 func TestValidateBranchNameAcceptsOrdinaryNames(t *testing.T) {
 	for _, name := range []string{"main", "feature/x", "release-1.0"} {
 		if _, err := validateBranchName(name); err != nil {

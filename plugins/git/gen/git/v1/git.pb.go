@@ -595,7 +595,37 @@ type LogInputs struct {
 	Token *v1.Value `protobuf:"bytes,6,opt,name=token,proto3" json:"token,omitempty"`
 	// Username is the HTTP Basic-auth username paired with token - see
 	// LsRemoteInputs.username for the full doc comment and default.
-	Username      string `protobuf:"bytes,7,opt,name=username,proto3" json:"username,omitempty"`
+	Username string `protobuf:"bytes,7,opt,name=username,proto3" json:"username,omitempty"`
+	// Cursor resumes a prior, truncated call: the oldest sha that call
+	// returned (its own LogOutputs.next_cursor), fed back in. The walk
+	// starts at cursor's PARENT - the commit immediately older than cursor in
+	// the history this task walks - so the commit named by cursor is never
+	// returned twice: page N's last entry and page N+1's first entry are
+	// adjacent, distinct commits, never the same one. Every filter this call
+	// sets (path, since) applies to the resumed walk exactly as it would to a
+	// fresh one, which is what makes paging through a filtered history safe:
+	// each page independently re-applies the filter to its own slice of
+	// history, so the union across every page is exactly the full filtered
+	// set, each commit exactly once.
+	//
+	// Cursor is untrusted input the moment it comes back from outside this
+	// task (a caller composes it from a prior response, or an attacker
+	// guesses at one) - so it is required to be a full, 40-character hex
+	// commit sha, and nothing else: not a branch, not a tag, not "HEAD~5",
+	// not a short sha. A revision expression is exactly the ambiguity ref
+	// already owns; accepting one here would let a "cursor" quietly become a
+	// second ref field with different validation, inviting the two to be
+	// confused with each other. Resuming re-validates everything a fresh call
+	// would - the same url validation, the same egress policy, the same
+	// clone-depth bound (maxCloneDepth, the same ceiling an explicit ref
+	// already deepens to) - a cursor names a position in history, never a
+	// bypass around any check the original query performs.
+	//
+	// Cursor and ref are mutually exclusive: a resumed call names cursor
+	// alone, never both, since cursor already carries everything ref would
+	// have named - this task refuses a call that sets both, rather than
+	// silently choosing one.
+	Cursor        string `protobuf:"bytes,8,opt,name=cursor,proto3" json:"cursor,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -679,6 +709,13 @@ func (x *LogInputs) GetUsername() string {
 	return ""
 }
 
+func (x *LogInputs) GetCursor() string {
+	if x != nil {
+		return x.Cursor
+	}
+	return ""
+}
+
 // LogOutputs is a bounded slice of history.
 type LogOutputs struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -694,7 +731,30 @@ type LogOutputs struct {
 	// returned - by max_commits, by the total message-byte budget, or by the
 	// shallow window this task cloned when path was set - so a workflow can
 	// tell "this is all of it" from "this is as much as this call reached."
-	Truncated     bool `protobuf:"varint,3,opt,name=truncated,proto3" json:"truncated,omitempty"`
+	Truncated bool `protobuf:"varint,3,opt,name=truncated,proto3" json:"truncated,omitempty"`
+	// NextCursor is the resume position for the next page, populated exactly
+	// when Truncated is true and Commits is non-empty: the oldest sha this
+	// call reached, Commits' own last entry (this task always returns
+	// most-recent-first) - the exact value LogInputs.cursor expects back to
+	// continue the walk one commit past this one. Empty whenever Truncated is
+	// false, since there is nothing left to resume.
+	//
+	// Also empty when Truncated is true but Commits is empty - the
+	// shallow-boundary case (see Truncated's own doc comment): this call
+	// reached its own fetch window's edge before finding even one matching
+	// commit, so there is no "last commit returned" to hand back as a resume
+	// position. A caller in that position has to widen the window itself
+	// (name an explicit ref, or raise max_commits) rather than page past it,
+	// since paging assumes a real position in history to resume from and this
+	// call never reached one.
+	//
+	// NextCursor is a real commit sha, not an opaque token this task
+	// invents - fed back as LogInputs.cursor, it resumes the identical walk
+	// (same repository, same filters) one commit past where this call
+	// stopped. It is still opaque to a workflow in every other sense: nothing
+	// about its shape or contents is meant to be parsed or reasoned about
+	// beyond "pass it back as cursor."
+	NextCursor    string `protobuf:"bytes,4,opt,name=next_cursor,json=nextCursor,proto3" json:"next_cursor,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -748,6 +808,13 @@ func (x *LogOutputs) GetTruncated() bool {
 		return x.Truncated
 	}
 	return false
+}
+
+func (x *LogOutputs) GetNextCursor() string {
+	if x != nil {
+		return x.NextCursor
+	}
+	return ""
 }
 
 // ReadFileInputs asks for one file's content at one ref - the audit
@@ -1054,7 +1121,7 @@ const file_git_v1_git_proto_rawDesc = "" +
 	"\x06author\x18\x02 \x01(\v2\x11.git.v1.SignatureR\x06author\x12/\n" +
 	"\tcommitter\x18\x03 \x01(\v2\x11.git.v1.SignatureR\tcommitter\x12\x18\n" +
 	"\amessage\x18\x04 \x01(\tR\amessage\x12#\n" +
-	"\rparent_hashes\x18\x05 \x03(\tR\fparentHashes\"\xc1\x01\n" +
+	"\rparent_hashes\x18\x05 \x03(\tR\fparentHashes\"\xd9\x01\n" +
 	"\tLogInputs\x12\x10\n" +
 	"\x03url\x18\x01 \x01(\tR\x03url\x12\x10\n" +
 	"\x03ref\x18\x02 \x01(\tR\x03ref\x12\x1f\n" +
@@ -1063,12 +1130,15 @@ const file_git_v1_git_proto_rawDesc = "" +
 	"\x04path\x18\x04 \x01(\tR\x04path\x12\x14\n" +
 	"\x05since\x18\x05 \x01(\tR\x05since\x12)\n" +
 	"\x05token\x18\x06 \x01(\v2\x13.flowstate.v1.ValueR\x05token\x12\x1a\n" +
-	"\busername\x18\a \x01(\tR\busername\"w\n" +
+	"\busername\x18\a \x01(\tR\busername\x12\x16\n" +
+	"\x06cursor\x18\b \x01(\tR\x06cursor\"\x98\x01\n" +
 	"\n" +
 	"LogOutputs\x12(\n" +
 	"\acommits\x18\x01 \x03(\v2\x0e.git.v1.CommitR\acommits\x12!\n" +
 	"\fresolved_ref\x18\x02 \x01(\tR\vresolvedRef\x12\x1c\n" +
-	"\ttruncated\x18\x03 \x01(\bR\ttruncated\"\x8f\x01\n" +
+	"\ttruncated\x18\x03 \x01(\bR\ttruncated\x12\x1f\n" +
+	"\vnext_cursor\x18\x04 \x01(\tR\n" +
+	"nextCursor\"\x8f\x01\n" +
 	"\x0eReadFileInputs\x12\x10\n" +
 	"\x03url\x18\x01 \x01(\tR\x03url\x12\x10\n" +
 	"\x03ref\x18\x02 \x01(\tR\x03ref\x12\x12\n" +

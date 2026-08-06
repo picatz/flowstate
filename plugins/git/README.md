@@ -18,12 +18,14 @@ the argument that named the split.
 
 An example that runs the read tasks lives at
 [`examples/plugins/git`](../../examples/plugins/git); read that first if you
-want to see it work rather than read about it. Four files live there: a
+want to see it work rather than read about it. Five files live there: a
 public read that runs with no arguments (`workflow.yaml`), the identical
 read against a private repository with one more field filled in
 (`ls-remote-private.yaml`), the read/audit tier chained into a real audit
 question - who last touched a file, and what does it contain now
-(`log-and-read-file.yaml`, also runs with no arguments) - and the write task
+(`log-and-read-file.yaml`, also runs with no arguments) - `git.log`'s own
+cursor-resume shape, two calls chained through `next_cursor` -> `cursor`
+(`log-resume.yaml`, also runs with no arguments) - and the write task
 (`commit-push.yaml`) - the private-read and write files are parameterized
 and cannot run by accident.
 
@@ -651,6 +653,71 @@ pathological object can still cost this process that object's own real
 size before the bound catches it, a residual `packbound_test.go` proves
 rather than hides. Until that residual is closed, this plugin should only
 be pointed at remotes the deployment trusts.
+
+## Resuming a truncated `git.log`
+
+`truncated: true` used to be a dead end: a caller who received fewer commits
+than existed had no way to ask for the rest (issue #216). `git.log` now
+grows two fields that turn it into an actual resume position:
+
+- **`LogOutputs.next_cursor`** - the oldest sha the call reached, `Commits`'
+  own last entry (this task always returns most-recent-first). Populated
+  exactly when `Truncated` is true and at least one commit was returned;
+  empty otherwise, including the shallow-boundary case where `Truncated` is
+  true but `Commits` is empty (see `Truncated`'s own doc comment) - there is
+  no last-returned commit to hand back as a resume position in that case, so
+  a caller has to widen the fetch itself (name an explicit `ref`, or raise
+  `max_commits`) rather than page past it.
+- **`LogInputs.cursor`** - fed a previous call's own `next_cursor`, the walk
+  resumes at that commit's *parent*, so the commit named by `cursor` is
+  never returned twice: one page's last entry and the next page's first
+  entry are adjacent, distinct commits.
+
+**The contract is full-sha-only, deliberately narrower than `ref`.** `ref`
+accepts anything go-git's own revision parser does - a branch, a tag,
+`HEAD~3` - because a workflow author names it by hand. `cursor` accepts only
+a full, 40-character lowercase hex commit sha (`validateCursor`), because a
+cursor is never something a caller composes: it is always the literal value
+a previous `git.log` call itself emitted. Accepting a revision expression as
+a "cursor" would make it a second, differently-validated spelling of `ref`,
+inviting exactly the confusion `LogInputs.cursor`'s own doc comment argues
+against - and `ref`/`cursor` are refused together outright (`gitLog`) for
+the same reason, rather than one silently winning.
+
+**A cursor is untrusted input, and resuming re-validates everything.**
+`cursor` reaches this task the same way any other field does - a workflow
+author's literal, or a value a coding agent composed - so it goes through
+`validateCursor` before anything else touches it, and a resumed call clones
+through the exact same `validateRepositoryURL`, egress policy, and
+clone-depth bound (`maxCloneDepth`, the same ceiling an explicit `ref`
+already deepens to - `cursor` deepens the clone identically, `doLog`'s own
+comment on `fetchDepth`) as a fresh one. A cursor names a position in
+history; it is never a bypass around any check the original query performs.
+
+**Filters compose across pages without gaps or duplicates.** `path` and
+`since` apply to a resumed walk exactly as they would to a fresh one - both
+are independent of where `From` starts - so paging through a filtered
+history is safe: each page independently re-applies the same filter to its
+own slice of history, and the union across every page is exactly the full
+filtered set, each commit exactly once.
+`TestGitLogCursorPagesReachEveryCommitExactlyOnce` is the acceptance test
+this claim rests on (CLAUDE.md, "Test the traversal, not just the step"): a
+23-commit fixture, half touching a filtered path and half not, walked to
+exhaustion at `max_commits: 4` (5+ pages), asserting the union of every page
+equals the full filtered set with every commit reached exactly once and the
+final page reporting `truncated: false` - not merely that one page has the
+right shape, which paging bugs live precisely outside of.
+
+**What this does not do.** `examples/plugins/git/log-resume.yaml`
+demonstrates exactly one resume - page one, then page two - not a loop to
+exhaustion: Flowstate's own workflow language has no loop primitive yet
+(issue #157 is still design-only), so walking an entire history to
+completion from a Flowfile is not yet expressible; only Go code (the test
+above) can do that today. This is issue #216's "layer 1": the task grows a
+resume position a caller driving it from outside (an MCP agent, a script
+calling `flow run` repeatedly) can already thread. "Layer 2" - the language
+itself carrying a cursor from one iteration to the next - is a separate,
+larger piece of work this change does not attempt.
 
 ## What was left undone, and why
 

@@ -210,6 +210,51 @@ func validateOptionalRevision(field, raw string) (string, error) {
 	return validateRevision(field, raw)
 }
 
+// fullShaHexLen is the length of a full git commit sha in hex - always 40
+// for the sha-1 object ids every repository this plugin clones actually
+// uses (go-git does not yet support sha-256 repositories).
+const fullShaHexLen = 40
+
+// validateCursor bounds git.log's optional resume position. Unlike
+// validateOptionalRevision (ref's own check, which deliberately accepts
+// anything go-git's revision parser does - a branch, a tag, "HEAD~3"), this
+// is deliberately narrow: a cursor is never something a workflow author or
+// coding agent composes by hand, only ever something this task itself
+// emitted as a previous call's next_cursor - so the one shape it accepts is
+// the one shape this task ever produces, a full 40-character lowercase hex
+// commit sha. Refusing anything else (a short sha, a branch name, "HEAD")
+// closes off a second, differently-validated spelling of ref that would
+// otherwise invite the two to be confused with one another - see
+// LogInputs.cursor's own doc comment for the full argument.
+func validateCursor(raw string) (string, error) {
+	if raw == "" {
+		return "", nil
+	}
+	if len(raw) != fullShaHexLen {
+		return "", fmt.Errorf(
+			"cursor must be a full %d-character commit sha (the exact value a previous call's "+
+				"next_cursor returned), got %d characters", fullShaHexLen, len(raw))
+	}
+	for _, r := range raw {
+		if !isLowerHexDigit(r) {
+			return "", fmt.Errorf(
+				"cursor %q is not a lowercase hex commit sha - it must be byte-identical to a "+
+					"previous call's own next_cursor output, never composed or guessed at", raw)
+		}
+	}
+	return raw, nil
+}
+
+// isLowerHexDigit reports whether r is one of the 16 characters
+// [plumbing.Hash.String] ever produces - lowercase only, since that is what
+// every sha this task ever emits as next_cursor looks like, and a cursor
+// this plugin did not itself emit is refused rather than case-normalized
+// (see validateCursor's own doc comment on why cursor is narrower than
+// ref).
+func isLowerHexDigit(r rune) bool {
+	return (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')
+}
+
 // clampMaxCommits applies git.log's default and ceiling to a requested
 // count - the same refuse-rather-than-clamp reasoning plugins/vcs's own
 // clampMaxCommits documents: a silently reduced bound looks like a working

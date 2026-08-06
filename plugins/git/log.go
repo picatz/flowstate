@@ -50,6 +50,15 @@ func gitLog(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flowst
 	if err != nil {
 		return nil, sdk.InvalidInput("%v", err)
 	}
+	cursor, err := validateCursor(in.GetCursor())
+	if err != nil {
+		return nil, sdk.InvalidInput("%v", err)
+	}
+	if cursor != "" && ref != "" {
+		return nil, sdk.InvalidInput(
+			"ref and cursor must not both be set - cursor already names a position in the same " +
+				"history a resumed call would otherwise use ref to reach; a call sets one or the other")
+	}
 
 	token, err := tokenFromValue(ctx, in.GetToken())
 	if err != nil {
@@ -66,6 +75,7 @@ func gitLog(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flowst
 		maxCommits: maxCommits,
 		path:       path,
 		since:      since,
+		cursor:     cursor,
 		token:      func() string { return token },
 		username:   username,
 	})
@@ -86,6 +96,7 @@ type logParams struct {
 	maxCommits int
 	path       string
 	since      time.Time
+	cursor     string // full 40-hex commit sha, or "" - see LogInputs.cursor
 	token      func() string
 	username   string
 }
@@ -118,9 +129,13 @@ func doLog(ctx context.Context, p logParams) (*gitv1.LogOutputs, error) {
 	// this deepens to the plugin's own existing clone-depth ceiling
 	// (maxCloneDepth, the same bound git.commit_push's base_ref resolution
 	// already uses) whenever a caller names a ref at all - never for the
-	// common empty-ref call, so the shallow default stays shallow.
+	// common empty-ref call, so the shallow default stays shallow. A cursor
+	// is an explicit ref for exactly this purpose (gitLog already refuses a
+	// call that sets both ref and cursor): resuming from a sha that can sit
+	// arbitrarily far back in history needs the same widened fetch a named
+	// ref does, for the same reason.
 	fetchDepth := fetchDepthForMaxCommits(p.maxCommits)
-	if p.ref != "" {
+	if p.ref != "" || p.cursor != "" {
 		fetchDepth = maxCloneDepth
 	}
 
@@ -129,9 +144,41 @@ func doLog(ctx context.Context, p logParams) (*gitv1.LogOutputs, error) {
 		return nil, err
 	}
 
-	startHash, err := resolveOptionalRef(repo, p.ref)
-	if err != nil {
-		return nil, err
+	// startHash is where the walk actually begins descending from, and
+	// resolvedHash is what ResolvedRef reports - equal for an ordinary call,
+	// but distinct when p.cursor is set: the walk begins one commit past the
+	// cursor (its parent), while ResolvedRef still names the position this
+	// call resolved (the cursor itself), the same way an ordinary call's
+	// ResolvedRef names the ref it resolved rather than that commit's
+	// parent.
+	var startHash, resolvedHash plumbing.Hash
+	if p.cursor != "" {
+		resolvedHash, err = resolve(repo, p.cursor)
+		if err != nil {
+			return nil, err
+		}
+		cursorCommit, err := repo.CommitObject(resolvedHash)
+		if err != nil {
+			return nil, classifyGitError(err)
+		}
+		if len(cursorCommit.ParentHashes) == 0 {
+			// cursor named the root commit: there is nothing older to
+			// resume into. Report the walk as complete rather than
+			// attempting a From with no commit behind it - go-git's own
+			// LogOptions has no "start from nothing" spelling, and there is
+			// nothing this call could honestly find anyway.
+			return &gitv1.LogOutputs{
+				ResolvedRef: resolvedHash.String(),
+				Truncated:   false,
+			}, nil
+		}
+		startHash = cursorCommit.ParentHashes[0]
+	} else {
+		startHash, err = resolveOptionalRef(repo, p.ref)
+		if err != nil {
+			return nil, err
+		}
+		resolvedHash = startHash
 	}
 
 	flowstatev1.ReportProgress(ctx, flowstatev1.PhaseReadingResponse)
@@ -157,10 +204,23 @@ func doLog(ctx context.Context, p logParams) (*gitv1.LogOutputs, error) {
 		return nil, classifyGitError(err)
 	}
 
+	var nextCursor string
+	if truncated && len(commits) > 0 {
+		// The natural git cursor: the oldest sha this call actually
+		// reached, Commits' own last entry (most-recent-first order). Left
+		// empty when Commits is empty even though Truncated is true (the
+		// shallow-boundary case, collectLogCommits's own doc comment) -
+		// there is no last-returned commit to resume from in that case, so
+		// no cursor exists to hand back; see LogOutputs.next_cursor's own
+		// doc comment.
+		nextCursor = commits[len(commits)-1].Sha
+	}
+
 	return &gitv1.LogOutputs{
 		Commits:     commits,
-		ResolvedRef: startHash.String(),
+		ResolvedRef: resolvedHash.String(),
 		Truncated:   truncated,
+		NextCursor:  nextCursor,
 	}, nil
 }
 
