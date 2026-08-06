@@ -295,6 +295,82 @@ func NewExamplesHTTPServer(tb testing.TB) (string, func() []string) {
 		_, _ = io.WriteString(w, "<html><body>ok</body></html>")
 	})
 
+	// The enterprise examples name several fictional internal domains rather than
+	// httpbin.org — a real ledger, provisioning system, IAM, and observability
+	// stack are the point of those examples, and hitting a generic echo service
+	// for "debit an account" or "check a tenant's quota" would undercut exactly
+	// the realism they exist to demonstrate. PointAtStandIn rewrites only the
+	// scheme and host, so every one of those domains lands here on its own path,
+	// and every path below has to be distinct across all four examples for that
+	// reason — two examples cannot both claim "/access-grants" if their meanings
+	// differ, which is why iam's read is "/access-grants/last-used" and
+	// provisioning's write is the bare "/access-grants".
+
+	// enterprise-fund-transfer: a debit or a credit, with which account in the
+	// request body rather than the path — literal URLs, so `PointAtStandIn` can
+	// rewrite them without tracing an expression, per that file's own `undo:`
+	// comment. The reversal of either lands on the same two paths, under the
+	// opposite verb, which this harness's default-inputs comparison run never
+	// reaches — only that example's own *.test.yaml exercises the compensation.
+	mux.HandleFunc("/debit", func(w http.ResponseWriter, _ *http.Request) {
+		write(w, map[string]any{"reference": "dbt-1"})
+	})
+	mux.HandleFunc("/credit", func(w http.ResponseWriter, _ *http.Request) {
+		write(w, map[string]any{"reference": "crd-1"})
+	})
+	mux.HandleFunc("/notify", func(w http.ResponseWriter, _ *http.Request) {
+		write(w, map[string]any{})
+	})
+
+	// enterprise-access-review: last-used evidence for one grant, read by
+	// `grantee` — matching what accounts for is worth doing since the harness's
+	// default `inputs.json` names two, and the example's `outputs:` reads
+	// `last_used_days_ago` back out of exactly this shape.
+	mux.HandleFunc("/access-grants/last-used", func(w http.ResponseWriter, r *http.Request) {
+		write(w, map[string]any{"last_used_days_ago": 5})
+	})
+
+	// enterprise-incident-response: the three branches `parallel:` gathers at
+	// once.
+	mux.HandleFunc("/logs", func(w http.ResponseWriter, _ *http.Request) {
+		write(w, map[string]any{"summary": "no anomaly detected"})
+	})
+	mux.HandleFunc("/metrics", func(w http.ResponseWriter, _ *http.Request) {
+		write(w, map[string]any{"error_rate": 0.01})
+	})
+	mux.HandleFunc("/deploys", func(w http.ResponseWriter, _ *http.Request) {
+		write(w, map[string]any{"deployed_version": "v3.9.1"})
+	})
+
+	// enterprise-customer-onboarding: the quota precondition, the three
+	// provisioners `call:` reaches, and the two top-level compensable steps —
+	// each with the DELETE its own `undo:` would hit, even though the default
+	// run this harness compares never fails partway through provisioning.
+	mux.HandleFunc("/quota", func(w http.ResponseWriter, _ *http.Request) {
+		write(w, map[string]any{"available": true})
+	})
+	mux.HandleFunc("/databases", func(w http.ResponseWriter, _ *http.Request) {
+		write(w, map[string]any{"resource_id": "db-acme-1"})
+	})
+	mux.HandleFunc("/billing-accounts", func(w http.ResponseWriter, _ *http.Request) {
+		write(w, map[string]any{"resource_id": "bill-acme-1"})
+	})
+	mux.HandleFunc("/access-grants", func(w http.ResponseWriter, _ *http.Request) {
+		write(w, map[string]any{"resource_id": "access-acme-1"})
+	})
+	// The same path answers both the POST that reserves and the DELETE its own
+	// `undo:` sends - the identifier travels in the body either way (see
+	// workflow.yaml's own comment on why), so there is only one path to serve.
+	mux.HandleFunc("/activation-slots", func(w http.ResponseWriter, _ *http.Request) {
+		write(w, map[string]any{"slot_id": "slot-1"})
+	})
+	mux.HandleFunc("/dns-records", func(w http.ResponseWriter, _ *http.Request) {
+		write(w, map[string]any{"record_id": "dns-1"})
+	})
+	mux.HandleFunc("/tenants/activate", func(w http.ResponseWriter, _ *http.Request) {
+		write(w, map[string]any{})
+	})
+
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		missing = append(missing, r.URL.Path)
@@ -404,6 +480,15 @@ func AnyStep(nodes []*v1.Node, pred func(*v1.Node) bool) bool {
 				if AnyStep(branch.GetSteps(), pred) {
 					return true
 				}
+			}
+		case *v1.Node_Call:
+			// The same walk [pointAtStandIn] learned to make, for the identical
+			// reason: a callee's own steps are what `ReachesTheNetwork` and
+			// `WaitsForASignal` are asking about too, and a `call:` step whose
+			// callee is the only place a workflow reaches the network or waits for
+			// a signal must not be misclassified as neither.
+			if AnyStep(kind.Call.GetWorkflow().GetSteps(), pred) {
+				return true
 			}
 		}
 	}
@@ -560,6 +645,24 @@ func pointAtStandIn(nodes []*v1.Node, standIn *url.URL, loops []binding) []strin
 			for _, branch := range kind.Parallel.GetBranches() {
 				unpointable = append(unpointable, pointAtStandIn(branch.GetSteps(), standIn, bindings)...)
 			}
+		case *v1.Node_Call:
+			// A callee's own steps are a request too — missed at first for the
+			// identical reason an undo step was: this walk knew about the caller's
+			// task and for_each/parallel positions and was wrong about the one where
+			// a whole compiled workflow hangs off a node. enterprise-customer-
+			// onboarding's `check_quota` and `provision_*` steps each `call:` a
+			// sibling Flowfile whose own `http` step is the one that actually
+			// reaches the network, and a walk that stopped at the `call:` node
+			// itself sent every one of those requests to the real
+			// provisioning.internal.example.com — silently, in exactly the way the
+			// comment above this switch already warns an unpointed position does.
+			//
+			// No bindings carried in: a callee cannot see anything of the caller's
+			// scope (`call:`'s own isolation, per docs/DSL.md), so a loop iterator
+			// or step var bound out here is not in scope for a URL inside it either
+			// — the identical rule the compiler itself enforces, applied to what
+			// this walk is willing to trace.
+			unpointable = append(unpointable, pointAtStandIn(kind.Call.GetWorkflow().GetSteps(), standIn, nil)...)
 		}
 	}
 

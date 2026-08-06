@@ -1,0 +1,5 @@
+{
+  "tenant": "acme",
+  "plan": "growth",
+  "activation_grace_hours": 0
+}

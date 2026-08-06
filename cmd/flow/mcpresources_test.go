@@ -208,7 +208,8 @@ func TestTheCatalogResourceIsTheCatalogTheToolAnswers(t *testing.T) {
 // by the flowfile and examples test suites, which read it from the real
 // filesystem the resource embedding is built from.
 var examplesNeedingAFile = map[string]bool{
-	"call-a-workflow": true,
+	"call-a-workflow":                true,
+	"enterprise-customer-onboarding": true,
 }
 
 func TestEveryExampleResourceIsAValidFlowfile(t *testing.T) {

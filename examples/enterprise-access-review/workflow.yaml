@@ -1,0 +1,219 @@
+edition: v2026.2
+name: enterprise-access-review
+description: >-
+  Fans out over a list of access grants, pulls last-used evidence for each,
+  and closes the review only once a compliance-role signal attests to it -
+  producing an audit record with the grantee PII flagged for display, not
+  hidden from it.
+
+# Access reviews are the recurring compliance workload every audited company
+# runs on a cadence, and they are three primitives most workflow engines make
+# an author stitch together by hand:
+#
+#   for_each      - one evidence lookup per grant, bounded by `max_parallel`
+#                   so a review of five hundred grants cannot open five
+#                   hundred connections to the IAM API at once. See
+#                   examples/data-enrichment/ for the same shape at a single
+#                   record's granularity; this file's `continue_on_error:`
+#                   plays the same role - one grant's lookup failing does not
+#                   stop the review of the other four hundred ninety-nine.
+#
+#   wait_for_signal + signals:
+#                 - the review does not close itself. A person - constrained
+#                   by role claim, the same shape enterprise-fund-transfer
+#                   uses for a treasury desk - has to look at what was
+#                   gathered and attest to it. `signals:` is what makes that
+#                   a real constraint rather than a comment: anyone able to
+#                   reach `flow signal` on this run can try, and only a
+#                   `compliance-reviewer` claim gets past the server.
+#
+#   sensitive:    - grantee identities are the point of an access review and
+#                   also personal data, so `reviewed_grants` below is marked
+#                   `sensitive: true`. Read that field's own doc comment
+#                   before assuming it does what its name suggests.
+#
+# # What `sensitive:` does not do (read this before relying on it)
+#
+# `sensitive:` is display etiquette, not containment - the schema's own doc
+# comment says so, and docs/DSL.md's #177 slice restates it. A value marked
+# `sensitive:` is an ordinary part of this run's history like any other
+# output: it travels through Temporal unencrypted, anyone with access to the
+# run's history reads it in the clear, and marking it changes exactly one
+# thing - `flow get` and the TUI redact it by default in a terminal someone
+# is looking at. It does not encrypt anything, does not restrict who may
+# fetch the run, and does not stop a plugin or a downstream step from reading
+# the same value in full - see `${secret(...)}` for the primitive that
+# actually keeps a value out of history, which is not what this is and is
+# not the right tool for "a PII field that many people run `flow get`
+# against," which is the case here.
+#
+# Evidence gathering here is `http` against a simulated IAM read endpoint.
+# A production version would more likely use the `github.*` or `git.*`
+# read-tier plugin tasks (#214) against real infrastructure state; this file
+# stays on `http` so it runs, and its test passes, without a plugin process -
+# see docs/USE_CASES.md for the honest note on why.
+
+inputs:
+  access_grants:
+    type: list
+    required: true
+    min_items: 1
+    max_items: 200
+    example:
+      - grantee: alice@example.com
+        resource: prod-database
+        role: admin
+      - grantee: bob@example.com
+        resource: billing-console
+        role: read-only
+    description: >-
+      the grants in scope for this review - each an object with grantee,
+      resource, and role
+
+  # Caller-supplied, checked against the attested sender the same way
+  # approval-gate's own `expected_approver` is - a real check (the review
+  # closes unattested unless the attested subject matches what this run
+  # declared it expects), not the security boundary itself, which is
+  # `signals:` below. Added for the identical reason approval-gate's field
+  # exists: without it, any attested `compliance-reviewer` closes any run,
+  # which is a real gap for a review meant to name who actually looked.
+  expected_reviewer:
+    type: string
+    required: true
+    example: compliance-lead@example.com
+    pattern: "^[^@]+@[^@]+$"
+    description: >-
+      who this run expects to attest the review - checked against the
+      attested sender at the gate, not a control on its own
+
+# Who may deliver `attestation-recorded` at all, checked by
+# `FlowstateServer.Signal` against the attested sender's claims before
+# Temporal ever sees the signal - the same shape enterprise-fund-transfer
+# uses for a treasury desk, here for a compliance team instead of naming one
+# named reviewer.
+signals:
+  attestation-recorded:
+    allow:
+      - claims:
+          role: compliance-reviewer
+
+steps:
+  # One lookup per grant, bounded concurrency, each failure tolerated so a
+  # single flaky grant does not stop the review of the rest of the batch -
+  # `unreachable` below is what a caller reads to see which ones need a
+  # manual follow-up.
+  - id: gather_evidence
+    for_each:
+      items: ${inputs.access_grants}
+      as: grant
+      max_parallel: 5
+      steps:
+        - id: last_used
+          continue_on_error: true
+          timeout: 10s
+          http:
+            method: GET
+            url: https://iam.internal.example.com/access-grants/last-used
+            query:
+              grantee: ${grant.grantee}
+              resource: ${grant.resource}
+            parse_json: true
+            outputs: '${ {"grantee": grant.grantee, "resource": grant.resource, "role": grant.role, "last_used_days_ago": response.json.last_used_days_ago} }'
+
+  # The gate. A compliance review that auto-closes itself is not a review -
+  # this is where a person has to have actually looked. Three days is a real
+  # cadence for a review cycle; approval-gate's own 24h deploy gate is the
+  # equivalent choice at a different tempo.
+  - id: attestation
+    wait_for_signal:
+      name: attestation-recorded
+      timeout: 72h
+
+  # Attested, and by someone real: the sender was actually authenticated (not
+  # a local run), said yes, and is the reviewer this run declared it expects.
+  # `signals:` above already refused anyone without the `compliance-reviewer`
+  # claim from reaching this point at all; `expected_reviewer` narrows that
+  # further to the one this run named, the same two-layer shape approval-gate
+  # uses. Unlike approval-gate's own gate this does not also compare against
+  # `run.identity` - a compliance reviewer attesting to their own team's
+  # access review is not the same conflict of interest a self-approved
+  # deploy is.
+  - id: recorded
+    if: >-
+      ${has(steps.attestation.payload.attested) && steps.attestation.payload.attested &&
+        !steps.attestation.sender.local && !run.local &&
+        steps.attestation.sender.identity.subject != "" &&
+        steps.attestation.sender.identity.subject == inputs.expected_reviewer}
+    log:
+      message: >-
+        ${"access review attested by %s for %d grant(s)".format(
+            [steps.attestation.sender.identity.subject, size(inputs.access_grants)])}
+
+  # Covers three different reasons under one branch - no attestation at all,
+  # an attested sender who is not the expected reviewer, or an explicit
+  # "no" - the same collapsing enterprise-fund-transfer's own
+  # `refused_unauthorized` does, and for the same reason: this file trades
+  # approval-gate's three-way split for fewer lines, a real gap named in
+  # docs/USE_CASES.md.
+  - id: unattested
+    if: >-
+      ${!(has(steps.attestation.payload.attested) && steps.attestation.payload.attested &&
+        !steps.attestation.sender.local && !run.local &&
+        steps.attestation.sender.identity.subject != "" &&
+        steps.attestation.sender.identity.subject == inputs.expected_reviewer)}
+    log:
+      level: warn
+      message: access review closed without a valid attestation
+
+outputs:
+  outcome:
+    value: >-
+      ${(has(steps.attestation.payload.attested) && steps.attestation.payload.attested &&
+          !steps.attestation.sender.local && !run.local &&
+          steps.attestation.sender.identity.subject != "" &&
+          steps.attestation.sender.identity.subject == inputs.expected_reviewer)
+        ? "attested"
+        : (steps.attestation.timed_out ? "expired" : "unattested")}
+    description: whether a real attestation closed this review, and why not if it did not
+
+  attested_by:
+    value: >-
+      ${(has(steps.attestation.payload.attested) && steps.attestation.payload.attested &&
+          !steps.attestation.sender.local && !run.local &&
+          steps.attestation.sender.identity.subject != "" &&
+          steps.attestation.sender.identity.subject == inputs.expected_reviewer)
+        ? steps.attestation.sender.identity.subject
+        : ""}
+    description: >-
+      who the server attests attested this review, empty unless a real
+      attestation happened - the audit trail itself, so not `sensitive:`
+      the way approval-gate's own `approver_subject` is not
+
+  reviewed_grants:
+    value: '${steps.gather_evidence.results.filter(r, has(r.last_used.grantee)).map(r, {"grantee": r.last_used.grantee, "resource": r.last_used.resource, "role": r.last_used.role, "last_used_days_ago": has(r.last_used.last_used_days_ago) ? r.last_used.last_used_days_ago : -1})}'
+    sensitive: true
+    description: >-
+      every grant this run gathered evidence for, with what it found -
+      display-redacted by default (see the header comment for what that
+      does and does not buy)
+
+  # Matched on the full grant identity - grantee AND resource - not grantee
+  # alone. `access_grants` allows the same grantee to appear more than once
+  # with a different resource (alice@example.com holding both prod-database
+  # and billing-console is an ordinary shape, not an edge case), and a
+  # membership test against grantee alone would clear every one of that
+  # grantee's grants the moment any single lookup for them succeeded - a
+  # partially-failed review reporting itself complete, which is the one
+  # thing this output exists to catch. `.exists()` checks the pair together,
+  # so a grantee with two grants and one failed lookup still names exactly
+  # that grant, not both and not neither.
+  unreachable:
+    value: >-
+      ${inputs.access_grants.filter(g,
+        !steps.gather_evidence.results.filter(r, has(r.last_used.grantee)).exists(r,
+          r.last_used.grantee == g.grantee && r.last_used.resource == g.resource))
+        .map(g, g.grantee + ':' + g.resource)}
+    description: >-
+      "grantee:resource" pairs whose evidence lookup did not complete,
+      needing manual follow-up - not grantee alone, since one grantee may
+      hold several grants and only some may have failed

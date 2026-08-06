@@ -1,0 +1,201 @@
+# `flow test` runs every `call:` for real, through the same local driver, the
+# same property call-a-workflow's own test file documents - so a stub here
+# answers the `http` task wherever the call reaches it, inside a callee or
+# not, and control flow (including `undo:` on this file's own top-level
+# steps) runs unmodified.
+edition: v2026.2
+tests:
+  - name: a tenant clears quota, is provisioned across three sub-workflows, and activates after its grace period
+    workflow: ./workflow.yaml
+    inputs:
+      tenant: acme
+      plan: growth
+      activation_grace_hours: 1
+    signals:
+      - name: activation-confirmed
+        payload:
+          confirmed: true
+    stubs:
+      - task: http
+        where: inputs.url == 'https://provisioning.internal.example.com/quota'
+        returns:
+          available: true
+      - task: http
+        where: inputs.url == 'https://provisioning.internal.example.com/databases'
+        returns:
+          resource_id: db-acme-1
+      - task: http
+        where: inputs.url == 'https://provisioning.internal.example.com/billing-accounts'
+        returns:
+          resource_id: bill-acme-1
+      - task: http
+        where: inputs.url == 'https://provisioning.internal.example.com/access-grants'
+        returns:
+          resource_id: access-acme-1
+      - task: http
+        where: inputs.url == 'https://provisioning.internal.example.com/activation-slots'
+        returns:
+          slot_id: slot-1
+      - task: http
+        where: inputs.url == 'https://provisioning.internal.example.com/dns-records'
+        returns:
+          record_id: dns-1
+      - task: http
+        where: inputs.url == 'https://provisioning.internal.example.com/tenants/activate'
+        returns: {}
+    expect:
+      ran:
+        - check_quota
+        - provision_database
+        - provision_billing
+        - provision_access
+        - reserve_activation_slot
+        - register_dns
+        - activation_window
+        - activation_confirmation
+        - activate
+      skipped: [activation_deferred]
+      outputs:
+        activated: true
+        tenant: acme
+        database_id: db-acme-1
+        billing_id: bill-acme-1
+        access_id: access-acme-1
+
+  - name: activation failing after the slot and DNS record were reserved undoes DNS then the slot
+    workflow: ./workflow.yaml
+    inputs:
+      tenant: acme
+      plan: growth
+      activation_grace_hours: 1
+    signals:
+      - name: activation-confirmed
+        payload:
+          confirmed: true
+    stubs:
+      - task: http
+        where: inputs.url == 'https://provisioning.internal.example.com/quota'
+        returns:
+          available: true
+      - task: http
+        where: inputs.url == 'https://provisioning.internal.example.com/databases'
+        returns:
+          resource_id: db-acme-2
+      - task: http
+        where: inputs.url == 'https://provisioning.internal.example.com/billing-accounts'
+        returns:
+          resource_id: bill-acme-2
+      - task: http
+        where: inputs.url == 'https://provisioning.internal.example.com/access-grants'
+        returns:
+          resource_id: access-acme-2
+      - task: http
+        where: inputs.url == 'https://provisioning.internal.example.com/activation-slots' && has(inputs.json.tenant)
+        returns:
+          slot_id: slot-2
+      - task: http
+        where: inputs.url == 'https://provisioning.internal.example.com/dns-records' && has(inputs.json.tenant)
+        returns:
+          record_id: dns-2
+      - task: http
+        where: inputs.url == 'https://provisioning.internal.example.com/tenants/activate'
+        fails:
+          kind: Upstream
+          message: activation service unavailable
+      # The compensations, hit for real once activate fails - the same literal
+      # URL as the reservation above, distinguished by the id travelling in the
+      # body instead of the tenant (see workflow.yaml's own `undo:` comment).
+      - task: http
+        where: inputs.url == 'https://provisioning.internal.example.com/dns-records' && inputs.json.record_id == 'dns-2'
+        returns: {}
+      - task: http
+        where: inputs.url == 'https://provisioning.internal.example.com/activation-slots' && inputs.json.slot_id == 'slot-2'
+        returns: {}
+    expect:
+      failed: true
+      error_contains: activation service unavailable
+      compensated: [register_dns, reserve_activation_slot]
+
+  - name: activation is deferred when the account manager never confirms go-live
+    workflow: ./workflow.yaml
+    inputs:
+      tenant: acme
+      plan: growth
+      activation_grace_hours: 1
+    stubs:
+      - task: log
+        returns: {}
+      - task: http
+        where: inputs.url == 'https://provisioning.internal.example.com/quota'
+        returns:
+          available: true
+      - task: http
+        where: inputs.url == 'https://provisioning.internal.example.com/databases'
+        returns:
+          resource_id: db-acme-3
+      - task: http
+        where: inputs.url == 'https://provisioning.internal.example.com/billing-accounts'
+        returns:
+          resource_id: bill-acme-3
+      - task: http
+        where: inputs.url == 'https://provisioning.internal.example.com/access-grants'
+        returns:
+          resource_id: access-acme-3
+      - task: http
+        where: inputs.url == 'https://provisioning.internal.example.com/activation-slots'
+        returns:
+          slot_id: slot-3
+      - task: http
+        where: inputs.url == 'https://provisioning.internal.example.com/dns-records'
+        returns:
+          record_id: dns-3
+    expect:
+      ran:
+        - check_quota
+        - provision_database
+        - provision_billing
+        - provision_access
+        - reserve_activation_slot
+        - register_dns
+        - activation_window
+        - activation_confirmation
+        - activation_deferred
+      skipped: [activate]
+      outputs:
+        activated: false
+        tenant: acme
+        database_id: db-acme-3
+        billing_id: bill-acme-3
+        access_id: access-acme-3
+
+  - name: a tenant whose quota precondition fails is refused before any provisioning runs
+    workflow: ./workflow.yaml
+    inputs:
+      tenant: acme
+      plan: enterprise
+      activation_grace_hours: 1
+    stubs:
+      # `fails:` stands in for the real `expect:` failure check-quota.yaml's
+      # own `check` step would produce on an out-of-quota answer - see that
+      # file's comment for why a stub cannot exercise `expect:` itself.
+      - task: http
+        where: inputs.url == 'https://provisioning.internal.example.com/quota'
+        fails:
+          kind: InvalidInput
+          message: tenant has no quota remaining on the requested plan
+    expect:
+      failed: true
+      error_contains: tenant has no quota remaining
+
+  - name: an unknown plan is refused before the first step runs
+    workflow: ./workflow.yaml
+    inputs:
+      tenant: acme
+      plan: legacy
+      activation_grace_hours: 1
+    stubs:
+      - task: http
+        returns: {}
+    expect:
+      failed: true
+      error_contains: "must satisfy"

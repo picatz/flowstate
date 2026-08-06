@@ -1,0 +1,251 @@
+edition: v2026.2
+name: enterprise-customer-onboarding
+description: >-
+  Checks quota, provisions a tenant's database, billing, and access grant as
+  reusable sub-workflows, confirms go-live after a grace period, and undoes
+  what it reserved if activation fails.
+
+# Onboarding a customer is rarely one system's job - it is several teams'
+# provisioning APIs, called in an order that matters, with a real answer for
+# "what happens if the last step fails after earlier ones succeeded." Four
+# primitives, composed for that - and one honest gap discovered while
+# composing two of them, which is worth more here than pretending around it:
+#
+#   call:      - `check_quota` and each `provision_*` step reach their own
+#                reusable Flowfile under `workflows/`, the same shape
+#                call-a-workflow's own callee demonstrates. A platform team
+#                maintains "provision a database" once and every workflow
+#                that needs one - not just onboarding - calls it the same
+#                way, with its own `inputs:` checked at compile time rather
+#                than trusted at run time.
+#
+#   undo:      - `reserve_activation_slot` and `register_dns` are ordinary
+#                top-level task steps, each naming its own compensation
+#                exactly as saga-provisioning's `network` and `volume` do.
+#                If `activate` fails after both succeeded, the engine undoes
+#                `register_dns` then `reserve_activation_slot`, in that
+#                order - the same reverse-registration guarantee saga-
+#                provisioning exercises.
+#
+#   wait_until - a configurable grace period between "provisioned" and
+#                "live," a real shape (a tenant is not billed until a grace
+#                window has passed, giving a chance to cancel before
+#                anything is charged) and a real durable timer: `${now +
+#                hours(inputs.activation_grace_hours)}` computes the deadline
+#                from an input rather than a number baked into the file, so
+#                the same workflow definition serves a one-hour trial signup
+#                and a two-week enterprise contract without being edited.
+#
+#   signals: +
+#   wait_for_signal
+#              - `activation_confirmation` gates the actual go-live on an
+#                `account-manager` claim, the same `signals:` shape every
+#                other example in this portfolio uses for a different role.
+#
+# # A genuine gap, found while building this file (read before reusing it)
+#
+# The natural first draft put `undo:` on each `provision_*` step's own task,
+# inside its callee - `workflows/provision-database.yaml`'s `provision` step
+# deleting what it created, the same shape saga-provisioning uses, just one
+# level down through a `call:`. `flow validate` refuses it: `undo:` is
+# refused both on a `call:` step in a parent workflow (it is control flow,
+# the identical refusal a `for_each` or `parallel:` step gets - `undo:`
+# names a `Task`, not a `Node`, and a call is not a task) and, less
+# obviously, on a step *inside* a callee reached through a `call:` - the
+# engine treats a called workflow's body the same way it treats a
+# `for_each` body or a `parallel:` branch for this purpose, and compensation
+# order inside concurrent control flow is not guaranteed to match between
+# `flow run local` and a durable run, which `undo:`'s own refusal message
+# names as the reason. So `workflows/provision-*.yaml` provision real
+# resources with no compensation at all when reached this way - each file's
+# own comment says so - and this workflow's actually-compensable effects
+# (`reserve_activation_slot`, `register_dns`) had to be plain top-level task
+# steps instead of anything reached through `call:`. A caller composing
+# reusable, callable provisioning steps cannot get saga compensation on them
+# today; the two primitives are each real and do not yet compose with each
+# other. Tracked honestly, not silently worked around, in docs/USE_CASES.md.
+#
+# "Tenant isolation via inputs" undersells what `call:`'s isolation actually
+# is and is not. `with: { tenant: inputs.tenant }` means a callee cannot read
+# anything of this file's *scope* it was not explicitly handed - it cannot
+# see `inputs.plan`, `steps.provision_database`, or this file's own vars,
+# the ordinary isolation a function call gives a callee over its caller's
+# locals. That is not the tenancy boundary docs/ARCHITECTURE.md describes
+# under "Tenancy": which secrets resolve, which egress rules apply, and
+# which runs are visible are all governed by the *authenticated caller's*
+# namespace, established once when the run is submitted - a property of who
+# started this run, never of an argument a Flowfile passes to a callee. A
+# malicious or buggy `with:` value cannot forge that boundary; conflating
+# the two is the mistake worth naming rather than repeating.
+
+inputs:
+  tenant:
+    type: string
+    required: true
+    example: acme
+    pattern: "^[a-z][a-z0-9-]*$"
+    description: the new tenant's slug - passed to every sub-workflow, never invented by one
+
+  plan:
+    type: string
+    required: true
+    example: growth
+    must: 'this in ["starter", "growth", "enterprise"]'
+    description: the billing plan this tenant is being onboarded onto
+
+  activation_grace_hours:
+    type: int
+    required: true
+    example: 1
+    min: 0
+    max: 336
+    description: >-
+      how long after provisioning completes before the tenant goes live and
+      billing starts - the SLA window a real deployment would size per plan
+
+    # `inputs.json` beside this file sets this to 0 - a real value (an
+    # immediate go-live, no grace period) and also the one that lets `flow
+    # run local` and this repo's own example harness finish in seconds
+    # rather than sitting through a real wait. `wait_until:` on a moment
+    # already past releases immediately (see wait-until-a-moment), so 0
+    # hours is not a special case in the engine, only a deliberately small
+    # one here - the same trade-off approval-gate's own header names for its
+    # day-long gate.
+
+# Who may deliver `activation-confirmed` at all, enforced by
+# `FlowstateServer.Signal` before Temporal ever sees the signal - the same
+# `signals:` shape every other example in this portfolio uses, here for the
+# account manager who owns the contract rather than a treasury desk or an
+# on-call rotation.
+signals:
+  activation-confirmed:
+    allow:
+      - claims:
+          role: account-manager
+
+steps:
+  # A read, not an effect - a reusable precondition every onboarding-shaped
+  # workflow can share without any of them needing to compensate it.
+  - id: check_quota
+    call: ./workflows/check-quota.yaml
+    with:
+      tenant: ${inputs.tenant}
+      plan: ${inputs.plan}
+
+  # No `undo:` on any of these three - see the header comment for why not,
+  # and `workflows/provision-*.yaml` for what each one actually does.
+  - id: provision_database
+    call: ./workflows/provision-database.yaml
+    with:
+      tenant: ${inputs.tenant}
+
+  - id: provision_billing
+    call: ./workflows/provision-billing.yaml
+    with:
+      tenant: ${inputs.tenant}
+      plan: ${inputs.plan}
+
+  - id: provision_access
+    call: ./workflows/provision-access.yaml
+    with:
+      tenant: ${inputs.tenant}
+
+  # The first step that genuinely gets saga compensation - a plain top-level
+  # task, not reached through `call:`.
+  - id: reserve_activation_slot
+    http:
+      method: POST
+      url: https://provisioning.internal.example.com/activation-slots
+      json: '${ {"tenant": inputs.tenant} }'
+      parse_json: true
+      outputs: '${ {"slot_id": response.json.slot_id} }'
+    undo:
+      # A literal URL with the slot id in the body, not spliced into the path —
+      # see enterprise-fund-transfer's `debit` step for the identical reasoning:
+      # a URL built by concatenating a step's own output is not a literal
+      # `PointAtStandIn` can rewrite, which is a property of the test harness,
+      # not of this API design, but one worth building around anyway since the
+      # body was always the more ordinary place to put it.
+      http:
+        method: DELETE
+        url: https://provisioning.internal.example.com/activation-slots
+        json: '${ {"slot_id": steps.reserve_activation_slot.slot_id} }'
+
+  - id: register_dns
+    http:
+      method: POST
+      url: https://provisioning.internal.example.com/dns-records
+      json: '${ {"tenant": inputs.tenant} }'
+      parse_json: true
+      outputs: '${ {"record_id": response.json.record_id} }'
+    undo:
+      http:
+        method: DELETE
+        url: https://provisioning.internal.example.com/dns-records
+        json: '${ {"record_id": steps.register_dns.record_id} }'
+
+  # The grace window. A durable timer, not a sleeping worker - the tenant
+  # can sit here for two weeks while every worker in the fleet is replaced
+  # underneath the wait.
+  - id: activation_window
+    wait_until: ${now + hours(inputs.activation_grace_hours)}
+
+  # A final human check before anything is billed - an account manager
+  # confirming the contract is actually signed, restricted by `signals:`
+  # below to the one claim that may answer it. Simpler than approval-gate's
+  # own gate on purpose: this file already carries the composition finding
+  # above, and a second full separation-of-duties check would be the same
+  # shape repeated rather than new range - see approval-gate for that
+  # version in full.
+  - id: activation_confirmation
+    wait_for_signal:
+      name: activation-confirmed
+      timeout: 1h
+
+  # The step most likely to fail in practice, and the one that triggers
+  # compensation in this file's failing test case - reversing `register_dns`
+  # then `reserve_activation_slot`, in that order.
+  - id: activate
+    if: >-
+      ${has(steps.activation_confirmation.payload.confirmed) && steps.activation_confirmation.payload.confirmed}
+    http:
+      method: POST
+      url: https://provisioning.internal.example.com/tenants/activate
+      json: >-
+        ${ {"tenant": inputs.tenant,
+            "database_id": steps.provision_database.resource_id,
+            "billing_id": steps.provision_billing.resource_id,
+            "access_id": steps.provision_access.resource_id,
+            "slot_id": steps.reserve_activation_slot.slot_id} }
+
+  - id: activation_deferred
+    if: >-
+      ${!(has(steps.activation_confirmation.payload.confirmed) && steps.activation_confirmation.payload.confirmed)}
+    log:
+      level: warn
+      message: >-
+        ${"activation for %s deferred: %s".format(
+            [inputs.tenant,
+             steps.activation_confirmation.timed_out ? "no confirmation within the window" : "confirmation was not given"])}
+
+outputs:
+  activated:
+    value: >-
+      ${has(steps.activation_confirmation.payload.confirmed) && steps.activation_confirmation.payload.confirmed}
+    description: whether the account manager confirmed go-live and the tenant was actually activated
+
+  tenant:
+    value: ${inputs.tenant}
+    description: which tenant this run onboarded
+
+  database_id:
+    value: ${steps.provision_database.resource_id}
+    description: the provisioned database's id
+
+  billing_id:
+    value: ${steps.provision_billing.resource_id}
+    description: the provisioned billing account's id
+
+  access_id:
+    value: ${steps.provision_access.resource_id}
+    description: the provisioned access grant's id

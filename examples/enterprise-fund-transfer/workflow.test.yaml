@@ -1,0 +1,183 @@
+# Six cases. The first two are the shape money actually has to get right —
+# a small transfer clearing on its own, and a settlement failure taking back
+# what already moved. The rest are refusal paths: rejected, expired, and the
+# same honest limit approval-gate's own test file names — `flow test` has no
+# authenticated caller, so an "approved: true" payload can never look like a
+# real treasury-approver here, only like the unattested refusal. A real
+# attested approval is exercised durably, the same way approval-gate's is
+# (engine/examples_durable_test.go, engine/run_identity_test.go).
+edition: v2026.2
+tests:
+  - name: a transfer below the threshold clears without a gate
+    workflow: ./workflow.yaml
+    inputs:
+      from_account_id: acct-treasury-001
+      to_account_id: acct-supplier-042
+      amount_cents: 250000
+      approval_threshold_cents: 1000000
+      idempotency_key: transfer-2026-08-06-0001
+    stubs:
+      - task: log
+        returns: {}
+      - task: http
+        where: inputs.url == 'https://ledger.internal.example.com/debit' && inputs.json.account_id == 'acct-treasury-001'
+        returns:
+          reference: dbt-1
+      - task: http
+        where: inputs.url == 'https://ledger.internal.example.com/credit' && inputs.json.account_id == 'acct-supplier-042'
+        returns:
+          reference: crd-1
+      - task: http
+        where: inputs.url == 'https://settlements.internal.example.com/notify'
+        returns: {}
+    expect:
+      ran: [request, debit, credit, notify_settlement]
+      skipped: [approval, rejected, expired, refused_unauthorized, refused_malformed_payload]
+      outputs:
+        decision: transferred
+        debit_reference: dbt-1
+
+  - name: a settlement failure after both legs cleared undoes credit then debit
+    workflow: ./workflow.yaml
+    inputs:
+      from_account_id: acct-treasury-001
+      to_account_id: acct-supplier-042
+      amount_cents: 250000
+      approval_threshold_cents: 1000000
+      idempotency_key: transfer-2026-08-06-0002
+    stubs:
+      - task: log
+        returns: {}
+      - task: http
+        where: inputs.url == 'https://ledger.internal.example.com/debit' && inputs.json.account_id == 'acct-treasury-001'
+        returns:
+          reference: dbt-2
+      - task: http
+        where: inputs.url == 'https://ledger.internal.example.com/credit' && inputs.json.account_id == 'acct-supplier-042'
+        returns:
+          reference: crd-2
+      - task: http
+        where: inputs.url == 'https://settlements.internal.example.com/notify'
+        fails:
+          kind: Upstream
+          message: settlement service unavailable
+      # The compensations, hit for real by the local driver once notify_settlement
+      # fails - reversing amounts at the opposite endpoint from the original call,
+      # each account in the body rather than the path (see workflow.yaml's own
+      # `undo:` comment on `debit`).
+      - task: http
+        where: inputs.url == 'https://ledger.internal.example.com/debit' && inputs.json.account_id == 'acct-supplier-042'
+        returns: {}
+      - task: http
+        where: inputs.url == 'https://ledger.internal.example.com/credit' && inputs.json.account_id == 'acct-treasury-001'
+        returns: {}
+    expect:
+      failed: true
+      error_contains: settlement service unavailable
+      compensated: [credit, debit]
+
+  - name: an explicit rejection above the threshold moves nothing
+    workflow: ./workflow.yaml
+    inputs:
+      from_account_id: acct-treasury-001
+      to_account_id: acct-supplier-042
+      amount_cents: 5000000
+      approval_threshold_cents: 1000000
+      idempotency_key: transfer-2026-08-06-0003
+    signals:
+      - name: transfer-approved
+        payload:
+          approved: false
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [request, approval, rejected]
+      skipped: [debit, credit, notify_settlement, expired, refused_unauthorized, refused_malformed_payload]
+      outputs:
+        decision: rejected
+        debit_reference: ""
+
+  - name: nobody answers, and the gate lapses at its own timeout
+    workflow: ./workflow.yaml
+    inputs:
+      from_account_id: acct-treasury-001
+      to_account_id: acct-supplier-042
+      amount_cents: 5000000
+      approval_threshold_cents: 1000000
+      idempotency_key: transfer-2026-08-06-0004
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [request, approval, expired]
+      skipped: [debit, credit, notify_settlement, rejected, refused_malformed_payload]
+      outputs:
+        decision: expired
+        debit_reference: ""
+
+  - name: >-
+      an approved payload above the threshold is still refused without a real
+      attested, separate approver
+    workflow: ./workflow.yaml
+    inputs:
+      from_account_id: acct-treasury-001
+      to_account_id: acct-supplier-042
+      amount_cents: 5000000
+      approval_threshold_cents: 1000000
+      idempotency_key: transfer-2026-08-06-0005
+    signals:
+      - name: transfer-approved
+        payload:
+          approved: true
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [request, approval, refused_unauthorized]
+      skipped: [debit, credit, notify_settlement, rejected, expired, refused_malformed_payload]
+      outputs:
+        decision: refused_unauthorized
+        debit_reference: ""
+
+  - name: a signal that answers with no approved field is refused, not read as a timeout
+    workflow: ./workflow.yaml
+    inputs:
+      from_account_id: acct-treasury-001
+      to_account_id: acct-supplier-042
+      amount_cents: 5000000
+      approval_threshold_cents: 1000000
+      idempotency_key: transfer-2026-08-06-0007
+    signals:
+      # A payload that arrived - `steps.approval.timed_out` reads false - but
+      # carries nothing this file can act on. The bug this case exists to
+      # catch: an earlier version of `decision` used `!has(payload.approved)`
+      # as a stand-in for "nobody answered," which is also true here even
+      # though somebody very much did.
+      - name: transfer-approved
+        payload:
+          note: wrong shape entirely
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [request, approval, refused_malformed_payload]
+      skipped: [debit, credit, notify_settlement, rejected, expired, refused_unauthorized]
+      outputs:
+        decision: refused_malformed_payload
+        debit_reference: ""
+
+  - name: an amount below one cent is refused before the first step runs
+    workflow: ./workflow.yaml
+    inputs:
+      from_account_id: acct-treasury-001
+      to_account_id: acct-supplier-042
+      amount_cents: 0
+      approval_threshold_cents: 1000000
+      idempotency_key: transfer-2026-08-06-0006
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      failed: true
+      error_contains: "must be"
