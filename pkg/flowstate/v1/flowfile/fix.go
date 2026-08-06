@@ -382,7 +382,7 @@ var recognizedTopLevelKeys = []string{"steps", "tests"}
 // keys happen to collide with ours. Everything listed here means something
 // specific to this language and would be an odd thing for another format to
 // say.
-var distinctiveWorkflowKeys = []string{"edition", "steps", "tests", "inputs", "outputs", "vars", "triggers"}
+var distinctiveWorkflowKeys = []string{"edition", "steps", "tests", "inputs", "outputs", "vars", "triggers", "signals"}
 
 // refuseUnrecognizedDocument reports whether a parsed file is something `flow
 // fix` has no business rewriting, and builds the diagnostic saying so.

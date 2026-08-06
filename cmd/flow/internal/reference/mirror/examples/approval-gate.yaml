@@ -41,24 +41,42 @@ description: >-
 # starter across a different issuer. That is fail-closed, but wrong, and wrong
 # in the way that reads as a mystery report in a multi-IdP deployment rather
 # than as a bug anyone can point at.
-# Two things remain true, and this file does not pretend otherwise:
 #
-#   - There is still no signal authorization surface: anyone who can reach this
-#     run in its tenant can send `deploy-approved`, matched approver or not,
-#     because nothing constrains *who* may deliver a named signal. What this
-#     file refuses is a signal that *did* arrive from the run's own starter,
-#     approving itself — not a signal from someone who was never supposed to
-#     approve anything at all. That is #206's first gap, still open.
-#   - The check lives here, in a file its own author can edit: whoever can weaken
-#     `deploy`'s `if:` to `true`, or delete `wait_for_signal` outright, controls
-#     the control. A workflow cannot author a rule that binds against itself.
+# # Gap 1 is closed: `signals:` below constrains who may deliver this signal
 #
-# The fix for both is deployment-side, not a cleverer expression: signal
-# authorization evaluated where a signal is accepted, and task-shape policy
-# (#187) enforced by the worker outside the file. Track that at #206 and #187.
-# What is true today is durable waiting, an unforgeable sender, and a real
-# self-approval refusal — genuinely useful, worth demonstrating, and worth
-# being honest about the edge of.
+# `signals.deploy-approved.allow` (below `inputs:`) is enforced by
+# `FlowstateServer.Signal`, server-side, against the attested sender — before
+# Temporal ever sees the signal. Fifty engineers sharing this run's tenant no
+# longer all satisfy the gate: only the identity or claim named in `allow:`
+# does, and everyone else's `flow signal deploy-approved` is refused with
+# `PermissionDenied`, synchronously, rather than silently accepted and then
+# merely failing the `if:` below. This is a *coarser* control than the
+# `expected_approver` input/`run.identity` comparison in `deploy`'s own `if:`
+# — it names who may answer the gate *at all*, independent of which run;
+# `expected_approver` is a caller-supplied expectation checked per run, never
+# the security boundary itself (see its own `description:` below), which is
+# exactly why `signals:` cannot be built from it: a policy templated off a
+# caller-chosen input could be set by the same caller it is meant to
+# constrain.
+#
+# One thing remains true, and this file does not pretend otherwise:
+#
+#   - The check still lives here, in a file its own author can edit for the
+#     workflow's *own* logic — `deploy`'s `if:` can still be weakened to
+#     `true` by whoever owns this file. `signals:` does not have that
+#     weakness: it is read by the server from the run's own memo, frozen at
+#     submit, never re-read from a running workflow's own reasoning — but the
+#     Flowfile that *declares* `signals:` in the first place is still this
+#     same file, so an author who can edit `deploy`'s `if:` can as easily
+#     delete the `signals:` block above it or widen `allow:` to match anyone.
+#     Binding that requires policy the workflow's own author does not
+#     control at all — deployment-side task-shape policy (#187). That is
+#     gap 3, and it stays open, tracked at #187.
+#
+# What is true today: durable waiting, an unforgeable sender, a real
+# self-approval refusal, and — as of this file — a real constraint on who may
+# answer the gate in the first place. All genuinely useful, worth
+# demonstrating, and worth being honest about the edge of.
 
 inputs:
   # No default: there is no sensible absent value for the thing being shipped,
@@ -118,6 +136,31 @@ inputs:
     description: >-
       who this run expects to approve it — caller-supplied, checked against
       the attested sender at the deploy gate, not a control on its own
+
+# Who may deliver `deploy-approved` at all — #206 gap 1, closed for this
+# example. Enforced by `FlowstateServer.Signal` against the attested sender,
+# before Temporal ever sees the signal: an authenticated, in-tenant caller who
+# matches neither rule below gets `PermissionDenied` synchronously and the
+# workflow never learns the signal was sent. Two rule forms, deliberately both
+# shown: an issuer-qualified subject (`allow.subject`, "<issuer>#<subject>" —
+# never a bare subject, for the identical multi-IdP reason `run.identity` is
+# compared issuer-and-subject in `deploy`'s own `if:` below) and a claim
+# (`allow.claims`), so a whole team can be named without enumerating its
+# members one subject at a time. A sender satisfying *either* rule is
+# authorized; within `claims`, every key listed must match.
+#
+# Deliberately literal, not built from `inputs.expected_approver`: that input
+# is the caller's own claim about who they expect to approve this run (see its
+# `description:` above), so a policy templated from it would let the same
+# caller who is supposed to be constrained choose their own constraint.
+# `signals:` names a real identity or a real claim instead — a fact this
+# file's author states, not a fact this run's caller supplies.
+signals:
+  deploy-approved:
+    allow:
+      - subject: "https://issuer.example.com#sre-lead@example.com"
+      - claims:
+          team: release-managers
 
 steps:
   # `run.identity.subject` here, not `inputs.requested_by`: this is what the

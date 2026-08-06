@@ -22,6 +22,7 @@ import (
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/temporal"
+	"google.golang.org/protobuf/proto"
 )
 
 // New creates a new FlowstateServer instance with the provided Temporal client.
@@ -160,6 +161,23 @@ type FlowstateServer struct {
 // start-dev`.
 const namespaceMemoKey = "flowstate.namespace"
 
+// signalPolicyMemoKey is the memo field recording which signals a run
+// declared a delivery policy for, and what it is.
+//
+// Set once, at submit, from [v1.Workflow.Signals] — the same moment and the
+// same mechanism [namespaceMemoKey] uses, and for the identical reason: a
+// verb that has to authorize a signal delivery reads this via the
+// `DescribeWorkflowExecution` it already calls to check tenancy, rather than
+// asking Temporal a second question or reaching into the run's own history.
+//
+// Absent when the workflow declared no signal policy at all — which is the
+// overwhelmingly common case today, and the zero case [v1.SignalPolicyAllows]'s
+// own doc comment states: nothing here means every signal name is
+// unconstrained, exactly as it was before this key existed. There is
+// deliberately no compatibility arm to reach for, because absent already
+// means the right thing.
+const signalPolicyMemoKey = "flowstate.signalPolicy"
+
 // maxStepsPerRunFromEnv reads the optional step budget.
 func maxStepsPerRunFromEnv() int {
 	if s := os.Getenv("FLOWSTATE_MAX_STEPS_PER_RUN"); s != "" {
@@ -240,6 +258,16 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 		}
 	}
 
+	// Rules compile at submit, not at signal-time. Everything [v1.Validate] above
+	// cannot see because it is a fact about a *set* of declared policies rather
+	// than about one field — a policy for a signal name nothing waits for, a rule
+	// that matches every sender — is caught here, once, rather than discovered the
+	// first time a signal is actually delivered and denied for a reason the
+	// author never saw at submit.
+	if err := v1.CheckSignalPolicies(req.Msg.GetWorkflow()); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
 	// Size is a separate question from validity, and it has to be asked here
 	// because here is where somebody is still listening.
 	//
@@ -287,6 +315,28 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	// who asked for the work has to be recorded in the state it carries.
 	identity := s.identityFor(ctx)
 
+	// The declared signal policy, frozen into the memo now, exactly as the
+	// tenant is a few lines below — see [signalPolicyMemoKey]. Encoded through
+	// the specification's own message rather than a bespoke wrapper type,
+	// which is what lets `Signal` decode it with nothing more than
+	// `proto.Unmarshal` into a `*v1.Workflow` and read `.GetSignals()` back off
+	// it. Absent (nil bytes, key not written) when the workflow declares no
+	// policy at all — the zero case [v1.SignalPolicyAllows] documents.
+	memo := map[string]any{namespaceMemoKey: identity.GetNamespace()}
+	if signals := req.Msg.GetWorkflow().GetSignals(); len(signals) > 0 {
+		encoded, err := proto.Marshal(&v1.Workflow{Signals: signals})
+		if err != nil {
+			// CheckSignalPolicies and v1.Validate above already accepted this
+			// specification, so a marshal failure here is not a caller mistake —
+			// it is this handler unable to do what it just told the caller it
+			// would do. Fail closed rather than start a run whose signal policy
+			// the server itself could not record.
+			return nil, connect.NewError(connect.CodeInternal,
+				fmt.Errorf("encoding the declared signal policy: %w", err))
+		}
+		memo[signalPolicyMemoKey] = encoded
+	}
+
 	options := client.StartWorkflowOptions{
 		ID:        workflowID,
 		TaskQueue: engine.RunTaskQueueName,
@@ -311,9 +361,7 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 		// against this run is one Describe rather than a walk through history.
 		// A memo needs no cluster-side registration, which keeps this working
 		// against `temporal server start-dev` with no operator setup.
-		Memo: map[string]any{
-			namespaceMemoKey: identity.GetNamespace(),
-		},
+		Memo: memo,
 
 		// One task queue serves every tenant, so without this the queue is
 		// first-come-first-served and a tenant is one large workload away from
