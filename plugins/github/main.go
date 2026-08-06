@@ -19,7 +19,7 @@ func main() {
 	sdk.Main(sdk.Plugin{
 		Name:        "github",
 		Version:     "0.1.0",
-		Description: "Reads a pull request's state and posts issue/PR comments, authenticated as a GitHub App or a personal access token.",
+		Description: "Reads pull requests and issues (single-record and bounded listings), posts issue/PR comments, authenticated as a GitHub App or a personal access token.",
 
 		Secrets: &sdk.Secrets{
 			Schemes: []string{secretScheme},
@@ -40,6 +40,34 @@ func main() {
 				Input:   &githubv1.IssueCommentInputs{},
 				Output:  &githubv1.IssueCommentOutputs{},
 				Fn:      issueComment,
+			},
+			{
+				Name:    "pull_request_list",
+				Summary: "A bounded page of a repository's pull requests, filtered by state and branch.",
+				Input:   &githubv1.PullRequestListInputs{},
+				Output:  &githubv1.PullRequestListOutputs{},
+				Fn:      pullRequestList,
+			},
+			{
+				Name:    "pull_request_files",
+				Summary: "The bounded list of files one pull request touches - filename, change kind, and line counts.",
+				Input:   &githubv1.PullRequestFilesInputs{},
+				Output:  &githubv1.PullRequestFilesOutputs{},
+				Fn:      pullRequestFiles,
+			},
+			{
+				Name:    "issue_get",
+				Summary: "One issue's title, body, state, labels, and comment count.",
+				Input:   &githubv1.IssueGetInputs{},
+				Output:  &githubv1.IssueGetOutputs{},
+				Fn:      issueGet,
+			},
+			{
+				Name:    "issue_list",
+				Summary: "A bounded page of a repository's issues, filtered by state, label, and an updated-since cutoff.",
+				Input:   &githubv1.IssueListInputs{},
+				Output:  &githubv1.IssueListOutputs{},
+				Fn:      issueList,
 			},
 		},
 

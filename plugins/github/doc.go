@@ -1,7 +1,34 @@
-// Command flowstate-plugin-github provides two GitHub forge tasks:
-// github.pull_request_get (read) and github.issue_comment (write), proving
-// one forge operation end to end rather than a wide, thin API surface. See
-// the README for what was deliberately left out and why.
+// Command flowstate-plugin-github provides GitHub forge tasks:
+// github.pull_request_get (read) and github.issue_comment (write) prove one
+// forge operation end to end; github.pull_request_list,
+// github.pull_request_files, github.issue_get, and github.issue_list are the
+// read/audit tier added alongside them once that pair had landed - the same
+// shape plugins/git took, adding git.log and git.read_file as a read/audit
+// tier around its own original git.ls_remote/git.commit_push pair. See the
+// README, "Read/audit tier," for which further candidates were considered
+// and rejected, and "What was left undone" for what is still out of scope.
+//
+// # The read/audit tier
+//
+// github.pull_request_list and github.issue_list both answer "what exists"
+// rather than "what is #N's state" - a genuinely different capability from
+// pull_request_get/issue_get's single-record reads, not a filter over one
+// this plugin already had. github.pull_request_files answers the
+// review-triage question - which paths a pull request touches, and how much
+// - deliberately without returning any diff content: a file's own Patch
+// field has no natural size limit, the same reasoning plugins/git's own
+// maxLogMessageBytes documents for a commit message, and reading content at
+// a path (or diffing two of them) is already a different primitive this
+// repository has elsewhere. Every listing task bounds two resources GitHub
+// controls independently - items collected (max_results, refused rather
+// than silently clamped over its ceiling) and requests made
+// (maxListRequests) - because how many items land in one page is GitHub's
+// choice, not this task's: see paginate.go's paginateBounded for the
+// mechanism and pkg/flowstate/v1/server/list.go's own maxListScan/
+// maxListRequests for the lesson it mirrors. Every listing also reports
+// truncated: false only when GitHub itself said there was nothing more,
+// never merely because a call stopped looking - the same honesty git.log's
+// own Truncated field practices.
 //
 // # Naming: why github.* and not forge.*
 //

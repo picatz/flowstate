@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // Bounds and validation this plugin applies to attacker-chosen input before
@@ -25,6 +26,40 @@ const (
 	maxCommentBodyBytes = 32 << 10 // 32 KiB
 
 	requestTimeout = 30 // seconds; see client.go
+
+	// defaultMaxResults and maxMaxResults bound every read/audit-tier list
+	// task's own output size (pull_request_list, pull_request_files,
+	// issue_list) - the same "ceiling, refused rather than silently
+	// clamped" reasoning plugins/git's own defaultMaxCommits/maxMaxCommits
+	// document (see that package's validate.go) - independent of how many
+	// pull requests, files, or issues the repository actually has.
+	defaultMaxResults = 30
+	maxMaxResults     = 200
+
+	// maxPerPage bounds this plugin's own request to GitHub per page -
+	// GitHub's own ceiling for every List endpoint this plugin calls, so
+	// asking for more would not get more.
+	maxPerPage = 100
+
+	// maxListRequests bounds how many page requests one listing task may
+	// make - the second, independent bound CLAUDE.md's own "Bound anything
+	// that consumes untrusted input" section requires for any paged
+	// listing (see pkg/flowstate/v1/server/list.go's maxListScan /
+	// maxListRequests, the lesson this mirrors): GitHub decides how many
+	// items land in a page - Response.NextPage can legitimately stay
+	// non-zero across a page carrying zero items while a large result set
+	// is computed - so a loop bounded only by items collected does not
+	// terminate against a peer that always pages forward with an empty
+	// page. See paginate.go's paginateBounded and
+	// paginate_test.go's own peer that does exactly this.
+	maxListRequests = 20
+
+	// maxLabels and maxLabelBytes bound issue_list's optional labels filter
+	// before it is sent to GitHub at all - the same "bound before the real
+	// use sees it" reasoning validateCommentBody documents for a comment's
+	// own body.
+	maxLabels     = 20
+	maxLabelBytes = 100
 )
 
 // ownerPattern and repoPattern are validated because both are later placed
@@ -106,4 +141,73 @@ func validateCommentBody(body string) error {
 		return fmt.Errorf("body is %d bytes, over the %d byte limit this task enforces", len(body), maxCommentBodyBytes)
 	}
 	return nil
+}
+
+// validateState normalizes and checks the read/audit tier's optional state
+// filter (pull_request_list, issue_list): empty means this task's own
+// explicit default, "open" - named rather than left to whatever GitHub's
+// API defaults to unasked, so a Flowfile reading state: ${vars.something}
+// with nothing set behaves the same today and after any future change to
+// GitHub's own default.
+func validateState(field, value string) (string, error) {
+	if value == "" {
+		return "open", nil
+	}
+	switch value {
+	case "open", "closed", "all":
+		return value, nil
+	default:
+		return "", fmt.Errorf("%s %q is not one of \"open\", \"closed\", \"all\"", field, value)
+	}
+}
+
+// clampMaxResults applies the read/audit tier's shared default and ceiling
+// to a requested count - the same refuse-rather-than-clamp reasoning
+// plugins/git's own clampMaxCommits documents: a silently reduced bound
+// looks like a working request that quietly returned less than it was
+// asked for.
+func clampMaxResults(requested int32) (int, error) {
+	if requested == 0 {
+		return defaultMaxResults, nil
+	}
+	if requested < 0 {
+		return 0, fmt.Errorf("max_results must not be negative")
+	}
+	if requested > maxMaxResults {
+		return 0, fmt.Errorf("max_results is %d, over the %d ceiling this task enforces", requested, maxMaxResults)
+	}
+	return int(requested), nil
+}
+
+// validateLabels bounds issue_list's optional labels filter before it is
+// ever sent to GitHub - count and per-entry length, the same "bound before
+// the real use sees it" reasoning every other attacker-adjacent input in
+// this plugin follows.
+func validateLabels(labels []string) error {
+	if len(labels) > maxLabels {
+		return fmt.Errorf("labels has %d entries, over the %d limit this task enforces", len(labels), maxLabels)
+	}
+	for _, l := range labels {
+		if l == "" {
+			return fmt.Errorf("labels must not contain an empty entry")
+		}
+		if len(l) > maxLabelBytes {
+			return fmt.Errorf("label %q is %d bytes, over the %d byte limit this task enforces", l, len(l), maxLabelBytes)
+		}
+	}
+	return nil
+}
+
+// parseSince parses issue_list's optional since filter, refusing rather
+// than ignoring a value that does not parse - the same reasoning
+// plugins/git's own parseSince (git.log's since input) documents.
+func parseSince(raw string) (time.Time, error) {
+	if raw == "" {
+		return time.Time{}, nil
+	}
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("since %q is not RFC 3339: %w", raw, err)
+	}
+	return t, nil
 }
