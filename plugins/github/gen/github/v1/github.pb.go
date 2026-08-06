@@ -413,36 +413,57 @@ type PullRequestListInputs struct {
 	// and plugins/github/cursor.go for the full encoding.
 	//
 	// GitHub's pull-request listing is page-number pagination over a list
-	// that mutates between calls - a pull request opened or closed while a
-	// caller is still paging shifts every later page's contents by one,
-	// unlike git.log's own cursor, which resumes an immutable commit DAG.
-	// This task cannot make the list stop mutating, but it can make new
-	// entries land only at the far end of the walk rather than in the middle
-	// of it: sorted by "created" ascending, a newly opened pull request is
-	// always the newest, so it is always appended after wherever a resumed
-	// walk currently stands, never inserted before it. That is why Cursor is
-	// only ever produced (and only ever accepted back) when Sort is
-	// "created" and Direction is "asc" - see requireStableOrder in
-	// pull_request_list.go. Any other sort/direction still lists pull
-	// requests exactly as before; it just never grows a next_cursor a caller
-	// could resume from.
+	// that mutates between calls - a pull request opened, closed, or
+	// reopened while a caller is still paging shifts every later page's
+	// contents, unlike git.log's own cursor, which resumes an immutable
+	// commit DAG. This task cannot make the list stop mutating, but ordering
+	// by "created" ascending closes ONE direction of the problem: a
+	// brand-new pull request is always the newest match, so it is always
+	// appended after wherever a resumed walk currently stands, never
+	// inserted before it. That is why Cursor is only ever produced (and only
+	// ever accepted back) when Sort is "created" and Direction is "asc" -
+	// see doPullRequestList in pull_request_list.go. Any other sort/
+	// direction still lists pull requests exactly as before; it just never
+	// grows a next_cursor a caller could resume from.
 	//
-	// Even under that stable order, a pull request CLOSED (or otherwise
-	// removed from the matching set - e.g. a state filter that no longer
-	// matches it) between two calls can still shift a later page's contents
-	// backward by one, which this task's page-plus-skip position has no way
-	// to detect: unlike an insertion, a removal can cause a miss. Ordering by
-	// created-ascending closes the insertion direction of this problem, not
-	// the removal direction - state this precisely to a caller rather than
-	// implying either "resumes exactly like git.log" or "resumes with no
-	// guarantee at all."
+	// What that ordering does NOT close - stated precisely, because a
+	// resumed walk really can behave either of these two ways, and a caller
+	// needs to know which one it is getting, not merely that "some limit
+	// applies":
+	//
+	//   - REMOVAL can cause a MISS. A pull request closed (or otherwise
+	//     removed from the matching set - e.g. a state filter that no longer
+	//     matches it) between two calls shifts every later page's contents
+	//     backward by one, which this task's page-plus-skip position has no
+	//     way to detect - it tracks a position, not an identity.
+	//   - MEMBERSHIP GROWING BEFORE THE CURSOR can cause a REPEAT. Ordering
+	//     by "created" ascending only guarantees a NEW pull request (whose
+	//     created time is later than everything already returned) lands
+	//     after the cursor. It says nothing about an EXISTING, older pull
+	//     request that newly matches between two calls: one reopened, or
+	//     retargeted to a base/head this call filters on. Its created time
+	//     did not change, so it re-enters the matching set at its ORIGINAL,
+	//     possibly-earlier position - which can sit before the saved
+	//     cursor, shifting the offset so a resumed call repeats a pull
+	//     request already returned. See
+	//     TestIssueListCursorCanRepeatAReopenedIssueBetweenPages
+	//     (issue_list_cursor_test.go) for this same shape demonstrated
+	//     directly - PullRequestListInputs.cursor shares the mechanism
+	//     unchanged, only the specific membership trigger (reopen, base/
+	//     head retarget here; reopen, label, or since here on the issue
+	//     side) differs.
+	//
+	// Neither of these is "resumes exactly like git.log," and neither is
+	// "resumes with no guarantee at all" - this cursor is a best-effort
+	// resume position for a triage/audit read, not a transactional snapshot,
+	// and both of its gaps are named here rather than discovered later.
 	//
 	// Untrusted input the moment it comes back from outside this task, so it
 	// is bound and validated narrowly - see validateCursor (validate.go) and
 	// decodePageCursor (cursor.go). A cursor issued under different filters
-	// (a different state, base, head, sort, direction, or max_results) is
-	// refused outright rather than silently walking the wrong sequence - see
-	// cursor.go's own doc comment, "why a fingerprint."
+	// (a different state, base, head, sort, direction, max_results, or
+	// base_url) is refused outright rather than silently walking the wrong
+	// sequence - see cursor.go's own doc comment, "why a fingerprint."
 	//
 	// This task has no separate "starting page" input for Cursor to conflict
 	// with the way git.log's own Cursor is mutually exclusive with Ref -
@@ -1291,14 +1312,41 @@ type IssueListInputs struct {
 	// this shares essentially unchanged: page-plus-skip pagination over a
 	// list GitHub, not this task, controls, requiring Sort "created" and
 	// Direction "asc" before this task will ever produce or accept one - so
-	// a newly filed issue always appends past wherever a resumed walk
-	// currently stands rather than shifting it - and still unable to detect
-	// an issue removed from the matching set between calls (closed under a
-	// state filter that excludes it, or deleted outright), which can shift a
-	// later page backward and cause a miss even under that stable order.
+	// a brand-NEW issue always appends past wherever a resumed walk
+	// currently stands rather than shifting it.
+	//
+	// That ordering closes only the append-only direction of the problem.
+	// Two things it does NOT close, both stated precisely rather than
+	// implied away:
+	//
+	//   - REMOVAL can cause a MISS: an issue closed (under a state filter
+	//     that now excludes it) or deleted between two calls shifts every
+	//     later page backward by one, which this task's page-plus-skip
+	//     position has no way to detect. Demonstrated in
+	//     TestIssueListCursorCanMissAnItemDeletedBetweenPages.
+	//   - AN OLDER ISSUE NEWLY MATCHING can cause a REPEAT: "created"
+	//     ascending only guarantees a genuinely new issue sorts after
+	//     everything already returned. An issue that EXISTED before this
+	//     walk began, but did not match this call's own filters until
+	//     between two calls - reopened under a state filter, given a label
+	//     this call's own `labels` now requires, or updated so its
+	//     `updated_at` newly crosses `since` - keeps its ORIGINAL created
+	//     time, which can be earlier than the saved cursor's own position.
+	//     It re-enters the matching set there, shifting the offset so a
+	//     resumed call repeats an issue already returned. Demonstrated in
+	//     TestIssueListCursorCanRepeatAReopenedIssueBetweenPages.
+	//
+	// Neither gap makes this cursor useless - the common case (nothing in
+	// the matching set changed shape between two calls, which for a page
+	// fetched moments apart is the overwhelming majority of the time) still
+	// resumes correctly - but it is not git.log's exactly-once, and is not
+	// claimed to be: this is a best-effort resume position for a triage/
+	// audit read, not a transactional snapshot.
 	//
 	// As with pull_request_list, there is no separate "starting page" input
-	// here for Cursor to conflict with.
+	// here for Cursor to conflict with. A cursor issued under different
+	// filters (including base_url) is refused - see
+	// PullRequestListInputs.cursor's own doc comment.
 	Cursor        string `protobuf:"bytes,11,opt,name=cursor,proto3" json:"cursor,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

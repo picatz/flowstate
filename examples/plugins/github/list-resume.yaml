@@ -27,19 +27,33 @@ description: Reads a repository's open issues in two bounded pages using github.
 #
 #   - sort: created and direction: asc are REQUIRED alongside cursor (this
 #     task refuses a cursor set without them, and never produces a
-#     next_cursor without them either) - that ordering is what makes a
-#     newly filed issue append past a walk already in progress rather than
-#     shift it, closing the "an insertion between pages causes a miss or a
-#     duplicate" half of the classic offset-pagination problem.
-#   - what is NOT closed: an issue removed from the matching set between two
-#     calls (closed under a state filter that excludes it, or deleted
-#     outright) can still shift a later page backward and cause a miss -
-#     this task cannot detect that case, and says so plainly rather than
-#     implying exactly-once the way git.log's own cursor can actually
-#     deliver against an immutable commit graph.
+#     next_cursor without them either) - that ordering guarantees a
+#     genuinely NEW issue (created later than everything a walk has already
+#     reached) always appends past it rather than shifting it. That is the
+#     append-only case, and only that case.
+#   - what is NOT closed, in two directions - both real, both demonstrated
+#     as passing tests, neither merely asserted:
+#       - removal can cause a MISS: an issue closed (under a state filter
+#         that now excludes it) or deleted between two calls shifts every
+#         later page backward by one, which this task's cursor - a
+#         position, not an identity - cannot detect
+#         (TestIssueListCursorCanMissAnItemDeletedBetweenPages).
+#       - an OLDER issue newly matching can cause a REPEAT: "created"
+#         ascending says nothing about an issue that already existed but
+#         did not match until between two calls - reopened, newly
+#         carrying a requested label, or an updated_at that just crossed
+#         since. Its created time never moved, so it re-enters the
+#         matching set at its original, possibly-earlier position, ahead
+#         of the saved cursor, and a resumed call repeats it
+#         (TestIssueListCursorCanRepeatAReopenedIssueBetweenPages).
+#     Neither gap makes this cursor useless - it is a best-effort resume
+#     position for a triage/audit read, not a transactional snapshot - but
+#     "created asc closes insertion" is true only for brand-new items, and
+#     this file says so precisely rather than implying more.
 #   - a cursor replayed against different filters (a different owner, repo,
-#     state, label set, sort, or direction than the call that produced it)
-#     is refused outright, not silently walked against the wrong sequence.
+#     state, label set, sort, direction, max_results, or base_url than the
+#     call that produced it) is refused outright, not silently walked
+#     against the wrong sequence.
 #
 # github.pull_request_list's own cursor works identically (sort: created,
 # direction: asc required). github.pull_request_files's cursor is weaker

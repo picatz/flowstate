@@ -25,7 +25,7 @@ func TestPullRequestFilesCursorWalksToExhaustion(t *testing.T) {
 		if pages > total {
 			t.Fatalf("walked %d pages without exhausting %d files", pages, total)
 		}
-		files, truncated, nextCursor, err := doPullRequestFiles(context.Background(), client, "o", "r", 1, 5, cursor)
+		files, truncated, nextCursor, err := doPullRequestFiles(context.Background(), client, "o", "r", 1, 5, cursor, "")
 		if err != nil {
 			t.Fatalf("doPullRequestFiles (page %d): unexpected error: %v", pages, err)
 		}
@@ -58,7 +58,7 @@ func TestPullRequestFilesCursorWalksToExhaustion(t *testing.T) {
 func TestPullRequestFilesCursorEmitsUnconditionally(t *testing.T) {
 	client := newPagedTestServer(t, 20, 4, commitFileJSON)
 
-	files, truncated, cursor, err := doPullRequestFiles(context.Background(), client, "o", "r", 1, 5, "")
+	files, truncated, cursor, err := doPullRequestFiles(context.Background(), client, "o", "r", 1, 5, "", "")
 	if err != nil {
 		t.Fatalf("doPullRequestFiles: unexpected error: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestPullRequestFilesCursorEmitsUnconditionally(t *testing.T) {
 func TestPullRequestFilesCursorRefusesMismatchedFilters(t *testing.T) {
 	client := newPagedTestServer(t, 20, 4, commitFileJSON)
 
-	_, _, cursor, err := doPullRequestFiles(context.Background(), client, "o", "r", 1, 5, "")
+	_, _, cursor, err := doPullRequestFiles(context.Background(), client, "o", "r", 1, 5, "", "")
 	if err != nil {
 		t.Fatalf("producing a cursor: unexpected error: %v", err)
 	}
@@ -86,9 +86,31 @@ func TestPullRequestFilesCursorRefusesMismatchedFilters(t *testing.T) {
 		t.Fatal("expected a next_cursor")
 	}
 
-	_, _, _, err = doPullRequestFiles(context.Background(), client, "o", "r", 2, 5, cursor)
+	_, _, _, err = doPullRequestFiles(context.Background(), client, "o", "r", 2, 5, cursor, "")
 	if err == nil {
 		t.Fatal("doPullRequestFiles with a cursor replayed under a different pull request number: got nil error, want a refusal")
+	}
+	if !strings.Contains(err.Error(), "different filters") {
+		t.Fatalf("error = %q, want it to name the filter mismatch", err)
+	}
+}
+
+// TestPullRequestFilesCursorRefusesMismatchedBaseURL mirrors
+// TestIssueListCursorRefusesMismatchedBaseURL.
+func TestPullRequestFilesCursorRefusesMismatchedBaseURL(t *testing.T) {
+	client := newPagedTestServer(t, 20, 4, commitFileJSON)
+
+	_, _, cursor, err := doPullRequestFiles(context.Background(), client, "o", "r", 1, 5, "", "https://github.example.com/api/v3")
+	if err != nil {
+		t.Fatalf("producing a cursor: unexpected error: %v", err)
+	}
+	if cursor == "" {
+		t.Fatal("expected a next_cursor")
+	}
+
+	_, _, _, err = doPullRequestFiles(context.Background(), client, "o", "r", 1, 5, cursor, "https://github.other-example.com/api/v3")
+	if err == nil {
+		t.Fatal("doPullRequestFiles with a cursor replayed under a different base_url: got nil error, want a refusal")
 	}
 	if !strings.Contains(err.Error(), "different filters") {
 		t.Fatalf("error = %q, want it to name the filter mismatch", err)
@@ -100,7 +122,7 @@ func TestPullRequestFilesCursorRefusesMismatchedFilters(t *testing.T) {
 func TestPullRequestFilesCursorRefusesGarbage(t *testing.T) {
 	client := newPagedTestServer(t, 5, 4, commitFileJSON)
 
-	_, _, _, err := doPullRequestFiles(context.Background(), client, "o", "r", 1, 5, "not-a-real-cursor")
+	_, _, _, err := doPullRequestFiles(context.Background(), client, "o", "r", 1, 5, "not-a-real-cursor", "")
 	if err == nil {
 		t.Fatal("doPullRequestFiles with a garbage cursor: got nil error, want a refusal")
 	}
@@ -120,7 +142,7 @@ func TestPullRequestFilesCursorResumesCorrectlyWhenABoundTruncatesMidPage(t *tes
 		if pages > total {
 			t.Fatal("did not exhaust the listing in a bounded number of pages")
 		}
-		files, truncated, nextCursor, err := doPullRequestFiles(context.Background(), client, "o", "r", 1, 6, cursor)
+		files, truncated, nextCursor, err := doPullRequestFiles(context.Background(), client, "o", "r", 1, 6, cursor, "")
 		if err != nil {
 			t.Fatalf("doPullRequestFiles: unexpected error: %v", err)
 		}
@@ -138,5 +160,51 @@ func TestPullRequestFilesCursorResumesCorrectlyWhenABoundTruncatesMidPage(t *tes
 
 	if len(seen) != total {
 		t.Fatalf("saw %d distinct files, want %d", len(seen), total)
+	}
+}
+
+// TestPullRequestFilesCursorSurvivesAnEmptyPageRunToTheRequestBound mirrors
+// TestIssueListCursorSurvivesAnEmptyPageRunToTheRequestBound.
+func TestPullRequestFilesCursorSurvivesAnEmptyPageRunToTheRequestBound(t *testing.T) {
+	const (
+		emptyPages = 22
+		total      = 8
+	)
+	client := newEmptyThenRealServer(t, emptyPages, 4, total, commitFileJSON)
+
+	files, truncated, cursor, err := doPullRequestFiles(context.Background(), client, "o", "r", 1, 5, "", "")
+	if err != nil {
+		t.Fatalf("first call: unexpected error: %v", err)
+	}
+	if len(files) != 0 || !truncated {
+		t.Fatalf("first call: got (%d items, truncated=%v), want (0, true)", len(files), truncated)
+	}
+	if cursor == "" {
+		t.Fatal("first call: next_cursor is empty - the empty-page run's own forward progress was discarded")
+	}
+
+	seen := map[string]bool{}
+	for pages := 0; ; pages++ {
+		if pages > total+emptyPages {
+			t.Fatal("did not reach the real content within a bounded number of resumes")
+		}
+		page, truncated2, nextCursor, err := doPullRequestFiles(context.Background(), client, "o", "r", 1, 5, cursor, "")
+		if err != nil {
+			t.Fatalf("resumed call: unexpected error: %v", err)
+		}
+		for _, f := range page {
+			if seen[f.Filename] {
+				t.Fatalf("file %q returned twice across the resume", f.Filename)
+			}
+			seen[f.Filename] = true
+		}
+		if !truncated2 {
+			break
+		}
+		cursor = nextCursor
+	}
+
+	if len(seen) != total {
+		t.Fatalf("reached %d distinct files past the empty run, want all %d", len(seen), total)
 	}
 }

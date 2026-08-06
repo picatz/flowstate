@@ -89,26 +89,48 @@ func pullRequestJSON(n int) string {
 }
 
 // newMutableIssueServer is newPagedTestServer's stateful counterpart, built
-// specifically for the two tests that need the repository's own issue list
-// to change shape BETWEEN two of this task's calls -
-// TestIssueListCursorToleratesAnInsertionBetweenPages and
-// TestIssueListCursorCanMissAnItemDeletedBetweenPages. It starts by serving
-// issue numbers 1..n, in that order (matching issueJSON's own
-// created-ascending timestamps), and returns two functions: grow appends by
-// more issues at the tail (higher numbers, later timestamps - the shape a
-// newly opened issue actually has), and remove deletes one issue number
-// from the currently served list, shifting everything after it one
-// position earlier - the shape a closed-and-filtered-out (or deleted)
-// issue actually has.
-func newMutableIssueServer(t *testing.T, n, defaultPerPage int) (client *github.Client, grow func(by int), remove func(number int)) {
+// specifically for the tests that need the repository's own issue list to
+// change shape BETWEEN two of this task's calls -
+// TestIssueListCursorToleratesAnInsertionBetweenPages,
+// TestIssueListCursorCanMissAnItemDeletedBetweenPages, and
+// TestIssueListCursorCanRepeatAReopenedIssueBetweenPages. It starts by
+// serving issue numbers 1..n, in that order (matching issueJSON's own
+// created-ascending timestamps), and returns three functions:
+//
+//   - grow appends by more issues at the tail (higher numbers, later
+//     timestamps - the shape a newly opened issue actually has).
+//   - remove deletes one issue number from the currently served list,
+//     shifting everything after it one position earlier - the shape a
+//     closed-and-filtered-out (or deleted) issue actually has.
+//   - insertFront re-admits an issue number NOT currently in the served
+//     list at the very front - the shape a REOPENED issue (or one newly
+//     matching a label/since filter) actually has: its created_at did not
+//     change, so if it is chronologically the oldest of everything this
+//     walk could ever see, "created" ascending places it first regardless
+//     of when it re-entered the matching set, ahead of positions a walk
+//     may already have passed.
+func newMutableIssueServer(t *testing.T, n, defaultPerPage int) (client *github.Client, grow func(by int), remove func(number int), insertFront func(number int)) {
+	t.Helper()
+	return newMutableIssueServerFrom(t, 1, n, defaultPerPage)
+}
+
+// newMutableIssueServerFrom is newMutableIssueServer with an explicit
+// starting issue number, rather than always 1 - what
+// TestIssueListCursorCanRepeatAReopenedIssueBetweenPages needs: a "reopened"
+// issue's own created_at cannot move, and issueJSON derives a strictly
+// increasing timestamp from a number's own value, so the only way to give a
+// reopened issue a timestamp OLDER than every number a walk has already
+// seen is to reserve a smaller number for it up front, unserved until
+// insertFront admits it.
+func newMutableIssueServerFrom(t *testing.T, start, n, defaultPerPage int) (client *github.Client, grow func(by int), remove func(number int), insertFront func(number int)) {
 	t.Helper()
 
 	var mu sync.Mutex
 	numbers := make([]int, n)
 	for i := range numbers {
-		numbers[i] = i + 1
+		numbers[i] = start + i
 	}
-	next := n + 1
+	next := start + n
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
@@ -171,8 +193,75 @@ func newMutableIssueServer(t *testing.T, n, defaultPerPage int) (client *github.
 		}
 		numbers = out
 	}
+	insertFront = func(number int) {
+		mu.Lock()
+		defer mu.Unlock()
+		numbers = append([]int{number}, numbers...)
+	}
 
-	return httpClient, grow, remove
+	return httpClient, grow, remove, insertFront
+}
+
+// newEmptyThenRealServer starts an httptest server that answers the first
+// emptyPages page requests with a zero-item page and a Link "next" header
+// (a legitimate GitHub response shape - CLAUDE.md's own List lesson: a
+// large result set can be computed with the first several pages empty and
+// NextPage still set), then serves count real items - itemJSON(i) for i in
+// [0, count) - starting at page emptyPages+1, paginated at defaultPerPage.
+// Built for the "a peer that pages through empties to the request bound
+// yields a resumable cursor" requirement: emptyPages is meant to exceed
+// maxListRequests, so a single doXxxList call spends its whole request
+// budget on nothing but empty pages before ever reaching the real content,
+// and the test asserts a cursor is still handed back - see
+// cursorHasResumePosition's own doc comment for why len(out) > 0 alone is
+// the wrong gate for that.
+func newEmptyThenRealServer(t *testing.T, emptyPages, defaultPerPage, count int, itemJSON func(i int) string) *github.Client {
+	t.Helper()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		page, _ := strconv.Atoi(q.Get("page"))
+		if page < 1 {
+			page = 1
+		}
+		perPage, _ := strconv.Atoi(q.Get("per_page"))
+		if perPage < 1 {
+			perPage = defaultPerPage
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+
+		if page <= emptyPages {
+			w.Header().Set("Link", fmt.Sprintf(`<http://%s%s?page=%d>; rel="next"`, r.Host, r.URL.Path, page+1))
+			fmt.Fprint(w, "[]")
+			return
+		}
+
+		realPage := page - emptyPages
+		start := (realPage - 1) * perPage
+		end := min(start+perPage, count)
+
+		var items []string
+		for i := start; i < end; i++ {
+			if i < 0 || i >= count {
+				continue
+			}
+			items = append(items, itemJSON(i))
+		}
+		if end < count {
+			w.Header().Set("Link", fmt.Sprintf(`<http://%s%s?page=%d>; rel="next"`, r.Host, r.URL.Path, page+1))
+		}
+		fmt.Fprintf(w, "[%s]", strings.Join(items, ","))
+	}))
+	t.Cleanup(server.Close)
+
+	client := github.NewClient(http.DefaultClient)
+	base := strings.TrimSuffix(server.URL, "/") + "/"
+	client, err := client.WithEnterpriseURLs(base, base)
+	if err != nil {
+		t.Fatalf("WithEnterpriseURLs: unexpected error: %v", err)
+	}
+	return client
 }
 
 // commitFileJSON builds one github.CommitFile's JSON body - pull_request_files'

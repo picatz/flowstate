@@ -372,35 +372,58 @@ repository's issues or pull requests can gain or lose entries between two
 calls, which a commit history (immutable once written) never does. This
 plugin's cursor packs a page number, a within-page skip count (for a resume
 that lands mid-page, not only at a page boundary - see `paginate.go`'s own
-doc comment), and a fingerprint of the filters the walk was running under
-(`cursor.go`) - opaque to a workflow, and refused outright if replayed
-against different filters than the call that produced it.
+doc comment), and a fingerprint of the filters the walk was running under,
+including `base_url` (`cursor.go`) - opaque to a workflow, and refused
+outright if replayed against different filters, or a different GitHub API
+endpoint, than the call that produced it. That fingerprint check is also
+what makes a cursor's own forward progress worth keeping even across a run
+of pages GitHub answered with zero items apiece (a legitimate response
+shape while a large result set is computed - see `cursorHasResumePosition`
+in `cursor.go`): the position still advanced, and withholding a cursor just
+because nothing was collected yet would be the exact dead end #216 exists
+to close, one call later than the original bug.
 
 That mechanism is honest about what it can and cannot guarantee against a
-mutating list:
+mutating list - and the guarantee is narrower than it may first look, in
+both directions:
 
 - **`github.issue_list` and `github.pull_request_list`** require `sort:
   created` and `direction: asc` alongside `cursor` - refusing one set
-  without the other - because that ordering is what makes a newly opened
-  issue or pull request append past a walk already in progress rather than
-  shift it, closing the "an insertion between pages causes a miss or a
-  duplicate" half of the classic offset-pagination problem. What it does
-  *not* close: an item removed from the matching set between two calls
-  (closed under a filter that now excludes it, or deleted outright) can
-  still shift a later page backward and cause a miss - this plugin's cursor
-  tracks a position, not an identity, and has no way to detect that. Stated
-  here, in `IssueListInputs.cursor`/`PullRequestListInputs.cursor`'s own doc
-  comments (`proto/github/v1/github.proto`), and demonstrated as a passing
-  test rather than left to be discovered:
-  `TestIssueListCursorCanMissAnItemDeletedBetweenPages` shows the miss
-  directly, and `TestIssueListCursorToleratesAnInsertionBetweenPages` shows
-  the insertion case the stable sort actually closes.
+  without the other - because that ordering guarantees a genuinely NEW
+  issue or pull request (whose created time is later than everything a
+  walk has already reached) always appends past it rather than shifting it.
+  That closes only the append-only case. Two gaps remain, both real and
+  both demonstrated as passing tests rather than left to be discovered:
+    - **removal can cause a miss**: an item closed (under a filter that now
+      excludes it) or deleted between two calls shifts every later page
+      backward by one, which this plugin's cursor - a position, not an
+      identity - cannot detect.
+      `TestIssueListCursorCanMissAnItemDeletedBetweenPages` shows it
+      directly.
+    - **an older item newly matching can cause a REPEAT**: "created"
+      ascending says nothing about an item that already existed but did not
+      match this call's own filters until between two calls - a reopened
+      issue or pull request, one newly carrying a requested label, or one
+      whose `updated_at` just crossed a `since` cutoff. Its created time
+      never moved, so it re-enters the matching set at its original,
+      possibly-earlier position, which can sit before the saved cursor and
+      cause a resumed call to repeat an item it already returned.
+      `TestIssueListCursorCanRepeatAReopenedIssueBetweenPages` shows it
+      directly; `TestIssueListCursorToleratesAnInsertionBetweenPages` shows
+      the append-only case the stable sort actually does close, for
+      contrast.
+  Neither gap makes the cursor useless - the common case, nothing in the
+  matching set changing shape between two calls fetched moments apart, is
+  the overwhelming majority - but this is a best-effort resume position for
+  a triage/audit read, not a transactional snapshot, and both gaps are
+  stated in `IssueListInputs.cursor`/`PullRequestListInputs.cursor`'s own
+  doc comments (`proto/github/v1/github.proto`) rather than left implicit.
 - **`github.pull_request_files`** has no ordering lever at all - GitHub's
   `ListFiles` endpoint takes no `sort` parameter this task could ask it to
-  hold stable, so its own cursor's contract is honestly weaker: it resumes
-  *near* where a truncated call stopped, and a commit pushed to the pull
-  request between two calls can cause a file to be missed or (less likely)
-  returned twice. Acceptable for the triage read this task is - see
+  hold stable, so its own cursor's contract is honestly weaker still: it
+  resumes *near* where a truncated call stopped, and a commit pushed to the
+  pull request between two calls can cause a file to be missed or (less
+  likely) returned twice. Acceptable for the triage read this task is - see
   `PullRequestFilesInputs.cursor`'s own doc comment for the full argument.
 
 <!-- example: examples/plugins/github/list-resume.yaml -->
@@ -434,19 +457,33 @@ description: Reads a repository's open issues in two bounded pages using github.
 #
 #   - sort: created and direction: asc are REQUIRED alongside cursor (this
 #     task refuses a cursor set without them, and never produces a
-#     next_cursor without them either) - that ordering is what makes a
-#     newly filed issue append past a walk already in progress rather than
-#     shift it, closing the "an insertion between pages causes a miss or a
-#     duplicate" half of the classic offset-pagination problem.
-#   - what is NOT closed: an issue removed from the matching set between two
-#     calls (closed under a state filter that excludes it, or deleted
-#     outright) can still shift a later page backward and cause a miss -
-#     this task cannot detect that case, and says so plainly rather than
-#     implying exactly-once the way git.log's own cursor can actually
-#     deliver against an immutable commit graph.
+#     next_cursor without them either) - that ordering guarantees a
+#     genuinely NEW issue (created later than everything a walk has already
+#     reached) always appends past it rather than shifting it. That is the
+#     append-only case, and only that case.
+#   - what is NOT closed, in two directions - both real, both demonstrated
+#     as passing tests, neither merely asserted:
+#       - removal can cause a MISS: an issue closed (under a state filter
+#         that now excludes it) or deleted between two calls shifts every
+#         later page backward by one, which this task's cursor - a
+#         position, not an identity - cannot detect
+#         (TestIssueListCursorCanMissAnItemDeletedBetweenPages).
+#       - an OLDER issue newly matching can cause a REPEAT: "created"
+#         ascending says nothing about an issue that already existed but
+#         did not match until between two calls - reopened, newly
+#         carrying a requested label, or an updated_at that just crossed
+#         since. Its created time never moved, so it re-enters the
+#         matching set at its original, possibly-earlier position, ahead
+#         of the saved cursor, and a resumed call repeats it
+#         (TestIssueListCursorCanRepeatAReopenedIssueBetweenPages).
+#     Neither gap makes this cursor useless - it is a best-effort resume
+#     position for a triage/audit read, not a transactional snapshot - but
+#     "created asc closes insertion" is true only for brand-new items, and
+#     this file says so precisely rather than implying more.
 #   - a cursor replayed against different filters (a different owner, repo,
-#     state, label set, sort, or direction than the call that produced it)
-#     is refused outright, not silently walked against the wrong sequence.
+#     state, label set, sort, direction, max_results, or base_url than the
+#     call that produced it) is refused outright, not silently walked
+#     against the wrong sequence.
 #
 # github.pull_request_list's own cursor works identically (sort: created,
 # direction: asc required). github.pull_request_files's cursor is weaker

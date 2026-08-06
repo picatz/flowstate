@@ -64,7 +64,7 @@ func pullRequestFiles(ctx context.Context, inputs map[string]*flowstatev1.Value,
 
 	flowstatev1.ReportProgress(ctx, flowstatev1.PhaseRequesting)
 
-	files, truncated, nextCursor, err := doPullRequestFiles(ctx, client, in.GetOwner(), in.GetRepo(), int(in.GetNumber()), maxResults, cursorRaw)
+	files, truncated, nextCursor, err := doPullRequestFiles(ctx, client, in.GetOwner(), in.GetRepo(), int(in.GetNumber()), maxResults, cursorRaw, in.GetBaseUrl())
 	if err != nil {
 		return nil, classifyReadError(err)
 	}
@@ -77,26 +77,27 @@ func pullRequestFiles(ctx context.Context, inputs map[string]*flowstatev1.Value,
 }
 
 // pullRequestFilesFingerprint hashes the filters a github.pull_request_files
-// walk runs under - see issueListFingerprint's own doc comment for why.
-// Deliberately does not include a sort/direction pair the way the other two
-// list tasks' fingerprints do: GitHub's ListFiles endpoint has none - see
-// PullRequestFilesInputs.cursor's own doc comment for the weaker contract
-// that follows from that absence.
-func pullRequestFilesFingerprint(owner, repo string, number, maxResults int) fingerprint {
+// walk runs under - see issueListFingerprint's own doc comment for why,
+// including why base_url is included. Deliberately does not include a
+// sort/direction pair the way the other two list tasks' fingerprints do:
+// GitHub's ListFiles endpoint has none - see PullRequestFilesInputs.cursor's
+// own doc comment for the weaker contract that follows from that absence.
+func pullRequestFilesFingerprint(owner, repo string, number, maxResults int, baseURL string) fingerprint {
 	return filterFingerprint(
 		"owner="+owner,
 		"repo="+repo,
 		"number="+strconv.Itoa(number),
 		"max_results="+strconv.Itoa(maxResults),
+		"base_url="+normalizeBaseURL(baseURL),
 	)
 }
 
 // doPullRequestFiles is pullRequestFiles's already-validated network step -
 // see doPullRequestList's own doc comment for why this split exists.
-func doPullRequestFiles(ctx context.Context, client *github.Client, owner, repo string, number, maxResults int, cursor string) ([]*githubv1.PullRequestFile, bool, string, error) {
+func doPullRequestFiles(ctx context.Context, client *github.Client, owner, repo string, number, maxResults int, cursor, baseURL string) ([]*githubv1.PullRequestFile, bool, string, error) {
 	perPage := min(maxPerPage, maxResults+1)
 
-	fingerprint := pullRequestFilesFingerprint(owner, repo, number, maxResults)
+	fingerprint := pullRequestFilesFingerprint(owner, repo, number, maxResults, baseURL)
 
 	startPage, startSkip := 1, 0
 	if cursor != "" {
@@ -135,11 +136,15 @@ func doPullRequestFiles(ctx context.Context, client *github.Client, owner, repo 
 	}
 
 	// No ordering condition to gate on here, unlike issue_list and
-	// pull_request_list - see PullRequestFilesOutputs.next_cursor's own
-	// doc comment for why this task emits one unconditionally whenever
-	// truncated and non-empty, with the correspondingly weaker guarantee.
+	// pull_request_list - see PullRequestFilesOutputs.next_cursor's own doc
+	// comment for why this task emits one whenever truncated and a real
+	// position exists, with the correspondingly weaker guarantee.
+	// cursorHasResumePosition, not len(out) > 0: see its own doc comment
+	// for why a peer that pages through many empty results before this
+	// call's own request budget runs out still has a position worth
+	// resuming from.
 	var nextCursor string
-	if truncated && len(out) > 0 {
+	if truncated && cursorHasResumePosition(startPage, startSkip, nextPage, nextSkip, len(out)) {
 		nextCursor = encodePageCursor(nextPage, nextSkip, fingerprint)
 	}
 

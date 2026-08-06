@@ -79,6 +79,7 @@ func pullRequestList(ctx context.Context, inputs map[string]*flowstatev1.Value, 
 		direction:  direction,
 		maxResults: maxResults,
 		cursor:     cursorRaw,
+		baseURL:    in.GetBaseUrl(),
 	})
 	if err != nil {
 		return nil, classifyReadError(err)
@@ -104,10 +105,13 @@ type pullRequestListParams struct {
 	direction  string
 	maxResults int
 	cursor     string // opaque, already structurally validated - see cursor.go
+	baseURL    string // GitHub Enterprise Server API base, "" meaning github.com
 }
 
 // pullRequestListFingerprint hashes the filters a github.pull_request_list
-// walk runs under - see issueListFingerprint's own doc comment for why.
+// walk runs under - see issueListFingerprint's own doc comment for why,
+// including why base_url is part of this even though it is not a "filter"
+// in the same sense state/base/head are.
 func pullRequestListFingerprint(owner, repo string, p pullRequestListParams) fingerprint {
 	return filterFingerprint(
 		"owner="+owner,
@@ -118,6 +122,7 @@ func pullRequestListFingerprint(owner, repo string, p pullRequestListParams) fin
 		"sort="+p.sort,
 		"direction="+p.direction,
 		"max_results="+strconv.Itoa(p.maxResults),
+		"base_url="+normalizeBaseURL(p.baseURL),
 	)
 }
 
@@ -133,11 +138,14 @@ func doPullRequestList(ctx context.Context, client *github.Client, owner, repo s
 	fingerprint := pullRequestListFingerprint(owner, repo, p)
 
 	// See IssueListInputs.cursor's own doc comment (issue_list.go) for the
-	// full reasoning this mirrors: a cursor is only trustworthy under a
-	// sort order where a newly opened pull request can only ever append
-	// past a walk already in progress. Checked before the cursor is
-	// decoded, for the same "more specific than the generic fingerprint
-	// mismatch" reason issueList documents.
+	// full reasoning this mirrors, including the honest limit: "created"
+	// ascending closes the append-only case (a brand-new pull request
+	// always sorts after a walk already in progress) but not every way a
+	// pull request can newly match state/base/head between two calls -
+	// a reopened pull request, or one retargeted to a base/head this call
+	// filters on, can still repeat. Checked before the cursor is decoded,
+	// for the same "more specific than the generic fingerprint mismatch"
+	// reason issueList documents.
 	if p.cursor != "" && !(p.sort == "created" && p.direction == "asc") {
 		return nil, false, "", sdk.InvalidInput(
 			"cursor requires sort: created and direction: asc - only that order guarantees a newly " +
@@ -193,7 +201,13 @@ func doPullRequestList(ctx context.Context, client *github.Client, owner, repo s
 	}
 
 	var nextCursor string
-	if truncated && len(out) > 0 && p.sort == "created" && p.direction == "asc" {
+	if truncated && p.sort == "created" && p.direction == "asc" &&
+		cursorHasResumePosition(startPage, startSkip, nextPage, nextSkip, len(out)) {
+		// See cursorHasResumePosition's own doc comment for why this is not
+		// simply len(out) > 0: a peer that pages through many empty results
+		// before this call's own request budget runs out still advances the
+		// position, and withholding a cursor there is the dead end #216
+		// exists to close.
 		nextCursor = encodePageCursor(nextPage, nextSkip, fingerprint)
 	}
 

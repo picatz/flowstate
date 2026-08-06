@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
+	"strings"
 )
 
 // This file is this plugin's counterpart to plugins/git/cursor.go, for
@@ -169,4 +170,51 @@ func requireCursorFingerprint(cur pageCursor, current fingerprint) error {
 				"that produced it; start a fresh call (cursor unset) to change filters")
 	}
 	return nil
+}
+
+// normalizeBaseURL is the form of base_url every list task's own fingerprint
+// hashes, rather than the raw input string - trimming only the one piece of
+// variation newClient itself introduces (a trailing slash, always appended
+// back by newClient before use, so "https://x" and "https://x/" already
+// name the identical API endpoint and must fingerprint identically too).
+// Deliberately not a fuller normalization (case-folding the host, resolving
+// "..", and so on): base_url is checked as a valid URL by newClient itself
+// before a request is ever made, so this only needs to erase the one
+// difference that means nothing, not defend against a malformed value -
+// that is validateRepositoryURL/newClient's job, not the fingerprint's.
+func normalizeBaseURL(raw string) string {
+	return strings.TrimSuffix(raw, "/")
+}
+
+// cursorHasResumePosition reports whether (nextPage, nextSkip) - what a
+// list task's own paginateBounded call just returned - is an actual,
+// different position from where this call started (startPage, startSkip),
+// or whether at least one item was collected. Either is a real place a
+// resumed call can continue from.
+//
+// Why "position changed" has to be checked independently of "collected an
+// item": a peer that answers every page with zero items and a non-zero
+// NextPage - CLAUDE.md's own List lesson, and paginateBounded's own
+// TestPaginateBoundedStopsAgainstAPeerThatPagesForever - drives
+// paginateBounded to its request bound having collected nothing at all,
+// yet it DID advance from page 1 to some later page over those requests:
+// that later page is exactly where a resumed call needs to pick up, and a
+// cursor gate that only asked "did this call return anything" would
+// discard that position and hand the caller a dead end - `truncated: true`
+// with no way to continue, the exact failure #216 exists to close. Checked
+// as "the position moved" rather than "requests were spent," so it stays
+// correct if paginateBounded's own retry shape ever changes: what matters
+// is where a next call would resume, not how many requests it took to get
+// there.
+//
+// The one case genuinely left with nothing to resume from is the
+// mirror-image byte-budget wall: a single item, on the very first page at
+// the very first index, too large to fit even alone - collected count 0,
+// position unchanged from where this call started. There is nothing this
+// call reached that a resumed call could start after; see
+// PullRequestListOutputs.next_cursor's own doc comment for what a caller
+// does in that position (the same "narrow the walk" remedy git.log's own
+// NextCursor gives for its own narrower empty cases).
+func cursorHasResumePosition(startPage, startSkip, nextPage, nextSkip, collected int) bool {
+	return collected > 0 || nextPage != startPage || nextSkip != startSkip
 }
