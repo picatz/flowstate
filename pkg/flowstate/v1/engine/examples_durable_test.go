@@ -711,6 +711,22 @@ func stableOutputs(outputs *v1.Workflow_StepOutputs) *v1.Workflow_StepOutputs {
 		}
 	}
 
+	// `approval-gate`'s own declared outputs read the identical attested sender
+	// [v1.SenderOutput] is stripped above for producing — its `decision` and
+	// `approver_subject` are both computed from `steps.approval.sender.identity`,
+	// so once that disagrees between drivers (by design, the paragraph above),
+	// anything the file itself derives from it disagrees too. That used to be
+	// invisible: before #215's third finding split the merged
+	// `refused_unattested_or_self_approved` into distinct values per reason, a
+	// local run's "unattested" and a durable run's "attested but the wrong
+	// approver" happened to render the same string, so the comparison below
+	// passed by coincidence rather than by agreement. `approver_subject` was
+	// already anticipated — see its own description in
+	// examples/approval-gate/workflow.yaml, which names this function and this
+	// reasoning before either of the two ever disagreed in practice.
+	delete(clone.GetRunOutputs().GetValues(), "decision")
+	delete(clone.GetRunOutputs().GetValues(), "approver_subject")
+
 	for _, value := range clone.GetRunOutputs().GetValues() {
 		sortMapEntries(value.GetLiteral())
 	}

@@ -87,6 +87,17 @@ type StepsOutputActivation struct {
 	// selection — the same contract step outputs follow.
 	Locals map[string]ref.Val
 
+	// RunIdentity is the attested identity of whoever started this run, answered
+	// whole under [RunRoot] exactly as [StepsOutputActivation.Inputs] is: nil reads
+	// as every field empty, which is correct both for a run that predates the field
+	// and for a run the server attested anonymously — [RunLocal] is what tells
+	// those apart from a run with no authenticated caller at all.
+	RunIdentity *WorkloadIdentity
+
+	// RunLocal marks an activation built by the local driver, which has no
+	// authenticated caller at all. See [Scope.local].
+	RunLocal bool
+
 	// Ctx bounds evaluation of any stored expression encountered while
 	// resolving a name. A context is held here, rather than passed in,
 	// because ResolveName implements a fixed third-party interface that has
@@ -298,25 +309,30 @@ const VarsRoot = "vars"
 // no new file can reach this precedence; it exists for the runs that predate the
 // root and for nothing else.
 func (e *StepsOutputActivation) ambientRoot(name string) (any, bool) {
-	if name != InputsRoot {
+	switch name {
+	case InputsRoot:
+		// An empty root still resolves, to an empty map, for the reason [VarsRoot]
+		// does: a run started with no arguments should make `inputs.missing` a
+		// missing key rather than an unresolved reference, so the diagnostic
+		// describes the mistake the author made rather than sending them to look
+		// for a root that is always there.
+		if len(e.Inputs) == 0 {
+			return types.NewStringInterfaceMap(TypeAdapter, nil), true
+		}
+
+		entries := make(map[ref.Val]ref.Val, len(e.Inputs))
+		for inputName, v := range e.Inputs {
+			entries[types.String(inputName)] = v
+		}
+
+		return types.NewRefValMap(TypeAdapter, entries), true
+
+	case RunRoot:
+		return runRootValue(e.RunIdentity, e.RunLocal), true
+
+	default:
 		return nil, false
 	}
-
-	// An empty root still resolves, to an empty map, for the reason [VarsRoot] does:
-	// a run started with no arguments should make `inputs.missing` a missing key
-	// rather than an unresolved reference, so the diagnostic describes the mistake
-	// the author made rather than sending them to look for a root that is always
-	// there.
-	if len(e.Inputs) == 0 {
-		return types.NewStringInterfaceMap(TypeAdapter, nil), true
-	}
-
-	entries := make(map[ref.Val]ref.Val, len(e.Inputs))
-	for inputName, v := range e.Inputs {
-		entries[types.String(inputName)] = v
-	}
-
-	return types.NewRefValMap(TypeAdapter, entries), true
 }
 
 // InputsRoot is the name a run's arguments hang from in an expression, as
@@ -329,6 +345,51 @@ func (e *StepsOutputActivation) ambientRoot(name string) (any, bool) {
 // The four that are not are lexer tokens, which is the one thing a root cannot
 // rescue; the compiler refuses those.
 const InputsRoot = "inputs"
+
+// RunRoot is the name the run's own starter identity hangs from in an expression,
+// as `run.identity.<field>` and `run.local`.
+//
+// # Naming this over `caller`, `principal`, `requester`, `started_by`
+//
+// `run` reads least surprising against this codebase's own vocabulary — every
+// comment that explains [WorkloadIdentity.subject] already calls it "the caller
+// that requested the run" — and it is the word this project's own design notes
+// already set aside for exactly this: docs/DSL.md lists `run.*` beside
+// `steps.<id>.*`, `vars.*` and `inputs.*` as part of one naming model, and its
+// own "Order of work" section records it as planned and unstarted. Landing
+// identity under it completes that reservation rather than inventing a new one.
+//
+// `caller` was the next candidate and was rejected for being no clearer while
+// giving up that alignment. `principal` is accurate IAM terminology this
+// codebase's own docs never otherwise reach for. `requester` and `started_by`
+// were rejected for a sharper reason: an approval-gate workflow is exactly the
+// place a step might legitimately be named "requester" to look something up
+// about one, and `requester` sits one letter from `inputs.requested_by` — the
+// caller-supplied field this very root exists to be checked against — which is
+// precisely the confusion a reader should never have to resolve. Nesting under
+// `workload` (the name egress and secret policy already bind this exact
+// [WorkloadIdentity] shape to, see auth/assume.go's attrWorkload) was rejected
+// because that grammar's `workload` carries a richer, different shape —
+// subject, namespace, deployment, workflow, run, step, on_behalf_of, claims —
+// and reusing the word here would make it answer two different questions in
+// two grammars a reader moves between.
+//
+// # Reserved without an edition boundary
+//
+// Adding `run` as a root makes it collide with a step of that id, exactly as
+// `steps`, `vars` and `inputs` did when rooting landed — and that precedent is
+// the reason this needs no edition bump. `cel:`, `echo:` and `printf:`
+// retiring at v2026.2 were *reinterpretations*: the same spelling kept parsing
+// and silently started meaning something else, which is what an edition
+// boundary and a rewriter exist to make an explicit, versioned break instead of
+// a silent one. This is not that. It is [flow validate] refusing one new step
+// id, unconditionally, the same way it already refuses `steps`, `vars` and
+// `inputs` — a check that runs regardless of a file's declared edition, because
+// invariant 10 protects what a run already compiled and replays, never what a
+// file sitting in a repository is allowed to name a step. No example in this
+// repository names a step `run`, and the diagnostic ([shadowsRoot]) names the
+// collision and what to do about it exactly as the other three already do.
+const RunRoot = "run"
 
 // ResponseRoot is the name an http task's `expect:` and `outputs:` expressions reach the
 // response through: `${response.status_code}`.
@@ -837,6 +898,14 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 	// Bound for the whole run rather than per step: an argument is a fact about the
 	// run, which is what makes it a root and not a binding.
 	scope.Inputs = inputs
+
+	// The local driver has no authenticated caller at all — no server sits in
+	// front of it to attest anything — so Identity stays unset (every field
+	// reads empty) and Local is true. This is the same honest answer
+	// `LocalSignalSender` gives for a wait's `sender`, made for the run's own
+	// starter identity: a local run must never look like an attested
+	// production one, which is invariant 3's whole point.
+	scope.Local = true
 
 	if runtime, ok := ctx.Value(secretRuntimeKey{}).(TaskRuntime); ok && runtime.Step.Workflow == "" {
 		runtime.Step.Workflow = w.GetName()

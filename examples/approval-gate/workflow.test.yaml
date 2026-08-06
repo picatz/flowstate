@@ -1,10 +1,16 @@
 # Every case shares the same inputs unless noted: a real caller can never get
-# `steps.approval.sender.local` to read `false` from `flow test` any more than
-# from `flow run local` (both drivers use [v1.LocalSignals]), so what these
-# cases prove is that the gate refuses even a matching, approved payload when
-# nothing attested it — the honest limit the workflow's own header comment
-# names. `deploy` itself is unreachable from this file for exactly that
-# reason; see #206.
+# `steps.approval.sender.local` or `run.local` to read `false` from `flow test`
+# any more than from `flow run local` (both drivers use [v1.LocalSignals]), so
+# what these cases prove is that the gate refuses even a matching, approved
+# payload when nothing attested it — the honest limit the workflow's own header
+# comment names. `deploy` itself is unreachable from this file for exactly that
+# reason; see #206. The durable half — an attested sender who is not the run's
+# own starter deploying, and one who is being refused — is exercised in CI by
+# engine/examples_durable_test.go and engine/run_identity_test.go, which is
+# where a real sender and a real run identity can both exist at once, and where
+# the other two refusal decisions -- `refused_mismatched_approver` and
+# `refused_self_approved` (#215) -- are exercised, since both require an
+# attested sender this harness cannot produce.
 edition: v2026.2
 tests:
   - name: an approved payload is still refused without an attested sender
@@ -12,7 +18,6 @@ tests:
     inputs:
       version: v1.4.2
       environment: production
-      requested_by: jordan@example.com
       expected_approver: sre-lead@example.com
     signals:
       - name: deploy-approved
@@ -25,7 +30,7 @@ tests:
       ran: [request, settle, approval, deploy_refused]
       skipped: [deploy, rejected, expired]
       outputs:
-        decision: refused_unattested_or_mismatched_approver
+        decision: refused_unattested
         approver_subject: ""
 
   - name: an explicit rejection is honored
@@ -33,7 +38,6 @@ tests:
     inputs:
       version: v1.4.2
       environment: production
-      requested_by: jordan@example.com
       expected_approver: sre-lead@example.com
     signals:
       - name: deploy-approved
@@ -54,7 +58,6 @@ tests:
     inputs:
       version: v1.4.2
       environment: production
-      requested_by: jordan@example.com
       expected_approver: sre-lead@example.com
     stubs:
       - task: log
@@ -71,7 +74,6 @@ tests:
     inputs:
       version: latest
       environment: production
-      requested_by: jordan@example.com
       expected_approver: sre-lead@example.com
     stubs:
       - task: log
@@ -85,7 +87,6 @@ tests:
     inputs:
       version: v1.4.2
       environment: prod-typo
-      requested_by: jordan@example.com
       expected_approver: sre-lead@example.com
     stubs:
       - task: log

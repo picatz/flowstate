@@ -61,7 +61,7 @@ None.
 
 ## Expressions
 
-Values are reached through these roots: `inputs`, `steps`, `vars`.
+Values are reached through these roots: `inputs`, `run`, `steps`, `vars`.
 
 Duration constructors, available to every expression: `days`, `hours`, `minutes`, `seconds`, `weeks`.
 

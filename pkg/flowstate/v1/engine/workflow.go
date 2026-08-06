@@ -259,7 +259,7 @@ func Run(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error
 		// the next task, and that worker must evaluate against the vocabulary the
 		// spec was compiled with rather than its own current one — otherwise a
 		// deployment mid-rollout runs one workload against two dialects.
-		scope:  varsScope(st.GetWorkflow().GetProfile(), stepOutputs, vars, st.GetInputs()),
+		scope:  varsScope(st.GetWorkflow().GetProfile(), stepOutputs, vars, st.GetInputs(), st.GetIdentity()),
 		budget: stepsBudget,
 		resume: resumeFrames(st),
 
@@ -1006,7 +1006,7 @@ func compactOutputsForRemainingSteps(
 // same state through v1.EvalWorkflowVars; what must not differ between them is the
 // scope a first step sees, and that is easier to compare when each driver has exactly
 // one place that builds it.
-func varsScope(profile string, outputs *v1.Workflow_StepOutputs, vars, inputs map[string]*v1.Value) *v1.Scope {
+func varsScope(profile string, outputs *v1.Workflow_StepOutputs, vars, inputs map[string]*v1.Value, identity *v1.WorkloadIdentity) *v1.Scope {
 	scope := v1.NewScope(profile, outputs)
 	scope.AmbientVars = vars
 
@@ -1017,6 +1017,15 @@ func varsScope(profile string, outputs *v1.Workflow_StepOutputs, vars, inputs ma
 	// segment, so a declaration edited between deploys could change an argument
 	// underneath a run in flight — the class of thing invariant 10 exists to stop.
 	scope.Inputs = inputs
+
+	// The run's own starter identity, established once when the run was requested
+	// (server.go) and carried in RunState across every Continue-As-New — see
+	// [v1.RunState.identity]. Never Local: the durable driver always has a server
+	// in front of it, even when that server attests an anonymous caller because no
+	// identity provider is configured. That is still an attestation, not the
+	// absence of one, and [v1.Scope.local] exists precisely so the two are never
+	// confused.
+	scope.Identity = identity
 
 	return scope
 }

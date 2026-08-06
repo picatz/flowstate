@@ -159,6 +159,28 @@ steps:
     wait_until: "${now + duration('1s')}"
 `,
 		},
+		{
+			// `run` is a root (#206), not a name the grammar binds bare the way a
+			// loop's `as:` or `now` is — but the risk is the identical shape: a bare
+			// identifier that means something other than a step, sitting in a file
+			// that also has steps, where a rewriter that only asks "is this a step
+			// id anywhere in the document" would still get it right by construction.
+			// No step here is called `run` — `flow validate` refuses that collision
+			// outright, see declarations.go — so this is the case that must never be
+			// touched at all: nothing here is a step reference to root.
+			name: "a bare reference to the run root, beside ordinary steps",
+			source: `edition: v2026.2
+name: shadow-run-root
+steps:
+  - id: approval
+    log:
+      message: "${'requested by ' + run.identity.subject}"
+  - id: deploy
+    if: "${!run.local && run.identity.subject != ''}"
+    log:
+      message: deploying
+`,
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()

@@ -458,6 +458,92 @@ steps:
       message: "${[{'title': 'x'}].map(steps, steps.title)[0]}"
 `,
 		},
+		{
+			// #215's second finding: `run`'s shape is statically known —
+			// unlike `steps` and `inputs`, no file can add a field to it — so a
+			// typo below `run.` is diagnosable here rather than failing only at
+			// run time, three steps into a run nobody can act on.
+			name: "a typo'd field of run.identity is refused",
+			src: `
+edition: v2026.2
+name: run-identity-typo
+steps:
+  - id: a
+    log:
+      message: ${run.identitty.subject}
+`,
+			want: `references unknown field "identitty" of ` + "`run`" + `; did you mean "identity"?`,
+		},
+		{
+			name: "a typo'd field directly under run is refused",
+			src: `
+edition: v2026.2
+name: run-field-typo
+steps:
+  - id: a
+    log:
+      message: ${run.locl}
+`,
+			want: `references unknown field "locl" of ` + "`run`" + `; did you mean "local"?`,
+		},
+		{
+			name: "every legal field of run validates cleanly",
+			src: `
+edition: v2026.2
+name: run-legal-fields
+steps:
+  - id: a
+    log:
+      message: >-
+        ${run.identity.subject + run.identity.issuer + run.identity.namespace +
+          (run.local ? "local" : "not local")}
+`,
+		},
+		{
+			// claims is a map keyed by whatever the identity provider issued, so
+			// an arbitrary key must stay legal — reporting into a map's dynamic
+			// keys would be exactly the false diagnostic this package's own
+			// standard refuses to draw.
+			name: "an arbitrary claims key, indexed, validates cleanly",
+			src: `
+edition: v2026.2
+name: run-claims-index
+steps:
+  - id: a
+    log:
+      message: ${run.identity.claims["team"]}
+`,
+		},
+		{
+			name: "an arbitrary claims key, dotted, validates cleanly",
+			src: `
+edition: v2026.2
+name: run-claims-dot
+steps:
+  - id: a
+    log:
+      message: ${run.identity.claims.team}
+`,
+		},
+		{
+			// A regression guard for the change that taught rootedName to
+			// recognise `run`: before, `${run.identity.subject}` in a var
+			// reached this refusal through the generic bare-name fallback,
+			// which the added root recognition bypasses unless the vars walk
+			// is taught about run refs too.
+			name: "a workflow var may not read run, even through a legal field",
+			src: `
+edition: v2026.2
+name: run-in-vars
+vars:
+  starter: ${run.identity.subject}
+steps:
+  - id: a
+    log:
+      message: ${vars.starter}
+`,
+			want: "a var may not read `run`",
+		},
 	}
 
 	for _, tt := range tests {

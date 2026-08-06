@@ -431,7 +431,7 @@ func validateWorkflowVars(wf *v1.Workflow) Diagnostics {
 		}
 
 		field := v1.VarsRoot + "." + name
-		rooted, vars, inputs, bare := referencedIdentifiers(parsed)
+		rooted, vars, inputs, run, bare := referencedIdentifiers(parsed)
 
 		for _, ref := range inputs {
 			// A run's arguments *are* known before the first step, so this refusal is
@@ -478,8 +478,24 @@ func validateWorkflowVars(wf *v1.Workflow) Diagnostics {
 			})
 		}
 
+		// `run` fails the same way `inputs` does, for the same reason: both are
+		// known only once the run's arguments are — after this block has already
+		// been evaluated (see the loop over inputs above). Reported here rather
+		// than falling through to a per-field check, because the field itself may
+		// be perfectly spelled; the mistake is reading it from `vars:` at all.
+		for range run {
+			ds = append(ds, Diagnostic{
+				Field: field, Value: v1.RunRoot,
+				Message: fmt.Sprintf(
+					"a var may not read `%s`: `%s:` is evaluated before the first step runs, "+
+						"against a scope holding literals, operators and the profile's functions "+
+						"and nothing else",
+					v1.RunRoot, v1.VarsRoot),
+			})
+		}
+
 		for _, ref := range bare {
-			if ref == v1.StepsRoot || ref == v1.VarsRoot || ref == v1.InputsRoot {
+			if ref == v1.StepsRoot || ref == v1.VarsRoot || ref == v1.InputsRoot || ref == v1.RunRoot {
 				// A root as an operand, which fails here for the same reason a
 				// selection through it does — and is described by the two loops
 				// above, not by the general "unknown name" sentence.
@@ -1046,7 +1062,7 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 		return ds
 	}
 
-	rooted, vars, inputs, bare := referencedIdentifiers(parsed)
+	rooted, vars, inputs, run, bare := referencedIdentifiers(parsed)
 
 	// An input can only fail one way — nothing declared it — for the reason a var
 	// can: every declaration exists before the run starts, so there is no forward
@@ -1056,6 +1072,17 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 			continue
 		}
 		ds = append(ds, unresolvedInput(stepID, inputName, ref, scope))
+	}
+
+	// `run`'s shape is statically known — `identity{subject,issuer,namespace,
+	// claims}` and `local` — unlike `steps` and `inputs`, where the set of legal
+	// names depends on the file. That is what makes an unknown field under it
+	// diagnosable here rather than only at run time, where it surfaces as an
+	// unresolved reference three steps into a run nobody can act on.
+	for _, ref := range run {
+		if d, wrong := unknownRunField(stepID, inputName, ref); wrong {
+			ds = append(ds, d)
+		}
 	}
 
 	// A var can only fail one way — nothing declared it — because they all exist
@@ -1088,7 +1115,7 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 		if scope.locals[ref] {
 			continue
 		}
-		if ref == v1.StepsRoot || ref == v1.VarsRoot || ref == v1.InputsRoot {
+		if ref == v1.StepsRoot || ref == v1.VarsRoot || ref == v1.InputsRoot || ref == v1.RunRoot {
 			// A root written as an operand rather than selected through:
 			// `size(steps)`, or `vars["region"]` where the key is computed. Both
 			// resolve — the activation answers a root whole — so reporting either as
@@ -1211,26 +1238,30 @@ func unresolvedInput(stepID, inputName, ref string, scope refScope) Diagnostic {
 	return Diagnostic{Step: stepID, Field: inputName, Value: ref, Message: message}
 }
 
-// referencedIdentifiers returns the names an expression references, in four groups:
+// referencedIdentifiers returns the names an expression references, in five groups:
 // steps reached under the `steps.` root, vars reached under the `vars.` root, inputs
-// reached under the `inputs.` root, and whatever is written bare.
+// reached under the `inputs.` root, fields reached under the `run.` root, and whatever
+// is written bare.
 //
-// Three groups rather than one because each fails differently and so wants a different
+// Four groups rather than one because each fails differently and so wants a different
 // diagnostic. An unknown step may be a forward reference, a typo, or a step that exists
 // outside this scope; an unknown var can only be a typo, since every var exists before
-// the first step runs; a bare name may be a local, `now`, or a reference in the spelling
-// this grammar retired. Merging them and sorting it out afterwards loses exactly the
-// distinction the caller needs.
+// the first step runs; a field under `run` can only be a typo too, because unlike
+// `steps` and `inputs` its shape does not depend on the file — `identity{subject,
+// issuer,namespace,claims}` and `local` are the whole of it; a bare name may be a
+// local, `now`, or a reference in the spelling this grammar retired. Merging them and
+// sorting it out afterwards loses exactly the distinction the caller needs.
 //
 // Identifiers bound by a comprehension are excluded: in `items.map(x, x + 1)`
 // the name `x` is introduced by the expression itself and is not a step
 // reference. Reporting those would make every use of a comprehension look broken.
-func referencedIdentifiers(parsed *expr.ParsedExpr) (rooted []stepRef, vars, inputs, bare []string) {
+func referencedIdentifiers(parsed *expr.ParsedExpr) (rooted []stepRef, vars, inputs []string, run []runRef, bare []string) {
 	roots := map[stepRef]struct{}{}
 	varNames, inputNames, free := map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}
-	collectReferences(parsed.GetExpr(), map[string]struct{}{}, roots, varNames, inputNames, free)
+	runFields := map[runRef]struct{}{}
+	collectReferences(parsed.GetExpr(), map[string]struct{}{}, roots, varNames, inputNames, runFields, free)
 
-	return sortedStepRefs(roots), sortedNames(varNames), sortedNames(inputNames), sortedNames(free)
+	return sortedStepRefs(roots), sortedNames(varNames), sortedNames(inputNames), sortedRunRefs(runFields), sortedNames(free)
 }
 
 // A stepRef is one reference to a step: which step, and which of its outputs.
@@ -1267,6 +1298,44 @@ func sortedStepRefs(set map[stepRef]struct{}) []stepRef {
 	return refs
 }
 
+// A runRef is one reference to a field under the `run` root: which field
+// (`identity` or `local`), and — for `identity` — which of its own fields is
+// selected from it.
+//
+// Shaped like [stepRef] for the same reason and named apart from it because the
+// two answer different questions: a stepRef's ID may or may not be declared in
+// this file, but every runRef's Field is checked against a fixed, known set —
+// `run`'s shape does not depend on what an author wrote.
+type runRef struct {
+	// Field is the name selected directly under `run`: `identity` or `local`.
+	Field string
+
+	// Under is the name selected from Field, or empty when the reference is to
+	// Field's whole value — `${run.identity}` or `${run.local}`, both legal.
+	// Only meaningful when Field is `identity`; `local` is a bool with nothing
+	// under it, and this walk carries at most one level down regardless (see
+	// [rootedName]).
+	Under string
+}
+
+// sortedRunRefs orders references so one file reports the same diagnostics in the
+// same sequence.
+func sortedRunRefs(set map[runRef]struct{}) []runRef {
+	refs := make([]runRef, 0, len(set))
+	for ref := range set {
+		refs = append(refs, ref)
+	}
+	slices.SortFunc(refs, func(a, b runRef) int {
+		if a.Field != b.Field {
+			return strings.Compare(a.Field, b.Field)
+		}
+
+		return strings.Compare(a.Under, b.Under)
+	})
+
+	return refs
+}
+
 // sortedNames returns a set's members in order, so one file always reports the
 // same diagnostics in the same sequence.
 func sortedNames(set map[string]struct{}) []string {
@@ -1286,14 +1355,14 @@ func sortedNames(set map[string]struct{}) []string {
 // the spelling this grammar retired, and those want different diagnostics. They
 // are collected apart rather than merged and sorted out afterwards, because the
 // distinction is exactly what the caller needs and is lost by then.
-func collectReferences(e *expr.Expr, bound map[string]struct{}, rooted map[stepRef]struct{}, vars, inputs, free map[string]struct{}) {
+func collectReferences(e *expr.Expr, bound map[string]struct{}, rooted map[stepRef]struct{}, vars, inputs map[string]struct{}, run map[runRef]struct{}, free map[string]struct{}) {
 	if e == nil {
 		return
 	}
 	if sel := e.GetSelectExpr(); sel != nil {
-		// Both roots are recognised here, and an unrecognised root falls through to
-		// the walk below so that `foo.bar` still reports `foo` as a bare name. That
-		// fall-through is what keeps adding a root from silently swallowing the
+		// All four roots are recognised here, and an unrecognised root falls through
+		// to the walk below so that `foo.bar` still reports `foo` as a bare name.
+		// That fall-through is what keeps adding a root from silently swallowing the
 		// diagnostic for a name that has none.
 		if root, name, under, ok := rootedName(sel, bound); ok {
 			switch root {
@@ -1309,6 +1378,10 @@ func collectReferences(e *expr.Expr, bound map[string]struct{}, rooted map[stepR
 				inputs[name] = struct{}{}
 
 				return
+			case v1.RunRoot:
+				run[runRef{Field: name, Under: under}] = struct{}{}
+
+				return
 			}
 		}
 	}
@@ -1319,28 +1392,28 @@ func collectReferences(e *expr.Expr, bound map[string]struct{}, rooted map[stepR
 			free[name] = struct{}{}
 		}
 	case *expr.Expr_SelectExpr:
-		collectReferences(kind.SelectExpr.GetOperand(), bound, rooted, vars, inputs, free)
+		collectReferences(kind.SelectExpr.GetOperand(), bound, rooted, vars, inputs, run, free)
 	case *expr.Expr_CallExpr:
-		collectReferences(kind.CallExpr.GetTarget(), bound, rooted, vars, inputs, free)
+		collectReferences(kind.CallExpr.GetTarget(), bound, rooted, vars, inputs, run, free)
 		for _, arg := range kind.CallExpr.GetArgs() {
-			collectReferences(arg, bound, rooted, vars, inputs, free)
+			collectReferences(arg, bound, rooted, vars, inputs, run, free)
 		}
 	case *expr.Expr_ListExpr:
 		for _, el := range kind.ListExpr.GetElements() {
-			collectReferences(el, bound, rooted, vars, inputs, free)
+			collectReferences(el, bound, rooted, vars, inputs, run, free)
 		}
 	case *expr.Expr_StructExpr:
 		for _, entry := range kind.StructExpr.GetEntries() {
-			collectReferences(entry.GetMapKey(), bound, rooted, vars, inputs, free)
-			collectReferences(entry.GetValue(), bound, rooted, vars, inputs, free)
+			collectReferences(entry.GetMapKey(), bound, rooted, vars, inputs, run, free)
+			collectReferences(entry.GetValue(), bound, rooted, vars, inputs, run, free)
 		}
 	case *expr.Expr_ComprehensionExpr:
 		c := kind.ComprehensionExpr
 
 		// The range and the accumulator's start are evaluated outside the
 		// comprehension's own scope.
-		collectReferences(c.GetIterRange(), bound, rooted, vars, inputs, free)
-		collectReferences(c.GetAccuInit(), bound, rooted, vars, inputs, free)
+		collectReferences(c.GetIterRange(), bound, rooted, vars, inputs, run, free)
+		collectReferences(c.GetAccuInit(), bound, rooted, vars, inputs, run, free)
 
 		inner := make(map[string]struct{}, len(bound)+3)
 		for name := range bound {
@@ -1351,22 +1424,23 @@ func collectReferences(e *expr.Expr, bound map[string]struct{}, rooted map[stepR
 				inner[name] = struct{}{}
 			}
 		}
-		collectReferences(c.GetLoopCondition(), inner, rooted, vars, inputs, free)
-		collectReferences(c.GetLoopStep(), inner, rooted, vars, inputs, free)
-		collectReferences(c.GetResult(), inner, rooted, vars, inputs, free)
+		collectReferences(c.GetLoopCondition(), inner, rooted, vars, inputs, run, free)
+		collectReferences(c.GetLoopStep(), inner, rooted, vars, inputs, run, free)
+		collectReferences(c.GetResult(), inner, rooted, vars, inputs, run, free)
 	}
 }
 
 // rootedName returns the root a select chain hangs from and the first field under it.
 //
-// One walk for both roots the language has. `steps.a.result` and `vars.region.zone`
-// have identical shapes and differ only in the word at the bottom, so deciding which
-// root it is belongs to the caller — a second copy of this walk per root is how the two
-// come to disagree about a shadowed root or a chain three deep.
+// One walk for every root the language has. `steps.a.result`, `vars.region.zone`, and
+// `run.identity.subject` have identical shapes and differ only in the word at the
+// bottom, so deciding which root it is belongs to the caller — a second copy of this
+// walk per root is how the two come to disagree about a shadowed root or a chain three
+// deep.
 //
 // ok is false when the chain does not bottom out in a plain identifier, or when a
 // comprehension bound the root's name: then it is a binding rather than the root, and
-// whatever hangs off it is neither a step nor a var.
+// whatever hangs off it is neither a step, a var, nor a field of `run`.
 func rootedName(sel *expr.Expr_Select, bound map[string]struct{}) (root, name, under string, ok bool) {
 	var fields []string
 	node := sel
@@ -1585,6 +1659,68 @@ func unresolvedStep(stepID, inputName, ref string, index int, wf *v1.Workflow) D
 // because the validator has to know about it and does not otherwise: it is the one
 // output that comes from the *policy* rather than from the task.
 const toleratedErrorOutput = v1.StepErrorOutput
+
+// runIdentityFields are the fields [runRootValue] renders under `run.identity`.
+//
+// Kept here rather than derived from [WorkloadIdentity]'s own field list, because
+// the two are deliberately not the same shape — `run.identity` is narrower, and
+// [runRootValue]'s own doc says why (`deployment` is left off). This names what an
+// expression actually reaches, which is the only set a diagnostic here can be
+// honest about.
+var runIdentityFields = []string{"subject", "issuer", "namespace", "claims"}
+
+// runFields are the fields [runRootValue] renders directly under `run`.
+var runFields = []string{"identity", "local"}
+
+// unknownRunField reports a reference to a field `run` does not have.
+//
+// Unlike [unknownStepOutput], this is never silent about a field it can name: a
+// step's outputs depend on the task it runs and the file's own declarations, but
+// `run`'s shape is fixed by the engine — [runRootValue] renders exactly these
+// fields and no others, on every run, on both drivers — so an unknown one is
+// always a mistake and never a shape this validator lacks the knowledge to judge.
+//
+// Silent below `claims`, deliberately: `run.identity.claims["team"]` and
+// `run.identity.claims.team` are both legal, because claims are a map keyed by
+// whatever the identity provider issued, and this only ever sees as far as
+// `claims` itself — one level down, the same reach [rootedName] gives every
+// other root. Reporting into a map's dynamic keys would be exactly the false
+// diagnostic this package's own standard refuses to draw.
+func unknownRunField(stepID, inputName string, ref runRef) (Diagnostic, bool) {
+	if !slices.Contains(runFields, ref.Field) {
+		message := fmt.Sprintf("references unknown field %q of `run`", ref.Field)
+		if suggestion, ok := nearest(ref.Field, runFields); ok {
+			message += fmt.Sprintf("; did you mean %q?", suggestion)
+		} else {
+			message += fmt.Sprintf("; `run` has %s", strings.Join(runFields, " and "))
+		}
+
+		return Diagnostic{Step: stepID, Field: inputName, Value: v1.RunRoot + "." + ref.Field, Message: message}, true
+	}
+
+	if ref.Field != "identity" || ref.Under == "" {
+		// `run.local` (a bool, nothing under it) or the whole of either field —
+		// `${run.identity}`, `${run.local}` — both legal.
+		return Diagnostic{}, false
+	}
+
+	if slices.Contains(runIdentityFields, ref.Under) {
+		return Diagnostic{}, false
+	}
+
+	message := fmt.Sprintf("references unknown field %q of `run.identity`", ref.Under)
+	if suggestion, ok := nearest(ref.Under, runIdentityFields); ok {
+		message += fmt.Sprintf("; did you mean %q?", suggestion)
+	} else {
+		message += fmt.Sprintf("; `run.identity` has %s", strings.Join(runIdentityFields, ", "))
+	}
+
+	return Diagnostic{
+		Step: stepID, Field: inputName,
+		Value:   v1.RunRoot + ".identity." + ref.Under,
+		Message: message,
+	}, true
+}
 
 // unknownStepOutput reports a reference to an output a step does not produce.
 //
