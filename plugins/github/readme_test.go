@@ -40,10 +40,11 @@ func TestReadmeExamplesMatchTheFilesOnDisk(t *testing.T) {
 
 	blocks := extractExampleBlocks(t, string(readme))
 
-	// The floor: two example files exist today (workflow.yaml,
-	// issue-comment.yaml), so finding fewer than two means the extraction
-	// convention itself broke, not that an example is briefly missing.
-	const minBlocks = 2
+	// The floor: three example files exist today (workflow.yaml,
+	// issue-comment.yaml, triage.yaml), so finding fewer than three means the
+	// extraction convention itself broke, not that an example is briefly
+	// missing.
+	const minBlocks = 3
 	if len(blocks) < minBlocks {
 		t.Fatalf("extracted %d example block(s) from README.md, want at least %d — "+
 			"the <!-- example: path --> convention may have broken", len(blocks), minBlocks)

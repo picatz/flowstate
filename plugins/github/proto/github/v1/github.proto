@@ -68,3 +68,226 @@ message IssueCommentOutputs {
   string html_url = 2;
   string created_at = 3; // RFC 3339
 }
+
+// The read/audit tier below - pull_request_list, pull_request_files,
+// issue_get, issue_list - is this plugin's counterpart to plugins/git's own
+// git.log/git.read_file: genuinely stateless reads, composable as ordinary
+// Flowfile steps, added once the schema and error-classification discipline
+// above had already proven out on one operation end to end. See the
+// plugin's README, "Read/audit tier," for which candidates were rejected
+// and why.
+
+// PullRequestListInputs asks for a bounded page of a repository's pull
+// requests, filtered by state and (optionally) branch - the "what is in
+// flight" read/audit primitive github.pull_request_get's single-record read
+// has no way to answer on its own.
+message PullRequestListInputs {
+  string owner = 1;
+  string repo = 2;
+
+  // State filters by state: "open" (the default when unset), "closed", or
+  // "all".
+  string state = 3;
+
+  // Base filters to pull requests targeting this branch.
+  string base = 4;
+
+  // Head filters to pull requests from this branch, in GitHub's own
+  // "<owner>:<branch>" format (see pull_request_list.go).
+  string head = 5;
+
+  // MaxResults bounds how many pull requests are returned. Zero means this
+  // task's own default (see defaultMaxResults); anything over the ceiling
+  // (maxMaxResults) is refused rather than silently clamped - see
+  // clampMaxResults's own doc comment for why.
+  int32 max_results = 6;
+
+  // Token authenticates the request. Unset means an unauthenticated
+  // request, which GitHub permits for a public repository at a much lower
+  // rate limit. A literal string here is refused.
+  flowstate.v1.Value token = 7;
+
+  // BaseUrl overrides the API base for GitHub Enterprise Server.
+  string base_url = 8;
+}
+
+// PullRequestSummary is one entry PullRequestListOutputs returns -
+// deliberately lighter than PullRequestGetOutputs (no body): a listing
+// answers "what is in flight," not "what does each one say," and a body
+// per entry would make a page's size a function of how much text every
+// author wrote rather than of how many pull requests exist.
+message PullRequestSummary {
+  int64 number = 1;
+  string title = 2;
+  string state = 3; // "open", "closed"
+  bool draft = 4;
+  string head_ref = 5;
+  string head_sha = 6;
+  string base_ref = 7;
+  string html_url = 8;
+  string created_at = 9; // RFC 3339
+  string updated_at = 10; // RFC 3339
+}
+
+// PullRequestListOutputs is a bounded page of matching pull requests.
+message PullRequestListOutputs {
+  repeated PullRequestSummary pull_requests = 1;
+
+  // Truncated reports whether more pull requests matched than this call
+  // returned - by max_results, or by the request budget this task spends
+  // paginating GitHub's own API (see maxListRequests) - so a workflow can
+  // tell "this is all of it" from "this is as much as this call reached."
+  bool truncated = 2;
+}
+
+// PullRequestFilesInputs asks which files one pull request touches - the
+// review-triage primitive: which paths changed, and how much, without
+// reading any diff content. See pull_request_files.go's own doc comment for
+// why file content is out of scope here.
+message PullRequestFilesInputs {
+  string owner = 1;
+  string repo = 2;
+
+  // Number is the pull request number.
+  int64 number = 3;
+
+  // MaxResults bounds how many files are returned - see
+  // PullRequestListInputs.max_results's own doc comment; the same default
+  // and ceiling apply here.
+  int32 max_results = 4;
+
+  flowstate.v1.Value token = 5;
+  string base_url = 6;
+}
+
+// PullRequestFile is one file GitHub reports as touched by a pull request.
+message PullRequestFile {
+  string filename = 1;
+  string status = 2; // "added", "removed", "modified", "renamed", "copied", "changed", "unchanged"
+  int32 additions = 3;
+  int32 deletions = 4;
+  int32 changes = 5;
+
+  // PreviousFilename is set only when status is "renamed".
+  string previous_filename = 6;
+}
+
+// PullRequestFilesOutputs is a bounded page of the files a pull request
+// touches.
+message PullRequestFilesOutputs {
+  repeated PullRequestFile files = 1;
+
+  // Truncated reports whether the pull request touched more files than
+  // this call returned - see PullRequestListOutputs.truncated's own doc
+  // comment; the same reasoning applies here.
+  bool truncated = 2;
+}
+
+// IssueGetInputs asks for one issue's current state - the single-record
+// read/audit-tier counterpart to github.pull_request_get, for a workflow
+// that already has a number (from a webhook, a wait_for_signal payload, or
+// a previous github.issue_list call) and needs the full record, body
+// included, unlike a listing.
+message IssueGetInputs {
+  string owner = 1;
+  string repo = 2;
+
+  // Number is the issue (or pull request - see IssueGetOutputs.is_pull_request)
+  // number.
+  int64 number = 3;
+
+  flowstate.v1.Value token = 4;
+  string base_url = 5;
+}
+
+// IssueGetOutputs is what GitHub answered.
+message IssueGetOutputs {
+  string title = 1;
+  string body = 2;
+  string state = 3; // "open", "closed"
+  string state_reason = 4; // "completed", "not_planned", "reopened", or empty
+  repeated string labels = 5;
+  int32 comments = 6;
+  string html_url = 7;
+  string created_at = 8; // RFC 3339
+  string updated_at = 9; // RFC 3339
+
+  // ClosedAt is RFC 3339, empty while the issue is still open.
+  string closed_at = 10;
+
+  // IsPullRequest reports whether this "issue" number is actually a pull
+  // request - GitHub's own issues API answers both through this same
+  // endpoint (an issue comment's own doc comment gives the same reasoning:
+  // a pull request is an issue with extra fields there), so a workflow
+  // that only meant to ask about an issue is not silently handed a pull
+  // request's state without being told.
+  bool is_pull_request = 11;
+}
+
+// IssueListInputs asks for a bounded page of a repository's issues - the
+// audit/triage primitive: what needs attention, filtered by state and
+// label.
+message IssueListInputs {
+  string owner = 1;
+  string repo = 2;
+
+  // State filters by state: "open" (the default when unset), "closed", or
+  // "all".
+  string state = 3;
+
+  // Labels filters to issues carrying every label named - an AND, matching
+  // GitHub's own List endpoint semantics for a comma-joined labels
+  // parameter.
+  repeated string labels = 4;
+
+  // Since, RFC 3339, limits results to issues updated at or after this
+  // time.
+  string since = 5;
+
+  // MaxResults bounds how many issues are returned - see
+  // PullRequestListInputs.max_results's own doc comment; the same default
+  // and ceiling apply here.
+  int32 max_results = 6;
+
+  flowstate.v1.Value token = 7;
+  string base_url = 8;
+
+  // Sort orders the result: "created" (the default when unset), "updated",
+  // or "comments" - GitHub's own three values for this endpoint's sort
+  // parameter. Anything else is refused as InvalidInput; this is not a
+  // passthrough string.
+  string sort = 9;
+
+  // Direction orders the result ascending or descending: "asc" or "desc".
+  // Unset means this task's own explicit default, "desc" - GitHub's own
+  // default for this endpoint, named here rather than left to whatever
+  // GitHub does unasked, the same reasoning IssueListInputs.state's default
+  // documents. Element zero of Issues is therefore the newest match when
+  // direction is (or defaults to) "desc", and the oldest when it is "asc" -
+  // ask for "asc" to answer "what is the oldest open issue."
+  string direction = 10;
+}
+
+// IssueSummary is one entry IssueListOutputs returns - see
+// PullRequestSummary's own doc comment for why this excludes body.
+message IssueSummary {
+  int64 number = 1;
+  string title = 2;
+  string state = 3; // "open", "closed"
+  repeated string labels = 4;
+  string html_url = 5;
+  string created_at = 6; // RFC 3339
+  string updated_at = 7; // RFC 3339
+
+  // IsPullRequest - see IssueGetOutputs.is_pull_request's own doc comment.
+  bool is_pull_request = 8;
+}
+
+// IssueListOutputs is a bounded page of matching issues.
+message IssueListOutputs {
+  repeated IssueSummary issues = 1;
+
+  // Truncated - see PullRequestListOutputs.truncated's own doc comment; the
+  // same reasoning applies here.
+  bool truncated = 2;
+}

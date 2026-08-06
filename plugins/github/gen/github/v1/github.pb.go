@@ -365,6 +365,1049 @@ func (x *IssueCommentOutputs) GetCreatedAt() string {
 	return ""
 }
 
+// PullRequestListInputs asks for a bounded page of a repository's pull
+// requests, filtered by state and (optionally) branch - the "what is in
+// flight" read/audit primitive github.pull_request_get's single-record read
+// has no way to answer on its own.
+type PullRequestListInputs struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Owner string                 `protobuf:"bytes,1,opt,name=owner,proto3" json:"owner,omitempty"`
+	Repo  string                 `protobuf:"bytes,2,opt,name=repo,proto3" json:"repo,omitempty"`
+	// State filters by state: "open" (the default when unset), "closed", or
+	// "all".
+	State string `protobuf:"bytes,3,opt,name=state,proto3" json:"state,omitempty"`
+	// Base filters to pull requests targeting this branch.
+	Base string `protobuf:"bytes,4,opt,name=base,proto3" json:"base,omitempty"`
+	// Head filters to pull requests from this branch, in GitHub's own
+	// "<owner>:<branch>" format (see pull_request_list.go).
+	Head string `protobuf:"bytes,5,opt,name=head,proto3" json:"head,omitempty"`
+	// MaxResults bounds how many pull requests are returned. Zero means this
+	// task's own default (see defaultMaxResults); anything over the ceiling
+	// (maxMaxResults) is refused rather than silently clamped - see
+	// clampMaxResults's own doc comment for why.
+	MaxResults int32 `protobuf:"varint,6,opt,name=max_results,json=maxResults,proto3" json:"max_results,omitempty"`
+	// Token authenticates the request. Unset means an unauthenticated
+	// request, which GitHub permits for a public repository at a much lower
+	// rate limit. A literal string here is refused.
+	Token *v1.Value `protobuf:"bytes,7,opt,name=token,proto3" json:"token,omitempty"`
+	// BaseUrl overrides the API base for GitHub Enterprise Server.
+	BaseUrl       string `protobuf:"bytes,8,opt,name=base_url,json=baseUrl,proto3" json:"base_url,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PullRequestListInputs) Reset() {
+	*x = PullRequestListInputs{}
+	mi := &file_github_v1_github_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PullRequestListInputs) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PullRequestListInputs) ProtoMessage() {}
+
+func (x *PullRequestListInputs) ProtoReflect() protoreflect.Message {
+	mi := &file_github_v1_github_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PullRequestListInputs.ProtoReflect.Descriptor instead.
+func (*PullRequestListInputs) Descriptor() ([]byte, []int) {
+	return file_github_v1_github_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *PullRequestListInputs) GetOwner() string {
+	if x != nil {
+		return x.Owner
+	}
+	return ""
+}
+
+func (x *PullRequestListInputs) GetRepo() string {
+	if x != nil {
+		return x.Repo
+	}
+	return ""
+}
+
+func (x *PullRequestListInputs) GetState() string {
+	if x != nil {
+		return x.State
+	}
+	return ""
+}
+
+func (x *PullRequestListInputs) GetBase() string {
+	if x != nil {
+		return x.Base
+	}
+	return ""
+}
+
+func (x *PullRequestListInputs) GetHead() string {
+	if x != nil {
+		return x.Head
+	}
+	return ""
+}
+
+func (x *PullRequestListInputs) GetMaxResults() int32 {
+	if x != nil {
+		return x.MaxResults
+	}
+	return 0
+}
+
+func (x *PullRequestListInputs) GetToken() *v1.Value {
+	if x != nil {
+		return x.Token
+	}
+	return nil
+}
+
+func (x *PullRequestListInputs) GetBaseUrl() string {
+	if x != nil {
+		return x.BaseUrl
+	}
+	return ""
+}
+
+// PullRequestSummary is one entry PullRequestListOutputs returns -
+// deliberately lighter than PullRequestGetOutputs (no body): a listing
+// answers "what is in flight," not "what does each one say," and a body
+// per entry would make a page's size a function of how much text every
+// author wrote rather than of how many pull requests exist.
+type PullRequestSummary struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Number        int64                  `protobuf:"varint,1,opt,name=number,proto3" json:"number,omitempty"`
+	Title         string                 `protobuf:"bytes,2,opt,name=title,proto3" json:"title,omitempty"`
+	State         string                 `protobuf:"bytes,3,opt,name=state,proto3" json:"state,omitempty"` // "open", "closed"
+	Draft         bool                   `protobuf:"varint,4,opt,name=draft,proto3" json:"draft,omitempty"`
+	HeadRef       string                 `protobuf:"bytes,5,opt,name=head_ref,json=headRef,proto3" json:"head_ref,omitempty"`
+	HeadSha       string                 `protobuf:"bytes,6,opt,name=head_sha,json=headSha,proto3" json:"head_sha,omitempty"`
+	BaseRef       string                 `protobuf:"bytes,7,opt,name=base_ref,json=baseRef,proto3" json:"base_ref,omitempty"`
+	HtmlUrl       string                 `protobuf:"bytes,8,opt,name=html_url,json=htmlUrl,proto3" json:"html_url,omitempty"`
+	CreatedAt     string                 `protobuf:"bytes,9,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`  // RFC 3339
+	UpdatedAt     string                 `protobuf:"bytes,10,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"` // RFC 3339
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PullRequestSummary) Reset() {
+	*x = PullRequestSummary{}
+	mi := &file_github_v1_github_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PullRequestSummary) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PullRequestSummary) ProtoMessage() {}
+
+func (x *PullRequestSummary) ProtoReflect() protoreflect.Message {
+	mi := &file_github_v1_github_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PullRequestSummary.ProtoReflect.Descriptor instead.
+func (*PullRequestSummary) Descriptor() ([]byte, []int) {
+	return file_github_v1_github_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *PullRequestSummary) GetNumber() int64 {
+	if x != nil {
+		return x.Number
+	}
+	return 0
+}
+
+func (x *PullRequestSummary) GetTitle() string {
+	if x != nil {
+		return x.Title
+	}
+	return ""
+}
+
+func (x *PullRequestSummary) GetState() string {
+	if x != nil {
+		return x.State
+	}
+	return ""
+}
+
+func (x *PullRequestSummary) GetDraft() bool {
+	if x != nil {
+		return x.Draft
+	}
+	return false
+}
+
+func (x *PullRequestSummary) GetHeadRef() string {
+	if x != nil {
+		return x.HeadRef
+	}
+	return ""
+}
+
+func (x *PullRequestSummary) GetHeadSha() string {
+	if x != nil {
+		return x.HeadSha
+	}
+	return ""
+}
+
+func (x *PullRequestSummary) GetBaseRef() string {
+	if x != nil {
+		return x.BaseRef
+	}
+	return ""
+}
+
+func (x *PullRequestSummary) GetHtmlUrl() string {
+	if x != nil {
+		return x.HtmlUrl
+	}
+	return ""
+}
+
+func (x *PullRequestSummary) GetCreatedAt() string {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return ""
+}
+
+func (x *PullRequestSummary) GetUpdatedAt() string {
+	if x != nil {
+		return x.UpdatedAt
+	}
+	return ""
+}
+
+// PullRequestListOutputs is a bounded page of matching pull requests.
+type PullRequestListOutputs struct {
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	PullRequests []*PullRequestSummary  `protobuf:"bytes,1,rep,name=pull_requests,json=pullRequests,proto3" json:"pull_requests,omitempty"`
+	// Truncated reports whether more pull requests matched than this call
+	// returned - by max_results, or by the request budget this task spends
+	// paginating GitHub's own API (see maxListRequests) - so a workflow can
+	// tell "this is all of it" from "this is as much as this call reached."
+	Truncated     bool `protobuf:"varint,2,opt,name=truncated,proto3" json:"truncated,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PullRequestListOutputs) Reset() {
+	*x = PullRequestListOutputs{}
+	mi := &file_github_v1_github_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PullRequestListOutputs) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PullRequestListOutputs) ProtoMessage() {}
+
+func (x *PullRequestListOutputs) ProtoReflect() protoreflect.Message {
+	mi := &file_github_v1_github_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PullRequestListOutputs.ProtoReflect.Descriptor instead.
+func (*PullRequestListOutputs) Descriptor() ([]byte, []int) {
+	return file_github_v1_github_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *PullRequestListOutputs) GetPullRequests() []*PullRequestSummary {
+	if x != nil {
+		return x.PullRequests
+	}
+	return nil
+}
+
+func (x *PullRequestListOutputs) GetTruncated() bool {
+	if x != nil {
+		return x.Truncated
+	}
+	return false
+}
+
+// PullRequestFilesInputs asks which files one pull request touches - the
+// review-triage primitive: which paths changed, and how much, without
+// reading any diff content. See pull_request_files.go's own doc comment for
+// why file content is out of scope here.
+type PullRequestFilesInputs struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Owner string                 `protobuf:"bytes,1,opt,name=owner,proto3" json:"owner,omitempty"`
+	Repo  string                 `protobuf:"bytes,2,opt,name=repo,proto3" json:"repo,omitempty"`
+	// Number is the pull request number.
+	Number int64 `protobuf:"varint,3,opt,name=number,proto3" json:"number,omitempty"`
+	// MaxResults bounds how many files are returned - see
+	// PullRequestListInputs.max_results's own doc comment; the same default
+	// and ceiling apply here.
+	MaxResults    int32     `protobuf:"varint,4,opt,name=max_results,json=maxResults,proto3" json:"max_results,omitempty"`
+	Token         *v1.Value `protobuf:"bytes,5,opt,name=token,proto3" json:"token,omitempty"`
+	BaseUrl       string    `protobuf:"bytes,6,opt,name=base_url,json=baseUrl,proto3" json:"base_url,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PullRequestFilesInputs) Reset() {
+	*x = PullRequestFilesInputs{}
+	mi := &file_github_v1_github_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PullRequestFilesInputs) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PullRequestFilesInputs) ProtoMessage() {}
+
+func (x *PullRequestFilesInputs) ProtoReflect() protoreflect.Message {
+	mi := &file_github_v1_github_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PullRequestFilesInputs.ProtoReflect.Descriptor instead.
+func (*PullRequestFilesInputs) Descriptor() ([]byte, []int) {
+	return file_github_v1_github_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *PullRequestFilesInputs) GetOwner() string {
+	if x != nil {
+		return x.Owner
+	}
+	return ""
+}
+
+func (x *PullRequestFilesInputs) GetRepo() string {
+	if x != nil {
+		return x.Repo
+	}
+	return ""
+}
+
+func (x *PullRequestFilesInputs) GetNumber() int64 {
+	if x != nil {
+		return x.Number
+	}
+	return 0
+}
+
+func (x *PullRequestFilesInputs) GetMaxResults() int32 {
+	if x != nil {
+		return x.MaxResults
+	}
+	return 0
+}
+
+func (x *PullRequestFilesInputs) GetToken() *v1.Value {
+	if x != nil {
+		return x.Token
+	}
+	return nil
+}
+
+func (x *PullRequestFilesInputs) GetBaseUrl() string {
+	if x != nil {
+		return x.BaseUrl
+	}
+	return ""
+}
+
+// PullRequestFile is one file GitHub reports as touched by a pull request.
+type PullRequestFile struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Filename  string                 `protobuf:"bytes,1,opt,name=filename,proto3" json:"filename,omitempty"`
+	Status    string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"` // "added", "removed", "modified", "renamed", "copied", "changed", "unchanged"
+	Additions int32                  `protobuf:"varint,3,opt,name=additions,proto3" json:"additions,omitempty"`
+	Deletions int32                  `protobuf:"varint,4,opt,name=deletions,proto3" json:"deletions,omitempty"`
+	Changes   int32                  `protobuf:"varint,5,opt,name=changes,proto3" json:"changes,omitempty"`
+	// PreviousFilename is set only when status is "renamed".
+	PreviousFilename string `protobuf:"bytes,6,opt,name=previous_filename,json=previousFilename,proto3" json:"previous_filename,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *PullRequestFile) Reset() {
+	*x = PullRequestFile{}
+	mi := &file_github_v1_github_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PullRequestFile) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PullRequestFile) ProtoMessage() {}
+
+func (x *PullRequestFile) ProtoReflect() protoreflect.Message {
+	mi := &file_github_v1_github_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PullRequestFile.ProtoReflect.Descriptor instead.
+func (*PullRequestFile) Descriptor() ([]byte, []int) {
+	return file_github_v1_github_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *PullRequestFile) GetFilename() string {
+	if x != nil {
+		return x.Filename
+	}
+	return ""
+}
+
+func (x *PullRequestFile) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *PullRequestFile) GetAdditions() int32 {
+	if x != nil {
+		return x.Additions
+	}
+	return 0
+}
+
+func (x *PullRequestFile) GetDeletions() int32 {
+	if x != nil {
+		return x.Deletions
+	}
+	return 0
+}
+
+func (x *PullRequestFile) GetChanges() int32 {
+	if x != nil {
+		return x.Changes
+	}
+	return 0
+}
+
+func (x *PullRequestFile) GetPreviousFilename() string {
+	if x != nil {
+		return x.PreviousFilename
+	}
+	return ""
+}
+
+// PullRequestFilesOutputs is a bounded page of the files a pull request
+// touches.
+type PullRequestFilesOutputs struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Files []*PullRequestFile     `protobuf:"bytes,1,rep,name=files,proto3" json:"files,omitempty"`
+	// Truncated reports whether the pull request touched more files than
+	// this call returned - see PullRequestListOutputs.truncated's own doc
+	// comment; the same reasoning applies here.
+	Truncated     bool `protobuf:"varint,2,opt,name=truncated,proto3" json:"truncated,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PullRequestFilesOutputs) Reset() {
+	*x = PullRequestFilesOutputs{}
+	mi := &file_github_v1_github_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PullRequestFilesOutputs) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PullRequestFilesOutputs) ProtoMessage() {}
+
+func (x *PullRequestFilesOutputs) ProtoReflect() protoreflect.Message {
+	mi := &file_github_v1_github_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PullRequestFilesOutputs.ProtoReflect.Descriptor instead.
+func (*PullRequestFilesOutputs) Descriptor() ([]byte, []int) {
+	return file_github_v1_github_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *PullRequestFilesOutputs) GetFiles() []*PullRequestFile {
+	if x != nil {
+		return x.Files
+	}
+	return nil
+}
+
+func (x *PullRequestFilesOutputs) GetTruncated() bool {
+	if x != nil {
+		return x.Truncated
+	}
+	return false
+}
+
+// IssueGetInputs asks for one issue's current state - the single-record
+// read/audit-tier counterpart to github.pull_request_get, for a workflow
+// that already has a number (from a webhook, a wait_for_signal payload, or
+// a previous github.issue_list call) and needs the full record, body
+// included, unlike a listing.
+type IssueGetInputs struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Owner string                 `protobuf:"bytes,1,opt,name=owner,proto3" json:"owner,omitempty"`
+	Repo  string                 `protobuf:"bytes,2,opt,name=repo,proto3" json:"repo,omitempty"`
+	// Number is the issue (or pull request - see IssueGetOutputs.is_pull_request)
+	// number.
+	Number        int64     `protobuf:"varint,3,opt,name=number,proto3" json:"number,omitempty"`
+	Token         *v1.Value `protobuf:"bytes,4,opt,name=token,proto3" json:"token,omitempty"`
+	BaseUrl       string    `protobuf:"bytes,5,opt,name=base_url,json=baseUrl,proto3" json:"base_url,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *IssueGetInputs) Reset() {
+	*x = IssueGetInputs{}
+	mi := &file_github_v1_github_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IssueGetInputs) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IssueGetInputs) ProtoMessage() {}
+
+func (x *IssueGetInputs) ProtoReflect() protoreflect.Message {
+	mi := &file_github_v1_github_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IssueGetInputs.ProtoReflect.Descriptor instead.
+func (*IssueGetInputs) Descriptor() ([]byte, []int) {
+	return file_github_v1_github_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *IssueGetInputs) GetOwner() string {
+	if x != nil {
+		return x.Owner
+	}
+	return ""
+}
+
+func (x *IssueGetInputs) GetRepo() string {
+	if x != nil {
+		return x.Repo
+	}
+	return ""
+}
+
+func (x *IssueGetInputs) GetNumber() int64 {
+	if x != nil {
+		return x.Number
+	}
+	return 0
+}
+
+func (x *IssueGetInputs) GetToken() *v1.Value {
+	if x != nil {
+		return x.Token
+	}
+	return nil
+}
+
+func (x *IssueGetInputs) GetBaseUrl() string {
+	if x != nil {
+		return x.BaseUrl
+	}
+	return ""
+}
+
+// IssueGetOutputs is what GitHub answered.
+type IssueGetOutputs struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Title       string                 `protobuf:"bytes,1,opt,name=title,proto3" json:"title,omitempty"`
+	Body        string                 `protobuf:"bytes,2,opt,name=body,proto3" json:"body,omitempty"`
+	State       string                 `protobuf:"bytes,3,opt,name=state,proto3" json:"state,omitempty"`                                // "open", "closed"
+	StateReason string                 `protobuf:"bytes,4,opt,name=state_reason,json=stateReason,proto3" json:"state_reason,omitempty"` // "completed", "not_planned", "reopened", or empty
+	Labels      []string               `protobuf:"bytes,5,rep,name=labels,proto3" json:"labels,omitempty"`
+	Comments    int32                  `protobuf:"varint,6,opt,name=comments,proto3" json:"comments,omitempty"`
+	HtmlUrl     string                 `protobuf:"bytes,7,opt,name=html_url,json=htmlUrl,proto3" json:"html_url,omitempty"`
+	CreatedAt   string                 `protobuf:"bytes,8,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"` // RFC 3339
+	UpdatedAt   string                 `protobuf:"bytes,9,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"` // RFC 3339
+	// ClosedAt is RFC 3339, empty while the issue is still open.
+	ClosedAt string `protobuf:"bytes,10,opt,name=closed_at,json=closedAt,proto3" json:"closed_at,omitempty"`
+	// IsPullRequest reports whether this "issue" number is actually a pull
+	// request - GitHub's own issues API answers both through this same
+	// endpoint (an issue comment's own doc comment gives the same reasoning:
+	// a pull request is an issue with extra fields there), so a workflow
+	// that only meant to ask about an issue is not silently handed a pull
+	// request's state without being told.
+	IsPullRequest bool `protobuf:"varint,11,opt,name=is_pull_request,json=isPullRequest,proto3" json:"is_pull_request,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *IssueGetOutputs) Reset() {
+	*x = IssueGetOutputs{}
+	mi := &file_github_v1_github_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IssueGetOutputs) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IssueGetOutputs) ProtoMessage() {}
+
+func (x *IssueGetOutputs) ProtoReflect() protoreflect.Message {
+	mi := &file_github_v1_github_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IssueGetOutputs.ProtoReflect.Descriptor instead.
+func (*IssueGetOutputs) Descriptor() ([]byte, []int) {
+	return file_github_v1_github_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *IssueGetOutputs) GetTitle() string {
+	if x != nil {
+		return x.Title
+	}
+	return ""
+}
+
+func (x *IssueGetOutputs) GetBody() string {
+	if x != nil {
+		return x.Body
+	}
+	return ""
+}
+
+func (x *IssueGetOutputs) GetState() string {
+	if x != nil {
+		return x.State
+	}
+	return ""
+}
+
+func (x *IssueGetOutputs) GetStateReason() string {
+	if x != nil {
+		return x.StateReason
+	}
+	return ""
+}
+
+func (x *IssueGetOutputs) GetLabels() []string {
+	if x != nil {
+		return x.Labels
+	}
+	return nil
+}
+
+func (x *IssueGetOutputs) GetComments() int32 {
+	if x != nil {
+		return x.Comments
+	}
+	return 0
+}
+
+func (x *IssueGetOutputs) GetHtmlUrl() string {
+	if x != nil {
+		return x.HtmlUrl
+	}
+	return ""
+}
+
+func (x *IssueGetOutputs) GetCreatedAt() string {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return ""
+}
+
+func (x *IssueGetOutputs) GetUpdatedAt() string {
+	if x != nil {
+		return x.UpdatedAt
+	}
+	return ""
+}
+
+func (x *IssueGetOutputs) GetClosedAt() string {
+	if x != nil {
+		return x.ClosedAt
+	}
+	return ""
+}
+
+func (x *IssueGetOutputs) GetIsPullRequest() bool {
+	if x != nil {
+		return x.IsPullRequest
+	}
+	return false
+}
+
+// IssueListInputs asks for a bounded page of a repository's issues - the
+// audit/triage primitive: what needs attention, filtered by state and
+// label.
+type IssueListInputs struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Owner string                 `protobuf:"bytes,1,opt,name=owner,proto3" json:"owner,omitempty"`
+	Repo  string                 `protobuf:"bytes,2,opt,name=repo,proto3" json:"repo,omitempty"`
+	// State filters by state: "open" (the default when unset), "closed", or
+	// "all".
+	State string `protobuf:"bytes,3,opt,name=state,proto3" json:"state,omitempty"`
+	// Labels filters to issues carrying every label named - an AND, matching
+	// GitHub's own List endpoint semantics for a comma-joined labels
+	// parameter.
+	Labels []string `protobuf:"bytes,4,rep,name=labels,proto3" json:"labels,omitempty"`
+	// Since, RFC 3339, limits results to issues updated at or after this
+	// time.
+	Since string `protobuf:"bytes,5,opt,name=since,proto3" json:"since,omitempty"`
+	// MaxResults bounds how many issues are returned - see
+	// PullRequestListInputs.max_results's own doc comment; the same default
+	// and ceiling apply here.
+	MaxResults int32     `protobuf:"varint,6,opt,name=max_results,json=maxResults,proto3" json:"max_results,omitempty"`
+	Token      *v1.Value `protobuf:"bytes,7,opt,name=token,proto3" json:"token,omitempty"`
+	BaseUrl    string    `protobuf:"bytes,8,opt,name=base_url,json=baseUrl,proto3" json:"base_url,omitempty"`
+	// Sort orders the result: "created" (the default when unset), "updated",
+	// or "comments" - GitHub's own three values for this endpoint's sort
+	// parameter. Anything else is refused as InvalidInput; this is not a
+	// passthrough string.
+	Sort string `protobuf:"bytes,9,opt,name=sort,proto3" json:"sort,omitempty"`
+	// Direction orders the result ascending or descending: "asc" or "desc".
+	// Unset means this task's own explicit default, "desc" - GitHub's own
+	// default for this endpoint, named here rather than left to whatever
+	// GitHub does unasked, the same reasoning IssueListInputs.state's default
+	// documents. Element zero of Issues is therefore the newest match when
+	// direction is (or defaults to) "desc", and the oldest when it is "asc" -
+	// ask for "asc" to answer "what is the oldest open issue."
+	Direction     string `protobuf:"bytes,10,opt,name=direction,proto3" json:"direction,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *IssueListInputs) Reset() {
+	*x = IssueListInputs{}
+	mi := &file_github_v1_github_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IssueListInputs) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IssueListInputs) ProtoMessage() {}
+
+func (x *IssueListInputs) ProtoReflect() protoreflect.Message {
+	mi := &file_github_v1_github_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IssueListInputs.ProtoReflect.Descriptor instead.
+func (*IssueListInputs) Descriptor() ([]byte, []int) {
+	return file_github_v1_github_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *IssueListInputs) GetOwner() string {
+	if x != nil {
+		return x.Owner
+	}
+	return ""
+}
+
+func (x *IssueListInputs) GetRepo() string {
+	if x != nil {
+		return x.Repo
+	}
+	return ""
+}
+
+func (x *IssueListInputs) GetState() string {
+	if x != nil {
+		return x.State
+	}
+	return ""
+}
+
+func (x *IssueListInputs) GetLabels() []string {
+	if x != nil {
+		return x.Labels
+	}
+	return nil
+}
+
+func (x *IssueListInputs) GetSince() string {
+	if x != nil {
+		return x.Since
+	}
+	return ""
+}
+
+func (x *IssueListInputs) GetMaxResults() int32 {
+	if x != nil {
+		return x.MaxResults
+	}
+	return 0
+}
+
+func (x *IssueListInputs) GetToken() *v1.Value {
+	if x != nil {
+		return x.Token
+	}
+	return nil
+}
+
+func (x *IssueListInputs) GetBaseUrl() string {
+	if x != nil {
+		return x.BaseUrl
+	}
+	return ""
+}
+
+func (x *IssueListInputs) GetSort() string {
+	if x != nil {
+		return x.Sort
+	}
+	return ""
+}
+
+func (x *IssueListInputs) GetDirection() string {
+	if x != nil {
+		return x.Direction
+	}
+	return ""
+}
+
+// IssueSummary is one entry IssueListOutputs returns - see
+// PullRequestSummary's own doc comment for why this excludes body.
+type IssueSummary struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Number    int64                  `protobuf:"varint,1,opt,name=number,proto3" json:"number,omitempty"`
+	Title     string                 `protobuf:"bytes,2,opt,name=title,proto3" json:"title,omitempty"`
+	State     string                 `protobuf:"bytes,3,opt,name=state,proto3" json:"state,omitempty"` // "open", "closed"
+	Labels    []string               `protobuf:"bytes,4,rep,name=labels,proto3" json:"labels,omitempty"`
+	HtmlUrl   string                 `protobuf:"bytes,5,opt,name=html_url,json=htmlUrl,proto3" json:"html_url,omitempty"`
+	CreatedAt string                 `protobuf:"bytes,6,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"` // RFC 3339
+	UpdatedAt string                 `protobuf:"bytes,7,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"` // RFC 3339
+	// IsPullRequest - see IssueGetOutputs.is_pull_request's own doc comment.
+	IsPullRequest bool `protobuf:"varint,8,opt,name=is_pull_request,json=isPullRequest,proto3" json:"is_pull_request,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *IssueSummary) Reset() {
+	*x = IssueSummary{}
+	mi := &file_github_v1_github_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IssueSummary) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IssueSummary) ProtoMessage() {}
+
+func (x *IssueSummary) ProtoReflect() protoreflect.Message {
+	mi := &file_github_v1_github_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IssueSummary.ProtoReflect.Descriptor instead.
+func (*IssueSummary) Descriptor() ([]byte, []int) {
+	return file_github_v1_github_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *IssueSummary) GetNumber() int64 {
+	if x != nil {
+		return x.Number
+	}
+	return 0
+}
+
+func (x *IssueSummary) GetTitle() string {
+	if x != nil {
+		return x.Title
+	}
+	return ""
+}
+
+func (x *IssueSummary) GetState() string {
+	if x != nil {
+		return x.State
+	}
+	return ""
+}
+
+func (x *IssueSummary) GetLabels() []string {
+	if x != nil {
+		return x.Labels
+	}
+	return nil
+}
+
+func (x *IssueSummary) GetHtmlUrl() string {
+	if x != nil {
+		return x.HtmlUrl
+	}
+	return ""
+}
+
+func (x *IssueSummary) GetCreatedAt() string {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return ""
+}
+
+func (x *IssueSummary) GetUpdatedAt() string {
+	if x != nil {
+		return x.UpdatedAt
+	}
+	return ""
+}
+
+func (x *IssueSummary) GetIsPullRequest() bool {
+	if x != nil {
+		return x.IsPullRequest
+	}
+	return false
+}
+
+// IssueListOutputs is a bounded page of matching issues.
+type IssueListOutputs struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Issues []*IssueSummary        `protobuf:"bytes,1,rep,name=issues,proto3" json:"issues,omitempty"`
+	// Truncated - see PullRequestListOutputs.truncated's own doc comment; the
+	// same reasoning applies here.
+	Truncated     bool `protobuf:"varint,2,opt,name=truncated,proto3" json:"truncated,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *IssueListOutputs) Reset() {
+	*x = IssueListOutputs{}
+	mi := &file_github_v1_github_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IssueListOutputs) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IssueListOutputs) ProtoMessage() {}
+
+func (x *IssueListOutputs) ProtoReflect() protoreflect.Message {
+	mi := &file_github_v1_github_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IssueListOutputs.ProtoReflect.Descriptor instead.
+func (*IssueListOutputs) Descriptor() ([]byte, []int) {
+	return file_github_v1_github_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *IssueListOutputs) GetIssues() []*IssueSummary {
+	if x != nil {
+		return x.Issues
+	}
+	return nil
+}
+
+func (x *IssueListOutputs) GetTruncated() bool {
+	if x != nil {
+		return x.Truncated
+	}
+	return false
+}
+
 var File_github_v1_github_proto protoreflect.FileDescriptor
 
 const file_github_v1_github_proto_rawDesc = "" +
@@ -398,7 +1441,100 @@ const file_github_v1_github_proto_rawDesc = "" +
 	"comment_id\x18\x01 \x01(\x03R\tcommentId\x12\x19\n" +
 	"\bhtml_url\x18\x02 \x01(\tR\ahtmlUrl\x12\x1d\n" +
 	"\n" +
-	"created_at\x18\x03 \x01(\tR\tcreatedAtB\xa4\x01\n" +
+	"created_at\x18\x03 \x01(\tR\tcreatedAt\"\xe6\x01\n" +
+	"\x15PullRequestListInputs\x12\x14\n" +
+	"\x05owner\x18\x01 \x01(\tR\x05owner\x12\x12\n" +
+	"\x04repo\x18\x02 \x01(\tR\x04repo\x12\x14\n" +
+	"\x05state\x18\x03 \x01(\tR\x05state\x12\x12\n" +
+	"\x04base\x18\x04 \x01(\tR\x04base\x12\x12\n" +
+	"\x04head\x18\x05 \x01(\tR\x04head\x12\x1f\n" +
+	"\vmax_results\x18\x06 \x01(\x05R\n" +
+	"maxResults\x12)\n" +
+	"\x05token\x18\a \x01(\v2\x13.flowstate.v1.ValueR\x05token\x12\x19\n" +
+	"\bbase_url\x18\b \x01(\tR\abaseUrl\"\x98\x02\n" +
+	"\x12PullRequestSummary\x12\x16\n" +
+	"\x06number\x18\x01 \x01(\x03R\x06number\x12\x14\n" +
+	"\x05title\x18\x02 \x01(\tR\x05title\x12\x14\n" +
+	"\x05state\x18\x03 \x01(\tR\x05state\x12\x14\n" +
+	"\x05draft\x18\x04 \x01(\bR\x05draft\x12\x19\n" +
+	"\bhead_ref\x18\x05 \x01(\tR\aheadRef\x12\x19\n" +
+	"\bhead_sha\x18\x06 \x01(\tR\aheadSha\x12\x19\n" +
+	"\bbase_ref\x18\a \x01(\tR\abaseRef\x12\x19\n" +
+	"\bhtml_url\x18\b \x01(\tR\ahtmlUrl\x12\x1d\n" +
+	"\n" +
+	"created_at\x18\t \x01(\tR\tcreatedAt\x12\x1d\n" +
+	"\n" +
+	"updated_at\x18\n" +
+	" \x01(\tR\tupdatedAt\"z\n" +
+	"\x16PullRequestListOutputs\x12B\n" +
+	"\rpull_requests\x18\x01 \x03(\v2\x1d.github.v1.PullRequestSummaryR\fpullRequests\x12\x1c\n" +
+	"\ttruncated\x18\x02 \x01(\bR\ttruncated\"\xc1\x01\n" +
+	"\x16PullRequestFilesInputs\x12\x14\n" +
+	"\x05owner\x18\x01 \x01(\tR\x05owner\x12\x12\n" +
+	"\x04repo\x18\x02 \x01(\tR\x04repo\x12\x16\n" +
+	"\x06number\x18\x03 \x01(\x03R\x06number\x12\x1f\n" +
+	"\vmax_results\x18\x04 \x01(\x05R\n" +
+	"maxResults\x12)\n" +
+	"\x05token\x18\x05 \x01(\v2\x13.flowstate.v1.ValueR\x05token\x12\x19\n" +
+	"\bbase_url\x18\x06 \x01(\tR\abaseUrl\"\xc8\x01\n" +
+	"\x0fPullRequestFile\x12\x1a\n" +
+	"\bfilename\x18\x01 \x01(\tR\bfilename\x12\x16\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\x12\x1c\n" +
+	"\tadditions\x18\x03 \x01(\x05R\tadditions\x12\x1c\n" +
+	"\tdeletions\x18\x04 \x01(\x05R\tdeletions\x12\x18\n" +
+	"\achanges\x18\x05 \x01(\x05R\achanges\x12+\n" +
+	"\x11previous_filename\x18\x06 \x01(\tR\x10previousFilename\"i\n" +
+	"\x17PullRequestFilesOutputs\x120\n" +
+	"\x05files\x18\x01 \x03(\v2\x1a.github.v1.PullRequestFileR\x05files\x12\x1c\n" +
+	"\ttruncated\x18\x02 \x01(\bR\ttruncated\"\x98\x01\n" +
+	"\x0eIssueGetInputs\x12\x14\n" +
+	"\x05owner\x18\x01 \x01(\tR\x05owner\x12\x12\n" +
+	"\x04repo\x18\x02 \x01(\tR\x04repo\x12\x16\n" +
+	"\x06number\x18\x03 \x01(\x03R\x06number\x12)\n" +
+	"\x05token\x18\x04 \x01(\v2\x13.flowstate.v1.ValueR\x05token\x12\x19\n" +
+	"\bbase_url\x18\x05 \x01(\tR\abaseUrl\"\xc6\x02\n" +
+	"\x0fIssueGetOutputs\x12\x14\n" +
+	"\x05title\x18\x01 \x01(\tR\x05title\x12\x12\n" +
+	"\x04body\x18\x02 \x01(\tR\x04body\x12\x14\n" +
+	"\x05state\x18\x03 \x01(\tR\x05state\x12!\n" +
+	"\fstate_reason\x18\x04 \x01(\tR\vstateReason\x12\x16\n" +
+	"\x06labels\x18\x05 \x03(\tR\x06labels\x12\x1a\n" +
+	"\bcomments\x18\x06 \x01(\x05R\bcomments\x12\x19\n" +
+	"\bhtml_url\x18\a \x01(\tR\ahtmlUrl\x12\x1d\n" +
+	"\n" +
+	"created_at\x18\b \x01(\tR\tcreatedAt\x12\x1d\n" +
+	"\n" +
+	"updated_at\x18\t \x01(\tR\tupdatedAt\x12\x1b\n" +
+	"\tclosed_at\x18\n" +
+	" \x01(\tR\bclosedAt\x12&\n" +
+	"\x0fis_pull_request\x18\v \x01(\bR\risPullRequest\"\x98\x02\n" +
+	"\x0fIssueListInputs\x12\x14\n" +
+	"\x05owner\x18\x01 \x01(\tR\x05owner\x12\x12\n" +
+	"\x04repo\x18\x02 \x01(\tR\x04repo\x12\x14\n" +
+	"\x05state\x18\x03 \x01(\tR\x05state\x12\x16\n" +
+	"\x06labels\x18\x04 \x03(\tR\x06labels\x12\x14\n" +
+	"\x05since\x18\x05 \x01(\tR\x05since\x12\x1f\n" +
+	"\vmax_results\x18\x06 \x01(\x05R\n" +
+	"maxResults\x12)\n" +
+	"\x05token\x18\a \x01(\v2\x13.flowstate.v1.ValueR\x05token\x12\x19\n" +
+	"\bbase_url\x18\b \x01(\tR\abaseUrl\x12\x12\n" +
+	"\x04sort\x18\t \x01(\tR\x04sort\x12\x1c\n" +
+	"\tdirection\x18\n" +
+	" \x01(\tR\tdirection\"\xeb\x01\n" +
+	"\fIssueSummary\x12\x16\n" +
+	"\x06number\x18\x01 \x01(\x03R\x06number\x12\x14\n" +
+	"\x05title\x18\x02 \x01(\tR\x05title\x12\x14\n" +
+	"\x05state\x18\x03 \x01(\tR\x05state\x12\x16\n" +
+	"\x06labels\x18\x04 \x03(\tR\x06labels\x12\x19\n" +
+	"\bhtml_url\x18\x05 \x01(\tR\ahtmlUrl\x12\x1d\n" +
+	"\n" +
+	"created_at\x18\x06 \x01(\tR\tcreatedAt\x12\x1d\n" +
+	"\n" +
+	"updated_at\x18\a \x01(\tR\tupdatedAt\x12&\n" +
+	"\x0fis_pull_request\x18\b \x01(\bR\risPullRequest\"a\n" +
+	"\x10IssueListOutputs\x12/\n" +
+	"\x06issues\x18\x01 \x03(\v2\x17.github.v1.IssueSummaryR\x06issues\x12\x1c\n" +
+	"\ttruncated\x18\x02 \x01(\bR\ttruncatedB\xa4\x01\n" +
 	"\rcom.github.v1B\vGithubProtoP\x01ZAgithub.com/picatz/flowstate/plugins/github/gen/github/v1;githubv1\xa2\x02\x03GXX\xaa\x02\tGithub.V1\xca\x02\tGithub\\V1\xe2\x02\x15Github\\V1\\GPBMetadata\xea\x02\n" +
 	"Github::V1b\x06proto3"
 
@@ -414,22 +1550,40 @@ func file_github_v1_github_proto_rawDescGZIP() []byte {
 	return file_github_v1_github_proto_rawDescData
 }
 
-var file_github_v1_github_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_github_v1_github_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_github_v1_github_proto_goTypes = []any{
-	(*PullRequestGetInputs)(nil),  // 0: github.v1.PullRequestGetInputs
-	(*PullRequestGetOutputs)(nil), // 1: github.v1.PullRequestGetOutputs
-	(*IssueCommentInputs)(nil),    // 2: github.v1.IssueCommentInputs
-	(*IssueCommentOutputs)(nil),   // 3: github.v1.IssueCommentOutputs
-	(*v1.Value)(nil),              // 4: flowstate.v1.Value
+	(*PullRequestGetInputs)(nil),    // 0: github.v1.PullRequestGetInputs
+	(*PullRequestGetOutputs)(nil),   // 1: github.v1.PullRequestGetOutputs
+	(*IssueCommentInputs)(nil),      // 2: github.v1.IssueCommentInputs
+	(*IssueCommentOutputs)(nil),     // 3: github.v1.IssueCommentOutputs
+	(*PullRequestListInputs)(nil),   // 4: github.v1.PullRequestListInputs
+	(*PullRequestSummary)(nil),      // 5: github.v1.PullRequestSummary
+	(*PullRequestListOutputs)(nil),  // 6: github.v1.PullRequestListOutputs
+	(*PullRequestFilesInputs)(nil),  // 7: github.v1.PullRequestFilesInputs
+	(*PullRequestFile)(nil),         // 8: github.v1.PullRequestFile
+	(*PullRequestFilesOutputs)(nil), // 9: github.v1.PullRequestFilesOutputs
+	(*IssueGetInputs)(nil),          // 10: github.v1.IssueGetInputs
+	(*IssueGetOutputs)(nil),         // 11: github.v1.IssueGetOutputs
+	(*IssueListInputs)(nil),         // 12: github.v1.IssueListInputs
+	(*IssueSummary)(nil),            // 13: github.v1.IssueSummary
+	(*IssueListOutputs)(nil),        // 14: github.v1.IssueListOutputs
+	(*v1.Value)(nil),                // 15: flowstate.v1.Value
 }
 var file_github_v1_github_proto_depIdxs = []int32{
-	4, // 0: github.v1.PullRequestGetInputs.token:type_name -> flowstate.v1.Value
-	4, // 1: github.v1.IssueCommentInputs.token:type_name -> flowstate.v1.Value
-	2, // [2:2] is the sub-list for method output_type
-	2, // [2:2] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	15, // 0: github.v1.PullRequestGetInputs.token:type_name -> flowstate.v1.Value
+	15, // 1: github.v1.IssueCommentInputs.token:type_name -> flowstate.v1.Value
+	15, // 2: github.v1.PullRequestListInputs.token:type_name -> flowstate.v1.Value
+	5,  // 3: github.v1.PullRequestListOutputs.pull_requests:type_name -> github.v1.PullRequestSummary
+	15, // 4: github.v1.PullRequestFilesInputs.token:type_name -> flowstate.v1.Value
+	8,  // 5: github.v1.PullRequestFilesOutputs.files:type_name -> github.v1.PullRequestFile
+	15, // 6: github.v1.IssueGetInputs.token:type_name -> flowstate.v1.Value
+	15, // 7: github.v1.IssueListInputs.token:type_name -> flowstate.v1.Value
+	13, // 8: github.v1.IssueListOutputs.issues:type_name -> github.v1.IssueSummary
+	9,  // [9:9] is the sub-list for method output_type
+	9,  // [9:9] is the sub-list for method input_type
+	9,  // [9:9] is the sub-list for extension type_name
+	9,  // [9:9] is the sub-list for extension extendee
+	0,  // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_github_v1_github_proto_init() }
@@ -443,7 +1597,7 @@ func file_github_v1_github_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_github_v1_github_proto_rawDesc), len(file_github_v1_github_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

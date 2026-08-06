@@ -1,16 +1,24 @@
 # flowstate-plugin-github
 
-GitHub forge tasks for Flowstate: `github.pull_request_get` (read) and
-`github.issue_comment` (write), built on
+GitHub forge tasks for Flowstate: `github.pull_request_get` and
+`github.issue_comment` (the original one-forge-operation proof, read and
+write respectively), plus a read/audit tier added alongside them -
+`github.pull_request_list`, `github.pull_request_files`, `github.issue_get`,
+`github.issue_list` - built on
 [google/go-github](https://github.com/google/go-github) - the real GitHub
 API client, deliberately, rather than a hand-rolled one. See "Why go-github"
 below for why that is the right call for this one dependency even though
 `plugins/vcs` (this repository's sibling plugin) takes the opposite position
 on `git`.
 
-An example that runs it lives at
-[`examples/plugins/github`](../../examples/plugins/github); read that first
-if you want to see it work rather than read about it.
+Two examples live at
+[`examples/plugins/github`](../../examples/plugins/github); read those first
+if you want to see it work rather than read about it -
+[`workflow.yaml`](../../examples/plugins/github/workflow.yaml) and
+[`issue-comment.yaml`](../../examples/plugins/github/issue-comment.yaml)
+exercise the original pair, and
+[`triage.yaml`](../../examples/plugins/github/triage.yaml) exercises the
+read/audit tier.
 
 ## Building
 
@@ -20,7 +28,7 @@ go build -o /path/to/plugins/flowstate-plugin-github ./plugins/github
 
 ## Examples, kept honest
 
-Both files below are pasted in whole, not summarized, and
+All three files below are pasted in whole, not summarized, and
 `TestReadmeExamplesMatchTheFilesOnDisk` in this package holds them to the real
 files byte for byte in both directions - a file added under
 [`examples/plugins/github`](../../examples/plugins/github) with no matching
@@ -138,6 +146,120 @@ outputs:
     description: where to see what this run just posted
 ```
 
+<!-- example: examples/plugins/github/triage.yaml -->
+```yaml
+edition: v2026.2
+name: github-review-and-issue-triage
+description: A review-triage pass over a public repository using the "github" plugin's read/audit tier - what is open, which files a candidate change touches, and the full record of whichever issue needs the next look. Runs with no arguments.
+
+# github.pull_request_list, github.pull_request_files, github.issue_get, and
+# github.issue_list are this plugin's read/audit tier, added alongside its
+# original one-forge-operation proof (github.pull_request_get,
+# github.issue_comment in workflow.yaml and issue-comment.yaml) - see
+# plugins/github/README.md, "Read/audit tier," for which candidates were
+# rejected and why. This file is the shape a security engineer (or an agent
+# doing the same job) actually reaches for, deliberately not a CI shape:
+# what pull requests are in flight, which files the most recent one touches
+# before reading any diff content, and both a bounded listing of open
+# issues and the full record (body included) of the oldest one still
+# waiting for a look.
+#
+# Every task here accepts an unset token and works exactly the same against
+# a public repository - see workflow.yaml's own comment on why, and this
+# plugin's README, "Authentication," for the private-repository case.
+
+vars:
+  owner: golang
+  repo: go
+  # A path fragment worth flagging on a candidate change - stand-in for
+  # whatever a real review policy would actually care about (an auth
+  # module, a secrets file, a dependency manifest). golang/go's own
+  # standard library ships a "crypto" tree, so this is a fragment its pull
+  # requests plausibly touch without being tied to any one PR's identity.
+  sensitive_path_fragment: crypto
+
+steps:
+  - id: open_prs
+    github.pull_request_list:
+      owner: ${vars.owner}
+      repo: ${vars.repo}
+      state: open
+      max_results: 5
+      # No token: a public repository's pull requests are readable
+      # unauthenticated, at a much lower rate limit - see workflow.yaml.
+
+  - id: pr_files
+    github.pull_request_files:
+      owner: ${vars.owner}
+      repo: ${vars.repo}
+      # Bound to the most recently created open pull request
+      # github.pull_request_list just found - github.pull_request_list's
+      # own default sort, GitHub's "created", descending - rather than a
+      # number this file hard-codes, so the audit chain is "whatever is
+      # actually open right now," not one pull request frozen in time.
+      number: ${steps.open_prs.pull_requests[0].number}
+      max_results: 100
+
+  - id: open_issues
+    github.issue_list:
+      owner: ${vars.owner}
+      repo: ${vars.repo}
+      state: open
+      max_results: 5
+      # Ascending by creation time, explicitly - GitHub's own default for
+      # this endpoint is "created" descending (newest first), which would
+      # make element zero the newest match, not the oldest this file's own
+      # outputs claim it to be. direction: asc is what actually earns the
+      # name "oldest" below.
+      sort: created
+      direction: asc
+
+  - id: issue_detail
+    github.issue_get:
+      owner: ${vars.owner}
+      repo: ${vars.repo}
+      # The audit chain's other half: github.issue_list found which issues
+      # are open; github.issue_get reads the one at the front of that
+      # queue in full - body included, which a listing deliberately leaves
+      # out (see IssueSummary's own doc comment).
+      #
+      # .filter(i, !i.is_pull_request) exists because GitHub's own
+      # repository-issues endpoint - what github.issue_list calls -
+      # answers both issues and pull requests through this same response
+      # (is_pull_request on each entry says which); without the filter,
+      # element zero could be a pull request wearing an issue's number,
+      # and this step (and open_issue_count below) would count and detail
+      # the wrong thing. See IssueSummary.is_pull_request's own doc
+      # comment (github.proto) for the endpoint quirk this filter exists
+      # to correct for.
+      number: ${steps.open_issues.issues.filter(i, !i.is_pull_request)[0].number}
+
+  - id: announce
+    log:
+      message: "${'%s/%s - %d open pull request(s) seen, most recent is #%d touching %d file(s); %d open issue(s) seen, oldest of them is #%d (\"%s\")'.format([vars.owner, vars.repo, steps.open_prs.pull_requests.size(), steps.open_prs.pull_requests[0].number, steps.pr_files.files.size(), steps.open_issues.issues.filter(i, !i.is_pull_request).size(), steps.open_issues.issues.filter(i, !i.is_pull_request)[0].number, steps.issue_detail.title])}"
+
+outputs:
+  most_recent_open_pull_request:
+    value: ${steps.open_prs.pull_requests[0].number}
+    description: the most recently created open pull request github.pull_request_list found (see PullRequestListOutputs.truncated for whether more than max_results are actually open)
+
+  touches_a_sensitive_path:
+    value: ${steps.pr_files.files.exists(f, f.filename.contains(vars.sensitive_path_fragment))}
+    description: whether that pull request's own files (github.pull_request_files - filenames and line counts, no diff content read) include a path matching sensitive_path_fragment - the review-triage question this task exists to answer before any diff is ever read
+
+  open_issue_count:
+    value: ${steps.open_issues.issues.filter(i, !i.is_pull_request).size()}
+    description: how many open issues (pull requests excluded - see issue_detail's own comment on why) github.issue_list found, capped at max_results (see IssueListOutputs.truncated for whether more exist)
+
+  oldest_open_issue_title:
+    value: ${steps.issue_detail.title}
+    description: the full title of the oldest open issue among the listing above (github.issue_list's own sort/direction inputs, set to created/asc - see that step's comment), read in full via github.issue_get - the single-record detail a listing's own summary leaves out
+
+  oldest_open_issue_is_actually_a_pull_request:
+    value: ${steps.issue_detail.is_pull_request}
+    description: GitHub answers issues and pull requests through the same endpoint - always false here, since issue_detail's own number is chosen by filtering pull requests out first (see that step's comment); kept as an explicit sanity check on that filter rather than an assumption
+```
+
 ## Why go-github, and not a hand-rolled client
 
 `plugins/vcs` never execs `git` and never takes a git-client dependency,
@@ -160,13 +282,113 @@ separate `go.mod` and `replace` directive in this plugin achieve.
 | Task | Reads/Writes | Idempotent | Needs a credential |
 | --- | --- | --- | --- |
 | `github.pull_request_get` | reads | yes | only for a private repository |
+| `github.pull_request_list` | reads | yes | only for a private repository |
+| `github.pull_request_files` | reads | yes | only for a private repository |
+| `github.issue_get` | reads | yes | only for a private repository |
+| `github.issue_list` | reads | yes | only for a private repository |
 | `github.issue_comment` | writes | **no** | always |
 
-Two tasks, not four, on purpose: this plugin proves one forge operation -
-reading a pull request and commenting on it - end to end, rather than a
-wide, thin API surface. See "What was left undone" below for what a broader
-version would need, and the naming question that has to be settled before it
-is worth building.
+Six tasks, not two, not a wide surface either: the original pair proved one
+forge operation end to end - reading a pull request and commenting on it -
+and everything else here is the read/audit tier added once that had landed,
+matching plugins/git's own evolution (`git.ls_remote` first, `git.log` and
+`git.read_file` added as its read/audit tier in the same spirit). See "What
+was left undone" below for what is still not built, and "Naming" below for
+the naming question that has to be settled before any of this could honestly
+be `forge.*` instead.
+
+## Read/audit tier
+
+`github.pull_request_list`, `github.pull_request_files`, `github.issue_get`,
+and `github.issue_list` are the read/audit tier - the operations a security
+engineer (or an agent doing the same job) actually reaches for when auditing
+a repository rather than acting on it, chosen and rejected against a
+standing preference for a small surface: if an existing task's output plus a
+CEL filter already answers a question, it does not earn a new task (the same
+call plugins/git's own `git.ls_remote` makes against `list_tags`/
+`list_branches` - see that plugin's README).
+
+**Chosen:**
+
+- **`github.pull_request_list`** - "what is in flight," filtered by state
+  and (optionally) branch. `github.pull_request_get` answers "what is pull
+  request #N's state" for a number the caller already has; nothing existing
+  answers "which pull requests exist at all," which is a genuinely different
+  capability, not a filter over one this plugin already had.
+- **`github.pull_request_files`** - "which files did this pull request
+  touch, and how much" - the review-triage primitive: usually enough to
+  decide whether a change needs a closer look, before reading any diff
+  content at all. Deliberately returns no diff text - see
+  `pull_request_files.go`'s own doc comment for why that would duplicate a
+  different primitive (`git.read_file`'s "what is there now," or a future
+  diff-shaped task) rather than extend this one.
+- **`github.issue_get`** - the single-record read/audit-tier counterpart to
+  `github.pull_request_get`, for a workflow that already has an issue number
+  (from a webhook, a `wait_for_signal` payload, or a previous
+  `github.issue_list` call) and needs the full record, body included.
+- **`github.issue_list`** - "what needs attention," filtered by state,
+  label, and an updated-since cutoff - the same "list exists, get does not"
+  gap `pull_request_list` closes, on the issue side.
+
+**Rejected:**
+
+- **`github.workflow_run_list`** ("is main green"). Not because it is a bad
+  primitive - it is a strong one - but because this repository's own example
+  portfolio already skews heavily toward deploy/release/CI shapes, and this
+  read/audit tier's own worked example (`triage.yaml`) was deliberately
+  chosen to be something else: an audit/triage pass a non-CI reader
+  recognizes. Revisit this if a future CI-observability need asks for it
+  directly.
+- **`github.release_get`/`github.release_list`**. A release's tag and commit
+  are already answerable today, for a public or private repository, by
+  `git.ls_remote` with `prefix: "refs/tags/"` (a name and a sha, with no
+  GitHub-specific credential at all) - what is left that only GitHub's own
+  Releases API adds is release notes, draft/prerelease flags, and asset
+  metadata, which is real but is a second, smaller primitive rather than an
+  obvious member of *this* tier's "what needs attention" shape. Left for a
+  later, explicitly-scoped addition rather than folded in here to round the
+  set out to eight.
+- **A separate `github.issue_list` state/label filter combinator** (e.g.
+  splitting "list my issues" or "list issues by milestone" into their own
+  tasks). `github.issue_list`'s own `state`, `labels`, and `since` inputs,
+  plus a CEL filter over what it returns, already answer every narrower
+  question this would - exactly the "an existing task's output plus a filter
+  already answers it" refusal above.
+
+## Bounds this tier enforces, and the resource each one matches
+
+Every list-shaped task here bounds two independent resources GitHub, not
+this plugin, controls - the same "bound anything that consumes untrusted
+input" reasoning as `pkg/flowstate/v1/server`'s own `List` RPC and its
+`maxListScan`/`maxListRequests` pair:
+
+- **Items collected** (`max_results`, default `defaultMaxResults` (30),
+  ceiling `maxMaxResults` (200) - refused, not silently clamped, over the
+  ceiling, the same discipline `plugins/git`'s `clampMaxCommits` documents).
+  This is the resource a workflow author asks for.
+- **Requests made** (`maxListRequests`, 20 page requests per call). This is
+  the resource GitHub - or, in the adversarial case this bound actually
+  exists for, any peer answering on GitHub's behalf - controls independently
+  of the first: `go-github`'s own `*Response.NextPage` can legitimately stay
+  non-zero on a page that carried zero items while a large result set is
+  still being computed, so a loop bounded only by items collected does not
+  terminate against a peer that always answers with an empty page and a
+  next-page cursor. See `paginate.go`'s `paginateBounded` and
+  `TestPaginateBoundedStopsAgainstAPeerThatPagesForever` for a peer built to
+  do exactly that, and
+  `TestPaginateBoundedCapsAtMaxItemsAndReportsTruncated` /
+  `TestPaginateBoundedStopsAtTheBoundaryWithoutSpendingAnExtraRequest` for
+  proof that each bound is actually *reached*, not merely respected -
+  `scanned <= maxListScan` is also satisfied by a listing that gave up after
+  one batch, and the tests here assert the ceiling was hit, per CLAUDE.md's
+  own "Bounds must be proven reached."
+
+Every list output also carries `truncated`: `false` only when GitHub itself
+said there was nothing more (`NextPage == 0`), never merely because this call
+stopped looking - the same honesty `git.log`'s own `Truncated` field
+practices, and the same reasoning `git.log`'s own doc comment gives for why
+a bounded read that says nothing about its own limit lets a caller believe a
+partial answer is complete.
 
 ## Authentication
 
@@ -358,14 +580,21 @@ Two more, specific to this plugin:
 
 ## What was left undone, and why
 
-- **Broader API surface** (`github.pull_request_create`,
-  `github.check_run.list`, `github.issue_create`, and the rest of what the
-  original task list asked for). Deliberately not built: this engagement's
-  design review explicitly asked for one or two forge operations proven end
-  to end over a wide, thin surface, and for the naming question above to be
-  settled first, since adding more tasks now would mean naming and
+- **Write and mutation coverage beyond `issue_comment`**
+  (`github.pull_request_create`, `github.check_run.list`,
+  `github.issue_create`, and the rest of what the original task list asked
+  for). Deliberately not built: this engagement's design review asked for
+  one forge write proven end to end, and for the naming question below to be
+  settled first, since adding more mutating tasks now would mean naming and
   potentially renaming several more of them once a portable `forge.*`
-  vocabulary exists.
+  vocabulary exists. The read/audit tier above is a narrower, lower-risk
+  extension in the meantime - nothing it added writes anything, so the
+  naming and mutation-safety questions this bullet is about do not apply to
+  it.
+- **`github.release_get`/`github.release_list` and
+  `github.workflow_run_list`.** See "Read/audit tier," "Rejected," above for
+  why each was left out of this pass specifically, rather than folded in to
+  round the read/audit tier's set out.
 - **Workload identity federation.** See "Authentication" above - not a gap
   in this plugin so much as a mismatch between GitHub's own auth model and
   what the broker federates into; recorded rather than forced.

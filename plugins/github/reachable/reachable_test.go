@@ -48,13 +48,14 @@ const exampleDir = "../../../examples/plugins/github"
 // which this mirrors - so at most one test in this binary may do it, and this
 // is that one.
 //
-// It deliberately never runs github.pull_request_get or github.issue_comment:
-// both reach the real GitHub API, the second posts a real comment and needs a
-// credential, and network access is not this test's business. What it proves
-// is the seam a Flowfile actually depends on - that a step naming this
-// plugin's tasks is refused before the plugin is registered and accepted once
-// it is, using the descriptors the plugin really shipped, not ones this build
-// knows in advance.
+// It deliberately never runs github.pull_request_get, github.issue_comment,
+// or any of the read/audit-tier tasks in triage.yaml: all reach the real
+// GitHub API, issue_comment posts a real comment and needs a credential, and
+// network access is not this test's business. What it proves is the seam a
+// Flowfile actually depends on - that a step naming this plugin's tasks is
+// refused before the plugin is registered and accepted once it is, using the
+// descriptors the plugin really shipped, not ones this build knows in
+// advance.
 func TestAFlowfileCanNameTheGitHubPluginsTasks(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds a real plugin binary; skipped under -short, run in CI and by `make check`")
@@ -69,13 +70,18 @@ func TestAFlowfileCanNameTheGitHubPluginsTasks(t *testing.T) {
 
 	readOnly := readExample(t, "workflow.yaml")
 	mutation := readExample(t, "issue-comment.yaml")
+	triage := readExample(t, "triage.yaml")
 
 	// The premise. Before any host registers this plugin's tasks, a Flowfile
 	// naming them is a Flowfile naming nothing - what every author who has not
 	// installed the plugin actually has - and it is what makes the assertions
 	// after registration mean something rather than being true of any file at
 	// all.
-	for _, name := range []string{"github.pull_request_get", "github.issue_comment"} {
+	for _, name := range []string{
+		"github.pull_request_get", "github.issue_comment",
+		"github.pull_request_list", "github.pull_request_files",
+		"github.issue_get", "github.issue_list",
+	} {
 		if _, ok := flowstatev1.LookupTask(name); ok {
 			t.Fatalf("%q is already in the default registry before this test registered it, "+
 				"so nothing below distinguishes a working seam from a task that was always there", name)
@@ -103,6 +109,22 @@ func TestAFlowfileCanNameTheGitHubPluginsTasks(t *testing.T) {
 	}
 	if text := diagnosticText(beforeMutation); !strings.Contains(text, "github.issue_comment") {
 		t.Errorf("the diagnostics do not name %q; diagnostics:\n%s", "github.issue_comment", text)
+	}
+
+	beforeTriage, err := flowfile.ValidateSource(triage)
+	if err != nil {
+		t.Fatalf("ValidateSource(triage.yaml): unexpected error: %v", err)
+	}
+	if len(beforeTriage) == 0 {
+		t.Fatal("the validator accepted triage.yaml's steps naming tasks no registry holds")
+	}
+	for _, name := range []string{
+		"github.pull_request_list", "github.pull_request_files",
+		"github.issue_get", "github.issue_list",
+	} {
+		if text := diagnosticText(beforeTriage); !strings.Contains(text, name) {
+			t.Errorf("the diagnostics do not name %q; diagnostics:\n%s", name, text)
+		}
 	}
 
 	host := openHost(t, plugin.Config{
@@ -140,6 +162,17 @@ func TestAFlowfileCanNameTheGitHubPluginsTasks(t *testing.T) {
 		if len(diags) != 0 {
 			t.Errorf("this plugin's tasks are registered and `flow validate` still refuses "+
 				"examples/plugins/github/issue-comment.yaml: %s", diagnosticText(diags))
+		}
+	})
+
+	t.Run("the validator accepts the read/audit-tier triage example", func(t *testing.T) {
+		diags, err := flowfile.ValidateSource(triage)
+		if err != nil {
+			t.Fatalf("ValidateSource: unexpected error: %v", err)
+		}
+		if len(diags) != 0 {
+			t.Errorf("this plugin's tasks are registered and `flow validate` still refuses "+
+				"examples/plugins/github/triage.yaml: %s", diagnosticText(diags))
 		}
 	})
 
