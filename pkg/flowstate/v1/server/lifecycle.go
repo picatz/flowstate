@@ -115,11 +115,26 @@ func notFound(workflowID string) *connect.Error {
 // with no compatibility arm needed, because "nothing here" already means the
 // right thing in both cases.
 //
-// A memo key that *is* present but cannot be decoded is a different case
+// A memo key that *is* present but cannot be decoded, or decodes to
+// something that is not a legitimately declared policy, is a different case
 // entirely, and it is answered the other way: an error, never an empty map.
-// Reading "no bytes, so no constraint" out of a decode failure would turn
-// "a policy exists but I could not read it" into "no policy exists", which
-// is the one substitution fail-closed forbids.
+// Reading "no bytes, so no constraint" — or "empty map, so no constraint" —
+// out of a decode failure would turn "a policy exists but I could not read
+// it" into "no policy exists", which is the one substitution fail-closed
+// forbids.
+//
+// # Why "present but decodes to nothing" is corruption, not the zero case
+//
+// [signalPolicyMemoEntry] — the one function [FlowstateServer.Run] and
+// [FlowstateServer.CreateSchedule] both use to write this key — never writes
+// it for an empty policy map, and [v1.CheckSignalPolicyShape] refuses a
+// `signals:` block that would compile to one. So "the key is present" and "a
+// non-empty, well-formed policy was recorded" are the same fact on every
+// path that legitimately writes this memo. A present key that decodes to an
+// empty map, or to a policy with no rules, or to a rule that authorizes
+// every sender, is therefore not a policy this server ever wrote — it is
+// truncation, a bit flip, or a byte sequence nothing here produced — and is
+// refused exactly like a payload that fails to decode at all.
 func signalPolicies(memo *common.Memo) (map[string]*v1.SignalPolicy, bool, error) {
 	payload, ok := memo.GetFields()[signalPolicyMemoKey]
 	if !ok {
@@ -136,7 +151,13 @@ func signalPolicies(memo *common.Memo) (map[string]*v1.SignalPolicy, bool, error
 		return nil, false, fmt.Errorf("server: decoding the signal policy recorded on a run: %w", err)
 	}
 
-	return spec.GetSignals(), true, nil
+	declared := spec.GetSignals()
+	if err := v1.CheckSignalPolicyShape(declared); err != nil {
+		return nil, false, fmt.Errorf(
+			"server: the signal policy recorded on a run is not a policy this server would have written: %w", err)
+	}
+
+	return declared, true, nil
 }
 
 // authorizeSignal reports whether sender may deliver a signal named name to

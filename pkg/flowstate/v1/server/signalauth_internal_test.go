@@ -210,3 +210,106 @@ func TestAuthorizeSignalFailsClosedOnWrongPayloadShape(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 }
+
+// P2's regression coverage: a memo key that is *present* but decodes to
+// something that is not a legitimately declared policy must deny, exactly
+// like a key that fails to decode at all. [signalPolicyMemoEntry] — the only
+// function that writes this key — never writes it for an empty policy map,
+// so "the key is present" and "a non-empty, well-formed policy was
+// recorded" are the same fact on every path that legitimately writes it. A
+// present key that decodes to nothing is corruption, and the bug this
+// closes was reading it as the zero case ("no policy declared") instead —
+// the one substitution fail-closed forbids, and the most dangerous shape a
+// decode failure can take, because it looks identical to the ordinary,
+// overwhelmingly common case of no policy at all.
+
+// TestAuthorizeSignalFailsClosedOnPresentButEmptyPayload is P2's first
+// required case: the memo key exists, decodes cleanly as bytes and then as a
+// `*v1.Workflow`, but that Workflow declares no signals at all — the shape
+// `proto.Unmarshal` produces for zero bytes, for a truncated payload missing
+// the signals field, or for any payload that happens to decode to an empty
+// message. Before this fix, [signalPolicies] returned `(nil, true, nil)` for
+// this — "hasMemo" true, zero policies — and [authorizeSignal] read the
+// empty map, found no entry for the signal name, and allowed the sender:
+// exactly the substitution "policy exists but corrupted" must never make.
+func TestAuthorizeSignalFailsClosedOnPresentButEmptyPayload(t *testing.T) {
+	// The wire shape a present-but-empty payload actually takes: an encoded
+	// zero-value Workflow, indistinguishable at the proto level from an
+	// empty/zero-length payload (proto3's empty message and the zero-length
+	// byte string decode identically).
+	encoded, err := proto.Marshal(&v1types.Workflow{})
+	require.NoError(t, err)
+	require.Empty(t, encoded, "an empty Workflow encodes to zero bytes, which is the shape under test")
+
+	payload, err := converter.GetDefaultDataConverter().ToPayload(encoded)
+	require.NoError(t, err)
+
+	resp := &workflowservice.DescribeWorkflowExecutionResponse{
+		WorkflowExecutionInfo: &workflow.WorkflowExecutionInfo{
+			Memo: &common.Memo{Fields: map[string]*common.Payload{
+				signalPolicyMemoKey: payload,
+			}},
+		},
+	}
+
+	err = authorizeSignal(resp, "deploy-approved",
+		sender("https://issuer.example.com", "some-other-engineer@example.com", "team-a", nil))
+	require.Error(t, err,
+		"a present-but-empty signal policy payload authorized a sender instead of refusing — the key's "+
+			"presence proves a policy was recorded, so an empty decode must deny, not fall through to "+
+			"the zero case")
+	require.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+}
+
+// TestAuthorizeSignalFailsClosedOnAnUnauthorizingPolicyShape is P2's second
+// required case: the memo decodes to a non-empty, structurally well-formed
+// Workflow message, but the policy it carries is not something this server
+// would ever have written — a declared name with no `allow:` rules at all,
+// which authorizes nobody but also is not "no policy", and (separately) a
+// rule that authorizes everybody, which [v1.CheckSignalPolicyShape] refuses
+// for the identical reason `flow validate`/`CheckSignalPolicies` refuse it
+// at submit. Both must deny.
+func TestAuthorizeSignalFailsClosedOnAnUnauthorizingPolicyShape(t *testing.T) {
+	t.Run("a declared name with no allow rules", func(t *testing.T) {
+		resp := memoWithSignalPolicy(t, map[string]*v1types.SignalPolicy{
+			"deploy-approved": {}, // Allow is nil
+		})
+
+		err := authorizeSignal(resp, "deploy-approved",
+			sender("https://issuer.example.com", "release-manager@example.com", "team-a", nil))
+		require.Error(t, err, "a policy with no allow rules authorized a sender instead of refusing")
+		require.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+	})
+
+	t.Run("a rule that matches every sender", func(t *testing.T) {
+		resp := memoWithSignalPolicy(t, map[string]*v1types.SignalPolicy{
+			"deploy-approved": {Allow: []*v1types.SignalPolicyRule{{}}}, // nothing set on the rule
+		})
+
+		err := authorizeSignal(resp, "deploy-approved",
+			sender("https://issuer.example.com", "anybody-at-all@example.com", "team-a", nil))
+		require.Error(t, err,
+			"a rule that authorizes every sender was accepted from the memo instead of refused — this "+
+				"shape is refused at submit (CheckSignalPolicies) and must be refused identically if it "+
+				"somehow reaches a run's memo anyway")
+		require.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+	})
+}
+
+// TestAuthorizeSignalZeroCaseStillAllowsWhenTheKeyIsGenuinelyAbsent is the
+// control for P2: the fix above must not have widened fail-closed to cover
+// the legitimate zero case. A memo with no [signalPolicyMemoKey] entry at
+// all — never written, never present — still allows every signal name.
+// [TestAuthorizeSignalZeroCaseNoMemoKey] already covers this; restated here,
+// beside the corruption cases it must stay distinguishable from, so the two
+// are read together rather than trusted to agree from opposite ends of the
+// file.
+func TestAuthorizeSignalZeroCaseStillAllowsWhenTheKeyIsGenuinelyAbsent(t *testing.T) {
+	resp := memoWithNoSignalPolicy()
+
+	err := authorizeSignal(resp, "deploy-approved",
+		sender("https://issuer.example.com", "anybody-at-all@example.com", "team-a", nil))
+	require.NoError(t, err,
+		"a memo with no signal-policy key at all must still allow — the zero case must survive the "+
+			"present-but-corrupt fix, not be swallowed by it")
+}

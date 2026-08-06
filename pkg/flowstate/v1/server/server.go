@@ -178,6 +178,38 @@ const namespaceMemoKey = "flowstate.namespace"
 // means the right thing.
 const signalPolicyMemoKey = "flowstate.signalPolicy"
 
+// signalPolicyMemoEntry encodes a workflow's declared signal policy into the
+// one memo entry both [FlowstateServer.Run] and [FlowstateServer.CreateSchedule]
+// write, so a scheduled run enforces exactly what a direct run does — the two
+// paths cannot drift, because there is exactly one place that turns
+// [v1.Workflow.Signals] into bytes.
+//
+// Returns a nil map (add nothing) when the workflow declares no policy at
+// all, which is the zero case [v1.SignalPolicyAllows] documents: absent means
+// unconstrained. A workflow that *does* declare a policy always yields a
+// non-empty entry — CheckSignalPolicies refuses a `signals:` block that
+// compiles to nothing, so "the key is present" and "a policy was recorded"
+// are the same fact from every reader's side; see [signalPolicies] in
+// lifecycle.go, which relies on that being true to fail closed on a present
+// key that decodes to nothing.
+//
+// Encoded through the specification's own message rather than a bespoke
+// wrapper type, which is what lets [signalPolicies] decode it with nothing
+// more than `proto.Unmarshal` into a `*v1.Workflow` and read `.GetSignals()`
+// back off it.
+func signalPolicyMemoEntry(signals map[string]*v1.SignalPolicy) (map[string]any, error) {
+	if len(signals) == 0 {
+		return nil, nil
+	}
+
+	encoded, err := proto.Marshal(&v1.Workflow{Signals: signals})
+	if err != nil {
+		return nil, fmt.Errorf("encoding the declared signal policy: %w", err)
+	}
+
+	return map[string]any{signalPolicyMemoKey: encoded}, nil
+}
+
 // maxStepsPerRunFromEnv reads the optional step budget.
 func maxStepsPerRunFromEnv() int {
 	if s := os.Getenv("FLOWSTATE_MAX_STEPS_PER_RUN"); s != "" {
@@ -316,25 +348,21 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	identity := s.identityFor(ctx)
 
 	// The declared signal policy, frozen into the memo now, exactly as the
-	// tenant is a few lines below — see [signalPolicyMemoKey]. Encoded through
-	// the specification's own message rather than a bespoke wrapper type,
-	// which is what lets `Signal` decode it with nothing more than
-	// `proto.Unmarshal` into a `*v1.Workflow` and read `.GetSignals()` back off
-	// it. Absent (nil bytes, key not written) when the workflow declares no
-	// policy at all — the zero case [v1.SignalPolicyAllows] documents.
+	// tenant is a few lines below — see [signalPolicyMemoEntry], the one
+	// function this and [FlowstateServer.CreateSchedule] both call, so a
+	// scheduled run and a direct run enforce identically.
 	memo := map[string]any{namespaceMemoKey: identity.GetNamespace()}
-	if signals := req.Msg.GetWorkflow().GetSignals(); len(signals) > 0 {
-		encoded, err := proto.Marshal(&v1.Workflow{Signals: signals})
-		if err != nil {
-			// CheckSignalPolicies and v1.Validate above already accepted this
-			// specification, so a marshal failure here is not a caller mistake —
-			// it is this handler unable to do what it just told the caller it
-			// would do. Fail closed rather than start a run whose signal policy
-			// the server itself could not record.
-			return nil, connect.NewError(connect.CodeInternal,
-				fmt.Errorf("encoding the declared signal policy: %w", err))
-		}
-		memo[signalPolicyMemoKey] = encoded
+	signalEntry, err := signalPolicyMemoEntry(req.Msg.GetWorkflow().GetSignals())
+	if err != nil {
+		// CheckSignalPolicies and v1.Validate above already accepted this
+		// specification, so a marshal failure here is not a caller mistake —
+		// it is this handler unable to do what it just told the caller it
+		// would do. Fail closed rather than start a run whose signal policy
+		// the server itself could not record.
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	for k, v := range signalEntry {
+		memo[k] = v
 	}
 
 	options := client.StartWorkflowOptions{

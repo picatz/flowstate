@@ -247,3 +247,112 @@ func TestSignalPolicySurvivesContinueAsNew(t *testing.T) {
 		return err == nil && resp.Msg.GetStatus() == v1.RunResponse_STATUS_COMPLETED
 	}, 60*time.Second, 200*time.Millisecond, "the run did not complete after the authorized sender approved")
 }
+
+// scheduledGatedWorkflowRequiring is [gatedWorkflowRequiring] with a schedule
+// trigger, so it can be created through [FlowstateServer.CreateSchedule] and
+// fired with [FlowstateServer.TriggerSchedule] — the path a scheduled
+// approval gate actually takes, and the one `CreateSchedule` used to skip
+// entirely when writing the fired execution's memo.
+func scheduledGatedWorkflowRequiring(name, issuer, subject string) *v1.Workflow {
+	wf := gatedWorkflowRequiring(issuer, subject)
+	wf.Name = name
+	wf.Triggers = &v1.Triggers{
+		Schedule: &v1.ScheduleTrigger{
+			// Hourly and triggered by hand, exactly as [scheduledWorkflow] in
+			// schedules_test.go does — the cadence only has to be legal, since
+			// nothing here waits for it to fire on its own.
+			Cron:    []string{"0 * * * *"},
+			Overlap: v1.ScheduleTrigger_OVERLAP_SKIP,
+		},
+	}
+	return wf
+}
+
+// TestScheduledSignalPolicyDeniesAnUnauthorizedSender is P1's regression
+// test: a scheduled run's *fired execution* must carry the declared signal
+// policy exactly as a direct `Run` would, because `CreateSchedule` used to
+// write the tenant memo onto the schedule's workflow action and nothing
+// else — so every scheduled approval gate's signal policy was silently
+// absent from the one memo `Signal` actually reads, and every fired
+// execution allowed any in-tenant sender regardless of what `signals:`
+// declared. This creates a schedule, fires it once, and signals the run it
+// started — the same negative-then-positive shape
+// [TestSignalPolicyDeniesAnUnauthorizedSender] and
+// [TestSignalPolicyAllowsTheAuthorizedSender] use for a direct run, proving
+// the scheduled path enforces identically rather than merely compiling.
+func TestScheduledSignalPolicyDeniesAnUnauthorizedSender(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTenantFixture(t)
+
+	wf := scheduledGatedWorkflowRequiring(
+		"scheduled-deploy-gate", "https://issuer.example.com", "release-manager@example.com")
+
+	_, err := fixture.teamA.CreateSchedule(t.Context(), connect.NewRequest(&v1.CreateScheduleRequest{
+		Workflow: wf,
+		Paused:   true,
+	}))
+	require.NoError(t, err)
+
+	_, err = fixture.teamA.TriggerSchedule(t.Context(),
+		connect.NewRequest(&v1.TriggerScheduleRequest{Name: "scheduled-deploy-gate"}))
+	require.NoError(t, err)
+
+	var workflowID string
+	require.Eventually(t, func() bool {
+		described, err := fixture.teamA.DescribeSchedule(t.Context(),
+			connect.NewRequest(&v1.DescribeScheduleRequest{Name: "scheduled-deploy-gate"}))
+		if err != nil || len(described.Msg.GetSchedule().GetRecentRuns()) == 0 {
+			return false
+		}
+		workflowID = described.Msg.GetSchedule().GetRecentRuns()[0].GetWorkflowId()
+		return workflowID != ""
+	}, 60*time.Second, 200*time.Millisecond, "the schedule never took an action")
+
+	waitUntilParkedAtTheGate(t, fixture.temporal, workflowID)
+
+	// The negative direction: an authenticated, in-tenant caller who is not
+	// the declared subject. Before the fix, this succeeded — the fired
+	// execution's memo carried only the tenant, so `authorizeSignal` read the
+	// zero case and allowed anyone.
+	deniedCtx := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+		Issuer:  "https://issuer.example.com",
+		Subject: "some-other-engineer@example.com",
+	})
+	_, err = fixture.teamA.Signal(deniedCtx, connect.NewRequest(&v1.SignalRequest{
+		WorkflowId: workflowID,
+		Name:       "deploy-approved",
+		Payload: &v1.Node_Outputs{
+			NamedValues: map[string]*v1.Value{"approved": v1.NewLiteral(true)},
+		},
+	}))
+	require.Error(t, err,
+		"a scheduled run's fired execution allowed an unauthorized sender — the declared signal policy "+
+			"did not reach the fired execution's memo")
+	require.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+
+	ran, err := stepsScheduled(t.Context(), fixture.temporal, workflowID)
+	require.NoError(t, err)
+	require.Equal(t, []string{"requesting approval"}, ran,
+		"a step ran after a signal a scheduled run's policy should have refused")
+
+	// The positive direction, in the same test as the negative one — a check
+	// that refused everyone would still pass the assertions above.
+	allowedCtx := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+		Issuer:  "https://issuer.example.com",
+		Subject: "release-manager@example.com",
+	})
+	_, err = fixture.teamA.Signal(allowedCtx, connect.NewRequest(&v1.SignalRequest{
+		WorkflowId: workflowID,
+		Name:       "deploy-approved",
+		Payload: &v1.Node_Outputs{
+			NamedValues: map[string]*v1.Value{"approved": v1.NewLiteral(true)},
+		},
+	}))
+	require.NoError(t, err, "the declared policy's own subject was refused on a scheduled run")
+
+	require.Eventually(t, func() bool {
+		resp, err := fixture.teamA.Get(t.Context(), connect.NewRequest(&v1.GetRequest{WorkflowId: workflowID}))
+		return err == nil && resp.Msg.GetStatus() == v1.RunResponse_STATUS_COMPLETED
+	}, 60*time.Second, 200*time.Millisecond, "the scheduled run did not complete after the authorized sender approved")
+}

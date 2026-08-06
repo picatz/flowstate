@@ -49,6 +49,10 @@ func CheckSignalPolicies(wf *Workflow) error {
 		return nil
 	}
 
+	if err := CheckSignalPolicyShape(declared); err != nil {
+		return err
+	}
+
 	known := make(map[string]struct{})
 	for _, name := range SignalNames(wf) {
 		known[name] = struct{}{}
@@ -61,8 +65,40 @@ func CheckSignalPolicies(wf *Workflow) error {
 					"that name; a policy for a signal nobody waits for is almost always a misspelling of "+
 					"the name a wait actually uses", name)
 		}
+	}
 
+	return nil
+}
+
+// CheckSignalPolicyShape reports what is wrong with a set of signal policies
+// on its own terms, without reference to any workflow's steps — everything
+// [CheckSignalPolicies] can check about a policy map without also knowing
+// which signal names a `wait_for_signal:` actually waits for.
+//
+// Split out from [CheckSignalPolicies] so a caller that has only the policy
+// map — not the workflow it came from — can still ask "is this well
+// formed?". `FlowstateServer`'s `signalPolicies` is exactly that caller: it
+// decodes a run's memo back into a bare `map[string]*SignalPolicy` with no
+// steps beside it (the memo carries only the policy, never the whole
+// specification, to keep it small), so it cannot ask the name-existence
+// question [CheckSignalPolicies] asks — but it must still refuse a decoded
+// map that is empty, or that holds a policy with no rules, or a rule that
+// authorizes every sender, because a memo that decodes to any of those is
+// corruption, not a legitimately declared policy, and must be denied rather
+// than misread as "no policy" (see lifecycle.go's `signalPolicies`).
+func CheckSignalPolicyShape(declared map[string]*SignalPolicy) error {
+	if len(declared) == 0 {
+		return fmt.Errorf("no signal policies are declared")
+	}
+
+	for _, name := range slices.Sorted(maps.Keys(declared)) {
 		policy := declared[name]
+
+		if len(policy.GetAllow()) == 0 {
+			return fmt.Errorf(
+				"signals[%q] declares no `allow:` rule, so it authorizes nobody", name)
+		}
+
 		for i, rule := range policy.GetAllow() {
 			if ruleMatchesEverySender(rule) {
 				return fmt.Errorf(
