@@ -280,6 +280,12 @@ func countCompiledNodes(nodes []*v1.Node) int {
 		switch kind := node.GetKind().(type) {
 		case *v1.Node_ForEach:
 			n += countCompiledNodes(kind.ForEach.GetBody())
+		case *v1.Node_Loop:
+			// A loop body's nodes are compiled nodes like any others, so they count
+			// against the expansion budget too — without this a `call:` tree could
+			// hide arbitrarily many nodes inside loop bodies under the bound, the
+			// billion-laughs shape through a construct the counter did not descend.
+			n += countCompiledNodes(kind.Loop.GetBody())
 		case *v1.Node_Parallel:
 			for _, branch := range kind.Parallel.GetBranches() {
 				n += countCompiledNodes(branch.GetSteps())

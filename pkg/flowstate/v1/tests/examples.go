@@ -395,6 +395,10 @@ func AnyStep(nodes []*v1.Node, pred func(*v1.Node) bool) bool {
 			if AnyStep(kind.ForEach.GetBody(), pred) {
 				return true
 			}
+		case *v1.Node_Loop:
+			if AnyStep(kind.Loop.GetBody(), pred) {
+				return true
+			}
 		case *v1.Node_Parallel:
 			for _, branch := range kind.Parallel.GetBranches() {
 				if AnyStep(branch.GetSteps(), pred) {
@@ -545,6 +549,13 @@ func pointAtStandIn(nodes []*v1.Node, standIn *url.URL, loops []binding) []strin
 			child = append(child, binding{name: iterator, items: fe.GetItems().GetLiteral()})
 
 			unpointable = append(unpointable, pointAtStandIn(fe.GetBody(), standIn, child)...)
+		case *v1.Node_Loop:
+			// The body is walked, but the loop's carried state adds no binding: unlike
+			// a `for_each` item, which is an element of a literal list this walk can
+			// rewrite a URL against, a loop's state is a value `update:` computes — so a
+			// body URL derived from it is genuinely unpointable rather than something a
+			// stand-in binding could reach, which the recursion below reports honestly.
+			unpointable = append(unpointable, pointAtStandIn(kind.Loop.GetBody(), standIn, bindings)...)
 		case *v1.Node_Parallel:
 			for _, branch := range kind.Parallel.GetBranches() {
 				unpointable = append(unpointable, pointAtStandIn(branch.GetSteps(), standIn, bindings)...)
@@ -728,6 +739,8 @@ func httpStepIDs(nodes []*v1.Node) []string {
 		switch kind := node.GetKind().(type) {
 		case *v1.Node_ForEach:
 			ids = append(ids, httpStepIDs(kind.ForEach.GetBody())...)
+		case *v1.Node_Loop:
+			ids = append(ids, httpStepIDs(kind.Loop.GetBody())...)
 		case *v1.Node_Parallel:
 			for _, branch := range kind.Parallel.GetBranches() {
 				ids = append(ids, httpStepIDs(branch.GetSteps())...)

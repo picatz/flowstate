@@ -88,6 +88,48 @@ func LoopCases() []Case {
 			}},
 		},
 		{
+			// The final iteration's `update:` is never evaluated, and both drivers
+			// must agree on that. `until:` holds after the body of the iteration whose
+			// state is `{i: 2}`, so the loop stops there — and its `update:` would
+			// index `[10, 20][2]`, out of range, if it were evaluated. The local driver
+			// returns before evaluating it; the durable driver used to evaluate it
+			// after `until:` succeeded, which failed a run the local rehearsal
+			// completed — invariant 3. This case fails on that driver and passes on
+			// this one, so it holds them together: the run must complete, with three
+			// iterations, on both.
+			Name: "a loop never evaluates the final iteration's update",
+			Workflow: &v1.Workflow{
+				Name:    "loop-update-after-until",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					{
+						Id: "check",
+						Kind: &v1.Node_Loop{Loop: &v1.Loop{
+							State:   "acc",
+							Initial: v1.NewExpr("{'i': 0}"),
+							// Advances the counter and computes a value valid for every
+							// index the loop actually updates from (0 and 1) and out of
+							// range for the final one (2), which the loop must never reach
+							// because `until:` stops it first.
+							Update:        v1.NewExpr("{'i': acc.i + 1, 'check': [10, 20][acc.i]}"),
+							Until:         v1.NewExpr("acc.i >= 2"),
+							MaxIterations: 100,
+							Body:          pins("tick", "acc.i >= 0"),
+						}},
+					},
+				},
+			},
+			// Asserted through a predicate rather than exact outputs: the carried state
+			// is a CEL map whose encoded entry order is not worth pinning, and what this
+			// case is really about is that the run *completes* — which the harness's own
+			// no-error check enforces on both drivers before this runs — with the body
+			// having run three times.
+			ExpectedOutputsPredicate: func(out *v1.Workflow_StepOutputs) bool {
+				results := out.GetStepValues()["check"].GetNamedValues()["results"]
+				return len(results.GetLiteral().GetListValue().GetValues()) == 3
+			},
+		},
+		{
 			// A loop whose condition never holds runs its whole budget and then fails,
 			// distinctly. The bound is *reached* here, not merely respected: with
 			// `until:` false and no state to change, the only way this run ends is by

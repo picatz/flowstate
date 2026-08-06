@@ -806,12 +806,24 @@ func (e *executor) runLoopIteration(loop *v1.Loop, stateName string, state *v1.V
 	if err != nil {
 		return nil, false, nil, err
 	}
+
+	// When `until:` holds the loop stops and `update:` is never evaluated — its value
+	// would only be bound into an iteration that will not run. Returning here rather
+	// than after evaluating it matches the local driver exactly (eval.go's runLoop
+	// returns the moment `until:` is true), and it is not a micro-optimisation: a
+	// final-iteration `update:` that cannot resolve — `${steps.page.next_cursor}`
+	// where the last page carries no next cursor — would fail a durable run that the
+	// local rehearsal completes. That divergence is invariant 3's exact shape.
+	if stop {
+		return bodyOutputs(loop.GetBody(), iterationOutputs), true, nil, nil
+	}
+
 	next, err := v1.LoopNextState(context.Background(), loop, nested.scope)
 	if err != nil {
 		return nil, false, nil, err
 	}
 
-	return bodyOutputs(loop.GetBody(), iterationOutputs), stop, next, nil
+	return bodyOutputs(loop.GetBody(), iterationOutputs), false, next, nil
 }
 
 // runIteration executes the loop body once against its own output scope.

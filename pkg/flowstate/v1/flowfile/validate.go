@@ -1763,6 +1763,10 @@ func declaredAnywhere(id string, wf *v1.Workflow) bool {
 				if walk(kind.ForEach.GetBody()) {
 					return true
 				}
+			case *v1.Node_Loop:
+				if walk(kind.Loop.GetBody()) {
+					return true
+				}
 			case *v1.Node_Parallel:
 				for _, branch := range kind.Parallel.GetBranches() {
 					if walk(branch.GetSteps()) {
@@ -1972,6 +1976,10 @@ func nodeWithID(id string, wf *v1.Workflow) *v1.Node {
 			switch kind := node.GetKind().(type) {
 			case *v1.Node_ForEach:
 				if found := walk(kind.ForEach.GetBody()); found != nil {
+					return found
+				}
+			case *v1.Node_Loop:
+				if found := walk(kind.Loop.GetBody()); found != nil {
 					return found
 				}
 			case *v1.Node_Parallel:

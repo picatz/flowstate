@@ -1120,6 +1120,10 @@ func TestRunWorkflowLoop(t *testing.T) {
 
 			var out v1.Workflow_StepOutputs
 			require.NoError(t, env.GetWorkflowResult(&out))
+			if test.ExpectedOutputsPredicate != nil {
+				require.True(t, test.ExpectedOutputsPredicate(&out), "unexpected outputs: %v", &out)
+				return
+			}
 			require.Empty(t, cmp.Diff(test.ExpectedOutputs, &out, protocmp.Transform()))
 		})
 	}
