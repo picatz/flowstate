@@ -446,7 +446,7 @@ func UndoCancellationCases(base string) []UndoCancellationCase {
 func UndoPlacementCases(base string) []UndoCase {
 	return []UndoCase{
 		{
-			Name: "a compensation inside a loop body is refused",
+			Name: "a compensation inside a for_each body is refused",
 			Workflow: &v1.Workflow{
 				Name:    "undo-in-loop",
 				Profile: v1.CurrentProfile,
@@ -456,6 +456,27 @@ func UndoPlacementCases(base string) []UndoCase {
 						Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
 							Items: v1.NewExpr("['x']"),
 							Body:  []*v1.Node{undoing(records("inner", base, "i"), base, "/do/undo")},
+						}},
+					},
+				},
+			},
+			Fails: true,
+		},
+		{
+			Name: "a compensation inside a named loop body is refused",
+			Workflow: &v1.Workflow{
+				Name:    "undo-in-named-loop",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					{
+						Id: "page",
+						Kind: &v1.Node_Loop{Loop: &v1.Loop{
+							State:         "n",
+							Initial:       v1.NewLiteral(int64(0)),
+							Update:        v1.NewExpr("n + 1"),
+							Until:         v1.NewExpr("n >= 1"),
+							MaxIterations: 5,
+							Body:          []*v1.Node{undoing(records("inner", base, "i"), base, "/do/undo")},
 						}},
 					},
 				},
@@ -482,6 +503,149 @@ func UndoPlacementCases(base string) []UndoCase {
 				},
 			},
 			Fails: true,
+		},
+		{
+			// Issue #219 problem 1: a compensation on the `call:` step itself is
+			// still refused — a call has no effect of its own to take back — but the
+			// refusal must now say so and point at the callee's own steps, not lump
+			// a call in with wait/parallel "no effect of their own" wording that
+			// names the wrong construct.
+			Name: "a compensation on a call step itself is refused",
+			Workflow: &v1.Workflow{
+				Name:    "undo-on-call",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					func() *v1.Node {
+						node := callNode("provision", &v1.Workflow{
+							Name:    "undo-on-call-callee",
+							Profile: v1.CurrentProfile,
+							Steps:   []*v1.Node{records("inner", base, "i")},
+						}, nil)
+						node.Undo = &v1.Compensation{Task: &v1.Task{
+							Name:   "http",
+							Inputs: map[string]*v1.Value{"url": v1.NewLiteral(base + "/do/undo-call")},
+						}}
+						return node
+					}(),
+				},
+			},
+			Fails: true,
+		},
+	}
+}
+
+// UndoCallCases are the shared cases for compensation composing *through* a
+// `call:` boundary — issue #219's decision. Both drivers run every one of them.
+//
+// A callee's steps register onto the same run-level [v1.UndoLog] a top-level
+// step's would (see [v1.UndoScopeCall]), so these are deliberately shaped like
+// [UndoCases]' first case — two things provisioned, a later step fails, both
+// come back off in reverse — except one of the two provisioning steps sits
+// inside a called workflow. What is under test is that the boundary is
+// transparent to that reversal: a compensation registered inside the callee
+// undoes *after* one registered before the call, and before whatever the
+// caller registered after the call returns, in exactly the reverse of the
+// order the two sides actually ran in.
+func UndoCallCases(base string) []UndoCase {
+	notFound := func(token string) string {
+		return `task "http" failed (InvalidInput): GET ` + base + `/fail/` + token + ` returned status 404`
+	}
+
+	calleeWith := func(steps ...*v1.Node) *v1.Workflow {
+		return &v1.Workflow{
+			Name:    "undo-call-callee",
+			Profile: v1.CurrentProfile,
+			Steps:   steps,
+		}
+	}
+
+	return []UndoCase{
+		{
+			// The compose-through shape itself: a step before the call registers a
+			// compensation, the call's callee registers one of its own, and a step
+			// after the call fails. Reverse of registration order crosses the
+			// boundary cleanly: the callee's compensation (registered second) runs
+			// first, the caller's own (registered first) runs second — the ordering
+			// a `for_each` or `parallel` cannot offer, because a call is sequential,
+			// compile-time-vendored control flow rather than concurrent work.
+			Name: "a callee's compensation composes onto the caller's stack and undoes in reverse across the boundary",
+			Workflow: &v1.Workflow{
+				Name:    "undo-call-reverse",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					undoing(records("before", base, "a"), base, "/do/undo"),
+					callNode("provision", calleeWith(
+						undoing(records("inner", base, "b"), base, "/do/undo"),
+					), nil),
+					fails("boom", base, "boom"),
+				},
+			},
+			Fails:    true,
+			Summary:  `; compensation ran in reverse order: undid "inner", undid "before"`,
+			Recorded: []string{"a", "b", "boom", "undo-b", "undo-a"},
+		},
+		{
+			// The callee registering more than one compensation, so the assertion
+			// covers ordering *within* the callee as well as across its boundary:
+			// the callee's own two steps undo in their own reverse order first,
+			// nested inside the overall reverse-of-registration sequence.
+			Name: "a callee's own steps undo in reverse among themselves, inside the caller's reversal",
+			Workflow: &v1.Workflow{
+				Name:    "undo-call-reverse-nested",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					undoing(records("before", base, "a"), base, "/do/undo"),
+					callNode("provision", calleeWith(
+						undoing(records("first", base, "b"), base, "/do/undo"),
+						undoing(records("second", base, "c"), base, "/do/undo"),
+					), nil),
+					fails("boom", base, "boom"),
+				},
+			},
+			Fails: true,
+			Summary: `; compensation ran in reverse order: undid "second", undid "first", ` +
+				`undid "before"`,
+			Recorded: []string{"a", "b", "c", "boom", "undo-c", "undo-b", "undo-a"},
+		},
+		{
+			// A failing compensation inside the callee must not stop the caller's
+			// own compensation from running — the same "a failing compensation does
+			// not stop the rest" rule [UndoCases] pins, now asserted across a call
+			// boundary rather than only within one level.
+			Name: "a compensation that fails inside a callee does not stop the caller's own",
+			Workflow: &v1.Workflow{
+				Name:    "undo-call-partial",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					undoing(records("before", base, "a"), base, "/do/undo"),
+					callNode("provision", calleeWith(
+						undoing(records("inner", base, "b"), base, "/fail/undo"),
+					), nil),
+					fails("boom", base, "boom"),
+				},
+			},
+			Fails: true,
+			Summary: `; compensation ran in reverse order: could not undo "inner": ` +
+				notFound("undo-b") + `, undid "before"`,
+			Recorded: []string{"a", "b", "boom", "undo-b", "undo-a"},
+		},
+		{
+			// The negative direction: a call whose callee succeeds and whose caller
+			// also succeeds must take nothing back, exactly as an all-succeeding
+			// top-level run does in [UndoCases].
+			Name: "a run that succeeds through a call compensates nothing",
+			Workflow: &v1.Workflow{
+				Name:    "undo-call-unused",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					undoing(records("before", base, "a"), base, "/do/undo"),
+					callNode("provision", calleeWith(
+						undoing(records("inner", base, "b"), base, "/do/undo"),
+					), nil),
+				},
+			},
+			Fails:    false,
+			Recorded: []string{"a", "b"},
 		},
 	}
 }

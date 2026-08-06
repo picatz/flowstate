@@ -296,7 +296,7 @@ func TestUndoPlacementIsRefusedWithAPosition(t *testing.T) {
 		want string
 	}{
 		{
-			name: "inside a loop body",
+			name: "inside a for_each body",
 			src: `edition: v2026.2
 name: t
 steps:
@@ -312,7 +312,10 @@ steps:
               message: bye
 `,
 			line: 11,
-			want: "only supported on a top-level step",
+			// The for_each/parallel refusal is about registration order under
+			// concurrency, and must say so rather than reusing the loop's wording —
+			// [TestUndoInsideANamedLoopBodyIsRefused] pins the accurate loop message.
+			want: "the order work registers in inside concurrent control flow is not the same",
 		},
 		{
 			name: "inside a parallel branch",
@@ -330,7 +333,7 @@ steps:
                 message: bye
 `,
 			line: 10,
-			want: "only supported on a top-level step",
+			want: "the order work registers in inside concurrent control flow is not the same",
 		},
 		{
 			name: "on control flow",
@@ -369,6 +372,147 @@ steps:
 			assert.True(t, found, "no diagnostic said %q; got:\n%s", tt.want, ds.Error())
 		})
 	}
+}
+
+// TestUndoInsideANamedLoopBodyIsRefused pins the loop-specific refusal — issue
+// #219's problem statement that a `loop:` body must not be told it is "inside a
+// for_each body or a parallel branch", which is simply false for it and would
+// send an author looking for a fan-out that is not there. A loop's own message
+// names carried state, which is the actual, distinct reason it is refused: a
+// sequential loop's registration order is perfectly well defined, unlike a
+// for_each's or a parallel's, so the two placements need different sentences even
+// though both are refused.
+func TestUndoInsideANamedLoopBodyIsRefused(t *testing.T) {
+	t.Parallel()
+
+	src := `edition: v2026.2
+name: t
+steps:
+  - id: pages
+    loop:
+      as: cursor
+      init: "${0}"
+      update: "${cursor + 1}"
+      until: "${cursor >= 1}"
+      steps:
+        - id: inner
+          log:
+            message: hi
+          undo:
+            log:
+              message: bye
+`
+
+	ds, err := flowfile.ValidateSource([]byte(src))
+	require.NoError(t, err)
+
+	var found bool
+	for _, d := range ds {
+		if strings.Contains(d.Error(), "is inside a loop body") {
+			found = true
+			assert.NotContains(t, d.Error(), "for_each body or a parallel branch",
+				"a loop body's refusal borrowed the for_each/parallel wording, naming a "+
+					"construct that is not in this file:\n%s", d.Error())
+			assert.Contains(t, d.Error(), "carries state between iterations",
+				"the loop refusal does not say why a loop is different from concurrent control flow:\n%s", d.Error())
+		}
+	}
+	assert.True(t, found, "no diagnostic refused the compensation inside the loop body; got:\n%s", ds.Error())
+}
+
+// TestUndoOnACallStepIsRefused pins issue #219 problem 1: a compensation written
+// on the `call:` step itself is still refused — a call has no effect of its own
+// to take back under compose-through any more than it did before — but the
+// message must now point at the callee's own steps rather than lump a call in
+// with "a wait and a parallel block have no effect of their own", which names the
+// wrong construct for a call.
+func TestUndoOnACallStepIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "callee.yaml", simpleCalleeSource)
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.2
+name: caller
+steps:
+  - id: provision
+    call: ./callee.yaml
+    with:
+      tenant: acme
+    undo:
+      log:
+        message: bye
+`)
+
+	wf, _, err := flowfile.ParseFile(caller)
+	require.NoError(t, err)
+
+	ds := flowfile.Validate(wf)
+	require.NotEmpty(t, ds, "a compensation on a `call:` step validated and should not have")
+
+	var found bool
+	for _, d := range ds {
+		if strings.Contains(d.Error(), "only supported on a step that runs a task") {
+			found = true
+			assert.Contains(t, d.Error(), "callee's own steps",
+				"the refusal does not point an author at where the compensation belongs:\n%s", d.Error())
+			assert.NotContains(t, d.Error(), "a wait and a parallel block",
+				"a `call:` step's refusal reused the control-flow wording, which names the wrong construct:\n%s", d.Error())
+		}
+	}
+	assert.True(t, found, "no diagnostic refused the compensation on the call step; got:\n%s", ds.Error())
+}
+
+// TestUndoInsideACalleeValidates is issue #219 problem 2's author-time face: a
+// callee's own task-step `undo:` must be accepted, whether the callee is
+// validated on its own or reached through a caller's `call:` — both are
+// [v1.UndoScopeTopLevel] / [v1.UndoScopeCall] respectively, and
+// [v1.CheckUndoPlacement] allows both. Before compose-through this validated
+// (validateAtDepth always treated a callee's own top level as unnested) while the
+// engine refused it at run time — a false accept that would have sent an author
+// straight into a run failing on its first step; this test also stands as the
+// regression pin for that half of the fix now that both agree.
+func TestUndoInsideACalleeValidates(t *testing.T) {
+	calleeSrc := `edition: v2026.2
+name: callee
+inputs:
+  tenant:
+    type: string
+    required: true
+steps:
+  - id: provision
+    http:
+      url: https://example.com/create
+      outputs: '${ {"id": response.body} }'
+    undo:
+      log:
+        message: ${steps.provision.id}
+outputs:
+  greeting:
+    value: ${'hello ' + inputs.tenant}
+`
+
+	t.Run("standalone", func(t *testing.T) {
+		ds, err := flowfile.ValidateSource([]byte(calleeSrc))
+		require.NoError(t, err)
+		assert.Empty(t, ds, "a callee's own task-step undo was refused when validated on its own")
+	})
+
+	t.Run("reached through a call", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "callee.yaml", calleeSrc)
+		caller := writeFile(t, dir, "caller.yaml", `edition: v2026.2
+name: caller
+steps:
+  - id: provision
+    call: ./callee.yaml
+    with:
+      tenant: acme
+`)
+
+		wf, _, err := flowfile.ParseFile(caller)
+		require.NoError(t, err)
+
+		ds := flowfile.Validate(wf)
+		assert.Empty(t, ds, "a callee's own task-step undo was refused when reached through a caller's call: %s", ds.Error())
+	})
 }
 
 // TestUndoIsReservedAgainstTaskNames keeps the grammar unambiguous.

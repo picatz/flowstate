@@ -1235,6 +1235,48 @@ func TestRunWorkflowUndo(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowUndoCall is the durable half of the compose-through cases —
+// issue #219's decision that a callee's compensations register onto the same
+// run-level undo stack a top-level step's would, and undo in reverse across the
+// `call:` boundary. The local driver runs the identical [tests.UndoCallCases].
+//
+// This is exactly the shape [TestRunWorkflowUndo] exists for, pointed at the one
+// case that shape could not previously express: the durable executor shares
+// `e.undo` by pointer with the nested executor a call descends into (see
+// [executor.runCall]), so what makes this pass is that sharing already being
+// correct — the only thing that changed to make this legal was the placement
+// check at [v1.CheckUndoPlacement], not how registration reaches the log.
+func TestRunWorkflowUndoCall(t *testing.T) {
+	for index, outline := range tests.UndoCallCases(undoPlaceholderBase) {
+		t.Run(outline.Name, func(t *testing.T) {
+			base, recorded := tests.NewUndoServer(t)
+			test := tests.UndoCallCases(base)[index]
+
+			testSuite := &testsuite.WorkflowTestSuite{}
+			env := testSuite.NewTestWorkflowEnvironment()
+			env.RegisterWorkflow(engine.Run)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
+
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow})
+			require.True(t, env.IsWorkflowCompleted())
+
+			err := env.GetWorkflowError()
+			if !test.Fails {
+				require.NoError(t, err, "the run was expected to succeed")
+			} else {
+				require.Error(t, err, "the run was expected to fail")
+				require.Contains(t, err.Error(), test.Summary,
+					"the failure does not carry the account of what was compensated across the call boundary")
+			}
+
+			require.Equal(t, test.Recorded, recorded(),
+				"the effects that happened, and their order, are not what compensating across a call should have produced")
+		})
+	}
+}
+
 // TestRunWorkflowUndoOnCancellation is the durable half of the cancellation cases.
 //
 // The local driver runs the identical [tests.UndoCancellationCases]. This is the

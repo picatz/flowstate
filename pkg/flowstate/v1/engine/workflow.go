@@ -273,6 +273,11 @@ func Run(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error
 		// suspend, fail — so the run that fails is usually not the run that did the
 		// work it has to take back.
 		undo: v1.NewUndoLog(st.GetPendingUndo()),
+
+		// The run's own top level. Explicit rather than relied on as the zero
+		// value: every other construction site sets this deliberately, and this
+		// one should read the same way.
+		undoScope: v1.UndoScopeTopLevel,
 	}
 
 	err := exec.runNodes(st.Workflow.GetSteps(), 0, 0)

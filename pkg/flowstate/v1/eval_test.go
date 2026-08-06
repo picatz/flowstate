@@ -417,6 +417,32 @@ func TestRunWorkflowUndo(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowUndoCall is the local half of the compose-through cases: a
+// callee's compensations must register onto the caller's own undo stack and run
+// in reverse across the `call:` boundary exactly as [TestRunWorkflowUndo]'s
+// top-level cases do within one level. The engine package runs the identical
+// [tests.UndoCallCases] against the durable driver.
+func TestRunWorkflowUndoCall(t *testing.T) {
+	for index, outline := range tests.UndoCallCases(undoPlaceholderBase) {
+		t.Run(outline.Name, func(t *testing.T) {
+			base, recorded := tests.NewUndoServer(t)
+			test := tests.UndoCallCases(base)[index]
+
+			_, err := v1.Run(t.Context(), test.Workflow)
+			if !test.Fails {
+				require.NoError(t, err, "the run was expected to succeed")
+			} else {
+				require.Error(t, err, "the run was expected to fail")
+				require.Contains(t, err.Error(), test.Summary,
+					"the failure does not carry the account of what was compensated across the call boundary")
+			}
+
+			require.Equal(t, test.Recorded, recorded(),
+				"the effects that happened, and their order, are not what compensating across a call should have produced")
+		})
+	}
+}
+
 // TestRunWorkflowUndoOnCancellation is the local half of the cancellation cases.
 //
 // The engine package runs the identical [tests.UndoCancellationCases]. This is the
