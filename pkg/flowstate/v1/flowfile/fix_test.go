@@ -1306,6 +1306,113 @@ steps:
 	assert.NoError(t, err)
 }
 
+// TestFixKnowsWhichLoopExpressionsSeeTheCarriedState pins the one binding scope
+// `sees` decides that had no test — a `loop:`'s `init:` versus its `until:`/`update:`.
+//
+// A loop's `as:` binds the carried state for the body, `until:`, and `update:`, which
+// are all evaluated with the state in scope; `init:` runs *before* the loop begins, so
+// the state is not bound there and a bare name in `init:` is an ordinary reference —
+// exactly the standing a `for_each`'s `items:` has relative to its own iterator. The
+// rewriter must therefore split the two directions: a bare iterator name in `until:` or
+// `update:` is the binding and stays bare, while the same spelling in `init:` is a step
+// and must be rooted. Getting either direction wrong is the corruption class this whole
+// pass exists to stop — too narrow rewrites a live reference into the binding, too wide
+// leaves a legacy reference bare while stamping the edition, so `flow fix` exits zero on
+// a file the validator then rejects.
+//
+// Byte-for-byte, and both directions in one file, because the point is the *split*:
+//
+//   - init treated as seeing the binding — `case ..., loopInitKey:` — would leave the
+//     `init` case's `${cursor}` bare instead of rooting it, and this test's expected
+//     output (`init: ${steps.cursor}`) would not match.
+//   - `until:`/`update:` treated as not seeing it — dropping them from that case — would
+//     root their `${cursor.*}` to `${steps.cursor.*}`, and again the bytes would differ.
+//
+// Both mutations were run against these fixtures and both flip the output, so neither
+// direction rests on prose alone.
+func TestFixKnowsWhichLoopExpressionsSeeTheCarriedState(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name, src, want string
+	}{
+		{
+			// The sharpest split: the iterator name `cursor` is *also* a step id, and the
+			// same spelling appears in `init:` (rooted — the state is not bound yet) and in
+			// `update:`/`until:`/the body (bare — the state is bound). Only a rewriter that
+			// distinguishes the two scopes produces this output; one that treated them alike
+			// would rewrite all four or none.
+			name: "iterator name is also a step id",
+			src: "edition: v2026.2\nname: t\n" +
+				"steps:\n" +
+				"  - id: cursor\n    log:\n      message: standalone\n" +
+				"  - id: pager\n    loop:\n" +
+				"      as: cursor\n" +
+				"      init: ${cursor}\n" +
+				"      update: ${cursor.next}\n" +
+				"      until: ${cursor.done}\n" +
+				"      max_iterations: 10\n" +
+				"      steps:\n        - id: body\n          log:\n            message: ${cursor.page}\n",
+			want: "edition: v2026.2\nname: t\n" +
+				"steps:\n" +
+				"  - id: cursor\n    log:\n      message: standalone\n" +
+				"  - id: pager\n    loop:\n" +
+				"      as: cursor\n" +
+				"      init: ${steps.cursor}\n" +
+				"      update: ${cursor.next}\n" +
+				"      until: ${cursor.done}\n" +
+				"      max_iterations: 10\n" +
+				"      steps:\n        - id: body\n          log:\n            message: ${cursor.page}\n",
+		},
+		{
+			// The plain reading of the same rule: `init:` naming a *different* step id
+			// (`seed`) roots it, because `init:` is an ordinary reference site; the carried
+			// name `cursor` in `until:`/`update:` stays bare.
+			name: "init names a distinct step, iterator stays bare",
+			src: "edition: v2026.2\nname: t\n" +
+				"steps:\n" +
+				"  - id: seed\n    log:\n      message: hi\n" +
+				"  - id: pager\n    loop:\n" +
+				"      as: cursor\n" +
+				"      init: ${seed}\n" +
+				"      update: ${cursor.next}\n" +
+				"      until: ${cursor.done}\n" +
+				"      max_iterations: 10\n" +
+				"      steps:\n        - id: body\n          log:\n            message: ${cursor.page}\n",
+			want: "edition: v2026.2\nname: t\n" +
+				"steps:\n" +
+				"  - id: seed\n    log:\n      message: hi\n" +
+				"  - id: pager\n    loop:\n" +
+				"      as: cursor\n" +
+				"      init: ${steps.seed}\n" +
+				"      update: ${cursor.next}\n" +
+				"      until: ${cursor.done}\n" +
+				"      max_iterations: 10\n" +
+				"      steps:\n        - id: body\n          log:\n            message: ${cursor.page}\n",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			result, err := flowfile.Fix([]byte(test.src))
+			require.NoError(t, err)
+			assert.Equal(t, test.want, string(result.Source),
+				"init: is rooted (state not yet bound) while until:/update: stay bare (state in scope)")
+
+			// The rewrite must land on a file the validator accepts — a bare reference left
+			// where the edition is stamped is the failure mode `flow fix` promises not to
+			// produce, and it passes a byte check while failing this one.
+			_, _, err = flowfile.Parse(result.Source)
+			assert.NoError(t, err)
+
+			// And it must be a fixed point: a second pass has nothing to root.
+			again, err := flowfile.Fix(result.Source)
+			require.NoError(t, err)
+			assert.Equal(t, test.want, string(again.Source), "fix must be idempotent")
+		})
+	}
+}
+
 // TestFixRootsAReferenceAfterANonASCIICharacter is the unit mismatch between what
 // cel-go counts and what a Go string is indexed in.
 //
