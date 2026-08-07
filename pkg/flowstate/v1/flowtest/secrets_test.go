@@ -219,7 +219,7 @@ tests:
 	require.NotContains(t, fmt.Sprintf("%v", report), material)
 	require.NotContains(t, fmt.Sprintf("%+v", report), material)
 	require.NotContains(t, fmt.Sprintf("%#v", report), material)
-	require.NotContains(t, fmt.Sprintf("%s", report), material)
+	require.NotContains(t, report.String(), material)
 
 	// And directly on the type every resolution produces, on a struct
 	// holding it through an unexported field, and on a slice of those — the
@@ -229,7 +229,7 @@ tests:
 	require.NotContains(t, fmt.Sprintf("%v", secret), material)
 	require.NotContains(t, fmt.Sprintf("%+v", secret), material)
 	require.NotContains(t, fmt.Sprintf("%#v", secret), material)
-	require.NotContains(t, fmt.Sprintf("%s", secret), material)
+	require.NotContains(t, secret.String(), material)
 
 	type holder struct{ secret secrets.Secret }
 	held := holder{secret: secret}
