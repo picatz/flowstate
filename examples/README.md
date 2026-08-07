@@ -62,6 +62,8 @@ $ flow validate examples/hello-world/workflow.yaml
 | [scheduled-report](scheduled-report) | `triggers:` — the cadence a file declares, which `flow schedule create` turns into a schedule and `flow run` ignores | no |
 | [observability](observability) | The docker-compose observability lab: one trace id from `flow run` through Grafana Tempo to the Temporal UI | no |
 | [embedding](embedding/README.md) | Flowstate as a Go library — `pkg/flowstate/embed`: compiling `flowfile/workflow.yaml` from bytes, a custom Go task registered with no `.proto` descriptor, and running it locally or (with `--durable`) against a real Temporal server. A Go program, not a `flow run`able Flowfile alone — read its README | no |
+| [operations/tenant-routing](operations/tenant-routing/) | Per-tenant worker routing — `flow server --task-queue-prefix` and `flow worker --tenant`, one fleet per tenant with that tenant's own secrets and egress policy, why the composed queue name cannot be forged, and the two half-configured command lines refused at startup. A two-process demo rather than a Flowfile, so read its README | no |
+| [operations/worker-versioning](operations/worker-versioning/) | `flow worker --deployment-name --build-id` — a run pinned to the interpreter it started on, upgraded at Continue-As-New, and the refusals for half a version and for none. Also a two-process demo, so read its README | no |
 | [plugins/greet](plugins/greet/) | A task a plugin provides, written `example.greet:` and type-checked against the plugin's own schema — needs a built plugin and a worker, so read its README | no |
 | [plugins/vcs](plugins/vcs/) | `vcs.log` and `vcs.diff` — version-control tasks (go-git) that clone in memory, per invocation, and return content rather than a workspace path — needs a built plugin and a worker, so read its README | yes |
 | [plugins/github](plugins/github/) | `github.pull_request_get` (read) and `github.issue_comment` (a mutation, in a separate parameterized file so it cannot run by accident), plus a read/audit tier (`github.pull_request_list`, `github.pull_request_files`, `github.issue_get`, `github.issue_list`) in a review-triage example — needs a built plugin, a worker, and for the comment file a credential, so read its README | yes |
@@ -71,27 +73,29 @@ $ flow validate examples/hello-world/workflow.yaml
 | [enterprise-incident-response](enterprise-incident-response) | A `wait_for_signal:` page with an escalation on timeout, `parallel:` evidence gathering while it waits, and two distinct `signals:` claims separating who may claim an incident from who may authorize remediation | yes |
 | [enterprise-customer-onboarding](enterprise-customer-onboarding) | `call:` into four reusable per-resource sub-workflows, each provisioner's own task step carrying `undo:` that composes back onto the run's undo stack across the `call:` boundary, a `wait_until:` grace period sized per plan, and an account-manager `signals:` confirmation gate — see [docs/USE_CASES.md](../docs/USE_CASES.md) for the composition gap this file found and, once #225 closed it, the composed shape it now demonstrates | yes |
 
-Sixteen of these hold more than a `workflow.yaml`, and those sixteen have a `README.md`
-saying what the rest of the directory is for: [http-secret](http-secret),
-[vault-secret](vault-secret), [keychain-secret](keychain-secret),
-[onepassword-secret](onepassword-secret), [command-secret](command-secret), and
-[http-federated](http-federated) ship the policy that authorizes what their step does,
-[task-shape-policy](task-shape-policy) ships the deployment-side policy that refuses
-one, [plugins/greet](plugins/greet/), [plugins/vcs](plugins/vcs/),
-[plugins/github](plugins/github/), and [plugins/git](plugins/git/) each need a plugin
-built and a worker told where to find it, [observability](observability) is a whole
-docker-compose lab, [expense-approval](expense-approval),
-[ops-healthcheck](ops-healthcheck), [data-enrichment](data-enrichment), and
-[order-fulfillment](order-fulfillment) each carry a README naming the one durability
-property the example demonstrates and the two-command local-then-durable contrast, per
-the examples charter (#165), and [embedding](embedding/README.md) is a Go program rather than a
-Flowfile `flow` runs on its own, so its README says how to run it instead. Everywhere
-else the workflow's own comments are the documentation, and a README repeating them
-would be one more thing to leave stale — which is also why
+A directory that holds more than a `workflow.yaml` carries a `README.md` saying what
+the rest of it is for. The reasons a directory needs one are few, and they are the
+thing worth knowing rather than the membership: a secret- or credential-using example
+ships the policy that authorizes what its step does; `task-shape-policy` ships the
+deployment-side policy that refuses one; anything under `plugins/` needs a plugin
+built and a worker told where to find it; `observability` is a whole docker-compose
+lab; the examples charter (#165) asks a few to name the one durability property they
+demonstrate alongside the two-command local-then-durable contrast; `embedding` is a Go
+program rather than a Flowfile `flow` runs on its own, so its README says how to run
+it instead; and `operations/` holds walkthroughs of capabilities no Flowfile can
+express at all.
+
+Everywhere else the workflow's own comments are the documentation, and a README
+repeating them would be one more thing to leave stale. Which is also why
 [call-a-workflow](call-a-workflow), [progressive-rollout](progressive-rollout) and
 [fan-out-calls](fan-out-calls) each hold two Flowfiles and have none: the second one is
 called by the first, and its own comments are exactly as much documentation as any
 other example's.
+
+This paragraph used to prove its own point. It opened "Sixteen of these", went on to
+list seventeen, and by then twenty directories on disk actually had one — so it was
+wrong in three different ways at once about a fact anybody could have counted. It no
+longer counts or enumerates, for exactly the reason it gives.
 
 `plugins/greet`, `plugins/vcs`, `plugins/github`, and `plugins/git` also sit a directory
 deeper than the rest, which is deliberate: everything matching `examples/*/workflow.yaml`
@@ -102,6 +106,12 @@ names `greet`, a task only `examples/embedding`'s own program registers, so it s
 `embedding/flowfile/workflow.yaml` rather than `embedding/workflow.yaml` to stay out of
 that single-level glob — `flow fix --check examples/` and `flow test examples/` still
 walk the whole tree and reach it.
+
+`operations/` sits a directory deeper too, for a related but distinct reason: it holds
+no `workflow.yaml` at all. Its two walkthroughs are about what a *worker process* does,
+which nothing in a Flowfile can express or observe, so each one runs an existing example
+rather than shipping a file of its own that CI would not check. Its README argues the
+placement.
 
 Where a directory holds an `inputs.json` beside its `workflow.yaml`, that file is what
 the example is run with — by you and by CI, through the same flag:
