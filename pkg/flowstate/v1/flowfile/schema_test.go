@@ -144,6 +144,99 @@ steps:
 `,
 			want: `unknown task "nosuchtask"`,
 		},
+
+		// #158: a task input written as a direct reference to a name this file types
+		// gets the same schema check a literal gets. The type is a property of the
+		// file — the var's literal, the input's declaration — so a value the field can
+		// never hold is reported before the run rather than at it.
+		{
+			name: "a var literal of the wrong type routed through a reference",
+			src: `edition: v2026.2
+name: t
+vars:
+  flag: "yes"
+steps:
+  - id: a
+    http:
+      url: https://example.com
+      parse_json: ${vars.flag}
+`,
+			want: "expected true or false, but this is a string (from ${vars.flag})",
+		},
+		{
+			name: "a declared input of the wrong type routed through a reference",
+			src: `edition: v2026.2
+name: t
+inputs:
+  count:
+    type: int
+steps:
+  - id: a
+    log:
+      message: ${inputs.count}
+`,
+			want: "expected a string, but this is a whole number (from ${inputs.count})",
+		},
+
+		// The negative direction, which matters more: a reference whose type the file
+		// does *not* fix must not be refused, or the check trades a missing diagnostic
+		// for a false one.
+		{
+			name: "a var literal of the right type is not refused",
+			src: `edition: v2026.2
+name: t
+vars:
+  note: hello
+steps:
+  - id: a
+    log:
+      message: ${vars.note}
+`,
+		},
+		{
+			name: "a declared input of the right type is not refused",
+			src: `edition: v2026.2
+name: t
+inputs:
+  note:
+    type: string
+steps:
+  - id: a
+    log:
+      message: ${inputs.note}
+`,
+		},
+		{
+			// The false-diagnostic guard: a computed expression has a type no part of
+			// the file fixes — `string(inputs.count)` is a string however `count` is
+			// declared — so it is left to the run rather than judged here.
+			name: "a computed expression over a typed input is not refused",
+			src: `edition: v2026.2
+name: t
+inputs:
+  count:
+    type: int
+steps:
+  - id: a
+    log:
+      message: ${string(inputs.count)}
+`,
+		},
+		{
+			// A var whose value is itself an expression has no type knowable here, so
+			// a reference to it stays unchecked even into a typed field.
+			name: "a reference to an expression-valued var is not refused",
+			src: `edition: v2026.2
+name: t
+vars:
+  computed: ${1 + 1}
+steps:
+  - id: a
+    http:
+      url: https://example.com
+      parse_json: ${vars.computed}
+`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -226,6 +319,55 @@ steps:
 	// The value of the offending input begins at column 15 of line 5.
 	if ds[0].Line != 6 || ds[0].Column != 15 {
 		t.Errorf("position = %d:%d, want 6:15\nreported: %s", ds[0].Line, ds[0].Column, ds[0].Error())
+	}
+}
+
+// TestExpressionInputTypeMismatchIsPositionedAndNamesBothTypes pins the #158
+// diagnostic exactly: one positioned message that names the type the field expects and
+// the type the reference resolves to, so an author reads what is wrong and where
+// without running the workflow.
+func TestExpressionInputTypeMismatchIsPositionedAndNamesBothTypes(t *testing.T) {
+	t.Parallel()
+
+	src := `edition: v2026.2
+name: t
+vars:
+  flag: "yes"
+steps:
+  - id: a
+    http:
+      url: https://example.com
+      parse_json: ${vars.flag}
+`
+	ds, err := flowfile.ValidateSource([]byte(src))
+	if err != nil {
+		t.Fatalf("ValidateSource() error: %v", err)
+	}
+
+	var found *flowfile.Diagnostic
+	for i := range ds {
+		if ds[i].Code == "type-mismatch" {
+			found = &ds[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("no type_mismatch diagnostic; got:\n%s", ds.Error())
+	}
+
+	// Names the expected type (bool → "true or false") and the actual (string), and
+	// the reference it came from — byte for byte.
+	const want = `expected true or false, but this is a string (from ${vars.flag})`
+	if got := found.Message; got != want {
+		t.Errorf("message =\n  %q\nwant\n  %q", got, want)
+	}
+	if found.Step != "a" || found.Field != "parse_json" {
+		t.Errorf("diagnostic names step %q input %q, want step \"a\" input \"parse_json\"", found.Step, found.Field)
+	}
+
+	// Positioned at the input's value, on the `parse_json:` line.
+	if found.Line != 9 {
+		t.Errorf("line = %d, want 9 (reported: %s)", found.Line, found.Error())
 	}
 }
 

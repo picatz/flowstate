@@ -621,6 +621,12 @@ func validateTaskStep(id string, node *v1.Node, task *v1.Task, scope, inner refS
 	// about the task.
 	ds = append(ds, validateTaskInputs(id, task)...)
 
+	// A literal input is type-checked against the field by validateTaskInputs; an
+	// input written as a direct reference to a name this file types — `${inputs.x}`,
+	// `${vars.x}` — is checked here, where the workflow is in hand to read the
+	// declaration from (#158). A computed expression stays unchecked, deliberately.
+	ds = append(ds, checkExpressionInputTypes(id, task, wf)...)
+
 	checkable, _ := v1.ResolvableInputs(task.GetName(), task.GetInputs())
 	for _, name := range sortedInputNames(checkable) {
 		ds = append(ds, validateInputRefs(id, name, checkable[name], inner, index, wf)...)
