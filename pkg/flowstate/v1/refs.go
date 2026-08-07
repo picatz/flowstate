@@ -368,6 +368,17 @@ func CollectNodeRefs(node *Node, prev *Workflow_StepOutputs, refs map[string]map
 		CollectValueRefs(kind.Wait.GetDurationExpr(), prev, refs)
 		CollectValueRefs(kind.Wait.GetTimeoutExpr(), prev, refs)
 
+		// A `wait_for_signal:`'s own `outputs:` shaping — the fourth and last
+		// expression position a wait can hold, and the one whose omission would be
+		// hardest to see. These evaluate *after* the wait resolves, which is
+		// precisely when a run that suspended in the wait has already crossed a
+		// Continue-As-New: an output only this expression names would be compacted
+		// away while the run slept, and the gate would fail on resume naming a step
+		// that is no longer there. Growing the message means growing this.
+		for _, value := range kind.Wait.GetSignal().GetOutputs() {
+			CollectValueRefs(value, prev, refs)
+		}
+
 	case *Node_Call:
 		for _, value := range kind.Call.GetArguments() {
 			CollectValueRefs(value, prev, refs)

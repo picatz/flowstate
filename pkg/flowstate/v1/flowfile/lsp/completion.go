@@ -158,6 +158,16 @@ var dslKeys = map[string][]dslKey{
 		{name: "name", detail: "string", docs: "The signal this step waits for, and what a sender addresses with `flow signal <workflow-id> <name>`."},
 		{name: "timeout", detail: "duration", docs: "Bounds the wait. A gate that lapses is not a failure: the step produces `timed_out: true` and the run carries on, " +
 			"so an author branches on it with `if: ${!" + v1.StepsRoot + ".approval.timed_out}`. Omit it to wait indefinitely."},
+		{name: "outputs", detail: "map", docs: "Shapes what this step produces, the way the http task's own `outputs:` shapes a response.\n\n" +
+			"Each value is evaluated once, the moment the wait resolves, with the wait's result bound bare — `" +
+			v1.PayloadOutput + "`, `" + v1.SenderOutput + "`, `" + v1.TimedOutOutput + "`, and `" + v1.NowIdentifier +
+			"` — over the ordinary scope, so `" + v1.StepsRoot + ".*` and `" + v1.InputsRoot + ".*` read here as they do in an `if:`:\n\n" +
+			"```yaml\noutputs:\n  approved: ${has(" + v1.PayloadOutput + ".approved) && " + v1.PayloadOutput + ".approved}\n  " +
+			v1.TimedOutOutput + ": ${" + v1.TimedOutOutput + "}\n```\n\n" +
+			"It **replaces** the wait's own outputs rather than adding to them, exactly as the http task's does — so `" +
+			v1.PayloadOutput + "` and `" + v1.SenderOutput + "` are gone unless a line re-exposes them, and reading one that was dropped is a `flow validate` error rather than an empty value.\n\n" +
+			"The point is to state a gate once: later `if:`s and the workflow's `outputs:` read `${" + v1.StepsRoot +
+			".approval.approved}` instead of each re-deriving the condition, so the report cannot disagree with the branch that ran."},
 	},
 	"for_each": {
 		{name: "items", detail: "expression", docs: "An expression producing the list to iterate, written as `${...}`."},
@@ -222,7 +232,9 @@ func completeAt(doc *document, pos lsp.Position) *lsp.CompletionList {
 	// Inside ${...} nothing else applies: the cursor is in an expression, not in
 	// YAML structure.
 	if inner, ok := openExpression(before); ok {
-		return completeInExpression(pos, inner, referenceScope(doc, pos, bindsClock(key, path), current, earlier))
+		scope := referenceScope(doc, pos, bindsClock(key, path), current, earlier)
+		scope.locals = append(waitResultCandidates(path), scope.locals...)
+		return completeInExpression(pos, inner, scope)
 	}
 
 	word, replace := wordBefore(pos, before)
@@ -449,6 +461,45 @@ const waitUntilKey = "wait_until"
 // rule they implement is one rule, so a change to either belongs in both.
 func bindsClock(key string, path []string) bool {
 	return key == waitUntilKey && endsWith(path, "steps")
+}
+
+// waitResultCandidates are the names bound bare inside a `wait_for_signal:`'s
+// `outputs:` shaping, and nowhere else in the language.
+//
+// Offered ahead of the rest of the scope because they are the whole reason an
+// author is typing here: a shaping expression exists to read the wait's own
+// result. Decided from the key path rather than from the model, for the reason
+// [bindsClock] is: completion is asked for while the document does not parse.
+//
+// `outputs:` alone is not enough to decide it — the workflow's own declared
+// outputs and the http task's shaping use the same word, and neither binds these
+// — so the path must show the wait above it.
+func waitResultCandidates(path []string) []refCandidate {
+	if !endsWith(path, "wait_for_signal", "outputs") {
+		return nil
+	}
+
+	return []refCandidate{
+		{
+			name:   v1.PayloadOutput,
+			kind:   lsp.CIKVariable,
+			detail: "map",
+			docs: "What the sender sent, unchanged and untrusted. Bound bare here because this expression is the wait's own; " +
+				"from a later step the same data is `${" + v1.StepsRoot + ".<id>." + v1.PayloadOutput + "}` — unless this `outputs:` block drops it, which it does unless a line re-exposes it.",
+		},
+		{
+			name:   v1.SenderOutput,
+			kind:   lsp.CIKVariable,
+			detail: "map",
+			docs: "Who the server attests sent the signal — `" + v1.SenderOutput + ".identity.subject`, `." + v1.SenderOutput + ".local` — never anything the payload claims.",
+		},
+		{
+			name:   v1.TimedOutOutput,
+			kind:   lsp.CIKVariable,
+			detail: "bool",
+			docs: "Whether the wait ended because nobody answered in time. A lapsed gate is an ordinary outcome, not a failure.",
+		},
+	}
 }
 
 // stepAtIfParsed returns the model's step at a position, or nil when the document

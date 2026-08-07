@@ -327,7 +327,7 @@ steps:
       |
 edition: v2026.2
 `,
-			exact: []string{"name", "timeout"},
+			exact: []string{"name", "timeout", "outputs"},
 		},
 		{
 			name: "input keys inside a for_each body",

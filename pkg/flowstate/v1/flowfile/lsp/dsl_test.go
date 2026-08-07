@@ -160,7 +160,15 @@ func TestDSLKeysMatchTheDSL(t *testing.T) {
 				// carrying a timeout makes Marshal emit `name` and `timeout`.
 				Id: "gate",
 				Kind: &v1.Node_Wait{Wait: &v1.Wait{
-					Kind:    &v1.Wait_Signal{Signal: &v1.Signal{Name: "deploy-approved"}},
+					Kind: &v1.Wait_Signal{Signal: &v1.Signal{
+						Name: "deploy-approved",
+						// The gate's own `outputs:` shaping, which is the third
+						// key of this block and the only one whose values are
+						// expressions in a scope of their own.
+						Outputs: map[string]*v1.Value{
+							"approved": v1.NewExpr("has(payload.approved) && payload.approved"),
+						},
+					}},
 					Timeout: durationpb.New(3_600_000_000_000),
 				}},
 			},
@@ -276,6 +284,11 @@ func TestDSLKeysMatchTheDSL(t *testing.T) {
 		}
 		for _, declaration := range node.GetCall().GetWorkflow().GetDeclaredInputs() {
 			authored[declaration.GetName()] = true
+		}
+		// A gate's `outputs:` shaping is an open mapping too: the author names
+		// what the wait produces, exactly as they name a `vars:` binding.
+		for name := range node.GetWait().GetSignal().GetOutputs() {
+			authored[name] = true
 		}
 	}
 
@@ -1310,6 +1323,8 @@ steps:
     wait_for_signal:
       name: deploy-approved
       timeout: 24h
+      outputs:
+        approved: ${has(payload.approved) && payload.approved}
   - id: provision
     call: ./callee.yaml
     with:

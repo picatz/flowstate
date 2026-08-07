@@ -236,18 +236,101 @@ func signalSenderValue(sender *SignalSender) *Value {
 const NowIdentifier = "now"
 
 // evalWaitExpr evaluates a wait's expression with [NowIdentifier] bound.
-func evalWaitExpr(ctx context.Context, v *Value, scope *Scope, now time.Time) (ref.Val, error) {
+//
+// bound carries any further names the position sees — the wait's own result,
+// inside [ShapeSignalOutputs] — and is empty everywhere else. They join `now`
+// rather than replacing it, because every expression a wait holds sees the
+// clock and a shaping expression is no exception.
+func evalWaitExpr(ctx context.Context, v *Value, scope *Scope, now time.Time, bound map[string]ref.Val) (ref.Val, error) {
 	switch kind := v.GetKind().(type) {
 	case *Value_Literal:
 		return cel.ValueToRefValue(TypeAdapter, kind.Literal)
 	case *Value_Expr:
-		activation := scope.ActivationWith(ctx, map[string]ref.Val{
-			NowIdentifier: types.DefaultTypeAdapter.NativeToValue(now),
-		})
+		extra := make(map[string]ref.Val, len(bound)+1)
+		for name, value := range bound {
+			extra[name] = value
+		}
+		extra[NowIdentifier] = types.DefaultTypeAdapter.NativeToValue(now)
+
+		activation := scope.ActivationWith(ctx, extra)
 		return DefaultEvaluator().EvalParsedBase(ctx, scope.GetProfile(), kind.Expr, activation)
 	default:
 		return nil, fmt.Errorf("unsupported value kind %T", kind)
 	}
+}
+
+// ShapeSignalOutputs applies a `wait_for_signal:`'s own `outputs:` to the result
+// the wait produced, and is what makes a gate expressible once.
+//
+// # Where this runs
+//
+// At the moment the wait resolves, in workflow code, on both drivers, against
+// exactly the outputs that were about to be recorded — the same moment
+// [SignalOutputs] built them. That is not a convenience: it is the whole reason
+// this shape was chosen over a lazy binding. There is no new evaluation position
+// for a reader to hold in their head, nothing to re-evaluate on a later read, and
+// nothing new at the Continue-As-New seam — a shaped output is recorded like any
+// other step output and carried like one.
+//
+// # What the expressions see
+//
+// The wait's own result bound bare — [PayloadOutput], [SenderOutput],
+// [TimedOutOutput] — plus [NowIdentifier], over the enclosing scope. So
+// `${has(payload.approved) && payload.approved}` reads the sender's data, and
+// `${steps.request.id}` reads an earlier step, in the one expression.
+//
+// The bare spelling is deliberate and is the reason `flow fix` has to know about
+// this position: a file may legitimately contain a step called `payload`, and a
+// rewriter that rooted the name here would silently turn the gate into a
+// reference to that step. See the rewriter's own note.
+//
+// # Replace, not extend
+//
+// The returned outputs are *only* what was shaped. An empty or absent mapping
+// leaves the wait's own outputs untouched, so nothing changes for a wait that
+// does not ask.
+//
+// A failure here fails the step rather than producing an empty value, because the
+// values being shaped are the ones later steps branch on: an expression naming a
+// field the payload does not carry has to say so, at the step that would have
+// hidden it.
+func ShapeSignalOutputs(ctx context.Context, signal *Signal, raw *Node_Outputs, scope *Scope, now time.Time) (*Node_Outputs, error) {
+	shaping := signal.GetOutputs()
+	if len(shaping) == 0 {
+		return raw, nil
+	}
+
+	bound := make(map[string]ref.Val, len(raw.GetNamedValues()))
+	for name, value := range raw.GetNamedValues() {
+		converted, err := cel.ValueToRefValue(TypeAdapter, value.GetLiteral())
+		if err != nil {
+			return nil, fmt.Errorf("binding %q for outputs shaping: %w", name, err)
+		}
+		bound[name] = converted
+	}
+
+	out := &Node_Outputs{NamedValues: make(map[string]*Value, len(shaping))}
+
+	// Sorted, for the reason [SignalOutputs] sorts its payload entries: this
+	// result is serialized into the run's state and carried across every
+	// Continue-As-New, and evaluation order is observable through a cost limit
+	// shared by the whole set. A protobuf map has no order of its own, so
+	// without this two runs of one file could spend their budget differently.
+	for _, name := range slices.Sorted(maps.Keys(shaping)) {
+		value, err := evalWaitExpr(ctx, shaping[name], scope, now, bound)
+		if err != nil {
+			return nil, fmt.Errorf("evaluating outputs.%s: %w", name, err)
+		}
+
+		literal, err := cel.RefValueToValue(value)
+		if err != nil {
+			return nil, fmt.Errorf("converting outputs.%s: %w", name, err)
+		}
+
+		out.NamedValues[name] = &Value{Kind: &Value_Literal{Literal: literal}}
+	}
+
+	return out, nil
 }
 
 // EvalWaitDeadline resolves a `wait_until` expression to the moment it names.
@@ -274,7 +357,7 @@ func EvalWaitDeadline(ctx context.Context, until *Value, scope *Scope, now time.
 		return time.Time{}, fmt.Errorf("wait_until has no expression")
 	}
 
-	value, err := evalWaitExpr(ctx, until, scope, now)
+	value, err := evalWaitExpr(ctx, until, scope, now, nil)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("evaluating wait_until: %w", err)
 	}
@@ -404,7 +487,7 @@ func EvalWaitTimeout(ctx context.Context, wait *Wait, scope *Scope, now time.Tim
 // holds) is the one an author is least likely to mean. The message names both
 // spellings that are unambiguous.
 func evalDuration(ctx context.Context, v *Value, scope *Scope, now time.Time, label string) (time.Duration, error) {
-	value, err := evalWaitExpr(ctx, v, scope, now)
+	value, err := evalWaitExpr(ctx, v, scope, now, nil)
 	if err != nil {
 		return 0, fmt.Errorf("evaluating %s: %w", label, err)
 	}

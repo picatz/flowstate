@@ -1603,8 +1603,13 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 	// sharing a top-level var's name, which is the opposite failure and just as
 	// bad. Only the document's body is the workflow; everything reached from it is
 	// a step, a task, or something inside one.
-	var walk func(n ast.Node, task taskScope, steps map[string]bool, workflow bool)
-	walk = func(n ast.Node, task taskScope, steps map[string]bool, workflow bool) {
+	// waiting marks the subtree under a `wait_for_signal:` key, which is the only
+	// place a wait's own result is bound bare. Carried as a flag rather than
+	// recognised by the `outputs:` key alone, because `outputs:` is also the http
+	// task's own shaping key and the workflow's declared-output block — subtracting
+	// `payload` in either of those would leave a real step reference bare.
+	var walk func(n ast.Node, task taskScope, steps map[string]bool, workflow, waiting bool)
+	walk = func(n ast.Node, task taskScope, steps map[string]bool, workflow, waiting bool) {
 		switch node := unwrapAnchor(n).(type) {
 		case *ast.MappingNode:
 			// The bindings a mapping introduces are written as siblings of the
@@ -1625,10 +1630,27 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 			}
 
 			for _, v := range node.Values {
-				walk(v, task, sees(steps, v, vars, iterator), false)
+				walk(v, task, sees(steps, v, vars, iterator), false, waiting)
 			}
 		case *ast.MappingValueNode:
 			name, named := keyNameOf(node.Key)
+			if named && name == waitForSignalKey {
+				// Everything below a `wait_for_signal:` is inside the wait, which is
+				// what the shaping subtraction one branch down needs to know.
+				waiting = true
+			}
+			if named && waiting && name == waitOutputsKey {
+				// A shaping expression sees the wait's own result bound bare —
+				// `payload`, `sender`, `timed_out` — so a step of the same name is
+				// not what is written here. Subtracted for this value alone, the way
+				// `now` is, because outside this mapping all three are ordinary
+				// names and a step may legitimately be called any of them.
+				//
+				// Taken from where the engine evaluates the thing, per CLAUDE.md:
+				// [v1.ShapeSignalOutputs] binds exactly these three, at the moment
+				// the wait resolves, and nowhere else.
+				steps = without(steps, waitShapingNames)
+			}
 			if named && bindsNow[name] {
 				// `now` is bound inside a wait and nowhere else. Subtracted for
 				// this value alone rather than for the step, because outside a wait
@@ -1687,20 +1709,20 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 					walk(node.Value, taskScope{
 						name:     name,
 						deferred: deferredInputs(def),
-					}, steps, false)
+					}, steps, false, waiting)
 					return
 				}
 			}
-			walk(node.Value, task, steps, false)
+			walk(node.Value, task, steps, false, waiting)
 		case *ast.SequenceNode:
 			for _, v := range node.Values {
-				walk(v, task, steps, false)
+				walk(v, task, steps, false, waiting)
 			}
 		case *ast.StringNode:
 			f.rootScalar(node, steps)
 		}
 	}
-	walk(n, taskScope{}, steps, true)
+	walk(n, taskScope{}, steps, true, false)
 }
 
 // resolved follows anchors and aliases to the node that was actually written,

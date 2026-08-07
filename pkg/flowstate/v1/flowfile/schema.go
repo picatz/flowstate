@@ -481,15 +481,43 @@ const (
 	// waitSleepKey is a `sleep:`, whose value may be a duration or an expression.
 	waitSleepKey = "sleep"
 
-	// waitForSignalKey opens a mapping whose `timeout:` may be an expression. The
-	// subtree rather than the `timeout:` key itself is what gets the binding
-	// subtracted, because a bare `timeout:` elsewhere is a *step's* activity
-	// timeout — an ordinary duration, in a scope with no clock — and subtracting
-	// there would be the "too wide" failure [sees] warns about. Inside this
-	// mapping the only other key is `name:`, which the compiler refuses to read as
-	// an expression at all, so nothing rootable is suppressed.
+	// waitForSignalKey opens a mapping whose `timeout:` may be an expression, and
+	// whose `outputs:` values are expressions. The subtree rather than the
+	// `timeout:` key itself is what gets the `now` binding subtracted, because a
+	// bare `timeout:` elsewhere is a *step's* activity timeout — an ordinary
+	// duration, in a scope with no clock — and subtracting there would be the "too
+	// wide" failure [sees] warns about. `name:` is the only other key, and the
+	// compiler refuses to read it as an expression at all, so nothing rootable is
+	// suppressed by taking the whole subtree.
 	waitForSignalKey = "wait_for_signal"
+
+	// waitOutputsKey is a `wait_for_signal:`'s output shaping, and the *only* place
+	// the three names below are bound.
+	//
+	// Narrower than the subtree above, deliberately. `now` is bound everywhere in a
+	// wait because a wait is evaluated in workflow code holding a clock whichever
+	// key you are under; the wait's own *result* exists only once the wait has
+	// resolved, which is only in here. Subtracting these under `timeout:` as well
+	// would leave a legitimate `${payload.deadline}` — a step called `payload` — bare
+	// while the edition is stamped, which is the other way this rewriter breaks a
+	// file.
+	waitOutputsKey = "outputs"
 )
+
+// waitShapingNames are the names a `wait_for_signal:`'s `outputs:` binds bare: the
+// wait's own result, as [v1.ShapeSignalOutputs] binds it.
+//
+// A file may legitimately contain a step called `payload`, `sender`, or
+// `timed_out` — none of them is reserved, because outside this one mapping they
+// are ordinary names — so a rewriter that rooted them here would turn a working
+// gate into a reference to that step, and the result would still pass
+// `flow validate`. That is the exact class CLAUDE.md's rewriter section records,
+// and it is why these are subtracted rather than trusted to be unusual.
+var waitShapingNames = map[string]bool{
+	v1.PayloadOutput:  true,
+	v1.SenderOutput:   true,
+	v1.TimedOutOutput: true,
+}
 
 // bindsNow is the set of keys under which `now` is bound, which the rewriter reads
 // as one thing so that no caller can know a subset of it.

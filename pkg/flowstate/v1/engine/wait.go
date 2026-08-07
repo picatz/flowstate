@@ -61,7 +61,32 @@ func (e *executor) runWait(node *v1.Node, wait *v1.Wait) error {
 		if err != nil {
 			return nodeFailed(err)
 		}
-		return e.waitForSignal(node, kind.Signal, timeout, bounded)
+
+		outputs, err := e.waitForSignal(node, kind.Signal, timeout, bounded)
+		if err != nil {
+			return err
+		}
+
+		// Shaped here rather than at each of the four places the outcome is
+		// built, so there is exactly one moment a wait's `outputs:` can be
+		// evaluated — the moment the wait resolves, whichever way it resolved.
+		// The local driver shapes at its own single point for the same reason,
+		// through this same function, so neither driver can shape a lapsed gate
+		// differently from an answered one.
+		//
+		// `workflow.Now` again rather than the value read before the wait: the
+		// clock a shaping expression sees is the moment the wait *ended*, which
+		// is the only reading of `now` that is true here. It replays to the same
+		// instant, so this is deterministic like every other read of it.
+		shaped, err := v1.ShapeSignalOutputs(
+			context.Background(), kind.Signal, outputs, e.scope, workflow.Now(e.ctx))
+		if err != nil {
+			return nodeFailed(err)
+		}
+
+		e.recordOutputs(node, shaped)
+
+		return nil
 
 	default:
 		return nodeFailed(fmt.Errorf("unsupported wait kind %T", wait.GetKind()))
@@ -93,7 +118,7 @@ func (e *executor) waitFor(node *v1.Node, d time.Duration) error {
 // setting the field to `0s` — read as an approval gate that blocks forever, which
 // is the opposite of what it says. A written bound is honoured at its value now,
 // and zero means the gate has already lapsed.
-func (e *executor) waitForSignal(node *v1.Node, signal *v1.Signal, timeout time.Duration, bounded bool) error {
+func (e *executor) waitForSignal(node *v1.Node, signal *v1.Signal, timeout time.Duration, bounded bool) (*v1.Node_Outputs, error) {
 	name := signal.GetName()
 
 	// A signal that arrived before this step was reached, drained from its
@@ -103,8 +128,7 @@ func (e *executor) waitForSignal(node *v1.Node, signal *v1.Signal, timeout time.
 	if payload, sender, ok := e.takePendingSignal(name); ok {
 		workflow.GetLogger(e.ctx).Info("step consumed a signal that arrived earlier",
 			"id", node.GetId(), "signal", name)
-		e.recordOutputs(node, v1.SignalOutputs(payload, sender, false))
-		return nil
+		return v1.SignalOutputs(payload, sender, false), nil
 	}
 
 	// A bound that has already lapsed. Answered before the selector rather than
@@ -115,9 +139,7 @@ func (e *executor) waitForSignal(node *v1.Node, signal *v1.Signal, timeout time.
 	if bounded && timeout <= 0 {
 		workflow.GetLogger(e.ctx).Info("wait timed out before it began",
 			"id", node.GetId(), "signal", name, "timeout", timeout)
-		e.recordOutputs(node, v1.SignalOutputs(nil, nil, true))
-
-		return nil
+		return v1.SignalOutputs(nil, nil, true), nil
 	}
 
 	channel := workflow.GetSignalChannel(e.ctx, name)
@@ -158,7 +180,7 @@ func (e *executor) waitForSignal(node *v1.Node, signal *v1.Signal, timeout time.
 	// cancellation must never produce, and it is invisible: the outputs are
 	// well-formed and the run looks like it merely went unanswered.
 	if err := e.ctx.Err(); err != nil {
-		return stepFailed(err, "cancelled while waiting for signal %q", name)
+		return nil, stepFailed(err, "cancelled while waiting for signal %q", name)
 	}
 
 	if !received {
@@ -166,18 +188,15 @@ func (e *executor) waitForSignal(node *v1.Node, signal *v1.Signal, timeout time.
 		// above: with no timeout there is nothing else for the selector to have
 		// woken on.
 		if !bounded {
-			return nodeFailed(fmt.Errorf("stopped waiting for signal %q", name))
+			return nil, nodeFailed(fmt.Errorf("stopped waiting for signal %q", name))
 		}
 
 		workflow.GetLogger(e.ctx).Info("wait timed out",
 			"id", node.GetId(), "signal", name, "timeout", timeout)
-		e.recordOutputs(node, v1.SignalOutputs(nil, nil, true))
-		return nil
+		return v1.SignalOutputs(nil, nil, true), nil
 	}
 
-	e.recordOutputs(node, v1.SignalOutputs(delivery.GetPayload(), delivery.GetSender(), false))
-
-	return nil
+	return v1.SignalOutputs(delivery.GetPayload(), delivery.GetSender(), false), nil
 }
 
 // recordOutputs records a step's outputs in the scope later steps resolve

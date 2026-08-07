@@ -1408,6 +1408,57 @@ message Signal {
       pattern: "^[A-Za-z0-9][A-Za-z0-9-_]*$"
     }
   ];
+
+  // Outputs shapes what the waiting step produces, the way the http task's own
+  // `outputs:` shapes what a request produces.
+  //
+  // Each value is evaluated once, at the moment the wait resolves, against the
+  // wait's own result: `payload`, `sender` and `timed_out` are bound bare, and
+  // so is `now` — every expression a wait holds sees the driver's clock (see
+  // [NowIdentifier]). The enclosing scope is underneath, so `steps.*`,
+  // `inputs.*` and `vars.*` read here exactly as they do in an `if:`.
+  //
+  //     wait_for_signal:
+  //       name: deploy-approved
+  //       timeout: 1h
+  //       outputs:
+  //         approved: ${has(payload.approved) && payload.approved}
+  //         timed_out: ${timed_out}
+  //
+  // # Replace, not extend
+  //
+  // The shaped names become the step's outputs, and the defaults are gone —
+  // one key with one meaning, matching `Task.HTTP.Inputs.outputs` exactly. An
+  // author who still needs `payload` or `timed_out` re-exposes it in a line,
+  // and reading one that was dropped is an ordinary "step has no output"
+  // diagnostic rather than an empty value that branches the wrong way.
+  //
+  // # Why this exists
+  //
+  // A condition derived from a step's own result had nowhere to be named, so
+  // real workflows wrote it once per reader: in an `if:`, negated in the
+  // sibling's `if:`, and re-derived in the workflow's `outputs:`. Nothing kept
+  // the copies in agreement, and the report could disagree with the branch that
+  // ran. Shaped here, the gate is stated once on the step that produced the data
+  // and every later reader reads the same recorded output.
+  //
+  // # Why it is on Signal rather than on Wait
+  //
+  // Two of the three names these expressions see — `payload` and `sender` — do
+  // not exist on the other arms, and the third, `timed_out`, is a constant
+  // `false` for a `sleep:` and a `wait_until:`. Shaping a constant is what
+  // `vars:` is for. Putting the field here rather than on [Wait] makes the
+  // refusal structural instead of reported: `timeout` sits on [Wait] and is
+  // meaningless on two of its arms, which is exactly why [ValidateWait] has to
+  // exist. The placement also matches the precedent it copies — http's
+  // `outputs:` sits on that task's own inputs, not on a generic step wrapper.
+  //
+  // Carriage across Continue-As-New is unaffected either way, which is what
+  // frees the decision to be made on meaning: the whole node travels inside the
+  // spec, and a shaped value is recorded in `Workflow_StepOutputs` like any
+  // other step output. What compaction *does* need is that the references these
+  // expressions make are collected — see `CollectNodeRefs`.
+  map<string, Value> outputs = 2;
 }
 
 // SignalSender is who the server attests sent a signal — never what the
