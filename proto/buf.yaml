@@ -7,37 +7,18 @@ breaking:
     - FILE
     - WIRE
 
-  # Scoped, and due to be removed by the commit after this one lands on main.
+  # Nothing suppressed, which is the only state this file should be found in
+  # for longer than one commit.
   #
-  # This commit deletes three fields from `InputDeclaration` — 11 (`min`), 12
-  # (`max`), both lossy on `type: int` because they were `double` and an
-  # int64 literal converts to float64 before the comparison, silently
-  # accepting a value below a declared minimum once the number is large
-  # enough to lose precision in that conversion; and 15 (`unique`), replaced
-  # by `must: this == this.distinct()`, which said the identical thing
-  # through the one expression surface this schema has instead of a second
-  # vocabulary that duplicated one corner of it — and reserves all three
-  # numbers and names. `buf breaking` compares against `origin/main`, where
-  # the fields still exist, so the check cannot pass until main has the
-  # deletion.
-  #
-  # A suppression measures a distance from one commit. The moment this one is
-  # on main that distance is zero: the check compares against a schema that
-  # already has the change, and the block suppresses nothing. What it still
-  # does is stand ready to hide the *next* break in the same file — which is a
-  # quiet failure, because a stale suppression reads as a considered
-  # exception, keeps passing, and the break it eventually swallows belongs to
+  # The pattern, when a schema change genuinely has to break: add a scoped
+  # `ignore_only` naming the one rule and the one file, explain in a comment
+  # exactly which fields moved and why, land it, and remove it in the very next
+  # commit. It has been used six times and removed six times. A suppression
+  # measures a distance from one commit, and once that commit is on main the
+  # distance is zero — what a stale block still does is stand ready to hide the
+  # *next* break in the same file, which is a quiet failure, because it reads as
+  # a considered exception, keeps passing, and the break it swallows belongs to
   # whoever comes next.
-  #
-  # This is the sixth deliberate use of the pattern, and each of the previous
-  # five was removed by the very next commit. That is what keeps it a pattern
-  # rather than an excuse. One rule, the same shape as `pattern`'s removal:
-  # `min`, `max`, and `unique` are a plain `optional double`/`optional
-  # double`/`bool`, none of them maps, so there is no synthesized entry
-  # message to reserve alongside any of them.
-  ignore_only:
-    FIELD_NO_DELETE:
-      - flowstate/v1/flowstate.proto
 
 lint:
   # STANDARD is what DEFAULT was renamed to. Same rules, current spelling.
