@@ -375,6 +375,57 @@ func NewExamplesHTTPServer(tb testing.TB) (string, func() []string) {
 		write(w, map[string]any{})
 	})
 
+	// paged-fan-out: a cursor API, and the only handler here that answers
+	// differently depending on what it was asked. The example walks it to
+	// exhaustion, so the two things it has to get right are that a first
+	// request (no cursor at all, which is how a cursor API spells "from the
+	// beginning") is distinguishable from a resumed one, and that the last
+	// page reports an *empty* next cursor rather than omitting the field —
+	// that empty string is what the loop's `until:` compares against, and a
+	// missing key would make the walk stop for the wrong reason.
+	//
+	// Two pages of different lengths on purpose. Equal pages would let a
+	// per-page count of [3, 3] pass a walk that fetched the first page twice,
+	// and the record ids are distinct across pages for the same reason: the
+	// example's `indexed` output is a flattened list precisely so that a
+	// repeated page shows up as a duplicate rather than as a total that still
+	// adds up.
+	//
+	// A third request would be a bug in the walk rather than in the fixture,
+	// so there is no third page: `next_cursor` is empty after page two, and a
+	// loop that asked again would be asking with a cursor this refuses.
+	mux.HandleFunc("/records", func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("cursor") {
+		case "":
+			write(w, map[string]any{
+				"records": []any{
+					map[string]any{"id": "rec-1", "title": "first"},
+					map[string]any{"id": "rec-2", "title": "second"},
+					map[string]any{"id": "rec-3", "title": "third"},
+				},
+				"next_cursor": "page-2",
+			})
+		case "page-2":
+			write(w, map[string]any{
+				"records": []any{
+					map[string]any{"id": "rec-4", "title": "fourth"},
+					map[string]any{"id": "rec-5", "title": "fifth"},
+				},
+				"next_cursor": "",
+			})
+		default:
+			// Named rather than answered with an empty page: a walk that
+			// invented a cursor would otherwise terminate quietly and look
+			// like a correct one that simply found less.
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	})
+
+	// paged-fan-out's per-record work, one request per record on each page.
+	mux.HandleFunc("/index", func(w http.ResponseWriter, _ *http.Request) {
+		write(w, map[string]any{"indexed": true})
+	})
+
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		missing = append(missing, r.URL.Path)

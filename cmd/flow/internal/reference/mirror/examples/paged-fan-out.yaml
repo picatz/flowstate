@@ -1,0 +1,146 @@
+# The batch shape: a `loop:` walking a cursor API to exhaustion, with a
+# `for_each` inside it doing the work on each page.
+#
+# This is #216's acceptance shape. The outer loop is the only thing that can
+# walk a cursor — the number of pages is not known before the first request, so
+# a `for_each` cannot express it, and the stop signal is something the body
+# *produces* (`next_cursor` coming back empty), which is exactly why `until:`
+# is checked after the body rather than before it. The inner `for_each` is the
+# only thing that can fan out over a page, because a page's records arrive as a
+# list and `max_parallel:` is what keeps the indexer from being handed all of
+# them at once.
+#
+# # Be clear about what the concurrency is
+#
+# `max_parallel: 3` is a window *within a page*, and the window drains at every
+# page boundary: the loop's next iteration cannot start until the `for_each`
+# inside the current one has finished, because that is what a step finishing
+# means. So a page of 4 records with a window of 3 runs 3, then 1, then fetches
+# the next page — it does not slide the fourth record's slot into the next
+# page's first.
+#
+# That is what this shape *is*, not a limitation of it being written badly. A
+# genuinely sliding window over a paged source — fetch page N+1 while page N's
+# tail is still in flight — is a different thing, and it is not built. Saying
+# so here rather than letting the file imply otherwise: the barrier per page is
+# usually what a batch wants anyway, since it bounds how much of somebody
+# else's catalogue is in memory at once and gives a resumable run an obvious
+# place to have got to.
+#
+# # Running it
+#
+# The hosts here are a fictional internal catalogue and a fictional internal
+# indexer, the same choice the `enterprise-*` examples make and for the same
+# reason: "walk a catalogue and index every record" is what this shape is for,
+# and pointing it at a generic echo service would undercut the one thing worth
+# seeing. The cost of that choice is stated rather than hidden — those hosts do
+# not resolve, so unlike `hello-world` this is not a file to paste at a shell
+# and watch work.
+#
+# What runs it is the test file beside it, which walks two pages end to end
+# against stubbed responses:
+#
+#   flow test examples/paged-fan-out/
+#
+# CI additionally runs this exact file, unstubbed, against a stand-in that
+# serves a real two-page cursor API (`NewExamplesHTTPServer` in
+# pkg/flowstate/v1/tests/examples.go) — on both execution drivers. Point the two
+# URLs at a service of your own and it runs as written.
+#
+# Run durably and the walk survives losing the worker: the cursor is state on
+# the execution substrate rather than a variable in a process, so a run that
+# died halfway through page two resumes on page two rather than starting the
+# catalogue again.
+#
+#   flow run examples/paged-fan-out/workflow.yaml
+#
+# (needs `flow server` and `flow worker` running; see the main README's
+# Quickstart)
+edition: v2026.2
+name: paged-fan-out
+description: >-
+  Walks a cursor API to exhaustion and fans out over each page with bounded
+  concurrency — the loop pages, the for_each does the work.
+
+steps:
+  - id: pages
+    description: One page per iteration, until the catalogue says there is no next cursor.
+    loop:
+      # The carried state is the cursor, and it is the reason this is a `loop:`
+      # rather than a `for_each`: each page's cursor is produced by the request
+      # for the page before it, so a page that never ran is a cursor that was
+      # never handed out.
+      as: cursor
+      # The first request asks for no cursor at all, which is how a cursor API
+      # spells "from the beginning".
+      init: ${''}
+      update: ${steps.fetch.next_cursor}
+      # The stop signal the *body* produced. A `while`-style check before the
+      # body could not see this, because on the first iteration no page has
+      # been fetched — see docs/DSL.md's "Do-while, and why the condition is
+      # checked after the body".
+      until: ${steps.fetch.next_cursor == ''}
+      # Bounded because the trip count belongs to the far side: a catalogue
+      # that never stops reporting a next cursor is exactly the runaway this
+      # ceiling exists to catch, and reaching it fails the run rather than
+      # quietly reporting a partial walk as a finished one.
+      max_iterations: 50
+      steps:
+        - id: fetch
+          description: One page of the catalogue, from wherever the last page said to carry on.
+          http:
+            method: GET
+            url: https://catalog.internal.example.com/records
+            query:
+              cursor: ${cursor}
+            parse_json: true
+            # Both halves of the page are named here: the records to work on,
+            # and where to carry on from. `next_cursor` is what `until:` and
+            # `update:` read, so it has to be an output of this step rather
+            # than something re-derived later.
+            outputs: >-
+              ${ {"records": response.json.records,
+                  "next_cursor": response.json.next_cursor} }
+
+        - id: index
+          description: Fan out over this page's records, three at a time.
+          for_each:
+            items: ${steps.fetch.records}
+            as: record
+            # The window, and it is per page — see the header. Local runs
+            # execute one record after another whatever this says, so a
+            # comparison between the two drivers compares the same requests
+            # rather than however many the durable one overlapped.
+            max_parallel: 3
+            steps:
+              - id: send
+                http:
+                  method: POST
+                  url: https://search.internal.example.com/index
+                  json:
+                    id: ${record.id}
+                    title: ${record.title}
+                  parse_json: true
+                  outputs: '${ {"id": record.id} }'
+
+outputs:
+  pages_walked:
+    value: ${steps.pages.results.size()}
+    description: how many pages the cursor walk took before the catalogue said it was done
+
+  # Per page rather than summed, and the shape is the assertion: `results` is
+  # one entry per iteration, each a map of body step id to that step's outputs,
+  # so a page's own fan-out results sit under `index` inside the page's entry.
+  # A caller reading [3, 2] can see both that two pages were walked and that
+  # neither was silently empty — a total of 5 could not tell those apart.
+  records_per_page:
+    value: ${steps.pages.results.map(page, page.index.results.size())}
+    description: how many records each page held, in the order the pages were walked
+
+  # Every record the walk reached, flattened across pages into one list. This
+  # is what makes "exactly once" checkable at all: a cursor that repeated a
+  # page, or a page boundary that dropped a record, shows up here as a
+  # duplicate or a gap rather than as a count that still adds up.
+  indexed:
+    value: ${steps.pages.results.map(page, page.index.results.map(r, r.send.id)).flatten()}
+    description: every record id this run indexed, in page order

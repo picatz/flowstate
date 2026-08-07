@@ -210,6 +210,7 @@ func TestTheCatalogResourceIsTheCatalogTheToolAnswers(t *testing.T) {
 var examplesNeedingAFile = map[string]bool{
 	"call-a-workflow":                true,
 	"enterprise-customer-onboarding": true,
+	"fan-out-calls":                  true,
 	"progressive-rollout":            true,
 }
 

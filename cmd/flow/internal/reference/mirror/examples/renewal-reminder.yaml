@@ -1,0 +1,134 @@
+# A reminder that keeps going out until somebody makes it stop.
+#
+# The shape is a `loop:` whose whole body is a `wait_for_signal:` with a long
+# `timeout:`, and the trick is which way round the two outcomes read:
+#
+#   timed_out: true   nobody acted, so do the periodic work — send a reminder,
+#                     re-check for drift, rotate the certificate — and go round
+#                     again
+#   a signal arrives  somebody acted, so stop
+#
+# That inversion is the point. A gate normally waits *for* an answer and treats
+# the deadline as the sad path (`wait-timeout` is that file). Here the deadline
+# is the ordinary path and the answer is the interrupt, which is what makes this
+# the shape most operational workloads actually want: renewal reminders,
+# drift detection, certificate rotation, dunning. Temporal ships it as
+# `sleep-for-days`, and the reason it is a wait rather than a `sleep:` is that a
+# sleep cannot be interrupted — a customer who renews on day 3 of a 30-day
+# timer would sit through the rest of the timer and get a reminder anyway.
+#
+# `entity-order` is the sibling file, and the difference between them is worth
+# stating because they are built from the identical two nodes. There, every
+# iteration is driven by a mutation *arriving*, and a lapse is the abandonment
+# case. Here, every iteration is driven by a mutation *not* arriving, and the
+# one that does arrive ends the run. Same grammar, opposite polarity, and the
+# `until:` expression is the whole of what says which one a file is.
+#
+# The interrupt is the half you can watch immediately, and it is the path this
+# example exists for:
+#
+#   flow run local examples/renewal-reminder/workflow.yaml \
+#     --signal subscription-changed='{"decision": "renewed"}'
+#
+# The *reminder* half costs what it says it costs. `flow run local` reads the
+# wall clock, so a run given no signal genuinely sits on a 30-day timer before
+# its first reminder, and then eleven more — this is not a file to paste and
+# wait on. `flow test` runs the identical file on a virtual clock, which is
+# where all twelve periods go by in no time at all:
+#
+#   flow test examples/renewal-reminder/
+#
+# That is worth knowing generally rather than as a quirk of this file: an
+# example whose subject is a *long* duration is one the test file demonstrates
+# better than a local run can, and `workflow.test.yaml` here is written as the
+# thing to read rather than as an afterthought.
+#
+# Durably, the same file is a run that sits on a timer for a month at a time,
+# across as many worker deployments as that takes, and is reachable the whole
+# while:
+#
+#   flow signal <run-id> subscription-changed --payload '{"decision": "renewed"}'
+#
+# (needs `flow server` and `flow worker` running; see the main README's
+# Quickstart)
+edition: v2026.2
+name: renewal-reminder
+description: >-
+  Nudges a customer every billing period until they renew or cancel — the
+  periodic work is what a lapsed wait does, and the signal is what stops it.
+
+vars:
+  customer: acme
+
+steps:
+  - id: opened
+    description: A step before the loop, so a run that suspends before its first deadline still has something to have carried across the handover.
+    log:
+      message: watching acme's subscription for a renewal decision
+
+  - id: reminders
+    description: One billing period per iteration, retired by the customer deciding rather than by exhausting max_iterations.
+    loop:
+      # A bare int: the only thing carried between periods is how many
+      # reminders have gone out. `loop-accumulate` is the file that shows the
+      # map shape, for when more than one value is carried.
+      as: sent
+      init: ${0}
+      # Unconditional, and correct *because* of where `update:` sits in an
+      # iteration: `until:` is evaluated first, and a loop that stops skips
+      # `update:` entirely. The only iterations that reach this line are the
+      # ones whose wait lapsed — the ones that actually sent something — so
+      # `sent` counts reminders rather than periods. Writing the condition
+      # again here (`${steps.decision.timed_out ? sent + 1 : sent}`) would be a
+      # second copy of `until:`, spelled backwards, and would go wrong the day
+      # somebody changed one of them.
+      update: ${sent + 1}
+      # The inversion, in one line. A delivered signal means somebody decided,
+      # which is the only thing that ends this run; a lapse means nobody has,
+      # which is why there is more work to do.
+      until: ${!steps.decision.timed_out}
+      # The budget for *this* segment, not for the subscription's lifetime — a
+      # run that lives for years does so across many Continue-As-New segments,
+      # each with its own budget of this many periods. See docs/DSL.md's
+      # "carried state" for why this is a per-segment ceiling.
+      #
+      # Reaching it is a failure rather than a quiet stop, deliberately: a
+      # reminder loop that ran out of budget did *not* get an answer, and
+      # reporting that as a completed run is how a customer stops being chased
+      # without anyone deciding they should be.
+      max_iterations: 12
+      steps:
+        - id: decision
+          description: Wait a billing period for the customer to renew or cancel.
+          wait_for_signal:
+            name: subscription-changed
+            # A literal duration, and the literal is the subject: a month is a
+            # property of the billing cycle, not of this run. Computing one per
+            # customer is a different thing and lands separately.
+            timeout: 720h
+
+        # The periodic work, and it is behind an `if:` for a reason that is not
+        # decoration: this step is reached on the closing iteration too, and a
+        # customer who has just renewed must not be sent a reminder to renew.
+        # The `if:` is what separates "the loop is still going" from "the loop
+        # is still going *because nobody answered*".
+        - id: remind
+          if: ${steps.decision.timed_out}
+          log:
+            # Quoted because of YAML rather than because of the expression: a
+            # plain scalar cannot contain a colon followed by a space.
+            message: '${"reminder %d for %s: the subscription renews soon".format([sent + 1, vars.customer])}'
+
+outputs:
+  reminders_sent:
+    value: ${steps.reminders.state}
+    description: how many reminders went out before the customer decided
+
+  # `results` holds one entry per iteration, and the loop can only have stopped
+  # because `until:` held — which here means the last iteration's wait was
+  # answered rather than lapsing. So the last entry is always the deciding one,
+  # and its payload is what the customer said. Every earlier entry is a lapse,
+  # whose `payload` is an empty mapping.
+  decision:
+    value: ${steps.reminders.results[steps.reminders.results.size() - 1].decision.payload.decision}
+    description: what ended the reminders — `renewed` or `cancelled`

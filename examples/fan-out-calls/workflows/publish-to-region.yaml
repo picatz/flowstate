@@ -1,0 +1,66 @@
+# One region's publish: upload the build to that region's edge, and answer with
+# where it landed.
+#
+# This file is the unit of work — the thing the caller runs once per region —
+# and writing it as its own Flowfile rather than as steps inside the caller's
+# loop body is what makes it reusable: a release pipeline, a rollback, and a
+# one-off `flow run local` on a single region all call this same file, and none
+# of them restates what publishing to a region means.
+#
+# It knows nothing about the fan-out that called it. There is no iteration
+# index here, no notion of the other regions, and no way to reach the caller's
+# `region` binding — a callee's only view in is its declared `inputs:`. That
+# isolation is what makes the composition safe to run with `max_parallel:`
+# above one: two concurrent calls share no scope to race over.
+edition: v2026.2
+name: publish-to-region
+description: Publish one build to one region's edge, and report the URL it is served from.
+
+inputs:
+  region:
+    type: string
+    required: true
+    description: the edge region to publish to
+
+steps:
+  - id: upload
+    description: >-
+      Push the build to this region. "quarantined" is a region the edge
+      permanently refuses, which is what gives the caller a failure to tolerate.
+    http:
+      method: GET
+      url: https://httpbin.org/get
+      query:
+        region: ${inputs.region}
+      parse_json: true
+      # The refusal is decided here, by `expect:`, rather than by pointing the
+      # request at a URL that fails — the same reason `progressive-rollout`'s
+      # canary check does: the CI harness rewrites a *literal* host onto its
+      # stand-in, so a URL built from an input would stay pointed at the real
+      # one. `expect:` has no such constraint, and a region the edge refuses is
+      # exactly the shape a real 4xx would arrive in: permanent, about the
+      # request itself, and never worth retrying.
+      expect: ${inputs.region != 'quarantined' && response.status_code == 200}
+      outputs: >-
+        ${ {"url": "https://" + response.json.args.region + ".cdn.example.com",
+            "region": response.json.args.region} }
+
+outputs:
+  # The values the caller reads back, per iteration. A failed publish never
+  # reaches either — `expect:` decided before `upload` produced anything — so
+  # the absence of these keys in an iteration's result is what tells the caller
+  # which regions did not go out.
+  url:
+    value: ${steps.upload.url}
+    description: where this region now serves the build from
+
+  # Answering with the region as well as the URL is deliberate, and it is a
+  # property of writing the unit as a callee: a caller collecting a bag of
+  # results should be able to read what each one *is* without having to
+  # remember what it asked for, in what order. The alternative — the caller
+  # reconstructing the region by aligning `results` against its own worklist by
+  # index — works, and quietly stops working the day anything filters the list
+  # or an iteration is skipped.
+  region:
+    value: ${steps.upload.region}
+    description: the region this call published to, echoed so a caller need not track order

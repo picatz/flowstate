@@ -21,19 +21,17 @@ description: Reads a repository's commit history in two bounded pages using git.
 # nothing dropped and nothing repeated: page one's last commit and page
 # two's first commit are always distinct.
 #
-# What this file deliberately does NOT show: walking to exhaustion. Doing
-# that for real means looping - fetching page after page until
-# `truncated: false` - and Flowstate's own workflow language has no loop
-# primitive yet (issue #157 is still design-only; issue #216 names this gap
-# explicitly as "layer 2," the harder half of the fix this file's layer-1
-# half unblocks). Two fixed steps, page one then page two, is what today's
-# language can express; a workflow that pages an unbounded history to
-# completion needs #157 first. The exhaustive-walk test that proves cursor
-# semantics are actually correct - every commit reached, exactly once,
-# across as many pages as it takes - lives in Go instead, at
+# What this file deliberately does NOT show: walking to exhaustion. That is
+# `log-paginate.yaml`, beside this file — a `loop:` carrying the cursor
+# until a page reports `truncated: false`. (When this file was written the
+# language had no loop primitive and said so here; `loop:` landed, and the
+# exhaustive walk moved from a Go-only test into the DSL itself.) Two fixed
+# steps stay valuable for what they make legible: the resume shape in
+# isolation, one chained hand-off you can read without loop machinery
+# around it. The Go test proving cursor semantics across arbitrarily many
+# pages — every commit reached, exactly once — remains at
 # TestGitLogCursorPagesReachEveryCommitExactlyOnce
-# (plugins/git/log_test.go), which is free to loop because it is not
-# written in the DSL.
+# (plugins/git/log_test.go).
 
 vars:
   repo: https://github.com/octocat/Hello-World.git
