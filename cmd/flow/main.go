@@ -292,6 +292,13 @@ func runWorker(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Same reasoning, for #187's task-shape policy: a worker that started
+	// anyway would dispatch every task unrestricted while its operator
+	// believes the file governs them.
+	if err := applyTaskPolicy(cmd); err != nil {
+		return err
+	}
+
 	secretProviders, secretsConfigured, closeSecretProviders, err := secretRegistry(cmd)
 	if err != nil {
 		return err
@@ -1466,6 +1473,8 @@ flow server --verbose`,
 	// the server answers.
 	addEgressPolicyFlag(workerCmd)
 	addEgressPolicyFlag(runLocalCmd)
+	addTaskPolicyFlag(workerCmd)
+	addTaskPolicyFlag(runLocalCmd)
 	addSecretFlags(workerCmd)
 	addSecretFlags(runLocalCmd)
 	runLocalCmd.Flags().String("as-subject", "local-user",

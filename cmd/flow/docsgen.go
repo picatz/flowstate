@@ -609,6 +609,12 @@ func documentedEnvironmentVariables() []environmentVariable {
 			read:    "cmd/flow/egress.go",
 		},
 		{
+			name:    "FLOWSTATE_TASK_POLICY",
+			value:   "unset",
+			purpose: "Default for `--task-policy`: a YAML task-shape policy (#187) governing which identities may dispatch which tasks. When set it replaces the built-in policy (no restriction) entirely rather than merging with it.",
+			read:    "cmd/flow/taskpolicy.go",
+		},
+		{
 			name:    "FLOWSTATE_IDENTITY_KEY",
 			value:   "unset",
 			purpose: "Default for `--identity-key`: the PKCS#8 PEM key Flowstate signs its own short-lived assertions with, required when the trust policy configures federation.",

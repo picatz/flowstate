@@ -41,6 +41,7 @@ $ flow validate examples/hello-world/workflow.yaml
 | [http-output-shaping](http-output-shaping) | Returning only chosen fields from a response via `outputs` | yes |
 | [http-secret](http-secret) | Resolving an authorized bearer reference only inside the HTTP task | yes |
 | [http-federated](http-federated) | Exchanging the workload identity for a short-lived API credential inside the task | yes |
+| [task-shape-policy](task-shape-policy) | A deployment-side `--task-policy` refusing a step whose own `if:` and `signals:` have already been stripped out — #187, the author-proof complement to `approval-gate`'s in-file gate | no |
 | [simple-http-multi-step](simple-http-multi-step) | Using a response status code in a later step | yes |
 | [edition-and-descriptions](edition-and-descriptions) | `description:` as a property of the step, and the required `edition:` naming the grammar the file is written in | no |
 | [parameterized-deploy](parameterized-deploy) | `inputs:` — typed arguments with defaults and a required one, read from an `if:`, a step's `vars:`, and a task input | yes |
@@ -59,10 +60,11 @@ $ flow validate examples/hello-world/workflow.yaml
 | [enterprise-incident-response](enterprise-incident-response) | A `wait_for_signal:` page with an escalation on timeout, `parallel:` evidence gathering while it waits, and two distinct `signals:` claims separating who may claim an incident from who may authorize remediation | yes |
 | [enterprise-customer-onboarding](enterprise-customer-onboarding) | `call:` into four reusable per-resource sub-workflows, each provisioner's own task step carrying `undo:` that composes back onto the run's undo stack across the `call:` boundary, a `wait_until:` grace period sized per plan, and an account-manager `signals:` confirmation gate — see [docs/USE_CASES.md](../docs/USE_CASES.md) for the composition gap this file found and, once #225 closed it, the composed shape it now demonstrates | yes |
 
-Eleven of these hold more than a `workflow.yaml`, and those eleven have a `README.md`
+Twelve of these hold more than a `workflow.yaml`, and those twelve have a `README.md`
 saying what the rest of the directory is for: [http-secret](http-secret) and
 [http-federated](http-federated) ship the policy that authorizes what their step does,
-[plugins/greet](plugins/greet/), [plugins/vcs](plugins/vcs/),
+[task-shape-policy](task-shape-policy) ships the deployment-side policy that refuses
+one, [plugins/greet](plugins/greet/), [plugins/vcs](plugins/vcs/),
 [plugins/github](plugins/github/), and [plugins/git](plugins/git/) each need a plugin
 built and a worker told where to find it, [observability](observability) is a whole
 docker-compose lab, and [expense-approval](expense-approval),
