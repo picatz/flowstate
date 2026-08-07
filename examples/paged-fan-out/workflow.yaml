@@ -27,13 +27,30 @@
 # else's catalogue is in memory at once and gives a resumable run an obvious
 # place to have got to.
 #
-# Run it and watch it walk both pages:
+# # Running it
 #
-#   flow run local examples/paged-fan-out/workflow.yaml -o json | jq .runOutputs
+# The hosts here are a fictional internal catalogue and a fictional internal
+# indexer, the same choice the `enterprise-*` examples make and for the same
+# reason: "walk a catalogue and index every record" is what this shape is for,
+# and pointing it at a generic echo service would undercut the one thing worth
+# seeing. The cost of that choice is stated rather than hidden — those hosts do
+# not resolve, so unlike `hello-world` this is not a file to paste at a shell
+# and watch work.
 #
-# Run it durably and the walk survives losing the worker: the cursor is state
-# on the execution substrate rather than a variable in a process, so a run that
-# died halfway through page two resumes on page two.
+# What runs it is the test file beside it, which walks two pages end to end
+# against stubbed responses:
+#
+#   flow test examples/paged-fan-out/
+#
+# CI additionally runs this exact file, unstubbed, against a stand-in that
+# serves a real two-page cursor API (`NewExamplesHTTPServer` in
+# pkg/flowstate/v1/tests/examples.go) — on both execution drivers. Point the two
+# URLs at a service of your own and it runs as written.
+#
+# Run durably and the walk survives losing the worker: the cursor is state on
+# the execution substrate rather than a variable in a process, so a run that
+# died halfway through page two resumes on page two rather than starting the
+# catalogue again.
 #
 #   flow run examples/paged-fan-out/workflow.yaml
 #

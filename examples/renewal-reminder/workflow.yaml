@@ -24,17 +24,24 @@
 # one that does arrive ends the run. Same grammar, opposite polarity, and the
 # `until:` expression is the whole of what says which one a file is.
 #
-# Nothing is ever sent to this run by default, so pasting it as written walks
-# the timeout branch until the loop's budget runs out — which is a real,
-# deliberate failure, not a hang, and `loop-accumulate`'s runaway case is where
-# that bound is pinned. Watch a couple of reminders go out and then stop it:
-#
-#   flow run local examples/renewal-reminder/workflow.yaml
-#
-# Interrupt it instead, which is the path this example exists for:
+# The interrupt is the half you can watch immediately, and it is the path this
+# example exists for:
 #
 #   flow run local examples/renewal-reminder/workflow.yaml \
 #     --signal subscription-changed='{"decision": "renewed"}'
+#
+# The *reminder* half costs what it says it costs. `flow run local` reads the
+# wall clock, so a run given no signal genuinely sits on a 30-day timer before
+# its first reminder, and then eleven more — this is not a file to paste and
+# wait on. `flow test` runs the identical file on a virtual clock, which is
+# where all twelve periods go by in no time at all:
+#
+#   flow test examples/renewal-reminder/
+#
+# That is worth knowing generally rather than as a quirk of this file: an
+# example whose subject is a *long* duration is one the test file demonstrates
+# better than a local run can, and `workflow.test.yaml` here is written as the
+# thing to read rather than as an afterthought.
 #
 # Durably, the same file is a run that sits on a timer for a month at a time,
 # across as many worker deployments as that takes, and is reachable the whole
