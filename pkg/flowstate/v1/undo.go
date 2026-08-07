@@ -441,9 +441,8 @@ func CheckUndoPlacement(node *Node, placement UndoScope) error {
 			"`undo:` is only supported on a top-level step or a step inside a `call:`, and "+
 				"this one is inside a loop body; a loop carries state between iterations, and "+
 				"what a compensation for one iteration would resolve against once a later "+
-				"iteration has moved that state on is not defined yet. Move the compensated step "+
-				"into a called workflow and undo it there, or undo the loop as a whole from the "+
-				"step that follows it (step %q)",
+				"iteration has moved that state on is not defined yet. Undo the loop as a whole "+
+				"from the step that follows it (step %q)",
 			node.GetId())
 	}
 
