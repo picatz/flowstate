@@ -511,19 +511,101 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	if err := v1.Validate(req.Msg); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
+
+	inputs, err := s.validateSubmission(req.Msg.GetWorkflow(), req.Msg.GetInputs())
+	if err != nil {
+		return nil, err
+	}
+
+	// Capture the identity now, while the authenticated caller is still in scope.
+	// The run outlives this request, so anything a later step needs to know about
+	// who asked for the work has to be recorded in the state it carries.
+	identity := s.identityFor(ctx)
+
+	// A random id unless the caller named a business key, in which case the run
+	// is addressable by what it *is* rather than by an id nobody wrote down —
+	// see [RunRequest.entity_key]'s doc comment for the grammar and the
+	// unforgeability argument. The namespace half comes only from the identity
+	// just captured above, never from the request: the same rule [fairnessFor]
+	// already applies a few lines down, and for the identical reason — a
+	// workload must not be able to name the tenant it is addressed under, or
+	// the first thing anyone writes is another tenant's key.
+	workflowID := fmt.Sprintf("flowstate-workflow-%s", uuid.NewString())
+	if key := req.Msg.GetEntityKey(); key != "" {
+		entityID, err := v1.EntityWorkflowID(identity.GetNamespace(), key)
+		if err != nil {
+			// protovalidate already checked entity_key against the same grammar
+			// [v1.EntityWorkflowID] enforces, so reaching this is either the
+			// composed id exceeding Temporal's own limit or a namespace this
+			// caller's identity carries that predates [auth.ValidateNamespace]'s
+			// grammar (invariant 6: fail closed rather than guess).
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		workflowID = entityID
+	}
+
+	_, temporal, options, err := s.prepareCreate(ctx, identity, req.Msg.GetWorkflow(), inputs)
+	if err != nil {
+		return nil, err
+	}
+	options.ID = workflowID
+
+	run, err := temporal.ExecuteWorkflow(ctx, options, engine.Run, &v1.RunState{
+		Workflow:    req.Msg.GetWorkflow(),
+		StepsBudget: int32(s.maxStepsPerRun),
+		Identity:    identity,
+
+		// Checked and defaulted, once, above. The engine reads them and never
+		// re-derives them, so every segment of the run sees what this submission
+		// established.
+		Inputs: inputs,
+	})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("unable to execute workflow: %w", err))
+	}
+
+	return connect.NewResponse(
+		&v1.RunResponse{
+			WorkflowId: workflowID,
+			RunId:      run.GetRunID(),
+			Status:     v1.RunResponse_STATUS_RUNNING,
+		},
+	), nil
+}
+
+// validateSubmission is the submission-validation pipeline shared by
+// [FlowstateServer.Run] and the create branch of
+// [FlowstateServer.SignalWithStart] — credential targets, the declared signal
+// policies' shape, the specification's own size, input binding, and the
+// specification-plus-inputs size together. One function rather than two
+// copies, for the reason CLAUDE.md's "one meaning, written down twice" section
+// names generally: two RPCs that can each bring a new run into existence must
+// refuse the identical specification for the identical reason, or "may I
+// create an entity under this key" would silently become a laxer question
+// than "may I Run" purely because SignalWithStart's copy of these checks had
+// drifted from Run's.
+//
+// [FlowstateServer.SignalWithStart] runs this unconditionally — even when the
+// entity it addresses turns out to already exist and this validation's result
+// is then unused — because which branch Temporal's own
+// SignalWithStartWorkflow takes is not knowable at the moment this handler
+// commits to it (see that RPC's own doc comment for the race this closes).
+// "May create" is therefore the floor for every call through that RPC, not
+// only the ones that end up creating.
+func (s *FlowstateServer) validateSubmission(wf *v1.Workflow, rawInputs map[string]*v1.Value) (map[string]*v1.Value, error) {
 	if s.credentialTargetsConfigured {
-		if err := v1.ValidateCredentialTargets(req.Msg.GetWorkflow(), s.credentialTargets); err != nil {
+		if err := v1.ValidateCredentialTargets(wf, s.credentialTargets); err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
 	}
 
-	// Rules compile at submit, not at signal-time. Everything [v1.Validate] above
+	// Rules compile at submit, not at signal-time. Everything [v1.Validate]
 	// cannot see because it is a fact about a *set* of declared policies rather
 	// than about one field — a policy for a signal name nothing waits for, a rule
 	// that matches every sender — is caught here, once, rather than discovered the
 	// first time a signal is actually delivered and denied for a reason the
 	// author never saw at submit.
-	if err := v1.CheckSignalPolicies(req.Msg.GetWorkflow()); err != nil {
+	if err := v1.CheckSignalPolicies(wf); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
@@ -539,7 +621,7 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	//
 	// Refusing at submit turns that into a sentence an author can act on. The
 	// engine keeps its own check for what this one cannot predict.
-	if err := v1.CheckSpecSize(req.Msg.GetWorkflow()); err != nil {
+	if err := v1.CheckSpecSize(wf); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
@@ -553,7 +635,7 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	// refuses is one a local rehearsal refuses too and in the same words. Defaults
 	// are filled in here, once: what goes into `RunState` is what every segment of
 	// the run will see.
-	inputs, err := v1.BindRunInputs(req.Msg.GetWorkflow(), req.Msg.GetInputs())
+	inputs, err := v1.BindRunInputs(wf, rawInputs)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
@@ -563,17 +645,29 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	// what Temporal will store using arguments alone — which would be the wedged run
 	// invariant 9 exists to convert into an answer, reached by the one path the
 	// specification's own check cannot see.
-	if err := v1.CheckSubmissionSize(req.Msg.GetWorkflow(), inputs); err != nil {
+	if err := v1.CheckSubmissionSize(wf, inputs); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	workflowID := fmt.Sprintf("flowstate-workflow-%s", uuid.NewString())
+	return inputs, nil
+}
 
-	// Capture the identity now, while the authenticated caller is still in scope.
-	// The run outlives this request, so anything a later step needs to know about
-	// who asked for the work has to be recorded in the state it carries.
-	identity := s.identityFor(ctx)
-
+// prepareCreate builds the memo, the start options, and the namespace-scoped
+// client that starting a new run needs — the part of [FlowstateServer.Run]
+// after inputs are already bound, factored out so
+// [FlowstateServer.SignalWithStart]'s create-if-absent branch goes through the
+// identical memo and option construction rather than a second copy that could
+// drift from it. inputs must already be the output of [v1.BindRunInputs];
+// identity must already be [FlowstateServer.identityFor]'s answer for this
+// request. Neither is derived here, because both callers need their own value
+// before this is reached — Run to compose an entity id, SignalWithStart to
+// decide whether it is even taking the create branch.
+//
+// The caller still has to set options.ID: this only fills in everything that
+// does not depend on which workflow id was chosen.
+func (s *FlowstateServer) prepareCreate(
+	ctx context.Context, identity *v1.WorkloadIdentity, wf *v1.Workflow, inputs map[string]*v1.Value,
+) (map[string]any, client.Client, client.StartWorkflowOptions, error) {
 	// The declared signal policy, resolved against inputs and frozen into the
 	// memo now, exactly as the tenant is a few lines below — see
 	// [signalPolicyMemoEntry], the one function this and
@@ -586,7 +680,7 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	for k, v := range starterMemoEntry(identity) {
 		memo[k] = v
 	}
-	signalEntry, err := signalPolicyMemoEntry(ctx, req.Msg.GetWorkflow(), inputs)
+	signalEntry, err := signalPolicyMemoEntry(ctx, wf, inputs)
 	if err != nil {
 		// Two different failures share this one call, and they get the same
 		// answer for different reasons. CheckSignalPolicies and v1.Validate
@@ -600,7 +694,7 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 		// way, refusing before the run starts is what invariant 6 asks for:
 		// fail closed rather than start a run whose signal policy the server
 		// itself could not finish establishing.
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, nil, client.StartWorkflowOptions{}, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 	for k, v := range signalEntry {
 		memo[k] = v
@@ -609,12 +703,11 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	// Unconditional, unlike the search attribute below: see
 	// [workflowNameMemoEntry] for why `flow list --filter 'name == ...'` must
 	// not depend on whether registration succeeded.
-	for k, v := range workflowNameMemoEntry(req.Msg.GetWorkflow().GetName()) {
+	for k, v := range workflowNameMemoEntry(wf.GetName()) {
 		memo[k] = v
 	}
 
 	options := client.StartWorkflowOptions{
-		ID:        workflowID,
 		TaskQueue: engine.RunTaskQueueName,
 
 		// No run timeout.
@@ -665,7 +758,7 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	// makes Temporal refuse the whole submission, so a deployment that never
 	// registered must never attach one, not even hopefully.
 	if s.searchAttributesRegistered {
-		options.TypedSearchAttributes = runSearchAttributes(identity.GetNamespace(), req.Msg.GetWorkflow().GetName())
+		options.TypedSearchAttributes = runSearchAttributes(identity.GetNamespace(), wf.GetName())
 	}
 
 	// Chosen from the identity established by authenticating the caller, never
@@ -673,30 +766,10 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	// tenant's namespace.
 	temporal, err := s.clientFor(identity.GetNamespace())
 	if err != nil {
-		return nil, err
+		return nil, nil, client.StartWorkflowOptions{}, err
 	}
 
-	run, err := temporal.ExecuteWorkflow(ctx, options, engine.Run, &v1.RunState{
-		Workflow:    req.Msg.GetWorkflow(),
-		StepsBudget: int32(s.maxStepsPerRun),
-		Identity:    identity,
-
-		// Checked and defaulted, once, above. The engine reads them and never
-		// re-derives them, so every segment of the run sees what this submission
-		// established.
-		Inputs: inputs,
-	})
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("unable to execute workflow: %w", err))
-	}
-
-	return connect.NewResponse(
-		&v1.RunResponse{
-			WorkflowId: workflowID,
-			RunId:      run.GetRunID(),
-			Status:     v1.RunResponse_STATUS_RUNNING,
-		},
-	), nil
+	return memo, temporal, options, nil
 }
 
 // maxFairnessKeyBytes is what Temporal accepts for a fairness key.
@@ -795,6 +868,11 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 				// further round trip. See pendingActivities for what is and is
 				// not claimed.
 				PendingActivities: pendingActivities(resp),
+				// The one field on this response that answers what a healthy
+				// entity actually holds — see [entityState]'s own comment for
+				// why a run that is, by design, always RUNNING was otherwise
+				// unreadable through this RPC at all.
+				EntityState: entityState(ctx, temporal, resp),
 			},
 		), nil
 	case v1.RunResponse_STATUS_COMPLETED:
@@ -1061,6 +1139,55 @@ func runProgress(ctx context.Context, temporal client.Client, resp *workflowserv
 	}
 
 	return &progress
+}
+
+// entityState asks a running workload what it is carrying — its top-level
+// `vars:` and what each active `loop:` holds — through [engine.StateQuery],
+// exactly as [runProgress] asks where the workload has got to through
+// [engine.ProgressQuery]. See that function's doc comment for why a failed
+// query costs the caller one optional field rather than the whole answer, and
+// why that is the right trade rather than a compromise: every reason a
+// progress query can fail — no worker polling, an interpreter built before
+// the handler existed, a busy worker, a timeout — applies here identically,
+// and none of them says anything about the run itself.
+//
+// This is the field that makes an entity's whole point observable. Outputs
+// populate only on STATUS_COMPLETED, and an entity — a run shaped as `loop:`
+// + `wait_for_signal:` and never meant to reach that status — was otherwise
+// unreadable through Get at all: not by waiting for it to finish, which it
+// structurally does not, and not without mutating it to provoke a readable
+// output, which is signaling used as a read — the wrong tool for the job.
+func entityState(ctx context.Context, temporal client.Client, resp *workflowservice.DescribeWorkflowExecutionResponse) *v1.EntityState {
+	// Same STATUS_RUNNING-only gate [runProgress] applies, and the same reason:
+	// a superseded run id names a *closed* execution that Temporal will answer
+	// a query against by replaying history, returning whatever state that
+	// segment held when it suspended — a real answer from the wrong moment,
+	// which is worse than none.
+	if resp.GetWorkflowExecutionInfo().GetStatus() != enums.WORKFLOW_EXECUTION_STATUS_RUNNING {
+		return nil
+	}
+
+	workflowID := resp.GetWorkflowExecutionInfo().GetExecution().GetWorkflowId()
+	runID := resp.GetWorkflowExecutionInfo().GetExecution().GetRunId()
+
+	// Bounded exactly as [runProgress]'s query is, and for the same reason: the
+	// request's own deadline is the wrong bound for an optional field, and a
+	// worker that will never answer should not make every `flow get` wait out
+	// the whole of it.
+	ctx, cancel := context.WithTimeout(ctx, progressQueryTimeout)
+	defer cancel()
+
+	encoded, err := temporal.QueryWorkflow(ctx, workflowID, runID, engine.StateQuery)
+	if err != nil {
+		return nil
+	}
+
+	var state v1.EntityState
+	if err := encoded.Get(&state); err != nil {
+		return nil
+	}
+
+	return &state
 }
 
 // pendingActivities projects what Temporal is retrying into the schema's own

@@ -3,6 +3,7 @@ package engine
 import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"go.temporal.io/sdk/workflow"
+	"google.golang.org/protobuf/proto"
 )
 
 // A run reports RUNNING and, until this, nothing else. `flow get` could say how long
@@ -21,6 +22,25 @@ import (
 // engine runs and Temporal's own tooling puts its built-ins (`__stack_trace`,
 // `__enhanced_stack_trace`) in the same namespace.
 const ProgressQuery = "flowstate.progress"
+
+// StateQuery is the query name a client asks for a run's carried state by —
+// its top-level `vars:` and what every currently active `loop:` is carrying
+// between iterations.
+//
+// A second query beside [ProgressQuery] rather than a field added to it: the
+// two answer different questions at different costs. Position is small and
+// answerable from the moment a run starts; state can be as large as an
+// author's own `vars:` and loop bindings, which is why it carries its own
+// bound (see [entityStateMaxLoopEntries] and [entityStateMaxBytes]) instead
+// of inheriting one sized for a step id and a short path.
+//
+// This is the answer to a gap [ProgressQuery] cannot close on its own: an
+// entity — a run shaped as `loop:` + `wait_for_signal:`, never meant to reach
+// STATUS_COMPLETED — is by design always RUNNING, and [ProgressQuery] answers
+// only where such a run is, never what it holds. Namespaced for
+// [ProgressQuery]'s own reason: a query name is a public identifier on every
+// workflow this engine runs.
+const StateQuery = "flowstate.state"
 
 // progress is the run's position, shared by pointer with every nested executor.
 //
@@ -43,7 +63,53 @@ type progress struct {
 	// completed counts steps finished in this segment, which is what the step budget
 	// counts too.
 	completed int
+
+	// vars is the workflow's own top-level `vars:`, set once when [Run] resolves
+	// them (whichever segment does that — the first, or a later one still
+	// waiting to evaluate them) and read-only after: [v1.RunState.Vars] is
+	// itself evaluated once per run, never per segment (see [Run]'s own
+	// comment), so there is nothing here to keep re-setting.
+	vars map[string]*v1.Value
+
+	// loopState is, for every `loop:` currently active in this segment, the
+	// value its `state:` binding is carrying into the next iteration — keyed by
+	// the loop step's own id. Bounded by [entityStateMaxLoopEntries]: nested
+	// loops are not a shape this engine runs yet, but several independent
+	// top-level loops inside a `parallel:` block are, and an author is free to
+	// write as many as the step-count and spec-size bounds allow.
+	loopState map[string]*v1.Value
+
+	// loopStateTruncated is set once loopState has refused an entry for being
+	// over [entityStateMaxLoopEntries], and stays set for the rest of the
+	// segment — a snapshot that dropped something must keep saying so, not only
+	// in the query that caught it in the act.
+	loopStateTruncated bool
 }
+
+// entityStateMaxLoopEntries bounds how many concurrently active loops'
+// carried state [progress] will track for the state query at once.
+//
+// A loop's own carried value is already bounded transitively — it travelled
+// here inside a `RunState` that [v1.CheckRunStateSize] refused to let grow
+// past Temporal's blob limit at the last Continue-As-New — but *how many*
+// loops are simultaneously active is a different resource, one a `parallel:`
+// block full of loops controls directly, and CLAUDE.md's rule applies: ask
+// which resource an author's own spec controls, then bound that resource
+// separately from the one the size check already bounds.
+const entityStateMaxLoopEntries = 64
+
+// entityStateMaxBytes bounds the serialized size of one [v1.EntityState]
+// answer.
+//
+// A second, coarser backstop behind [entityStateMaxLoopEntries]: even within
+// that count, [v1.CheckRunStateSize]'s blob-limit bound on any *one* carried
+// value is measured against the whole `RunState`, not against a single
+// query's answer, so several loops each carrying a value close to that limit
+// could still produce a query response nobody asked to receive something
+// that large. Reached, the answer is marked truncated and reports nothing
+// rather than an unbounded body — the same choice [v1.CheckRunStateSize]
+// makes for the run itself, applied to the read path.
+const entityStateMaxBytes = 256 * 1024
 
 // snapshot copies the position into the message a query answers with.
 //
@@ -106,6 +172,83 @@ func (p *progress) finished() {
 	p.completed++
 }
 
+// setVars records the workflow's evaluated top-level `vars:`, once.
+func (p *progress) setVars(vars map[string]*v1.Value) {
+	if p == nil {
+		return
+	}
+
+	p.vars = vars
+}
+
+// setLoopState records the value a loop is carrying into its next iteration,
+// keyed by the loop step's own id — called every time [executor.runLoop]
+// records a resumable position, so the query answers with whatever the run
+// most recently committed to resuming from, never a value an iteration
+// merely computed and then abandoned.
+//
+// Silently refuses a new key once [entityStateMaxLoopEntries] is already
+// spent, setting [progress.loopStateTruncated] rather than growing without
+// bound — an author who writes more concurrently-active loops than the state
+// query tracks gets an honestly incomplete answer, not a crash and not a
+// answer that quietly omits one loop without saying so.
+func (p *progress) setLoopState(stepID string, state *v1.Value) {
+	if p == nil || state == nil {
+		return
+	}
+
+	if _, ok := p.loopState[stepID]; !ok {
+		if len(p.loopState) >= entityStateMaxLoopEntries {
+			p.loopStateTruncated = true
+			return
+		}
+		if p.loopState == nil {
+			p.loopState = map[string]*v1.Value{}
+		}
+	}
+	p.loopState[stepID] = state
+}
+
+// clearLoopState drops a loop's tracked state once it stops being active —
+// finished normally, or failed — so a query asked after the loop is done does
+// not keep reporting a value the run has already moved past.
+func (p *progress) clearLoopState(stepID string) {
+	if p == nil {
+		return
+	}
+
+	delete(p.loopState, stepID)
+}
+
+// stateSnapshot copies the current state into the message [StateQuery]
+// answers with.
+//
+// A copy for [progress.snapshot]'s exact reason: the maps underneath keep
+// being written to as the run walks, and handing a caller the live ones would
+// let the answer change out from under serialization. Truncated whenever the
+// serialized answer would exceed [entityStateMaxBytes], regardless of why —
+// [progress.loopStateTruncated] already caught the per-entry count, and this
+// is the coarser byte-level backstop behind it; either one reaching its bound
+// reports nothing rather than a partial map a reader could mistake for the
+// whole of it.
+func (p *progress) stateSnapshot() *v1.EntityState {
+	if p == nil {
+		return nil
+	}
+
+	out := &v1.EntityState{
+		Vars:      p.vars,
+		LoopState: p.loopState,
+		Truncated: p.loopStateTruncated,
+	}
+
+	if proto.Size(out) > entityStateMaxBytes {
+		return &v1.EntityState{Truncated: true}
+	}
+
+	return out
+}
+
 // setProgressQuery installs the handler that answers [ProgressQuery].
 //
 // Installed before anything else runs, including the vars activity, so a query that
@@ -121,5 +264,16 @@ func (p *progress) finished() {
 func setProgressQuery(ctx workflow.Context, p *progress) error {
 	return workflow.SetQueryHandler(ctx, ProgressQuery, func() (*v1.RunProgress, error) {
 		return p.snapshot(), nil
+	})
+}
+
+// setStateQuery installs the handler that answers [StateQuery], on
+// [setProgressQuery]'s exact reasoning: registered before anything else runs
+// so a query arriving in a run's first moments gets an empty-but-honest
+// answer rather than "handler not found," and replay-safe because
+// registering a handler schedules nothing and writes no history event.
+func setStateQuery(ctx workflow.Context, p *progress) error {
+	return workflow.SetQueryHandler(ctx, StateQuery, func() (*v1.EntityState, error) {
+		return p.stateSnapshot(), nil
 	})
 }
