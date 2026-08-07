@@ -231,8 +231,6 @@ func recordedStepKind(err error) v1.ErrorKind {
 	return v1.ClassifyError(err)
 }
 
-const RunTaskQueueName = "flowstate-run-task-queue"
-
 // defaultMaxStepsPerRun defines how many steps to execute before
 // continuing-as-new when no label overrides are provided.
 const defaultMaxStepsPerRun = 200
