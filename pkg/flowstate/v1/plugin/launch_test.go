@@ -33,6 +33,29 @@ func TestOpenRefusesBadPlugins(t *testing.T) {
 		// wantMessage is a fragment the operator-facing message must contain,
 		// because a refusal nobody can act on is only half of failing closed.
 		wantMessage string
+
+		// timeoutIsTheBound marks the one case whose refusal *is* a timeout
+		// firing, so the timeout must stay short enough to fire.
+		//
+		// Every other case here refuses for a reason the plugin gives —
+		// garbage on the handshake line, a manifest that does not validate, a
+		// descriptor that cannot be reconstructed — and reaches that reason
+		// only if the process is allowed to get far enough to say it. Sharing
+		// one 3-second handshake timeout across all sixteen made that a race:
+		// under CPU contention a perfectly healthy fake plugin does not always
+		// get scheduled, exec'd and through its first write inside three
+		// seconds, and when it does not, the host refuses it with
+		// ErrHandshakeTimeout instead of the ErrHandshake or ErrManifest the
+		// case exists to assert. That is this test's flake, and it is a bound
+		// being applied where it is not the bound under test.
+		//
+		// So the timeout is generous everywhere it is incidental and short
+		// exactly where it is the point. Generous does not weaken those cases:
+		// each still has to produce its own specific sentinel and its own
+		// operator-facing message, and a longer timeout only makes it more
+		// certain that what it produced is what the case is about rather than
+		// the clock running out first.
+		timeoutIsTheBound bool
 	}{
 		{
 			name:        "binary that exits immediately",
@@ -47,10 +70,11 @@ func TestOpenRefusesBadPlugins(t *testing.T) {
 			wantMessage: "is this a Flowstate plugin?",
 		},
 		{
-			name:        "binary that never handshakes",
-			mode:        "silent",
-			wantErr:     ErrHandshakeTimeout,
-			wantMessage: "no handshake line within",
+			name:              "binary that never handshakes",
+			mode:              "silent",
+			wantErr:           ErrHandshakeTimeout,
+			wantMessage:       "no handshake line within",
+			timeoutIsTheBound: true,
 		},
 		{
 			name:        "binary that writes without a newline",
@@ -143,6 +167,14 @@ func TestOpenRefusesBadPlugins(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			dir := pluginDir(t, test.mode)
 			cfg := testConfig(t, dir)
+
+			// See timeoutIsTheBound. The waiting bounds are incidental
+			// machinery for every case but "silent", and a busy machine must
+			// not be able to turn one refusal into another.
+			if !test.timeoutIsTheBound {
+				cfg.HandshakeTimeout = time.Minute
+				cfg.DescribeTimeout = time.Minute
+			}
 
 			host, err := NewHost(cfg)
 			if err != nil {

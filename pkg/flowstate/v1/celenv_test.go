@@ -67,38 +67,63 @@ func TestEvaluatorCostLimit(t *testing.T) {
 		name string
 		expr string
 		libs []string
+
+		// wantErr is the bound that must be the one to refuse this expression,
+		// named rather than left to "some error happened".
+		//
+		// This replaces an elapsed-time check, and naming the bound is the
+		// stronger assertion of the two. "It failed within five seconds" is
+		// satisfied by any error at all — a typo in the expression, a missing
+		// library, a context deadline — and is violated by a busy machine,
+		// which is why this flaked under contention. Reading which meter
+		// tripped says the work was bounded *and* says by what, and it says
+		// the same thing whatever the load is.
+		wantErr string
 	}{
 		{
 			name: "large range allocation",
 			expr: "size(lists.range(50000000))",
 			libs: []string{"lists"},
+			// Not the cost meter, as it turns out. lists.range refuses a size
+			// this large before allocating anything, which is the bound that
+			// genuinely protects this shape: a cost limit charged after the
+			// allocation would be charged too late to prevent it. Worth
+			// asserting explicitly, because the old check could not tell this
+			// case apart from the one below and would have stayed green if the
+			// pre-allocation guard were removed and the expression allowed to
+			// allocate its way into the cost limit instead.
+			wantErr: "exceeds maximum allowed",
 		},
 		{
 			name: "nested comprehension blowup",
 			expr: "size([1,2,3,4,5,6,7,8,9,10].map(a, [1,2,3,4,5,6,7,8,9,10].map(b, " +
 				"[1,2,3,4,5,6,7,8,9,10].map(c, [1,2,3,4,5,6,7,8,9,10].map(d, " +
 				"[1,2,3,4,5,6,7,8,9,10].map(e, [1,2,3,4,5,6,7,8,9,10].map(f, a+b+c+d+e+f)))))))",
+			// This one is the cost meter proper: nothing about the expression
+			// is refused up front, and what stops it is [DefaultCostLimit]
+			// being spent mid-evaluation.
+			wantErr: "actual cost limit exceeded",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// A backstop, not the bound: an evaluation that ran to this
+			// deadline would fail the assertion below, because a context
+			// deadline does not spell either message. So an unbounded
+			// evaluation is still a red test — it just reports as the wrong
+			// bound rather than as a slow one.
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
-			start := time.Now()
 			_, err := e.EvalString(ctx, tt.expr, tt.libs, map[string]any{})
-			elapsed := time.Since(start)
-
 			if err == nil {
-				t.Fatal("expected the expression to be rejected by the cost limit")
+				t.Fatal("expected the expression to be refused by a bound")
 			}
-			// The point of the limit is that it trips quickly. If this takes
-			// seconds, the budget is not actually bounding the work.
-			if elapsed > 5*time.Second {
-				t.Errorf("cost limit took %v to trip; expected it to fail fast", elapsed)
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("refused by the wrong bound: got %q, want it to mention %q",
+					err.Error(), tt.wantErr)
 			}
-			t.Logf("rejected in %v: %v", elapsed, err)
 		})
 	}
 }
