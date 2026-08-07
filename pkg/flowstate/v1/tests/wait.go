@@ -330,7 +330,7 @@ func WaitCases() []Case {
 				// ([v1.SignalOutputs]'s nil-sender rendering) and not a value —
 				// transcribing it here would be a second definition of it, which
 				// is the drift this repository keeps finding.
-				"gate": v1.SignalOutputs(nil, nil, true),
+				"gate":  v1.SignalOutputs(nil, nil, true),
 				"after": {},
 			}},
 		},
@@ -359,7 +359,7 @@ func WaitCases() []Case {
 				// ([v1.SignalOutputs]'s nil-sender rendering) and not a value —
 				// transcribing it here would be a second definition of it, which
 				// is the drift this repository keeps finding.
-				"gate": v1.SignalOutputs(nil, nil, true),
+				"gate":  v1.SignalOutputs(nil, nil, true),
 				"after": {},
 			}},
 		},
