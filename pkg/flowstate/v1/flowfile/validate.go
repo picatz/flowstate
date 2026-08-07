@@ -1414,16 +1414,28 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 			continue
 		}
 		// Named rather than guessed at. Bare now means a local binding, so this is
-		// not necessarily a step someone misspelled — and saying which two things a
-		// bare name can be is the difference between a diagnostic an author can act
-		// on and one that only says no.
+		// not necessarily a step someone misspelled — and saying which things a bare
+		// name can be is the difference between a diagnostic an author can act on and
+		// one that only says no.
+		//
+		// The step-output form is stated in the general — `steps.<id>.<output>` — and
+		// never as `steps.<ref>`: this name matches no declared step, so splicing it in
+		// after `steps.` fabricates a spelling that does not resolve and was never a
+		// real suggestion (`${step.a.result}` would be told to write `steps.step`). A
+		// concrete "did you mean" is offered only when a step id is genuinely a near
+		// edit-distance match, taken from the steps in scope here so the suggestion
+		// resolves.
+		message := fmt.Sprintf(
+			"references unknown name %q; a bare name is a loop's iterator, a name this step "+
+				"declares in its own `vars:`, or `now`, and a step output is written `%s.<id>.<output>`",
+			ref, v1.StepsRoot)
+		if suggestion, ok := nearest(ref, slices.Sorted(maps.Keys(scope.steps))); ok {
+			message += fmt.Sprintf("; did you mean `%s.%s`?", v1.StepsRoot, suggestion)
+		}
 		ds = append(ds, Diagnostic{
 			Step: stepID, Field: inputName,
-			Message: fmt.Sprintf(
-				"references unknown name %q; a step is written `%s.%s`, and a bare name is a loop's "+
-					"iterator, a name this step declares in its own `vars:`, or `now`",
-				ref, v1.StepsRoot, ref),
-			Code: v1.DiagnosticCodeUnresolvedReference,
+			Message: message,
+			Code:    v1.DiagnosticCodeUnresolvedReference,
 		})
 	}
 	return ds
