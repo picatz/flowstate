@@ -661,9 +661,13 @@ history, the claim-check pattern — but it is not yet a solved problem *in this
 every `DataConverter` in the codebase is the default one, and no seam exists for an
 operator to supply a codec (#113 is the design record, #271 tracks the gap). Until that
 seam is built, the honest answer to a payload too large for history is the refusal
-`CheckRunStateSize` already gives, not an offload nothing can configure. When the seam
-lands, the codec is the right place to absorb large payloads; per-task byte caps exist to
-bound worker memory, not to express what the system can handle.
+`CheckRunStateSize` already gives, not an offload nothing can configure. The same seam is
+where payload encryption would live, so the confidentiality statement is the same one:
+today, history confidentiality is whatever the cluster's own database and filesystem
+encryption provide — Flowstate keeps secrets *out* of history (invariant 7) and seals
+nothing that legitimately goes in. When the seam lands, the codec is the right place to
+absorb large payloads; per-task byte caps exist to bound worker memory, not to express
+what the system can handle.
 
 ### Interaction shape, not protocol
 
