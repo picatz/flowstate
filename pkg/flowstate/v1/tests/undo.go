@@ -463,20 +463,79 @@ func UndoPlacementCases(base string) []UndoCase {
 			Fails: true,
 		},
 		{
-			Name: "a compensation inside a named loop body is refused",
+			// The refusal #253 made necessary rather than one it removed. A
+			// `loop:` body accepts a compensation now, and a `loop:` may be
+			// written inside a `for_each` body — only a loop directly inside
+			// another loop is refused — so a loop is exactly the wrapper that
+			// could route one around the concurrency refusal. That is #219's
+			// escape hatch with `loop:` standing where `call:` stood, and
+			// [v1.UndoScope.IntoLoop] is what closes it on both drivers.
+			//
+			// Written as the negative direction of [UndoLoopCases]' first case:
+			// the identical body, one construct further out, must be refused.
+			Name: "a loop inside a for_each body, whose body compensates, is refused",
 			Workflow: &v1.Workflow{
-				Name:    "undo-in-named-loop",
+				Name:    "undo-loop-inside-for-each",
 				Profile: v1.CurrentProfile,
 				Steps: []*v1.Node{
 					{
-						Id: "page",
-						Kind: &v1.Node_Loop{Loop: &v1.Loop{
-							State:         "n",
-							Initial:       v1.NewLiteral(int64(0)),
-							Update:        v1.NewExpr("n + 1"),
-							Until:         v1.NewExpr("n >= 1"),
-							MaxIterations: 5,
-							Body:          []*v1.Node{undoing(records("inner", base, "i"), base, "/do/undo")},
+						Id: "fan",
+						Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+							Items: v1.NewExpr("['x']"),
+							Body: []*v1.Node{
+								{
+									Id: "page",
+									Kind: &v1.Node_Loop{Loop: &v1.Loop{
+										State:         "n",
+										Initial:       v1.NewLiteral(int64(0)),
+										Update:        v1.NewExpr("n + 1"),
+										Until:         v1.NewExpr("n >= 1"),
+										MaxIterations: 5,
+										Body:          []*v1.Node{undoing(records("inner", base, "i"), base, "/do/undo")},
+									}},
+								},
+							},
+						}},
+					},
+				},
+			},
+			Fails: true,
+		},
+		{
+			// The same closure with a `call:` inside the loop inside the
+			// fan-out, which is the composition an author reaching for #253's
+			// motivating shape would actually write — and the one that has to
+			// stay refused, because [v1.UndoScope.IntoCall] and
+			// [v1.UndoScope.IntoLoop] compose in sequence: Concurrent survives
+			// both.
+			Name: "a call inside a loop inside a for_each body, whose callee compensates, is refused",
+			Workflow: &v1.Workflow{
+				Name:    "undo-call-in-loop-inside-for-each",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					{
+						Id: "fan",
+						Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+							Items: v1.NewExpr("['x']"),
+							Body: []*v1.Node{
+								{
+									Id: "page",
+									Kind: &v1.Node_Loop{Loop: &v1.Loop{
+										State:         "n",
+										Initial:       v1.NewLiteral(int64(0)),
+										Update:        v1.NewExpr("n + 1"),
+										Until:         v1.NewExpr("n >= 1"),
+										MaxIterations: 5,
+										Body: []*v1.Node{
+											callNode("provision", &v1.Workflow{
+												Name:    "undo-call-in-loop-inside-for-each-callee",
+												Profile: v1.CurrentProfile,
+												Steps:   []*v1.Node{undoing(records("inner", base, "i"), base, "/do/undo")},
+											}, nil),
+										},
+									}},
+								},
+							},
 						}},
 					},
 				},
@@ -706,6 +765,222 @@ func UndoCallCases(base string) []UndoCase {
 			},
 			Fails:    false,
 			Recorded: []string{"a", "b"},
+		},
+	}
+}
+
+// rollout is the progressive-rollout loop #253 is about: a `loop:` carrying a
+// traffic percentage 5 → 25 → 50, running `body` once per value.
+//
+// The ladder is written as a `? :` rather than as arithmetic so the three values
+// are the ones an operator would actually roll out to, and so the tokens each
+// iteration records name the percentage rather than an index — which is what lets
+// the assertions below read the *order iterations were undone in* out of a flat
+// list of effects.
+func rollout(body ...*v1.Node) *v1.Node {
+	return &v1.Node{
+		Id: "rollout",
+		Kind: &v1.Node_Loop{Loop: &v1.Loop{
+			State:         "percent",
+			Initial:       v1.NewLiteral(int64(5)),
+			Update:        v1.NewExpr("percent == 5 ? 25 : 50"),
+			Until:         v1.NewExpr("percent >= 50"),
+			MaxIterations: 10,
+			Body:          body,
+		}},
+	}
+}
+
+// shifts is a loop-body step that records the percentage the current iteration is
+// shifting to, keeping it as `said` so the step's own `undo:` can name it.
+//
+// The URL is an expression over the loop's carried state rather than a literal,
+// which is the whole reason this helper exists rather than [records]: a body step
+// runs once per iteration, and a case that cannot tell one iteration's effect from
+// another's cannot see an ordering bug — the #226 lesson, applied to a loop.
+func shifts(id, base string) *v1.Node {
+	return &v1.Node{
+		Id: id,
+		Kind: &v1.Node_Task{Task: &v1.Task{
+			Name: "http",
+			Inputs: map[string]*v1.Value{
+				"url":     v1.NewExpr(`"` + base + `/do/p" + string(percent)`),
+				"outputs": v1.NewExpr(`{"said": response.body}`),
+			},
+		}},
+	}
+}
+
+// UndoLoopCases are the shared cases for compensation inside a `loop:` body —
+// issue #253's decision. Both drivers run every one of them.
+//
+// # What is under test, and why it needed its own set
+//
+// [UndoCases] and [UndoCallCases] each register at most one compensation per
+// step, so "reverse of registration order" and "reverse of declaration order"
+// agree in both, and either would pass a driver that reversed the wrong list. A
+// loop body is the first placement where they come apart: one step registers
+// three times, and nothing about the specification says which of the three comes
+// off first. Only the order they ran in does.
+//
+// # The order is asserted twice, in two different currencies
+//
+// `Recorded` is the sequence of requests the world actually saw, so it catches a
+// driver that undid the right set in the wrong order. `Summary` is the sentence
+// the failed run reports, and one case below deliberately makes every
+// compensation fail so that each entry in that sentence carries the URL naming
+// its own iteration — because a summary of three successes reads `undid "shift"`
+// three times, which is membership, not order. Asserting order through the text
+// an operator reads is the point: a run that unwound 5% before 50% and said so
+// would pass a set-shaped assertion and be a live incident.
+func UndoLoopCases(base string) []UndoCase {
+	notFound := func(token string) string {
+		return `task "http" failed (InvalidInput): GET ` + base + `/fail/` + token + ` returned status 404`
+	}
+
+	return []UndoCase{
+		{
+			// The shape the issue is named for. Three iterations raise traffic,
+			// a step after the loop fails, and the rollout comes back down in the
+			// order an operator would do it by hand: 50, then 25, then 5.
+			Name: "a loop body's compensations undo newest iteration first",
+			Workflow: &v1.Workflow{
+				Name:    "undo-loop-reverse",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					rollout(undoing(shifts("shift", base), base, "/do/undo")),
+					fails("boom", base, "boom"),
+				},
+			},
+			Fails:    true,
+			Summary:  `; compensation ran in reverse order: undid "shift", undid "shift", undid "shift"`,
+			Recorded: []string{"p5", "p25", "p50", "boom", "undo-p50", "undo-p25", "undo-p5"},
+		},
+		{
+			// The same reversal, asserted through the *failure text* rather than
+			// through the effects — see this set's doc. Every compensation is
+			// pointed at `/fail/`, so each entry in [v1.UndoSummary]'s sentence
+			// carries the URL of the iteration it belongs to, and the sentence is
+			// only correct if 50 precedes 25 precedes 5.
+			//
+			// It is also the "a failing compensation does not stop the rest" rule
+			// applied across iterations: a rollout that cannot undo 50% must still
+			// try to undo 25% and 5%, because stopping leaves more traffic on the
+			// new version than continuing does.
+			Name: "the failure text names each iteration's compensation, newest first",
+			Workflow: &v1.Workflow{
+				Name:    "undo-loop-reverse-text",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					rollout(undoing(shifts("shift", base), base, "/fail/undo")),
+					fails("boom", base, "boom"),
+				},
+			},
+			Fails: true,
+			Summary: `; compensation ran in reverse order: ` +
+				`could not undo "shift": ` + notFound("undo-p50") + `, ` +
+				`could not undo "shift": ` + notFound("undo-p25") + `, ` +
+				`could not undo "shift": ` + notFound("undo-p5"),
+			Recorded: []string{"p5", "p25", "p50", "boom", "undo-p50", "undo-p25", "undo-p5"},
+		},
+		{
+			// #253's motivating composition, and the boundary the issue is filed
+			// against: the compensated step is not in the loop body at all, it is
+			// inside a workflow the loop body `call:`s. Before #253 this was the
+			// remedy the loop refusal named and the one `IntoCall` refused.
+			//
+			// A top-level compensated step sits before the loop, so the assertion
+			// covers both boundaries at once: the callee's three registrations come
+			// off newest-first among themselves, and all three before the caller's
+			// own — reverse of registration, straight through two levels of nesting.
+			Name: "a callee's compensation reached by call from a loop body composes onto the run's stack",
+			Workflow: &v1.Workflow{
+				Name:    "undo-loop-call",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					undoing(records("before", base, "a"), base, "/do/undo"),
+					rollout(callNode("shift", &v1.Workflow{
+						Name:    "undo-loop-call-callee",
+						Profile: v1.CurrentProfile,
+						DeclaredInputs: []*v1.InputDeclaration{
+							{Name: "percent", Type: v1.InputDeclaration_TYPE_INT, Required: true},
+						},
+						Steps: []*v1.Node{
+							undoing(&v1.Node{
+								Id: "inner",
+								Kind: &v1.Node_Task{Task: &v1.Task{
+									Name: "http",
+									Inputs: map[string]*v1.Value{
+										"url":     v1.NewExpr(`"` + base + `/do/p" + string(inputs.percent)`),
+										"outputs": v1.NewExpr(`{"said": response.body}`),
+									},
+								}},
+							}, base, "/do/undo"),
+						},
+					}, map[string]*v1.Value{"percent": v1.NewExpr("percent")})),
+					fails("boom", base, "boom"),
+				},
+			},
+			Fails: true,
+			Summary: `; compensation ran in reverse order: undid "inner", undid "inner", ` +
+				`undid "inner", undid "before"`,
+			Recorded: []string{
+				"a", "p5", "p25", "p50", "boom",
+				"undo-p50", "undo-p25", "undo-p5", "undo-a",
+			},
+		},
+		{
+			// An iteration that fails part way through still has the part that
+			// succeeded taken back. The second body step answers 404 once the
+			// rollout reaches 25%, so iteration two registered a compensation for
+			// `shift` and then failed — and that registration is exactly the one an
+			// engine registering per *step* rather than per *success* would miss,
+			// or that a driver unwinding only completed iterations would drop.
+			//
+			// It is also the case that would catch a driver reversing the
+			// declaration list: `check` declares no compensation at all, so a
+			// specification-shaped unwind has nothing to reverse and this passes
+			// only if registration is what is being reversed.
+			Name: "an iteration that fails part way through still undoes the part that succeeded",
+			Workflow: &v1.Workflow{
+				Name:    "undo-loop-partial-iteration",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					rollout(
+						undoing(shifts("shift", base), base, "/do/undo"),
+						&v1.Node{
+							Id: "check",
+							Kind: &v1.Node_Task{Task: &v1.Task{
+								Name: "http",
+								Inputs: map[string]*v1.Value{
+									"url": v1.NewExpr(
+										`"` + base + `/" + (percent >= 25 ? "fail" : "do") + "/c" + string(percent)`),
+								},
+							}},
+						},
+					),
+				},
+			},
+			Fails:    true,
+			Summary:  `; compensation ran in reverse order: undid "shift", undid "shift"`,
+			Recorded: []string{"p5", "c5", "p25", "c25", "undo-p25", "undo-p5"},
+		},
+		{
+			// The negative direction, which a set of failing rollouts would never
+			// notice going wrong: a loop that runs to completion inside a run that
+			// succeeds takes nothing back. An engine that unwound at the end of the
+			// loop rather than on failure would pass every case above and roll back
+			// every healthy deployment in production.
+			Name: "a loop whose run succeeds compensates nothing",
+			Workflow: &v1.Workflow{
+				Name:    "undo-loop-unused",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					rollout(undoing(shifts("shift", base), base, "/do/undo")),
+				},
+			},
+			Fails:    false,
+			Recorded: []string{"p5", "p25", "p50"},
 		},
 	}
 }

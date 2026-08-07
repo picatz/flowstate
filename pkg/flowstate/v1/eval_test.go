@@ -525,6 +525,35 @@ func TestRunWorkflowUndoCall(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowUndoLoop is the local half of the loop cases — issue #253's
+// decision that a `loop:` body is a place a compensation may be written, and that
+// a `call:` from one composes onto the same run-level stack.
+//
+// What makes it worth running locally as well as durably is what the whole shared
+// package is for: an author rehearsing a progressive rollout on a laptop has to be
+// told the order production will unwind in. The engine package runs the identical
+// [tests.UndoLoopCases] against the durable driver.
+func TestRunWorkflowUndoLoop(t *testing.T) {
+	for index, outline := range tests.UndoLoopCases(undoPlaceholderBase) {
+		t.Run(outline.Name, func(t *testing.T) {
+			base, recorded := tests.NewUndoServer(t)
+			test := tests.UndoLoopCases(base)[index]
+
+			_, err := v1.Run(t.Context(), test.Workflow)
+			if !test.Fails {
+				require.NoError(t, err, "the run was expected to succeed")
+			} else {
+				require.Error(t, err, "the run was expected to fail")
+				require.Contains(t, err.Error(), test.Summary,
+					"the failure does not name each iteration's compensation in reverse order")
+			}
+
+			require.Equal(t, test.Recorded, recorded(),
+				"the effects that happened, and their order, are not what unwinding a loop should have produced")
+		})
+	}
+}
+
 // TestRunWorkflowUndoOnCancellation is the local half of the cancellation cases.
 //
 // The engine package runs the identical [tests.UndoCancellationCases]. This is the

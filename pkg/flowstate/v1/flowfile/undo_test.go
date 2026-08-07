@@ -313,8 +313,8 @@ steps:
 `,
 			line: 11,
 			// The for_each/parallel refusal is about registration order under
-			// concurrency, and must say so rather than reusing the loop's wording —
-			// [TestUndoInsideANamedLoopBodyIsRefused] pins the accurate loop message.
+			// concurrency, which is the one reason left after #253 —
+			// [TestUndoInsideANamedLoopBodyIsAccepted] pins the other direction.
 			want: "the order work registers in inside concurrent control flow is not the same",
 		},
 		{
@@ -374,15 +374,21 @@ steps:
 	}
 }
 
-// TestUndoInsideANamedLoopBodyIsRefused pins the loop-specific refusal — issue
-// #219's problem statement that a `loop:` body must not be told it is "inside a
-// for_each body or a parallel branch", which is simply false for it and would
-// send an author looking for a fan-out that is not there. A loop's own message
-// names carried state, which is the actual, distinct reason it is refused: a
-// sequential loop's registration order is perfectly well defined, unlike a
-// for_each's or a parallel's, so the two placements need different sentences even
-// though both are refused.
-func TestUndoInsideANamedLoopBodyIsRefused(t *testing.T) {
+// TestUndoInsideANamedLoopBodyIsAccepted pins #253's decision in the validator:
+// a `loop:` body is a place a compensation may be written.
+//
+// The refusal that used to live here gave carried state as its reason — that a
+// compensation for one iteration had nothing defined to resolve against once a
+// later iteration moved that state on. [v1.PendingUndo] is why that does not
+// survive: a compensation is resolved when its step succeeds and stores values,
+// so a later iteration has nothing left to move. Loop iterations are sequential
+// on both drivers, so reverse-registration order across them is as well defined
+// as it is at the top level.
+//
+// Asserted as "no diagnostic mentions this step's `undo:` at all" rather than as
+// "zero diagnostics", so the case keeps failing for the right reason if the file
+// grows an unrelated mistake.
+func TestUndoInsideANamedLoopBodyIsAccepted(t *testing.T) {
 	t.Parallel()
 
 	src := `edition: v2026.2
@@ -406,18 +412,109 @@ steps:
 	ds, err := flowfile.ValidateSource([]byte(src))
 	require.NoError(t, err)
 
+	for _, d := range ds {
+		assert.NotContains(t, d.Error(), "`undo:` is only supported",
+			"a compensation inside a `loop:` body was refused; #253 opened this placement:\n%s", d.Error())
+	}
+}
+
+// TestUndoInsideALoopInsideAForEachIsRefused is the direction that opening the
+// loop boundary made necessary rather than the one it made legal.
+//
+// A `loop:` may be written inside a `for_each` body — only a loop directly inside
+// another loop is refused — so once a loop body accepts a compensation, a loop is
+// exactly the wrapper that could launder one out of the concurrency refusal. That
+// is issue #219's escape hatch with `loop:` where `call:` stood, and
+// [v1.UndoScope.IntoLoop] is what closes it: the composed placement stays
+// [v1.UndoScopeConcurrent], so the refusal an author gets is the concurrency one,
+// naming the construct that is actually the problem.
+func TestUndoInsideALoopInsideAForEachIsRefused(t *testing.T) {
+	t.Parallel()
+
+	src := `edition: v2026.2
+name: t
+steps:
+  - id: fan
+    for_each:
+      items: ${[1]}
+      steps:
+        - id: pages
+          loop:
+            as: cursor
+            init: "${0}"
+            update: "${cursor + 1}"
+            until: "${cursor >= 1}"
+            steps:
+              - id: inner
+                log:
+                  message: hi
+                undo:
+                  log:
+                    message: bye
+`
+
+	ds, err := flowfile.ValidateSource([]byte(src))
+	require.NoError(t, err)
+
 	var found bool
 	for _, d := range ds {
-		if strings.Contains(d.Error(), "is inside a loop body") {
+		if strings.Contains(d.Error(), "the order work registers in inside concurrent control flow") {
 			found = true
-			assert.NotContains(t, d.Error(), "for_each body or a parallel branch",
-				"a loop body's refusal borrowed the for_each/parallel wording, naming a "+
-					"construct that is not in this file:\n%s", d.Error())
-			assert.Contains(t, d.Error(), "carries state between iterations",
-				"the loop refusal does not say why a loop is different from concurrent control flow:\n%s", d.Error())
 		}
 	}
-	assert.True(t, found, "no diagnostic refused the compensation inside the loop body; got:\n%s", ds.Error())
+	assert.True(t, found,
+		"a `loop:` inside a `for_each` body laundered the concurrency refusal — a compensation "+
+			"one construct deep validated where the same step written directly in the fan-out is "+
+			"refused; got:\n%s", ds.Error())
+}
+
+// TestUndoInsideACallFromALoopBodyIsAccepted is #253's motivating shape: the
+// progressive rollout, where a `loop:` carrying a traffic percentage calls a
+// reusable sub-workflow that carries its own `undo:`.
+//
+// Before #253 this was refused with a diagnostic whose only remedy was to move
+// the compensated step into a called workflow — which is exactly what this file
+// does. PR #261 removed the false remedy; this removes the refusal.
+func TestUndoInsideACallFromALoopBodyIsAccepted(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir, "shift.yaml", `edition: v2026.2
+name: shift
+inputs:
+  percent:
+    type: int
+steps:
+  - id: shift
+    log:
+      message: ${"shifting to " + string(inputs.percent)}
+    undo:
+      log:
+        message: ${"rolling back " + string(inputs.percent)}
+`)
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.2
+name: caller
+steps:
+  - id: rollout
+    loop:
+      as: percent
+      init: "${5}"
+      update: "${percent * 5}"
+      until: "${percent >= 50}"
+      steps:
+        - id: shift
+          call: ./shift.yaml
+          with:
+            percent: "${percent}"
+`)
+
+	wf, _, err := flowfile.ParseFile(caller)
+	require.NoError(t, err)
+
+	for _, d := range flowfile.Validate(wf) {
+		assert.NotContains(t, d.Error(), "`undo:` is only supported",
+			"a callee's compensation reached by `call:` from a `loop:` body was refused:\n%s", d.Error())
+	}
 }
 
 // TestUndoOnACallStepIsRefused pins issue #219 problem 1: a compensation written

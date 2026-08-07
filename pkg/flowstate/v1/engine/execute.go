@@ -891,9 +891,13 @@ func (e *executor) runLoopIteration(loop *v1.Loop, stateName string, state *v1.V
 		progress: e.progress,
 		undo:     e.undo,
 
-		// A loop body's carried state has no defined undo semantics yet — see
-		// [v1.UndoScopeLoop].
-		undoScope: v1.UndoScopeLoop,
+		// Composed with the scope this loop itself sits in, not always
+		// [v1.UndoScopeLoop] — see [v1.UndoScope.IntoLoop]. A loop body is an
+		// accepting placement since #253 (iterations are sequential on both
+		// drivers, and a compensation is resolved when its step succeeds), but a
+		// `loop:` written inside a `for_each` body or a `parallel` branch carries
+		// that scope's refusal straight through rather than laundering it.
+		undoScope: e.undoScope.IntoLoop(),
 
 		callDepth: e.callDepth,
 	}

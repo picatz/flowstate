@@ -251,11 +251,11 @@ func Validate(wf *v1.Workflow) Diagnostics {
 // placement is this workflow's own undo scope, already composed by the caller
 // through [v1.UndoScope.IntoCall] — [v1.UndoScopeTopLevel] for the run's own
 // top level, [v1.UndoScopeCall] for a callee reached through a call sitting at
-// top level or inside another call, and [v1.UndoScopeConcurrent] /
-// [v1.UndoScopeLoop] for a callee reached through a call that itself sits
-// inside a `for_each` body, a `parallel` branch, or a `loop:` body — a call is
-// transparent to whatever restriction already applies there, not an escape
-// from it. See [validateCallAtDepth], which does the composing.
+// top level, inside another call, or inside a `loop:` body, and
+// [v1.UndoScopeConcurrent] for a callee reached through a call that itself sits
+// inside a `for_each` body or a `parallel` branch — a call is transparent to
+// whatever restriction already applies there, not an escape from it. See
+// [validateCallAtDepth], which does the composing.
 func validateAtDepth(wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnostics {
 	var ds Diagnostics
 
@@ -396,7 +396,7 @@ func validateAtDepth(wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnos
 				// output does — so body step ids must not become referenceable.
 
 			case *v1.Node_Loop:
-				ds = append(ds, validateNamedLoop(id, kind.Loop, inner, i, wf, depth)...)
+				ds = append(ds, validateNamedLoop(id, kind.Loop, inner, i, wf, depth, placement)...)
 				// A loop's body outputs do not escape it either — only its own
 				// `results` (and `state`) outputs do.
 
@@ -817,7 +817,14 @@ func validateLoop(stepID string, loop *v1.ForEach, enclosing refScope, index int
 // The body is checked with the enclosing steps visible plus the carried state's
 // name — a body step may reference a step defined before the loop, and reads the
 // state under its bare name, exactly as a `for_each` body reads its iterator.
-func validateNamedLoop(stepID string, loop *v1.Loop, enclosing refScope, index int, wf *v1.Workflow, depth int) Diagnostics {
+//
+// placement is the scope this loop step itself sits in, composed for the body
+// through [v1.UndoScope.IntoLoop] rather than assumed to be [v1.UndoScopeLoop].
+// A loop body accepts an `undo:` since #253, and a `loop:` may be written inside
+// a `for_each` body — so a body that claimed [v1.UndoScopeLoop] unconditionally
+// would validate a compensation the engine refuses, which is invariant 3's exact
+// shape pointed at the validator.
+func validateNamedLoop(stepID string, loop *v1.Loop, enclosing refScope, index int, wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnostics {
 	var ds Diagnostics
 
 	if len(loop.GetBody()) == 0 {
@@ -924,7 +931,7 @@ func validateNamedLoop(stepID string, loop *v1.Loop, enclosing refScope, index i
 	if hasState {
 		bodyScope = enclosing.withLocal(state)
 	}
-	return append(ds, validateNested(loop.GetBody(), bodyScope, index, wf, depth, v1.UndoScopeLoop)...)
+	return append(ds, validateNested(loop.GetBody(), bodyScope, index, wf, depth, placement.IntoLoop())...)
 }
 
 // bodyHasNestedLoop reports whether a loop body directly or transitively contains
@@ -1038,8 +1045,9 @@ func validateParallel(stepID string, parallel *v1.Parallel, enclosing refScope, 
 //
 // placement is the [v1.UndoScope] every step in nodes is checked at — a
 // `for_each` body and a `parallel` branch pass [v1.UndoScopeConcurrent], a
-// `loop:` body passes [v1.UndoScopeLoop]. A callee reached through a `call:`
-// does not come through here at all; see [validateCallAtDepth].
+// `loop:` body passes whatever [v1.UndoScope.IntoLoop] composes from the scope
+// the loop step itself sits in. A callee reached through a `call:` does not come
+// through here at all; see [validateCallAtDepth].
 func validateNested(nodes []*v1.Node, enclosing refScope, index int, wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnostics {
 	var ds Diagnostics
 
@@ -1096,7 +1104,7 @@ func validateNested(nodes []*v1.Node, enclosing refScope, index int, wf *v1.Work
 			case *v1.Node_ForEach:
 				ds = append(ds, validateLoop(id, kind.ForEach, inner, index, wf, depth)...)
 			case *v1.Node_Loop:
-				ds = append(ds, validateNamedLoop(id, kind.Loop, inner, index, wf, depth)...)
+				ds = append(ds, validateNamedLoop(id, kind.Loop, inner, index, wf, depth, placement)...)
 			case *v1.Node_Parallel:
 				ds = append(ds, validateParallel(id, kind.Parallel, inner, index, wf, depth)...)
 			case *v1.Node_Wait:
