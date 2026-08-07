@@ -491,13 +491,13 @@ func waitResultCandidates(path []string) []refCandidate {
 			name:   v1.SenderOutput,
 			kind:   lsp.CIKVariable,
 			detail: "map",
-			docs: "Who the server attests sent the signal — `" + v1.SenderOutput + ".identity.subject`, `." + v1.SenderOutput + ".local` — never anything the payload claims.",
+			docs:   "Who the server attests sent the signal — `" + v1.SenderOutput + ".identity.subject`, `." + v1.SenderOutput + ".local` — never anything the payload claims.",
 		},
 		{
 			name:   v1.TimedOutOutput,
 			kind:   lsp.CIKVariable,
 			detail: "bool",
-			docs: "Whether the wait ended because nobody answered in time. A lapsed gate is an ordinary outcome, not a failure.",
+			docs:   "Whether the wait ended because nobody answered in time. A lapsed gate is an ordinary outcome, not a failure.",
 		},
 	}
 }

@@ -408,5 +408,188 @@ func WaitCases() []Case {
 				}},
 			}},
 		},
+
+		// Output shaping. Every case below lapses its gate rather than answering
+		// it, for the reason the computed-timeout cases above give: delivering a
+		// signal is still driver-specific, and timing one out is not — so shaping
+		// is testable on both drivers today, on the arm where it matters most
+		// (a gate that lapsed is exactly the case an author most often has to
+		// distinguish from one that was refused).
+		{
+			// Replace, not extend: the wait's own `payload`, `sender` and
+			// `timed_out` are gone, and only what was shaped is there. Asserted
+			// as the *whole* outputs map rather than by presence, because
+			// "extend" would pass every presence check this could make.
+			Name: "a shaped wait produces only the names it shaped",
+			Workflow: &v1.Workflow{
+				Name: "wait-shaping-replaces",
+				Steps: []*v1.Node{
+					{
+						Id: "gate",
+						Kind: &v1.Node_Wait{Wait: &v1.Wait{
+							Kind: &v1.Wait_Signal{Signal: &v1.Signal{
+								Name: "sign-off",
+								Outputs: map[string]*v1.Value{
+									"approved": v1.NewExpr("has(payload.approved) && payload.approved"),
+									"answered": v1.NewExpr("!timed_out"),
+								},
+							}},
+							TimeoutExpr: v1.NewExpr(`duration("0s")`),
+						}},
+					},
+					says("after", "carried on"),
+				},
+			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"gate": {NamedValues: map[string]*v1.Value{
+					"approved": v1.NewLiteral(false),
+					"answered": v1.NewLiteral(false),
+				}},
+				"after": {},
+			}},
+		},
+		{
+			// The re-exposure the replace decision costs, and the proof that it
+			// costs exactly one line: `timed_out: ${timed_out}` puts the name
+			// back, unchanged, beside the shaped one.
+			Name: "a shaped wait can re-expose the wait's own outputs",
+			Workflow: &v1.Workflow{
+				Name: "wait-shaping-reexposes",
+				Steps: []*v1.Node{
+					{
+						Id: "gate",
+						Kind: &v1.Node_Wait{Wait: &v1.Wait{
+							Kind: &v1.Wait_Signal{Signal: &v1.Signal{
+								Name: "sign-off",
+								Outputs: map[string]*v1.Value{
+									"approved":          v1.NewExpr("has(payload.approved) && payload.approved"),
+									v1.TimedOutOutput:   v1.NewExpr(v1.TimedOutOutput),
+									"attested":          v1.NewExpr("!sender.local"),
+									"approver":          v1.NewExpr("sender.identity.subject"),
+									"shaped_at_present": v1.NewExpr(`now > timestamp("2000-01-01T00:00:00Z")`),
+								},
+							}},
+							TimeoutExpr: v1.NewExpr(`duration("0s")`),
+						}},
+					},
+				},
+			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"gate": {NamedValues: map[string]*v1.Value{
+					"approved": v1.NewLiteral(false),
+					// A lapsed gate with nothing pending is unattested, which is
+					// what `sender.local` reads as — the shaping sees the same
+					// rendering a later step would have.
+					"attested":          v1.NewLiteral(false),
+					"approver":          v1.NewLiteral(""),
+					v1.TimedOutOutput:   v1.NewLiteral(true),
+					"shaped_at_present": v1.NewLiteral(true),
+				}},
+			}},
+		},
+		{
+			// The enclosing scope is underneath the wait's own names, so a
+			// shaping expression is an ordinary expression that happens to see
+			// three more things. Without this a shaping block could only ever
+			// restate the payload, which is half of what the gate this feature
+			// exists for needs.
+			Name: "a shaped wait reads the enclosing scope",
+			Inputs: map[string]*v1.Value{
+				"quorum": v1.NewLiteral(int64(2)),
+			},
+			Workflow: &v1.Workflow{
+				Name: "wait-shaping-scope",
+				DeclaredInputs: []*v1.InputDeclaration{
+					{Name: "quorum", Type: v1.InputDeclaration_TYPE_INT, Required: true},
+				},
+				Steps: []*v1.Node{
+					{
+						Id: "gate",
+						Kind: &v1.Node_Wait{Wait: &v1.Wait{
+							Kind: &v1.Wait_Signal{Signal: &v1.Signal{
+								Name: "sign-off",
+								Outputs: map[string]*v1.Value{
+									"reason": v1.NewExpr(
+										`timed_out ? "release needs " + string(inputs.quorum) : "answered"`),
+								},
+							}},
+							TimeoutExpr: v1.NewExpr(`duration("0s")`),
+						}},
+					},
+				},
+			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"gate": {NamedValues: map[string]*v1.Value{
+					"reason": v1.NewLiteral("release needs 2"),
+				}},
+			}},
+		},
+		{
+			// A literal shaped output, which is what an author writes for a
+			// constant beside the derived names. It goes through the same path
+			// and is recorded unchanged, so `outputs:` is not a block that
+			// silently demands a fence.
+			Name: "a shaped output may be a literal",
+			Workflow: &v1.Workflow{
+				Name: "wait-shaping-literal",
+				Steps: []*v1.Node{
+					{
+						Id: "gate",
+						Kind: &v1.Node_Wait{Wait: &v1.Wait{
+							Kind: &v1.Wait_Signal{Signal: &v1.Signal{
+								Name:    "sign-off",
+								Outputs: map[string]*v1.Value{"kind": v1.NewLiteral("approval")},
+							}},
+							TimeoutExpr: v1.NewExpr(`duration("0s")`),
+						}},
+					},
+				},
+			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"gate": {NamedValues: map[string]*v1.Value{"kind": v1.NewLiteral("approval")}},
+			}},
+		},
+		{
+			// The negative direction, and the one that decides whether this
+			// feature is safe: an expression naming a field the payload does not
+			// carry fails the run rather than recording an empty value.
+			//
+			// Silently empty is the dangerous answer, not the annoying one. These
+			// values are what later steps branch on, so an unnamed field that
+			// evaluated to nothing would take the *other* arm of every gate built
+			// on it — the exact failure the four hand-copied predicates this
+			// feature replaces used to produce.
+			Name:          "a shaping expression naming a field the payload lacks fails the run",
+			ExpectFailure: true,
+			Workflow: &v1.Workflow{
+				Name: "wait-shaping-unknown-field",
+				Steps: []*v1.Node{
+					{
+						Id: "gate",
+						Kind: &v1.Node_Wait{Wait: &v1.Wait{
+							Kind: &v1.Wait_Signal{Signal: &v1.Signal{
+								Name:    "sign-off",
+								Outputs: map[string]*v1.Value{"approved": v1.NewExpr("payload.approved")},
+							}},
+							TimeoutExpr: v1.NewExpr(`duration("0s")`),
+						}},
+					},
+				},
+			},
+		},
+		// There is deliberately no case here for shaping on a `sleep:` or a
+		// `wait_until:`, and its absence is the decision rather than a gap.
+		//
+		// The field is on [v1.Signal], not on [v1.Wait], so neither arm can carry
+		// one — the refusal is structural instead of reported, and there is no
+		// state for a driver to disagree about. That placement is the whole point:
+		// `timeout` sits on [v1.Wait] and is meaningless on two of its arms, which
+		// is exactly why [v1.ValidateWait] has to exist and say so. Shaping does
+		// not repeat the mistake.
+		//
+		// It is also the honest answer about what those arms produce. Two of the
+		// three names a shaping expression reads — `payload` and `sender` — do not
+		// exist for a timer, and the third, `timed_out`, is the constant `false`;
+		// naming a constant is what `vars:` is for.
 	}
 }

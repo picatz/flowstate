@@ -233,6 +233,61 @@ steps:
 `,
 		},
 		{
+			// The fourth binding position, and the one that binds three names
+			// rather than one. A `wait_for_signal:`'s `outputs:` sees the wait's
+			// own result — `payload`, `sender`, `timed_out` — bound bare, and all
+			// three are ordinary words a step may legitimately be called. Rooted,
+			// `payload.approved` becomes `steps.payload.approved`: still valid,
+			// still passing `flow validate`, and computing the outputs of a
+			// logging step instead of the gate.
+			//
+			// All three in one file on purpose. A rewriter that learned two of
+			// them would corrupt exactly the file it did not know about, which is
+			// the failure `bindsNow` was widened to fix a release ago.
+			name: "steps share the names a gate's outputs shaping binds",
+			source: `edition: v2026.2
+name: shadow-shaping
+steps:
+  - id: payload
+    log:
+      message: a step called payload
+  - id: sender
+    log:
+      message: a step called sender
+  - id: timed_out
+    log:
+      message: a step called timed_out
+  - id: gate
+    wait_for_signal:
+      name: sign-off
+      timeout: 1h
+      outputs:
+        approved: "${has(payload.approved) && payload.approved}"
+        who: "${sender.identity.subject}"
+        lapsed: "${timed_out}"
+`,
+		},
+		{
+			// `now` is bound in the shaping block too — it is a wait, and the
+			// clock follows the node kind — so the subtraction that covers the
+			// whole `wait_for_signal:` subtree has to survive descending one
+			// further level into `outputs:`, where a second subtraction has
+			// already narrowed the same map.
+			name: "a step is called now, beside a gate's outputs shaping that reads the clock",
+			source: `edition: v2026.2
+name: shadow-now-shaping
+steps:
+  - id: now
+    log:
+      message: a step called now
+  - id: gate
+    wait_for_signal:
+      name: sign-off
+      outputs:
+        answered_before: "${now < now + duration('1h')}"
+`,
+		},
+		{
 			// `run` is a root (#206), not a name the grammar binds bare the way a
 			// loop's `as:` or `now` is — but the risk is the identical shape: a bare
 			// identifier that means something other than a step, sitting in a file
@@ -467,6 +522,39 @@ steps:
 `,
 			rooted: "vars.now",
 			bareIn: `timeout: "${(now + duration('1h')) - now}"`,
+		},
+		{
+			// The extent of the shaping binding, from the side the byte-comparison
+			// table cannot see. `payload` is a step *and* the wait's own result, and
+			// which one a reference means is decided by whether it is inside
+			// `outputs:` — so the `if:` on the same step migrates and the shaping
+			// expression does not.
+			//
+			// Subtracting the three names for the whole `wait_for_signal:` subtree
+			// instead of for `outputs:` alone would leave `${payload.result}` in the
+			// `timeout:` below bare, in a file stamped with the new edition, which
+			// the validator then rejects — the "too wide" half of this failure.
+			name: "a gate's outputs see the wait's result, and its timeout sees the step called payload",
+			source: `edition: v2026.2
+name: payloadscope
+steps:
+  - id: payload
+    sleep: 1s
+  - id: gate
+    wait_for_signal:
+      name: sign-off
+      timeout: "${payload.timed_out ? duration('1h') : duration('2h')}"
+      outputs:
+        approved: "${has(payload.approved) && payload.approved}"
+`,
+			// Two keys of one mapping, and the same word means different things in
+			// each. Only `outputs:` binds the wait's result, so the `timeout:` beside
+			// it is naming the step and has to be rooted — subtracting the three
+			// names for the whole `wait_for_signal:` subtree instead would leave this
+			// bare in a file the validator then rejects, which is the "too wide" half
+			// of the failure and the half no byte-comparison case can see.
+			rooted: `timeout: "${steps.payload.timed_out ? duration('1h') : duration('2h')}"`,
+			bareIn: `approved: "${has(payload.approved) && payload.approved}"`,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
