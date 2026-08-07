@@ -164,19 +164,47 @@ type Stub struct {
 	Task string `yaml:"task"`
 
 	// Where filters which invocations of Task this stub answers, as a CEL
-	// expression over the task's resolved inputs — the same language `if:`
-	// and every other expression in a Flowfile use, bound to one name:
-	// `inputs`. Written bare, without the `${...}` fence a Flowfile's own
+	// expression — the same language `if:` and every other expression in a
+	// Flowfile use. Written bare, without the `${...}` fence a Flowfile's own
 	// values need: a Flowfile fences an expression to tell it apart from a
 	// literal value in a position that could legally hold either, and Where
 	// is never anything else, so there is nothing for a fence to
 	// disambiguate. Empty matches every invocation of Task that no earlier
 	// stub already matched, which is what makes a stub list read as a
 	// sequence of cases tried in order — the shape a `switch` already has.
+	//
+	// It is evaluated against the scope the stubbed step itself was evaluated
+	// in, plus `inputs` — the task's own resolved inputs. So it reads, with
+	// the spellings a Flowfile uses: `inputs.<name>`, any name bound where the
+	// step is written (a `for_each`'s `as:` name, `item` when the loop writes
+	// none, the step's own `vars:` keys), `vars.<name>`, and
+	// `steps.<id>.<output>`.
+	//
+	// The bare binding is what makes a loop testable. An input the task
+	// evaluates itself ([v1.TaskDef.DeferredInputs] — `http`'s `outputs:` and
+	// `expect:`, against `response`) is still an expression when a stub is
+	// consulted and is absent from `inputs` rather than resolved to something
+	// misleading, so where a loop body's outputs are shaped by one, `inputs`
+	// is identical on every iteration and only the binding separates them
+	// (#269).
+	//
+	// `inputs` is bound as a local, so it shadows the run's own
+	// `inputs.<name>` namespace for the length of a Where clause. That is the
+	// older meaning kept deliberately: a stub's `where:` has named the task's
+	// inputs since stubs existed.
 	Where string `yaml:"where"`
 
 	// Returns is the task's outputs when Where matches, converted the way a
 	// literal value anywhere in a Flowfile is — see [v1.NewValue].
+	//
+	// A value follows the Flowfile's own fence rule, at any depth: a
+	// whole-value `${...}` is an expression, evaluated per invocation against
+	// the same names [Stub.Where] sees, and anything else is literal. So one
+	// stub can answer a loop's iterations differently — `name:
+	// '${service.name}'` — rather than repeating one canned answer over a
+	// whole fan-out. A value that mixes literal text with a fence is refused
+	// when the test file is loaded, the same mistake reported the same way a
+	// Flowfile reports it.
 	//
 	// Mutually exclusive with Fails; a stub declaring both is refused when
 	// the test file is loaded rather than left to pick one arbitrarily at run
