@@ -1,0 +1,64 @@
+# One honest limit up front, because it decides what this file can claim.
+#
+# `expect:` is an input the http *task* evaluates, against `response`, inside the
+# activity — so a stub, which replaces that task wholesale, sits above it. No
+# case here can make `expect:` reject or accept anything; taskFuncHTTP's own
+# tests in pkg/flowstate/v1 own that, and they are where a change to the accept
+# rule would fail. What `flow test` can prove is the half `expect:` exists *for*:
+# that a 404 and a 200-with-a-body are both carried forward as ordinary step
+# outputs a later step reads, rather than one of them ending the run.
+#
+# So both cases pin the reported statuses through `where:` on `log`, and the
+# second pins the shape `expect:` was written to inspect — a 200 whose parsed
+# body is present — reaching `checked` as a value.
+edition: v2026.2
+tests:
+  - name: a 404 this workflow accepts is carried forward as an ordinary output
+    workflow: ./workflow.yaml
+    stubs:
+      - task: http
+        where: inputs.url == 'https://httpbin.org/status/404'
+        returns:
+          status_code: 404
+      - task: http
+        where: inputs.url == 'https://httpbin.org/json' && inputs.parse_json
+        returns:
+          status_code: 200
+          json:
+            slideshow:
+              title: Sample Slide Show
+      - task: log
+        where: inputs.message == 'lookup answered 404, which this step accepts'
+        returns: {}
+      - task: log
+        where: "inputs.message == 'response carried no error field: 200'"
+        returns: {}
+    expect:
+      # Neither step ended the run, which is the outcome the two `expect:`
+      # expressions exist to produce.
+      ran: [maybe_missing, report_missing, checked, report_checked]
+
+  - name: a status outside the accepted list is still reported by the same expression
+    workflow: ./workflow.yaml
+    stubs:
+      # 410 is not in `vars.accepted`. The real task would reject it; a stub
+      # cannot, which is the limit this file's header names — so what this case
+      # actually pins is that `report_missing`'s message is built from the
+      # status the step reported rather than from the literal 404 written in the
+      # url, a substitution a reader could easily make and the file never says.
+      - task: http
+        where: inputs.url == 'https://httpbin.org/status/404'
+        returns:
+          status_code: 410
+      - task: http
+        where: inputs.url == 'https://httpbin.org/json'
+        returns:
+          status_code: 200
+      - task: log
+        where: inputs.message == 'lookup answered 410, which this step accepts'
+        returns: {}
+      - task: log
+        where: "inputs.message == 'response carried no error field: 200'"
+        returns: {}
+    expect:
+      ran: [maybe_missing, report_missing, checked, report_checked]

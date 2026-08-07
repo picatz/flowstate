@@ -1,0 +1,31 @@
+# Two independent claims, both about a value arriving intact:
+#
+#   * `headers:` is a map handed to the task, so both entries reach it under the
+#     names written — asserted in the stub's `where:`, which is the only place a
+#     header this workflow sends is observable without a network;
+#   * a var holding a nested map is indexable twice — `${vars.nested['outer']['inner']}`
+#     must be `value`, not the map, and not the fenced expression's own text.
+#     That is the whole of what the `nested` var is in the file for.
+#
+# The status echo is pinned to 204 rather than 200 so the message is one the
+# default could not have produced by accident.
+edition: v2026.2
+tests:
+  - name: both headers reach the task, and a nested var indexes twice
+    workflow: ./workflow.yaml
+    stubs:
+      - task: http
+        where: >-
+          inputs.url == 'https://httpbin.org/anything' &&
+          inputs.headers['X-From'] == 'Flowstate' &&
+          inputs.headers['X-Env'] == 'dev'
+        returns:
+          status_code: 204
+      - task: log
+        where: inputs.message == '204'
+        returns: {}
+      - task: log
+        where: inputs.message == 'value'
+        returns: {}
+    expect:
+      ran: [web, report_status, pick]

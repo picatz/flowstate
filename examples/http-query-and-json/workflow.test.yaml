@@ -1,0 +1,60 @@
+# Two claims, and they are about *composition* rather than about the wire.
+#
+# A stub replaces the http task itself, so the escaping and the Content-Type
+# header this example is partly about are not reachable from here — those belong
+# to taskFuncHTTP, and pkg/flowstate/v1's own http tests own them. What a stub
+# can see, and what this case therefore pins, is the shape the task was handed:
+#
+#   * `query:` is a map, and a list value stays a *list* all the way to the task
+#     rather than being flattened into one comma-joined value somewhere in the
+#     DSL — which is the difference between two parameters under one name and
+#     one parameter with a comma in it, the exact bug the file exists about;
+#   * `json:` carries a structure whose values may reference an earlier step, so
+#     `echoed_query` must arrive holding what `search` returned, nested map and
+#     all, rather than an unevaluated expression.
+#
+# The `report` step's `where:` closes the loop back through `fields:`, which are
+# string-valued: `tag` is joined *there*, by `join(", ")` in the file, which is
+# only meaningful because it arrived as a list.
+edition: v2026.2
+tests:
+  - name: a list query value stays a list, and a json body carries an earlier step's value
+    workflow: ./workflow.yaml
+    stubs:
+      - task: http
+        where: >-
+          inputs.url == 'https://httpbin.org/get?source=flowstate' &&
+          inputs.query.q == 'hello world & goodbye' &&
+          inputs.query.page == 2 &&
+          inputs.query.tag == ['alpha', 'beta'] &&
+          inputs.parse_json
+        returns:
+          status_code: 200
+          json:
+            args:
+              q: hello world & goodbye
+              tag: [alpha, beta]
+      # The POST, whose body reads `steps.search.json.args` — so this `where:`
+      # only holds if that reference resolved to the map above rather than to
+      # an empty value or to the expression's own text.
+      - task: http
+        where: >-
+          inputs.url == 'https://httpbin.org/post' &&
+          inputs.method == 'POST' &&
+          inputs.json.echoed_query.q == 'hello world & goodbye' &&
+          inputs.json.nested.works &&
+          inputs.json.nested.count == 3
+        returns:
+          status_code: 200
+          json:
+            json:
+              nested:
+                count: 3
+      - task: log
+        where: >-
+          inputs.fields.q == 'hello world & goodbye' &&
+          inputs.fields.tags == 'alpha, beta' &&
+          inputs.fields.sent == '3'
+        returns: {}
+    expect:
+      ran: [search, submit, report]

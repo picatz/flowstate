@@ -1,0 +1,33 @@
+# `form:` is one of three mutually exclusive body inputs, and what distinguishes
+# it from `json:` and `body:` is that the encoding and the header are the task's
+# to handle rather than the author's. A stub stands in for the task, so the
+# encoding itself is not reachable from here — pkg/flowstate/v1's own http tests
+# own that. What this case pins is the half that belongs to the file: `form:`
+# arrives as a map with the scope intact as *one* value containing spaces, and
+# not as three, which is the thing an author writing the parameters by hand gets
+# wrong.
+#
+# The `report` step then reads the header back out of the parsed response, so the
+# second `where:` pins that `${steps.token.json.headers['Content-Type']}`
+# resolved through a bracket index into a parsed body rather than to nothing.
+edition: v2026.2
+tests:
+  - name: a form value containing spaces stays one value, and the content type is read back
+    workflow: ./workflow.yaml
+    stubs:
+      - task: http
+        where: >-
+          inputs.method == 'POST' &&
+          inputs.form.grant_type == 'client_credentials' &&
+          inputs.form.scope == 'read:things write:things' &&
+          inputs.parse_json
+        returns:
+          status_code: 200
+          json:
+            headers:
+              Content-Type: application/x-www-form-urlencoded
+      - task: log
+        where: inputs.message == 'the endpoint received content type application/x-www-form-urlencoded'
+        returns: {}
+    expect:
+      ran: [token, report]
