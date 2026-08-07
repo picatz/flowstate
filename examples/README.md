@@ -51,6 +51,7 @@ $ flow validate examples/hello-world/workflow.yaml
 | [call-a-workflow](call-a-workflow) | `call:` — running another Flowfile as a step, isolated from the caller, with `with:` binding its declared inputs and its `outputs:` read back under the step id | no |
 | [scheduled-report](scheduled-report) | `triggers:` — the cadence a file declares, which `flow schedule create` turns into a schedule and `flow run` ignores | no |
 | [observability](observability) | The docker-compose observability lab: one trace id from `flow run` through Grafana Tempo to the Temporal UI | no |
+| [embedding](embedding/README.md) | Flowstate as a Go library — `pkg/flowstate/embed`: compiling `flowfile/workflow.yaml` from bytes, a custom Go task registered with no `.proto` descriptor, and running it locally or (with `--durable`) against a real Temporal server. A Go program, not a `flow run`able Flowfile alone — read its README | no |
 | [plugins/greet](plugins/greet/) | A task a plugin provides, written `example.greet:` and type-checked against the plugin's own schema — needs a built plugin and a worker, so read its README | no |
 | [plugins/vcs](plugins/vcs/) | `vcs.log` and `vcs.diff` — version-control tasks (go-git) that clone in memory, per invocation, and return content rather than a workspace path — needs a built plugin and a worker, so read its README | yes |
 | [plugins/github](plugins/github/) | `github.pull_request_get` (read) and `github.issue_comment` (a mutation, in a separate parameterized file so it cannot run by accident), plus a read/audit tier (`github.pull_request_list`, `github.pull_request_files`, `github.issue_get`, `github.issue_list`) in a review-triage example — needs a built plugin, a worker, and for the comment file a credential, so read its README | yes |
@@ -67,20 +68,27 @@ saying what the rest of the directory is for: [http-secret](http-secret) and
 one, [plugins/greet](plugins/greet/), [plugins/vcs](plugins/vcs/),
 [plugins/github](plugins/github/), and [plugins/git](plugins/git/) each need a plugin
 built and a worker told where to find it, [observability](observability) is a whole
-docker-compose lab, and [expense-approval](expense-approval),
+docker-compose lab, [expense-approval](expense-approval),
 [ops-healthcheck](ops-healthcheck), [data-enrichment](data-enrichment), and
 [order-fulfillment](order-fulfillment) each carry a README naming the one durability
 property the example demonstrates and the two-command local-then-durable contrast, per
-the examples charter (#165). Everywhere else the workflow's own comments are the
-documentation, and a README repeating them would be one more thing to leave stale —
-which is also why [call-a-workflow](call-a-workflow) holds two files and has none: the
-second one is a Flowfile, called by the first, and its own comments are exactly as much
-documentation as any other example's.
+the examples charter (#165), and [embedding](embedding/README.md) is a Go program rather than a
+Flowfile `flow` runs on its own, so its README says how to run it instead. Everywhere
+else the workflow's own comments are the documentation, and a README repeating them
+would be one more thing to leave stale — which is also why
+[call-a-workflow](call-a-workflow) holds two files and has none: the second one is a
+Flowfile, called by the first, and its own comments are exactly as much documentation
+as any other example's.
 
 `plugins/greet`, `plugins/vcs`, `plugins/github`, and `plugins/git` also sit a directory
 deeper than the rest, which is deliberate: everything matching `examples/*/workflow.yaml`
 is checked with the built-in task registry, and a file naming a plugin's task is meant to
 be refused by a process that has not loaded that plugin. Their READMEs say more.
+`embedding/flowfile/workflow.yaml` follows the same convention for the same reason: it
+names `greet`, a task only `examples/embedding`'s own program registers, so it sits at
+`embedding/flowfile/workflow.yaml` rather than `embedding/workflow.yaml` to stay out of
+that single-level glob — `flow fix --check examples/` and `flow test examples/` still
+walk the whole tree and reach it.
 
 Where a directory holds an `inputs.json` beside its `workflow.yaml`, that file is what
 the example is run with — by you and by CI, through the same flag:

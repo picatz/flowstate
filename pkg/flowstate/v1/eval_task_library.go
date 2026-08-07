@@ -78,6 +78,25 @@ var defaultEgressPolicy = sync.OnceValue(func() *netpolicy.Policy {
 	return p
 })
 
+// DefaultEgressPolicy returns the egress policy the built-in http task
+// enforces when nothing has replaced it: internal address ranges denied,
+// loopback denied unless [AllowLoopbackEgressEnv] is set, every redirect hop
+// re-checked, the response body bounded.
+//
+// This is the *constant* this build ships, not "whatever [DefaultRegistry]
+// currently has registered for `http`" — those answer different questions.
+// [DefaultRegistry]'s `http` entry is mutable process state: `flow run local
+// --egress-policy` and any other caller of [HTTPTaskDef] replace it, and
+// once replaced, a reader consulting the registry sees the replacement, not
+// this. A caller that needs the *documented default itself* — regardless of
+// what anything else in the process has done — calls this directly. See
+// pkg/flowstate/embed's RunOptions.EgressPolicy for exactly this need: a nil
+// policy there must be a fixed posture, not whatever the registry happens to
+// hold at the moment a run starts.
+func DefaultEgressPolicy() *netpolicy.Policy {
+	return defaultEgressPolicy()
+}
+
 // HTTPTaskDef returns the http task definition enforcing the given egress policy.
 //
 // Registering the result replaces the built-in http task, which is how a

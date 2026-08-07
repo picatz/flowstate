@@ -6,7 +6,6 @@ import (
 	"math"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
@@ -15,22 +14,6 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
-
-// registryMu serializes every case that swaps the process-wide default task
-// registry ([swapRegistry]).
-//
-// The registry-swap pattern this package uses ([swapRegistry]'s own doc)
-// mutates process-global state, the same way `allowLoopback` does in
-// pkg/flowstate/v1/tests/tests.go — safe there because that suite runs its
-// swaps one at a time, and safe here for the same reason: [RunFile] already
-// runs a file's own cases in sequence, but nothing stops two goroutines each
-// calling [RunFile] on two different files at once (`flow test`'s own
-// discovery could parallelize across files; a caller embedding this package
-// could too), and two cases racing on the same global registry would each see
-// a mix of the other's stubs. One case's task registry mutation happens
-// entirely inside this lock, so "which stub answered this call" is always
-// unambiguous.
-var registryMu sync.Mutex
 
 // epoch is the moment every case's [v1.VirtualClock] starts at.
 //
@@ -78,8 +61,13 @@ func runCase(testFile string, test *Test) *v1.TestCase {
 		return result
 	}
 
-	registryMu.Lock()
-	defer registryMu.Unlock()
+	// Serializes every case that swaps the process-wide default task registry
+	// ([swapRegistry]) against every other such compound sequence in the
+	// process — this package's own, run one at a time by [RunFile], and any
+	// other package's, such as pkg/flowstate/embed's Tasks.Install. See
+	// [v1.LockDefaultRegistry].
+	unlockRegistry := v1.LockDefaultRegistry()
+	defer unlockRegistry()
 
 	// Swapped in before the workflow is even parsed, not just before it runs:
 	// a stub may name a task this build does not otherwise register — a

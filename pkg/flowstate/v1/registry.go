@@ -301,6 +301,19 @@ func (r *Registry) MustRegister(def TaskDef) {
 	}
 }
 
+// Unregister removes the task definition registered under name, so a later
+// lookup answers unknown again.
+//
+// There is deliberately no bulk form: a caller restoring a save point after a
+// compound sequence of Register calls (see [LockDefaultRegistry]) knows
+// exactly which names it added and removes them one at a time, the same way
+// it registered them one at a time.
+func (r *Registry) Unregister(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.tasks, name)
+}
+
 // Lookup returns the definition registered under name.
 func (r *Registry) Lookup(name string) (TaskDef, bool) {
 	r.mu.RLock()
@@ -344,6 +357,46 @@ var defaultRegistry = sync.OnceValue(func() *Registry {
 // which is what [IsBuiltinTask] is for.
 func DefaultRegistry() *Registry {
 	return defaultRegistry()
+}
+
+// defaultRegistryMu serializes a *compound* sequence of mutations against
+// [DefaultRegistry] — save current state, register over it, later restore —
+// as seen by every other such sequence.
+//
+// A single Register or Unregister call is already safe on its own, guarded by
+// the [Registry]'s own mutex. What that does not protect is two callers each
+// doing save-register-...-restore at once: interleaved, the second caller's
+// save can capture the first caller's temporary registrations, and the second
+// caller's restore can then put those temporary registrations back after the
+// first caller believed it had already undone them. [flowtest]'s per-case
+// stub swap and an embedding program's [LockDefaultRegistry]-based install are
+// both this shape, and both need to see each other's whole window rather than
+// interleave with it — see [LockDefaultRegistry].
+var defaultRegistryMu sync.Mutex
+
+// LockDefaultRegistry acquires the lock serializing compound mutations of
+// [DefaultRegistry] and returns the matching unlock.
+//
+// Anything that captures [DefaultRegistry]'s current state, registers one or
+// more definitions over it, and later restores what it captured — rather than
+// making one isolated Register call — must hold this for the whole window.
+// Without it, two such sequences running concurrently can each restore over
+// the other's still-in-progress changes.
+//
+// This does not, on its own, give a *run* isolation from what another
+// goroutine registers globally — that is what [NewContextWithRegistry] is
+// for, and it is why execution reads a context-scoped registry rather than
+// this one (see its doc for issue #195, which this lock does not solve).
+// What this protects is narrower and different: the bookkeeping of a
+// save-then-restore sequence against the shared global itself, so a
+// definition one sequence temporarily installed for compilation cannot be
+// clobbered, or wrongly left behind, by another sequence's restore. Exported
+// so more than one package's registry-swap can share it instead of adding a
+// second, uncoordinated one — see [flowtest]'s per-case stub swap and
+// pkg/flowstate/embed's Tasks.Install.
+func LockDefaultRegistry() func() {
+	defaultRegistryMu.Lock()
+	return defaultRegistryMu.Unlock
 }
 
 // builtinTaskNames is the set of tasks this build ships, frozen at first use.
