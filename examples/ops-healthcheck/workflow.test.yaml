@@ -4,14 +4,13 @@
 # map, and the entry that carries the idea is `unhealthy_services` — a list of
 # names derived from the *absence* of a name in `steps.checks.results`.
 #
-# One thing shapes every case below. A stub matches on a task's resolved inputs,
-# and this step's `outputs:` — the expression that carries `service.name`
-# forward — is one the http task evaluates itself
-# ([v1.TaskDef.DeferredInputs]), so a stub never sees which iteration it is
-# answering. `checkout` and `payments` are probed at the identical url, so no
-# `where:` can tell them apart; only `search`, at the 503 url, is separable.
-# Each case is therefore built from probe outcomes a stub can genuinely
-# distinguish, and the one case that cannot says so where it matters.
+# Every case below matches on `service`, the name the `for_each` binds — a stub
+# sees the scope its step was evaluated in, so an iteration is distinguishable
+# even though the step's `outputs:` expression is one the http task evaluates
+# itself ([v1.TaskDef.DeferredInputs]) and so never reaches a stub's `inputs`.
+# That is what lets `checkout` and `payments` be told apart at all: they are
+# probed at the identical url, so nothing in this workflow's task inputs
+# separates them.
 edition: v2026.2
 tests:
   - name: two services down and one up are named individually, and the run still completes
@@ -21,14 +20,14 @@ tests:
       # iteration result carries no name at all — that absence is exactly what
       # `unhealthy_services` is computed from.
       - task: http
-        where: inputs.url == 'https://httpbin.org/status/200'
+        where: service.name in ['checkout', 'payments']
         fails:
           kind: Upstream
           message: service unavailable
       - task: http
-        where: inputs.url == 'https://httpbin.org/status/503'
+        where: service.name == 'search'
         returns:
-          name: search
+          name: '${service.name}'
       - task: log
         where: "inputs.message == 'probed 3 service(s): 1 healthy, 2 down'"
         returns: {}
@@ -65,28 +64,44 @@ tests:
     stubs:
       # Every probe healthy, including the one the file deliberately points at a
       # permanent 503 — the only way to reach the no-page branch without editing
-      # workflow.yaml.
+      # workflow.yaml. One stub answers all three iterations, each with its own
+      # name, which is what the real endpoint's own `outputs:` expression would
+      # have produced.
       - task: http
         returns:
-          name: checkout
+          name: '${service.name}'
       - task: log
         where: "inputs.message == 'probed 3 service(s): 3 healthy, 0 down'"
         returns: {}
     expect:
       ran: [checks, summary]
       outputs:
-        # This case is for `page_required` and `healthy_count`, which are
-        # counted from how many iterations reported a name at all and are
-        # therefore exact here: three healthy, so `3 < 3` is false and no page.
-        #
-        # `unhealthy_services` is the one output the stub boundary distorts, and
-        # it is written down as measured rather than as it would be in
-        # production: it is set membership by *name*, and a stub answering all
-        # three probes cannot know which iteration it is in, so all three report
-        # `checkout` and the other two names look absent. Against a real
-        # endpoint each iteration carries its own `service.name` and this reads
-        # `[]`. Nothing in the workflow is wrong here; the value simply cannot
-        # be produced faithfully without a stub that can see the loop binding.
-        unhealthy_services: [payments, search]
+        # Nothing absent, so nothing to page about: `3 < 3` is false.
+        unhealthy_services: []
         healthy_count: 3
         page_required: false
+
+  - name: one service down is named alone, and it is the one the stub singled out
+    workflow: ./workflow.yaml
+    stubs:
+      # The negative direction of the binding: this `where:` names `payments`
+      # and must answer *only* that iteration, leaving the other two to the
+      # stub below. If the binding were invisible — or matched every iteration
+      # — all three would fail and `unhealthy_services` would name all three.
+      - task: http
+        where: service.name == 'payments'
+        fails:
+          kind: Upstream
+          message: service unavailable
+      - task: http
+        returns:
+          name: '${service.name}'
+      - task: log
+        where: "inputs.message == 'probed 3 service(s): 2 healthy, 1 down'"
+        returns: {}
+    expect:
+      ran: [checks, summary]
+      outputs:
+        unhealthy_services: [payments]
+        healthy_count: 2
+        page_required: true

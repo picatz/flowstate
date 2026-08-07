@@ -554,6 +554,52 @@ exercise composition rather than only a single file in isolation; see
 `examples/call-a-workflow/workflow.test.yaml` for a worked case, run in CI by
 the `Example workflows pass their own tests` job.
 
+### What a stub can see
+
+A stub's `where:` and its `returns:` are evaluated against **the scope the
+stubbed step itself was evaluated in, plus `inputs`** — the task's own resolved
+inputs. So a stub reads, with the same spellings a Flowfile uses:
+
+| Name | What it holds |
+| --- | --- |
+| `inputs.<name>` | the task's own resolved inputs — the url an `http` step is about to fetch, the message a `log` step is about to write |
+| a bare name | whatever is bound where the step is written: a `for_each`'s `as:` name (`item` when it writes none), the step's own `vars:` keys |
+| `vars.<name>` | the ambient vars in scope |
+| `steps.<id>.<output>` | what earlier steps reported |
+
+The bare binding is the one that makes a loop testable. Some task inputs are
+expressions the *task* evaluates itself (`http`'s `outputs:` and `expect:`,
+against `response`), so they are not resolved values when a stub is consulted
+and are simply absent from `inputs`. Where a loop body's outputs are shaped by
+such an expression, `inputs` alone is identical on every iteration — the loop's
+binding is what separates them:
+
+```yaml
+stubs:
+  # One stub, answering each iteration with that iteration's own value.
+  - task: http
+    returns:
+      name: '${service.name}'
+
+  # Or one stub per iteration, matched by the binding.
+  - task: http
+    where: service.name == 'search'
+    fails: {kind: Upstream, message: service unavailable}
+```
+
+A `returns:` value follows the Flowfile's own fence rule at any depth: a
+whole-value `${...}` is an expression, anything else is literal, and a value
+that mixes text with a fence is refused when the file loads rather than
+carried into the run as text. `inputs` is bound over the run's own
+`inputs.<name>` namespace for the length of a `where:` — a stub's `where:` has
+named the task's inputs since stubs existed, and that meaning is kept.
+
+`where:` cannot reach what a stub replaces. The task's own evaluation of
+`expect:` or `outputs:` does not run when the task is stubbed — the stub *is*
+the step's answer — which is why `examples/http-expect` and
+`examples/http-output-shaping` assert the steps around those expressions rather
+than the expressions themselves.
+
 ## What this means for a change
 
 A change to this surface is finished when:
