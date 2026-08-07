@@ -173,6 +173,25 @@ func TestALocalRunThatFailsStillAnswersAMachineCaller(t *testing.T) {
 	require.True(t, described, "the document does not say why the run failed:\n%s", stdout)
 	assert.NotEmpty(t, failure["message"], "the failure carries no reason")
 
+	// #241's P2: the classification behind the prose survives the same round
+	// trip the message does — `flow run local -o json` through marshalJSON,
+	// exactly the path an agent's own tooling reads.
+	//
+	// Checked as "some recognized kind arrived" rather than pinned to one
+	// value: this test runs `flow run local` through the real CLI, sharing the
+	// process-wide task registry with every other package test running
+	// alongside it under `go test -race ./...` — a test elsewhere that installs
+	// its own permissive http task for the duration of its run (see
+	// applyEgressPolicy, which has no teardown) can make this exact URL fail on
+	// a refused connection (Upstream) instead of a policy denial
+	// (PolicyDenied). Both are real classifications a wire consumer can act on;
+	// which one this particular race lands on is not what P2 is answering for.
+	kind, recognized := v1.ParseErrorKind(fmt.Sprint(failure["kind"]))
+	assert.True(t, recognized, "the failure's kind %q did not survive the round trip to -o json as a recognized ErrorKind", failure["kind"])
+	assert.True(t, kind == v1.ErrorKindPolicyDenied || kind == v1.ErrorKindUpstream,
+		"an http task refused to reach a loopback address should classify as PolicyDenied or, "+
+			"under the registry race described above, Upstream — got %s", kind)
+
 	// The negative direction, and the one that would let a reader act on nothing:
 	// `kind` is a oneof, so a failed run must not also appear to have produced an
 	// answer. A consumer that checked `.outputs` before `.status` would otherwise

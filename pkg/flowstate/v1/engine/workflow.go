@@ -40,10 +40,32 @@ type ErrRunFailed struct {
 	// of them. This bit is what lets the durable driver make the same choice
 	// without re-deriving it from a chain it has already flattened.
 	recordedFromTask bool
+
+	// Kind classifies the failure the same way [v1.ClassifyError] would,
+	// carried alongside Message and Recorded for the same reason both of those
+	// are: whatever wrapping this driver adds between where the failure
+	// happened and where the run finally reports it must not be what a caller
+	// reads back. See [recordedStepKind], which computes it, and
+	// [classifyRunError], which is what puts it where a client can read it —
+	// this field only carries it there.
+	Kind v1.ErrorKind
 }
 
 func (e *ErrRunFailed) Error() string {
 	return fmt.Sprintf("engine: flowstate run failed: %s", e.Message)
+}
+
+// errorKind reports e's classification, defaulting to [v1.ErrorKindInternal]
+// when nothing along the way classified it — the same default
+// [v1.ClassifyError] uses for a non-nil error it does not recognize, since an
+// unclassified run failure is a gap in Flowstate rather than a statement that
+// nothing is known about the failure.
+func (e *ErrRunFailed) errorKind() v1.ErrorKind {
+	if e.Kind != "" {
+		return e.Kind
+	}
+
+	return v1.ErrorKindInternal
 }
 
 // stepFailed reports a step failure, except when the run is being cancelled.
@@ -128,6 +150,7 @@ func failedAt(err error, position string) error {
 		Message:          message,
 		Recorded:         recorded,
 		recordedFromTask: fromTask,
+		Kind:             recordedStepKind(err),
 	}
 }
 
@@ -173,6 +196,41 @@ func recordedStepError(err error) (string, bool) {
 	return v1.StepErrorText(err), errors.As(err, &taskErr)
 }
 
+// recordedStepKind extracts the [v1.ErrorKind] a failure was classified as,
+// from whatever shape it reached this driver in — the companion to
+// [recordedStepError], for the same reason: a value that has to agree with the
+// local driver cannot be read back out of a wrapper the local driver never
+// added.
+//
+// An inner [ErrRunFailed] is checked first so a classification made deeper in
+// the walk — a loop iteration, a parallel branch — is not overwritten by a
+// weaker guess made where it is caught. Failing that, an application error's
+// Type is exactly [v1.ErrorKind.String] as [activityError] set it, so parsing
+// it back recovers the same classification the worker made; anything else
+// falls through to [v1.ClassifyError], whose own default (Internal, for a
+// non-nil error it does not otherwise recognize) is the right answer for a
+// failure that crossed the boundary in a shape nothing here expected.
+func recordedStepKind(err error) v1.ErrorKind {
+	var run *ErrRunFailed
+	if errors.As(err, &run) && run.Kind != "" {
+		return run.Kind
+	}
+
+	var app *temporal.ApplicationError
+	if errors.As(err, &app) {
+		if kind, ok := v1.ParseErrorKind(app.Type()); ok {
+			return kind
+		}
+	}
+
+	var activity *temporal.ActivityError
+	if errors.As(err, &activity) && activity.Unwrap() != nil {
+		return v1.ClassifyError(activity.Unwrap())
+	}
+
+	return v1.ClassifyError(err)
+}
+
 const RunTaskQueueName = "flowstate-run-task-queue"
 
 // defaultMaxStepsPerRun defines how many steps to execute before
@@ -181,7 +239,58 @@ const defaultMaxStepsPerRun = 200
 
 // Run is the durable workflow entrypoint that supports Continue-As-New.
 // It executes from the provided state and yields final step outputs when done.
+//
+// A thin wrapper around [runWorkflow] rather than the whole body itself, so
+// that the one thing every terminal failure needs — being reported as a
+// [temporal.ApplicationError] whose Type is the run's [v1.ErrorKind] — happens
+// at a single choke point instead of at each of runWorkflow's several return
+// statements. [classifyRunError] is what does that, and it is careful to
+// leave a Continue-As-New error and a cancellation untouched; see its own
+// comment for why touching either would be wrong.
+//
+// Registered as the workflow function itself (not runWorkflow), and passed by
+// this same name to Continue-As-New below — both matter, because Temporal
+// resumes a continued run by looking up the registered function by the value
+// passed to NewContinueAsNewErrorWithOptions, and a workflow's own dispatch
+// table always points at the registered name.
 func Run(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error) {
+	outputs, err := runWorkflow(ctx, st)
+
+	return outputs, classifyRunError(err)
+}
+
+// classifyRunError puts a terminal run failure's [v1.ErrorKind] where a client
+// reading the failed workflow can recover it — [ApplicationError.Type], the
+// same field [activityError] already uses to carry a task's own classification
+// across the activity boundary — rather than leaving it to be reconstructed
+// from Temporal's generic wrapping of an arbitrary Go error, which classifies
+// by the error's *Go type name* and would report every run failure as
+// "*engine.ErrRunFailed" regardless of what actually happened.
+//
+// Only an [*ErrRunFailed] is rewrapped. A Continue-As-New error must reach
+// Temporal exactly as [workflow.NewContinueAsNewErrorWithOptions] built it —
+// it is recognized by type, and wrapping it would turn a suspension into a
+// reported failure — and neither it nor a cancellation is ever an
+// [*ErrRunFailed], so errors.As already excludes both without a special case
+// for either, the same way [stepFailed] excludes a cancellation from
+// [failedAt] by never routing one through it.
+func classifyRunError(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	var run *ErrRunFailed
+	if !errors.As(err, &run) {
+		return err
+	}
+
+	return temporal.NewApplicationErrorWithOptions(run.Error(), run.errorKind().String(),
+		temporal.ApplicationErrorOptions{Cause: err})
+}
+
+// runWorkflow is [Run]'s whole implementation, wrapped by it rather than
+// registered directly — see [Run]'s comment for why.
+func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error) {
 	if st == nil || st.Workflow == nil || len(st.Workflow.Steps) == 0 {
 		return nil, fmt.Errorf("workflow cannot be nil or empty")
 	}
@@ -483,6 +592,7 @@ func compensate(ctx workflow.Context, exec *executor, err error) error {
 			Message:          inner.Message + v1.UndoSummary(results),
 			Recorded:         inner.Recorded,
 			recordedFromTask: inner.recordedFromTask,
+			Kind:             inner.Kind,
 		}
 	}
 
