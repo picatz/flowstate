@@ -19,11 +19,39 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
 )
 
-type exampleSecretProvider struct{}
+// exampleSecretProvider always resolves to "example-token", whatever name was
+// asked for, under the scheme it is registered for.
+//
+// One provider per scheme rather than one provider answering several: [secrets.
+// Provider] handles exactly one scheme, which is also the shape the CLI wiring
+// takes in cmd/flow/secrets.go — a distinct provider per backend, registered
+// against distinct schemes. vault-secret, keychain-secret, onepassword-secret and
+// command-secret each need their own scheme resolvable here for the same reason
+// http-secret's env: does: this corpus exercises the engine's own machinery
+// end to end, and a step that fails to resolve its secret never reaches the http
+// task that machinery is supposed to be exercising.
+type exampleSecretProvider struct{ scheme string }
 
-func (exampleSecretProvider) Scheme() string { return "env" }
+func (p exampleSecretProvider) Scheme() string { return p.scheme }
 func (exampleSecretProvider) Resolve(_ context.Context, req secrets.Request) (secrets.Secret, error) {
 	return secrets.NewSecret(req.Ref, "example-token"), nil
+}
+
+// exampleSecretSchemes are the schemes every example in the corpus may resolve
+// against, each answering the same fixture value. Kept alongside the local-driver
+// harness because the durable-driver harness (examples_durable_test.go) builds the
+// identical set, and a scheme reachable on one driver and not the other is exactly
+// the kind of disagreement this corpus exists to catch.
+var exampleSecretSchemes = []string{"env", "vault", "keychain", "op", "command"}
+
+// exampleSecretProviders builds one [exampleSecretProvider] per scheme in
+// [exampleSecretSchemes].
+func exampleSecretProviders() []secrets.Provider {
+	providers := make([]secrets.Provider, len(exampleSecretSchemes))
+	for i, scheme := range exampleSecretSchemes {
+		providers[i] = exampleSecretProvider{scheme: scheme}
+	}
+	return providers
 }
 
 type exampleExchanger struct{}
@@ -214,7 +242,7 @@ func TestEveryNetworkedExampleRuns(t *testing.T) {
 	// have the first one's restore land while the second still runs. Subtests may
 	// still be parallel — cleanup waits for them.
 	base, unserved := tests.NewExamplesHTTPServer(t)
-	secretStore, err := secrets.NewStore(exampleSecretProvider{})
+	secretStore, err := secrets.NewStore(exampleSecretProviders()...)
 	require.NoError(t, err)
 	secretPolicy, err := (auth.SecretAccessPolicy{Allow: []string{"true"}}).Compile()
 	require.NoError(t, err)

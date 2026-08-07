@@ -26,8 +26,38 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
 )
+
+// exampleSecretSchemes are the schemes every example in the corpus may resolve
+// against, each answering the same fixture value. Kept identical to the
+// local-driver harness's copy in examples_run_test.go, because a scheme reachable
+// on one driver and not the other is exactly the kind of disagreement this corpus
+// exists to catch.
+var exampleSecretSchemes = []string{"env", "vault", "keychain", "op", "command"}
+
+// exampleSecretProvider always resolves to "example-token", whatever name was
+// asked for, under the scheme it is registered for. One provider per scheme rather
+// than one provider answering several, matching [secrets.Provider]'s contract of
+// exactly one scheme per implementation — the same shape the CLI wiring in
+// cmd/flow/secrets.go takes.
+type exampleSecretProvider struct{ scheme string }
+
+func (p exampleSecretProvider) Scheme() string { return p.scheme }
+func (exampleSecretProvider) Resolve(_ context.Context, req secrets.Request) (secrets.Secret, error) {
+	return secrets.NewSecret(req.Ref, "example-token"), nil
+}
+
+// exampleSecretProviders builds one [exampleSecretProvider] per scheme in
+// [exampleSecretSchemes].
+func exampleSecretProviders() []secrets.Provider {
+	providers := make([]secrets.Provider, len(exampleSecretSchemes))
+	for i, scheme := range exampleSecretSchemes {
+		providers[i] = exampleSecretProvider{scheme: scheme}
+	}
+	return providers
+}
 
 // The examples corpus proves a capability is reachable from a file somebody writes,
 // and until now it proved it of one driver. `examples_run_test.go` runs every
@@ -204,23 +234,31 @@ func TestEveryExampleRunsDurably(t *testing.T) {
 	// the examples take a second or two each — and neither has per-example state.
 	base, unserved := tests.NewExamplesHTTPServer(t)
 
-	// The worker capabilities two examples need. `http-secret` resolves
-	// `${secret('env:API_TOKEN')}` and `http-federated` names a `credential:`
-	// target, and on the durable driver both arrive through worker registration
-	// rather than through a context value — which is the installation path this
-	// harness should be exercising, since it is the one production uses.
+	// The worker capabilities the secret- and credential-using examples need.
+	// `http-secret`, `vault-secret`, `keychain-secret`, `onepassword-secret`, and
+	// `command-secret` each resolve `${secret('<scheme>:...')}`, and `http-federated`
+	// names a `credential:` target; on the durable driver both arrive through worker
+	// registration rather than through a context value — which is the installation
+	// path this harness should be exercising, since it is the one production uses.
+	//
+	// [exampleSecretSchemes] is a fixture store answering every scheme the corpus
+	// needs with the same value, built here rather than through [tests.Authority]
+	// because that helper resolves exactly one scheme and this corpus needs several
+	// — the same set [exampleSecretProviders] builds for the local-driver harness in
+	// examples_run_test.go, so a scheme reachable on one driver and not the other is
+	// exactly the disagreement this test exists to catch.
 	authority := tests.Authority{
-		Scheme:       "env",
-		FixtureValue: "example-token",
-		Allow:        []string{"true"},
+		Allow: []string{"true"},
 		Identity: auth.WorkloadIdentity{
 			Subject: "examples",
 			Issuer:  "flowstate:test",
 		},
 		Federation: &tests.Federation{Target: "partner-api", Token: "example-jit-token"},
 	}
+	secretStore, err := secrets.NewStore(exampleSecretProviders()...)
+	require.NoError(t, err)
 	runtime, err := engine.NewTaskRuntimeConfig(
-		authority.Store(t), authority.Policy(t), authority.Broker(t))
+		secretStore, authority.Policy(t), authority.Broker(t))
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
@@ -386,7 +424,7 @@ func TestEveryExampleRunsDurably(t *testing.T) {
 			// never suspends never reads it.
 			if want, fails := tests.ExampleFailure(name); fails {
 				assertFailingExampleAgrees(t, devServer.Client(), "example-failing-"+name, name, want,
-					localSpec, suspendingSpec, inputs, authority, signals)
+					localSpec, suspendingSpec, inputs, authority, secretStore, signals)
 
 				mu.Lock()
 				crossed[name] = 1
@@ -395,7 +433,7 @@ func TestEveryExampleRunsDurably(t *testing.T) {
 				return
 			}
 
-			local := runExampleLocally(t, localSpec, inputs, authority, signals)
+			local := runExampleLocally(t, localSpec, inputs, authority, secretStore, signals)
 
 			// Two durable runs of one file, because the two questions need different
 			// budgets and answering both from one run would answer neither properly.
@@ -470,7 +508,7 @@ func TestEveryExampleRunsDurably(t *testing.T) {
 				t.Parallel()
 
 				runVariantDurably(t, devServer.Client(), name, variant,
-					cloneSpec(t, wf), cloneSpec(t, wf), inputs, authority, signals)
+					cloneSpec(t, wf), cloneSpec(t, wf), inputs, authority, secretStore, signals)
 			})
 		}
 	}
@@ -604,6 +642,7 @@ func runExampleLocally(
 	spec *v1.Workflow,
 	inputs map[string]*v1.Value,
 	authority tests.Authority,
+	secretStore *secrets.Store,
 	signals map[string]*v1.Node_Outputs,
 ) *v1.Workflow_StepOutputs {
 	t.Helper()
@@ -612,7 +651,7 @@ func runExampleLocally(
 	defer cancel()
 
 	ctx = v1.ContextWithTaskRuntime(ctx, v1.TaskRuntime{
-		Store:    authority.Store(t),
+		Store:    secretStore,
 		Policy:   authority.Policy(t),
 		Broker:   authority.Broker(t),
 		Identity: authority.Identity,
@@ -920,11 +959,12 @@ func assertFailingExampleAgrees(
 	localSpec, durableSpec *v1.Workflow,
 	inputs map[string]*v1.Value,
 	authority tests.Authority,
+	secretStore *secrets.Store,
 	signals map[string]*v1.Node_Outputs,
 ) {
 	t.Helper()
 
-	localErr := runFailingExampleLocally(t, localSpec, inputs, authority, signals)
+	localErr := runFailingExampleLocally(t, localSpec, inputs, authority, secretStore, signals)
 	require.ErrorContains(t, localErr, want,
 		"%s is meant to fail locally in a particular way and did not", name)
 
@@ -971,6 +1011,7 @@ func runVariantDurably(
 	localSpec, durableSpec *v1.Workflow,
 	inputs map[string]*v1.Value,
 	authority tests.Authority,
+	secretStore *secrets.Store,
 	signals map[string]*v1.Node_Outputs,
 ) {
 	t.Helper()
@@ -981,7 +1022,7 @@ func runVariantDurably(
 
 	assertFailingExampleAgrees(t, c,
 		"example-failing-"+name+"-"+variant.Name, name+"/"+variant.Name, variant.Fails,
-		localSpec, durableSpec, variant.WithOverrides(inputs), authority, signals)
+		localSpec, durableSpec, variant.WithOverrides(inputs), authority, secretStore, signals)
 }
 
 // runFailingExampleLocally is [runExampleLocally] for a run that is expected to
@@ -992,6 +1033,7 @@ func runFailingExampleLocally(
 	spec *v1.Workflow,
 	inputs map[string]*v1.Value,
 	authority tests.Authority,
+	secretStore *secrets.Store,
 	signals map[string]*v1.Node_Outputs,
 ) error {
 	t.Helper()
@@ -1000,7 +1042,7 @@ func runFailingExampleLocally(
 	defer cancel()
 
 	ctx = v1.ContextWithTaskRuntime(ctx, v1.TaskRuntime{
-		Store:    authority.Store(t),
+		Store:    secretStore,
 		Policy:   authority.Policy(t),
 		Broker:   authority.Broker(t),
 		Identity: authority.Identity,

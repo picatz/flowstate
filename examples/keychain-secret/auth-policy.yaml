@@ -1,0 +1,9 @@
+issuers:
+  - name: github-actions
+    issuer: https://token.actions.githubusercontent.com
+    audiences: [flowstate]
+    algorithms: [RS256]
+
+secrets:
+  allow:
+    - 'secret.scheme == "keychain" && secret.name == "github-token"'

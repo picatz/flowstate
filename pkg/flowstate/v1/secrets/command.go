@@ -189,3 +189,232 @@ func hasCommand(name string) error {
 
 	return nil
 }
+
+// Defaults for the command provider.
+const (
+	// DefaultCommandScheme is the reference scheme the provider handles.
+	DefaultCommandScheme = "command"
+
+	// namePlaceholder is replaced, literally, with the reference's name wherever it
+	// appears in a configured argument.
+	namePlaceholder = "{{name}}"
+
+	// namespacePlaceholder is replaced, literally, with the resolved namespace
+	// segment wherever it appears in a configured argument.
+	namespacePlaceholder = "{{namespace}}"
+)
+
+// CommandProvider resolves secrets by running a configured external command and
+// reading the secret from its standard output. It handles the "command" scheme by
+// default.
+//
+// It exists as the escape hatch for every backend that does not get a provider of
+// its own: "aws kms decrypt", "sops -d", "age -d",
+// "aws secretsmanager get-secret-value", "doppler run", and anything else that is a
+// command line away from a secret value is reachable through this without adding a
+// dependency, an auth mode, or a review to this tree. A deployment that needs one of
+// those is a deployment for which no in-tree provider is coming; this is the answer
+// for all of them at once.
+//
+// A reference names the secret; the command is fixed at construction, by an
+// operator, not by the workflow. The configured argument list may contain the
+// literal token "{{name}}", replaced with the reference's name, and "{{namespace}}",
+// replaced with the resolved namespace segment. Substitution is a literal string
+// replace on one argv element — there is no shell anywhere in this path, so a name
+// containing a space, a quote, a semicolon, or a backtick is exactly one argument to
+// the child process and never something a shell reinterprets.
+//
+//	secrets.NewCommandProvider([]string{"sops", "-d", "--extract", `["{{name}}"]`, "/etc/flowstate/secrets.enc.yaml"})
+//	secrets.NewCommandProvider([]string{"aws", "secretsmanager", "get-secret-value", "--secret-id", "{{name}}", "--query", "SecretString", "--output", "text"})
+//
+// The command's exit code and stderr classify the failure the same way the keychain
+// and 1Password providers do: a non-zero exit is [ErrNotFound] with a bounded,
+// control-character-stripped summary of stderr; a timeout or a missing executable is
+// [ErrUnavailable]; empty output is [ErrEmpty].
+//
+// It is safe for concurrent use.
+type CommandProvider struct {
+	scheme string
+	args   []string
+	runner commandRunner
+
+	// namespaced opts this provider into tenancy, off by default for the same
+	// reason it is off in every other local provider: a worker must not become
+	// multi-tenant because an identity happened to carry a namespace. When on,
+	// "{{namespace}}" in a configured argument is replaced with the namespace, or
+	// [DefaultNamespaceDir] for the unnamespaced tenant.
+	namespaced bool
+}
+
+// CommandOption configures a [CommandProvider].
+type CommandOption func(*CommandProvider)
+
+// WithCommandNamespaced gives each tenant its own namespace segment, substituted
+// wherever a configured argument spells "{{namespace}}".
+//
+// With it, a run in namespace "team-a" substitutes "team-a", and the unnamespaced
+// tenant substitutes [DefaultNamespaceDir] — every tenant gets a segment, including
+// the default one, which is what keeps a command that branches on the namespace
+// unambiguous.
+//
+// Without it, a namespaced request is refused rather than run with an empty or
+// omitted substitution: a command that was never told to expect a namespace should
+// not silently be handed one tenant's identity while reading whatever it was
+// configured to read for everyone.
+func WithCommandNamespaced() CommandOption {
+	return func(p *CommandProvider) {
+		p.namespaced = true
+	}
+}
+
+// WithCommandScheme changes the reference scheme the provider handles, which
+// defaults to [DefaultCommandScheme].
+//
+// A [Registry] holds one provider per scheme, so this is what lets a worker
+// configure two different escape-hatch commands at once — "command" for one and,
+// say, "kms" for another — each with its own argv template.
+func WithCommandScheme(scheme string) CommandOption {
+	return func(p *CommandProvider) {
+		p.scheme = scheme
+	}
+}
+
+// withCommandRunner replaces the subprocess runner, for tests.
+func withCommandRunner(runner commandRunner) CommandOption {
+	return func(p *CommandProvider) {
+		p.runner = runner
+	}
+}
+
+// NewCommandProvider returns a provider that resolves secrets by running args,
+// substituting "{{name}}" and, when [WithCommandNamespaced] is set, "{{namespace}}"
+// into the configured arguments before each invocation.
+//
+// args must hold at least the executable; args[0] is resolved on PATH when the
+// provider is constructed, so a worker configured for a command it does not have
+// refuses to start rather than failing the first workflow that needs a secret.
+// args[0] is taken literally and never has a placeholder substituted into it, so it
+// must be a real executable name or path.
+func NewCommandProvider(args []string, opts ...CommandOption) (*CommandProvider, error) {
+	if len(args) == 0 || strings.TrimSpace(args[0]) == "" {
+		return nil, fmt.Errorf("secrets: command provider needs at least an executable to run")
+	}
+
+	provider := &CommandProvider{
+		scheme: DefaultCommandScheme,
+		args:   append([]string(nil), args...),
+		runner: execRunner{timeout: DefaultCommandTimeout, maxBytes: DefaultCommandMaxBytes},
+	}
+
+	for _, opt := range opts {
+		if opt == nil {
+			continue
+		}
+		opt(provider)
+	}
+
+	if err := ValidateScheme(provider.scheme); err != nil {
+		return nil, fmt.Errorf("secrets: command provider: %w", err)
+	}
+
+	if _, real := provider.runner.(execRunner); real {
+		if err := hasCommand(provider.args[0]); err != nil {
+			return nil, fmt.Errorf("secrets: command provider needs %q: %w", provider.args[0], err)
+		}
+	}
+
+	return provider, nil
+}
+
+// Scheme implements [Provider].
+func (p *CommandProvider) Scheme() string {
+	return p.scheme
+}
+
+// Args returns the configured argument template. It is safe to log: it is what an
+// operator configured, never a resolved secret.
+func (p *CommandProvider) Args() []string {
+	return append([]string(nil), p.args...)
+}
+
+// Resolve implements [Provider].
+func (p *CommandProvider) Resolve(ctx context.Context, req Request) (Secret, error) {
+	ref := req.Ref
+
+	name := ref.GetName()
+	if err := validateCommandName(name); err != nil {
+		return Secret{}, &ResolveError{Ref: ref, Err: err}
+	}
+
+	nsSegment, err := p.namespaceSegment(req.Namespace)
+	if err != nil {
+		return Secret{}, &ResolveError{Ref: ref, Err: err}
+	}
+
+	argv := make([]string, len(p.args))
+	for i, arg := range p.args {
+		arg = strings.ReplaceAll(arg, namePlaceholder, name)
+		arg = strings.ReplaceAll(arg, namespacePlaceholder, nsSegment)
+		argv[i] = arg
+	}
+
+	out, err := p.runner.run(ctx, argv[0], argv[1:]...)
+	if err != nil {
+		return Secret{}, &ResolveError{Ref: ref, Err: err}
+	}
+
+	value := strings.TrimSuffix(string(out), "\n")
+	if value == "" {
+		return Secret{}, &ResolveError{
+			Ref: ref,
+			Err: fmt.Errorf("%w: command for %q produced nothing", ErrEmpty, RefString(ref)),
+		}
+	}
+
+	return NewSecret(ref, value), nil
+}
+
+// namespaceSegment returns the namespace substitution for "{{namespace}}", or
+// refuses.
+//
+// The same discipline as [KeychainProvider.serviceFor] and
+// [OnePasswordProvider.vaultFor]: refusing a namespaced request on an unnamespaced
+// provider says "not configured", never "not found", so a worker that has not been
+// told to expect tenants does not quietly start serving them.
+func (p *CommandProvider) namespaceSegment(namespace string) (string, error) {
+	switch {
+	case p.namespaced:
+		if namespace == "" {
+			return DefaultNamespaceDir, nil
+		}
+		return namespace, nil
+
+	case namespace != "":
+		return "", fmt.Errorf(
+			"%w: this worker's command provider is not namespaced, so it cannot resolve secrets "+
+				"for namespace %q; configure it with WithCommandNamespaced",
+			ErrNamespace, namespace)
+	}
+
+	return "", nil
+}
+
+// validateCommandName rejects a name the substitution would misread.
+//
+// A leading dash would be taken as an option wherever "{{name}}" lands as a whole
+// argument, which is the one way an argument can change what the command does with
+// no shell involved.
+func validateCommandName(name string) error {
+	switch {
+	case name == "":
+		return fmt.Errorf("%w: command secret name must not be empty", ErrInvalidRef)
+	case strings.HasPrefix(name, "-"):
+		return fmt.Errorf("%w: command secret name %q may not start with a dash", ErrInvalidRef, name)
+	}
+
+	if i := strings.IndexFunc(name, isControl); i >= 0 {
+		return fmt.Errorf("%w: command secret name contains a control character at offset %d", ErrInvalidRef, i)
+	}
+
+	return nil
+}
