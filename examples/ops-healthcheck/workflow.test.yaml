@@ -1,0 +1,92 @@
+# What this example exists to teach is a *classification*: every probe runs
+# regardless of what any other one answers, and the outputs name which services
+# were not reached rather than counting them. So the assertion is the outputs
+# map, and the entry that carries the idea is `unhealthy_services` — a list of
+# names derived from the *absence* of a name in `steps.checks.results`.
+#
+# One thing shapes every case below. A stub matches on a task's resolved inputs,
+# and this step's `outputs:` — the expression that carries `service.name`
+# forward — is one the http task evaluates itself
+# ([v1.TaskDef.DeferredInputs]), so a stub never sees which iteration it is
+# answering. `checkout` and `payments` are probed at the identical url, so no
+# `where:` can tell them apart; only `search`, at the 503 url, is separable.
+# Each case is therefore built from probe outcomes a stub can genuinely
+# distinguish, and the one case that cannot says so where it matters.
+edition: v2026.2
+tests:
+  - name: two services down and one up are named individually, and the run still completes
+    workflow: ./workflow.yaml
+    stubs:
+      # A failed probe never reaches the step's `outputs:` expression, so its
+      # iteration result carries no name at all — that absence is exactly what
+      # `unhealthy_services` is computed from.
+      - task: http
+        where: inputs.url == 'https://httpbin.org/status/200'
+        fails:
+          kind: Upstream
+          message: service unavailable
+      - task: http
+        where: inputs.url == 'https://httpbin.org/status/503'
+        returns:
+          name: search
+      - task: log
+        where: "inputs.message == 'probed 3 service(s): 1 healthy, 2 down'"
+        returns: {}
+    expect:
+      # Not `failed: true`. Two probes failing is the case this workflow was
+      # written for, and `continue_on_error:` on the iteration is what turns it
+      # into an answer rather than an abandoned run.
+      ran: [checks, summary]
+      outputs:
+        # Named, not counted — a pager needs to know which ones.
+        unhealthy_services: [checkout, payments]
+        healthy_count: 1
+        page_required: true
+
+  - name: every probe failing still finishes the run and names all three
+    workflow: ./workflow.yaml
+    stubs:
+      - task: http
+        fails:
+          kind: Upstream
+          message: service unavailable
+      - task: log
+        where: "inputs.message == 'probed 3 service(s): 0 healthy, 3 down'"
+        returns: {}
+    expect:
+      ran: [checks, summary]
+      outputs:
+        unhealthy_services: [checkout, payments, search]
+        healthy_count: 0
+        page_required: true
+
+  - name: with nothing down, nobody is paged
+    workflow: ./workflow.yaml
+    stubs:
+      # Every probe healthy, including the one the file deliberately points at a
+      # permanent 503 — the only way to reach the no-page branch without editing
+      # workflow.yaml.
+      - task: http
+        returns:
+          name: checkout
+      - task: log
+        where: "inputs.message == 'probed 3 service(s): 3 healthy, 0 down'"
+        returns: {}
+    expect:
+      ran: [checks, summary]
+      outputs:
+        # This case is for `page_required` and `healthy_count`, which are
+        # counted from how many iterations reported a name at all and are
+        # therefore exact here: three healthy, so `3 < 3` is false and no page.
+        #
+        # `unhealthy_services` is the one output the stub boundary distorts, and
+        # it is written down as measured rather than as it would be in
+        # production: it is set membership by *name*, and a stub answering all
+        # three probes cannot know which iteration it is in, so all three report
+        # `checkout` and the other two names look absent. Against a real
+        # endpoint each iteration carries its own `service.name` and this reads
+        # `[]`. Nothing in the workflow is wrong here; the value simply cannot
+        # be produced faithfully without a stub that can see the loop binding.
+        unhealthy_services: [payments, search]
+        healthy_count: 3
+        page_required: false

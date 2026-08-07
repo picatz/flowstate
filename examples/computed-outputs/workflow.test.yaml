@@ -1,0 +1,37 @@
+# This is the one example whose subject *is* `outputs:`, so the assertion is the
+# outputs map itself — all three, exactly, with nothing extra. Two cases, because
+# the point of computing an output rather than writing one down is that it says
+# something different when the run was given different arguments: the defaults
+# reach three hosts, and an explicit two-element `targets:` reaches two, with
+# `hosts_placed` and the `summary` sentence both following the loop's own
+# `results` rather than the argument.
+edition: v2026.2
+tests:
+  - name: with no arguments, every output is computed from the declared defaults
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [roll_out, report]
+      outputs:
+        release: 2026.8.1
+        # size(steps.roll_out.results) — counting what the loop actually did,
+        # which is what makes this different from echoing size(inputs.targets).
+        hosts_placed: 3
+        summary: placed 2026.8.1 on 3 host(s)
+
+  - name: supplied arguments change every output that reads them
+    workflow: ./workflow.yaml
+    inputs:
+      release: 2026.9.0
+      targets: [alpha, beta]
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [roll_out, report]
+      outputs:
+        release: 2026.9.0
+        hosts_placed: 2
+        summary: placed 2026.9.0 on 2 host(s)

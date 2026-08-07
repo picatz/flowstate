@@ -1,0 +1,42 @@
+# The claim worth pinning here is the last line of the file's own comment: a
+# loop's `results` output *outlives its block*, which is what makes the count in
+# `summary` possible at all. `ran: [process, checks, summary]` says nothing about
+# it — a `results` that came back empty, or that held one entry per loop rather
+# than one per item, would still list those three ids.
+#
+# So `summary`'s `where:` is the assertion: `size(steps.process.results)` must be
+# 3, read from outside the block that produced it. The three per-item messages
+# and the two branch messages are pinned the same way, which is also how the
+# `parallel:` half is asserted — two branches that both ran, each with its own
+# body, joined before `summary` was reached.
+edition: v2026.2
+tests:
+  - name: every item is processed, both branches run, and the loop's results are countable afterwards
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        where: inputs.message == 'processing alpha'
+        returns: {}
+      - task: log
+        where: inputs.message == 'processing beta'
+        returns: {}
+      - task: log
+        where: inputs.message == 'processing gamma'
+        returns: {}
+      - task: log
+        where: inputs.message == 'config ok'
+        returns: {}
+      - task: log
+        where: inputs.message == 'quota ok'
+        returns: {}
+      # Read outside the block. Three, one per item — not one, and not zero.
+      - task: log
+        where: inputs.message == 'checks done, processed 3 target(s)'
+        returns: {}
+    expect:
+      # `check_config` and `check_quota` rather than `checks`: a `parallel:`
+      # block records nothing of its own, only what its branches' steps
+      # produced, so naming both branch bodies is how "the join happened" is
+      # asserted. A `for_each` does have an output of its own — `results` —
+      # which is why `process` is nameable here and `checks` is not.
+      ran: [process, check_config, check_quota, summary]

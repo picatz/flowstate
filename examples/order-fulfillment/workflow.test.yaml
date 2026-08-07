@@ -1,0 +1,93 @@
+# The same mechanism as saga-provisioning, over a business transaction — and the
+# property worth pinning is the one the file's own header names: a half-finished
+# checkout must not keep a customer's money for stock that was never shipped. So
+# the failing case asserts the *refund*, by order, in the engine's own account:
+# `charge_payment` before `reserve_inventory`, because the payment was only taken
+# because the stock was already held.
+#
+# One stub-boundary note. The shipped file decides the outage through `expect:`,
+# which is a deferred input the http task evaluates for itself — a stub replaces
+# the task, so `expect:` never runs here and the equivalent failure is declared
+# with `fails:` on the `arrange_shipment` request. The compensations, the order
+# they run in, and the resolved ids they carry are all reached for real.
+edition: v2026.2
+tests:
+  - name: the ordinary path ships the order and reports the two ids it created
+    workflow: ./workflow.yaml
+    inputs:
+      order_id: ORD-48213
+    stubs:
+      - task: http
+        where: "'query' in inputs && 'reserve' in inputs.query && inputs.query.order == 'ORD-48213'"
+        returns:
+          id: res-ORD-48213
+      # This request's `reservation:` is an ordinary backward reference to the
+      # step above, so this `where:` is what proves the hold's id reached it.
+      - task: http
+        where: "'query' in inputs && 'charge' in inputs.query && inputs.query.reservation == 'res-ORD-48213'"
+        returns:
+          id: chg-res-ORD-48213
+      - task: http
+        where: inputs.url == 'https://httpbin.org/status/200'
+        returns:
+          status_code: 200
+      - task: log
+        where: "inputs.message == 'order ORD-48213 confirmed and handed to a carrier'"
+        returns: {}
+    expect:
+      ran: [reserve_inventory, charge_payment, arrange_shipment, confirm]
+      # Nothing was undone, and no `release:`/`refund:` stub is declared above —
+      # so a compensation that fired on the successful path would reach no stub
+      # and fail this case rather than pass unnoticed.
+      compensated: []
+      outputs:
+        order_id: ORD-48213
+        reservation: res-ORD-48213
+        charge: chg-res-ORD-48213
+
+  - name: a carrier that cannot take the order refunds the charge, then releases the hold
+    workflow: ./workflow.yaml
+    inputs:
+      order_id: ORD-48213
+      carrier_outage: true
+    stubs:
+      - task: http
+        where: "'query' in inputs && 'reserve' in inputs.query && inputs.query.order == 'ORD-48213'"
+        returns:
+          id: res-ORD-48213
+      - task: http
+        where: "'query' in inputs && 'charge' in inputs.query && inputs.query.reservation == 'res-ORD-48213'"
+        returns:
+          id: chg-res-ORD-48213
+      - task: http
+        where: inputs.url == 'https://httpbin.org/status/200'
+        fails:
+          kind: InvalidInput
+          message: no carrier can take this order
+      # The two compensations, hit for real. Each one names the id its own step
+      # resolved when it succeeded, which is what makes these `where:` clauses an
+      # assertion that the value — not the expression — was carried forward.
+      - task: http
+        where: "'query' in inputs && 'refund' in inputs.query && inputs.query.refund == 'chg-res-ORD-48213'"
+        returns: {}
+      - task: http
+        where: "'query' in inputs && 'release' in inputs.query && inputs.query.release == 'res-ORD-48213'"
+        returns: {}
+    expect:
+      failed: true
+      # The refund before the release, in the engine's ordered account. This is
+      # the sentence the example's own header tells a reader to go and look at,
+      # and reversing the two names here fails the case.
+      error_contains: >-
+        no carrier can take this order; compensation ran in reverse order: undid
+        "charge_payment", undid "reserve_inventory"
+      compensated: [charge_payment, reserve_inventory]
+
+  - name: an order id is required, and a run without one is refused before anything is reserved
+    workflow: ./workflow.yaml
+    stubs:
+      - task: http
+        returns: {}
+    expect:
+      failed: true
+      error_contains: order_id

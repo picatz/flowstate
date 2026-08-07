@@ -1,0 +1,35 @@
+# The pattern examples/vault-secret/workflow.test.yaml establishes, pointed at
+# the scheme this example is about. Nothing here runs the 1Password CLI and
+# nothing here signs in to an account: `secrets:` binds the reference's text form
+# for one case, and an in-memory provider answers it.
+#
+# The reference is the one shape in the corpus that carries a field after `#` —
+# `op:github#token`, an item and a field within it — so the binding below is also
+# a check that the whole reference, field included, is what the workflow asks for
+# and what a `secrets:` key has to name. Binding `op:github` alone would not
+# answer it.
+edition: v2026.2
+tests:
+  - name: the bearer resolves from this file's own secrets, never from a real 1Password account
+    workflow: ./workflow.yaml
+    secrets:
+      op:github#token: test-op-token-not-a-real-credential
+    stubs:
+      # The assertion: the reference survived compilation as a reference and was
+      # resolved at the task boundary, so `bearer` holds the bound plaintext.
+      - task: http
+        where: inputs.bearer == 'test-op-token-not-a-real-credential'
+        returns:
+          status_code: 200
+    expect:
+      ran: [health]
+
+  - name: a run with no secrets entry for the item and field is refused, not silently empty
+    workflow: ./workflow.yaml
+    stubs:
+      - task: http
+        returns:
+          status_code: 200
+    expect:
+      failed: true
+      error_contains: op:github#token

@@ -1,0 +1,151 @@
+# The idea here, and the reason this is not `approval-gate` again: the second
+# gate *only exists on the path where the first one lapsed*. So every case
+# asserts both directions — which gate decided, and which steps were therefore
+# skipped — and `outcome` distinguishes the four endings a caller actually needs
+# told apart, "denied" and "denied_no_response" among them.
+#
+# `approved_by` is the other assertion worth making. It reads
+# `steps.<gate>.sender.identity.subject`, which is attested by the delivery
+# rather than claimed by the payload, so a case supplying `sender:` and a case
+# supplying none produce different values for the same `approved: true`.
+edition: v2026.2
+tests:
+  - name: the manager answers, so nothing is escalated and the second gate never exists
+    workflow: ./workflow.yaml
+    inputs:
+      employee: jordan@example.com
+      amount: 482.50
+    signals:
+      - name: manager-approved
+        payload:
+          approved: true
+        sender:
+          subject: manager@example.com
+          issuer: https://issuer.example.com
+    stubs:
+      - task: log
+        where: "inputs.message == 'jordan@example.com filed an expense report for $482.50'"
+        returns: {}
+      - task: log
+        where: "inputs.message == 'reimbursing jordan@example.com $482.50, approved by manager@example.com'"
+        returns: {}
+    expect:
+      ran: [submit, manager_review, reimburse]
+      # The whole point of the `if:` on both: an answered first gate leaves
+      # nothing to escalate, so neither the warning nor the second wait happens.
+      skipped: [escalate, finance_review, deny]
+      outputs:
+        outcome: approved_by_manager
+        amount: 482.5
+        # Attested by the delivery, never read out of the payload.
+        approved_by: manager@example.com
+
+  - name: the manager lapses and finance approves, which is the path the timeout creates
+    workflow: ./workflow.yaml
+    inputs:
+      employee: jordan@example.com
+      amount: 482.50
+    signals:
+      # Only the second gate is answered. The first is left to lapse, which is
+      # what makes `escalate` and `finance_review` run at all — and `at:` puts
+      # this delivery after the manager gate's own 4s timeout so it cannot be
+      # consumed by the wrong wait.
+      - name: finance-approved
+        at: 6s
+        payload:
+          approved: true
+        sender:
+          subject: finance-ops@example.com
+          issuer: https://issuer.example.com
+    stubs:
+      - task: log
+        where: "inputs.message == 'jordan@example.com filed an expense report for $482.50'"
+        returns: {}
+      - task: log
+        where: >-
+          inputs.message == "manager did not respond in time; escalating jordan@example.com's report to finance ops" &&
+          inputs.level == 'warn'
+        returns: {}
+      - task: log
+        where: "inputs.message == 'reimbursing jordan@example.com $482.50, approved by finance (finance-ops@example.com) after the manager did not respond'"
+        returns: {}
+    expect:
+      ran: [submit, manager_review, escalate, finance_review, reimburse]
+      skipped: [deny]
+      outputs:
+        outcome: approved_after_escalation
+        amount: 482.5
+        approved_by: finance-ops@example.com
+
+  - name: nobody answers either gate, and the report is denied for a materially different reason
+    workflow: ./workflow.yaml
+    inputs:
+      employee: jordan@example.com
+      amount: 482.50
+    stubs:
+      - task: log
+        where: "inputs.message == 'jordan@example.com filed an expense report for $482.50'"
+        returns: {}
+      - task: log
+        where: >-
+          inputs.message == "manager did not respond in time; escalating jordan@example.com's report to finance ops" &&
+          inputs.level == 'warn'
+        returns: {}
+      - task: log
+        where: >-
+          inputs.message == "jordan@example.com's expense report was not approved" &&
+          inputs.level == 'warn'
+        returns: {}
+    expect:
+      ran: [submit, manager_review, escalate, finance_review, deny]
+      skipped: [reimburse]
+      outputs:
+        # Not "denied". A caller deciding whether to ask again needs to know
+        # nobody ever answered, which is what this value being separate is for.
+        outcome: denied_no_response
+        amount: 482.5
+        approved_by: ""
+
+  - name: an explicit refusal by the manager is denied without ever escalating
+    workflow: ./workflow.yaml
+    inputs:
+      employee: jordan@example.com
+      amount: 482.50
+    signals:
+      - name: manager-approved
+        payload:
+          approved: false
+        sender:
+          subject: manager@example.com
+          issuer: https://issuer.example.com
+    stubs:
+      - task: log
+        where: "inputs.message == 'jordan@example.com filed an expense report for $482.50'"
+        returns: {}
+      - task: log
+        where: >-
+          inputs.message == "jordan@example.com's expense report was not approved" &&
+          inputs.level == 'warn'
+        returns: {}
+    expect:
+      ran: [submit, manager_review, deny]
+      # Somebody said no, so there is nothing to escalate — the difference
+      # between this case and the one above, and the reason `outcome` is not a
+      # boolean.
+      skipped: [escalate, finance_review, reimburse]
+      outputs:
+        outcome: denied
+        amount: 482.5
+        approved_by: ""
+
+  - name: an employee that is not an address is refused before the first step runs
+    workflow: ./workflow.yaml
+    inputs:
+      employee: jordan
+      amount: 482.50
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      failed: true
+      error_contains: "must satisfy"

@@ -1,0 +1,29 @@
+# One honest limit, and it decides what this file claims. `flow test` has no way
+# to load a task-shape policy — there is no field for one, deliberately: the
+# policy is worker configuration a Flowfile never carries, which is the entire
+# premise of the example. So the half this file can pin is the zero case the
+# example's own comments name first: with nothing restricting `deploy`, the step
+# runs, exactly as every deployment before #187's policy existed.
+#
+# The refusal half — the same file, the same `if: true`, denied by
+# examples/task-shape-policy/task-policy.yaml — is exercised where a real
+# identity exists on both sides of the rule, in
+# `engine.TestTaskPolicyIdentityNamespaceDenial`. Restating it here would need a
+# `flow test` that could stand up worker configuration, which is a different
+# thing from what `flow test` is.
+#
+# What is still worth asserting is the premise: `deploy` has no gate of its own
+# left. `if: true` is not a bug in the example, it is the thing the policy has to
+# refuse without help — so this case proves the step is genuinely unguarded, by
+# running it with no policy at all and finding it present rather than skipped.
+edition: v2026.2
+tests:
+  - name: with no deployment policy loaded, the ungated step runs — the zero case the policy exists to change
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        where: >-
+          inputs.message == "this must never run outside the platform team's namespace"
+        returns: {}
+    expect:
+      ran: [deploy]

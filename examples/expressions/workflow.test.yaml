@@ -1,0 +1,34 @@
+# Three claims, one per step, and each is about the *result* of an expression
+# rather than about a step having run:
+#
+#   * a step's own `vars:` binding is computed and readable bare — `HI`, which is
+#     `regex.replace` applied to `upperAscii()`, so both halves of the chain have
+#     to have run;
+#   * an `if:` reaches the same string functions a binding does — this is the one
+#     the file's own comment records as having been `no such overload`, and the
+#     way to assert it is that `confirm` is present in `ran:` at all, since a
+#     condition that failed to compile would have failed the run;
+#   * a macro is expanded by the parser, so `sortBy(...)[0]` over an unsorted
+#     list yields `alpha` and not `zeta`.
+#
+# Every `log` stub carries a `where:`, so an expression that produced something
+# else reaches no stub and fails the case.
+edition: v2026.2
+tests:
+  - name: each of the three expressions produces the value it claims to
+    workflow: ./workflow.yaml
+    stubs:
+      # regex.replace over upperAscii: HELLO -> HI.
+      - task: log
+        where: inputs.message == 'HI'
+        returns: {}
+      # The condition held, and the message is the lower-cased binding.
+      - task: log
+        where: inputs.message == 'hello'
+        returns: {}
+      # sortBy expanded at parse time and actually sorted: alpha, not zeta.
+      - task: log
+        where: inputs.message == 'alpha'
+        returns: {}
+    expect:
+      ran: [shout, confirm, order]

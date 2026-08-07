@@ -1,0 +1,49 @@
+# The same pattern examples/vault-secret/workflow.test.yaml establishes: a
+# `secrets:` block resolves the reference from this file, so nothing here reads
+# an environment variable and nothing here needs `env:` to be a configured
+# provider — the scheme is a map key and the value is bound for one case.
+#
+# What the first case actually proves is that the reference *reached the task as
+# a reference and was resolved there*: the stub's `where:` compares
+# `inputs.bearer` against the plaintext this file bound, which only holds if the
+# engine carried a `${secret(...)}` through compilation and resolved it at the
+# task boundary rather than substituting something earlier.
+#
+# The second case is the fail-closed direction, and it is the one thing `flow
+# test` owns that nothing else can stand in for: a reference no case named is
+# refused, naming the reference, rather than silently sending an empty bearer.
+edition: v2026.2
+tests:
+  - name: the bearer resolves from this file's own secrets, never from the environment
+    workflow: ./workflow.yaml
+    secrets:
+      env:API_TOKEN: test-api-token-not-a-real-credential
+    stubs:
+      - task: http
+        where: "'bearer' in inputs && inputs.bearer == 'test-api-token-not-a-real-credential'"
+        returns:
+          status_code: 200
+      # The second step carries the same reference inside `headers:` rather than
+      # in a top-level input, and its absence from `inputs` here is the
+      # assertion. A `where:` clause is built from a task's *literal* inputs, so
+      # a fully-literal `headers:` map would appear — this one does not, because
+      # one of its entries is still a reference at the moment the task is
+      # invoked. That is invariant 7 observed from outside: the entry stayed a
+      # reference through compilation and through the activity payload, and only
+      # the worker setting the header would have resolved it.
+      - task: http
+        where: "!('bearer' in inputs) && !('headers' in inputs)"
+        returns:
+          status_code: 200
+    expect:
+      ran: [health, health_with_header]
+
+  - name: a run with no secrets entry is refused, not silently sent an empty bearer
+    workflow: ./workflow.yaml
+    stubs:
+      - task: http
+        returns:
+          status_code: 200
+    expect:
+      failed: true
+      error_contains: env:API_TOKEN

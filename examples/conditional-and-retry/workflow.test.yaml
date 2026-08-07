@@ -1,0 +1,65 @@
+# Three things this file teaches, and none of them is visible from a list of
+# step ids:
+#
+#   * a false `if:` skips the step, so `rollback` must be *absent* — the branch
+#     not taken is the assertion, which is #260's lesson about
+#     enterprise-access-review;
+#   * `continue_on_error:` tolerates a failure rather than ending the run, so
+#     `notify` ran, the run did not fail, and `carry_on` after it did run;
+#   * the tolerated failure is a *value*, readable as `${steps.notify.error}` —
+#     pinned by the `where:` on `carry_on`, which requires the text the stub
+#     failed with to have arrived in that field.
+#
+# The second case pins the distinction that makes the third of those real: a
+# tolerated step's `error` is *absent* when the step succeeded, not empty. So
+# `carry_on` reading it unguarded is only correct because `notify` fails on
+# every run, which is exactly why the file's own comment says a step that always
+# fails is what makes the tolerance visible. Stub `notify` into succeeding and
+# `${steps.notify.error}` has nothing to resolve, and the run fails on
+# `carry_on` — the failure mode `has()` exists to guard, demonstrated rather
+# than described.
+edition: v2026.2
+tests:
+  - name: the false branch is skipped, the failure is tolerated, and its text is carried forward
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        where: inputs.message == 'deploying'
+        returns: {}
+      - task: http
+        fails:
+          kind: Upstream
+          message: dial tcp 127.0.0.1:1 connect refused by egress policy
+      # The point of the example: the error text of a step that failed is an
+      # ordinary value the next step can read.
+      - task: log
+        where: >-
+          inputs.message == 'notification failed, continuing anyway' &&
+          inputs.level == 'warn' &&
+          inputs.fields.why.contains('connect refused by egress policy')
+        returns: {}
+    expect:
+      ran: [deploy, notify, carry_on]
+      # The whole of what a false `if:` means. A step that ran and did nothing
+      # would still be present here.
+      skipped: [rollback]
+
+  - name: a tolerated step's error is absent when it succeeded, not empty
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        where: inputs.message == 'deploying'
+        returns: {}
+      # The one thing this file's own design depends on, inverted: `notify`
+      # succeeding.
+      - task: http
+        returns:
+          status_code: 200
+    expect:
+      # `${steps.notify.error}` is not "" here — it does not exist, so
+      # `carry_on`'s `fields:` cannot be composed and the run fails on that
+      # step. That is the difference between an output that is empty and one
+      # that is absent, and it is why a file whose tolerated step might
+      # genuinely succeed has to write `has(steps.<id>.error) ? ... : ...`.
+      failed: true
+      error_contains: 'step "carry_on": input "fields"'

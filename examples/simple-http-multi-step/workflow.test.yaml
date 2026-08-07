@@ -1,0 +1,21 @@
+# The one idea: a step's output is typed, and a task that wants a string will
+# not take an int — so `string(steps.web.status_code)` is the author's
+# conversion rather than the task's coercion. The case pins the conversion by
+# stubbing the response with a status the *default* would not produce and then
+# requiring the log message to be exactly those three characters: a task that
+# quietly stringified whatever it was handed, or one that dropped the value,
+# reaches no stub.
+edition: v2026.2
+tests:
+  - name: the status code arrives in the message as text the author converted
+    workflow: ./workflow.yaml
+    stubs:
+      - task: http
+        where: inputs.url == 'https://microsoft.com' && inputs.method == 'GET'
+        returns:
+          status_code: 204
+      - task: log
+        where: inputs.message == '204'
+        returns: {}
+    expect:
+      ran: [web, output]

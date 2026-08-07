@@ -1,0 +1,109 @@
+# The idea this file is built around is that two failures with the same effect
+# on the run — a tolerated step — are not the same failure. "flagged" is a
+# permanent judgement about the request, which `retry:` cannot rescue;
+# `vendor_status` is a transient outage, which `retry:` genuinely gets three
+# attempts at before it is tolerated too. The outputs are where that distinction
+# becomes readable, so the outputs are what these cases assert: `failed:` names
+# the records a lookup never completed for, and `vendor_outage_tolerated` says
+# whether the transient one outlasted its policy.
+#
+# Two things the stub boundary decides, recorded here rather than discovered:
+#
+#   * the shipped file makes "flagged" fail through the http task's own
+#     `expect:`, which is a deferred input the task evaluates — a stub replaces
+#     the task, so `expect:` never runs and the equivalent failure is declared
+#     with `fails:` instead. The classification still matters and is still
+#     asserted: `InvalidInput` is permanent, `Upstream` is transient, which is
+#     what makes the two failures in this file different things;
+#   * a stub cannot count attempts, so "three attempts happened" is not
+#     assertable from here — pkg/flowstate/v1/tests owns retry counting for both
+#     drivers. What is assertable, and is the reason the retry is in the file at
+#     all, is that a retryable failure which outlasts its policy still ends up
+#     *tolerated* rather than failing the run.
+edition: v2026.2
+tests:
+  - name: a permanently rejected record and a transient vendor outage are both tolerated, and told apart
+    workflow: ./workflow.yaml
+    inputs:
+      records: [alpha, beta, gamma, flagged]
+    stubs:
+      - task: http
+        where: "'query' in inputs && inputs.query.record == 'flagged'"
+        fails:
+          # Permanent: the request itself is the problem, so no number of
+          # attempts changes the answer. The same shape a 4xx has.
+          kind: InvalidInput
+          message: record is flagged and will not be enriched
+      - task: http
+        where: "'query' in inputs && inputs.query.record == 'alpha'"
+        returns:
+          id: alpha
+      - task: http
+        where: "'query' in inputs && inputs.query.record == 'beta'"
+        returns:
+          id: beta
+      - task: http
+        where: "'query' in inputs && inputs.query.record == 'gamma'"
+        returns:
+          id: gamma
+      # The vendor lookup, which carries no query at all — transient, retried,
+      # and still down when the attempts run out.
+      - task: http
+        where: inputs.url == 'https://httpbin.org/status/503'
+        fails:
+          kind: Upstream
+          message: vendor unavailable
+      - task: log
+        where: "inputs.message == 'enrichment finished for 3 of 4 record(s), vendor status unavailable after retries'"
+        returns: {}
+    expect:
+      ran: [enrich, vendor_status, report]
+      outputs:
+        enriched: [alpha, beta, gamma]
+        # Named rather than counted: this is what a caller deciding whether to
+        # retry the batch actually needs, and it is derived from the absence of
+        # an id rather than from anything the failure carried.
+        failed: [flagged]
+        attempted: 4
+        vendor_outage_tolerated: true
+
+  - name: with nothing rejected and the vendor up, the batch reports no failures at all
+    workflow: ./workflow.yaml
+    inputs:
+      records: [alpha, beta]
+    stubs:
+      - task: http
+        where: "'query' in inputs && inputs.query.record == 'alpha'"
+        returns:
+          id: alpha
+      - task: http
+        where: "'query' in inputs && inputs.query.record == 'beta'"
+        returns:
+          id: beta
+      - task: http
+        where: inputs.url == 'https://httpbin.org/status/503'
+        returns:
+          status_code: 200
+      # The other arm of the report's own conditional: the vendor's status code
+      # rather than the "unavailable after retries" text.
+      - task: log
+        where: "inputs.message == 'enrichment finished for 2 of 2 record(s), vendor status 200'"
+        returns: {}
+    expect:
+      ran: [enrich, vendor_status, report]
+      outputs:
+        enriched: [alpha, beta]
+        failed: []
+        attempted: 2
+        vendor_outage_tolerated: false
+
+  - name: an empty worklist is refused before the first request goes out
+    workflow: ./workflow.yaml
+    inputs:
+      records: []
+    stubs:
+      - task: http
+        returns: {}
+    expect:
+      failed: true
+      error_contains: "must have at least"

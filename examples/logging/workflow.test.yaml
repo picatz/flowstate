@@ -1,0 +1,45 @@
+# `log:` produces no outputs, so everything this example teaches is in the inputs
+# it hands the task — which is exactly what a stub's `where:` can see. The three
+# claims:
+#
+#   * `level:` defaults to info when the step does not write one, and carries the
+#     spelled word when it does (`warn`, not a protocol's number for it);
+#   * `fields:` are string-valued and carry the composed values, so a `version:`
+#     built from a var arrives as text beside the message rather than inside it;
+#   * a `log:` inside a `for_each` body sees the iterator, once per item.
+#
+# The second case is the negative direction the level vocabulary needs: a fourth
+# level is refused when the file compiles, not ignored at run time.
+edition: v2026.2
+tests:
+  - name: level defaults, fields carry composed values, and the body sees the iterator
+    workflow: ./workflow.yaml
+    stubs:
+      # No `level:` written, so the task is handed none and the sink's default
+      # applies — asserted as the absence of the input, which is a different
+      # thing from being handed "info" explicitly.
+      - task: log
+        where: inputs.message == 'deploying checkout v2026.7.3' && !('level' in inputs)
+        returns: {}
+      # The spelled level, and all three fields, each a string.
+      # `'level' in inputs` leads, so this reads false rather than erroring on
+      # the two invocations below that write no level at all — a `where:` is
+      # tried against every invocation of its task, not only the one it was
+      # written for.
+      - task: log
+        where: >-
+          'level' in inputs && inputs.level == 'warn' &&
+          inputs.fields.service == 'checkout' &&
+          inputs.fields.version == 'v2026.7.3' &&
+          inputs.fields.stage == 'canary'
+        returns: {}
+      # One invocation per region, each carrying its own iterator in both the
+      # message and the field.
+      - task: log
+        where: inputs.message == 'rolled out to eu-west-1' && inputs.fields.region == 'eu-west-1'
+        returns: {}
+      - task: log
+        where: inputs.message == 'rolled out to us-east-1' && inputs.fields.region == 'us-east-1'
+        returns: {}
+    expect:
+      ran: [announce, canary, rollout]

@@ -1,0 +1,32 @@
+# The same boundary http-expect's own test file names applies here: `outputs:`
+# is an input the http *task* evaluates against `response`, so a stub — which
+# replaces the task — is what decides this step's outputs, and taskFuncHTTP's
+# own tests own the shaping itself.
+#
+# What is entirely this file's, and what this case pins, is the *other* half of
+# the example and the half a reader gets wrong: the two spellings are different
+# things. `response.body` is read inside the step; `steps.web.body` is read
+# afterwards — and when a step shapes its outputs, `body` is no longer among
+# them. So the case gives `web` exactly the three shaped names and asserts that
+# `report` composes its sentence from all three, including `source`, which comes
+# from `vars.source` rather than from the response at all.
+#
+# `title` and `source` are deliberately not the values the real endpoint or the
+# real var carry, so a `report` that read anything else — a default output, or
+# the var directly rather than the step's — reaches no stub.
+edition: v2026.2
+tests:
+  - name: a later step reads only the shaped names the step reported
+    workflow: ./workflow.yaml
+    stubs:
+      - task: http
+        where: inputs.url == 'https://httpbin.org/json' && inputs.method == 'GET'
+        returns:
+          status: 204
+          title: Sample Slide Show
+          source: catalog
+      - task: log
+        where: inputs.message == 'got 204 for Sample Slide Show from catalog'
+        returns: {}
+    expect:
+      ran: [web, report]

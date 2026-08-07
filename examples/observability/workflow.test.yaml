@@ -1,0 +1,51 @@
+# #263 flags this as "a lab whose subject is telemetry rather than the workload"
+# and offers it for the guard test's allowlist. It does not need one, and the
+# reason is the example's own first sentence: *nothing in it is about telemetry*.
+# Flowstate emits spans and metrics for whatever a file happens to do, so the
+# workload here is an ordinary workload and is testable as one. What a test
+# cannot reach is the lab around it — the collector, the dashboards, the Temporal
+# UI — and none of that is in workflow.yaml.
+#
+# The file is shaped for a trace with something in it, and each of the three
+# things it is shaped for is a claim a case can pin:
+#
+#   * a durable wait, which is a step that runs rather than a gap somebody
+#     inserted — `settle` present in `ran:`, costing this case nothing under
+#     virtual time, which is itself the point: the worker is not holding a
+#     thread;
+#   * a fan-out, so there are siblings rather than one line — three `deploy`
+#     invocations, one per region, each carrying its own region in a field;
+#   * a step carrying a value into a later one, so the spans have a reason to be
+#     in the order they are — `vars.release` reaching the announce line, all
+#     three rollout lines, and the count in the report.
+edition: v2026.2
+tests:
+  - name: the wait, the fan-out and the carried release are all present in one run
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        where: >-
+          inputs.message == 'starting rollout of v2026.8.0' &&
+          inputs.fields.release == 'v2026.8.0' &&
+          inputs.fields.regions == '3'
+        returns: {}
+      - task: log
+        where: >-
+          inputs.message == 'rolled out v2026.8.0 to eu-west-1' &&
+          inputs.fields.region == 'eu-west-1' && inputs.fields.release == 'v2026.8.0'
+        returns: {}
+      - task: log
+        where: >-
+          inputs.message == 'rolled out v2026.8.0 to us-east-1' &&
+          inputs.fields.region == 'us-east-1' && inputs.fields.release == 'v2026.8.0'
+        returns: {}
+      - task: log
+        where: >-
+          inputs.message == 'rolled out v2026.8.0 to ap-southeast-2' &&
+          inputs.fields.region == 'ap-southeast-2' && inputs.fields.release == 'v2026.8.0'
+        returns: {}
+      - task: log
+        where: inputs.message == 'rollout of v2026.8.0 reached 3 regions'
+        returns: {}
+    expect:
+      ran: [announce, settle, rollout, report]

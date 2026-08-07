@@ -1,0 +1,26 @@
+# `json_parse` turns a body — which is text, and nothing else — into a value
+# expressions can index, and a step's own `vars:` names the parse once so it is
+# not repeated at every use. Both halves are asserted by handing the stub a body
+# that is a *string* of JSON and requiring the two reads of it to arrive as
+# separate scalars: `title` in the message and `author` in a field, each pulled
+# out of the same `slideshow` binding.
+#
+# A `json_parse` that returned the text unchanged, or a `vars:` binding that was
+# re-evaluated to something else on the second read, reaches no stub.
+edition: v2026.2
+tests:
+  - name: a body is text until json_parse indexes it, and the binding is read twice
+    workflow: ./workflow.yaml
+    stubs:
+      - task: http
+        where: inputs.url == 'https://httpbin.org/json'
+        returns:
+          status_code: 200
+          body: '{"slideshow": {"title": "Sample Slide Show", "author": "Yours Truly"}}'
+      - task: log
+        where: >-
+          inputs.message == 'Sample Slide Show' &&
+          inputs.fields.author == 'Yours Truly'
+        returns: {}
+    expect:
+      ran: [web, title]

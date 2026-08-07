@@ -1,0 +1,29 @@
+# `credential:` is the outbound half of identity: the step names a
+# deployment-configured target and the *worker* mints an assertion, exchanges
+# it, and applies the result to the request inside the activity. The material
+# never comes back to workflow code, and the file holds no secret at all — which
+# is precisely why this example needs no `secrets:` block while its four
+# siblings do.
+#
+# That distinction is what the case pins. `credential:` reaches the task as an
+# ordinary literal input naming the target, and there is no bearer, no header,
+# and nothing resolved: an edit that turned `credential: partner-api` into an
+# embedded token would fail here rather than pass quietly.
+#
+# The exchange itself, and the CEL policy deciding which workload may assume
+# which target, are the worker's — engine's own tests own those, since a Flowfile
+# has no way to carry the deployment configuration that makes them real.
+edition: v2026.2
+tests:
+  - name: the step names a credential target and carries no credential material of its own
+    workflow: ./workflow.yaml
+    stubs:
+      - task: http
+        where: >-
+          inputs.url == 'https://api.example.com/status/200' &&
+          inputs.credential == 'partner-api' &&
+          !('bearer' in inputs) && !('headers' in inputs)
+        returns:
+          status_code: 200
+    expect:
+      ran: [health]

@@ -1,0 +1,15 @@
+# One claim, and it is the only one this file makes: `format` is an operator on a
+# string, pinned by the profile, so `%s` and `%d` are filled from the argument
+# list in order and the result is the exact sentence below. `ran: [greeting]`
+# would pass just as well against a `format` that rendered nothing — which is
+# precisely the regression a profile change could cause.
+edition: v2026.2
+tests:
+  - name: format fills both verbs from the argument list
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        where: inputs.message == 'hello flowstate, you have 0 step(s) left'
+        returns: {}
+    expect:
+      ran: [greeting]
