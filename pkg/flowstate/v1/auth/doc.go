@@ -164,7 +164,38 @@
 // The subject names the workload hierarchically, so a relying party can authorize
 // at whatever level it wants with a prefix match:
 //
-//	flowstate:<namespace>/<deployment>/<workflow>/<step>
+//	flowstate:<namespace>/<deployment>/<workflow>/<step>          server-attested
+//	flowstate:_local/<namespace>/<deployment>/<workflow>/<step>   flow run local
+//
+// Two components are reserved and begin with an underscore: "_default" stands in
+// for a namespace or deployment nobody set, and "_local" marks an assertion
+// minted by `flow run local` rather than by a server-attested run. Both are
+// unforgeable by an operator-chosen namespace, and for the same reason: the
+// grammar that admits a namespace into this subject ([ValidateNamespace])
+// forbids the underscore, so no namespace can ever equal either reserved
+// segment. That is what makes a subject's meaning a property of the string
+// itself rather than of an operator's discipline — a trust policy written for
+// "flowstate:acme/prod/..." cannot match a namespace that renamed itself
+// "_default" or "_local", because no namespace can. The same reasoning
+// protects `flow run local`: `flow run local --identity-key <prod key>
+// --as-namespace acme --as-deployment prod` would otherwise mint an assertion
+// byte-indistinguishable from a server-attested one. With "_local" prepended,
+// it cannot, on AWS, GCP, or any other RFC 8693 peer, because AWS STS ignores
+// custom claims and can only condition a trust policy on "sub" and "aud" — a
+// run-mode marker carried only as a claim would be unenforceable there. The
+// mode is set by which constructor built the [WorkloadIdentity]
+// ([NewLocalWorkloadIdentity] versus [IdentityFromPrincipal] or [IdentityFrom]),
+// never by a flag, since the field recording it is unexported.
+//
+// A local run's [ClaimNamespace] claim and the workload attributes an
+// assumption rule sees are unaffected by any of this: only the subject gains
+// the "_local" segment, so a local rehearsal still exercises Flowstate's own
+// assumption policy exactly as a server-attested run would. What fails, and
+// should, is the final exchange with the cloud provider — the rehearsal is
+// faithful right up to the boundary that only a real deployment can cross. A
+// driver-set "run_mode" claim ("local" or "server") carries the same
+// distinction for relying parties that read claims, such as a GCP attribute
+// mapping — belt and braces, where the braces work.
 //
 // Delegation stays visible rather than being flattened away. The subject says which
 // workload is calling; the [ClaimOnBehalfOf] and [ClaimOnBehalfOfIssuer] claims say
@@ -234,6 +265,12 @@
 //
 // The namespace reaches [Principal.Namespace], then [WorkloadIdentity.Namespace],
 // then every assertion subject and every policy decision the workload's steps make.
+//
+// [ValidateNamespace] is the one grammar a namespace is checked against on that
+// whole path — a signed subject, a secret provider's path or environment
+// variable name — never two. secrets.ValidateNamespace delegates to it rather
+// than checking separately, which is what makes "one value, one grammar" true
+// of the running system and not only of the intent.
 //
 // # Authorizing secrets
 //

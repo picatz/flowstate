@@ -92,6 +92,8 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 )
 
 // Limits on the parts of a reference, applied by [ValidateRef]. They exist so a
@@ -284,8 +286,10 @@ func isControl(r rune) bool {
 
 // Namespace limits, applied by [ValidateNamespace].
 const (
-	// MaxNamespaceLen is the longest permitted namespace.
-	MaxNamespaceLen = 63
+	// MaxNamespaceLen is the longest permitted namespace. It is
+	// [auth.MaxNamespaceLen]: see [ValidateNamespace] for why there is one
+	// value rather than two.
+	MaxNamespaceLen = auth.MaxNamespaceLen
 )
 
 // Request is what a [Provider] is asked to resolve.
@@ -507,27 +511,21 @@ func (n Namespace) GetNamespace() string { return string(n) }
 // namespace would be a path traversal, and one containing a control character
 // would forge log lines. The namespace comes from an authenticated identity and
 // should already be well formed, so this is the second line rather than the first.
+//
+// The grammar itself lives in [auth.ValidateNamespace], not here. The same
+// namespace also has to pass this check on its way into a signed assertion
+// subject, and until it did, the two packages checked it two different ways —
+// auth only refused the two characters that could split a subject into extra
+// components, secrets refused everything outside lowercase letters, digits, and
+// dashes — so a namespace such as "Prod Team" could reach a signed subject
+// while never reaching a secret. This delegates so there is one grammar to
+// fail, in one place, rather than two that can quietly drift apart. The
+// returned error still wraps [ErrNamespace], so every existing caller of this
+// function keeps matching it with [errors.Is].
 func ValidateNamespace(namespace string) error {
-	if namespace == "" {
-		return nil
+	if err := auth.ValidateNamespace(namespace); err != nil {
+		return fmt.Errorf("%w: %w", ErrNamespace, err)
 	}
-
-	if len(namespace) > MaxNamespaceLen {
-		return fmt.Errorf("%w: namespace is longer than %d characters", ErrNamespace, MaxNamespaceLen)
-	}
-
-	for i, c := range namespace {
-		switch {
-		case c >= 'a' && c <= 'z', c >= '0' && c <= '9':
-		case c == '-' && i > 0:
-		default:
-			return fmt.Errorf(
-				"%w: namespace %q may only contain lowercase letters, digits, and dashes, and may not start with a dash",
-				ErrNamespace, namespace,
-			)
-		}
-	}
-
 	return nil
 }
 

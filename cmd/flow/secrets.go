@@ -122,9 +122,13 @@ func localWorkloadIdentity(cmd *cobra.Command) (auth.WorkloadIdentity, error) {
 		}
 		claims[name] = value
 	}
-	identity := auth.WorkloadIdentity{
-		Subject: subject, Issuer: issuer, Namespace: namespace, Deployment: deployment, Claims: claims,
-	}
+	// NewLocalWorkloadIdentity, not a struct literal, is what marks this
+	// identity as a local rehearsal rather than a server-attested run: the
+	// distinction lives in an unexported field only this constructor can set,
+	// so nothing --as-subject, --as-namespace, --as-deployment, or --as-claim
+	// supplies can turn it off. See [auth.WorkloadIdentity] and
+	// [auth.WorkloadIdentity.SubjectFor].
+	identity := auth.NewLocalWorkloadIdentity(subject, issuer, namespace, deployment, claims)
 	if err := identity.Validate(); err != nil {
 		return auth.WorkloadIdentity{}, fmt.Errorf("local rehearsal identity: %w", err)
 	}

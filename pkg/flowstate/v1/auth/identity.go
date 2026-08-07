@@ -42,6 +42,16 @@ type WorkloadIdentity struct {
 
 	// Deployment names the Flowstate deployment running the workload.
 	Deployment string
+
+	// local marks an identity minted by `flow run local` rather than by a
+	// server-attested run. It is unexported and has no setter: a struct literal
+	// built outside this package can never set it, however many fields it names,
+	// so a flag, an environment variable, or an operator cannot forge it. The
+	// only way to produce one is [NewLocalWorkloadIdentity], which the local
+	// driver calls and the server driver never does. See that function and
+	// [WorkloadIdentity.SubjectFor] for why the run mode has to live somewhere a
+	// flag cannot reach.
+	local bool
 }
 
 // IdentitySource is anything that exposes a workload identity through the
@@ -143,6 +153,31 @@ func IdentityFromPrincipal(principal Principal, namespace, deployment string, cl
 	return identity
 }
 
+// NewLocalWorkloadIdentity returns the identity `flow run local` mints for a
+// rehearsal run.
+//
+// This is the only constructor that can produce an identity whose
+// [WorkloadIdentity.SubjectFor] carries the [localComponent] segment, because
+// it is the only code outside this package that can set the unexported local
+// field — a struct literal cannot. The local driver calls this; the server
+// driver builds an identity through [IdentityFromPrincipal] or [IdentityFrom]
+// instead, and neither of those sets it either. So the distinction between a
+// local rehearsal and a server-attested run is not something either driver
+// remembers to apply — it is which constructor the call site is, and only one
+// of the two call sites is this one. See [WorkloadIdentity.SubjectFor] for why
+// AWS, GCP, and every other RFC 8693 peer treat the two as unrelated
+// principals as a result, and not merely as differently labeled ones.
+func NewLocalWorkloadIdentity(subject, issuer, namespace, deployment string, claims map[string]string) WorkloadIdentity {
+	return WorkloadIdentity{
+		Subject:    subject,
+		Issuer:     issuer,
+		Namespace:  namespace,
+		Deployment: deployment,
+		Claims:     maps.Clone(claims),
+		local:      true,
+	}
+}
+
 // IsZero reports whether the identity is unset.
 func (w WorkloadIdentity) IsZero() bool {
 	return w.Subject == "" && w.Issuer == "" && w.Namespace == "" && w.Deployment == "" && len(w.Claims) == 0
@@ -211,12 +246,40 @@ const subjectPrefix = "flowstate:"
 // set, so that a subject always has the same number of components. Without it, a
 // workload with no deployment would produce a subject that a prefix rule written
 // for a different level would match.
-const defaultComponent = "default"
+//
+// It begins with an underscore, which [ValidateNamespace] forbids, so no tenant
+// can name itself into this component: a namespace literally called "default"
+// mints "flowstate:default/...", never "flowstate:_default/...". Without the
+// underscore, a deployment that ran single-tenant, had a trust policy written for
+// "flowstate:default/prod/...", and later admitted a tenant that happened to be
+// named "default" would find that tenant inheriting the single-tenant grant. This
+// mirrors [secrets.DefaultNamespaceDir] in the file secrets provider, which
+// solves the identical problem the identical way — see its doc comment.
+const defaultComponent = "_default"
+
+// localComponent marks a subject minted by `flow run local` rather than by a
+// server-attested run, as the leading component of the subject:
+//
+//	flowstate:_local/<namespace>/<deployment>/<workflow>/<step>
+//
+// It begins with an underscore for the same reason [defaultComponent] does: no
+// namespace can ever equal it, because [ValidateNamespace] forbids the
+// character. That is what makes it a property of the subject a relying party
+// can rely on rather than a convention an operator has to trust: a trust policy
+// written for "flowstate:acme/..." cannot match "flowstate:_local/acme/...",
+// on AWS, GCP, or any other RFC 8693 peer, because prefix and exact-match rules
+// both compare bytes and the leading segment differs. A custom claim would not
+// have this property — AWS ignores claims it was not asked to put in the
+// subject or audience, so a marker that lived only in a claim would be
+// unenforceable on the relying party this matters most for. See
+// [WorkloadIdentity.SubjectFor].
+const localComponent = "_local"
 
 // SubjectFor returns the subject a minted assertion will carry for this identity
 // and step:
 //
-//	flowstate:<namespace>/<deployment>/<workflow>/<step>
+//	flowstate:<namespace>/<deployment>/<workflow>/<step>          server-attested
+//	flowstate:_local/<namespace>/<deployment>/<workflow>/<step>   flow run local
 //
 // The shape is fixed and hierarchical so that a relying party can authorize at
 // whatever level it wants with a prefix match: a whole namespace, one
@@ -224,8 +287,23 @@ const defaultComponent = "default"
 // policy needs the exact string, so this is exported and used by minting rather
 // than being computed twice.
 //
+// Two components are reserved and begin with an underscore, which
+// [ValidateNamespace] forbids in a namespace: [defaultComponent], substituted
+// for a namespace or deployment nobody set, and [localComponent], prepended
+// when the identity came from [NewLocalWorkloadIdentity]. Neither can be
+// forged by an operator-chosen namespace, because the grammar that admits a
+// namespace into this subject is the same grammar that refuses the underscore
+// — see [ValidateNamespace]. A local rehearsal run therefore mints a subject
+// that is byte-distinguishable from every server-attested one, by
+// construction, and no trust policy written for the latter can ever match the
+// former.
+//
 // The run identifier is not part of the subject; it travels as a claim.
 func (w WorkloadIdentity) SubjectFor(ref StepRef) (string, error) {
+	if err := ValidateNamespace(w.Namespace); err != nil {
+		return "", fmt.Errorf("%w: namespace: %w", ErrInvalidIdentity, err)
+	}
+
 	components := []string{
 		orDefault(w.Namespace),
 		orDefault(w.Deployment),
@@ -244,6 +322,10 @@ func (w WorkloadIdentity) SubjectFor(ref StepRef) (string, error) {
 			return "", fmt.Errorf("%w: %s %q must not contain %q or %q",
 				ErrInvalidIdentity, names[i], truncate(component, 64), subjectSeparator, ":")
 		}
+	}
+
+	if w.local {
+		components = append([]string{localComponent}, components...)
 	}
 
 	return subjectPrefix + strings.Join(components, subjectSeparator), nil

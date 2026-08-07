@@ -345,7 +345,7 @@ func AuthorityDenialCases() []AuthorityCase {
 					"read": v1.FailedStepOutputs(`task "http" failed (PolicyDenied): ` +
 						`resolving bearer reference fixture-secret:API_TOKEN: ` +
 						`auth: denied by secret access policy: no rule permits workload ` +
-						`"flowstate:acme-tenant/default/authority-denied-bearer/read" ` +
+						`"flowstate:acme-tenant/_default/authority-denied-bearer/read" ` +
 						`in namespace "acme-tenant" to read fixture-secret:API_TOKEN (deny rule: true)`),
 				}},
 			},
@@ -385,7 +385,7 @@ func AuthorityDenialCases() []AuthorityCase {
 					"read": v1.FailedStepOutputs(`task "http" failed (PolicyDenied): ` +
 						`header "Authorization": resolving reference fixture-secret:API_TOKEN: ` +
 						`auth: denied by secret access policy: no rule permits workload ` +
-						`"flowstate:acme-tenant/default/authority-denied-header/read" ` +
+						`"flowstate:acme-tenant/_default/authority-denied-header/read" ` +
 						`in namespace "acme-tenant" to read fixture-secret:API_TOKEN (deny rule: true)`),
 				}},
 			},
@@ -410,7 +410,7 @@ func AuthorityDenialCases() []AuthorityCase {
 					"read": v1.FailedStepOutputs(`task "http" failed (PolicyDenied): ` +
 						`resolving bearer reference fixture-secret:API_TOKEN: ` +
 						`auth: denied by secret access policy: no rule permits workload ` +
-						`"flowstate:acme-tenant/default/authority-denied-ordering/read" ` +
+						`"flowstate:acme-tenant/_default/authority-denied-ordering/read" ` +
 						`in namespace "acme-tenant" to read fixture-secret:API_TOKEN (deny rule: true)`),
 				}},
 			},
