@@ -496,8 +496,41 @@ steps:
     log:
       message: >-
         ${run.identity.subject + run.identity.issuer + run.identity.namespace +
-          (run.local ? "local" : "not local")}
+          run.workflow_id + run.run_id + (run.local ? "local" : "not local")}
 `,
+		},
+		{
+			// The gap #272 measured: a run could not learn its own address, so a
+			// workload had no way to tell an external system where to send a
+			// callback. Both halves are ordinary fields of the root now, and the
+			// closed set below is what keeps the diagnostic above honest.
+			name: "a run may read its own address",
+			src: `
+edition: v2026.2
+name: run-address
+steps:
+  - id: a
+    log:
+      message: ${run.workflow_id + "/" + run.run_id}
+`,
+		},
+		{
+			// The two fields deliberately absent, checked as a refusal rather
+			// than left to a comment: a start time is a clock read by another
+			// name, and `now` is bound only inside a wait precisely so a task
+			// cannot read a clock. If either is ever added, this case is the
+			// thing that has to be deleted on purpose.
+			name: "run has no clock and no attempt count",
+			src: `
+edition: v2026.2
+name: run-start-time
+steps:
+  - id: a
+    log:
+      message: ${string(run.start_time)}
+`,
+			want: `references unknown field "start_time" of ` + "`run`" + `; ` +
+				"`run` has identity, local, workflow_id, run_id",
 		},
 		{
 			// claims is a map keyed by whatever the identity provider issued, so

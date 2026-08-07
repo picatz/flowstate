@@ -132,6 +132,16 @@ var exampleSignals = map[string]map[string]*v1.Node_Outputs{
 		}},
 	},
 
+	// callback-address's gate is the one the run itself registered an address
+	// for, so answering it is the whole shape rather than an option: a review
+	// that lapses exercises the timeout and not the callback. The payload is the
+	// one this example's own `flow signal` line documents.
+	"callback-address": {
+		"review-decided": {NamedValues: map[string]*v1.Value{
+			"accepted": v1.NewLiteral(true),
+		}},
+	},
+
 	// enterprise-fund-transfer's `approval` gate is reached only above
 	// `approval_threshold_cents`, and this example's own `inputs.json` names an
 	// `amount_cents` below it — so this payload, like approval-gate's own, is

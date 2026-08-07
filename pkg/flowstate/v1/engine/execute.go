@@ -532,6 +532,11 @@ func (e *executor) runTask(node *v1.Node, task *v1.Task) error {
 			Identity: e.scope.GetIdentity(),
 			Local:    e.scope.GetLocal(),
 
+			// And the run's own address, whole, for the identical reason: an
+			// `${run.workflow_id}` written in an http task's `outputs:` or `expect:`
+			// is evaluated here and nowhere else.
+			Address: e.scope.GetAddress(),
+
 			// Carried across the wire. This scope is what an activity on some other
 			// worker evaluates a task's own expressions against, and that worker's
 			// build may know a different set of profiles than the one that compiled

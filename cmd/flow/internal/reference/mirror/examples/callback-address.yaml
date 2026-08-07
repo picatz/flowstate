@@ -1,0 +1,141 @@
+edition: v2026.2
+name: callback-address
+description: >-
+  Hands an external reviewer the address of this very run, then waits for the
+  signal that address will carry back.
+
+# `approval-gate` and `expense-approval` wait for a person who already knows
+# which run to answer. This is the other half of that shape, and it is the one
+# that could not be written at all until `run.workflow_id` and `run.run_id`
+# existed: a workload that has to *tell* an outside system where to send the
+# answer, before there is any answer to send.
+#
+# That is Temporal's own `expense` sample, and the comparison is worth stating
+# because the two designs differ in exactly one place. There, the workflow hands
+# the external system an opaque *completion token* — a bearer capability to
+# complete an activity, good for whoever holds it. Here it hands over an
+# address: a workflow id and a run id, which name a run and grant nothing. The
+# right to signal it is decided when the signal arrives, against the caller the
+# server authenticated, under the run's own tenancy — so a leaked address is a
+# leaked *name*, not a leaked permission.
+#
+# Run it locally with:
+#
+#   flow run local examples/callback-address/workflow.yaml --input-file examples/callback-address/inputs.json
+#
+# Nobody answers, so the wait lapses and the review is abandoned — the
+# fail-closed default. To see the answered path:
+#
+#   flow run local examples/callback-address/workflow.yaml \
+#     --input-file examples/callback-address/inputs.json \
+#     --signal review-decided='{"accepted": true}'
+#
+# Watch what the `register` step below sends when you do. A local run reports
+# `local` for both halves of its address, and that is deliberate rather than a
+# placeholder nobody filled in: a local run has no server in front of it and no
+# Temporal behind it, so *nothing* can reach it by any name. A sentinel says
+# that outright; an empty string would read as a field that failed to populate
+# and send you looking for a bug in this file. Against a real deployment the
+# same expressions produce the id `flow signal` takes:
+#
+#   flow signal <workflow-id> review-decided --data '{"accepted": true}'
+
+inputs:
+  # No default — there is no sensible absent value for "which document", only a
+  # plausible one to paste, which is what `example:` is for.
+  document:
+    type: string
+    required: true
+    example: contract-2041.pdf
+    must: this.matches(r'^[A-Za-z0-9._-]+$')
+    description: the document being sent out for review
+
+steps:
+  # The registration. Everything the reviewer needs in order to answer is in
+  # this one request: which document, and where to send the decision.
+  #
+  # `run.workflow_id` and `run.run_id` are facts about the run, established by
+  # whoever started it and readable nowhere else in the language — a file cannot
+  # name its own address any more than it can name its own tenant, and for the
+  # same reason. The pair is sent rather than the workflow id alone because a
+  # workflow id may be reused once an earlier run has finished, and a reviewer
+  # holding a stale address should be answering nothing rather than answering
+  # the wrong run.
+  #
+  # `run.run_id` is stable for the whole run, including across the engine's own
+  # Continue-As-New — the address registered here still names this run after it
+  # has suspended and resumed, which is the entire point of registering it
+  # before a wait that may outlive several segments.
+  - id: register
+    http:
+      method: POST
+      url: https://reviews.example.com/reviews
+      json:
+        document: ${inputs.document}
+        callback:
+          workflow_id: ${run.workflow_id}
+          run_id: ${run.run_id}
+          signal: review-decided
+
+  # The wait the address above was registered for. Seconds here so the example
+  # finishes; the number a real review policy would write is days, and nothing
+  # else in this file changes to get there.
+  - id: decision
+    wait_for_signal:
+      name: review-decided
+      timeout: 6s
+
+  # `has()` guards the payload read, because a lapsed gate carries no payload at
+  # all — `timed_out` is how a wait reports that, rather than failing.
+  - id: accepted
+    if: ${has(steps.decision.payload.accepted) && steps.decision.payload.accepted}
+    log:
+      message: >-
+        ${"%s was accepted by %s".format(
+            [inputs.document, steps.decision.sender.identity.subject == ""
+              ? "an unattested caller"
+              : steps.decision.sender.identity.subject])}
+
+  - id: rejected
+    if: ${has(steps.decision.payload.accepted) && !steps.decision.payload.accepted}
+    log:
+      level: warn
+      message: ${"%s was rejected".format([inputs.document])}
+
+  # The reviewer had the address and never used it. Worth its own branch and its
+  # own log line: a review nobody answered is a different fact from a review
+  # somebody declined, and an operator reading the history should not have to
+  # infer which happened.
+  - id: abandoned
+    if: ${steps.decision.timed_out}
+    log:
+      level: warn
+      message: ${"nobody answered the review of %s in time".format([inputs.document])}
+
+outputs:
+  # That this run had an address to hand out at all — asserted rather than
+  # reported, and the distinction is the point.
+  #
+  # The address itself is deployment-specific by construction: a durable run
+  # answers with Temporal's workflow id, a local rehearsal answers `local`. An
+  # output carrying it verbatim would therefore be the one thing in this file
+  # that *must* differ between the two drivers, which is exactly what a run's
+  # declared outputs are not for (see `steps.<gate>.sender`, stripped from the
+  # corpus's own cross-driver comparison for the same reason). What both
+  # drivers do owe, and what this checks, is that neither ever hands out a
+  # blank: an empty address is a reviewer that can never answer.
+  #
+  # Reading the address here, at the end, also exercises the property a
+  # callback depends on — it is still the same address the run registered
+  # before it waited, which is why `run_id` is the first run id of the
+  # continued-execution chain rather than the current execution's.
+  addressed:
+    value: ${run.workflow_id != "" && run.run_id != ""}
+    description: whether this run had an address to register at all
+
+  outcome:
+    value: >-
+      ${has(steps.decision.payload.accepted)
+        ? (steps.decision.payload.accepted ? "accepted" : "rejected")
+        : "abandoned"}
+    description: what the reviewer decided, or that they never answered

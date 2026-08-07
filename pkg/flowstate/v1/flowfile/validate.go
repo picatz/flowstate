@@ -1920,7 +1920,13 @@ const toleratedErrorOutput = v1.StepErrorOutput
 var runIdentityFields = []string{"subject", "issuer", "namespace", "claims"}
 
 // runFields are the fields [runRootValue] renders directly under `run`.
-var runFields = []string{"identity", "local"}
+//
+// The set is closed on purpose and the two absences are the interesting part:
+// there is no `start_time` and no `attempt`, so `${run.start_time}` is reported
+// here rather than silently resolving to something. [v1.RunAddress] records why
+// neither will be added — a start time is a clock read by another name, and
+// `now` is bound only inside a wait precisely so a task cannot read a clock.
+var runFields = []string{"identity", "local", "workflow_id", "run_id"}
 
 // unknownRunField reports a reference to a field `run` does not have.
 //
@@ -1942,7 +1948,9 @@ func unknownRunField(stepID, inputName string, ref runRef) (Diagnostic, bool) {
 		if suggestion, ok := nearest(ref.Field, runFields); ok {
 			message += fmt.Sprintf("; did you mean %q?", suggestion)
 		} else {
-			message += fmt.Sprintf("; `run` has %s", strings.Join(runFields, " and "))
+			// Comma-joined, as the `run.identity` branch below already is: the set
+			// grew past the two names " and " read well between.
+			message += fmt.Sprintf("; `run` has %s", strings.Join(runFields, ", "))
 		}
 
 		return Diagnostic{

@@ -1,0 +1,109 @@
+# What is actually under test here is the *registration*, not the branching:
+# the `where:` on the http stub asserts the exact bytes the reviewer would have
+# received, so a run whose address failed to resolve — or resolved to an empty
+# string, which is the failure this whole feature exists to refuse — reaches no
+# stub at all and the case fails.
+#
+# `local` is the address a local run reports for both halves, and asserting the
+# sentinel by name is deliberate: it is what makes "never a blank" a property
+# this corpus enforces rather than a rule written in a doc comment. A durable
+# run reports Temporal's own workflow id and the first run id of its
+# continued-execution chain; the shared driver cases in
+# `pkg/flowstate/v1/tests/runaddress.go` are where those two answers are held to
+# one definition.
+edition: v2026.2
+tests:
+  - name: the run registers its own address before it waits on it
+    workflow: ./workflow.yaml
+    inputs:
+      document: contract-2041.pdf
+    signals:
+      - name: review-decided
+        payload:
+          accepted: true
+        sender:
+          subject: reviewer@example.com
+          issuer: https://issuer.example.com
+    stubs:
+      - task: http
+        # The whole point of the example, asserted as a request the reviewer
+        # could actually answer: the document, and an address with both halves
+        # present.
+        where: >-
+          inputs.url == 'https://reviews.example.com/reviews' &&
+          inputs.json.document == 'contract-2041.pdf' &&
+          inputs.json.callback.signal == 'review-decided' &&
+          inputs.json.callback.workflow_id == 'local' &&
+          inputs.json.callback.run_id == 'local'
+        returns:
+          status_code: 202
+          body: ''
+      - task: log
+        returns: {}
+    expect:
+      ran: [register, decision, accepted]
+      skipped: [rejected, abandoned]
+      outputs:
+        addressed: true
+        outcome: accepted
+
+  - name: a rejection travels back through the same address
+    workflow: ./workflow.yaml
+    inputs:
+      document: contract-2041.pdf
+    signals:
+      - name: review-decided
+        payload:
+          accepted: false
+        sender:
+          subject: reviewer@example.com
+          issuer: https://issuer.example.com
+    stubs:
+      - task: http
+        returns:
+          status_code: 202
+          body: ''
+      - task: log
+        returns: {}
+    expect:
+      ran: [register, decision, rejected]
+      skipped: [accepted, abandoned]
+      outputs:
+        addressed: true
+        outcome: rejected
+
+  # The address was handed over and never used. Fail-closed: nothing is
+  # accepted by default, and the run says which of the two "not accepted"
+  # things happened.
+  - name: nobody answers, and the review is abandoned rather than accepted
+    workflow: ./workflow.yaml
+    inputs:
+      document: contract-2041.pdf
+    stubs:
+      - task: http
+        returns:
+          status_code: 202
+          body: ''
+      - task: log
+        returns: {}
+    expect:
+      ran: [register, decision, abandoned]
+      skipped: [accepted, rejected]
+      outputs:
+        addressed: true
+        outcome: abandoned
+
+  - name: a document name that is not a plain filename is refused before the first step runs
+    workflow: ./workflow.yaml
+    inputs:
+      document: ../../etc/passwd
+    stubs:
+      - task: http
+        returns:
+          status_code: 202
+          body: ''
+      - task: log
+        returns: {}
+    expect:
+      failed: true
+      error_contains: 'must satisfy'

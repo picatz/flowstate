@@ -56,7 +56,7 @@ func rootHolds(root string) string {
 	case v1.InputsRoot:
 		return "the run's inputs"
 	case v1.RunRoot:
-		return "the run's starter identity fields"
+		return "the run's own address and starter identity"
 	default:
 		return "those values"
 	}
