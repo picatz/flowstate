@@ -2210,9 +2210,11 @@ one.** A callee's placement is not unconditionally `UndoScopeCall` — it is
 `callSitePlacement.IntoCall()`, composed with whatever scope the `call:` step
 itself sits in. A call reached from the top level or from another call's body
 composes to `UndoScopeCall`, which is the case above. A call reached from *inside*
-a `for_each` body, a `parallel:` branch, or a `loop:` body composes to that same
-restriction instead, and its callee's `undo:` is refused with that restriction's
-own message — the concurrency one, or the loop one. Without this, a `for_each`
+a `for_each` body or a `parallel:` branch composes to that same restriction
+instead, and its callee's `undo:` is refused with that restriction's own message.
+A `loop:` body composes to `UndoScopeCall` because a loop body is itself an
+accepting placement (below), so there is nothing left there for a call to launder.
+Without this, a `for_each`
 whose body did nothing but `call:` a workflow with a compensating step would have
 been an unintended way to route a compensation around the exact refusal invariant 3
 exists to enforce: the callee's steps still run once per iteration or once per
@@ -2224,6 +2226,9 @@ both execution drivers and `flow validate`.
 ### What this slice does not do, and why
 
 Two narrowings, each of which is a design that has to be argued rather than guessed.
+A third — a `loop:` body — was a narrowing when this was written and is not one any
+more; it is left below with the reason it was retired, because the argument that
+retired it is the same one that keeps the first narrowing in force.
 
 **`undo:` is refused inside a `for_each` body and a `parallel:` branch.** This is
 invariant 3, not effort. Compensations run in reverse registration order, and
@@ -2240,19 +2245,42 @@ specification that never came from a Flowfile cannot slip past. A `call:` does n
 this narrowing — see "Compensation composes through a call" above — because it is not
 concurrent: the reason this refusal exists is exactly the reason it does not apply there.
 
-**`undo:` is refused inside a `loop:` body**, for a different reason than the one above:
-a sequential loop's registration order is perfectly well defined, but what "the
-compensation for iteration 3" resolves against once a later iteration has moved the
-loop's carried state on is not designed yet. This is deferred alongside `loop:`'s other
-carried-state semantics, not folded into the concurrency refusal above, so an author
-told about it is told the truth about why.
+**`undo:` is *not* refused inside a `loop:` body.** It was, and the reason it gave did
+not survive being checked (#253). The refusal said that a sequential loop's registration
+order is well defined but that what "the compensation for iteration 3" resolves against,
+once a later iteration has moved the carried state on, was not designed yet. Read
+[`PendingUndo`](../proto/flowstate/v1/flowstate.proto): a compensation is resolved the
+instant its step *succeeds*, in that step's own scope, and what is stored is values —
+running one "evaluates nothing at all". Iteration 3 has nothing left to move. And the
+ordering half of the argument is the one that keeps the fan-out refusal above true and
+this one false: loop iterations are sequential on *both* drivers, so reverse-registration
+order across them is exactly as well defined as it is at the top level. That is the same
+argument that let a compensation compose through a `call:`.
+
+So a `loop:` body registers one compensation per iteration onto the run's own stack, and
+they come off newest-first: a rollout that shifted traffic to 5%, then 25%, then 50%
+unwinds 50%, then 25%, then 5%. `examples/progressive-rollout/` is the worked example,
+and it is worth knowing what asserting that costs — the summary a failed run reports
+names each entry by *step id*, and three iterations of one step are three identical
+names. Order there is a property of the sequence, not of the sentence, which is why the
+shared cases assert it through effects the world actually saw and through a failure text
+whose entries carry each iteration's own URL.
+
+A bare `undo:` in a loop body and an `undo:` inside a workflow the body `call:`s were
+opened together, deliberately. Opening only the call path would have left a restriction
+that a one-line wrapper removes — which is not a restriction, and is precisely the
+escape hatch `IntoCall` exists to prevent. The composition rule that does still bite is
+the mirror of it: a `loop:` may be written inside a `for_each` body, so a loop body's
+placement is `loopSitePlacement.IntoLoop()`, and a compensation one construct deeper
+than a fan-out is refused with the fan-out's own message rather than accepted with the
+loop's.
 
 **`undo:` is refused on a step that is not a task.** A wait and a `parallel:` block have
 no effect of their own to take back, and a loop's effects belong to the tasks in its
-body — which cannot carry an `undo:` under the rules above, so writing one on the loop
-would look like it compensated them and would not. A `call:` step gets its own
-sentence rather than this one: the compensation belongs on the callee's own steps,
-which can carry it now, not on the step that reaches them.
+body — which carry the `undo:` themselves, so writing one on the loop step would look
+like it compensated them and would not. A `call:` step gets its own sentence rather than
+this one: the compensation belongs on the callee's own steps, which can carry it now,
+not on the step that reaches them.
 
 **A compensation has no `retry:` or `timeout:` of its own.** It gets the defaults a step
 with neither gets, from the same constants both drivers read. A `policy` field would be

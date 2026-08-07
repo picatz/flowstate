@@ -26,10 +26,11 @@ import (
 //
 // placement is the undo scope the `call:` step itself sits in, and the callee
 // is validated at placement.IntoCall() rather than always at
-// [v1.UndoScopeCall] — a call reached from inside a `for_each` body, a
-// `parallel` branch, or a `loop:` body must carry that restriction into the
-// callee, or the call would be a way to launder a compensation out of a scope
-// that refuses one. Both execution drivers compose the identical way (see
+// [v1.UndoScopeCall] — a call reached from inside a `for_each` body or a
+// `parallel` branch must carry that restriction into the callee, or the call
+// would be a way to launder a compensation out of a scope that refuses one. A
+// `loop:` body composes to [v1.UndoScopeCall] because it is itself an accepting
+// placement since #253, so there is nothing there left to launder. Both execution drivers compose the identical way (see
 // [v1.UndoScope.IntoCall]), which is what keeps `flow validate` from accepting
 // a shape either engine refuses, or refusing one either engine would allow.
 func validateCallAtDepth(id string, call *v1.Call, scope refScope, index int, wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnostics {

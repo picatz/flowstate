@@ -1425,6 +1425,44 @@ func TestRunWorkflowUndoCall(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowUndoLoop is the durable half of the loop cases — issue #253's
+// decision. The local driver runs the identical [tests.UndoLoopCases].
+//
+// The durable executor already shared `e.undo` by pointer with the executor a loop
+// iteration descends into, exactly as it does for a call, so what changed to make
+// these pass is the placement check ([v1.CheckUndoPlacement]) and the composition
+// [v1.UndoScope.IntoLoop] performs — not how a registration reaches the log.
+func TestRunWorkflowUndoLoop(t *testing.T) {
+	for index, outline := range tests.UndoLoopCases(undoPlaceholderBase) {
+		t.Run(outline.Name, func(t *testing.T) {
+			base, recorded := tests.NewUndoServer(t)
+			test := tests.UndoLoopCases(base)[index]
+
+			testSuite := &testsuite.WorkflowTestSuite{}
+			env := testSuite.NewTestWorkflowEnvironment()
+			env.RegisterWorkflow(engine.Run)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
+
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow})
+			require.True(t, env.IsWorkflowCompleted())
+
+			err := env.GetWorkflowError()
+			if !test.Fails {
+				require.NoError(t, err, "the run was expected to succeed")
+			} else {
+				require.Error(t, err, "the run was expected to fail")
+				require.Contains(t, err.Error(), test.Summary,
+					"the failure does not name each iteration's compensation in reverse order")
+			}
+
+			require.Equal(t, test.Recorded, recorded(),
+				"the effects that happened, and their order, are not what unwinding a loop should have produced")
+		})
+	}
+}
+
 // TestRunWorkflowUndoOnCancellation is the durable half of the cancellation cases.
 //
 // The local driver runs the identical [tests.UndoCancellationCases]. This is the
@@ -1574,4 +1612,76 @@ func TestPendingCompensationsSurviveContinueAsNew(t *testing.T) {
 		"a run that suspended before it failed did not take back what earlier segments did")
 	require.Equal(t, test.Recorded, recorded(),
 		"the effects that happened, and their order, are not what compensating should have produced")
+}
+
+// TestPendingLoopCompensationsSurviveContinueAsNew is
+// [TestPendingCompensationsSurviveContinueAsNew] pointed at the placement #253
+// opened, and it is the case the issue named as the one to prove.
+//
+// A progressive rollout is the workload that suspends by construction: a loop is
+// where the durable driver deliberately looks for an iteration boundary to hand
+// over at, so a rollout of any length spans several segments. Each segment
+// registers the compensation for the iterations it ran and then stops executing
+// entirely; the segment that finally fails replays none of their history. If the
+// registrations did not ride `RunState.pending_undo`, that segment would unwind
+// only its own iterations and report a clean failure over a half-shifted fleet.
+//
+// It is worth stating what this asserts that #233 does not. `Frame.results` is a
+// different structure with a different fate — [v1.LoopResumeResults] drops it on
+// the way in when nothing outside the loop can read it — and the undo log is a
+// top-level field of `RunState`, appended to and never compacted. The assertion
+// below is that a rollout whose `results` may legitimately have been thrown away
+// still takes back every iteration, in reverse, across every handover.
+//
+// `StepsBudget: 1` puts a suspension at every iteration boundary, so the reversal
+// under test crosses a Continue-As-New between each pair of entries rather than
+// only once somewhere in the middle.
+func TestPendingLoopCompensationsSurviveContinueAsNew(t *testing.T) {
+	base, recorded := tests.NewUndoServer(t)
+	cases := tests.UndoLoopCases(base)
+	test := cases[0]
+	require.Equal(t, "a loop body's compensations undo newest iteration first", test.Name,
+		"this test is written against the first shared loop case; the list was reordered")
+
+	state := &v1.RunState{Workflow: test.Workflow, StepsBudget: 1}
+
+	var (
+		segments  int
+		lastError error
+	)
+	for segments = 0; segments < 20; segments++ {
+		testSuite := &testsuite.WorkflowTestSuite{}
+		env := testSuite.NewTestWorkflowEnvironment()
+		env.RegisterWorkflow(engine.Run)
+		env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
+		env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+		env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
+
+		env.ExecuteWorkflow(engine.Run, state)
+		require.True(t, env.IsWorkflowCompleted())
+
+		err := env.GetWorkflowError()
+		var continued *workflow.ContinueAsNewError
+		if !errors.As(err, &continued) {
+			lastError = err
+
+			break
+		}
+
+		next := &v1.RunState{}
+		require.NoError(t, converter.GetDefaultDataConverter().FromPayloads(continued.Input, &next))
+		state = next
+	}
+
+	// Asserted rather than assumed: a budget that stopped suspending would leave
+	// every case below passing for a run that never handed over at all, which is
+	// CLAUDE.md's rule about a bound nothing reaches.
+	require.Greater(t, segments, 2,
+		"the rollout did not suspend between its iterations, so this proves nothing the "+
+			"single-segment loop case did not")
+	require.Error(t, lastError, "the run was expected to fail")
+	require.Contains(t, lastError.Error(), test.Summary,
+		"a rollout that suspended between iterations did not take back what earlier segments shifted")
+	require.Equal(t, test.Recorded, recorded(),
+		"the effects that happened, and their order, are not what unwinding a suspended rollout should have produced")
 }

@@ -1131,7 +1131,12 @@ func runNode(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, place
 		return runForEach(ctx, n.ForEach, scope, depth)
 
 	case *Node_Loop:
-		return runLoop(ctx, n.Loop, scope, depth)
+		// The body's placement composes with the scope this loop itself sits in
+		// — see [UndoScope.IntoLoop] — rather than always being [UndoScopeLoop].
+		// A `loop:` written inside a for_each body or a parallel branch is legal,
+		// and must not become an escape hatch out of the concurrency refusal that
+		// already applies there.
+		return runLoop(ctx, n.Loop, scope, undo, placement.IntoLoop(), depth)
 
 	case *Node_Parallel:
 		return nil, runParallel(ctx, n.Parallel, scope, depth)
@@ -1290,7 +1295,17 @@ func runForEach(ctx context.Context, loop *ForEach, scope *Scope, depth int) (*N
 // Continue-As-New frame to suppress `results` from carrying across — the other
 // half of #229's fix — and holds only this bound; see the package doc on
 // [LoopResumeResults] for why suppression could not live here even if it did.
-func runLoop(ctx context.Context, loop *Loop, scope *Scope, depth int) (*Node_Outputs, error) {
+// undo is the run's own log, passed straight through rather than withheld: a
+// loop's iterations are sequential here and on the durable driver, so a
+// compensation a body step registers belongs on the same run-level stack a
+// top-level step's does, and comes off newest-first — iteration 3's before
+// iteration 2's. [UndoScope] argues that at length; #253 is where the refusal
+// that used to sit here was retired.
+//
+// placement is the body's own scope, already composed by the caller through
+// [UndoScope.IntoLoop], which is what keeps a loop inside a `for_each` from
+// laundering the concurrency refusal.
+func runLoop(ctx context.Context, loop *Loop, scope *Scope, undo *UndoLog, placement UndoScope, depth int) (*Node_Outputs, error) {
 	name := loop.GetState()
 	max := LoopMaxIterations(loop)
 
@@ -1329,10 +1344,12 @@ func runLoop(ctx context.Context, loop *Loop, scope *Scope, depth int) (*Node_Ou
 		}
 		iterationScope = iterationScope.WithOutputs(iterationOutputs)
 
-		// nil log and UndoScopeLoop: a compensation may not be written in a loop
-		// body, and [CheckUndoPlacement] refuses one rather than this level quietly
-		// ignoring it — for its own reason, distinct from a `for_each` body's.
-		if err := runNodes(ctx, loop.GetBody(), iterationScope, nil, UndoScopeLoop, depth); err != nil {
+		// The run's own log and the composed placement: a body step's `undo:` is
+		// registered onto the same stack a top-level step's is, once per iteration.
+		// Where the composed placement is still [UndoScopeConcurrent] — a loop
+		// inside a for_each body — [CheckUndoPlacement] refuses it rather than this
+		// level quietly ignoring it.
+		if err := runNodes(ctx, loop.GetBody(), iterationScope, undo, placement, depth); err != nil {
 			return nil, fmt.Errorf("iteration %d: %w", i, err)
 		}
 

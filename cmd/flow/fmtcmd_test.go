@@ -147,6 +147,15 @@ func walkCallNodes(nodes []*v1.Node, dir string, into map[string]bool) {
 			walkCallNodes(kind.Call.GetWorkflow().GetSteps(), filepath.Dir(abs), into)
 		case *v1.Node_ForEach:
 			walkCallNodes(kind.ForEach.GetBody(), dir, into)
+		case *v1.Node_Loop:
+			// A `loop:` body, for the identical reason a `for_each` body is
+			// walked: a call reached only from inside one is still a file this
+			// test has to copy beside its caller, or the copy's `call:` resolves
+			// to nothing. `progressive-rollout` is the first example whose only
+			// call sits there, and it failed here rather than in the assertion —
+			// a walk that knows about three of the four nesting constructs is a
+			// walk that is wrong about the fourth.
+			walkCallNodes(kind.Loop.GetBody(), dir, into)
 		case *v1.Node_Parallel:
 			for _, branch := range kind.Parallel.GetBranches() {
 				walkCallNodes(branch.GetSteps(), dir, into)

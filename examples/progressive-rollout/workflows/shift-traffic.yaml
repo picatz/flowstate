@@ -1,0 +1,102 @@
+# One stage of a progressive rollout: move a share of traffic to the new
+# version, write the change down, and check the canary is healthy at that share.
+#
+# This file is the unit — the thing a rollout does once per percentage — and it
+# is why the rollout is written as a `call:` from a loop body rather than as
+# three copied stages. Both of its effects carry their own `undo:`, so what it
+# knows how to take back is a property of *this* file. The caller decides how
+# many times it happens and at what percentages, and never has to restate how a
+# stage is reversed.
+#
+# Compensation composes through both boundaries at once here (#219 and #253):
+# these steps register onto the *run's* one undo stack, exactly as a top-level
+# step's would, and a later failure takes every registration back in reverse —
+# across the call boundary, and across every iteration of the loop that made the
+# calls.
+edition: v2026.2
+name: shift-traffic
+description: Move a percentage of traffic to the new version, record it, and check the canary.
+
+inputs:
+  service:
+    type: string
+    required: true
+    description: which service is being rolled out
+
+  percent:
+    type: int
+    required: true
+    description: the share of traffic this stage moves to the new version
+
+  # A feature flag, and 0 — no stage is unhealthy — is the sensible absent value
+  # a default should carry. The caller passes its own input straight through.
+  unhealthy_at:
+    type: int
+    default: 0
+    description: simulate the canary failing its health check at this percentage, to see the rollout unwind
+
+steps:
+  # Shifted first and reverted last: everything else in this stage exists
+  # because traffic moved, so putting it back has to wait until what was
+  # recorded about it is gone.
+  - id: shift
+    description: move `percent` of traffic to the new version
+    http:
+      method: GET
+      url: https://httpbin.org/get
+      query:
+        shift: ${inputs.service}
+        to: ${string(inputs.percent)}
+      parse_json: true
+      outputs: '${ {"id": "stage-" + response.json.args.to} }'
+    undo:
+      # `${steps.shift.id}` — a step reading its own output, which parses only
+      # inside that step's own `undo:`. It is resolved the moment this step
+      # succeeds, so what the run carries forward is `stage-25` and not an
+      # expression waiting for a scope that the next iteration has already
+      # moved on from. That is the whole reason a loop body can compensate at
+      # all: there is nothing left to evaluate later.
+      http:
+        method: GET
+        url: https://httpbin.org/get
+        query:
+          revert: ${steps.shift.id}
+
+  - id: record
+    description: write the stage into the rollout log
+    http:
+      method: GET
+      url: https://httpbin.org/get
+      query:
+        record: ${inputs.service}
+        stage: ${steps.shift.id}
+      parse_json: true
+      outputs: '${ {"id": "entry-" + response.json.args.stage} }'
+    undo:
+      http:
+        method: GET
+        url: https://httpbin.org/get
+        query:
+          erase: ${steps.record.id}
+
+  # The canary check, and the step this example fails on when asked to. No
+  # `undo:`: a health check has no effect of its own to take back.
+  #
+  # `unhealthy_at` decides the outcome through `expect:` rather than through the
+  # URL, for the reason `order-fulfillment` states: the CI harness that points
+  # these requests at a stand-in can only rewrite a literal host, so a URL built
+  # from an input would stay pointed at the real one. `expect:` has no such
+  # constraint.
+  - id: check
+    description: confirm the canary is healthy at this share of traffic
+    http:
+      method: GET
+      url: https://httpbin.org/status/200
+      query:
+        canary: ${string(inputs.percent)}
+      expect: ${(inputs.unhealthy_at == 0 || inputs.percent < inputs.unhealthy_at) && response.status_code == 200}
+
+outputs:
+  stage:
+    value: ${steps.shift.id}
+    description: the stage this call shifted traffic to

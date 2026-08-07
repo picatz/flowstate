@@ -1,0 +1,92 @@
+# Two cases, and the second is the one this example exists for.
+#
+# `flow test` runs the `call:` for real — `shift-traffic`'s own steps execute
+# through the same local driver, in this process — and stubs the tasks inside it.
+# So a case here exercises the whole composition: the loop's three iterations,
+# the call boundary each one crosses, and the compensations registered on the far
+# side of it.
+edition: v2026.2
+tests:
+  - name: the rollout reaches 50% and nothing is taken back
+    workflow: ./workflow.yaml
+    inputs:
+      service: checkout
+    stubs:
+      # A stub answers with the step's *outputs*, not with an HTTP response — so
+      # what `shift` and `record` return here is the `id` their own `outputs:`
+      # expression would have computed, and `where:` is what tells the two
+      # apart: each names a query key only its own step sends.
+      #
+      # One literal id for all three stages, where a real run produces
+      # `stage-5`, `stage-25`, `stage-50`. That is a limit of a canned answer
+      # rather than of the engine, and it costs nothing here: the account a
+      # failed run reports names steps, not ids. The genuinely distinct ids are
+      # exercised against the stand-in server by
+      # `TestEveryNetworkedExampleRuns/progressive-rollout`.
+      - task: http
+        where: '"shift" in inputs.query'
+        returns:
+          id: stage-50
+      - task: http
+        where: '"record" in inputs.query'
+        returns:
+          id: entry-stage-50
+      - task: http
+        returns: {}
+      # `promote`, the one step outside the rollout. `flow test` never lets an
+      # unstubbed task run for real, so a task the file reaches has to be named
+      # here even when it produces nothing.
+      - task: log
+        returns: {}
+    expect:
+      ran: [rollout, promote]
+      # Three stages: 5, 25, 50 — the loop stops when `until:` holds, after the
+      # iteration that reached it. Nothing in the file says "three"; the ladder
+      # in `update:` does.
+      outputs:
+        service: checkout
+        final_percent: 50
+        stages: 3
+      # Nothing failed, so nothing was compensated. This is the direction a suite
+      # of failing rollouts would never notice going wrong: an engine that
+      # unwound at the *end of the loop* rather than on failure would pass the
+      # case below and roll back every healthy deployment in production.
+      compensated: []
+
+  - name: an unhealthy canary at 50% unwinds every stage, newest first
+    workflow: ./workflow.yaml
+    inputs:
+      service: checkout
+      unhealthy_at: 50
+    stubs:
+      # The canary check for the last stage. `where:` matches on the resolved
+      # inputs of the step being run, so this answers only the health check at
+      # 50% and the ordinary stub below answers everything else — which is what
+      # makes the run get three stages in before it fails, rather than one.
+      - task: http
+        where: 'inputs.url.contains("/status/") && inputs.query.canary == "50"'
+        fails:
+          kind: Upstream
+          message: canary error rate above threshold at 50%
+      - task: http
+        where: '"shift" in inputs.query'
+        returns:
+          id: stage-50
+      - task: http
+        where: '"record" in inputs.query'
+        returns:
+          id: entry-stage-50
+      - task: http
+        returns: {}
+    expect:
+      failed: true
+      # The whole point, asserted through the sentence an operator actually
+      # reads. `compensated:` below checks the *set*, which cannot tell 50 → 25
+      # → 5 from 5 → 25 → 50 — and getting that backwards would put more traffic
+      # on a version already known to be bad. So the order is pinned here, in the
+      # failure text, where it is visible: six entries, each stage's `record`
+      # before its own `shift`, and the stages themselves newest first.
+      error_contains: >-
+        compensation ran in reverse order: undid "record", undid "shift",
+        undid "record", undid "shift", undid "record", undid "shift"
+      compensated: [record, shift]
