@@ -20,6 +20,7 @@ rather than failing opaquely when `--address` was not given.
 | `flowstate_run` | via a server | `flowstate.v1.RunRequest` |
 | `flowstate_get` | via a server | `flowstate.v1.GetRequest` |
 | `flowstate_signal` | via a server | `flowstate.v1.SignalRequest` |
+| `flowstate_signal_with_start` | via a server | `flowstate.v1.SignalWithStartRequest` |
 | `flowstate_list` | via a server | `flowstate.v1.ListRequest` |
 | `flowstate_cancel` | via a server | `flowstate.v1.CancelRequest` |
 | `flowstate_terminate` | via a server | `flowstate.v1.TerminateRequest` |
@@ -56,6 +57,10 @@ Report a run's status, timing, current position, and its outputs once finished.
 ## `flowstate_signal`
 
 Deliver a named signal to a run waiting for one — how an approval reaches a workload.
+
+## `flowstate_signal_with_start`
+
+Deliver a named signal to the entity holding a business key — an order id, a subscription id — creating that entity if this is the first event for the key. Use this rather than flowstate_run whenever the key, not a run id, is what you have: it is atomic, so two callers racing on the same key produce one entity, not two.
 
 ## `flowstate_list`
 

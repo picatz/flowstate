@@ -16,6 +16,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 )
 
 // Addressing a run is an authorization decision, not a lookup.
@@ -361,6 +362,112 @@ func (s *FlowstateServer) Signal(ctx context.Context, req *connect.Request[v1.Si
 	}
 
 	return connect.NewResponse(&v1.SignalResponse{}), nil
+}
+
+// SignalWithStart delivers a signal to an entity, creating it first if none is
+// running under the given entity key — see [v1.SignalWithStartRequest] for the
+// two authorization questions this decides separately, and for the race this
+// closes that a caller doing its own Describe-then-Run-or-Signal cannot.
+func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Request[v1.SignalWithStartRequest]) (*connect.Response[v1.SignalWithStartResponse], error) {
+	if err := v1.Validate(req.Msg); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	// Captured once, used both to compose the address and — inside
+	// prepareCreate, if this turns out to be a create — to build the memo the
+	// new run needs. The same identity a plain Run or Signal would see: this
+	// RPC establishes it no differently.
+	identity := s.identityFor(ctx)
+
+	workflowID, err := v1.EntityWorkflowID(identity.GetNamespace(), req.Msg.GetEntityKey())
+	if err != nil {
+		// protovalidate already checked entity_key against the same grammar
+		// [v1.EntityWorkflowID] enforces; reaching this is the composed id
+		// exceeding Temporal's own limit, or a namespace predating
+		// [auth.ValidateNamespace]'s grammar (invariant 6: fail closed).
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	// An absent payload is an empty one rather than nil, exactly as
+	// [FlowstateServer.Signal] treats it — a waiting step's outputs exist either
+	// way, so `${mutation.timed_out}` resolves whether or not the sender sent
+	// anything.
+	payload := req.Msg.GetPayload()
+	if payload == nil {
+		payload = &v1.Node_Outputs{NamedValues: map[string]*v1.Value{}}
+	}
+
+	// identityFor already ran above; the sender attestation is built from that
+	// same value, exactly as [FlowstateServer.Signal] builds one from
+	// [FlowstateServer.authorizeRun]'s. [v1.SignalWithStartRequest] has no
+	// field a caller could use to set this — the schema itself is the refusal.
+	sender := &v1.SignalSender{Identity: identity, AcceptedAt: timestamppb.Now()}
+
+	// Whether this call creates or only signals is not knowable until Temporal
+	// itself decides, atomically, inside SignalWithStartWorkflow below — that
+	// atomicity is the entire reason to use it rather than a Describe-then-act
+	// sequence this handler could race against. What *is* decided here, before
+	// that call, is which of the two authorization questions applies, and both
+	// are asked whenever they can be:
+	//
+	//   - If an entity already exists under this key, "may this sender signal
+	//     it" is answered by *that entity's own declared signal policy* —
+	//     [authorizeSignal], the identical rule and the identical fail-closed
+	//     defaults [FlowstateServer.Signal] enforces. A denial here is
+	//     synchronous and never reaches Temporal.
+	//   - "May this sender create an entity under this key" is answered by
+	//     [FlowstateServer.validateSubmission] below, unconditionally — not
+	//     only when the Describe just below reports absence. A concurrent
+	//     creator could win the race between that Describe and the
+	//     SignalWithStartWorkflow call a few lines down, in which case this
+	//     sender's signal reaches a workflow this handler believed did not yet
+	//     exist; validateSubmission having already run means that residual
+	//     window is bounded by "another equally-authorized creator won a tie,"
+	//     never by "an unauthorized sender's signal started a workflow."
+	created := true
+	if _, resp, err := s.authorizeRun(ctx, workflowID, ""); err == nil {
+		created = false
+		if err := authorizeSignal(resp, req.Msg.GetName(), sender); err != nil {
+			return nil, err
+		}
+	} else if connect.CodeOf(err) != connect.CodeNotFound {
+		// Something other than "no such run" — a namespace this identity
+		// cannot even reach, for instance. Fail closed rather than fall
+		// through to the create branch on an error that says nothing about
+		// whether an entity exists.
+		return nil, err
+	}
+
+	inputs, err := s.validateSubmission(req.Msg.GetWorkflow(), req.Msg.GetInputs())
+	if err != nil {
+		return nil, err
+	}
+
+	_, temporal, options, err := s.prepareCreate(ctx, identity, req.Msg.GetWorkflow(), inputs)
+	if err != nil {
+		return nil, err
+	}
+	options.ID = workflowID
+
+	run, err := temporal.SignalWithStartWorkflow(
+		ctx, workflowID, req.Msg.GetName(),
+		&v1.SignalDelivery{Payload: payload, Sender: sender},
+		options, engine.Run, &v1.RunState{
+			Workflow:    req.Msg.GetWorkflow(),
+			StepsBudget: int32(s.maxStepsPerRun),
+			Identity:    identity,
+			Inputs:      inputs,
+		},
+	)
+	if err != nil {
+		return nil, actOnRunError("signalling (with start)", workflowID, "", err)
+	}
+
+	return connect.NewResponse(&v1.SignalWithStartResponse{
+		WorkflowId: workflowID,
+		RunId:      run.GetRunID(),
+		Created:    created,
+	}), nil
 }
 
 // Cancel asks a run to stop, letting it clean up on the way out.
