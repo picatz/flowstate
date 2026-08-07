@@ -419,3 +419,235 @@ steps:
 	require.True(t, strings.Contains(message, "vars.second"),
 		"a diagnostic inside a `vars:` block did not say which var:\n%s", message)
 }
+
+// TestVarsRefuseSecretReference covers the refusal that closes #169, at both levels
+// and in every spelling a reference can reach a var by.
+//
+// The spellings are the point. A check written against the shape an author is most
+// likely to type — a bare ${secret(...)} at the top of the value — passes the file
+// that wraps the same reference in a concatenation, hides it in a header map, or
+// puts it behind a YAML anchor, and each of those compiles to a var the workflow
+// evaluates just the same. So each is asserted separately, with the position it
+// reports: a refusal that lands on the value rather than on the reference sends an
+// author to the wrong end of a line.
+//
+// The two cases at the end are the other direction — text that contains the
+// characters `secret(` and is not a reference. Refusing those would make the rule
+// unusable and would mean the check had stopped asking CEL what it sees.
+func TestVarsRefuseSecretReference(t *testing.T) {
+	t.Parallel()
+
+	// The whole sentence, so a case asserts what an author reads rather than that
+	// the message starts with the right words.
+	const help = "a secret reference cannot be stored in `vars:`; a var is evaluated by the " +
+		"workflow and its value is written to durable history, and there is no activity here " +
+		"to resolve it in — write ${secret('...')} directly on the task input that consumes " +
+		"the secret instead"
+
+	for _, test := range []struct {
+		name string
+		src  string
+		want string
+	}{
+		{
+			name: "a bare reference in a workflow var",
+			src: `edition: v2026.2
+name: wfvar-secret
+vars:
+  token: ${secret('env:TOKEN')}
+steps:
+  - id: noop
+    log:
+      message: ${vars.token}
+`,
+			want: "4:12: vars.token: " + help,
+		},
+		{
+			name: "a bare reference in a step var",
+			src: `edition: v2026.2
+name: stepvar-secret
+steps:
+  - id: noop
+    vars:
+      token: ${secret('env:TOKEN')}
+    log:
+      message: ${token}
+`,
+			want: "6:16: steps[0].vars.token: " + help,
+		},
+		{
+			// Nested in a larger expression. The refusal has to land on the
+			// `secret`, not on the quote the expression opens with.
+			name: "a reference inside a larger expression",
+			src: `edition: v2026.2
+name: wfvar-secret-nested-expr
+vars:
+  token: ${'Bearer ' + secret('env:TOKEN')}
+steps:
+  - id: noop
+    log:
+      message: ${vars.token}
+`,
+			want: "4:24: vars.token: " + help,
+		},
+		{
+			name: "a reference inside a list",
+			src: `edition: v2026.2
+name: wfvar-secret-list
+vars:
+  tokens:
+    - ${secret('env:TOKEN')}
+steps:
+  - id: noop
+    log:
+      message: hi
+`,
+			want: "5:9: vars.tokens: " + help,
+		},
+		{
+			name: "a reference inside a mapping",
+			src: `edition: v2026.2
+name: wfvar-secret-map
+vars:
+  headers:
+    Authorization: ${secret('env:TOKEN')}
+steps:
+  - id: noop
+    log:
+      message: hi
+`,
+			want: "5:22: vars.headers: " + help,
+		},
+		{
+			name: "a reference inside a step var's mapping",
+			src: `edition: v2026.2
+name: stepvar-secret-map
+steps:
+  - id: noop
+    vars:
+      headers:
+        Authorization: ${secret('env:TOKEN')}
+    log:
+      message: hi
+`,
+			want: "7:26: steps[0].vars.headers: " + help,
+		},
+		{
+			// Behind an anchor, and read through the alias: two vars, two
+			// refusals. An alias is resolved before the check, so the rule cannot
+			// be stepped around by naming the value somewhere else.
+			name: "a reference behind a YAML anchor and its alias",
+			src: `edition: v2026.2
+name: wfvar-secret-anchor
+vars:
+  a: &tok ${secret('env:TOKEN')}
+  b: *tok
+steps:
+  - id: noop
+    log:
+      message: hi
+`,
+			want: "4:13: vars.a: " + help + "\n4:13: vars.b: " + help,
+		},
+		{
+			name: "a reference in a block scalar",
+			src: `edition: v2026.2
+name: wfvar-secret-block
+vars:
+  token: |-
+    ${secret('env:TOKEN')}
+steps:
+  - id: noop
+    log:
+      message: hi
+`,
+			want: "4:10: vars.token: " + help,
+		},
+		{
+			// A reference reached through a macro, which parses to a
+			// comprehension rather than to a call the root can be compared
+			// against.
+			name: "a reference inside a comprehension",
+			src: `edition: v2026.2
+name: wfvar-secret-comprehension
+vars:
+  token: ${[1].map(x, secret('env:TOKEN'))}
+steps:
+  - id: noop
+    log:
+      message: hi
+`,
+			want: "4:23: vars.token: " + help,
+		},
+		{
+			// Not a reference: a literal string that happens to spell one. The
+			// fence rule is what separates them, and `vars:` is the position
+			// whose own doc uses this exact example.
+			name: "unfenced text spelling a reference is a literal",
+			src: `edition: v2026.2
+name: wfvar-not-a-secret-literal
+vars:
+  a: "secret('env:TOKEN')"
+steps:
+  - id: noop
+    log:
+      message: ${vars.a}
+`,
+			want: "",
+		},
+		{
+			// Not a reference either: an expression containing the word. The
+			// check asks CEL for a global call to the marker, not for the
+			// characters.
+			name: "an expression mentioning the word is not a reference",
+			src: `edition: v2026.2
+name: wfvar-not-a-secret-expr
+vars:
+  a: ${'not a ' + 'secret'}
+steps:
+  - id: noop
+    log:
+      message: ${vars.a}
+`,
+			want: "",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := diagnose(t, test.src)
+			if test.want == "" {
+				require.Empty(t, got)
+				return
+			}
+			require.Equal(t, test.want, got)
+		})
+	}
+}
+
+// TestVarsSecretRefusalNamesTheAlternative pins the half of the diagnostic that is
+// not the prohibition.
+//
+// The standard this repo holds diagnostics to is position, what is wrong, and what
+// to do instead, and the third is the one that quietly goes missing: a refusal an
+// author cannot act on is a refusal they work around. What to do instead here is
+// concrete — write the same reference on the input that consumes the secret — so
+// the sentence has to say so, and asserting the fragment separately means a later
+// rewording cannot drop it while the tests above still pass on the prefix.
+func TestVarsSecretRefusalNamesTheAlternative(t *testing.T) {
+	t.Parallel()
+
+	got := diagnose(t, `edition: v2026.2
+name: wfvar-secret-help
+vars:
+  token: ${secret('env:TOKEN')}
+steps:
+  - id: noop
+    log:
+      message: ${vars.token}
+`)
+
+	require.Contains(t, got, "durable history")
+	require.Contains(t, got, "there is no activity here to resolve it in")
+	require.Contains(t, got, "write ${secret('...')} directly on the task input that consumes the secret instead")
+}

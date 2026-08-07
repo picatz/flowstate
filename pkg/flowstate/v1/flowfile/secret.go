@@ -119,7 +119,63 @@ const (
 	// ${secret(...)} directly, in the file that actually uses it.
 	notAcrossCallHelp = "a secret reference cannot cross a call boundary; pass it to the task that " +
 		"needs it inside the callee, or declare the input there"
+
+	// notInVarHelp is the same shape of refusal as [notAcrossCallHelp], for the
+	// same reason read one level down: a `vars:` entry is not a place a
+	// resolution could be contained.
+	//
+	// Every position that *does* carry a reference carries it to a worker — a task
+	// input, or an entry of a structure a task applies inside its own activity. A
+	// var has no such destination. It is evaluated by the workflow, at the top of
+	// the run or just before a step, and its value is bound into the scope every
+	// later expression reads and written into durable state — `RunState.vars` on
+	// the durable driver, carried across Continue-As-New — before anything has
+	// asked what it is for. So there is no activity to resolve it in and no moment
+	// at which the resolved value is not already in history.
+	//
+	// Refused rather than deferred, and refused at both levels, because the
+	// alternative is a var that holds a reference until something reads it — which
+	// is a task input with extra steps, spelled somewhere the author cannot see
+	// which reads are safe. Referencing the secret where it is consumed costs a
+	// workflow nothing it could otherwise do: the same `${secret(...)}` written on
+	// the input that needs it reaches the worker unresolved, which is the whole of
+	// what a var here was being asked to arrange.
+	notInVarHelp = "a secret reference cannot be stored in `vars:`; a var is evaluated by the " +
+		"workflow and its value is written to durable history, and there is no activity here to " +
+		"resolve it in — write ${secret('...')} directly on the task input that consumes the " +
+		"secret instead"
 )
+
+// secretMarkerSpan returns the span of the first ${secret(...)} reference inside n,
+// so that a refusal about a value holding one underlines the reference itself.
+//
+// It resolves down to the marker the same way [compiler.markerNode] does, and then
+// one step further, through [markerSpan]: a reference buried in a longer expression
+// — `${'Bearer ' + secret('env:T')}` — reports at the `secret` rather than at the
+// quote the value starts with. Falling back to the node's own span wherever that
+// cannot be established, which is honest about what was found rather than guessing
+// at a column.
+func (c *compiler) secretMarkerSpan(n ast.Node) Span {
+	at := spanOfNode(n)
+
+	c.walkMarkers(n, func(scalar ast.Node, src string) bool {
+		span := spanWithin(scalar, src)
+		at = span
+
+		parsed := v1.NewExpr(src)
+		if parsed.Error() != nil {
+			return false
+		}
+		call, found := findSecretCall(parsed.GetExpr().GetExpr())
+		if !found {
+			return false
+		}
+		at = markerSpan(parsed.GetExpr(), call.GetId(), src, span)
+		return false
+	})
+
+	return at
+}
 
 // secret compiles a ${secret(...)} marker into a reference, or reports why it
 // cannot be one here.

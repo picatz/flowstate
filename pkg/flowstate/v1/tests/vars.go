@@ -265,3 +265,123 @@ func VarsCases(httpBaseURL string) []Case {
 		},
 	}
 }
+
+// VarsSecretRefusalCases returns specifications that must be refused before
+// anything runs, on either driver, because a `vars:` block holds a secret
+// reference.
+//
+// The negative direction of [VarsCases], and the direction that set could not have
+// covered: every case above asserts a var reaches the scope a step reads, which is
+// exactly the property that makes a secret in one a leak. A corpus that only ever
+// binds ordinary values proves the binding works and says nothing about whether
+// anything refuses the one value it must never bind.
+//
+// Refused rather than deferred, and refused at both levels: see
+// [flowstatev1.CheckVarsHoldNoSecretRef] for why a var has no contained place to
+// resolve one, and `flowfile.notInVarHelp` for the same rule said to an author
+// against a line and a column. Shared, because "refused" is an observable and the
+// local driver exists to predict what production does — a local run that evaluated
+// a var holding a reference would be a rehearsal that resolves a secret production
+// refuses to.
+//
+// Every case is built here in Go rather than parsed, which is the point: the
+// compiler refuses these files, so the only way one of these specifications reaches
+// a driver is by being built by something that never was a Flowfile. That is the
+// submission this pins.
+func VarsSecretRefusalCases() []Refusal {
+	ref := func() *v1.Value {
+		return &v1.Value{Kind: &v1.Value_SecretRef{SecretRef: &v1.SecretRef{
+			Scheme: "env", Name: "TOKEN",
+		}}}
+	}
+
+	return []Refusal{
+		{
+			Name: "a workflow var holding a secret reference is refused",
+			Workflow: &v1.Workflow{
+				Name:    "wfvar-secret",
+				Profile: v1.CurrentProfile,
+				Vars:    map[string]*v1.Value{"token": ref()},
+				Steps:   []*v1.Node{says("noop", "hi")},
+			},
+			Contains: `workflow var "token" is a secret reference`,
+		},
+		{
+			Name: "a step var holding a secret reference is refused",
+			Workflow: &v1.Workflow{
+				Name:    "stepvar-secret",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					withVars(says("noop", "hi"), map[string]*v1.Value{"token": ref()}),
+				},
+			},
+			Contains: `step "noop" var "token" is a secret reference`,
+		},
+		{
+			// Nested in a structure, which is the spelling the schema deliberately
+			// makes representable: a structure's entries are values in their own
+			// right, so a reference can sit arbitrarily deep in one. A check that
+			// only looked at the top of a var's value would pass exactly the value
+			// [v1.Value_Structure] exists for.
+			Name: "a workflow var holding a structure with a nested reference is refused",
+			Workflow: &v1.Workflow{
+				Name:    "wfvar-secret-nested",
+				Profile: v1.CurrentProfile,
+				Vars: map[string]*v1.Value{
+					"headers": v1.NewStructureMap(map[string]*v1.Value{"Authorization": ref()}),
+				},
+				Steps: []*v1.Node{says("noop", "hi")},
+			},
+			Contains: `workflow var "headers" is a secret reference`,
+		},
+		{
+			// Inside a loop body, where a var is evaluated once per iteration. A
+			// walk that stopped at the top level of `steps:` would miss it, and a
+			// var in a body is no more contained for being deeper.
+			Name: "a step var inside a loop body holding a secret reference is refused",
+			Workflow: &v1.Workflow{
+				Name:    "loopvar-secret",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					{
+						Id: "each",
+						Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+							Items:    v1.NewLiteralList("a"),
+							Iterator: "name",
+							Body: []*v1.Node{
+								withVars(says("inner", "hi"), map[string]*v1.Value{"token": ref()}),
+							},
+						}},
+					},
+				},
+			},
+			Contains: `step "inner" var "token" is a secret reference`,
+		},
+		{
+			// A callee is inlined in the caller's own specification and its
+			// `vars:` are evaluated by the same [v1.EvalVars] a top-level block
+			// goes through, so a walk that stopped at the `call:` step would
+			// check the half of a submission that happens to be spelled at the
+			// top and pass the half that is not.
+			Name: "a callee's var holding a secret reference is refused",
+			Workflow: &v1.Workflow{
+				Name:    "calleevar-secret",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					{
+						Id: "delegate",
+						Kind: &v1.Node_Call{Call: &v1.Call{
+							Workflow: &v1.Workflow{
+								Name:    "callee",
+								Profile: v1.CurrentProfile,
+								Vars:    map[string]*v1.Value{"token": ref()},
+								Steps:   []*v1.Node{says("inner", "hi")},
+							},
+						}},
+					},
+				},
+			},
+			Contains: `workflow "callee" var "token" is a secret reference`,
+		},
+	}
+}

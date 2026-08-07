@@ -850,6 +850,23 @@ func TestRunWorkflowInputsRefused(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowVarsSecretRefused is the durable driver's half of the same
+// negative direction: a specification whose `vars:` hold a secret reference is
+// refused at this driver's submit boundary too, in the same words, because both
+// reach [v1.BindRunInputs] (#169).
+//
+// Nothing is executed, because nothing should be — a workflow whose first act would
+// be to evaluate a var holding a reference must not have a first act.
+func TestRunWorkflowVarsSecretRefused(t *testing.T) {
+	for _, test := range tests.VarsSecretRefusalCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			_, err := v1.BindRunInputs(test.Workflow, test.Inputs)
+			require.Error(t, err, "the submission was accepted")
+			require.Contains(t, err.Error(), test.Contains)
+		})
+	}
+}
+
 // TestInputsAndDeclaredOutputsSurviveContinueAsNew is the durable half of this
 // feature that no shared case can reach: the local driver never suspends.
 //

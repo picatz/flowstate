@@ -246,6 +246,25 @@ func TestRunWorkflowVars(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowVarsSecretRefused is the negative direction of the same corpus: a
+// specification whose `vars:` hold a secret reference, which must be refused before
+// anything runs.
+//
+// Run by both drivers, for the reason [TestRunWorkflowInputsRefused] is: a local run
+// that evaluated a var holding a reference would resolve a secret production refuses
+// to, which is a rehearsal saying yes where production says no. Nothing above could
+// see it — every case there asserts a var *does* reach the scope a step reads, which
+// is exactly what makes a secret in one a leak (#169).
+func TestRunWorkflowVarsSecretRefused(t *testing.T) {
+	for _, test := range tests.VarsSecretRefusalCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			_, err := v1.RunWithInputs(t.Context(), test.Workflow, test.Inputs)
+			require.Error(t, err, "the submission was accepted")
+			require.Contains(t, err.Error(), test.Contains)
+		})
+	}
+}
+
 // TestRunWorkflowTaskOutputElementBound covers the local driver's half of the
 // remaining #204 gap: a task's *result*, not a caller's submitted input,
 // carrying more list elements than a later expression can walk cheaply.
