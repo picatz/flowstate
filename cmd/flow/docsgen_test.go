@@ -146,8 +146,13 @@ func TestEveryMCPToolHasALocality(t *testing.T) {
 		assert.True(t, documented[mcpToolName(method.name)],
 			"the MCP reference does not document %q", mcpToolName(method.name))
 	}
-	assert.True(t, documented[runLocalToolName],
-		"the MCP reference does not document the one tool with no RPC behind it")
+	// Both of this surface's non-RPC tools, individually — not just any local
+	// tool — so a third one added the way flowstate_test was (#241) and left
+	// out of [mcpTools] fails here rather than shipping mute in the reference.
+	for name := range documentedLocalTools {
+		assert.True(t, documented[name],
+			"the MCP reference does not document %q, which flow mcp registers with no RPC behind it", name)
+	}
 }
 
 // envVarLiteral matches a string literal that is one of this project's

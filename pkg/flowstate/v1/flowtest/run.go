@@ -40,15 +40,72 @@ func RunFile(path string) *v1.TestReport {
 		return report
 	}
 
+	// Reads test.Workflow off disk, relative to the *.test.yaml itself — the
+	// same rule `call:` resolves against ([WorkflowPath]'s doc) — which is
+	// what makes this the bytes-vs-paths seam [runCase] shares with
+	// [RunSource]: the loader is the only part of one case's run that differs
+	// between a file on disk and a workflow submitted as bytes.
 	for _, test := range file.Tests {
-		report.Cases = append(report.Cases, runCase(path, &test))
+		report.Cases = append(report.Cases, runCase(&test, func() (*v1.Workflow, error) {
+			workflow, _, err := flowfile.ParseFile(WorkflowPath(path, &test))
+			if err != nil {
+				return nil, fmt.Errorf("loading workflow %q: %w", test.Workflow, err)
+			}
+			return workflow, nil
+		}))
 	}
 
 	return report
 }
 
-// runCase runs one test and reports its verdict.
-func runCase(testFile string, test *Test) *v1.TestCase {
+// RunSource is [RunFile] for a workflow and a `*.test.yaml` given directly as
+// bytes rather than as paths — the same relationship the MCP surface's
+// flowstate_run_local tool has to `flow run local`
+// (see cmd/flow/mcp.go's parseFlowfileSource): same machinery, bytes instead
+// of files, so an agent can rehearse a workflow's conditions, retries, and
+// data flow through `flow test`'s stubbing without writing anything to disk.
+//
+// label names the report the way a path does for [RunFile]; a caller with no
+// path of its own — the MCP tool — passes whatever it wants a reader to see
+// there, such as "" or "<submitted>".
+//
+// workflowSource is parsed once per case, exactly as [RunFile] resolves and
+// parses test.Workflow once per case, and it is the *only* workflow every
+// case in testSource runs against: a case's own `workflow:` field, if it sets
+// one, is accepted but never consulted here — see [LoadSource]. A workflow
+// submitted this way has no file identity, so a `call:` step in it is refused
+// with a diagnostic rather than resolved, the same restriction
+// [flowfile.Parse] documents.
+func RunSource(label string, workflowSource, testSource []byte) *v1.TestReport {
+	report := &v1.TestReport{File: label}
+
+	file, err := LoadSource(testSource)
+	if err != nil {
+		report.Refused = err.Error()
+		return report
+	}
+
+	load := func() (*v1.Workflow, error) {
+		workflow, err := flowfile.Unmarshal(workflowSource)
+		if err != nil {
+			return nil, fmt.Errorf("the submitted workflow source is not a valid Flowfile: %w", err)
+		}
+		return workflow, nil
+	}
+
+	for _, test := range file.Tests {
+		report.Cases = append(report.Cases, runCase(&test, load))
+	}
+
+	return report
+}
+
+// runCase runs one test and reports its verdict. load resolves the workflow
+// this case runs against — from a sibling file for [RunFile], from bytes
+// submitted directly for [RunSource] — which is the entire seam between the
+// two: everything below this call is oblivious to where the workflow came
+// from.
+func runCase(test *Test, load func() (*v1.Workflow, error)) *v1.TestCase {
 	started := time.Now()
 	result := &v1.TestCase{Name: test.Name}
 	defer func() {
@@ -79,10 +136,9 @@ func runCase(testFile string, test *Test) *v1.TestCase {
 	restore := swapRegistry(stubs)
 	defer restore()
 
-	workflowPath := WorkflowPath(testFile, test)
-	workflow, _, err := flowfile.ParseFile(workflowPath)
+	workflow, err := load()
 	if err != nil {
-		result.Error = fmt.Sprintf("loading workflow %q: %v", test.Workflow, err)
+		result.Error = err.Error()
 		return result
 	}
 

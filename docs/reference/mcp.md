@@ -31,6 +31,7 @@ rather than failing opaquely when `--address` was not given.
 | `flowstate_resume_schedule` | via a server | `flowstate.v1.ResumeScheduleRequest` |
 | `flowstate_trigger_schedule` | via a server | `flowstate.v1.TriggerScheduleRequest` |
 | `flowstate_run_local` | locally | — |
+| `flowstate_test` | locally | — |
 
 ## `flowstate_validate`
 
@@ -107,4 +108,16 @@ What it does not prove: durability. A local run has no run id, nothing can watch
 A source declaring `inputs:` is given them in the `inputs` object of this call, keyed by declared name and typed as declared; a required one left out, an undeclared name, or a mistyped value is refused before any step runs. What the source declares under `outputs:` comes back as `runOutputs`.
 
 Answers with {"run": <GetResponse>, "logs": [...]}: the run's status, timing and step outputs, plus whatever `log:` steps emitted. Invalid sources come back as an error carrying positioned diagnostics (line:column) to correct against.
+
+## `flowstate_test`
+
+Run a Flowfile against inline test cases the way `flow test` runs a *.test.yaml beside a workflow on disk — the identical machinery (flowtest.RunSource), on bytes submitted here instead of two files. Every task the workflow would otherwise call is replaced: a stub answers with its `returns:`, or fails the way its `fails:` describes, and any task this case invokes with no matching stub is refused rather than run for real, naming the task and how many stubs were declared for it. Time is virtual, so a case with `sleep: 24h` resolves in under a second, and a wait_for_signal step is answered by `signals:` scripted for a chosen offset from the run's start.
+
+Needs no egress policy and no operator opt-in, unlike flowstate_run_local: a stubbed run never invokes a real task's implementation at all — not `http`, not a plugin task registered by --plugin-dir — so there is no network for a policy to govern, and no secret this tool could resolve even where one is configured. Reach for this first, while authoring: it proves conditions, retries, `undo:` compensation, and data-flow expressions without ever touching a network. Reach for flowstate_run_local afterward, once egress is configured, to rehearse the real effect of whichever task you deliberately left unstubbed.
+
+What it does not prove: that a real task behaves the way a stub's `returns:` or `fails:` says it does, or anything about durability — flowstate_run_local's own limits, on top of never running a real task at all.
+
+`tests` is a `*.test.yaml` document: `tests:` names one or more cases, each with an optional `inputs:`, `stubs:`, `signals:`, and an `expect:` the run must satisfy — `expect.outputs` compares the workflow's declared `outputs:`, `expect.failed`/`expect.error_contains` assert the run failing outright, `expect.compensated` the undo log, and `expect.ran`/`expect.skipped` step presence. A case's own `workflow:` field is accepted, for compatibility with a file written to disk, but is never consulted — every case here runs against the `workflow` argument, not a sibling file.
+
+Answers with the same v1.TestReport `flow test -o json` writes: one verdict per case, and for a case that did not pass, its unmet expectations as positioned diagnostics. A case that never reached a verdict at all — the workflow failed to compile, a stub named a task with no matching invocation, or the run failed in a way the case did not declare with `expect.failed` — reports why in `error` instead of `failures`. `refused` is set instead of any case running at all when the submitted `tests` document itself does not parse.
 

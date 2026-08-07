@@ -24,6 +24,7 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
@@ -111,6 +112,20 @@ func runMCP(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Launched here, once, before the first tool call can arrive — never per
+	// call, and never from anything but this command's own --plugin-dir, for
+	// the reasons given where the flag is declared in main.go. nil rather than
+	// a secret registry: the plugin registration server.go's own runServer
+	// passes secretProviders for is what lets a *worker* resolve a secret
+	// scheme a plugin claims, and this process has the same secret backend
+	// flowstate_run_local already takes through --secret-env/--secret-dir,
+	// wired separately in withLocalTaskRuntime per call.
+	closePlugins, err := startPlugins(cmd, nil)
+	if err != nil {
+		return err
+	}
+	defer closePlugins()
+
 	// Constructed lazily and at most once, so the local tools never dial and the
 	// remote ones share a client.
 	var remote flowstatev1connect.WorkflowServiceClient
@@ -177,6 +192,7 @@ func addMCPTools(
 	}
 
 	srv.AddTool(runLocalTool(), runLocalToolHandler(posture))
+	srv.AddTool(testTool(), testToolHandler())
 }
 
 // mcpToolName renders an RPC name as a tool name: GetCatalog becomes
@@ -788,6 +804,242 @@ func runLocalToolHandler(posture *cobra.Command) mcp.ToolHandler {
 			Content: []mcp.Content{&mcp.TextContent{Text: string(encoded)}},
 		}, nil
 	}
+}
+
+// The other tool that is not an RPC.
+//
+// flowstate_run_local closed the loop for a workflow that reaches the real
+// network — once an operator opted this process into it. It left a colder
+// dead end behind: an `http:` step, or any other task, denied by the
+// deny-by-default egress this process starts under (see
+// [applyMCPEgressPolicy]) proves only that the file parses. There was no way
+// over MCP to verify a condition, a retry, or a data-flow expression at all,
+// which is the repo's own "complete, tested, and impossible to use" pattern
+// applied to an agent (#241): `flow test` already answers this on a
+// developer's machine, and nothing served it here.
+//
+// flowstate_test is that tool, and it needs neither egress nor an operator
+// opt-in — not because it is trusted with less, but because a stubbed run
+// cannot reach anything. See [flowtest.caseRegistry] in
+// pkg/flowstate/v1/flowtest/run.go: every task this build registers, real or
+// plugin, has its Fn replaced before a step of the submitted workflow ever
+// runs — by a stub's canned answer, or by a fail-closed refusal naming the
+// unstubbed task — so no task's real implementation executes, whatever this
+// process was started with. A `${secret(...)}` reference fails the same way,
+// for an independent reason: [v1.ResolveSecret] refuses unless
+// [v1.ContextWithTaskRuntime] installed a store and a policy on the context
+// first, and nothing on this path ever does. Both claims are exercised by
+// TestTheTestToolStubsMakeNoRequest and TestTheTestToolNeedsNoEgressPolicy.
+
+// testToolName is the tool an agent calls to rehearse what it just wrote.
+const testToolName = mcpToolPrefix + "test"
+
+// testToolDescription is written for the model choosing between this tool and
+// flowstate_run_local.
+const testToolDescription = "Run a Flowfile against inline test cases the way `flow test` runs a *.test.yaml " +
+	"beside a workflow on disk — the identical machinery (flowtest.RunSource), on bytes submitted here " +
+	"instead of two files. Every task the workflow would otherwise call is replaced: a stub answers with " +
+	"its `returns:`, or fails the way its `fails:` describes, and any task this case invokes with no " +
+	"matching stub is refused rather than run for real, naming the task and how many stubs were declared " +
+	"for it. Time is virtual, so a case with `sleep: 24h` resolves in under a second, and a " +
+	"wait_for_signal step is answered by `signals:` scripted for a chosen offset from the run's start.\n\n" +
+	"Needs no egress policy and no operator opt-in, unlike flowstate_run_local: a stubbed run never " +
+	"invokes a real task's implementation at all — not `http`, not a plugin task registered by " +
+	"--plugin-dir — so there is no network for a policy to govern, and no secret this tool could resolve " +
+	"even where one is configured. Reach for this first, while authoring: it proves conditions, retries, " +
+	"`undo:` compensation, and data-flow expressions without ever touching a network. Reach for " +
+	"flowstate_run_local afterward, once egress is configured, to rehearse the real effect of whichever " +
+	"task you deliberately left unstubbed.\n\n" +
+	"What it does not prove: that a real task behaves the way a stub's `returns:` or `fails:` says it " +
+	"does, or anything about durability — flowstate_run_local's own limits, on top of never running a " +
+	"real task at all.\n\n" +
+	"`tests` is a `*.test.yaml` document: `tests:` names one or more cases, each with an optional " +
+	"`inputs:`, `stubs:`, `signals:`, and an `expect:` the run must satisfy — `expect.outputs` compares " +
+	"the workflow's declared `outputs:`, `expect.failed`/`expect.error_contains` assert the run failing " +
+	"outright, `expect.compensated` the undo log, and `expect.ran`/`expect.skipped` step presence. A " +
+	"case's own `workflow:` field is accepted, for compatibility with a file written to disk, but is " +
+	"never consulted — every case here runs against the `workflow` argument, not a sibling file.\n\n" +
+	"Answers with the same v1.TestReport `flow test -o json` writes: one verdict per case, and for a case " +
+	"that did not pass, its unmet expectations as positioned diagnostics. A case that never reached a " +
+	"verdict at all — the workflow failed to compile, a stub named a task with no matching invocation, or " +
+	"the run failed in a way the case did not declare with `expect.failed` — reports why in `error` " +
+	"instead of `failures`. `refused` is set instead of any case running at all when the submitted " +
+	"`tests` document itself does not parse."
+
+// testTool declares the tool.
+func testTool() *mcp.Tool {
+	return &mcp.Tool{
+		Name:        testToolName,
+		Description: testToolDescription,
+		InputSchema: testInputSchema(),
+	}
+}
+
+// testToolArguments is the tool's whole input surface: a workflow and the
+// test cases to run against it, both inline — the seam
+// [flowtest.RunSource] adds over [flowtest.RunFile] so this tool can offer
+// bytes where the CLI takes two paths.
+type testToolArguments struct {
+	// Workflow is the Flowfile YAML under test, exactly as it would be
+	// written to disk.
+	Workflow string `json:"workflow"`
+
+	// Tests is a `*.test.yaml` document naming the cases to run against
+	// Workflow. See [flowtest.LoadSource] for why a case's own `workflow:`
+	// is accepted but never consulted here.
+	Tests string `json:"tests"`
+}
+
+// testToolHandler runs the submitted cases and reports one v1.TestReport.
+//
+// Unlike [runLocalToolHandler] this takes no posture: there is no flag on
+// this surface that changes what a stubbed run may do, because a stubbed run
+// never reaches anything a flag could govern in the first place. See the
+// package comment above [testToolName].
+func testToolHandler() mcp.ToolHandler {
+	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		var args testToolArguments
+
+		if raw := req.Params.Arguments; len(raw) > 0 {
+			decoder := json.NewDecoder(bytes.NewReader(raw))
+
+			// The mirror of the schema's additionalProperties:false, for the
+			// same reason every other tool on this surface refuses an unknown
+			// field: an argument silently dropped is a tool that "worked"
+			// while doing something other than what was asked.
+			decoder.DisallowUnknownFields()
+
+			if err := decoder.Decode(&args); err != nil {
+				return toolError(fmt.Errorf("arguments do not match %s: %w", testToolName, err)), nil
+			}
+		}
+
+		if strings.TrimSpace(args.Workflow) == "" {
+			return toolError(errors.New(
+				"workflow is required: pass the Flowfile YAML under test, e.g. " +
+					"\"edition: v2026.2\\nname: demo\\nsteps:\\n- id: hi\\n  log:\\n    message: hello\"")), nil
+		}
+		if strings.TrimSpace(args.Tests) == "" {
+			return toolError(errors.New(
+				"tests is required: pass a *.test.yaml document naming at least one case, e.g. " +
+					"\"tests:\\n  - name: it runs\\n    expect:\\n      failed: false\"")), nil
+		}
+
+		report := flowtest.RunSource("<submitted>", []byte(args.Workflow), []byte(args.Tests))
+
+		encoded, err := renderTestResult(report)
+		if err != nil {
+			return toolError(err), nil
+		}
+
+		return &mcp.CallToolResult{
+			// The same reason [runLocalToolHandler] flags a failed run: a model
+			// that cannot tell a suite that failed from one that passed will
+			// report success. testReportFailed reads the whole report — a case
+			// that failed, or a `tests` document [flowtest.LoadSource] refused
+			// outright before any case ran — either way.
+			IsError: testReportFailed(report),
+			Content: []mcp.Content{&mcp.TextContent{Text: string(encoded)}},
+		}, nil
+	}
+}
+
+// testReportFailed reports whether report should flag the tool result as an
+// error: the submitted `tests` document was refused outright, or at least one
+// case did not pass.
+func testReportFailed(report *v1.TestReport) bool {
+	if report.GetRefused() != "" {
+		return true
+	}
+	for _, c := range report.GetCases() {
+		if !c.GetPassed() {
+			return true
+		}
+	}
+
+	return false
+}
+
+// maxTestFailureMessageBytes bounds one diagnostic's Message when the whole
+// answer needs shrinking — see [renderTestResult]. A diagnostic's message
+// compares a case's `expect.outputs` against what the run actually produced
+// ([flowtest]'s compareOutputs formats both sides with %v), so the message is
+// the one part of a TestReport a case's own stubs or a workflow's own
+// computed values can make large; everything else (case names, verdicts,
+// durations, how many cases and stubs a file may declare) is already bounded
+// by [flowtest.MaxTestsPerFile] and [flowtest.MaxStubsPerTest] before a case
+// ever runs.
+const maxTestFailureMessageBytes = 4 << 10
+
+// renderTestResult brings a v1.TestReport under maxRunLocalResultBytes —
+// [renderRunLocalResult]'s own bound and its own discipline, reused rather
+// than reinvented: stop at a document that still parses, and say what left
+// rather than truncating bytes into something a caller cannot decode. The
+// steps differ because what a workflow can make large differs between the two
+// answers — run_local's is step outputs and log lines, this one is
+// diagnostic messages built by comparing them — but the bound, the shape of
+// the ladder, and the floor that is returned whether or not it fits are the
+// same ones [renderRunLocalResult] already established.
+func renderTestResult(report *v1.TestReport) ([]byte, error) {
+	encoded, err := marshalJSON(report, false)
+	if err != nil {
+		return nil, fmt.Errorf("rendering the report: %w", err)
+	}
+	if len(encoded) <= maxRunLocalResultBytes {
+		return encoded, nil
+	}
+
+	// First, cap every failure's own message: a mismatch's %v of a large
+	// stubbed or computed value is the one part of this document a case
+	// controls the size of, and capping it keeps every case, every verdict,
+	// and every field/step/value a diagnostic named.
+	trimmed, ok := proto.Clone(report).(*v1.TestReport)
+	if !ok {
+		return nil, errors.New("rendering the report: the report is not a TestReport")
+	}
+	for _, c := range trimmed.GetCases() {
+		for _, f := range c.GetFailures() {
+			if len(f.GetMessage()) > maxTestFailureMessageBytes {
+				f.Message = f.GetMessage()[:maxTestFailureMessageBytes] +
+					fmt.Sprintf("... (truncated, exceeded %d bytes)", maxTestFailureMessageBytes)
+			}
+		}
+	}
+	encoded, err = marshalJSON(trimmed, false)
+	if err != nil {
+		return nil, fmt.Errorf("rendering the report: %w", err)
+	}
+	if len(encoded) <= maxRunLocalResultBytes {
+		return encoded, nil
+	}
+
+	// Still too big — enough cases with enough failures each that even capped
+	// messages do not fit. Report per-case verdicts only, dropping the
+	// diagnostics themselves down to a count: a report with no verdicts at
+	// all is worse than no answer, so this floor is returned whether or not
+	// it fits, the same reasoning [renderRunLocalResult]'s own last rung
+	// gives for the fields nothing further can drop.
+	summary := &v1.TestReport{File: report.GetFile(), Refused: report.GetRefused()}
+	for _, c := range trimmed.GetCases() {
+		caseError := c.GetError()
+		if caseError == "" && len(c.GetFailures()) > 0 {
+			caseError = fmt.Sprintf(
+				"%d failure(s); their diagnostics were dropped because the answer exceeded %d bytes",
+				len(c.GetFailures()), maxRunLocalResultBytes)
+		}
+		summary.Cases = append(summary.Cases, &v1.TestCase{
+			Name:     c.GetName(),
+			Passed:   c.GetPassed(),
+			Duration: c.GetDuration(),
+			Error:    caseError,
+		})
+	}
+	encoded, err = marshalJSON(summary, false)
+	if err != nil {
+		return nil, fmt.Errorf("rendering the report: %w", err)
+	}
+
+	return encoded, nil
 }
 
 // parseFlowfileSource compiles submitted YAML into a workflow, reporting

@@ -81,6 +81,43 @@ func runLocalInputSchema() map[string]any {
 	}
 }
 
+// testInputSchema is flowstate_test's schema, written for the same reason
+// [runLocalInputSchema] is: the tool it describes is not an RPC, so there is
+// no request message to derive it from.
+//
+// Two fields, deliberately the same shape as [runLocalInputSchema]'s single
+// `source`: `workflow` is the Flowfile under test and `tests` is a
+// `*.test.yaml` document naming the cases to run against it — bytes standing
+// in for the two paths `flow test` would otherwise take, in from the same
+// call. Nothing here widens what a run may reach, because nothing a stubbed
+// run does can reach anything: see [testToolDescription].
+func testInputSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"workflow": map[string]any{
+				"type": "string",
+				"description": "The Flowfile YAML under test, exactly as it would be written to disk — " +
+					"including the `edition:` line.",
+			},
+			"tests": map[string]any{
+				"type": "string",
+				"description": "A `*.test.yaml` document: `tests:` names one or more cases, each with an " +
+					"optional `inputs:`, `stubs:` replacing task behavior, `signals:` scripting what a " +
+					"wait_for_signal step receives and when, and an `expect:` the run must satisfy. A " +
+					"case's own `workflow:` field is accepted, for compatibility with a file written to " +
+					"disk, but is never consulted here — every case runs against the `workflow` argument " +
+					"above, not a sibling file.",
+			},
+		},
+		"required": []any{"workflow", "tests"},
+		// Refused rather than ignored, for the reason [messageSchema] gives: a
+		// misspelled argument silently dropped is a tool that "worked" and did
+		// something other than what was asked.
+		"additionalProperties": false,
+	}
+}
+
 // schemaForMessage renders a message descriptor as a 2020-12 JSON Schema object
 // describing the message's protojson encoding: camelCase names, enums by name,
 // bytes as base64, 64-bit integers as strings.
