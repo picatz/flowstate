@@ -34,6 +34,7 @@ $ flow validate examples/hello-world/workflow.yaml
 | [wait-timeout](wait-timeout) | The same gate going unanswered: `timeout:` lapses, `timed_out` is true, and the run carries on rather than failing | no |
 | [wait-until-a-moment](wait-until-a-moment) | `wait_until:` a computed moment, with `now` and the duration builders | no |
 | [expense-approval](expense-approval) | Two `wait_for_signal:` gates in sequence — a manager approval that escalates to finance ops on timeout, fail-closed if neither ever answers | no |
+| [callback-address](callback-address) | `run.workflow_id` and `run.run_id` — a run telling an external system where to send the answer, then waiting for the signal that address carries back | yes |
 | [headers-and-nested](headers-and-nested) | Request headers, and selecting into a nested result | yes |
 | [http-json](http-json) | Parsing a JSON body with `json_parse`, named once in a step's `vars:` | yes |
 | [http-query-and-json](http-query-and-json) | `query:` parameters, a structured `json:` body, and `parse_json:` | yes |

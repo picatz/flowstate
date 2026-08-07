@@ -1588,6 +1588,67 @@ message Scope {
   // authentication — that is only possible in development, and it is still a
   // server attesting an anonymous caller rather than no caller at all.
   bool local = 7;
+
+  // Address is the run's own address — what an expression reads as
+  // `run.workflow_id` and `run.run_id`.
+  //
+  // Carried on the scope for the reason [Scope.inputs] is: a task declaring
+  // `needs_prev_outputs` evaluates its own expressions inside an activity, on a
+  // worker holding this message and nothing else, so without the field
+  // `${run.workflow_id}` would resolve in a step's `if:` and be unbound in the
+  // http task's `outputs:` two lines below it.
+  //
+  // Not carried in [RunState]: each driver derives it where it is, from a source
+  // that is stable for the whole run (see [RunAddress]), so there is no value
+  // crossing the Continue-As-New seam and nothing for invariant 10 to protect.
+  RunAddress address = 8;
+}
+
+// RunAddress is a run's own address: the pair that identifies it to anything
+// outside it, including this engine's own control plane.
+//
+// This exists because a workload that has to be *called back* — hand an external
+// system a token, wait for that system to answer — cannot say where the answer
+// should be sent without it. That is Temporal's `expense` sample, and it is also
+// every shape where one run tells a peer how to reach it.
+//
+// # Why exactly these two fields
+//
+// [workflow_id] is the address: it is what `flow signal <workflow-id> <name>`
+// takes, what `flow get` takes, and what the Signal RPC resolves. [run_id]
+// disambiguates which execution of that id — the same workflow id may be
+// reused once an earlier run has finished.
+//
+// What is deliberately absent is a start time and an attempt count, and the
+// absence is load-bearing rather than an oversight. A start time is a clock read
+// by another name: `now` is bound *only* inside a wait, and docs/ARCHITECTURE.md
+// argues that placement at length — a name resolvable only where a replay-safe
+// clock exists in every case. Putting a timestamp on the run root would make a
+// clock readable from every expression in the language, through a field nobody
+// would think of as a clock. An attempt count is the same mistake one layer
+// down: it is a fact about the substrate's scheduling, it changes underneath a
+// run, and a workflow branching on it is a workflow whose meaning depends on
+// how many times a worker happened to crash. Neither belongs here; adding one
+// to "complete" the message would quietly undo the reasoning behind `now`.
+message RunAddress {
+  // WorkflowID is the id the run is addressed by — the same id `flow signal`
+  // and `flow get` take.
+  //
+  // Stable for the whole run, including across Continue-As-New: Temporal keeps
+  // the workflow id and mints a new run id for each continued execution.
+  string workflow_id = 1;
+
+  // RunID identifies which execution of [workflow_id] this is.
+  //
+  // The durable driver fills this from Temporal's `FirstRunID`, not from the
+  // current execution's run id, and the difference is the whole point: the
+  // current run id changes at every Continue-As-New, so a workload that
+  // suspended once would report a different address than it did before it
+  // suspended — a value that changes halfway through a run, which is exactly
+  // what [RunState.vars] exists to prevent for `vars:`. `FirstRunID` is
+  // preserved along the whole chain of continued executions, so it names the
+  // run an author thinks they wrote.
+  string run_id = 2;
 }
 
 // ForEach runs a body of steps once per item of a list.

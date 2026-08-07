@@ -369,7 +369,7 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		// the next task, and that worker must evaluate against the vocabulary the
 		// spec was compiled with rather than its own current one — otherwise a
 		// deployment mid-rollout runs one workload against two dialects.
-		scope:  varsScope(st.GetWorkflow().GetProfile(), stepOutputs, vars, st.GetInputs(), st.GetIdentity()),
+		scope:  varsScope(st.GetWorkflow().GetProfile(), stepOutputs, vars, st.GetInputs(), st.GetIdentity(), runAddress(ctx)),
 		budget: stepsBudget,
 		resume: resumeFrames(st),
 
@@ -804,7 +804,7 @@ func compactOutputsForRemainingSteps(
 // same state through v1.EvalWorkflowVars; what must not differ between them is the
 // scope a first step sees, and that is easier to compare when each driver has exactly
 // one place that builds it.
-func varsScope(profile string, outputs *v1.Workflow_StepOutputs, vars, inputs map[string]*v1.Value, identity *v1.WorkloadIdentity) *v1.Scope {
+func varsScope(profile string, outputs *v1.Workflow_StepOutputs, vars, inputs map[string]*v1.Value, identity *v1.WorkloadIdentity, address *v1.RunAddress) *v1.Scope {
 	scope := v1.NewScope(profile, outputs)
 	scope.AmbientVars = vars
 
@@ -825,5 +825,57 @@ func varsScope(profile string, outputs *v1.Workflow_StepOutputs, vars, inputs ma
 	// confused.
 	scope.Identity = identity
 
+	// The run's own address. Derived from Temporal's own view of this execution
+	// rather than carried in `RunState`, which is the one place this differs in
+	// kind from the four fields above: a run id in `RunState` would be a value
+	// written by one interpreter version and read by another (invariant 10) for
+	// no benefit, because the substrate can always answer the question directly
+	// and answers it identically on every replay. See [runAddress].
+	scope.Address = address
+
 	return scope
+}
+
+// runAddress is the address this run reports under `run.workflow_id` and
+// `run.run_id`.
+//
+// Both halves are read from `workflow.GetInfo`, which is replay-safe: the same
+// values come back on every replay of the same execution, so an expression that
+// embeds the address in a callback URL computes the same URL after a worker
+// crash as before it.
+func runAddress(ctx workflow.Context) *v1.RunAddress {
+	info := workflow.GetInfo(ctx)
+
+	return RunAddressFrom(info.WorkflowExecution.ID, info.FirstRunID, info.WorkflowExecution.RunID)
+}
+
+// RunAddressFrom builds a run's address from the three things Temporal knows
+// about an execution, and choosing between the last two is its whole substance.
+//
+// Continue-As-New starts a *new* Temporal execution with the same workflow id
+// and a fresh run id, and this engine continues as new on its own schedule — a
+// step budget an author never sees and cannot predict. A workload that handed
+// out `currentRunID` would therefore report one address before it suspended and
+// a different one after, with nothing in the file to explain it. `firstRunID`
+// (Temporal's `FirstRunID`) is preserved along the whole chain of continued
+// executions, so it names the run an author believes they wrote. See
+// [v1.RunAddress.run_id].
+//
+// The fallback is for the one source that does not offer the first id at all:
+// Temporal's own workflow test environment leaves it unset. Falling back to the
+// current execution is correct there rather than merely convenient, because a
+// run that has never continued as new has one execution and the two ids are the
+// same value.
+//
+// Exported and taking plain strings so the choice can be tested directly. It is
+// exactly the kind of rule a test environment cannot exercise — it never
+// populates the field the rule is about — and a bound nothing reaches is a bound
+// nothing tests.
+func RunAddressFrom(workflowID, firstRunID, currentRunID string) *v1.RunAddress {
+	runID := firstRunID
+	if runID == "" {
+		runID = currentRunID
+	}
+
+	return &v1.RunAddress{WorkflowId: workflowID, RunId: runID}
 }

@@ -143,6 +143,14 @@ func CallScope(caller *Scope, callee *Workflow, arguments, vars map[string]*Valu
 	scope.Identity = caller.GetIdentity()
 	scope.Local = caller.GetLocal()
 
+	// And the run's own address, for the same reason and with more force: a call
+	// is transparent to the run it is part of — it is still the caller's own
+	// execution, in the caller's own history — so a callee asking where to be
+	// signalled must get the address that actually reaches it, which is the
+	// caller's. A callee with an address of its own would be an address nothing
+	// answers at.
+	scope.Address = caller.GetAddress()
+
 	return scope, nil
 }
 

@@ -81,7 +81,7 @@ func (s *Scope) ActivationWith(ctx context.Context, extra map[string]ref.Val) ce
 		locals[name] = v
 	}
 
-	return Activation(ctx, s.GetProfile(), s.StepOutputs(), refValues(s.GetAmbientVars()), locals, refValues(s.GetInputs()), s.GetIdentity(), s.GetLocal())
+	return Activation(ctx, s.GetProfile(), s.StepOutputs(), refValues(s.GetAmbientVars()), locals, refValues(s.GetInputs()), s.GetIdentity(), s.GetLocal(), s.GetAddress())
 }
 
 // Activation returns the CEL activation for this scope.
@@ -92,10 +92,10 @@ func (s *Scope) ActivationWith(ctx context.Context, extra map[string]ref.Val) ce
 // evaluator names one for how it resolves. They disagree here and only here.
 func (s *Scope) Activation(ctx context.Context) cel.Activation {
 	if s == nil {
-		return Activation(ctx, "", nil, nil, nil, nil, nil, false)
+		return Activation(ctx, "", nil, nil, nil, nil, nil, false, nil)
 	}
 
-	return Activation(ctx, s.Profile, s.Outputs, refValues(s.GetAmbientVars()), refValues(s.GetVars()), refValues(s.GetInputs()), s.GetIdentity(), s.GetLocal())
+	return Activation(ctx, s.Profile, s.Outputs, refValues(s.GetAmbientVars()), refValues(s.GetVars()), refValues(s.GetInputs()), s.GetIdentity(), s.GetLocal(), s.GetAddress())
 }
 
 // refValues converts a map of schema values to CEL values.
@@ -140,6 +140,11 @@ func (s *Scope) WithLocal(name string, item *Value) *Scope {
 		next.Inputs = s.Inputs
 		next.Identity = s.Identity
 		next.Local = s.Local
+
+		// The run's own address, shared for the same reason Identity is: it is
+		// fixed for the whole run, and every one of these helpers is a place a
+		// field is silently dropped by being forgotten.
+		next.Address = s.Address
 		for k, v := range s.Vars {
 			next.Vars[k] = v
 		}
@@ -169,6 +174,11 @@ func (s *Scope) WithLocals(locals map[string]*Value) *Scope {
 		next.Inputs = s.Inputs
 		next.Identity = s.Identity
 		next.Local = s.Local
+
+		// The run's own address, shared for the same reason Identity is: it is
+		// fixed for the whole run, and every one of these helpers is a place a
+		// field is silently dropped by being forgotten.
+		next.Address = s.Address
 		for k, v := range s.Vars {
 			next.Vars[k] = v
 		}
@@ -198,6 +208,11 @@ func (s *Scope) WithAmbientVars(vars map[string]*Value) *Scope {
 		next.Inputs = s.Inputs
 		next.Identity = s.Identity
 		next.Local = s.Local
+
+		// The run's own address, shared for the same reason Identity is: it is
+		// fixed for the whole run, and every one of these helpers is a place a
+		// field is silently dropped by being forgotten.
+		next.Address = s.Address
 		for k, v := range s.AmbientVars {
 			next.AmbientVars[k] = v
 		}
@@ -495,6 +510,7 @@ func Activation(
 	inputs map[string]ref.Val,
 	identity *WorkloadIdentity,
 	local bool,
+	address *RunAddress,
 ) cel.Activation {
 	return cel.Activation(&StepsOutputActivation{
 		Prev:        prev,
@@ -503,6 +519,7 @@ func Activation(
 		Inputs:      inputs,
 		RunIdentity: identity,
 		RunLocal:    local,
+		RunAddress:  address,
 		Ctx:         ctx,
 		Eval:        DefaultEvaluator(),
 		Profile:     profile,
@@ -562,6 +579,11 @@ func (s *Scope) WithOutputs(outputs *Workflow_StepOutputs) *Scope {
 		// update, until a loop body five retries deep could no longer see it.
 		next.Identity = s.Identity
 		next.Local = s.Local
+
+		// The run's own address, shared for the same reason Identity is: it is
+		// fixed for the whole run, and every one of these helpers is a place a
+		// field is silently dropped by being forgotten.
+		next.Address = s.Address
 	}
 	return next
 }

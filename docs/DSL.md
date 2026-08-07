@@ -77,6 +77,18 @@ response under a root of its own, `${response.status_code}`, `response.headers`,
 disposition table below. `vars.*` has since landed too, in both of its positions;
 `inputs.*` and `run.*` do not exist; see [Order of work](#order-of-work).
 
+*Since written:* `inputs.*` and `run.*` both exist now. `run.*` is the root for facts
+about the run rather than about the file — `run.identity.<field>` and `run.local` for the
+attested caller who started it, `run.workflow_id` and `run.run_id` for the run's own
+address, which is what lets a workload hand an external system somewhere to send a
+callback (`examples/callback-address/`). The set is closed and `flow validate` reports an
+unknown field under it, which is the one thing `steps.*` and `inputs.*` cannot do: no file
+can add a field to `run`. Two fields a reader may expect are deliberately absent and will
+stay absent — a start time and an attempt count. A start time is a clock read by another
+name, and `now` is bound only inside a wait precisely so that a task cannot read a clock
+(see [ARCHITECTURE.md](ARCHITECTURE.md)'s execution model); an attempt count is a fact
+about the substrate's scheduling that changes underneath a run.
+
 *Since written:* the reason this section gave for accepting it was checked against the
 code and was half wrong, so it is replaced here rather than left to be rediscovered.
 

@@ -306,6 +306,14 @@ func NewExamplesHTTPServer(tb testing.TB) (string, func() []string) {
 	// differ, which is why iam's read is "/access-grants/last-used" and
 	// provisioning's write is the bare "/access-grants".
 
+	// callback-address: the reviewer this run registers itself with. Answers 202
+	// and nothing else, deliberately — the whole point of that example is that the
+	// answer does not come back on this connection, it comes back later as a
+	// signal to the address the request body carried.
+	mux.HandleFunc("/reviews", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	})
+
 	// enterprise-fund-transfer: a debit or a credit, with which account in the
 	// request body rather than the path — literal URLs, so `PointAtStandIn` can
 	// rewrite them without tracing an expression, per that file's own `undo:`

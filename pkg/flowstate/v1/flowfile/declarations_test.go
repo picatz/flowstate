@@ -431,7 +431,7 @@ steps:
     log:
       message: hello
 `,
-			want: "is the root the run's starter identity fields are named under",
+			want: "is the root the run's own address and starter identity are named under",
 		},
 		{
 			name: "a loop may not bind run",
@@ -446,7 +446,7 @@ steps:
           log:
             message: hello
 `,
-			want: "is the root the run's starter identity fields are named under",
+			want: "is the root the run's own address and starter identity are named under",
 		},
 		{
 			name: "a step var may not be called run",
@@ -458,7 +458,7 @@ steps:
     log:
       message: hello
 `,
-			want: "is the root the run's starter identity fields are named under",
+			want: "is the root the run's own address and starter identity are named under",
 		},
 	}
 

@@ -98,6 +98,12 @@ type StepsOutputActivation struct {
 	// authenticated caller at all. See [Scope.local].
 	RunLocal bool
 
+	// RunAddress is the run's own address — `run.workflow_id` and `run.run_id` —
+	// answered under [RunRoot] beside the identity, because both are facts about
+	// the run rather than about the file. Nil reads as both fields empty, which
+	// is correct only for a run that predates them; see [runRootValue].
+	RunAddress *RunAddress
+
 	// Ctx bounds evaluation of any stored expression encountered while
 	// resolving a name. A context is held here, rather than passed in,
 	// because ResolveName implements a fixed third-party interface that has
@@ -328,7 +334,7 @@ func (e *StepsOutputActivation) ambientRoot(name string) (any, bool) {
 		return types.NewRefValMap(TypeAdapter, entries), true
 
 	case RunRoot:
-		return runRootValue(e.RunIdentity, e.RunLocal), true
+		return runRootValue(e.RunIdentity, e.RunLocal, e.RunAddress), true
 
 	default:
 		return nil, false
@@ -346,8 +352,26 @@ func (e *StepsOutputActivation) ambientRoot(name string) (any, bool) {
 // rescue; the compiler refuses those.
 const InputsRoot = "inputs"
 
-// RunRoot is the name the run's own starter identity hangs from in an expression,
-// as `run.identity.<field>` and `run.local`.
+// RunRoot is the name the run's own facts hang from in an expression: its
+// address, as `run.workflow_id` and `run.run_id`, and the identity that started
+// it, as `run.identity.<field>` and `run.local`.
+//
+// # Additive by construction
+//
+// Adding a field here costs nothing already written. `run` is a root, so a name
+// under it is a field selection rather than an identifier, and the four names a
+// file can bind — a step id, a loop's `as:`, a step's own `vars:` key, `now` —
+// cannot collide with one: the root itself is refused as any of them, and
+// nothing below it is in anyone's namespace. That is the whole argument for
+// having made this a root in the first place, and it is why `workflow_id` and
+// `run_id` needed no edition boundary either — a file that did not reference
+// them before means exactly what it meant.
+//
+// What is not free is the *set*: [runRootValue] renders these fields and no
+// others, on every run, on both drivers, which is what lets
+// [flowfile.unknownRunField] report an unknown one rather than staying silent.
+// So a field added here has to be filled by both drivers with something honest,
+// and the test for that is a shared case, not a driver's own.
 //
 // # Naming this over `caller`, `principal`, `requester`, `started_by`
 //
@@ -906,6 +930,12 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 	// starter identity: a local run must never look like an attested
 	// production one, which is invariant 3's whole point.
 	scope.Local = true
+
+	// And the address a local run answers with, which is a sentinel and not an
+	// empty string: a local run is not reachable by any name, so the honest
+	// answer is one that says so rather than one that looks like a field nobody
+	// filled in. See [LocalRunAddress].
+	scope.Address = NewLocalRunAddress()
 
 	if runtime, ok := ctx.Value(secretRuntimeKey{}).(TaskRuntime); ok && runtime.Step.Workflow == "" {
 		runtime.Step.Workflow = w.GetName()
