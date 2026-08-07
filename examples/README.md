@@ -28,6 +28,7 @@ $ flow validate examples/hello-world/workflow.yaml
 | [renewal-reminder](renewal-reminder) | The same two nodes as `entity-order` with the polarity reversed — a `loop:` around a `wait_for_signal:` whose *lapse* is the work (send the reminder, go round again) and whose delivered signal is the stop. Temporal's `sleep-for-days`, and the shape drift detection and certificate rotation take | no |
 | [ops-healthcheck](ops-healthcheck) | `for_each` over a list of services, `continue_on_error:` tolerating the one that is down, and structured outputs shaped for a pager | yes |
 | [data-enrichment](data-enrichment) | `for_each` over a worklist with bounded `max_parallel`, per-item `retry:`, and which records could not be enriched named in `outputs:` | yes |
+| [fan-out-calls](fan-out-calls) | `call:` inside `for_each` — a worklist where each item is handled by a reusable called workflow, bounded by `max_parallel:`, each callee's outputs read back per iteration, and one item's call failing tolerated without touching the others | yes |
 | [workflow-vars](workflow-vars) | `vars:` at the top of a file, read as `vars.<name>`, beside a loop's bare binding | no |
 | [step-vars](step-vars) | `vars:` on a step and on a loop, bare and private to what declares them | no |
 | [expressions](expressions) | Expressions as values: a step's own `vars:`, and one dialect an `if:` reaches too | no |
@@ -86,9 +87,10 @@ the examples charter (#165), and [embedding](embedding/README.md) is a Go progra
 Flowfile `flow` runs on its own, so its README says how to run it instead. Everywhere
 else the workflow's own comments are the documentation, and a README repeating them
 would be one more thing to leave stale — which is also why
-[call-a-workflow](call-a-workflow) and [progressive-rollout](progressive-rollout) each
-hold two Flowfiles and have none: the second one is called by the first, and its own
-comments are exactly as much documentation as any other example's.
+[call-a-workflow](call-a-workflow), [progressive-rollout](progressive-rollout) and
+[fan-out-calls](fan-out-calls) each hold two Flowfiles and have none: the second one is
+called by the first, and its own comments are exactly as much documentation as any
+other example's.
 
 `plugins/greet`, `plugins/vcs`, `plugins/github`, and `plugins/git` also sit a directory
 deeper than the rest, which is deliberate: everything matching `examples/*/workflow.yaml`
