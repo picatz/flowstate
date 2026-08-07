@@ -335,23 +335,31 @@ list to the service descriptor in both directions.
 
 ### What it serves
 
-**Ten tools.** Nine are one-per-RPC — `flowstate_validate`, `flowstate_compile`,
-`flowstate_get_catalog`, `flowstate_run`, `flowstate_get`, `flowstate_signal`,
-`flowstate_list`, `flowstate_cancel`, `flowstate_terminate` — and they split by
-what the method needs. Validate, compile and the catalog touch no run and no
-tenant, so they answer in this process: an agent gets a working authoring loop
-with no server and no Temporal stood up. The lifecycle verbs address durable
-runs, which only a server has, and without `--address` they say so rather than
-failing opaquely.
+**One tool per RPC, plus two that are deliberately not RPCs.** The roster is
+[docs/reference/mcp.md](reference/mcp.md), generated from the service descriptor
+and pinned in CI — this page describes the shape and does not repeat the list,
+because an earlier revision counted "ten tools" two sentences after explaining
+why hand-maintained lists fall behind, and the count was wrong within weeks.
 
-The tenth, `flowstate_run_local`, is the one tool that is not an RPC, and
-deliberately: it is the local driver executing a submitted Flowfile in this
-process — the same rehearsal `flow run local` performs — and giving it a service
-method would make a server executing submitted workflows in-process, which is a
-different product. It answers with the same `GetResponse` document
-`flowstate_get` returns, plus whatever `log:` steps emitted, because stdout is
-the transport here and a workflow that narrates itself must not write into the
-protocol.
+The per-RPC tools split by what the method needs. Validate, compile and the
+catalog touch no run and no tenant, so they answer in this process: an agent
+gets a working authoring loop with no server and no Temporal stood up. The
+lifecycle and schedule verbs address durable state, which only a server has,
+and without `--address` they say so rather than failing opaquely.
+
+`flowstate_run_local` is not an RPC, and deliberately: it is the local driver
+executing a submitted Flowfile in this process — the same rehearsal `flow run
+local` performs — and giving it a service method would make a server executing
+submitted workflows in-process, which is a different product. It answers with
+the same `GetResponse` document `flowstate_get` returns, plus whatever `log:`
+steps emitted, because stdout is the transport here and a workflow that
+narrates itself must not write into the protocol.
+
+`flowstate_test` is the other non-RPC, and the one to reach for first while
+authoring: the `flow test` machinery over bytes submitted inline, every task
+stubbed, time virtual, nothing real invoked — so it needs no egress policy and
+no opt-in, and proves conditions, retries, compensation and data flow before
+`flowstate_run_local` rehearses the one task deliberately left unstubbed.
 
 **Resources**, read-only and listed before anything is called:
 

@@ -93,6 +93,17 @@ var grammarStepKeys = []string{
 // in a list of things the engine will eventually do.
 var futureStepKeys = []string{
 	"needs",
+
+	// Refused-for-now node kinds docs/DSL.md names as held ("`value:` is
+	// refused, for now"): a pure computed-value step and a pure assertion step,
+	// each deferred until a corpus file hurts without it. The doc promised in as
+	// many words that both "join the reserved list so no plugin takes it in the
+	// meantime" — a promise this list did not keep until an audit read it as an
+	// assertion and found a plugin could register either name. These are step
+	// keys in a design that named them as step keys, which is exactly the bar
+	// the comment above sets.
+	"value",
+	"assert",
 }
 
 // reservedStepKeys is every word a task name may not take.
