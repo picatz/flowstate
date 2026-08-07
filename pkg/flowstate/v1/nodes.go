@@ -337,6 +337,51 @@ func LoopOutputs(iterations []*Workflow_StepOutputs) *Node_Outputs {
 	}
 }
 
+// ForEachResultsSizeError is the failure a `for_each` reports when its
+// accumulated `results` outgrow [MaxLoopResultsBytes].
+//
+// The `for_each` sibling of [LoopResultsSizeError], and the reason the two are
+// not one: a `for_each` accumulates the identical [LoopResultsField] against the
+// identical byte ceiling, but the remedy it can offer an author is different. A
+// `for_each` has no `max_iterations:` to lower and no `state:` to fold an
+// aggregate into — its trip count is the length of the list it iterates — so it
+// names the levers it actually has (a smaller body, fewer items) rather than
+// borrowing a loop's, which would be a false diagnostic in the sense CLAUDE.md's
+// "Diagnostics are a feature" warns against. Named at the step that caused it;
+// the caller wraps it with the iteration position on the way out, the same
+// discipline [LoopResultsSizeError] follows.
+//
+// A `for_each` never suppresses `results` the way an unread `loop:` does across
+// a Continue-As-New ([LoopResumeResults] has no `for_each` caller), so this
+// carries none of [LoopResultsSizeError]'s "if nothing reads it, file a bug"
+// language: for a `for_each` the accumulation is always genuine and always
+// reported, so crossing the bound is always the real thing.
+func ForEachResultsSizeError(size, max int) error {
+	return fmt.Errorf(
+		"for_each has accumulated %d bytes of `results`, over the %d byte limit. "+
+			"A for_each holds one entry per item in `results` all at once, so shrink "+
+			"what the body outputs or iterate over fewer items",
+		size, max)
+}
+
+// AccumulateForEachResult appends iteration to a `for_each`'s results, tracking
+// the running byte total and failing with [ForEachResultsSizeError] the moment
+// it crosses [MaxLoopResultsBytes].
+//
+// The `for_each` counterpart of [AccumulateLoopResult], sharing its
+// [accumulateResults] arithmetic so a `for_each` and a `loop:` weigh their
+// common `results` field against one ceiling — the fix #229 applied to `loop:`,
+// spelled once and reached by both constructs rather than a second time here.
+// Both execution drivers call it at the point an iteration's outputs are
+// appended (the local driver's runForEach in eval.go, the durable driver's
+// executor.runForEach for the sequential path and at the concurrent path's join
+// in runIterationsConcurrently's caller), so an iteration that would overflow
+// the bound is refused identically regardless of which driver — and, for the
+// durable driver, which scheduling — produced it.
+func AccumulateForEachResult(results []*Workflow_StepOutputs, resultsBytes int, iteration *Workflow_StepOutputs) ([]*Workflow_StepOutputs, int, error) {
+	return accumulateResults(results, resultsBytes, iteration, ForEachResultsSizeError)
+}
+
 // ResolveTaskInputs returns a copy of the task whose expression inputs have been
 // evaluated to literals.
 //

@@ -1073,6 +1073,47 @@ func TestRunWorkflowTaskOutputElementBound(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowForEachResultsBound is the durable half of #229's byte bound
+// for the `for_each` construct — see the local driver's identically-named test.
+//
+// A `for_each`'s accumulated `results` are bounded in bytes exactly as a
+// `loop:`'s are, through the shared [v1.MaxLoopResultsBytes]. What this half adds
+// over the local one is the concurrent path: with `max_parallel:` set, the
+// durable driver runs iterations with bounded fan-out that land out of order, so
+// the bound is checked at the join over the completed iterations in input order —
+// a genuinely different code path from the sequential accumulation, which must
+// nonetheless reach the identical verdict. Both the sequential and the concurrent
+// over-bound cases must fail here, and the just-under case must succeed.
+func TestRunWorkflowForEachResultsBound(t *testing.T) {
+	baseURL := tests.NewHTTPServer(t)
+	for _, test := range tests.ForEachResultsBoundCases(baseURL) {
+		t.Run(test.Name, func(t *testing.T) {
+			testSuite := &testsuite.WorkflowTestSuite{}
+			env := testSuite.NewTestWorkflowEnvironment()
+			env.RegisterWorkflow(engine.Run)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
+
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow})
+			require.True(t, env.IsWorkflowCompleted())
+
+			err := env.GetWorkflowError()
+			if test.ExpectFailure {
+				require.Error(t, err, "a for_each past the results byte bound must be refused")
+				require.Contains(t, err.Error(), "byte limit",
+					"the refusal must name the bound it reached")
+				return
+			}
+			require.NoError(t, err)
+
+			var out v1.Workflow_StepOutputs
+			require.NoError(t, env.GetWorkflowResult(&out))
+			require.True(t, test.ExpectedOutputsPredicate(&out), "unexpected outputs: %v", &out)
+		})
+	}
+}
+
 // TestAStepsVarsSurviveContinueAsNew is the same claim as
 // [TestABudgetSmallerThanTheWorkflowContinuesAsNew], written the way the language
 // actually encourages — and the way that used to lose the value.

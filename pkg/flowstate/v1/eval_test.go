@@ -316,6 +316,35 @@ func TestRunWorkflowTaskOutputElementBound(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowForEachResultsBound covers the local driver's half of #229's
+// byte bound for the `for_each` construct: its accumulated `results` are bounded
+// in bytes exactly as a `loop:`'s are, through the shared [v1.MaxLoopResultsBytes]
+// and [v1.AccumulateForEachResult].
+//
+// The same cases run against the durable driver in the engine package — see the
+// identically-named test there. Both reach the bound through the one accumulation
+// point each driver has for a `for_each`, which is what invariant 3 asks a shared
+// case to hold the two to. The local driver runs even the `max_parallel:` case
+// sequentially by design, so here that case exercises the ordinary sequential
+// accumulation; the durable driver's concurrent path is what the engine half
+// covers.
+func TestRunWorkflowForEachResultsBound(t *testing.T) {
+	baseURL := tests.NewHTTPServer(t)
+	for _, test := range tests.ForEachResultsBoundCases(baseURL) {
+		t.Run(test.Name, func(t *testing.T) {
+			out, err := v1.Run(t.Context(), test.Workflow)
+			if test.ExpectFailure {
+				require.Error(t, err, "a for_each past the results byte bound must be refused")
+				require.Contains(t, err.Error(), "byte limit",
+					"the refusal must name the bound it reached")
+				return
+			}
+			require.NoError(t, err)
+			require.True(t, test.ExpectedOutputsPredicate(out), "unexpected outputs: %v", out)
+		})
+	}
+}
+
 // TestRunWorkflowCall covers `call:` in the local driver.
 //
 // The same cases run against the durable driver in the engine package — see

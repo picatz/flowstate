@@ -1275,6 +1275,7 @@ func runForEach(ctx context.Context, loop *ForEach, scope *Scope, depth int) (*N
 
 	name := IteratorName(loop)
 	iterations := make([]*Workflow_StepOutputs, 0, len(items))
+	resultsBytes := 0
 
 	for i, item := range items {
 		// Each iteration gets its own output scope, seeded with what was visible
@@ -1298,7 +1299,19 @@ func runForEach(ctx context.Context, loop *ForEach, scope *Scope, depth int) (*N
 			return nil, fmt.Errorf("iteration %d: %w", i, err)
 		}
 
-		iterations = append(iterations, onlyBodyOutputs(loop.GetBody(), iterationOutputs))
+		// The same byte bound the durable driver applies to a `for_each`'s
+		// accumulating `results`, at the same point — right after an iteration's
+		// outputs are known — so a local rehearsal fails identically to production
+		// rather than accumulating silently past what a local process can hold.
+		// This is #229's `loop:` fix reached through the shared [MaxLoopResultsBytes]
+		// (see [AccumulateForEachResult]); the position wrap is spelled the way the
+		// durable driver's stepFailed composes it, `"iteration %d: "`, so the
+		// recorded sentence matches across drivers.
+		var sizeErr error
+		iterations, resultsBytes, sizeErr = AccumulateForEachResult(iterations, resultsBytes, onlyBodyOutputs(loop.GetBody(), iterationOutputs))
+		if sizeErr != nil {
+			return nil, fmt.Errorf("iteration %d: %w", i, sizeErr)
+		}
 	}
 
 	return LoopOutputs(iterations), nil

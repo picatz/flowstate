@@ -40,3 +40,26 @@ func TestLoopResultsSizeErrorTextMatchesAcrossDrivers(t *testing.T) {
 		"a loop that crosses the results byte bound must record the identical sentence "+
 			"under ${steps.<id>.error} whether it ran locally or durably")
 }
+
+// TestForEachResultsSizeErrorTextMatchesAcrossDrivers is the `for_each` sibling
+// of the check above: a for_each that crosses [v1.MaxLoopResultsBytes] must
+// record the identical sentence whichever driver ran it. The local driver's
+// runForEach in eval.go wraps with `fmt.Errorf("iteration %d: %w", ...)`; the
+// durable driver's executor.runForEach — both its sequential per-iteration check
+// and its concurrent join — wraps with `stepFailed(sizeErr, "iteration %d", ...)`.
+// Those compositions must land on one string, the same invariant-3 shape
+// steperror.go exists for.
+func TestForEachResultsSizeErrorTextMatchesAcrossDrivers(t *testing.T) {
+	sizeErr := v1.ForEachResultsSizeError(600000, v1.MaxLoopResultsBytes)
+
+	localText := fmt.Errorf("iteration %d: %w", 3, sizeErr).Error()
+
+	durableErr := stepFailed(sizeErr, "iteration %d", 3)
+	var runFailed *ErrRunFailed
+	require.ErrorAs(t, durableErr, &runFailed,
+		"stepFailed must classify a plain error as an ErrRunFailed, the same shape recordedStepError expects")
+
+	require.Equal(t, localText, runFailed.Message,
+		"a for_each that crosses the results byte bound must record the identical sentence "+
+			"under ${steps.<id>.error} whether it ran locally or durably")
+}

@@ -356,8 +356,20 @@ func collectStepIDs(nodes []*Node, into map[string]*Node_Outputs) {
 	}
 }
 
-// MaxLoopResultsBytes bounds a loop's accumulated `results` where something can
-// still read them.
+// MaxLoopResultsBytes bounds the accumulated `results` a [Loop] or a [ForEach]
+// carries, where something can still read them.
+//
+// One bound for one field: a `loop:` and a `for_each:` report their
+// per-iteration history under the identical [LoopResultsField] through the
+// identical [LoopOutputs], so a byte ceiling on that field belongs to the field
+// and not to either construct — the same "one constant cannot disagree with
+// itself" discipline CLAUDE.md's "Both execution drivers must agree" applies
+// across drivers, applied here across the two constructs that share the output.
+// Both accumulate through [accumulateResults], which weighs every iteration
+// against this one number; only the sentence a breach reports differs, because
+// the remedy a `loop:` author reaches for (`max_iterations:`, `state:`) is not
+// the one a `for_each:` author has ([ForEachResultsSizeError] versus
+// [LoopResultsSizeError]).
 //
 // A quarter of [MaxRunStateBytes], deliberately less than the whole of it:
 // `results` is one field of one frame in a [RunState] that also carries the
@@ -366,7 +378,7 @@ func collectStepIDs(nodes []*Node, into map[string]*Node_Outputs) {
 // whole run-state budget would only move today's failure from a named one here
 // to an unnamed one at the next [CheckRunStateSize], with one fewer clue about
 // the cause. Leaving three-quarters of the budget for everything else riding
-// along is the point: this is meant to be hit first, and it names the loop.
+// along is the point: this is meant to be hit first, and it names the step.
 const MaxLoopResultsBytes = MaxRunStateBytes / 4
 
 // LoopResultsSizeError is the failure a loop reports when its accumulated
@@ -439,11 +451,33 @@ func LoopResumeResults(spec *Workflow, stepID string, carried []*Workflow_StepOu
 // unconditionally, never gated on whether the loop is read: see the package
 // doc above for why suppression lives at the resume boundary
 // ([LoopResumeResults]) instead of here.
+//
+// The byte-counting itself is [accumulateResults], shared with a `for_each`'s
+// [AccumulateForEachResult] so the two constructs weigh their common `results`
+// field against [MaxLoopResultsBytes] through one piece of arithmetic; this
+// wrapper only names the loop-specific diagnostic.
 func AccumulateLoopResult(results []*Workflow_StepOutputs, resultsBytes int, iteration *Workflow_StepOutputs) ([]*Workflow_StepOutputs, int, error) {
+	return accumulateResults(results, resultsBytes, iteration, LoopResultsSizeError)
+}
+
+// accumulateResults appends iteration to results, adds its wire size to the
+// running total, and fails with tooBig the moment the total crosses
+// [MaxLoopResultsBytes].
+//
+// The shared mechanism behind [AccumulateLoopResult] and
+// [AccumulateForEachResult]: `results` is one field ([LoopResultsField]) both a
+// `loop:` and a `for_each:` accumulate into, so the ceiling and the counting are
+// spelled once here and read against the same [MaxLoopResultsBytes]. What the
+// two constructs do not share is the sentence a breach reports — a `for_each:`
+// author has no `max_iterations:` or `state:` to reach for — so the size-error
+// constructor is a parameter rather than baked in. Reporting the wrong remedy
+// would be a false diagnostic, which CLAUDE.md's "Diagnostics are a feature"
+// holds to be worse than a missing one.
+func accumulateResults(results []*Workflow_StepOutputs, resultsBytes int, iteration *Workflow_StepOutputs, tooBig func(size, max int) error) ([]*Workflow_StepOutputs, int, error) {
 	results = append(results, iteration)
 	resultsBytes += proto.Size(iteration)
 	if resultsBytes > MaxLoopResultsBytes {
-		return results, resultsBytes, LoopResultsSizeError(resultsBytes, MaxLoopResultsBytes)
+		return results, resultsBytes, tooBig(resultsBytes, MaxLoopResultsBytes)
 	}
 	return results, resultsBytes, nil
 }

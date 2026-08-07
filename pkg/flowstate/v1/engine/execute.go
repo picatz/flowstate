@@ -685,12 +685,38 @@ func (e *executor) runForEach(node *v1.Node, loop *v1.ForEach, depth, susp int, 
 		results = e.resume[inner].GetResults()
 	}
 
+	// Seed the running byte total from whatever a prior segment already
+	// accumulated, exactly as [executor.runLoop] does — results arriving from a
+	// resume frame were weighed by that segment, not this one, so a `for_each`
+	// resuming already over the bound has to notice it rather than assume zero.
+	// The bound itself is #229's `loop:` fix, applied to a `for_each`'s sibling
+	// `results` field through the shared [v1.MaxLoopResultsBytes]; see
+	// [v1.AccumulateForEachResult].
+	resultsBytes := v1.LoopResultsSize(results)
+
 	if loop.GetMaxParallel() > 1 {
 		iterations, err := e.runIterationsConcurrently(loop, name, items[startItem:], inner, innerSusp)
 		if err != nil {
 			return err
 		}
-		results = append(results, iterations...)
+		// The concurrent path runs every iteration before any of them can be
+		// weighed — a worker writes results[i] out of completion order, so no
+		// running total exists until they have all landed. The bound is therefore
+		// checked here, at the join, walking the completed iterations in input
+		// order: the same order the sequential path below accumulates in, so the
+		// iteration a breach names is the same index either path would name for the
+		// same per-iteration sizes, and the observable outcome — the run fails with
+		// [v1.ForEachResultsSizeError] — is identical whether MaxParallel scheduled
+		// them concurrently or one at a time. Iterations are independent, so which
+		// coroutine finished first cannot change the set being summed, only the
+		// order it was produced in, which this re-imposes.
+		for j, iteration := range iterations {
+			var sizeErr error
+			results, resultsBytes, sizeErr = v1.AccumulateForEachResult(results, resultsBytes, iteration)
+			if sizeErr != nil {
+				return stepFailed(sizeErr, "iteration %d", startItem+j)
+			}
+		}
 		e.truncateFrames(inner)
 		e.scope.Outputs.StepValues[node.GetId()] = v1.LoopOutputs(results)
 		return nil
@@ -712,7 +738,18 @@ func (e *executor) runForEach(node *v1.Node, loop *v1.ForEach, depth, susp int, 
 			// until the recorded text had to match across drivers.
 			return stepFailed(err, "iteration %d", i)
 		}
-		results = append(results, iteration)
+
+		// The same byte bound the concurrent path enforces at its join, applied
+		// here per iteration so a sequential `for_each` refuses the crossing
+		// iteration before running any more of them — and before suspending with a
+		// frame already over the bound. Positioned `"iteration %d"` the identical
+		// way runIteration's own failure just above is, so the recorded sentence
+		// matches the local driver's `fmt.Errorf("iteration %d: %w", ...)`.
+		var sizeErr error
+		results, resultsBytes, sizeErr = v1.AccumulateForEachResult(results, resultsBytes, iteration)
+		if sizeErr != nil {
+			return stepFailed(sizeErr, "iteration %d", i)
+		}
 
 		// A long loop is exactly where history accumulates, so an iteration
 		// boundary is worth suspending at — the position is a single index plus
