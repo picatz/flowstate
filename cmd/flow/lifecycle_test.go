@@ -116,21 +116,23 @@ func TestListRendersRunsAndSaysWhenMoreRemain(t *testing.T) {
 	// The header first, because everything below asserts a position in a row and
 	// a position means nothing without the column it belongs to.
 	require.Equal(t,
-		[]string{"WORKFLOW_ID", "STATUS", "STARTED", "FINISHED"},
+		[]string{"WORKFLOW_ID", "SYM", "STATUS", "STARTED", "FINISHED"},
 		tableRow(t, out.String(), "WORKFLOW_ID"),
 		"the columns are not the ones the rows are checked against")
 
 	// A finished run: every field, in order, on its own line. The close time is
 	// the field most easily rendered in the wrong column, and the status is the
-	// one nothing used to check at all.
+	// one nothing used to check at all. SYM carries the same outcome as STATUS,
+	// per section 2's rule that colour is never the only carrier of meaning — a
+	// plain-text listing still shows the outcome as a mark beside the word.
 	require.Equal(t,
-		[]string{"run-done", "COMPLETED", "2026-07-01T08:00:00Z", "2026-07-01T08:30:00Z"},
+		[]string{"run-done", "+", "COMPLETED", "2026-07-01T08:00:00Z", "2026-07-01T08:30:00Z"},
 		tableRow(t, out.String(), "run-done"))
 
 	// A run still going has no close time, so it renders a placeholder. Rendering
 	// the zero instant instead would report it as having finished in 1970.
 	require.Equal(t,
-		[]string{"run-running", "RUNNING", "2026-07-01T09:00:00Z", "-"},
+		[]string{"run-running", ">", "RUNNING", "2026-07-01T09:00:00Z", "-"},
 		tableRow(t, out.String(), "run-running"))
 
 	// The listing is a bounded scan, so a page that came back with a token still

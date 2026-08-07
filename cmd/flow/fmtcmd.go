@@ -229,7 +229,7 @@ func fmtOne(out, reports io.Writer, theme ui.Theme, path string, opts fmtOptions
 		// so there is nothing safe to write. Reported and left alone, the same
 		// as `flow fix` leaves a shape it refuses.
 		if !machine {
-			fmt.Fprintf(reports, "%s: %v\n", theme.Muted.Render(path), err)
+			fmt.Fprintf(reports, "%s: %s\n", theme.Muted.Render(path), theme.Danger.Render(err.Error()))
 		}
 		report.Refusals = refusalDiagnostics(err)
 		return fmtOutcome{refused: true, report: report}, nil
@@ -241,7 +241,7 @@ func fmtOne(out, reports io.Writer, theme ui.Theme, path string, opts fmtOptions
 		// string containing ${, or an expression written with a macro cel-go
 		// cannot render as source — is not safe to guess at either.
 		if !machine {
-			fmt.Fprintf(reports, "%s: %v\n", theme.Muted.Render(path), err)
+			fmt.Fprintf(reports, "%s: %s\n", theme.Muted.Render(path), theme.Danger.Render(err.Error()))
 		}
 		report.Refusals = refusalDiagnostics(err)
 		return fmtOutcome{refused: true, report: report}, nil
@@ -258,13 +258,13 @@ func fmtOne(out, reports io.Writer, theme ui.Theme, path string, opts fmtOptions
 
 	if !changed {
 		if !machine {
-			fmt.Fprintf(reports, "%s: %s\n", theme.Muted.Render(path), theme.Muted.Render("already formatted"))
+			fmt.Fprintf(reports, "%s: %s\n", theme.Muted.Render(path), theme.Success.Render("already formatted"))
 		}
 		return outcome, nil
 	}
 
 	if !machine {
-		fmt.Fprintf(reports, "%s: %s\n", theme.Muted.Render(path), theme.Muted.Render("reformatted"))
+		fmt.Fprintf(reports, "%s: %s\n", theme.Muted.Render(path), theme.Warning.Render("reformatted"))
 	}
 
 	if opts.check {

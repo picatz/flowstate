@@ -222,7 +222,7 @@ func fixOne(out, reports io.Writer, theme ui.Theme, path string, opts fixOptions
 		// does not stop the rest of a directory — but counted as a refusal, because
 		// the file is certainly not in the current edition.
 		if !machine {
-			fmt.Fprintf(reports, "%s: %v\n", theme.Muted.Render(path), err)
+			fmt.Fprintf(reports, "%s: %s\n", theme.Muted.Render(path), theme.Danger.Render(err.Error()))
 		}
 		// Unpositioned: this is a fact about the whole document rather than a line
 		// within it, the same distinction [Diagnostic] draws with Line and Column
@@ -233,7 +233,7 @@ func fixOne(out, reports io.Writer, theme ui.Theme, path string, opts fixOptions
 
 	for _, refusal := range result.Refusals {
 		if !machine {
-			fmt.Fprintf(reports, "%s:%s\n", theme.Muted.Render(path), refusal.Error())
+			fmt.Fprintf(reports, "%s:%s\n", theme.Muted.Render(path), theme.Danger.Render(refusal.Error()))
 		}
 		report.Refusals = append(report.Refusals, refusal.Proto())
 	}
@@ -257,7 +257,7 @@ func fixOne(out, reports io.Writer, theme ui.Theme, path string, opts fixOptions
 	if !result.Changed() {
 		if !outcome.refused && !machine {
 			fmt.Fprintf(reports, "%s: %s\n",
-				theme.Muted.Render(path), theme.Muted.Render("already current"))
+				theme.Muted.Render(path), theme.Success.Render("already current"))
 		}
 		return outcome, nil
 	}
@@ -265,7 +265,7 @@ func fixOne(out, reports io.Writer, theme ui.Theme, path string, opts fixOptions
 	for _, change := range result.Changes {
 		if !machine {
 			fmt.Fprintf(reports, "%s:%d: %s\n",
-				theme.Muted.Render(path), change.Line, change.Message)
+				theme.Muted.Render(path), change.Line, theme.Warning.Render(change.Message))
 		}
 		report.Changes = append(report.Changes, &v1.FixChange{
 			Line:    uint32(max(change.Line, 0)),
