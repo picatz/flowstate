@@ -1,6 +1,7 @@
 package flowstatev1
 
 import (
+	"context"
 	"fmt"
 	"maps"
 	"slices"
@@ -49,7 +50,12 @@ func CheckSignalPolicies(wf *Workflow) error {
 		return nil
 	}
 
-	if err := CheckSignalPolicyShape(declared); err != nil {
+	// false: this is a workflow's own declared signals:, checked at submit
+	// before BindRunInputs has run — a rule's subject_from is expected to
+	// still be an unresolved expression here, and it is not an error for it
+	// to be. See [CheckSignalPolicyShape]'s own doc comment for the other
+	// caller, which asks the opposite question of a decoded memo.
+	if err := CheckSignalPolicyShape(declared, false); err != nil {
 		return err
 	}
 
@@ -86,7 +92,25 @@ func CheckSignalPolicies(wf *Workflow) error {
 // authorizes every sender, because a memo that decodes to any of those is
 // corruption, not a legitimately declared policy, and must be denied rather
 // than misread as "no policy" (see lifecycle.go's `signalPolicies`).
-func CheckSignalPolicyShape(declared map[string]*SignalPolicy) error {
+//
+// # requireResolvedSubjects, and the two shapes this function is asked about
+//
+// This function has exactly two callers, and they ask about two different
+// documents that happen to share a Go type. [CheckSignalPolicies] asks about
+// a workflow's own declared `signals:` block, checked at submit before
+// [BindRunInputs] has run — a rule may legitimately still carry an
+// unresolved `subject_from`, written as `subject: ${...}`, that has not been
+// evaluated yet. `signalPolicies` in `server/lifecycle.go` asks about a
+// policy already decoded back off a run's memo, which resolution has
+// *already* run against before anything was frozen there — so a decoded
+// policy that still carries a populated `subject_from` is not "not yet
+// resolved", it is corruption or a bug that skipped resolution, and is
+// refused exactly like any other shape a memo this server wrote would never
+// have. requireResolvedSubjects is which question is being asked: false for
+// the declared side, true for the decoded side. See
+// [SignalPolicyRule.subject_from] for when resolution happens and why the
+// enforcement path never evaluates an expression.
+func CheckSignalPolicyShape(declared map[string]*SignalPolicy, requireResolvedSubjects bool) error {
 	if len(declared) == 0 {
 		return fmt.Errorf("no signal policies are declared")
 	}
@@ -111,6 +135,13 @@ func CheckSignalPolicyShape(declared map[string]*SignalPolicy) error {
 					"signals[%q].allow[%d].subject %q is not \"<issuer>#<subject>\"; a bare subject is "+
 						"refused because a subject is only unique within its issuer", name, i, subject)
 			}
+			if requireResolvedSubjects && rule.GetSubjectFrom() != nil {
+				return fmt.Errorf(
+					"signals[%q].allow[%d].subject is still an unresolved expression; a policy read back "+
+						"off a run's memo must never carry one — resolution happens once, at submit, "+
+						"before this policy is frozen, so a populated subject_from here is not a policy "+
+						"this server would have written", name, i)
+			}
 		}
 	}
 
@@ -118,9 +149,119 @@ func CheckSignalPolicyShape(declared map[string]*SignalPolicy) error {
 }
 
 // ruleMatchesEverySender reports whether a rule has nothing on it to check —
-// the shape that would authorize any sender at all.
+// the shape that would authorize any sender at all. subject_from counts as a
+// constraint here even though its content is not yet known: it will resolve
+// to a subject before this policy is ever enforced, so a rule that sets it
+// (with nothing else) is narrower than "matches every sender" even though it
+// is not yet narrower than anything in particular — the narrowing check that
+// answers "narrower than what" is the Flowfile compiler's, not this one's.
 func ruleMatchesEverySender(rule *SignalPolicyRule) bool {
-	return rule.GetSubject() == "" && rule.GetNamespace() == "" && len(rule.GetClaims()) == 0
+	return rule.GetSubject() == "" && rule.GetSubjectFrom() == nil &&
+		rule.GetNamespace() == "" && len(rule.GetClaims()) == 0
+}
+
+// ResolveSignalPolicySubjects resolves every rule's subject_from expression
+// against inputs — the run's own bound arguments, and the only names such an
+// expression may reference, since resolution happens at submit before any
+// step has run — writing the result into that rule's subject and clearing
+// subject_from.
+//
+// Returns a new map; wf.GetSignals() itself is never mutated, so a
+// specification kept for replay or re-use is untouched by resolving a
+// policy that will be frozen into one particular run's memo.
+//
+// Called once, by the server's `signalPolicyMemoEntry` — the one function
+// [FlowstateServer.Run] and [FlowstateServer.CreateSchedule] both use to
+// turn a workflow's declared policy into the memo entry that governs that
+// run — after [BindRunInputs] has established the inputs both submit paths
+// bind through. That "one function, two callers" shape is what keeps a
+// scheduled run's resolution identical to a direct run's, the same
+// discipline [BindRunInputs]'s own package doc states for input binding
+// itself.
+//
+// The result the enforcement path (`authorizeSignal`/[SignalPolicyAllows])
+// ever sees never contains an expression: it evaluates nothing, because
+// resolution has already happened here, once, before the policy was ever
+// stored. [CheckSignalPolicyShape] with requireResolvedSubjects true is what
+// makes that a checked fact rather than an assumption — a decoded policy
+// that still carries subject_from is refused rather than silently evaluated
+// on a future signal delivery.
+func ResolveSignalPolicySubjects(ctx context.Context, wf *Workflow, inputs map[string]*Value) (map[string]*SignalPolicy, error) {
+	signals := wf.GetSignals()
+	if len(signals) == 0 {
+		return nil, nil
+	}
+
+	scope := &Scope{Profile: wf.GetProfile(), Inputs: inputs}
+
+	resolved := make(map[string]*SignalPolicy, len(signals))
+	for _, name := range slices.Sorted(maps.Keys(signals)) {
+		policy := signals[name]
+
+		allow := make([]*SignalPolicyRule, len(policy.GetAllow()))
+		for i, rule := range policy.GetAllow() {
+			exprValue := rule.GetSubjectFrom()
+			if exprValue == nil {
+				allow[i] = rule
+				continue
+			}
+
+			subject, err := evalSubjectFrom(ctx, exprValue, scope)
+			if err != nil {
+				return nil, fmt.Errorf("signals[%q].allow[%d].subject: %w", name, i, err)
+			}
+
+			allow[i] = &SignalPolicyRule{
+				Subject:   subject,
+				Namespace: rule.GetNamespace(),
+				Claims:    rule.GetClaims(),
+				// SubjectFrom deliberately left unset: resolution is exactly the
+				// act of replacing it with a literal, and a rule carried past
+				// this point must never hold both.
+			}
+		}
+
+		resolved[name] = &SignalPolicy{
+			Allow:               allow,
+			DistinctFromStarter: policy.GetDistinctFromStarter(),
+		}
+	}
+
+	return resolved, nil
+}
+
+// evalSubjectFrom evaluates one rule's subject_from expression to the
+// literal it resolves to, refusing anything that is not a string shaped
+// like [SignalPolicyRule.subject] requires.
+//
+// Evaluated against scope — inputs only, no step outputs, no run identity —
+// which is the whole of what a submit-time expression may legitimately see:
+// nothing has executed yet. Through [DefaultEvaluator], so this resolution
+// is bounded by [DefaultCostLimit] exactly as every other CEL evaluation in
+// this codebase is; there is no second, unbounded evaluation path here.
+func evalSubjectFrom(ctx context.Context, value *Value, scope *Scope) (string, error) {
+	kind, ok := value.GetKind().(*Value_Expr)
+	if !ok {
+		return "", fmt.Errorf("subject_from is %T, not an expression", value.GetKind())
+	}
+
+	out, err := DefaultEvaluator().EvalParsedBase(ctx, scope.GetProfile(), kind.Expr, scope.Activation(ctx))
+	if err != nil {
+		return "", fmt.Errorf("evaluating: %w", err)
+	}
+
+	s, ok := out.Value().(string)
+	if !ok {
+		return "", fmt.Errorf("must evaluate to a string, got %s", out.Type())
+	}
+
+	if !LooksLikeQualifiedSubject(s) {
+		return "", fmt.Errorf(
+			"resolved to %q, which is not \"<issuer>#<subject>\"; a bare subject is refused because a "+
+				"subject is only unique within its issuer", s)
+	}
+
+	return s, nil
 }
 
 // SignalPolicyAllows reports whether identity satisfies policy — whether it

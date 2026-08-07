@@ -152,7 +152,13 @@ func signalPolicies(memo *common.Memo) (map[string]*v1.SignalPolicy, bool, error
 	}
 
 	declared := spec.GetSignals()
-	if err := v1.CheckSignalPolicyShape(declared); err != nil {
+	// true: this is a policy decoded back off a run's memo, which
+	// [server.signalPolicyMemoEntry] never writes with a rule's subject_from
+	// still populated — resolution happens once, at submit, before this
+	// memo entry is ever written. See [v1.CheckSignalPolicyShape]'s own doc
+	// comment for why the declared side (checked before submit resolves
+	// anything) asks the opposite question.
+	if err := v1.CheckSignalPolicyShape(declared, true); err != nil {
 		return nil, false, fmt.Errorf(
 			"server: the signal policy recorded on a run is not a policy this server would have written: %w", err)
 	}
@@ -172,9 +178,11 @@ func signalPolicies(memo *common.Memo) (map[string]*v1.SignalPolicy, bool, error
 // [v1.Workflow.Signals] — authorization is opt-in per name, because the
 // alternative is every existing workflow's next `flow signal` failing the
 // day this shipped, for a policy nobody wrote. Everything else fails closed
-// without exception: a memo that cannot be decoded, or a sender that
-// matches no rule of a policy that *does* exist, is refused. There is no
-// third outcome once a policy is declared.
+// without exception: a memo that cannot be decoded, a sender that matches
+// no rule of a policy that *does* exist, or — when the policy sets
+// `distinct_from_starter` — a sender who turns out to be this run's own
+// starter, or a run with no starter recorded to compare against at all, is
+// refused. There is no third outcome once a policy is declared.
 func authorizeSignal(resp *workflowservice.DescribeWorkflowExecutionResponse, name string, sender *v1.SignalSender) error {
 	policies, hasMemo, err := signalPolicies(resp.GetWorkflowExecutionInfo().GetMemo())
 	if err != nil {
@@ -199,12 +207,44 @@ func authorizeSignal(resp *workflowservice.DescribeWorkflowExecutionResponse, na
 		return nil
 	}
 
-	if v1.SignalPolicyAllows(policy, sender.GetIdentity()) {
-		return nil
+	if !v1.SignalPolicyAllows(policy, sender.GetIdentity()) {
+		return connect.NewError(connect.CodePermissionDenied,
+			fmt.Errorf("the authenticated caller is not authorized to deliver signal %q to this run", name))
 	}
 
-	return connect.NewError(connect.CodePermissionDenied,
-		fmt.Errorf("the authenticated caller is not authorized to deliver signal %q to this run", name))
+	// distinct_from_starter is ANDed onto whichever rule the sender just
+	// satisfied, un-bypassable by any rule in allow — see
+	// [v1.SignalPolicy.distinct_from_starter]'s own doc comment for why it
+	// lives at the policy level rather than as one more alternative a rule
+	// could opt out of.
+	if policy.GetDistinctFromStarter() {
+		starter, hasStarter, err := memoStarter(resp.GetWorkflowExecutionInfo().GetMemo())
+		if err != nil {
+			// Same rule as an undecodable signal policy: nothing can be concluded
+			// about who started this run, so nobody may act on the strength of a
+			// guess.
+			return connect.NewError(connect.CodePermissionDenied,
+				fmt.Errorf("this run's starter could not be read, so no sender is authorized "+
+					"until it can be: %w", err))
+		}
+		if !hasStarter {
+			// A run whose memo predates [starterMemoKey] has nothing to compare
+			// the sender against. Fail closed rather than treat "unknown" as
+			// "distinct" — a run that cannot prove separation does not get it.
+			return connect.NewError(connect.CodePermissionDenied,
+				fmt.Errorf("signal %q requires a sender distinct from this run's own starter, but this "+
+					"run predates that record; a run that cannot prove separation does not get it", name))
+		}
+
+		senderQualified := v1.QualifiedSubject(sender.GetIdentity().GetIssuer(), sender.GetIdentity().GetSubject())
+		if senderQualified == starter {
+			return connect.NewError(connect.CodePermissionDenied,
+				fmt.Errorf("signal %q requires a sender distinct from this run's own starter, and the "+
+					"authenticated caller is the run's starter", name))
+		}
+	}
+
+	return nil
 }
 
 // memoTenant reads the namespace recorded on a run when it started.
@@ -224,6 +264,31 @@ func memoTenant(memo *common.Memo) (string, error) {
 	}
 
 	return namespace, nil
+}
+
+// memoStarter reads the qualified issuer#subject of whoever started a run,
+// recorded under [starterMemoKey] at submit through [starterMemoEntry] — the
+// one function both [FlowstateServer.Run] and [FlowstateServer.CreateSchedule]
+// use to write it, exactly as [namespaceMemoKey] and [signalPolicyMemoKey]
+// already are.
+//
+// Absent (ok false, err nil) is not always an error: it is the ordinary case
+// for a run started before this key existed, or one whose declared signal
+// policy never sets `distinct_from_starter`. [authorizeSignal] is what turns
+// "absent, but the flag demands the comparison" into a denial — this
+// function only reports what the memo holds.
+func memoStarter(memo *common.Memo) (string, bool, error) {
+	payload, ok := memo.GetFields()[starterMemoKey]
+	if !ok {
+		return "", false, nil
+	}
+
+	var starter string
+	if err := converter.GetDefaultDataConverter().FromPayload(payload, &starter); err != nil {
+		return "", false, fmt.Errorf("server: reading the starter recorded on a run: %w", err)
+	}
+
+	return starter, true, nil
 }
 
 // Signal delivers a signal to a run waiting for one.

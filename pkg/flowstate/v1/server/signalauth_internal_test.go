@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -312,4 +313,188 @@ func TestAuthorizeSignalZeroCaseStillAllowsWhenTheKeyIsGenuinelyAbsent(t *testin
 	require.NoError(t, err,
 		"a memo with no signal-policy key at all must still allow — the zero case must survive the "+
 			"present-but-corrupt fix, not be swallowed by it")
+}
+
+// Per-run signal authorization (#207's slice 1): distinct_from_starter and
+// the fail-closed shape of a decoded policy that still carries subject_from.
+
+// memoWithSignalPolicyAndStarter is [memoWithSignalPolicy] plus a
+// [starterMemoKey] entry — the shape [starterMemoEntry] writes at submit,
+// built directly here rather than through it so a test can construct a memo
+// [starterMemoEntry] would never produce (a starter recorded, but no policy;
+// or vice versa) when that is exactly the shape under test.
+func memoWithSignalPolicyAndStarter(t *testing.T, policies map[string]*v1types.SignalPolicy, starter string) *workflowservice.DescribeWorkflowExecutionResponse {
+	t.Helper()
+
+	resp := memoWithSignalPolicy(t, policies)
+
+	payload, err := converter.GetDefaultDataConverter().ToPayload(starter)
+	require.NoError(t, err)
+	resp.WorkflowExecutionInfo.Memo.Fields[starterMemoKey] = payload
+
+	return resp
+}
+
+// TestAuthorizeSignalDistinctFromStarterRefusesTheStartersOwnSignal is the
+// negative direction #207's decision record calls out by name: a policy
+// requiring separation of duties must refuse the run's own starter, even
+// when the starter satisfies every rule in `allow`.
+func TestAuthorizeSignalDistinctFromStarterRefusesTheStartersOwnSignal(t *testing.T) {
+	starter := v1types.QualifiedSubject("https://issuer.example.com", "release-manager@example.com")
+
+	resp := memoWithSignalPolicyAndStarter(t, map[string]*v1types.SignalPolicy{
+		"deploy-approved": {
+			Allow:               []*v1types.SignalPolicyRule{{Subject: starter}},
+			DistinctFromStarter: true,
+		},
+	}, starter)
+
+	err := authorizeSignal(resp, "deploy-approved",
+		sender("https://issuer.example.com", "release-manager@example.com", "team-a", nil))
+	require.Error(t, err, "the run's own starter delivered a signal a distinct_from_starter policy should have refused")
+	require.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+}
+
+// TestAuthorizeSignalDistinctFromStarterAllowsADistinctSender is the positive
+// half of the same policy, in its own test so a check that refused
+// everyone would still pass the negative one above.
+func TestAuthorizeSignalDistinctFromStarterAllowsADistinctSender(t *testing.T) {
+	starter := v1types.QualifiedSubject("https://issuer.example.com", "requester@example.com")
+	approver := v1types.QualifiedSubject("https://issuer.example.com", "release-manager@example.com")
+
+	resp := memoWithSignalPolicyAndStarter(t, map[string]*v1types.SignalPolicy{
+		"deploy-approved": {
+			Allow:               []*v1types.SignalPolicyRule{{Subject: approver}},
+			DistinctFromStarter: true,
+		},
+	}, starter)
+
+	err := authorizeSignal(resp, "deploy-approved",
+		sender("https://issuer.example.com", "release-manager@example.com", "team-a", nil))
+	require.NoError(t, err, "a sender distinct from the run's starter was refused by distinct_from_starter")
+}
+
+// TestAuthorizeSignalDistinctFromStarterRefusesARunPredatingTheStarterKey
+// checks the fail-closed side of #207's decision record: a run whose memo
+// has no [starterMemoKey] entry — because it started before this field
+// existed — has nothing to compare a sender against, and a policy demanding
+// the comparison must refuse rather than treat "unknown" as "distinct".
+func TestAuthorizeSignalDistinctFromStarterRefusesARunPredatingTheStarterKey(t *testing.T) {
+	resp := memoWithSignalPolicy(t, map[string]*v1types.SignalPolicy{
+		"deploy-approved": {
+			Allow: []*v1types.SignalPolicyRule{
+				{Subject: v1types.QualifiedSubject("https://issuer.example.com", "release-manager@example.com")},
+			},
+			DistinctFromStarter: true,
+		},
+	}) // no starterMemoKey entry at all
+
+	err := authorizeSignal(resp, "deploy-approved",
+		sender("https://issuer.example.com", "release-manager@example.com", "team-a", nil))
+	require.Error(t, err,
+		"a run predating the starter memo key was authorized under distinct_from_starter instead of "+
+			"refused — a run that cannot prove separation must not get it")
+	require.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+}
+
+// TestAuthorizeSignalRefusesASenderMatchingClaimsButNotTheResolvedSubject
+// checks that a resolved subject (what a subject_from rule looks like once
+// it has reached a run's memo) is still ANDed with the rule's other fields
+// rather than treated as satisfied by them: a sender carrying the right
+// claim but the wrong subject is refused.
+func TestAuthorizeSignalRefusesASenderMatchingClaimsButNotTheResolvedSubject(t *testing.T) {
+	resp := memoWithSignalPolicy(t, map[string]*v1types.SignalPolicy{
+		"deploy-approved": {Allow: []*v1types.SignalPolicyRule{{
+			// This is the shape resolution produces: subject_from has already
+			// been evaluated to a literal subject by the time anything reaches
+			// a memo.
+			Subject: v1types.QualifiedSubject("https://issuer.example.com", "release-manager@example.com"),
+			Claims:  map[string]string{"team": "release-managers"},
+		}}},
+	})
+
+	err := authorizeSignal(resp, "deploy-approved",
+		sender("https://issuer.example.com", "some-other-engineer@example.com", "team-a",
+			map[string]string{"team": "release-managers"}))
+	require.Error(t, err,
+		"a sender carrying the right claim but the wrong subject was authorized — the two are an AND, "+
+			"not a fallback to whichever field matches")
+	require.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+}
+
+// TestAuthorizeSignalFailsClosedOnAMemoPolicyStillCarryingSubjectFrom is
+// #207's read-path fail-closed check: a policy decoded off a run's memo
+// must never still carry a rule's subject_from, because resolution has
+// already run before anything is frozen into a memo — see
+// [signalPolicyMemoEntry] and [v1.ResolveSignalPolicySubjects]. A populated
+// subject_from at this point is corruption or a bug that skipped
+// resolution, not an authoring-time fact, and is refused exactly like any
+// other shape a memo this server wrote would never have.
+func TestAuthorizeSignalFailsClosedOnAMemoPolicyStillCarryingSubjectFrom(t *testing.T) {
+	resp := memoWithSignalPolicy(t, map[string]*v1types.SignalPolicy{
+		"deploy-approved": {Allow: []*v1types.SignalPolicyRule{{
+			SubjectFrom: v1types.NewExpr("inputs.expected_approver"),
+			Namespace:   "release-managers-ns",
+		}}},
+	})
+
+	err := authorizeSignal(resp, "deploy-approved",
+		sender("https://issuer.example.com", "release-manager@example.com", "release-managers-ns", nil))
+	require.Error(t, err,
+		"a memo policy that still carried an unresolved subject_from authorized a sender instead of "+
+			"refusing — an unresolved expression must never reach the enforcement path")
+	require.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+	require.Contains(t, err.Error(), "unresolved expression")
+}
+
+// TestSignalPolicyMemoEntryResolvesSubjectFromAndClearsIt is the shared
+// helper both submit paths use, tested directly: given a workflow declaring
+// a rule's subject_from and the bound inputs BindRunInputs would have
+// produced, the entry it encodes carries only the resolved literal, never
+// the expression.
+func TestSignalPolicyMemoEntryResolvesSubjectFromAndClearsIt(t *testing.T) {
+	approver := v1types.QualifiedSubject("https://issuer.example.com", "release-manager@example.com")
+
+	wf := &v1types.Workflow{
+		Name: "gate",
+		Signals: map[string]*v1types.SignalPolicy{
+			"deploy-approved": {Allow: []*v1types.SignalPolicyRule{
+				{SubjectFrom: v1types.NewExpr("inputs.expected_approver"), Namespace: "release-managers-ns"},
+			}},
+		},
+	}
+	inputs := map[string]*v1types.Value{"expected_approver": v1types.NewLiteral(approver)}
+
+	entry, err := signalPolicyMemoEntry(context.Background(), wf, inputs)
+	require.NoError(t, err)
+	require.Contains(t, entry, signalPolicyMemoKey)
+
+	encoded, ok := entry[signalPolicyMemoKey].([]byte)
+	require.True(t, ok)
+
+	var decoded v1types.Workflow
+	require.NoError(t, proto.Unmarshal(encoded, &decoded))
+
+	rule := decoded.GetSignals()["deploy-approved"].GetAllow()[0]
+	require.Equal(t, approver, rule.GetSubject())
+	require.Nil(t, rule.GetSubjectFrom(), "the encoded memo entry still carried subject_from")
+
+	// And the encoded entry passes the same read-path check the server
+	// applies when it later decodes this memo back — proving the two halves
+	// of #207's fail-closed design agree with each other, not merely that
+	// each looks right in isolation.
+	require.NoError(t, v1types.CheckSignalPolicyShape(decoded.GetSignals(), true))
+}
+
+// TestStarterMemoEntryRecordsTheQualifiedIdentity checks the second shared
+// helper submit uses: the starter entry is the same "<issuer>#<subject>"
+// form [v1.QualifiedSubject] produces everywhere else, so [memoStarter] and
+// [v1.SignalPolicyRule.subject] read identically shaped strings.
+func TestStarterMemoEntryRecordsTheQualifiedIdentity(t *testing.T) {
+	identity := &v1types.WorkloadIdentity{Issuer: "https://issuer.example.com", Subject: "requester@example.com"}
+
+	entry := starterMemoEntry(identity)
+	require.Equal(t,
+		v1types.QualifiedSubject("https://issuer.example.com", "requester@example.com"),
+		entry[starterMemoKey])
 }

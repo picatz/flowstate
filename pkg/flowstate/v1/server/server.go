@@ -178,11 +178,56 @@ const namespaceMemoKey = "flowstate.namespace"
 // means the right thing.
 const signalPolicyMemoKey = "flowstate.signalPolicy"
 
+// starterMemoKey is the memo field recording the qualified issuer#subject of
+// whoever started a run — the identity [v1.SignalPolicy.distinct_from_starter]
+// compares an authorized sender against.
+//
+// Set once, at submit, from the same identity [namespaceMemoKey] already
+// records, through [starterMemoEntry] — the one function both
+// [FlowstateServer.Run] and [FlowstateServer.CreateSchedule] use to write
+// it, for the identical "one function, two callers" reason
+// [signalPolicyMemoEntry] exists. Absent on a run started before this key
+// existed; see [memoStarter] in lifecycle.go for what that absence means to
+// [authorizeSignal].
+const starterMemoKey = "flowstate.starter"
+
+// starterMemoEntry records the qualified issuer#subject of whoever is
+// starting a run, under [starterMemoKey], written by both
+// [FlowstateServer.Run] and [FlowstateServer.CreateSchedule] so that
+// `distinct_from_starter` enforces identically on a direct run and on every
+// firing of a schedule — the same discipline [signalPolicyMemoEntry]
+// follows for the policy itself, and for the identical reason: a scheduled
+// run's starter is whoever created the schedule, captured once and frozen,
+// because there is no caller left to derive an identity from when a
+// schedule fires at 03:00.
+//
+// Always written, even for an identity with no subject (an unauthenticated
+// caller, only possible in development) — the same rule [namespaceMemoKey]
+// follows a few lines above every caller of this function: a memo entry
+// that is unconditionally present is what lets a reader tell "recorded as
+// empty" apart from "never recorded at all", which is exactly the
+// distinction [memoStarter] needs to answer a run that predates this key.
+func starterMemoEntry(identity *v1.WorkloadIdentity) map[string]any {
+	return map[string]any{
+		starterMemoKey: v1.QualifiedSubject(identity.GetIssuer(), identity.GetSubject()),
+	}
+}
+
 // signalPolicyMemoEntry encodes a workflow's declared signal policy into the
 // one memo entry both [FlowstateServer.Run] and [FlowstateServer.CreateSchedule]
 // write, so a scheduled run enforces exactly what a direct run does — the two
 // paths cannot drift, because there is exactly one place that turns
 // [v1.Workflow.Signals] into bytes.
+//
+// Resolves every rule's subject_from against inputs before encoding anything
+// — through [v1.ResolveSignalPolicySubjects], which is also this function's
+// one place a rule's subject_from is ever evaluated. inputs must already be
+// the value [v1.BindRunInputs] returned; both callers pass it that way, so a
+// scheduled run resolves a `subject: ${...}` against exactly the arguments
+// the schedule was created with, and a direct run resolves against exactly
+// what the caller submitted. The resolved policy — literal subjects only,
+// subject_from always cleared — is what gets encoded; the caller's own
+// wf.GetSignals() is never mutated.
 //
 // Returns a nil map (add nothing) when the workflow declares no policy at
 // all, which is the zero case [v1.SignalPolicyAllows] documents: absent means
@@ -197,12 +242,17 @@ const signalPolicyMemoKey = "flowstate.signalPolicy"
 // wrapper type, which is what lets [signalPolicies] decode it with nothing
 // more than `proto.Unmarshal` into a `*v1.Workflow` and read `.GetSignals()`
 // back off it.
-func signalPolicyMemoEntry(signals map[string]*v1.SignalPolicy) (map[string]any, error) {
-	if len(signals) == 0 {
+func signalPolicyMemoEntry(ctx context.Context, wf *v1.Workflow, inputs map[string]*v1.Value) (map[string]any, error) {
+	if len(wf.GetSignals()) == 0 {
 		return nil, nil
 	}
 
-	encoded, err := proto.Marshal(&v1.Workflow{Signals: signals})
+	resolved, err := v1.ResolveSignalPolicySubjects(ctx, wf, inputs)
+	if err != nil {
+		return nil, fmt.Errorf("resolving the declared signal policy's per-run subjects: %w", err)
+	}
+
+	encoded, err := proto.Marshal(&v1.Workflow{Signals: resolved})
 	if err != nil {
 		return nil, fmt.Errorf("encoding the declared signal policy: %w", err)
 	}
@@ -347,19 +397,33 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	// who asked for the work has to be recorded in the state it carries.
 	identity := s.identityFor(ctx)
 
-	// The declared signal policy, frozen into the memo now, exactly as the
-	// tenant is a few lines below — see [signalPolicyMemoEntry], the one
-	// function this and [FlowstateServer.CreateSchedule] both call, so a
-	// scheduled run and a direct run enforce identically.
+	// The declared signal policy, resolved against inputs and frozen into the
+	// memo now, exactly as the tenant is a few lines below — see
+	// [signalPolicyMemoEntry], the one function this and
+	// [FlowstateServer.CreateSchedule] both call, so a scheduled run and a
+	// direct run resolve and enforce identically. And the starter, recorded
+	// through [starterMemoEntry] for the same reason — what a policy's
+	// `distinct_from_starter` will need to compare an authorized sender
+	// against.
 	memo := map[string]any{namespaceMemoKey: identity.GetNamespace()}
-	signalEntry, err := signalPolicyMemoEntry(req.Msg.GetWorkflow().GetSignals())
+	for k, v := range starterMemoEntry(identity) {
+		memo[k] = v
+	}
+	signalEntry, err := signalPolicyMemoEntry(ctx, req.Msg.GetWorkflow(), inputs)
 	if err != nil {
-		// CheckSignalPolicies and v1.Validate above already accepted this
-		// specification, so a marshal failure here is not a caller mistake —
-		// it is this handler unable to do what it just told the caller it
-		// would do. Fail closed rather than start a run whose signal policy
-		// the server itself could not record.
-		return nil, connect.NewError(connect.CodeInternal, err)
+		// Two different failures share this one call, and they get the same
+		// answer for different reasons. CheckSignalPolicies and v1.Validate
+		// above already accepted the specification's shape, so an encoding
+		// failure is this handler unable to do what it just told the caller
+		// it would do — not a caller mistake. But resolving a rule's
+		// subject_from evaluates an expression over the caller's own bound
+		// inputs, and a value that does not resolve to "<issuer>#<subject>"
+		// is exactly the caller's mistake — the same one BindRunInputs above
+		// already reports as InvalidArgument for an ordinary input. Either
+		// way, refusing before the run starts is what invariant 6 asks for:
+		// fail closed rather than start a run whose signal policy the server
+		// itself could not finish establishing.
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 	for k, v := range signalEntry {
 		memo[k] = v
