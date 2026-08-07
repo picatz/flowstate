@@ -1,0 +1,101 @@
+# Roll a new version out in stages — 5% of traffic, then 25%, then 50% — and if
+# the canary goes bad at any stage, put *every* stage back, newest first.
+#
+# This is the composition the engine is for, and until #253 it could not be
+# written. Three things meet in one file:
+#
+#   loop:  carries the traffic percentage, and decides from it what happens next
+#   call:  makes "one stage of a rollout" a reusable unit with its own undo
+#   undo:  unwinds the stages in reverse — 50%, then 25%, then 5%
+#
+# Reverse order is not a constraint here, it is the operationally correct thing
+# to do: traffic was raised in that order, so lowering it in the other order
+# would put more traffic on a version already known to be bad. The engine gets
+# it right for the same reason it does at the top level — compensations run in
+# reverse *registration* order, and a loop's iterations are sequential on both
+# execution drivers, so the order they registered in is the order they happened
+# in.
+#
+# The ordinary path, which finishes the rollout — `service:` is required, so an
+# argument for it is needed the way `parameterized-deploy` needs its own:
+#
+#   flow run local examples/progressive-rollout/workflow.yaml --input service=checkout
+#
+# The path this example exists for — ask it to fail the canary at 50%, and read
+# the last line:
+#
+#   flow run local examples/progressive-rollout/workflow.yaml --input service=checkout --input unhealthy_at=50
+#   ...
+#   step "rollout": iteration 2: step "stage": workflow "shift-traffic": step "check": ...
+#   ; compensation ran in reverse order: undid "record", undid "shift", undid
+#   "record", undid "shift", undid "record", undid "shift"
+#
+# Six compensations for three stages: each stage shifted traffic and recorded
+# it, and each pair comes off in its own reverse order, inside the reverse order
+# of the stages themselves. Nothing in the file says "three" — the loop ran
+# three times, so three registrations are on the stack.
+#
+# `flow cancel` on a run partway through does the same, in the same order:
+# whatever traffic this rollout has already moved has to move back regardless of
+# why it is stopping. `flow terminate` runs none of it, which is the difference
+# the two verbs have always meant.
+edition: v2026.2
+name: progressive-rollout
+description: Shift traffic to a new version in stages, and unwind every stage in reverse if the canary fails.
+
+inputs:
+  service:
+    type: string
+    required: true
+    example: checkout
+    description: which service is being rolled out
+
+  # A feature flag, and 0 — every stage healthy — is exactly the sensible absent
+  # value a default should carry.
+  unhealthy_at:
+    type: int
+    default: 0
+    description: simulate the canary failing at this percentage, to see the whole rollout unwind
+
+steps:
+  - id: rollout
+    description: raise traffic to the new version one stage at a time
+    loop:
+      # The carried state *is* the rollout position, which is what makes this a
+      # `loop:` and not a `for_each` over a list of three numbers: each stage's
+      # percentage is decided after the one before it succeeded, so a stage that
+      # never runs is a percentage that was never chosen.
+      as: percent
+      init: ${5}
+      update: "${percent == 5 ? 25 : 50}"
+      until: ${percent >= 50}
+      max_iterations: 5
+      steps:
+        # The body is one `call:`. Every effect, and every compensation for it,
+        # belongs to `shift-traffic` — this file decides only how far and how
+        # often. A callee's `undo:` registers onto this run's own undo stack, so
+        # a failure three stages in unwinds all three.
+        - id: stage
+          call: ./workflows/shift-traffic.yaml
+          with:
+            service: ${inputs.service}
+            percent: ${percent}
+            unhealthy_at: ${inputs.unhealthy_at}
+
+  - id: promote
+    description: the rollout finished — everything is on the new version's path
+    log:
+      message: ${"%s is at %d%% and healthy".format([inputs.service, steps.rollout.state])}
+
+outputs:
+  service:
+    value: ${inputs.service}
+    description: the service this run rolled out
+
+  final_percent:
+    value: ${steps.rollout.state}
+    description: the share of traffic the new version ended on
+
+  stages:
+    value: ${steps.rollout.results.size()}
+    description: how many stages ran
