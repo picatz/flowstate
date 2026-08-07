@@ -1,0 +1,145 @@
+# A paging bug does not live in a page — it lives at the boundary between two.
+# So no case here asserts anything about *a* page: each one walks the cursor to
+# exhaustion and checks the set, which is CLAUDE.md's "test the traversal, not
+# just the step" applied to the shape that rule was written about.
+#
+# `indexed` is what carries that. It is every record id the walk reached,
+# flattened across pages in page order, so the three ways this can go wrong are
+# all visible in one value: a page fetched twice shows up as a duplicate, a
+# record dropped at a boundary shows up as a gap, and a cursor that stopped
+# early shows up as a short list. A count could not tell any of them apart —
+# `records_per_page: [3, 2]` and a total of five are both satisfied by a run
+# that indexed `rec-1` five times.
+#
+# The stubs are matched on `inputs.query.cursor`, which is what makes two pages
+# expressible at all: one stub answers the request that carries no cursor, and
+# a second answers the request carrying the cursor the first one handed back.
+# A walk that ignored `next_cursor` and asked again from the beginning would
+# match the first stub twice and never terminate, failing on the loop's own
+# `max_iterations:` rather than passing with a plausible-looking list.
+edition: v2026.2
+tests:
+  - name: two pages are walked to exhaustion and every record is indexed exactly once
+    workflow: ./workflow.yaml
+    stubs:
+      # Page one: no cursor, which is how a cursor API is asked for the
+      # beginning. Hands back the cursor page two is fetched with.
+      - task: http
+        where: "inputs.url.endsWith('/records') && inputs.query.cursor == ''"
+        returns:
+          records:
+            - id: rec-1
+              title: first
+            - id: rec-2
+              title: second
+            - id: rec-3
+              title: third
+          next_cursor: page-2
+      # Page two, reachable only by a walk that actually read `next_cursor` out
+      # of page one and carried it into `update:`. Its `next_cursor` is the
+      # empty string rather than an absent key: that empty string is the value
+      # `until:` compares against, and this is the assertion that the walk
+      # stops because the catalogue said it was done.
+      - task: http
+        where: "inputs.url.endsWith('/records') && inputs.query.cursor == 'page-2'"
+        returns:
+          records:
+            - id: rec-4
+              title: fourth
+            - id: rec-5
+              title: fifth
+          next_cursor: ""
+      # The per-record work: one stub answering every record on every page.
+      - task: http
+        where: inputs.url.endsWith('/index')
+        returns:
+          # `record` is the iteration binding, in scope because a stub sees the
+          # scope its step was evaluated in — so one stub answers every record
+          # on every page with that record's own id, which is what the real
+          # endpoint's own `outputs:` expression computes. A stub returning a
+          # fixed id would make `indexed` a list of one value repeated, and
+          # every duplicate this case exists to catch would be invisible.
+          id: ${record.id}
+    expect:
+      ran: [pages]
+      outputs:
+        pages_walked: 2
+        # Unequal pages on purpose. [3, 3] would be satisfied by a walk that
+        # fetched page one twice.
+        records_per_page: [3, 2]
+        # The whole traversal, in order, with nothing repeated and nothing
+        # missing. This is the assertion the other two exist to be read
+        # alongside.
+        indexed: [rec-1, rec-2, rec-3, rec-4, rec-5]
+
+  - name: a catalogue that fits in one page stops after one request
+    workflow: ./workflow.yaml
+    stubs:
+      # The single-page walk, and it matters because it is the case where the
+      # do-while ordering earns its keep: the loop body runs before `until:` is
+      # ever evaluated, so a catalogue with one page is still fetched once
+      # rather than skipped by a condition that held before anything ran.
+      - task: http
+        where: "inputs.url.endsWith('/records') && inputs.query.cursor == ''"
+        returns:
+          records:
+            - id: only-1
+              title: alone
+          next_cursor: ""
+      - task: http
+        where: inputs.url.endsWith('/index')
+        returns:
+          # Each record's own id again — see the first case.
+          id: ${record.id}
+      # Only one `/records` stub, and it is worth being exact about what that
+      # does and does not catch. A walk that kept going would fetch again with
+      # `update:`'s value — the empty cursor — and so would match this same
+      # stub rather than arriving unmatched. So the stub list is not what
+      # proves the walk stopped; the assertions below are. `pages_walked: 1`
+      # and an `indexed` with no repeat both fail on a walk that took a second
+      # page, and one that never stopped at all fails on the loop's own
+      # `max_iterations:`. All three roads lead somewhere red, which is the
+      # property worth having — none of them is a quiet pass.
+    expect:
+      ran: [pages]
+      outputs:
+        pages_walked: 1
+        records_per_page: [1]
+        indexed: [only-1]
+
+  - name: an empty page is walked past rather than treated as the end
+    workflow: ./workflow.yaml
+    stubs:
+      # A page with no records but a next cursor — the case that separates "the
+      # page was empty" from "the catalogue is finished". The inner `for_each`
+      # has nothing to do and the outer loop must carry on regardless, because
+      # `until:` reads the cursor and not the record count. This is the same
+      # mistake CLAUDE.md records `List` making against Temporal's visibility
+      # store: a peer may legitimately answer with an empty page and a next
+      # page token.
+      - task: http
+        where: "inputs.url.endsWith('/records') && inputs.query.cursor == ''"
+        returns:
+          records: []
+          next_cursor: page-2
+      - task: http
+        where: "inputs.url.endsWith('/records') && inputs.query.cursor == 'page-2'"
+        returns:
+          records:
+            - id: rec-1
+              title: first
+          next_cursor: ""
+      - task: http
+        where: inputs.url.endsWith('/index')
+        returns:
+          # Each record's own id again — see the first case.
+          id: ${record.id}
+    expect:
+      ran: [pages]
+      outputs:
+        # Two pages walked for one record: the empty page counts as a page,
+        # which is exactly what a walk bounded by cursors rather than by
+        # records has to do.
+        pages_walked: 2
+        records_per_page: [0, 1]
+        indexed: [rec-1]
