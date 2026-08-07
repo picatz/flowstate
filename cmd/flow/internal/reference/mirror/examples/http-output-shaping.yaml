@@ -1,7 +1,18 @@
+# A step that shapes its own result.
+#
+# `outputs:` is not the http task's own idea — it is what a step of any kind writes
+# to say what it produces, in place of the defaults. The http task is one of the two
+# that has it; `wait_for_signal:` is the other, and shapes its result the same way
+# from `payload`, `sender` and `timed_out` (see `examples/approval-gate`). What
+# differs between them is only which names their expressions see, because that is
+# the one thing that genuinely differs: each shapes *its own* result.
+#
 # By default the http task returns `status_code`, `body` and `headers` as this step's
 # outputs, which later steps read as `${steps.web.status_code}`. The optional `outputs`
 # input replaces those with exactly the values this step should return, keeping only
-# what later steps need in the workflow's payloads.
+# what later steps need in the workflow's payloads. Replace and not extend, in both
+# places: one key with one meaning, and a name the shaping dropped is a `flow validate`
+# error rather than an empty value.
 #
 # Expressions in `outputs` are evaluated after the response arrives, and reach it
 # through `response.*`: `${response.status_code}`, `${response.body}`. Rooted because

@@ -33,7 +33,7 @@ $ flow validate examples/hello-world/workflow.yaml
 | [workflow-vars](workflow-vars) | `vars:` at the top of a file, read as `vars.<name>`, beside a loop's bare binding | no |
 | [step-vars](step-vars) | `vars:` on a step and on a loop, bare and private to what declares them | no |
 | [expressions](expressions) | Expressions as values: a step's own `vars:`, and one dialect an `if:` reaches too | no |
-| [approval-gate](approval-gate) | `wait_for_signal:` as a human approval gate, and branching on `payload` versus `timed_out` | no |
+| [approval-gate](approval-gate) | `wait_for_signal:` as a human approval gate, shaping its own `outputs:` so the gate is stated once and every branch and report reads one name | no |
 | [wait-timeout](wait-timeout) | The same gate going unanswered: `timeout:` lapses, `timed_out` is true, and the run carries on rather than failing | no |
 | [wait-until-a-moment](wait-until-a-moment) | `wait_until:` a computed moment, with `now` and the duration builders | no |
 | [computed-durations](computed-durations) | A `sleep:` and a `wait_for_signal:` `timeout:` computed rather than written down — a grace period sized by the plan, a deadline sized by the contract, and `now` in both | no |
@@ -44,7 +44,7 @@ $ flow validate examples/hello-world/workflow.yaml
 | [http-query-and-json](http-query-and-json) | `query:` parameters, a structured `json:` body, and `parse_json:` | yes |
 | [http-form](http-form) | A url-encoded `form:` body, as OAuth token endpoints expect | yes |
 | [http-expect](http-expect) | `expect:` — accepting a 404, and rejecting a 200 with an error in the body | yes |
-| [http-output-shaping](http-output-shaping) | Returning only chosen fields from a response via `outputs` | yes |
+| [http-output-shaping](http-output-shaping) | A step that shapes its own result — returning only chosen fields from a response via `outputs:`, the same key `wait_for_signal:` uses | yes |
 | [http-secret](http-secret) | Resolving an authorized bearer reference only inside the HTTP task | yes |
 | [vault-secret](vault-secret) | `vault:` — the regulated-deployment backend, HashiCorp Vault or OpenBao, with a KV v2 path and token or Kubernetes auth | yes |
 | [keychain-secret](keychain-secret) | `keychain:` — the macOS-only local-development backend, and the platform check that refuses it elsewhere with a clear message | yes |
