@@ -168,22 +168,25 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	// The declared signal policy, encoded through the exact function [Run]
-	// uses — [signalPolicyMemoEntry] — so a scheduled run and a direct run
-	// enforce identically. This was the hole a scheduled approval gate had:
-	// a schedule's fired execution used to carry only the tenant memo, never
-	// this one, so `Signal` read the fired run's memo, found no policy
-	// entry, and allowed any in-tenant sender — the zero case, reached by a
-	// workflow that had in fact declared a policy. Sharing the one encoding
-	// function with [Run] is what makes that impossible to reintroduce by
-	// editing one path and not the other.
-	signalEntry, err := signalPolicyMemoEntry(workflow.GetSignals())
+	// The declared signal policy, resolved against this schedule's own bound
+	// inputs and encoded through the exact function [Run] uses —
+	// [signalPolicyMemoEntry] — so a scheduled run resolves and enforces
+	// exactly what a direct run does, on every firing. This was the hole a
+	// scheduled approval gate had: a schedule's fired execution used to
+	// carry only the tenant memo, never this one, so `Signal` read the fired
+	// run's memo, found no policy entry, and allowed any in-tenant sender —
+	// the zero case, reached by a workflow that had in fact declared a
+	// policy. Sharing the one encoding function with [Run] is what makes
+	// that impossible to reintroduce by editing one path and not the other.
+	signalEntry, err := signalPolicyMemoEntry(ctx, workflow, inputs)
 	if err != nil {
-		// Symmetric with Run's own refusal: a specification CheckSignalPolicies
-		// and v1.Validate already accepted, but this handler could not encode,
-		// must not create a schedule whose every firing would silently enforce
-		// nothing.
-		return nil, connect.NewError(connect.CodeInternal, err)
+		// Symmetric with Run's own refusal: an InvalidArgument covers a
+		// caller-supplied input that a rule's subject_from cannot resolve to
+		// a qualified subject; anything else is this handler unable to
+		// encode a specification CheckSignalPolicies and v1.Validate already
+		// accepted, and must not create a schedule whose every firing would
+		// silently enforce nothing.
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
 	// The schedule's own memo (below) governs the Schedule object itself —
@@ -195,12 +198,22 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 	// keeping their memos in the same shape means a future reader of either
 	// finds what it expects rather than discovering the split by tracing
 	// through `Signal`.
+	// The starter, recorded through [starterMemoEntry] on both memos for the
+	// same reason and in the same shape the policy entry above is: whoever
+	// creates a schedule is the starter of every run it fires, frozen once
+	// here because there is no caller left at 03:00 to derive one from.
 	scheduleMemo := map[string]any{namespaceMemoKey: namespace}
+	for k, v := range starterMemoEntry(identity) {
+		scheduleMemo[k] = v
+	}
 	for k, v := range signalEntry {
 		scheduleMemo[k] = v
 	}
 
 	actionMemo := map[string]any{namespaceMemoKey: namespace}
+	for k, v := range starterMemoEntry(identity) {
+		actionMemo[k] = v
+	}
 	for k, v := range signalEntry {
 		actionMemo[k] = v
 	}
