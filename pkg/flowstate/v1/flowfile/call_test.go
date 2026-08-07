@@ -1,6 +1,7 @@
 package flowfile_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -431,6 +432,106 @@ steps:
 	// that a caller's own step will never be visible — that is what CallScope's
 	// isolation enforces at run time, not what the parser refuses.
 	require.NotNil(t, workflow.GetSteps()[1].GetCall().GetWorkflow())
+}
+
+// buildCallDiamond writes a binary `call:` diamond of the given depth into dir
+// and returns the root file's path.
+//
+// Files l0..l{depth-1} each `call:` the next file twice; leaf l{depth} holds
+// leafSteps plain `log:` steps and calls nothing. Because a `call:` embeds the
+// callee's compiled spec whole and nothing deduplicates a callee compiled more
+// than once (see [v1.Call]'s doc), the leaf's steps appear 2^depth times in the
+// fully-expanded tree — breadth multiplied by the fan-out of two at every
+// level, the exact billion-laughs shape maxCallExpansionNodes bounds. The
+// source files stay tiny; only the expansion is large, which is the point.
+//
+// depth is kept at or under [v1.MaxCallDepth] so the run reaches the expansion
+// bound rather than tripping the depth bound first.
+func buildCallDiamond(t *testing.T, dir string, depth, leafSteps int) string {
+	t.Helper()
+
+	var root string
+	for i := range depth {
+		var b strings.Builder
+		fmt.Fprintf(&b, "edition: v2026.2\nname: l%d\nsteps:\n", i)
+		// Two calls to the next file: the fan-out of two per level is what makes
+		// the embedded copies multiply rather than add.
+		fmt.Fprintf(&b, "  - id: c1\n    call: ./l%d.yaml\n", i+1)
+		fmt.Fprintf(&b, "  - id: c2\n    call: ./l%d.yaml\n", i+1)
+		path := writeFile(t, dir, fmt.Sprintf("l%d.yaml", i), b.String())
+		if i == 0 {
+			root = path
+		}
+	}
+
+	var leaf strings.Builder
+	fmt.Fprintf(&leaf, "edition: v2026.2\nname: l%d\nsteps:\n", depth)
+	for s := range leafSteps {
+		fmt.Fprintf(&leaf, "  - id: s%d\n    log:\n      message: hi\n", s)
+	}
+	writeFile(t, dir, fmt.Sprintf("l%d.yaml", depth), leaf.String())
+
+	// The root — l0, the file a compile starts from — not the leaf written last.
+	return root
+}
+
+// TestCallExpansionIsBounded is TestMergeExpansionIsBounded's sibling for
+// `call:`, and the end-to-end proof for the same lesson: a diamond of calls
+// multiplies breadth exactly as a repeated YAML alias does, so the compiler
+// bounds the *total compiled node count* across the whole call tree
+// (maxCallExpansionNodes = 100_000), not the depth or the per-file size.
+//
+// Every source file here is tiny; nothing in the tree is near any per-file
+// limit. What is large is only the expansion — a depth-7 binary diamond embeds
+// its leaf 2^7 = 128 times, so a leaf of ~850 log steps compiles to ~109k
+// nodes, and the bound has to be the thing that stops it. The refusal is
+// measured by its diagnostic, never by a wall clock: a bound test that reddens
+// under load is worse than none, because "the box was busy" is the honest
+// reading of a real regression too (the #246 lesson TestMergeExpansionIsBounded
+// records).
+//
+// Asserted to both sides. The over case (~109k nodes) must be refused with the
+// bound's own diagnostic; the under case, the identical shape one leaf-size step
+// smaller (~90k nodes), must compile clean — which is what makes the refusal
+// evidence the bound was *reached* rather than merely never crossed, and proves
+// an ordinary large call tree is not rejected for being large.
+func TestCallExpansionIsBounded(t *testing.T) {
+	t.Parallel()
+
+	// depth 7 (<= v1.MaxCallDepth) fans out to 2^7 = 128 embedded leaf copies.
+	// 128 * 850 ~= 109k > 100k reaches the bound; 128 * 700 ~= 90k < 100k does
+	// not. Both sides share the shape so only the leaf size decides the outcome.
+	const depth = 7
+
+	t.Run("over the bound is refused with the expansion diagnostic", func(t *testing.T) {
+		t.Parallel()
+
+		root := buildCallDiamond(t, t.TempDir(), depth, 850)
+
+		_, _, err := flowfile.ParseFile(root)
+
+		var ds flowfile.Diagnostics
+		require.ErrorAs(t, err, &ds)
+		// Reached, not merely survived — the bound's own sentence, so a tree
+		// refused for some unrelated reason could not pass this by accident.
+		require.Contains(t, ds.Error(), "meant to expand to",
+			"the call-expansion bound is what should have stopped this")
+		// Reported against a call step that overran the budget, not blamed on
+		// the whole file: the diagnostic names the callee it was resolving.
+		require.Contains(t, ds.Error(), ".yaml")
+	})
+
+	t.Run("under the bound compiles clean", func(t *testing.T) {
+		t.Parallel()
+
+		root := buildCallDiamond(t, t.TempDir(), depth, 700)
+
+		workflow, _, err := flowfile.ParseFile(root)
+		require.NoError(t, err,
+			"a large-but-bounded call tree must still compile; the bound is a count, not a ban on calls")
+		require.NotNil(t, workflow.GetSteps()[0].GetCall().GetWorkflow(),
+			"the callee should have been embedded whole")
+	})
 }
 
 func mustValidate(t *testing.T, path string) flowfile.Diagnostics {

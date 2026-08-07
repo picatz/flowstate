@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -309,4 +310,122 @@ func TestEntityStateReportsCarriedVarsAndLoopState(t *testing.T) {
 		return total != nil && total.GetLiteral().GetInt64Value() == 3+4
 	}, 30*time.Second, 100*time.Millisecond,
 		"the entity's carried vars and loop state were never observed through Get, even after two mutations")
+}
+
+// entityWorkflowCarryingVar is entityWorkflow with one extra top-level `var:`,
+// used to size the state query's answer without touching the loop arithmetic:
+// the blob is only ever read back through the state query, never referenced by
+// the loop's `update:`/`until:`, so it inflates the [v1.EntityState] a query
+// serializes and nothing else.
+func entityWorkflowCarryingVar(name string, value *v1.Value) *v1.Workflow {
+	wf := entityWorkflow(nil)
+	wf.Vars[name] = value
+	return wf
+}
+
+// TestEntityStateTruncationReachesTheClientThroughGet is the traversal
+// [TestEntityStateReportsCarriedVarsAndLoopState] leaves open: that test proves
+// the happy path (`!Truncated`, values present) survives QueryWorkflow encoding
+// to the RunResponse, and the struct-level unit tests
+// (progress_internal_test.go) prove [progress.stateSnapshot] flips Truncated
+// when its answer would exceed [engine.entityStateMaxBytes]. Neither drives an
+// actually-oversized workload the whole way — SignalWithStart -> the
+// StateQuery handler -> [server.entityState]'s QueryWorkflow/encoded.Get ->
+// RunResponse.EntityState — and asserts the flag a caller sees. This does.
+//
+// # Which bound, and why this one
+//
+// Of the two documented state bounds, only [engine.entityStateMaxBytes]
+// (256 KiB) is reachable end-to-end. [engine.entityStateMaxLoopEntries] (64)
+// counts *concurrently active* loops, and the only shape that runs more than
+// one loop at once is a `parallel:` block — whose branches the engine runs with
+// a nil `progress` (execute.go's runParallel: "no one branch is the run's
+// position"), so a loop inside a branch records no loop state at all. A
+// sequential top-level loop that parks at a `wait_for_signal:` blocks every
+// later step, so at most one top-level loop is ever active. The count bound is
+// therefore real and unit-tested but has no end-to-end path today; the byte
+// bound does, so it is the one driven here.
+//
+// # How the bound is driven, and to both sides
+//
+// A single top-level var carries a raw blob. ~300 KiB sits comfortably under
+// [v1.MaxSpecBytes] (1 MiB, so the spec is accepted) and comfortably over
+// [engine.entityStateMaxBytes] (256 KiB, so the serialized answer must be
+// refused) — that is the over case. A ~64 KiB blob on the identical shape stays
+// well under the byte bound — the under case — and proves the bound is
+// *reached* rather than merely never exceeded: same driver, one just below and
+// one just above, distinct outcomes. The under case must come back with its
+// vars intact and `!Truncated`; the over case must come back `Truncated` with
+// an empty body, because a truncated answer reports nothing rather than a
+// partial map a reader could mistake for the whole of it.
+func TestEntityStateTruncationReachesTheClientThroughGet(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTenantFixture(t)
+	startWorker(t, fixture.temporal)
+
+	// One fixture, one worker, two entities under distinct keys: the byte bound
+	// is a property of the answer, not of the tenant, so both sides can share a
+	// namespace and the slow dev-server setup is paid once.
+	underKey := "order-state-under-byte-bound"
+	overKey := "order-state-over-byte-bound"
+
+	underStarted, err := fixture.teamA.SignalWithStart(t.Context(), connect.NewRequest(&v1.SignalWithStartRequest{
+		EntityKey: underKey,
+		Workflow:  entityWorkflowCarryingVar("blob", v1.NewLiteral(strings.Repeat("u", 64*1024))),
+		Name:      "update",
+		Payload:   updatePayload(1, false),
+	}))
+	require.NoError(t, err)
+	underID := underStarted.Msg.GetWorkflowId()
+
+	overStarted, err := fixture.teamA.SignalWithStart(t.Context(), connect.NewRequest(&v1.SignalWithStartRequest{
+		EntityKey: overKey,
+		Workflow:  entityWorkflowCarryingVar("blob", v1.NewLiteral(strings.Repeat("o", 300*1024))),
+		Name:      "update",
+		Payload:   updatePayload(1, false),
+	}))
+	require.NoError(t, err)
+	overID := overStarted.Msg.GetWorkflowId()
+
+	// Both run the same shape and set their vars before the loop body's wait, so
+	// once each is parked at its gate the state query's answer is stable.
+	waitUntilParkedAtTheGate(t, fixture.temporal, underID)
+	waitUntilParkedAtTheGate(t, fixture.temporal, overID)
+
+	// Over the bound: Truncated must reach the client and the oversized body
+	// must be refused whole — no partial Vars, no LoopState leaked past the cap.
+	require.Eventually(t, func() bool {
+		got, err := fixture.teamA.Get(t.Context(), connect.NewRequest(&v1.GetRequest{
+			WorkflowId: overID,
+		}))
+		if err != nil || got.Msg.GetStatus() != v1.RunResponse_STATUS_RUNNING {
+			return false
+		}
+		state := got.Msg.GetEntityState()
+		return state != nil &&
+			state.GetTruncated() &&
+			len(state.GetVars()) == 0 &&
+			len(state.GetLoopState()) == 0
+	}, 30*time.Second, 100*time.Millisecond,
+		"an entity whose carried state exceeds entityStateMaxBytes never reported Truncated through Get")
+
+	// Under the bound, same driver: a real answer reaches the client with its
+	// vars intact and nothing truncated — the negative pole that makes the
+	// assertion above evidence the bound was reached, not merely never crossed.
+	require.Eventually(t, func() bool {
+		got, err := fixture.teamA.Get(t.Context(), connect.NewRequest(&v1.GetRequest{
+			WorkflowId: underID,
+		}))
+		if err != nil || got.Msg.GetStatus() != v1.RunResponse_STATUS_RUNNING {
+			return false
+		}
+		state := got.Msg.GetEntityState()
+		if state == nil || state.GetTruncated() {
+			return false
+		}
+		blob := state.GetVars()["blob"]
+		return blob != nil && len(blob.GetLiteral().GetStringValue()) == 64*1024
+	}, 30*time.Second, 100*time.Millisecond,
+		"an entity whose carried state fits under entityStateMaxBytes never returned its untruncated vars through Get")
 }
