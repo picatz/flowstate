@@ -319,6 +319,26 @@ func fakeManifest(mode string) (*pluginv1.PluginManifest, error) {
 		}}
 		return base, nil
 
+	case "scoped":
+		// Otherwise identical to the default fake below, except that it
+		// declares NeedsScope — which is what routes the durable driver to
+		// TaskInScope rather than the legacy Task activity, exercising the
+		// path [engine.TaskInScope] carries an identity on independent of
+		// [flowstatev1.TaskNeedsAuthority].
+		base.Capabilities = []pluginv1.Capability{
+			pluginv1.Capability_CAPABILITY_SECRETS,
+			pluginv1.Capability_CAPABILITY_TASKS,
+		}
+		base.Schemes = []string{mode}
+		base.Tasks = []*pluginv1.TaskManifest{{
+			Name:          "scoped_task",
+			Summary:       "a fake task that declares it needs a scope",
+			InputMessage:  "flowstate.v1.Task.Log.Inputs",
+			OutputMessage: "flowstate.v1.Task.Log.Outputs",
+			NeedsScope:    true,
+		}}
+		return base, nil
+
 	case "secret-task", "secret-task-error":
 		// Declares one input, "message", as accepting a host secret reference —
 		// the manifest field TestResolvePluginSecretInputs* and

@@ -10,6 +10,7 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 	"github.com/spf13/cobra"
 )
@@ -194,6 +195,21 @@ func withLocalTaskRuntime(cmd *cobra.Command, ctx context.Context, workflow *v1.
 	if err != nil {
 		return nil, noop, err
 	}
+
+	// Installed before any of the branches below, and on every one of their
+	// returns, rather than only alongside [v1.ContextWithTaskRuntime] near the
+	// bottom: a local rehearsal with no secret backend and no broker
+	// configured — the common case for a plugin-only workflow on a laptop —
+	// returns early, below, without ever building a TaskRuntime at all. A
+	// plugin task still runs on that path, and the wire still carries
+	// Identity and Namespace fields on every ExecuteRequest, so it needs a
+	// caller here regardless of whether this run also resolves secrets. One
+	// source: the same identity [v1.TaskRuntime.Identity] gets, converted by
+	// [v1.ProtoWorkloadIdentity] to the wire shape [plugin.NewContextWithIdentity]
+	// carries, per the same rule engine/runtime.go's taskActivities.context
+	// follows for the durable driver.
+	ctx = plugin.NewContextWithIdentity(ctx, v1.ProtoWorkloadIdentity(identity))
+
 	registry, configured, closeProviders, err := secretRegistry(cmd)
 	if err != nil {
 		return nil, closeProviders, err

@@ -4,6 +4,7 @@ import (
 	"context"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -131,7 +132,14 @@ func Task(ctx context.Context, task *v1.Task, identity *v1.WorkloadIdentity) (*v
 	// task evaluates its own inputs — a property of the task, not of logging — and a
 	// bridge present on two of three paths is a message that vanishes for a reason
 	// nobody would connect to it.
-	out, err := task.Eval(withActivityLogger(ctx), nil)
+	//
+	// #187 gave this entry point an identity parameter for the task-shape
+	// policy check above, which closes #235's one remaining gap for free: a
+	// plugin task that needs neither a scope nor secret authority is scheduled
+	// here, and until identity had a reason to reach this activity at all
+	// there was nothing for [plugin.NewContextWithIdentity] to install it
+	// from. Same call, same helper, same reasoning as [TaskInScope]'s.
+	out, err := task.Eval(plugin.NewContextWithIdentity(withActivityLogger(ctx), orEmptyIdentity(identity)), nil)
 	recordTaskOutcome(span, err)
 
 	return out, activityError(task.GetName(), err)
@@ -161,7 +169,11 @@ func TaskWithPrev(ctx context.Context, task *v1.Task, prev *v1.Workflow_StepOutp
 	ctx, stop := withHeartbeat(ctx)
 	defer stop()
 
-	out, err := task.Eval(withActivityLogger(ctx), prev)
+	// No identity parameter to read, per this function's own doc — but a
+	// plugin task replayed through this legacy entry point still deserves the
+	// same explicit-empty caller every other path gives one, rather than the
+	// context simply never having a value at all.
+	out, err := task.Eval(plugin.NewContextWithIdentity(withActivityLogger(ctx), orEmptyIdentity(nil)), prev)
 	recordTaskOutcome(span, err)
 
 	return out, activityError(task.GetName(), err)
@@ -196,7 +208,15 @@ func TaskInScope(ctx context.Context, task *v1.Task, scope *v1.Scope) (*v1.Node_
 	ctx, stop := withHeartbeat(ctx)
 	defer stop()
 
-	out, err := task.EvalInScope(withActivityLogger(ctx), scope)
+	// The scope this activity was scheduled with already carries the run's
+	// identity — execute.go copies RunState.Identity into it for every task
+	// that needs previous outputs, whether or not this invocation also needs
+	// [v1.TaskNeedsAuthority]'s identity-aware activity. A plugin task that
+	// declares it needs a scope gets its caller from here rather than from
+	// [ContextWithTaskRuntime], which this unauthorized entry point never
+	// installs — see runtime.go's taskActivities.context for the path that
+	// does.
+	out, err := task.EvalInScope(plugin.NewContextWithIdentity(withActivityLogger(ctx), orEmptyIdentity(scope.GetIdentity())), scope)
 	recordTaskOutcome(span, err)
 
 	return out, activityError(task.GetName(), err)

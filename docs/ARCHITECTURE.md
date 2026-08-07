@@ -475,8 +475,21 @@ worker and a plugin binary nobody should have trusted running as though it were
 trustworthy.
 
 A plugin task also receives the caller's identity and namespace — the wire always
-carried them, and `sdk.CallerFromContext` is what reads them without widening every
-task's function signature to carry a value most tasks never need.
+carried the fields, and `sdk.CallerFromContext` is what reads them without widening
+every task's function signature to carry a value most tasks never need. Filling
+those fields is the run's authenticated identity crossing into
+`plugin.NewContextWithIdentity`, installed at every entry point that can execute a
+task on either driver: `engine/runtime.go`'s `taskActivities.context` for the
+authorized activities, and `engine/activities.go`'s `Task`, `TaskWithPrev` and
+`TaskInScope` directly, all reading the same `RunState.Identity` `#187`'s
+task-shape policy threads into every one of them — the same value, and often the
+same call, that secret resolution reaches through `ContextWithTaskRuntime` on the
+authorized arms. `cmd/flow/secrets.go`'s `withLocalTaskRuntime` is the identical
+seam for the local driver. An identity that was never established — a local
+rehearsal with no `--as-subject`, or a run predating this field — crosses as an
+explicit, present, all-empty caller rather than as a missing context value or a
+fabricated one; `engine/runtime.go`'s `orEmptyIdentity` and
+`v1.ProtoWorkloadIdentity` are the two places that guarantee it.
 
 ### Tenancy
 
