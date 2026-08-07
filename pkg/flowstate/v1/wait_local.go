@@ -343,17 +343,23 @@ func waitLocally(ctx context.Context, clock Clock, d time.Duration) (*Node_Outpu
 func waitForSignalLocally(ctx context.Context, clock Clock, signal *Signal, timeout time.Duration, bounded bool) (*Node_Outputs, error) {
 	name := signal.GetName()
 
-	waiter, ok := SignalWaiterFromContext(ctx)
-	if !ok {
-		return nil, fmt.Errorf("%w: it waits for %q", ErrNoSignalWaiter, name)
-	}
-
 	// A bound that has already lapsed, answered before anything blocks — the same
 	// order the durable driver uses, and for the same reason: racing an
 	// already-expired timer against a signal that may be ready makes the outcome a
 	// property of the scheduler rather than of the workload.
+	//
+	// Ahead of the waiter lookup, and deliberately. This gate never waits for
+	// anything, so demanding a waiter to tell it so would refuse a run that has
+	// nothing left to receive — and it would refuse it *only locally*, since the
+	// durable driver has no equivalent requirement. That is a driver disagreement
+	// on the path a lapsed deadline takes, which is the one this arm exists for.
 	if bounded && timeout <= 0 {
 		return SignalOutputs(nil, nil, true), nil
+	}
+
+	waiter, ok := SignalWaiterFromContext(ctx)
+	if !ok {
+		return nil, fmt.Errorf("%w: it waits for %q", ErrNoSignalWaiter, name)
 	}
 
 	if !bounded {

@@ -188,6 +188,51 @@ steps:
 `,
 		},
 		{
+			// The same clock in the position that grew an expression second.
+			// `sleep:` took a literal duration and nothing else until computed
+			// durations landed, so this file could not be written at all — and the
+			// day it could, `now` was bound in it while the rewriter knew about
+			// `wait_until:` alone. A `sleep:` whose value is a scalar expression is
+			// the same node shape the case above covers, so it is the cheap half of
+			// the extent; the mapping below is the other one.
+			name: "a step is called now, beside a computed sleep that reads the clock",
+			source: `edition: v2026.2
+name: shadow-now-sleep
+steps:
+  - id: now
+    log:
+      message: a step called now
+  - id: hold
+    sleep: "${(now + duration('1s')) - now}"
+`,
+		},
+		{
+			// The extent, in the shape that is genuinely different. A `wait_until:`
+			// and a computed `sleep:` are scalars hanging off their own key;
+			// `wait_for_signal:` is a *mapping*, and the expression that sees `now`
+			// is a key inside it. So the subtraction has to survive one more level of
+			// descent, and a rewriter that subtracted at the key holding the
+			// expression rather than at the key opening the wait would be right on
+			// both scalars and wrong here.
+			//
+			// It cannot be subtracted at `timeout:` either, which is the other half
+			// of why this case exists: a bare `timeout:` on an ordinary step is that
+			// step's activity timeout, an ordinary duration evaluated where there is
+			// no clock at all.
+			name: "a step is called now, beside a signal timeout computed from the clock",
+			source: `edition: v2026.2
+name: shadow-now-timeout
+steps:
+  - id: now
+    log:
+      message: a step called now
+  - id: gate
+    wait_for_signal:
+      name: sign-off
+      timeout: "${(now + duration('1h')) - now}"
+`,
+		},
+		{
 			// `run` is a root (#206), not a name the grammar binds bare the way a
 			// loop's `as:` or `now` is — but the risk is the identical shape: a bare
 			// identifier that means something other than a step, sitting in a file
@@ -373,6 +418,55 @@ steps:
 `,
 			rooted: "vars.flag",
 			bareIn: `message: "${flag}"`,
+		},
+		{
+			// Both directions of the clock's own scope, in the position the
+			// byte-comparison table above cannot reach: that table asserts a file is
+			// left alone, so it can only ever prove the subtraction happened, never
+			// that it stopped where it should.
+			//
+			// Here a step is called `now` *and* referenced the legacy way outside the
+			// wait. The reference has to be rooted — it is a step — while the `now`
+			// inside the computed `sleep:` has to stay bare, because there it is the
+			// clock. Subtracting for the step rather than for the wait's own value
+			// would leave the first bare in a file stamped with the new edition,
+			// which is the failure this whole test is named for.
+			name: "a computed sleep sees the clock, and the rest of the step sees the step called now",
+			source: `edition: 2026.1
+name: nowsleepscope
+steps:
+  - id: now
+    echo:
+      message: "5s"
+  - id: hold
+    if: "${now.result != ''}"
+    sleep: "${duration(now.result)}"
+`,
+			// The `if:` is outside the wait's own value, so `now.result` there is the
+			// step and migrates with it.
+			rooted: "vars.now",
+			bareIn: `sleep: "${duration(now.result)}"`,
+		},
+		{
+			// The same pair one level deeper, through the mapping shape. `timeout:`
+			// is a key inside `wait_for_signal:`, so the clock is bound across a
+			// descent the two scalar positions never make — and the step called `now`
+			// is still an ordinary step everywhere outside that mapping.
+			name: "a signal's timeout sees the clock, and the rest of the step sees the step called now",
+			source: `edition: 2026.1
+name: nowtimeoutscope
+steps:
+  - id: now
+    echo:
+      message: "1h"
+  - id: gate
+    if: "${now.result != ''}"
+    wait_for_signal:
+      name: sign-off
+      timeout: "${(now + duration('1h')) - now}"
+`,
+			rooted: "vars.now",
+			bareIn: `timeout: "${(now + duration('1h')) - now}"`,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {

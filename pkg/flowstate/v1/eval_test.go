@@ -185,7 +185,33 @@ func TestRunWorkflowTaskPolicy(t *testing.T) {
 func TestRunWorkflowWait(t *testing.T) {
 	for _, test := range tests.WaitCases() {
 		t.Run(test.Name, func(t *testing.T) {
-			runWorkflow(t, test.Workflow, test.ExpectedOutputs)
+			// Inputs and ExpectFailure are read here rather than delegated to
+			// runWorkflow, which does neither. Both arrived with computed
+			// durations: a `sleep:` branching on `inputs.plan` needs the first,
+			// and a negative one has to fail the run rather than produce outputs
+			// to compare. A caller that ignored them would have run every one of
+			// those cases as "expect success with no inputs" and passed on the
+			// two that are about failing — which is CLAUDE.md's own note about
+			// ZeroValueCases, in a suite that already had both callers.
+			// A waiter nobody sends anything to. The durable driver always has a
+			// signal channel; locally one has to be installed, and without it a
+			// gate bounded by a computed timeout fails on "no signal waiter"
+			// instead of lapsing — a difference in the driver, not in the case.
+			// Delivering a signal is still driver-specific (see [tests.WaitCases]);
+			// timing one out is not.
+			ctx := v1.NewContextWithSignalWaiter(t.Context(), v1.NewLocalSignals())
+
+			out, err := v1.RunWithInputs(ctx, test.Workflow, test.Inputs)
+			if test.ExpectFailure {
+				require.Error(t, err, "the wait was expected to fail the run")
+				return
+			}
+			require.NoError(t, err)
+			require.NotEmpty(t, out)
+
+			require.True(t, proto.Equal(test.ExpectedOutputs, out),
+				"Expected output does not match actual output:\n%s",
+				cmp.Diff(test.ExpectedOutputs, out, protocmp.Transform()))
 		})
 	}
 }
