@@ -1,0 +1,20 @@
+# The idea this file teaches is that one `vars:` binding is how two steps agree
+# about a value — and that each of them reads it through its own expression. So
+# the case pins the two messages *separately*: `greet` must emit the binding
+# verbatim and `shout` must emit it upper-cased. Two `where:` stubs is what makes
+# that an assertion rather than a description — swap the two expressions in
+# workflow.yaml and neither invocation matches its stub, where `ran: [greet,
+# shout]` would stay green.
+edition: v2026.2
+tests:
+  - name: both steps read the one binding, each through its own expression
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        where: inputs.message == 'hello world'
+        returns: {}
+      - task: log
+        where: inputs.message == 'HELLO WORLD'
+        returns: {}
+    expect:
+      ran: [greet, shout]

@@ -1,0 +1,15 @@
+# The smallest file this language admits, so the only thing it can teach is
+# that a step's task input arrives as written. That is what this case pins:
+# the stub's `where:` is the assertion — a `log` invocation whose `message` is
+# anything other than the literal `hello world` matches no stub and fails the
+# case, which `ran: [hello]` on its own could never notice.
+edition: v2026.2
+tests:
+  - name: the one step logs the literal it was given
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        where: inputs.message == 'hello world'
+        returns: {}
+    expect:
+      ran: [hello]

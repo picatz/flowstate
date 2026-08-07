@@ -1,0 +1,33 @@
+# The claim this file makes is that `subject` bound in `describe` and `subject`
+# bound in `describe_rollback` are two different names that happen to be spelled
+# the same — lexical, not ambient — and that a name bound *inside* a loop body is
+# re-evaluated per iteration against the iterator.
+#
+# Both are assertions about values, so both are `where:` clauses. If a step's
+# `vars:` ever leaked into the next step, `describe_rollback` would emit "release
+# for staging" and match no stub. If a body var were evaluated once rather than
+# per iteration, one of the two host lines would be wrong. Listing the five step
+# ids in `ran:` could not see either.
+edition: v2026.2
+tests:
+  - name: the same bare name means two different things, and a body var follows the iterator
+    workflow: ./workflow.yaml
+    stubs:
+      # Two step vars composed, one of them reading the workflow's ambient var.
+      - task: log
+        where: inputs.message == 'release for staging (2026)'
+        returns: {}
+      # `subject` again, in another step, bound to something else entirely.
+      - task: log
+        where: inputs.message == 'rollback for staging'
+        returns: {}
+      # `fqdn` is declared inside the body, so it reads `host` — a different
+      # value each iteration — alongside `suffix` from the enclosing block.
+      - task: log
+        where: inputs.message == 'alpha.staging.internal'
+        returns: {}
+      - task: log
+        where: inputs.message == 'beta.staging.internal'
+        returns: {}
+    expect:
+      ran: [describe, describe_rollback, fan_out]

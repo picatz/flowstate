@@ -1,0 +1,32 @@
+# The ambient half of `vars:`, and the two things about it worth asserting:
+#
+#   * an expression var is evaluated once, before the first step runs, and every
+#     step reads the same value — `deploying to eu-west-1`;
+#   * an ambient var and a loop's own binding are both in scope inside a body and
+#     cannot be confused, which is what the three `<target>.eu-west-1` lines say:
+#     `target` varies, `vars.region` does not.
+#
+# Each is a `where:` clause, because each is a claim about a computed string. The
+# `doc_hint` var is deliberately not asserted here and cannot be: no step reads
+# it, which is the whole of its point — it exists to show an unfenced literal
+# staying a literal, and `flow validate` (not this file) is what checks that it
+# was not read as a step reference.
+edition: v2026.2
+tests:
+  - name: an ambient var reaches the top level and the inside of a loop alike
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        where: inputs.message == 'deploying to eu-west-1'
+        returns: {}
+      - task: log
+        where: inputs.message == 'alpha.eu-west-1'
+        returns: {}
+      - task: log
+        where: inputs.message == 'beta.eu-west-1'
+        returns: {}
+      - task: log
+        where: inputs.message == 'gamma.eu-west-1'
+        returns: {}
+    expect:
+      ran: [announce, fan_out]
