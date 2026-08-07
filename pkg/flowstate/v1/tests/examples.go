@@ -969,15 +969,32 @@ func (v ExampleVariant) WithOverrides(bound map[string]*v1.Value) map[string]*v1
 // exampleVariants names an example against the additional invocations worth
 // running beyond its default one.
 //
-// One entry, for the reason exampleFailures has one: it is meant to stay hard
-// to add to, so an entry here is a real gap in what the default run reaches
-// rather than a way to make an assertion pass.
+// Two entries, and it is meant to stay hard to add to: an entry here is a real
+// gap in what the default run reaches rather than a way to make an assertion
+// pass. Both meet that bar the same way — the example's compensation path is
+// its whole point and its default arguments deliberately never reach it,
+// because "paste this and watch it work" is the rule every example follows.
 var exampleVariants = map[string][]ExampleVariant{
 	"order-fulfillment": {
 		{
 			Name:      "carrier-outage",
 			Overrides: map[string]*v1.Value{"carrier_outage": v1.NewLiteral(true)},
 			Fails:     `; compensation ran in reverse order: undid "charge_payment", undid "reserve_inventory"`,
+		},
+	},
+	// The #253 shape: a `loop:` carrying a traffic percentage, each iteration
+	// `call:`ing a sub-workflow that carries its own `undo:`. Six entries for
+	// three stages, and the *order* is the assertion — each stage's two
+	// compensations come off in their own reverse order, inside the reverse
+	// order of the stages. A run that unwound 5% before 50% would satisfy any
+	// set-shaped check and would be a live incident; this is the text an
+	// operator reads, so it is what the harness pins.
+	"progressive-rollout": {
+		{
+			Name:      "canary-unhealthy-at-50",
+			Overrides: map[string]*v1.Value{"unhealthy_at": v1.NewLiteral(int64(50))},
+			Fails: `; compensation ran in reverse order: undid "record", undid "shift", ` +
+				`undid "record", undid "shift", undid "record", undid "shift"`,
 		},
 	},
 }

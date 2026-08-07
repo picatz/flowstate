@@ -52,6 +52,7 @@ $ flow validate examples/hello-world/workflow.yaml
 | [parameterized-deploy](parameterized-deploy) | `inputs:` — typed arguments with defaults and a required one, read from an `if:`, a step's `vars:`, and a task input | yes |
 | [saga-provisioning](saga-provisioning) | `undo:` — saga compensation: three steps, a failure on the third, and the first two taken back in reverse order. The one example that ends in a failed run, on purpose | yes |
 | [order-fulfillment](order-fulfillment) | The same compensation over a business transaction — reserve stock, charge a card, undo both when the carrier step is asked to fail | yes |
+| [progressive-rollout](progressive-rollout) | `loop:` + `call:` + `undo:` together — traffic shifted 5% → 25% → 50% by a loop carrying the percentage, each stage a reusable called workflow with its own compensation, and every stage unwound newest-first when the canary is asked to fail | yes |
 | [computed-outputs](computed-outputs) | `outputs:` — what the run answers with, computed from its steps and its arguments | no |
 | [call-a-workflow](call-a-workflow) | `call:` — running another Flowfile as a step, isolated from the caller, with `with:` binding its declared inputs and its `outputs:` read back under the step id | no |
 | [scheduled-report](scheduled-report) | `triggers:` — the cadence a file declares, which `flow schedule create` turns into a schedule and `flow run` ignores | no |
@@ -83,9 +84,9 @@ the examples charter (#165), and [embedding](embedding/README.md) is a Go progra
 Flowfile `flow` runs on its own, so its README says how to run it instead. Everywhere
 else the workflow's own comments are the documentation, and a README repeating them
 would be one more thing to leave stale — which is also why
-[call-a-workflow](call-a-workflow) holds two files and has none: the second one is a
-Flowfile, called by the first, and its own comments are exactly as much documentation
-as any other example's.
+[call-a-workflow](call-a-workflow) and [progressive-rollout](progressive-rollout) each
+hold two Flowfiles and have none: the second one is called by the first, and its own
+comments are exactly as much documentation as any other example's.
 
 `plugins/greet`, `plugins/vcs`, `plugins/github`, and `plugins/git` also sit a directory
 deeper than the rest, which is deliberate: everything matching `examples/*/workflow.yaml`
