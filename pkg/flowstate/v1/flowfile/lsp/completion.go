@@ -106,7 +106,8 @@ var dslKeys = map[string][]dslKey{
 		{name: "vars", detail: "map", docs: "Names values once, for the whole file. Every step reads them as `${" + v1.VarsRoot + ".<name>}`.\n\n" +
 			"Rooted rather than bare because a var is *ambient*: it is in scope everywhere rather than bound where you read it, the same distinction that makes a step's outputs `" + v1.StepsRoot + ".<id>.<output>` and a loop's binding bare.\n\n" +
 			"Evaluated once, before the first step runs — so a var may use literals, operators and the profile's functions, and may not read a step, another var, or anything else that does not exist yet. " +
-			"The `${...}` fence is still required for an expression: without it the value is the text as written, which is what lets a var hold the literal string `steps.greet.result`."},
+			"The `${...}` fence is still required for an expression: without it the value is the text as written, which is what lets a var hold the literal string `steps.greet.result`.\n\n" +
+			"A `${secret(...)}` reference may not be stored here — a var is evaluated by the workflow and its value is written to durable history. Write the reference on the task input that consumes the secret instead."},
 		{name: "steps", detail: "list", docs: "The steps to run, in order. Each step may reference the outputs of the steps before it."},
 	},
 	"steps": {
@@ -136,7 +137,8 @@ var dslKeys = map[string][]dslKey{
 			"Bare rather than rooted because these are author-chosen and lexically local — the same standing as the name a loop binds — where the workflow's `vars:` are ambient and so are rooted. " +
 			"They are private to the step: on a `for_each` or `parallel:` they reach the whole body, and nowhere else. Pass a value to a *later* step through its outputs instead.\n\n" +
 			"A name already bound by an enclosing loop or step is refused rather than shadowed, and a var may not read its siblings — `vars:` is a mapping, so there is no order that would make one available to another. " +
-			"Everything else in scope is fair: `" + v1.VarsRoot + ".<name>`, the outputs of steps already run, and any enclosing binding."},
+			"Everything else in scope is fair: `" + v1.VarsRoot + ".<name>`, the outputs of steps already run, and any enclosing binding.\n\n" +
+			"A `${secret(...)}` reference may not be stored here either, for the same reason it may not go in the workflow's own `vars:`. Write it on the task input that consumes the secret."},
 		{name: "timeout", detail: "duration", docs: "Bounds one attempt at the step, written as `30s`, `5m`, or `1h`."},
 		{name: "retry", detail: "map", docs: "How a failed attempt is retried. Omit it to use the engine's defaults."},
 		{name: "continue_on_error", detail: "bool", docs: "Let the run proceed when this step fails. A cancellation is not a failure, so this does not tolerate one."},
