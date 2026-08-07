@@ -1,0 +1,135 @@
+edition: v2026.2
+name: entity-order
+description: An order as a long-lived entity — created by its first mutation, accumulating state across further ones, surviving Continue-As-New in between, and closing on a terminal event rather than by exhausting its loop.
+
+# An "entity workflow" is not new grammar. It is a shape this file's own steps
+# already had: `loop:` (#220) carrying state, mutated by `wait_for_signal:`
+# (#194), retired by a mutation setting the loop's own stop condition rather
+# than by `until:` resolving true on its own — the same primitive
+# `loop-accumulate` shows for a bounded fold, aimed at a run that mostly is not
+# expected to reach its bound in normal operation.
+#
+# What makes a run like this reachable as an *entity* — addressable by a
+# business key, created by whichever caller signals it first, read without
+# mutating it — lives one layer up, at the RPC surface this file cannot see or
+# express:
+#
+#   - `RunRequest.entity_key` turns "order-4471" into this run's workflow id,
+#     composed with the caller's own tenant (`v1.EntityWorkflowID`,
+#     `pkg/flowstate/v1/entity.go`) rather than left to a random one.
+#   - `WorkflowService.SignalWithStart` is what a caller actually uses to
+#     reach this order: signal it if it exists, create it under this exact
+#     file if it does not — atomically, so two callers racing to place the
+#     first line item cannot both start it.
+#   - `Get`'s `entity_state` answers what this run is carrying — its `vars:`
+#     and `steps.lifecycle.state` — while it is RUNNING, which by design it
+#     almost always is; nothing about a healthy order shows up in `outputs`
+#     until it closes.
+#
+# This slice lands the RPC surface an entity needs; `flow`'s own subcommands do
+# not yet have flags for it, so what follows is the RPC a client issues rather
+# than a CLI line to paste — the same honest gap this file's own `outputs:`
+# comments do not paper over.
+#
+# Bring an order into existence and place its first line item in one call to
+# `WorkflowService.SignalWithStart` (`proto/flowstate/v1/flowstate.proto`):
+# entity_key "order-4471", this file as `workflow`, signal name `update`,
+# payload `{"amount_cents": 1999, "close": false}`. The response's `created`
+# field is true — nothing existed under this key yet.
+#
+# Add another line item with the identical call, entity_key unchanged: the
+# entity is found rather than recreated (`created` comes back false), and its
+# `signals:` policy — this file declares none, so any authenticated caller in
+# the run's own tenant may — is what decided that before Temporal ever saw it.
+#
+# Read what it currently holds, at any point, without mutating it and without
+# waiting for it to finish (it structurally never does, until closed): `Get`
+# on the workflow id the first call returned, whose `entity_state` field
+# answers `vars.kind` and `steps.lifecycle`'s carried `order` value.
+#
+# Close it with one more `SignalWithStart` (or the ordinary `Signal`, once the
+# entity is known to exist) carrying `{"amount_cents": 0, "close": true}` —
+# the mutation that finally makes `until:` hold.
+#
+# # What this file's own tests can and cannot show
+#
+# `workflow.test.yaml` queues three `update` signals for the identical name —
+# the local driver's signal queue (`LocalSignals`, `pkg/flowstate/v1/wait_local.go`)
+# holds several deliveries of one name and hands them out to successive waits
+# in order, exactly as Temporal buffers real signals — so it proves the loop
+# genuinely accumulates across more than one mutation before closing.
+#
+# The durable corpus harness (`engine/examples_durable_test.go`) that also
+# runs this file is shared across every example and answers each named signal
+# once, up front, the same way `approval-gate`'s single `deploy-approved` is
+# answered there — so the run CI compares between drivers closes on its first
+# and only mutation. That is a limit of the shared harness's table, not of
+# this workflow: the RPC-level behavior — several live `SignalWithStart`/
+# `Signal` calls against one still-running entity, accumulating state exactly
+# as `workflow.test.yaml` shows locally — is what `pkg/flowstate/v1/server/entity_test.go`
+# exercises directly against a real Temporal server (see
+# `TestEntityStateReportsCarriedVarsAndLoopState` and
+# `TestSignalWithStartCreatesOnceThenSignalsTheEntityThereafter`).
+
+vars:
+  kind: order
+
+steps:
+  - id: opened
+    description: A step before the loop, so a run that suspends before reaching its first mutation still has something to have carried across the handover.
+    log:
+      message: order opened
+
+  - id: lifecycle
+    description: Runs one mutation per iteration, retired immediately by a `close` mutation rather than by exhausting `max_iterations`.
+    loop:
+      # A bare int rather than a map: `until:` and `update:` here need only one
+      # value, and `loop-accumulate` is the example that shows the map shape
+      # for when more than one is carried.
+      as: order
+      init: ${0}
+      # Only reached when the loop does *not* stop this iteration — see
+      # `until:` below for why a `close` (or a lapsed) mutation's own
+      # `amount_cents` is never folded in, deliberately.
+      update: ${order + steps.mutation.payload.amount_cents}
+      # Checked against *this* iteration's own fresh signal, not against
+      # `order` — `until:` and `update:` share one scope, but `until:` runs
+      # first and stopping skips `update:` entirely (this is the identical
+      # rule a `for_each`'s early `if:` follows, stated for `loop:` in
+      # `pkg/flowstate/v1/engine/execute.go`'s own `runLoopIteration` comment).
+      # Deciding to stop from `order` — the value carried *into* this
+      # iteration, one mutation stale — would need a whole extra round of
+      # waiting just to notice a close that already happened; reading the
+      # fresh payload instead means an order closes on the very mutation that
+      # tells it to; a lapsed wait closes it the same way `update:`'s
+      # never-reached branch would have. The cost, worth stating plainly: a
+      # `close` mutation's own `amount_cents` is never added — closing is a
+      # checkout, not one more line item, and an author who wants the two
+      # combined sends two mutations, the last with nothing left to add.
+      until: ${steps.mutation.timed_out || steps.mutation.payload.close}
+      # The budget for *this* segment of the entity's life, not for its
+      # lifetime — an order this file expects to run for months does so across
+      # many Continue-As-New segments, each with its own budget of this many
+      # mutations before the engine suspends and resumes with the carried
+      # `order` value intact. See `docs/DSL.md`'s "carried state" section for
+      # why this is a per-segment ceiling rather than a lifetime one.
+      max_iterations: 100
+      steps:
+        - id: mutation
+          wait_for_signal:
+            name: update
+            # An order genuinely abandoned for a month closes on its own
+            # rather than sitting there — see `until:` above.
+            timeout: 720h
+
+outputs:
+  total_cents:
+    value: ${steps.lifecycle.state}
+    description: the sum of every mutation's amount_cents except the one that closed the order
+  mutations:
+    value: ${steps.lifecycle.results.size()}
+    description: >-
+      how many mutations this run processed, including the one that closed
+      it; reachable only when the order genuinely closed — see
+      loop-accumulate's own runaway case for what an unclosed order does
+      instead

@@ -807,6 +807,11 @@ func (e *executor) runLoop(node *v1.Node, loop *v1.Loop, depth, susp int, descen
 		}
 
 		e.setLoopStateFrame(inner, i, results, state)
+		// Tracked for [StateQuery], keyed by the loop's own step id — see
+		// [progress.setLoopState]. Set at the same point [setLoopStateFrame] is,
+		// so the state query always answers with whatever the run has most
+		// recently committed to resuming from.
+		e.progress.setLoopState(node.GetId(), state)
 
 		iteration, stop, next, err := e.runLoopIteration(loop, name, state, inner, innerSusp, i == startItem && descend)
 		if err != nil {
@@ -832,6 +837,10 @@ func (e *executor) runLoop(node *v1.Node, loop *v1.Loop, depth, susp int, descen
 		if stop {
 			e.truncateFrames(inner)
 			e.scope.Outputs.StepValues[node.GetId()] = v1.LoopStateOutputsHonest(results, state, truncated)
+			// The loop is done — a query asked after this point sees its final
+			// value through the step's own outputs, not through the state query,
+			// which only tracks a loop that is still active.
+			e.progress.clearLoopState(node.GetId())
 			return nil
 		}
 		state = next
@@ -841,6 +850,7 @@ func (e *executor) runLoop(node *v1.Node, loop *v1.Loop, depth, susp int, descen
 		// carried state, all of which are representable in the frame.
 		if susp == 0 && e.shouldSuspend() {
 			e.setLoopStateFrame(inner, i+1, results, state)
+			e.progress.setLoopState(node.GetId(), state)
 			return errContinueAsNew
 		}
 	}

@@ -62,12 +62,13 @@ const mcpToolPrefix = "flowstate_"
 var mcpDescriptions = map[string]string{
 	"Run": "Submit a compiled workflow specification to run durably. Returns ids to watch it by; it does not wait. " +
 		"Author a Flowfile, check it with flowstate_validate, compile it with flowstate_compile, and submit the result here.",
-	"Get":       "Report a run's status, timing, current position, and its outputs once finished.",
-	"Signal":    "Deliver a named signal to a run waiting for one — how an approval reaches a workload.",
-	"List":      "List the caller's runs, paged. A short or empty page with a nextPageToken is not the end of the listing; keep paging.",
-	"Cancel":    "Ask a run to stop, letting it clean up on the way out.",
-	"Terminate": "Stop a run immediately, running none of its cleanup. Prefer cancel.",
-	"Validate":  "Check Flowfile YAML sources and report positioned diagnostics without executing anything. Pure and safe to loop on; answers locally, no server needed.",
+	"Get":             "Report a run's status, timing, current position, and its outputs once finished.",
+	"Signal":          "Deliver a named signal to a run waiting for one — how an approval reaches a workload.",
+	"SignalWithStart": "Deliver a named signal to the entity holding a business key — an order id, a subscription id — creating that entity if this is the first event for the key. Use this rather than flowstate_run whenever the key, not a run id, is what you have: it is atomic, so two callers racing on the same key produce one entity, not two.",
+	"List":            "List the caller's runs, paged. A short or empty page with a nextPageToken is not the end of the listing; keep paging.",
+	"Cancel":          "Ask a run to stop, letting it clean up on the way out.",
+	"Terminate":       "Stop a run immediately, running none of its cleanup. Prefer cancel.",
+	"Validate":        "Check Flowfile YAML sources and report positioned diagnostics without executing anything. Pure and safe to loop on; answers locally, no server needed.",
 	"Compile": "Compile Flowfile YAML into the workflow specification flowstate_run submits. A file with problems answers with its " +
 		"diagnostics and no specification. Answers locally, no server needed.",
 	"GetCatalog": "What this build can execute: every task with its typed inputs and outputs, and every CEL function an expression may call. " +
@@ -295,6 +296,23 @@ func workflowServiceMethods() []serviceMethod {
 			input: (&v1.SignalRequest{}).ProtoReflect().Descriptor(),
 			call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
 				resp, err := remote().Signal(ctx, connect.NewRequest(in.(*v1.SignalRequest)))
+				if err != nil {
+					return nil, err
+				}
+
+				return resp.Msg, nil
+			},
+		},
+		{
+			// The entity idiom's entry point: address a run by business key and
+			// deliver to it, creating it if it is not there yet. An agent driving
+			// an order or a subscription needs this rather than Run, because it
+			// does not know — and must not have to know — whether this is the
+			// first event for that key.
+			name:  "SignalWithStart",
+			input: (&v1.SignalWithStartRequest{}).ProtoReflect().Descriptor(),
+			call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
+				resp, err := remote().SignalWithStart(ctx, connect.NewRequest(in.(*v1.SignalWithStartRequest)))
 				if err != nil {
 					return nil, err
 				}

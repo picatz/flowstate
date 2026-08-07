@@ -189,6 +189,23 @@ var exampleSignals = map[string]map[string]*v1.Node_Outputs{
 			"confirmed": v1.NewLiteral(true),
 		}},
 	},
+
+	// entity-order's `until:` reads its own fresh payload each iteration
+	// (`steps.mutation.timed_out || steps.mutation.payload.close`), so one
+	// `close: true` signal closes the loop on its very first iteration — this
+	// table answers each name once, so this is the shape it can exercise here.
+	// The multi-mutation accumulation the file's own header comment names is
+	// what `workflow.test.yaml` shows through the local driver's signal queue
+	// instead (several deliveries of one name, handed out in order), and what
+	// `pkg/flowstate/v1/server/entity_test.go` exercises against a real,
+	// still-running entity through the RPC surface this shared table cannot
+	// reach at all — signalling a run more than once, live.
+	"entity-order": {
+		"update": {NamedValues: map[string]*v1.Value{
+			"amount_cents": v1.NewLiteral(int64(0)),
+			"close":        v1.NewLiteral(true),
+		}},
+	},
 }
 
 // exampleLapsingGates names an example whose gate is meant to go unanswered,
@@ -819,6 +836,7 @@ func stableOutputs(outputs *v1.Workflow_StepOutputs) *v1.Workflow_StepOutputs {
 		delete(step.GetNamedValues(), v1.SenderOutput)
 
 		for _, value := range step.GetNamedValues() {
+			stripSenderRecursive(value.GetLiteral())
 			sortMapEntries(value.GetLiteral())
 		}
 	}
@@ -860,6 +878,42 @@ func stableOutputs(outputs *v1.Workflow_StepOutputs) *v1.Workflow_StepOutputs {
 // Where order *is* load-bearing — a signal payload carried across Continue-As-New —
 // the engine already sorts it deliberately (see [v1.SignalOutputs]), so this cannot
 // hide a difference in the one place order is meant to be stable.
+// stripSenderRecursive deletes [v1.SenderOutput] wherever it appears nested
+// inside value, not only at a step's own top level.
+//
+// stableOutputs's flat `delete(step.GetNamedValues(), v1.SenderOutput)`
+// reaches a `wait_for_signal` step's own outputs, which is every gated
+// example before entity-order: `sender` sits directly in that step's
+// `NamedValues`. entity-order's `wait_for_signal` sits inside a `loop:` body
+// instead, so its per-iteration outputs — sender included — travel folded
+// into the *loop* step's own `results` (a CEL list of maps, built by
+// [v1.LoopOutputs]/[v1.LoopStateOutputsHonest]), which the flat delete above
+// never looks inside. Left unstripped there, `steps.lifecycle`'s own
+// `results` disagrees between drivers on exactly the field the flat delete
+// exists to hide, for the identical reason a bare wait's does — a local run
+// has no authenticated caller and a durable one simulates a real one, and
+// that is supposed to differ.
+func stripSenderRecursive(value *expr.Value) {
+	switch kind := value.GetKind().(type) {
+	case *expr.Value_MapValue:
+		entries := kind.MapValue.GetEntries()
+		kept := entries[:0]
+		for _, entry := range entries {
+			if s, ok := entry.GetKey().GetKind().(*expr.Value_StringValue); ok && s.StringValue == v1.SenderOutput {
+				continue
+			}
+			stripSenderRecursive(entry.GetValue())
+			kept = append(kept, entry)
+		}
+		kind.MapValue.Entries = kept
+
+	case *expr.Value_ListValue:
+		for _, element := range kind.ListValue.GetValues() {
+			stripSenderRecursive(element)
+		}
+	}
+}
+
 func sortMapEntries(value *expr.Value) {
 	switch kind := value.GetKind().(type) {
 	case *expr.Value_MapValue:
