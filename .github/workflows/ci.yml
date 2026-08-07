@@ -60,9 +60,22 @@ jobs:
       # go.mod pins a patched toolchain via its `toolchain` directive. Reading the
       # version from go.mod keeps CI on exactly what local builds use, so a
       # toolchain-level security fix cannot be present locally and missing here.
+      #
+      # cache-dependency-path names the plugin modules' go.sum files as well as
+      # the root one, because this job is the only one that builds them and
+      # setup-go's default key is the root go.sum alone. Without them the five
+      # plugin modules resolve and download their whole dependency graph on
+      # every run — which is why "Test plugin modules" takes ten to twenty
+      # minutes here against roughly one hundred seconds locally, on a job whose
+      # whole budget is fifteen. A separate module is the point of a plugin; the
+      # cost of that boundary is that its dependencies have to be cached
+      # deliberately rather than by default.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            plugins/*/go.sum
 
       - name: Report toolchain
         run: go version
@@ -86,8 +99,11 @@ jobs:
             exit 1
           fi
 
+      # `make test`, not a second copy of the command, so the memory and time
+      # bounds cannot drift between here and the loop a contributor runs
+      # locally. CLAUDE.md's rule is that the Makefile *is* what CI runs.
       - name: Test
-        run: go test -race ./...
+        run: make test
 
       # The plugins are separate Go modules, which is the point of them: a plugin
       # owns its dependencies so an operator decides whether to trust them, and
@@ -99,18 +115,7 @@ jobs:
       # failure, which is the only way this class is ever found — a module nobody
       # builds is not red, it is absent.
       - name: Test plugin modules
-        run: |
-          for module in plugins/*/; do
-            [ -f "$module/go.mod" ] || continue
-            echo "::group::$module"
-            (cd "$module" && go build ./... && go vet ./... && go test -race ./...)
-            unformatted=$(gofmt -l "$module")
-            if [ -n "$unformatted" ]; then
-              echo "::error::not gofmt'd: $unformatted"
-              exit 1
-            fi
-            echo "::endgroup::"
-          done
+        run: make test-plugins
 
       # The same mechanism as the proto job's generated-code check, on the four
       # reference documents that are derived rather than written: the task
