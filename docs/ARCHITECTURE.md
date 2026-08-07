@@ -233,7 +233,7 @@ Rows marked **(done)** are implemented; the rest are the shape the surface shoul
 | Concurrent branches | `parallel:` branch groups, joined before dependents run **(done)** |
 | Best-effort steps | per-step `continue_on_error:`, recording the failure as `${steps.<id>.error}` **(done)** |
 | Activity heartbeats | every task activity heartbeats on a ten-second ticker carrying the phase the task has reached **(done)**; periodic rather than per-phase, because a heartbeat *timeout* has to exceed the longest legitimate gap between beats and a per-phase beat would make that the whole request. The phase is a `v1.Phase`, a closed vocabulary with no constructor — heartbeat details are written into history, so invariant 7 applies and the type refuses the leak rather than a reviewer catching it. This is also how a cancellation reaches a running activity at all, which is what makes the cancellation wait in the row above short |
-| Task queues | routing steps to specialized or plugin workers |
+| Task queues | per-*tenant* routing **(done)**: `flow server --task-queue-prefix` submits a run to `<prefix>_<namespace>`, derived from the authenticated tenant and never from the request, and `flow worker --tenant` polls exactly that queue and refuses a run belonging to anyone else — which is what makes a per-tenant worker fleet addressable rather than merely startable, and what turns a routing mistake into a failure instead of a cross-tenant execution. Unset, every run goes to the one shared queue exactly as before. The composition is unforgeable for the reason an assertion subject's `_default` is: the separator is the one character the namespace grammar forbids, so the boundary is a fact rather than a convention. Per-*step* routing — a step naming a specialized or plugin fleet — is the same mechanism one level down, and is not built |
 | Priorities and rate limits | a run is scheduled under a fairness key taken from its authenticated tenant, so one tenant's large workload cannot crowd out another's **(done)**; per-step controls still to come |
 | **Nexus** | cross-namespace and cross-team calls — both consuming and *exposing* operations |
 
@@ -525,6 +525,15 @@ Flowstate namespace onto a Temporal namespace is worth supporting for deployment
 that isolation, and worth keeping optional: a single-team deployment should not have to
 operate several Temporal namespaces to use the engine, and a self-hosted first-run should
 need none at all.
+
+Which namespace a run *lives* in and which fleet *executes* it are two separate
+decisions, and only the second is about process isolation. A task queue derived from
+the tenant is what makes a per-tenant worker fleet addressable, and the worker's own
+`--tenant` is what makes a mistake in that addressing a refusal rather than a
+cross-tenant execution — see the task queue row above and [DEPLOYMENT.md](DEPLOYMENT.md).
+Both are optional, and both compose with the namespace mapping rather than replacing it:
+a deployment that maps several Flowstate namespaces onto one Temporal namespace still
+keeps them apart by the tenant recorded on each run.
 
 See [DEPLOYMENT.md](DEPLOYMENT.md) for what isolation each deployment shape actually
 provides — checkable claims, not aspirations — and for the one fact about shared Temporal

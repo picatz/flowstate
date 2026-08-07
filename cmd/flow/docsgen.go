@@ -827,6 +827,17 @@ func documentedEnvironmentVariables() []environmentVariable {
 			family:  true,
 		},
 		{
+			name:  "FLOWSTATE_TASK_QUEUE_PREFIX",
+			value: "unset",
+			purpose: "Default for `--task-queue-prefix` on both `flow server` and `flow worker`: route each " +
+				"tenant's runs to a task queue named `<prefix>_<namespace>` instead of the single shared " +
+				"queue. Unset routes nothing, which is the zero-configuration behaviour. It has to be the " +
+				"same value on the server and on every worker, because a worker that spelled it differently " +
+				"would poll a queue nothing submits to — which is why one variable is the convenient way to " +
+				"set it. A worker also needs `--tenant` to say which of those queues is its own.",
+			read: "cmd/flow/main.go",
+		},
+		{
 			name:    "TEMPORAL_TASK_QUEUE",
 			value:   "flowstate-run-task-queue",
 			purpose: "Default for `--task-queue`: the queue workers serve and workflows are routed to.",

@@ -170,19 +170,48 @@ worker fleet that serves only that tenant.
   someone fixes; a fallback is a tenancy breach nobody notices" —
   `pkg/flowstate/v1/server/server.go`). This is genuinely built, tested, and
   undocumented before this file.
-- ❌ **The worker side is not built yet.** `engine.RunTaskQueueName` is a
-  hardcoded constant, and both places a run is put on a task queue —
-  `server.go`'s `Start` (line ~370) and `schedules.go`'s trigger firing (line
-  ~227) — use that constant directly, not anything derived from the tenant.
-  `flow worker` does accept a `--task-queue` flag, so an operator *can* start
-  a worker fleet polling a queue named for one tenant — but the server has no
-  way to route a specific tenant's runs onto that queue, because every
-  submission path names the same queue for everyone. Until per-tenant
-  task-queue routing lands, "per-tenant worker fleet" means "a separate
-  Temporal namespace per tenant, with one worker fleet per namespace, and no
-  way to further split a fleet within one namespace by tenant" — which is
-  still Tier 2 (namespace isolation is what buys history privacy), but is not
-  the fully worked-out story the tier name implies.
+- ✅ **The worker side is built.** `flow server --task-queue-prefix <prefix>`
+  routes each tenant's runs to a task queue of that tenant's own, named
+  `<prefix>_<namespace>`, derived from the *authenticated* tenant and never
+  from the request — the same rule the tenant memo and the fairness key
+  already follow. `flow worker --tenant <namespace> --task-queue-prefix
+  <prefix>` starts a fleet that polls exactly that queue, and **refuses** any
+  run belonging to anyone else, terminally and non-retryably, rather than
+  executing it with this worker's secrets, egress policy and plugins. Both
+  sides compose the name with the same function, which is the only way they
+  can be relied on to agree.
+
+  Unset, the prefix routes nothing and every tenant's runs go to
+  `flowstate-run-task-queue` exactly as they always have — a single-team
+  deployment has nothing to route between and should not have to say so.
+
+  Two combinations are refused at startup rather than documented as things not
+  to do. `--tenant` with no queue of its own is refused, because a
+  tenant-restricted worker on the *shared* queue would race the general fleet
+  for every tenant's runs and fail the ones it won — a flag meant to contain
+  one misconfiguration turned into an outage for everybody else.
+  `--task-queue-prefix` with no `--tenant` is refused because the queue a
+  prefix composes is a function of the tenant, so half the pair addresses
+  nothing.
+
+  **Why the queue name cannot be forged across a tenant boundary.** A
+  namespace is `auth.ValidateNamespace`'s grammar — lowercase letters, digits,
+  and a dash that is never first — so it cannot contain `_`; a prefix is
+  checked against the same grammar, so it cannot either; and the composed name
+  joins them with exactly one `_`. The first `_` is therefore always the
+  separator, at `len(prefix)`, so two `(prefix, namespace)` pairs that composed
+  one string would have to be the same pair. The default tenant's component is
+  `_default`, which begins with the one character a namespace may not contain,
+  so a tenant named `default` gets `<prefix>_default` and the default tenant
+  gets `<prefix>__default` — different queues. This is the same argument the
+  `_default` component of an assertion subject makes, and it is the fix for the
+  ambiguity that let the env secrets provider resolve two tenants' secrets to
+  one variable (`CLAUDE.md`). Asserted over a cross product of straddling
+  pairs by `TestTaskQueueNamesCannotBeForged`.
+
+  What this is *not*: per-**step** queue routing ("run this step on the GPU
+  fleet"), which is the same mechanism applied at a different level and is not
+  built.
 - ✅ What Tier 2 buys once wired to a distinct namespace per tenant: worker
   blast radius drops to one tenant (a plugin compromise on tenant A's worker
   fleet cannot reach tenant B's secrets, because they're different
@@ -190,15 +219,48 @@ worker fleet that serves only that tenant.
   actually addressed), and per-tenant egress becomes a *deployment* fact — run
   tenant A's worker fleet with tenant A's `--egress-policy` file — rather than
   something netpolicy's CEL would need a namespace attribute for.
-- ❌ **Missing to make this easy, not missing to make it possible:** the
-  per-tenant task-queue routing above; a worker-side tenant assertion (a
-  `--tenant` flag a worker refuses to start without, so a worker
-  misconfigured to poll the wrong namespace *fails* instead of quietly
-  executing another tenant's runs); and a check that every namespace the
-  trust policy maps actually has a worker polling it — an unpolled mapped
-  namespace means runs sit `RUNNING` forever with nothing wrong reported.
-  None of these exist in the tree today; they are the direct path from "Tier
-  2 is real" to "Tier 2 is easy to run correctly."
+- ⚠️ **Mapping completeness is a warning, not a refusal.** A tenant mapped
+  onto a Temporal namespace, or onto a task queue, with nothing polling it
+  does not fail: its runs are accepted, start, and sit `RUNNING` forever with
+  nothing wrong reported anywhere — invariant 9's failure shape arriving
+  through a configuration path. `flow server` therefore checks, at startup,
+  whether a worker is polling each routable tenant's queue and logs a warning
+  naming the tenant and the queue when none is. It warns rather than refusing
+  because a server that would not start until its fleet was already polling
+  deadlocks every deployment that starts the server first, and because a
+  poller count is true at an instant rather than durably. **Watch for that
+  line**; it is the difference between finding this at deploy time and finding
+  it when somebody asks why their run has been running since Tuesday.
+
+  Note the tenant that is easiest to miss: a mapping with a `default` also
+  routes the *empty* namespace — what an unauthenticated caller, and a caller
+  whose token names no namespace, belongs to. It has a queue like any other
+  and appears in the mapping under no name at all.
+
+**A worked Tier 2 command line, both sides:**
+
+```console
+# Server: route each tenant onto its own queue, tenants mapped onto Temporal
+# namespaces by the trust policy's `tenancy:` block.
+$ flow server --auth-policy /etc/flowstate/trust.yaml \
+    --task-queue-prefix flowstate-run
+
+# One fleet per tenant. Each gets that tenant's own egress policy and secrets,
+# which is the whole point: a compromise of this process reaches one tenant's
+# material, which is the claim Tier 1 structurally cannot make.
+$ flow worker --tenant team-a --task-queue-prefix flowstate-run \
+    --namespace temporal-team-a \
+    --egress-policy /etc/flowstate/team-a/egress.yaml \
+    --secret-dir /etc/flowstate/team-a/secrets \
+    --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"
+
+# And the default tenant of a deployment whose trust policy has a `default`:
+$ flow worker --tenant= --task-queue-prefix flowstate-run ...
+```
+
+`FLOWSTATE_TASK_QUEUE_PREFIX` sets the prefix on both sides, which is the
+convenient way to keep them equal — a worker that spelled it differently would
+poll a queue nothing submits to, do nothing forever, and report nothing.
 
 ### Tier 3 — substrate isolation
 
