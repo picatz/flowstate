@@ -66,6 +66,17 @@ func BindRunInputs(wf *Workflow, submitted map[string]*Value) (map[string]*Value
 		}
 	}
 
+	// Before a single input is bound, for the same reason the output-shape check
+	// above runs here: this is the one function every submit path already calls,
+	// and a secret reference in a `vars:` block is a specification that would put
+	// a resolved secret in durable history the moment the first block is
+	// evaluated. `flow validate` refuses it earlier and against a position; this
+	// is what refuses it in a specification that never was a Flowfile. See
+	// [CheckVarsHoldNoSecretRef].
+	if err := CheckVarsHoldNoSecretRef(wf); err != nil {
+		return nil, err
+	}
+
 	declared := make(map[string]*InputDeclaration, len(wf.GetDeclaredInputs()))
 	for _, declaration := range wf.GetDeclaredInputs() {
 		declared[declaration.GetName()] = declaration

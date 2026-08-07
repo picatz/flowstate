@@ -124,10 +124,19 @@
 //     `form:`. The destination is what refuses it: a query string is written to
 //     access logs, kept in browser history, and forwarded in a Referer header by
 //     anything that follows a redirect.
-//   - The raw string `body:`, a `log:` field, a step's `vars:`, an `if:`, a loop's
-//     `items:`, an `outputs:` declaration, a wait's payload — all of these are
-//     values the workflow itself reads, and reading a secret in workflow code is
-//     the one thing this whole arrangement exists to prevent.
+//   - The raw string `body:`, a `log:` field, an `if:`, a loop's `items:`, an
+//     `outputs:` declaration, a wait's payload — all of these are values the
+//     workflow itself reads, and reading a secret in workflow code is the one
+//     thing this whole arrangement exists to prevent.
+//   - A `vars:` entry, at the workflow and on a step, in any spelling: bare,
+//     buried in a larger expression, nested in a list or a mapping, or behind a
+//     YAML anchor. This one is not a matter of which input applies what, which is
+//     why it is refused before the question is asked — a var has no destination
+//     at all. It is evaluated by the workflow and bound into the scope every
+//     later expression reads, so there is no activity to resolve it in and no
+//     moment at which the resolved value is not already in durable history. The
+//     diagnostic points at the reference and names the alternative: write the
+//     same `${secret(...)}` on the task input that consumes it.
 //   - An expression sharing a list or a mapping with a reference. The entries of a
 //     structure holding a reference travel as they were written, and an expression
 //     among them would have to be evaluated by the workflow to get there; a

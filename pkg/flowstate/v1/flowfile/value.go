@@ -141,6 +141,24 @@ func (c *compiler) callArgumentValue(n ast.Node, path string, r ref) *v1.Value {
 	return c.value(n, path, r, false)
 }
 
+// varValue compiles one entry of a `vars:` block, at the workflow or on a step.
+//
+// Checked for a secret reference first, and refused wherever one is found — bare,
+// buried in a larger expression, or nested in a list or a mapping — rather than
+// delegated to [compiler.inputValue], which would allow the bare case: a var is not
+// a task input, so "the whole value of a task input" never describes one. The check
+// is [compiler.holdsSecretMarker] rather than a placement, for the reason
+// [compiler.callArgumentValue] uses the same one — none of the placement reasons is
+// true of this position, so the switch that draws them would have to be told a
+// falsehood to reach a refusal here. See [notInVarHelp].
+func (c *compiler) varValue(n ast.Node, path string, r ref) *v1.Value {
+	if resolved := c.resolveQuiet(n); resolved != nil && c.holdsSecretMarker(resolved) {
+		c.report(c.secretMarkerSpan(resolved), r, "%s", notInVarHelp)
+		return nil
+	}
+	return c.inputValue(n, path, r)
+}
+
 // value compiles one node into a schema Value.
 //
 // It returns nil after reporting a diagnostic, so a caller building a message must

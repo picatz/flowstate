@@ -1003,7 +1003,7 @@ func (c *compiler) vars(n ast.Node, path string, r ref) map[string]*v1.Value {
 	compiled := make(map[string]*v1.Value, len(entries))
 	for _, e := range entries {
 		valuePath := fieldPath(path, e.name)
-		if value := c.inputValue(e.value, valuePath, ref{path: valuePath, label: "vars." + e.name}); value != nil {
+		if value := c.varValue(e.value, valuePath, ref{path: valuePath, label: "vars." + e.name}); value != nil {
 			compiled[e.name] = value
 		}
 	}
