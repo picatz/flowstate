@@ -361,6 +361,12 @@ func validateAtDepth(wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnos
 	// one call here covers the whole tree the way checkExpressionTypes does.
 	ds = append(ds, checkNegationDrift(wf.GetSteps())...)
 
+	// A `log:` message that writes an input declared `sensitive:` into the log
+	// in the clear — see sensitive_log.go. Recurses into every for_each/loop
+	// body and parallel branch on its own, the same way checkNegationDrift does,
+	// so one call here covers the whole tree.
+	ds = append(ds, checkSensitiveLog(wf)...)
+
 	// Tasks and expression references.
 	scope := newRefScope(wf)
 	for i, node := range wf.GetSteps() {

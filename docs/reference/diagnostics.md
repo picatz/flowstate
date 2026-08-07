@@ -17,3 +17,4 @@ everything else is `general`, and that is documented rather than pretended away.
 | `constraint-violation` | A value has the right type but violates a rule the schema declares on it, such as a required shape, a pattern, or a bound on size. |
 | `placement-refusal` | A construct is refused at the position it is written — an `undo:` the engine cannot order, a loop nested inside another loop. |
 | `retired-key` | A bare name is the pre-rooting spelling of a step reference; `flow fix` rewrites it rather than an author needing to decide what to write. |
+| `sensitive-in-log` | An input declared `sensitive:` is written directly into a `log:` message, where it would be recorded in run history and stdout in the clear; log a value derived from it instead of the value itself. |
