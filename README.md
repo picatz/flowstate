@@ -205,6 +205,10 @@ That contrast is the whole pitch: write once, rehearse locally, run durably. See
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the layer model and the invariants the
 implementation holds to, and [docs/VISION.md](docs/VISION.md) for where this is going.
 
+Putting this somewhere real, especially somewhere multiple tenants share it? Read
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) first — it opens with the one fact about shared
+Temporal namespaces that has to shape the decision.
+
 ## How it fits together
 
 ```mermaid

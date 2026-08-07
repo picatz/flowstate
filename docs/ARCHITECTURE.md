@@ -513,6 +513,10 @@ that isolation, and worth keeping optional: a single-team deployment should not 
 operate several Temporal namespaces to use the engine, and a self-hosted first-run should
 need none at all.
 
+See [DEPLOYMENT.md](DEPLOYMENT.md) for what isolation each deployment shape actually
+provides — checkable claims, not aspirations — and for the one fact about shared Temporal
+namespaces that belongs at the top of that decision.
+
 ## Execution model
 
 A run proceeds through the layers in one direction:
