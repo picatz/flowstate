@@ -96,9 +96,20 @@ func TestRunWorkflowWait(t *testing.T) {
 			t.Parallel()
 
 			env := newWaitEnv(t)
-			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow})
+			env.ExecuteWorkflow(engine.Run,
+				&v1.RunState{Workflow: test.Workflow, Inputs: test.Inputs})
 
 			require.True(t, env.IsWorkflowCompleted())
+
+			// The same two fields the local driver's caller reads, for the same
+			// reason: a case with inputs and a case that must fail are both in
+			// this set now, and a caller that skipped either would report
+			// agreement it never checked.
+			if test.ExpectFailure {
+				require.Error(t, env.GetWorkflowError(),
+					"the wait was expected to fail the run, as it does locally")
+				return
+			}
 			require.NoError(t, env.GetWorkflowError())
 
 			var output v1.Workflow_StepOutputs

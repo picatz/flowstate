@@ -798,7 +798,7 @@ func validateLoop(stepID string, loop *v1.ForEach, enclosing refScope, index int
 		ds = append(ds, Diagnostic{
 			Step: stepID, Field: "as",
 			Message: fmt.Sprintf(
-				"%q is the built-in naming the moment a wait is evaluated, which a loop variable of the same name would shadow inside `wait_until:`; choose another iterator",
+				"%q is the built-in naming the moment a wait is evaluated, which a loop variable of the same name would shadow inside a wait's own expressions (`sleep:`, `wait_until:`, a signal's `timeout:`); choose another iterator",
 				iterator),
 		})
 	}
@@ -989,7 +989,7 @@ func validateLoopStateName(stepID, state string, enclosing refScope) Diagnostics
 		ds = append(ds, Diagnostic{
 			Step: stepID, Field: "as", Value: state,
 			Message: fmt.Sprintf(
-				"%q is the built-in naming the moment a wait is evaluated, which a loop's carried state of the same name would shadow inside `wait_until:`; choose another name",
+				"%q is the built-in naming the moment a wait is evaluated, which a loop's carried state of the same name would shadow inside a wait's own expressions (`sleep:`, `wait_until:`, a signal's `timeout:`); choose another name",
 				state),
 		})
 	}
@@ -1183,7 +1183,7 @@ func scopeWithStepVars(id string, node *v1.Node, scope refScope, index int, wf *
 		case name == v1.NowIdentifier:
 			ds = append(ds, Diagnostic{
 				Step: id, Field: "vars." + name, Value: name,
-				Message: "`" + v1.NowIdentifier + "` is the moment a `wait_until:` is evaluated, so a " +
+				Message: "`" + v1.NowIdentifier + "` is the moment a wait is evaluated, so a " +
 					"var of that name would shadow it wherever both are in scope; rename this one",
 			})
 
@@ -1405,10 +1405,11 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 			// here, and what to do instead.
 			ds = append(ds, Diagnostic{
 				Step: stepID, Field: inputName,
-				Message: "`now` is only available in `wait_until:`, where the engine binds it to the " +
-					"moment the wait is evaluated; a task input is resolved inside an activity, which " +
-					"has no clock that survives a retry, so compute the moment in a `wait_until:` or " +
-					"pass the time in as an input",
+				Message: "`now` is only available inside a wait — `sleep:`, `wait_until:`, and a " +
+					"signal's `timeout:` — where the engine binds it to the moment the wait is " +
+					"evaluated; a task input is resolved inside an activity, which has no clock that " +
+					"survives a retry, so compute the moment or the length in the wait itself, or pass " +
+					"the time in as an input",
 			})
 			continue
 		}
@@ -1825,14 +1826,26 @@ func validateWait(id string, wait *v1.Wait, scope refScope, index int, wf *v1.Wo
 		return ds
 	}
 
+	// The same reference checking a condition gets, since these are the same kind
+	// of expression resolving against the same names — plus `now`, which the
+	// engine binds when it evaluates a wait and binds nowhere else. Added for
+	// these fields rather than to the workflow's scope, so that using it in a task
+	// input is still reported: there is no clock behind it there, and a name that
+	// resolves in one place and not another has to say so.
+	//
+	// All three of a wait's expressions, not just `wait_until:`. The clock is the
+	// node kind's, not the field's — see [v1.NowIdentifier] — so a scope built per
+	// field here would be the place the two disagreed.
+	waiting := scope.withLocal(v1.NowIdentifier)
+
 	if until := wait.GetUntil(); until != nil {
-		// The same reference checking a condition gets, since it is the same kind
-		// of expression resolving against the same names — plus `now`, which the
-		// engine binds when it evaluates a deadline and binds nowhere else. Added
-		// for this one field rather than to the workflow's scope, so that using it
-		// in a task input is still reported: there is no clock behind it there,
-		// and a name that resolves in one place and not another has to say so.
-		ds = append(ds, validateInputRefs(id, "wait_until", until, scope.withLocal(v1.NowIdentifier), index, wf)...)
+		ds = append(ds, validateInputRefs(id, "wait_until", until, waiting, index, wf)...)
+	}
+	if computed := wait.GetDurationExpr(); computed != nil {
+		ds = append(ds, validateInputRefs(id, "sleep", computed, waiting, index, wf)...)
+	}
+	if computed := wait.GetTimeoutExpr(); computed != nil {
+		ds = append(ds, validateInputRefs(id, "timeout", computed, waiting, index, wf)...)
 	}
 
 	return ds

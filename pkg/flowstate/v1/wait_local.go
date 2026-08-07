@@ -270,8 +270,16 @@ func runWait(ctx context.Context, node *Node, wait *Wait, scope *Scope) (*Node_O
 	clock := ClockFromContext(ctx)
 
 	switch kind := wait.GetKind().(type) {
-	case *Wait_Duration:
-		return waitLocally(ctx, clock, kind.Duration.AsDuration())
+	case *Wait_Duration, *Wait_DurationExpr:
+		// One reader for both spellings, shared with the durable driver — see
+		// [EvalWaitDuration]. The clock is the context's, so `flow test`'s
+		// [VirtualClock] resolves a computed `sleep: ${days(30)}` as readily as a
+		// literal one, without the test spending thirty days finding out.
+		d, err := EvalWaitDuration(ctx, wait, scope, clock.Now())
+		if err != nil {
+			return nil, err
+		}
+		return waitLocally(ctx, clock, d)
 
 	case *Wait_Until:
 		now := clock.Now()
@@ -282,7 +290,11 @@ func runWait(ctx context.Context, node *Node, wait *Wait, scope *Scope) (*Node_O
 		return waitLocally(ctx, clock, deadline.Sub(now))
 
 	case *Wait_Signal:
-		return waitForSignalLocally(ctx, clock, kind.Signal, wait.GetTimeout().AsDuration())
+		timeout, bounded, err := EvalWaitTimeout(ctx, wait, scope, clock.Now())
+		if err != nil {
+			return nil, err
+		}
+		return waitForSignalLocally(ctx, clock, kind.Signal, timeout, bounded)
 
 	default:
 		return nil, fmt.Errorf("unsupported wait kind %T", wait.GetKind())
@@ -323,15 +335,34 @@ func waitLocally(ctx context.Context, clock Clock, d time.Duration) (*Node_Outpu
 // every participant parked, and could never advance to deliver whatever
 // `flow test`'s own scripted signal sender is waiting to send — the run
 // would hang rather than resolve.
-func waitForSignalLocally(ctx context.Context, clock Clock, signal *Signal, timeout time.Duration) (*Node_Outputs, error) {
+// bounded says whether a `timeout:` was written, carried separately from its
+// value for the reason the durable driver's own [engine] arm carries it: `timeout
+// <= 0` used to be the encoding for "no timeout", so a bound that computed to zero
+// read as a gate that blocks forever. The two drivers answer this identically
+// because they are given the same two values by [EvalWaitTimeout].
+func waitForSignalLocally(ctx context.Context, clock Clock, signal *Signal, timeout time.Duration, bounded bool) (*Node_Outputs, error) {
 	name := signal.GetName()
+
+	// A bound that has already lapsed, answered before anything blocks — the same
+	// order the durable driver uses, and for the same reason: racing an
+	// already-expired timer against a signal that may be ready makes the outcome a
+	// property of the scheduler rather than of the workload.
+	//
+	// Ahead of the waiter lookup, and deliberately. This gate never waits for
+	// anything, so demanding a waiter to tell it so would refuse a run that has
+	// nothing left to receive — and it would refuse it *only locally*, since the
+	// durable driver has no equivalent requirement. That is a driver disagreement
+	// on the path a lapsed deadline takes, which is the one this arm exists for.
+	if bounded && timeout <= 0 {
+		return SignalOutputs(nil, nil, true), nil
+	}
 
 	waiter, ok := SignalWaiterFromContext(ctx)
 	if !ok {
 		return nil, fmt.Errorf("%w: it waits for %q", ErrNoSignalWaiter, name)
 	}
 
-	if timeout <= 0 {
+	if !bounded {
 		rejoin := LeaveClockWhile(ctx)
 		defer rejoin()
 

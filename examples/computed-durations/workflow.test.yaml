@@ -1,0 +1,87 @@
+# Three cases, and between them they pin the thing that makes a computed
+# duration worth having: the same file waits for different lengths of time
+# because its inputs differ, and nothing about the file changed.
+#
+# A wait resolves against `flow test`'s virtual clock, so `days(30)` and a
+# deadline in 2099 cost nothing to assert - which is what makes it reasonable to
+# test the enterprise branch at its real size rather than at a toy one.
+edition: v2026.2
+tests:
+  - name: an enterprise contract waits its own grace period and signs off inside the deadline
+    workflow: ./workflow.yaml
+    inputs:
+      plan: enterprise
+      quiet_period: 30m
+      sign_off_by: "2099-01-01T00:00:00Z"
+    signals:
+      - name: onboarding-signed-off
+        payload:
+          approved: true
+    stubs:
+      - task: log
+        where: inputs.message == 'onboarding a enterprise tenant'
+        returns: {}
+      - task: log
+        where: inputs.message == 'enterprise tenant signed off, activating'
+        returns: {}
+    expect:
+      ran: [announce, settle, grace, sign_off, activate]
+      skipped: [lapsed]
+      outputs:
+        outcome: answered
+        plan: enterprise
+
+  # The other branch of the same `sleep:`, which is the assertion that the
+  # expression is being evaluated at all rather than merely accepted: a starter
+  # tenant reaches the identical step and waits a quarter as long.
+  - name: a starter contract takes the other branch of the same computed sleep
+    workflow: ./workflow.yaml
+    inputs:
+      plan: starter
+      quiet_period: 5s
+      sign_off_by: "2099-01-01T00:00:00Z"
+    signals:
+      - name: onboarding-signed-off
+        payload:
+          approved: true
+    stubs:
+      - task: log
+        where: inputs.message == 'onboarding a starter tenant'
+        returns: {}
+      - task: log
+        where: inputs.message == 'starter tenant signed off, activating'
+        returns: {}
+    expect:
+      ran: [announce, settle, grace, sign_off, activate]
+      skipped: [lapsed]
+      outputs:
+        outcome: answered
+        plan: starter
+
+  # Nobody signs off, so the computed timeout is what ends the wait - and it
+  # ends it as a branch rather than as a failure, the same distinction
+  # `wait-timeout` exists for. `lapsed` running is what proves the timeout was
+  # honoured; had the expression fallen through to the encoding that means "no
+  # timeout", this case would hang instead of failing, which is precisely why
+  # a negative one is refused rather than clamped.
+  - name: nobody signs off, and the computed deadline lapses the gate rather than failing it
+    workflow: ./workflow.yaml
+    inputs:
+      plan: growth
+      quiet_period: 1m
+      sign_off_by: "2099-01-01T00:00:00Z"
+    stubs:
+      - task: log
+        where: inputs.message == 'onboarding a growth tenant'
+        returns: {}
+      - task: log
+        where: >-
+          inputs.message == 'sign-off did not arrive before the contract deadline' &&
+          inputs.level == 'warn'
+        returns: {}
+    expect:
+      ran: [announce, settle, grace, sign_off, lapsed]
+      skipped: [activate]
+      outputs:
+        outcome: lapsed
+        plan: growth

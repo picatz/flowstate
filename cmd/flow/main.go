@@ -1305,8 +1305,9 @@ func runTasks(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(out, "\n%s\n  %s\n",
 		theme.Accent.Render("Duration constructors available to every expression:"),
 		strings.Join(v1.DurationUnits(), ", "))
-	fmt.Fprintf(out, "\nInside wait_until, %s is the moment the wait is evaluated,\n"+
-		"so a deadline can be written as ${%s + days(3)}.\n", v1.NowIdentifier, v1.NowIdentifier)
+	fmt.Fprintf(out, "\nInside a wait (sleep, wait_until, a signal's timeout), %s is the moment\n"+
+		"the wait is evaluated, so a deadline is ${%s + days(3)} and a remaining\n"+
+		"bound is ${deadline - %s}.\n", v1.NowIdentifier, v1.NowIdentifier, v1.NowIdentifier)
 
 	// Where a value comes from, which this listing otherwise leaves somebody to
 	// guess at.

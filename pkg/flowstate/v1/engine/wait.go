@@ -34,8 +34,17 @@ func (e *executor) runWait(node *v1.Node, wait *v1.Wait) error {
 	logger.Info("step is waiting", "id", node.GetId(), "wait", v1.WaitDescription(wait))
 
 	switch kind := wait.GetKind().(type) {
-	case *v1.Wait_Duration:
-		return e.waitFor(node, kind.Duration.AsDuration())
+	case *v1.Wait_Duration, *v1.Wait_DurationExpr:
+		// Both spellings of a sleep go through one reader, so the durable driver
+		// cannot resolve a computed one differently from the local driver — see
+		// [v1.EvalWaitDuration]. The clock is `workflow.Now`, which replays to the
+		// instant it first returned, which is what makes an expression naming
+		// `now` safe in workflow code.
+		d, err := v1.EvalWaitDuration(context.Background(), wait, e.scope, workflow.Now(e.ctx))
+		if err != nil {
+			return nodeFailed(err)
+		}
+		return e.waitFor(node, d)
 
 	case *v1.Wait_Until:
 		deadline, err := v1.EvalWaitDeadline(context.Background(), kind.Until, e.scope, workflow.Now(e.ctx))
@@ -48,7 +57,11 @@ func (e *executor) runWait(node *v1.Node, wait *v1.Wait) error {
 		return e.waitFor(node, deadline.Sub(workflow.Now(e.ctx)))
 
 	case *v1.Wait_Signal:
-		return e.waitForSignal(node, kind.Signal, wait.GetTimeout().AsDuration())
+		timeout, bounded, err := v1.EvalWaitTimeout(context.Background(), wait, e.scope, workflow.Now(e.ctx))
+		if err != nil {
+			return nodeFailed(err)
+		}
+		return e.waitForSignal(node, kind.Signal, timeout, bounded)
 
 	default:
 		return nodeFailed(fmt.Errorf("unsupported wait kind %T", wait.GetKind()))
@@ -72,7 +85,15 @@ func (e *executor) waitFor(node *v1.Node, d time.Duration) error {
 }
 
 // waitForSignal blocks until a signal arrives or the wait times out.
-func (e *executor) waitForSignal(node *v1.Node, signal *v1.Signal, timeout time.Duration) error {
+//
+// bounded says whether a `timeout:` was written at all, and it is carried
+// separately from its value because the two facts used to be one and that was a
+// latent bug. "No timeout" was spelled `timeout <= 0`, so a bound that computed to
+// zero — `${deadline - now}` reached exactly on the deadline, or a hand-built spec
+// setting the field to `0s` — read as an approval gate that blocks forever, which
+// is the opposite of what it says. A written bound is honoured at its value now,
+// and zero means the gate has already lapsed.
+func (e *executor) waitForSignal(node *v1.Node, signal *v1.Signal, timeout time.Duration, bounded bool) error {
 	name := signal.GetName()
 
 	// A signal that arrived before this step was reached, drained from its
@@ -83,6 +104,19 @@ func (e *executor) waitForSignal(node *v1.Node, signal *v1.Signal, timeout time.
 		workflow.GetLogger(e.ctx).Info("step consumed a signal that arrived earlier",
 			"id", node.GetId(), "signal", name)
 		e.recordOutputs(node, v1.SignalOutputs(payload, sender, false))
+		return nil
+	}
+
+	// A bound that has already lapsed. Answered before the selector rather than
+	// through a zero-length timer, because a selector holding both a ready channel
+	// and an already-fired timer may take either, and "which one" would then be a
+	// property of the SDK's scheduling rather than of the workload — the two
+	// drivers could not be made to agree on it, and neither could two replays.
+	if bounded && timeout <= 0 {
+		workflow.GetLogger(e.ctx).Info("wait timed out before it began",
+			"id", node.GetId(), "signal", name, "timeout", timeout)
+		e.recordOutputs(node, v1.SignalOutputs(nil, nil, true))
+
 		return nil
 	}
 
@@ -108,7 +142,7 @@ func (e *executor) waitForSignal(node *v1.Node, signal *v1.Signal, timeout time.
 		received = c.Receive(e.ctx, &delivery)
 	})
 	selector.AddReceive(e.ctx.Done(), func(workflow.ReceiveChannel, bool) {})
-	if timeout > 0 {
+	if bounded {
 		selector.AddFuture(workflow.NewTimer(e.ctx, timeout), func(workflow.Future) {})
 	}
 	selector.Select(e.ctx)
@@ -131,7 +165,7 @@ func (e *executor) waitForSignal(node *v1.Node, signal *v1.Signal, timeout time.
 		// Only a deadline can produce this now that cancellation is handled
 		// above: with no timeout there is nothing else for the selector to have
 		// woken on.
-		if timeout <= 0 {
+		if !bounded {
 			return nodeFailed(fmt.Errorf("stopped waiting for signal %q", name))
 		}
 

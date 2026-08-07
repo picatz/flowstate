@@ -464,8 +464,47 @@ const (
 	// exist and therefore unable to see them.
 	conditionKey = "if"
 
-	// waitUntilKey opens the one expression that sees `now`.
+	// The three keys that open an expression seeing `now`, which is every
+	// expression a wait can hold.
+	//
+	// It was one of these — `wait_until:` — for as long as that was the only arm
+	// of a wait that took an expression at all. `sleep:` and a signal's `timeout:`
+	// take one now, and `now` is bound in both, because the clock belongs to the
+	// node kind and not to the field (see [v1.NowIdentifier]).
+	//
+	// A rewriter that learned two of the three would corrupt a working file in
+	// exactly the case it did not know about, which is what this block's own
+	// comment above says and what has happened twice. So they are listed together
+	// and read together.
 	waitUntilKey = "wait_until"
+
+	// waitSleepKey is a `sleep:`, whose value may be a duration or an expression.
+	waitSleepKey = "sleep"
+
+	// waitForSignalKey opens a mapping whose `timeout:` may be an expression. The
+	// subtree rather than the `timeout:` key itself is what gets the binding
+	// subtracted, because a bare `timeout:` elsewhere is a *step's* activity
+	// timeout — an ordinary duration, in a scope with no clock — and subtracting
+	// there would be the "too wide" failure [sees] warns about. Inside this
+	// mapping the only other key is `name:`, which the compiler refuses to read as
+	// an expression at all, so nothing rootable is suppressed.
+	waitForSignalKey = "wait_for_signal"
+)
+
+// bindsNow is the set of keys under which `now` is bound, which the rewriter reads
+// as one thing so that no caller can know a subset of it.
+//
+// Derived from the constants above rather than written out again, because a fourth
+// duration position would otherwise mean remembering to edit two places, and the
+// one that gets forgotten is this one — it is not a compile error, and the file it
+// corrupts still passes `flow validate`.
+var bindsNow = map[string]bool{
+	waitUntilKey:     true,
+	waitSleepKey:     true,
+	waitForSignalKey: true,
+}
+
+const (
 
 	// nowBinding is the clock, bound bare and only inside a wait.
 	nowBinding = "now"

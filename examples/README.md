@@ -36,6 +36,7 @@ $ flow validate examples/hello-world/workflow.yaml
 | [approval-gate](approval-gate) | `wait_for_signal:` as a human approval gate, and branching on `payload` versus `timed_out` | no |
 | [wait-timeout](wait-timeout) | The same gate going unanswered: `timeout:` lapses, `timed_out` is true, and the run carries on rather than failing | no |
 | [wait-until-a-moment](wait-until-a-moment) | `wait_until:` a computed moment, with `now` and the duration builders | no |
+| [computed-durations](computed-durations) | A `sleep:` and a `wait_for_signal:` `timeout:` computed rather than written down — a grace period sized by the plan, a deadline sized by the contract, and `now` in both | no |
 | [expense-approval](expense-approval) | Two `wait_for_signal:` gates in sequence — a manager approval that escalates to finance ops on timeout, fail-closed if neither ever answers | no |
 | [callback-address](callback-address) | `run.workflow_id` and `run.run_id` — a run telling an external system where to send the answer, then waiting for the signal that address carries back | yes |
 | [headers-and-nested](headers-and-nested) | Request headers, and selecting into a nested result | yes |

@@ -191,8 +191,9 @@ func renderTaskReference() string {
 	b.WriteString("## Expressions\n\n")
 	fmt.Fprintf(&b, "Values are reached through these roots: %s.\n\n", codeList(catalog.GetValueRoots()))
 	fmt.Fprintf(&b, "Duration constructors, available to every expression: %s.\n\n", codeList(catalog.GetDurationUnits()))
-	fmt.Fprintf(&b, "Inside a `wait_until:` expression, and nowhere else, `%s` is bound to the\n"+
-		"evaluation moment.\n\n", catalog.GetNowIdentifier())
+	fmt.Fprintf(&b, "Inside a wait's own expressions — `sleep:`, `wait_until:`, and a signal's\n"+
+		"`timeout:` — and nowhere else, `%s` is bound to the evaluation moment.\n\n",
+		catalog.GetNowIdentifier())
 	fmt.Fprintf(&b, "CEL libraries every expression reaches: %s.\n\n", codeList(catalog.GetCelLibraries()))
 
 	b.WriteString("### Functions\n\n")

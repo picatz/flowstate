@@ -129,7 +129,7 @@ type mustEnvResult struct {
 //
 // None of the above reads a clock, a random source, or does I/O. The one
 // nondeterministic name in the language — [NowIdentifier] — is not a library
-// function but a *variable* bound only inside a `wait_until:`'s own
+// function but a *variable* bound only inside a wait's own
 // evaluation (see wait.go), so it is not part of any profile library and
 // widening the library set does not expose it; [refuseNondeterministicMust]
 // still catches a `must:` that references it, by the identical free-identifier
@@ -235,8 +235,8 @@ func compileMustIn(env *cel.Env, mustExpr string) (*cel.Ast, error) {
 
 // refuseNondeterministicMust reports a tailored refusal when a `must:`
 // expression reads `now`, the one nondeterministic name an author is likeliest
-// to reach for out of habit — `now` is bound everywhere a `wait_until:` is,
-// and a `must:` is not a `wait_until:`.
+// to reach for out of habit — `now` is bound inside a wait's own expressions,
+// and a `must:` is not one of them.
 //
 // This is deliberately narrower than "reject every free name other than
 // `this`." Since V1 widened `must:`'s environment to the profile's own

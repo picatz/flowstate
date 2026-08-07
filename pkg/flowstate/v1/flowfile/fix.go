@@ -1629,10 +1629,18 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 			}
 		case *ast.MappingValueNode:
 			name, named := keyNameOf(node.Key)
-			if named && name == waitUntilKey {
-				// `now` is bound only here. Bound for this value alone rather than
-				// for the step, because outside a wait it is an ordinary name and a
-				// step may legitimately be called it.
+			if named && bindsNow[name] {
+				// `now` is bound inside a wait and nowhere else. Subtracted for
+				// this value alone rather than for the step, because outside a wait
+				// it is an ordinary name and a step may legitimately be called it —
+				// which is precisely why getting the extent wrong corrupts a file
+				// rather than merely annoying somebody.
+				//
+				// Taken from where the engine evaluates the thing, per CLAUDE.md: a
+				// wait is one node kind whose every expression is evaluated in
+				// workflow code holding the driver's clock, so the binding follows
+				// the node and all three keys are listed. Knowing two of three is
+				// the failure this replaced.
 				steps = without(steps, map[string]bool{nowBinding: true})
 			}
 			if named && task.deferred[name] {

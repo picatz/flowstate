@@ -1333,6 +1333,31 @@ message Wait {
     // Signal waits for something outside the workload to say it may proceed,
     // which is what makes a human approval gate expressible.
     Signal signal = 3;
+
+    // DurationExpr is a `sleep:` whose length is computed: `sleep: ${inputs.grace}`.
+    //
+    // A separate field from `duration` rather than a widening of it, because
+    // `duration` is a published field carried in every running spec and in every
+    // `RunState` crossing a Continue-As-New — changing its type would break the
+    // wire contract invariant 10 exists to protect. So a literal `sleep: 30s`
+    // still compiles to `duration` and is byte-identical through a round trip,
+    // and only a `${...}` reaches here.
+    //
+    // Two fields for one meaning is the shape CLAUDE.md warns about, so nothing
+    // reads them apart: [EvalWaitDuration] is the single reader, both drivers
+    // call it, and neither knows which field answered.
+    //
+    // The expression must produce a CEL duration — `duration('720h')`,
+    // `days(30)`, `hours(2) + minutes(30)` — or a string spelled the way the
+    // literal does (`30s`, `5m`, `7d`), which is what lets a plain string input
+    // carry one. An int is refused rather than guessed at, because nothing says
+    // whether it counts seconds or nanoseconds.
+    //
+    // Inside it `now` is bound, exactly as in `until`: a wait is a node kind
+    // evaluated in workflow code holding the driver's own clock, on both
+    // drivers, so every arm of this message has the replay-safe clock the
+    // binding rule asks for. See [NowIdentifier].
+    Value duration_expr = 5;
   }
 
   // Timeout bounds how long the wait may last, for a wait that might otherwise
@@ -1348,6 +1373,21 @@ message Wait {
   // choice for an approval gate that genuinely should block until someone acts,
   // and a mistake everywhere else.
   google.protobuf.Duration timeout = 4;
+
+  // TimeoutExpr is a `timeout:` whose length is computed: `${deadline - now}`.
+  //
+  // Beside `timeout` for the reason `duration_expr` is beside `duration`, and
+  // read through one function for the same reason: [EvalWaitTimeout]. Setting
+  // both is refused by [ValidateWait] — two answers to one question is not
+  // something a spec gets to say.
+  //
+  // A wait whose computed timeout is negative fails the run rather than falling
+  // through to the encoding that means *unbounded*. That is the one outcome
+  // worth spelling out here: `timeout <= 0` is how "no timeout" is spelled on
+  // the wire, so a sign error in an expression would silently convert a bounded
+  // approval gate into one that blocks forever. Zero is legal and means the
+  // wait times out at once.
+  Value timeout_expr = 6;
 }
 
 // Signal names something a workload waits to be told.

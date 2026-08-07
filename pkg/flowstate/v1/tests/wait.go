@@ -124,6 +124,266 @@ func WaitCases() []Case {
 			}},
 		},
 		{
+			// A computed sleep, in the shape an author writes: the length is a
+			// property of the run rather than of the file. Here the branch is over a
+			// declared input, which is the `sleep: ${inputs.plan == 'enterprise' ?
+			// ... : ...}` spelling with the durations shrunk to what a local run can
+			// reasonably sit through.
+			Name: "a computed sleep blocks for the length its expression produces",
+			Workflow: &v1.Workflow{
+				Name: "sleep-computed",
+				DeclaredInputs: []*v1.InputDeclaration{
+					{Name: "plan", Type: v1.InputDeclaration_TYPE_STRING, Required: true},
+				},
+				Steps: []*v1.Node{
+					says("before", "starting"),
+					{
+						Id: "pause",
+						Kind: &v1.Node_Wait{Wait: &v1.Wait{
+							Kind: &v1.Wait_DurationExpr{
+								DurationExpr: v1.NewExpr(
+									`inputs.plan == "enterprise" ? duration("30ms") : duration("10ms")`),
+							},
+						}},
+					},
+					says("after", "resumed"),
+				},
+			},
+			Inputs: map[string]*v1.Value{"plan": v1.NewLiteral("growth")},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"before": {},
+				"pause": {NamedValues: map[string]*v1.Value{
+					v1.TimedOutOutput: v1.NewLiteral(false),
+				}},
+				"after": {},
+			}},
+		},
+		{
+			// A duration arriving as text, which is how one arrives from outside at
+			// all: [v1.InputDeclaration_Type] has no duration member, so a caller
+			// sends a string. `10ms` therefore has to mean here exactly what the
+			// same characters mean in a literal `sleep:` — one parser
+			// ([v1.ParseDuration]), read by both drivers.
+			Name: "a computed sleep reads a duration written as a string",
+			Workflow: &v1.Workflow{
+				Name: "sleep-computed-string",
+				Steps: []*v1.Node{
+					{
+						Id: "pause",
+						Kind: &v1.Node_Wait{Wait: &v1.Wait{
+							Kind: &v1.Wait_DurationExpr{DurationExpr: v1.NewExpr(`"10ms"`)},
+						}},
+					},
+					says("after", "resumed"),
+				},
+			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"pause": {NamedValues: map[string]*v1.Value{
+					v1.TimedOutOutput: v1.NewLiteral(false),
+				}},
+				"after": {},
+			}},
+		},
+		{
+			// Zero is legal and releases at once, which is the boundary the negative
+			// case below sits on the other side of. Stated as its own case because
+			// "greater than zero" and "not negative" are one character apart in the
+			// code and a fortnight apart in consequence: the literal `sleep: 0s` is
+			// refused by the *compiler*, which can see it, and an expression's value
+			// exists only at run time where the honest answer is that there is no
+			// time left to wait.
+			Name: "a computed sleep of zero is a step that does nothing",
+			Workflow: &v1.Workflow{
+				Name: "sleep-computed-zero",
+				Steps: []*v1.Node{
+					{
+						Id: "pause",
+						Kind: &v1.Node_Wait{Wait: &v1.Wait{
+							Kind: &v1.Wait_DurationExpr{DurationExpr: v1.NewExpr(`duration("0s")`)},
+						}},
+					},
+				},
+			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"pause": {NamedValues: map[string]*v1.Value{
+					v1.TimedOutOutput: v1.NewLiteral(false),
+				}},
+			}},
+		},
+		{
+			// The other side of it. A negative sleep fails the run on both drivers
+			// rather than being clamped to zero, because the two readings of a
+			// negative duration — "somebody meant zero" and "somebody's arithmetic
+			// has its operands the wrong way round" — are indistinguishable here,
+			// and only one of them is harmless.
+			Name:          "a computed sleep that is negative fails the run",
+			ExpectFailure: true,
+			Workflow: &v1.Workflow{
+				Name: "sleep-computed-negative",
+				Steps: []*v1.Node{
+					{
+						Id: "pause",
+						Kind: &v1.Node_Wait{Wait: &v1.Wait{
+							Kind: &v1.Wait_DurationExpr{DurationExpr: v1.NewExpr(`duration("-1s")`)},
+						}},
+					},
+				},
+			},
+		},
+		{
+			// A type mismatch, which has to be a failure and not a guess. An integer
+			// is the one worth pinning: CEL would happily read it as nanoseconds, so
+			// `sleep: ${inputs.minutes}` against a number would "work" and wait
+			// nothing, which is the failure an author never finds.
+			Name:          "a computed sleep that produces a number fails the run",
+			ExpectFailure: true,
+			Workflow: &v1.Workflow{
+				Name: "sleep-computed-int",
+				Steps: []*v1.Node{
+					{
+						Id: "pause",
+						Kind: &v1.Node_Wait{Wait: &v1.Wait{
+							Kind: &v1.Wait_DurationExpr{DurationExpr: v1.NewExpr(`1 + 2`)},
+						}},
+					},
+				},
+			},
+		},
+		{
+			// A string that is not a duration. Distinct from the integer above
+			// because it fails in [v1.ParseDuration] rather than in the type switch,
+			// and a case covering only one of the two would leave the other's
+			// agreement between drivers unproven.
+			Name:          "a computed sleep that produces a string that is not a duration fails the run",
+			ExpectFailure: true,
+			Workflow: &v1.Workflow{
+				Name: "sleep-computed-nonsense",
+				Steps: []*v1.Node{
+					{
+						Id: "pause",
+						Kind: &v1.Node_Wait{Wait: &v1.Wait{
+							Kind: &v1.Wait_DurationExpr{DurationExpr: v1.NewExpr(`"a fortnight"`)},
+						}},
+					},
+				},
+			},
+		},
+		{
+			// `now` inside a computed sleep, which is the binding this change
+			// widened. Both drivers hold a replay-safe clock here — `workflow.Now`
+			// durably, the context's [v1.Clock] locally — so the same expression has
+			// to resolve on both, and this is the case that says so.
+			//
+			// Written as a round trip through the clock so the result is a fixed
+			// 15ms whatever the clock reads, which is what makes it assertable at
+			// all: the point is that the name resolves, not what time it is.
+			Name: "a computed sleep may read the clock",
+			Workflow: &v1.Workflow{
+				Name: "sleep-computed-now",
+				Steps: []*v1.Node{
+					{
+						Id: "pause",
+						Kind: &v1.Node_Wait{Wait: &v1.Wait{
+							Kind: &v1.Wait_DurationExpr{
+								DurationExpr: v1.NewExpr(`(now + duration("15ms")) - now`),
+							},
+						}},
+					},
+					says("after", "caught up"),
+				},
+			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"pause": {NamedValues: map[string]*v1.Value{
+					v1.TimedOutOutput: v1.NewLiteral(false),
+				}},
+				"after": {},
+			}},
+		},
+		{
+			// A computed *timeout*, ending a gate nobody answers. This is the case
+			// that would hang rather than fail if the computed bound fell through to
+			// the encoding that means "no timeout" — which is exactly what a
+			// negative or zero value used to do, and why [v1.EvalWaitTimeout]
+			// reports whether a bound was written separately from what it is.
+			//
+			// A signal nothing sends is deliverable to both drivers precisely
+			// because nothing has to deliver it: the timer is the whole assertion,
+			// which is what lets this be a shared case where the answered gate above
+			// still cannot be.
+			Name: "a computed timeout lapses a gate nobody answers",
+			Workflow: &v1.Workflow{
+				Name: "timeout-computed",
+				Steps: []*v1.Node{
+					{
+						Id: "gate",
+						Kind: &v1.Node_Wait{Wait: &v1.Wait{
+							Kind:        &v1.Wait_Signal{Signal: &v1.Signal{Name: "sign-off"}},
+							TimeoutExpr: v1.NewExpr(`(now + duration("15ms")) - now`),
+						}},
+					},
+					says("after", "carried on"),
+				},
+			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				// Built through the engine's own constructor rather than written
+				// out, because a lapsed gate's `sender` is a shape
+				// ([v1.SignalOutputs]'s nil-sender rendering) and not a value —
+				// transcribing it here would be a second definition of it, which
+				// is the drift this repository keeps finding.
+				"gate":  v1.SignalOutputs(nil, nil, true),
+				"after": {},
+			}},
+		},
+		{
+			// A computed timeout of zero, which means the gate has already lapsed —
+			// not that it is unbounded. The distinction is the whole reason
+			// [v1.EvalWaitTimeout] returns two values, and a case that only ever
+			// computed a positive bound could not tell the two apart.
+			Name: "a computed timeout of zero lapses the gate at once",
+			Workflow: &v1.Workflow{
+				Name: "timeout-computed-zero",
+				Steps: []*v1.Node{
+					{
+						Id: "gate",
+						Kind: &v1.Node_Wait{Wait: &v1.Wait{
+							Kind:        &v1.Wait_Signal{Signal: &v1.Signal{Name: "sign-off"}},
+							TimeoutExpr: v1.NewExpr(`duration("0s")`),
+						}},
+					},
+					says("after", "carried on"),
+				},
+			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				// Built through the engine's own constructor rather than written
+				// out, because a lapsed gate's `sender` is a shape
+				// ([v1.SignalOutputs]'s nil-sender rendering) and not a value —
+				// transcribing it here would be a second definition of it, which
+				// is the drift this repository keeps finding.
+				"gate":  v1.SignalOutputs(nil, nil, true),
+				"after": {},
+			}},
+		},
+		{
+			// And a negative one fails, on both drivers, rather than becoming the
+			// unbounded gate it would decay into. The sharpest case in this file:
+			// the failure it prevents is not a wrong answer but a run that never
+			// ends, which no assertion about outputs could ever catch.
+			Name:          "a computed timeout that is negative fails the run",
+			ExpectFailure: true,
+			Workflow: &v1.Workflow{
+				Name: "timeout-computed-negative",
+				Steps: []*v1.Node{
+					{
+						Id: "gate",
+						Kind: &v1.Node_Wait{Wait: &v1.Wait{
+							Kind:        &v1.Wait_Signal{Signal: &v1.Signal{Name: "sign-off"}},
+							TimeoutExpr: v1.NewExpr(`duration("0s") - duration("1s")`),
+						}},
+					},
+				},
+			},
+		},
+		{
 			Name: "a skipped wait does not wait",
 			Workflow: &v1.Workflow{
 				Name: "wait-skipped",

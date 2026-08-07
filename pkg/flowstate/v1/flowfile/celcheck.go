@@ -152,6 +152,8 @@ func checkNodeExpressions(nodes []*v1.Node) Diagnostics {
 			}
 		case *v1.Node_Wait:
 			ds = append(ds, typeErrors(id, "wait_until", kind.Wait.GetUntil())...)
+			ds = append(ds, typeErrors(id, "sleep", kind.Wait.GetDurationExpr())...)
+			ds = append(ds, typeErrors(id, "timeout", kind.Wait.GetTimeoutExpr())...)
 		}
 	}
 

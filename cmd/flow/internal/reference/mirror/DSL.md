@@ -69,8 +69,8 @@ of these.
 **Rooted ambient names, bare local names** (`inputs.*`, `vars.*`, `steps.<id>.*`,
 `run.*`; bare loop bindings, private vars, `now`). Accepted, and the `steps.` half has
 landed: a step's outputs are `${steps.<id>.<output>}`, and what stays bare is what is
-bound *where the expression is written* — a `for_each` iterator, `now` inside
-`wait_until:`. The names a task resolves against its own scope were bare when this was
+bound *where the expression is written* — a `for_each` iterator, `now` inside a
+wait. The names a task resolves against its own scope were bare when this was
 written and are not any more: the `http` task's `expect:` and `outputs:` reach the
 response under a root of its own, `${response.status_code}`, `response.headers`,
 `response.body` and — when the step asked for `parse_json` — `response.json`, per the
@@ -108,7 +108,8 @@ The two left intact are the two about the iterator, and that is not tidying left
 later. An iterator stays bare *by this proposal's own design*, so it and `now` genuinely
 do share one namespace and the collision between them is unaffected — a loop variable
 called `now` is still refused, because a body saying `${now}` would mean the item
-everywhere except inside a `wait_until:`, where the clock is bound on top and wins.
+everywhere except inside a wait's own expressions, where the clock is bound on top and
+wins.
 Rooting makes a collision unrepresentable **between** the two halves, never within one.
 
 **The reserved-word list survives in full**, for the same reason: it guards the iterator,
@@ -254,7 +255,7 @@ refused outright to write back any file containing `filter` or `map`.
 the file. It did not remove the mirror image: the http task evaluated its own two
 deferred inputs, `outputs:` and `expect:`, against an environment holding the response
 root and the json library and nothing else. So `${response.body.upperAscii()}` — a
-function that works in a `vars:` binding, an `if:`, `items:`, `wait_until:` and every
+function that works in a `vars:` binding, an `if:`, `items:`, a wait's own expressions and every
 other task input — failed inside `outputs:`, after the request had been made, since
 that is when the expression runs.
 
@@ -3138,6 +3139,163 @@ level, unlike the genuinely concurrent shapes the refusal was written for.
   fmt`, and the language server all compile from a real file and so all resolve a call;
   `flow compile` does too, since it is a client with its own files to point at, not a
   request over a wire another process might have none.
+
+## The seventh round: a duration a run computes
+
+### The inconsistency, not the concept
+
+A `Wait` has three duration-shaped positions and, until this round, two grammars for
+them. `wait_until:` took an expression and had since it existed. `sleep:` and
+`wait_for_signal:`'s `timeout:` took a literal and nothing else:
+
+```
+9:12: step "nap": sleep "${inputs.d}" is not a duration; write it as 30s, 5m, 1h, or 7d
+```
+
+That refusal is not a decision anybody made. It is what a field typed
+`google.protobuf.Duration` says when handed a string, and the three positions differ
+only in which arm of one message they land in. So this round adds no concept: it
+routes the other two through the same compiler path the first already used, and the
+whole of the new surface is that a `${...}` is now legal where a duration goes.
+
+What it unlocks is the shape the file could not previously express at all — a
+duration that is a property of the *run* rather than of the file:
+
+```yaml
+- id: settle
+  sleep: ${duration(inputs.quiet_period)}
+
+- id: grace
+  sleep: '${inputs.plan == "enterprise" ? days(30) : days(7)}'
+
+- id: sign_off
+  wait_for_signal:
+    name: onboarding-signed-off
+    timeout: '${deadline > now ? deadline - now : duration("0s")}'
+```
+
+`examples/computed-durations/` is that file, with a test.
+
+### The fence decides, so `sleep: 5m` never moved
+
+A duration position can now hold either data or code, which is exactly the case
+constitution rule 3 governs: **where a field can hold either, the `${...}` fence
+decides.** An unfenced `5m` is a literal duration and compiles to the same bytes it
+always did; `${...}` is an expression. Nothing is evaluated because it happens to
+parse, which is the failure the alternative reading has — `wait_until:`'s rule, where
+a bare string *is* expression source, would turn `sleep: 30s` into the CEL expression
+`30s` and `sleep: 5m` into a reference to a name nobody bound.
+
+This is the only sound answer for a field that grew a second reading, and it is why
+the two positions read their values through different helpers rather than one.
+
+### `now` is bound in all three, because the clock belongs to the node
+
+The binding rule was "`now` is bound inside `wait_until:` and nowhere else." That
+was never quite the rule — it was the rule's *only instance*, because `wait_until:`
+was the only arm that took an expression. The rule underneath it, which
+[ARCHITECTURE.md](ARCHITECTURE.md) argues from replay-safety, is that `now` is bound
+where a replay-safe clock backs the evaluation.
+
+A wait is a node kind evaluated in workflow code on both drivers — `workflow.Now`
+durably, the context's `Clock` locally — whichever arm it takes. So the hazard the
+narrow rule guarded against does not reach here, and the honest generalization is
+that every expression a wait carries sees the clock. The alternative is a name that
+resolves in one expression of a message and not in its sibling, decided by nothing an
+author could predict.
+
+Everywhere else is unchanged and still refused, with the diagnostic naming all three
+positions:
+
+```
+step "t" if: `now` is only available inside a wait — `sleep:`, `wait_until:`, and a
+signal's `timeout:` — where the engine binds it to the moment the wait is evaluated;
+a task input is resolved inside an activity, which has no clock that survives a
+retry, so compute the moment or the length in the wait itself, or pass the time in
+as an input
+```
+
+A loop iterator named `now` is still refused for the reason it always was: an
+iterator is bare too, so it and the clock genuinely share a namespace.
+
+`flow fix` learns the same set, from one map, and this is the part that matters most:
+the rewriter has corrupted a valid file twice, both times by knowing less about scope
+than the language does. A step *may* be called `now`, so a rewriter that knew two of
+the three positions would rewrite the third's `now` into a reference to that step —
+a file that still validates and computes something else. The extent is not uniform,
+either: `wait_until:` and `sleep:` hold a scalar, while `wait_for_signal:` holds a
+*mapping* whose `timeout:` is a key inside it, so the subtraction happens at the key
+that opens the wait rather than at the key that holds the expression. A bare
+`timeout:` elsewhere in a step is that step's activity timeout, evaluated where there
+is no clock at all, and must not be touched.
+
+### What a computed duration must produce
+
+A CEL duration — `duration('720h')`, `days(30)`, `hours(2) + minutes(30)` — or a
+string spelled the way a literal is: `30s`, `5m`, `1h`, `7d`. The string case is not
+a convenience. `inputs:` declares six types, the shapes a *caller* can send, and JSON
+has no duration among them, so text is how a duration arrives from outside at all.
+It therefore has to mean in an expression exactly what the same characters mean
+written literally, which is why there is now one parser (`v1.ParseDuration`) rather
+than one in the compiler and one in the engine.
+
+An integer is refused, and the refusal is the point: nothing in `${inputs.n}` says
+whether the number counts seconds or nanoseconds, and CEL's own answer — nanoseconds
+— is the one an author is least likely to mean. A `sleep:` that silently waited 3ns
+for `${1 + 2}` is a bug nobody finds.
+
+### Zero is legal; negative fails the run
+
+Zero means there is no time left to wait: a `sleep:` proceeds, a `timeout:` reports
+`timed_out: true` at once. A literal `sleep: 0s` is still refused by the *compiler*,
+which can see it and can tell an author to delete the step; an expression's value
+exists only at run time, where "you computed zero" is a fact rather than a mistake.
+
+A negative one fails the run, on both drivers, rather than being clamped. For
+`sleep:` the two readings of a negative duration — somebody meant zero, or somebody's
+operands are the wrong way round — are indistinguishable, and only one is harmless.
+For `timeout:` it is sharper than that: **`timeout <= 0` is how "no timeout" is
+encoded on the wire**, so a sign error would not produce a short wait, it would
+produce an approval gate that blocks until the run itself dies. Clamping hides it and
+falling through is worse. The diagnostic names the guard:
+
+```
+wait_for_signal timeout computed -1s; a negative timeout is how this engine spells
+"no timeout", so it is refused rather than silently making the wait unbounded —
+guard the expression, as in ${deadline > now ? deadline - now : duration('0s')}
+```
+
+The same distinction is why `EvalWaitTimeout` reports *whether* a bound was written
+separately from what it is: a computed zero and an absent `timeout:` are two
+different facts that the wire spells the same way, and collapsing them made the first
+read as the second.
+
+### The bound: parity, deliberately
+
+A computed duration is untrusted input, so the ceiling is a fair question. The
+literal path has none beyond the representable range — `time.ParseDuration` stops at
+about 292 years because int64 nanoseconds do, and nothing in the schema or the
+compiler caps it below that. The expression path adds none either, which is parity
+rather than an oversight: a ceiling on one spelling and not the other would be a new
+inconsistency introduced by a change whose entire purpose is removing one, and a
+Temporal timer genuinely tolerates years. The duration constructors already refuse
+the case that actually bites — `days(400000)` overflows into a *negative* duration,
+so `durationLibrary` bounds each unit rather than inspecting the result afterwards.
+A ceiling on how long a workload may wait is a deployment's question, and it belongs
+wherever run timeouts are decided, not in the grammar.
+
+### The schema
+
+Two add-only fields. `Wait.duration_expr` joins the `kind` oneof beside `duration`,
+and `Wait.timeout_expr` sits beside `timeout` — rather than either literal field
+changing type, which would break the wire contract invariant 10 exists to protect:
+`Wait.duration` is carried in every running spec and in every `RunState` crossing a
+Continue-As-New.
+
+Two fields for one meaning is the shape CLAUDE.md warns about, and the answer is that
+nothing reads them apart. `v1.EvalWaitDuration` and `v1.EvalWaitTimeout` are the sole
+readers of each pair, both drivers call them, and neither knows which field answered.
+One function cannot disagree with itself.
 
 ## The standing rule
 

@@ -118,6 +118,59 @@ steps:
 				require.Equal(t, "deploy_approved_2", wait.GetSignal().GetName())
 			},
 		},
+		{
+			// The fence is what makes it code, so this is the case that pins the
+			// rule the other duration positions could not have: `sleep: 30s` above
+			// stays a literal in `duration`, and only this one reaches
+			// `duration_expr`. Both readings live on the same key.
+			name: "a computed sleep",
+			src: `edition: v2026.2
+name: w
+steps:
+  - id: pause
+    sleep: ${duration(inputs.grace)}
+`,
+			check: func(t *testing.T, wait *v1.Wait) {
+				require.Nil(t, wait.GetDuration(),
+					"a fenced value was read as a literal duration")
+				require.NotNil(t, wait.GetDurationExpr(),
+					"a fenced value did not compile to an expression")
+				require.Nil(t, wait.GetTimeout())
+			},
+		},
+		{
+			// `now` in the position that did not previously bind it. Parsed here
+			// and *accepted* by the validator in TestValidateAcceptsWaits below —
+			// two different claims, and the second is the one that used to fail.
+			name: "a computed sleep reading the clock",
+			src: `edition: v2026.2
+name: w
+steps:
+  - id: pause
+    sleep: ${(now + duration("1h")) - now}
+`,
+			check: func(t *testing.T, wait *v1.Wait) {
+				require.NotNil(t, wait.GetDurationExpr())
+			},
+		},
+		{
+			name: "a signal with a computed timeout",
+			src: `edition: v2026.2
+name: w
+steps:
+  - id: gate
+    wait_for_signal:
+      name: sign-off
+      timeout: ${deadline - now}
+`,
+			check: func(t *testing.T, wait *v1.Wait) {
+				require.Equal(t, "sign-off", wait.GetSignal().GetName())
+				require.Nil(t, wait.GetTimeout(),
+					"a fenced timeout was read as a literal duration")
+				require.NotNil(t, wait.GetTimeoutExpr(),
+					"a fenced timeout did not compile to an expression")
+			},
+		},
 	}
 
 	for _, test := range tests {
@@ -316,6 +369,193 @@ steps:
 	require.NoError(t, err)
 	require.NotEmpty(t, ds, "a wait_until naming a step that does not exist was accepted")
 	require.Contains(t, ds.Error(), "nonexistent")
+}
+
+// TestValidateAcceptsComputedDurations is the "reachable from a Flowfile" half of
+// expression-valued durations: parsing one and having the validator accept it are
+// two claims, and the second is the one `now` used to fail.
+//
+// The four spellings the feature was specified against, in one file so that a
+// regression in any of them fails here rather than in an example somebody deletes.
+func TestValidateAcceptsComputedDurations(t *testing.T) {
+	t.Parallel()
+
+	src := []byte(`edition: v2026.2
+name: computed
+inputs:
+  grace:
+    type: string
+    required: true
+  plan:
+    type: string
+    required: true
+steps:
+  - id: from_input
+    sleep: ${duration(inputs.grace)}
+  - id: bare_input
+    sleep: ${inputs.grace}
+  - id: branched
+    sleep: '${inputs.plan == "enterprise" ? duration("720h") : duration("168h")}'
+  - id: gate
+    wait_for_signal:
+      name: sign-off
+      timeout: ${(now + days(1)) - now}
+  - id: literal
+    sleep: 5m
+`)
+
+	ds, err := flowfile.ValidateSource(src)
+	require.NoError(t, err)
+	require.Empty(t, ds, "a computed duration was refused:\n%s", ds.Error())
+}
+
+// TestValidateRefusesNowOutsideAWait is the standing guard the widened binding
+// makes worth restating.
+//
+// `now` moved from one position to three, and the failure mode of widening a
+// binding is widening it too far — a name that resolves everywhere is a clock
+// readable from any expression in the language, which is precisely what invariant 4
+// and the DSL's own bet refuse. Each case below is a position that must keep
+// saying no.
+func TestValidateRefusesNowOutsideAWait(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name string
+		src  string
+		want string
+	}{
+		{
+			// The one ARCHITECTURE.md argues from: a task input may be resolved
+			// inside an activity, where each retry would read a different value.
+			name: "a task input",
+			src: `edition: v2026.2
+name: w
+steps:
+  - id: t
+    log:
+      message: ${string(now)}
+`,
+			want: "only available inside a wait",
+		},
+		{
+			// Evaluated before the step's own vars exist, in workflow code but not
+			// in a wait — and a condition that read a clock would put a
+			// nondeterministic branch in history.
+			name: "a step condition",
+			src: `edition: v2026.2
+name: w
+steps:
+  - id: t
+    if: ${now > timestamp("2020-01-01T00:00:00Z")}
+    log:
+      message: hi
+`,
+			want: "only available inside a wait",
+		},
+		{
+			// An activity, and the one seam replay does not cover: re-evaluated at
+			// the top of every Continue-As-New segment.
+			name: "a workflow var",
+			src: `edition: v2026.2
+name: w
+vars:
+  x: ${now}
+steps:
+  - id: t
+    log:
+      message: hi
+`,
+			want: `unknown name "now"`,
+		},
+		{
+			// The collision that rooting cannot fix: an iterator is bare too, so it
+			// and the clock genuinely share a namespace.
+			name: "a loop iterator",
+			src: `edition: v2026.2
+name: w
+steps:
+  - id: t
+    for_each:
+      items: ${[1, 2]}
+      as: now
+      steps:
+        - id: inner
+          log:
+            message: hi
+`,
+			want: "choose another iterator",
+		},
+		{
+			// A step's own vars are bare within that step, so one called `now`
+			// would shadow the clock inside that step's own wait.
+			name: "a step var",
+			src: `edition: v2026.2
+name: w
+steps:
+  - id: t
+    vars:
+      now: ${1}
+    log:
+      message: hi
+`,
+			want: "rename this one",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			ds, err := flowfile.ValidateSource([]byte(test.src))
+			require.NoError(t, err)
+			require.NotEmpty(t, ds, "`now` was accepted outside a wait")
+			require.Contains(t, ds.Error(), test.want)
+		})
+	}
+}
+
+// TestValidateReportsUnresolvableComputedDurations holds a computed duration to the
+// same reference standard `wait_until:` is held to.
+//
+// Widening a position is the moment a check gets forgotten: the expression is new,
+// the walk over it is not, and a field missing from `validateWait` would accept a
+// reference to a step nobody wrote.
+func TestValidateReportsUnresolvableComputedDurations(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name string
+		src  string
+	}{
+		{
+			name: "a computed sleep",
+			src: `edition: v2026.2
+name: w
+steps:
+  - id: pause
+    sleep: ${steps.nonexistent.grace}
+`,
+		},
+		{
+			name: "a computed timeout",
+			src: `edition: v2026.2
+name: w
+steps:
+  - id: gate
+    wait_for_signal:
+      name: sign-off
+      timeout: ${steps.nonexistent.deadline}
+`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			ds, err := flowfile.ValidateSource([]byte(test.src))
+			require.NoError(t, err)
+			require.NotEmpty(t, ds, "a computed duration naming a step that does not exist was accepted")
+			require.Contains(t, ds.Error(), "nonexistent")
+		})
+	}
 }
 
 // cmpWorkflows reports how two workflows differ, for the round-trip assertions.
