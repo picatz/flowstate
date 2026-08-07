@@ -91,10 +91,15 @@ tests:
         returns:
           # Each record's own id again — see the first case.
           id: ${record.id}
-      # Deliberately no stub for a request carrying a cursor. A walk that asked
-      # for a second page after being told there was none would arrive here
-      # unmatched and fail the case, which is what makes "stopped on the empty
-      # next cursor" an assertion rather than an inference from a count.
+      # Only one `/records` stub, and it is worth being exact about what that
+      # does and does not catch. A walk that kept going would fetch again with
+      # `update:`'s value — the empty cursor — and so would match this same
+      # stub rather than arriving unmatched. So the stub list is not what
+      # proves the walk stopped; the assertions below are. `pages_walked: 1`
+      # and an `indexed` with no repeat both fail on a walk that took a second
+      # page, and one that never stopped at all fails on the loop's own
+      # `max_iterations:`. All three roads lead somewhere red, which is the
+      # property worth having — none of them is a quiet pass.
     expect:
       ran: [pages]
       outputs:
