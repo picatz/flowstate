@@ -2,6 +2,7 @@ package flowtest_test
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -168,6 +169,46 @@ tests:
 	_, err := flowtest.Load(dir + "/workflow.test.yaml")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "no provider")
+}
+
+// TestLoadRejectsTooManySecrets checks the bound is reached rather than
+// merely declared: MaxSecretsPerTest+1 entries is refused, and the message
+// names both the count and the limit so an author knows which way to move.
+// The sibling bound MaxStubsPerTest is pinned the same way in run_test.go —
+// a limit nothing tests is a limit nothing enforces once someone edits the
+// loader.
+func TestLoadRejectsTooManySecrets(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/workflow.yaml", `
+edition: v2026.2
+name: whatever
+steps:
+  - id: noop
+    log:
+      message: hi
+`)
+
+	var secretsBlock strings.Builder
+	for i := 0; i <= flowtest.MaxSecretsPerTest; i++ {
+		fmt.Fprintf(&secretsBlock, "      env:TOKEN_%d: value-%d\n", i, i)
+	}
+
+	writeFile(t, dir+"/workflow.test.yaml", `
+tests:
+  - name: too many secrets
+    workflow: ./workflow.yaml
+    secrets:
+`+secretsBlock.String()+`    stubs:
+      - task: log
+        returns: {}
+`)
+
+	_, err := flowtest.Load(dir + "/workflow.test.yaml")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), fmt.Sprintf("declares %d secrets", flowtest.MaxSecretsPerTest+1))
+	require.Contains(t, err.Error(), fmt.Sprintf("limit of %d", flowtest.MaxSecretsPerTest))
 }
 
 // TestSecretsContainmentShapes is the redaction containment matrix CLAUDE.md
