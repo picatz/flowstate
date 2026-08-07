@@ -216,6 +216,27 @@ var exampleSignals = map[string]map[string]*v1.Node_Outputs{
 			"close":        v1.NewLiteral(true),
 		}},
 	},
+
+	// renewal-reminder is entity-order's opposite polarity, and it belongs in
+	// this table rather than in [exampleLapsingGates] for a reason worth
+	// stating: its gate does lapse, and lapsing is the branch it exists to
+	// demonstrate — but a lapse there means "go round again", not "finish". A
+	// run nobody answers walks its whole 12-period budget and then *fails*, on
+	// purpose, so leaving it unanswered here would enter the corpus comparison
+	// as an example that does not complete. Answering it closes the loop on
+	// the first iteration, which is the shape this shared table can express;
+	// the lapse-and-continue branch is what the file's own workflow.test.yaml
+	// walks, twelve times, through the local driver's virtual clock.
+	//
+	// The payload is the one this example's own `flow signal` line documents.
+	// `decision` is read by the workflow's declared `outputs:`, so a payload
+	// missing it would not merely be unused — it would leave the run unable to
+	// answer.
+	"renewal-reminder": {
+		"subscription-changed": {NamedValues: map[string]*v1.Value{
+			"decision": v1.NewLiteral("renewed"),
+		}},
+	},
 }
 
 // exampleLapsingGates names an example whose gate is meant to go unanswered,

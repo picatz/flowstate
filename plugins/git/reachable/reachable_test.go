@@ -63,6 +63,7 @@ func TestAFlowfileCanNameTheGitPluginsTasks(t *testing.T) {
 	privateReadSource := readExample(t, "ls-remote-private.yaml")
 	logAndReadFileSource := readExample(t, "log-and-read-file.yaml")
 	logResumeSource := readExample(t, "log-resume.yaml")
+	logPaginateSource := readExample(t, "log-paginate.yaml")
 	writeSource := readExample(t, "commit-push.yaml")
 
 	for _, name := range []string{"git.ls_remote", "git.log", "git.read_file", "git.commit_push"} {
@@ -121,6 +122,17 @@ func TestAFlowfileCanNameTheGitPluginsTasks(t *testing.T) {
 	}
 	if !strings.Contains(diagnosticText(beforeLogResume), "git.log") {
 		t.Errorf("the diagnostics do not name %q; diagnostics:\n%s", "git.log", diagnosticText(beforeLogResume))
+	}
+
+	beforeLogPaginate, err := flowfile.ValidateSource(logPaginateSource)
+	if err != nil {
+		t.Fatalf("ValidateSource(log-paginate.yaml): unexpected error: %v", err)
+	}
+	if len(beforeLogPaginate) == 0 {
+		t.Fatal("the validator accepted log-paginate.yaml naming a task no registry holds")
+	}
+	if !strings.Contains(diagnosticText(beforeLogPaginate), "git.log") {
+		t.Errorf("the diagnostics do not name %q; diagnostics:\n%s", "git.log", diagnosticText(beforeLogPaginate))
 	}
 
 	beforeWrite, err := flowfile.ValidateSource(writeSource)
@@ -190,6 +202,17 @@ func TestAFlowfileCanNameTheGitPluginsTasks(t *testing.T) {
 		if len(diags) != 0 {
 			t.Errorf("this plugin's tasks are registered and `flow validate` still refuses "+
 				"examples/plugins/git/log-resume.yaml: %s", diagnosticText(diags))
+		}
+	})
+
+	t.Run("the validator accepts the loop-paginated walk", func(t *testing.T) {
+		diags, err := flowfile.ValidateSource(logPaginateSource)
+		if err != nil {
+			t.Fatalf("ValidateSource: unexpected error: %v", err)
+		}
+		if len(diags) != 0 {
+			t.Errorf("this plugin's tasks are registered and `flow validate` still refuses "+
+				"examples/plugins/git/log-paginate.yaml: %s", diagnosticText(diags))
 		}
 	})
 

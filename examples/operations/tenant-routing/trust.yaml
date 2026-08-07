@@ -1,0 +1,51 @@
+# The trust policy the walkthrough's `flow server` is started with.
+#
+# Two things are configured here and they are independent of each other, which is
+# the point worth seeing in one file:
+#
+#   - `issuers:` decides who a caller is, and which Flowstate namespace they
+#     belong to. `namespace_claim:` reads the tenant off a *verified* claim, so
+#     the namespace is an assertion of the issuer rather than something a request
+#     gets to choose. That is the same rule the task queue name follows below: a
+#     tenant is derived from who authenticated, never from what was asked for.
+#   - `tenancy:` maps each Flowstate namespace onto the Temporal namespace its
+#     runs execute in, which is what isolates history and visibility.
+#
+# Note what is *not* here: no task queue names. The queue is composed from the
+# prefix `flow server` and `flow worker` are each started with, plus the
+# authenticated tenant — see the README for why one string cannot be forged into
+# another tenant's queue.
+#
+# Every issuer names a namespace or a namespace claim, and that is enforced:
+# `Policy.validateTenancy` refuses a file where one issuer determines a namespace
+# and another does not, because callers admitted without one would share a
+# namespace with tenants meant to be kept apart.
+issuers:
+  - name: github-actions
+    issuer: https://token.actions.githubusercontent.com
+    audiences: [flowstate]
+    algorithms: [RS256]
+    # The tenant, read off a claim the issuer signed.
+    namespace_claim: repository_owner
+
+  # A second platform, pinned to one tenant outright rather than reading a claim.
+  # Both spellings are legal in one file; what is not legal is an issuer with
+  # neither.
+  - name: internal-ci
+    issuer: https://ci.internal.example.com
+    audiences: [flowstate]
+    algorithms: [RS256]
+    namespace: team-a
+
+tenancy:
+  temporal:
+    team-a: temporal-team-a
+    team-b: temporal-team-b
+
+  # Deliberately absent: with no `default:`, a Flowstate namespace this file does
+  # not map is *refused* rather than quietly landing in somebody else's Temporal
+  # namespace. That is the fail-closed choice for a deployment whose whole reason
+  # for mapping tenants apart is that they must not read each other's history —
+  # see `Tenancy.Default`'s own doc comment for when to set it instead.
+  #
+  # default: temporal-shared

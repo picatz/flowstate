@@ -1,0 +1,124 @@
+# Two ideas, and every case has to pin both: a callee's outputs are read back
+# *per iteration*, and a call that fails belongs to its own item.
+#
+# `flow test` runs the calls for real — the callee's own steps execute through
+# the same local driver, exactly as `flow run local` on this file does — and
+# stubs the tasks inside them. That is what makes testing a composition
+# different from testing either file alone (#155), and it is also what forces
+# the interesting question below.
+#
+# # What tells one concurrent call from another
+#
+# A stub sees the scope its step was evaluated in (#273), and for a step inside
+# the callee that scope is the *callee's*. The caller's `region` binding is not
+# in it, because a call is isolated — which is the property this example exists
+# to demonstrate, arriving here as a constraint on how a stub is written.
+#
+# So the two sides are matched two different ways, deliberately:
+#
+#   - Inside the callee, on the task's own inputs: `inputs.query.region` is
+#     what the caller passed through `with:`, and it is the only thing that
+#     distinguishes one concurrent publish from another. `returns:` reads the
+#     same value, so one stub answers the whole fan-out with each iteration's
+#     own URL rather than four stubs answering one region each.
+#   - In the caller's own loop body, on the loop binding: `region` is in scope
+#     for `announce`, so its stub asserts that *this* iteration read *this*
+#     region's URL back out of the call. That is the per-iteration read-back,
+#     and it is the assertion a whole-fan-out `outputs:` check cannot make —
+#     `published` holding four URLs is satisfied by a run that paired every one
+#     of them with the wrong region.
+edition: v2026.2
+tests:
+  - name: three regions publish, and the one the edge refuses is named rather than fatal
+    workflow: ./workflow.yaml
+    stubs:
+      # The refusal, matched inside the callee on what the caller passed in.
+      # Declared first because the first matching stub answers: this one claims
+      # `quarantined`, and the general stub below takes the other three.
+      - task: http
+        where: inputs.query.region == 'quarantined'
+        fails:
+          kind: Upstream
+          message: region is quarantined
+      # One stub, four iterations, each answered with its own value — the
+      # callee's real `outputs:` expression computes exactly this from the
+      # response, so what is stubbed here is the edge being reachable and not
+      # what the workflow does with it.
+      - task: http
+        returns:
+          url: ${'https://' + inputs.query.region + '.cdn.example.com'}
+          region: ${inputs.query.region}
+      # The read-back, one stub per published region, each pinning that the
+      # caller's binding and the callee's answer agree. A run that returned the
+      # right set of URLs against the wrong regions fails here.
+      - task: log
+        where: "inputs.message == region + ' is serving from https://' + region + '.cdn.example.com'"
+        returns: {}
+    expect:
+      # Not `failed: true`. One region refusing is the case this file was
+      # written for, and `continue_on_error:` on the `call:` step is what turns
+      # it into an answer rather than an abandoned run.
+      ran: [publish]
+      outputs:
+        published:
+          - https://eu-west.cdn.example.com
+          - https://us-east.cdn.example.com
+          - https://ap-south.cdn.example.com
+        # Named, not counted, and named from the worklist rather than from the
+        # results — a failed call answers nothing to be named by.
+        unpublished: [quarantined]
+        attempted: 4
+
+  - name: a stub naming one region must not answer another
+    workflow: ./workflow.yaml
+    stubs:
+      # The negative direction of the binding, across the call boundary. This
+      # `where:` names one region and must answer *only* that iteration; if
+      # `inputs.query.region` were invisible to a stub — or matched whatever it
+      # was asked — all four calls would fail and `published` would be empty.
+      - task: http
+        where: inputs.query.region == 'us-east'
+        fails:
+          kind: Upstream
+          message: region is unreachable
+      - task: http
+        returns:
+          url: ${'https://' + inputs.query.region + '.cdn.example.com'}
+          region: ${inputs.query.region}
+      - task: log
+        where: "inputs.message == region + ' is serving from https://' + region + '.cdn.example.com'"
+        returns: {}
+    expect:
+      ran: [publish]
+      outputs:
+        # `quarantined` publishes here, which is the point of stubbing at all:
+        # what fails is decided by the callee's `expect:` against a real edge,
+        # and a stub answering success is how the file's own permanent-refusal
+        # case is taken out of the way to test a different one.
+        published:
+          - https://eu-west.cdn.example.com
+          - https://ap-south.cdn.example.com
+          - https://quarantined.cdn.example.com
+        unpublished: [us-east]
+        attempted: 4
+
+  - name: every call failing still finishes the run and names all four
+    workflow: ./workflow.yaml
+    stubs:
+      - task: http
+        fails:
+          kind: Upstream
+          message: the edge is down
+      # Deliberately no `log` stub. `announce` is behind `has(steps.deploy.url)`
+      # and no call answered one, so it must not run once — and a `log`
+      # invocation matching no stub fails the case, which is what makes that an
+      # assertion rather than an omission.
+    expect:
+      # Four tolerated failures and the run still completes, which is the whole
+      # claim: `continue_on_error:` on a `call:` contains the failure to its own
+      # item however many items fail.
+      ran: [publish]
+      outputs:
+        published: []
+        unpublished: [eu-west, us-east, ap-south, quarantined]
+        attempted: 4

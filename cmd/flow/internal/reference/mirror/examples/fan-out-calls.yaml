@@ -1,0 +1,110 @@
+# A worklist where each item is handled by a reusable called workflow:
+# `call:` inside `for_each`.
+#
+# The two halves already had examples of their own — `call-a-workflow` runs one
+# callee once, `data-enrichment` fans out over a worklist — and the composition
+# is the thing neither shows. It is worth its own file because three properties
+# only appear when they meet:
+#
+#   - **The unit is a file, not a block.** Publishing to a region is defined
+#     once, in `workflows/publish-to-region.yaml`, and the caller decides only
+#     *which* regions and *how many at a time*. `progressive-rollout` makes the
+#     same argument for a `loop:`; this is the fan-out spelling of it.
+#   - **The callee cannot see the iteration.** `region` is bound by the loop
+#     here and is not in scope inside the callee — a call is isolated, so the
+#     only thing that crosses is `with:`. That is what makes running several at
+#     once with `max_parallel:` sound rather than lucky, and it is also why the
+#     callee's own `inputs.region` is what tells one concurrent publish from
+#     another.
+#   - **A failure belongs to one item.** `continue_on_error:` sits on the
+#     `call:` step, so a callee that fails takes down its own iteration and
+#     nothing else. The whole callee is the unit that is tolerated — every step
+#     inside it, not just the one that broke.
+#
+# Run it, and watch three regions publish while the quarantined one is reported
+# rather than fatal:
+#
+#   flow run local examples/fan-out-calls/workflow.yaml -o json | jq .runOutputs
+#
+# Run it durably instead, and the fan-out survives losing the worker partway:
+# whichever regions were already published stay published, and the rest are
+# picked up by whatever worker replaces it.
+#
+#   flow run examples/fan-out-calls/workflow.yaml
+#
+# (needs `flow server` and `flow worker` running; see the main README's
+# Quickstart)
+edition: v2026.2
+name: fan-out-calls
+description: >-
+  Fans a worklist out over a reusable called workflow, two at a time, and names
+  the items whose call failed rather than failing the run.
+
+vars:
+  # Named here rather than inline in `items:` so that `outputs:` below can ask
+  # what was *asked for* and subtract what came back. A failed iteration's
+  # result carries no region name to read — the callee never got far enough to
+  # produce one — so the only way to name what did not publish is to start from
+  # the list this run was given.
+  regions: ${['eu-west', 'us-east', 'ap-south', 'quarantined']}
+
+steps:
+  - id: publish
+    description: One call per region, two in flight at a time.
+    for_each:
+      items: ${vars.regions}
+      as: region
+      # Bounded because the edge API is somebody else's service. Local runs
+      # still execute one region after another whatever this says, so a
+      # comparison between the two drivers is a comparison of the same four
+      # calls rather than of however many the durable one happened to overlap.
+      max_parallel: 2
+      steps:
+        - id: deploy
+          description: Publish this one region, tolerating a region that refuses.
+          # On the `call:` step, so the unit that is tolerated is the whole
+          # callee. A failure anywhere inside `publish-to-region.yaml` — its
+          # upload, or any step it grows later — stops that region and leaves
+          # the other three alone.
+          continue_on_error: true
+          call: ./workflows/publish-to-region.yaml
+          with:
+            # The one thing that crosses the call boundary. Checked against the
+            # callee's declared `inputs:` when this file is compiled, so a
+            # misspelling here is refused before anything runs rather than on
+            # the iteration that reaches it.
+            region: ${region}
+
+        # A callee's outputs are read back under the calling step's id, the
+        # same way a task's would be — and per iteration, so this reads *this*
+        # region's URL and not some other one's.
+        - id: announce
+          # `has()` rather than a bare read: a tolerated failure leaves `deploy`
+          # with no `url` at all, and this arm exists only for the regions that
+          # actually published.
+          if: ${has(steps.deploy.url)}
+          log:
+            message: ${region + ' is serving from ' + steps.deploy.url}
+
+outputs:
+  # Read out of the fan-out's per-iteration results — one entry per region,
+  # each a map of body step id to that step's outputs, so `r.deploy.url` is the
+  # value the callee answered for that region.
+  published:
+    value: ${steps.publish.results.filter(r, has(r.deploy.url)).map(r, r.deploy.url)}
+    description: the edge URLs the successful calls answered with
+
+  # Named rather than counted, for the reason `ops-healthcheck` gives: whoever
+  # reads this has to know which region to go and look at. A failed iteration
+  # carries nothing identifying — not even the region, since the callee never
+  # reached its own `outputs:` — so this is the worklist with whatever the
+  # successful calls named taken back out.
+  unpublished:
+    value: >-
+      ${vars.regions.filter(name,
+        !(name in steps.publish.results.filter(r, has(r.deploy.region)).map(r, r.deploy.region)))}
+    description: regions whose call failed, named rather than counted
+
+  attempted:
+    value: ${size(vars.regions)}
+    description: how many regions this run was asked to publish to

@@ -172,11 +172,14 @@ What is left:
 
 ## The generated ecosystem
 
-Proto-first extends to documentation and the agent surface: reference docs
-generated from the descriptors, the registry, and the cobra tree rather than
-hand-maintained (the audit found exactly which tables drift — the env-var table
-already has); `flow mcp` derived from the service schema so there is no
-hand-kept tool list; and the catalog RPC as the one answer every consumer reads.
-Custom protoc options are available if plain leading comments stop being enough
+The generated ecosystem used to be listed here and is not any more, per this
+file's own rule: reference docs generated from the descriptors, the registry
+and the cobra tree landed under `docs/reference/`, pinned in CI with
+`git diff --exit-code`; `flow mcp` derives its tools from the service schema
+with no hand-kept list (a test holds the two together in both directions); and
+the catalog RPC is the one answer every consumer reads. See
+[CLI.md](CLI.md) for the surface and `cmd/flow/docsgen.go` for the mechanism.
+One piece of guidance survives because it is not yet needed rather than done:
+custom protoc options are available if plain leading comments stop being enough
 — but check first whether SourceCodeInfo survives to where the generator runs,
 because it does not survive into the compiled-in descriptors.
