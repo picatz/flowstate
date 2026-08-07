@@ -748,6 +748,14 @@ func (e *executor) runForEach(node *v1.Node, loop *v1.ForEach, depth, susp int, 
 // segment's own iterations for a loop nothing reads — however many
 // Continue-As-New cycles an entity loop with heavy signal traffic has already
 // survived. See loop.go's package doc on this for the full reasoning.
+//
+// A loop that has dropped history this way still eventually finishes, and
+// what it finishes with is only its own final segment's iterations — a
+// suffix of the real run, not the whole of it. Reporting that suffix as
+// `results` would be a run whose `Get` answer, `flow get` output, or
+// `flowstate_get` MCP answer looks like a short but complete history when it
+// is not. [v1.LoopStateOutputsHonest] omits `results` entirely once that has
+// happened, rather than publish a partial list nothing marks as partial.
 func (e *executor) runLoop(node *v1.Node, loop *v1.Loop, depth, susp int, descend bool) error {
 	name := loop.GetState()
 	max := v1.LoopMaxIterations(loop)
@@ -761,7 +769,8 @@ func (e *executor) runLoop(node *v1.Node, loop *v1.Loop, depth, susp int, descen
 	startItem := 0
 	var results []*v1.Workflow_StepOutputs
 	var state *v1.Value
-	if descend && inner < len(e.resume) {
+	resuming := descend && inner < len(e.resume)
+	if resuming {
 		startItem = int(e.resume[inner].GetNextIteration())
 		results = v1.LoopResumeResults(e.curSpec, node.GetId(), e.resume[inner].GetResults())
 		state = e.resume[inner].GetLoopState()
@@ -772,6 +781,12 @@ func (e *executor) runLoop(node *v1.Node, loop *v1.Loop, depth, susp int, descen
 			return nodeFailed(err)
 		}
 	}
+
+	// True the moment this segment is continuing a loop an earlier segment
+	// already suspended out of, for a loop nothing reads: whatever this
+	// segment finishes with is only its own iterations, a suffix of the real
+	// history rather than the whole of it. See [v1.LoopStateOutputsHonest].
+	truncated := resuming && !v1.LoopResultsReferenced(e.curSpec, node.GetId())
 
 	resultsBytes := v1.LoopResultsSize(results)
 
@@ -796,12 +811,19 @@ func (e *executor) runLoop(node *v1.Node, loop *v1.Loop, depth, susp int, descen
 		var sizeErr error
 		results, resultsBytes, sizeErr = v1.AccumulateLoopResult(results, resultsBytes, iteration)
 		if sizeErr != nil {
-			return nodeFailed(sizeErr)
+			// Positioned the identical way runLoopIteration's own error just
+			// above is — "iteration %d: " — so a run that hits the bound
+			// records the same sentence under ${steps.<id>.error} whether it
+			// ran locally (eval.go's runLoop wraps with the same
+			// "iteration %d: %w") or durably. A bare nodeFailed here would
+			// have left the two drivers disagreeing about the recorded text
+			// for the identical failure, invariant 3's exact shape.
+			return stepFailed(sizeErr, "iteration %d", i)
 		}
 
 		if stop {
 			e.truncateFrames(inner)
-			e.scope.Outputs.StepValues[node.GetId()] = v1.LoopStateOutputs(results, state)
+			e.scope.Outputs.StepValues[node.GetId()] = v1.LoopStateOutputsHonest(results, state, truncated)
 			return nil
 		}
 		state = next

@@ -191,6 +191,42 @@ func LoopStateOutputs(iterations []*Workflow_StepOutputs, finalState *Value) *No
 	return out
 }
 
+// LoopStateOutputsHonest is [LoopStateOutputs], except that when truncated is
+// true the `results` output is omitted entirely rather than reported as
+// iterations.
+//
+// A loop nothing in the spec reads drops earlier segments' iterations at
+// every Continue-As-New resume (see [LoopResumeResults]), so once that has
+// happened at least once, whatever this segment finishes the loop with is
+// only its *own* iterations — a suffix of the real history, not the whole of
+// it. Reporting that suffix as `results` would read, on a surface like the
+// `Get` RPC, `flow get`, or the `flowstate_get` MCP tool, as a short but
+// complete run when it is neither: the same shape as a page that stopped
+// early and said nothing about it, which is exactly what a bound elsewhere in
+// this codebase exists to refuse doing silently.
+//
+// The omission uses machinery [Node_Outputs] already has — an absent key
+// reads as "nothing to report" the identical way a skipped step's outputs do
+// (see observe.go's doc in the tests package) — rather than adding schema
+// surface for a distinction the map's own presence/absence can already make
+// honestly. `state` is unaffected in either case: it is always the loop's
+// true final value, never partial, because it travels in [Frame.LoopState]
+// and was never subject to this suppression at all.
+//
+// Only the durable driver ever passes truncated as true: the local driver has
+// no Continue-As-New to resume across, so nothing it produces is ever a
+// suffix of a longer history. See #229.
+func LoopStateOutputsHonest(iterations []*Workflow_StepOutputs, finalState *Value, truncated bool) *Node_Outputs {
+	if truncated {
+		out := &Node_Outputs{NamedValues: map[string]*Value{}}
+		if finalState != nil {
+			out.NamedValues["state"] = finalState
+		}
+		return out
+	}
+	return LoopStateOutputs(iterations, finalState)
+}
+
 // --- #229: bounding what `results` accumulates -----------------------------
 //
 // A loop's `results` grows by one [Workflow_StepOutputs] per iteration with no

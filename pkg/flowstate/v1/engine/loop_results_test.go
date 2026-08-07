@@ -56,6 +56,14 @@ func loopSpanningCAN(read bool) *v1.Workflow {
 // in full — both driven through a real, multi-segment durable run rather than
 // a fabricated RunState.
 //
+// It also pins the honest-contract follow-up: what env.GetWorkflowResult
+// returns here is exactly what a completed run's `Get` answer, `flow get`
+// output, and `flowstate_get` MCP answer all carry verbatim (see
+// FlowstateServer.Get's COMPLETED branch and cmd/flow/mcp.go's
+// runLocalResult) — so this is the caller-visible surface, not an internal
+// implementation detail. An unread loop's `results` must therefore come back
+// *absent*, never a plausible-looking partial list.
+//
 // The test environment does not continue a workflow as new for real: it
 // reports the [workflow.ContinueAsNewError], and the next segment has to be
 // started by hand, feeding back the state it carried — see
@@ -122,14 +130,23 @@ func TestRunWorkflowLoopResultsAcrossCAN(t *testing.T) {
 			require.EqualValues(t, 5, n,
 				"carried state must survive Continue-As-New regardless of results suppression")
 
-			results := out.GetStepValues()["loop"].GetNamedValues()["results"].GetLiteral().GetListValue().GetValues()
+			loopOutputs := out.GetStepValues()["loop"]
 			if tc.read {
+				results := loopOutputs.GetNamedValues()["results"].GetLiteral().GetListValue().GetValues()
 				require.Len(t, results, 6,
 					"a read loop's results must survive every Continue-As-New segment in full")
 			} else {
-				require.Less(t, len(results), 6,
-					"an unread loop's results must not survive every Continue-As-New segment whole — "+
-						"the Frame/RunState this loop writes should have shrunk at at least one resume")
+				// The honest contract (#229's P1 follow-up): a loop that dropped
+				// earlier segments' history must not report the finishing
+				// segment's own iterations as though they were the whole run —
+				// that would be a partial list on a surface (Get, `flow get`,
+				// `flowstate_get`) that gives a reader no way to tell it apart
+				// from a short but complete one. The key must be absent
+				// entirely, not merely short.
+				_, present := loopOutputs.GetNamedValues()["results"]
+				require.False(t, present,
+					"an unread loop that dropped history across a Continue-As-New must omit `results` "+
+						"entirely rather than publish a partial list nothing marks as partial")
 			}
 		})
 	}

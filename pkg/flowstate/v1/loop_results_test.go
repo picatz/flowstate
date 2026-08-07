@@ -291,3 +291,43 @@ func TestLoopResultsSize(t *testing.T) {
 		"size is additive across entries, the same way proto.Size sums what it measures",
 	)
 }
+
+// TestLoopStateOutputsHonest covers #229's follow-up honest contract: a loop
+// that dropped history at a Continue-As-New resume must not report the
+// finishing segment's own iterations as though they were the whole run —
+// this is what a caller reading a completed run's `Get` answer, `flow get`
+// output, or `flowstate_get` MCP answer actually sees, so the distinction has
+// to be caller-visible, not just an internal bookkeeping detail.
+func TestLoopStateOutputsHonest(t *testing.T) {
+	iterations := []*v1.Workflow_StepOutputs{
+		{StepValues: map[string]*v1.Node_Outputs{"body": {}}},
+	}
+	state := v1.NewLiteral(int64(3))
+
+	t.Run("not truncated reports results in full, identical to LoopStateOutputs", func(t *testing.T) {
+		got := v1.LoopStateOutputsHonest(iterations, state, false)
+		want := v1.LoopStateOutputs(iterations, state)
+		require.Equal(t, want.GetNamedValues()["results"], got.GetNamedValues()["results"])
+		require.Equal(t, want.GetNamedValues()["state"], got.GetNamedValues()["state"])
+	})
+
+	t.Run("truncated omits results entirely rather than reporting a partial list", func(t *testing.T) {
+		got := v1.LoopStateOutputsHonest(iterations, state, true)
+		_, present := got.GetNamedValues()["results"]
+		require.False(t, present,
+			"a truncated loop's results must be an absent key, not an empty or partial list — "+
+				"either of those would still read as a claim about what the loop's whole history was")
+	})
+
+	t.Run("truncated still reports the true final state", func(t *testing.T) {
+		got := v1.LoopStateOutputsHonest(iterations, state, true)
+		require.Equal(t, state, got.GetNamedValues()["state"],
+			"state travels in Frame.LoopState, never subject to results suppression — "+
+				"truncating results must never touch it")
+	})
+
+	t.Run("truncated with no carried state reports neither key", func(t *testing.T) {
+		got := v1.LoopStateOutputsHonest(iterations, nil, true)
+		require.Empty(t, got.GetNamedValues())
+	})
+}

@@ -5783,9 +5783,21 @@ type Frame struct {
 	// NextIteration is the index of the next item to process, for a frame
 	// standing inside a for_each.
 	NextIteration int32 `protobuf:"varint,2,opt,name=next_iteration,json=nextIteration,proto3" json:"next_iteration,omitempty"`
-	// Results holds the outputs of iterations already completed by a for_each at
-	// this level, so a resumed run still reports every iteration's results and not
-	// only those from the run that finished the loop.
+	// Results holds the outputs of iterations already completed by a for_each or
+	// loop at this level, so a resumed run still reports every iteration's
+	// results and not only those from the run that finished the loop.
+	//
+	// For a `loop:`, this is carried forward across a Continue-As-New only when
+	// something in the specification could still read it — see the doc on
+	// `LoopResultsReferenced` and `LoopResumeResults` in pkg/flowstate/v1/loop.go.
+	// A loop nothing reads starts each new segment's Results fresh rather than
+	// inheriting every prior segment's, which is what keeps an indefinitely
+	// running `loop:` + `wait_for_signal:` entity from carrying its whole
+	// history forward forever. When that has happened at least once, the
+	// finished loop's own reported `results` output is *omitted* rather than
+	// showing only the last segment's iterations — an absent key rather than a
+	// list that looks complete and is not. See docs/DSL.md's loop section for
+	// the contract this states to an author, and #229.
 	Results []*Workflow_StepOutputs `protobuf:"bytes,3,rep,name=results,proto3" json:"results,omitempty"`
 	// CallOutputs holds the step outputs a called workflow's own steps had
 	// produced when a run suspended partway through it, for a frame standing

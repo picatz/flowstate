@@ -3112,9 +3112,21 @@ message Frame {
   // standing inside a for_each.
   int32 next_iteration = 2 [(buf.validate.field).int32 = {gte: 0}];
 
-  // Results holds the outputs of iterations already completed by a for_each at
-  // this level, so a resumed run still reports every iteration's results and not
-  // only those from the run that finished the loop.
+  // Results holds the outputs of iterations already completed by a for_each or
+  // loop at this level, so a resumed run still reports every iteration's
+  // results and not only those from the run that finished the loop.
+  //
+  // For a `loop:`, this is carried forward across a Continue-As-New only when
+  // something in the specification could still read it — see the doc on
+  // `LoopResultsReferenced` and `LoopResumeResults` in pkg/flowstate/v1/loop.go.
+  // A loop nothing reads starts each new segment's Results fresh rather than
+  // inheriting every prior segment's, which is what keeps an indefinitely
+  // running `loop:` + `wait_for_signal:` entity from carrying its whole
+  // history forward forever. When that has happened at least once, the
+  // finished loop's own reported `results` output is *omitted* rather than
+  // showing only the last segment's iterations — an absent key rather than a
+  // list that looks complete and is not. See docs/DSL.md's loop section for
+  // the contract this states to an author, and #229.
   repeated Workflow.StepOutputs results = 3;
 
   // CallOutputs holds the step outputs a called workflow's own steps had
