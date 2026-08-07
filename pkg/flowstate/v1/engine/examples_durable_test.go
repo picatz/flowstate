@@ -216,6 +216,19 @@ var exampleSignals = map[string]map[string]*v1.Node_Outputs{
 			"close":        v1.NewLiteral(true),
 		}},
 	},
+
+	// Answered rather than lapsing, and it has to be: this gate's bound is
+	// `${timestamp(inputs.sign_off_by) > now ? ... : duration('0s')}`, so
+	// [tests.LapsesWithin] cannot promise it lapses inside the unattended budget
+	// — how long a computed timeout is, is not a property of the file. The
+	// example's subject is the length being computed at all, which the answered
+	// path shows as well as the lapsed one; `workflow.test.yaml` covers the lapse
+	// through the local driver, where the deadline can be moved.
+	"computed-durations": {
+		"onboarding-signed-off": {NamedValues: map[string]*v1.Value{
+			"approved": v1.NewLiteral(true),
+		}},
+	},
 }
 
 // exampleLapsingGates names an example whose gate is meant to go unanswered,

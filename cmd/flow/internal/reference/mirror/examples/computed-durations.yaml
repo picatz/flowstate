@@ -15,10 +15,15 @@ description: >-
 # own clock whichever arm it takes. See docs/DSL.md's "Waiting".
 #
 #   flow test examples/computed-durations/
+#
 #   flow run local examples/computed-durations/workflow.yaml \
-#     --input plan=starter --input quiet_period=5s \
-#     --input sign_off_by=2099-01-01T00:00:00Z \
+#     --input-file examples/computed-durations/inputs.json \
 #     --signal onboarding-signed-off='{"approved": true}'
+#
+# The `--signal` is not optional for a local run. `sign_off_by` in `inputs.json`
+# is deliberately far future - a contract deadline that never goes stale - so
+# the computed timeout is enormous and nothing but an answer ends the gate. That
+# is `approval-gate`'s convention, not a quirk of this file.
 
 inputs:
   plan:
@@ -65,13 +70,19 @@ steps:
   # number is a property of the contract, so it belongs in an expression over
   # the input that names the contract, not in a copy of this file.
   #
-  # `days()` rather than `duration('720h')` because a reader can scan it. Both
-  # compile to the same thing - see docs/reference for the unit constructors.
+  # Kept to seconds so the example finishes if someone runs it - the same
+  # convention `wait-until-a-moment` uses, and for the same reason.
+  # `${inputs.plan == "enterprise" ? days(30) : days(7)}` is the identical
+  # expression at a useful scale, and costs the engine nothing more: a durable
+  # timer holds no worker, so a month is as cheap as a second.
+  #
+  # `days()` rather than `duration('720h')` when you do write it, because a
+  # reader can scan it. Both compile to the same thing.
   #
   # Quoted because of YAML rather than because of the expression: a plain scalar
   # cannot contain a colon followed by a space, and a conditional has one.
   - id: grace
-    sleep: '${inputs.plan == "enterprise" ? days(30) : days(7)}'
+    sleep: '${inputs.plan == "enterprise" ? seconds(4) : seconds(1)}'
 
   # A timeout computed from `now`, which is the clock the wait is evaluated
   # against - `workflow.Now` under Temporal, so it replays to the same instant.

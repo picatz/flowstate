@@ -265,7 +265,10 @@ steps:
     log:
       message: ${now}
 `,
-			want: "is the moment a `wait_until:` is evaluated",
+			// Not "a `wait_until:`" any more: `now` is bound in every expression a
+			// wait carries, so naming one arm here would describe a narrower rule
+			// than the one being enforced.
+			want: "is the moment a wait is evaluated",
 		},
 		{
 			name: "a name of its own is fine",

@@ -455,6 +455,22 @@ func LapsesWithin(nodes []*v1.Node, budget time.Duration) bool {
 			return false
 		}
 
+		// A computed timeout answers "no" here, deliberately and not by
+		// omission: how long it is cannot be known from the file, which is what
+		// makes it computed, so the only honest static answer is that this gate
+		// is not promised to lapse inside the budget.
+		//
+		// The reading is safe because it coincides with the unset case, and it is
+		// written down because that coincidence is exactly what would make a
+		// future reader "fix" it — everywhere the *engine* reads a timeout, an
+		// absent field and a computed one had to be told apart (see
+		// [v1.EvalWaitTimeout]), and this is the one place they may be treated
+		// alike. Guessing a value instead would call a workflow unattended on
+		// arithmetic nobody has evaluated.
+		if wait.GetTimeoutExpr() != nil {
+			return true
+		}
+
 		timeout := wait.GetTimeout().AsDuration()
 
 		return timeout <= 0 || timeout > budget
