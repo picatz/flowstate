@@ -80,7 +80,7 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	// blocks with nothing that could ever release it.
 	localSignals, _ := cmd.Flags().GetStringArray("signal")
 
-	ctx, err := withLocalSignals(cmd.Context(), localSignals)
+	ctx, err := withLocalSignals(cmd.Context(), cmd, workflow, inputs, localSignals)
 	if err != nil {
 		return err
 	}

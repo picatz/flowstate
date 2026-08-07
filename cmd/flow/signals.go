@@ -29,8 +29,45 @@ var ()
 // A waiter is attached even when nothing was supplied, so that a workload reaching
 // a gate with no answer times out or blocks exactly as it would in production,
 // rather than failing with a message about local tooling.
-func withLocalSignals(ctx context.Context, flags []string) (context.Context, error) {
-	signals := v1.NewLocalSignals()
+//
+// # Enforcing the same policy the server enforces (#207 slice 2)
+//
+// Every `--signal` delivered through this command goes through
+// [v1.SignalPolicyCheck] before it reaches a waiting step, exactly as a durable
+// `flow signal` does through `FlowstateServer.Signal` — see
+// [v1.NewPolicedLocalSignals]. `--signal` has no way to attest a sender's
+// identity (unlike `flow test`'s scripted `sender:`), so its delivery is always
+// [v1.LocalSignalSender] — unattested — which a real policy's `allow:` rule can
+// never match. A workflow whose gate declares a `signals:` policy is therefore
+// unreachable through `--signal` today, honestly: that is the same limit
+// `examples/approval-gate/workflow.yaml`'s own header comment already names for
+// `flow run local` generally, not a new one this introduces.
+//
+// --as-subject/--as-issuer/--as-namespace/--as-claim name this run's own
+// starter, for `distinct_from_starter` only — the identity a `--signal`ed
+// sender is checked against, not the sender's own identity (which, per the
+// paragraph above, never carries one). A separate starter identity from
+// [WorkloadIdentity]'s zero value distinguishes "this local run started as
+// nobody" from "this local run started as somebody, but who is unknown" —
+// see [v1.NewPolicedLocalSignals]'s hasStarter parameter.
+func withLocalSignals(ctx context.Context, cmd *cobra.Command, workflow *v1.Workflow, inputs map[string]*v1.Value, flags []string) (context.Context, error) {
+	policies, err := resolvedLocalSignalPolicies(ctx, workflow, inputs)
+	if err != nil {
+		return nil, err
+	}
+
+	starter, err := localWorkloadIdentity(cmd)
+	if err != nil {
+		return nil, err
+	}
+
+	signals := v1.NewPolicedLocalSignals(policies, &v1.WorkloadIdentity{
+		Subject:   starter.Subject,
+		Issuer:    starter.Issuer,
+		Claims:    starter.Claims,
+		Namespace: starter.Namespace,
+	}, true)
+
 	answered := make(map[string]bool, len(flags))
 
 	for _, flag := range flags {
@@ -45,6 +82,31 @@ func withLocalSignals(ctx context.Context, flags []string) (context.Context, err
 	}
 
 	return v1.NewContextWithSignalWaiter(ctx, signals), nil
+}
+
+// resolvedLocalSignalPolicies is workflow's declared `signals:` — if any —
+// resolved against inputs the same way submit resolves them
+// ([v1.ResolveSignalPolicySubjects]), suitable for [v1.NewPolicedLocalSignals].
+//
+// inputs is bound first ([v1.BindRunInputs]), matching what
+// [v1.ResolveSignalPolicySubjects] itself expects: a rule's `subject_from`
+// expression may read a defaulted input, not only one the caller typed. A bind
+// failure here is not reported directly — [v1.RunWithInputs] performs the
+// identical bind moments later and is what actually decides whether this run
+// proceeds; this function only needs bound inputs when there is a policy to
+// resolve; when binding fails, the run is about to fail anyway, so an empty,
+// unpoliced result is returned rather than a second, differently-shaped error.
+func resolvedLocalSignalPolicies(ctx context.Context, workflow *v1.Workflow, inputs map[string]*v1.Value) (map[string]*v1.SignalPolicy, error) {
+	if len(workflow.GetSignals()) == 0 {
+		return nil, nil
+	}
+
+	bound, err := v1.BindRunInputs(workflow, inputs)
+	if err != nil {
+		return nil, nil
+	}
+
+	return v1.ResolveSignalPolicySubjects(ctx, workflow, bound)
 }
 
 // reportUnansweredGates warns about gates this run will block on.

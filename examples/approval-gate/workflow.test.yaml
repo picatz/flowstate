@@ -1,18 +1,70 @@
-# Every case shares the same inputs unless noted: a real caller can never get
-# `steps.approval.sender.local` or `run.local` to read `false` from `flow test`
-# any more than from `flow run local` (both drivers use [v1.LocalSignals]), so
-# what these cases prove is that the gate refuses even a matching, approved
-# payload when nothing attested it — the honest limit the workflow's own header
-# comment names. `deploy` itself is unreachable from this file for exactly that
-# reason; see #206. The durable half — an attested sender who is not the run's
-# own starter deploying, and one who is being refused — is exercised in CI by
-# engine/examples_durable_test.go and engine/run_identity_test.go, which is
-# where a real sender and a real run identity can both exist at once, and where
-# the other two refusal decisions -- `refused_mismatched_approver` and
-# `refused_self_approved` (#215) -- are exercised, since both require an
-# attested sender this harness cannot produce.
+# `flow test` checks a scripted signal's optional `sender:` against this
+# workflow's `signals:` policy through the same `v1.SignalPolicyCheck`
+# `FlowstateServer.Signal` calls (#207 slice 2) — the seam that makes it safe
+# for `deploy`'s own `if:` to trust `signals:` for authorization rather than
+# restate it: a scripted signal with no `sender:`, or one that does not
+# satisfy the policy, is refused before it ever reaches the waiting step,
+# exactly as a durable one would be. That is what makes the first case below
+# possible at all — this file's own history is the reason it did not use to
+# exist: before local delivery enforced policy, no case here could reach
+# `deploy`, because a scripted signal always looked unattested and the old
+# `if:` gated on attestation directly. Now the gate is `signals:`'s job, and
+# `flow test` enforces it the same way production does.
 edition: v2026.2
 tests:
+  - name: "a sender satisfying signals: deploys"
+    workflow: ./workflow.yaml
+    inputs:
+      version: v1.4.2
+      environment: production
+      expected_approver: sre-lead@example.com
+    signals:
+      - name: deploy-approved
+        payload:
+          approved: true
+        sender:
+          subject: sre-lead@example.com
+          issuer: https://issuer.example.com
+          claims:
+            team: release-managers
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [request, settle, approval, deploy]
+      skipped: [rejected, expired]
+      outputs:
+        decision: deployed
+        approver_subject: sre-lead@example.com
+
+  - name: "an approved payload from a sender signals: refuses never reaches the gate"
+    workflow: ./workflow.yaml
+    inputs:
+      version: v1.4.2
+      environment: production
+      expected_approver: sre-lead@example.com
+    signals:
+      - name: deploy-approved
+        payload:
+          approved: true
+        sender:
+          # Satisfies the claim, but not the narrowed subject this run
+          # named — signals: refuses it before it is ever delivered, so
+          # the wait simply times out, the same as nobody answering at all.
+          subject: someone-else@example.com
+          issuer: https://issuer.example.com
+          claims:
+            team: release-managers
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [request, settle, approval, expired]
+      skipped: [deploy, rejected]
+      outputs:
+        decision: expired
+        approver_subject: ""
+
   - name: an approved payload is still refused without an attested sender
     workflow: ./workflow.yaml
     inputs:
@@ -27,10 +79,10 @@ tests:
       - task: log
         returns: {}
     expect:
-      ran: [request, settle, approval, deploy_refused]
-      skipped: [deploy, rejected, expired]
+      ran: [request, settle, approval, expired]
+      skipped: [deploy, rejected]
       outputs:
-        decision: refused_unattested
+        decision: expired
         approver_subject: ""
 
   - name: an explicit rejection is honored
@@ -43,12 +95,17 @@ tests:
       - name: deploy-approved
         payload:
           approved: false
+        sender:
+          subject: sre-lead@example.com
+          issuer: https://issuer.example.com
+          claims:
+            team: release-managers
     stubs:
       - task: log
         returns: {}
     expect:
       ran: [request, settle, approval, rejected]
-      skipped: [deploy, deploy_refused, expired]
+      skipped: [deploy, expired]
       outputs:
         decision: rejected
         approver_subject: ""
@@ -64,7 +121,7 @@ tests:
         returns: {}
     expect:
       ran: [request, settle, approval, expired]
-      skipped: [deploy, deploy_refused, rejected]
+      skipped: [deploy, rejected]
       outputs:
         decision: expired
         approver_subject: ""

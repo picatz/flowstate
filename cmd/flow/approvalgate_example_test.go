@@ -15,11 +15,22 @@ import (
 // signal is ever consulted, so both examples stopped being runnable the
 // moment the inputs became required.
 //
+// The two `Example:` lines this pins to now run `examples/expense-approval/`
+// rather than `examples/approval-gate/` (#207 slice 3): once approval-gate
+// declared a `signals:` policy, `--signal` — always
+// [v1.LocalSignalSender], never an attested identity — could no longer
+// satisfy it, by the same design that makes the gate real in production
+// (see signals.go's withLocalSignals doc comment). Demonstrating "answer a
+// gate locally, up front" needs a workflow with a `wait_for_signal:` and no
+// signal policy to attest a sender against, which is exactly what
+// expense-approval already is and approval-gate, by design, no longer can
+// be. The name stuck; what it pins did not.
+//
 // This does not walk the cobra tree the way [TestEverySubcommandHasAWorkedExample]
 // and [TestExamplesArePlausibleInvocations] do — those check that an Example
 // looks like a command, not that it succeeds, and building a general "resolve
 // and execute every Example: line in the tree" harness would need to fake a
-// server for the commands that talk to one. `approval-gate` runs entirely
+// server for the commands that talk to one. `expense-approval` runs entirely
 // locally, so it is cheap to actually run; this test does exactly that,
 // pinned to the two lines that regressed, rather than generalizing.
 func TestApprovalGateHelpExamplesActuallyRun(t *testing.T) {
@@ -33,7 +44,7 @@ func TestApprovalGateHelpExamplesActuallyRun(t *testing.T) {
 			// The example is written the way an author would paste it in
 			// front of their own repo checkout, i.e. paths relative to the
 			// repo root; this test runs from cmd/flow, one level under that.
-			line = strings.ReplaceAll(line, "examples/approval-gate/", filepath.Join("..", "..", "examples", "approval-gate")+string(filepath.Separator))
+			line = strings.ReplaceAll(line, "examples/expense-approval/", filepath.Join("..", "..", "examples", "expense-approval")+string(filepath.Separator))
 
 			args := splitShellish(t, line)
 			if args[0] != "flow" {
@@ -56,19 +67,19 @@ func TestApprovalGateHelpExamplesActuallyRun(t *testing.T) {
 }
 
 // approvalGateExampleLine finds the one line in example that runs the
-// approval-gate workflow, failing loudly if the example no longer contains
-// one — so a future rewrite of the Example: text does not silently stop
-// exercising anything.
+// expense-approval workflow, failing loudly if the example no longer
+// contains one — so a future rewrite of the Example: text does not silently
+// stop exercising anything.
 func approvalGateExampleLine(t *testing.T, example string) string {
 	t.Helper()
 
 	for _, line := range strings.Split(example, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if strings.Contains(trimmed, "examples/approval-gate/workflow.yaml") {
+		if strings.Contains(trimmed, "examples/expense-approval/workflow.yaml") {
 			return trimmed
 		}
 	}
-	t.Fatalf("no line in this Example: runs examples/approval-gate/workflow.yaml:\n%s", example)
+	t.Fatalf("no line in this Example: runs examples/expense-approval/workflow.yaml:\n%s", example)
 	return ""
 }
 

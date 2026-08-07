@@ -45,13 +45,18 @@ description: >-
 # approval-and-compensation shape with that file's transactional idempotency
 # shape for the real thing.
 #
-# Separation of duties here is the same check approval-gate uses:
-# `steps.approval.sender` must be attested (not a local run), must not be the
-# run's own starter (`run.identity`, issuer and subject together - #215), and
-# `signals:` below is what restricts who may send `transfer-approved` at all.
-# What this file does not add beyond approval-gate is a `flow fix`-safe way to
-# stop its own author from deleting `signals:` or loosening `deploy`'s `if:` -
-# see approval-gate's header, gap 3, #187. That gap is identical here.
+# Separation of duties here is `distinct_from_starter: true` on
+# `transfer-approved` itself (#207) - enforced by `FlowstateServer.Signal`
+# (and, locally, by the identical `v1.SignalPolicyCheck` `flow test` and
+# `flow run local` call) before Temporal ever sees the signal, rather than
+# restated as a `run.identity` comparison in every step's own `if:` the way
+# this file used to carry it. What reaches `debit`/`credit`/`notify_settlement`
+# below was already attested, already role-checked, and already confirmed
+# distinct from whoever started this run - the workflow's own logic is just
+# "did the desk say yes." What this file does not add beyond that is a
+# `flow fix`-safe way to stop its own author from deleting `signals:` or
+# loosening a step's `if:` - see approval-gate's header, gap 3, #187. That
+# gap is identical here.
 
 inputs:
   from_account_id:
@@ -96,14 +101,16 @@ inputs:
 # Who may deliver `transfer-approved` at all - a claim, not a named
 # individual, because a treasury desk is a team rather than one person. A
 # sender satisfying this claim is authorized to approve any transfer this
-# workflow definition gates; `run.identity` below is what still refuses the
-# one case a claim alone cannot: the approver being the same caller who
-# started the run.
+# workflow definition gates; `distinct_from_starter` is what still refuses
+# the one case a claim alone cannot: the approver being the same caller who
+# started the run - enforced here, structurally, rather than as a
+# `run.identity` comparison a step's own `if:` could be edited to drop.
 signals:
   transfer-approved:
     allow:
       - claims:
           role: treasury-approver
+    distinct_from_starter: true
 
 steps:
   - id: request
@@ -122,19 +129,15 @@ steps:
       timeout: 4h
 
   # Cleared to move: either the amount never needed a gate, or the gate was
-  # answered yes by an attested sender who is not this run's own starter.
-  # `debit`, `credit`, and `notify_settlement` all share this exact condition
-  # - approval-gate's `deploy` and `deploy_refused` share theirs the same way,
-  # for the same reason: a step and the branch that explains why it did not
-  # run must never be able to disagree about what happened.
+  # answered yes. `signals:` above is what makes that a real check - an
+  # unattested, wrongly-claimed, or self-approving sender never reaches this
+  # payload at all - so `debit`, `credit`, and `notify_settlement` (all three
+  # share this exact condition) ask only the one question that is actually
+  # this workflow's own logic: did the desk say yes.
   - id: debit
     if: >-
       ${inputs.amount_cents < inputs.approval_threshold_cents ||
-        (has(steps.approval.payload.approved) && steps.approval.payload.approved &&
-          !steps.approval.sender.local && !run.local &&
-          steps.approval.sender.identity.subject != "" &&
-          !(steps.approval.sender.identity.subject == run.identity.subject &&
-            steps.approval.sender.identity.issuer == run.identity.issuer))}
+        (has(steps.approval.payload.approved) && steps.approval.payload.approved)}
     http:
       method: POST
       url: https://ledger.internal.example.com/debit
@@ -159,11 +162,7 @@ steps:
   - id: credit
     if: >-
       ${inputs.amount_cents < inputs.approval_threshold_cents ||
-        (has(steps.approval.payload.approved) && steps.approval.payload.approved &&
-          !steps.approval.sender.local && !run.local &&
-          steps.approval.sender.identity.subject != "" &&
-          !(steps.approval.sender.identity.subject == run.identity.subject &&
-            steps.approval.sender.identity.issuer == run.identity.issuer))}
+        (has(steps.approval.payload.approved) && steps.approval.payload.approved)}
     http:
       method: POST
       url: https://ledger.internal.example.com/credit
@@ -189,11 +188,7 @@ steps:
   - id: notify_settlement
     if: >-
       ${inputs.amount_cents < inputs.approval_threshold_cents ||
-        (has(steps.approval.payload.approved) && steps.approval.payload.approved &&
-          !steps.approval.sender.local && !run.local &&
-          steps.approval.sender.identity.subject != "" &&
-          !(steps.approval.sender.identity.subject == run.identity.subject &&
-            steps.approval.sender.identity.issuer == run.identity.issuer))}
+        (has(steps.approval.payload.approved) && steps.approval.payload.approved)}
     http:
       method: POST
       url: https://settlements.internal.example.com/notify
@@ -216,24 +211,6 @@ steps:
     log:
       level: warn
       message: ${"approval for %d cents lapsed; the transfer did not happen".format([inputs.amount_cents])}
-
-  # The payload said yes and the gate above still refused it - unattested,
-  # not the role the caller expected, or the approver was this run's own
-  # starter. See approval-gate's `deploy_refused` for the finer-grained,
-  # three-way split of this same shape; this file reports one bucket rather
-  # than three for brevity, which is a real gap named in docs/USE_CASES.md.
-  - id: refused_unauthorized
-    if: >-
-      ${inputs.amount_cents >= inputs.approval_threshold_cents &&
-        has(steps.approval.payload.approved) && steps.approval.payload.approved &&
-        !(!steps.approval.sender.local && !run.local &&
-          steps.approval.sender.identity.subject != "" &&
-          !(steps.approval.sender.identity.subject == run.identity.subject &&
-            steps.approval.sender.identity.issuer == run.identity.issuer))}
-    log:
-      level: warn
-      message: >-
-        ${"refusing to move %d cents: approved, but the sender was not a valid, separate approver".format([inputs.amount_cents])}
 
   # The gate was answered - it did not time out - but the payload carried
   # neither an explicit `approved: true` nor an explicit `approved: false`:
@@ -258,6 +235,12 @@ steps:
         ${"refusing to move %d cents: the approval signal answered with no usable approved field".format([inputs.amount_cents])}
 
 outputs:
+  # `refused_unauthorized` is gone (#207): a payload can no longer arrive
+  # here approved-but-wrong-sender, because `signals:`
+  # (claims + distinct_from_starter) refuses that sender before the payload
+  # is ever delivered. `decision` only has to distinguish what the desk
+  # actually said - `has(payload.approved)`, its value, and `timed_out` -
+  # never who said it.
   decision:
     value: >-
       ${inputs.amount_cents < inputs.approval_threshold_cents
@@ -265,12 +248,7 @@ outputs:
         : (steps.approval.timed_out
             ? "expired"
             : ((has(steps.approval.payload.approved) && steps.approval.payload.approved)
-                ? ((!steps.approval.sender.local && !run.local &&
-                      steps.approval.sender.identity.subject != "" &&
-                      !(steps.approval.sender.identity.subject == run.identity.subject &&
-                        steps.approval.sender.identity.issuer == run.identity.issuer))
-                    ? "transferred"
-                    : "refused_unauthorized")
+                ? "transferred"
                 : ((has(steps.approval.payload.approved) && !steps.approval.payload.approved)
                     ? "rejected"
                     : "refused_malformed_payload")))}
@@ -282,11 +260,7 @@ outputs:
   debit_reference:
     value: >-
       ${(inputs.amount_cents < inputs.approval_threshold_cents ||
-          (has(steps.approval.payload.approved) && steps.approval.payload.approved &&
-            !steps.approval.sender.local && !run.local &&
-            steps.approval.sender.identity.subject != "" &&
-            !(steps.approval.sender.identity.subject == run.identity.subject &&
-              steps.approval.sender.identity.issuer == run.identity.issuer)))
+          (has(steps.approval.payload.approved) && steps.approval.payload.approved))
         ? steps.debit.reference
         : ""}
     description: the ledger's debit reference, empty unless the transfer actually cleared

@@ -180,6 +180,47 @@ type SignalScript struct {
 	// Payload is what the signal carries, read back under `${<step>.payload}`
 	// exactly as `flow signal`'s would be.
 	Payload map[string]any `yaml:"payload"`
+
+	// Sender attests who sent this signal, checked against the workflow's own
+	// declared `signals:` policy for Name exactly as
+	// `FlowstateServer.Signal` checks a durable one — through
+	// [v1.SignalPolicyCheck], the same function, so a policy that would
+	// refuse this sender in production refuses it here too rather than
+	// silently delivering anyway (#207's slice 2: local delivery not
+	// enforcing policy was what made rehearsal lie in the dangerous
+	// direction once a workflow's `if:` started trusting `signals:` for
+	// authorization).
+	//
+	// Omitted under a signal that carries no declared policy: the signal is
+	// delivered as [v1.LocalSignalSender] always was, unattested. Omitted
+	// under a signal that *does* declare a policy: the delivery is still
+	// checked, as an unattested, empty identity — which a real policy's
+	// `allow:` rule can never match (every rule requires a non-empty
+	// subject, namespace, or claim; see signalpolicy.go's
+	// ruleMatchesEverySender) — so an author who forgets `sender:` gets a
+	// refused delivery and a diagnostic naming why, not a silent pass. That
+	// is the deliberate fail-closed answer, not an oversight: a scripted
+	// signal is exactly as unattested as `flow run local --signal` unless a
+	// case says otherwise.
+	Sender *ScriptedSender `yaml:"sender"`
+}
+
+// ScriptedSender is the identity a [SignalScript] attests, the same fields
+// [v1.WorkloadIdentity] carries — subject and issuer together, never subject
+// alone, for the identical multi-IdP reason `flow validate` requires a
+// [v1.SignalPolicyRule.subject] to be issuer-qualified.
+type ScriptedSender struct {
+	// Subject is the attested caller, matched against a policy rule's
+	// `subject:` as `<issuer>#<subject>` — see [v1.QualifiedSubject].
+	Subject string `yaml:"subject"`
+
+	// Issuer identifies which identity provider attested Subject.
+	Issuer string `yaml:"issuer"`
+
+	// Claims are additional attested facts, matched against a policy rule's
+	// `claims:` — every key the rule names must be present here with the
+	// same value.
+	Claims map[string]string `yaml:"claims"`
 }
 
 // Expectation is what a case's run must have produced to pass.

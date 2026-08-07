@@ -1,12 +1,20 @@
-# Same honest limit approval-gate's own test file names: `flow test` has no
-# authenticated caller, so an "attested: true" payload can never look like a
-# real compliance-reviewer signal here - only like the unattested refusal.
-# What these cases prove is the shape that does not depend on a real sender:
-# bounded fan-out completing (and tolerating one bad grant), and the review
-# correctly refusing to call itself closed without one.
+# `flow test` now enforces a declared `signals:` policy against a scripted
+# signal exactly the way `FlowstateServer.Signal` does (#207 slice 2), through
+# the same `v1.SignalPolicyCheck` - so a scripted `attestation-recorded` with
+# no `sender:` (or a `sender:` whose claims do not carry `role:
+# compliance-reviewer`) is refused before it ever reaches the waiting step,
+# not merely delivered-but-unattested the way it used to read. That means the
+# gate times out here exactly as it would in production against nobody
+# answering - `outcome: expired`, not the `unattested` value this file
+# produced before local delivery enforced policy. What these cases prove is
+# the shape that does not depend on a real sender: bounded fan-out completing
+# (and tolerating one bad grant), and the review correctly refusing to call
+# itself closed without one. A case exercising a genuinely attested sender
+# would add `sender: {claims: {role: compliance-reviewer}}` to its `signals:`
+# entry, the same way `examples/approval-gate/`'s own happy-path case does.
 edition: v2026.2
 tests:
-  - name: evidence is gathered for every grant, but the review closes unattested without a real sender
+  - name: evidence is gathered for every grant, but the review times out unattested without a real sender
     workflow: ./workflow.yaml
     inputs:
       access_grants:
@@ -42,7 +50,7 @@ tests:
       ran: [gather_evidence, attestation, unattested]
       skipped: [recorded]
       outputs:
-        outcome: unattested
+        outcome: expired
         attested_by: ""
         reviewed_grants:
           - grantee: alice@example.com

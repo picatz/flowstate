@@ -133,12 +133,33 @@ func TestParseSignalFlag(t *testing.T) {
 	}
 }
 
+// localSignalsTestCommand returns a `run local` command with the `--as-*`
+// flags [withLocalSignals] reads, exactly as the real one declares them — a
+// bare &cobra.Command{} has none of these registered, so localWorkloadIdentity
+// would read every field empty and fail identity.Validate() before a test
+// ever reached what it meant to check.
+func localSignalsTestCommand(t *testing.T) *cobra.Command {
+	t.Helper()
+	root := newRootCommand()
+	local, _, err := root.Find([]string{"run", "local"})
+	require.NoError(t, err)
+	return local
+}
+
 // TestWithLocalSignalsDelivers checks that a supplied answer actually reaches a
 // waiting step, buffered until the run gets there.
 func TestWithLocalSignalsDelivers(t *testing.T) {
 	t.Parallel()
 
-	ctx, err := withLocalSignals(t.Context(), []string{
+	workflow := &v1.Workflow{
+		Steps: []*v1.Node{
+			{Id: "approval", Kind: &v1.Node_Wait{Wait: &v1.Wait{
+				Kind: &v1.Wait_Signal{Signal: &v1.Signal{Name: "deploy-approved"}},
+			}}},
+		},
+	}
+
+	ctx, err := withLocalSignals(t.Context(), localSignalsTestCommand(t), workflow, nil, []string{
 		`deploy-approved={"approved": true}`,
 	})
 	require.NoError(t, err)
@@ -169,7 +190,7 @@ func TestWithLocalSignalsDelivers(t *testing.T) {
 func TestWithLocalSignalsAttachesAWaiterRegardless(t *testing.T) {
 	t.Parallel()
 
-	ctx, err := withLocalSignals(t.Context(), nil)
+	ctx, err := withLocalSignals(t.Context(), localSignalsTestCommand(t), &v1.Workflow{}, nil, nil)
 	require.NoError(t, err)
 
 	_, ok := v1.SignalWaiterFromContext(ctx)
