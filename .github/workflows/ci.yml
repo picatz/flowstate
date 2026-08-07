@@ -86,8 +86,11 @@ jobs:
             exit 1
           fi
 
+      # `make test`, not a second copy of the command, so the memory and time
+      # bounds cannot drift between here and the loop a contributor runs
+      # locally. CLAUDE.md's rule is that the Makefile *is* what CI runs.
       - name: Test
-        run: go test -race ./...
+        run: make test
 
       # The plugins are separate Go modules, which is the point of them: a plugin
       # owns its dependencies so an operator decides whether to trust them, and
@@ -99,18 +102,7 @@ jobs:
       # failure, which is the only way this class is ever found — a module nobody
       # builds is not red, it is absent.
       - name: Test plugin modules
-        run: |
-          for module in plugins/*/; do
-            [ -f "$module/go.mod" ] || continue
-            echo "::group::$module"
-            (cd "$module" && go build ./... && go vet ./... && go test -race ./...)
-            unformatted=$(gofmt -l "$module")
-            if [ -n "$unformatted" ]; then
-              echo "::error::not gofmt'd: $unformatted"
-              exit 1
-            fi
-            echo "::endgroup::"
-          done
+        run: make test-plugins
 
       # The same mechanism as the proto job's generated-code check, on the four
       # reference documents that are derived rather than written: the task
