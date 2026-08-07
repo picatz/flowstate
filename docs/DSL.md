@@ -2592,6 +2592,84 @@ types themselves (#177 proper, which this now inherits a tested constraint layer
 into) and the render half of `sensitive:` in the CLI's own views, which sits
 outside the schema and compiler this section describes.
 
+*Since written, a third time:* **`pattern:` is retired.** It said nothing
+`must:` could not already say: `pattern: "^acct-[a-z0-9-]+$"` and
+`must: this.matches('^acct-[a-z0-9-]+$')` are the identical check, the second
+spelled through the one expression surface this schema has instead of a
+second vocabulary that happened to duplicate one corner of it. A greenfield
+project removes redundant surface outright rather than deprecating it, so this
+followed `cel:`/`echo:`/`printf:` and `iterator:` rather than sitting beside
+`must:` as a second way to write the same rule forever.
+
+Nothing about cost or safety changes in the move. `matches()` compiles to
+Go's `regexp` package the same way `pattern:`'s own shape check did — RE2,
+linear-time, no catastrophic backtracking regardless of what an author or a
+caller writes — so a hostile regex is bounded exactly the way it always was.
+What does change is *where* it is bounded: every other `must:` expression
+already runs through [`Evaluator.Eval`](../pkg/flowstate/v1/celenv.go) under
+`DefaultCostLimit`, and now the regex match does too, rather than through a
+second, freestanding `regexp.Compile` call that sat beside the constraint
+system instead of inside it.
+
+The field is `reserved` in the schema — `InputDeclaration.pattern` was field
+8 — rather than deleted and freed, on the same terms as `Workflow.inputs` and
+`Task.description` before it: a number that meant something in a
+specification some worker may still be replaying must never come back with a
+new meaning. `buf breaking` needed the one-commit `ignore_only` scoped to
+`FIELD_NO_DELETE` that pattern always needs when a field goes from present to
+reserved in a single diff — see `proto/buf.yaml`'s own comment, due to come
+out in the commit after this one reaches `main`.
+
+The parser still recognizes the word. `pattern:` written today is refused
+with a diagnostic that names the replacement and echoes the author's own
+regular expression back inside it, copy-pasteable:
+
+```console
+$ flow validate workflow.yaml
+workflow.yaml:61:5: inputs.to_account_id: `pattern:` is removed: `must:`
+already says the identical thing, through the one constraint language this
+schema has, instead of a second one that duplicated a corner of it — write
+`must: this.matches(r'^acct-[a-z0-9-]+$')` instead
+```
+
+The echoed regex is rendered as a CEL raw string literal — `r'...'` — rather
+than an ordinary one, because a raw string does not process `\` as an escape
+introducer: `pattern: '^v?[0-9]+\.[0-9]+\.[0-9]+$'` becomes
+`must: this.matches(r'^v?[0-9]+\.[0-9]+\.[0-9]+$')` verbatim, where an
+ordinary CEL string literal would need every backslash doubled by hand
+(`\\.`) to read back as the pattern the author wrote, since CEL's own escape
+table (`\n`, `\t`, `\\`, a handful of others) does not cover most of what RE2
+uses. `flow fix` does not rewrite this one — unlike `iterator:` → `as:`, the
+replacement is not a fixed word, and while the *regex* carries over verbatim,
+the mechanical move still changes what the file says in one respect worth a
+human's eyes: `pattern:` — like `min_len:`, `max:`, `unique:` and the rest of
+the standard-rule vocabulary — silently did nothing on an *optional* input
+left absent, where `must:` runs whenever it is declared, absent value or not,
+unless the input is also marked `required: true` or is otherwise guaranteed
+present. Every input `pattern:` was moved off of in this repository's own
+examples was already `required: true`, so the difference does not show here —
+but it is a difference, and the diagnostic asks a person to look rather than
+have `flow fix` decide silently.
+
+One gap the move opens, honestly stated: `pattern:`'s own regex was checked
+by [`CheckInputConstraintShape`](../pkg/flowstate/v1/constraints.go) —
+`regexp.Compile` against the declaration alone — so an unusable pattern was
+reported at load time even on a declaration with no example and no default to
+check it against. `must:`'s regex only reaches `regexp.Compile` inside
+`matches()`, which CEL evaluates rather than type-checks: `CompileMustExpression`
+parses and type-checks the *expression*, but a string literal argument to a
+function is just a string as far as the type checker is concerned, so
+`must: this.matches('[')` compiles clean and only fails once something
+evaluates it — an example, a default, or a submitted value. `flow validate`
+still catches it at author time for every declaration that carries an example
+or a default, which is the shape every constrained input in this repository's
+own examples has, but an input with neither would carry an unusable regex
+silently until the first run that submits a value for it. Closing that gap
+fully would mean teaching the type checker to evaluate a literal regex
+argument to `matches()` specifically, which is more machinery than this move
+asked for and is left as a known, written-down difference rather than quietly
+accepted.
+
 One limit worth writing down where the spelling is, because it is not obvious from
 the blocks: the workflow-level `vars:` block cannot read `${inputs.<name>}`. Vars
 are evaluated once before the first step, against a scope holding literals,

@@ -21,25 +21,67 @@ func constrainedInputWorkflow(decl string) string {
 }
 
 // TestAConstraintKeyMismatchedToTheDeclaredTypeIsReported is the load-time
-// half of the fail-closed rule, reported with a position: a pattern on an int
-// input is refused in the editor rather than silently never firing.
+// half of the fail-closed rule, reported with a position: a string constraint
+// (min_len, here) on an int input is refused in the editor rather than
+// silently never firing.
 func TestAConstraintKeyMismatchedToTheDeclaredTypeIsReported(t *testing.T) {
 	t.Parallel()
 
-	got := diagnose(t, constrainedInputWorkflow("    type: int\n    pattern: \"^[0-9]+$\"\n"))
+	got := diagnose(t, constrainedInputWorkflow("    type: int\n    min_len: 1\n"))
 	assert.Contains(t, got, "x")
 	assert.Contains(t, got, "string input")
 }
 
-// TestAnUnusablePatternIsReported catches a regular expression that will
-// never compile, at the position it was written rather than at the first run
-// that happens to reach it.
-func TestAnUnusablePatternIsReported(t *testing.T) {
+// TestPatternIsRefusedWithARemedy proves the retired `pattern:` key is
+// reported by name — not as an unknown key, which would send an author
+// looking for a typo they did not make — and that the remedy echoes their own
+// regular expression back inside a copy-pasteable `must: this.matches(...)`.
+func TestPatternIsRefusedWithARemedy(t *testing.T) {
 	t.Parallel()
 
-	got := diagnose(t, constrainedInputWorkflow("    type: string\n    pattern: \"[\"\n"))
+	got := diagnose(t, constrainedInputWorkflow("    type: string\n    pattern: \"^(us|eu)-\"\n"))
 	assert.Contains(t, got, "x")
-	assert.Contains(t, got, "regular expression")
+	assert.Contains(t, got, "`pattern:` is removed")
+	assert.Contains(t, got, "must: this.matches(r'^(us|eu)-')")
+}
+
+// TestPatternWithASingleQuoteFallsBackToADoubleQuotedLiteral proves the
+// remedy still parses as CEL when the author's own regex contains a single
+// quote — the one character a raw `r'...'` literal cannot hold — by switching
+// to `r"..."` instead.
+func TestPatternWithASingleQuoteFallsBackToADoubleQuotedLiteral(t *testing.T) {
+	t.Parallel()
+
+	got := diagnose(t, constrainedInputWorkflow(`    type: string
+    pattern: "[^']+"
+`))
+	assert.Contains(t, got, `must: this.matches(r"[^']+")`)
+}
+
+// TestAnInvalidRegexInMustIsReportedAgainstAnExample is the closest this
+// grammar comes, post-pattern:, to pattern:'s own unconditional "this regex
+// will never compile" diagnostic.
+//
+// The two are not quite the same guarantee, and this test exists to record
+// the difference rather than hide it: pattern:'s regexp.Compile ran in
+// [v1.CheckInputConstraintShape], against the declaration alone, so a bad
+// regex was reported even on an input with no example and no default.
+// must:'s regex only reaches Go's regexp package inside `matches()`, which
+// CEL evaluates rather than type-checks — [v1.CompileMustExpression] parses
+// and type-checks the expression itself (proven not to regress by
+// TestAMustThatDoesNotCompileIsReported below) but does not evaluate it, so
+// an unusable regex compiles clean until something evaluates the
+// expression. `flow validate` still catches it at author time whenever the
+// input carries a literal to check the constraint against — an example, a
+// default — which is the shape every declaration in this repository's own
+// examples has: an input worth constraining is documented with one.
+func TestAnInvalidRegexInMustIsReportedAgainstAnExample(t *testing.T) {
+	t.Parallel()
+
+	got := diagnose(t, constrainedInputWorkflow(
+		"    type: string\n    must: \"this.matches('[')\"\n    example: anything\n"))
+	assert.Contains(t, got, "x")
+	assert.Contains(t, got, "example")
 }
 
 // TestAMustThatDoesNotCompileIsReported proves a must: is compiled and
@@ -78,9 +120,9 @@ func TestAStaleLiteralExampleIsReported(t *testing.T) {
 	t.Parallel()
 
 	got := diagnose(t, constrainedInputWorkflow(
-		"    type: string\n    pattern: \"^(us|eu)-\"\n    example: mars-east-1\n"))
+		"    type: string\n    must: \"this.matches('^(us|eu)-')\"\n    example: mars-east-1\n"))
 	assert.Contains(t, got, "example")
-	assert.Contains(t, got, "must match pattern")
+	assert.Contains(t, got, "must satisfy")
 }
 
 // TestAConformingExampleIsSilent is the other direction: an example that
@@ -89,7 +131,7 @@ func TestAConformingExampleIsSilent(t *testing.T) {
 	t.Parallel()
 
 	got := diagnose(t, constrainedInputWorkflow(
-		"    type: string\n    pattern: \"^(us|eu)-\"\n    example: us-east-1\n"))
+		"    type: string\n    must: \"this.matches('^(us|eu)-')\"\n    example: us-east-1\n"))
 	assert.Empty(t, got)
 }
 
@@ -133,7 +175,7 @@ func TestAnOutputMustThatDoesNotCompileIsReported(t *testing.T) {
 // TestACallArgumentViolatingTheCalleesConstraintIsReported proves the call
 // boundary is one of the enforcement points, not only submit: a literal
 // with: argument that satisfies the callee's declared type but not its
-// pattern is refused at the call site — the typed-function feel extending to
+// must: is refused at the call site — the typed-function feel extending to
 // preconditions.
 func TestACallArgumentViolatingTheCalleesConstraintIsReported(t *testing.T) {
 	t.Parallel()
@@ -145,7 +187,7 @@ inputs:
   region:
     type: string
     required: true
-    pattern: "^(us|eu)-"
+    must: this.matches('^(us|eu)-')
 steps:
   - id: a
     log:
@@ -161,7 +203,7 @@ steps:
 `)
 
 	ds := mustValidate(t, caller)
-	require.NotEmpty(t, ds, "an argument violating the callee's pattern was accepted")
+	require.NotEmpty(t, ds, "an argument violating the callee's must: was accepted")
 	assert.Contains(t, ds.Error(), "region")
-	assert.Contains(t, ds.Error(), "must match pattern")
+	assert.Contains(t, ds.Error(), "must satisfy")
 }

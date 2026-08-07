@@ -36,7 +36,7 @@ inputs:
     type: string
     required: true
     example: v1.4.2
-    pattern: '^v?[0-9]+\.[0-9]+\.[0-9]+$'
+    must: this.matches(r'^v?[0-9]+\.[0-9]+\.[0-9]+$')
   environment:
     type: string
     required: true

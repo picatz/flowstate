@@ -61,7 +61,7 @@ inputs:
     required: true
     example: jordan@example.com
     sensitive: true
-    pattern: "^[^@]+@[^@]+$"
+    must: this.matches(r'^[^@]+@[^@]+$')
     description: who filed the expense report
   amount:
     type: float

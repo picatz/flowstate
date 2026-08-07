@@ -58,14 +58,14 @@ inputs:
     type: string
     required: true
     example: acct-treasury-001
-    pattern: "^acct-[a-z0-9-]+$"
+    must: this.matches(r'^acct-[a-z0-9-]+$')
     description: the account debited
 
   to_account_id:
     type: string
     required: true
     example: acct-supplier-042
-    pattern: "^acct-[a-z0-9-]+$"
+    must: this.matches(r'^acct-[a-z0-9-]+$')
     description: the account credited
 
   amount_cents:
