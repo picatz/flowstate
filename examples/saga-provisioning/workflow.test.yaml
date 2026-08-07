@@ -1,0 +1,79 @@
+# The only example in the corpus that ends in a failed run on purpose, and the
+# thing worth seeing is not the failure — it is the *order* the two
+# compensations ran in. `compensated:` checks a set in any order, so the order
+# is pinned through the failure text instead, which carries the engine's own
+# ordered account: volume, then network. Swap the two names and this case fails.
+#
+# The second case is the half a saga has nothing to show for: with `attach`
+# succeeding, the compensations are registered and none of them runs. That is
+# what makes the first case an assertion about compensation rather than about
+# `undo:` merely being written down — a compensation that ran on every path
+# would pass the first case and fail this one.
+edition: v2026.2
+tests:
+  - name: the third step failing takes the first two back, in reverse
+    workflow: ./workflow.yaml
+    inputs:
+      tenant: acme
+    stubs:
+      - task: http
+        where: "'query' in inputs && 'create' in inputs.query && inputs.query.create == 'network'"
+        returns:
+          id: net-acme
+      - task: http
+        where: "'query' in inputs && 'create' in inputs.query && inputs.query.create == 'volume' && inputs.query.network == 'net-acme'"
+        returns:
+          id: vol-net-acme
+      # The step that does not work. Upstream, so it is the kind of failure the
+      # step's `retry:` is allowed to attempt again — and when the attempts run
+      # out the run cannot continue, which is the moment the compensations run.
+      - task: http
+        where: inputs.url == 'https://httpbin.org/status/500'
+        fails:
+          kind: Upstream
+          message: could not attach the volume
+      # The compensations themselves, reached for real. Each one's `delete:`
+      # carries the id its own step resolved at the moment that step succeeded —
+      # so these `where:` clauses also pin that `${steps.<id>.id}` inside an
+      # `undo:` was resolved to a value and carried forward, rather than left as
+      # an expression waiting for a scope that no longer exists.
+      - task: http
+        where: "'query' in inputs && 'delete' in inputs.query && inputs.query.delete == 'vol-net-acme'"
+        returns: {}
+      - task: http
+        where: "'query' in inputs && 'delete' in inputs.query && inputs.query.delete == 'net-acme'"
+        returns: {}
+    expect:
+      failed: true
+      # The cause, and then the engine's ordered account of the unwinding in the
+      # same string — which is what pins volume-before-network. The volume was
+      # created inside the network, so the network cannot go first.
+      error_contains: >-
+        could not attach the volume; compensation ran in reverse order: undid
+        "volume", undid "network"
+      compensated: [volume, network]
+
+  - name: nothing is undone on the path where every step succeeds
+    workflow: ./workflow.yaml
+    inputs:
+      tenant: acme
+    stubs:
+      - task: http
+        where: "'query' in inputs && 'create' in inputs.query && inputs.query.create == 'network'"
+        returns:
+          id: net-acme
+      - task: http
+        where: "'query' in inputs && 'create' in inputs.query && inputs.query.create == 'volume'"
+        returns:
+          id: vol-net-acme
+      - task: http
+        where: inputs.url == 'https://httpbin.org/status/500'
+        returns:
+          status_code: 200
+    expect:
+      ran: [network, volume, attach]
+      # Empty, and that is the assertion: a compensation is registered when its
+      # step succeeds and runs only when the run cannot continue. Every
+      # `delete:` stub is absent from this case, so an `undo:` that fired here
+      # would reach no stub and fail rather than pass quietly.
+      compensated: []
