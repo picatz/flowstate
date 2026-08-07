@@ -1514,8 +1514,17 @@ flow run local examples/computed-outputs/workflow.yaml --input release=2026.9.0 
 	workerCmd := &cobra.Command{
 		Use:   "worker",
 		Short: "Start a worker",
-		Long:  "Start a Temporal worker to process workflows and activities. The worker connects to the Temporal server and processes tasks from the specified task queue.",
-		RunE:  runWorker,
+		Long: "Start a Temporal worker: the process that actually runs a workflow's steps. " +
+			"The server submits work to Temporal and a worker polling its task queue is what picks " +
+			"it up, so nothing a deployment accepts runs until at least one worker is up — the two " +
+			"never talk to each other, they meet at Temporal. With --deployment-name and --build-id " +
+			"it claims a Worker Deployment version, pinning every run already in flight to the " +
+			"interpreter it started on: a later deploy changes what new runs compute, not what " +
+			"in-flight ones do, until each reaches continue-as-new. With --tenant it executes one " +
+			"namespace's runs and refuses every other outright, rather than running them with this " +
+			"worker's secrets, egress policy and plugins — which needs a queue of its own, named by " +
+			"--task-queue-prefix (the value the server was started with) or given as --task-queue.",
+		RunE: runWorker,
 		Example: `# Start a worker, pinned so a deploy does not change runs already in flight:
 flow worker --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"
 
@@ -1534,8 +1543,14 @@ flow worker --namespace production --deployment-name flowstate --build-id "$(git
 	serverCmd := &cobra.Command{
 		Use:   "server",
 		Short: "Start a server",
-		Long:  "Start a Flowstate API server to handle workflow requests. The server provides HTTP/gRPC endpoints for managing workflows and integrates with Temporal for execution.",
-		RunE:  runServer,
+		Long: "Start the Flowstate control plane: the Connect (HTTP/gRPC) endpoint every CLI verb and " +
+			"`flow mcp` reaches a deployment through. It authenticates each caller and maps them onto " +
+			"a tenant, then submits accepted runs to Temporal, where the workers execute them — the " +
+			"server schedules, lists and reports on runs, it does not run their steps itself. " +
+			"Authentication is fail-closed: it serves only with a trust policy configured " +
+			"(--auth-policy, naming the issuers and claims to accept) or with authentication waived " +
+			"out loud (--insecure-no-auth, for local development), and never by defaulting open.",
+		RunE: runServer,
 		Example: `# Start the server with default settings:
 flow server
 
