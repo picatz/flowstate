@@ -710,13 +710,30 @@ message InputDeclaration {
   optional uint64 min_len = 9;
   optional uint64 max_len = 10;
 
-  // Min and Max bound a `type: int` or `type: float` value. Either may be given
-  // alone. One field serves both declared types rather than the four
-  // `buf.validate` keeps per width, because this schema's numeric inputs are
-  // already the two kinds [InputDeclaration.Type] names and a DSL author writes
-  // one number regardless of which.
-  optional double min = 11;
-  optional double max = 12;
+  // Fields 11 and 12 were Min and Max: a `type: int` or `type: float` value's
+  // bound, one field serving both declared types. Removed rather than kept,
+  // for a reason sharper than the bloat argument that retired `pattern:`
+  // above — on `type: int` these were *wrong*. Both fields were `double`, so
+  // an int64 literal converted to float64 before every comparison, and past
+  // 2^53 that conversion loses precision: `min: 9007199254740993` accepted
+  // 9007199254740992, a value one below the declared minimum, because both
+  // numbers round to the identical float64. `must: this >= 9007199254740993`
+  // has no such conversion — CEL's `>=` on two ints compares the int64s
+  // directly — and refuses that value correctly. The typed key was weaker
+  // than the CEL spelling on exactly the type it most obviously served.
+  //
+  // `must: this >= <N>` / `must: this <= <N>` say the identical thing at
+  // every magnitude either declared type allows, through the one expression
+  // surface this schema has. See docs/DSL.md.
+  //
+  // Reserved rather than reused, on the same terms as `pattern` above: a
+  // number that meant something else in a spec some worker may still be
+  // replaying must never come back with a new meaning. The parser still
+  // recognizes `min:`/`max:` specifically and refuses each with a diagnostic
+  // naming the `must:` spelling to write instead, built from the author's own
+  // number so the remedy is copy-pasteable — see `flowfile.declaredInput`.
+  reserved 11, 12;
+  reserved "min", "max";
 
   // MinItems and MaxItems bound a `type: list` value's length. Either may be
   // given alone. Named after `buf.validate`'s `repeated.min_items` and
@@ -724,11 +741,22 @@ message InputDeclaration {
   optional uint64 min_items = 13;
   optional uint64 max_items = 14;
 
-  // Unique reports that a `type: list` value's elements must all differ from one
-  // another, compared the way two [Value] literals compare for equality. Named
-  // after `buf.validate`'s `repeated.unique`. The compiler refuses it on a
-  // declaration of any other type.
-  bool unique = 15;
+  // Field 15 was Unique: whether a `type: list` value's elements must all
+  // differ from one another. Removed for the reason `pattern` was — it said
+  // nothing `must:` could not already say, and said it worse, through a
+  // second vocabulary that duplicated one corner of the one expression
+  // surface this schema has. `must: this == this.distinct()` is the identical
+  // check: CEL's `distinct()` (a `lists` extension macro, part of this
+  // schema's own profile since #234's V1) returns the value's elements with
+  // duplicates removed, order preserved, so equality against the original
+  // holds exactly when every element was already unique. See docs/DSL.md.
+  //
+  // Reserved rather than reused, on the same terms as `min`/`max` above. The
+  // parser still recognizes `unique:` specifically and refuses it with a
+  // diagnostic naming the `must:` spelling to write instead — see
+  // `flowfile.declaredInput`.
+  reserved 15;
+  reserved "unique";
 
   // Must is a CEL predicate over `this`, the value being checked, for a rule the
   // declarative keys above cannot state — the escape hatch `buf.validate` itself

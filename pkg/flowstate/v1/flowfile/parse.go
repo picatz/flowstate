@@ -59,7 +59,7 @@ var (
 	// as names, not as keys.
 	inputKeys = []string{
 		"type", "required", "default", "description", "example", "sensitive",
-		"min_len", "max_len", "min", "max", "min_items", "max_items", "unique", "must",
+		"min_len", "max_len", "min_items", "max_items", "must",
 	}
 	outputKeys = []string{"value", "description", "must", "sensitive"}
 
@@ -238,6 +238,61 @@ func celMatchesArgument(regex string) string {
 		return `"` + escaped + `"`
 	}
 }
+
+// retiredMinMaxMessage builds the diagnostic for an input declaration's
+// retired `min:`/`max:` key — [declaredInput]'s counterpart to
+// [retiredPatternMessage], held back from [inputKeys] for the identical
+// reason: the remedy depends on the number the author wrote, so it is built
+// from the value in hand rather than looked up.
+//
+// key is "min" or "max", deciding which comparison operator the remedy uses.
+// n is the value node, already resolved through aliases. When it reads as a
+// plain numeric scalar this echoes its own source text verbatim into the
+// `must:` expression — not a value parsed and reformatted through float64,
+// which is the exact conversion that made `min:`/`max:` lossy on `type: int`
+// in the first place (see the schema's own doc on the reserved fields). A
+// diagnostic that reproduced the bug in its own remedy would be worse than
+// none.
+func retiredMinMaxMessage(key string, n ast.Node) string {
+	op := ">="
+	if key == "max" {
+		op = "<="
+	}
+
+	remedy := fmt.Sprintf(
+		"`%s:` is removed: on `type: int` its bound is stored as a float64 and can silently accept "+
+			"a value the bound was written to refuse once the number is large enough to lose precision "+
+			"in that conversion — `must: this %s <N>` is exact at every magnitude either declared type allows",
+		key, op)
+
+	text, ok := numericScalarText(n)
+	if !ok {
+		return fmt.Sprintf("%s — write `must: this %s <the same number>` instead", remedy, op)
+	}
+	return fmt.Sprintf("%s — write `must: this %s %s` instead", remedy, op, text)
+}
+
+// numericScalarText returns the literal source text of an integer or float
+// scalar, unparsed — the number as the author wrote it, not as YAML decoded
+// it. [ast.IntegerNode.String] and [ast.FloatNode.String] both return the
+// token's own text, so a numeral of any magnitude survives without passing
+// through a Go numeric type that could round it.
+func numericScalarText(n ast.Node) (string, bool) {
+	switch n.(type) {
+	case *ast.IntegerNode, *ast.FloatNode:
+		return n.String(), true
+	default:
+		return "", false
+	}
+}
+
+// retiredUniqueMessage builds the diagnostic for an input declaration's
+// retired `unique:` key. Unlike `pattern:`/`min:`/`max:`, the remedy needs
+// nothing from the value in hand — `unique: true` has exactly one meaning —
+// so this is a constant message rather than one built per occurrence.
+const retiredUniqueMessage = "`unique:` is removed: `must: this == this.distinct()` says the identical " +
+	"thing, through the one constraint language this schema has, instead of a second one that " +
+	"duplicated a corner of it — write `must: this == this.distinct()` instead"
 
 // StepTaskKeys reports which of a step's keys name the task it runs, in the order
 // they were written.
@@ -726,11 +781,16 @@ func (c *compiler) declaredInput(e entry, parent string) *v1.InputDeclaration {
 	// they need is the `must:` spelling and their own regex, copy-pasteable.
 	checkable := make([]entry, 0, len(entries))
 	for _, en := range entries {
-		if en.name != "pattern" {
+		switch en.name {
+		case "pattern":
+			c.report(spanOfNode(en.key), r, "%s", retiredPatternMessage(c.resolveQuiet(en.value)))
+		case "min", "max":
+			c.report(spanOfNode(en.key), r, "%s", retiredMinMaxMessage(en.name, c.resolveQuiet(en.value)))
+		case "unique":
+			c.report(spanOfNode(en.key), r, "%s", retiredUniqueMessage)
+		default:
 			checkable = append(checkable, en)
-			continue
 		}
-		c.report(spanOfNode(en.key), r, "%s", retiredPatternMessage(c.resolveQuiet(en.value)))
 	}
 
 	fields := c.check(checkable, r, inputKeys)
@@ -816,18 +876,6 @@ func (c *compiler) declaredInput(e entry, parent string) *v1.InputDeclaration {
 			declaration.MaxLen = proto.Uint64(v)
 		}
 	}
-	if f, found := fields.get("min"); found {
-		p := fieldPath(path, "min")
-		if v, ok := c.number(f.value, p, ref{path: p, label: "input " + e.name + " min"}); ok {
-			declaration.Min = proto.Float64(v)
-		}
-	}
-	if f, found := fields.get("max"); found {
-		p := fieldPath(path, "max")
-		if v, ok := c.number(f.value, p, ref{path: p, label: "input " + e.name + " max"}); ok {
-			declaration.Max = proto.Float64(v)
-		}
-	}
 	if f, found := fields.get("min_items"); found {
 		p := fieldPath(path, "min_items")
 		if v, ok := c.unsignedWhole(f.value, p, ref{path: p, label: "input " + e.name + " min_items"}); ok {
@@ -838,12 +886,6 @@ func (c *compiler) declaredInput(e entry, parent string) *v1.InputDeclaration {
 		p := fieldPath(path, "max_items")
 		if v, ok := c.unsignedWhole(f.value, p, ref{path: p, label: "input " + e.name + " max_items"}); ok {
 			declaration.MaxItems = proto.Uint64(v)
-		}
-	}
-	if f, found := fields.get("unique"); found {
-		p := fieldPath(path, "unique")
-		if v, ok := c.boolean(f.value, p, ref{path: p, label: "input " + e.name + " unique"}); ok {
-			declaration.Unique = v
 		}
 	}
 	if f, found := fields.get("must"); found {

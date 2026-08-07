@@ -61,16 +61,22 @@ func TestBindRunInputsEnforcesStandardRules(t *testing.T) {
 			says:  "at most 3 character",
 		},
 		{
-			name:  "min",
-			decl:  &v1.InputDeclaration{Name: "replicas", Type: v1.InputDeclaration_TYPE_INT, Min: f64Ptr(1)},
+			// min: is retired; must: this >= N is its replacement, and exact on
+			// type: int where min: was lossy (min/max were `double` fields, so an
+			// int64 literal converted to float64 before the comparison and lost
+			// precision past 2^53 — see the schema's own doc on the reserved
+			// fields, and docs/DSL.md, for the probe).
+			name:  "must: this >= N (min's replacement)",
+			decl:  &v1.InputDeclaration{Name: "replicas", Type: v1.InputDeclaration_TYPE_INT, Must: strPtr("this >= 1")},
 			value: v1.NewLiteral(int64(0)),
-			says:  "must be >= 1",
+			says:  "must satisfy",
 		},
 		{
-			name:  "max",
-			decl:  &v1.InputDeclaration{Name: "replicas", Type: v1.InputDeclaration_TYPE_INT, Max: f64Ptr(50)},
+			// max: is retired; must: this <= N is its replacement.
+			name:  "must: this <= N (max's replacement)",
+			decl:  &v1.InputDeclaration{Name: "replicas", Type: v1.InputDeclaration_TYPE_INT, Must: strPtr("this <= 50")},
 			value: v1.NewLiteral(int64(51)),
-			says:  "must be <= 50",
+			says:  "must satisfy",
 		},
 		{
 			name:  "min_items",
@@ -85,10 +91,13 @@ func TestBindRunInputsEnforcesStandardRules(t *testing.T) {
 			says:  "at most 2 item",
 		},
 		{
-			name:  "unique",
-			decl:  &v1.InputDeclaration{Name: "regions", Type: v1.InputDeclaration_TYPE_LIST, Unique: true},
+			// unique: is retired; must: this == this.distinct() is its
+			// replacement — see TestUniqueDistinctIsUniquesEquivalent below for
+			// the head-to-head comparison.
+			name:  "must: this == this.distinct() (unique's replacement)",
+			decl:  &v1.InputDeclaration{Name: "regions", Type: v1.InputDeclaration_TYPE_LIST, Must: strPtr("this == this.distinct()")},
 			value: v1.NewLiteralList("a", "b", "a"),
-			says:  "unique",
+			says:  "must satisfy",
 		},
 		{
 			name:  "must",
@@ -105,6 +114,48 @@ func TestBindRunInputsEnforcesStandardRules(t *testing.T) {
 			require.Error(t, err, "a value violating the constraint was accepted")
 			assert.Contains(t, err.Error(), test.says)
 			assert.Contains(t, err.Error(), test.decl.GetName(), "the refusal does not name the input")
+		})
+	}
+}
+
+// TestUniqueDistinctIsUniquesEquivalent is the head-to-head comparison the
+// removal of `unique:` depends on: `must: this == this.distinct()` refuses
+// exactly the values the retired `unique: true` refused, and accepts exactly
+// the values it accepted — a duplicate-free list, and the empty list, which
+// distinct() must not treat as a special case.
+func TestUniqueDistinctIsUniquesEquivalent(t *testing.T) {
+	t.Parallel()
+
+	decl := &v1.InputDeclaration{
+		Name: "regions", Type: v1.InputDeclaration_TYPE_LIST,
+		Must: strPtr("this == this.distinct()"),
+	}
+	wf := constrainedWorkflow(decl)
+
+	for _, test := range []struct {
+		name    string
+		regions []string
+		wantErr bool
+	}{
+		{"duplicate elements refused", []string{"us-east-1", "eu-west-1", "us-east-1"}, true},
+		{"unique elements accepted", []string{"us-east-1", "eu-west-1"}, false},
+		{"empty list accepted", nil, false},
+		{"single element accepted", []string{"us-east-1"}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			vals := make([]any, len(test.regions))
+			for i, r := range test.regions {
+				vals[i] = r
+			}
+			_, err := v1.BindRunInputs(wf, map[string]*v1.Value{"regions": v1.NewLiteralList(vals...)})
+			if test.wantErr {
+				require.Error(t, err, "must: this == this.distinct() accepted a list with a duplicate")
+				assert.Contains(t, err.Error(), "must satisfy")
+			} else {
+				require.NoError(t, err, "must: this == this.distinct() refused a list that had none")
+			}
 		})
 	}
 }
@@ -792,6 +843,5 @@ func TestBindRunInputsAcceptsAnOrdinaryUnconstrainedList(t *testing.T) {
 	assert.Len(t, results, len(regions), "the loop did not run once per region")
 }
 
-func strPtr(s string) *string   { return &s }
-func u64Ptr(u uint64) *uint64   { return &u }
-func f64Ptr(f float64) *float64 { return &f }
+func strPtr(s string) *string { return &s }
+func u64Ptr(u uint64) *uint64 { return &u }

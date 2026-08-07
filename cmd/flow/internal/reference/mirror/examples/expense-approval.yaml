@@ -68,7 +68,7 @@ inputs:
     required: true
     example: 482.50
     sensitive: true
-    min: 0
+    must: this >= 0.0
     description: the amount being claimed, in USD
 
 steps:

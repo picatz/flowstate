@@ -2730,6 +2730,87 @@ argument to `matches()` specifically, which is more machinery than this move
 asked for and is left as a known, written-down difference rather than quietly
 accepted.
 
+*Since written, a fourth time:* **`min:`/`max:` and `unique:` are retired — V2 and
+V3 of the DSL audit (#234), which V1 above unblocked.** Both followed `pattern:`
+for the identical bloat reason — a second vocabulary saying what `must:` already
+says, through the one expression surface this schema has — but `min:`/`max:` also
+carried a live correctness bug independent of that argument, and `unique:`'s
+removal was the reason V1 had to land first.
+
+`min`/`max` were `double` fields on a message where the declared type is `int` or
+`float`, one field serving both. An `int` literal converts to `float64` before
+every comparison, and past 2⁵³ that conversion loses precision:
+`min: 9007199254740993` accepted `9007199254740992`, a value one below the
+declared minimum, because both integers round to the identical `float64`.
+`must: this >= 9007199254740993` has no such conversion — CEL's `>=` on two
+declared-`int` operands compares the `int64`s directly — and refuses that value
+correctly. Verified with a live probe against the real package before either key
+was touched:
+
+```console
+min: 9007199254740993, checking 9007199254740992 -> err=<nil>
+must: this >= 9007199254740993, checking 9007199254740992 -> err=input "amount" must satisfy `this >= 9007199254740993`; got 9007199254740992
+```
+
+The typed key was *weaker than* the CEL spelling on exactly the type it most
+obviously served — a defect the bloat argument alone would not have caught, since
+`min:`/`max:` read as strictly more precise than a hand-written predicate to
+someone who has not looked at the proto.
+
+`unique:` reported that a `type: list` value's elements must all differ from one
+another. `must: this == this.distinct()` says the identical thing: `distinct()` (a
+`lists` extension macro) returns the value's elements with duplicates removed,
+order preserved, so equality against the original holds exactly when every
+element was already unique — verified end to end, refusing `["a","b","a"]` and
+accepting `["a","b"]` and the empty list, the same three shapes `unique: true`
+answered. This remedy is what V1 exists for: before the profile's libraries
+reached `must:`'s environment, `this.distinct()` failed to compile there at all —
+"undeclared reference `distinct`" — so `unique:` could not be retired until `must:`
+could say its replacement.
+
+All three fields are `reserved` rather than deleted and freed, on the terms
+`pattern:`'s retirement set: a number that meant something in a specification some
+worker may still be replaying must never come back with a new meaning. `min`/`max`
+were field numbers 11 and 12, `unique` was 15; none of the three is a map, so
+(unlike `Workflow.inputs`) there is no synthesized entry message to reserve
+alongside any of them. `buf breaking` needed the identical one-commit `ignore_only`
+scoped to `FIELD_NO_DELETE` that `pattern:`'s retirement needed, for the identical
+reason — see `proto/buf.yaml`'s own comment, due to come out in the commit after
+this one reaches `main`.
+
+The parser still recognizes all three words. Each is refused with a diagnostic
+naming the replacement; `min:`/`max:` echo the author's own number back into a
+copy-pasteable `must:`, sourced from the value's own token text rather than parsed
+back through `float64` — reproducing the precision bug inside the bug's own
+remedy would be worse than no remedy at all:
+
+```console
+$ flow validate workflow.yaml
+workflow.yaml:80:5: inputs.amount_cents: `min:` is removed: on `type: int` its
+bound is stored as a float64 and can silently accept a value the bound was
+written to refuse once the number is large enough to lose precision in that
+conversion — `must: this >= <N>` is exact at every magnitude either declared
+type allows — write `must: this >= 1` instead
+```
+
+`unique:`'s remedy needs nothing from the value in hand — `unique: true` has
+exactly one meaning — so its diagnostic is a fixed message rather than one built
+per occurrence:
+
+```console
+$ flow validate workflow.yaml
+workflow.yaml:15:5: inputs.regions: `unique:` is removed: `must: this ==
+this.distinct()` says the identical thing, through the one constraint language
+this schema has, instead of a second one that duplicated a corner of it — write
+`must: this == this.distinct()` instead
+```
+
+Four examples in this repository's own portfolio carried `min:`/`max:` and were
+migrated: `enterprise-customer-onboarding` (`activation_grace_hours`),
+`enterprise-fund-transfer` (`amount_cents`, `approval_threshold_cents`),
+`expense-approval` (`amount`), and `parameterized-deploy` (`replicas`). None
+carried `unique:`.
+
 One limit worth writing down where the spelling is, because it is not obvious from
 the blocks: the workflow-level `vars:` block cannot read `${inputs.<name>}`. Vars
 are evaluated once before the first step, against a scope holding literals,

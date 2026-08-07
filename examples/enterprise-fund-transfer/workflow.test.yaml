@@ -238,4 +238,4 @@ tests:
         returns: {}
     expect:
       failed: true
-      error_contains: "must be"
+      error_contains: "must satisfy"
