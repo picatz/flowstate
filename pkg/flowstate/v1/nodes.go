@@ -284,6 +284,16 @@ func listElements(val ref.Val) ([]*Value, error) {
 	return elems, nil
 }
 
+// LoopResultsField is the name a [Loop] or [ForEach] reports its per-iteration
+// results under — `${steps.<id>.results}`.
+//
+// A constant rather than a literal repeated at every site that reads or writes
+// it, because [LoopResultsReferenced] has to ask the identical question
+// [LoopOutputs] answers: is *this* the field a loop's static analysis for #229
+// treats as "the accumulated history", or just some other named output the loop
+// happens to also carry.
+const LoopResultsField = "results"
+
 // LoopOutputs shapes a loop's per-iteration results into the loop's own outputs.
 //
 // The loop reports a `results` list, one element per iteration, each a map of body
@@ -307,7 +317,7 @@ func LoopOutputs(iterations []*Workflow_StepOutputs) *Node_Outputs {
 
 	return &Node_Outputs{
 		NamedValues: map[string]*Value{
-			"results": NewLiteralList(results...),
+			LoopResultsField: NewLiteralList(results...),
 		},
 	}
 }
