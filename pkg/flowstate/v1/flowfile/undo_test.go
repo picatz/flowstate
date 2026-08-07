@@ -280,6 +280,67 @@ steps:
 	}
 }
 
+// TestUndoCompensationHasThePluginCarveOut proves a compensation's task-name check
+// treats a dotted (plugin) name the same way the primary task-name check does: a
+// step's task and its compensation task are the same kind of thing and must fail the
+// same way. A correctly-spelled plugin task gets the installation diagnosis, not a
+// flat "unknown task" that would tell an author their file is wrong on the strength
+// of what plugins this launch-nothing validator happens not to have loaded; a name
+// with no dot is a spelling the validator can judge, so it still gets "unknown task".
+func TestUndoCompensationHasThePluginCarveOut(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name    string
+		task    string
+		wantSub string
+		notSub  string
+	}{
+		{
+			name:    "dotted plugin task gets the installation carve-out",
+			task:    "slack.post",
+			wantSub: `no plugin task "slack.post" is registered here`,
+			notSub:  `unknown task`,
+		},
+		{
+			name:    "an undotted misspelling still gets the flat unknown-task message",
+			task:    "htpp",
+			wantSub: `unknown task "htpp"`,
+			notSub:  `no plugin task`,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			src := `edition: v2026.2
+name: t
+steps:
+  - id: book
+    log:
+      message: hi
+    undo:
+      ` + tt.task + `:
+        text: undo
+`
+			ds, err := flowfile.ValidateSource([]byte(src))
+			require.NoError(t, err)
+			require.NotEmpty(t, ds, "the file validated and should not have")
+
+			var found bool
+			for _, d := range ds {
+				if strings.Contains(d.Error(), tt.wantSub) {
+					found = true
+					assert.Contains(t, d.Error(), `undo`,
+						"the diagnostic does not place the problem in the compensation:\n%s", d.Error())
+				}
+			}
+			assert.True(t, found, "no diagnostic contained %q; got:\n%s", tt.wantSub, ds.Error())
+			assert.NotContains(t, ds.Error(), tt.notSub,
+				"the diagnostic used the wrong message shape")
+		})
+	}
+}
+
 // TestUndoPlacementIsRefusedWithAPosition covers the two shapes this version does
 // not support, at the position an author wrote them.
 //
