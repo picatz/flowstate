@@ -151,10 +151,11 @@ steps:
 
   # Covers three different reasons under one branch - no attestation at all,
   # an attested sender who is not the expected reviewer, or an explicit
-  # "no" - the same collapsing enterprise-fund-transfer's own
-  # `refused_unauthorized` does, and for the same reason: this file trades
-  # approval-gate's three-way split for fewer lines, a real gap named in
-  # docs/USE_CASES.md.
+  # "no" - trading approval-gate's three-way split for fewer lines, a real
+  # gap named in docs/USE_CASES.md. Unlike enterprise-fund-transfer's own
+  # `transfer-approved` (#207), this policy has no `distinct_from_starter`,
+  # so "attested sender who is not the expected reviewer" still has to be
+  # checked here rather than delegated to `signals:` entirely.
   - id: unattested
     if: >-
       ${!(has(steps.attestation.payload.attested) && steps.attestation.payload.attested &&

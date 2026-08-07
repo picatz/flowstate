@@ -449,11 +449,16 @@ flow mcp --egress-policy examples/egress-policy.yaml
 
 # Let local runs resolve one environment secret, under an access policy:
 flow mcp --secret-env API_KEY --auth-policy policy.yaml
+
+# Teach the catalog, flowstate_validate and flowstate_run_local a plugin's
+# tasks, so a file naming one stops reading as "unknown task":
+flow mcp --plugin-dir ./plugins
 ```
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
+| `--allow-insecure-plugin-dir` | `bool` | `false` | — | permit a plugin directory other users can write to, which lets them choose what this worker runs |
 | `--as-claim <string,...>` | `stringArray` | — | — | authenticated string claim NAME=VALUE to rehearse policy as (repeatable) |
 | `--as-deployment <string>` | `string` | `local` | — | Flowstate deployment name to rehearse policy as (local runs only) |
 | `--as-issuer <string>` | `string` | `flowstate:local` | — | authenticated issuer to rehearse policy as (local runs only) |
@@ -462,6 +467,9 @@ flow mcp --secret-env API_KEY --auth-policy policy.yaml
 | `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to an access policy whose secrets rules authorize local runs served to an agent |
 | `--egress-policy <string>` | `string` | — | `FLOWSTATE_EGRESS_POLICY` | path to an egress policy (YAML) governing the http task (default $FLOWSTATE_EGRESS_POLICY); when set it replaces the default policy entirely, and FLOWSTATE_ALLOW_LOOPBACK_EGRESS is ignored — a file that wants loopback says allow_loopback: true |
 | `--identity-key <string>` | `string` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets |
+| `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
+| `--plugin-dir <string,...>` | `stringArray` | — | — | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
+| `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
 | `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only — the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
 | `--run-local-timeout <duration>` | `duration` | `2m0s` | — | how long a flowstate_run_local call may execute for before the run is stopped and reported as timed out |
 | `--secret-command <string,...>` | `stringArray` | — | `FLOWSTATE_SECRET_COMMAND` | argv of the command that resolves command: secrets, repeatable in order (executable first);"{{name}}" and, with --secret-command-namespaced, "{{namespace}}" are substituted literally into one argument, never through a shell (default $FLOWSTATE_SECRET_COMMAND, :-separated) |
@@ -600,7 +608,7 @@ flow run local examples/hello-world/workflow.yaml | jq .stepValues.hello.namedVa
 flow run local examples/hello-world/workflow.yaml -o json | jq -r .status
 
 # Run a workflow with an approval gate, answering the gate up front:
-flow run local examples/approval-gate/workflow.yaml --input-file examples/approval-gate/inputs.json --signal deploy-approved='{"approved": true}'
+flow run local examples/expense-approval/workflow.yaml --input-file examples/expense-approval/inputs.json --signal manager-approved='{"approved": true}'
 
 # Run a workflow that takes arguments, and read what it answered with:
 flow run local examples/computed-outputs/workflow.yaml --input release=2026.9.0 -o json | jq .runOutputs
@@ -894,8 +902,9 @@ flow signal deploy-abc123 deploy-approved --data '{"approved": false}'
 # Send a signal that carries nothing:
 flow signal deploy-abc123 deploy-approved
 
-# Answer the same gate on a local run, which is given its answers up front:
-flow run local examples/approval-gate/workflow.yaml --input-file examples/approval-gate/inputs.json --signal deploy-approved='{"approved": true}'
+# A local run is given its answers up front instead, the same idea for a
+# workflow with no signals: policy to attest a sender against:
+flow run local examples/expense-approval/workflow.yaml --input-file examples/expense-approval/inputs.json --signal manager-approved='{"approved": true}'
 ```
 
 | Flag | Type | Default | Environment | Description |

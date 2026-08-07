@@ -147,7 +147,7 @@ func validateTaskInputs(stepID string, task *v1.Task) Diagnostics {
 			continue
 		}
 		if message := literalMismatch(field, literal); message != "" {
-			ds = append(ds, Diagnostic{Step: stepID, Field: name, Message: message})
+			ds = append(ds, Diagnostic{Step: stepID, Field: name, Message: message, Code: v1.DiagnosticCodeTypeMismatch})
 
 			continue
 		}
@@ -209,7 +209,7 @@ func violatedRules(stepID string, task *v1.Task, def v1.TaskDef, checkable map[s
 		// the schema's rule accept this value, then will this build do anything
 		// with it.
 		if err := v1.CheckLiteralInput(def.Name, name, task.GetInputs()[name]); err != nil {
-			ds = append(ds, Diagnostic{Step: stepID, Field: name, Message: err.Error()})
+			ds = append(ds, Diagnostic{Step: stepID, Field: name, Message: err.Error(), Code: v1.DiagnosticCodeConstraintViolation})
 		}
 	}
 
@@ -244,6 +244,7 @@ func violatedRulesFor(stepID, name string, value *v1.Value, def v1.TaskDef) Diag
 			Step:    stepID,
 			Field:   name,
 			Message: fmt.Sprintf("task %q does not accept it: %s", def.Name, trimFieldPrefix(err.Error(), name)),
+			Code:    v1.DiagnosticCodeTypeMismatch,
 		}}
 	}
 
@@ -271,6 +272,7 @@ func violatedRulesFor(stepID, name string, value *v1.Value, def v1.TaskDef) Diag
 			// the message says what the schema objected to and nothing else.
 			Field:   name,
 			Message: fmt.Sprintf("task %q does not accept it: %s", def.Name, violation.Message),
+			Code:    v1.DiagnosticCodeConstraintViolation,
 		})
 	}
 

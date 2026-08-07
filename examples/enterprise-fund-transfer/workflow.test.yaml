@@ -1,11 +1,18 @@
-# Six cases. The first two are the shape money actually has to get right —
-# a small transfer clearing on its own, and a settlement failure taking back
-# what already moved. The rest are refusal paths: rejected, expired, and the
-# same honest limit approval-gate's own test file names — `flow test` has no
-# authenticated caller, so an "approved: true" payload can never look like a
-# real treasury-approver here, only like the unattested refusal. A real
-# attested approval is exercised durably, the same way approval-gate's is
-# (engine/examples_durable_test.go, engine/run_identity_test.go).
+# Seven cases. The first three are the shape money actually has to get
+# right — a small transfer clearing on its own, a large one clearing once a
+# genuinely qualifying `sender:` approves it (#207 slice 2: `flow test`
+# checks a scripted `sender:` against `signals:` through the same
+# `v1.SignalPolicyCheck` the server calls, so this reaches `debit` for real
+# now, not merely "the shape that does not depend on a real sender"), and a
+# settlement failure taking back what already moved. The rest are refusal
+# paths: rejected, expired, an unattested/wrong-claim sender refused before
+# the signal is ever delivered (so the gate simply times out, same as
+# nobody answering), and a malformed payload. The starter's own self-approval
+# being refused is exercised durably (engine/examples_durable_test.go,
+# engine/run_identity_test.go) — `flow test` has no concept of "who ran this
+# test" to compare a scripted sender against beyond the fixed empty identity
+# [v1.NewPolicedLocalSignals] documents, and no realistic sender ever equals
+# that.
 edition: v2026.2
 tests:
   - name: a transfer below the threshold clears without a gate
@@ -32,7 +39,7 @@ tests:
         returns: {}
     expect:
       ran: [request, debit, credit, notify_settlement]
-      skipped: [approval, rejected, expired, refused_unauthorized, refused_malformed_payload]
+      skipped: [approval, rejected, expired, refused_malformed_payload]
       outputs:
         decision: transferred
         debit_reference: dbt-1
@@ -88,12 +95,17 @@ tests:
       - name: transfer-approved
         payload:
           approved: false
+        sender:
+          subject: treasury-lead@example.com
+          issuer: https://issuer.example.com
+          claims:
+            role: treasury-approver
     stubs:
       - task: log
         returns: {}
     expect:
       ran: [request, approval, rejected]
-      skipped: [debit, credit, notify_settlement, expired, refused_unauthorized, refused_malformed_payload]
+      skipped: [debit, credit, notify_settlement, expired, refused_malformed_payload]
       outputs:
         decision: rejected
         debit_reference: ""
@@ -116,9 +128,7 @@ tests:
         decision: expired
         debit_reference: ""
 
-  - name: >-
-      an approved payload above the threshold is still refused without a real
-      attested, separate approver
+  - name: a genuinely qualifying approver above the threshold clears the transfer
     workflow: ./workflow.yaml
     inputs:
       from_account_id: acct-treasury-001
@@ -130,14 +140,57 @@ tests:
       - name: transfer-approved
         payload:
           approved: true
+        sender:
+          subject: treasury-lead@example.com
+          issuer: https://issuer.example.com
+          claims:
+            role: treasury-approver
+    stubs:
+      - task: log
+        returns: {}
+      - task: http
+        where: inputs.url == 'https://ledger.internal.example.com/debit' && inputs.json.account_id == 'acct-treasury-001'
+        returns:
+          reference: dbt-5
+      - task: http
+        where: inputs.url == 'https://ledger.internal.example.com/credit' && inputs.json.account_id == 'acct-supplier-042'
+        returns:
+          reference: crd-5
+      - task: http
+        where: inputs.url == 'https://settlements.internal.example.com/notify'
+        returns: {}
+    expect:
+      ran: [request, approval, debit, credit, notify_settlement]
+      skipped: [rejected, expired, refused_malformed_payload]
+      outputs:
+        decision: transferred
+        debit_reference: dbt-5
+
+  - name: a sender lacking the treasury-approver claim is refused before the signal is ever delivered
+    workflow: ./workflow.yaml
+    inputs:
+      from_account_id: acct-treasury-001
+      to_account_id: acct-supplier-042
+      amount_cents: 5000000
+      approval_threshold_cents: 1000000
+      idempotency_key: transfer-2026-08-06-0008
+    signals:
+      - name: transfer-approved
+        payload:
+          approved: true
+        sender:
+          subject: someone-else@example.com
+          issuer: https://issuer.example.com
+          claims:
+            role: engineer
     stubs:
       - task: log
         returns: {}
     expect:
-      ran: [request, approval, refused_unauthorized]
-      skipped: [debit, credit, notify_settlement, rejected, expired, refused_malformed_payload]
+      ran: [request, approval, expired]
+      skipped: [debit, credit, notify_settlement, rejected, refused_malformed_payload]
       outputs:
-        decision: refused_unauthorized
+        decision: expired
         debit_reference: ""
 
   - name: a signal that answers with no approved field is refused, not read as a timeout
@@ -157,12 +210,17 @@ tests:
       - name: transfer-approved
         payload:
           note: wrong shape entirely
+        sender:
+          subject: treasury-lead@example.com
+          issuer: https://issuer.example.com
+          claims:
+            role: treasury-approver
     stubs:
       - task: log
         returns: {}
     expect:
       ran: [request, approval, refused_malformed_payload]
-      skipped: [debit, credit, notify_settlement, rejected, expired, refused_unauthorized]
+      skipped: [debit, credit, notify_settlement, rejected, expired]
       outputs:
         decision: refused_malformed_payload
         debit_reference: ""

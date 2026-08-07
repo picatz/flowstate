@@ -10,6 +10,7 @@ import (
 
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
@@ -40,15 +41,72 @@ func RunFile(path string) *v1.TestReport {
 		return report
 	}
 
+	// Reads test.Workflow off disk, relative to the *.test.yaml itself — the
+	// same rule `call:` resolves against ([WorkflowPath]'s doc) — which is
+	// what makes this the bytes-vs-paths seam [runCase] shares with
+	// [RunSource]: the loader is the only part of one case's run that differs
+	// between a file on disk and a workflow submitted as bytes.
 	for _, test := range file.Tests {
-		report.Cases = append(report.Cases, runCase(path, &test))
+		report.Cases = append(report.Cases, runCase(&test, func() (*v1.Workflow, error) {
+			workflow, _, err := flowfile.ParseFile(WorkflowPath(path, &test))
+			if err != nil {
+				return nil, fmt.Errorf("loading workflow %q: %w", test.Workflow, err)
+			}
+			return workflow, nil
+		}))
 	}
 
 	return report
 }
 
-// runCase runs one test and reports its verdict.
-func runCase(testFile string, test *Test) *v1.TestCase {
+// RunSource is [RunFile] for a workflow and a `*.test.yaml` given directly as
+// bytes rather than as paths — the same relationship the MCP surface's
+// flowstate_run_local tool has to `flow run local`
+// (see cmd/flow/mcp.go's parseFlowfileSource): same machinery, bytes instead
+// of files, so an agent can rehearse a workflow's conditions, retries, and
+// data flow through `flow test`'s stubbing without writing anything to disk.
+//
+// label names the report the way a path does for [RunFile]; a caller with no
+// path of its own — the MCP tool — passes whatever it wants a reader to see
+// there, such as "" or "<submitted>".
+//
+// workflowSource is parsed once per case, exactly as [RunFile] resolves and
+// parses test.Workflow once per case, and it is the *only* workflow every
+// case in testSource runs against: a case's own `workflow:` field, if it sets
+// one, is accepted but never consulted here — see [LoadSource]. A workflow
+// submitted this way has no file identity, so a `call:` step in it is refused
+// with a diagnostic rather than resolved, the same restriction
+// [flowfile.Parse] documents.
+func RunSource(label string, workflowSource, testSource []byte) *v1.TestReport {
+	report := &v1.TestReport{File: label}
+
+	file, err := LoadSource(testSource)
+	if err != nil {
+		report.Refused = err.Error()
+		return report
+	}
+
+	load := func() (*v1.Workflow, error) {
+		workflow, err := flowfile.Unmarshal(workflowSource)
+		if err != nil {
+			return nil, fmt.Errorf("the submitted workflow source is not a valid Flowfile: %w", err)
+		}
+		return workflow, nil
+	}
+
+	for _, test := range file.Tests {
+		report.Cases = append(report.Cases, runCase(&test, load))
+	}
+
+	return report
+}
+
+// runCase runs one test and reports its verdict. load resolves the workflow
+// this case runs against — from a sibling file for [RunFile], from bytes
+// submitted directly for [RunSource] — which is the entire seam between the
+// two: everything below this call is oblivious to where the workflow came
+// from.
+func runCase(test *Test, load func() (*v1.Workflow, error)) *v1.TestCase {
 	started := time.Now()
 	result := &v1.TestCase{Name: test.Name}
 	defer func() {
@@ -79,10 +137,9 @@ func runCase(testFile string, test *Test) *v1.TestCase {
 	restore := swapRegistry(stubs)
 	defer restore()
 
-	workflowPath := WorkflowPath(testFile, test)
-	workflow, _, err := flowfile.ParseFile(workflowPath)
+	workflow, err := load()
 	if err != nil {
-		result.Error = fmt.Sprintf("loading workflow %q: %v", test.Workflow, err)
+		result.Error = err.Error()
 		return result
 	}
 
@@ -94,7 +151,39 @@ func runCase(testFile string, test *Test) *v1.TestCase {
 	// timing can put a real task's Fn in this run's path. See [caseRegistry].
 	ctx = v1.NewContextWithRegistry(ctx, caseRegistry(stubs))
 
-	signals := v1.NewLocalSignals()
+	inputs := v1.NewNamedValues(test.Inputs)
+
+	// Resolved here, against the case's own inputs, the same way submit
+	// resolves a `subject: ${inputs.x}` rule to a literal before anything is
+	// enforced ([v1.ResolveSignalPolicySubjects]) — so a scripted `sender:`
+	// is checked against the same literal production would check it against.
+	// A bind failure here is not reported directly: [v1.RunWithInputs] below
+	// performs the identical bind on the same inputs and is what the case's
+	// own `expect.failed`/`expect.error_contains` are written against, so a
+	// bad input surfaces as that run's ordinary failure rather than as a
+	// second, differently-shaped error from this package. When binding
+	// fails, policies stays nil (unpoliced) — the run is going to fail
+	// before it reaches any wait step regardless, so nothing here needs to
+	// enforce anything.
+	var policies map[string]*v1.SignalPolicy
+	if bound, bindErr := v1.BindRunInputs(workflow, inputs); bindErr == nil {
+		resolved, err := v1.ResolveSignalPolicySubjects(ctx, workflow, bound)
+		if err != nil {
+			result.Error = fmt.Sprintf("resolving workflow %q's signal policy: %v", test.Workflow, err)
+			return result
+		}
+		policies = resolved
+	}
+
+	// hasStarter true with an empty identity, not false: `flow test` has no
+	// concept of "who ran this test" to begin with, which is a known fact —
+	// nobody — not a gap in a record the way a durable run predating
+	// [starterMemoKey] is. Treating it as unknown (hasStarter false) would
+	// make every `distinct_from_starter` policy unconditionally refuse every
+	// case, including one that scripts a genuinely qualifying `sender:` —
+	// the happy path this harness exists to let an author exercise at all.
+	// See [v1.NewPolicedLocalSignals]'s own doc comment.
+	signals := v1.NewPolicedLocalSignals(policies, &v1.WorkloadIdentity{}, true)
 	ctx = v1.NewContextWithSignalWaiter(ctx, signals)
 
 	// Hold the run's own clock participant before any scripted signal can park,
@@ -121,8 +210,6 @@ func runCase(testFile string, test *Test) *v1.TestCase {
 		result.Error = scriptErr.Error()
 		return result
 	}
-
-	inputs := v1.NewNamedValues(test.Inputs)
 
 	outputs, runErr := v1.RunWithInputs(ctx, workflow, inputs)
 	close(runFinished)
@@ -278,6 +365,7 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 		name    string
 		at      time.Duration
 		payload map[string]any
+		sender  *v1.SignalSender
 	}
 
 	jobs := make([]job, 0, len(scripts))
@@ -290,7 +378,7 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 			}
 			at = d
 		}
-		jobs = append(jobs, job{name: s.Name, at: at, payload: s.Payload})
+		jobs = append(jobs, job{name: s.Name, at: at, payload: s.Payload, sender: scriptedSender(s.Sender)})
 	}
 
 	done := make(chan struct{}, len(jobs))
@@ -322,7 +410,7 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 			default:
 			}
 
-			_ = signals.Deliver(j.name, &v1.Node_Outputs{NamedValues: v1.NewNamedValues(j.payload)})
+			_ = signals.DeliverFrom(j.name, &v1.Node_Outputs{NamedValues: v1.NewNamedValues(j.payload)}, j.sender)
 		}(j)
 	}
 
@@ -331,6 +419,30 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 			<-done
 		}
 	}, nil
+}
+
+// scriptedSender renders a [SignalScript]'s optional `sender:` as the
+// [v1.SignalSender] [v1.LocalSignals.DeliverFrom] attests — a real,
+// non-local identity when a case names one, or the same unattested
+// [v1.LocalSignalSender] a script with no `sender:` always delivered as,
+// before this field existed.
+func scriptedSender(s *ScriptedSender) *v1.SignalSender {
+	if s == nil {
+		return v1.LocalSignalSender()
+	}
+
+	return &v1.SignalSender{
+		Identity: &v1.WorkloadIdentity{
+			Subject: s.Subject,
+			Issuer:  s.Issuer,
+			Claims:  s.Claims,
+		},
+		AcceptedAt: timestamppb.New(epoch),
+		// Local left false, deliberately: a scripted sender: attests a real
+		// identity, the same way a durable signal's sender always does — see
+		// [v1.SignalSender.Local]'s own doc comment for why that field must
+		// never read true for anything but a genuinely unattested delivery.
+	}
 }
 
 // assertExpectation compares a run's outcome against what the case declared,

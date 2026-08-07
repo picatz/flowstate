@@ -180,6 +180,47 @@ type SignalScript struct {
 	// Payload is what the signal carries, read back under `${<step>.payload}`
 	// exactly as `flow signal`'s would be.
 	Payload map[string]any `yaml:"payload"`
+
+	// Sender attests who sent this signal, checked against the workflow's own
+	// declared `signals:` policy for Name exactly as
+	// `FlowstateServer.Signal` checks a durable one — through
+	// [v1.SignalPolicyCheck], the same function, so a policy that would
+	// refuse this sender in production refuses it here too rather than
+	// silently delivering anyway (#207's slice 2: local delivery not
+	// enforcing policy was what made rehearsal lie in the dangerous
+	// direction once a workflow's `if:` started trusting `signals:` for
+	// authorization).
+	//
+	// Omitted under a signal that carries no declared policy: the signal is
+	// delivered as [v1.LocalSignalSender] always was, unattested. Omitted
+	// under a signal that *does* declare a policy: the delivery is still
+	// checked, as an unattested, empty identity — which a real policy's
+	// `allow:` rule can never match (every rule requires a non-empty
+	// subject, namespace, or claim; see signalpolicy.go's
+	// ruleMatchesEverySender) — so an author who forgets `sender:` gets a
+	// refused delivery and a diagnostic naming why, not a silent pass. That
+	// is the deliberate fail-closed answer, not an oversight: a scripted
+	// signal is exactly as unattested as `flow run local --signal` unless a
+	// case says otherwise.
+	Sender *ScriptedSender `yaml:"sender"`
+}
+
+// ScriptedSender is the identity a [SignalScript] attests, the same fields
+// [v1.WorkloadIdentity] carries — subject and issuer together, never subject
+// alone, for the identical multi-IdP reason `flow validate` requires a
+// [v1.SignalPolicyRule.subject] to be issuer-qualified.
+type ScriptedSender struct {
+	// Subject is the attested caller, matched against a policy rule's
+	// `subject:` as `<issuer>#<subject>` — see [v1.QualifiedSubject].
+	Subject string `yaml:"subject"`
+
+	// Issuer identifies which identity provider attested Subject.
+	Issuer string `yaml:"issuer"`
+
+	// Claims are additional attested facts, matched against a policy rule's
+	// `claims:` — every key the rule names must be present here with the
+	// same value.
+	Claims map[string]string `yaml:"claims"`
 }
 
 // Expectation is what a case's run must have produced to pass.
@@ -243,51 +284,86 @@ func Load(path string) (*File, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 
+	file, err := parseSource(data, true)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+
+	return file, nil
+}
+
+// LoadSource is [Load] for a `*.test.yaml` given directly as bytes rather than
+// read from a path — the seam [RunSource] uses to run inline test cases the
+// way [RunFile] runs a file on disk, on bytes instead of a path, exactly as
+// the MCP surface's flowstate_run_local is [v1.RunWithInputs] on bytes instead
+// of `flow run local`'s path.
+//
+// The one difference bytes force: a case's `workflow:` is not required. [Load]
+// requires it because [RunFile] resolves each case's workflow relative to the
+// *.test.yaml's own directory ([WorkflowPath]), and there is no directory for
+// bytes with no path — the same reason [Parse], unlike [ParseFile], refuses a
+// `call:` step. [RunSource] is given the workflow directly instead, once, for
+// every case in the file, so nothing here needs a name for it.
+func LoadSource(data []byte) (*File, error) {
+	if len(data) > MaxTestFileBytes {
+		return nil, fmt.Errorf("%d bytes exceeds the %d byte limit for a test file", len(data), MaxTestFileBytes)
+	}
+
+	return parseSource(data, false)
+}
+
+// parseSource is the byte-parsing seam both [Load] and [LoadSource] share:
+// the expansion-bound check, the strict unmarshal, and every bound in
+// [MaxTestsPerFile]/[MaxStubsPerTest]/[MaxSignalsPerTest] — everything [Load]
+// did after reading the file off disk, factored out so a caller with bytes
+// and no path runs the identical checks rather than a second copy of them.
+// requireWorkflow is false only for [LoadSource]; see its doc for why.
+func parseSource(data []byte, requireWorkflow bool) (*File, error) {
 	// Checked against the parsed AST, before yaml.Unmarshal below is asked to
 	// do anything: Unmarshal resolves every alias into the destination value
 	// as it decodes, which means a billion-laughs document is already fully
 	// expanded in memory by the time any bound written against the decoded
 	// value could run. See [checkExpansionBounds].
 	if err := checkExpansionBounds(data); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, err
 	}
 
 	var file File
 	if err := yaml.UnmarshalWithOptions(data, &file, yaml.Strict()); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, err
 	}
 
 	if len(file.Tests) == 0 {
-		return nil, fmt.Errorf("%s: declares no tests", path)
+		return nil, fmt.Errorf("declares no tests")
 	}
 	if len(file.Tests) > MaxTestsPerFile {
-		return nil, fmt.Errorf("%s: declares %d tests, more than the limit of %d",
-			path, len(file.Tests), MaxTestsPerFile)
+		return nil, fmt.Errorf("declares %d tests, more than the limit of %d",
+			len(file.Tests), MaxTestsPerFile)
 	}
 
 	for i, test := range file.Tests {
 		if test.Name == "" {
-			return nil, fmt.Errorf("%s: test %d has no name", path, i+1)
+			return nil, fmt.Errorf("test %d has no name", i+1)
 		}
-		if test.Workflow == "" {
-			return nil, fmt.Errorf("%s: test %q names no workflow", path, test.Name)
+		if requireWorkflow && test.Workflow == "" {
+			return nil, fmt.Errorf("test %q names no workflow", test.Name)
 		}
 		if len(test.Stubs) > MaxStubsPerTest {
-			return nil, fmt.Errorf("%s: test %q declares %d stubs, more than the limit of %d",
-				path, test.Name, len(test.Stubs), MaxStubsPerTest)
+			return nil, fmt.Errorf("test %q declares %d stubs, more than the limit of %d",
+				test.Name, len(test.Stubs), MaxStubsPerTest)
 		}
 		if len(test.Signals) > MaxSignalsPerTest {
-			return nil, fmt.Errorf("%s: test %q declares %d signals, more than the limit of %d",
-				path, test.Name, len(test.Signals), MaxSignalsPerTest)
+			return nil, fmt.Errorf("test %q declares %d signals, more than the limit of %d",
+				test.Name, len(test.Signals), MaxSignalsPerTest)
 		}
 		for j, stub := range test.Stubs {
 			if stub.Task == "" {
-				return nil, fmt.Errorf("%s: test %q stub %d names no task", path, test.Name, j+1)
+				return nil, fmt.Errorf("test %q stub %d names no task", test.Name, j+1)
 			}
 			if stub.Returns != nil && stub.Fails != nil {
 				return nil, fmt.Errorf(
-					"%s: test %q stub %d for task %q declares both returns and fails; a stubbed call either succeeds or fails, not both",
-					path, test.Name, j+1, stub.Task)
+					"test %q stub %d for task %q declares both returns and fails; a stubbed call either succeeds or fails, not both",
+					test.Name, j+1, stub.Task)
 			}
 		}
 	}

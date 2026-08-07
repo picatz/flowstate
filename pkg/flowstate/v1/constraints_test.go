@@ -298,6 +298,112 @@ func TestMustRefusesANonBoolExpression(t *testing.T) {
 	assert.Contains(t, err.Error(), "bool")
 }
 
+// TestMustHasTheProfileLibraries is issue #234's V1: `must:` used to build a
+// bare CEL environment with none of the profile's extension libraries, so
+// every one of these — bar `matches`, which is CEL standard — failed with
+// "undeclared reference," a diagnostic describing a typo the author did not
+// make. Each is drawn straight from the issue's own reproduction.
+func TestMustHasTheProfileLibraries(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		expr string
+		typ  v1.InputDeclaration_Type
+	}{
+		{"regex: matches (CEL standard, worked before)", `this.matches('^v[0-9]+$')`, v1.InputDeclaration_TYPE_STRING},
+		{"strings: trim", `this.trim() != ''`, v1.InputDeclaration_TYPE_STRING},
+		{"strings: lowerAscii", `this.lowerAscii() == this`, v1.InputDeclaration_TYPE_STRING},
+		{"lists: distinct", `this == this.distinct()`, v1.InputDeclaration_TYPE_LIST},
+		{"sets: contains", `sets.contains(this, this)`, v1.InputDeclaration_TYPE_LIST},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := v1.CompileMustExpression(c.expr, c.typ)
+			require.NoError(t, err, "expression should compile now that must: shares the profile's libraries")
+		})
+	}
+}
+
+// TestMustHasTheProfileLibrariesEndToEnd takes
+// TestMustHasTheProfileLibraries's compile-only check one step further: each
+// expression actually *evaluates* correctly against a real value, not just
+// type-checks.
+func TestMustHasTheProfileLibrariesEndToEnd(t *testing.T) {
+	t.Parallel()
+
+	t.Run("strings: trim", func(t *testing.T) {
+		t.Parallel()
+		decl := &v1.InputDeclaration{Name: "s", Type: v1.InputDeclaration_TYPE_STRING, Must: strPtr(`this.trim() != ''`)}
+		wf := constrainedWorkflow(decl)
+		_, err := v1.BindRunInputs(wf, map[string]*v1.Value{"s": v1.NewLiteral("hello")})
+		assert.NoError(t, err)
+		_, err = v1.BindRunInputs(wf, map[string]*v1.Value{"s": v1.NewLiteral("   ")})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "must satisfy")
+	})
+
+	t.Run("strings: lowerAscii", func(t *testing.T) {
+		t.Parallel()
+		decl := &v1.InputDeclaration{Name: "s", Type: v1.InputDeclaration_TYPE_STRING, Must: strPtr(`this.lowerAscii() == this`)}
+		wf := constrainedWorkflow(decl)
+		_, err := v1.BindRunInputs(wf, map[string]*v1.Value{"s": v1.NewLiteral("already-lower")})
+		assert.NoError(t, err)
+		_, err = v1.BindRunInputs(wf, map[string]*v1.Value{"s": v1.NewLiteral("NotLower")})
+		require.Error(t, err)
+	})
+
+	t.Run("lists: distinct", func(t *testing.T) {
+		t.Parallel()
+		decl := &v1.InputDeclaration{Name: "l", Type: v1.InputDeclaration_TYPE_LIST, Must: strPtr(`this == this.distinct()`)}
+		wf := constrainedWorkflow(decl)
+		_, err := v1.BindRunInputs(wf, map[string]*v1.Value{"l": v1.NewLiteralList(1, 2, 3)})
+		assert.NoError(t, err)
+		_, err = v1.BindRunInputs(wf, map[string]*v1.Value{"l": v1.NewLiteralList(1, 2, 2)})
+		require.Error(t, err)
+	})
+
+	t.Run("sets: contains", func(t *testing.T) {
+		t.Parallel()
+		decl := &v1.InputDeclaration{Name: "l", Type: v1.InputDeclaration_TYPE_LIST, Must: strPtr(`sets.contains(this, this)`)}
+		wf := constrainedWorkflow(decl)
+		_, err := v1.BindRunInputs(wf, map[string]*v1.Value{"l": v1.NewLiteralList(1, 2, 3)})
+		assert.NoError(t, err)
+	})
+}
+
+// TestMustStillRefusesEveryNondeterministicCaseItRefusedBefore enumerates
+// every case refuseNondeterministicMust refused before the profile's
+// libraries were added, so widening the environment cannot be shown to have
+// silently widened what a `must:` may reach along with it.
+func TestMustStillRefusesEveryNondeterministicCaseItRefusedBefore(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		expr string
+		typ  v1.InputDeclaration_Type
+		want string // substring expected in the refusal
+	}{
+		{"now, bare", `this == now`, v1.InputDeclaration_TYPE_STRING, "now"},
+		{"now, inside a duration expression", `this == now + days(1)`, v1.InputDeclaration_TYPE_STRING, "now"},
+		{"an unrelated step reference", `this == steps.web.result`, v1.InputDeclaration_TYPE_STRING, "steps"},
+		{"an unrelated input reference", `this == inputs.other`, v1.InputDeclaration_TYPE_STRING, "inputs"},
+		{"a bare unknown identifier", `this == foo`, v1.InputDeclaration_TYPE_STRING, "foo"},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := v1.CompileMustExpression(c.expr, c.typ)
+			require.Error(t, err, "must: should still refuse this the way it did before must: gained the profile's libraries")
+			assert.Contains(t, err.Error(), c.want)
+		})
+	}
+}
+
 // TestMustIsCostBounded proves must: expressions go through the same bounded
 // evaluator every other CEL expression in this schema does, rather than a
 // bespoke unbounded path — a comprehension over a huge literal list is refused

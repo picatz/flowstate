@@ -77,13 +77,89 @@ var mustEnvs sync.Map // map[InputDeclaration_Type]*mustEnvResult
 // outputMustEnv is the one environment every OutputDeclaration.must compiles
 // against: `this` typed dyn, because an output carries no declared type the
 // way an input does — see OutputDeclaration's schema doc.
+//
+// Built from the current profile's own library set — see [mustEnvFor]'s doc
+// for why that set, and not a hand-copied one, is what belongs here.
 var outputMustEnv = sync.OnceValues(func() (*cel.Env, error) {
-	return cel.NewEnv(cel.Variable("this", cel.DynType))
+	return mustBaseEnv(cel.Variable("this", cel.DynType))
 })
 
 type mustEnvResult struct {
 	env *cel.Env
 	err error
+}
+
+// mustBaseEnv returns the profile's own environment — the identical one
+// [Evaluator.Env] builds and caches for `if:`, a task input, or any other
+// expression position in a workflow — extended with extra (the declaration of
+// `this`).
+//
+// This is the fix for the defect #234 verified: `must:` used to build
+// `cel.NewEnv(cel.Variable("this", ...))` and nothing else, so `this.trim()`,
+// `this.lowerAscii()`, `this.distinct()`, and `sets.contains(...)` all failed
+// with "undeclared reference" — a diagnostic describing a typo the author did
+// not make, and a second CEL dialect in one file, which CLAUDE.md's "one
+// dialect per file, pinned per run" rule forbids. Sourcing the environment
+// through [ProfileLibraries] and [Evaluator.Env] rather than copying
+// `extensionLibraries`' contents into a second list is what keeps `must:`
+// from drifting out of step with every other position the day a library is
+// added or removed from the profile — a copied list is exactly the class of
+// bug this repository's rule about one constant exists to prevent.
+//
+// # Why this is safe: every profile library is deterministic
+//
+// `must:` is evaluated at author time, at submit, and at every `call:`
+// boundary a value crosses (see [refuseNondeterministicMust]'s own doc), so
+// it has to answer identically every time. That requirement is what
+// [extensionLibraries]' own doc comment already promises of every library it
+// lists — "every entry must be deterministic and free of I/O" — so widening
+// `must:` to the profile's set does not admit anything `must:` cannot afford:
+//
+//   - bindings, comprehensions (macros: `cel.bind`, two-variable
+//     comprehensions) — pure control-flow sugar, no new values.
+//   - encoders (base64 encode/decode), lists (distinct, flatten, sum, …),
+//     math (greatest/least and friends), sets, strings (trim, lowerAscii, …)
+//     — pure functions of their arguments.
+//   - regex (`this.matches`, `extractAll`, …) — pure pattern matching, no
+//     compilation cost beyond what [DefaultEvaluator]'s cost limit already
+//     bounds.
+//   - optional, protos — pure construction/inspection helpers.
+//   - json (`json_parse`) — deterministic for a given input string.
+//   - the always-on duration constructors (`days(3)`, `hours(12)`, …) —
+//     pure arithmetic on the argument given, not the clock.
+//
+// None of the above reads a clock, a random source, or does I/O. The one
+// nondeterministic name in the language — [NowIdentifier] — is not a library
+// function but a *variable* bound only inside a `wait_until:`'s own
+// evaluation (see wait.go), so it is not part of any profile library and
+// widening the library set does not expose it; [refuseNondeterministicMust]
+// still catches a `must:` that references it, by the identical free-identifier
+// walk this had before. If a future library ever needs I/O or a clock, it
+// does not belong in [extensionLibraries] at all — that map's own doc already
+// says so — so there is no library this function could pull in that would
+// weaken that guarantee.
+func mustBaseEnv(extra ...cel.EnvOption) (*cel.Env, error) {
+	libs, err := ProfileLibraries(CurrentProfile)
+	if err != nil {
+		return nil, fmt.Errorf("resolve profile libraries: %w", err)
+	}
+
+	// DefaultEvaluator().Env is the identical cached construction every other
+	// expression position in a workflow resolves through
+	// ([Evaluator.EvalParsedBase], [Evaluator.ProfileEnv]) — reusing it rather
+	// than building a second environment from the same library names is what
+	// makes it impossible for `must:`'s vocabulary to silently diverge from
+	// theirs.
+	base, err := DefaultEvaluator().Env(libs...)
+	if err != nil {
+		return nil, fmt.Errorf("build profile environment: %w", err)
+	}
+
+	env, err := base.Extend(extra...)
+	if err != nil {
+		return nil, fmt.Errorf("extend profile environment: %w", err)
+	}
+	return env, nil
 }
 
 // mustEnvFor returns the cached environment for t's `must:` expressions,
@@ -94,7 +170,7 @@ func mustEnvFor(t InputDeclaration_Type) (*cel.Env, error) {
 		return res.env, res.err
 	}
 
-	env, err := cel.NewEnv(cel.Variable("this", constraintCELType(t)))
+	env, err := mustBaseEnv(cel.Variable("this", constraintCELType(t)))
 	res := &mustEnvResult{env: env, err: err}
 	actual, _ := mustEnvs.LoadOrStore(t, res)
 	stored := actual.(*mustEnvResult)
@@ -158,33 +234,41 @@ func compileMustIn(env *cel.Env, mustExpr string) (*cel.Ast, error) {
 	return checked, nil
 }
 
-// refuseNondeterministicMust reports the first name a `must:` expression
-// reads other than `this`, the one name its environment declares.
+// refuseNondeterministicMust reports a tailored refusal when a `must:`
+// expression reads `now`, the one nondeterministic name an author is likeliest
+// to reach for out of habit — `now` is bound everywhere a `wait_until:` is,
+// and a `must:` is not a `wait_until:`.
 //
-// `env.Check` alone already refuses these — nothing else is declared, so a
-// reference to anything else is an undeclared-reference error — but that
-// message does not say *why* a constraint is different from every other
-// expression in the language, which is worth saying explicitly for the one
-// name an author is likeliest to reach for out of habit: `now` is bound
-// everywhere a `wait_until:` is, and a `must:` is not a `wait_until:`.
+// This is deliberately narrower than "reject every free name other than
+// `this`." Since V1 widened `must:`'s environment to the profile's own
+// libraries, a name that is free in the *raw parse tree* is not necessarily
+// free in the *checked* expression: `sets.contains(a, b)` and
+// `base64.encode(b)` parse as a select on the identifier `sets` or `base64`
+// applied to a call, because the parser resolves only macros (expanded
+// in-place before this ever runs — `cel.bind`, `math.greatest`, `math.least`,
+// `proto.getExt`, `proto.hasExt`, every two-variable comprehension), not
+// namespaced function declarations; whether `sets` or `base64` is a package
+// prefix for a declared function or an actually-undeclared variable is a
+// question the *checker* answers, not the parser. Flagging every such prefix
+// here produced a false "unknown name" refusal for exactly the library
+// functions V1 exists to enable.
+//
+// So this function only ever refuses `now`, pre-check, for the friendlier
+// message; every other undeclared name — a step reference, a bare typo, a
+// genuinely-unknown package prefix — is left to `env.Check`, which refuses it
+// correctly, because nothing but `this` and the profile's own declared
+// functions are ever declared in a `must:` environment, and an
+// undeclared-reference error is exactly what that produces. `now` cannot
+// itself be part of a namespaced function name — it does not appear as a
+// package prefix in any profile library — so narrowing to it introduces no
+// gap: every name this used to refuse generically, `env.Check` still refuses,
+// just with a different message wrapping the identical `fmt.Errorf("must:
+// %w", ...)` in [compileMustIn].
 func refuseNondeterministicMust(parsed *expr.ParsedExpr) error {
 	free := map[string]struct{}{}
 	collectFreeIdentifiers(parsed.GetExpr(), map[string]struct{}{}, free)
 
-	names := make([]string, 0, len(free))
-	for name := range free {
-		if name == "this" {
-			continue
-		}
-		names = append(names, name)
-	}
-	if len(names) == 0 {
-		return nil
-	}
-	sort.Strings(names)
-	name := names[0]
-
-	if name == NowIdentifier {
+	if _, ok := free[NowIdentifier]; ok {
 		return fmt.Errorf(
 			"must: may not reference `now`: a constraint is checked at author time, at submit, and at " +
 				"every call boundary a value crosses, and has to answer the same way every time, but `now` " +
@@ -192,9 +276,7 @@ func refuseNondeterministicMust(parsed *expr.ParsedExpr) error {
 				"the deadline as an ordinary input instead")
 	}
 
-	return fmt.Errorf(
-		"must: references unknown name %q; a constraint sees only `this`, the value being checked, and "+
-			"the language's own operators and functions", name)
+	return nil
 }
 
 // collectFreeIdentifiers walks e collecting every identifier not bound by an

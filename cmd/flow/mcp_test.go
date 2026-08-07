@@ -98,8 +98,17 @@ func TestToolsMatchTheServiceDescriptor(t *testing.T) {
 // because a server executing a submitted workflow in-process is a different
 // product, and inventing a service method for it would be that product's first
 // half.
+//
+// flowstate_test: flowtest.RunSource, executing in this process the same way
+// run_local does. Not an RPC for the identical reason, and not folded into
+// run_local's own tool because the two answer different questions with
+// different documents — a GetResponse's transcript against a v1.TestReport's
+// verdicts — and a single tool choosing between them by which arguments were
+// set is the shape [runLocalArguments]'s own doc comment already rejected for
+// `vars`: an implicit mode a caller has to infer.
 var documentedLocalTools = map[string]bool{
 	runLocalToolName: true,
+	testToolName:     true,
 }
 
 func documentedLocalToolNames() []string {
@@ -315,6 +324,7 @@ type runLocalAnswer struct {
 		Status string `json:"status"`
 		Error  struct {
 			Message string `json:"message"`
+			Kind    string `json:"kind"`
 		} `json:"error"`
 		Outputs struct {
 			StepValues map[string]struct {
@@ -776,6 +786,14 @@ steps:
 	assert.Contains(t, answer.Run.Error.Message, "denied by egress policy",
 		"the run failed for some reason other than the egress policy denying it, so this "+
 			"proves nothing about the policy: %s", answer.Run.Error.Message)
+
+	// #241's P2, at the surface an agent actually reads: the MCP tool result, not
+	// the Go message the tool marshals from. A policy denial is permanent — an
+	// agent that retried on seeing PolicyDenied would be retrying a request the
+	// same policy will refuse again — so this is exactly the answer that has to
+	// arrive as data rather than be parsed out of the sentence above.
+	assert.Equal(t, v1.ErrorKindPolicyDenied.String(), answer.Run.Error.Kind,
+		"the MCP tool result did not carry the run's ErrorKind")
 }
 
 // TestTheRunLocalAnswerIsBounded.

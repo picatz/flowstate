@@ -83,13 +83,87 @@ func SignalWaiterFromContext(ctx context.Context) (SignalWaiter, bool) {
 //
 // It is safe for concurrent use: signals arrive from whatever is listening for
 // them while the run executes on another goroutine.
+//
+// # Enforcing the same policy the server enforces
+//
+// Before #207's slice 2, a local delivery was never checked against a
+// workflow's declared `signals:` policy at all — a scripted or `--signal`ed
+// delivery always reached the waiting step, authorized or not. That made
+// local rehearsal strictly more permissive than production in exactly the
+// dangerous direction CLAUDE.md's "both execution drivers must agree"
+// invariant exists to catch: a workflow whose `if:` had been simplified to
+// trust `signals:` for authorization (the whole point of #207's after-shape)
+// would take the approve branch locally on *any* scripted signal, while
+// production correctly gated on identity.
+//
+// policies and starter/hasStarter, once set through [NewPolicedLocalSignals],
+// make every [LocalSignals.Deliver] and [LocalSignals.DeliverFrom] call
+// [SignalPolicyCheck] — the same function `server/lifecycle.go`'s
+// authorizeSignal calls — before a signal is ever queued for a waiting step
+// to read. A caller that constructs the zero value or calls [NewLocalSignals]
+// gets no enforcement at all, exactly as before this existed: that is still
+// correct for a workflow that declares no `signals:` policy, and it is the
+// embed SDK's documented default (see pkg/flowstate/embed/run.go) for a
+// caller with no policy to resolve in the first place.
 type LocalSignals struct {
 	mu     sync.Mutex
 	queues map[string]chan *SignalDelivery
+
+	// policies is nil for an unpoliced [LocalSignals] — every delivery
+	// succeeds, the zero case [SignalPolicyAllows]'s own doc comment
+	// describes. Set through [NewPolicedLocalSignals], normally to a
+	// workflow's own `signals:` already resolved against the run's inputs by
+	// [ResolveSignalPolicySubjects] — the same resolution submit performs,
+	// so a `subject: ${inputs.x}` rule is checked against the same literal
+	// production would check it against, not re-evaluated here.
+	policies map[string]*SignalPolicy
+
+	// starter/hasStarter are this local run's own answer to "who started it,"
+	// for [SignalPolicyCheck]'s distinct_from_starter comparison only — see
+	// [NewPolicedLocalSignals].
+	starter    *WorkloadIdentity
+	hasStarter bool
 }
 
-// NewLocalSignals returns an empty [LocalSignals]. The zero value works too.
+// NewLocalSignals returns an empty [LocalSignals] with no policy to enforce:
+// every delivery succeeds, unconditionally. The zero value works too.
+//
+// This is correct, not merely permissive, for a workflow that declares no
+// `signals:` policy at all — the zero case [SignalPolicyAllows] documents.
+// A caller delivering to a workflow that *does* declare one and wants local
+// delivery to enforce it wants [NewPolicedLocalSignals] instead.
 func NewLocalSignals() *LocalSignals { return &LocalSignals{} }
+
+// NewPolicedLocalSignals returns a [LocalSignals] that checks every delivery
+// against policies through [SignalPolicyCheck] — the same function the
+// server's own `authorizeSignal` calls — before queuing it for a waiting
+// step, restoring invariant 3 for a workflow whose `if:` trusts `signals:`
+// for authorization rather than restating it.
+//
+// policies is normally a workflow's own `wf.GetSignals()`, already resolved
+// against the run's bound inputs by [ResolveSignalPolicySubjects] — passing
+// the *declared*, unresolved map here would check a rule's `subject_from`
+// expression as though it had already become a literal, which it has not;
+// that is a caller bug, not a lenient mode, so this constructor does no
+// resolution of its own and trusts the caller to have done it (`flow test`'s
+// runCase and `flow run local`'s withLocalSignals both do, right after
+// binding the run's inputs the same way [RunWithInputs] itself would).
+//
+// starter/hasStarter are this local run's own notion of who started it,
+// checked only against a policy that sets `distinct_from_starter`.
+// hasStarter false is refused exactly like a durable run whose memo predates
+// the starter record — never treated as "unconstrained." A caller that
+// affirmatively knows its local run has no starter at all — `flow test`,
+// which has no concept of "who ran this test" to begin with — passes
+// hasStarter true with an empty [WorkloadIdentity]: that is a known fact
+// ("nobody"), not a gap in the record, and it is what makes
+// `distinct_from_starter` satisfiable at all against a scripted, genuinely
+// attested sender — see flowtest's own runCase for why treating it as
+// "unknown" instead would make the happy path this exists to test
+// unreachable.
+func NewPolicedLocalSignals(policies map[string]*SignalPolicy, starter *WorkloadIdentity, hasStarter bool) *LocalSignals {
+	return &LocalSignals{policies: policies, starter: starter, hasStarter: hasStarter}
+}
 
 // localSignalQueueDepth bounds how many undelivered signals of one name are held.
 //
@@ -124,8 +198,29 @@ func (s *LocalSignals) queue(name string) chan *SignalDelivery {
 // something does.
 //
 // Always attributed to [LocalSignalSender] — there is no authenticated caller
-// behind a local delivery for anything else to attest.
+// behind this delivery for anything else to attest. A caller that has a real,
+// scripted sender to attest wants [LocalSignals.DeliverFrom] instead.
 func (s *LocalSignals) Deliver(name string, payload *Node_Outputs) error {
+	return s.DeliverFrom(name, payload, LocalSignalSender())
+}
+
+// DeliverFrom hands a signal to whatever is waiting for it, attributed to
+// sender rather than to [LocalSignalSender] — what `flow test`'s scripted
+// `signals:` uses when a case names a `sender:`, so a case can exercise a
+// `signals:` policy's `allow:` rule the same way a real approver would
+// satisfy it.
+//
+// Checked against policy first, through [SignalPolicyCheck] — the same
+// function the server's own `authorizeSignal` calls — when this
+// [LocalSignals] was constructed policed ([NewPolicedLocalSignals]) and
+// declares a policy for name. A refused delivery is never queued: it
+// disappears exactly the way a caller's `PermissionDenied` `flow signal`
+// disappears from the workflow's point of view in production — the waiting
+// step never learns anything was sent at all, and (per its own `timeout:`)
+// eventually reports timed_out, not an error. That is deliberate: a refused
+// signal reaching the step as if delivered would be the exact failure this
+// function exists to close.
+func (s *LocalSignals) DeliverFrom(name string, payload *Node_Outputs, sender *SignalSender) error {
 	if payload == nil {
 		// An empty payload rather than nil, so the waiting step's outputs exist
 		// and `${approval.timed_out}` resolves whether or not a sender sent
@@ -133,7 +228,13 @@ func (s *LocalSignals) Deliver(name string, payload *Node_Outputs) error {
 		payload = &Node_Outputs{NamedValues: map[string]*Value{}}
 	}
 
-	delivery := &SignalDelivery{Payload: payload, Sender: LocalSignalSender()}
+	if policy, declared := s.policies[name]; declared {
+		if err := SignalPolicyCheck(policy, sender.GetIdentity(), s.starter, s.hasStarter); err != nil {
+			return fmt.Errorf("flowstate: signal %q refused: %w", name, err)
+		}
+	}
+
+	delivery := &SignalDelivery{Payload: payload, Sender: sender}
 
 	select {
 	case s.queue(name) <- delivery:

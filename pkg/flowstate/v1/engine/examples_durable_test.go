@@ -688,7 +688,22 @@ func runExampleLocally(
 			// Delivered before the run starts, for the reason the durable side signals
 			// immediately: the local waiter buffers, so this is the local spelling of a
 			// signal that arrived early.
-			require.NoError(t, waiter.Deliver(signal, payload))
+			//
+			// Attributed to the identical sender identity [runExampleDurably] builds
+			// its [v1.SignalDelivery] with — "examples"/"flowstate:test" — rather
+			// than [v1.LocalSignalSender]. Before #207 that distinction was the
+			// point: an example's own `if:` read `sender.local`/`run.local`
+			// directly, so the two drivers were deliberately signalled with
+			// different senders and [stableOutputs] stripped what that produced.
+			// After #207 an example's own logic no longer inspects attestation at
+			// all — `signals:` does, enforced at the RPC boundary this harness
+			// bypasses on both sides — so the fair comparison this harness exists
+			// to make is: given the identical, already-authorized sender, do the
+			// two engines compute the identical answer. They cannot, unless both
+			// sides are actually given that identical sender.
+			require.NoError(t, waiter.DeliverFrom(signal, payload, &v1.SignalSender{
+				Identity: &v1.WorkloadIdentity{Subject: "examples", Issuer: "flowstate:test"},
+			}))
 		}
 		ctx = v1.NewContextWithSignalWaiter(ctx, waiter)
 	}
@@ -826,22 +841,21 @@ func stableOutputs(outputs *v1.Workflow_StepOutputs) *v1.Workflow_StepOutputs {
 		}
 	}
 
-	// `approval-gate`'s own declared outputs read the identical attested sender
-	// [v1.SenderOutput] is stripped above for producing — its `decision` and
-	// `approver_subject` are both computed from `steps.approval.sender.identity`,
-	// so once that disagrees between drivers (by design, the paragraph above),
-	// anything the file itself derives from it disagrees too. That used to be
-	// invisible: before #215's third finding split the merged
-	// `refused_unattested_or_self_approved` into distinct values per reason, a
-	// local run's "unattested" and a durable run's "attested but the wrong
-	// approver" happened to render the same string, so the comparison below
-	// passed by coincidence rather than by agreement. `approver_subject` was
-	// already anticipated — see its own description in
-	// examples/approval-gate/workflow.yaml, which names this function and this
-	// reasoning before either of the two ever disagreed in practice.
-	delete(clone.GetRunOutputs().GetValues(), "decision")
-	delete(clone.GetRunOutputs().GetValues(), "approver_subject")
-
+	// `decision` and `approver_subject` used to be stripped here (#207's
+	// predecessor state): `approval-gate`'s own `deploy` gated directly on
+	// `steps.approval.sender.local`/`run.local`, which [runExampleLocally] and
+	// [runExampleDurably] deliberately attest differently (see the comment a
+	// few lines above, on `v1.SenderOutput`), so anything the file derived
+	// from that — both of these outputs — disagreed by construction. That is
+	// no longer true: `deploy`'s `if:` reads only `payload.approved` now,
+	// authorization having moved to `signals:` (enforced at the RPC boundary
+	// this harness bypasses on both drivers, not inside the workflow), and
+	// [runExampleLocally] now attributes its delivery to the identical sender
+	// identity [runExampleDurably] does — so both engines see the same
+	// payload from the same sender and must compute the same `decision` and
+	// `approver_subject`. Comparing them here is what makes that a checked
+	// fact rather than an assumption; see #207's decision record for why this
+	// is called out as the invariant-3 win the whole redesign was for.
 	for _, value := range clone.GetRunOutputs().GetValues() {
 		sortMapEntries(value.GetLiteral())
 	}

@@ -105,6 +105,14 @@ type Diagnostic struct {
 
 	// Message states the problem and, where possible, how to fix it.
 	Message string
+
+	// Code names the diagnostic's class in a form stable across a reworded
+	// Message — see [v1.DiagnosticCode]'s own doc for why the set is small and
+	// how it is kept from drifting. Left unset at most call sites, which is not
+	// an omission: [Proto] falls it back to [v1.DiagnosticCodeGeneral], so a
+	// site only needs to set this when its diagnostic belongs to one of the
+	// classes worth branching on.
+	Code v1.DiagnosticCode
 }
 
 // Error renders the diagnostic in the conventional line:column: message form so it
@@ -591,6 +599,7 @@ func validateTaskStep(id string, node *v1.Node, task *v1.Task, scope, inner refS
 			// there is a token to underline rather than a whole step.
 			Kind:    task.GetName(),
 			Message: message,
+			Code:    v1.DiagnosticCodeUnknownTask,
 		})
 	}
 
@@ -905,6 +914,7 @@ func validateNamedLoop(stepID string, loop *v1.Loop, enclosing refScope, index i
 			Message: "a loop inside a loop is not supported in this edition — the Continue-As-New " +
 				"interaction across two carried-state frames is not exercised yet; hoist the inner " +
 				"loop into a called workflow (`call:`) and loop over that, or flatten the two into one",
+			Code: v1.DiagnosticCodePlacementRefusal,
 		})
 	}
 
@@ -1213,7 +1223,10 @@ func validateUndo(id string, node *v1.Node, scope refScope, index int, wf *v1.Wo
 	var ds Diagnostics
 
 	if err := v1.CheckUndoPlacement(node, placement); err != nil {
-		return append(ds, Diagnostic{Step: id, Field: "undo", Message: err.Error()})
+		return append(ds, Diagnostic{
+			Step: id, Field: "undo", Message: err.Error(),
+			Code: v1.DiagnosticCodePlacementRefusal,
+		})
 	}
 
 	task := undo.GetTask()
@@ -1226,6 +1239,7 @@ func validateUndo(id string, node *v1.Node, scope refScope, index int, wf *v1.Wo
 			Field: "undo",
 			Message: fmt.Sprintf("unknown task %q; available tasks are %s",
 				task.GetName(), strings.Join(v1.TaskNames(), ", ")),
+			Code: v1.DiagnosticCodeUnknownTask,
 		})
 	}
 
@@ -1264,7 +1278,7 @@ func validateUndoInputs(id string, task *v1.Task) Diagnostics {
 		if d.Field != "" {
 			message = fmt.Sprintf("input %q: %s", d.Field, message)
 		}
-		ds = append(ds, Diagnostic{Step: d.Step, Field: "undo", Value: d.Value, Message: message})
+		ds = append(ds, Diagnostic{Step: d.Step, Field: "undo", Value: d.Value, Message: message, Code: d.Code})
 	}
 
 	return ds
@@ -1364,6 +1378,7 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 				Message: fmt.Sprintf(
 					"`%s` is a step, and a step is named `%s.%s` now; run `flow fix` to rewrite this file",
 					ref, v1.StepsRoot, ref),
+				Code: v1.DiagnosticCodeRetiredKey,
 			})
 			continue
 		}
@@ -1399,6 +1414,7 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 				"references unknown name %q; a step is written `%s.%s`, and a bare name is a loop's "+
 					"iterator, a name this step declares in its own `vars:`, or `now`",
 				ref, v1.StepsRoot, ref),
+			Code: v1.DiagnosticCodeUnresolvedReference,
 		})
 	}
 	return ds
@@ -1430,7 +1446,7 @@ func unresolvedVar(stepID, inputName, ref string, scope refScope) Diagnostic {
 		}
 	}
 
-	return Diagnostic{Step: stepID, Field: inputName, Value: ref, Message: message}
+	return Diagnostic{Step: stepID, Field: inputName, Value: ref, Message: message, Code: v1.DiagnosticCodeUnresolvedReference}
 }
 
 // unresolvedInput reports a reference to an input the workflow does not declare.
@@ -1454,7 +1470,7 @@ func unresolvedInput(stepID, inputName, ref string, scope refScope) Diagnostic {
 		}
 	}
 
-	return Diagnostic{Step: stepID, Field: inputName, Value: ref, Message: message}
+	return Diagnostic{Step: stepID, Field: inputName, Value: ref, Message: message, Code: v1.DiagnosticCodeUnresolvedReference}
 }
 
 // referencedIdentifiers returns the names an expression references, in five groups:
@@ -1858,6 +1874,7 @@ func unresolvedStep(stepID, inputName, ref string, index int, wf *v1.Workflow) D
 		return Diagnostics{{
 			Step: stepID, Field: inputName,
 			Message: fmt.Sprintf("references its own step %q, which has no outputs yet", ref),
+			Code:    v1.DiagnosticCodeUnresolvedReference,
 		}}
 	}
 	for _, other := range wf.GetSteps()[index:] {
@@ -1866,12 +1883,14 @@ func unresolvedStep(stepID, inputName, ref string, index int, wf *v1.Workflow) D
 				Step: stepID, Field: inputName,
 				Message: fmt.Sprintf(
 					"references step %q, which runs later; steps can only reference steps defined before them", ref),
+				Code: v1.DiagnosticCodeUnresolvedReference,
 			}}
 		}
 	}
 	return Diagnostics{{
 		Step: stepID, Field: inputName,
 		Message: fmt.Sprintf("references unknown step %q", ref),
+		Code:    v1.DiagnosticCodeUnresolvedReference,
 	}}
 }
 
@@ -1918,7 +1937,10 @@ func unknownRunField(stepID, inputName string, ref runRef) (Diagnostic, bool) {
 			message += fmt.Sprintf("; `run` has %s", strings.Join(runFields, " and "))
 		}
 
-		return Diagnostic{Step: stepID, Field: inputName, Value: v1.RunRoot + "." + ref.Field, Message: message}, true
+		return Diagnostic{
+			Step: stepID, Field: inputName, Value: v1.RunRoot + "." + ref.Field, Message: message,
+			Code: v1.DiagnosticCodeUnresolvedReference,
+		}, true
 	}
 
 	if ref.Field != "identity" || ref.Under == "" {
@@ -1942,6 +1964,7 @@ func unknownRunField(stepID, inputName string, ref runRef) (Diagnostic, bool) {
 		Step: stepID, Field: inputName,
 		Value:   v1.RunRoot + ".identity." + ref.Under,
 		Message: message,
+		Code:    v1.DiagnosticCodeUnresolvedReference,
 	}, true
 }
 
@@ -1987,6 +2010,7 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, wf *v1.Workflow) (
 				Message: fmt.Sprintf(
 					"step %q has no output %q; `%s` is the name the loop binds *inside* itself (its `as:`), which does not exist out here — the carried value is read as `%s.%s.state`",
 					ref.ID, ref.Output, ref.Output, v1.StepsRoot, ref.ID),
+				Code: v1.DiagnosticCodeUnresolvedReference,
 			}, true
 		}
 		return Diagnostic{}, false
@@ -2055,7 +2079,10 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, wf *v1.Workflow) (
 		}
 	}
 
-	return Diagnostic{Step: stepID, Field: inputName, Value: ref.Output, Message: message}, true
+	return Diagnostic{
+		Step: stepID, Field: inputName, Value: ref.Output, Message: message,
+		Code: v1.DiagnosticCodeUnresolvedReference,
+	}, true
 }
 
 // nodeWithID returns the node an id names, anywhere in the workflow, or nil.
@@ -2147,6 +2174,11 @@ var functionNamespaces = func() map[string]bool {
 // Positions are widened to uint32 unchanged, zero and all. A diagnostic with no
 // position is a real answer, so it must not be turned into line 1.
 func (d Diagnostic) Proto() *v1.Diagnostic {
+	code := d.Code
+	if code == "" {
+		code = v1.DiagnosticCodeGeneral
+	}
+
 	return &v1.Diagnostic{
 		Line:    uint32(max(d.Line, 0)),
 		Column:  uint32(max(d.Column, 0)),
@@ -2155,6 +2187,7 @@ func (d Diagnostic) Proto() *v1.Diagnostic {
 		Field:   d.Field,
 		Kind:    d.Kind,
 		Value:   d.Value,
+		Code:    string(code),
 	}
 }
 

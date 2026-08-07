@@ -2714,6 +2714,26 @@ message RunRequest {
 message RunResponse {
   message Error {
     string message = 1 [(buf.validate.field).required = true];
+
+    // Kind classifies why the run failed, mirroring flowstatev1.ErrorKind — the
+    // same classification retry policy is built from, so an agent (or any
+    // programmatic consumer) can decide "repair the file / retry / escalate to
+    // the operator" without parsing Message.
+    //
+    // A plain string rather than an enum: the set this names already lives as a
+    // Go type in the execution-independent layer (errors.go) because it drives
+    // retry semantics on both drivers before it ever needed to travel, and it
+    // already crosses the durable driver's own wire — Temporal's
+    // ApplicationError carries it as its Type — as this same string. Restating
+    // it as a second, proto-owned enum would be two closed sets that could
+    // disagree about what "PolicyDenied" means; this field is that value
+    // reaching the client rather than a parallel definition of it.
+    //
+    // Always set alongside Message, on the same rule flowstatev1.ClassifyError
+    // itself follows: a failure this driver cannot otherwise classify is
+    // reported as "Internal" rather than left blank, because an unclassified
+    // failure is a gap in Flowstate and not a statement that nothing is known.
+    string kind = 2;
   }
   enum Status {
     STATUS_UNSPECIFIED = 0;
@@ -3023,6 +3043,20 @@ message Diagnostic {
   // Value is the literal at fault *inside* Field, when the field holds a list and one
   // element of it is the problem.
   string value = 7;
+
+  // Code names the diagnostic's class in a form that survives Message being
+  // reworded — the same argument this message already makes for Line/Column
+  // over parsing a squiggle out of prose, applied to *what* is wrong rather
+  // than to *where*.
+  //
+  // A small, deliberately incomplete set: only the classes a program is
+  // expected to actually branch on (an unknown task, an unresolved reference,
+  // a type mismatch, a schema constraint violation, a placement the grammar
+  // refuses, a retired spelling) get their own code today. Everything else is
+  // "general" — an honest fallback rather than a code invented to look
+  // complete. The full set, generated from the registry that assigns them so
+  // it cannot drift, is docs/reference/diagnostics.md.
+  string code = 8;
 }
 
 // DiagnosticReport is what one file's check produced.
