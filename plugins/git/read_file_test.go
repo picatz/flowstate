@@ -169,14 +169,48 @@ func TestGitReadFileAcceptsAFileExactlyAtTheBound(t *testing.T) {
 // before any clone, is the property that matters (an attacker-adjacent path
 // never reaches go-git's tree lookup at all).
 func TestGitReadFileRefusesPathTraversal(t *testing.T) {
-	if _, err := validateTreePath("path", "../outside"); err == nil {
+	// The empty field is what gitReadFile itself passes: this task's only input
+	// is the path, so the message must not double the word into "path: path ...".
+	if _, err := validateTreePath("", "../outside"); err == nil {
 		t.Fatal("validateTreePath(\"../outside\"): got nil error, want a refusal")
 	}
 }
 
 func TestGitReadFileRefusesAnAbsolutePath(t *testing.T) {
-	if _, err := validateTreePath("path", "/etc/passwd"); err == nil {
+	if _, err := validateTreePath("", "/etc/passwd"); err == nil {
 		t.Fatal("validateTreePath(\"/etc/passwd\"): got nil error, want a refusal")
+	}
+}
+
+// TestValidateTreePathMessageOmitsRedundantFieldPrefix pins the diagnostic
+// text gitReadFile produces (empty field) against commit_push's (field
+// "files"/"patch"): read_file's message reads "path is empty", never the
+// doubled "path: path is empty" it produced when it passed "path" as the field,
+// while a named field still prefixes exactly as before.
+func TestValidateTreePathMessageOmitsRedundantFieldPrefix(t *testing.T) {
+	_, err := validateTreePath("", "")
+	if err == nil {
+		t.Fatal("validateTreePath(\"\", \"\"): got nil error, want a refusal")
+	}
+	if got := err.Error(); got != "path is empty" {
+		t.Fatalf("read_file message = %q, want %q (no doubled \"path\")", got, "path is empty")
+	}
+
+	_, err = validateTreePath("", "/etc/passwd")
+	if err == nil {
+		t.Fatal("validateTreePath(\"\", \"/etc/passwd\"): got nil error, want a refusal")
+	}
+	if got := err.Error(); strings.HasPrefix(got, "path: path") {
+		t.Fatalf("read_file message %q still doubles \"path\"", got)
+	}
+
+	// A named field (commit_push's callers) still prefixes exactly as before.
+	_, err = validateTreePath("files", "")
+	if err == nil {
+		t.Fatal("validateTreePath(\"files\", \"\"): got nil error, want a refusal")
+	}
+	if got := err.Error(); got != "files: path is empty" {
+		t.Fatalf("files message = %q, want %q", got, "files: path is empty")
 	}
 }
 

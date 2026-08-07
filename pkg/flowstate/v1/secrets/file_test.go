@@ -252,6 +252,42 @@ func Test_FileProvider_Resolve(t *testing.T) {
 	}
 }
 
+// Test_FileProvider_capCannotBeDisabled asserts the byte cap fails closed: a
+// maxBytes of zero (WithFileMaxBytes(0)) or a zero-value FileProvider does not
+// disable the bound, it substitutes DefaultFileMaxBytes. This is the negative
+// direction that matters — the bound must be REACHED — so it feeds a file one
+// byte past the default cap and requires the refusal, rather than merely
+// checking that a small file under the cap still resolves.
+func Test_FileProvider_capCannotBeDisabled(t *testing.T) {
+	// limit() substitutes the default whenever maxBytes is not positive, so a
+	// zero-value provider and an explicit WithFileMaxBytes(0) both carry the
+	// full DefaultFileMaxBytes cap rather than none. There is no value that
+	// removes it.
+	require.Equal(t, DefaultFileMaxBytes, (&FileProvider{}).limit())
+	require.Equal(t, DefaultFileMaxBytes, (&FileProvider{maxBytes: 0}).limit())
+	require.Equal(t, DefaultFileMaxBytes, (&FileProvider{maxBytes: -1}).limit())
+
+	// A zero-value provider's read path refuses an oversized reader outright,
+	// with no root or directory involved — the cap alone does the work.
+	oversized := strings.Repeat("x", int(DefaultFileMaxBytes)+1)
+	_, err := (&FileProvider{}).read(strings.NewReader(oversized))
+	require.ErrorIs(t, err, ErrTooLarge)
+
+	// And the same file is refused through the real Resolve path when the
+	// provider was constructed with WithFileMaxBytes(0), proving the
+	// substituted bound is enforced end to end rather than only in limit().
+	dir := secretDir(t, map[string]string{"big": oversized})
+
+	provider, err := NewFileProvider(dir, WithFileMaxBytes(0))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, provider.Close()) })
+
+	secret, err := provider.Resolve(t.Context(), Request{Ref: NewRef("file", "big")})
+	require.ErrorIs(t, err, ErrTooLarge)
+	require.True(t, secret.IsZero())
+	require.NotContains(t, err.Error(), "xxxx", "the error must not include the file contents")
+}
+
 // Test_FileProvider_symlinkEscape covers the case string path checks miss: a name
 // with no ".." in it that still leaves the directory, because a symlink does the
 // escaping.

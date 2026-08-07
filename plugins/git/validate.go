@@ -462,21 +462,33 @@ func validateBranchName(raw string) (string, error) {
 // path sits in base_ref's tree, not of the path string alone, and which
 // go-git's own check has no way to know about.
 func validateTreePath(field, raw string) (string, error) {
+	// field names the input that carried this path, so a diagnostic can say
+	// *which* one is wrong when more than one exists: commit_push's files map
+	// ("files") and its patch ("patch") each carry paths, and each prefixes its
+	// messages accordingly. read_file's sole input *is* the path, so there is no
+	// second path to distinguish it from - it passes an empty field and the
+	// prefix is omitted, rather than doubling the word into "path: path ...".
+	// The templates below own the noun "path"; field only qualifies it.
+	label := ""
+	if field != "" {
+		label = field + ": "
+	}
+
 	if raw == "" {
-		return "", fmt.Errorf("%s: path is empty", field)
+		return "", fmt.Errorf("%spath is empty", label)
 	}
 	if len(raw) > 4096 {
-		return "", fmt.Errorf("%s: path is %d bytes, over the 4096 byte limit", field, len(raw))
+		return "", fmt.Errorf("%spath is %d bytes, over the 4096 byte limit", label, len(raw))
 	}
 	if strings.HasPrefix(raw, "/") {
-		return "", fmt.Errorf("%s: path %q is absolute; every path in a git tree is relative", field, raw)
+		return "", fmt.Errorf("%spath %q is absolute; every path in a git tree is relative", label, raw)
 	}
 	if strings.Contains(raw, "\\") {
-		return "", fmt.Errorf("%s: path %q contains a backslash, which no git tree path does", field, raw)
+		return "", fmt.Errorf("%spath %q contains a backslash, which no git tree path does", label, raw)
 	}
 	for _, r := range raw {
 		if r == 0 || unicode.IsControl(r) {
-			return "", fmt.Errorf("%s: path %q contains a control character", field, raw)
+			return "", fmt.Errorf("%spath %q contains a control character", label, raw)
 		}
 	}
 
@@ -484,13 +496,13 @@ func validateTreePath(field, raw string) (string, error) {
 	for _, seg := range segments {
 		switch {
 		case seg == "":
-			return "", fmt.Errorf("%s: path %q has an empty segment (a leading, trailing, or doubled \"/\")", field, raw)
+			return "", fmt.Errorf("%spath %q has an empty segment (a leading, trailing, or doubled \"/\")", label, raw)
 		case seg == ".":
-			return "", fmt.Errorf("%s: path %q has a \".\" segment", field, raw)
+			return "", fmt.Errorf("%spath %q has a \".\" segment", label, raw)
 		case seg == "..":
-			return "", fmt.Errorf("%s: path %q escapes the tree with \"..\"", field, raw)
+			return "", fmt.Errorf("%spath %q escapes the tree with \"..\"", label, raw)
 		case seg == ".git":
-			return "", fmt.Errorf("%s: path %q writes under a \".git\" segment, which this task refuses regardless of position", field, raw)
+			return "", fmt.Errorf("%spath %q writes under a \".git\" segment, which this task refuses regardless of position", label, raw)
 		}
 	}
 

@@ -33,7 +33,11 @@ func gitReadFile(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *f
 	if err != nil {
 		return nil, sdk.InvalidInput("%v", err)
 	}
-	path, err := validateTreePath("path", in.GetPath())
+	// Empty field: this task's sole input *is* the path, so validateTreePath's
+	// messages read "path is empty" rather than doubling into "path: path is
+	// empty". commit_push passes "files"/"patch" there to distinguish which of
+	// its several path-bearing inputs is at fault; read_file has only one.
+	path, err := validateTreePath("", in.GetPath())
 	if err != nil {
 		return nil, sdk.InvalidInput("%v", err)
 	}

@@ -209,21 +209,34 @@ func (p *FileProvider) Resolve(_ context.Context, req Request) (Secret, error) {
 	return NewSecret(ref, value), nil
 }
 
+// limit returns the byte cap, substituting the default. It mirrors
+// [execRunner.limit] in command.go for the same reason: a maxBytes of zero or
+// less must fall back to [DefaultFileMaxBytes] rather than disable the cap, so a
+// default-constructed provider or WithFileMaxBytes(0) can never turn a reference
+// into an unbounded read of a secret file into memory. The cap fails closed —
+// there is no value that removes it.
+func (p *FileProvider) limit() int64 {
+	if p.maxBytes > 0 {
+		return p.maxBytes
+	}
+
+	return DefaultFileMaxBytes
+}
+
 // read reads a secret file under the size limit. It reads one byte past the limit
 // so that a file exactly at the limit is distinguishable from one that exceeds it,
 // and so exceeding it is an error rather than a silently truncated credential.
 func (p *FileProvider) read(r io.Reader) (string, error) {
-	if p.maxBytes > 0 {
-		r = io.LimitReader(r, p.maxBytes+1)
-	}
+	maxBytes := p.limit()
+	r = io.LimitReader(r, maxBytes+1)
 
 	contents, err := io.ReadAll(r)
 	if err != nil {
 		return "", fmt.Errorf("reading secret file: %w", err)
 	}
 
-	if p.maxBytes > 0 && int64(len(contents)) > p.maxBytes {
-		return "", fmt.Errorf("%w: larger than %d bytes", ErrTooLarge, p.maxBytes)
+	if int64(len(contents)) > maxBytes {
+		return "", fmt.Errorf("%w: larger than %d bytes", ErrTooLarge, maxBytes)
 	}
 
 	value := string(contents)
