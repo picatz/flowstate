@@ -62,14 +62,18 @@ type RunOptions struct {
 
 	// EgressPolicy governs what the built-in http task may reach.
 	//
-	// Nil is not "no policy" — it is the same policy `flow run local`
-	// enforces when invoked with no --egress-policy flag: internal address
-	// ranges denied, loopback denied unless
-	// [v1.AllowLoopbackEgressEnv] is set in this process's environment,
-	// every redirect hop re-checked, and the response body bounded. Setting
-	// EgressPolicy replaces that policy entirely for this run — the same
-	// replace-not-merge semantics [netpolicy] gives every other caller of it
-	// — it does not add rules on top of the default.
+	// Nil is not "no policy", and it is not "whatever this process happens
+	// to have registered for `http` right now" either — it is always
+	// exactly [v1.DefaultEgressPolicy]: internal address ranges denied,
+	// loopback denied unless [v1.AllowLoopbackEgressEnv] is set in this
+	// process's environment, every redirect hop re-checked, and the
+	// response body bounded. RunLocal registers that policy's http task
+	// explicitly for the nil case rather than copying whatever
+	// [v1.DefaultRegistry] currently holds for `http` — see [RunLocal]'s
+	// doc for why an ambient default would not actually be a constant one.
+	// Setting EgressPolicy replaces that policy entirely for this run — the
+	// same replace-not-merge semantics [netpolicy] gives every other caller
+	// of it — it does not add rules on top of the default.
 	//
 	// This governs only this [RunLocal] call, not the process: unlike
 	// `flow run local --egress-policy`, which mutates [v1.DefaultRegistry]
@@ -101,10 +105,10 @@ type RunOptions struct {
 // Every call builds a fresh [v1.Registry], seeded from
 // [v1.DefaultRegistry]'s current contents — this build's own tasks, plus
 // anything else installed globally in this process, such as another
-// embedder's already-[Tasks.Install]ed set — and then layers opts.Tasks and
-// opts.EgressPolicy's http task on top, before installing the result on the
-// run's context with [v1.NewContextWithRegistry]. Two consequences follow
-// from building it fresh rather than reading [v1.DefaultRegistry] directly:
+// embedder's already-[Tasks.Install]ed set — and then layers the http task
+// (opts.EgressPolicy's, or [v1.DefaultEgressPolicy]'s when nil) and
+// opts.Tasks on top, before installing the result on the run's context with
+// [v1.NewContextWithRegistry]. Three consequences follow:
 //
 //   - opts.Tasks does not need [Tasks.Install] to have been called, or to
 //     still be installed, for RunLocal to execute it — only [flowfile.Validate]
@@ -115,6 +119,14 @@ type RunOptions struct {
 //     are answering different questions, on purpose, the same way they
 //     already do for [v1.LookupTask] versus [v1.LookupTaskIn] — see
 //     [Tasks]'s doc.
+//   - opts.EgressPolicy being nil does *not* mean "whatever the copy above
+//     happened to carry over for `http`". The http entry is always
+//     re-registered explicitly, from opts.EgressPolicy or from
+//     [v1.DefaultEgressPolicy] — never left as the copied value — so the
+//     documented zero-value posture holds even when something else in the
+//     process (`cmd/flow/egress.go`'s own mutation of [v1.DefaultRegistry],
+//     or another embedder's [Tasks.Install] overriding `http`) has changed
+//     what [v1.DefaultRegistry] itself would have answered.
 //   - Two concurrent RunLocal calls with different opts.Tasks or
 //     opts.EgressPolicy never interfere with each other: each builds and
 //     discards its own registry, and nothing about running one mutates
@@ -131,11 +143,25 @@ func RunLocal(ctx context.Context, workflow *Workflow, opts RunOptions) (*v1.Wor
 			return nil, fmt.Errorf("flowstate/embed: RunLocal: copying the default registry: %w", err)
 		}
 	}
-	if opts.EgressPolicy != nil {
-		if err := registry.Register(v1.HTTPTaskDef(opts.EgressPolicy)); err != nil {
-			return nil, fmt.Errorf("flowstate/embed: RunLocal: registering the http task for the given egress policy: %w", err)
-		}
+
+	// The http task is always (re-)registered explicitly, never left as
+	// whatever the copy above happened to carry over. Reading it off
+	// [v1.DefaultRegistry] for the nil case would make RunOptions's zero
+	// value an *ambient* posture — whatever the process happens to have
+	// registered for `http` at the moment this call runs, which
+	// `cmd/flow/egress.go`'s own mutation of that same registry, or another
+	// embedder's [Tasks.Install] overriding `http`, can silently change out
+	// from under a caller who wrote nothing at all. [RunOptions.EgressPolicy]
+	// promises a *constant* default instead: [v1.DefaultEgressPolicy]
+	// unless opts.EgressPolicy names something else.
+	egressPolicy := opts.EgressPolicy
+	if egressPolicy == nil {
+		egressPolicy = v1.DefaultEgressPolicy()
 	}
+	if err := registry.Register(v1.HTTPTaskDef(egressPolicy)); err != nil {
+		return nil, fmt.Errorf("flowstate/embed: RunLocal: registering the http task for the given egress policy: %w", err)
+	}
+
 	if opts.Tasks != nil {
 		for _, def := range opts.Tasks.defs() {
 			if err := registry.Register(def); err != nil {

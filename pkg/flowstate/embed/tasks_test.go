@@ -45,7 +45,10 @@ func TestTasksInstall_ValidationAndExecutionCoherence(t *testing.T) {
 			t.Fatalf("Register: %v", err)
 		}
 
-		uninstall := tasks.Install()
+		uninstall, err := tasks.Install()
+		if err != nil {
+			t.Fatalf("Install: %v", err)
+		}
 		defer uninstall()
 
 		workflow, err := flowfile.Unmarshal(echoWorkflowSource(taskName))
@@ -114,7 +117,10 @@ func TestTasksInstall_ValidationAndExecutionCoherence(t *testing.T) {
 			t.Fatalf("Register: %v", err)
 		}
 
-		uninstall := tasks.Install()
+		uninstall, err := tasks.Install()
+		if err != nil {
+			t.Fatalf("Install: %v", err)
+		}
 
 		workflow, err := flowfile.Unmarshal(echoWorkflowSource(taskName))
 		if err != nil {
@@ -130,6 +136,118 @@ func TestTasksInstall_ValidationAndExecutionCoherence(t *testing.T) {
 			t.Fatal("Validate: expected an unknown-task diagnostic after uninstall")
 		}
 	})
+}
+
+// TestTasksInstall_ConflictingNameIsRefusedNotCorrupted is the P2 fix from
+// PR #232's review, reproducing the exact interleaving the review named:
+//
+//	A installs "x" -> B installs "x" (saving A's def as what B will restore)
+//	-> A uninstalls (removes "x" entirely, unaware B took it over)
+//	-> B uninstalls (restores A's def)
+//	=> "x" is left permanently registered, owned by neither A nor B.
+//
+// With ownership tracking, B's Install never succeeds while A still owns
+// "x" — it is refused outright — so there is nothing for either uninstall to
+// disagree about, and the registry ends back in its original state (no "x"
+// registered at all) once A uninstalls.
+func TestTasksInstall_ConflictingNameIsRefusedNotCorrupted(t *testing.T) {
+	const name = "conflicting_task_name"
+
+	if _, ok := v1.LookupTask(name); ok {
+		t.Fatalf("test setup: %q is already registered somehow", name)
+	}
+
+	a := NewTasks()
+	if err := a.Register(Task{Name: name, Fn: echoTask(name)}); err != nil {
+		t.Fatalf("a.Register: %v", err)
+	}
+	b := NewTasks()
+	if err := b.Register(Task{Name: name, Fn: echoTask(name)}); err != nil {
+		t.Fatalf("b.Register: %v", err)
+	}
+
+	// A installs "x" successfully.
+	uninstallA, err := a.Install()
+	if err != nil {
+		t.Fatalf("a.Install: unexpected error: %v", err)
+	}
+
+	// B's attempt to install the same name, while A still owns it, must be
+	// refused outright — not layered silently on top.
+	uninstallB, err := b.Install()
+	if err == nil {
+		t.Fatal("b.Install: expected a conflict error while a still owns the name")
+	}
+	if uninstallB != nil {
+		t.Error("b.Install: expected a nil uninstall alongside the conflict error")
+	}
+	if !strings.Contains(err.Error(), name) {
+		t.Errorf("b.Install: error does not name the conflicting task: %v", err)
+	}
+
+	// A's def must still be the one registered — B's refused Install
+	// registered nothing.
+	if _, ok := v1.LookupTask(name); !ok {
+		t.Fatal("expected a's task to still be registered")
+	}
+
+	// A uninstalls. Because B's Install never succeeded, this is the only
+	// live claim on "x", and removing it must return the registry to
+	// exactly its original state.
+	uninstallA()
+
+	if _, ok := v1.LookupTask(name); ok {
+		t.Fatal("expected the task to be fully unregistered after a's uninstall — " +
+			"the original state, with nothing left behind by either a or b")
+	}
+
+	// Now that A has released it, B may install it cleanly.
+	uninstallB2, err := b.Install()
+	if err != nil {
+		t.Fatalf("b.Install after a released the name: unexpected error: %v", err)
+	}
+	if _, ok := v1.LookupTask(name); !ok {
+		t.Fatal("expected b's task to be registered")
+	}
+	uninstallB2()
+
+	if _, ok := v1.LookupTask(name); ok {
+		t.Fatal("expected the task to be fully unregistered after b's uninstall too")
+	}
+}
+
+// TestTasksInstall_DoubleInstallSameSetIsRefused pins the same refusal for
+// the same Tasks set installed twice without an uninstall in between — a
+// second, unrelated Install call racing the first is exactly the collision
+// [TestTasksInstall_ConflictingNameIsRefusedNotCorrupted] covers, just with
+// the same set on both sides.
+func TestTasksInstall_DoubleInstallSameSetIsRefused(t *testing.T) {
+	const name = "double_install_task_name"
+
+	tasks := NewTasks()
+	if err := tasks.Register(Task{Name: name, Fn: echoTask(name)}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	uninstall1, err := tasks.Install()
+	if err != nil {
+		t.Fatalf("first Install: unexpected error: %v", err)
+	}
+	defer func() {
+		if _, ok := v1.LookupTask(name); ok {
+			uninstall1()
+		}
+	}()
+
+	_, err = tasks.Install()
+	if err == nil {
+		t.Fatal("second Install: expected an error while the first is still live")
+	}
+
+	uninstall1()
+	if _, ok := v1.LookupTask(name); ok {
+		t.Fatal("expected the task to be unregistered after uninstall")
+	}
 }
 
 func TestTasksRegister_RejectsInvalidTasks(t *testing.T) {
@@ -163,7 +281,10 @@ func TestTasksInstall_RestoresAPreexistingTask(t *testing.T) {
 		t.Fatal("expected the built-in log task to be registered")
 	}
 
-	uninstall := tasks.Install()
+	uninstall, err := tasks.Install()
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
 	overridden, ok := v1.LookupTask("log")
 	if !ok || overridden.Summary != "" {
 		t.Fatalf("expected the log task to be overridden while installed, got %+v", overridden)

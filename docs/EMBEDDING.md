@@ -41,7 +41,11 @@ tasks.Register(embed.Task{
 		})}, nil
 	},
 })
-uninstall := tasks.Install()
+uninstall, err := tasks.Install()
+if err != nil {
+	// Another Tasks set already claims one of these names.
+	log.Fatal(err)
+}
 defer uninstall()
 
 // 2. Compile a Flowfile from bytes.
@@ -89,11 +93,17 @@ task's name, of two different registries:
 
 `embed.Tasks.Install()` registers a task set into `v1.DefaultRegistry()` so
 validation can see it, and returns a func that undoes exactly that
-registration. `embed.RunOptions.Tasks` is read fresh by every `RunLocal`
-call to build a run-scoped registry, independent of whether `Install` was
-ever called — which is what makes it safe for two goroutines to call
-`RunLocal` with two different `Tasks` sets, against two different workflows,
-at the same time, and never see each other's tasks (issue #195's lesson).
+registration — or refuses outright, returning a non-nil error and a nil
+uninstall, when a task in the set names something a *different*,
+still-installed `Tasks` set already claims. Two embedders (or an embedder
+and a plugin) legitimately can both want to call a task `log`; refusing the
+second Install rather than silently layering it over the first is what
+keeps a later `uninstall` call from ever restoring the wrong thing. `embed.
+RunOptions.Tasks` is read fresh by every `RunLocal` call to build a
+run-scoped registry, independent of whether `Install` was ever called —
+which is what makes it safe for two goroutines to call `RunLocal` with two
+different `Tasks` sets, against two different workflows, at the same time,
+and never see each other's tasks (issue #195's lesson).
 
 One consequence is a real, deliberate divergence: a workflow value built
 directly in Go — skipping `Compile` and `flowfile.Validate` entirely — runs

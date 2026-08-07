@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -105,7 +106,11 @@ func TestRunLocal_ConcurrentInstallAndRunDoNotInterfere(t *testing.T) {
 				return
 			}
 
-			uninstall := tasks.Install()
+			uninstall, err := tasks.Install()
+			if err != nil {
+				errs <- fmt.Errorf("goroutine %d: Install: %w", g, err)
+				return
+			}
 			defer uninstall()
 
 			workflow, diags, err := Compile([]byte(fmt.Sprintf(`
@@ -137,5 +142,73 @@ steps:
 	close(errs)
 	for err := range errs {
 		t.Error(err)
+	}
+}
+
+// TestTasksInstall_ConcurrentSameNameOnlyOneWins races many goroutines each
+// trying to Install a distinct [Tasks] set that all name the *same* task, so
+// the ownership check in [Tasks.Install] itself — not just the sequential
+// trace in TestTasksInstall_ConflictingNameIsRefusedNotCorrupted — is what
+// is under test here, with -race able to catch any unsynchronized access to
+// [installOwners] the sequential test cannot exercise.
+//
+// Exactly one goroutine must succeed; every other must be refused; and once
+// the winner uninstalls, the name must be fully unregistered again — the
+// registry ends in its original state no matter how the attempts interleave.
+func TestTasksInstall_ConcurrentSameNameOnlyOneWins(t *testing.T) {
+	const goroutines = 16
+	const name = "concurrent_conflict_task_name"
+
+	if _, ok := v1.LookupTask(name); ok {
+		t.Fatalf("test setup: %q is already registered somehow", name)
+	}
+
+	var wg sync.WaitGroup
+	var wins atomic.Int32
+	uninstalls := make(chan func(), goroutines)
+	errs := make(chan error, goroutines)
+
+	start := make(chan struct{})
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+
+			tasks := NewTasks()
+			if err := tasks.Register(Task{Name: name, Fn: echoTask(name)}); err != nil {
+				errs <- fmt.Errorf("goroutine %d: Register: %w", g, err)
+				return
+			}
+
+			<-start
+			uninstall, err := tasks.Install()
+			if err == nil {
+				wins.Add(1)
+				uninstalls <- uninstall
+				return
+			}
+			if uninstall != nil {
+				errs <- fmt.Errorf("goroutine %d: got a non-nil uninstall alongside an error", g)
+			}
+		}(g)
+	}
+	close(start)
+	wg.Wait()
+	close(uninstalls)
+	close(errs)
+
+	for err := range errs {
+		t.Error(err)
+	}
+	if wins.Load() != 1 {
+		t.Fatalf("expected exactly one goroutine to win Install, got %d", wins.Load())
+	}
+
+	for uninstall := range uninstalls {
+		uninstall()
+	}
+
+	if _, ok := v1.LookupTask(name); ok {
+		t.Fatal("expected the task to be fully unregistered after the winner uninstalled")
 	}
 }

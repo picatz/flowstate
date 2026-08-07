@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
@@ -144,6 +145,54 @@ func TestRunLocal_EgressPolicyZeroValueDeniesLoopback(t *testing.T) {
 	}
 	if !strings.Contains(runErr.Error(), "denied by egress policy") || !strings.Contains(runErr.Error(), "loopback") {
 		t.Errorf("RunLocal: error = %q, want a loopback denial from the default policy", runErr.Error())
+	}
+}
+
+// TestRunLocal_EgressPolicyZeroValueIsConstantNotAmbient is the P1-1 fix
+// from PR #232's review: a nil RunOptions.EgressPolicy must be the
+// documented deny-by-default posture regardless of what
+// [v1.DefaultRegistry] currently holds for "http" — never inherited from
+// whatever happens to be registered there, which another component (
+// cmd/flow/egress.go's own process-wide mutation, or a different embedder's
+// [Tasks.Install] overriding "http") can change out from under a caller who
+// configured nothing at all.
+func TestRunLocal_EgressPolicyZeroValueIsConstantNotAmbient(t *testing.T) {
+	workflow, diags, err := Compile([]byte(loopbackWorkflow))
+	if err != nil {
+		t.Fatalf("Compile: %v diags=%v", err, diags)
+	}
+
+	original, ok := v1.LookupTask("http")
+	if !ok {
+		t.Fatal("expected the built-in http task to be registered")
+	}
+	t.Cleanup(func() {
+		if err := v1.DefaultRegistry().Register(original); err != nil {
+			t.Fatalf("restoring the original http task: %v", err)
+		}
+	})
+
+	// Replace the *global* http task with a fully permissive one — exactly
+	// what `cmd/flow/egress.go` does process-wide, and exactly what a
+	// different embedder's Tasks.Install could do by naming "http" in its
+	// own set. Nothing in this test touches RunOptions.
+	permissive, err := netpolicy.New(netpolicy.WithAllowLoopback())
+	if err != nil {
+		t.Fatalf("netpolicy.New: %v", err)
+	}
+	if err := v1.DefaultRegistry().Register(v1.HTTPTaskDef(permissive)); err != nil {
+		t.Fatalf("registering a permissive http task globally: %v", err)
+	}
+
+	// A zero RunOptions must still deny — the documented constant, not
+	// whatever the registry now says.
+	_, runErr := RunLocal(context.Background(), workflow, RunOptions{})
+	if runErr == nil {
+		t.Fatal("RunLocal: expected a loopback request to be denied despite the permissive global override")
+	}
+	if !strings.Contains(runErr.Error(), "denied by egress policy") || !strings.Contains(runErr.Error(), "loopback") {
+		t.Errorf("RunLocal: error = %q, want the documented default's loopback denial, "+
+			"not whatever the global registry's http task currently allows", runErr.Error())
 	}
 }
 

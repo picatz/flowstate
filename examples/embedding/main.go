@@ -49,7 +49,10 @@ func run(durable bool) error {
 	// to flowfile.Validate (and to running the workflow), which is why
 	// tasks.Install happens before either: see [embed.Tasks]'s doc for why
 	// compiling and running consult two different registries on purpose.
-	uninstall := tasks.Install()
+	uninstall, err := tasks.Install()
+	if err != nil {
+		return fmt.Errorf("installing tasks: %w", err)
+	}
 	defer uninstall()
 
 	workflow, diags, err := embed.Compile(workflowSource)

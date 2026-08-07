@@ -139,6 +139,62 @@ func (t *Tasks) defs() []v1.TaskDef {
 	return defs
 }
 
+// installedExactly reports whether every task in t is currently registered
+// in [v1.DefaultRegistry] as *this Tasks set's own* Install, not merely a
+// task of the same name existing there at all.
+//
+// The distinction is [RunDurable]'s whole precondition: a task NAME
+// existing in [v1.DefaultRegistry] is true for every built-in the moment
+// the process starts, whether or not this set was ever installed — so
+// checking existence alone would let a custom override of a built-in (a
+// program's own "log", say) pass the check without [Tasks.Install] having
+// run at all, and a durable worker would then execute the *built-in*
+// log while [RunLocal] executes the program's own — two drivers silently
+// disagreeing about what one step does. [installOwners] is authoritative for
+// which Tasks set, if any, currently owns a name's registration — set only
+// by [Tasks.Install] and cleared only by its uninstall — so comparing
+// against it answers "is the definition mine" rather than "does a
+// definition exist".
+func (t *Tasks) installedExactly() (missing string, ok bool) {
+	defs := t.defs()
+
+	unlock := v1.LockDefaultRegistry()
+	defer unlock()
+
+	for _, def := range defs {
+		if installOwners[def.Name] != t {
+			return def.Name, false
+		}
+	}
+	return "", true
+}
+
+// installOwners tracks, for every task name currently claimed by some
+// [Tasks] set's still-live Install call, which set claimed it.
+//
+// Guarded by [v1.LockDefaultRegistry] rather than a mutex of its own — every
+// accessor already holds that lock for the registry mutation this
+// bookkeeping accompanies, so a second lock could only add a second order to
+// get wrong, not add any real independence.
+//
+// This is what makes two different Tasks sets contending for one name a
+// refusal at Install time rather than a race two later, independent
+// uninstalls can corrupt. Without it: A installs "x", B installs "x" (saving
+// A's definition as what B will restore), A uninstalls "x" (removing it
+// entirely, since A never knew B had taken it over), and B uninstalls "x"
+// (restoring A's definition) — "x" is now permanently registered, installed
+// by neither remaining live Tasks set, and nothing will ever remove it.
+// Comparing the registry's *current* value against what an uninstall
+// personally wrote before touching it (a compare-and-swap) does not fix
+// this either: in the same trace, A's uninstall would see B's definition in
+// place of its own and correctly decline to touch it, but B's uninstall
+// still finds its own definition exactly as it left it and still restores
+// A's — the leaked registration is unavoidable once two lifecycles are
+// allowed to overlap on one name at all, whatever runs at teardown. Refusing
+// the second Install outright is the only design where B's take-over never
+// happens, so there is nothing for either uninstall to disagree about.
+var installOwners = make(map[string]*Tasks)
+
 // Install registers every task in this set into [v1.DefaultRegistry], so
 // [flowfile.Validate] and anything else asking what this build knows —
 // `flow`'s own language server, if this program also exposes one — can see
@@ -153,26 +209,50 @@ func (t *Tasks) defs() []v1.TaskDef {
 // required before [RunLocal]: see [RunOptions.Tasks] for why execution reads
 // the Tasks set directly and does not need this call at all.
 //
-// The whole registration — every task in the set — happens as one unit under
-// [v1.LockDefaultRegistry], so a concurrent Install of a different Tasks set,
-// or a concurrent `flow test` run in the same process, can never observe half
-// of this set registered. Returned uninstall restores exactly what Install
-// found: a name that was already registered to something else gets that
+// Install refuses — returning a non-nil error and a nil uninstall, having
+// registered nothing — when any task in this set names something already
+// claimed by a *different*, still-installed Tasks set. This is a real
+// runtime condition, not a defect in this package: two independently
+// authored embedders (or plugins) can legitimately both want to call their
+// task "log", and the right answer is to tell whichever one asks second,
+// clearly, rather than let the two lifecycles silently overlap — see
+// [installOwners]'s doc for the corruption that overlap otherwise produces.
+// The fix is always one of: uninstall the other set first, or give this
+// task a different name. Installing the very same *Tasks set twice without
+// uninstalling in between is also refused, for the same reason — a second,
+// unrelated call from the same set is exactly the collision above, just
+// with t on both sides.
+//
+// The whole check-then-registration — every task in the set — happens as
+// one unit under [v1.LockDefaultRegistry], so a concurrent Install of a
+// different Tasks set, or a concurrent `flow test` run in the same process,
+// can never observe half of this set registered, and never races the
+// ownership check above against another Install's own. On success, returned
+// uninstall restores exactly what this call found: a name that was already
+// registered to something else (a built-in task, most commonly) gets that
 // definition back, and a name this set introduced is removed with
 // [v1.Registry.Unregister] — not merely overwritten, so a step naming it
 // after uninstall is unknown again, exactly as if it had never been
-// installed.
-//
-// Calling Install twice on the same set installs twice; call the first
-// uninstall before installing again, or the second install's uninstall will
-// restore only to the state the first install left behind.
-func (t *Tasks) Install() (uninstall func()) {
+// installed. uninstall also re-acquires [v1.LockDefaultRegistry] for its own
+// restore, rather than the lock from Install being held open across the
+// whole Install-to-uninstall lifetime — holding it that long would block
+// every other Install, and every `flow test` case, for as long as this
+// program keeps its tasks installed, which can be indefinitely.
+func (t *Tasks) Install() (uninstall func(), err error) {
 	defs := t.defs()
 
 	unlock := v1.LockDefaultRegistry()
 	defer unlock()
 
 	registry := v1.DefaultRegistry()
+
+	for _, def := range defs {
+		if _, claimed := installOwners[def.Name]; claimed {
+			return nil, fmt.Errorf(
+				"flowstate/embed: Install: task %q is already installed by a different Tasks set; "+
+					"uninstall it first, or give this task a different name", def.Name)
+		}
+	}
 
 	type saved struct {
 		def     v1.TaskDef
@@ -193,6 +273,7 @@ func (t *Tasks) Install() (uninstall func()) {
 		if err := registry.Register(def); err != nil {
 			panic("flowstate/embed: " + err.Error())
 		}
+		installOwners[def.Name] = t
 	}
 
 	return func() {
@@ -200,6 +281,14 @@ func (t *Tasks) Install() (uninstall func()) {
 		defer unlock()
 
 		for name, s := range originals {
+			// Always this call's own claim: a name this call registered
+			// stays owned by t until this same uninstall runs, because a
+			// different Tasks set naming it would have been refused above,
+			// and this same set cannot install it again without uninstalling
+			// first either. There is therefore nothing to compare against —
+			// ownership alone is enough to know this restore is still safe.
+			delete(installOwners, name)
+
 			if s.existed {
 				// Panics for the same reason as above: this is putting back a
 				// definition the registry already accepted once.
@@ -210,5 +299,5 @@ func (t *Tasks) Install() (uninstall func()) {
 			}
 			registry.Unregister(name)
 		}
-	}
+	}, nil
 }
