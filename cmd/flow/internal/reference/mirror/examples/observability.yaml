@@ -1,5 +1,5 @@
 edition: v2026.2
-name: observability-lab
+name: observability
 description: A run shaped to be worth looking at in Grafana and in the Temporal UI.
 
 # The workload the lab's walkthrough runs. Nothing in it is about telemetry —

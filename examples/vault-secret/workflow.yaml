@@ -1,5 +1,5 @@
 edition: v2026.2
-name: authenticated-health-check
+name: vault-secret
 
 steps:
   # A vault: reference names a path within the configured KV v2 mount, and

@@ -1,5 +1,5 @@
 edition: v2026.2
-name: authenticated-health-check
+name: http-secret
 
 steps:
   # `bearer:` is the input built to take a reference whole. The worker resolves it

@@ -1,5 +1,5 @@
 edition: v2026.2
-name: federated-health-check
+name: http-federated
 
 steps:
   - id: health

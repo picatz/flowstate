@@ -1,5 +1,5 @@
 edition: v2026.2
-name: simple
+name: hello-world
 steps:
 - id: hello
   log:
