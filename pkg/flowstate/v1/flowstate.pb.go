@@ -1123,23 +1123,11 @@ type InputDeclaration struct {
 	// `string.max_len`, for the reason `pattern` above is.
 	MinLen *uint64 `protobuf:"varint,9,opt,name=min_len,json=minLen,proto3,oneof" json:"min_len,omitempty"`
 	MaxLen *uint64 `protobuf:"varint,10,opt,name=max_len,json=maxLen,proto3,oneof" json:"max_len,omitempty"`
-	// Min and Max bound a `type: int` or `type: float` value. Either may be given
-	// alone. One field serves both declared types rather than the four
-	// `buf.validate` keeps per width, because this schema's numeric inputs are
-	// already the two kinds [InputDeclaration.Type] names and a DSL author writes
-	// one number regardless of which.
-	Min *float64 `protobuf:"fixed64,11,opt,name=min,proto3,oneof" json:"min,omitempty"`
-	Max *float64 `protobuf:"fixed64,12,opt,name=max,proto3,oneof" json:"max,omitempty"`
 	// MinItems and MaxItems bound a `type: list` value's length. Either may be
 	// given alone. Named after `buf.validate`'s `repeated.min_items` and
 	// `repeated.max_items`.
 	MinItems *uint64 `protobuf:"varint,13,opt,name=min_items,json=minItems,proto3,oneof" json:"min_items,omitempty"`
 	MaxItems *uint64 `protobuf:"varint,14,opt,name=max_items,json=maxItems,proto3,oneof" json:"max_items,omitempty"`
-	// Unique reports that a `type: list` value's elements must all differ from one
-	// another, compared the way two [Value] literals compare for equality. Named
-	// after `buf.validate`'s `repeated.unique`. The compiler refuses it on a
-	// declaration of any other type.
-	Unique bool `protobuf:"varint,15,opt,name=unique,proto3" json:"unique,omitempty"`
 	// Must is a CEL predicate over `this`, the value being checked, for a rule the
 	// declarative keys above cannot state — the escape hatch `buf.validate` itself
 	// keeps behind its own standard-rule vocabulary, and for the identical reason:
@@ -1254,20 +1242,6 @@ func (x *InputDeclaration) GetMaxLen() uint64 {
 	return 0
 }
 
-func (x *InputDeclaration) GetMin() float64 {
-	if x != nil && x.Min != nil {
-		return *x.Min
-	}
-	return 0
-}
-
-func (x *InputDeclaration) GetMax() float64 {
-	if x != nil && x.Max != nil {
-		return *x.Max
-	}
-	return 0
-}
-
 func (x *InputDeclaration) GetMinItems() uint64 {
 	if x != nil && x.MinItems != nil {
 		return *x.MinItems
@@ -1280,13 +1254,6 @@ func (x *InputDeclaration) GetMaxItems() uint64 {
 		return *x.MaxItems
 	}
 	return 0
-}
-
-func (x *InputDeclaration) GetUnique() bool {
-	if x != nil {
-		return x.Unique
-	}
-	return false
 }
 
 func (x *InputDeclaration) GetMust() string {
@@ -9616,7 +9583,7 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"\fsubject_from\x18\x04 \x01(\v2\x13.flowstate.v1.ValueR\vsubjectFrom\x1a9\n" +
 	"\vClaimsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xaf\x06\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xfd\x05\n" +
 	"\x10InputDeclaration\x12?\n" +
 	"\x04name\x18\x01 \x01(\tB+\xe2A\x01\x02\xbaH$\xc8\x01\x01r\x1f\x10\x01\x18\x80\x012\x18^[A-Za-z_][A-Za-z0-9_]*$R\x04name\x12J\n" +
 	"\x04type\x18\x02 \x01(\x0e2#.flowstate.v1.InputDeclaration.TypeB\x11\xe2A\x01\x02\xbaH\n" +
@@ -9628,13 +9595,10 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"\tsensitive\x18\a \x01(\bR\tsensitive\x12\x1c\n" +
 	"\amin_len\x18\t \x01(\x04H\x01R\x06minLen\x88\x01\x01\x12\x1c\n" +
 	"\amax_len\x18\n" +
-	" \x01(\x04H\x02R\x06maxLen\x88\x01\x01\x12\x15\n" +
-	"\x03min\x18\v \x01(\x01H\x03R\x03min\x88\x01\x01\x12\x15\n" +
-	"\x03max\x18\f \x01(\x01H\x04R\x03max\x88\x01\x01\x12 \n" +
-	"\tmin_items\x18\r \x01(\x04H\x05R\bminItems\x88\x01\x01\x12 \n" +
-	"\tmax_items\x18\x0e \x01(\x04H\x06R\bmaxItems\x88\x01\x01\x12\x16\n" +
-	"\x06unique\x18\x0f \x01(\bR\x06unique\x12\x17\n" +
-	"\x04must\x18\x10 \x01(\tH\aR\x04must\x88\x01\x01\"z\n" +
+	" \x01(\x04H\x02R\x06maxLen\x88\x01\x01\x12 \n" +
+	"\tmin_items\x18\r \x01(\x04H\x03R\bminItems\x88\x01\x01\x12 \n" +
+	"\tmax_items\x18\x0e \x01(\x04H\x04R\bmaxItems\x88\x01\x01\x12\x17\n" +
+	"\x04must\x18\x10 \x01(\tH\x05R\x04must\x88\x01\x01\"z\n" +
 	"\x04Type\x12\x14\n" +
 	"\x10TYPE_UNSPECIFIED\x10\x00\x12\x0f\n" +
 	"\vTYPE_STRING\x10\x01\x12\f\n" +
@@ -9648,14 +9612,12 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"\n" +
 	"\b_min_lenB\n" +
 	"\n" +
-	"\b_max_lenB\x06\n" +
-	"\x04_minB\x06\n" +
-	"\x04_maxB\f\n" +
+	"\b_max_lenB\f\n" +
 	"\n" +
 	"_min_itemsB\f\n" +
 	"\n" +
 	"_max_itemsB\a\n" +
-	"\x05_mustJ\x04\b\b\x10\tR\apattern\"\x8c\x02\n" +
+	"\x05_mustJ\x04\b\b\x10\tJ\x04\b\v\x10\fJ\x04\b\f\x10\rJ\x04\b\x0f\x10\x10R\apatternR\x03minR\x03maxR\x06unique\"\x8c\x02\n" +
 	"\x11OutputDeclaration\x12?\n" +
 	"\x04name\x18\x01 \x01(\tB+\xe2A\x01\x02\xbaH$\xc8\x01\x01r\x1f\x10\x01\x18\x80\x012\x18^[A-Za-z_][A-Za-z0-9_]*$R\x04name\x125\n" +
 	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueB\n" +

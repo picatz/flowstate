@@ -31,3 +31,11 @@ steps:
   - id: announce
     log:
       message: ${'tenant ready at ' + steps.provision.url}
+
+outputs:
+  # Read back from the callee a second time, at the run's own boundary rather
+  # than a step's — proving the value survived past `announce` and not only
+  # that `announce` could see it a moment after the call returned.
+  tenant_url:
+    value: ${steps.provision.url}
+    description: where the call's callee said the provisioned tenant landed

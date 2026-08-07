@@ -31,3 +31,13 @@ steps:
             url: https://httpbin.org/status/200
             outputs:
               ready: ${response.status_code == 200}
+
+outputs:
+  # How many times the body ran, not just that it ran — `ran: [poll]` in
+  # workflow.test.yaml proves the step executed, and nothing about "the poll
+  # stopped on the first try, as a do-while poll that is ready immediately
+  # should" without this. See `loop-accumulate`'s own `iterations:` output for
+  # the same reasoning on the carried-state loop.
+  iterations:
+    value: ${steps.poll.results.size()}
+    description: how many times the poll checked the endpoint

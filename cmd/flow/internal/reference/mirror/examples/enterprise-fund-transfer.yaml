@@ -77,14 +77,14 @@ inputs:
     type: int
     required: true
     example: 250000
-    min: 1
+    must: this >= 1
     description: how much moves, in cents
 
   approval_threshold_cents:
     type: int
     required: true
     example: 1000000
-    min: 0
+    must: this >= 0
     description: >-
       transfers at or above this amount require a treasury-approver signal
       before they move; below it, they settle immediately

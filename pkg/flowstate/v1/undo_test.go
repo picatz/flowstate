@@ -2,6 +2,7 @@ package flowstatev1_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -141,4 +142,66 @@ func TestUndoBudgetErrorIsOneValue(t *testing.T) {
 	require.True(t, errors.Is(v1.ErrUndoBudget, v1.ErrUndoBudget))
 	require.Equal(t, 2*time.Minute, v1.UndoBudget,
 		"the budget changed; both drivers read this constant, and DSL.md quotes it")
+}
+
+// TestEveryRefusalOffersARemedyThatValidates is the guard for issue #253, where
+// [v1.CheckUndoPlacement]'s loop refusal told an author to "move the compensated
+// step into a called workflow and undo it there" — a remedy
+// [v1.UndoScope.IntoCall] refuses, since a loop's placement composes *through* a
+// call rather than being laundered into [v1.UndoScopeCall] by it. An author who
+// followed the instruction got the same refusal back, one file later, and had no
+// reason to suspect the diagnostic rather than themselves.
+//
+// CLAUDE.md's rule is that a diagnostic names what to do instead. A remedy the
+// validator itself rejects is worse than no remedy: it is a false diagnostic, the
+// class the same document calls worse than a missing one.
+//
+// So this pins the relationship rather than the wording. A scope may only be told
+// to move into a `call:` if moving into a call actually changes its answer — which
+// is exactly `IntoCall()` returning something other than itself. Open the loop
+// boundary later and this test goes quiet on its own; keep it closed and no
+// refusal can drift back into recommending the escape hatch that is not one.
+func TestEveryRefusalOffersARemedyThatValidates(t *testing.T) {
+	t.Parallel()
+
+	for _, scope := range []v1.UndoScope{
+		v1.UndoScopeTopLevel,
+		v1.UndoScopeCall,
+		v1.UndoScopeConcurrent,
+		v1.UndoScopeLoop,
+	} {
+		node := &v1.Node{
+			Id:   "compensated",
+			Kind: &v1.Node_Task{Task: &v1.Task{Name: "log"}},
+			Undo: &v1.Compensation{Task: &v1.Task{Name: "log"}},
+		}
+
+		err := v1.CheckUndoPlacement(node, scope)
+		if err == nil {
+			// Placements that accept a compensation have no remedy to check.
+			continue
+		}
+
+		if scope.IntoCall() != scope {
+			// A call *does* change this scope's answer, so recommending one is
+			// honest. Nothing here refuses in that shape today; the branch
+			// exists so opening the boundary does not silently skip the check.
+			continue
+		}
+
+		// Every refusal opens by stating the rule — "only supported on a
+		// top-level step or a step inside a `call:`" — and that clause names a
+		// `call:` legitimately, as one of the two placements that accept a
+		// compensation at all. What must not name one is everything after it:
+		// the explanation and the remedy, which is where #253's false
+		// instruction lived. The rule statement ends at the first semicolon.
+		_, remedy, found := strings.Cut(err.Error(), ";")
+		require.True(t, found,
+			"the refusal for scope %v does not state the rule before explaining itself, so "+
+				"this test cannot tell its remedy from its preamble: %s", scope, err)
+
+		require.NotContains(t, remedy, "call",
+			"the refusal for scope %v recommends a `call:`, but IntoCall leaves the placement "+
+				"unchanged — an author following that remedy is refused again, one file later", scope)
+	}
 }
