@@ -358,7 +358,15 @@ func CollectNodeRefs(node *Node, prev *Workflow_StepOutputs, refs map[string]map
 		// A `wait_until` expression can name a step's output — "wait until the
 		// deadline the previous step computed" — and a run that suspended
 		// before the wait needs that output to still be there when it resumes.
+		//
+		// The two computed durations are the same fact about the same node, and
+		// missing one would be worse than missing a diagnostic: compaction drops
+		// an output nothing appears to need, and the run fails on resume naming a
+		// step it can no longer see. Every expression a [Wait] can hold is read
+		// here, so growing the message means growing this.
 		CollectValueRefs(kind.Wait.GetUntil(), prev, refs)
+		CollectValueRefs(kind.Wait.GetDurationExpr(), prev, refs)
+		CollectValueRefs(kind.Wait.GetTimeoutExpr(), prev, refs)
 
 	case *Node_Call:
 		for _, value := range kind.Call.GetArguments() {

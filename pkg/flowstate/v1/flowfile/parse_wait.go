@@ -1,8 +1,6 @@
 package flowfile
 
 import (
-	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -39,70 +37,14 @@ import (
 // signalKeys are the keys of the mapping form of wait_for_signal.
 var signalKeys = []string{"name", "timeout"}
 
-// parseDuration reads a duration the way the DSL writes one: Go's syntax, plus
-// days.
+// parseDuration reads a duration the way the DSL writes one, which is
+// [v1.ParseDuration] — Go's syntax, plus days.
 //
-// Go's time.ParseDuration stops at hours, which was fine while the longest thing
-// anyone wrote was an activity timeout. It is not fine now that the headline
-// capability is waiting a week for someone to approve a deploy: `168h` is the same
-// duration as `7d` and communicates none of it, and an author who writes `7d` and
-// is told it is not a duration will conclude the feature does not do what it says.
-//
-// Days are the last unit worth adding. Weeks are ambiguous enough in scheduling
-// that spelling them `7d` is clearer, and months are not a duration at all.
-func parseDuration(s string) (time.Duration, error) {
-	converted, err := expandDays(s)
-	if err != nil {
-		return 0, err
-	}
-	return time.ParseDuration(converted)
-}
-
-// expandDays rewrites day components as hours, so that Go's parser can read the
-// rest.
-//
-// No unit Go accepts contains the letter d, so a d in a duration is either this
-// unit or a typo — which means rewriting it cannot corrupt an otherwise valid
-// duration, and anything left over still fails to parse and still gets a
-// diagnostic.
-func expandDays(s string) (string, error) {
-	var out strings.Builder
-
-	for i := 0; i < len(s); {
-		if s[i] != 'd' {
-			out.WriteByte(s[i])
-			i++
-			continue
-		}
-
-		// Walk back over the number this d belongs to.
-		written := out.String()
-		start := len(written)
-		for start > 0 && (isDigit(written[start-1]) || written[start-1] == '.') {
-			start--
-		}
-		if start == len(written) {
-			return "", fmt.Errorf("%q has a d with no number before it", s)
-		}
-
-		days, err := strconv.ParseFloat(written[start:], 64)
-		if err != nil {
-			return "", fmt.Errorf("%q is not a number of days", written[start:])
-		}
-
-		out.Reset()
-		out.WriteString(written[:start])
-		// Written as hours rather than as a scaled duration so that a fractional
-		// day keeps its precision through Go's own parser.
-		fmt.Fprintf(&out, "%gh", days*24)
-		i++
-	}
-
-	return out.String(), nil
-}
-
-// isDigit reports whether b is an ASCII digit.
-func isDigit(b byte) bool { return b >= '0' && b <= '9' }
+// It moved to `v1` when `sleep:` learned to take an expression, because a string
+// an expression produces has to mean exactly what the same characters mean written
+// literally, and two parsers would eventually disagree about `7d`. Kept as a name
+// here so the diagnostics in this file read unchanged.
+func parseDuration(s string) (time.Duration, error) { return v1.ParseDuration(s) }
 
 // StepKinds returns the keys that spell the kinds of work a step can be, in the
 // order a diagnostic lists them.
@@ -136,14 +78,81 @@ func StepKindList() string {
 // unchanged.
 func stepKindList() string { return StepKindList() }
 
-// sleep compiles `sleep: 30s` into a durable timer.
+// sleep compiles `sleep: 30s` — or `sleep: ${...}` — into a durable timer.
 func (c *compiler) sleep(n ast.Node, path string, r ref) *v1.Wait {
-	duration, ok := c.duration(n, path, ref{step: r.step, path: path, label: "sleep"})
+	sleepRef := ref{step: r.step, path: path, label: "sleep"}
+
+	if computed, isExpr := c.computedDuration(n, path, sleepRef); isExpr {
+		if computed == nil {
+			return nil
+		}
+		return &v1.Wait{Kind: &v1.Wait_DurationExpr{DurationExpr: computed}}
+	}
+
+	duration, ok := c.duration(n, path, sleepRef)
 	if !ok {
 		return nil
 	}
 
 	return &v1.Wait{Kind: &v1.Wait_Duration{Duration: duration}}
+}
+
+// computedDuration compiles a duration position written as an expression, and
+// reports whether it was one.
+//
+// The fence decides, and it has to, because this is a field that can hold either.
+// `sleep: 30s` is a duration and `sleep: ${inputs.grace}` is an expression, and
+// nothing between them is ambiguous — which is constitution rule 3 (`docs/DSL.md`)
+// applied to a position that grew a second reading. An unfenced string stays a
+// literal duration, so every file written before this existed compiles to exactly
+// the bytes it did.
+//
+// This is deliberately *not* [compiler.exprValue]. That one treats a bare string as
+// expression source, which is right for `wait_until:` — a field the schema has
+// always typed as an expression — and would be catastrophic here: `sleep: 30s`
+// would become the CEL expression `30s`, which does not parse, and `sleep: 5m`
+// would become a reference to a name nobody bound. The two positions differ in what
+// their unfenced form means, so they differ in which helper reads them.
+//
+// isExpr false means "not written as one"; the caller falls through to the literal
+// reading. isExpr true with a nil value means it was written as one and a
+// diagnostic has already been reported.
+func (c *compiler) computedDuration(n ast.Node, path string, r ref) (value *v1.Value, isExpr bool) {
+	resolved := c.resolve(n, path, r)
+	if resolved == nil {
+		return nil, false
+	}
+
+	var text string
+	switch node := resolved.(type) {
+	case *ast.StringNode:
+		text = node.Value
+	case *ast.LiteralNode:
+		text = blockText(node)
+	default:
+		// A number, a mapping, a list. None of them is an expression, and the
+		// literal reading has the better diagnostic for each — it names what was
+		// written and what a duration looks like.
+		return nil, false
+	}
+
+	if _, fenced := SplitFence(text); !fenced {
+		return nil, false
+	}
+
+	// secretNotEvaluable, matching every other field the workflow evaluates
+	// itself: a `${secret(...)}` here would have to be resolved in workflow code
+	// to know how long to wait, and a secret reaching workflow code is the
+	// invariant this engine will not trade. The refusal comes from
+	// [compiler.expression] with the message that placement carries.
+	return c.expression(resolved, mustFence(text), path, r, secretNotEvaluable), true
+}
+
+// mustFence returns the source inside a fence that [computedDuration] has already
+// confirmed is one.
+func mustFence(text string) string {
+	inner, _ := SplitFence(text)
+	return inner
 }
 
 // waitUntil compiles `wait_until: <expression>` into a timer to a moment.
@@ -197,8 +206,19 @@ func (c *compiler) waitForSignal(n ast.Node, path string, r ref) *v1.Wait {
 	}
 
 	if f, found := fields.get("timeout"); found {
-		timeout, ok := c.duration(f.value, fieldPath(path, "timeout"),
-			ref{step: r.step, path: fieldPath(path, "timeout"), label: "wait_for_signal timeout"})
+		timeoutPath := fieldPath(path, "timeout")
+		timeoutRef := ref{step: r.step, path: timeoutPath, label: "wait_for_signal timeout"}
+
+		if computed, isExpr := c.computedDuration(f.value, timeoutPath, timeoutRef); isExpr {
+			if computed == nil {
+				return nil
+			}
+			wait.TimeoutExpr = computed
+
+			return wait
+		}
+
+		timeout, ok := c.duration(f.value, timeoutPath, timeoutRef)
 		if !ok {
 			return nil
 		}

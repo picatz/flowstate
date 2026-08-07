@@ -21,7 +21,7 @@ import (
 //
 // Inside ${...} there are two namespaces rather than one ordered list. A step is
 // reached through the root — `steps.<id>.<output>` — and a name bound where the
-// cursor stands is written bare: a loop's iterator, `now` inside a `wait_until:`.
+// cursor stands is written bare: a loop's iterator, `now` inside a wait.
 // Which one a position is in is decided by what has been typed, so a menu never
 // mixes them: offering a step id bare, or a loop's item under the root, is
 // offering a reference the engine cannot resolve.

@@ -209,7 +209,7 @@ func validateInputDefault(declaration *v1.InputDeclaration, field string) Diagno
 //
 // The scope is the one a finished run has: every step's outputs, the workflow's
 // vars, and the run's inputs. Nothing bare is in it — a loop's binding exists only
-// inside its body, and `now` only inside a `wait_until:` — so a reference to one is
+// inside its body, and `now` only inside a wait's own expressions — so a reference to one is
 // reported like any other unknown name.
 func validateDeclaredOutputs(wf *v1.Workflow, scope refScope, index int) Diagnostics {
 	var ds Diagnostics

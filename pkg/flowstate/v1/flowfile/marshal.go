@@ -483,6 +483,37 @@ func exprValueToYAML(value *v1.Value) (any, error) {
 	return inputValueToYAML(value)
 }
 
+// fencedExprToYAML writes an expression back into a field where the fence is what
+// makes it one.
+//
+// [exprValueToYAML] is the other rule, for a field the schema types as an
+// expression outright: there an unfenced string *is* source, so writing the fence
+// would be noise. In a duration position an unfenced string is a literal `30s`, so
+// the fence is meaning rather than punctuation and has to come back.
+//
+// A literal reaching here is a specification built by hand — the compiler puts a
+// duration written as data in the message's literal field instead — and it is
+// refused rather than written, because writing it would produce a Flowfile that
+// says something else.
+func fencedExprToYAML(value *v1.Value) (any, error) {
+	parsed := value.GetExpr()
+	if parsed == nil {
+		if reference := value.GetSecretRef(); reference != nil {
+			return nil, fmt.Errorf("is a secret reference, which cannot be written here: %s", notEvaluableHelp)
+		}
+
+		return nil, fmt.Errorf(
+			"is not an expression; a duration written as data belongs in the literal field, not the computed one")
+	}
+
+	text, err := exprToText(parsed)
+	if err != nil {
+		return nil, err
+	}
+
+	return fenceOpen + text + fenceClose, nil
+}
+
 // exprToText renders an expression back into source.
 func exprToText(parsed *expr.ParsedExpr) (string, error) {
 	text, err := cel.AstToString(cel.ParsedExprToAst(parsed))
@@ -589,6 +620,18 @@ func waitToYAML(wait *v1.Wait) (string, any, error) {
 	case *v1.Wait_Duration:
 		return "sleep", durationToYAML(kind.Duration), nil
 
+	case *v1.Wait_DurationExpr:
+		// Written back fenced, always. A computed sleep is the one duration
+		// position where the fence is not decoration: unfenced, `inputs.grace` is
+		// the literal five-character string, which is not a duration and which
+		// `flow validate` would then refuse — so dropping the fence on a round trip
+		// would be `flow fmt` corrupting a file, the thing that must not happen.
+		value, err := fencedExprToYAML(kind.DurationExpr)
+		if err != nil {
+			return "", nil, fmt.Errorf("sleep: %w", err)
+		}
+		return "sleep", value, nil
+
 	case *v1.Wait_Until:
 		value, err := exprValueToYAML(kind.Until)
 		if err != nil {
@@ -599,13 +642,26 @@ func waitToYAML(wait *v1.Wait) (string, any, error) {
 	case *v1.Wait_Signal:
 		// The scalar form when there is nothing else to say, which is what an
 		// author most often wrote and what reads best coming back.
-		if wait.GetTimeout() == nil {
+		switch {
+		case wait.GetTimeoutExpr() != nil:
+			value, err := fencedExprToYAML(wait.GetTimeoutExpr())
+			if err != nil {
+				return "", nil, fmt.Errorf("wait_for_signal timeout: %w", err)
+			}
+			return "wait_for_signal", yaml.MapSlice{
+				{Key: "name", Value: kind.Signal.GetName()},
+				{Key: "timeout", Value: value},
+			}, nil
+
+		case wait.GetTimeout() != nil:
+			return "wait_for_signal", yaml.MapSlice{
+				{Key: "name", Value: kind.Signal.GetName()},
+				{Key: "timeout", Value: durationToYAML(wait.GetTimeout())},
+			}, nil
+
+		default:
 			return "wait_for_signal", kind.Signal.GetName(), nil
 		}
-		return "wait_for_signal", yaml.MapSlice{
-			{Key: "name", Value: kind.Signal.GetName()},
-			{Key: "timeout", Value: durationToYAML(wait.GetTimeout())},
-		}, nil
 
 	default:
 		return "", nil, fmt.Errorf("wait has no sleep, wait_until, or wait_for_signal")

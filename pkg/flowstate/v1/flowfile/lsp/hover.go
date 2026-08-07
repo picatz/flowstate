@@ -477,7 +477,7 @@ func hoverBareName(from *parsedStep, name string, clock bool, rng lsp.Range) *ls
 		return markdownHover(fmt.Sprintf(
 			"**`%s`** — every step's outputs, keyed by step id.\n\n"+
 				"One step's output is `${%s.<id>.<output>}`. The root is what keeps a step id "+
-				"and a name bound here — a loop's item, `%s` inside a `wait_until:` — in "+
+				"and a name bound here — a loop's item, `%s` inside a wait — in "+
 				"separate namespaces, so neither can hide the other.",
 			v1.StepsRoot, v1.StepsRoot, v1.NowIdentifier), rng)
 	}
@@ -666,7 +666,7 @@ func secretDoc(ref string) string {
 //
 // Two namespaces, held in two fields rather than in one name plus a flag. A step's
 // outputs hang off the root — `steps.web.body` — and everything bound where the
-// cursor stands is written bare: a loop's iterator, `now` inside a `wait_until:`.
+// cursor stands is written bare: a loop's iterator, `now` inside a wait.
 // The response an http task resolves against its own scope is not among them; it
 // has a root of its own, `response.*`, so `response.status_code` reads here the way
 // `steps.web.body` does. Before rooting the two were the same shape, `a.b`, and only

@@ -1,0 +1,110 @@
+edition: v2026.2
+name: computed-durations
+description: >-
+  Sizes a grace period and an approval deadline from its inputs, so one
+  definition serves a trial signup and an enterprise contract unedited.
+
+# `wait-until-a-moment` computes *when* a wait ends. This one computes *how
+# long* it lasts, which used to be the one thing a wait could not say: `sleep:`
+# and `wait_for_signal:`'s `timeout:` took a literal and nothing else, so a
+# per-plan grace period meant a copy of the file per plan.
+#
+# Three positions, one rule. Every duration a wait carries takes either a
+# literal or a `${...}`, the fence decides which, and `now` is bound inside all
+# of them — because a wait is evaluated in workflow code holding the driver's
+# own clock whichever arm it takes. See docs/DSL.md's "Waiting".
+#
+#   flow test examples/computed-durations/
+#   flow run local examples/computed-durations/workflow.yaml \
+#     --input plan=starter --input quiet_period=5s \
+#     --input sign_off_by=2099-01-01T00:00:00Z \
+#     --signal onboarding-signed-off='{"approved": true}'
+
+inputs:
+  plan:
+    type: string
+    required: true
+    example: growth
+    must: 'this in ["starter", "growth", "enterprise"]'
+    description: which contract this tenant is on, which is what sizes the grace period
+
+  # A string rather than a duration, because there is no duration among the six
+  # types an input may declare: those are the shapes a *caller* can send, and
+  # JSON has no duration. So a duration arrives as text and the expression reads
+  # it - which is why `30s` and `7d` mean here exactly what they mean written
+  # literally in a `sleep:`. One parser, not two.
+  quiet_period:
+    type: string
+    required: true
+    example: 30m
+    description: >-
+      how long to let provisioning settle before anything else happens, written
+      the way a duration is written anywhere else in the DSL - 30s, 5m, 1h, 7d
+
+  sign_off_by:
+    type: string
+    required: true
+    example: "2099-01-01T00:00:00Z"
+    description: >-
+      the absolute moment sign-off has to arrive by, as RFC 3339 - a contract
+      deadline, which is a thing a caller knows and a duration is not
+
+steps:
+  - id: announce
+    log:
+      message: ${"onboarding a %s tenant".format([inputs.plan])}
+
+  # A duration read out of a string input. `duration()` is CEL's own
+  # constructor and the spelling to reach for when the text came from outside;
+  # a bare `${inputs.quiet_period}` works too, because a string this position
+  # produces is parsed the same way a literal one is.
+  - id: settle
+    sleep: ${duration(inputs.quiet_period)}
+
+  # A duration chosen by a branch. This is the shape the feature exists for: the
+  # number is a property of the contract, so it belongs in an expression over
+  # the input that names the contract, not in a copy of this file.
+  #
+  # `days()` rather than `duration('720h')` because a reader can scan it. Both
+  # compile to the same thing - see docs/reference for the unit constructors.
+  #
+  # Quoted because of YAML rather than because of the expression: a plain scalar
+  # cannot contain a colon followed by a space, and a conditional has one.
+  - id: grace
+    sleep: '${inputs.plan == "enterprise" ? days(30) : days(7)}'
+
+  # A timeout computed from `now`, which is the clock the wait is evaluated
+  # against - `workflow.Now` under Temporal, so it replays to the same instant.
+  #
+  # Guarded, and the guard is the point rather than defensive habit. A negative
+  # timeout is refused at run time on purpose: `timeout <= 0` is how this engine
+  # spells "no timeout", so silently accepting one would turn a bounded gate
+  # into one that blocks until the run itself dies. `duration('0s')` says the
+  # deadline has already passed, and the wait reports `timed_out: true` at once.
+  - id: sign_off
+    wait_for_signal:
+      name: onboarding-signed-off
+      timeout: >-
+        ${timestamp(inputs.sign_off_by) > now
+            ? timestamp(inputs.sign_off_by) - now
+            : duration("0s")}
+
+  - id: activate
+    if: ${has(steps.sign_off.payload.approved) && steps.sign_off.payload.approved}
+    log:
+      message: ${"%s tenant signed off, activating".format([inputs.plan])}
+
+  - id: lapsed
+    if: ${!(has(steps.sign_off.payload.approved) && steps.sign_off.payload.approved)}
+    log:
+      level: warn
+      message: sign-off did not arrive before the contract deadline
+
+outputs:
+  outcome:
+    value: '${steps.sign_off.timed_out ? "lapsed" : "answered"}'
+    description: whether sign-off arrived or the contract deadline passed first
+
+  plan:
+    value: ${inputs.plan}
+    description: which contract sized this run's grace period

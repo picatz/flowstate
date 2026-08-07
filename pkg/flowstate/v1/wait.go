@@ -192,7 +192,23 @@ func signalSenderValue(sender *SignalSender) *Value {
 // NowIdentifier is the name a wait expression uses for the moment it is being
 // evaluated, so `wait_until: ${now + days(1)}` means what it reads as.
 //
-// # Why this is bound here and nowhere else
+// # Where it is bound
+//
+// In a wait, and nowhere else in the language. Every expression a [Wait] carries
+// sees it: `until`, `duration_expr`, and `timeout_expr`. That is one rule about a
+// node kind rather than three about fields, and it is the rule the reasoning below
+// actually supports — a wait is evaluated in workflow code holding the driver's own
+// clock whichever arm it takes, so `${deadline - now}` is as replay-safe as
+// `${now + days(3)}` is.
+//
+// It was narrower than that for one release, bound only inside `until`, and the
+// narrowness was an artifact rather than a decision: `until` was the only arm that
+// took an expression at all. When `sleep:` and `timeout:` learned to as well, the
+// binding followed the clock rather than the field, because the alternative is a
+// name that resolves in one expression of a message and not in its sibling — which
+// an author has no way to predict and no reason to expect.
+//
+// # Why not everywhere
 //
 // The value comes from the caller, which is workflow code holding the driver's
 // own clock: `workflow.Now` under Temporal, the wall clock locally. Both are
@@ -296,6 +312,126 @@ func EvalWaitDeadline(ctx context.Context, until *Value, scope *Scope, now time.
 	}
 }
 
+// EvalWaitDuration resolves how long a `sleep:` waits, whether it was written as
+// a literal or computed.
+//
+// The single reader of the two fields that can carry it, which is what keeps them
+// from becoming the "one value written down twice" disagreement CLAUDE.md is
+// about: neither driver knows which one answered, so neither can answer
+// differently. Both call this, at the same point, with the same clock.
+//
+// Deterministic under replay for the same reason [EvalWaitDeadline] is. CEL here
+// is a pure function of the run's already-resolved scope plus now, and now is the
+// driver's own clock — under Temporal `workflow.Now`, which replays to the instant
+// it first returned. Nothing is read from the world, so a replay computes what the
+// original execution computed.
+//
+// It returns an error for a wait that is not a sleep at all, because a caller
+// asking a signal how long it sleeps has confused two things.
+func EvalWaitDuration(ctx context.Context, wait *Wait, scope *Scope, now time.Time) (time.Duration, error) {
+	switch kind := wait.GetKind().(type) {
+	case *Wait_Duration:
+		return kind.Duration.AsDuration(), nil
+
+	case *Wait_DurationExpr:
+		d, err := evalDuration(ctx, kind.DurationExpr, scope, now, "sleep")
+		if err != nil {
+			return 0, err
+		}
+		if d < 0 {
+			return 0, fmt.Errorf(
+				"sleep computed %s, and a wait cannot run backwards; guard the expression, as in ${until > now ? until - now : duration('0s')}", d)
+		}
+
+		return d, nil
+
+	default:
+		return 0, fmt.Errorf("wait is not a sleep")
+	}
+}
+
+// EvalWaitTimeout resolves the bound on a wait, whether it was written as a
+// literal or computed.
+//
+// bounded reports whether there is a timeout at all, and it is a separate result
+// rather than a zero duration because those are two different facts that the wire
+// spells the same way. An absent `timeout:` means "wait as long as the run does";
+// a computed `${deadline - now}` that lands exactly on zero means "the deadline is
+// now". Collapsing them would make the second read as the first, which is the
+// difference between a gate that times out immediately and one that never does.
+//
+// A negative computed timeout is refused rather than clamped, and this is the
+// reason both this and the schema say so twice. `timeout <= 0` is how "unbounded"
+// is encoded everywhere below here — `engine.waitForSignal` and
+// `waitForSignalLocally` both gate their timer on it — so a sign error in an
+// author's expression would not produce a short wait, it would produce an approval
+// gate that blocks until the run itself times out. Failing the run names the
+// mistake while somebody can still fix it; the alternative is a workload that
+// looks like it is waiting patiently.
+func EvalWaitTimeout(ctx context.Context, wait *Wait, scope *Scope, now time.Time) (timeout time.Duration, bounded bool, err error) {
+	if wait.GetTimeoutExpr() != nil {
+		d, err := evalDuration(ctx, wait.GetTimeoutExpr(), scope, now, "wait_for_signal timeout")
+		if err != nil {
+			return 0, false, err
+		}
+		if d < 0 {
+			return 0, false, fmt.Errorf(
+				"wait_for_signal timeout computed %s; a negative timeout is how this engine spells \"no timeout\", so it is refused rather than silently making the wait unbounded — guard the expression, as in ${deadline > now ? deadline - now : duration('0s')}", d)
+		}
+
+		return d, true, nil
+	}
+
+	if literal := wait.GetTimeout(); literal != nil {
+		return literal.AsDuration(), true, nil
+	}
+
+	return 0, false, nil
+}
+
+// evalDuration evaluates one expression and reads a duration out of what it
+// produced.
+//
+// A string is accepted and read with [ParseDuration], which is what makes
+// `sleep: ${inputs.grace}` work against a declared input: [InputDeclaration.Type]
+// has no duration member — it is the six types a caller can *send*, and a duration
+// is not one of them — so a string is how a duration arrives from outside, and it
+// has to mean there exactly what the same characters mean written literally.
+//
+// An integer is refused, and that refusal is the point rather than an omission.
+// Nothing in `${inputs.grace * 2}` says whether the number counts seconds or
+// nanoseconds, and CEL's own answer (nanoseconds, since that is what a duration
+// holds) is the one an author is least likely to mean. The message names both
+// spellings that are unambiguous.
+func evalDuration(ctx context.Context, v *Value, scope *Scope, now time.Time, label string) (time.Duration, error) {
+	value, err := evalWaitExpr(ctx, v, scope, now)
+	if err != nil {
+		return 0, fmt.Errorf("evaluating %s: %w", label, err)
+	}
+
+	switch resolved := value.Value().(type) {
+	case time.Duration:
+		return resolved, nil
+
+	case string:
+		parsed, err := ParseDuration(resolved)
+		if err != nil {
+			return 0, fmt.Errorf(
+				"%s produced %q, which is not a duration; write it as 30s, 5m, 1h, or 7d", label, truncateForError(resolved))
+		}
+
+		return parsed, nil
+
+	case int64:
+		return 0, fmt.Errorf(
+			"%s produced the number %d, and a number does not say what unit it counts; write duration('30s'), or seconds(30), minutes(5), hours(2), days(7)", label, resolved)
+
+	default:
+		return 0, fmt.Errorf(
+			"%s produced %s, but it must produce a duration — duration('720h'), days(30), or a string like 30s, 5m, 1h, 7d", label, value.Type())
+	}
+}
+
 // truncateForError bounds expression output on its way into a message.
 func truncateForError(s string) string {
 	const max = 64
@@ -375,12 +511,34 @@ func ValidateWait(wait *Wait) error {
 		return fmt.Errorf("wait is missing")
 	}
 
+	// Two spellings of one bound is not something a spec gets to say, and it is
+	// checked before the arms because it is wrong on every one of them. A caller
+	// building a message by hand is the only way to produce it — the compiler
+	// writes one field or the other — which is exactly the caller this function
+	// exists for.
+	if wait.GetTimeout() != nil && wait.GetTimeoutExpr() != nil {
+		return fmt.Errorf("wait has both a literal timeout and a computed one; set one")
+	}
+
 	switch kind := wait.GetKind().(type) {
 	case *Wait_Duration:
 		if d := kind.Duration.AsDuration(); d < 0 {
 			return fmt.Errorf("sleep is negative (%s)", d)
 		}
-		if wait.GetTimeout() != nil {
+		if wait.hasTimeout() {
+			return fmt.Errorf("sleep has a timeout, which does nothing: the duration is already how long it waits")
+		}
+		return nil
+
+	case *Wait_DurationExpr:
+		// How long it sleeps is not knowable here — that is what makes it a
+		// computed one — so what is checkable is that there is something to
+		// evaluate. The value's own sign is checked by [EvalWaitDuration], at the
+		// only moment it exists.
+		if kind.DurationExpr == nil {
+			return fmt.Errorf("sleep has no expression")
+		}
+		if wait.hasTimeout() {
 			return fmt.Errorf("sleep has a timeout, which does nothing: the duration is already how long it waits")
 		}
 		return nil
@@ -389,7 +547,7 @@ func ValidateWait(wait *Wait) error {
 		if kind.Until == nil {
 			return fmt.Errorf("wait_until has no expression")
 		}
-		if wait.GetTimeout() != nil {
+		if wait.hasTimeout() {
 			return fmt.Errorf("wait_until has a timeout, which does nothing: the moment is already how long it waits")
 		}
 		return nil
@@ -405,12 +563,27 @@ func ValidateWait(wait *Wait) error {
 	}
 }
 
+// hasTimeout reports whether a bound was written at all, in either spelling.
+//
+// The two checks above that refuse a timeout on a `sleep:` and a `wait_until:`
+// read `GetTimeout()` alone for as long as that was the only field. Left that way
+// they would have gone quiet for the computed spelling — the same misuse, no
+// longer reported, which is how a diagnostic rots.
+func (w *Wait) hasTimeout() bool {
+	return w.GetTimeout() != nil || w.GetTimeoutExpr() != nil
+}
+
 // WaitDescription renders a wait for a log line or a progress display, such as
 // the local driver's report of what a run is blocked on.
 func WaitDescription(wait *Wait) string {
 	switch kind := wait.GetKind().(type) {
 	case *Wait_Duration:
 		return "sleeping for " + kind.Duration.AsDuration().String()
+	case *Wait_DurationExpr:
+		// Not the duration, because this is written into a log line *before* the
+		// wait is evaluated and there is nothing to say yet. "for a computed
+		// duration" is the honest version; a number here would have to be invented.
+		return "sleeping for a computed duration"
 	case *Wait_Until:
 		return "waiting until a time"
 	case *Wait_Signal:
