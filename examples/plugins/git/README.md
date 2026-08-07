@@ -1,9 +1,9 @@
 # Tasks a plugin provides: git.ls_remote, git.log, git.read_file, and git.commit_push
 
-This directory has five files, chosen to walk the auth shapes and the
-read/write split this plugin's four tasks actually have - public read,
-private read, read/audit, resumable read, and write - rather than only the
-one that happens to need no credential:
+This directory's workflow files walk the auth shapes and the read/write
+split this plugin's four tasks actually have - public read, private read,
+read/audit, resumable read, an exhaustive paged walk, and write - rather
+than only the one that happens to need no credential:
 
 - [`workflow.yaml`](workflow.yaml) reads a real, public repository's branch
   refs with `git.ls_remote:` - no `token:`, and safe to run as written, with
@@ -22,9 +22,14 @@ one that happens to need no credential:
   through `next_cursor` -> `cursor`, to show a truncated listing's resume
   shape from issue #216 - a caller who received page one now has something
   to ask for page two with. No `token:`, safe to run as written, with no
-  arguments. See the file's own comment for why it shows exactly one
-  resume, not a loop to exhaustion: the DSL has no loop primitive yet
-  (issue #157).
+  arguments. It shows exactly one resume so the chaining is legible; the
+  loop to exhaustion is its own file, next.
+- [`log-paginate.yaml`](log-paginate.yaml) is that loop: `loop:` carrying
+  the cursor until a page reports `truncated: false`, bounded by
+  `max_iterations:`, with a CI test file walking a stubbed three-page
+  history and asserting every commit is seen exactly once. This is issue
+  #216's acceptance shape, and the reason the file beside it stops at one
+  resume.
 - [`commit-push.yaml`](commit-push.yaml) pushes a real commit with
   `git.commit_push:` - `token:` here is never optional, because no forge
   accepts an anonymous push. It cannot run by accident either: there is no
@@ -151,8 +156,8 @@ See [`examples/README.md`](../../README.md) for the fuller argument.
 `TestAFlowfileCanNameTheGitPluginsTasks`, in
 [`plugins/git/reachable`](../../../plugins/git/reachable), builds this
 plugin as a real, separately compiled binary, opens a
-[`plugin.Host`](../../../pkg/flowstate/v1/plugin) over it, and validates all
-five files here from disk before and after registration - each refused with
+[`plugin.Host`](../../../pkg/flowstate/v1/plugin) over it, and validates every
+workflow file here from disk before and after registration - each refused with
 a diagnostic naming its task(s) beforehand, accepted afterward, inputs
 checked against the descriptors the plugin actually shipped. It does not run
 `git.ls_remote`, `git.log`, `git.read_file`, or `git.commit_push` for real -
