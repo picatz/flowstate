@@ -159,6 +159,165 @@ func validateTaskInputs(stepID string, task *v1.Task) Diagnostics {
 	return append(ds, violatedRules(stepID, task, def, checkable)...)
 }
 
+// checkExpressionInputTypes reports a task input written as a *direct reference* to a
+// name whose static type this file already fixes — `${inputs.<name>}` against the
+// declared input's type, `${vars.<name>}` against a var's literal — where that type is
+// one the field can never hold.
+//
+// This closes the half of the schema type-check a literal got and an expression
+// escaped (#158). [validateTaskInputs] type-checks a literal against the field and
+// returns early for anything else, so `parse_json: false` was caught and the identical
+// mistake routed through `parse_json: ${vars.flag}` — with `flag: "yes"` making the
+// type just as knowable — was not. Real files wire steps together with references, so
+// the spelling checked was the one authors leave behind the moment they start.
+//
+// It stays inside the boundary CLAUDE.md draws — report what is a property of the file,
+// stay silent about what a run decides — by checking *only* a reference whose type is
+// written in this same file, and only in its exact form:
+//
+//   - `${inputs.x}` where `x` is a declared input with a declared type. A run supplies
+//     the value, but the *type* is the declaration's, which is in the file.
+//   - `${vars.x}` where `x` is a var whose value is a literal. The literal, and so its
+//     type, is in the file. A var whose value is itself an expression is skipped — its
+//     type is not knowable here.
+//
+// Everything else is left to the run, which is the whole point rather than a
+// limitation: a computed expression (`${inputs.n + 1}`), a nested selection
+// (`${inputs.obj.field}`), or a step output (`${steps.a.body}`) has a type no part of
+// the file fixes, and a diagnostic drawn from a type this cannot know would be exactly
+// the false one CLAUDE.md forbids. An enum target is skipped for the `inputs` path too:
+// the field's type is knowable but the *value* is not, and an enum is judged by value.
+func checkExpressionInputTypes(stepID string, task *v1.Task, wf *v1.Workflow) Diagnostics {
+	def, known := v1.LookupTask(task.GetName())
+	if !known || def.Inputs == nil {
+		return nil
+	}
+
+	// Inputs the task evaluates itself are the task's business, the same skip the
+	// literal path takes: their shape is decided against a scope this cannot see.
+	_, deferred := v1.ResolvableInputs(task.GetName(), task.GetInputs())
+
+	var ds Diagnostics
+	for _, name := range sortedInputNames(task.GetInputs()) {
+		if _, isDeferred := deferred[name]; isDeferred {
+			continue
+		}
+		if v1.MustBeExpression(def.Name, name) {
+			// An input the task requires as an expression is evaluated by the task,
+			// against names this validator does not model — its value is not a shape
+			// the field holds directly, so comparing one to the field is meaningless.
+			continue
+		}
+		field := findField(def.Inputs, name)
+		if field == nil {
+			// An input the task does not declare, reported by [validateTaskInputs].
+			continue
+		}
+		parsed := task.GetInputs()[name].GetExpr()
+		if parsed == nil {
+			// A literal or a secret reference. The literal is checked above; a secret
+			// is resolved inside the activity and has no type to check here.
+			continue
+		}
+
+		root, refName, ok := directReference(parsed.GetExpr())
+		if !ok {
+			continue
+		}
+		value, synthesized, ok := knowableReferenceType(root, refName, wf)
+		if !ok {
+			continue
+		}
+		if synthesized && field.Kind() == protoreflect.EnumKind {
+			// The declared type is known but the value is not, and an enum is accepted
+			// or refused by its value. Reporting here would guess.
+			continue
+		}
+
+		if mismatch := literalMismatch(field, value); mismatch != "" {
+			ds = append(ds, Diagnostic{
+				Step:    stepID,
+				Field:   name,
+				Message: fmt.Sprintf("%s (from ${%s.%s})", mismatch, root, refName),
+				Code:    v1.DiagnosticCodeTypeMismatch,
+			})
+		}
+	}
+
+	return ds
+}
+
+// directReference returns the root and selected name of an expression that is exactly
+// `<root>.<name>` — one field selected off a bare identifier — and false for anything
+// else.
+//
+// The exactness is the false-diagnostic guard. A computed expression, a nested
+// selection, a call, or a `has(x.y)` test is not a direct reference: its type is not a
+// property of the file, so this declines to know it and the run decides.
+func directReference(e *expr.Expr) (root, name string, ok bool) {
+	sel, isSelect := e.GetExprKind().(*expr.Expr_SelectExpr)
+	if !isSelect || sel.SelectExpr.GetTestOnly() {
+		return "", "", false
+	}
+	ident, isIdent := sel.SelectExpr.GetOperand().GetExprKind().(*expr.Expr_IdentExpr)
+	if !isIdent {
+		return "", "", false
+	}
+
+	return ident.IdentExpr.GetName(), sel.SelectExpr.GetField(), true
+}
+
+// knowableReferenceType returns a value whose type stands in for what a direct
+// reference resolves to, when that type is written in the file. synthesized is true
+// when only the type is known (an `inputs` declaration) rather than the value itself (a
+// `vars` literal), which is the difference an enum's value-level check turns on.
+func knowableReferenceType(root, name string, wf *v1.Workflow) (value *expr.Value, synthesized, ok bool) {
+	switch root {
+	case v1.InputsRoot:
+		for _, declaration := range wf.GetDeclaredInputs() {
+			if declaration.GetName() != name {
+				continue
+			}
+			if v := representativeValue(declaration.GetType()); v != nil {
+				return v, true, true
+			}
+			return nil, false, false
+		}
+	case v1.VarsRoot:
+		if declared, present := wf.GetVars()[name]; present {
+			if literal := declared.GetLiteral(); literal != nil {
+				return literal, false, true
+			}
+		}
+	}
+
+	return nil, false, false
+}
+
+// representativeValue is a zero value of a declared input's type, standing in for the
+// value a run will supply so [literalMismatch] can judge it against the field the same
+// way it judges a literal. Its content is never read — only its kind — so the zero of
+// each is enough. An unspecified or unknown type has no representative and is left to
+// the run.
+func representativeValue(t v1.InputDeclaration_Type) *expr.Value {
+	switch t {
+	case v1.InputDeclaration_TYPE_STRING:
+		return &expr.Value{Kind: &expr.Value_StringValue{}}
+	case v1.InputDeclaration_TYPE_INT:
+		return &expr.Value{Kind: &expr.Value_Int64Value{}}
+	case v1.InputDeclaration_TYPE_FLOAT:
+		return &expr.Value{Kind: &expr.Value_DoubleValue{}}
+	case v1.InputDeclaration_TYPE_BOOL:
+		return &expr.Value{Kind: &expr.Value_BoolValue{}}
+	case v1.InputDeclaration_TYPE_LIST:
+		return &expr.Value{Kind: &expr.Value_ListValue{ListValue: &expr.ListValue{}}}
+	case v1.InputDeclaration_TYPE_STRUCT:
+		return &expr.Value{Kind: &expr.Value_MapValue{MapValue: &expr.MapValue{}}}
+	default:
+		return nil
+	}
+}
+
 // violatedRules reports what the schema's own rules say about the inputs written as
 // literals — a method that is not a method, a URL that is not a URL, a map with more
 // entries than the field allows.

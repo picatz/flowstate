@@ -602,6 +602,67 @@ steps:
 	}
 }
 
+// TestBareNameDoesNotFabricateStepSuggestion covers the self-defeating diagnostic
+// that spliced the failed name back in after `steps.`: `${step.a.result}` — a typo
+// for `steps.a.result` — was told to write `steps.step`, a spelling that resolves to
+// nothing and was never a real suggestion. A bare name that matches no declared step
+// must state the step-output form in the general (`steps.<id>.<output>`) rather than
+// as `steps.<thatname>`, and offer a concrete `steps.<id>` only for a genuine
+// near-miss.
+func TestBareNameDoesNotFabricateStepSuggestion(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a typo'd root does not become a fabricated step suggestion", func(t *testing.T) {
+		t.Parallel()
+		// `step.a.result` is a typo for `steps.a.result`; `step` arrives here as a
+		// bare name. `a` is a real step but not a near edit-distance match to `step`,
+		// so no "did you mean" is offered.
+		src := `
+edition: v2026.2
+name: typo-root
+steps:
+  - id: a
+    http:
+      url: https://example.com
+  - id: b
+    log:
+      message: ${step.a.result}
+`
+		got := diagnose(t, src)
+
+		// The whole point: never suggest the name that does not exist.
+		require.NotContains(t, got, "steps.step",
+			"the diagnostic fabricated a steps.<thatname> suggestion that does not resolve")
+
+		// Byte-exact the message this now produces.
+		const want = "references unknown name \"step\"; a bare name is a loop's iterator, a name this step " +
+			"declares in its own `vars:`, or `now`, and a step output is written `steps.<id>.<output>`"
+		require.Contains(t, got, want)
+	})
+
+	t.Run("a near-miss to a real step is offered concretely", func(t *testing.T) {
+		t.Parallel()
+		// `totl` is one edit from the declared step `total`, so the diagnostic names
+		// it — a suggestion that actually resolves once rooted.
+		src := `
+edition: v2026.2
+name: near-miss
+steps:
+  - id: total
+    http:
+      url: https://example.com
+  - id: b
+    log:
+      message: ${totl.body}
+`
+		got := diagnose(t, src)
+
+		require.Contains(t, got, "did you mean `steps.total`?")
+		// Still never the fabricated form.
+		require.NotContains(t, got, "steps.totl")
+	})
+}
+
 // TestValidateSourceReportsLineNumbers verifies diagnostics carry a source
 // position, so an editor can place them and a human can find them.
 func TestValidateSourceReportsLineNumbers(t *testing.T) {
