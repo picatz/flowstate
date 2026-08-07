@@ -81,7 +81,7 @@ inputs:
     type: string
     required: true
     example: compliance-lead@example.com
-    pattern: "^[^@]+@[^@]+$"
+    must: this.matches(r'^[^@]+@[^@]+$')
     description: >-
       who this run expects to attest the review - checked against the
       attested sender at the gate, not a control on its own

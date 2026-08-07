@@ -650,9 +650,6 @@ func declaredInputsToYAML(declarations []*v1.InputDeclaration) (yaml.MapSlice, e
 		if declaration.GetSensitive() {
 			entry = append(entry, yaml.MapItem{Key: "sensitive", Value: true})
 		}
-		if declaration.Pattern != nil {
-			entry = append(entry, yaml.MapItem{Key: "pattern", Value: declaration.GetPattern()})
-		}
 		if declaration.MinLen != nil {
 			entry = append(entry, yaml.MapItem{Key: "min_len", Value: declaration.GetMinLen()})
 		}

@@ -39,10 +39,14 @@ func TestBindRunInputsEnforcesStandardRules(t *testing.T) {
 		says  string
 	}{
 		{
-			name:  "pattern",
-			decl:  &v1.InputDeclaration{Name: "email", Type: v1.InputDeclaration_TYPE_STRING, Pattern: strPtr(`^[^@]+@[^@]+$`)},
+			// pattern: is retired; must: this.matches(...) is its replacement, and
+			// this is that replacement doing the same job the "pattern" case above
+			// used to — see TestMustMatchesIsPatternsEquivalent for the head-to-head
+			// comparison against a real example's regex.
+			name:  "must: this.matches (pattern's replacement)",
+			decl:  &v1.InputDeclaration{Name: "email", Type: v1.InputDeclaration_TYPE_STRING, Must: strPtr(`this.matches('^[^@]+@[^@]+$')`)},
 			value: v1.NewLiteral("not-an-email"),
-			says:  "must match pattern",
+			says:  "must satisfy",
 		},
 		{
 			name:  "min_len",
@@ -112,7 +116,7 @@ func TestBindRunInputsAcceptsAConformingValue(t *testing.T) {
 
 	decl := &v1.InputDeclaration{
 		Name: "email", Type: v1.InputDeclaration_TYPE_STRING,
-		Pattern: strPtr(`^[^@]+@[^@]+$`), MinLen: u64Ptr(3), MaxLen: u64Ptr(64),
+		Must: strPtr(`this.matches('^[^@]+@[^@]+$')`), MinLen: u64Ptr(3), MaxLen: u64Ptr(64),
 	}
 	wf := constrainedWorkflow(decl)
 
@@ -131,14 +135,14 @@ func TestCheckInputExampleCatchesAConstraintViolation(t *testing.T) {
 	decl := &v1.InputDeclaration{
 		Name:    "region",
 		Type:    v1.InputDeclaration_TYPE_STRING,
-		Pattern: strPtr(`^(us|eu)-`),
+		Must:    strPtr(`this.matches('^(us|eu)-')`),
 		Example: v1.NewLiteral("mars-east-1"),
 	}
 
 	err := v1.CheckInputExample(decl)
-	require.Error(t, err, "an example violating its own pattern was accepted")
+	require.Error(t, err, "an example violating its own must: was accepted")
 	assert.Contains(t, err.Error(), "example:")
-	assert.Contains(t, err.Error(), "must match pattern")
+	assert.Contains(t, err.Error(), "must satisfy")
 }
 
 // TestCheckInputExampleAcceptsAConformingExample is the acceptance direction:
@@ -149,7 +153,7 @@ func TestCheckInputExampleAcceptsAConformingExample(t *testing.T) {
 	decl := &v1.InputDeclaration{
 		Name:    "region",
 		Type:    v1.InputDeclaration_TYPE_STRING,
-		Pattern: strPtr(`^(us|eu)-`),
+		Must:    strPtr(`this.matches('^(us|eu)-')`),
 		Example: v1.NewLiteral("us-east-1"),
 	}
 
@@ -157,12 +161,12 @@ func TestCheckInputExampleAcceptsAConformingExample(t *testing.T) {
 }
 
 // TestConstraintShapeRefusesAMismatchedKey is the load-time half of the
-// fail-closed rule: a pattern declared on an int is refused when the
-// declaration is checked, not left to silently never fire.
+// fail-closed rule: a string constraint (min_len, here) declared on an int is
+// refused when the declaration is checked, not left to silently never fire.
 func TestConstraintShapeRefusesAMismatchedKey(t *testing.T) {
 	t.Parallel()
 
-	decl := &v1.InputDeclaration{Name: "replicas", Type: v1.InputDeclaration_TYPE_INT, Pattern: strPtr("^[0-9]+$")}
+	decl := &v1.InputDeclaration{Name: "replicas", Type: v1.InputDeclaration_TYPE_INT, MinLen: u64Ptr(1)}
 
 	err := v1.CheckInputConstraintShape(decl)
 	require.Error(t, err)
@@ -253,7 +257,7 @@ func TestCheckInputDefaultAcceptsASaneLiteral(t *testing.T) {
 func TestBindRunInputsRefusesABadDeclarationBeforeAnyValue(t *testing.T) {
 	t.Parallel()
 
-	decl := &v1.InputDeclaration{Name: "replicas", Type: v1.InputDeclaration_TYPE_INT, Pattern: strPtr("^[0-9]+$")}
+	decl := &v1.InputDeclaration{Name: "replicas", Type: v1.InputDeclaration_TYPE_INT, MinLen: u64Ptr(1)}
 	wf := constrainedWorkflow(decl)
 
 	_, err := v1.BindRunInputs(wf, map[string]*v1.Value{"replicas": v1.NewLiteral(int64(3))})

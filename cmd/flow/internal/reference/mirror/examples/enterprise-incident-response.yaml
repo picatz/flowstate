@@ -56,7 +56,7 @@ inputs:
     type: string
     required: true
     example: inc-2026-0142
-    pattern: "^inc-[0-9-]+$"
+    must: this.matches(r'^inc-[0-9-]+$')
     description: the incident this runbook is responding to
 
   service:

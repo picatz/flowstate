@@ -8,7 +8,7 @@ inputs:
     type: string
     required: true
     example: acme
-    pattern: "^[a-z][a-z0-9-]*$"
+    must: this.matches(r'^[a-z][a-z0-9-]*$')
     description: which tenant this access grant belongs to
 
 steps:

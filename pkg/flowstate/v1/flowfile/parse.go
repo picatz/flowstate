@@ -59,7 +59,7 @@ var (
 	// as names, not as keys.
 	inputKeys = []string{
 		"type", "required", "default", "description", "example", "sensitive",
-		"pattern", "min_len", "max_len", "min", "max", "min_items", "max_items", "unique", "must",
+		"min_len", "max_len", "min", "max", "min_items", "max_items", "unique", "must",
 	}
 	outputKeys = []string{"value", "description", "must", "sensitive"}
 
@@ -185,6 +185,58 @@ var retiredStepKeys = map[string]string{
 		"if more than one step needs it. The name answered \"which evaluator?\" when the question was " +
 		"\"what does this value do?\". Run `flow fix`: it rewrites a step whose result is read into a " +
 		"`vars:` binding and reports one whose result is not",
+}
+
+// retiredPatternMessage builds the diagnostic for an input declaration's
+// retired `pattern:` key — [declaredInput]'s counterpart to [retiredStepKeys]
+// one level up, held back the same way and for the same reason, but not
+// joined to that table: a `retiredStepKeys` entry replaces a word with
+// another fixed word, and `pattern:`'s replacement is not fixed — it depends
+// on the regular expression the author wrote, so the remedy is built from the
+// value in hand rather than looked up.
+//
+// n is that value, already resolved through aliases. When it reads as a plain
+// scalar this echoes it verbatim inside a `must: this.matches(...)` call, so
+// the message is copy-pasteable rather than a shape to figure out; anything
+// else — an expression, no value at all — falls back to naming the shape
+// generically, since RE2 syntax has not changed and the advice is accurate
+// either way.
+func retiredPatternMessage(n ast.Node) string {
+	const remedy = "`pattern:` is removed: `must:` already says the identical thing, through the " +
+		"one constraint language this schema has, instead of a second one that duplicated a corner of it"
+
+	regex, ok := scalarText(n)
+	if !ok {
+		return fmt.Sprintf("%s — write `must: this.matches('<the same regular expression>')` instead", remedy)
+	}
+	return fmt.Sprintf("%s — write `must: this.matches(%s)` instead", remedy, celMatchesArgument(regex))
+}
+
+// celMatchesArgument renders regex as a CEL string literal suitable for
+// `this.matches(...)`, preferring a raw string literal — `r'...'` — because a
+// regex's own backslash escapes (`\.`, `\d`, `\s`, ...) pass through
+// unchanged in one, where CEL's ordinary escape table (`\n`, `\t`, `\\`, a
+// handful of others) does not cover most of what RE2 uses and would need
+// every backslash doubled by hand to read back as the original pattern.
+//
+// A raw string still ends at its own unescaped quote character, so this picks
+// whichever of `'` or `"` regex does not itself contain — the case a
+// character class like `[^']` puts one in, however uncommon. If it contains
+// both (rarer still), the fallback is an ordinary literal with every
+// backslash and double quote escaped, which always parses: CEL's `\\` escape
+// reproduces a literal backslash exactly, so a regex's own `\.` survives as
+// `\\.` — two input characters producing the two the regex needs — the same
+// way any other character neither `\` nor `"` passes through unchanged.
+func celMatchesArgument(regex string) string {
+	switch {
+	case !strings.Contains(regex, "'"):
+		return "r'" + regex + "'"
+	case !strings.Contains(regex, `"`):
+		return `r"` + regex + `"`
+	default:
+		escaped := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(regex)
+		return `"` + escaped + `"`
+	}
 }
 
 // StepTaskKeys reports which of a step's keys name the task it runs, in the order
@@ -651,7 +703,7 @@ func (c *compiler) declaredInput(e entry, parent string) *v1.InputDeclaration {
 
 	c.pos.record(path, spanOfNode(c.resolveQuiet(e.value)))
 
-	fields, ok := c.fields(e.value, path, r, inputKeys)
+	entries, ok := c.entries(e.value, path, r)
 	if !ok {
 		// The message [compiler.entries] gives — "must be a mapping of keys to
 		// values" — names the shape and not the reason, so the shape is spelled out
@@ -663,6 +715,25 @@ func (c *compiler) declaredInput(e entry, parent string) *v1.InputDeclaration {
 
 		return nil
 	}
+
+	// `pattern:` is retired, the same shape [retiredStepKeys] handles a level up
+	// but held back here instead of joining that table: what an author writes
+	// back is not a fixed replacement word, it depends on the regular
+	// expression they wrote `pattern:` with, so the remedy is built from the
+	// value in hand rather than looked up. Held back from the key check for the
+	// identical reason a retired step key is — "unknown key `pattern`; did you
+	// mean...?" sends an author looking for a typo that is not there, when what
+	// they need is the `must:` spelling and their own regex, copy-pasteable.
+	checkable := make([]entry, 0, len(entries))
+	for _, en := range entries {
+		if en.name != "pattern" {
+			checkable = append(checkable, en)
+			continue
+		}
+		c.report(spanOfNode(en.key), r, "%s", retiredPatternMessage(c.resolveQuiet(en.value)))
+	}
+
+	fields := c.check(checkable, r, inputKeys)
 
 	declaration := &v1.InputDeclaration{Name: e.name}
 
@@ -733,13 +804,6 @@ func (c *compiler) declaredInput(e entry, parent string) *v1.InputDeclaration {
 		}
 	}
 
-	if f, found := fields.get("pattern"); found {
-		patternPath := fieldPath(path, "pattern")
-		if pattern, ok := c.text(f.value, patternPath,
-			ref{path: patternPath, label: "input " + e.name + " pattern"}); ok {
-			declaration.Pattern = proto.String(pattern)
-		}
-	}
 	if f, found := fields.get("min_len"); found {
 		p := fieldPath(path, "min_len")
 		if v, ok := c.unsignedWhole(f.value, p, ref{path: p, label: "input " + e.name + " min_len"}); ok {

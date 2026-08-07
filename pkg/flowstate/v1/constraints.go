@@ -3,7 +3,6 @@ package flowstatev1
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"sort"
 	"sync"
 	"unicode/utf8"
@@ -14,7 +13,7 @@ import (
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )
 
-// What protovalidate calls a standard-rule vocabulary — pattern, min_len, min,
+// What protovalidate calls a standard-rule vocabulary — min_len, min,
 // min_items, unique, and the rest — landing on [InputDeclaration] and
 // [OutputDeclaration] the way the same rules land on a task's own inputs
 // through buf.validate: declarative keys for the common case, and `must:`
@@ -250,8 +249,8 @@ func collectFreeIdentifiers(e *expr.Expr, bound map[string]struct{}, free map[st
 
 // CheckInputConstraintShape reports what is wrong with a declaration's
 // constraints as written, independent of any value: a key that does not apply
-// to the declared type, an unusable pattern, a min above its max, or a
-// `must:` that will not compile.
+// to the declared type, a min above its max, or a `must:` that will not
+// compile.
 //
 // This is the "rules compile when configuration loads" half of the fail-closed
 // rule. [BindRunInputs] runs it before checking any submitted value, so a
@@ -262,16 +261,11 @@ func CheckInputConstraintShape(decl *InputDeclaration) error {
 	name := decl.GetName()
 	t := decl.GetType()
 
-	if decl.Pattern != nil || decl.MinLen != nil || decl.MaxLen != nil {
+	if decl.MinLen != nil || decl.MaxLen != nil {
 		if t != InputDeclaration_TYPE_STRING {
 			return fmt.Errorf(
-				"input %q declares a string constraint (pattern, min_len or max_len) but is declared %s; "+
+				"input %q declares a string constraint (min_len or max_len) but is declared %s; "+
 					"those apply only to a string input", name, DeclaredTypeName(t))
-		}
-	}
-	if decl.Pattern != nil {
-		if _, err := regexp.Compile(decl.GetPattern()); err != nil {
-			return fmt.Errorf("input %q pattern %q is not a valid regular expression: %w", name, decl.GetPattern(), err)
 		}
 	}
 	if decl.MinLen != nil && decl.MaxLen != nil && decl.GetMinLen() > decl.GetMaxLen() {
@@ -468,15 +462,21 @@ func evalMust(ctx context.Context, t InputDeclaration_Type, ast *cel.Ast, lit *e
 	return ok && b, nil
 }
 
-// checkStringConstraints applies pattern, min_len and max_len to a string
-// literal.
+// checkStringConstraints applies min_len and max_len to a string literal.
+//
+// A pattern rule used to live here too. It is gone: `must: this.matches('re')`
+// says the identical thing through `must:`'s one CEL evaluation path — see
+// [InputDeclaration]'s doc on the field number this retired — so a hostile
+// regex is bounded exactly where every other `must:` expression already is,
+// by [CompileMustExpression] and [DefaultEvaluator].Eval, rather than by a
+// second, unbounded `regexp.Compile` call sitting beside it.
 //
 // Silently returns for a value [inputTypeOf] does not read as a string —
 // [CheckInputValue] already refused the mismatch, and this is not the place
 // to report it a second time, per this repository's rule about one mistake
 // getting one diagnostic.
 func checkStringConstraints(name string, decl *InputDeclaration, lit *expr.Value) error {
-	if decl.Pattern == nil && decl.MinLen == nil && decl.MaxLen == nil {
+	if decl.MinLen == nil && decl.MaxLen == nil {
 		return nil
 	}
 	s, ok := lit.GetKind().(*expr.Value_StringValue)
@@ -484,16 +484,6 @@ func checkStringConstraints(name string, decl *InputDeclaration, lit *expr.Value
 		return nil
 	}
 	value := s.StringValue
-
-	if decl.Pattern != nil {
-		re, err := regexp.Compile(decl.GetPattern())
-		if err != nil {
-			return fmt.Errorf("input %q pattern %q is not a valid regular expression: %w", name, decl.GetPattern(), err)
-		}
-		if !re.MatchString(value) {
-			return fmt.Errorf("input %q must match pattern %q; got %q", name, decl.GetPattern(), value)
-		}
-	}
 
 	length := uint64(utf8.RuneCountInString(value))
 	if decl.MinLen != nil && length < decl.GetMinLen() {

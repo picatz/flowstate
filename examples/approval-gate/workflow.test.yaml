@@ -80,7 +80,7 @@ tests:
         returns: {}
     expect:
       failed: true
-      error_contains: 'must match pattern'
+      error_contains: 'must satisfy'
 
   - name: an environment outside the known set is refused before the first step runs
     workflow: ./workflow.yaml

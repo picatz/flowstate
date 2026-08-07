@@ -127,9 +127,10 @@ func checkCallArgumentType(stepID, name string, value *v1.Value, declaration *v1
 		}
 		// A callee's constraints, not only its type, bind a call's own
 		// arguments — the typed-function feel extends to preconditions: a
-		// literal that violates the callee's `pattern:` or `must:` is a
-		// mistake at the call site, caught here rather than only at the
-		// run's own submit-equivalent inside BindRunInputs.
+		// literal that violates the callee's declared `must:` (or one of the
+		// standard-rule keys, `min_len:` and the rest) is a mistake at the
+		// call site, caught here rather than only at the run's own
+		// submit-equivalent inside BindRunInputs.
 		if err := v1.CheckInputConstraints(name, declaration, value); err != nil {
 			return &Diagnostic{Step: stepID, Field: "with." + name, Message: err.Error()}
 		}

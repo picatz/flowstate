@@ -683,16 +683,26 @@ message InputDeclaration {
   // was never containment (see above).
   bool sensitive = 7;
 
-  // Pattern is an RE2 regular expression a `type: string` value must fully
-  // match. The compiler refuses it on a declaration of any other type, the same
-  // way it refuses a `min_items` on one that is not a list — a rule on a type it
-  // cannot apply to is worse than no rule, per this schema's own history with
-  // rules that could never hold.
+  // Field 8 was Pattern: an RE2 regular expression a `type: string` value had to
+  // fully match. Removed rather than kept, because it said nothing `must:`
+  // could not already say, and said it worse. `must: this.matches('<regex>')`
+  // is the identical check — CEL's `matches()` compiles to the same RE2 engine
+  // `regexp.Compile` gave `pattern:`, so nothing about cost or backtracking
+  // changes — through the one expression surface this schema has, rather than a
+  // second vocabulary that happened to duplicate one corner of it. Every
+  // declaration that used it in this repository's own examples now spells it
+  // that way; see docs/DSL.md.
   //
-  // Named and shaped to match `buf.validate`'s `string.pattern` one for one, so
-  // that a constraint written here and one arriving from an imported `.proto`
-  // file's own annotations are the same artifact underneath.
-  optional string pattern = 8;
+  // Reserved rather than reused, on the same terms as the two deletions already
+  // in this file (`Workflow.inputs` above, `Task.description` below): a number
+  // that meant something else in a spec some worker may still be replaying must
+  // never come back with a new meaning. The parser also still recognizes the
+  // key `pattern:` specifically — see `flowfile.declaredInput` — and refuses it
+  // with a diagnostic naming the `must:` spelling to write instead, rather than
+  // reporting it as an unknown key, because "unknown key" describes a typo
+  // nobody made.
+  reserved 8;
+  reserved "pattern";
 
   // MinLen and MaxLen bound a `type: string` value's length, counted in runes.
   // Either may be given alone. Named after `buf.validate`'s `string.min_len` and

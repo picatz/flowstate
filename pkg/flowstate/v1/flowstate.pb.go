@@ -1118,16 +1118,6 @@ type InputDeclaration struct {
 	// describe. That is a display-surface gap, not a containment one — this flag
 	// was never containment (see above).
 	Sensitive bool `protobuf:"varint,7,opt,name=sensitive,proto3" json:"sensitive,omitempty"`
-	// Pattern is an RE2 regular expression a `type: string` value must fully
-	// match. The compiler refuses it on a declaration of any other type, the same
-	// way it refuses a `min_items` on one that is not a list — a rule on a type it
-	// cannot apply to is worse than no rule, per this schema's own history with
-	// rules that could never hold.
-	//
-	// Named and shaped to match `buf.validate`'s `string.pattern` one for one, so
-	// that a constraint written here and one arriving from an imported `.proto`
-	// file's own annotations are the same artifact underneath.
-	Pattern *string `protobuf:"bytes,8,opt,name=pattern,proto3,oneof" json:"pattern,omitempty"`
 	// MinLen and MaxLen bound a `type: string` value's length, counted in runes.
 	// Either may be given alone. Named after `buf.validate`'s `string.min_len` and
 	// `string.max_len`, for the reason `pattern` above is.
@@ -1248,13 +1238,6 @@ func (x *InputDeclaration) GetSensitive() bool {
 		return x.Sensitive
 	}
 	return false
-}
-
-func (x *InputDeclaration) GetPattern() string {
-	if x != nil && x.Pattern != nil {
-		return *x.Pattern
-	}
-	return ""
 }
 
 func (x *InputDeclaration) GetMinLen() uint64 {
@@ -9228,7 +9211,7 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"\fsubject_from\x18\x04 \x01(\v2\x13.flowstate.v1.ValueR\vsubjectFrom\x1a9\n" +
 	"\vClaimsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xcb\x06\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xaf\x06\n" +
 	"\x10InputDeclaration\x12?\n" +
 	"\x04name\x18\x01 \x01(\tB+\xe2A\x01\x02\xbaH$\xc8\x01\x01r\x1f\x10\x01\x18\x80\x012\x18^[A-Za-z_][A-Za-z0-9_]*$R\x04name\x12J\n" +
 	"\x04type\x18\x02 \x01(\x0e2#.flowstate.v1.InputDeclaration.TypeB\x11\xe2A\x01\x02\xbaH\n" +
@@ -9237,17 +9220,16 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"\adefault\x18\x04 \x01(\v2\x13.flowstate.v1.ValueR\adefault\x12/\n" +
 	"\vdescription\x18\x05 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02H\x00R\vdescription\x88\x01\x01\x12-\n" +
 	"\aexample\x18\x06 \x01(\v2\x13.flowstate.v1.ValueR\aexample\x12\x1c\n" +
-	"\tsensitive\x18\a \x01(\bR\tsensitive\x12\x1d\n" +
-	"\apattern\x18\b \x01(\tH\x01R\apattern\x88\x01\x01\x12\x1c\n" +
-	"\amin_len\x18\t \x01(\x04H\x02R\x06minLen\x88\x01\x01\x12\x1c\n" +
+	"\tsensitive\x18\a \x01(\bR\tsensitive\x12\x1c\n" +
+	"\amin_len\x18\t \x01(\x04H\x01R\x06minLen\x88\x01\x01\x12\x1c\n" +
 	"\amax_len\x18\n" +
-	" \x01(\x04H\x03R\x06maxLen\x88\x01\x01\x12\x15\n" +
-	"\x03min\x18\v \x01(\x01H\x04R\x03min\x88\x01\x01\x12\x15\n" +
-	"\x03max\x18\f \x01(\x01H\x05R\x03max\x88\x01\x01\x12 \n" +
-	"\tmin_items\x18\r \x01(\x04H\x06R\bminItems\x88\x01\x01\x12 \n" +
-	"\tmax_items\x18\x0e \x01(\x04H\aR\bmaxItems\x88\x01\x01\x12\x16\n" +
+	" \x01(\x04H\x02R\x06maxLen\x88\x01\x01\x12\x15\n" +
+	"\x03min\x18\v \x01(\x01H\x03R\x03min\x88\x01\x01\x12\x15\n" +
+	"\x03max\x18\f \x01(\x01H\x04R\x03max\x88\x01\x01\x12 \n" +
+	"\tmin_items\x18\r \x01(\x04H\x05R\bminItems\x88\x01\x01\x12 \n" +
+	"\tmax_items\x18\x0e \x01(\x04H\x06R\bmaxItems\x88\x01\x01\x12\x16\n" +
 	"\x06unique\x18\x0f \x01(\bR\x06unique\x12\x17\n" +
-	"\x04must\x18\x10 \x01(\tH\bR\x04must\x88\x01\x01\"z\n" +
+	"\x04must\x18\x10 \x01(\tH\aR\x04must\x88\x01\x01\"z\n" +
 	"\x04Type\x12\x14\n" +
 	"\x10TYPE_UNSPECIFIED\x10\x00\x12\x0f\n" +
 	"\vTYPE_STRING\x10\x01\x12\f\n" +
@@ -9259,8 +9241,6 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"\tTYPE_LIST\x10\x06B\x0e\n" +
 	"\f_descriptionB\n" +
 	"\n" +
-	"\b_patternB\n" +
-	"\n" +
 	"\b_min_lenB\n" +
 	"\n" +
 	"\b_max_lenB\x06\n" +
@@ -9270,7 +9250,7 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"_min_itemsB\f\n" +
 	"\n" +
 	"_max_itemsB\a\n" +
-	"\x05_must\"\x8c\x02\n" +
+	"\x05_mustJ\x04\b\b\x10\tR\apattern\"\x8c\x02\n" +
 	"\x11OutputDeclaration\x12?\n" +
 	"\x04name\x18\x01 \x01(\tB+\xe2A\x01\x02\xbaH$\xc8\x01\x01r\x1f\x10\x01\x18\x80\x012\x18^[A-Za-z_][A-Za-z0-9_]*$R\x04name\x125\n" +
 	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueB\n" +

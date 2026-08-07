@@ -907,7 +907,7 @@ inputs:
     required: true
     example: someone@example.com
     sensitive: true
-    pattern: ^[^@]+@[^@]+$
+    must: this.matches('^[^@]+@[^@]+$')
     min_len: 3
     max_len: 128
   replicas:
