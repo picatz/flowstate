@@ -230,13 +230,15 @@ func (r *listRendering) add(runs []*v1.RunSummary) error {
 
 		default:
 			if !r.header {
-				fmt.Fprintln(r.table, "WORKFLOW_ID\tSTATUS\tSTARTED\tFINISHED")
+				fmt.Fprintln(r.table, "WORKFLOW_ID\tSYM\tSTATUS\tSTARTED\tFINISHED")
 				r.header = true
 			}
 
-			fmt.Fprintf(r.table, "%s\t%s\t%s\t%s\n",
+			tone := statusTone(run.GetStatus())
+			fmt.Fprintf(r.table, "%s\t%s\t%s\t%s\t%s\n",
 				run.GetWorkflowId(),
-				r.surface.Theme.Tone(statusTone(run.GetStatus())).Render(statusLabel(run.GetStatus())),
+				r.surface.Theme.Tone(tone).Render(r.surface.Caps.Symbols().Mark(tone)),
+				r.surface.Theme.Tone(tone).Render(statusLabel(run.GetStatus())),
 				formatRunTime(run.GetStartTime().AsTime(), run.GetStartTime() != nil),
 				formatRunTime(run.GetCloseTime().AsTime(), run.GetCloseTime() != nil),
 			)
