@@ -274,6 +274,48 @@ steps:
 			want: "no activity to attempt again",
 		},
 		{
+			// The other key on the same arm: a retry on a sleep is a no-op for the
+			// same reason a retry on a signal is — a timer has nothing to attempt
+			// again.
+			name: "a retry on a sleep",
+			src: `edition: v2026.2
+name: w
+steps:
+  - id: pause
+    sleep: 1h
+    retry:
+      attempts: 3
+`,
+			want: "no activity to attempt again",
+		},
+		{
+			// The third arm gets the same refusal: wait_until schedules no activity
+			// a step-level timeout could bound.
+			name: "a step timeout on a wait_until",
+			src: `edition: v2026.2
+name: w
+steps:
+  - id: hold
+    wait_until: ${now}
+    timeout: 5m
+`,
+			want: "does nothing on a waiting step",
+		},
+		{
+			// A wait's own bound is `wait_for_signal:`'s own `timeout:`, inside the
+			// wait — so a `timeout:` on the *step* is the confusion the diagnostic
+			// exists to catch, and its advice points at the inside-the-wait spelling.
+			name: "a step timeout on a wait_for_signal",
+			src: `edition: v2026.2
+name: w
+steps:
+  - id: approval
+    wait_for_signal: deploy-approved
+    timeout: 5m
+`,
+			want: "does nothing on a waiting step",
+		},
+		{
 			name: "two kinds of work at once",
 			src: `edition: v2026.2
 name: w
@@ -312,6 +354,33 @@ steps:
 				"the diagnostic does not name a line and column")
 		})
 	}
+}
+
+// TestRetryTimeoutStayOnTaskSteps is the positive half of the wait refusal: the
+// keys `checkWaitPolicy` refuses beside a wait are exactly the keys a task step is
+// meant to carry, so bounding and retrying a task must stay clean. Refusing them on
+// waits by narrowing the grammar rather than by check would have taken them off
+// tasks too; this proves it did not.
+func TestRetryTimeoutStayOnTaskSteps(t *testing.T) {
+	t.Parallel()
+
+	src := `edition: v2026.2
+name: w
+steps:
+  - id: fetch
+    http:
+      method: GET
+      url: https://example.com/
+    retry:
+      attempts: 3
+    timeout: 10s
+`
+	_, _, err := flowfile.Parse([]byte(src))
+	require.NoError(t, err, "retry/timeout on a task step should be accepted")
+
+	ds, err := flowfile.ValidateSource([]byte(src))
+	require.NoError(t, err)
+	require.Empty(t, ds, "a task carrying retry/timeout should validate clean:\n%s", ds.Error())
 }
 
 // TestValidateAcceptsWaits checks the other half of reachable: that `flow validate`
