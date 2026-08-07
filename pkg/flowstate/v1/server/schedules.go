@@ -205,6 +205,16 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 		actionMemo[k] = v
 	}
 
+	// Unconditional, through the exact function [FlowstateServer.Run] uses —
+	// see [workflowNameMemoEntry]. Written to both memos for the reason the
+	// comment above already gives for the tenant and the signal policy: a
+	// `name` filter has to see identically whichever memo it happens to be
+	// reading, and this is the one function that guarantees that.
+	for k, v := range workflowNameMemoEntry(workflow.GetName()) {
+		scheduleMemo[k] = v
+		actionMemo[k] = v
+	}
+
 	_, err = temporal.ScheduleClient().Create(ctx, client.ScheduleOptions{
 		ID:      scheduleIDFor(namespace, name),
 		Spec:    spec,

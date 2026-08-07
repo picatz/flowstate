@@ -50,13 +50,19 @@ func otherTenantsRun(t *testing.T, id string) *workflow.WorkflowExecutionInfo {
 
 // runOwnedByWithName is an execution belonging to owner (empty means the
 // caller's own default tenant, matching how the rest of this file builds
-// "mine"), carrying the FlowstateWorkflowName search attribute exactly as
-// [runSearchAttributes] would have set it.
+// "mine"), carrying its workflow's declared name in the memo exactly as
+// [workflowNameMemoEntry] would have written it — the memo, not a search
+// attribute, is what [workflowNameOf] actually reads; see that function's
+// doc for why a search attribute cannot be the filter's source of truth.
 //
-// The memo and the search attribute are independent facts about the same
-// run, which is the whole point of the negative-tenancy tests below: a
-// filter matches on the search attribute, and ownership is decided by the
-// memo, and the two must never be allowed to substitute for each other.
+// Deliberately builds no [common.SearchAttributes] at all: these tests
+// exercise a `name` filter against runs from a deployment that never
+// registered search attributes, which is the scenario the fixed code path
+// must handle identically to one that did — and did not, before the fix,
+// because the field only used to come from the search attribute.
+//
+// name == "" leaves the memo without a name entry at all, which is a
+// separate, real case: a run started before this memo key existed.
 func runOwnedByWithName(t *testing.T, id, owner, name string) *workflow.WorkflowExecutionInfo {
 	t.Helper()
 
@@ -64,18 +70,22 @@ func runOwnedByWithName(t *testing.T, id, owner, name string) *workflow.Workflow
 		Execution: &common.WorkflowExecution{WorkflowId: id},
 	}
 
+	fields := map[string]*common.Payload{}
+
 	if owner != "" {
 		payload, err := converter.GetDefaultDataConverter().ToPayload(owner)
 		require.NoError(t, err)
-		execution.Memo = &common.Memo{Fields: map[string]*common.Payload{namespaceMemoKey: payload}}
+		fields[namespaceMemoKey] = payload
 	}
 
 	if name != "" {
 		payload, err := converter.GetDefaultDataConverter().ToPayload(name)
 		require.NoError(t, err)
-		execution.SearchAttributes = &common.SearchAttributes{
-			IndexedFields: map[string]*common.Payload{workflowNameSearchAttribute.GetName(): payload},
-		}
+		fields[workflowNameMemoKey] = payload
+	}
+
+	if len(fields) > 0 {
+		execution.Memo = &common.Memo{Fields: fields}
 	}
 
 	return execution
@@ -773,11 +783,18 @@ func TestListPagingReachesEveryMatchingRun(t *testing.T) {
 }
 
 // TestListPagingReachesEveryRunMatchingByName is [TestListPagingReachesEveryMatchingRun]
-// for the search-attribute-backed field rather than a built-in one: `name`
-// comes off [runSearchAttributes]/[workflowNameOf] instead of the execution's
-// own status, and the join with paging is exactly as capable of hiding a run
+// for the memo-backed `name` field rather than a built-in one: `name` comes
+// off [workflowNameMemoEntry]/[workflowNameOf] instead of the execution's own
+// status, and the join with paging is exactly as capable of hiding a run
 // behind a moved cursor either way — see the file header on why this needs a
 // traversal test rather than a page-shaped one.
+//
+// Built with `server := New(temporal)`, no [WithSearchAttributesRegistered]
+// — this is the deployment shape the fix in [workflowNameOf] exists for: one
+// where search-attribute registration never happened (failed at startup, or
+// was never attempted). `name` still has to resolve correctly, because it
+// reads the memo unconditionally rather than a search attribute the server
+// never set.
 func TestListPagingReachesEveryRunMatchingByName(t *testing.T) {
 	t.Parallel()
 
@@ -865,13 +882,18 @@ func TestListPagingReachesEveryRunMatchingByName(t *testing.T) {
 // already holds the server to for an unfiltered listing.
 //
 // Both tenants declare workflows sharing the exact same name, so a filter
-// that matched on the search attribute *before* the memo check would return
+// that matched on `name` *before* the memo ownership check would return
 // somebody else's runs the instant the caller asked a question their own
 // runs also answer. [FlowstateServer.List] applies [RunFilter.Match] strictly
 // after [ownedBy] — see the comment there — and this is what would catch a
 // change that got the order backwards: every run in this namespace matches
 // the filter, so this test passes only because tenancy, not the filter,
-// decides which of them the caller ever sees.
+// decides which of them the caller ever sees. `name` and the tenant now
+// share one memo, which is exactly why this test matters more after the fix
+// than before it: a `workflowNameOf`/`memoTenant` implementation that read
+// the wrong field, or read across the two tenants' memos somehow, would
+// surface here rather than in a test that only ever checks one tenant's own
+// runs.
 func TestAFilterOnNameCannotEscapeTenancy(t *testing.T) {
 	t.Parallel()
 
@@ -944,8 +966,96 @@ func TestAFilterOnNameCannotEscapeTenancy(t *testing.T) {
 	// — and none of the other tenant's, even though every one of them matches
 	// the filter too.
 	for id := range seen {
-		require.True(t, mine[id], "a filter that matches on a search attribute returned another tenant's run %q", id)
+		require.True(t, mine[id], "a filter that matches on a memo-backed field returned another tenant's run %q", id)
 	}
+}
+
+// TestANameFilterWorksWithSearchAttributesDisabled is the direct regression
+// test for the bug this file's other `name` tests would not, by themselves,
+// have caught: every one of them already builds executions with no
+// [common.SearchAttributes] at all, via [runOwnedByWithName], so this test's
+// only job is to say in its name what the others leave implicit.
+//
+// Before the fix, [workflowNameOf] read the FlowstateWorkflowName search
+// attribute, which nothing here ever sets — the same shape a real deployment
+// has whenever [EnsureSearchAttributesRegistered] failed at startup, or
+// [WithSearchAttributesRegistered] was never passed to [New]. `name ==
+// "..."` on that deployment silently matched nothing: not an error, just an
+// always-empty page, which looks exactly like a filter with a typo in it.
+// The fix reads the memo instead, which [workflowNameMemoEntry] always
+// writes, so this must keep passing regardless of whether search attributes
+// are registered anywhere.
+func TestANameFilterWorksWithSearchAttributesDisabled(t *testing.T) {
+	t.Parallel()
+
+	run := runOwnedByWithName(t, "indexed-by-memo-only", "", "nightly-etl")
+	require.Nil(t, run.GetSearchAttributes(), "this test is only meaningful if no search attribute is set")
+
+	temporal := &mocks.Client{}
+	temporal.On("ListWorkflow", mock.Anything, mock.Anything).Return(
+		&workflowservice.ListWorkflowExecutionsResponse{Executions: []*workflow.WorkflowExecutionInfo{run}},
+		nil,
+	)
+
+	// No [WithSearchAttributesRegistered]: the server under test never sets a
+	// search attribute on submission and was never told one is queryable —
+	// the "registration failed, or was never attempted" deployment shape.
+	server := New(temporal)
+
+	response, err := server.List(t.Context(), connect.NewRequest(&v1types.ListRequest{
+		Filter: `name == "nightly-etl"`,
+	}))
+	require.NoError(t, err)
+	require.Len(t, response.Msg.GetRuns(), 1,
+		"a name filter matched nothing on a deployment with search attributes disabled")
+	require.Equal(t, "nightly-etl", response.Msg.GetRuns()[0].GetName())
+}
+
+// TestAPreMemoRunIsHonestlyExcludedFromANameFilter covers the one run a
+// memo-backed `name` genuinely cannot know about: one started before
+// [workflowNameMemoKey] existed, which carries no entry for it at all — not
+// an empty string, an absent key, exactly as an old run predates
+// [signalPolicyMemoKey] too.
+//
+// The filter's answer for that run has to stay honest in both directions:
+// it is excluded by any `name` comparison to an actual name, and included by
+// `name == ""`, because [workflowNameOf] reports the empty string for
+// "nothing recorded" — the same value CLAUDE.md's own diagnostics rule holds
+// this system to elsewhere: absence is reported as what it is, not coerced
+// into a comparison the run never had an opinion on.
+func TestAPreMemoRunIsHonestlyExcludedFromANameFilter(t *testing.T) {
+	t.Parallel()
+
+	// Owned by the caller, but with no name at all — runOwnedByWithName skips
+	// the memo entry entirely when name is "".
+	preMemo := runOwnedByWithName(t, "run-from-before-the-memo-key-existed", "", "")
+	require.Equal(t, "", workflowNameOf(preMemo), "a pre-memo run must report no name, not a coerced one")
+
+	temporal := &mocks.Client{}
+	temporal.On("ListWorkflow", mock.Anything, mock.Anything).Return(
+		&workflowservice.ListWorkflowExecutionsResponse{Executions: []*workflow.WorkflowExecutionInfo{preMemo}},
+		nil,
+	)
+
+	server := New(temporal)
+
+	t.Run("does not match a real name", func(t *testing.T) {
+		response, err := server.List(t.Context(), connect.NewRequest(&v1types.ListRequest{
+			Filter: `name == "nightly-etl"`,
+		}))
+		require.NoError(t, err)
+		require.Empty(t, response.Msg.GetRuns(),
+			"a pre-memo run matched a name filter it has no recorded opinion about")
+	})
+
+	t.Run("matches the empty string, honestly", func(t *testing.T) {
+		response, err := server.List(t.Context(), connect.NewRequest(&v1types.ListRequest{
+			Filter: `name == ""`,
+		}))
+		require.NoError(t, err)
+		require.Len(t, response.Msg.GetRuns(), 1,
+			"a pre-memo run's absent name did not compare equal to the empty string it is reported as")
+	})
 }
 
 // TestAFilterTheServerCannotCompileIsRefused is the backstop for a caller that is

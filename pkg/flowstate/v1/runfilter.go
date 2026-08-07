@@ -81,10 +81,13 @@ const (
 	// filterName is the workflow's own declared name — see [RunSummary.Name].
 	// Not "workflow_type": every run's Temporal WorkflowType is "Run", the one
 	// interpreter workflow, so it could never distinguish one Flowfile from
-	// another. This binds to whatever the run recorded, which is empty for a
-	// run that predates the feature or whose deployment never registered the
-	// search attribute — an empty string a caller can filter for explicitly
-	// (`name == ""`) rather than one silently coerced into "unknown".
+	// another. Recorded in the run's memo unconditionally, on every
+	// deployment, so this filters correctly whether or not search attributes
+	// are registered anywhere — see `server/server.go`'s
+	// `workflowNameMemoEntry`. It binds to whatever the run recorded, which
+	// is empty only for a run that predates the memo key entirely — an empty
+	// string a caller can filter for explicitly (`name == ""`) rather than
+	// one silently coerced into "unknown".
 	filterName = "name"
 )
 

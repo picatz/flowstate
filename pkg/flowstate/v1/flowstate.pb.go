@@ -6578,11 +6578,14 @@ type RunSummary struct {
 	// WorkflowType — every run's WorkflowType is "Run", the one interpreter
 	// workflow, so it cannot distinguish "nightly-etl" from "onboard-tenant".
 	//
-	// Populated from the FlowstateWorkflowName search attribute when the
-	// deployment has one registered and the run recorded it; empty otherwise,
-	// which includes every run started before this field existed and every run
-	// in a deployment where registration never succeeded. Absence is not an
-	// error — see server/list.go and runfilter.go, where a filter comparing
+	// Populated from the run's memo, recorded unconditionally at submit —
+	// never from a search attribute, and deliberately so: a deployment may
+	// additionally project this into Temporal's visibility store for external
+	// tooling, but `flow list --filter` never depends on that having
+	// succeeded, or a filter with nothing wrong with it would silently return
+	// nothing on a deployment where search-attribute registration failed.
+	// Empty only for a run that predates this field entirely. Absence is not
+	// an error — see server/list.go and runfilter.go, where a filter comparing
 	// against `name` simply does not match a run that carries none.
 	Name          string `protobuf:"bytes,6,opt,name=name,proto3" json:"name,omitempty"`
 	unknownFields protoimpl.UnknownFields

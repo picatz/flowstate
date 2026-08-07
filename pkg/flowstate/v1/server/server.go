@@ -175,10 +175,19 @@ type FlowstateServer struct {
 // registered, so attaching one on the strength of a hopeful registration
 // attempt would turn "operator API unreachable" into "no run can start" —
 // exactly the failure fail-closed elsewhere in this system exists to avoid
-// creating by accident. Filtering is unaffected either way, because
-// [v1.RunFilter] never depends on a search attribute existing — it reads
-// [v1.RunSummary] fields the server already has from the memo and from
-// Temporal's own execution info.
+// creating by accident.
+//
+// Filtering on `name` is unaffected either way, and deliberately so: it
+// reads [workflowNameMemoKey], which [workflowNameMemoEntry] writes
+// unconditionally, on every run, regardless of this option. A search
+// attribute is index-only — a projection into Temporal's visibility store
+// for external tooling (`temporal workflow list --query`, the Web UI) — and
+// was the wrong place for `flow list --filter 'name == ...'`'s own data to
+// live in the first place: gating the filter's only source of the value on
+// whether an operator API call happened to succeed at startup would make a
+// perfectly good filter answer "nothing matched" on a deployment where
+// registration failed, which is indistinguishable from a filter with a typo
+// in it — the exact dishonesty CLAUDE.md's List section exists to prevent.
 func WithSearchAttributesRegistered() Option {
 	return func(s *FlowstateServer) { s.searchAttributesRegistered = true }
 }
@@ -242,6 +251,41 @@ func signalPolicyMemoEntry(signals map[string]*v1.SignalPolicy) (map[string]any,
 	return map[string]any{signalPolicyMemoKey: encoded}, nil
 }
 
+// workflowNameMemoKey is the memo field recording a workflow's own declared
+// name — see [v1.RunSummary.Name] for why this cannot be read off Temporal's
+// built-in WorkflowType.
+//
+// A memo rather than only a search attribute, and this is the fix for the
+// bug the search-attribute-only version had: `flow list --filter` composes
+// with the tenant memo check unconditionally (`server/list.go`'s [ownedBy]),
+// on every deployment, registered or not. A field the filter can read only
+// sometimes is worse than a field it cannot read at all, because "sometimes"
+// looks identical to "no runs matched" from the caller's side — a filter
+// with nothing wrong with it, on a deployment where
+// [EnsureSearchAttributesRegistered] happened to fail at startup, would
+// silently return an empty page for every `name` comparison. See
+// [namespaceMemoKey] for the same reasoning applied to tenancy, which this
+// mirrors exactly: no cluster-side registration, so it works against
+// `temporal server start-dev` with nothing configured.
+const workflowNameMemoKey = "flowstate.workflowName"
+
+// workflowNameMemoEntry encodes a workflow's own declared name into the one
+// memo entry both [FlowstateServer.Run] and [FlowstateServer.CreateSchedule]
+// write, for [signalPolicyMemoEntry]'s exact reason: two encoders drift, and
+// here drift would mean a scheduled run's fired execution silently failing
+// to match a `name` filter a direct run with the identical workflow does
+// match.
+//
+// Always non-nil and never empty, unlike [signalPolicyMemoEntry]: a
+// workflow's `name` is protovalidate-required, so there is no zero case to
+// encode as absence. A run that predates this memo key simply has none —
+// [workflowNameOf] treats that as "no name available," the same honest
+// absence a filter already handles for a run with no search attribute set,
+// documented where [v1.RunSummary.Name] is declared.
+func workflowNameMemoEntry(name string) map[string]any {
+	return map[string]any{workflowNameMemoKey: name}
+}
+
 // namespaceSearchAttribute and workflowNameSearchAttribute are the two
 // Temporal search attributes a run may carry, alongside the memo that always
 // carries the tenant.
@@ -263,6 +307,15 @@ var (
 // runSearchAttributes builds the search attributes both [FlowstateServer.Run]
 // and [FlowstateServer.CreateSchedule]'s fired executions carry, when the
 // deployment has registration confirmed — see [WithSearchAttributesRegistered].
+//
+// Purely a projection into Temporal's own visibility store, for tools that
+// query it directly — `temporal workflow list --query`, the Web UI. Nothing
+// in this server reads a search attribute back to decide anything:
+// `flow list --filter` is answered from [v1.RunSummary], populated from the
+// memo — see [workflowNameMemoEntry] and [ownedBy] — which is unconditional
+// on every deployment. A filter that depended on this instead would silently
+// stop working wherever registration failed, which is exactly the bug this
+// split exists to avoid; keep it that way when touching either half.
 //
 // The one function that turns identity and a workflow's declared name into
 // search attributes, for [signalPolicyMemoEntry]'s exact reason: two
@@ -486,6 +539,13 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	for k, v := range signalEntry {
+		memo[k] = v
+	}
+
+	// Unconditional, unlike the search attribute below: see
+	// [workflowNameMemoEntry] for why `flow list --filter 'name == ...'` must
+	// not depend on whether registration succeeded.
+	for k, v := range workflowNameMemoEntry(req.Msg.GetWorkflow().GetName()) {
 		memo[k] = v
 	}
 
