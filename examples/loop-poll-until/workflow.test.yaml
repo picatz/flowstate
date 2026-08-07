@@ -15,6 +15,11 @@ tests:
           ready: true
     expect:
       ran: [poll]
+      outputs:
+        # The whole behavior of a do-while poll that is ready immediately: one
+        # iteration, not "ran, however many times". `ran: [poll]` alone is
+        # membership-only and cannot tell one iteration from five.
+        iterations: 1
 
   - name: an endpoint that is never ready gives up at the bound
     workflow: ./workflow.yaml

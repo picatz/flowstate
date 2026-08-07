@@ -21,4 +21,8 @@ tests:
         returns: {}
     expect:
       ran: [provision, announce]
-      outputs: {}
+      outputs:
+        # The point of this file is reading a callee's outputs back — `outputs:
+        # {}` here would assert nothing about the one value this example exists
+        # to demonstrate reading.
+        tenant_url: https://acme.internal.example.com

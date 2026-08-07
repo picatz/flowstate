@@ -372,3 +372,46 @@ func TestEveryNetworkedExampleRuns(t *testing.T) {
 		assert.Empty(t, unserved(), "the examples stand-in was asked for paths it does not serve")
 	})
 }
+
+// TestExampleWorkflowNamesMatchDirectoryAndAreUnique guards the corpus against the
+// shape #231 found: five examples sharing `name: authenticated-health-check`, two
+// sharing `name: simple`, and ten directories whose own `name:` disagreed with the
+// directory holding them — none of it caught by anything, because nothing checked
+// it.
+//
+// The field is not decorative. #231 records it in the run memo and projects it
+// into Temporal visibility, which makes it the value a production operator
+// searches by — so a corpus where that value collides between five unrelated
+// workflows, or silently disagrees with the path an author would `flow run`, is
+// teaching that the field does not matter. It does, and this is what keeps it
+// fixed: a directory's `workflow.yaml` names itself after the directory, and no
+// two directories may name themselves the same thing (which they cannot, since a
+// directory name is already unique — so the second check is really "no example
+// was left off the first one").
+func TestExampleWorkflowNamesMatchDirectoryAndAreUnique(t *testing.T) {
+	t.Parallel()
+
+	paths, err := filepath.Glob(filepath.Join("..", "..", "..", "examples", "*", "workflow.yaml"))
+	require.NoError(t, err)
+	require.NotEmpty(t, paths, "no examples found; the glob is wrong")
+
+	seen := make(map[string]string, len(paths)) // workflow name -> directory that claimed it first
+	for _, path := range paths {
+		dir := filepath.Base(filepath.Dir(path))
+
+		wf, _, err := flowfile.ParseFile(path)
+		require.NoError(t, err, "%s does not compile", dir)
+
+		name := wf.GetName()
+		assert.Equal(t, dir, name,
+			"examples/%s/workflow.yaml declares name %q, which does not match its own directory — "+
+				"a production operator searching Temporal visibility by directory name would not find this run", dir, name)
+
+		if owner, ok := seen[name]; ok {
+			t.Errorf("examples/%s/workflow.yaml and examples/%s/workflow.yaml both declare name %q; "+
+				"a run started from either is indistinguishable from the other in Temporal visibility", owner, dir, name)
+			continue
+		}
+		seen[name] = dir
+	}
+}

@@ -1,5 +1,5 @@
 edition: v2026.2
-name: headers-and-nested-outputs
+name: headers-and-nested
 vars:
   nested: "${{'outer': {'inner': 'value'}}}"
 steps:

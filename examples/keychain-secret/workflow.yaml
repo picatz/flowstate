@@ -1,5 +1,5 @@
 edition: v2026.2
-name: authenticated-health-check
+name: keychain-secret
 
 steps:
   # A keychain: reference names an account within the configured service. The
