@@ -58,6 +58,54 @@ func TestPatternWithASingleQuoteFallsBackToADoubleQuotedLiteral(t *testing.T) {
 	assert.Contains(t, got, `must: this.matches(r"[^']+")`)
 }
 
+// TestMinIsRefusedWithARemedy proves the retired `min:` key is reported by
+// name — not as an unknown key — and that the remedy echoes the author's own
+// number back inside a copy-pasteable `must: this >= N`.
+func TestMinIsRefusedWithARemedy(t *testing.T) {
+	t.Parallel()
+
+	got := diagnose(t, constrainedInputWorkflow("    type: int\n    min: 1\n"))
+	assert.Contains(t, got, "x")
+	assert.Contains(t, got, "`min:` is removed")
+	assert.Contains(t, got, "must: this >= 1")
+}
+
+// TestMaxIsRefusedWithARemedy is TestMinIsRefusedWithARemedy's mirror for
+// `max:`, whose remedy uses `<=` rather than `>=`.
+func TestMaxIsRefusedWithARemedy(t *testing.T) {
+	t.Parallel()
+
+	got := diagnose(t, constrainedInputWorkflow("    type: int\n    max: 50\n"))
+	assert.Contains(t, got, "x")
+	assert.Contains(t, got, "`max:` is removed")
+	assert.Contains(t, got, "must: this <= 50")
+}
+
+// TestMinRemedyEchoesTheAuthorsOwnNumberVerbatim proves the diagnostic does
+// not round the author's number through float64 on its way into the
+// remedy — the exact conversion that made `min:` lossy on `type: int` in the
+// first place (see TestIntPrecisionMinMaxBug). A remedy that reproduced the
+// bug it exists to fix would be worse than none.
+func TestMinRemedyEchoesTheAuthorsOwnNumberVerbatim(t *testing.T) {
+	t.Parallel()
+
+	got := diagnose(t, constrainedInputWorkflow("    type: int\n    min: 9007199254740993\n"))
+	assert.Contains(t, got, "must: this >= 9007199254740993")
+}
+
+// TestUniqueIsRefusedWithARemedy proves the retired `unique:` key is
+// reported by name, with the fixed `must: this == this.distinct()` remedy —
+// unlike `min:`/`max:`/`pattern:`, `unique:`'s remedy needs nothing from the
+// value the author wrote, since `unique: true` has exactly one meaning.
+func TestUniqueIsRefusedWithARemedy(t *testing.T) {
+	t.Parallel()
+
+	got := diagnose(t, constrainedInputWorkflow("    type: list\n    unique: true\n"))
+	assert.Contains(t, got, "x")
+	assert.Contains(t, got, "`unique:` is removed")
+	assert.Contains(t, got, "must: this == this.distinct()")
+}
+
 // TestAnInvalidRegexInMustIsReportedAgainstAnExample is the closest this
 // grammar comes, post-pattern:, to pattern:'s own unconditional "this regex
 // will never compile" diagnostic.
@@ -143,7 +191,7 @@ func TestAConformingDefaultAgainstConstraintsIsSilent(t *testing.T) {
 	t.Parallel()
 
 	got := diagnose(t, constrainedInputWorkflow(
-		"    type: int\n    default: 3\n    min: 1\n    max: 50\n"))
+		"    type: int\n    default: 3\n    must: \"this >= 1 && this <= 50\"\n"))
 	assert.Empty(t, got)
 }
 
@@ -155,9 +203,9 @@ func TestAStaleLiteralDefaultAgainstAConstraintIsReported(t *testing.T) {
 	t.Parallel()
 
 	got := diagnose(t, constrainedInputWorkflow(
-		"    type: int\n    default: 0\n    min: 1\n"))
+		"    type: int\n    default: 0\n    must: \"this >= 1\"\n"))
 	assert.Contains(t, got, "x")
-	assert.Contains(t, got, "must be >=")
+	assert.Contains(t, got, "must satisfy")
 }
 
 // TestAnOutputMustThatDoesNotCompileIsReported is the output-side mirror: a

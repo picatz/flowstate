@@ -8,7 +8,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/cel-go/cel"
-	"google.golang.org/protobuf/proto"
 
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )
@@ -355,22 +354,10 @@ func CheckInputConstraintShape(decl *InputDeclaration) error {
 			name, decl.GetMinLen(), decl.GetMaxLen())
 	}
 
-	if decl.Min != nil || decl.Max != nil {
-		if t != InputDeclaration_TYPE_INT && t != InputDeclaration_TYPE_FLOAT {
-			return fmt.Errorf(
-				"input %q declares min or max but is declared %s; those apply only to an int or float input",
-				name, DeclaredTypeName(t))
-		}
-	}
-	if decl.Min != nil && decl.Max != nil && decl.GetMin() > decl.GetMax() {
-		return fmt.Errorf("input %q min (%v) is greater than max (%v), so no value can satisfy both",
-			name, decl.GetMin(), decl.GetMax())
-	}
-
-	if decl.MinItems != nil || decl.MaxItems != nil || decl.GetUnique() {
+	if decl.MinItems != nil || decl.MaxItems != nil {
 		if t != InputDeclaration_TYPE_LIST {
 			return fmt.Errorf(
-				"input %q declares min_items, max_items or unique but is declared %s; those apply only "+
+				"input %q declares min_items or max_items but is declared %s; those apply only "+
 					"to a list input", name, DeclaredTypeName(t))
 		}
 	}
@@ -423,9 +410,6 @@ func CheckInputConstraints(name string, decl *InputDeclaration, value *Value) er
 	}
 
 	if err := checkStringConstraints(name, decl, lit); err != nil {
-		return err
-	}
-	if err := checkNumericConstraints(name, decl, lit); err != nil {
 		return err
 	}
 	if err := checkListConstraints(name, decl, lit); err != nil {
@@ -578,43 +562,6 @@ func checkStringConstraints(name string, decl *InputDeclaration, lit *expr.Value
 	return nil
 }
 
-// checkNumericConstraints applies min and max to an int or float literal.
-func checkNumericConstraints(name string, decl *InputDeclaration, lit *expr.Value) error {
-	if decl.Min == nil && decl.Max == nil {
-		return nil
-	}
-	n, ok := numericLiteralValue(lit)
-	if !ok {
-		return nil
-	}
-
-	if decl.Min != nil && n < decl.GetMin() {
-		return fmt.Errorf("input %q must be >= %v; got %v", name, decl.GetMin(), n)
-	}
-	if decl.Max != nil && n > decl.GetMax() {
-		return fmt.Errorf("input %q must be <= %v; got %v", name, decl.GetMax(), n)
-	}
-
-	return nil
-}
-
-// numericLiteralValue reads a literal's numeric value regardless of which of
-// the three numeric kinds a parsed value carries it as — the same latitude
-// [inputTypeOf] gives an int declaration, and for the same reason: whether a
-// scalar arrived signed is an artifact of how its digits were written.
-func numericLiteralValue(lit *expr.Value) (float64, bool) {
-	switch kind := lit.GetKind().(type) {
-	case *expr.Value_Int64Value:
-		return float64(kind.Int64Value), true
-	case *expr.Value_Uint64Value:
-		return float64(kind.Uint64Value), true
-	case *expr.Value_DoubleValue:
-		return kind.DoubleValue, true
-	default:
-		return 0, false
-	}
-}
-
 // maxListElements bounds how many list elements a value may carry in total,
 // *summed across the whole value* — every element in every list reachable by
 // walking the value, not the length of any one list in isolation.
@@ -692,27 +639,6 @@ const maxListElements = 10_000
 // enough for anything a person writes by hand, shallow enough that recursion
 // bounded by it cannot exhaust a goroutine's stack.
 const maxConstraintValueDepth = 32
-
-// checkConstraintListBound refuses a list value too long for unique: to
-// examine cheaply, naming the bound so a caller knows what to shrink.
-//
-// unique: only ever runs against the top-level list a list-typed
-// declaration carries directly — there is no nested case to walk into, so
-// this stays a flat check rather than calling
-// [checkConstraintValueBound]'s walk.
-func checkConstraintListBound(name string, lit *expr.Value) error {
-	list, ok := lit.GetKind().(*expr.Value_ListValue)
-	if !ok {
-		return nil
-	}
-	if n := len(list.ListValue.GetValues()); n > maxListElements {
-		return fmt.Errorf(
-			"input %q has %d items, over the %d a `unique:` or `must:` constraint may examine; "+
-				"a list this large cannot be checked cheaply, and the caller's own choice of length "+
-				"is not a cost this server bounds any other way", name, n, maxListElements)
-	}
-	return nil
-}
 
 // checkConstraintValueBound refuses a value whose `must:` a caller could
 // make expensive to check: either because the total number of list elements
@@ -1003,38 +929,22 @@ func checkHTTPResponseElementBound(url string, parsedJSON *expr.Value) error {
 		url, v.ElementCount, maxListElements))
 }
 
-// checkListConstraints applies min_items, max_items and unique to a list
-// literal.
+// checkListConstraints applies min_items and max_items to a list literal.
 func checkListConstraints(name string, decl *InputDeclaration, lit *expr.Value) error {
-	if decl.MinItems == nil && decl.MaxItems == nil && !decl.GetUnique() {
+	if decl.MinItems == nil && decl.MaxItems == nil {
 		return nil
 	}
 	list, ok := lit.GetKind().(*expr.Value_ListValue)
 	if !ok {
 		return nil
 	}
-	items := list.ListValue.GetValues()
-	length := uint64(len(items))
+	length := uint64(len(list.ListValue.GetValues()))
 
 	if decl.MinItems != nil && length < decl.GetMinItems() {
 		return fmt.Errorf("input %q must have at least %d item(s); got %d", name, decl.GetMinItems(), length)
 	}
 	if decl.MaxItems != nil && length > decl.GetMaxItems() {
 		return fmt.Errorf("input %q must have at most %d item(s); got %d", name, decl.GetMaxItems(), length)
-	}
-
-	if decl.GetUnique() {
-		if err := checkConstraintListBound(name, lit); err != nil {
-			return err
-		}
-		for i, item := range items {
-			for _, earlier := range items[:i] {
-				if proto.Equal(item, earlier) {
-					got, _ := literalToNative(item)
-					return fmt.Errorf("input %q must have unique items; %v appears more than once", name, got)
-				}
-			}
-		}
 	}
 
 	return nil

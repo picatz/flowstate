@@ -83,8 +83,7 @@ inputs:
     type: int
     required: true
     example: 1
-    min: 0
-    max: 336
+    must: this >= 0 && this <= 336
     description: >-
       how long after provisioning completes before the tenant goes live and
       billing starts - the SLA window a real deployment would size per plan
