@@ -4,13 +4,26 @@
 // A `*.test.yaml` file sits beside the Flowfile it tests — `deploy.test.yaml`
 // next to `deploy.yaml` — naming the workflow, the arguments to run it with,
 // the task responses to stub in place of the real registry, scripted signals,
-// and what the run must produce. Running it never touches a network or a
-// Temporal server: every task the workflow would otherwise call is replaced by
-// what the test declares, and the workflow's own control flow — conditions,
-// retries, loops, `undo:` — runs for real through the ordinary local driver.
-// That is the registry-swap pattern the repo's own tests already use
-// (`allowLoopback`, `NewUndoServer` in pkg/flowstate/v1/tests) productized for
-// an author's own workflow.
+// what `${secret(...)}` references resolve to, and what the run must produce.
+// Running it never touches a network or a Temporal server: every task the
+// workflow would otherwise call is replaced by what the test declares, and the
+// workflow's own control flow — conditions, retries, loops, `undo:` — runs for
+// real through the ordinary local driver. That is the registry-swap pattern
+// the repo's own tests already use (`allowLoopback`, `NewUndoServer` in
+// pkg/flowstate/v1/tests) productized for an author's own workflow.
+//
+// # Secrets are stubbed at the reference boundary, the same way tasks are
+// stubbed at the task boundary
+//
+// A workflow's `${secret('vault:prod/db#password')}` compiles and runs under
+// `flow test` with no Vault reachable, and no Vault provider even compiled
+// into this build: [Test.Secrets] binds the reference's text form directly to
+// a value for the duration of one case, resolved by an in-memory provider
+// [runCase] registers instead of any real backend — see [secretRuntime]. A
+// reference with no matching entry is refused, naming the reference and the
+// remedy, on the identical fail-closed reasoning [swapRegistry] applies to an
+// unstubbed task: `flow test`'s whole promise is that nothing it runs reaches
+// a real dependency, and a secret backend is exactly such a dependency.
 //
 // # Why this runs the local driver only
 //
@@ -32,6 +45,8 @@ import (
 	"path/filepath"
 
 	"github.com/goccy/go-yaml"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 )
 
 // Bounds on a test file, enforced before anything in it runs.
@@ -57,6 +72,10 @@ const (
 
 	// MaxSignalsPerTest bounds how many `signals:` one test may script.
 	MaxSignalsPerTest = 200
+
+	// MaxSecretsPerTest bounds how many `secrets:` entries one test may
+	// declare.
+	MaxSecretsPerTest = 200
 )
 
 // File is a parsed `*.test.yaml`.
@@ -105,6 +124,26 @@ type Test struct {
 	// — a stubbed test that silently made a real network request would defeat
 	// the entire point of stubbing at the task boundary.
 	Stubs []Stub `yaml:"stubs"`
+
+	// Secrets replaces the real secret backend for the duration of this case —
+	// the secret sibling of Stubs, at the reference boundary rather than the
+	// task boundary. Keyed by a reference's text form ("scheme:name", exactly
+	// as a Flowfile's `${secret('scheme:name')}` names it — see
+	// [secrets.RefString]) and bound to the plaintext value that reference
+	// resolves to for this case only.
+	//
+	// A `${secret(...)}` a stubbed task's input carries is resolved against
+	// this map, not against any real backend: no scheme needs a configured
+	// provider, or even a provider compiled into this build, which is what
+	// makes a workflow naming `vault:prod/db#password` testable with no Vault
+	// reachable — see the package doc. A reference with no matching entry
+	// here is refused the moment a stubbed task is invoked with it, naming
+	// the reference and the remedy, on the same fail-closed reasoning
+	// [swapRegistry] applies to an unstubbed task: resolving it to the empty
+	// string, or falling through to whatever secret backend this process
+	// happens to have configured, would both defeat the reason `flow test`
+	// exists.
+	Secrets map[string]string `yaml:"secrets"`
 
 	// Signals scripts what to deliver to a `wait_for_signal:` step, and when.
 	Signals []SignalScript `yaml:"signals"`
@@ -355,6 +394,19 @@ func parseSource(data []byte, requireWorkflow bool) (*File, error) {
 		if len(test.Signals) > MaxSignalsPerTest {
 			return nil, fmt.Errorf("test %q declares %d signals, more than the limit of %d",
 				test.Name, len(test.Signals), MaxSignalsPerTest)
+		}
+		if len(test.Secrets) > MaxSecretsPerTest {
+			return nil, fmt.Errorf("test %q declares %d secrets, more than the limit of %d",
+				test.Name, len(test.Secrets), MaxSecretsPerTest)
+		}
+		for ref := range test.Secrets {
+			// Checked while the reference is still text, so a malformed
+			// `secrets:` key fails when the file loads rather than the first
+			// time a case happens to invoke a task naming it — the same
+			// timing [secrets.ParseRef]'s own doc gives for a Flowfile.
+			if _, err := secrets.ParseRef(ref); err != nil {
+				return nil, fmt.Errorf("test %q secrets: %w", test.Name, err)
+			}
 		}
 		for j, stub := range test.Stubs {
 			if stub.Task == "" {

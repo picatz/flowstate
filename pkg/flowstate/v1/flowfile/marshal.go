@@ -656,20 +656,11 @@ func declaredInputsToYAML(declarations []*v1.InputDeclaration) (yaml.MapSlice, e
 		if declaration.MaxLen != nil {
 			entry = append(entry, yaml.MapItem{Key: "max_len", Value: declaration.GetMaxLen()})
 		}
-		if declaration.Min != nil {
-			entry = append(entry, yaml.MapItem{Key: "min", Value: declaration.GetMin()})
-		}
-		if declaration.Max != nil {
-			entry = append(entry, yaml.MapItem{Key: "max", Value: declaration.GetMax()})
-		}
 		if declaration.MinItems != nil {
 			entry = append(entry, yaml.MapItem{Key: "min_items", Value: declaration.GetMinItems()})
 		}
 		if declaration.MaxItems != nil {
 			entry = append(entry, yaml.MapItem{Key: "max_items", Value: declaration.GetMaxItems()})
-		}
-		if declaration.GetUnique() {
-			entry = append(entry, yaml.MapItem{Key: "unique", Value: true})
 		}
 		if declaration.Must != nil {
 			entry = append(entry, yaml.MapItem{Key: "must", Value: declaration.GetMust()})

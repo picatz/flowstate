@@ -91,6 +91,7 @@ tests:
           message: iam service unavailable
     expect:
       ran: [gather_evidence, attestation, unattested]
+      skipped: [recorded]
       outputs:
         outcome: expired
         attested_by: ""
@@ -129,6 +130,7 @@ tests:
           message: iam service unavailable
     expect:
       ran: [gather_evidence, attestation, unattested]
+      skipped: [recorded]
       outputs:
         outcome: expired
         attested_by: ""

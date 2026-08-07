@@ -44,16 +44,19 @@ inputs:
   # also why `--input replicas=many` is refused here rather than in the middle of the
   # run.
   #
-  # `min:`/`max:` are the standard-rule vocabulary: declarative bounds a run is
-  # checked against before it starts, the same way `type:` is — `--input
-  # replicas=0` or `--input replicas=99` is refused here rather than reaching a
-  # step that would have scaled to a number nobody meant, and `flow validate`
-  # catches a literal one outside the range while the file is still open.
+  # `must:` is the constraint escape hatch: a bound a run is checked against
+  # before it starts, the same way `type:` is — `--input replicas=0` or
+  # `--input replicas=99` is refused here rather than reaching a step that
+  # would have scaled to a number nobody meant, and `flow validate` catches a
+  # literal one outside the range while the file is still open. It used to be
+  # the typed `min:`/`max:` keys; those were retired because they stored the
+  # bound as a float64, which silently loses precision against an int64
+  # literal past 2^53 — `must:` compares the declared type's own CEL
+  # representation and has no such conversion to lose precision in.
   replicas:
     type: int
     default: 2
-    min: 1
-    max: 50
+    must: this >= 1 && this <= 50
 
   # A bool an `if:` reads. A flag that decides whether a step happens is exactly the
   # kind of thing that used to require two nearly identical files.

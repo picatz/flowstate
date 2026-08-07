@@ -913,15 +913,14 @@ inputs:
   replicas:
     type: int
     default: 1
-    min: 1
-    max: 50
+    must: this >= 1 && this <= 50
   regions:
     type: list
     required: true
     example: [us-east-1]
     min_items: 1
     max_items: 10
-    unique: true
+    must: this == this.distinct()
 outputs:
   tracking:
     value: ${inputs.email}

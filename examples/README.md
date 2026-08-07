@@ -25,7 +25,7 @@ $ flow validate examples/hello-world/workflow.yaml
 | [loop-accumulate](loop-accumulate) | `loop:` carrying state between iterations until a condition holds, bounded by `max_iterations:`, reporting `results` and `state` | no |
 | [loop-poll-until](loop-poll-until) | `loop:` in its stateless mode — a bounded poll that repeats a check until the body reports ready, or gives up at `max_iterations:` | yes |
 | [entity-order](entity-order) | An entity — `loop:` + `wait_for_signal:`, addressable, mutated by repeated signals, surviving Continue-As-New, closing on a terminal event rather than by exhausting its loop | no |
-| [ops-healthcheck](ops-healthcheck) | Three services probed at once with `parallel:`, `continue_on_error:` tolerating the one that is down, and structured outputs shaped for a pager | yes |
+| [ops-healthcheck](ops-healthcheck) | `for_each` over a list of services, `continue_on_error:` tolerating the one that is down, and structured outputs shaped for a pager | yes |
 | [data-enrichment](data-enrichment) | `for_each` over a worklist with bounded `max_parallel`, per-item `retry:`, and which records could not be enriched named in `outputs:` | yes |
 | [workflow-vars](workflow-vars) | `vars:` at the top of a file, read as `vars.<name>`, beside a loop's bare binding | no |
 | [step-vars](step-vars) | `vars:` on a step and on a loop, bare and private to what declares them | no |

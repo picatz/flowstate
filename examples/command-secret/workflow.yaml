@@ -1,5 +1,5 @@
 edition: v2026.2
-name: authenticated-health-check
+name: command-secret
 
 steps:
   # command: is the escape hatch: whatever "aws kms decrypt", "sops -d", "age -d",
