@@ -1,0 +1,40 @@
+# #263 flags this file as one that "deliberately executes almost nothing" and
+# offers it as a candidate for the guard test's allowlist. It does not need one.
+# `description:` and `edition:` are indeed inert — no step executes either, and
+# there is nothing for a case to assert about prose — but the file is not inert:
+# it carries a `sleep:`, a `for_each` over a roster, and a report counting it.
+#
+# What is worth pinning is the sentence the file writes about the loop and does
+# not enforce anywhere: "one at a time, in roster order, so the first responder
+# is paged before the backup." A `for_each` with no `max_parallel:` is
+# sequential, and the roster's order is the paging order — so the three messages
+# and the count are the assertion, and a `page` step that fanned out or a roster
+# read in some other order fails here.
+#
+# What this case cannot see is a `description:` being present, correct, or
+# attached to the right step. That is a property of the file, so it belongs to
+# `flow validate` and to the LSP rather than to a run of it.
+edition: v2026.2
+tests:
+  - name: the roster is paged in order and counted, whatever the descriptions say about it
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        where: inputs.message == 'paging ada'
+        returns: {}
+      - task: log
+        where: inputs.message == 'paging grace'
+        returns: {}
+      - task: log
+        where: inputs.message == 'paging katherine'
+        returns: {}
+      # Counted from the var the loop iterated, so this is three because the
+      # roster is three — not because a literal was written down twice.
+      - task: log
+        where: inputs.message == 'paged 3 people'
+        returns: {}
+    expect:
+      # `settle` is a `sleep:`, which under [v1.VirtualClock] costs the case
+      # nothing — it is a step that runs, and its being present here is what says
+      # a description on a wait does not change what the wait does.
+      ran: [settle, notify, report]

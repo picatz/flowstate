@@ -1,0 +1,48 @@
+# The claim this file makes is one no step performs: `triggers:` is a
+# *declaration*, not an act. Running the file runs it once, now — nothing here
+# creates a schedule, and neither driver reads the block. That is exactly what
+# these cases prove by being ordinary: a `flow test` run of this workflow
+# executes the three steps and produces the declared output, with the cadence,
+# the time zone, the jitter and the overlap policy all inert.
+#
+# The half `flow test` genuinely owns is the argument-driven branch, which is
+# what makes one file serve a terse schedule and a verbose one: `detailed:`
+# decides whether `breakdown` runs at all, and both directions are asserted.
+edition: v2026.2
+tests:
+  - name: the defaults report the declared region tersely, and the breakdown never runs
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        where: "inputs.message == 'gathering yesterday\\'s numbers for region eu-west-1'"
+        returns: {}
+      - task: log
+        where: inputs.message == 'report ready for eu-west-1' && inputs.level == 'info'
+        returns: {}
+    expect:
+      # Three steps ran, not a schedule created. `breakdown` is the branch the
+      # default argument does not take.
+      ran: [gather, publish]
+      skipped: [breakdown]
+      outputs:
+        region: eu-west-1
+
+  - name: the arguments a schedule would bind change both the region and the branch
+    workflow: ./workflow.yaml
+    inputs:
+      region: us-east-1
+      detailed: true
+    stubs:
+      - task: log
+        where: "inputs.message == 'gathering yesterday\\'s numbers for region us-east-1'"
+        returns: {}
+      - task: log
+        where: inputs.message == 'per-service breakdown included'
+        returns: {}
+      - task: log
+        where: inputs.message == 'report ready for us-east-1' && inputs.level == 'info'
+        returns: {}
+    expect:
+      ran: [gather, breakdown, publish]
+      outputs:
+        region: us-east-1

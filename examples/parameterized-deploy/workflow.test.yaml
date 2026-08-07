@@ -1,0 +1,101 @@
+# The contract this file teaches is the `inputs:` declaration itself: a default
+# makes an argument optional, a required one with nothing supplied is refused
+# before the first step runs, a declared type is what a value is coerced
+# against, and `must:` is a bound checked at the same moment `type:` is.
+#
+# So most of these cases are refusals, and each one asserts that the refusal
+# happened *before* anything ran — the `stubs:` are declared but no invocation
+# ever reaches them, and `failed: true` with no `ran:` is what says so. A run
+# that got as far as `plan` and then failed would look different.
+#
+# The two that do run pin the other half: `dry_run` deciding which of two steps
+# happens at all, which is the case the file says used to need two nearly
+# identical workflows.
+edition: v2026.2
+tests:
+  - name: only the required argument is supplied, and every default fills itself in
+    workflow: ./workflow.yaml
+    inputs:
+      service: checkout
+    stubs:
+      # `region` is the declared default and `replicas` the declared 2, rendered
+      # into a string field — so this `where:` is the assertion that a default is
+      # part of the specification rather than something the CLI invents.
+      - task: log
+        where: inputs.message == 'planning checkout in eu-west-1' && inputs.fields.replicas == '2'
+        returns: {}
+      - task: http
+        where: >-
+          inputs.method == 'POST' &&
+          inputs.json.service == 'checkout' &&
+          inputs.json.region == 'eu-west-1' &&
+          inputs.json.replicas == 2
+        returns:
+          status_code: 200
+    expect:
+      ran: [plan, announce]
+      # The other arm of the same condition. A step that ran and did nothing
+      # would still be present in `ran:`.
+      skipped: [note_dry_run]
+
+  - name: a dry run announces nothing, and says so on the branch that only exists for it
+    workflow: ./workflow.yaml
+    inputs:
+      service: checkout
+      region: us-east-1
+      replicas: 5
+      dry_run: true
+    stubs:
+      - task: log
+        where: inputs.message == 'planning checkout in us-east-1' && inputs.fields.replicas == '5'
+        returns: {}
+      - task: log
+        where: inputs.message == 'dry run, checkout was not announced'
+        returns: {}
+    expect:
+      ran: [plan, note_dry_run]
+      # No `http` stub is declared at all above, so an `announce` that ran here
+      # would fail the case rather than pass unnoticed — which is a stronger
+      # statement than `skipped:` alone.
+      skipped: [announce]
+
+  - name: the required argument missing is refused while the caller is still there to be told
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        returns: {}
+      - task: http
+        returns: {}
+    expect:
+      failed: true
+      # The description is repeated back in the refusal, which is the one part of
+      # a declaration written for whoever supplies the value.
+      error_contains: which service to deploy
+
+  - name: a replica count outside the declared bound is refused before the first request goes out
+    workflow: ./workflow.yaml
+    inputs:
+      service: checkout
+      replicas: 99
+    stubs:
+      - task: log
+        returns: {}
+      - task: http
+        returns: {}
+    expect:
+      failed: true
+      error_contains: "must satisfy"
+
+  - name: zero replicas is refused by the same bound, from the other side
+    workflow: ./workflow.yaml
+    inputs:
+      service: checkout
+      replicas: 0
+    stubs:
+      - task: log
+        returns: {}
+      - task: http
+        returns: {}
+    expect:
+      failed: true
+      error_contains: "must satisfy"

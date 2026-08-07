@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -413,5 +414,83 @@ func TestExampleWorkflowNamesMatchDirectoryAndAreUnique(t *testing.T) {
 			continue
 		}
 		seen[name] = dir
+	}
+}
+
+// examplesWithoutTestFile is the allowlist [TestEveryExampleHasATestFile] reads:
+// example directories permitted to have no `workflow.test.yaml`.
+//
+// It is empty, and that is the finding rather than an oversight. #263 nominated
+// two candidates and neither survived being looked at:
+//
+//   - `observability` is described as a lab whose subject is telemetry rather
+//     than the workload — but the file's own first sentence is that nothing in it
+//     is about telemetry, which is the point of it. The workload is an ordinary
+//     workload (a durable wait, a fan-out over three regions, a value carried
+//     forward) and is asserted as one. What a test cannot reach is the collector
+//     and the dashboards around it, and none of that is in workflow.yaml.
+//   - `edition-and-descriptions` is described as executing almost nothing. Its
+//     two subjects, `edition:` and `description:`, are indeed inert — but the file
+//     carries a `sleep:`, a `for_each` over a roster, and a report counting it,
+//     and the sentence its own `description:` writes about the loop ("one at a
+//     time, in roster order") is a claim nothing else enforces.
+//
+// An entry here would be a decision with a reason, never a gap: it must name why
+// a run of the example can assert nothing, not merely that writing the case was
+// awkward. "The interesting behavior is above the stub boundary" is not one —
+// examples/http-expect and examples/task-shape-policy both have that problem and
+// both have test files that say so in their own headers and pin what is left.
+var examplesWithoutTestFile = map[string]string{}
+
+// TestEveryExampleHasATestFile keeps the corpus from drifting back to the shape
+// #263 records: 34 of 45 example directories with no `workflow.test.yaml`, so
+// `flow test` — the capability that makes a library of reusable workflows
+// maintainable, and half of what `call:` is for — was demonstrated by under a
+// quarter of the files that are supposed to be the product demo.
+//
+// This is the same shape as [TestExampleWorkflowNamesMatchDirectoryAndAreUnique]
+// above and exists for the same reason: the sweep that fixed it once is a
+// one-time tidy unless something checks. CLAUDE.md's rule is that a capability is
+// not done until an example exercises it in CI, *because that is what keeps it
+// honest* — pointed at the corpus itself, an example with no test file is an
+// example checked only for the thing it happens to do on the happy path.
+//
+// What this cannot check is the bar #260 sets, which is the part that actually
+// matters: a case whose `expect:` is only `ran: [...]` asserts that a run
+// happened and nothing about what it produced. No test can tell a case that pins
+// behavior from one that pins membership, so that stays a review question. This
+// checks the floor.
+func TestEveryExampleHasATestFile(t *testing.T) {
+	t.Parallel()
+
+	paths, err := filepath.Glob(filepath.Join("..", "..", "..", "examples", "*", "workflow.yaml"))
+	require.NoError(t, err)
+	require.NotEmpty(t, paths, "no examples found; the glob is wrong")
+
+	seen := make(map[string]bool, len(examplesWithoutTestFile))
+	for _, path := range paths {
+		dir := filepath.Base(filepath.Dir(path))
+
+		if reason, ok := examplesWithoutTestFile[dir]; ok {
+			seen[dir] = true
+			assert.NotEmpty(t, reason,
+				"examples/%s is allowlisted with no reason; an entry must be a decision, not a gap", dir)
+
+			continue
+		}
+
+		testFile := filepath.Join(filepath.Dir(path), "workflow.test.yaml")
+		_, err := os.Stat(testFile)
+		assert.NoError(t, err,
+			"examples/%s/workflow.yaml has no sibling workflow.test.yaml — write one asserting what the "+
+				"example exists to teach (not that it ran), or add examples/%s to examplesWithoutTestFile "+
+				"with the reason a run of it can assert nothing", dir, dir)
+	}
+
+	// An allowlist entry for a directory that no longer exists is a decision
+	// about nothing, and would otherwise sit here outliving whatever it was for.
+	for dir := range examplesWithoutTestFile {
+		assert.True(t, seen[dir],
+			"examples/%s is allowlisted but has no workflow.yaml; remove the entry", dir)
 	}
 }
