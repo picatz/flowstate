@@ -57,8 +57,18 @@ func compileStubs(stubs []Stub) (map[string]*stubbedTask, error) {
 // whatever the task would otherwise have done.
 func (s *stubbedTask) fn(name string) v1.TaskFunc {
 	return func(ctx context.Context, inputs map[string]*v1.Value, scope *v1.Scope) (*v1.Node_Outputs, error) {
+		// Resolved once per invocation, before any matcher runs, so a
+		// reference with no `secrets:` entry is refused regardless of
+		// whether `where:` happens to mention the input carrying it — see
+		// [resolveSecretInputs]'s own doc for why this cannot be left to
+		// whichever matcher first reads the input.
+		resolvedSecrets, err := resolveSecretInputs(ctx, inputs)
+		if err != nil {
+			return nil, v1.NewTaskError(name, v1.ErrorKindInvalidInput, err)
+		}
+
 		for _, m := range s.matchers {
-			ok, err := m.matches(ctx, scope.GetProfile(), inputs)
+			ok, err := m.matches(ctx, scope.GetProfile(), inputs, resolvedSecrets)
 			if err != nil {
 				return nil, v1.NewTaskError(name, v1.ErrorKindExpression, err)
 			}
@@ -86,7 +96,13 @@ func (s *stubbedTask) fn(name string) v1.TaskFunc {
 
 // matches reports whether a stub's `where:` holds against a task invocation's
 // resolved inputs. An empty where always matches.
-func (c compiledStub) matches(ctx context.Context, profile string, inputs map[string]*v1.Value) (bool, error) {
+//
+// resolvedSecrets carries the plaintext [resolveSecretInputs] already
+// resolved for any input naming a `${secret(...)}` reference, keyed by input
+// name — the one shape a where: clause needs to assert against a secret's
+// value, since [literalToGo] has nothing to convert for a Value whose kind is
+// [v1.Value_SecretRef] rather than a literal.
+func (c compiledStub) matches(ctx context.Context, profile string, inputs map[string]*v1.Value, resolvedSecrets map[string]string) (bool, error) {
 	if c.where == nil {
 		return true, nil
 	}
@@ -99,6 +115,11 @@ func (c compiledStub) matches(ctx context.Context, profile string, inputs map[st
 				return false, fmt.Errorf("input %q: %w", name, err)
 			}
 			native[name] = value
+			continue
+		}
+		if value, ok := resolvedSecrets[name]; ok {
+			native[name] = value
+			continue
 		}
 		// An input the task evaluates itself ([v1.TaskDef.DeferredInputs]) is
 		// still an expression at this point and has nothing a `where:` clause

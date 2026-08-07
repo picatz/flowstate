@@ -1,0 +1,37 @@
+# The README explains why this file did not exist before: "unlike env: or
+# command:, vault: needs a real Vault or OpenBao server to talk to, which is
+# why this directory has no *.test.yaml". That was true — a Vault provider
+# has to reach a real server to answer, and this repository's CI has nowhere
+# to stand one up.
+#
+# It stopped being true the moment `flow test` gained a `secrets:` block
+# (#245's ranked slice 2). Nothing here talks to Vault, and nothing here
+# imports pkg/flowstate/v1/secrets/vault: `secrets:` resolves the
+# `vault:apps/api#token` reference straight from this file, by the same
+# mechanism that stubs the http task itself, so what this file proves is
+# genuine: the workflow asks for that reference and receives whatever this
+# case bound it to, and a case that forgets to bind it is refused rather than
+# silently handed an empty bearer token.
+edition: v2026.2
+tests:
+  - name: the bearer resolves from this file's own secrets, never a real vault
+    workflow: ./workflow.yaml
+    secrets:
+      vault:apps/api#token: test-vault-token-not-a-real-credential
+    stubs:
+      - task: http
+        where: inputs.bearer == 'test-vault-token-not-a-real-credential'
+        returns:
+          status_code: 200
+    expect:
+      ran: [health]
+
+  - name: a run with no secrets entry for the vault reference is refused, not silently empty
+    workflow: ./workflow.yaml
+    stubs:
+      - task: http
+        returns:
+          status_code: 200
+    expect:
+      failed: true
+      error_contains: "vault:apps/api#token"
