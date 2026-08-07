@@ -132,16 +132,25 @@ cheap to turn on, and undocumented until now.
 - ✅ Two tenants sharing one worker can therefore have secrets that resolve
   differently, or not at all, purely as a function of `workload.namespace` in
   one YAML file.
-- ⚠️ **Task policy keyed on `identity.namespace` is not landed in this tree.**
-  The design record this document is written from (issue #236) describes it
-  as "once #228 lands" — I searched for a task-policy package parallel to
-  `secretpolicy.go` and found none; the only `identity.namespace` in the
-  codebase today is `run.identity.namespace`, a CEL attribute available
-  *inside a Flowfile's own step conditions* (`run_identity.go`), which is a
-  different thing — an author's own workflow reading its own identity, not an
-  operator's policy gating a task by caller namespace. Treat "per-tenant task
-  policy" as **not yet available**; only the secret-rule half of Tier 1b is
-  real today.
+- ✅ **Task policy keyed on `identity.namespace` is now real.** The design
+  record this document is written from (issue #236) described it as "once
+  #228 lands" — #228 landed during the writing of this document. It is a
+  *separate* mechanism from the secret rules above: `--task-policy` (or
+  `$FLOWSTATE_TASK_POLICY`) on `flow worker` and `flow run local` — never on
+  `flow server` or `flow validate`, for the same reason egress policy isn't:
+  a deployment refusal is not a file diagnostic (`cmd/flow/taskpolicy.go`).
+  A rule is CEL over `task` (the qualified task name) and `identity`
+  (`identity.subject`, `.issuer`, `.namespace`, `.claims` — the run's attested
+  identity), so `task == "log" && identity.namespace != "platform"` denies a
+  task to every tenant but one. Fail-closed the same way secret rules are: no
+  policy configured permits everything (today's default, unchanged); a
+  malformed policy refuses the command to start rather than running
+  unrestricted. `examples/task-shape-policy/` is the worked example — a
+  Flowfile with no gate left in it at all, refused purely by worker
+  configuration. Two separate files, two separate flags
+  (`--auth-policy`'s `secrets:` rules and `--task-policy`'s rules), governing
+  two separate decisions — don't conflate them when writing one deployment's
+  configuration.
 - ❌ Still no history privacy and no plugin/process containment — those are
   Tier 2 properties, not policy-rule properties.
 
