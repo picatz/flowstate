@@ -117,19 +117,40 @@ func TestStepsOutputActivationSelfReference(t *testing.T) {
 		}},
 	}
 
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		// The contract is that this returns; the value is unimportant, and a
-		// self-reference cannot have one.
-		act.ResolveName("cycle.result")
-	}()
+	// The contract is that this returns; the value is unimportant, and a
+	// self-reference cannot have one.
+	//
+	// Called inline, and what is asserted afterwards is the budget itself
+	// rather than how long this took. A wall-clock deadline here measured the
+	// machine: it passed in isolation and failed under CPU contention, which is
+	// the worst possible behaviour for a bound test, because a scheduling
+	// artifact and a genuine unbounded-recursion regression produce the same
+	// red. The budget is the thing that stops this, so the budget is the thing
+	// to read. If it ever stops being spent, this does not time out — it
+	// recurses forever and the test binary's own -timeout says so, with a stack
+	// naming the frame that is looping.
+	_, ok := act.ResolveName("cycle.result")
+	if ok {
+		t.Fatal("a self-referential output resolved to a value, so nothing was ever evaluated")
+	}
 
-	select {
-	case <-done:
-	case <-time.After(30 * time.Second):
-		t.Fatal("resolving a self-referential output did not terminate; the evaluation " +
-			"budget is not being spent, or not being shared with child activations")
+	// Reached, not merely not exceeded. `remaining` is the counter the bound is
+	// enforced against in resolveValue — the same pointer every child
+	// activation spends — so reading zero here is the evaluation budget having
+	// been spent in full, which is what terminates the recursion.
+	//
+	// Nil would mean the resolution met no stored expression at all: the exact
+	// vacuous shape this test was already caught in once, when the fixture's
+	// step had been renamed out from under the assertion and the guard ran
+	// never.
+	if act.remaining == nil {
+		t.Fatal("no stored expression was ever evaluated, so the budget was never engaged; " +
+			"this test is vacuous again")
+	}
+	if *act.remaining != 0 {
+		t.Fatalf("resolution stopped with %d of %d evaluations unspent; a self-reference "+
+			"must run the budget out, so something else ended it",
+			*act.remaining, maxActivationEvaluations)
 	}
 }
 
@@ -168,9 +189,7 @@ func TestAFanOutOfStoredExpressionsIsBoundedByWorkNotDepth(t *testing.T) {
 		Prev: &Workflow_StepOutputs{StepValues: outputs},
 	}
 
-	start := time.Now()
 	_, ok := act.ResolveName(fmt.Sprintf("level%d.v", depth))
-	elapsed := time.Since(start)
 
 	// Refused rather than computed: 2^24 evaluations under budget would take
 	// minutes, so a success here means the budget was never spent.
@@ -178,7 +197,27 @@ func TestAFanOutOfStoredExpressionsIsBoundedByWorkNotDepth(t *testing.T) {
 		t.Fatal("a 2^24-evaluation fan-out resolved to a value, so the evaluation budget " +
 			"was never charged for the work")
 	}
-	if elapsed > 30*time.Second {
-		t.Fatalf("the refusal took %v; the budget bounded the answer but not the work", elapsed)
+
+	// The name of this test is the assertion: the bound is on *work*, so what
+	// is read is the work counter, not a stopwatch.
+	//
+	// This used to assert that the refusal arrived inside 30 seconds, which is
+	// a strictly weaker statement about a strictly less relevant quantity — it
+	// is satisfied by a machine that is merely fast, and violated by one that
+	// is merely busy, neither of which is a fact about the bound. `remaining`
+	// is the counter resolveValue decrements and checks, shared by pointer with
+	// every child activation, so zero here is the budget having been spent in
+	// full: 10,000 evaluations performed and the 10,001st refused. That is the
+	// bound reached, which is what CLAUDE.md asks a bound test to show, and it
+	// reads the same on an idle box and under load.
+	if act.remaining == nil {
+		t.Fatal("no stored expression was ever evaluated, so the budget was never engaged; " +
+			"the fixture is not producing the fan-out this test is about")
+	}
+	if *act.remaining != 0 {
+		t.Fatalf("the fan-out was refused with %d of %d evaluations still unspent, so the "+
+			"evaluation budget is not what stopped it — the depth bound cannot stop a "+
+			"breadth explosion, and something must have",
+			*act.remaining, maxActivationEvaluations)
 	}
 }

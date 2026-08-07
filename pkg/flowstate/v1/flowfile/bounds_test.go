@@ -56,28 +56,31 @@ func TestMergeExpansionIsBounded(t *testing.T) {
 	src := []byte(b.String())
 	require.Less(t, len(src), 1<<20, "premise: the file is inside the size limit, so size is not what stops this")
 
-	done := make(chan flowfile.Diagnostics, 1)
-	go func() {
-		_, _, err := flowfile.Parse(src)
-		var ds flowfile.Diagnostics
-		if !assert.ErrorAs(t, err, &ds) {
-			done <- nil
-			return
-		}
-		done <- ds
-	}()
+	// Parsed inline, and on a deliberately empty stopwatch.
+	//
+	// This used to run in a goroutine against a 20-second wall-clock budget,
+	// which is the one thing a bound test must not do: the budget measured the
+	// machine, so the test failed on ten consecutive full-suite runs under CPU
+	// contention while passing in isolation in under two seconds. A bound test
+	// that reddens for load is worse than no bound test, because "it is just
+	// the box being busy" is the honest reading of a real regression too.
+	//
+	// Nothing is lost by dropping the timer, because the timer was never what
+	// proved anything. The bound here is a *count* — maxNodes, checked against
+	// the values the compiler produces once aliases are expanded — and the
+	// assertion below reads that count's own diagnostic. If the bound is ever
+	// removed again, this does not return at all, and the test binary's
+	// -timeout reports it with a stack sitting in the expansion, which names
+	// the defect more precisely than a 20-second stopwatch ever did.
+	_, _, err := flowfile.Parse(src)
 
-	select {
-	case ds := <-done:
-		require.NotNil(t, ds)
-		// Reached, not merely survived. A run that finished quickly because the
-		// document was rejected for some unrelated reason would prove nothing about
-		// the bound, so the diagnostic itself is what is asserted.
-		assert.Contains(t, ds.Error(), "once aliases are expanded",
-			"the expansion bound is what should have stopped this")
-	case <-time.After(20 * time.Second):
-		t.Fatal("compiling a 110 KiB document did not finish; the merge expansion is unbounded again")
-	}
+	var ds flowfile.Diagnostics
+	require.ErrorAs(t, err, &ds)
+	// Reached, not merely survived. A run that finished quickly because the
+	// document was rejected for some unrelated reason would prove nothing about
+	// the bound, so the diagnostic itself is what is asserted.
+	assert.Contains(t, ds.Error(), "once aliases are expanded",
+		"the expansion bound is what should have stopped this")
 }
 
 // TestMergeExpansionWithinTheBoundStillWorks is the other half, and the reason

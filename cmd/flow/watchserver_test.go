@@ -37,12 +37,36 @@ import (
 // It costs a Temporal dev server, which is why it is behind -short like every other
 // dev-server test in this repo. CI runs the full suite, so it is not optional there.
 
+// releaseFirstSignal is the gate the watched run parks on for its first step,
+// held open until the watcher has reported seeing it there.
+const releaseFirstSignal = "release-first"
+
 // TestWatchFollowsARealRunningExecution drives a watch against a workload that is
 // genuinely parked on a step.
 //
-// The workflow does one step and then waits, so there is a position that changes and a
-// run that stays RUNNING while it does — which is the state this whole feature is
-// about, and the one a fake can only assert about itself.
+// The workflow parks on one step and then parks on another, so there is a position
+// that changes and a run that stays RUNNING while it does — which is the state this
+// whole feature is about, and the one a fake can only assert about itself.
+//
+// # Why the first step is a gate rather than a log
+//
+// It used to be a `log` task, and that made the test a race it could lose. A log task
+// finishes in a millisecond or two, while the watcher polls every
+// [minWatchInterval] — 250ms — through a Temporal query, an RPC and the wire. So
+// whether anybody ever *saw* the run on `first` depended entirely on the poller
+// getting scheduled before the worker finished a step it had no reason to wait for.
+// On a quiet box the first poll usually landed in time; under a full parallel
+// `-race` load it did not, and the test failed having seen only `waiting` — never
+// `first` — so `distinct()` never reached two positions, the poller never stopped
+// itself, and the watch ran to its 60-second deadline before failing.
+//
+// The fix is the ordering edge the test always needed, rather than a wider window:
+// `first` is now a `wait_for_signal:`, and the signal that releases it is sent by
+// the poller *because* it has seen the run parked there. The run therefore cannot
+// leave `first` until `first` has been observed and reported, which is precisely the
+// claim — that a live view is live — stated as a happens-before rather than inferred
+// from a step being slower than an RPC. Nothing about what is asserted changes; what
+// changes is that the first position is now guaranteed instead of likely.
 func TestWatchFollowsARealRunningExecution(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping: needs a Temporal dev server; CI runs the full suite")
@@ -71,9 +95,14 @@ func TestWatchFollowsARealRunningExecution(t *testing.T) {
 			Steps: []*v1.Node{
 				{
 					Id: "first",
-					Kind: &v1.Node_Task{Task: &v1.Task{
-						Name:   "log",
-						Inputs: map[string]*v1.Value{"message": v1.NewLiteral("hello")},
+					Kind: &v1.Node_Wait{Wait: &v1.Wait{
+						// Parked until the watcher has seen it here and says so
+						// by signalling. The timeout is the backstop for a
+						// watcher that never sees it at all — which is a
+						// failure, and one this test should reach its
+						// assertions to report rather than hang on.
+						Kind:    &v1.Wait_Signal{Signal: &v1.Signal{Name: releaseFirstSignal}},
+						Timeout: durationpb.New(90 * time.Second),
 					}},
 				},
 				{
@@ -112,6 +141,22 @@ func TestWatchFollowsARealRunningExecution(t *testing.T) {
 			server:     serverFlags{address: httpServer.URL},
 		},
 		stop: cancel,
+		// The happens-before edge: the run leaves `first` because this test saw
+		// it on `first`, not because a step happened to finish quickly enough.
+		// Sent once, on the first sighting; releasing a gate that is already
+		// open would be harmless but is not what is being claimed.
+		release: func() {
+			_, err := flowstate.Signal(context.Background(), connect.NewRequest(&v1.SignalRequest{
+				WorkflowId: workflowID,
+				Name:       releaseFirstSignal,
+			}))
+			// Reported rather than fatal: this runs on the poller's goroutine,
+			// and a failure here shows up as the position never moving, which
+			// the assertions below describe far better than a bare error would.
+			if err != nil {
+				t.Errorf("releasing the %q gate: %v", releaseFirstSignal, err)
+			}
+		},
 	}
 
 	surface, out, errOut := plainSurface()
@@ -161,6 +206,16 @@ type movedOn struct {
 	inner clientPoller
 	stop  context.CancelFunc
 
+	// release lets the run move off the step it is parked on, called once the
+	// run has been seen parked there. This is what makes the first position an
+	// ordering guarantee rather than a race against a fast step — see the test's
+	// own doc comment.
+	release func()
+
+	// released records that release has already been called, so a gate is
+	// opened once however many polls observe it standing open afterwards.
+	released bool
+
 	// positions are what the server actually answered, in order and with repeats,
 	// kept so a test that fails can say what it saw rather than only that it did not
 	// see what it wanted.
@@ -176,6 +231,14 @@ func (p *movedOn) Poll(ctx context.Context) (*v1.GetResponse, error) {
 	}
 
 	p.positions = append(p.positions, position)
+
+	// Released only after the position has been recorded, which is the edge
+	// that matters: the sighting is what causes the run to move on, so the run
+	// cannot have moved on before the sighting.
+	if !p.released && p.release != nil {
+		p.released = true
+		p.release()
+	}
 
 	if len(p.distinct()) >= 2 && p.positions[len(p.positions)-1] == p.positions[len(p.positions)-2] {
 		p.stop()

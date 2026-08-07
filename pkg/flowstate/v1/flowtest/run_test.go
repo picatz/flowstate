@@ -10,6 +10,31 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
 )
 
+// realClockBackstop is how long a case that is supposed to run on the virtual
+// clock may take in real time before this package calls it a regression.
+//
+// It is deliberately enormous next to what these cases actually take — they
+// are milliseconds — and deliberately tiny next to what the regression it
+// detects would take. The regression is binary, not gradual: `flow test` runs
+// every wait on [v1.VirtualClock], which never sleeps, so a case built around
+// a 1-hour timeout or a 24-hour sleep either resolves in the time it takes to
+// evaluate a few steps, or it resolves in an hour, or a day. There is no
+// mechanism that puts it in between.
+//
+// So every threshold between "milliseconds" and "one hour" detects exactly the
+// same defect, and the only thing a *tight* threshold adds is sensitivity to
+// how busy the machine is. A one-second budget here is what actually failed
+// under contention — several of these are t.Parallel() cases doing file I/O,
+// YAML parsing and CEL compilation, and on a loaded box that is not reliably
+// under a second, while still being four orders of magnitude away from the
+// regression.
+//
+// The stronger half of the proof is not this constant at all: it is that these
+// cases *pass*. A case asserting that a 1h `wait_for_signal:` lapsed has, by
+// passing, shown that an hour of the workflow's own clock elapsed inside the
+// test — which under a real clock could not have happened at all.
+const realClockBackstop = time.Minute
+
 // TestRunFileBasic exercises the happy path and the "no matching stub"
 // failure mode against pkg/flowstate/v1/flowtest/testdata/basic.
 func TestRunFileBasic(t *testing.T) {
@@ -40,7 +65,10 @@ func TestRunFileSleepIsInstant(t *testing.T) {
 	require.Empty(t, report.GetRefused())
 	require.Len(t, report.GetCases(), 1)
 	require.True(t, report.GetCases()[0].GetPassed(), "failures: %v", report.GetCases()[0].GetFailures())
-	require.Less(t, elapsed, time.Second, "a 24h sleep took %s to test", elapsed)
+	// The case passing is itself the proof of #155: the workflow's `sleep: 24h`
+	// completed, which on a real clock takes a day. See [realClockBackstop] for
+	// why the remaining check is wide rather than tight.
+	require.Less(t, elapsed, realClockBackstop, "a 24h sleep took %s to test", elapsed)
 }
 
 // TestRunFileGate exercises a scripted signal racing a wait's own timeout, in
@@ -58,10 +86,12 @@ func TestRunFileGate(t *testing.T) {
 	for _, c := range report.GetCases() {
 		require.True(t, c.GetPassed(), "%s: failures: %v", c.GetName(), c.GetFailures())
 	}
-	// The second case's timeout is one real hour on the workflow's own clock;
-	// under the virtual clock both cases together still take well under a
-	// second.
-	require.Less(t, elapsed, time.Second)
+	// The second case's timeout is one hour on the workflow's own clock, and
+	// that case having *passed* — the gate lapsed, `deploy` was skipped — is
+	// what shows the hour elapsed virtually rather than really. See
+	// [realClockBackstop] for why the check below is wide rather than tight.
+	require.Less(t, elapsed, realClockBackstop,
+		"two cases built on a 1h timeout took %s, so the virtual clock is not what they ran on", elapsed)
 }
 
 // TestRunFileUndo checks that a stub answering a failure exercises real
