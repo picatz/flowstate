@@ -58,6 +58,21 @@ type executor struct {
 	identity *v1.WorkloadIdentity
 	runID    string
 
+	// curSpec is the workflow whose own steps are directly in scope right now —
+	// the top-level spec, or the nearest enclosing call's callee once execution
+	// has descended into one. Unlike spec, which stays the top-level workflow
+	// for the whole run (every nested executor below copies it unchanged, since
+	// that is what CheckRunStateSize and friends need), this is what
+	// [v1.LoopResultsReferenced] walks: a loop's own body is excluded from what
+	// can still read its results by construction (a self-reference cannot
+	// resolve), and a callee's steps are a different node tree than its
+	// caller's, so the answer for a loop inside a callee has to come from the
+	// callee's own steps, not the run's top-level ones. Set once at the root in
+	// [Run] and updated only where runCall descends into a callee — never by
+	// descending into a loop body or a parallel branch, both of which share
+	// their enclosing workflow's own tree.
+	curSpec *v1.Workflow
+
 	// budget and processed implement the step budget for Continue-As-New.
 	budget    int
 	processed int
@@ -375,8 +390,12 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 	}
 
 	nested := &executor{
-		ctx:      e.ctx,
-		spec:     e.spec,
+		ctx:  e.ctx,
+		spec: e.spec,
+		// Descending into a callee's own steps: [v1.LoopResultsReferenced] for a
+		// loop inside it has to walk the callee's tree, not the caller's — see
+		// curSpec's doc.
+		curSpec:  callee,
 		identity: e.identity,
 		runID:    e.runID,
 		scope:    inner,
@@ -720,6 +739,31 @@ func (e *executor) runForEach(node *v1.Node, loop *v1.ForEach, depth, susp int, 
 // The bound is checked first each iteration and reaching it fails the run with
 // [v1.LoopIterationLimitError] — the identical outcome the local driver produces at
 // the identical point, both reading the ceiling through [v1.LoopMaxIterations].
+//
+// A second bound applies to what the loop accumulates rather than how many
+// times it runs, per #229. Within a segment, `results` accumulates in full
+// exactly as it always has, bounded in bytes by [v1.MaxLoopResultsBytes]
+// through [v1.AccumulateLoopResult] — a segment that finishes the loop within
+// itself must report that loop's genuine, complete results as its output,
+// whether or not anything downstream reads them; suppressing that would change
+// a completed run's own outputs for a workload nobody touched, so this never
+// happens. What is bounded instead is what a *resumed* segment inherits:
+// [v1.LoopResumeResults] drops the carried slice on the way in when nothing
+// reachable outside the loop's own body could ever read it
+// ([v1.LoopResultsReferenced], asked fresh against e.curSpec — the callee's
+// own tree once a call has descended into one). What is never restored is
+// never carried again, so a Frame this loop writes never holds more than one
+// segment's own iterations for a loop nothing reads — however many
+// Continue-As-New cycles an entity loop with heavy signal traffic has already
+// survived. See loop.go's package doc on this for the full reasoning.
+//
+// A loop that has dropped history this way still eventually finishes, and
+// what it finishes with is only its own final segment's iterations — a
+// suffix of the real run, not the whole of it. Reporting that suffix as
+// `results` would be a run whose `Get` answer, `flow get` output, or
+// `flowstate_get` MCP answer looks like a short but complete history when it
+// is not. [v1.LoopStateOutputsHonest] omits `results` entirely once that has
+// happened, rather than publish a partial list nothing marks as partial.
 func (e *executor) runLoop(node *v1.Node, loop *v1.Loop, depth, susp int, descend bool) error {
 	name := loop.GetState()
 	max := v1.LoopMaxIterations(loop)
@@ -733,9 +777,10 @@ func (e *executor) runLoop(node *v1.Node, loop *v1.Loop, depth, susp int, descen
 	startItem := 0
 	var results []*v1.Workflow_StepOutputs
 	var state *v1.Value
-	if descend && inner < len(e.resume) {
+	resuming := descend && inner < len(e.resume)
+	if resuming {
 		startItem = int(e.resume[inner].GetNextIteration())
-		results = e.resume[inner].GetResults()
+		results = v1.LoopResumeResults(e.curSpec, node.GetId(), e.resume[inner].GetResults())
 		state = e.resume[inner].GetLoopState()
 	} else {
 		var err error
@@ -744,6 +789,14 @@ func (e *executor) runLoop(node *v1.Node, loop *v1.Loop, depth, susp int, descen
 			return nodeFailed(err)
 		}
 	}
+
+	// True the moment this segment is continuing a loop an earlier segment
+	// already suspended out of, for a loop nothing reads: whatever this
+	// segment finishes with is only its own iterations, a suffix of the real
+	// history rather than the whole of it. See [v1.LoopStateOutputsHonest].
+	truncated := resuming && !v1.LoopResultsReferenced(e.curSpec, node.GetId())
+
+	resultsBytes := v1.LoopResultsSize(results)
 
 	for i := startItem; ; i++ {
 		if i >= max {
@@ -762,11 +815,23 @@ func (e *executor) runLoop(node *v1.Node, loop *v1.Loop, depth, susp int, descen
 			}
 			return stepFailed(err, "iteration %d", i)
 		}
-		results = append(results, iteration)
+
+		var sizeErr error
+		results, resultsBytes, sizeErr = v1.AccumulateLoopResult(results, resultsBytes, iteration)
+		if sizeErr != nil {
+			// Positioned the identical way runLoopIteration's own error just
+			// above is — "iteration %d: " — so a run that hits the bound
+			// records the same sentence under ${steps.<id>.error} whether it
+			// ran locally (eval.go's runLoop wraps with the same
+			// "iteration %d: %w") or durably. A bare nodeFailed here would
+			// have left the two drivers disagreeing about the recorded text
+			// for the identical failure, invariant 3's exact shape.
+			return stepFailed(sizeErr, "iteration %d", i)
+		}
 
 		if stop {
 			e.truncateFrames(inner)
-			e.scope.Outputs.StepValues[node.GetId()] = v1.LoopStateOutputs(results, state)
+			e.scope.Outputs.StepValues[node.GetId()] = v1.LoopStateOutputsHonest(results, state, truncated)
 			return nil
 		}
 		state = next
@@ -804,6 +869,7 @@ func (e *executor) runLoopIteration(loop *v1.Loop, stateName string, state *v1.V
 	nested := &executor{
 		ctx:       e.ctx,
 		spec:      e.spec,
+		curSpec:   e.curSpec,
 		identity:  e.identity,
 		runID:     e.runID,
 		scope:     scope,
@@ -869,6 +935,7 @@ func (e *executor) runIteration(loop *v1.ForEach, iterator string, item *v1.Valu
 	nested := &executor{
 		ctx:      e.ctx,
 		spec:     e.spec,
+		curSpec:  e.curSpec,
 		identity: e.identity,
 		runID:    e.runID,
 		// The iteration's scope: outputs visible before the loop, plus the
@@ -935,6 +1002,7 @@ func (e *executor) runIterationsConcurrently(loop *v1.ForEach, iterator string, 
 				worker := &executor{
 					ctx:       gctx,
 					spec:      e.spec,
+					curSpec:   e.curSpec,
 					identity:  e.identity,
 					runID:     e.runID,
 					scope:     e.scope.WithLocal(iterator, items[i]).WithOutputs(cloneOutputs(e.scope.GetOutputs())),
@@ -991,6 +1059,7 @@ func (e *executor) runParallel(parallel *v1.Parallel, depth, susp int) error {
 			worker := &executor{
 				ctx:       gctx,
 				spec:      e.spec,
+				curSpec:   e.curSpec,
 				identity:  e.identity,
 				runID:     e.runID,
 				scope:     e.scope.WithOutputs(branchOutputs),

@@ -2396,6 +2396,64 @@ block node's output set is not knowable in full (the same latitude a `for_each`
 gets). `examples/loop-accumulate` reads all three — `results.size()`, `state.n`,
 `state.sum` — in its declared `outputs:`.
 
+### `results` is bounded, and retained across Continue-As-New only when read
+
+Every iteration's outputs append to `results` with no eviction, and on the durable
+driver `results` rides `Frame.results`, which Continue-As-New carries forward. Left
+alone that is unbounded growth two different ways — a chunky per-iteration body can
+blow past what one Continue-As-New can carry long before `max_iterations:` is
+reached, and an entity shape (`loop:` + `wait_for_signal:`, running for as long as
+signals arrive) accumulates one entry per signal *forever*, with no iteration ceiling
+to save it (#229).
+
+Two rules follow, and an author who never writes `loop_state:`-scale workloads never
+notices either one:
+
+- **A byte bound.** `results` is weighed against `v1.MaxLoopResultsBytes` (a quarter
+  of `v1.MaxRunStateBytes`, leaving the rest of that budget for the specification and
+  everything else `RunState` carries) after every iteration, on both drivers,
+  unconditionally — a segment that finishes the loop within itself always reports its
+  genuine, complete `results`, whether or not anything reads them. Crossing the bound
+  fails the run *at the loop*, naming the byte limit and what to do about it —
+  `v1.LoopResultsSizeError` — rather than a generic `CheckRunStateSize` refusal three
+  Continue-As-New cycles later with no loop named in it.
+- **Retention, only when read.** Whether anything reachable outside the loop's own
+  body could still read `${steps.<id>.results}` — a sibling step, a later step, a
+  different loop's body, a parallel branch, the workflow's declared outputs, or the
+  loop's own `until:`/`update:`/`items:` — is answerable from the frozen
+  specification alone, at compile time (`v1.LoopResultsReferenced`). A loop's own
+  body does not count: the per-iteration scope is seeded from outputs visible
+  *before* the loop ran, so `${steps.<id>.results}` cannot resolve there regardless of
+  what is written. A `call:`'s callee does not count either — `CallScope` isolates
+  it entirely. When nothing reachable reads it, a durable resume starts the new
+  segment's `results` empty rather than inheriting every prior segment's
+  (`v1.LoopResumeResults`) — what is never restored is never carried again, so an
+  unread loop's Frame never holds more than one segment's worth of history, however
+  many Continue-As-New cycles it survives.
+
+**The honest contract.** A loop that dropped history this way still eventually
+finishes (or keeps running, in the entity case, indefinitely), and what it finishes
+with — if it does — is only its final segment's own iterations: a suffix of the real
+run, not the whole of it. Reporting that suffix as `results` would be a completed
+run whose `Get` answer, `flow get` output, or `flowstate_get` MCP answer — all three
+carry the run's raw step outputs verbatim, `results` included — looks like a short
+but complete history with nothing to say otherwise. So an unread loop that dropped
+history reports **no `results` key at all** once that has happened, rather than a
+plausible-but-partial list (`v1.LoopStateOutputsHonest`) — an absent key reads as
+"not retained," using the same presence/absence the language already gives a skipped
+step's outputs, rather than a new field for the distinction. `state` is never
+affected: it travels in `Frame.loop_state`, a separate mechanism, and is always the
+loop's true final value.
+
+**Local rehearsal's boundary.** The byte bound holds on both drivers identically —
+the same constant, the same error, the same "iteration %d:" position — but retention
+suppression is durable-only, because it exists to bound what a *resume* inherits and
+the local driver has no Continue-As-New to resume across. A local run of an entity
+loop is bounded only by `max_iterations:`, same as it always was; this is the same
+local-cannot-rehearse-a-CAN-seam boundary the section above already states for
+`update:`'s "never evaluated after `until:` holds" case, one instance of a general
+rule rather than a new one.
+
 ### Bounded, because the author does not control the trip count
 
 `until:` is a promise the loop cannot keep on its own: a cursor that never reports
@@ -2445,12 +2503,14 @@ the same iteration count and the same state transitions.
 
 - **The unbounded entity loop (#105).** A loop that runs forever — an actor
   consuming a stream, compacting its carried state across every Continue-As-New — is a
-  separate, larger slice. It needs two things a finite loop does not: a **byte bound**
-  on the carried state (a finite loop's state rides `CheckRunStateSize` bounded by the
-  iteration ceiling; an unbounded one's does not, and DSL.md's own `state:` rule says
-  that bound ships *with* the feature), and a **suspend cadence driven from Temporal's
-  history-size hint** rather than a step budget. Both are real design, not effort, and
-  neither is guessed at here.
+  separate, larger slice. `results`' own unbounded growth across Continue-As-New is
+  no longer part of what is deferred here — see "`results` is bounded, and retained
+  across Continue-As-New only when read," above (#229). What remains open is a
+  **byte bound on the carried `state:` value itself** (a finite loop's state rides
+  `CheckRunStateSize` bounded by the iteration ceiling; an unbounded one's does not,
+  and DSL.md's own `state:` rule says that bound ships *with* the feature), and a
+  **suspend cadence driven from Temporal's history-size hint** rather than a step
+  budget. Both are real design, not effort, and neither is guessed at here.
 - **Nested loops and concurrent iterations.** A loop inside a loop, and a
   `max_parallel:` on a loop, are both deferred. Concurrent iterations are incoherent
   with carried state by construction — iteration N+1's state *is* iteration N's output,
