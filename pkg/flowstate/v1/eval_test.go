@@ -120,6 +120,22 @@ func TestRunWorkflowPolicy(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowErrorKind pins that a run failing outright in the local
+// driver is classified the way [tests.ErrorKindCases] says it must be. The
+// same cases run against the durable driver in
+// engine.TestRunWorkflowErrorKind — invariant 3's "shared cases, two verified
+// callers" for the classification #241's P2 puts on the wire.
+func TestRunWorkflowErrorKind(t *testing.T) {
+	baseURL := tests.NewHTTPServer(t)
+	for _, tc := range tests.ErrorKindCases(baseURL) {
+		t.Run(tc.Name, func(t *testing.T) {
+			_, err := v1.Run(t.Context(), tc.Workflow)
+			require.Error(t, err, "the case must fail the run outright")
+			require.Equal(t, tc.ExpectedKind, v1.ClassifyError(err))
+		})
+	}
+}
+
 // TestRunWorkflowTaskPolicy covers #187 slice 1's task-shape policy in the
 // local driver. The same cases run against the durable driver in the engine
 // package (TestRunWorkflowTaskPolicyDurable) — verified callers on both,

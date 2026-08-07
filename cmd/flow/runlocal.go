@@ -189,9 +189,19 @@ func localRun(outputs *v1.Workflow_StepOutputs, runErr, interrupted error, start
 
 	if runErr != nil {
 		response.Status = interruptedStatus(interrupted)
-		response.Kind = &v1.GetResponse_Error{
-			Error: &v1.RunResponse_Error{Message: runErr.Error()},
+
+		// v1.ClassifyError, unwrapped: the local driver's error is the bare Go
+		// chain the executor produced, with no activity envelope to strip and
+		// no application-error Type to parse back — the durable driver's
+		// failureError does that work only because Temporal's wire made it
+		// necessary. Left unset for an interrupted (not failed) run — a
+		// classification would claim this driver knows why a workload it
+		// itself stopped went wrong.
+		errorResponse := &v1.RunResponse_Error{Message: runErr.Error()}
+		if response.GetStatus() == v1.RunResponse_STATUS_FAILED {
+			errorResponse.Kind = v1.ClassifyError(runErr).String()
 		}
+		response.Kind = &v1.GetResponse_Error{Error: errorResponse}
 
 		return response
 	}

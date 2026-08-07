@@ -836,9 +836,7 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 				StartTime:  start,
 				CloseTime:  closed,
 				Kind: &v1.GetResponse_Error{
-					Error: &v1.RunResponse_Error{
-						Message: failureMessage(ctx, temporal, req.Msg.GetWorkflowId(), req.Msg.GetRunId(), respStatus),
-					},
+					Error: failureError(ctx, temporal, req.Msg.GetWorkflowId(), req.Msg.GetRunId(), respStatus),
 				},
 			},
 		), nil
@@ -847,7 +845,8 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 	}
 }
 
-// failureMessage answers why a run ended the way it did.
+// failureError answers why a run ended the way it did, as the message the
+// wire already carried plus the classification P2 (#241) adds beside it.
 //
 // It used to answer with the status again — `Error{Message: respStatus.String()}` —
 // so a caller was told a run failed and, asked why, told that it failed. The reason
@@ -881,20 +880,36 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 // error cannot be read is a run this cannot describe, and inventing a description
 // would be worse than repeating what is known — which is exactly what the old answer
 // did in every case, and is now the answer only when there is nothing else.
-func failureMessage(
+//
+// # Kind, from the same application error
+//
+// [engine.classifyRunError] gives every terminal run failure's application error a
+// Type equal to its [v1.ErrorKind.String] — the same field [engine.activityError]
+// already uses for a task's own classification, so this reads it the same way the
+// durable driver's own step-tolerance logic does ([recordedStepError]'s sibling in
+// the engine package). A cancellation or an error this build never classified
+// carries no kind, rather than guessing one: an agent branching on Kind must be able
+// to tell "classified as X" from "not classified" and not receive a fabricated
+// answer for the second.
+func failureError(
 	ctx context.Context,
 	temporalClient client.Client,
 	workflowID, runID string,
 	status v1.RunResponse_Status,
-) string {
+) *v1.RunResponse_Error {
 	err := temporalClient.GetWorkflow(ctx, workflowID, runID).Get(ctx, nil)
 	if err == nil {
-		return status.String()
+		return &v1.RunResponse_Error{Message: status.String()}
 	}
 
 	var app *temporal.ApplicationError
 	if errors.As(err, &app) && app.Message() != "" {
-		return app.Message()
+		result := &v1.RunResponse_Error{Message: app.Message()}
+		if kind, ok := v1.ParseErrorKind(app.Type()); ok {
+			result.Kind = kind.String()
+		}
+
+		return result
 	}
 
 	// A cancelled run that compensated has something to say, and `Error()` on a
@@ -914,7 +929,7 @@ func failureMessage(
 	if errors.As(err, &canceled) && canceled.HasDetails() {
 		var summary string
 		if canceled.Details(&summary) == nil && summary != "" {
-			return status.String() + summary
+			return &v1.RunResponse_Error{Message: status.String() + summary}
 		}
 	}
 
@@ -923,10 +938,10 @@ func failureMessage(
 	// knows and the workload never said anything about. Its own text is then the
 	// best there is.
 	if text := err.Error(); text != "" {
-		return text
+		return &v1.RunResponse_Error{Message: text}
 	}
 
-	return status.String()
+	return &v1.RunResponse_Error{Message: status.String()}
 }
 
 // heartbeatPhase reads the phase a running attempt last heartbeated.

@@ -324,6 +324,7 @@ type runLocalAnswer struct {
 		Status string `json:"status"`
 		Error  struct {
 			Message string `json:"message"`
+			Kind    string `json:"kind"`
 		} `json:"error"`
 		Outputs struct {
 			StepValues map[string]struct {
@@ -785,6 +786,14 @@ steps:
 	assert.Contains(t, answer.Run.Error.Message, "denied by egress policy",
 		"the run failed for some reason other than the egress policy denying it, so this "+
 			"proves nothing about the policy: %s", answer.Run.Error.Message)
+
+	// #241's P2, at the surface an agent actually reads: the MCP tool result, not
+	// the Go message the tool marshals from. A policy denial is permanent — an
+	// agent that retried on seeing PolicyDenied would be retrying a request the
+	// same policy will refuse again — so this is exactly the answer that has to
+	// arrive as data rather than be parsed out of the sentence above.
+	assert.Equal(t, v1.ErrorKindPolicyDenied.String(), answer.Run.Error.Kind,
+		"the MCP tool result did not carry the run's ErrorKind")
 }
 
 // TestTheRunLocalAnswerIsBounded.

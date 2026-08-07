@@ -186,6 +186,11 @@ func typeErrors(stepID, field string, val *v1.Value) Diagnostics {
 			Step:    stepID,
 			Field:   field,
 			Message: message,
+			// What survives cel-go's checker once every name is assumed to exist is,
+			// by this file's own account, a missing overload, a wrong arity, or a
+			// function nobody declared — a type mismatch in every case, never a
+			// missing name (that is [validateInputRefs]'s question, not this one's).
+			Code: v1.DiagnosticCodeTypeMismatch,
 		})
 	}
 

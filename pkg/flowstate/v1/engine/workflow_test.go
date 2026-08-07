@@ -113,6 +113,48 @@ func TestRunWorkflowPolicy(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowErrorKind runs the shared [tests.ErrorKindCases] against the
+// durable driver, pinning that a run failing outright is classified the same
+// way [flowstatev1_test.TestRunWorkflowErrorKind] pins for the local one —
+// invariant 3's "shared cases, two verified callers" for the [v1.ErrorKind]
+// #241's P2 puts on RunResponse.Error.kind.
+//
+// Read from the application error's own Type rather than from
+// [v1.ClassifyError] on env.GetWorkflowError() directly: that is exactly what
+// a real client does through [flowstatev1.ParseErrorKind] (see server.go's
+// failureError), and it is what proves engine.classifyRunError actually wired
+// the kind onto the wire rather than only computing it. A bare ClassifyError
+// on the SDK's error would pass even if classifyRunError were deleted, because
+// ClassifyError's own fallback (Internal, for anything it does not recognize)
+// happens to be silent about the difference.
+func TestRunWorkflowErrorKind(t *testing.T) {
+	baseURL := tests.NewHTTPServer(t)
+	for _, tc := range tests.ErrorKindCases(baseURL) {
+		t.Run(tc.Name, func(t *testing.T) {
+			testSuite := &testsuite.WorkflowTestSuite{}
+			env := testSuite.NewTestWorkflowEnvironment()
+			env.RegisterWorkflow(engine.Run)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
+
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: tc.Workflow})
+			require.True(t, env.IsWorkflowCompleted())
+
+			err := env.GetWorkflowError()
+			require.Error(t, err, "the case must fail the run outright")
+
+			var app *temporal.ApplicationError
+			require.True(t, errors.As(err, &app),
+				"a terminal run failure must reach the client as an ApplicationError, got: %v", err)
+
+			kind, ok := v1.ParseErrorKind(app.Type())
+			require.True(t, ok, "the application error's Type %q must be a recognized ErrorKind", app.Type())
+			require.Equal(t, tc.ExpectedKind, kind)
+		})
+	}
+}
+
 // TestRunWorkflowTaskPolicy runs #187 slice 1's shared task-shape policy
 // cases ([tests.TaskPolicyCases]) against the durable driver — the same
 // cases [flowstatev1_test.TestRunWorkflowTaskPolicy] runs against the local

@@ -162,6 +162,29 @@ func RetryAfter(err error) time.Duration {
 	return 0
 }
 
+// ParseErrorKind recognizes a string as one of the defined [ErrorKind] values,
+// reporting false for anything else — including empty, which is not a kind
+// any classifier produces.
+//
+// This is the inverse of [ErrorKind.String] and exists for the one place that
+// needs it: recovering a kind from Temporal's ApplicationError.Type(), which
+// carries [ErrorKind.String] across the activity boundary as a bare string
+// (see engine/activities.go's activityError) and hands it back as one. A
+// closed lookup rather than a bare conversion, so a string that travelled
+// through something other than this classification — a future error type, a
+// worker running different code — is reported as unrecognized rather than
+// silently accepted as whichever kind happens to share its spelling.
+func ParseErrorKind(s string) (ErrorKind, bool) {
+	switch ErrorKind(s) {
+	case ErrorKindInvalidInput, ErrorKindUnknownTask, ErrorKindExpression,
+		ErrorKindPolicyDenied, ErrorKindLimitExceeded, ErrorKindUpstreamUnknown,
+		ErrorKindUpstream, ErrorKindInternal:
+		return ErrorKind(s), true
+	default:
+		return "", false
+	}
+}
+
 // NewTaskError returns a [TaskError] classifying a failure of the named task.
 func NewTaskError(task string, kind ErrorKind, err error) *TaskError {
 	return &TaskError{Task: task, Kind: kind, Err: err}

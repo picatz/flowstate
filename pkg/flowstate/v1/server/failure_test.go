@@ -94,6 +94,15 @@ func TestAFailedRunSaysWhy(t *testing.T) {
 		"Temporal's envelope reached the caller instead of the engine's own message")
 	assert.NotContains(t, failure, workflowID,
 		"the reason repeats the workflow id the caller asked with")
+
+	// #241's P2, proven through a real server and a real Temporal rather than a
+	// unit test of failureError alone: the classification behind that message
+	// survives the whole path — engine.classifyRunError's ApplicationError,
+	// Temporal's own wire, and server.go's failureError reading its Type back —
+	// to land on GetResponse.Error.kind, which is what `flow get -o json` and
+	// every MCP tool result actually render.
+	assert.Equal(t, v1.ErrorKindUnknownTask.String(), got.GetError().GetKind(),
+		"the run's classification did not survive the round trip to GetResponse")
 }
 
 // TestACompletedRunReportsNoFailure is the negative direction.

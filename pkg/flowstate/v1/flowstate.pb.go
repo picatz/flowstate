@@ -4944,7 +4944,20 @@ type Diagnostic struct {
 	Kind string `protobuf:"bytes,6,opt,name=kind,proto3" json:"kind,omitempty"`
 	// Value is the literal at fault *inside* Field, when the field holds a list and one
 	// element of it is the problem.
-	Value         string `protobuf:"bytes,7,opt,name=value,proto3" json:"value,omitempty"`
+	Value string `protobuf:"bytes,7,opt,name=value,proto3" json:"value,omitempty"`
+	// Code names the diagnostic's class in a form that survives Message being
+	// reworded — the same argument this message already makes for Line/Column
+	// over parsing a squiggle out of prose, applied to *what* is wrong rather
+	// than to *where*.
+	//
+	// A small, deliberately incomplete set: only the classes a program is
+	// expected to actually branch on (an unknown task, an unresolved reference,
+	// a type mismatch, a schema constraint violation, a placement the grammar
+	// refuses, a retired spelling) get their own code today. Everything else is
+	// "general" — an honest fallback rather than a code invented to look
+	// complete. The full set, generated from the registry that assigns them so
+	// it cannot drift, is docs/reference/diagnostics.md.
+	Code          string `protobuf:"bytes,8,opt,name=code,proto3" json:"code,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5024,6 +5037,13 @@ func (x *Diagnostic) GetKind() string {
 func (x *Diagnostic) GetValue() string {
 	if x != nil {
 		return x.Value
+	}
+	return ""
+}
+
+func (x *Diagnostic) GetCode() string {
+	if x != nil {
+		return x.Code
 	}
 	return ""
 }
@@ -9132,8 +9152,27 @@ func (x *Task_HTTP_Outputs) GetJson() *v1alpha1.Value {
 }
 
 type RunResponse_Error struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Message       string                 `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Message string                 `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
+	// Kind classifies why the run failed, mirroring flowstatev1.ErrorKind — the
+	// same classification retry policy is built from, so an agent (or any
+	// programmatic consumer) can decide "repair the file / retry / escalate to
+	// the operator" without parsing Message.
+	//
+	// A plain string rather than an enum: the set this names already lives as a
+	// Go type in the execution-independent layer (errors.go) because it drives
+	// retry semantics on both drivers before it ever needed to travel, and it
+	// already crosses the durable driver's own wire — Temporal's
+	// ApplicationError carries it as its Type — as this same string. Restating
+	// it as a second, proto-owned enum would be two closed sets that could
+	// disagree about what "PolicyDenied" means; this field is that value
+	// reaching the client rather than a parallel definition of it.
+	//
+	// Always set alongside Message, on the same rule flowstatev1.ClassifyError
+	// itself follows: a failure this driver cannot otherwise classify is
+	// reported as "Internal" rather than left blank, because an unclassified
+	// failure is a gap in Flowstate and not a statement that nothing is known.
+	Kind          string `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -9171,6 +9210,13 @@ func (*RunResponse_Error) Descriptor() ([]byte, []int) {
 func (x *RunResponse_Error) GetMessage() string {
 	if x != nil {
 		return x.Message
+	}
+	return ""
+}
+
+func (x *RunResponse_Error) GetKind() string {
+	if x != nil {
+		return x.Kind
 	}
 	return ""
 }
@@ -9565,7 +9611,7 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"\x06inputs\x18\x02 \x03(\v2$.flowstate.v1.RunRequest.InputsEntryB\x12\xe2A\x01\x01\xbaH\v\x9a\x01\b\x10@\"\x04r\x02\x10\x01R\x06inputs\x1aN\n" +
 	"\vInputsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12)\n" +
-	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\"\xfd\x03\n" +
+	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\"\x91\x04\n" +
 	"\vRunResponse\x12,\n" +
 	"\vworkflow_id\x18\x01 \x01(\tB\v\xbaH\b\xc8\x01\x01r\x03\xb0\x01\x01R\n" +
 	"workflowId\x12\"\n" +
@@ -9573,9 +9619,10 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"\x06status\x18\x03 \x01(\x0e2 .flowstate.v1.RunResponse.StatusB\r\xbaH\n" +
 	"\xc8\x01\x01\x82\x01\x04\x10\x01 \x00R\x06status\x127\n" +
 	"\x05error\x18\x04 \x01(\v2\x1f.flowstate.v1.RunResponse.ErrorH\x00R\x05error\x12>\n" +
-	"\aoutputs\x18\x05 \x01(\v2\".flowstate.v1.Workflow.StepOutputsH\x00R\aoutputs\x1a)\n" +
+	"\aoutputs\x18\x05 \x01(\v2\".flowstate.v1.Workflow.StepOutputsH\x00R\aoutputs\x1a=\n" +
 	"\x05Error\x12 \n" +
-	"\amessage\x18\x01 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\amessage\"\x9f\x01\n" +
+	"\amessage\x18\x01 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\amessage\x12\x12\n" +
+	"\x04kind\x18\x02 \x01(\tR\x04kind\"\x9f\x01\n" +
 	"\x06Status\x12\x16\n" +
 	"\x12STATUS_UNSPECIFIED\x10\x00\x12\x12\n" +
 	"\x0eSTATUS_RUNNING\x10\x01\x12\x14\n" +
@@ -9618,7 +9665,7 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"\vRunProgress\x12\x17\n" +
 	"\astep_id\x18\x01 \x01(\tR\x06stepId\x12\x12\n" +
 	"\x04path\x18\x02 \x03(\tR\x04path\x12'\n" +
-	"\x0fcompleted_steps\x18\x03 \x01(\x05R\x0ecompletedSteps\"\xae\x01\n" +
+	"\x0fcompleted_steps\x18\x03 \x01(\x05R\x0ecompletedSteps\"\xc2\x01\n" +
 	"\n" +
 	"Diagnostic\x12\x12\n" +
 	"\x04line\x18\x01 \x01(\rR\x04line\x12\x16\n" +
@@ -9627,7 +9674,8 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"\x04step\x18\x04 \x01(\tR\x04step\x12\x14\n" +
 	"\x05field\x18\x05 \x01(\tR\x05field\x12\x12\n" +
 	"\x04kind\x18\x06 \x01(\tR\x04kind\x12\x14\n" +
-	"\x05value\x18\a \x01(\tR\x05value\"j\n" +
+	"\x05value\x18\a \x01(\tR\x05value\x12\x12\n" +
+	"\x04code\x18\b \x01(\tR\x04code\"j\n" +
 	"\x10DiagnosticReport\x12\x1a\n" +
 	"\x04file\x18\x01 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\x04file\x12:\n" +
 	"\vdiagnostics\x18\x02 \x03(\v2\x18.flowstate.v1.DiagnosticR\vdiagnostics\"H\n" +
