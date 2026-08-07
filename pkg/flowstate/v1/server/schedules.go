@@ -163,6 +163,16 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 		return nil, err
 	}
 
+	// The same derivation [FlowstateServer.prepareCreate] applies to a directly
+	// submitted run, through the same function, so a scheduled run lands on its
+	// tenant's fleet exactly as a submitted one does. Resolved at creation
+	// rather than at each firing for the reason everything else here is: there
+	// is nobody at 03:00 to be told the queue could not be composed.
+	taskQueue, err := s.taskQueueFor(namespace)
+	if err != nil {
+		return nil, err
+	}
+
 	spec, err := scheduleSpecOf(trigger)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
@@ -247,7 +257,7 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 			// anything else.
 			ID:        schedulePrefix + name,
 			Workflow:  engine.Run,
-			TaskQueue: engine.RunTaskQueueName,
+			TaskQueue: taskQueue,
 
 			WorkflowExecutionTimeout: s.executionTimeout,
 

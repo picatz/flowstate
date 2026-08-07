@@ -88,6 +88,32 @@ func WithNamespacePool(pool *temporalclient.Pool) Option {
 	return func(s *FlowstateServer) { s.pool = pool }
 }
 
+// WithTaskQueues routes each tenant's runs to a task queue of its own, so a
+// per-tenant worker fleet is addressable rather than merely startable.
+//
+// Without it every run goes to [engine.RunTaskQueueName], which is the
+// zero-configuration path and the whole of today's behavior: one queue, every
+// tenant, whatever workers poll it. A deployment with one team has nothing to
+// route between and should not have to say so.
+//
+// With it, the queue a run is submitted to is derived from the run's
+// authenticated tenant — never from the request, the same rule the namespace
+// memo and the fairness key already follow, and for the same reason: a workload
+// that could name its own queue could name the fleet that executes it.
+//
+// It composes with [WithNamespacePool] rather than duplicating it. The pool
+// decides which Temporal namespace a tenant's runs live in (history and
+// visibility isolation); this decides which worker fleet inside that namespace
+// executes them (process isolation — the claim that a compromised worker holds
+// one tenant's secrets). A deployment can sensibly do either alone.
+//
+// The paired half is on the worker: `flow worker --tenant` refuses a run
+// belonging to anyone else, which is what turns a routing mistake into a failure
+// instead of a cross-tenant execution. See [engine.TenantInterceptor].
+func WithTaskQueues(queues engine.TaskQueues) Option {
+	return func(s *FlowstateServer) { s.taskQueues = queues }
+}
+
 // WithExecutionTimeout bounds how long a whole workload may take, including
 // every Continue-As-New in its chain.
 //
@@ -137,6 +163,11 @@ type FlowstateServer struct {
 	// namespace maps to. Nil means every run uses temporalClient, which is the
 	// zero-configuration path.
 	pool *temporalclient.Pool
+
+	// taskQueues decides which task queue a tenant's runs are submitted to. The
+	// zero value routes every run to [engine.RunTaskQueueName], which is the
+	// zero-configuration path — see [WithTaskQueues].
+	taskQueues engine.TaskQueues
 
 	// maxStepsPerRun is read once at construction. Reading it per request would
 	// let the step budget change between a run and its own Continue-As-New,
@@ -707,8 +738,18 @@ func (s *FlowstateServer) prepareCreate(
 		memo[k] = v
 	}
 
+	// Derived from the authenticated tenant, never from the request — the same
+	// rule the memo above and the fairness key below already follow. Refused
+	// before anything is started, rather than defaulted onto the shared queue:
+	// a tenant whose fleet was asked for but not configured must not quietly
+	// land on everyone else's workers.
+	taskQueue, err := s.taskQueueFor(identity.GetNamespace())
+	if err != nil {
+		return nil, nil, client.StartWorkflowOptions{}, err
+	}
+
 	options := client.StartWorkflowOptions{
-		TaskQueue: engine.RunTaskQueueName,
+		TaskQueue: taskQueue,
 
 		// No run timeout.
 		//
@@ -784,6 +825,31 @@ const maxFairnessKeyBytes = 64
 // A compile-time check, so raising the namespace limit fails the build here
 // rather than producing keys the server quietly rejects at submit.
 var _ = [1]struct{}{}[secrets.MaxNamespaceLen-maxFairnessKeyBytes+1]
+
+// taskQueueFor returns the task queue a tenant's runs are submitted to, or the
+// refusal to submit at all.
+//
+// Unconfigured it is [engine.RunTaskQueueName] and cannot fail, which is what
+// keeps a deployment that never sets [WithTaskQueues] byte-identical to what it
+// had before this existed — including for a recorded namespace that predates
+// [auth.ValidateNamespace]'s grammar, which the routed path has to refuse and
+// the unrouted path has no reason to look at.
+//
+// FailedPrecondition, and worded like [FlowstateServer.clientFor]'s refusal, for
+// the identical reason: this is the deployment's configuration being incomplete
+// for this caller, not the caller's request being wrong, and the message names
+// only the caller's own namespace so that refusing does not describe the
+// deployment's tenancy to whoever provoked it.
+func (s *FlowstateServer) taskQueueFor(namespace string) (string, error) {
+	queue, err := s.taskQueues.For(namespace)
+	if err != nil {
+		return "", connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("this deployment routes each tenant's runs to their own task queue, "+
+				"and namespace %q cannot be placed on one: %w", namespace, err))
+	}
+
+	return queue, nil
+}
 
 // fairnessFor returns the scheduling priority for a tenant.
 //

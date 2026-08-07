@@ -879,6 +879,7 @@ flow server --verbose
 | `--plugin-dir <string,...>` | `stringArray` | — | — | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
 | `--profile <string>` | `string` | — | — | Temporal configuration profile to use |
+| `--task-queue-prefix <string>` | `string` | — | `FLOWSTATE_TASK_QUEUE_PREFIX` | route each tenant's runs to a task queue of their own, named <prefix>_<namespace>, so a per-tenant worker fleet can be addressed; unset means every tenant shares the single default queue, which is the zero-configuration behavior |
 
 ## `flow signal`
 
@@ -1130,4 +1131,6 @@ flow worker --namespace production --deployment-name flowstate --build-id "$(git
 | `--secret-vault-token-file <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_TOKEN_FILE` | file holding a static Vault client token, re-read per login (default $FLOWSTATE_SECRET_VAULT_TOKEN_FILE; falls back to $FLOWSTATE_SECRET_VAULT_TOKEN directly, for a development vault or a test) |
 | `--task-policy <string>` | `string` | — | `FLOWSTATE_TASK_POLICY` | path to a task-shape policy (YAML) governing which identities may dispatch which tasks (default $FLOWSTATE_TASK_POLICY); with nothing configured, every task dispatches exactly as it does today — see #187 |
 | `--task-queue <string>` | `string` | `flowstate-run-task-queue` | `TEMPORAL_TASK_QUEUE` | task queue for Temporal workflows and activities |
+| `--task-queue-prefix <string>` | `string` | — | `FLOWSTATE_TASK_QUEUE_PREFIX` | route each tenant's runs to a task queue of their own, named <prefix>_<namespace>, so a per-tenant worker fleet can be addressed; unset means every tenant shares the single default queue, which is the zero-configuration behavior |
+| `--tenant <string>` | `string` | — | — | execute only this Flowstate namespace's runs, refusing any other tenant's outright rather than executing it with this worker's secrets, egress policy and plugins. Pass an empty value (--tenant=) for the default tenant of an untenanted deployment. Needs a queue of this worker's own: either --task-queue-prefix (the same value the server was started with) or an explicit --task-queue |
 

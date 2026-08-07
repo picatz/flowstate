@@ -57,6 +57,23 @@ type temporalFlags struct {
 	profile   string
 	taskQueue string
 
+	// Per-tenant task-queue routing, off unless a prefix is configured.
+	//
+	// taskQueuePrefix is the deployment's spelling of a tenant's queue and has
+	// to match on the server and on every worker; tenant is the one namespace a
+	// worker will execute, and tenantSet distinguishes "the default tenant"
+	// (--tenant=) from "no tenant declared", which are different postures and
+	// spell the same empty string.
+	//
+	// taskQueueExplicit records whether --task-queue was named on the command
+	// line, because its default is a value rather than empty: with a tenant and
+	// a prefix, the queue is derived, and an operator who named one anyway meant
+	// it.
+	taskQueuePrefix   string
+	tenant            string
+	tenantSet         bool
+	taskQueueExplicit bool
+
 	// Worker Deployment Versioning, off unless both halves are configured.
 	//
 	// A version is the pair, so honouring one without the other would produce a
@@ -84,18 +101,24 @@ func temporalFlagsOf(cmd *cobra.Command) temporalFlags {
 	namespace, _ := cmd.Flags().GetString("namespace")
 	profile, _ := cmd.Flags().GetString("profile")
 	taskQueue, _ := cmd.Flags().GetString("task-queue")
+	taskQueuePrefix, _ := cmd.Flags().GetString("task-queue-prefix")
+	tenant, _ := cmd.Flags().GetString("tenant")
 	deploymentName, _ := cmd.Flags().GetString("deployment-name")
 	buildID, _ := cmd.Flags().GetString("build-id")
 	verbose, _ := cmd.Flags().GetBool("verbose")
 
 	return temporalFlags{
-		address:        address,
-		namespace:      namespace,
-		profile:        profile,
-		taskQueue:      taskQueue,
-		deploymentName: deploymentName,
-		buildID:        buildID,
-		verbose:        verbose,
+		address:           address,
+		namespace:         namespace,
+		profile:           profile,
+		taskQueue:         taskQueue,
+		taskQueuePrefix:   taskQueuePrefix,
+		tenant:            tenant,
+		tenantSet:         cmd.Flags().Changed("tenant"),
+		taskQueueExplicit: cmd.Flags().Changed("task-queue"),
+		deploymentName:    deploymentName,
+		buildID:           buildID,
+		verbose:           verbose,
 	}
 }
 
@@ -285,6 +308,16 @@ func runWorker(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Same reasoning, one flag later: which queue this worker polls, and whether
+	// it is restricted to one tenant, are decided from flags alone and refused
+	// here rather than after a connection, a plugin launch, and a secret
+	// provider have been opened on a worker that is about to be told it may not
+	// start. See [workerTaskQueue] for the combinations it refuses.
+	taskQueue, err := workerTaskQueue(flags)
+	if err != nil {
+		return err
+	}
+
 	// Before any I/O, and before the worker can poll: a policy file that does not
 	// load must refuse the command, not leave a worker running the default policy
 	// its operator believes was replaced.
@@ -325,16 +358,33 @@ func runWorker(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	w := worker.New(c, flags.taskQueue, worker.Options{
+	interceptors := temporalWorkerInterceptors()
+	if flags.tenantSet {
+		// Appended rather than replacing, so a tenant-restricted worker is still
+		// traced: the refusal is a thing an operator will want to see in a trace
+		// beside the runs that succeeded.
+		interceptors = append(interceptors, engine.TenantInterceptor(flags.tenant))
+	}
+
+	w := worker.New(c, taskQueue, worker.Options{
 		DeploymentOptions: deployment,
-		Interceptors:      temporalWorkerInterceptors(),
+		Interceptors:      interceptors,
 	})
 
 	engine.Register(w, runtime)
 
+	if flags.tenantSet {
+		// Said at startup as well as at each refusal, because the operator
+		// reading a refused run's failure a month later is usually not the one
+		// who wrote this command line — the same argument the unversioned
+		// warning below makes.
+		infraLogger().Info("worker restricted to one tenant; runs belonging to any other will be refused",
+			"tenant", flags.tenant, "task_queue", taskQueue)
+	}
+
 	if deployment.UseVersioning {
 		infraLogger().Info("starting worker",
-			"task_queue", flags.taskQueue,
+			"task_queue", taskQueue,
 			"deployment", deployment.Version.DeploymentName,
 			"build_id", deployment.Version.BuildID)
 	} else {
@@ -343,7 +393,7 @@ func runWorker(cmd *cobra.Command, args []string) error {
 		// the moment the flag was typed: the person reading a worker's logs a month
 		// later is usually not the person who wrote its command line.
 		infraLogger().Warn("starting worker unversioned; deploying this binary changes every run in flight",
-			"task_queue", flags.taskQueue,
+			"task_queue", taskQueue,
 			"accepted_with", "--"+allowUnversionedFlag,
 			"fix", "set FLOWSTATE_DEPLOYMENT_NAME and FLOWSTATE_BUILD_ID, or --deployment-name and --build-id")
 	}
@@ -517,7 +567,18 @@ func runServer(cmd *cobra.Command, args []string) error {
 	}
 	defer c.Close()
 
+	// Before any of it is used, so a prefix that cannot compose a legal queue
+	// name stops the server rather than failing every submission after it — the
+	// rule CLAUDE.md states for policy surfaces, applied to this one.
+	taskQueues := engine.TaskQueues{Prefix: temporalCfg.taskQueuePrefix}
+	if err := taskQueues.Validate(); err != nil {
+		return fmt.Errorf("--task-queue-prefix: %w", err)
+	}
+
 	serverOpts := []server.Option{}
+	if taskQueues.Enabled() {
+		serverOpts = append(serverOpts, server.WithTaskQueues(taskQueues))
+	}
 	if temporalCfg.deploymentName != "" {
 		serverOpts = append(serverOpts, server.WithDeployment(temporalCfg.deploymentName))
 	}
@@ -575,6 +636,11 @@ func runServer(cmd *cobra.Command, args []string) error {
 
 		serverOpts = append(serverOpts, server.WithNamespacePool(pool))
 		logger.Info("routing tenants to mapped Temporal namespaces", "namespaces", pool.Namespaces())
+
+		// The mapping-completeness half: the pool proved every mapped namespace
+		// is *dialable* and knows nothing about whether anything polls it. See
+		// [warnUnpolledTenantQueues] for why this warns rather than refuses.
+		warnUnpolledTenantQueues(cmd.Context(), logger, pool, taskQueues, routableTenants(policy.Tenancy))
 	}
 
 	// The server answers Validate and GetCatalog from the process-wide registry,
@@ -1484,6 +1550,27 @@ flow server --verbose`,
 	}
 	workerCmd.Flags().String("task-queue", cmp.Or(os.Getenv("TEMPORAL_TASK_QUEUE"), engine.RunTaskQueueName),
 		"task queue for Temporal workflows and activities")
+
+	// Per-tenant routing: the prefix on both sides, the tenant on the worker.
+	//
+	// The prefix is the same value on the server and the worker because it is
+	// the same fact — how this deployment spells a tenant's queue — and a worker
+	// that spelled it differently would poll a queue nothing submits to. Stated
+	// twice rather than discovered, because a worker does not talk to the
+	// Flowstate server at all: it dials Temporal, and there is nothing there to
+	// ask.
+	for _, c := range []*cobra.Command{workerCmd, serverCmd} {
+		c.Flags().String("task-queue-prefix", os.Getenv("FLOWSTATE_TASK_QUEUE_PREFIX"),
+			"route each tenant's runs to a task queue of their own, named <prefix>_<namespace>, "+
+				"so a per-tenant worker fleet can be addressed; unset means every tenant shares "+
+				"the single default queue, which is the zero-configuration behavior")
+	}
+	workerCmd.Flags().String("tenant", "",
+		"execute only this Flowstate namespace's runs, refusing any other tenant's outright "+
+			"rather than executing it with this worker's secrets, egress policy and plugins. "+
+			"Pass an empty value (--tenant=) for the default tenant of an untenanted deployment. "+
+			"Needs a queue of this worker's own: either --task-queue-prefix (the same value the "+
+			"server was started with) or an explicit --task-queue")
 
 	workerCmd.Flags().String("deployment-name", os.Getenv("FLOWSTATE_DEPLOYMENT_NAME"),
 		"Worker Deployment this worker belongs to. With --build-id, pins every in-flight run to the "+
