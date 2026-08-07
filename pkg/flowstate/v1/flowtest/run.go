@@ -143,8 +143,15 @@ func runCase(test *Test, load func() (*v1.Workflow, error)) *v1.TestCase {
 		return result
 	}
 
+	runtime, err := secretRuntime(test.Secrets)
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
 	clock := v1.NewVirtualClock(epoch)
 	ctx := v1.NewContextWithClock(context.Background(), clock)
+	ctx = v1.ContextWithTaskRuntime(ctx, runtime)
 
 	// The run executes against its own registry, not the process-wide one:
 	// stubs answer, everything else fails closed, and no other goroutine's

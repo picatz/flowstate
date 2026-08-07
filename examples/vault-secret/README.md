@@ -21,10 +21,19 @@ vault:apps/api         the only field of the secret at apps/api
 
 The example points at `api.example.com`, so it is meant to be read and adapted
 rather than run as written — and unlike `env:` or `command:`, `vault:` needs a real
-Vault or OpenBao server to talk to, which is why this directory has no
-`*.test.yaml`: there is nothing this repository's CI can stand a real vault up as
-and still be testing what an operator's vault does. `flow fix --check` and `flow
-validate` still hold this file to the grammar, which is what CI does run.
+Vault or OpenBao server to talk to, which nothing in this repository's CI can stand
+up. `flow fix --check` and `flow validate` hold this file to the grammar, which is
+what CI runs against it directly.
+
+What CI *can* run, and does, is [`workflow.test.yaml`](workflow.test.yaml): it
+proves the workflow asks for `vault:apps/api#token` and that the step receiving it
+gets exactly the value a case bound that reference to, with no Vault reachable and
+no Vault provider even compiled into the test binary — `flow test`'s `secrets:`
+block resolves the reference itself, in place of a real backend, the same way
+`stubs:` replaces the http task in place of a real network call. It also proves the
+negative that matters most for a credential path: a case that forgets to bind
+`vault:apps/api#token` is refused, naming the reference, rather than handed an
+empty bearer token.
 
 Pointed at a real instance with a static development token:
 
