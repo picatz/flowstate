@@ -1,0 +1,68 @@
+# Two cases: an order accumulating across more than one mutation before
+# closing, and an order closed on its very first mutation. The distinct
+# failure a loop reports when it runs its whole per-segment budget without a
+# `close` mutation arriving at all is `loop-accumulate`'s own case to make
+# (`loop-accumulate-runaway` in that example's workflow.test.yaml); this file
+# does not repeat it, since it would need a hundred near-identical queued
+# signals to reach the identical, already-proven bound.
+#
+# The first case is what `workflow.yaml`'s own header comment names as the
+# thing the shared durable corpus harness (engine/examples_durable_test.go)
+# cannot show: `signals:` here queues *two* deliveries under the identical
+# name, and the local driver's signal queue (LocalSignals,
+# pkg/flowstate/v1/wait_local.go) hands them to the loop's two successive
+# waits in the order they were queued — proving the carried `order.total_cents`
+# genuinely accumulates rather than being recomputed from one payload.
+edition: v2026.2
+tests:
+  - name: accumulates across two line items, then closes on a third checkout mutation
+    workflow: ./workflow.yaml
+    # `at:` staggers the three deliveries. Left at the shared "immediately"
+    # default, all three race to enqueue at the identical virtual instant with
+    # no defined order among themselves — scriptSignals's own doc comment
+    # guarantees order only *across* distinct moments, not between signals
+    # scripted for the same one — so the closing mutation could be the one
+    # `LocalSignals` happens to queue first, closing the order before the
+    # first line item ever lands. Explicit, increasing `at:` values are what
+    # make "line item, line item, then checkout" the sequence this case
+    # actually proves rather than one of six equally likely orderings.
+    signals:
+      - name: update
+        at: 1s
+        payload:
+          amount_cents: 1999
+          close: false
+      - name: update
+        at: 2s
+        payload:
+          amount_cents: 500
+          close: false
+      - name: update
+        at: 3s
+        payload:
+          amount_cents: 0
+          close: true
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [opened, lifecycle]
+      outputs:
+        total_cents: 2499
+        mutations: 3
+
+  - name: an order closed before anything is added carries nothing forward
+    workflow: ./workflow.yaml
+    signals:
+      - name: update
+        payload:
+          amount_cents: 0
+          close: true
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [opened, lifecycle]
+      outputs:
+        total_cents: 0
+        mutations: 1

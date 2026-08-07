@@ -39,6 +39,9 @@ const (
 	WorkflowServiceGetProcedure = "/flowstate.v1.WorkflowService/Get"
 	// WorkflowServiceSignalProcedure is the fully-qualified name of the WorkflowService's Signal RPC.
 	WorkflowServiceSignalProcedure = "/flowstate.v1.WorkflowService/Signal"
+	// WorkflowServiceSignalWithStartProcedure is the fully-qualified name of the WorkflowService's
+	// SignalWithStart RPC.
+	WorkflowServiceSignalWithStartProcedure = "/flowstate.v1.WorkflowService/SignalWithStart"
 	// WorkflowServiceListProcedure is the fully-qualified name of the WorkflowService's List RPC.
 	WorkflowServiceListProcedure = "/flowstate.v1.WorkflowService/List"
 	// WorkflowServiceCancelProcedure is the fully-qualified name of the WorkflowService's Cancel RPC.
@@ -91,6 +94,12 @@ type WorkflowServiceClient interface {
 	// them — which is the part that has to match for a local run to tell an author
 	// what production will do.
 	Signal(context.Context, *connect.Request[v1.SignalRequest]) (*connect.Response[v1.SignalResponse], error)
+	// SignalWithStart delivers a signal to an entity, creating it first — from
+	// [SignalWithStartRequest.workflow] and [SignalWithStartRequest.inputs] — if no
+	// entity is running under [SignalWithStartRequest.entity_key] yet. See
+	// [SignalWithStartRequest] for the two authorization questions this decides
+	// separately and the race this closes that Run-then-Signal cannot.
+	SignalWithStart(context.Context, *connect.Request[v1.SignalWithStartRequest]) (*connect.Response[v1.SignalWithStartResponse], error)
 	// List returns the runs belonging to the caller's tenant.
 	//
 	// The filtering is done here rather than by Temporal, and that follows from how
@@ -234,6 +243,12 @@ func NewWorkflowServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(workflowServiceMethods.ByName("Signal")),
 			connect.WithClientOptions(opts...),
 		),
+		signalWithStart: connect.NewClient[v1.SignalWithStartRequest, v1.SignalWithStartResponse](
+			httpClient,
+			baseURL+WorkflowServiceSignalWithStartProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("SignalWithStart")),
+			connect.WithClientOptions(opts...),
+		),
 		list: connect.NewClient[v1.ListRequest, v1.ListResponse](
 			httpClient,
 			baseURL+WorkflowServiceListProcedure,
@@ -320,6 +335,7 @@ type workflowServiceClient struct {
 	run              *connect.Client[v1.RunRequest, v1.RunResponse]
 	get              *connect.Client[v1.GetRequest, v1.GetResponse]
 	signal           *connect.Client[v1.SignalRequest, v1.SignalResponse]
+	signalWithStart  *connect.Client[v1.SignalWithStartRequest, v1.SignalWithStartResponse]
 	list             *connect.Client[v1.ListRequest, v1.ListResponse]
 	cancel           *connect.Client[v1.CancelRequest, v1.CancelResponse]
 	terminate        *connect.Client[v1.TerminateRequest, v1.TerminateResponse]
@@ -348,6 +364,11 @@ func (c *workflowServiceClient) Get(ctx context.Context, req *connect.Request[v1
 // Signal calls flowstate.v1.WorkflowService.Signal.
 func (c *workflowServiceClient) Signal(ctx context.Context, req *connect.Request[v1.SignalRequest]) (*connect.Response[v1.SignalResponse], error) {
 	return c.signal.CallUnary(ctx, req)
+}
+
+// SignalWithStart calls flowstate.v1.WorkflowService.SignalWithStart.
+func (c *workflowServiceClient) SignalWithStart(ctx context.Context, req *connect.Request[v1.SignalWithStartRequest]) (*connect.Response[v1.SignalWithStartResponse], error) {
+	return c.signalWithStart.CallUnary(ctx, req)
 }
 
 // List calls flowstate.v1.WorkflowService.List.
@@ -429,6 +450,12 @@ type WorkflowServiceHandler interface {
 	// them — which is the part that has to match for a local run to tell an author
 	// what production will do.
 	Signal(context.Context, *connect.Request[v1.SignalRequest]) (*connect.Response[v1.SignalResponse], error)
+	// SignalWithStart delivers a signal to an entity, creating it first — from
+	// [SignalWithStartRequest.workflow] and [SignalWithStartRequest.inputs] — if no
+	// entity is running under [SignalWithStartRequest.entity_key] yet. See
+	// [SignalWithStartRequest] for the two authorization questions this decides
+	// separately and the race this closes that Run-then-Signal cannot.
+	SignalWithStart(context.Context, *connect.Request[v1.SignalWithStartRequest]) (*connect.Response[v1.SignalWithStartResponse], error)
 	// List returns the runs belonging to the caller's tenant.
 	//
 	// The filtering is done here rather than by Temporal, and that follows from how
@@ -568,6 +595,12 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 		connect.WithSchema(workflowServiceMethods.ByName("Signal")),
 		connect.WithHandlerOptions(opts...),
 	)
+	workflowServiceSignalWithStartHandler := connect.NewUnaryHandler(
+		WorkflowServiceSignalWithStartProcedure,
+		svc.SignalWithStart,
+		connect.WithSchema(workflowServiceMethods.ByName("SignalWithStart")),
+		connect.WithHandlerOptions(opts...),
+	)
 	workflowServiceListHandler := connect.NewUnaryHandler(
 		WorkflowServiceListProcedure,
 		svc.List,
@@ -654,6 +687,8 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 			workflowServiceGetHandler.ServeHTTP(w, r)
 		case WorkflowServiceSignalProcedure:
 			workflowServiceSignalHandler.ServeHTTP(w, r)
+		case WorkflowServiceSignalWithStartProcedure:
+			workflowServiceSignalWithStartHandler.ServeHTTP(w, r)
 		case WorkflowServiceListProcedure:
 			workflowServiceListHandler.ServeHTTP(w, r)
 		case WorkflowServiceCancelProcedure:
@@ -699,6 +734,10 @@ func (UnimplementedWorkflowServiceHandler) Get(context.Context, *connect.Request
 
 func (UnimplementedWorkflowServiceHandler) Signal(context.Context, *connect.Request[v1.SignalRequest]) (*connect.Response[v1.SignalResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.Signal is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) SignalWithStart(context.Context, *connect.Request[v1.SignalWithStartRequest]) (*connect.Response[v1.SignalWithStartResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.SignalWithStart is not implemented"))
 }
 
 func (UnimplementedWorkflowServiceHandler) List(context.Context, *connect.Request[v1.ListRequest]) (*connect.Response[v1.ListResponse], error) {

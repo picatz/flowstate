@@ -2702,6 +2702,40 @@ message RunRequest {
       max_pairs: 64
     }
   ];
+
+  // EntityKey turns a stable business key into the run's workflow id, in place of
+  // today's random one, so a long-lived workload — a subscription, an order, an
+  // incident — can be addressed by what it *is* rather than by an id nobody wrote
+  // down. Unset is byte-identical to today: a `flowstate-workflow-<uuid>` id, same
+  // as every run before this field existed (invariant 10, no compatibility arm
+  // needed because the zero value already means "generate one").
+  //
+  // # The id is namespace-scoped, and the request never says which namespace
+  //
+  // The other half of the id is the caller's own tenant, taken only from
+  // [FlowstateServer.identityFor] — the same rule [fairnessFor] already applies to
+  // scheduling priority and invariant "a workload's namespace comes from the
+  // authenticated caller, never from the workload itself" states generally. A
+  // request cannot name the namespace half of its own address, or a caller could
+  // address (and collide with) another tenant's entity by asserting their
+  // namespace as a field value rather than authenticating as them.
+  //
+  // # Grammar, and why it is the same grammar a namespace already has
+  //
+  // Lowercase ASCII letters, digits, and a dash that is never first — identical to
+  // [auth.ValidateNamespace]'s grammar, and deliberately so: the two halves are
+  // joined by a single separator character neither grammar permits (see
+  // `EntityWorkflowID` in `pkg/flowstate/v1/entity.go`), which is what makes the
+  // join unambiguous. CLAUDE.md's env-provider incident is the exact trap this
+  // avoids — `prefix + NAMESPACE + "_" + name` let `TEAM_A` + `KEY` collide with
+  // `TEAM` + `A_KEY` because every character legal in the prefix was also legal in
+  // the name. Here, neither half can contain the separator, so there is only ever
+  // one place the string could have been split, and it is the right one.
+  optional string entity_key = 3 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+    pattern: "^[a-z0-9][a-z0-9-]*$"
+  }];
 }
 
 // RunResponse is the response message for a workflow run.
@@ -2738,9 +2772,18 @@ message RunResponse {
     STATUS_TERMINATED = 5;
     STATUS_TIMED_OUT = 6;
   }
+  // WorkflowId is `flowstate-workflow-<uuid>` for an ordinary run and
+  // `flowstate-entity-<namespace>_<entity_key>` for one started with
+  // [RunRequest.entity_key] — no longer a bare UUID, so the format constraint
+  // is a length bound rather than [buf.validate.field.string.uuid], which the
+  // generated id never actually satisfied on its own (it is a prefixed string,
+  // not a bare UUID) and which an entity-addressed id cannot satisfy at all.
   string workflow_id = 1 [
     (buf.validate.field).required = true,
-    (buf.validate.field).string.uuid = true
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 1024
+    }
   ];
   string run_id = 2 [
     (buf.validate.field).required = true,
@@ -2834,6 +2877,69 @@ message GetResponse {
   // "nothing to report" rather than "an empty result", which is why there is no
   // empty message to distinguish them.
   RunOutputs run_outputs = 10;
+
+  // EntityState is a bounded snapshot of a RUNNING run's carried state — its
+  // top-level `vars:` and the value each active `loop:` is carrying between
+  // iterations — answered by a second Temporal query beside
+  // [RunProgress]'s, for the reason [RunProgress] itself exists: nothing
+  // outside a running workflow knows its own state, because the state lives
+  // in the interpreter's own memory rather than in anything the service
+  // records, so the only way to ask is a query that reaches the worker.
+  //
+  // # Why this exists at all
+  //
+  // Outputs (both arms of the oneof above) populate only on
+  // STATUS_COMPLETED. An entity — a run shaped as `loop:` +
+  // `wait_for_signal:` that is never meant to finish — is by design always
+  // RUNNING, so before this field existed its state was categorically
+  // unreadable: not even by its own owner, and not without either signaling
+  // it (mutating it to provoke a readable output — the wrong tool for a
+  // read) or waiting for it to end, which it structurally never does.
+  //
+  // Set only for a RUNNING run, on [RunProgress]'s exact reasoning: a
+  // finished run's state is its outputs, which the oneof above already
+  // answers.
+  EntityState entity_state = 11;
+}
+
+// EntityState is a bounded projection of a running workload's carried state,
+// answered by a Temporal query that reaches a live worker rather than
+// derived from anything the service itself records.
+//
+// # Bounded twice, on two different resources
+//
+// Vars and LoopState are themselves already bounded transitively — every
+// value in them travelled here inside a `RunState` that `CheckRunStateSize`
+// already refused to let grow past Temporal's blob limit at the last
+// Continue-As-New — but a query answer is its own resource, read by a
+// caller who did not ask "how big is this," so this message additionally
+// caps how many loop entries it reports (an author writing several
+// concurrent loops inside a `parallel:` block is not a hazard the blob-size
+// check alone would catch) and how many bytes the whole projection may
+// serialize to. Either bound being reached sets [truncated] rather than
+// silently dropping data or growing the response without limit: see
+// `entityStateMaxLoopEntries` and `entityStateMaxBytes` in
+// `pkg/flowstate/v1/engine/progress.go`.
+message EntityState {
+  // Vars are the workflow's own top-level `vars:`, evaluated once at the
+  // start of the run — the same values every step's `${vars.*}` reads,
+  // snapshotted at query time.
+  map<string, Value> vars = 1;
+
+  // LoopState is, for every `loop:` currently active in this segment, the
+  // value its `state:` binding is carrying into the next iteration — keyed
+  // by the loop step's own id. A loop with no `state:` (a bounded
+  // retry-until carrying nothing) has no entry here, and a loop not
+  // currently active — finished, or not yet reached — has none either.
+  map<string, Value> loop_state = 2;
+
+  // Truncated is true when this snapshot was cut down to stay inside this
+  // message's own bound (see the message-level comment) rather than reflect
+  // the full state a caller free of that bound would see. A truncated
+  // answer omits vars and loop_state entirely rather than reporting a
+  // partial, silently-incomplete map — a reader must not mistake "some of
+  // the keys" for "all of the keys, this run just does not have more."
+  bool truncated = 3;
 }
 
 // PendingActivity is one activity Temporal is retrying, projected from its
@@ -3451,6 +3557,98 @@ message SignalRequest {
 
 message SignalResponse {}
 
+// SignalWithStartRequest delivers a signal to an entity, creating it first if it
+// does not yet exist — atomically, through the SDK's SignalWithStartWorkflow,
+// which closes the race an ordinary create-then-signal has: a caller who checks
+// "does it exist" and then either Runs or Signals can always be beaten between the
+// two calls, either by another creator or by the signal arriving before the run
+// does.
+//
+// # Two authorization questions, decided separately, both fail-closed
+//
+// "May this sender signal entity key K" and "may this sender CREATE an entity
+// under key K" are not the same question, and this handler never answers the
+// second by reusing the first's rule. Delivering a signal is authorized by the
+// signal policy the *target* already declared — [Workflow.signals], enforced the
+// same way [FlowstateServer.Signal] enforces it, against the memo recorded when
+// the entity was created. Creating one has nothing yet to declare a policy: there
+// is no target, no memo, no `signals:` block recorded anywhere to check. So it is
+// authorized the same way [FlowstateServer.Run] authorizes an ordinary run —
+// every check `Run` performs on [workflow] and [inputs] runs here too, on the
+// same fields, before either branch is taken — which is a strictly *stronger* bar
+// than delivering a signal (a bare workflow id, a signal name, and a payload)
+// asks for. An authenticated caller in their own namespace may always create,
+// exactly as they may always Run; what [entity_key] changes is only the address
+// the result is reachable at.
+//
+// [workflow] and [inputs] are read only on the branch that creates — see
+// [SignalWithStartResponse.created]. When the entity already exists, Temporal
+// never looks at them and this handler never lets a caller believe they changed
+// anything about the run they signalled.
+message SignalWithStartRequest {
+  // EntityKey addresses the entity, composed with the caller's own namespace
+  // exactly as [RunRequest.entity_key] is — see that field's doc comment for
+  // the grammar and the unforgeability argument, which apply unchanged here.
+  string entity_key = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+      pattern: "^[a-z0-9][a-z0-9-]*$"
+    }
+  ];
+
+  // Workflow is the specification to start the entity from if it does not
+  // already exist. Checked exactly as [RunRequest.workflow] is — the same
+  // validation, the same signal-policy shape check, the same size bound —
+  // and ignored entirely if the entity is already running.
+  Workflow workflow = 2 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED
+  ];
+
+  // Inputs seed the entity's arguments if it does not already exist. Checked
+  // exactly as [RunRequest.inputs] is, and ignored if the entity is already
+  // running — an existing entity's inputs were bound once, at its own
+  // creation, and this call cannot rebind them.
+  map<string, Value> inputs = 3 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).map = {
+      keys: {string: {min_len: 1}}
+      max_pairs: 64
+    }
+  ];
+
+  // Name is the signal to deliver, matching what a waiting step declared —
+  // the same field, the same grammar, as [SignalRequest.name].
+  string name = 4 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+      pattern: "^[A-Za-z0-9][A-Za-z0-9-_]*$"
+    }
+  ];
+
+  // Payload becomes the waiting step's outputs, exactly as [SignalRequest.payload].
+  Node.Outputs payload = 5;
+}
+
+message SignalWithStartResponse {
+  string workflow_id = 1;
+  string run_id = 2;
+
+  // Created is true when this call is what brought the entity into existence —
+  // false means a signal was delivered to an entity that was already running.
+  // A caller that needs to tell "I just created this" from "this already
+  // existed" — to decide whether to wait for a different handler, say — has
+  // no other way to learn it, since Temporal's own SignalWithStartWorkflow
+  // answers the same shape (a run and a workflow execution) either way.
+  bool created = 3;
+}
+
 // Stopping a run is two different asks, and the difference is not a detail of
 // implementation — it decides whether the workload's cleanup happens.
 //
@@ -3652,6 +3850,13 @@ service WorkflowService {
   // them — which is the part that has to match for a local run to tell an author
   // what production will do.
   rpc Signal(SignalRequest) returns (SignalResponse) {}
+
+  // SignalWithStart delivers a signal to an entity, creating it first — from
+  // [SignalWithStartRequest.workflow] and [SignalWithStartRequest.inputs] — if no
+  // entity is running under [SignalWithStartRequest.entity_key] yet. See
+  // [SignalWithStartRequest] for the two authorization questions this decides
+  // separately and the race this closes that Run-then-Signal cannot.
+  rpc SignalWithStart(SignalWithStartRequest) returns (SignalWithStartResponse) {}
 
   // List returns the runs belonging to the caller's tenant.
   //

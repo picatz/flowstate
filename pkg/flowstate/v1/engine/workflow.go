@@ -312,6 +312,9 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 	if err := setProgressQuery(ctx, position); err != nil {
 		return nil, fmt.Errorf("register progress query: %w", err)
 	}
+	if err := setStateQuery(ctx, position); err != nil {
+		return nil, fmt.Errorf("register state query: %w", err)
+	}
 
 	// Initialize step outputs with carried-over minimal subset if present.
 	stepOutputs := st.Outputs
@@ -353,6 +356,7 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		vars = evaluated.GetAmbientVars()
 		st.Vars = vars
 	}
+	position.setVars(vars)
 
 	// Execute through the recursive executor, which handles nested control flow
 	// and records where to resume if the run has to be continued as new.
