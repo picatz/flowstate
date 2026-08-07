@@ -3475,6 +3475,21 @@ message RunSummary {
 
   // CloseTime is when it finished, unset while it is still running.
   google.protobuf.Timestamp close_time = 5;
+
+  // Name is the workflow's own declared name (Workflow.name), not Temporal's
+  // WorkflowType — every run's WorkflowType is "Run", the one interpreter
+  // workflow, so it cannot distinguish "nightly-etl" from "onboard-tenant".
+  //
+  // Populated from the run's memo, recorded unconditionally at submit —
+  // never from a search attribute, and deliberately so: a deployment may
+  // additionally project this into Temporal's visibility store for external
+  // tooling, but `flow list --filter` never depends on that having
+  // succeeded, or a filter with nothing wrong with it would silently return
+  // nothing on a deployment where search-attribute registration failed.
+  // Empty only for a run that predates this field entirely. Absence is not
+  // an error — see server/list.go and runfilter.go, where a filter comparing
+  // against `name` simply does not match a run that carries none.
+  string name = 6;
 }
 
 // ListResponse returns a page of the caller's runs.

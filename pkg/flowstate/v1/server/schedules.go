@@ -205,6 +205,16 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 		actionMemo[k] = v
 	}
 
+	// Unconditional, through the exact function [FlowstateServer.Run] uses —
+	// see [workflowNameMemoEntry]. Written to both memos for the reason the
+	// comment above already gives for the tenant and the signal policy: a
+	// `name` filter has to see identically whichever memo it happens to be
+	// reading, and this is the one function that guarantees that.
+	for k, v := range workflowNameMemoEntry(workflow.GetName()) {
+		scheduleMemo[k] = v
+		actionMemo[k] = v
+	}
+
 	_, err = temporal.ScheduleClient().Create(ctx, client.ScheduleOptions{
 		ID:      scheduleIDFor(namespace, name),
 		Spec:    spec,
@@ -237,6 +247,22 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 			// execution — see the comment above signalEntry.
 			Memo:     actionMemo,
 			Priority: fairnessFor(namespace),
+
+			// Through the exact function [FlowstateServer.Run] uses — see
+			// [runSearchAttributes] — for the identical reason signalEntry
+			// above is: a scheduled run's fired execution and a direct run's
+			// execution must carry the same attributes, or a filter that
+			// matches one silently misses the other. Guarded by the same
+			// registration flag Run checks, and for the same reason: an
+			// unregistered search attribute makes Temporal refuse the
+			// schedule's create outright, so a deployment that never
+			// confirmed registration must never attach one.
+			TypedSearchAttributes: func() sdk.SearchAttributes {
+				if s.searchAttributesRegistered {
+					return runSearchAttributes(namespace, workflow.GetName())
+				}
+				return sdk.SearchAttributes{}
+			}(),
 
 			Args: []any{&v1.RunState{
 				Workflow:    workflow,
