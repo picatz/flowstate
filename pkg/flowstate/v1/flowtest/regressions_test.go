@@ -223,6 +223,8 @@ tests:
 	require.Empty(t, report.GetRefused())
 	require.Len(t, report.GetCases(), 1)
 	c := report.GetCases()[0]
+	require.True(t, c.GetPassed(), "failures: %v", c.GetFailures())
+
 	// The passing case is the whole of P1-3's proof, and it is an ordering
 	// claim rather than a timing one: the gate lapsed at its 1h timeout and
 	// `deploy` was skipped, so the signal scripted for 2h was not visible to a
