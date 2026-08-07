@@ -632,6 +632,31 @@ func Test_tenancy_isolation_localProviders(t *testing.T) {
 		require.ErrorContains(t, err, "WithKeychainNamespaced")
 	})
 
+	t.Run("an unnamespaced command provider refuses a namespaced run", func(t *testing.T) {
+		provider, err := NewCommandProvider([]string{"sops", "-d", "{{name}}"}, withCommandRunner(&fakeRunner{}))
+		require.NoError(t, err)
+
+		store, err := NewStore(provider)
+		require.NoError(t, err)
+
+		resolver, err := store.For(Namespace("team-a"))
+		require.NoError(t, err)
+
+		_, err = resolver.Resolve(t.Context(), NewRef("command", "api-key"))
+		require.ErrorIs(t, err, ErrNamespace)
+		require.ErrorContains(t, err, "WithCommandNamespaced")
+	})
+
+	t.Run("a command namespace cannot forge another tenant's segment", func(t *testing.T) {
+		// Same shape as the keychain case: the placeholder is substituted with the
+		// namespace verbatim, and ValidateNamespace forbids an underscore, so no
+		// namespace can spell DefaultNamespaceDir and land on the unnamespaced
+		// tenant's segment.
+		require.Error(t, ValidateNamespace(DefaultNamespaceDir),
+			"a namespace equal to the unnamespaced tenant's segment was accepted, "+
+				"which makes the command provider's substitution ambiguous")
+	})
+
 	t.Run("a keychain namespace cannot forge another tenant's service", func(t *testing.T) {
 		// Safe here for a reason worth pinning: the separator is "/", which
 		// ValidateNamespace forbids, so no namespace can spell another's service.

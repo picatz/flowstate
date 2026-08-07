@@ -344,6 +344,189 @@ func Test_localProviders_neverLeakValues(t *testing.T) {
 	})
 }
 
+func Test_CommandProvider_Resolve(t *testing.T) {
+	tests := []struct {
+		name string
+		// namespaced opts the provider into tenancy. Off by default, matching the
+		// provider, because a worker configured for one tenant must not become
+		// multi-tenant just because a request carried a namespace.
+		namespaced bool
+		namespace  string
+		args       []string
+		ref        string
+		out        string
+		runErr     error
+		check      func(t *testing.T, secret Secret, err error, runner *fakeRunner)
+	}{
+		// Negative cases first.
+		{
+			name:   "the command reports the secret is missing",
+			args:   []string{"sops", "-d", "{{name}}"},
+			ref:    "absent",
+			runErr: errors.New("wrapped: " + ErrNotFound.Error()),
+			check: func(t *testing.T, _ Secret, err error, _ *fakeRunner) {
+				require.Error(t, err)
+				require.ErrorContains(t, err, "command:absent")
+			},
+		},
+		{
+			name:   "the command is unavailable",
+			args:   []string{"sops", "-d", "{{name}}"},
+			ref:    "token",
+			runErr: ErrUnavailable,
+			check: func(t *testing.T, _ Secret, err error, _ *fakeRunner) {
+				require.ErrorIs(t, err, ErrUnavailable)
+				require.True(t, Retryable(err), "an unreachable command is worth another attempt")
+			},
+		},
+		{
+			name: "empty output is a configuration mistake",
+			args: []string{"sops", "-d", "{{name}}"},
+			ref:  "blank",
+			out:  "\n",
+			check: func(t *testing.T, _ Secret, err error, _ *fakeRunner) {
+				require.ErrorIs(t, err, ErrEmpty)
+				require.False(t, Retryable(err))
+			},
+		},
+		{
+			name: "a name starting with a dash is refused",
+			args: []string{"sops", "-d", "{{name}}"},
+			ref:  "-w",
+			check: func(t *testing.T, _ Secret, err error, runner *fakeRunner) {
+				require.ErrorIs(t, err, ErrInvalidRef)
+				require.Empty(t, runner.calls, "an invalid name must not reach the command")
+			},
+		},
+		{
+			name: "a control character is refused",
+			args: []string{"sops", "-d", "{{name}}"},
+			ref:  "tok\nen",
+			check: func(t *testing.T, _ Secret, err error, runner *fakeRunner) {
+				require.ErrorIs(t, err, ErrInvalidRef)
+				require.Empty(t, runner.calls)
+			},
+		},
+
+		{
+			name: "the name is substituted into the argument template",
+			args: []string{"sops", "-d", "--extract", `["{{name}}"]`, "secrets.enc.yaml"},
+			ref:  "github-token",
+			out:  "ghp_example_value\n",
+			check: func(t *testing.T, secret Secret, err error, runner *fakeRunner) {
+				require.NoError(t, err)
+				require.Equal(t, "ghp_example_value", secret.Reveal())
+				require.Equal(t, []string{
+					"sops", "-d", "--extract", `["github-token"]`, "secrets.enc.yaml",
+				}, runner.argv(t))
+			},
+		},
+		{
+			name:       "a namespace is substituted when configured",
+			namespaced: true,
+			namespace:  "team-a",
+			args:       []string{"doppler", "secrets", "get", "{{name}}", "--project", "{{namespace}}"},
+			ref:        "api-key",
+			out:        "team-a-value\n",
+			check: func(t *testing.T, secret Secret, err error, runner *fakeRunner) {
+				require.NoError(t, err)
+				require.Equal(t, "team-a-value", secret.Reveal())
+				require.Contains(t, runner.argv(t), "team-a")
+			},
+		},
+		{
+			name:       "the unnamespaced tenant gets an unforgeable segment",
+			namespaced: true,
+			args:       []string{"doppler", "secrets", "get", "{{name}}", "--project", "{{namespace}}"},
+			ref:        "api-key",
+			out:        "default-value\n",
+			check: func(t *testing.T, secret Secret, err error, runner *fakeRunner) {
+				require.NoError(t, err)
+				require.Contains(t, runner.argv(t), DefaultNamespaceDir)
+			},
+		},
+		{
+			name: "a name that would need quoting is passed as one argument",
+			args: []string{"sops", "-d", "{{name}}"},
+			ref:  "a name; rm -rf /",
+			out:  "value\n",
+			check: func(t *testing.T, secret Secret, err error, runner *fakeRunner) {
+				require.NoError(t, err)
+				require.Equal(t, "value", secret.Reveal())
+				require.Contains(t, runner.argv(t), "a name; rm -rf /",
+					"the name reaches the command intact, as one argument, with no shell to reinterpret it")
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			runner := &fakeRunner{out: []byte(test.out), err: test.runErr}
+
+			options := []CommandOption{withCommandRunner(runner)}
+			if test.namespaced {
+				options = append(options, WithCommandNamespaced())
+			}
+
+			provider, err := NewCommandProvider(test.args, options...)
+			require.NoError(t, err)
+			require.Equal(t, "command", provider.Scheme())
+
+			secret, err := provider.Resolve(t.Context(), Request{
+				Namespace: test.namespace,
+				Ref:       NewRef("command", test.ref),
+			})
+			test.check(t, secret, err, runner)
+		})
+	}
+}
+
+func Test_NewCommandProvider(t *testing.T) {
+	t.Run("no arguments is refused", func(t *testing.T) {
+		_, err := NewCommandProvider(nil, withCommandRunner(&fakeRunner{}))
+		require.ErrorContains(t, err, "at least an executable")
+	})
+
+	t.Run("a blank executable is refused", func(t *testing.T) {
+		_, err := NewCommandProvider([]string{"  "}, withCommandRunner(&fakeRunner{}))
+		require.ErrorContains(t, err, "at least an executable")
+	})
+
+	t.Run("the scheme defaults to command", func(t *testing.T) {
+		provider, err := NewCommandProvider([]string{"sops"}, withCommandRunner(&fakeRunner{}))
+		require.NoError(t, err)
+		require.Equal(t, "command", provider.Scheme())
+	})
+
+	t.Run("the scheme is configurable", func(t *testing.T) {
+		provider, err := NewCommandProvider([]string{"sops"},
+			withCommandRunner(&fakeRunner{}), WithCommandScheme("sops"))
+		require.NoError(t, err)
+		require.Equal(t, "sops", provider.Scheme())
+	})
+
+	t.Run("a malformed scheme is refused at construction", func(t *testing.T) {
+		_, err := NewCommandProvider([]string{"sops"},
+			withCommandRunner(&fakeRunner{}), WithCommandScheme("Not Valid"))
+		require.ErrorIs(t, err, ErrInvalidRef)
+	})
+
+	t.Run("the argument template is reportable and copied", func(t *testing.T) {
+		args := []string{"sops", "-d", "{{name}}"}
+		provider, err := NewCommandProvider(args, withCommandRunner(&fakeRunner{}))
+		require.NoError(t, err)
+		require.Equal(t, args, provider.Args())
+
+		args[0] = "mutated"
+		require.Equal(t, "sops", provider.Args()[0], "the provider must not alias the caller's slice")
+	})
+
+	t.Run("a missing executable is refused when the real runner is used", func(t *testing.T) {
+		_, err := NewCommandProvider([]string{"flowstate-secrets-command-that-does-not-exist"})
+		require.ErrorContains(t, err, "is not installed or not on PATH")
+	})
+}
+
 // runnerArgs flattens every recorded argv, for asserting what a tool was told.
 func runnerArgs(r *fakeRunner) string {
 	var all string

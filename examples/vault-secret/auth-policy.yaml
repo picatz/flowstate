@@ -1,0 +1,11 @@
+# A real deployment normally keeps inbound trust and worker-side secret rules in
+# the same reviewed policy file.
+issuers:
+  - name: github-actions
+    issuer: https://token.actions.githubusercontent.com
+    audiences: [flowstate]
+    algorithms: [RS256]
+
+secrets:
+  allow:
+    - 'secret.scheme == "vault" && secret.name == "apps/api#token"'
