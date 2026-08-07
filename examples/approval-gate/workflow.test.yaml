@@ -85,6 +85,12 @@ tests:
         decision: expired
         approver_subject: ""
 
+  # The negated branch, which used to be a hand-expanded De Morgan copy of
+  # `deploy`'s own `if:` and is now `${steps.approval.outcome == "rejected"}`, an
+  # !steps.approval.approved}` — two names this file's gate decides once. The
+  # assertion that matters is the pair: the branch that ran and the `decision`
+  # output move together, because both read the same recorded output rather
+  # than each re-deriving the predicate.
   - name: an explicit rejection is honored
     workflow: ./workflow.yaml
     inputs:
@@ -151,3 +157,34 @@ tests:
     expect:
       failed: true
       error_contains: 'must satisfy'
+
+  # "answered" and "did not time out" are different questions, which is why the
+  # gate's `outcome` has three states rather than two. A signal arrived here —
+  # so the wait did not time out — carrying no `approved` field at all, which is
+  # not a decision. It reports `expired`, exactly as `decision` always did, and
+  # now the `expired` branch actually runs: before the gate was named, this
+  # input produced an output naming a branch that had been skipped.
+  - name: a signal carrying no decision is not a rejection
+    workflow: ./workflow.yaml
+    inputs:
+      version: v1.4.2
+      environment: production
+      expected_approver: sre-lead@example.com
+    signals:
+      - name: deploy-approved
+        payload:
+          note: looking into it
+        sender:
+          subject: sre-lead@example.com
+          issuer: https://issuer.example.com
+          claims:
+            team: release-managers
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [request, settle, approval, expired]
+      skipped: [deploy, rejected]
+      outputs:
+        decision: expired
+        approver_subject: ""

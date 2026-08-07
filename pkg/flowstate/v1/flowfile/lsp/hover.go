@@ -53,11 +53,12 @@ func hoverAt(doc *document, pos lsp.Position) *lsp.Hover {
 	for _, in := range step.expressionEntries() {
 		var found *lsp.Hover
 		clock := step.bindsNow(in)
+		shaping := step.bindsWaitResult(in)
 		walkValues(in.value, func(v *value) {
 			if found != nil || !v.fenced || !contains(v.exprRange, pos) {
 				return
 			}
-			found = hoverReference(doc, step, v, clock, pos)
+			found = hoverReference(doc, step, v, clock, shaping, pos)
 		})
 		if found != nil {
 			return found
@@ -286,7 +287,7 @@ func stepDoc(step *parsedStep, def v1.TaskDef, taskKnown bool) string {
 
 // hoverReference describes a ${...} reference: which step produces the value, the
 // task that produces it, and the output's declared type.
-func hoverReference(doc *document, from *parsedStep, v *value, clock bool, pos lsp.Position) *lsp.Hover {
+func hoverReference(doc *document, from *parsedStep, v *value, clock, shaping bool, pos lsp.Position) *lsp.Hover {
 	// The character offset of the cursor within the expression source.
 	cursor := doc.index.offsetOfPosition(pos) - v.exprOffset
 	ref := referenceAt(v.expr, cursor)
@@ -319,7 +320,7 @@ func hoverReference(doc *document, from *parsedStep, v *value, clock bool, pos l
 	}
 
 	if ref.step == "" {
-		if h := hoverBareName(from, ref.local, clock, rng); h != nil {
+		if h := hoverBareName(from, ref.local, clock, shaping, rng); h != nil {
 			return h
 		}
 	}
@@ -428,9 +429,18 @@ const varsKeyword = "vars"
 // answer to `${now}` written in a task input is not this documentation — it is the
 // validator's diagnostic saying the name is not bound there, and describing it as
 // though it were would contradict a squiggle the author is looking at.
-func hoverBareName(from *parsedStep, name string, clock bool, rng lsp.Range) *lsp.Hover {
+func hoverBareName(from *parsedStep, name string, clock, shaping bool, rng lsp.Range) *lsp.Hover {
 	if clock && name == v1.NowIdentifier {
 		return markdownHover(nowDoc(), rng)
+	}
+	// The wait's own result, bound bare and only inside its `outputs:` shaping.
+	// Ahead of the loop and `vars:` lookups below because nothing else can bind
+	// these here: shaping is evaluated the moment the wait resolves, before any
+	// later step exists to have declared anything.
+	if shaping {
+		if doc := waitResultDoc(name); doc != "" {
+			return markdownHover(doc, rng)
+		}
 	}
 	for _, loop := range from.iteratorsInScope() {
 		if loop.iteratorName() != name {
@@ -482,6 +492,33 @@ func hoverBareName(from *parsedStep, name string, clock bool, rng lsp.Range) *ls
 			v1.StepsRoot, v1.StepsRoot, v1.NowIdentifier), rng)
 	}
 	return nil
+}
+
+// waitResultDoc describes one of the names a `wait_for_signal:`'s `outputs:`
+// shaping binds, or returns empty for anything else.
+//
+// The same three names [waitResultCandidates] offers, so accepting a completion
+// and then hovering what was accepted does not produce two accounts of one name —
+// the rule the `now` documentation is shared for.
+func waitResultDoc(name string) string {
+	switch name {
+	case v1.PayloadOutput:
+		return "**`" + v1.PayloadOutput + "`** — what the sender sent, unchanged and untrusted.\n\n" +
+			"Bound bare here because this expression is the wait's own, evaluated the moment the wait resolves. " +
+			"It is empty on a gate that lapsed, so `has(" + v1.PayloadOutput + ".approved)` is answerable either way.\n\n" +
+			"From a later step the same data is `${" + v1.StepsRoot + ".<id>." + v1.PayloadOutput +
+			"}` — but only if this `outputs:` block re-exposes it, since shaping *replaces* the wait's outputs."
+	case v1.SenderOutput:
+		return "**`" + v1.SenderOutput + "`** — who the server attests sent the signal.\n\n" +
+			"`" + v1.SenderOutput + ".identity.subject`, `." + v1.SenderOutput + ".identity.issuer`, `." +
+			v1.SenderOutput + ".accepted_at`, `." + v1.SenderOutput + ".local`. Never anything the payload claims: " +
+			"a payload is evidence, a sender is identity."
+	case v1.TimedOutOutput:
+		return "**`" + v1.TimedOutOutput + "`** — whether the wait ended because nobody answered in time.\n\n" +
+			"A lapsed gate is an ordinary outcome rather than a failure, which is why it is an output to branch on."
+	default:
+		return ""
+	}
 }
 
 // blocksAround returns the blocks enclosing a step, nearest first.

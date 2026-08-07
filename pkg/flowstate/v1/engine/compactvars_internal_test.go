@@ -143,6 +143,22 @@ func TestEveryExpressionSiteKeepsWhatItReferences(t *testing.T) {
 				Kind: &v1.Wait_Until{Until: v1.NewExpr("src.said != ''")},
 			}}},
 		},
+		{
+			// A gate's own `outputs:` shaping, and the sharpest of these: it is
+			// the only site that evaluates *after* the wait resolves, which is
+			// exactly when a run that suspended in the wait has already crossed a
+			// Continue-As-New. Missed here, the output is dropped while the run
+			// sleeps and the gate fails on resume naming a step it can no longer
+			// see — a failure that only appears for waits long enough to suspend,
+			// which is every wait worth having.
+			name: "a gate's outputs shaping",
+			node: &v1.Node{Id: "n", Kind: &v1.Node_Wait{Wait: &v1.Wait{
+				Kind: &v1.Wait_Signal{Signal: &v1.Signal{
+					Name:    "sign-off",
+					Outputs: map[string]*v1.Value{"ok": v1.NewExpr("src.said != '' && !timed_out")},
+				}},
+			}}},
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()

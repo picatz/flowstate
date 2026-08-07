@@ -223,6 +223,14 @@ type parsedStep struct {
 	// which is the kind of wrong answer that is worse than no answer.
 	waitForSignalEntry *entry
 
+	// waitShapingEntries are the values of a `wait_for_signal:`'s `outputs:` block,
+	// which are expressions evaluated in a scope no other position has: the wait's
+	// own result, bound bare. Held apart from every other `outputs:` in the
+	// language — the workflow's declared outputs and the http task's own shaping
+	// are spelled the same and bind none of these — because what a bare `payload`
+	// means is decided by which of the three this is.
+	waitShapingEntries []*entry
+
 	// taskName is the task the step invokes, empty when not written. It is the
 	// task entry's key.
 	taskName string
@@ -253,6 +261,7 @@ func (s *parsedStep) expressionEntries() []*entry {
 	if s.waitUntilEntry != nil {
 		entries = append(entries, s.waitUntilEntry)
 	}
+	entries = append(entries, s.waitShapingEntries...)
 
 	// A step's `vars:` bindings, which are expressions like any other value here and
 	// were missing from this list until the retirement edition made them the place
@@ -277,7 +286,19 @@ func (s *parsedStep) expressionEntries() []*entry {
 // because it is asked for while a document does not parse and there is no model
 // then to ask. One rule, two readers: a change to either belongs in both.
 func (s *parsedStep) bindsNow(e *entry) bool {
-	return e != nil && e == s.waitUntilEntry
+	return e != nil && (e == s.waitUntilEntry || s.bindsWaitResult(e))
+}
+
+// bindsWaitResult reports whether an entry is one of a `wait_for_signal:`'s
+// `outputs:` values, which is the only position the wait's own result —
+// `payload`, `sender`, `timed_out` — is bound bare.
+//
+// Asked of the entry rather than of the key for the reason [parsedStep.bindsNow]
+// is: `outputs:` is a word three different blocks use, and only this one binds
+// these names. Answering yes for the workflow's declared outputs would document a
+// name there as though it resolved, which it does not.
+func (s *parsedStep) bindsWaitResult(e *entry) bool {
+	return e != nil && slices.Contains(s.waitShapingEntries, e)
 }
 
 // kind names the kind of work a step does, for the outline and for diagnostics
@@ -650,6 +671,11 @@ func fillParsedStep(s *parsedStep, entries []*entry) {
 			// is a scalar and is documented at the step level like any other key.
 			if s.waitForSignalEntry == nil && e.value != nil && e.value.kind == kindMapping {
 				s.waitForSignalEntry = e
+				for _, we := range e.value.entries {
+					if we.key == "outputs" {
+						s.waitShapingEntries = nestedEntries(we)
+					}
+				}
 			}
 		case "wait_until":
 			// A case of its own rather than falling through to the task branch

@@ -640,28 +640,48 @@ func waitToYAML(wait *v1.Wait) (string, any, error) {
 		return "wait_until", value, nil
 
 	case *v1.Wait_Signal:
-		// The scalar form when there is nothing else to say, which is what an
-		// author most often wrote and what reads best coming back.
+		// The mapping is built key by key rather than in a switch over the
+		// combinations, because there are now three optional keys and a switch
+		// over them is where a formatter *deletes* one: `flow fix` rewrites
+		// through this function, so a key nothing writes back is a key the
+		// command silently removes. `varsToYAML` records the same lesson.
+		mapping := yaml.MapSlice{{Key: "name", Value: kind.Signal.GetName()}}
+
 		switch {
 		case wait.GetTimeoutExpr() != nil:
 			value, err := fencedExprToYAML(wait.GetTimeoutExpr())
 			if err != nil {
 				return "", nil, fmt.Errorf("wait_for_signal timeout: %w", err)
 			}
-			return "wait_for_signal", yaml.MapSlice{
-				{Key: "name", Value: kind.Signal.GetName()},
-				{Key: "timeout", Value: value},
-			}, nil
+			mapping = append(mapping, yaml.MapItem{Key: "timeout", Value: value})
 
 		case wait.GetTimeout() != nil:
-			return "wait_for_signal", yaml.MapSlice{
-				{Key: "name", Value: kind.Signal.GetName()},
-				{Key: "timeout", Value: durationToYAML(wait.GetTimeout())},
-			}, nil
+			mapping = append(mapping,
+				yaml.MapItem{Key: "timeout", Value: durationToYAML(wait.GetTimeout())})
+		}
 
-		default:
+		if shaped := kind.Signal.GetOutputs(); len(shaped) > 0 {
+			// Sorted, for the reason `varsToYAML` sorts: the names come out of a
+			// protobuf map, and a formatter emitting them in a different order each
+			// run would make every `flow fix` a diff.
+			out := make(yaml.MapSlice, 0, len(shaped))
+			for _, name := range slices.Sorted(maps.Keys(shaped)) {
+				value, err := inputValueToYAML(shaped[name])
+				if err != nil {
+					return "", nil, fmt.Errorf("wait_for_signal outputs %q: %w", name, err)
+				}
+				out = append(out, yaml.MapItem{Key: name, Value: value})
+			}
+			mapping = append(mapping, yaml.MapItem{Key: "outputs", Value: out})
+		}
+
+		// The scalar form when there is nothing else to say, which is what an
+		// author most often wrote and what reads best coming back.
+		if len(mapping) == 1 {
 			return "wait_for_signal", kind.Signal.GetName(), nil
 		}
+
+		return "wait_for_signal", mapping, nil
 
 	default:
 		return "", nil, fmt.Errorf("wait has no sleep, wait_until, or wait_for_signal")

@@ -593,3 +593,220 @@ steps:
 			"a reference to a wait's outputs was reported as unresolvable: %s", d.Message)
 	}
 }
+
+// TestParseWaitOutputsShaping covers the `outputs:` key on a gate: the shape an
+// author writes, and that it survives `flow fmt` unchanged.
+//
+// A round trip is the assertion that matters most here, for the reason
+// `varsToYAML` records: `Marshal` is the inverse of `Unmarshal` and `flow fix`
+// rewrites files through it, so a block nothing writes back is a block the command
+// silently *deletes* — and deleting this one would turn a stated gate back into
+// four copies of a predicate, quietly.
+func TestParseWaitOutputsShaping(t *testing.T) {
+	t.Parallel()
+
+	src := []byte(`edition: v2026.2
+name: w
+steps:
+  - id: approval
+    wait_for_signal:
+      name: deploy-approved
+      timeout: 1h
+      outputs:
+        approved: ${has(payload.approved) && payload.approved}
+        answered: ${!timed_out}
+        who: ${sender.identity.subject}
+        kind: approval
+`)
+
+	workflow, _, err := flowfile.Parse(src)
+	require.NoError(t, err)
+
+	shaped := workflow.GetSteps()[0].GetWait().GetSignal().GetOutputs()
+	require.Len(t, shaped, 4)
+	require.NotNil(t, shaped["approved"].GetExpr(), "a fenced value is an expression")
+	require.NotNil(t, shaped["kind"].GetLiteral(), "an unfenced value is a literal, as everywhere else")
+
+	// Still on the signal, not on the wait: the placement is what makes shaping
+	// unrepresentable on a `sleep:` and a `wait_until:`, so a refactor that moved
+	// the field would silently reopen that.
+	require.Equal(t, time.Hour, workflow.GetSteps()[0].GetWait().GetTimeout().AsDuration())
+
+	out, err := flowfile.Marshal(workflow)
+	require.NoError(t, err)
+	require.Contains(t, string(out), "outputs:", "shaping was dropped writing the file back out")
+
+	again, _, err := flowfile.Parse(out)
+	require.NoError(t, err, "a written-out gate could not be read back:\n%s", out)
+	require.Empty(t, cmpWorkflows(workflow, again),
+		"a gate's outputs shaping changed shape through a round trip:\n%s", out)
+}
+
+// TestValidateWaitOutputsShapingScope pins what a shaping expression may name.
+//
+// The wait's own result is bound bare and `now` with it, over the ordinary scope —
+// so this is really two assertions in one: the three names resolve, and everything
+// that resolves in an `if:` still resolves here.
+func TestValidateWaitOutputsShapingScope(t *testing.T) {
+	t.Parallel()
+
+	src := []byte(`edition: v2026.2
+name: w
+inputs:
+  approver:
+    type: string
+    required: true
+vars:
+  label: release
+steps:
+  - id: first
+    log:
+      message: hello
+  - id: approval
+    wait_for_signal:
+      name: deploy-approved
+      outputs:
+        approved: ${has(payload.approved) && payload.approved}
+        lapsed: ${timed_out}
+        who: ${sender.identity.subject}
+        expected: ${inputs.approver}
+        label: ${vars.label}
+        after: ${now}
+`)
+
+	ds, err := flowfile.ValidateSource(src)
+	require.NoError(t, err)
+	require.Empty(t, ds, "a shaping expression over names the engine binds was reported")
+}
+
+// TestValidateWaitOutputsShapingDiagnostics covers what an author gets wrong here,
+// including the two negative directions replace semantics create.
+func TestValidateWaitOutputsShapingDiagnostics(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name string
+		src  string
+		want string
+	}{
+		{
+			// The replace-semantics diagnostic, and the reason replace is safe to
+			// ship at all: shaping *drops* `payload`, so a later reference to it
+			// reads nothing. Reported, with the one-line fix named.
+			name: "a later step reads a name the shaping dropped",
+			src: `edition: v2026.2
+name: w
+steps:
+  - id: approval
+    wait_for_signal:
+      name: deploy-approved
+      outputs:
+        approved: ${has(payload.approved) && payload.approved}
+  - id: deploy
+    if: ${steps.approval.payload.approved}
+    log:
+      message: deploying
+`,
+			want: "re-expose it",
+		},
+		{
+			// The same check from the other side: a name that is merely misspelled
+			// gets the suggestion rather than the re-exposure advice, because
+			// `approvd` is not one of the wait's own outputs.
+			name: "a later step misspells a shaped name",
+			src: `edition: v2026.2
+name: w
+steps:
+  - id: approval
+    wait_for_signal:
+      name: deploy-approved
+      outputs:
+        approved: ${has(payload.approved) && payload.approved}
+  - id: deploy
+    if: ${steps.approval.approvd}
+    log:
+      message: deploying
+`,
+			want: `did you mean "approved"?`,
+		},
+		{
+			// Bound only inside the shaping block. Outside it `payload` is an
+			// ordinary unknown name, which is what keeps a step legitimately called
+			// `payload` from being shadowed everywhere.
+			name: "the wait's result is not bound outside the shaping block",
+			src: `edition: v2026.2
+name: w
+steps:
+  - id: approval
+    wait_for_signal:
+      name: deploy-approved
+      outputs:
+        approved: ${has(payload.approved) && payload.approved}
+  - id: deploy
+    if: ${payload.approved}
+    log:
+      message: deploying
+`,
+			want: "unknown name",
+		},
+		{
+			name: "a shaping expression names a step that does not exist",
+			src: `edition: v2026.2
+name: w
+steps:
+  - id: approval
+    wait_for_signal:
+      name: deploy-approved
+      outputs:
+        approved: ${steps.nonexistent.ok}
+`,
+			want: "nonexistent",
+		},
+		{
+			// An empty block would silently produce a step with no outputs at all,
+			// since shaping replaces rather than extends.
+			name: "an empty outputs block",
+			src: `edition: v2026.2
+name: w
+steps:
+  - id: approval
+    wait_for_signal:
+      name: deploy-approved
+      outputs: {}
+`,
+			want: "replaces what the wait produces",
+		},
+		{
+			// The grammar refuses shaping on the two arms whose result is only the
+			// passage of time — structurally, since neither takes a mapping at all.
+			name: "a sleep cannot carry shaping",
+			src: `edition: v2026.2
+name: w
+steps:
+  - id: pause
+    sleep:
+      duration: 30s
+      outputs:
+        done: ${!timed_out}
+`,
+			want: "duration",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			// A compile-time refusal comes back as an error and a check that runs
+			// on a compiled workflow comes back in the diagnostics, and which of
+			// the two a case lands in is a property of *where* the mistake is
+			// catchable rather than of how serious it is. Both are read, so a
+			// diagnostic moving between them is not a silent pass.
+			ds, err := flowfile.ValidateSource([]byte(test.src))
+			reported := ds.Error()
+			if err != nil {
+				reported = err.Error()
+			}
+			require.NotEmpty(t, reported, "nothing was reported")
+			require.Contains(t, reported, test.want)
+		})
+	}
+}

@@ -3297,6 +3297,125 @@ nothing reads them apart. `v1.EvalWaitDuration` and `v1.EvalWaitTimeout` are the
 readers of each pair, both drivers call them, and neither knows which field answered.
 One function cannot disagree with itself.
 
+## The eighth round: a step that shapes its own result
+
+### A condition derived from a step's outputs could not be named
+
+`examples/approval-gate/` wrote the same predicate four times: in `deploy`'s `if:`,
+negated by hand in the sibling branch's, and re-derived twice more in the workflow's
+own `outputs:`. Nothing kept the four in agreement, so the `decision` output could
+report a branch the run had not taken — and the negated copy was the worst of them,
+because a De Morgan expansion getting subtly wrong is not something review reliably
+catches.
+
+Three routes to naming it were all closed. Workflow `vars:` evaluate before any step
+runs, so they cannot see `steps.*`. A step's own `vars:` are not in scope for that
+step's `if:`, deliberately — the condition decides whether the step runs. And no
+builtin carries a computed value forward.
+
+### The answer is a spelling the language already had
+
+The http task shapes its own result with an `outputs:` key, and the wait node is the
+other step kind whose result routinely needs deriving. So `wait_for_signal:` takes
+the same key, meaning the same thing:
+
+```yaml
+- id: approval
+  wait_for_signal:
+    name: deploy-approved
+    timeout: 24h
+    outputs:
+      outcome: >-
+        ${has(payload.approved)
+          ? (payload.approved ? "deployed" : "rejected")
+          : "expired"}
+      timed_out: ${timed_out}
+      sender: ${sender}
+
+- id: deploy
+  if: ${steps.approval.outcome == "deployed"}
+  ...
+outputs:
+  decision:
+    value: ${steps.approval.outcome}
+```
+
+The gate is stated once, on the step that produced the data, and the `decision`
+output cannot disagree with the branch that ran — it *is* the name the branches
+switch on.
+
+No new binding form, and no new *evaluation position*, which is what recommends this
+shape over a lazy workflow var: the expressions are evaluated exactly once, the
+moment the wait resolves, in the scope where the wait's result already exists and at
+the same instant those outputs were being recorded anyway. There is nothing for a
+reader to hold about *when*, nothing to re-evaluate on a later read, and no new
+interaction with Continue-As-New — a shaped output is recorded and carried like any
+other step output.
+
+### What the expressions see
+
+The wait's own result, bound bare — `payload`, `sender`, `timed_out` — and `now` with
+them, over the ordinary scope. So `steps.*`, `inputs.*` and `vars.*` read here exactly
+as they do in an `if:`, and `${has(payload.approved) && payload.approved}` sits beside
+`${inputs.expected_approver}` in one expression.
+
+Bare rather than rooted, matching how the wait's own names are written *inside* the
+wait — and that is precisely why `flow fix` had to learn this position. All three are
+ordinary words a step may legitimately be called; rooted, `payload.approved` becomes
+`steps.payload.approved`, which still validates and computes the outputs of some other
+step. The subtraction is at `outputs:` and not at the whole `wait_for_signal:` subtree,
+because the sibling `timeout:` sees no result — a `${payload.deadline}` there really is
+naming a step, and leaving it bare in a file stamped with the new edition is the same
+corruption in the other direction.
+
+### It replaces, and that is the decision worth stating
+
+The shaped names become the step's outputs. `payload`, `sender` and `timed_out` are
+gone unless a line puts them back, which is one line each. That is what the http
+task's `outputs:` already means, and one key with two meanings in two places is the
+divergence class this repo keeps paying for. The cost is visible in the example above
+— two re-exposures — and it buys a diagnostic rather than an empty value:
+
+```
+step "approval" has no output "payload"; its `outputs:` replaces what the wait
+produces, and it produces outcome, sender, timed_out; `payload` is one of the wait's
+own outputs, which shaping dropped — re-expose it with `payload: ${payload}`
+```
+
+Silently empty is the dangerous answer here, not the annoying one: these values are
+what later steps branch on, so a dropped name that read as nothing would take the
+*other* arm of every gate built on it — the exact failure the four hand-copied
+predicates produced.
+
+An expression naming a field the payload does not carry fails the run for the same
+reason, on both drivers, rather than recording an empty value.
+
+### Not on `sleep:` or `wait_until:`, structurally
+
+The field is on `Signal`, not on `Wait`, so neither timer arm can carry one. That is a
+refusal by grammar rather than by check, which is the stronger kind: `timeout` sits on
+`Wait` and is meaningless on two of its arms, and `ValidateWait` exists to say so.
+
+It is also the honest answer about what those arms produce. Two of the three names a
+shaping expression reads — `payload` and `sender` — do not exist for a timer, and the
+third, `timed_out`, is the constant `false`. Naming a constant is what `vars:` is for.
+
+The placement matches the precedent it copies, too: http's `outputs:` sits on that
+task's own inputs, not on a generic step wrapper. Continue-As-New carriage does not
+prefer either placement — the whole node travels inside the spec, and a shaped value
+is recorded in `Workflow_StepOutputs` like any other output — which is what frees the
+decision to be made on meaning. What compaction *does* need is that references made by
+these expressions are collected, so `CollectNodeRefs` reads them alongside the wait's
+three duration positions: they evaluate *after* the wait resolves, which is exactly
+when a run that suspended in the wait has already crossed a Continue-As-New.
+
+### What it deliberately does not solve
+
+A condition derived from *several* steps' outputs still has no single home. This puts
+the name on the step that owns the data, which covers the approval-gate class — one
+gate, one source — and nothing here forecloses a broader answer if the corpus grows
+one.
+
 ## The standing rule
 
 Every claim in a design document about what this codebase currently does is a claim,

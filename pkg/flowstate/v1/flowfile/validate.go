@@ -1848,6 +1848,26 @@ func validateWait(id string, wait *v1.Wait, scope refScope, index int, wf *v1.Wo
 		ds = append(ds, validateInputRefs(id, "timeout", computed, waiting, index, wf)...)
 	}
 
+	// A `wait_for_signal:`'s own `outputs:` sees three more names than the rest of
+	// the wait does: its result. `payload` and `sender` are the signal's, and
+	// `timed_out` is how it ended — bound bare, at the moment the wait resolves,
+	// by [v1.ShapeSignalOutputs].
+	//
+	// Added to the scope for these expressions only, exactly as `now` is added for
+	// the wait's own. A step in the same file may legitimately be called `payload`,
+	// and the whole reason these are locals rather than a widening of the workflow
+	// scope is that `${payload}` has to keep meaning that step everywhere else.
+	if shaped := wait.GetSignal().GetOutputs(); len(shaped) > 0 {
+		shaping := waiting.
+			withLocal(v1.PayloadOutput).
+			withLocal(v1.SenderOutput).
+			withLocal(v1.TimedOutOutput)
+
+		for _, name := range slices.Sorted(maps.Keys(shaped)) {
+			ds = append(ds, validateInputRefs(id, "outputs."+name, shaped[name], shaping, index, wf)...)
+		}
+	}
+
 	return ds
 }
 
@@ -2043,6 +2063,40 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, wf *v1.Workflow) (
 			}, true
 		}
 		return Diagnostic{}, false
+	}
+
+	// A wait that shapes its own outputs answers for them exactly, which is the
+	// one thing that makes replace semantics safe to ship: `outputs:` *drops* the
+	// wait's defaults, so `${steps.gate.payload.approved}` after a shaping that
+	// did not re-expose `payload` reads nothing at all, and every branch built on
+	// it quietly takes the other arm. The shaped set is written in this file and
+	// knowable in full, so the diagnostic cannot be false.
+	//
+	// A wait that does *not* shape is left unchecked, as it always has been. Its
+	// output set is knowable too, but reporting it is a separate change with its
+	// own false-diagnostic surface (a `payload` key is whatever a sender sent),
+	// and this check exists for the names shaping removed.
+	if shaped := node.GetWait().GetSignal().GetOutputs(); len(shaped) > 0 {
+		if _, produced := shaped[ref.Output]; produced {
+			return Diagnostic{}, false
+		}
+
+		names := slices.Sorted(maps.Keys(shaped))
+		message := fmt.Sprintf("step %q has no output %q; its `outputs:` replaces what the wait produces, and it produces %s",
+			ref.ID, ref.Output, strings.Join(names, ", "))
+		if suggestion, ok := nearest(ref.Output, names); ok {
+			message = fmt.Sprintf("step %q has no output %q; its `outputs:` replaces what the wait produces — did you mean %q?",
+				ref.ID, ref.Output, suggestion)
+		} else if ref.Output == v1.PayloadOutput || ref.Output == v1.SenderOutput || ref.Output == v1.TimedOutOutput {
+			message += fmt.Sprintf("; `%s` is one of the wait's own outputs, which shaping dropped — re-expose it with `%s: ${%s}`",
+				ref.Output, ref.Output, ref.Output)
+		}
+
+		return Diagnostic{
+			Step: stepID, Field: inputName, Value: ref.Output,
+			Message: message,
+			Code:    v1.DiagnosticCodeUnresolvedReference,
+		}, true
 	}
 
 	task := node.GetTask()

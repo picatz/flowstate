@@ -35,7 +35,7 @@ import (
 // friction that makes a feature feel heavier than it is.
 
 // signalKeys are the keys of the mapping form of wait_for_signal.
-var signalKeys = []string{"name", "timeout"}
+var signalKeys = []string{"name", "timeout", "outputs"}
 
 // parseDuration reads a duration the way the DSL writes one, which is
 // [v1.ParseDuration] — Go's syntax, plus days.
@@ -205,6 +205,20 @@ func (c *compiler) waitForSignal(n ast.Node, path string, r ref) *v1.Wait {
 		return nil
 	}
 
+	// `outputs:` shapes what the waiting step produces, the way the http task's
+	// own `outputs:` shapes what a request produces — and it is read here, on the
+	// signal, because only a signal has a result worth deriving. See
+	// [v1.ShapeSignalOutputs]; `sleep:` and `wait_until:` are refused the key by
+	// the grammar rather than by a check, since neither takes a mapping at all.
+	if f, found := fields.get("outputs"); found {
+		outputsPath := fieldPath(path, "outputs")
+		shaped := c.waitOutputs(f.value, outputsPath, r)
+		if shaped == nil {
+			return nil
+		}
+		wait.GetSignal().Outputs = shaped
+	}
+
 	if f, found := fields.get("timeout"); found {
 		timeoutPath := fieldPath(path, "timeout")
 		timeoutRef := ref{step: r.step, path: timeoutPath, label: "wait_for_signal timeout"}
@@ -226,6 +240,51 @@ func (c *compiler) waitForSignal(n ast.Node, path string, r ref) *v1.Wait {
 	}
 
 	return wait
+}
+
+// waitOutputs compiles a `wait_for_signal:`'s `outputs:` mapping.
+//
+// Each value is an ordinary expression position — [compiler.inputValue], the same
+// helper a task input and a `vars:` binding go through — so a fence means what it
+// means everywhere else and a `${secret(...)}` is refused where it is refused
+// everywhere else. What is *different* here is only the scope these expressions
+// resolve in, and scope is not this function's business: it is
+// [validateWait]'s, which adds the wait's own bound names, and
+// [v1.ShapeSignalOutputs]'s, which binds them.
+//
+// An empty mapping is a diagnostic rather than a no-op, because `outputs:`
+// *replaces* the step's outputs — an empty one is a step that deliberately
+// produces nothing, which nobody writes on purpose and which would silently
+// break every later reference.
+func (c *compiler) waitOutputs(n ast.Node, path string, r ref) map[string]*v1.Value {
+	c.pos.record(path, spanOfNode(c.resolveQuiet(n)))
+
+	entries, ok := c.entries(n, path, r)
+	if !ok {
+		return nil
+	}
+
+	if len(entries) == 0 {
+		c.report(spanOfNode(n), ref{step: r.step, path: path, label: "outputs"},
+			"is empty, and `outputs:` replaces what the wait produces — so this step would have no outputs at all; write the names this wait should produce, or remove the key")
+		return nil
+	}
+
+	compiled := make(map[string]*v1.Value, len(entries))
+	for _, e := range entries {
+		valuePath := fieldPath(path, e.name)
+		value := c.inputValue(e.value, valuePath,
+			ref{step: r.step, path: valuePath, label: "outputs." + e.name})
+		if value != nil {
+			compiled[e.name] = value
+		}
+	}
+
+	if len(compiled) == 0 {
+		return nil
+	}
+
+	return compiled
 }
 
 // signalWait builds the wait, reporting a name the schema will not accept.

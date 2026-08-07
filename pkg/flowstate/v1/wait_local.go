@@ -294,7 +294,21 @@ func runWait(ctx context.Context, node *Node, wait *Wait, scope *Scope) (*Node_O
 		if err != nil {
 			return nil, err
 		}
-		return waitForSignalLocally(ctx, clock, kind.Signal, timeout, bounded)
+
+		outputs, err := waitForSignalLocally(ctx, clock, kind.Signal, timeout, bounded)
+		if err != nil {
+			return nil, err
+		}
+
+		// The single point this driver shapes a wait's outputs, matching the
+		// durable driver's own single point — [ShapeSignalOutputs] is the one
+		// evaluator, called at the one moment, so a gate shaped in a local run
+		// says exactly what it will say in production.
+		//
+		// The clock is read again rather than reused from above, for the reason
+		// the durable driver reads `workflow.Now` again: `now` inside a shaping
+		// expression is the moment the wait *ended*.
+		return ShapeSignalOutputs(ctx, kind.Signal, outputs, scope, clock.Now())
 
 	default:
 		return nil, fmt.Errorf("unsupported wait kind %T", wait.GetKind())
