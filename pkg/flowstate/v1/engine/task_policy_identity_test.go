@@ -77,7 +77,7 @@ func TestTaskPolicyIdentityNamespaceDenial(t *testing.T) {
 		// participates in its own policing" and invariant 7's echo (no
 		// credential resolves for a denied call; here, no activity dispatches
 		// for one either).
-		env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
+		env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 		env.OnActivity(engine.TaskWithPrev, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskWithPrev)
 		env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 

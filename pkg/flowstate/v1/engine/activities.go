@@ -67,24 +67,54 @@ func WorkflowVars(ctx context.Context, declared *v1.Scope) (*v1.Scope, error) {
 	return &v1.Scope{AmbientVars: vars, Profile: declared.GetProfile()}, nil
 }
 
+// checkTaskDispatchPolicy is the one call every task-executing activity entry
+// point makes before running a task's Fn — the shared helper CLAUDE.md's
+// "Both execution drivers must agree" asks for once a value (here, "how is
+// the deployment's task-shape policy checked") has more than one caller: one
+// function that fails closed the same way everywhere, rather than N copies
+// of the same four lines that can silently drift apart, which is exactly how
+// this repo's own #187 slice 1 first shipped — three of what turned out to
+// be five entry points carried the check, and the other two (TaskAuthorized,
+// TaskInScopeAuthorized) were exactly the ones a deployment's policy most
+// needs to reach: the arms that resolve secrets and act under the run's own
+// identity (see runtime.go's own "Four activities... on two axes" comment on
+// [executor.dispatch] for why those two exist at all).
+//
+// A sixth task-executing entry point, if one is ever added, has exactly one
+// line to add here and one pattern to match — enumerate every `func` in this
+// file and runtime.go, and every activity in versioning.go's [Register], to
+// confirm each task-executing one calls this before evaluating the task.
+func checkTaskDispatchPolicy(ctx context.Context, span trace.Span, task *v1.Task, identity *v1.WorkloadIdentity) error {
+	if err := v1.CheckTaskPolicy(ctx, task.GetName(), identity); err != nil {
+		recordTaskOutcome(span, err)
+		return activityError(task.GetName(), err)
+	}
+	return nil
+}
+
 // Task is a Temporal activity that executes a single task.
 //
 // The workflow pre-resolves expression inputs to literals before scheduling this
 // activity, which keeps the payload small and avoids carrying growing prior
 // outputs across every step.
-func Task(ctx context.Context, task *v1.Task) (*v1.Node_Outputs, error) {
+//
+// identity is the run's own attested [v1.WorkloadIdentity] (or nil, for a
+// local run or a run that predates the field), threaded in from
+// [executor.dispatch]'s `e.identity` the same way [taskActivities.TaskAuthorized]
+// already receives it — one source, one spelling, for every entry point that
+// can carry identity at all. Added as a parameter rather than read from
+// anywhere ambient, because this activity — unlike [TaskInScope] — never
+// receives a [v1.Scope], so there is nothing else on this call to carry it.
+func Task(ctx context.Context, task *v1.Task, identity *v1.WorkloadIdentity) (*v1.Node_Outputs, error) {
 	ctx, span := startTaskSpan(ctx, task, "")
 	defer span.End()
 
 	// The deployment's task-shape policy (#187), checked once per activity
 	// entry — the durable driver's half of "once per dispatch," matching
 	// where the local driver checks, above its own retry loop
-	// (`eval.go`'s runStepWithPolicy). No scope reaches this entry point (it
-	// predates scopes — see [v1.Task.Eval]'s own doc), so identity reads
-	// empty here exactly as it does for any run this old.
-	if err := v1.CheckTaskPolicy(ctx, task.GetName(), nil); err != nil {
-		recordTaskOutcome(span, err)
-		return nil, activityError(task.GetName(), err)
+	// (`eval.go`'s runStepWithPolicy).
+	if err := checkTaskDispatchPolicy(ctx, span, task, identity); err != nil {
+		return nil, err
 	}
 
 	// Installed on all three entry points for the reason the logger bridge below
@@ -111,16 +141,21 @@ func Task(ctx context.Context, task *v1.Task) (*v1.Node_Outputs, error) {
 // needs the outputs of earlier steps.
 //
 // Retained so that a workflow started before scopes existed continues to run; new
-// runs schedule TaskInScope instead.
+// runs schedule TaskInScope instead — [Register]'s own comment states this is not
+// dead code, only uncalled by anything currently scheduling activities: a run
+// whose history already recorded a `TaskWithPrev` schedule (before [TaskInScope]
+// existed) is replayed against exactly the arguments that were persisted, so this
+// activity's signature is frozen at what a pre-scope run could have recorded —
+// unlike [Task], it cannot gain an identity parameter without breaking every such
+// run still in flight the day this deploys. identity therefore stays nil here,
+// deliberately: no pre-scope run ever carried one to lose, and [v1.WorkloadIdentity]
+// nil reads as every field empty, exactly as an absent one always has.
 func TaskWithPrev(ctx context.Context, task *v1.Task, prev *v1.Workflow_StepOutputs) (*v1.Node_Outputs, error) {
 	ctx, span := startTaskSpan(ctx, task, "")
 	defer span.End()
 
-	// See [Task]'s identical check: this entry point predates scopes too, so
-	// identity reads empty here for the same reason.
-	if err := v1.CheckTaskPolicy(ctx, task.GetName(), nil); err != nil {
-		recordTaskOutcome(span, err)
-		return nil, activityError(task.GetName(), err)
+	if err := checkTaskDispatchPolicy(ctx, span, task, nil); err != nil {
+		return nil, err
 	}
 
 	ctx, stop := withHeartbeat(ctx)
@@ -154,9 +189,8 @@ func TaskInScope(ctx context.Context, task *v1.Task, scope *v1.Scope) (*v1.Node_
 	// the one that carries a [v1.Scope], so unlike [Task]/[TaskWithPrev]
 	// identity here is whatever the run was actually started as (see
 	// varsScope in workflow.go).
-	if err := v1.CheckTaskPolicy(ctx, task.GetName(), scope.GetIdentity()); err != nil {
-		recordTaskOutcome(span, err)
-		return nil, activityError(task.GetName(), err)
+	if err := checkTaskDispatchPolicy(ctx, span, task, scope.GetIdentity()); err != nil {
+		return nil, err
 	}
 
 	ctx, stop := withHeartbeat(ctx)

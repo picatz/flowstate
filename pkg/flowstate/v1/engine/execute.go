@@ -541,7 +541,15 @@ func (e *executor) runTask(node *v1.Node, task *v1.Task) error {
 // compensation that quietly lost the authority arm would be a step that could read
 // a secret to create something and not to delete it.
 //
-// A nil scope selects the arms that carry none.
+// A nil scope selects the arms that carry none. [Task] additionally receives
+// e.identity directly — the run's own attested identity, the same value the
+// two authorized arms already receive as a parameter — so a deployment's
+// task-shape policy (#187) can be checked against a real identity on every
+// arm this executor can reach; [TaskInScope] reaches identity a different
+// way, through the scope it already carries (see varsScope in workflow.go).
+// [TaskWithPrev] is not dispatched here at all — it exists only to replay a
+// run whose history predates this split, so it is not one of these four arms
+// and never receives identity; see its own doc.
 func (e *executor) dispatch(
 	ctx workflow.Context,
 	resolved *v1.Task,
@@ -564,7 +572,7 @@ func (e *executor) dispatch(
 			e.identity, e.spec.GetName(), e.runID, stepID).Get(ctx, out)
 	}
 
-	return workflow.ExecuteActivity(ctx, Task, resolved).Get(ctx, out)
+	return workflow.ExecuteActivity(ctx, Task, resolved, e.identity).Get(ctx, out)
 }
 
 // runUndoTask runs one registered compensation as an activity.
