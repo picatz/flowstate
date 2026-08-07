@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"log/slog"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
@@ -192,6 +193,68 @@ func TestOutboundValuesNeverLogSecrets(t *testing.T) {
 func TestWorkloadIdentityString(t *testing.T) {
 	require.Equal(t, "acme/prod acting for repo:picatz/flowstate:ref:refs/heads/main", testIdentity().String())
 	require.Equal(t, "no identity", auth.WorkloadIdentity{}.String())
+}
+
+// TestDefaultNamespaceIsUnforgeable checks the negative direction of the
+// placeholder that stands in for "no namespace": a tenant literally named
+// "default" — which [auth.ValidateNamespace] permits, being lowercase letters
+// only — must mint a subject that DIFFERS from an untenanted run's, not one
+// that collides with it. Before this, both minted
+// "flowstate:default/prod/deploy/push", so an AWS trust policy an operator
+// wrote for a single-tenant deployment would have admitted a later tenant that
+// simply claimed the name "default".
+func TestDefaultNamespaceIsUnforgeable(t *testing.T) {
+	ref := auth.StepRef{Workflow: "deploy", Step: "push"}
+
+	untenanted := auth.WorkloadIdentity{Subject: "s", Issuer: "https://idp.example.com", Deployment: "prod"}
+	untenantedSubject, err := untenanted.SubjectFor(ref)
+	require.NoError(t, err)
+
+	tenantNamedDefault := auth.WorkloadIdentity{
+		Subject: "s", Issuer: "https://idp.example.com", Namespace: "default", Deployment: "prod",
+	}
+	tenantSubject, err := tenantNamedDefault.SubjectFor(ref)
+	require.NoError(t, err)
+
+	require.NotEqual(t, untenantedSubject, tenantSubject,
+		"a tenant named \"default\" must not mint the same subject as an untenanted run")
+	require.Equal(t, "flowstate:_default/prod/deploy/push", untenantedSubject)
+	require.Equal(t, "flowstate:default/prod/deploy/push", tenantSubject)
+}
+
+// TestNamespaceGrammarAppliesAtSubjectMinting checks the negative direction of
+// unifying the namespace grammar: a namespace that [secrets.ValidateNamespace]
+// would refuse must never reach a signed assertion subject either, because
+// before this, [auth.WorkloadIdentity.SubjectFor] only rejected a namespace
+// containing "/" or ":" — not a space, "..", a control character, or one far
+// longer than a namespace is ever allowed to be.
+func TestNamespaceGrammarAppliesAtSubjectMinting(t *testing.T) {
+	ref := auth.StepRef{Workflow: "deploy", Step: "push"}
+
+	tests := []struct {
+		name      string
+		namespace string
+	}{
+		{"a space", "Prod Team"},
+		{"path traversal shape", ".."},
+		{"a control character", "team\na"},
+		{"over the length limit", strings.Repeat("a", auth.MaxNamespaceLen+1)},
+		{"uppercase", "TeamA"},
+		{"underscore", "team_a"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			identity := auth.WorkloadIdentity{
+				Subject: "s", Issuer: "https://idp.example.com",
+				Namespace: test.namespace, Deployment: "prod",
+			}
+
+			_, err := identity.SubjectFor(ref)
+			require.ErrorIs(t, err, auth.ErrInvalidIdentity,
+				"a namespace secrets.ValidateNamespace would refuse must not reach a signed subject")
+		})
+	}
 }
 
 // TestFederationHTTPClientIsUsed checks that a caller-supplied HTTP client reaches

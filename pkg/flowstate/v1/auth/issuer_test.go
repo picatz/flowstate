@@ -96,7 +96,11 @@ func TestWorkloadIdentitySubject(t *testing.T) {
 			name:     "namespace and deployment default when unset",
 			identity: auth.WorkloadIdentity{Subject: "someone", Issuer: "https://idp.example.com"},
 			ref:      testStepRef(),
-			want:     "flowstate:default/default/deploy-service/push-image",
+			// _default, not default: "default" is a legal namespace, so the
+			// placeholder for "no namespace at all" must be spelled with
+			// something no namespace can spell. See the defaultComponent doc
+			// comment in identity.go.
+			want: "flowstate:_default/_default/deploy-service/push-image",
 		},
 		{
 			name:     "the run is not part of the subject",

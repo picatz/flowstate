@@ -58,7 +58,7 @@ var reservedClaims = []string{
 	jwt.Issuer, jwt.Subject, jwt.Audience,
 	jwt.ExpirationTime, jwt.NotBefore, jwt.IssuedAt, jwt.JWTID,
 	ClaimNamespace, ClaimDeployment, ClaimWorkflow, ClaimRun, ClaimStep,
-	ClaimOnBehalfOf, ClaimOnBehalfOfIssuer,
+	ClaimOnBehalfOf, ClaimOnBehalfOfIssuer, ClaimRunMode,
 }
 
 // Claims an [Issuer] adds to every assertion, beyond the registered JWT claims.
@@ -91,6 +91,27 @@ const (
 	// relying party can tell two callers with the same subject from different
 	// issuers apart.
 	ClaimOnBehalfOfIssuer = "on_behalf_of_issuer"
+
+	// ClaimRunMode is "local" for an assertion minted by `flow run local` and
+	// "server" for a server-attested run. See [localComponent] for why the
+	// subject, not this claim, is the actual enforcement point: AWS STS ignores
+	// custom claims, so a relying party that can only see "sub" and "aud" needs
+	// the distinction encoded there. This claim is belt and braces for relying
+	// parties that can read it, such as a GCP attribute mapping or an
+	// Anthropic or OpenAI assumption rule. Like every other reserved claim, an
+	// identity cannot carry one of this name — [WorkloadIdentity.Validate] and
+	// [Issuer.mintFor] both refuse it — so it cannot be set by `--as-claim` or
+	// any other caller-supplied claim.
+	ClaimRunMode = "run_mode"
+)
+
+// Values [ClaimRunMode] takes.
+const (
+	// RunModeServer marks an assertion minted for a server-attested run.
+	RunModeServer = "server"
+
+	// RunModeLocal marks an assertion minted for a `flow run local` rehearsal.
+	RunModeLocal = "local"
 )
 
 // SigningKey is a key an [Issuer] signs assertions with.
@@ -613,6 +634,8 @@ func (i *Issuer) mintFor(ctx context.Context, identity WorkloadIdentity, ref Ste
 
 		ClaimOnBehalfOf:       identity.Subject,
 		ClaimOnBehalfOfIssuer: identity.Issuer,
+
+		ClaimRunMode: runModeFor(identity),
 	}
 
 	if ref.Run != "" {
@@ -644,6 +667,17 @@ func (i *Issuer) mintFor(ctx context.Context, identity WorkloadIdentity, ref Ste
 		ExpiresAt: expiresAt,
 		ID:        id,
 	}, nil
+}
+
+// runModeFor reports the [ClaimRunMode] value for identity, driven entirely by
+// which constructor built it. [NewLocalWorkloadIdentity] is the only thing
+// that can set the identity's unexported local field, so this cannot be swayed
+// by anything a flag or a caller supplies — see [WorkloadIdentity].
+func runModeFor(identity WorkloadIdentity) string {
+	if identity.local {
+		return RunModeLocal
+	}
+	return RunModeServer
 }
 
 // newAssertionID returns a random identifier for the "jti" claim, so a relying

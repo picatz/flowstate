@@ -351,12 +351,15 @@ func (t TrustedIssuer) namespaceFor(claims map[string]any) (string, error) {
 		return "", fmt.Errorf("%w: the %q claim of a token from %q is empty", ErrNoNamespace, t.NamespaceClaim, t.Name)
 	}
 
-	// A namespace names a tenant, and it reaches an assertion subject and a secret
-	// rule. A value spelling out separators could make one tenant's workload look
-	// like another's.
-	if strings.ContainsAny(namespace, subjectSeparator+":") {
-		return "", fmt.Errorf("%w: the %q claim of a token from %q is %q, which must not contain %q or %q",
-			ErrNoNamespace, t.NamespaceClaim, t.Name, truncate(namespace, 64), subjectSeparator, ":")
+	// A namespace names a tenant, and it reaches an assertion subject and a
+	// secret rule. This is the one grammar both of those places check — see
+	// [ValidateNamespace] — checked here too so a namespace claim that would
+	// eventually be refused fails at verification, with the token and the claim
+	// named, rather than later and more opaquely when a subject or a secret
+	// reference is built from it.
+	if err := ValidateNamespace(namespace); err != nil {
+		return "", fmt.Errorf("%w: the %q claim of a token from %q is %q: %w",
+			ErrNoNamespace, t.NamespaceClaim, t.Name, truncate(namespace, 64), err)
 	}
 
 	return namespace, nil
@@ -417,9 +420,10 @@ func (t TrustedIssuer) validate() error {
 	if t.Namespace != "" && t.NamespaceClaim != "" {
 		return fmt.Errorf("namespace and namespace_claim are alternatives: name one tenant for every caller this issuer admits, or one claim to read it from")
 	}
-	if t.Namespace != "" && strings.ContainsAny(t.Namespace, subjectSeparator+":") {
-		return fmt.Errorf("namespace %q must not contain %q or %q, which would let it spell out another tenant's path",
-			t.Namespace, subjectSeparator, ":")
+	if t.Namespace != "" {
+		if err := ValidateNamespace(t.Namespace); err != nil {
+			return fmt.Errorf("namespace: %w", err)
+		}
 	}
 
 	if t.MaxTokenAge < 0 {
