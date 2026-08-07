@@ -243,51 +243,86 @@ func Load(path string) (*File, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 
+	file, err := parseSource(data, true)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+
+	return file, nil
+}
+
+// LoadSource is [Load] for a `*.test.yaml` given directly as bytes rather than
+// read from a path — the seam [RunSource] uses to run inline test cases the
+// way [RunFile] runs a file on disk, on bytes instead of a path, exactly as
+// the MCP surface's flowstate_run_local is [v1.RunWithInputs] on bytes instead
+// of `flow run local`'s path.
+//
+// The one difference bytes force: a case's `workflow:` is not required. [Load]
+// requires it because [RunFile] resolves each case's workflow relative to the
+// *.test.yaml's own directory ([WorkflowPath]), and there is no directory for
+// bytes with no path — the same reason [Parse], unlike [ParseFile], refuses a
+// `call:` step. [RunSource] is given the workflow directly instead, once, for
+// every case in the file, so nothing here needs a name for it.
+func LoadSource(data []byte) (*File, error) {
+	if len(data) > MaxTestFileBytes {
+		return nil, fmt.Errorf("%d bytes exceeds the %d byte limit for a test file", len(data), MaxTestFileBytes)
+	}
+
+	return parseSource(data, false)
+}
+
+// parseSource is the byte-parsing seam both [Load] and [LoadSource] share:
+// the expansion-bound check, the strict unmarshal, and every bound in
+// [MaxTestsPerFile]/[MaxStubsPerTest]/[MaxSignalsPerTest] — everything [Load]
+// did after reading the file off disk, factored out so a caller with bytes
+// and no path runs the identical checks rather than a second copy of them.
+// requireWorkflow is false only for [LoadSource]; see its doc for why.
+func parseSource(data []byte, requireWorkflow bool) (*File, error) {
 	// Checked against the parsed AST, before yaml.Unmarshal below is asked to
 	// do anything: Unmarshal resolves every alias into the destination value
 	// as it decodes, which means a billion-laughs document is already fully
 	// expanded in memory by the time any bound written against the decoded
 	// value could run. See [checkExpansionBounds].
 	if err := checkExpansionBounds(data); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, err
 	}
 
 	var file File
 	if err := yaml.UnmarshalWithOptions(data, &file, yaml.Strict()); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, err
 	}
 
 	if len(file.Tests) == 0 {
-		return nil, fmt.Errorf("%s: declares no tests", path)
+		return nil, fmt.Errorf("declares no tests")
 	}
 	if len(file.Tests) > MaxTestsPerFile {
-		return nil, fmt.Errorf("%s: declares %d tests, more than the limit of %d",
-			path, len(file.Tests), MaxTestsPerFile)
+		return nil, fmt.Errorf("declares %d tests, more than the limit of %d",
+			len(file.Tests), MaxTestsPerFile)
 	}
 
 	for i, test := range file.Tests {
 		if test.Name == "" {
-			return nil, fmt.Errorf("%s: test %d has no name", path, i+1)
+			return nil, fmt.Errorf("test %d has no name", i+1)
 		}
-		if test.Workflow == "" {
-			return nil, fmt.Errorf("%s: test %q names no workflow", path, test.Name)
+		if requireWorkflow && test.Workflow == "" {
+			return nil, fmt.Errorf("test %q names no workflow", test.Name)
 		}
 		if len(test.Stubs) > MaxStubsPerTest {
-			return nil, fmt.Errorf("%s: test %q declares %d stubs, more than the limit of %d",
-				path, test.Name, len(test.Stubs), MaxStubsPerTest)
+			return nil, fmt.Errorf("test %q declares %d stubs, more than the limit of %d",
+				test.Name, len(test.Stubs), MaxStubsPerTest)
 		}
 		if len(test.Signals) > MaxSignalsPerTest {
-			return nil, fmt.Errorf("%s: test %q declares %d signals, more than the limit of %d",
-				path, test.Name, len(test.Signals), MaxSignalsPerTest)
+			return nil, fmt.Errorf("test %q declares %d signals, more than the limit of %d",
+				test.Name, len(test.Signals), MaxSignalsPerTest)
 		}
 		for j, stub := range test.Stubs {
 			if stub.Task == "" {
-				return nil, fmt.Errorf("%s: test %q stub %d names no task", path, test.Name, j+1)
+				return nil, fmt.Errorf("test %q stub %d names no task", test.Name, j+1)
 			}
 			if stub.Returns != nil && stub.Fails != nil {
 				return nil, fmt.Errorf(
-					"%s: test %q stub %d for task %q declares both returns and fails; a stubbed call either succeeds or fails, not both",
-					path, test.Name, j+1, stub.Task)
+					"test %q stub %d for task %q declares both returns and fails; a stubbed call either succeeds or fails, not both",
+					test.Name, j+1, stub.Task)
 			}
 		}
 	}

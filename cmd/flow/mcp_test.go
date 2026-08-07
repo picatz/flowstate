@@ -98,8 +98,17 @@ func TestToolsMatchTheServiceDescriptor(t *testing.T) {
 // because a server executing a submitted workflow in-process is a different
 // product, and inventing a service method for it would be that product's first
 // half.
+//
+// flowstate_test: flowtest.RunSource, executing in this process the same way
+// run_local does. Not an RPC for the identical reason, and not folded into
+// run_local's own tool because the two answer different questions with
+// different documents — a GetResponse's transcript against a v1.TestReport's
+// verdicts — and a single tool choosing between them by which arguments were
+// set is the shape [runLocalArguments]'s own doc comment already rejected for
+// `vars`: an implicit mode a caller has to infer.
 var documentedLocalTools = map[string]bool{
 	runLocalToolName: true,
+	testToolName:     true,
 }
 
 func documentedLocalToolNames() []string {

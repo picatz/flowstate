@@ -524,6 +524,11 @@ func mcpTools() []mcpTool {
 		description: runLocalToolDescription,
 		local:       true,
 	})
+	tools = append(tools, mcpTool{
+		name:        testToolName,
+		description: testToolDescription,
+		local:       true,
+	})
 
 	return tools
 }

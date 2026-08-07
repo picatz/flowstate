@@ -1750,7 +1750,11 @@ flow mcp --address flowstate.internal:9233
 flow mcp --egress-policy examples/egress-policy.yaml
 
 # Let local runs resolve one environment secret, under an access policy:
-flow mcp --secret-env API_KEY --auth-policy policy.yaml`,
+flow mcp --secret-env API_KEY --auth-policy policy.yaml
+
+# Teach the catalog, flowstate_validate and flowstate_run_local a plugin's
+# tasks, so a file naming one stops reading as "unknown task":
+flow mcp --plugin-dir ./plugins`,
 	}
 	addServerFlags(mcpCmd)
 
@@ -1758,6 +1762,20 @@ flow mcp --secret-env API_KEY --auth-policy policy.yaml`,
 	// long-lived process serving a model cannot take it per call: an opt-in a
 	// caller can send is not an opt-in. See mcp.go.
 	addLocalRunFlags(mcpCmd)
+
+	// `flow mcp` was, until #241, the only plugin-relevant command without this:
+	// worker, server, plugins and lsp all call addPluginFlags, and an agent asked
+	// to author a `codex.exec:` workflow — the flagship agentic story — was told
+	// `unknown task` by the surface built for agents, with no way to validate,
+	// catalog, or rehearse it. The precedent this follows, exactly, is
+	// [runLSP]'s: an explicit operator flag, launched once at start-up rather
+	// than reached for per call, registering into the same [v1.DefaultRegistry]
+	// every lookup in the engine already consults (see [startPlugins]). Never
+	// auto-discovery, for the reason runLSP's own comment gives — a cloned
+	// repository must not choose what an agent's editor or this process executes
+	// — and never per call, because a tool call is not a moment to launch a
+	// process any more than a keystroke is.
+	addPluginFlags(mcpCmd)
 
 	// LSP command, which starts a Language Server Protocol (LSP) server for Flowfile files.
 	lspCmd := &cobra.Command{
