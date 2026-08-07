@@ -230,13 +230,15 @@ func (r *listRendering) add(runs []*v1.RunSummary) error {
 
 		default:
 			if !r.header {
-				fmt.Fprintln(r.table, "WORKFLOW_ID\tSTATUS\tSTARTED\tFINISHED")
+				fmt.Fprintln(r.table, "WORKFLOW_ID\tSYM\tSTATUS\tSTARTED\tFINISHED")
 				r.header = true
 			}
 
-			fmt.Fprintf(r.table, "%s\t%s\t%s\t%s\n",
+			tone := statusTone(run.GetStatus())
+			fmt.Fprintf(r.table, "%s\t%s\t%s\t%s\t%s\n",
 				run.GetWorkflowId(),
-				r.surface.Theme.Tone(statusTone(run.GetStatus())).Render(statusLabel(run.GetStatus())),
+				r.surface.Theme.Tone(tone).Render(r.surface.Caps.Symbols().Mark(tone)),
+				r.surface.Theme.Tone(tone).Render(statusLabel(run.GetStatus())),
 				formatRunTime(run.GetStartTime().AsTime(), run.GetStartTime() != nil),
 				formatRunTime(run.GetCloseTime().AsTime(), run.GetCloseTime() != nil),
 			)
@@ -326,7 +328,12 @@ flow list --all --filter 'status == "FAILED" && start_time > timestamp("2026-08-
 
 # Runs that took longer than an hour. close_time is null until a run finishes, so
 # the guard is not decoration: CEL's && absorbs the error from the side it skips.
-flow list --all --filter 'finished && close_time - start_time > duration("1h")'`,
+flow list --all --filter 'finished && close_time - start_time > duration("1h")'
+
+# Only one workload's runs. WorkflowType can't answer this — every run's is
+# "Run", the one interpreter workflow — so name is the workflow's own declared
+# name instead, and it is empty for a run older than this field.
+flow list --all --filter 'name == "nightly-etl"'`,
 	}
 
 	addOutputFlag(listCmd)
@@ -336,8 +343,9 @@ flow list --all --filter 'finished && close_time - start_time > duration("1h")'`
 
 	listCmd.Flags().String("filter", "",
 		"keep only the runs a CEL expression answers yes about, over `workflow_id`, "+
-			"`run_id`, `status`, `start_time`, `close_time` and `finished` — for example "+
-			`status == "FAILED"`)
+			"`run_id`, `status`, `start_time`, `close_time`, `finished`, and `name` "+
+			"(the workflow's own declared name, empty for a run older than this field) "+
+			`— for example status == "FAILED"`)
 	listCmd.Flags().String("page-token", "",
 		"continue a previous listing from where it stopped")
 	listCmd.Flags().Bool("all", false,

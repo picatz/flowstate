@@ -376,13 +376,18 @@ flow list --all --filter 'status == "FAILED" && start_time > timestamp("2026-08-
 # Runs that took longer than an hour. close_time is null until a run finishes, so
 # the guard is not decoration: CEL's && absorbs the error from the side it skips.
 flow list --all --filter 'finished && close_time - start_time > duration("1h")'
+
+# Only one workload's runs. WorkflowType can't answer this — every run's is
+# "Run", the one interpreter workflow — so name is the workflow's own declared
+# name instead, and it is empty for a run older than this field.
+flow list --all --filter 'name == "nightly-etl"'
 ```
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
 | `--all` | `bool` | `false` | — | keep asking until the listing is exhausted, rather than returning one page |
-| `--filter <string>` | `string` | — | — | keep only the runs a CEL expression answers yes about, over `workflow_id`, `run_id`, `status`, `start_time`, `close_time` and `finished` — for example status == "FAILED" |
+| `--filter <string>` | `string` | — | — | keep only the runs a CEL expression answers yes about, over `workflow_id`, `run_id`, `status`, `start_time`, `close_time`, `finished`, and `name` (the workflow's own declared name, empty for a run older than this field) — for example status == "FAILED" |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl carry the server's own schema, so a field is addressable by name |
 | `--page-size <int32>` | `int32` | `0` | — | how many runs to return per page; unset takes the server's default |
 | `--page-token <string>` | `string` | — | — | continue a previous listing from where it stopped |
@@ -464,6 +469,7 @@ flow mcp --secret-env API_KEY --auth-policy policy.yaml
 | `--secret-env <string,...>` | `stringSlice` | — | `FLOWSTATE_SECRET_ENV_ALLOW` | environment secret names this process may resolve (comma-separated or repeatable; values come from FLOWSTATE_SECRET_<NAME>) |
 | `--secret-env-namespace <string,...>` | `stringSlice` | — | — | tenant-to-prefix mapping NAMESPACE=PREFIX for env: secrets (repeatable) |
 | `--secret-require-namespace` | `bool` | `false` | — | refuse every secret read whose authenticated identity has no tenant namespace |
+| `--task-policy <string>` | `string` | — | `FLOWSTATE_TASK_POLICY` | path to a task-shape policy (YAML) governing which identities may dispatch which tasks (default $FLOWSTATE_TASK_POLICY); with nothing configured, every task dispatches exactly as it does today — see #187 |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
 
 ## `flow plugins`
@@ -604,6 +610,7 @@ flow run local examples/computed-outputs/workflow.yaml --input release=2026.9.0 
 | `--secret-env-namespace <string,...>` | `stringSlice` | — | — | tenant-to-prefix mapping NAMESPACE=PREFIX for env: secrets (repeatable) |
 | `--secret-require-namespace` | `bool` | `false` | — | refuse every secret read whose authenticated identity has no tenant namespace |
 | `--signal <string,...>` | `stringArray` | — | — | answer a wait_for_signal step, as name=json (repeatable), e.g. --signal deploy-approved='{"approved": true}' |
+| `--task-policy <string>` | `string` | — | `FLOWSTATE_TASK_POLICY` | path to a task-shape policy (YAML) governing which identities may dispatch which tasks (default $FLOWSTATE_TASK_POLICY); with nothing configured, every task dispatches exactly as it does today — see #187 |
 
 ## `flow schedule`
 
@@ -1064,5 +1071,6 @@ flow worker --namespace production --deployment-name flowstate --build-id "$(git
 | `--secret-env <string,...>` | `stringSlice` | — | `FLOWSTATE_SECRET_ENV_ALLOW` | environment secret names this process may resolve (comma-separated or repeatable; values come from FLOWSTATE_SECRET_<NAME>) |
 | `--secret-env-namespace <string,...>` | `stringSlice` | — | — | tenant-to-prefix mapping NAMESPACE=PREFIX for env: secrets (repeatable) |
 | `--secret-require-namespace` | `bool` | `false` | — | refuse every secret read whose authenticated identity has no tenant namespace |
+| `--task-policy <string>` | `string` | — | `FLOWSTATE_TASK_POLICY` | path to a task-shape policy (YAML) governing which identities may dispatch which tasks (default $FLOWSTATE_TASK_POLICY); with nothing configured, every task dispatches exactly as it does today — see #187 |
 | `--task-queue <string>` | `string` | `flowstate-run-task-queue` | `TEMPORAL_TASK_QUEUE` | task queue for Temporal workflows and activities |
 

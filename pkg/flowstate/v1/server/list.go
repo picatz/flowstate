@@ -10,6 +10,7 @@ import (
 	enums "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/workflow/v1"
 	"go.temporal.io/api/workflowservice/v1"
+	"go.temporal.io/sdk/converter"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -259,7 +260,54 @@ func summarize(execution *workflow.WorkflowExecutionInfo) *v1.RunSummary {
 		Status:     runStatus(execution.GetStatus()),
 		StartTime:  start,
 		CloseTime:  close,
+		Name:       workflowNameOf(execution),
 	}
+}
+
+// workflowNameOf reads the workflow's own declared name off a run's memo,
+// and reports the empty string when there is none to read.
+//
+// The memo, not the search attribute — deliberately, and this is the fix for
+// a real bug the search-attribute-only version had. `flow list --filter`
+// composes with the tenant check unconditionally, on every deployment
+// whether or not [EnsureSearchAttributesRegistered] ever succeeded; a
+// `name` comparison sourced from the search attribute would silently match
+// nothing on a deployment where registration failed or was never attempted
+// — a filter with nothing wrong with it, indistinguishable from one with a
+// typo. [workflowNameMemoKey] has no such dependency: it is written by
+// [workflowNameMemoEntry] on every run, exactly as [namespaceMemoKey] is,
+// so a listing already paying for the memo it reads for tenancy reads this
+// at the same cost. The search attribute this deployment may additionally
+// carry is index-only, for tools that query Temporal's visibility store
+// directly — this server never reads it back.
+//
+// Absence is still not an error, and still covers a real case: a run
+// started before this memo key existed. That run predates the feature
+// entirely, so "no name available" is the honest answer, and it is what
+// [RunFilter]'s `name` comparison sees — a bare `name == "..."` never
+// matches such a run, and `name == ""` does.
+//
+// Decoded with the SDK's own default data converter, matching the encoding
+// side in [workflowNameMemoEntry] exactly — a second decoder that guessed at
+// the payload's encoding would be the shared-encoder lesson violated in the
+// other direction.
+func workflowNameOf(execution *workflow.WorkflowExecutionInfo) string {
+	payload, ok := execution.GetMemo().GetFields()[workflowNameMemoKey]
+	if !ok {
+		return ""
+	}
+
+	var name string
+	if err := converter.GetDefaultDataConverter().FromPayload(payload, &name); err != nil {
+		// A payload under this key that does not decode as a string is not this
+		// deployment's doing — see [workflowNameOf]'s own doc — so the honest
+		// answer is "no name available", the same as when the key is absent,
+		// rather than failing a listing over a memo field this run's writer
+		// used for something else entirely.
+		return ""
+	}
+
+	return name
 }
 
 // runTimes returns when a run began and when it finished.

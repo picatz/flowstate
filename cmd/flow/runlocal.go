@@ -69,6 +69,13 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// And the same for #187's task-shape policy: a local run exists to tell
+	// an author what production will do, which means rehearsing under the
+	// task-shape policy a worker would enforce.
+	if err := applyTaskPolicy(cmd); err != nil {
+		return err
+	}
+
 	// A workload that waits for a signal needs something able to deliver one, or it
 	// blocks with nothing that could ever release it.
 	localSignals, _ := cmd.Flags().GetStringArray("signal")

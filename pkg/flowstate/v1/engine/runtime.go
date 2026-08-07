@@ -58,6 +58,21 @@ func (a taskActivities) TaskAuthorized(ctx context.Context, task *v1.Task, ident
 	ctx, span := startTaskSpan(ctx, task, stepID)
 	defer span.End()
 
+	// The deployment's task-shape policy (#187), checked here against the
+	// same identity parameter [executor.dispatch] already threads through
+	// for authorization — the fix for the gap found in review: this is the
+	// arm [v1.TaskNeedsAuthority] selects, so it is exactly the tasks that
+	// resolve secrets and act under the run's own identity that a
+	// deployment's policy most needs to be able to gate, and the first cut
+	// of #187 slice 1 checked [Task]/[TaskInScope] but not this one or
+	// [TaskInScopeAuthorized] — see [checkTaskDispatchPolicy]'s own doc.
+	// Checked before [a.context] installs the runtime a resolved secret
+	// reference would use, so a denied dispatch still resolves no
+	// credential (invariant 7's echo, restated for this arm).
+	if err := checkTaskDispatchPolicy(ctx, span, task, identity); err != nil {
+		return nil, err
+	}
+
 	ctx, stop := withHeartbeat(ctx)
 	defer stop()
 
@@ -71,6 +86,13 @@ func (a taskActivities) TaskAuthorized(ctx context.Context, task *v1.Task, ident
 func (a taskActivities) TaskInScopeAuthorized(ctx context.Context, task *v1.Task, scope *v1.Scope, identity *v1.WorkloadIdentity, workflowName, runID, stepID string) (*v1.Node_Outputs, error) {
 	ctx, span := startTaskSpan(ctx, task, stepID)
 	defer span.End()
+
+	// See [TaskAuthorized]'s identical check, this arm's sibling on the
+	// other axis (scope-carrying rather than not) of [executor.dispatch]'s
+	// four-way split.
+	if err := checkTaskDispatchPolicy(ctx, span, task, identity); err != nil {
+		return nil, err
+	}
 
 	ctx, stop := withHeartbeat(ctx)
 	defer stop()

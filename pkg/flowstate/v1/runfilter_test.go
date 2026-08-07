@@ -74,6 +74,51 @@ func TestAFilterKeepsTheRunsItSaysYesAbout(t *testing.T) {
 	}
 }
 
+// TestAFilterOnNameMatchesTheWorkflowsDeclaredName covers the one field this
+// package does not derive from the memo or from a built-in Temporal field —
+// see [RunSummary.Name]'s own doc for why WorkflowType cannot answer this.
+//
+// Also pins the field's honest failure mode: a run this deployment never
+// indexed carries the empty string, and that is a value like any other —
+// `name == ""` matches it, `name == "anything else"` does not, and neither
+// case is an error. A filter is never told "this run has no opinion"; it is
+// told what the run actually carries, which for an unindexed run is nothing.
+func TestAFilterOnNameMatchesTheWorkflowsDeclaredName(t *testing.T) {
+	t.Parallel()
+
+	named := run("etl", v1.RunResponse_STATUS_RUNNING, time.Now(), nil)
+	named.Name = "nightly-etl"
+
+	unindexed := run("legacy", v1.RunResponse_STATUS_RUNNING, time.Now(), nil)
+	// Name left at its zero value: an unindexed run.
+
+	for _, test := range []struct {
+		filter string
+		named  bool
+		legacy bool
+	}{
+		{filter: `name == "nightly-etl"`, named: true},
+		{filter: `name != "nightly-etl"`, legacy: true},
+		{filter: `name == ""`, legacy: true},
+		{filter: `name.startsWith("nightly")`, named: true},
+	} {
+		t.Run(test.filter, func(t *testing.T) {
+			t.Parallel()
+
+			filter, err := v1.NewRunFilter(test.filter)
+			require.NoError(t, err)
+
+			matched, err := filter.Match(t.Context(), named)
+			require.NoError(t, err)
+			require.Equal(t, test.named, matched, "the indexed run")
+
+			matched, err = filter.Match(t.Context(), unindexed)
+			require.NoError(t, err)
+			require.Equal(t, test.legacy, matched, "the unindexed run")
+		})
+	}
+}
+
 // TestNoFilterKeepsEverything pins that absence is not a filter.
 //
 // A nil filter matching everything is what lets `List` apply one unconditionally

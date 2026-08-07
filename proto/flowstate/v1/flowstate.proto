@@ -405,6 +405,25 @@ message SignalPolicy {
       max_items: 32
     }
   ];
+
+  // DistinctFromStarter requires, in addition to whichever rule in [allow]
+  // an otherwise-authorized sender satisfies, that the sender not be this
+  // run's own starter — the same issuer and the same subject as the
+  // identity that submitted the run, compared the way [SignalPolicyRule.subject]
+  // already is (see `QualifiedSubject`). Set at the policy level, not on a
+  // rule, so it cannot be bypassed by adding a wide-open rule to `allow:`:
+  // separation of duties is ANDed onto every rule this policy has, present
+  // or future, rather than expressed as one more alternative a caller could
+  // satisfy around it.
+  //
+  // Enforced against the `flowstate.starter` value recorded on the run's
+  // memo at submit. A run whose memo predates that key — started before
+  // this field existed — has nothing to compare against, and is refused
+  // whenever this flag demands the comparison: a run that cannot prove
+  // separation does not get it, the same fail-closed rule
+  // [SignalPolicyAllows]'s own doc comment states for every other case once
+  // a policy exists.
+  bool distinct_from_starter = 2;
 }
 
 // SignalPolicyRule is one admissible sender, checked against the
@@ -457,6 +476,32 @@ message SignalPolicyRule {
     keys: {string: {min_len: 1, max_len: 128}}
     values: {string: {max_len: 256}}
   }];
+
+  // SubjectFrom carries `subject:` written as an expression — `subject:
+  // ${...}` in a Flowfile — rather than a literal. It resolves exactly
+  // once, at submit, against the run's bound inputs (after
+  // `BindRunInputs`, before anything else runs), and the result is written
+  // into [subject] and this field is cleared before the policy is frozen
+  // into the run's memo.
+  //
+  // That resolve-then-clear is why the enforcement path never evaluates an
+  // expression: by the time a signal can arrive, `subject` already holds a
+  // literal or is empty, and [subject_from] is always unset on whatever
+  // `SignalPolicyAllows` is asked to check. A decoded policy that still
+  // carries a populated `subject_from` is refused by
+  // `CheckSignalPolicyShape` — an unresolved expression must never survive
+  // to the path that authorizes a signal, because that path runs on every
+  // delivery and evaluating a caller-influenced expression there is
+  // exactly what `BindRunInputs`'s own input-value rule already refuses
+  // for an ordinary input.
+  //
+  // The narrowing rule: a rule that sets this field must also set
+  // [namespace] or [claims] — see the Flowfile compiler's narrowing check.
+  // An interpolated subject alone would let a caller pick their own
+  // authorization by choosing what input value to submit; requiring a
+  // co-resident literal constraint means an input can only narrow a static
+  // grant the workflow's author already wrote, never invent one.
+  Value subject_from = 4;
 }
 
 // InputDeclaration is one parameter a run may be started with: what it is
@@ -3487,6 +3532,21 @@ message RunSummary {
 
   // CloseTime is when it finished, unset while it is still running.
   google.protobuf.Timestamp close_time = 5;
+
+  // Name is the workflow's own declared name (Workflow.name), not Temporal's
+  // WorkflowType — every run's WorkflowType is "Run", the one interpreter
+  // workflow, so it cannot distinguish "nightly-etl" from "onboard-tenant".
+  //
+  // Populated from the run's memo, recorded unconditionally at submit —
+  // never from a search attribute, and deliberately so: a deployment may
+  // additionally project this into Temporal's visibility store for external
+  // tooling, but `flow list --filter` never depends on that having
+  // succeeded, or a filter with nothing wrong with it would silently return
+  // nothing on a deployment where search-attribute registration failed.
+  // Empty only for a run that predates this field entirely. Absence is not
+  // an error — see server/list.go and runfilter.go, where a filter comparing
+  // against `name` simply does not match a run that carries none.
+  string name = 6;
 }
 
 // ListResponse returns a page of the caller's runs.

@@ -2,6 +2,7 @@ package flowstatev1_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"testing"
@@ -115,6 +116,46 @@ func TestRunWorkflowPolicy(t *testing.T) {
 				return
 			}
 			runWorkflow(t, test.Workflow, test.ExpectedOutputs)
+		})
+	}
+}
+
+// TestRunWorkflowTaskPolicy covers #187 slice 1's task-shape policy in the
+// local driver. The same cases run against the durable driver in the engine
+// package (TestRunWorkflowTaskPolicyDurable) — verified callers on both,
+// which is what invariant 3 asks a shared case set to have, per CLAUDE.md's
+// account of [tests.ZeroValueCases] sitting unreached by one driver for
+// months.
+//
+// Each case installs its own policy as the process-wide default
+// ([v1.SetDefaultTaskPolicy]) for the duration of its subtest and restores
+// nil afterward — global state, guarded by running one case at a time
+// (no t.Parallel here), the same posture [allowLoopback] in tests.go takes
+// for the egress registry swap.
+func TestRunWorkflowTaskPolicy(t *testing.T) {
+	for _, tc := range tests.TaskPolicyCases() {
+		t.Run(tc.Name, func(t *testing.T) {
+			policy, err := tc.Policy.Policy()
+			require.NoError(t, err, "every case's policy must itself compile")
+
+			v1.SetDefaultTaskPolicy(policy)
+			t.Cleanup(func() { v1.SetDefaultTaskPolicy(nil) })
+
+			out, err := v1.Run(t.Context(), tc.Workflow)
+
+			if tc.DeniedTask != "" {
+				require.Error(t, err, "the policy must refuse this dispatch")
+
+				var denied *v1.TaskPolicyDeniedError
+				require.True(t, errors.As(err, &denied),
+					"the failure must be a *v1.TaskPolicyDeniedError, got: %v", err)
+				require.Equal(t, tc.DeniedTask, denied.Task)
+				require.Equal(t, tc.DeniedReason, denied.Reason)
+				return
+			}
+
+			require.NoError(t, err)
+			require.Empty(t, cmp.Diff(tc.ExpectedOutputs, out, protocmp.Transform()))
 		})
 	}
 }

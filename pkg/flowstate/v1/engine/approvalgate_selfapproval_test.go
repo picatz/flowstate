@@ -49,7 +49,7 @@ func TestApprovalGateRefusesSelfApproval(t *testing.T) {
 		env := suite.NewTestWorkflowEnvironment()
 
 		env.RegisterWorkflow(engine.Run)
-		env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
+		env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 
 		env.RegisterDelayedCallback(func() {
 			// The same subject the run itself was started as — a requester who
@@ -112,7 +112,7 @@ func TestApprovalGateRefusesSelfApproval(t *testing.T) {
 		env := suite.NewTestWorkflowEnvironment()
 
 		env.RegisterWorkflow(engine.Run)
-		env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
+		env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 
 		env.RegisterDelayedCallback(func() {
 			env.SignalWorkflow("deploy-approved", &v1.SignalDelivery{
@@ -165,7 +165,7 @@ func TestApprovalGateRefusesSelfApproval(t *testing.T) {
 		env := suite.NewTestWorkflowEnvironment()
 
 		env.RegisterWorkflow(engine.Run)
-		env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
+		env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 
 		env.RegisterDelayedCallback(func() {
 			env.SignalWorkflow("deploy-approved", &v1.SignalDelivery{

@@ -1492,6 +1492,22 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 		return nil, err
 	}
 
+	// The deployment's task-shape policy (#187), consulted once for the whole
+	// dispatch — above the retry loop below, not inside it, because a
+	// dispatch's task name and identity do not change between retries of the
+	// same step, and a denial must produce none of a retry's side effects
+	// either. Placed after inputs resolve and before any attempt runs: inputs
+	// resolution never touches a secret reference (see [ResolveTaskInputs]
+	// and eval.go's own note on [Value_SecretRef]), so a denied dispatch here
+	// has still resolved no credential — the deployment-side echo of
+	// invariant 7 the design record for #187 states. The durable driver
+	// checks at the identical position, once per activity entry
+	// (`engine/activities.go`), which is what keeps the two drivers agreeing
+	// about which dispatches are denied.
+	if err := CheckTaskPolicy(ctx, resolved.GetName(), scope.GetIdentity()); err != nil {
+		return nil, err
+	}
+
 	// The same number the durable driver uses, from the same constant. This was
 	// `1` here and five there, so a step with no `retry:` behaved differently in
 	// the place that exists to rehearse the other.

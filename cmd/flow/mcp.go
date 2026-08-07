@@ -97,6 +97,16 @@ func runMCP(cmd *cobra.Command, args []string) error {
 	if err := applyMCPEgressPolicy(cmd); err != nil {
 		return err
 	}
+	// #187's task-shape policy takes the same zero case here as everywhere
+	// else: nothing configured restricts nothing. Unlike egress there is no
+	// MCP-specific stricter default to fall back to — a task-shape policy
+	// governs which *tasks* a workflow may dispatch, not which network
+	// addresses a running task may reach, so a model composing a workflow is
+	// not a materially different caller than a person running the same
+	// workflow through `flow run local`.
+	if err := applyTaskPolicy(cmd); err != nil {
+		return err
+	}
 	if _, err := localWorkloadIdentity(cmd); err != nil {
 		return err
 	}
@@ -585,6 +595,7 @@ func runLocalTool() *mcp.Tool {
 // the worker it rehearses.
 func addLocalRunFlags(cmd *cobra.Command) {
 	addEgressPolicyFlag(cmd)
+	addTaskPolicyFlag(cmd)
 	addSecretFlags(cmd)
 
 	cmd.Flags().String("as-subject", "local-user",

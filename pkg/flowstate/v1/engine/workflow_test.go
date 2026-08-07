@@ -31,7 +31,7 @@ func runWorkflow(t *testing.T, input *v1.Workflow, expected *v1.Workflow_StepOut
 	env := testSuite.NewTestWorkflowEnvironment()
 
 	env.RegisterWorkflow(engine.Run)
-	env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
+	env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 	env.OnActivity(engine.TaskWithPrev, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskWithPrev)
 	env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 	// Registered here rather than only in the `vars:` tests: a workflow's block is
@@ -82,7 +82,7 @@ func TestRunWorkflowPolicy(t *testing.T) {
 			testSuite := &testsuite.WorkflowTestSuite{}
 			env := testSuite.NewTestWorkflowEnvironment()
 			env.RegisterWorkflow(engine.Run)
-			env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 			env.OnActivity(engine.TaskWithPrev, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskWithPrev)
 			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
@@ -109,6 +109,59 @@ func TestRunWorkflowPolicy(t *testing.T) {
 				"Expected output does not match actual output:\n%s",
 				cmp.Diff(test.ExpectedOutputs, &output, protocmp.Transform()),
 			)
+		})
+	}
+}
+
+// TestRunWorkflowTaskPolicy runs #187 slice 1's shared task-shape policy
+// cases ([tests.TaskPolicyCases]) against the durable driver — the same
+// cases [flowstatev1_test.TestRunWorkflowTaskPolicy] runs against the local
+// one, which is what keeps the two agreeing about which dispatches a
+// deployment's policy refuses (invariant 3).
+//
+// Errors round-trip through Temporal's failure conversion here, unlike the
+// local driver's bare Go error chain, so this asserts by text — the same
+// choice [TestRunWorkflowTaskOutputElementBound] already makes for the
+// identical reason (see its own comment: `require.Contains(t, err.Error(),
+// "10000")` rather than errors.As) — rather than pretending a
+// *v1.TaskPolicyDeniedError survives the wire.
+func TestRunWorkflowTaskPolicy(t *testing.T) {
+	for _, tc := range tests.TaskPolicyCases() {
+		t.Run(tc.Name, func(t *testing.T) {
+			policy, err := tc.Policy.Policy()
+			require.NoError(t, err, "every case's policy must itself compile")
+
+			v1.SetDefaultTaskPolicy(policy)
+			t.Cleanup(func() { v1.SetDefaultTaskPolicy(nil) })
+
+			testSuite := &testsuite.WorkflowTestSuite{}
+			env := testSuite.NewTestWorkflowEnvironment()
+			env.RegisterWorkflow(engine.Run)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.TaskWithPrev, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskWithPrev)
+			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: tc.Workflow})
+			require.True(t, env.IsWorkflowCompleted())
+
+			if tc.DeniedTask != "" {
+				workflowErr := env.GetWorkflowError()
+				require.Error(t, workflowErr, "the policy must refuse this dispatch")
+				require.Contains(t, workflowErr.Error(), tc.DeniedTask,
+					"the denial must name the task it refused")
+				require.Contains(t, workflowErr.Error(), string(tc.DeniedReason),
+					"the denial must name why — the rule category the design record's "+
+						"diagnostics rule asks a deployment refusal to state")
+				require.Contains(t, workflowErr.Error(), "task-shape policy",
+					"the denial must read as a deployment refusal, not an ordinary task failure")
+				return
+			}
+
+			require.NoError(t, env.GetWorkflowError())
+
+			var output v1.Workflow_StepOutputs
+			require.NoError(t, env.GetWorkflowResult(&output))
+			require.Empty(t, cmp.Diff(tc.ExpectedOutputs, &output, protocmp.Transform()))
 		})
 	}
 }
@@ -211,7 +264,7 @@ func budgetEnv(t *testing.T) *testsuite.TestWorkflowEnvironment {
 	env := testSuite.NewTestWorkflowEnvironment()
 
 	env.RegisterWorkflow(engine.Run)
-	env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
+	env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 	env.OnActivity(engine.TaskWithPrev, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskWithPrev)
 	env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 	env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
@@ -562,7 +615,7 @@ func TestCallVarsSurviveMidCalleeSuspend(t *testing.T) {
 		testSuite := &testsuite.WorkflowTestSuite{}
 		seg := testSuite.NewTestWorkflowEnvironment()
 		seg.RegisterWorkflow(engine.Run)
-		seg.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
+		seg.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 		seg.OnActivity(engine.TaskWithPrev, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskWithPrev)
 		seg.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 		seg.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).
@@ -652,7 +705,7 @@ func TestRunWorkflowLog(t *testing.T) {
 			testSuite := &testsuite.WorkflowTestSuite{}
 			env := testSuite.NewTestWorkflowEnvironment()
 			env.RegisterWorkflow(engine.Run)
-			env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
 
@@ -683,7 +736,7 @@ func TestRunWorkflowVars(t *testing.T) {
 			testSuite := &testsuite.WorkflowTestSuite{}
 			env := testSuite.NewTestWorkflowEnvironment()
 			env.RegisterWorkflow(engine.Run)
-			env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
 
@@ -722,7 +775,7 @@ func TestRunWorkflowInputsAndOutputs(t *testing.T) {
 			testSuite := &testsuite.WorkflowTestSuite{}
 			env := testSuite.NewTestWorkflowEnvironment()
 			env.RegisterWorkflow(engine.Run)
-			env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
 
@@ -891,7 +944,7 @@ func TestRunWorkflowResponseScope(t *testing.T) {
 			testSuite := &testsuite.WorkflowTestSuite{}
 			env := testSuite.NewTestWorkflowEnvironment()
 			env.RegisterWorkflow(engine.Run)
-			env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
 
@@ -938,7 +991,7 @@ func TestRunWorkflowTaskOutputElementBound(t *testing.T) {
 			testSuite := &testsuite.WorkflowTestSuite{}
 			env := testSuite.NewTestWorkflowEnvironment()
 			env.RegisterWorkflow(engine.Run)
-			env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
 
@@ -1031,7 +1084,7 @@ func TestRunWorkflowErrorText(t *testing.T) {
 			testSuite := &testsuite.WorkflowTestSuite{}
 			env := testSuite.NewTestWorkflowEnvironment()
 			env.RegisterWorkflow(engine.Run)
-			env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
 
@@ -1064,7 +1117,7 @@ func TestToleratedFailureTextCarriesNoTransportWrapping(t *testing.T) {
 			testSuite := &testsuite.WorkflowTestSuite{}
 			env := testSuite.NewTestWorkflowEnvironment()
 			env.RegisterWorkflow(engine.Run)
-			env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
 
@@ -1101,7 +1154,7 @@ func TestRunWorkflowCall(t *testing.T) {
 			testSuite := &testsuite.WorkflowTestSuite{}
 			env := testSuite.NewTestWorkflowEnvironment()
 			env.RegisterWorkflow(engine.Run)
-			env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
 
@@ -1138,7 +1191,7 @@ func TestRunWorkflowLoop(t *testing.T) {
 			testSuite := &testsuite.WorkflowTestSuite{}
 			env := testSuite.NewTestWorkflowEnvironment()
 			env.RegisterWorkflow(engine.Run)
-			env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
 
@@ -1180,7 +1233,7 @@ func TestRunWorkflowToleratedStepFailure(t *testing.T) {
 			testSuite := &testsuite.WorkflowTestSuite{}
 			env := testSuite.NewTestWorkflowEnvironment()
 			env.RegisterWorkflow(engine.Run)
-			env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
 
@@ -1208,7 +1261,7 @@ func TestRunWorkflowNestedErrorText(t *testing.T) {
 			testSuite := &testsuite.WorkflowTestSuite{}
 			env := testSuite.NewTestWorkflowEnvironment()
 			env.RegisterWorkflow(engine.Run)
-			env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
 
@@ -1249,7 +1302,7 @@ func TestRunWorkflowUndo(t *testing.T) {
 			testSuite := &testsuite.WorkflowTestSuite{}
 			env := testSuite.NewTestWorkflowEnvironment()
 			env.RegisterWorkflow(engine.Run)
-			env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
 
@@ -1291,7 +1344,7 @@ func TestRunWorkflowUndoCall(t *testing.T) {
 			testSuite := &testsuite.WorkflowTestSuite{}
 			env := testSuite.NewTestWorkflowEnvironment()
 			env.RegisterWorkflow(engine.Run)
-			env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
 
@@ -1336,7 +1389,7 @@ func TestRunWorkflowUndoOnCancellation(t *testing.T) {
 			testSuite := &testsuite.WorkflowTestSuite{}
 			env := testSuite.NewTestWorkflowEnvironment()
 			env.RegisterWorkflow(engine.Run)
-			env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
 
@@ -1387,7 +1440,7 @@ func TestRunWorkflowUndoPlacement(t *testing.T) {
 			testSuite := &testsuite.WorkflowTestSuite{}
 			env := testSuite.NewTestWorkflowEnvironment()
 			env.RegisterWorkflow(engine.Run)
-			env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
 
@@ -1435,7 +1488,7 @@ func TestPendingCompensationsSurviveContinueAsNew(t *testing.T) {
 		testSuite := &testsuite.WorkflowTestSuite{}
 		env := testSuite.NewTestWorkflowEnvironment()
 		env.RegisterWorkflow(engine.Run)
-		env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(engine.Task)
+		env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 		env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 		env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
 

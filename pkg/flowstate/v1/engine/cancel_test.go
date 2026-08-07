@@ -48,15 +48,15 @@ func newCancelEnv(t *testing.T) (*testsuite.TestWorkflowEnvironment, func() []st
 	var mu sync.Mutex
 	var ran []string
 
-	record := func(ctx context.Context, task *v1.Task) (*v1.Node_Outputs, error) {
+	record := func(ctx context.Context, task *v1.Task, identity *v1.WorkloadIdentity) (*v1.Node_Outputs, error) {
 		mu.Lock()
 		ran = append(ran, task.GetInputs()["message"].GetLiteral().GetStringValue())
 		mu.Unlock()
 
-		return engine.Task(ctx, task)
+		return engine.Task(ctx, task, identity)
 	}
 
-	env.OnActivity(engine.Task, mock.Anything, mock.Anything).Return(record)
+	env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(record)
 	env.OnActivity(engine.TaskWithPrev, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskWithPrev)
 	env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 

@@ -62,9 +62,10 @@ import (
 // ten million, which is the same order as a single ordinary evaluation elsewhere
 // in the system.
 //
-// It is also generous for what a filter legitimately is. A predicate over six
-// scalar fields costs single-digit units; anything approaching this bound is not a
-// filter, it is a program someone is running once per run in a listing.
+// It is also generous for what a filter legitimately is. A predicate over the
+// scalar fields below costs single-digit units; anything approaching this
+// bound is not a filter, it is a program someone is running once per run in a
+// listing.
 const maxFilterCost uint64 = 10_000
 
 // Names a filter binds. Kept together because they are the vocabulary — a caller
@@ -76,6 +77,18 @@ const (
 	filterStartTime  = "start_time"
 	filterCloseTime  = "close_time"
 	filterFinished   = "finished"
+
+	// filterName is the workflow's own declared name — see [RunSummary.Name].
+	// Not "workflow_type": every run's Temporal WorkflowType is "Run", the one
+	// interpreter workflow, so it could never distinguish one Flowfile from
+	// another. Recorded in the run's memo unconditionally, on every
+	// deployment, so this filters correctly whether or not search attributes
+	// are registered anywhere — see `server/server.go`'s
+	// `workflowNameMemoEntry`. It binds to whatever the run recorded, which
+	// is empty only for a run that predates the memo key entirely — an empty
+	// string a caller can filter for explicitly (`name == ""`) rather than
+	// one silently coerced into "unknown".
+	filterName = "name"
 )
 
 // A RunFilter is a compiled predicate over the runs in a listing.
@@ -207,6 +220,7 @@ func (f *RunFilter) activation(run *RunSummary) map[string]any {
 		filterStartTime:  startTime,
 		filterCloseTime:  closeTime,
 		filterFinished:   run.GetCloseTime() != nil,
+		filterName:       run.GetName(),
 	}
 }
 
@@ -235,6 +249,7 @@ func runFilterEnv() (*cel.Env, error) {
 		cel.Variable(filterStartTime, cel.TimestampType),
 		cel.Variable(filterCloseTime, cel.TimestampType),
 		cel.Variable(filterFinished, cel.BoolType),
+		cel.Variable(filterName, cel.StringType),
 	)
 }
 
