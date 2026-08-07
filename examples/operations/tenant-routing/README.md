@@ -51,6 +51,20 @@ $ flow worker --tenant team-b --task-queue-prefix flowstate-run \
 do with tenancy — see [worker-versioning](../worker-versioning/), and note that a
 worker refuses to start without them.
 
+Note what makes those two fleets actually different: `--egress-policy` and
+`--secret-dir` are per-process, so each holds one tenant's material and no other's.
+That is the whole claim above, spelled as command-line arguments — the separation is
+a *deployment* fact here, rather than something a policy language would need a
+tenant attribute to express.
+
+If a fleet does serve more than one tenant, the file backend has
+`--secret-dir-namespaced`, which resolves below `<secret-dir>/<namespace>/` instead
+of flat. Prefer it over inventing a naming convention inside one directory:
+namespacing by prefix is exactly the ambiguity described [below](#why-the-queue-name-cannot-be-forged),
+and a separate directory per tenant has no separator to get wrong. There are
+`--secret-keychain-namespaced` and `--secret-op-namespaced` for the same reason, and
+each is fail-closed per backend rather than a single global switch.
+
 Then submit anything. There is nothing tenant-specific about the file, which is the
 point — routing is a deployment fact, and the same Flowfile runs on either fleet:
 
