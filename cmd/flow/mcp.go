@@ -739,7 +739,7 @@ func runLocalToolHandler(posture *cobra.Command) mcp.ToolHandler {
 		ctx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 
-		ctx, err = withLocalSignals(ctx, signals)
+		ctx, err = withLocalSignals(ctx, posture, workflow, inputs, signals)
 		if err != nil {
 			return toolError(err), nil
 		}

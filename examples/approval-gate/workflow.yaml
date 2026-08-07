@@ -2,7 +2,8 @@ edition: v2026.2
 name: approval-gate
 description: >-
   Waits for a human to approve a deploy, then acts on what an attested sender
-  actually sent — and refuses a deploy that would approve itself.
+  actually sent — authorization lives in `signals:`, not in this file's own
+  `if:`.
 
 # A workload that waits a week for a person and survives every worker restart in
 # between is the thing a CI system cannot copy. There, a job waiting for approval
@@ -21,62 +22,55 @@ description: >-
 # `FlowstateServer.Signal` and impossible for a caller to set. A payload is
 # evidence; a sender is identity.
 #
-# # Read this before copying it into production (#206)
+# # Authorization lives in `signals:`, not in `deploy`'s own `if:` (#207)
 #
-# This file gates the `deploy` step on `steps.approval.sender` and on `run` —
-# the run's own starter identity — rather than on the payload alone or on a
-# caller-supplied claim about who asked. That closes #206's second gap: a
-# requester can no longer set `expected_approver` to themselves and satisfy the
-# check below, because `run.identity.subject` is the caller the server actually
-# authenticated the *original* request as, not anything this file's inputs say.
+# Every clause a caller-supplied payload alone could never satisfy — "was the
+# sender attested at all," "is it the approver this run expects," "is it not
+# the run's own starter" — used to be restated, by hand, in `deploy`'s `if:`,
+# negated again in a `deploy_refused` step, and re-derived a third and fourth
+# time in this file's own `decision` and `approver_subject` outputs. Four
+# copies of one predicate, one of them a hand-expanded De Morgan negation, and
+# nothing kept them in agreement except review.
 #
-# The self-approval check compares issuer *and* subject, not subject alone
-# (#215). `auth/principal.go` states the rule this restates: a subject is only
-# unique within its issuer, so two different identity providers can each mint a
-# "runner" subject that must not be treated as the same caller —
-# `Principal.ID()` is `issuer + "#" + subject` for exactly this reason. Comparing
-# subject alone means the same thing this file is trying to prevent — a caller
-# approving their own request — but under the *wrong name*: it would also refuse
-# a genuinely different approver who happens to share a subject with the
-# starter across a different issuer. That is fail-closed, but wrong, and wrong
-# in the way that reads as a mystery report in a multi-IdP deployment rather
-# than as a bug anyone can point at.
+# None of that was actually workflow logic. `FlowstateServer.Signal` already
+# refuses a signal that fails any of it — synchronously, before Temporal ever
+# sees it — so a payload that reaches `deploy`'s `if:` below was already
+# attested, already narrowed to the approver this run named, and already
+# confirmed distinct from whoever started the run. `deploy_refused` is gone
+# outright, not merely renamed: "approved, but the sender was wrong" is no
+# longer a state this workflow can observe, because the signal that would
+# produce it never arrives. What is left for this file to decide is exactly
+# the one question that actually is this workflow's own logic — did the
+# approver say yes.
 #
-# # Gap 1 is closed: `signals:` below constrains who may deliver this signal
+# `sender` is still read below, in `deploy`'s own log line and in
+# `approver_subject` — not as a gate any more, but as evidence: who to name in
+# the audit trail for a deploy that, by the time this file sees it, has
+# already been authorized.
+#
+# # `signals:` below is the whole of the gate
 #
 # `signals.deploy-approved.allow` (below `inputs:`) is enforced by
 # `FlowstateServer.Signal`, server-side, against the attested sender — before
-# Temporal ever sees the signal. Fifty engineers sharing this run's tenant no
-# longer all satisfy the gate: only the identity or claim named in `allow:`
-# does, and everyone else's `flow signal deploy-approved` is refused with
-# `PermissionDenied`, synchronously, rather than silently accepted and then
-# merely failing the `if:` below. This is a *coarser* control than the
-# `expected_approver` input/`run.identity` comparison in `deploy`'s own `if:`
-# — it names who may answer the gate *at all*, independent of which run;
-# `expected_approver` is a caller-supplied expectation checked per run, never
-# the security boundary itself (see its own `description:` below), which is
-# exactly why `signals:` cannot be built from it: a policy templated off a
-# caller-chosen input could be set by the same caller it is meant to
-# constrain.
+# Temporal ever sees the signal. Its one rule requires *both* things at once
+# (fields AND within a rule): a `claims:` constraint this file's author wrote
+# and a caller cannot influence (`team: release-managers`), and a `subject:`
+# resolved once, at submit, from `inputs.expected_approver` — so a caller's
+# own input can *narrow* who this particular run accepts, but never invent an
+# approver outside the team this file already named. `distinct_from_starter:
+# true` refuses the one thing a claim and a per-run subject together still
+# cannot: the approver being the same caller who started the run — checked
+# against the run's own attested starter identity, which no input can set.
 #
-# One thing remains true, and this file does not pretend otherwise:
-#
-#   - The check still lives here, in a file its own author can edit for the
-#     workflow's *own* logic — `deploy`'s `if:` can still be weakened to
-#     `true` by whoever owns this file. `signals:` does not have that
-#     weakness: it is read by the server from the run's own memo, frozen at
-#     submit, never re-read from a running workflow's own reasoning — but the
-#     Flowfile that *declares* `signals:` in the first place is still this
-#     same file, so an author who can edit `deploy`'s `if:` can as easily
-#     delete the `signals:` block above it or widen `allow:` to match anyone.
-#     Binding that requires policy the workflow's own author does not
-#     control at all — deployment-side task-shape policy (#187). That is
-#     gap 3, and it stays open, tracked at #187.
-#
-# What is true today: durable waiting, an unforgeable sender, a real
-# self-approval refusal, and — as of this file — a real constraint on who may
-# answer the gate in the first place. All genuinely useful, worth
-# demonstrating, and worth being honest about the edge of.
+# One thing remains true, and this file does not pretend otherwise: the check
+# still lives here, in a file its own author can edit. `signals:` is read by
+# the server from the run's own memo, frozen at submit, never re-read from a
+# running workflow's own reasoning — but the Flowfile that *declares*
+# `signals:` in the first place is still this same file, so an author who can
+# edit `deploy`'s `if:` can as easily delete the `signals:` block above it or
+# widen `allow:` to match anyone. Binding that requires policy the workflow's
+# own author does not control at all — deployment-side task-shape policy
+# (#187). That is gap 3, and it stays open, tracked at #187.
 
 inputs:
   # No default: there is no sensible absent value for the thing being shipped,
@@ -103,64 +97,49 @@ inputs:
     must: 'this in ["staging", "production"]'
     description: which environment this deploy targets
 
-  # Who this run expects to approve it — caller-supplied, and checked below
-  # against the one thing that is *not* caller-supplied:
-  # `steps.approval.sender.identity.subject`.
-  #
-  # State plainly what that buys and does not. `expected_approver` matching the
-  # attested subject is a real check: the caller declares who they expect, and
-  # the deploy step refuses unless the server's own attestation agrees — a
-  # caller cannot forge that agreement by typing a different subject into the
-  # signal, because the signal payload never carries one. `expected_approver`
-  # itself is matched on subject alone, and that is fine: it is a caller's
-  # *expectation*, checked against what the server attested, not the security
-  # boundary. Separation of duties — the approver may not be the requester — no
-  # longer rides on this field at all: it is checked against `run.identity`,
-  # the run's own attested starter (#206), which a caller cannot set to
-  # whatever they like the way they could set an input. That comparison is
-  # issuer *and* subject together, never subject alone (#215) — see the header
-  # comment for why.
-  #
-  # Not marked `sensitive:`, deliberately, and the reason is worth stating
-  # because reaching for it here is the natural mistake. An approval trail is
-  # the one thing about this run that has to stay legible: who asked, who
-  # signed off. Redacting it in `flow get` would hide exactly the evidence an
-  # auditor opens the run to read. `sensitive:` is for a value that is nobody's
-  # business on a terminal — a token, a key — not for an identifier whose whole
-  # purpose is to be attributable.
+  # Who this run expects to approve it — resolved into `signals:` own
+  # `subject:` rule below, at submit, rather than read anywhere in this
+  # file's own step logic. A caller narrows *which* release-manager this
+  # particular run accepts; they cannot widen it past the team `signals:`
+  # names, and they cannot forge the resolution itself — `flow signal`'s
+  # payload never carries a subject for a caller to set.
   expected_approver:
     type: string
     required: true
     example: sre-lead@example.com
     must: this.matches(r'^[^@]+@[^@]+$')
     description: >-
-      who this run expects to approve it — caller-supplied, checked against
-      the attested sender at the deploy gate, not a control on its own
+      who this run expects to approve it — narrows `signals:`'s own
+      approver rule for this run, never the security boundary by itself
 
-# Who may deliver `deploy-approved` at all — #206 gap 1, closed for this
-# example. Enforced by `FlowstateServer.Signal` against the attested sender,
-# before Temporal ever sees the signal: an authenticated, in-tenant caller who
-# matches neither rule below gets `PermissionDenied` synchronously and the
-# workflow never learns the signal was sent. Two rule forms, deliberately both
-# shown: an issuer-qualified subject (`allow.subject`, "<issuer>#<subject>" —
-# never a bare subject, for the identical multi-IdP reason `run.identity` is
-# compared issuer-and-subject in `deploy`'s own `if:` below) and a claim
-# (`allow.claims`), so a whole team can be named without enumerating its
-# members one subject at a time. A sender satisfying *either* rule is
-# authorized; within `claims`, every key listed must match.
+# The whole of who may deliver `deploy-approved`, enforced by
+# `FlowstateServer.Signal` against the attested sender before Temporal ever
+# sees the signal: an authenticated caller who fails any part of this is
+# refused with `PermissionDenied`, synchronously, and the workflow never
+# learns the signal was sent.
 #
-# Deliberately literal, not built from `inputs.expected_approver`: that input
-# is the caller's own claim about who they expect to approve this run (see its
-# `description:` above), so a policy templated from it would let the same
-# caller who is supposed to be constrained choose their own constraint.
-# `signals:` names a real identity or a real claim instead — a fact this
-# file's author states, not a fact this run's caller supplies.
+# One rule, two constraints ANDed together. `claims: {team: release-managers}`
+# is literal — this file's author wrote it, and no caller's input can change
+# it. `subject: ${...}` is resolved once, at submit, from
+# `inputs.expected_approver` — qualified with a fixed issuer here rather than
+# left bare, for the identical multi-IdP reason every qualified subject in
+# this codebase is "<issuer>#<subject>," never a bare subject (a second
+# identity provider could mint the same local part for someone else
+# entirely). `flow validate` refuses a rule that interpolates a subject with
+# no literal constraint beside it — an interpolated field can only narrow a
+# grant this file's author already wrote, never invent one from nothing.
+#
+# `distinct_from_starter: true` refuses the one thing a claim and a per-run
+# subject together still cannot: the approver being this run's own starter.
+# Checked against the run's own attested starter identity — recorded at
+# submit, never anything an input can override.
 signals:
   deploy-approved:
     allow:
-      - subject: "https://issuer.example.com#sre-lead@example.com"
-      - claims:
+      - subject: ${"https://issuer.example.com#" + inputs.expected_approver}
+        claims:
           team: release-managers
+    distinct_from_starter: true
 
 steps:
   # `run.identity.subject` here, not `inputs.requested_by`: this is what the
@@ -192,71 +171,18 @@ steps:
   # A wait reports how it ended rather than failing, so a lapsed approval is an
   # ordinary branch and not an error to be tolerated.
   #
-  # Three namespaces, and the split is deliberate. `timed_out` is what the engine
-  # observed and is always there; `payload` is what the sender asserted, rooted
-  # where a sender cannot reach anything else; `sender` is who the *server*
-  # attested sent it — never settable by the sender, never merged into `payload`.
-  # The rule that generalizes: anything the system knows, the system states;
-  # anything the caller says, the caller owns. `run` is the same rule applied to
-  # the run itself: `run.identity` is who the server attested started this run,
-  # never anything an input can override.
-  #
-  # A payload key is only there if a sender sent it, and naming one that is absent
-  # fails the run with an unresolved reference. `has()` asks without asserting, and
-  # is safe on a wait that timed out — the payload is then an empty mapping rather
-  # than nothing, so there is still something to look inside.
-  #
-  # `deploy` fires only when all of this holds: the payload said yes; the sender
-  # was actually attested (not a local run, not an unauthenticated request); that
-  # attested subject is the one this run declared it expects; the run itself was
-  # attested (not local); and the approver is not the run's own starter — real
-  # separation of duties, checked against `run.identity` (issuer *and* subject
-  # together, #215) rather than a caller-supplied field. A local run —
-  # `flow run local`, `flow test` — has no authenticated caller at all
-  # (`steps.approval.sender.local` and `run.local` both read `true`, both
-  # subjects read empty), so this branch can never fire outside a real server:
-  # that is the honest consequence of gating on attestation rather than on the
-  # payload alone, not a bug in the example.
+  # `deploy` asks exactly one question: did the payload say yes. That is not an
+  # oversight — `signals:` above already refused any signal whose sender was
+  # unattested, wrongly claimed, or this run's own starter, before it ever
+  # reached this step. `sender` is still read in the log line below, as
+  # evidence for the audit trail, not as a second gate: by the time a payload
+  # is here to read, the server has already vouched for who sent it.
   - id: deploy
-    if: >-
-      ${has(steps.approval.payload.approved) && steps.approval.payload.approved &&
-        !steps.approval.sender.local && !run.local &&
-        steps.approval.sender.identity.subject != "" &&
-        steps.approval.sender.identity.subject == inputs.expected_approver &&
-        !(steps.approval.sender.identity.subject == run.identity.subject &&
-          steps.approval.sender.identity.issuer == run.identity.issuer)}
+    if: ${has(steps.approval.payload.approved) && steps.approval.payload.approved}
     log:
       message: >-
         ${"deploying %s to %s, approved by %s".format(
             [inputs.version, inputs.environment, steps.approval.sender.identity.subject])}
-
-  # The payload said yes and the gate above still refused it — either nothing
-  # attested the sender or the run at all (a local run, or a server with no
-  # identity provider configured), the attested sender was not the one this run
-  # declared it expects, or the attested sender is the run's own starter — same
-  # issuer *and* subject as `run.identity` (the self-approval this gate now
-  # genuinely refuses, rather than merely documenting as unenforceable — see the
-  # header comment).
-  - id: deploy_refused
-    if: >-
-      ${has(steps.approval.payload.approved) && steps.approval.payload.approved &&
-        !(!steps.approval.sender.local && !run.local &&
-          steps.approval.sender.identity.subject != "" &&
-          steps.approval.sender.identity.subject == inputs.expected_approver &&
-          !(steps.approval.sender.identity.subject == run.identity.subject &&
-            steps.approval.sender.identity.issuer == run.identity.issuer))}
-    log:
-      level: warn
-      message: >-
-        ${"refusing to deploy %s: approved, but the sender was %s".format(
-            [inputs.version,
-             (steps.approval.sender.local || run.local)
-               ? "not attested at all (a local run has no authenticated caller)"
-               : (steps.approval.sender.identity.subject == ""
-                   ? "attested with no identity at all (a misconfigured identity provider)"
-                   : (steps.approval.sender.identity.subject != inputs.expected_approver
-                       ? "attested, but not the expected approver"
-                       : "the same identity that started this run"))])}
 
   - id: rejected
     if: ${has(steps.approval.payload.approved) && !steps.approval.payload.approved}
@@ -271,56 +197,27 @@ steps:
       message: ${"nobody approved deploying %s in time".format([inputs.version])}
 
 outputs:
-  # An enterprise reader wants to know which of several things happened and,
-  # when a deploy shipped, who the server says shipped it — this reports both
-  # without anyone having to know which step's log line was the point.
-  #
-  # Three distinct refusal values rather than one merged
-  # `refused_unattested_or_self_approved` (#215's third finding). An audit
-  # trail that reports "mismatched approver" and "self-approval" and "no
-  # attestation at all" under the same string is lying to whoever reads it
-  # afterwards — those are three different findings, and the reader who opens
-  # this run to see *why* it refused deserves the one that actually happened,
-  # not a value that is merely consistent with several of them. Each is worded
-  # to match the reason `deploy_refused`'s own log line already names, so the
-  # step log and the declared output never disagree about which of the three it
-  # was.
+  # Three states, not the six this file used to carry. "Approved, but the
+  # wrong sender" is not a fourth: `signals:` refuses that signal before this
+  # run ever sees it, so a payload that arrived approved was already the
+  # narrowed, distinct approver this run named — there is nothing left here
+  # to distinguish.
   decision:
     value: >-
       ${!(has(steps.approval.payload.approved) && steps.approval.payload.approved)
-        ? (has(steps.approval.payload.approved)
-            ? "rejected"
-            : "expired")
-        : !(!steps.approval.sender.local && !run.local &&
-            steps.approval.sender.identity.subject != "")
-          ? "refused_unattested"
-          : steps.approval.sender.identity.subject != inputs.expected_approver
-            ? "refused_mismatched_approver"
-            : (steps.approval.sender.identity.subject == run.identity.subject &&
-                steps.approval.sender.identity.issuer == run.identity.issuer)
-              ? "refused_self_approved"
-              : "deployed"}
-    description: which branch this run ended on, and why
-  # Populated only when a deploy actually happened — the same pattern
-  # `expense-approval`'s own `approved_by` output uses, and for the same
-  # reason: the raw attested subject is real evidence on a run that reached
-  # `deploy`, but leaking it on a run that did not (where its only meaning is
-  # "which unattested or self-approving caller tried") would report something a
-  # local run and a durable one legitimately attest differently for the exact
-  # same reason `steps.<gate>.sender` itself is - see `stableOutputs` in
-  # pkg/flowstate/v1/engine/examples_durable_test.go, which strips that field
-  # from step comparisons for the identical reason.
+        ? (has(steps.approval.payload.approved) ? "rejected" : "expired")
+        : "deployed"}
+    description: which branch this run ended on
+  # Populated only when a deploy actually happened. The raw attested subject
+  # is real evidence on a run that reached `deploy`; a run that did not has
+  # nothing here to report, the same pattern `expense-approval`'s own
+  # `approved_by` output uses.
   approver_subject:
     value: >-
-      ${(has(steps.approval.payload.approved) && steps.approval.payload.approved &&
-          !steps.approval.sender.local && !run.local &&
-          steps.approval.sender.identity.subject != "" &&
-          steps.approval.sender.identity.subject == inputs.expected_approver &&
-          !(steps.approval.sender.identity.subject == run.identity.subject &&
-            steps.approval.sender.identity.issuer == run.identity.issuer))
+      ${(has(steps.approval.payload.approved) && steps.approval.payload.approved)
         ? steps.approval.sender.identity.subject
         : ""}
     description: >-
-      who the server attests actually deployed this, empty unless a deploy
+      who the server attests actually approved this, empty unless a deploy
       really happened — never a payload field, which is a claim rather than
       an attestation

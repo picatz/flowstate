@@ -29,7 +29,7 @@ edition: v2026.2
 name: approval-gate
 description: >-
   Waits for a human to approve a deploy, then acts on what an attested sender
-  actually sent — and refuses a deploy that would approve itself.
+  actually sent — authorization lives in `signals:`, not in this file's own `if:`.
 
 inputs:
   version:
@@ -47,15 +47,20 @@ inputs:
     required: true
     example: sre-lead@example.com
 
-# Who may deliver `deploy-approved` at all, enforced server-side against the
-# attested sender before Temporal ever sees the signal — not a payload check,
-# not something this file's own logic can be argued past.
+# The whole of who may deliver `deploy-approved`, enforced by
+# `FlowstateServer.Signal` against the attested sender before Temporal ever
+# sees the signal — a claim this file's author wrote (`team:
+# release-managers`, which no caller can influence) narrowed by a per-run
+# subject resolved once, at submit, from `inputs.expected_approver`.
+# `distinct_from_starter` refuses the one thing a claim and a per-run subject
+# together still cannot: the approver being this run's own starter.
 signals:
   deploy-approved:
     allow:
-      - subject: "https://issuer.example.com#sre-lead@example.com"
-      - claims:
+      - subject: ${"https://issuer.example.com#" + inputs.expected_approver}
+        claims:
           team: release-managers
+    distinct_from_starter: true
 
 steps:
   - id: request
@@ -69,16 +74,11 @@ steps:
       name: deploy-approved
       timeout: 24h
 
-  # Fires only when the payload said yes *and* the sender was really attested
-  # as the approver this run named — not a local run, not an unauthenticated
-  # request, not the same identity that started this run.
+  # One question: did the payload say yes. `signals:` above already refused
+  # any signal whose sender was unattested, wrongly claimed, mismatched, or
+  # this run's own starter — before it ever reached this step.
   - id: deploy
-    if: >-
-      ${has(steps.approval.payload.approved) && steps.approval.payload.approved &&
-        !steps.approval.sender.local && !run.local &&
-        steps.approval.sender.identity.subject == inputs.expected_approver &&
-        !(steps.approval.sender.identity.subject == run.identity.subject &&
-          steps.approval.sender.identity.issuer == run.identity.issuer)}
+    if: ${has(steps.approval.payload.approved) && steps.approval.payload.approved}
     log:
       message: ${"deploying, approved by %s".format([steps.approval.sender.identity.subject])}
 
@@ -90,99 +90,100 @@ steps:
 
 `steps.approval.sender` is not something the approver typed in — it is who the server
 authenticated the signal as, attached by `FlowstateServer.Signal` and impossible for a
-caller to set. `run.identity` is the same kind of fact about the other side of the gate: who
-the server authenticated the *original request* as, attached when the run was submitted
-(`server.go`) and impossible for this file's own `inputs:` to override. A payload is
-evidence; a sender and a run's starter are identity — see
-[CLAUDE.md's boundary doctrine](CLAUDE.md) for why none of the three are ever merged.
+caller to set. A payload is evidence; a sender is identity — see
+[CLAUDE.md's boundary doctrine](CLAUDE.md) for why the two are never merged.
 
-**Read this before copying it into production.** `deploy` above gates on two attested
-facts, both real: `steps.approval.sender.identity` cannot be forged by whoever sends the
-signal, and `run.identity` cannot be forged by whoever started the run — so `sender !=
-run`, compared on issuer *and* subject together, is a genuine self-approval refusal, not a
-caller-supplied claim checked against another caller-supplied claim. Subject alone would
-not do: a subject is only unique within its issuer, so two different identity providers
-could each mint an approver with the same subject the run started as, and comparing
-subject alone would refuse that genuinely different approver as if they were the starter.
+Notice what `deploy`'s `if:` does *not* say. Earlier versions of this example restated
+"was the sender attested," "is it the approver this run expects," and "is it not the run's
+own starter" by hand, inside the workflow — a six-clause condition, negated again for the
+refusal branch, and re-derived a third and fourth time in this file's declared outputs.
+Four copies of one predicate, kept in agreement by nothing but review
+([#207](https://github.com/picatz/flowstate/issues/207)). None of that was ever workflow
+logic: `FlowstateServer.Signal` already refuses a signal that fails any of it,
+synchronously, before Temporal ever sees it — so a payload that reaches `deploy` below was
+already attested, already narrowed to the approver this run named, and already confirmed
+distinct from whoever started the run. What is left for the file to decide is the one
+question that actually is its own logic: did the approver say yes.
 
-`signals:` above closes the gap that check alone left open: it is enforced by
-`FlowstateServer.Signal`, against the attested sender, before Temporal ever sees the
-signal — so a caller who is authenticated and in the run's tenant, but not named in
-`allow:`, gets `PermissionDenied` synchronously rather than reaching the workflow at
-all. That is a different question from `deploy`'s own `if:`, and a coarser one: it says
-who may answer this gate *at all*, independent of which run, where `deploy`'s check is
-per-run separation of duties. What still does not bind is the file itself — whoever can
-edit this Flowfile can weaken `deploy`'s `if:`, or delete the `signals:` block above it,
-or widen `allow:` to match anyone. Binding that is deployment-side task-shape policy
+**Read this before copying it into production.** `signals:` above is one rule, two
+constraints ANDed together: `claims: {team: release-managers}` is literal — this file's
+author wrote it, and no caller's input can change it — and `subject: ${...}` is resolved
+once, at submit, from `inputs.expected_approver`, so a caller narrows *which*
+release-manager this particular run accepts but can never widen it past the team this file
+already named. `distinct_from_starter: true` is checked against the run's own attested
+starter identity, recorded when the run was submitted and impossible for any input to
+override — issuer *and* subject together, never subject alone, because a subject is only
+unique within its issuer and two identity providers could otherwise mint the same one for
+different callers. What still does not bind is the file itself: whoever can edit this
+Flowfile can as easily delete the `signals:` block above or widen `allow:` to match anyone.
+Binding that is deployment-side task-shape policy
 ([#187](https://github.com/picatz/flowstate/issues/187)), tracked as the one gap
-[#206](https://github.com/picatz/flowstate/issues/206) leaves open: a workflow cannot
-author a rule that binds against its own author. What is real today — durable waiting,
-an unforgeable sender, a real self-approval refusal, and a real constraint on who may
-answer the gate — is worth having and worth demonstrating; it is just not the whole of
-an approval control on its own.
+[#206](https://github.com/picatz/flowstate/issues/206) leaves open. What is real today —
+durable waiting, an unforgeable sender, per-run authorization, and a real self-approval
+refusal — is worth having and worth demonstrating; it is just not the whole of an approval
+control on its own.
 
-Run it in this process — no Temporal, no server — and answer the gate yourself:
+Rehearse it in this process — no Temporal, no server — with `flow test`, which checks a
+scripted signal's `sender:` against `signals:` through the identical function the server
+calls, so a rehearsal that reaches `deploy` really is a signal production would have
+accepted too:
+
+```console
+$ flow test examples/approval-gate/
+PASS  examples/approval-gate/workflow.test.yaml: a sender satisfying signals: deploys
+PASS  examples/approval-gate/workflow.test.yaml: an approved payload from a sender signals: refuses never reaches the gate
+PASS  examples/approval-gate/workflow.test.yaml: an approved payload is still refused without an attested sender
+PASS  examples/approval-gate/workflow.test.yaml: an explicit rejection is honored
+PASS  examples/approval-gate/workflow.test.yaml: nobody answers, and the gate lapses at its own timeout
+PASS  examples/approval-gate/workflow.test.yaml: a version that is not semver is refused before the first step runs
+PASS  examples/approval-gate/workflow.test.yaml: an environment outside the known set is refused before the first step runs
+```
+
+`flow run local --signal` cannot reach `deploy` for this file, and that is deliberate
+rather than a gap: a `--signal` flag has no way to attest a sender's identity, so it is
+always [`v1.LocalSignalSender`](pkg/flowstate/v1/wait_local.go) — unattested — which a real
+`signals:` policy can never match. Try it and the run refuses before it even starts,
+synchronously, the same shape a durable `PermissionDenied` takes:
 
 ```console
 $ flow run local examples/approval-gate/workflow.yaml \
     --input-file examples/approval-gate/inputs.json \
     --signal deploy-approved='{"approved": true}'
-INFO an unattested caller requests deploying v1.4.2 to production
-WARN refusing to deploy v1.4.2: approved, but the sender was not attested at all (a local run has no authenticated caller)
-COMPLETED workflow approval-gate
-outputs
-  approver_subject 
-  decision refused_unattested
-{"stepValues":{...}, "runOutputs":{"values":{"approver_subject":{"literal":{"stringValue":""}}, "decision":{"literal":{"stringValue":"refused_unattested"}}}}}
+ERROR
+flowstate: signal "deploy-approved" refused: the sender does not match any rule this signal's policy declares
+exit status 1
 ```
-
-A local run has no authenticated caller — nothing signed in, no server in front of it — so
-`steps.approval.sender.identity.subject` and `run.identity.subject` both read empty, and
-`steps.approval.sender.local` and `run.local` both read `true`. The gate refuses even a
-payload that said yes. That is the honest local answer, not a bug: a local run must never
-look like an attested production one, and this gate is built to tell the difference rather
-than paper over it.
 
 A version outside the declared pattern is refused before that first step ever runs:
 
 ```console
 $ flow run local examples/approval-gate/workflow.yaml \
     --input version=latest --input environment=production \
-    --input expected_approver=sre-lead@example.com \
-    --signal deploy-approved='{"approved": true}'
+    --input expected_approver=sre-lead@example.com
 ERROR
-input "version" must match pattern "^v?[0-9]+\\.[0-9]+\\.[0-9]+$"; got "latest"
+input "version" must satisfy `this.matches(r'^v?[0-9]+\.[0-9]+\.[0-9]+$')`; got
+latest
 arguments are given with --input name=value or --input-file inputs.json
 exit status 1
 ```
 
-The payoff — the fact a Flowfile could not express until #206 closed this gap — is
-separation of duties itself, checked durably against two independent attestations rather
-than against anything either caller typed in. Run through the durable driver with the run
-started as one identity and the approval signed by that *same* identity (issuer and
-subject both), `deploy` is refused; signed by a different one that still matches
-`expected_approver`, it proceeds. The comparison is issuer *and* subject together, never
-subject alone: a subject is only unique within its issuer, so an approver whose subject
-happens to collide with the run's starter across a *different* issuer is a genuinely
-different principal, and the gate must not mistake that collision for self-approval
-([#215](https://github.com/picatz/flowstate/issues/215)). All three cases are exercised on
-the real example file in CI (`engine.TestApprovalGateRefusesSelfApproval`):
+The payoff is separation of duties itself, enforced once, server-side, rather than
+restated by hand inside the workflow — and enforced identically for `flow run local` and
+`flow test`, so a rehearsal can no longer say yes to a signal production would refuse
+(CLAUDE.md's "both execution drivers must agree"). A run started as one identity and an
+approval signed by that *same* identity, issuer and subject both, is refused by
+`distinct_from_starter` before Temporal ever sees the signal; signed by a different one
+that still satisfies the policy, it proceeds. The comparison is issuer *and* subject
+together, never subject alone — an approver whose subject happens to collide with the
+run's starter across a *different* issuer is a genuinely different principal, and the check
+must not mistake that collision for self-approval
+([#215](https://github.com/picatz/flowstate/issues/215)). Exercised in CI against the real
+per-run policy machinery:
 
 ```console
-$ go test ./pkg/flowstate/v1/engine/ -run TestApprovalGateRefusesSelfApproval -v
-=== RUN   TestApprovalGateRefusesSelfApproval
-=== RUN   TestApprovalGateRefusesSelfApproval/the_run's_starter_approves_their_own_request:_refused
-    WARN  refusing to deploy v1.4.2: approved, but the sender was the same identity that started this run
-    decision=refused_self_approved approver_subject="" (self-approval correctly refused)
---- PASS: TestApprovalGateRefusesSelfApproval/the_run's_starter_approves_their_own_request:_refused (0.12s)
-=== RUN   TestApprovalGateRefusesSelfApproval/same_subject,_different_issuer:_not_self-approval,_proceeds
-    INFO  deploying v1.4.2 to production, approved by sre-lead@example.com
-    decision=deployed approver_subject="sre-lead@example.com" (cross-issuer approver correctly allowed)
---- PASS: TestApprovalGateRefusesSelfApproval/same_subject,_different_issuer:_not_self-approval,_proceeds (0.02s)
-=== RUN   TestApprovalGateRefusesSelfApproval/a_different_attested_approver:_proceeds
-    INFO  deploying v1.4.2 to production, approved by sre-lead@example.com
-    decision=deployed approver_subject="sre-lead@example.com" (deploy proceeded)
---- PASS: TestApprovalGateRefusesSelfApproval/a_different_attested_approver:_proceeds (0.02s)
+$ go test ./pkg/flowstate/v1/server/ -run TestAuthorizeSignalDistinctFromStarterRefusesTheStartersOwnSignal -v
+=== RUN   TestAuthorizeSignalDistinctFromStarterRefusesTheStartersOwnSignal
+--- PASS: TestAuthorizeSignalDistinctFromStarterRefusesTheStartersOwnSignal (0.00s)
 PASS
 ```
 
@@ -191,8 +192,8 @@ a worker restart in between changes nothing, because nothing local was holding t
 through a real server with `--insecure-no-auth` (every caller authenticates as the fixed
 subject `anonymous`, `issuer: flowstate:insecure-anonymous` — see the warning `flow server`
 prints), both the run and the signal are attested by the *same* anonymous identity — same
-subject *and* same issuer — so the self-approval check is true before the approver check
-is even reached: this dev setup cannot produce a "deployed" transcript, because it cannot
+subject *and* same issuer — so `distinct_from_starter` refuses the signal before Temporal
+ever sees it: this dev setup cannot produce a "deployed" transcript, because it cannot
 produce two distinct attested identities, which is the honest reason and not a limitation
 of the check.
 

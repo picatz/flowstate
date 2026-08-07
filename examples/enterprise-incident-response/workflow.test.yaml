@@ -1,11 +1,19 @@
-# The same honest limit as every gated example in this portfolio: `flow test`
-# has no authenticated caller, so "authorized: true" can never look like a
-# real, separate incident-commander here - only like the refusal. What these
-# cases prove is the shape that does not depend on a real sender: parallel
-# evidence gathering finishing regardless of which page answers, escalation
-# firing exactly when the first page lapses and not otherwise, and an
-# unclaimed incident never reaching a remediation gate it has no business
-# reaching.
+# `responder-ack` and `remediation-authorized` both declare a `signals:`
+# policy (claims: role), so a scripted delivery now needs a `sender:` naming
+# a matching claim to be delivered at all — the same
+# `v1.SignalPolicyCheck` `FlowstateServer.Signal` enforces (#207 slice 2).
+# `responder-ack` below genuinely reaches `claimed`/`remediation_ack` this
+# way. `remediation-authorized`'s own `authorized` step still cannot be
+# reached from here, and that is the one honest limit that survives: its
+# `if:` also checks `!run.local`, and a local run's own `run.local` is always
+# true — see eval.go's own RunWithInputs doc comment — no `sender:` on the
+# signal itself changes what the run says about *itself*. What these cases
+# prove is the shape that does not depend on that: parallel evidence
+# gathering finishing regardless of which page answers, escalation firing
+# exactly when the first page lapses and not otherwise, an unclaimed incident
+# never reaching a remediation gate it has no business reaching, and even a
+# genuinely attested, correctly-claimed remediation signer still being
+# refused by a run that cannot attest itself.
 edition: v2026.2
 tests:
   - name: a promptly claimed incident gathers evidence but cannot record a real authorization here
@@ -18,9 +26,17 @@ tests:
       - name: responder-ack
         payload:
           claimed: true
+        sender:
+          claims:
+            role: on-call-responder
       - name: remediation-authorized
         payload:
           authorized: true
+        sender:
+          subject: incident-commander@example.com
+          issuer: https://issuer.example.com
+          claims:
+            role: incident-commander
     stubs:
       - task: log
         returns: {}
@@ -84,6 +100,9 @@ tests:
         at: 20m
         payload:
           claimed: true
+        sender:
+          claims:
+            role: on-call-responder
     stubs:
       - task: log
         returns: {}

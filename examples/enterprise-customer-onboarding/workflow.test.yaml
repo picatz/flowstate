@@ -16,6 +16,9 @@ tests:
       - name: activation-confirmed
         payload:
           confirmed: true
+        sender:
+          claims:
+            role: account-manager
     stubs:
       - task: http
         where: inputs.url == 'https://provisioning.internal.example.com/quota'
@@ -63,6 +66,9 @@ tests:
       - name: activation-confirmed
         payload:
           confirmed: true
+        sender:
+          claims:
+            role: account-manager
     stubs:
       - task: http
         where: inputs.url == 'https://provisioning.internal.example.com/quota'

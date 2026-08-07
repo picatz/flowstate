@@ -308,6 +308,55 @@ func signalPolicyRuleMatches(rule *SignalPolicyRule, identity *WorkloadIdentity)
 	return true
 }
 
+// SignalPolicyCheck reports whether identity may deliver a signal governed by
+// policy — the whole of what [FlowstateServer.authorizeSignal] enforces once
+// it already knows a policy exists for the name in question, factored out so
+// a second caller can enforce identically rather than re-derive it.
+//
+// It is the one function both the durable driver (`server/lifecycle.go`'s
+// authorizeSignal, which wraps this in a connect error and adds the memo
+// plumbing only the server has) and the local driver ([LocalSignals], through
+// a run's own declared and locally-resolved policy) call — see CLAUDE.md's
+// "one function, two callers" rule. Before this existed, local delivery
+// called [SignalPolicyAllows] alone or not at all, which checked the `allow:`
+// rules but never `distinct_from_starter` — a second matcher was exactly the
+// drift the rule warns about, so this folds both checks into the one place
+// either caller reaches.
+//
+// starter/hasStarter follow [SignalPolicy.distinct_from_starter]'s own
+// fail-closed rule, generalized past the server's one source (a run's memo)
+// to whatever a caller's own notion of "this run's starter" is: hasStarter
+// false means nothing here can prove separation, and is refused exactly like
+// a run whose memo predates the starter record — never treated as
+// "unconstrained."
+func SignalPolicyCheck(policy *SignalPolicy, identity *WorkloadIdentity, starter *WorkloadIdentity, hasStarter bool) error {
+	if !SignalPolicyAllows(policy, identity) {
+		return fmt.Errorf("the sender does not match any rule this signal's policy declares")
+	}
+
+	// distinct_from_starter is ANDed onto whichever rule the sender just
+	// satisfied, un-bypassable by any rule in allow — see
+	// [SignalPolicy.distinct_from_starter]'s own doc comment for why it lives
+	// at the policy level rather than as one more alternative a rule could
+	// opt out of.
+	if policy.GetDistinctFromStarter() {
+		if !hasStarter {
+			return fmt.Errorf(
+				"this signal requires a sender distinct from the run's own starter, but this run has no " +
+					"starter identity recorded to compare against; a run that cannot prove separation does not get it")
+		}
+
+		senderQualified := QualifiedSubject(identity.GetIssuer(), identity.GetSubject())
+		starterQualified := QualifiedSubject(starter.GetIssuer(), starter.GetSubject())
+		if senderQualified == starterQualified {
+			return fmt.Errorf(
+				"this signal requires a sender distinct from the run's own starter, and the sender is the run's own starter")
+		}
+	}
+
+	return nil
+}
+
 // QualifiedSubject renders an issuer and subject the way [SignalPolicyRule.subject]
 // is written and matched: "<issuer>#<subject>". Exported so a caller writing a
 // rule — `flow`'s own diagnostics, a Flowfile author copying a value out of a

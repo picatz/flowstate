@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"connectrpc.com/connect"
 	common "go.temporal.io/api/common/v1"
@@ -207,44 +208,45 @@ func authorizeSignal(resp *workflowservice.DescribeWorkflowExecutionResponse, na
 		return nil
 	}
 
-	if !v1.SignalPolicyAllows(policy, sender.GetIdentity()) {
+	// starterIdentity carries only what [v1.SignalPolicyCheck] needs to compare
+	// against — memoStarter reads a qualified "issuer#subject" string rather
+	// than a [v1.WorkloadIdentity], since that is the only shape a memo ever
+	// held one as. Splitting it back into issuer/subject fields here is safe
+	// because [v1.QualifiedSubject] is exactly how SignalPolicyCheck rejoins
+	// them before comparing — the same join, not a second parse of it.
+	starterIdentity, hasStarter, err := starterAsIdentity(resp.GetWorkflowExecutionInfo().GetMemo())
+	if err != nil {
+		// Same rule as an undecodable signal policy: nothing can be concluded
+		// about who started this run, so nobody may act on the strength of a
+		// guess.
 		return connect.NewError(connect.CodePermissionDenied,
-			fmt.Errorf("the authenticated caller is not authorized to deliver signal %q to this run", name))
+			fmt.Errorf("this run's starter could not be read, so no sender is authorized "+
+				"until it can be: %w", err))
 	}
 
-	// distinct_from_starter is ANDed onto whichever rule the sender just
-	// satisfied, un-bypassable by any rule in allow — see
-	// [v1.SignalPolicy.distinct_from_starter]'s own doc comment for why it
-	// lives at the policy level rather than as one more alternative a rule
-	// could opt out of.
-	if policy.GetDistinctFromStarter() {
-		starter, hasStarter, err := memoStarter(resp.GetWorkflowExecutionInfo().GetMemo())
-		if err != nil {
-			// Same rule as an undecodable signal policy: nothing can be concluded
-			// about who started this run, so nobody may act on the strength of a
-			// guess.
-			return connect.NewError(connect.CodePermissionDenied,
-				fmt.Errorf("this run's starter could not be read, so no sender is authorized "+
-					"until it can be: %w", err))
-		}
-		if !hasStarter {
-			// A run whose memo predates [starterMemoKey] has nothing to compare
-			// the sender against. Fail closed rather than treat "unknown" as
-			// "distinct" — a run that cannot prove separation does not get it.
-			return connect.NewError(connect.CodePermissionDenied,
-				fmt.Errorf("signal %q requires a sender distinct from this run's own starter, but this "+
-					"run predates that record; a run that cannot prove separation does not get it", name))
-		}
-
-		senderQualified := v1.QualifiedSubject(sender.GetIdentity().GetIssuer(), sender.GetIdentity().GetSubject())
-		if senderQualified == starter {
-			return connect.NewError(connect.CodePermissionDenied,
-				fmt.Errorf("signal %q requires a sender distinct from this run's own starter, and the "+
-					"authenticated caller is the run's starter", name))
-		}
+	if err := v1.SignalPolicyCheck(policy, sender.GetIdentity(), starterIdentity, hasStarter); err != nil {
+		return connect.NewError(connect.CodePermissionDenied,
+			fmt.Errorf("signal %q: %w", name, err))
 	}
 
 	return nil
+}
+
+// starterAsIdentity reads a run's recorded starter and renders it as a
+// [v1.WorkloadIdentity], the shape [v1.SignalPolicyCheck] compares against —
+// issuer and subject split back out of the single qualified string
+// [starterMemoEntry] wrote, by cutting on the same "#" [v1.QualifiedSubject]
+// joined them with. [v1.LooksLikeQualifiedSubject] is what guarantees every
+// qualified string this server ever wrote has exactly one such separator, so
+// this split is never ambiguous for a starter this server itself recorded.
+func starterAsIdentity(memo *common.Memo) (*v1.WorkloadIdentity, bool, error) {
+	starter, hasStarter, err := memoStarter(memo)
+	if err != nil || !hasStarter {
+		return nil, hasStarter, err
+	}
+
+	issuer, subject, _ := strings.Cut(starter, "#")
+	return &v1.WorkloadIdentity{Issuer: issuer, Subject: subject}, true, nil
 }
 
 // memoTenant reads the namespace recorded on a run when it started.
