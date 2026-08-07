@@ -1,0 +1,127 @@
+# The one idea this file pins is the inversion: a lapsed wait is the *working*
+# branch and a delivered signal is the stop. So every case says both how many
+# times the periodic work ran and what ended it — either number alone is
+# satisfied by a loop that got the polarity backwards.
+#
+# A month-long `timeout:` is testable at all because `flow test` runs on a
+# virtual clock ([v1.VirtualClock]): the run parks on its deadline, the
+# scripted signals park on theirs, and time jumps to whichever is nearest. No
+# case here waits a real second.
+#
+# Each reminder's stub matches on `sent`, the loop's own carried state, rather
+# than on a literal message. That is the assertion that ties the work to the
+# iteration it belongs to — `remind` renders the period number from `sent + 1`,
+# so a stub demanding those two agree fails the day the carried counter and the
+# thing it counts come apart. A `log` invocation matching no stub fails the
+# case, so these also bound the work from above: no case below carries a
+# catch-all `log` stub, and a reminder that went out when none was due has
+# nothing to match.
+#
+# # The ceiling: this file cannot script "the third period"
+#
+# A signal scripted for *any* moment after the first deadline is delivered as
+# soon as that first deadline lapses — `at: 721h` and `at: 3000h` produce the
+# identical run, one reminder and then the interrupt. The local driver's timed
+# wait hands its clock participation to a helper goroutine and takes it back
+# after the wait returns (`waitForSignalLocally`, pkg/flowstate/v1/wait_local.go),
+# and in the window between those two the scripted signal is the clock's only
+# participant, so the clock advances straight to it. So "two deadlines pass,
+# *then* the customer acts" is not a sequence this harness can express, and the
+# first case below claims one reminder rather than pretending to more.
+#
+# What that costs is smaller than it looks, because the multi-period behaviour
+# is pinned by the third case instead: twelve consecutive lapses, each one
+# doing the work and going round again. What is genuinely not covered is an
+# interrupt arriving after several periods rather than after one, and the
+# difference between those two is arithmetic on a counter this file already
+# checks once per iteration.
+edition: v2026.2
+tests:
+  - name: a deadline lapses, the reminder goes out, and the renewal that follows stops the loop
+    workflow: ./workflow.yaml
+    signals:
+      # Scripted for after the first billing period, so that period lapses and
+      # sends its reminder before the customer acts. See the ceiling above for
+      # why a larger number would not buy a third iteration.
+      - name: subscription-changed
+        at: 800h
+        payload:
+          decision: renewed
+    stubs:
+      - task: log
+        where: inputs.message == "watching acme's subscription for a renewal decision"
+        returns: {}
+      # `sent` is the loop's carried state, in scope for this step because a
+      # stub sees the scope its step was evaluated in. On the one iteration
+      # that reaches `remind`, `sent` is still 0 and the reminder calls itself
+      # number 1 — and there is no catch-all `log` stub, so a second reminder
+      # would arrive here unmatched and fail the case rather than passing.
+      - task: log
+        where: "inputs.message == 'reminder %d for acme: the subscription renews soon'.format([sent + 1])"
+        returns: {}
+    expect:
+      # Not `failed: true`. A lapsed wait is an ordinary branch here, exactly as
+      # it is in `wait-timeout` — the difference is that this file loops back
+      # round on it instead of carrying on past it.
+      #
+      # No `skipped:` entry either: `remind` lives in the loop body, so it never
+      # appears in a top-level list however many times it ran. What proves the
+      # closing iteration skipped it is the stub bound above.
+      ran: [opened, reminders]
+      outputs:
+        # One reminder for one lapsed period, and the loop stopped on the
+        # iteration it was answered — `update:` never runs on that one, which
+        # is why this is 1 and not 2.
+        reminders_sent: 1
+        decision: renewed
+
+  - name: a customer who cancels before the first deadline is never reminded at all
+    workflow: ./workflow.yaml
+    signals:
+      # No `at:`, so this is delivered at the epoch: the very first wait is
+      # answered rather than lapsing, and the periodic work never happens once.
+      - name: subscription-changed
+        payload:
+          decision: cancelled
+    stubs:
+      - task: log
+        where: inputs.message == "watching acme's subscription for a renewal decision"
+        returns: {}
+      # Deliberately no reminder stub. This is the negative direction, and it
+      # is the case that would catch the polarity being reversed: a `remind`
+      # that fired on the iteration it was told to stop would arrive as a `log`
+      # invocation matching nothing and fail here, rather than quietly chasing
+      # a customer who has already cancelled.
+    expect:
+      ran: [opened, reminders]
+      outputs:
+        reminders_sent: 0
+        decision: cancelled
+
+  - name: nobody ever answers, so every period does the work and the budget runs out
+    workflow: ./workflow.yaml
+    # No `signals:` at all, which is what makes this the multi-period case: all
+    # twelve deadlines lapse, each one sends its own reminder and goes round
+    # again, and the loop then reaches `max_iterations:` with `until:` still
+    # false.
+    #
+    # That is a failed run rather than a completed one, and the failure is the
+    # point. A loop whose stop condition is "somebody acted" has no honest way
+    # to finish on its own, so reporting eleven reminders and a green run would
+    # mean a customer silently stopped being chased with nobody deciding they
+    # should be.
+    stubs:
+      - task: log
+        where: inputs.message == "watching acme's subscription for a renewal decision"
+        returns: {}
+      # One stub for all twelve reminders, and it has to hold for every one of
+      # them: each invocation must agree with the `sent` its own iteration
+      # carried. A loop that stopped advancing the counter, or that sent two
+      # reminders in one period, produces a message this cannot match — and
+      # with no catch-all stub, that is a failure.
+      - task: log
+        where: "inputs.message == 'reminder %d for acme: the subscription renews soon'.format([sent + 1])"
+        returns: {}
+    expect:
+      failed: true
+      error_contains: "ran its full budget of 12 iterations"

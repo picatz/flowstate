@@ -25,6 +25,7 @@ $ flow validate examples/hello-world/workflow.yaml
 | [loop-accumulate](loop-accumulate) | `loop:` carrying state between iterations until a condition holds, bounded by `max_iterations:`, reporting `results` and `state` | no |
 | [loop-poll-until](loop-poll-until) | `loop:` in its stateless mode — a bounded poll that repeats a check until the body reports ready, or gives up at `max_iterations:` | yes |
 | [entity-order](entity-order) | An entity — `loop:` + `wait_for_signal:`, addressable, mutated by repeated signals, surviving Continue-As-New, closing on a terminal event rather than by exhausting its loop | no |
+| [renewal-reminder](renewal-reminder) | The same two nodes as `entity-order` with the polarity reversed — a `loop:` around a `wait_for_signal:` whose *lapse* is the work (send the reminder, go round again) and whose delivered signal is the stop. Temporal's `sleep-for-days`, and the shape drift detection and certificate rotation take | no |
 | [ops-healthcheck](ops-healthcheck) | `for_each` over a list of services, `continue_on_error:` tolerating the one that is down, and structured outputs shaped for a pager | yes |
 | [data-enrichment](data-enrichment) | `for_each` over a worklist with bounded `max_parallel`, per-item `retry:`, and which records could not be enriched named in `outputs:` | yes |
 | [workflow-vars](workflow-vars) | `vars:` at the top of a file, read as `vars.<name>`, beside a loop's bare binding | no |
