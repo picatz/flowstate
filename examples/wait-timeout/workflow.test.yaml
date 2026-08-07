@@ -1,0 +1,67 @@
+# The distinction this file exists for: a wait that lapsed is an ordinary branch,
+# not a failure. So the two cases are the two branches, and each asserts the one
+# that ran *and* the one that did not — a list of what ran can never see a branch
+# not taken.
+#
+# `outcome` is the assertion that makes it data rather than a log line: `lapsed`
+# against `answered`, computed from `timed_out`, which the engine always
+# observes and which is therefore always there to branch on.
+edition: v2026.2
+tests:
+  - name: nobody answers, the gate lapses, and the run carries on down the other branch
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        where: inputs.message == 'asking for approval to publish, and not waiting long'
+        returns: {}
+      - task: log
+        where: >-
+          inputs.message == 'nobody approved in time, so the release stays queued' &&
+          inputs.level == 'warn'
+        returns: {}
+    expect:
+      # Not `failed: true`. A lapsed wait produces `timed_out: true` and lets the
+      # file decide, which is the whole reason it is not a tolerated error.
+      ran: [request, approval, postponed]
+      skipped: [publish]
+      outputs:
+        outcome: lapsed
+
+  - name: an approval that arrives publishes, and the postponed arm never runs
+    workflow: ./workflow.yaml
+    signals:
+      - name: release-approved
+        payload:
+          approved: true
+    stubs:
+      - task: log
+        where: inputs.message == 'asking for approval to publish, and not waiting long'
+        returns: {}
+      - task: log
+        where: inputs.message == 'approved, publishing the release'
+        returns: {}
+    expect:
+      ran: [request, approval, publish]
+      skipped: [postponed]
+      outputs:
+        outcome: answered
+
+  - name: an answer that carries no approved key is neither a publish nor a timeout
+    workflow: ./workflow.yaml
+    signals:
+      # Somebody answered, so `timed_out` is false and `postponed` is skipped —
+      # but `has()` is what keeps `publish` from reading a key the sender never
+      # supplied, so neither arm runs. `outcome` still says the gate was
+      # answered, which is the fact it reports.
+      - name: release-approved
+        payload:
+          note: acknowledged, deciding later
+    stubs:
+      - task: log
+        where: inputs.message == 'asking for approval to publish, and not waiting long'
+        returns: {}
+    expect:
+      ran: [request, approval]
+      skipped: [postponed, publish]
+      outputs:
+        outcome: answered

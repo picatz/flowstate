@@ -1,0 +1,29 @@
+# `wait_until:` waits for a *moment*, and the file shows two ways a moment
+# arrives: computed from `now` — the clock the driver controls — and carried in
+# as data, in this file's case a moment already in the past.
+#
+# The second is the one worth pinning, because "a moment already past releases
+# the wait" is a defined behavior rather than an accident, and it is what lets a
+# workload resumed after an outage catch up instead of failing for being late.
+# The case asserts that `hold` ran and that `publish` after it composed its
+# message from the same embargo string — so a `wait_until:` that refused a past
+# moment, or blocked on it, fails here.
+#
+# `flow test` runs on virtual time ([v1.VirtualClock]), so `now + seconds(2)` in
+# `settle` costs the case nothing: the two-second timer is satisfied by the clock
+# advancing, not by anybody waiting.
+edition: v2026.2
+tests:
+  - name: a computed moment and a moment already past both release the run
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        where: "inputs.message == 'queued for publication, embargoed until 2026-01-01T09:00:00Z'"
+        returns: {}
+      # Reached only after both waits released — the second of them on a
+      # timestamp in the past, which is defined to release immediately.
+      - task: log
+        where: "inputs.message == 'embargo lifted at 2026-01-01T09:00:00Z; publishing'"
+        returns: {}
+    expect:
+      ran: [request, settle, hold, publish]

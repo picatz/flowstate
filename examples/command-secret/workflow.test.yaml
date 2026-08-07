@@ -1,0 +1,37 @@
+# The pattern examples/vault-secret/workflow.test.yaml establishes, pointed at
+# the scheme this example is about. Nothing here runs the configured command,
+# and nothing here needs `command:` to be a registered provider in this build:
+# `secrets:` binds the reference's text form for one case, and an in-memory
+# provider answers it.
+#
+# That is the whole reason this file can exist. `command:` is the escape hatch
+# whose value is whatever some other program prints — `sops -d`, `aws kms
+# decrypt` — so a test that proved anything about the reference used to need
+# that program installed. It does not: what is under test is that the workflow
+# asks for `command:github-token` and receives what was bound to it, and that a
+# case which forgets to bind it is refused rather than handed an empty bearer.
+edition: v2026.2
+tests:
+  - name: the bearer resolves from this file's own secrets, never by running a command
+    workflow: ./workflow.yaml
+    secrets:
+      command:github-token: test-command-token-not-a-real-credential
+    stubs:
+      # The assertion: the reference survived compilation as a reference and was
+      # resolved at the task boundary, so `bearer` holds the bound plaintext.
+      - task: http
+        where: inputs.bearer == 'test-command-token-not-a-real-credential'
+        returns:
+          status_code: 200
+    expect:
+      ran: [health]
+
+  - name: a run with no secrets entry for the command reference is refused, not silently empty
+    workflow: ./workflow.yaml
+    stubs:
+      - task: http
+        returns:
+          status_code: 200
+    expect:
+      failed: true
+      error_contains: command:github-token

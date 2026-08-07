@@ -1,0 +1,30 @@
+# The pattern examples/vault-secret/workflow.test.yaml establishes, pointed at
+# the scheme this example is about. Nothing here shells out to macOS `security`,
+# and this case passes on Linux CI where that tool does not exist at all:
+# `secrets:` binds the reference's text form for one case, and an in-memory
+# provider answers it, so the scheme need not have a real provider in this build.
+edition: v2026.2
+tests:
+  - name: the bearer resolves from this file's own secrets, never from a real keychain
+    workflow: ./workflow.yaml
+    secrets:
+      keychain:github-token: test-keychain-token-not-a-real-credential
+    stubs:
+      # The assertion: the reference survived compilation as a reference and was
+      # resolved at the task boundary, so `bearer` holds the bound plaintext.
+      - task: http
+        where: inputs.bearer == 'test-keychain-token-not-a-real-credential'
+        returns:
+          status_code: 200
+    expect:
+      ran: [health]
+
+  - name: a run with no secrets entry for the keychain reference is refused, not silently empty
+    workflow: ./workflow.yaml
+    stubs:
+      - task: http
+        returns:
+          status_code: 200
+    expect:
+      failed: true
+      error_contains: keychain:github-token
