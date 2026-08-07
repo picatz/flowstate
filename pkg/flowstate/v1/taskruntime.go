@@ -76,3 +76,30 @@ func ResolveSecret(ctx context.Context, ref secrets.Ref) (secrets.Secret, error)
 type secretIdentity struct{ namespace string }
 
 func (i secretIdentity) GetNamespace() string { return i.namespace }
+
+// ProtoWorkloadIdentity renders a [TaskRuntime]'s [auth.WorkloadIdentity] as the
+// wire type [WorkloadIdentity] carries.
+//
+// It exists on this side of the boundary rather than as a method on
+// auth.WorkloadIdentity because auth deliberately imports no other Flowstate
+// package — see [auth.IdentitySource] for why — so the direction that needs the
+// generated type has to do the converting. This is the local driver's half of
+// the identity the durable driver already has natively: engine/runtime.go's
+// activities receive *v1.WorkloadIdentity straight from RunState, while the
+// local driver's TaskRuntime.Identity is an auth.WorkloadIdentity built from
+// command-line flags, and both need to reach [plugin.NewContextWithIdentity]
+// carrying the same shape.
+//
+// A zero identity converts to a non-nil, all-empty message rather than nil, so
+// that a run with no identity still sends an explicitly empty caller across the
+// plugin boundary — the negative shape [plugin.IdentityFromContext] and the
+// plugin SDK are both written to expect, rather than a caller inventing one.
+func ProtoWorkloadIdentity(identity auth.WorkloadIdentity) *WorkloadIdentity {
+	return &WorkloadIdentity{
+		Subject:    identity.Subject,
+		Issuer:     identity.Issuer,
+		Claims:     identity.Claims,
+		Namespace:  identity.Namespace,
+		Deployment: identity.Deployment,
+	}
+}

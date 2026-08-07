@@ -6,6 +6,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 )
 
@@ -30,11 +31,44 @@ func NewTaskRuntimeConfig(store *secrets.Store, policy *auth.SecretPolicy, broke
 type taskActivities struct{ configured TaskRuntimeConfig }
 
 func (a taskActivities) context(ctx context.Context, identity *v1.WorkloadIdentity, workflowName, runID, stepID string) context.Context {
-	return v1.ContextWithTaskRuntime(ctx, v1.TaskRuntime{
+	ctx = v1.ContextWithTaskRuntime(ctx, v1.TaskRuntime{
 		Store: a.configured.store, Policy: a.configured.policy, Broker: a.configured.broker,
 		Identity: auth.IdentityFrom(identity),
 		Step:     auth.StepRef{Workflow: workflowName, Run: runID, Step: stepID},
 	})
+
+	// The same identity, carried a second way, for a task that reaches across
+	// the plugin process boundary rather than staying inside this one. A
+	// plugin task's Fn cannot read [TaskRuntime] — it lives in a package this
+	// one cannot import without a cycle back to itself, per
+	// [plugin.NewContextWithIdentity]'s doc — so it reads this context key
+	// instead. Installed here, at the one place this driver already builds a
+	// per-task context from the run's authenticated identity, so a plugin
+	// task on this activity sees exactly the identity a built-in task's secret
+	// resolution does: the same RunState.Identity, the same context, one call
+	// site rather than a second place that could drift from it.
+	return plugin.NewContextWithIdentity(ctx, orEmptyIdentity(identity))
+}
+
+// orEmptyIdentity substitutes an explicit, present, all-empty identity for a
+// nil one.
+//
+// [v1.RunState.Identity] is unset for a run nobody authenticated, and that is
+// a real, common case rather than an error — but a nil *v1.WorkloadIdentity
+// stored under [plugin.NewContextWithIdentity]'s context key is
+// indistinguishable, to [plugin.IdentityFromContext], from a context nothing
+// ever called it on at all, which is also a real case (a driver that predates
+// this fix, or a caller outside either driver). Collapsing that distinction
+// here — the one place both call sites in this package reach for an
+// identity — is what lets #235's negative-shape test assert "no identity"
+// looks the same on both drivers: present, and empty, never absent and never
+// invented. [v1.ProtoWorkloadIdentity] makes the identical promise for the
+// local driver, which never has a nil auth.WorkloadIdentity to begin with.
+func orEmptyIdentity(identity *v1.WorkloadIdentity) *v1.WorkloadIdentity {
+	if identity == nil {
+		return &v1.WorkloadIdentity{}
+	}
+	return identity
 }
 
 // Both heartbeat, exactly as the three in activities.go do, and that is not
