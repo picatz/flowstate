@@ -1,6 +1,7 @@
 package flowfile_test
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -199,10 +200,37 @@ func TestREADMENamesEveryCELLibrary(t *testing.T) {
 // ever mentioned. The diagnostic was confidently wrong, which is worse than
 // silence, and it punished writing rather than catching a mistake.
 //
-// A link target containing a slash is still deliberately unmatched, which is what
-// keeps `[plugins/greet](plugins/greet/)` out of the set: those sit a directory
-// deeper on purpose, and the glob below only walks one level.
-var exampleLink = regexp.MustCompile(`\[[^\]]+\]\(([a-z0-9-]+)/?\)`)
+// Nested targets are matched too. They did not used to be: the pattern stopped at
+// the first slash, on the reasoning that `[plugins/greet](plugins/greet/)` sits a
+// directory deeper on purpose and the glob only walked one level. Both halves of
+// that were true and the conclusion was still wrong — it meant the index's own
+// completeness check could not see the deeper half of the index, and
+// `plugins/codex` and `plugins/sql` were absent from the table for exactly as
+// long as nobody read it by hand. A guard that walks one level of a two-level
+// tree reports on a page rather than on the walk.
+var exampleLink = regexp.MustCompile(`\[[^\]]+\]\(([^)\s#]+)\)`)
+
+// exampleLinkTarget normalizes a matched link into the example path it names, or
+// "" for a link that names something else.
+//
+// Links out of the directory (`../docs/USE_CASES.md`) and to the web are not
+// claims about an example and are dropped. A link to an example's README
+// (`[embedding](embedding/README.md)`) is a link to that example, because that is
+// the file a reader is being sent to read.
+func exampleLinkTarget(target string) string {
+	if strings.HasPrefix(target, "../") || strings.Contains(target, "://") {
+		return ""
+	}
+
+	target = strings.TrimSuffix(target, "/")
+	target = strings.TrimSuffix(target, "/README.md")
+
+	if target == "" || strings.HasSuffix(target, ".md") {
+		return ""
+	}
+
+	return target
+}
 
 // TestExamplesREADMEListsEveryExample keeps the examples index complete.
 //
@@ -231,28 +259,66 @@ func TestExamplesREADMEListsEveryExample(t *testing.T) {
 
 	linked := map[string]bool{}
 	for _, m := range exampleLink.FindAllStringSubmatch(string(data), -1) {
-		linked[m[1]] = true
+		if target := exampleLinkTarget(m[1]); target != "" {
+			linked[target] = true
+		}
 	}
 	require.NotEmpty(t, linked,
 		"no example links found; either the index changed shape or this pattern stopped matching it")
 
-	dirs, err := filepath.Glob(filepath.Join(root, "examples", "*", "workflow.yaml"))
-	require.NoError(t, err)
-	require.NotEmpty(t, dirs, "no examples found; the glob is wrong")
+	// Every example, at whatever depth it sits — `plugins/sql` and
+	// `operations/worker-versioning` are examples in exactly the sense
+	// `hello-world` is, and the reason they were ever exempt was that the
+	// pattern above could not name them.
+	var onDisk []string
+	examplesDir := filepath.Join(root, "examples")
+	require.NoError(t, filepath.WalkDir(examplesDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || d.Name() != "workflow.yaml" {
+			return nil
+		}
+		rel, err := filepath.Rel(examplesDir, filepath.Dir(path))
+		if err != nil {
+			return err
+		}
+		onDisk = append(onDisk, filepath.ToSlash(rel))
+		return nil
+	}))
+	require.NotEmpty(t, onDisk, "no examples found; the walk is wrong")
 
-	onDisk := map[string]bool{}
-	for _, path := range dirs {
-		onDisk[filepath.Base(filepath.Dir(path))] = true
-	}
+	for _, name := range onDisk {
+		// Its own row, or an ancestor's. `embedding/flowfile` is the Flowfile
+		// belonging to the `embedding` example rather than an example in its
+		// own right, and a reader sent to `embedding` has been sent to it —
+		// demanding a separate row would be asking the index to list parts.
+		covered := false
+		for path := name; ; {
+			if linked[path] {
+				covered = true
+				break
+			}
+			parent := filepath.ToSlash(filepath.Dir(path))
+			if parent == path || parent == "." {
+				break
+			}
+			path = parent
+		}
 
-	for name := range onDisk {
-		assert.True(t, linked[name],
-			"examples/%s exists and examples/README.md does not link it\n"+
+		assert.True(t, covered,
+			"examples/%s exists and examples/README.md links neither it nor a directory above it\n"+
 				"  an example nobody links is an example nobody runs", name)
 	}
+
 	for name := range linked {
-		assert.True(t, onDisk[name],
-			"examples/README.md links %q, which is not an example directory\n"+
-				"  a stale link sends a reader somewhere that is not there", name)
+		info, err := os.Stat(filepath.Join(examplesDir, name))
+		assert.NoError(t, err,
+			"examples/README.md links %q, which is not there\n"+
+				"  a stale link sends a reader somewhere that is not", name)
+		if err == nil {
+			assert.True(t, info.IsDir(),
+				"examples/README.md links %q, which is not a directory", name)
+		}
 	}
 }
