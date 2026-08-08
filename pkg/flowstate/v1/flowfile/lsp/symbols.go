@@ -98,6 +98,9 @@ func definitionAt(doc *document, pos lsp.Position) []lsp.Location {
 
 	var locations []lsp.Location
 	for _, in := range from.expressionEntries() {
+		// Which of a loop's own scopes the entry's expression is evaluated in,
+		// loopScopeNone for every other entry — it decides both lookups below.
+		ls := from.loopScopeOf(in)
 		walkValues(in.value, func(v *value) {
 			// Only a fence that can place the cursor inside its own source has
 			// somewhere to jump from. A jump computed from a folded offset would
@@ -120,6 +123,16 @@ func definitionAt(doc *document, pos lsp.Position) []lsp.Location {
 				// that used to be a step reference is not one now — the
 				// diagnostic on it names the migration, and jumping to the step
 				// anyway would say the spelling still works.
+				//
+				// A loop's own `until:`/`update:` read the carried state, whose
+				// binding loop is the step the cursor is already in — and only
+				// there: in `init:` the state does not exist yet, so the name
+				// declines here and stays a non-answer.
+				if ls == loopScopeAfterBody && from.loopEntry != nil && ref.local != "" &&
+					ref.local == from.iteratorName() && from.idEntry != nil {
+					locations = []lsp.Location{{URI: doc.uri, Range: from.idEntry.valueRange()}}
+					return
+				}
 				for _, loop := range from.iteratorsInScope() {
 					if loop.iteratorName() == ref.local && loop.idEntry != nil {
 						locations = []lsp.Location{{URI: doc.uri, Range: loop.idEntry.valueRange()}}
@@ -130,7 +143,7 @@ func definitionAt(doc *document, pos lsp.Position) []lsp.Location {
 			}
 
 			target := doc.parsed.step(ref.step)
-			if !visibleFrom(target, from) || target.idEntry == nil {
+			if !visibleFromEntry(target, from, ls) || target.idEntry == nil {
 				return
 			}
 			locations = []lsp.Location{{URI: doc.uri, Range: target.idEntry.valueRange()}}

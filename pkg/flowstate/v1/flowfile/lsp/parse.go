@@ -221,6 +221,16 @@ type parsedStep struct {
 	// standing forEachEntry gives a `for_each` block.
 	loopEntry *entry
 
+	// loopInitEntry, loopUntilEntry and loopUpdateEntry are the loop's own three
+	// expressions, resolved once here so that every consumer agrees which entry
+	// each key names — the same reason waitUntilEntry is a field rather than a
+	// search. They are held apart from the step's other expression entries
+	// because each is evaluated in a scope no other position has, which is what
+	// [parsedStep.loopScopeOf] answers.
+	loopInitEntry   *entry
+	loopUntilEntry  *entry
+	loopUpdateEntry *entry
+
 	// callEntry is a `call:` and its value: the path of another Flowfile, relative
 	// to this file's own directory.
 	//
@@ -326,17 +336,21 @@ func (s *parsedStep) expressionEntries() []*entry {
 	}
 	entries = append(entries, s.waitShapingEntries...)
 
-	// A loop's own `init:`, `update:` and `until:` are deliberately absent,
-	// though they are expressions and adding them is one obvious line. Every
-	// consumer of this list evaluates against the *step's* scope, and those
-	// three are evaluated in scopes no other position has: `update:` and
-	// `until:` read the carried value and the just-finished body's outputs —
-	// both of which the step's own scope refuses, the body's steps being later
-	// in document order — while `init:` runs before the binding exists at all.
-	// Walked with the step's scope, a carried name that collides with a profile
-	// function would be described as that function: the same confidently-wrong
-	// answer the `join` fix below exists to prevent, reintroduced one key over.
-	// Silence until the scope is modeled entry-aware — see #306.
+	// A loop's own `init:`, `until:` and `update:`, which are expressions
+	// evaluated in scopes no other position has: `init:` against the enclosing
+	// scope alone, before the state it defines exists, and the other two after
+	// the body each iteration, with the carried state bound bare and the body's
+	// top-level steps readable. They were deliberately absent while every
+	// consumer of this list assumed the *step's* scope — walked that way, a
+	// carried name colliding with a profile function would have been described
+	// as that function. Each consumer now asks [parsedStep.loopScopeOf] which
+	// scope an entry's expression is evaluated in, which is what made adding
+	// them honest — see #306.
+	for _, e := range []*entry{s.loopInitEntry, s.loopUntilEntry, s.loopUpdateEntry} {
+		if e != nil {
+			entries = append(entries, e)
+		}
+	}
 
 	// A step's `vars:` bindings, which are expressions like any other value here and
 	// were missing from this list until the retirement edition made them the place
@@ -374,6 +388,62 @@ func (s *parsedStep) bindsNow(e *entry) bool {
 // name there as though it resolved, which it does not.
 func (s *parsedStep) bindsWaitResult(e *entry) bool {
 	return e != nil && slices.Contains(s.waitShapingEntries, e)
+}
+
+// A loopScope names which of a loop's own scopes an expression is evaluated in.
+// It is the tag that made the loop's three keys admissible to
+// [parsedStep.expressionEntries]: the engine evaluates each against a different
+// scope, and a consumer that assembled names without asking would describe a
+// binding that does not exist at that position.
+//
+// The rules are the engine's, mirrored from flowfile's validator (which mirrors
+// pkg/flowstate/v1/loop.go): `init:` runs once before the loop, against the
+// enclosing scope — it is *defining* the carried state, so the name is not
+// bound in it, and no body step has run. `until:` and `update:` run after the
+// body each iteration, so they read the enclosing scope, the carried state
+// under its bare `as:` name (a loop without `as:` carries nothing and binds
+// nothing), and the body's own top-level steps.
+type loopScope int
+
+const (
+	// loopScopeNone is every entry that is not one of a loop's three keys: the
+	// step's own scope applies unchanged.
+	loopScopeNone loopScope = iota
+	// loopScopeOuter is `init:` — the enclosing scope, with neither the carried
+	// state nor any body step in it.
+	loopScopeOuter
+	// loopScopeAfterBody is `until:` and `update:` — the enclosing scope plus
+	// the carried state bound bare plus the body's top-level steps.
+	loopScopeAfterBody
+)
+
+// loopScopeOf reports which scope an entry's expression is evaluated in.
+//
+// Asked of the entry rather than of its key, the rule [parsedStep.bindsNow] is
+// written to: `until:` under a `loop:` is the loop's stop condition, and a task
+// input spelled the same is resolved in a scope with no carried state in it.
+func (s *parsedStep) loopScopeOf(e *entry) loopScope {
+	switch {
+	case e == nil:
+		return loopScopeNone
+	case e == s.loopInitEntry:
+		return loopScopeOuter
+	case e == s.loopUntilEntry || e == s.loopUpdateEntry:
+		return loopScopeAfterBody
+	}
+	return loopScopeNone
+}
+
+// loopScopeAt reports which of a loop's own scopes a position's expression is
+// evaluated in, for the one consumer — completion — that starts from a position
+// rather than from a walk over the entries.
+func (s *parsedStep) loopScopeAt(pos lsp.Position) loopScope {
+	for _, e := range []*entry{s.loopInitEntry, s.loopUntilEntry, s.loopUpdateEntry} {
+		if e != nil && e.value != nil && contains(e.value.rng, pos) {
+			return s.loopScopeOf(e)
+		}
+	}
+	return loopScopeNone
 }
 
 // kind names the kind of work a step does, for the outline and for diagnostics
@@ -695,6 +765,24 @@ func visibleFrom(target, from *parsedStep) bool {
 	return true
 }
 
+// visibleFromEntry reports whether the outputs of target can be referenced by
+// an expression of from that is evaluated in scope ls — [visibleFrom] with the
+// one addition a loop's after-body scope has.
+//
+// `until:` and `update:` see the same steps a hypothetical last step of the
+// loop body would: everything the enclosing scope sees, plus the body's own
+// top-level steps — the ones whose parent is the loop itself. A step nested
+// deeper inside the body belongs to an inner block whose outputs do not escape
+// it, which is why the parent link is the whole test: the validator collects
+// only the body's top-level ids, and one collection cannot disagree with
+// itself when both read the same tree the same way.
+func visibleFromEntry(target, from *parsedStep, ls loopScope) bool {
+	if ls == loopScopeAfterBody && target != nil && from != nil && target.parent == from {
+		return true
+	}
+	return visibleFrom(target, from)
+}
+
 // containsFrame reports whether scope includes the given frame.
 func containsFrame(scope []scopeFrame, want scopeFrame) bool {
 	for _, f := range scope {
@@ -847,6 +935,25 @@ func fillParsedStep(s *parsedStep, entries []*entry) {
 				continue
 			}
 			s.loopEntry = e
+			if e.value == nil || e.value.kind != kindMapping {
+				continue
+			}
+			for _, le := range e.value.entries {
+				switch le.key {
+				case "init":
+					if s.loopInitEntry == nil {
+						s.loopInitEntry = le
+					}
+				case "until":
+					if s.loopUntilEntry == nil {
+						s.loopUntilEntry = le
+					}
+				case "update":
+					if s.loopUpdateEntry == nil {
+						s.loopUpdateEntry = le
+					}
+				}
+			}
 		case "call":
 			// Only the scalar form names a file. `call:` written as a mapping is a
 			// mistake the validator reports, and there would be no path in it to
