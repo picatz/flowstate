@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"time"
 
-	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"go.temporal.io/sdk/workflow"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
 // Waiting is the primitive that makes this engine worth building on the
@@ -141,6 +143,23 @@ func (e *executor) waitForSignal(node *v1.Node, signal *v1.Signal, timeout time.
 			"id", node.GetId(), "signal", name, "timeout", timeout)
 		return v1.SignalOutputs(nil, nil, true), nil
 	}
+
+	// Announced only from here down, which is the point after both ways a wait
+	// can resolve without ever parking: a signal that arrived early and is
+	// consumed above, and a bound that had already lapsed. Neither of those is
+	// something an operator can act on, and reporting them would mean a run that
+	// walked straight through a gate briefly claimed to be held at it. The local
+	// driver announces at its own matching point, for the same reason.
+	//
+	// The deadline is computed from `workflow.Now`, which replays to the instant
+	// it first returned, so a query answered before and after a replay reports
+	// the same moment rather than one that slides forward.
+	var deadline *timestamppb.Timestamp
+	if bounded {
+		deadline = timestamppb.New(workflow.Now(e.ctx).Add(timeout))
+	}
+	leave := e.waits.enter(e.pendingWait(node, signal, deadline))
+	defer leave()
 
 	channel := workflow.GetSignalChannel(e.ctx, name)
 

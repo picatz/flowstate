@@ -133,6 +133,26 @@ func (p *progress) snapshot() *v1.RunProgress {
 	return out
 }
 
+// ancestors returns the steps enclosing the step the run is currently inside,
+// outermost first and excluding that step itself.
+//
+// Only meaningful called from the step the run most recently entered, which is
+// the one whose id is the innermost entry: [progress.enter] records a step
+// before it runs, so at the moment that step's own code asks, the path's last
+// element is the step asking. Nil where the answer would be empty anyway - a
+// top-level step has no ancestry to report, and a nil [progress] (a parallel
+// branch, a concurrent iteration) has no position to draw one from.
+func (p *progress) ancestors() []string {
+	if p == nil || len(p.path) == 0 {
+		return nil
+	}
+
+	out := make([]string, 0, len(p.path))
+	out = append(out, p.stepID)
+
+	return append(out, p.path[:len(p.path)-1]...)
+}
+
 // enter records that the run has reached a step at some depth.
 //
 // Depth zero names the top-level step and resets the path, since arriving at a new
@@ -261,9 +281,23 @@ func (p *progress) stateSnapshot() *v1.EntityState {
 // event, so it cannot diverge a run already in flight. A run pinned to an interpreter
 // built before this simply has no handler, which is why the server treats a failed
 // query as unknown rather than as a failure.
-func setProgressQuery(ctx workflow.Context, p *progress) error {
+// The parked waits ride on this query's own answer rather than on a second
+// query of their own, and the reason is the one [StateQuery] states in the
+// negative: a second query earns its round trip when the answer is a different
+// size class, answerable at a different moment, or bounded differently. A wait
+// list is none of those - it is a handful of names and a deadline, live from
+// the same instant, and a caller asking where a run is has already asked the
+// question "and what is it waiting for" whether or not it sends a second RPC.
+// See [waitRegistry].
+func setProgressQuery(ctx workflow.Context, p *progress, w *waitRegistry) error {
 	return workflow.SetQueryHandler(ctx, ProgressQuery, func() (*v1.RunProgress, error) {
-		return p.snapshot(), nil
+		out := p.snapshot()
+		if out == nil {
+			return nil, nil
+		}
+		out.PendingWaits, out.PendingWaitsTruncated = w.snapshot()
+
+		return out, nil
 	})
 }
 

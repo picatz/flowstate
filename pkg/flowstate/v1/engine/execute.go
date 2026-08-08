@@ -108,6 +108,15 @@ type executor struct {
 	// is the one that stops moving the moment the run descends into anything.
 	progress *progress
 
+	// waits is the set of signal waits parked in this run, for the same query
+	// handler to answer from.
+	//
+	// Shared by pointer with every nested executor *including* the concurrent
+	// ones that carry no progress: a position is singular and cannot be claimed
+	// by one of several branches, while a set of open gates is plural and every
+	// branch belongs in it. See [waitRegistry].
+	waits *waitRegistry
+
 	// undo collects the compensation of every step that succeeds, so a run that
 	// later fails can take them back in reverse order.
 	//
@@ -409,6 +418,7 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 		// belongs to the run, not to the level that happens to be executing.
 		signals:  e.signals,
 		progress: e.progress,
+		waits:    e.waits,
 		undo:     e.undo,
 
 		// Composed with the scope this call itself sits in, not always
@@ -931,6 +941,7 @@ func (e *executor) runLoopIteration(loop *v1.Loop, stateName string, state *v1.V
 
 		signals:  e.signals,
 		progress: e.progress,
+		waits:    e.waits,
 		undo:     e.undo,
 
 		// Composed with the scope this loop itself sits in, not always
@@ -1006,6 +1017,7 @@ func (e *executor) runIteration(loop *v1.ForEach, iterator string, item *v1.Valu
 		// for the whole run.
 		signals:  e.signals,
 		progress: e.progress,
+		waits:    e.waits,
 		undo:     e.undo,
 
 		// Registration order inside a `for_each` is not the same on both drivers —
@@ -1128,6 +1140,12 @@ func (e *executor) runParallel(parallel *v1.Parallel, depth, susp int) error {
 				// Not carried, for the same reason a concurrent iteration does
 				// not carry it: no one branch is the run's position.
 				progress: nil,
+
+				// Carried, for the reason a concurrent iteration carries it: a
+				// branch parked on a gate is this run parked on that gate, and
+				// two branches holding two gates open is a set with two members
+				// rather than a contested position.
+				waits: e.waits,
 			}
 			if err := worker.runNodes(branch.GetSteps(), depth+1, susp+1); err != nil {
 				errs[i] = err

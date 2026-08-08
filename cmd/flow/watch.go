@@ -500,6 +500,19 @@ type watchState struct {
 	// would be reporting the terminal rather than the run.
 	pending []string
 
+	// waits are the gates the run is parked on, already rendered.
+	//
+	// Rendered at absorb time for the reason pending is: one of these sentences
+	// carries a countdown to a gate's deadline, and the moment to measure it
+	// against is the moment the answer was observed rather than whichever redraw
+	// happens to display it.
+	//
+	// No key beside it, unlike pendingKeys, and that is not an omission. A gate
+	// is a step, so reaching one and leaving one both move the position, which
+	// this shape already treats as news; a key here would be a second way to say
+	// the same thing, and a countdown in it would make every poll a change.
+	waits []string
+
 	// pendingKeys is the part of pending that means something has changed: the
 	// attempt count and the last failure, one string per activity.
 	//
@@ -619,6 +632,7 @@ func (s *watchState) absorb(at time.Time, response *v1.GetResponse, err error) w
 	s.steps = steps
 	s.position = position
 	s.pending = pendingActivityLines(response.GetPendingActivities(), at)
+	s.waits = pendingWaitLines(response.GetProgress(), at)
 	s.pendingKeys = pendingKeys
 	if failure := response.GetError(); failure != nil {
 		s.failure = failure.GetMessage()
@@ -687,6 +701,17 @@ func (s *watchState) line(theme ui.Theme) string {
 	// is one line per change and a retry is part of one change rather than another.
 	for _, pending := range s.pending {
 		line += fmt.Sprintf(" (%s)", pending)
+	}
+
+	// The gates it is parked on, through `flow get`'s own renderer for that
+	// renderer's reason: a person who asks once and a person who watches are
+	// reading about one run, and a second wording of "waiting for signal x" is
+	// how the two come to describe it differently.
+	//
+	// Rendered at absorb time like the retries above, so the countdown to a
+	// gate's deadline is measured against the moment the answer was observed.
+	for _, wait := range s.waits {
+		line += fmt.Sprintf(" (%s)", wait)
 	}
 
 	if len(s.steps) > 0 {

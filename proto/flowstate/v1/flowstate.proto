@@ -3173,6 +3173,105 @@ message RunProgress {
   // budget it is measured against is per segment too. It is progress against a
   // suspend, not against the workload.
   int32 completed_steps = 3;
+
+  // PendingWaits are the signal waits the run is parked on right now.
+  //
+  // Here rather than in a message of its own beside `progress` on GetResponse,
+  // and rather than behind a second query: one query already reaches the worker
+  // for exactly this run's live state, the answer is the same size class as a
+  // step id and a short path, and it is answerable from the same moment. A
+  // second query would cost a second round trip on every `flow get` of a
+  // running run to learn something the first one already had in hand. The
+  // separate query [EntityState] gets is the counter-example that proves the
+  // rule: that answer can be as large as an author's own `vars:`, which is why
+  // it carries its own bound and its own cost.
+  //
+  // Empty is a real answer and a different one from unset. An unset
+  // [RunProgress] means no worker answered (see GetResponse.progress); an empty
+  // list inside one that *is* set means this run is parked on nothing, which is
+  // to say it is working rather than waiting.
+  //
+  // Where a position stops at the boundary of concurrent work, this does not:
+  // a position is singular and a set of waits is not, so a run holding two
+  // gates open in two parallel branches reports both.
+  repeated PendingWait pending_waits = 4;
+
+  // PendingWaitsTruncated is true when this answer reports fewer waits than the
+  // run is actually parked on, because the run held more than the reporting
+  // bound (`v1.MaxPendingWaits`, in `pkg/flowstate/v1/waits.go`, which both drivers read).
+  //
+  // A flag rather than silence, for [EntityState.truncated]'s reason: a reader
+  // must never mistake "some of the waits" for "all of the waits". Unlike that
+  // field it keeps the entries it did collect, because the bound here is a
+  // count rather than a size, and the first waits of a run holding hundreds are
+  // still the answer to "what is this parked on" rather than a partial map
+  // whose keys a caller might index by.
+  bool pending_waits_truncated = 5;
+}
+
+// PendingWait is one signal wait a run is parked on right now, answered by the
+// running workflow itself through the same query [RunProgress] is.
+//
+// Signal waits only. A run asleep on a timer is waiting for nothing anyone can
+// do anything about and its deadline is already implied by the step it is on,
+// while a run parked on a `wait_for_signal:` is waiting on a *person* - and
+// "which gate, and may I open it" is the question that could not be answered
+// before this existed. An operator holding a run id had no way to learn the
+// signal name to send.
+//
+// # Everything here is non-secret by construction
+//
+// A step id, a path of step ids, a signal name and a deadline: all four are
+// written in the specification by its author or computed from a timeout the
+// author wrote, and none is derived from a task's inputs, a response body, or a
+// resolved secret. That is the same discipline `v1.Phase` enforces with an
+// unexported field, applied to a projection whose members happen to already be
+// names rather than values. A payload a sender delivered is deliberately not
+// here: that is the one thing about a wait that could carry anything.
+message PendingWait {
+  // StepId is the waiting step's own id.
+  //
+  // The waiting step, not [RunProgress.step_id]'s top-level one, and the
+  // difference is what makes this useful: two gates open at once in two
+  // parallel branches share a top-level step, so reporting that one would give
+  // both entries the same name and neither an answer.
+  string step_id = 1;
+
+  // Path is the position of the waiting step from the top-level step inward,
+  // outermost first, excluding the waiting step itself: a wait inside a loop
+  // body reports the loop.
+  //
+  // Empty for a top-level wait, and empty inside concurrent work for the reason
+  // [RunProgress.path] stops there - the run has no single position to describe
+  // that wait's ancestry with. StepId and SignalName are exact in both cases,
+  // which is what an operator needs to act.
+  repeated string path = 2;
+
+  // SignalName is the name a sender must deliver to release this wait. It is
+  // the string `flow signal <run> <name>` takes.
+  string signal_name = 3;
+
+  // Deadline is when this wait lapses of its own accord, set only where the
+  // author wrote a `timeout:`.
+  //
+  // Unset means the gate blocks until somebody acts, which is a different
+  // situation and not a missing value: it is the spelling this schema
+  // recommends for an approval, and a run parked on one will wait as long as
+  // the run itself is allowed to live.
+  optional google.protobuf.Timestamp deadline = 4;
+
+  // Policed is true when the workflow's own `signals:` declares a policy for
+  // SignalName, so a delivery is authorized against it before it reaches this
+  // step.
+  //
+  // Reported because the two failure modes look identical from outside: a
+  // signal sent to an unpoliced name that nobody is waiting for, and a signal
+  // refused by a policy, both leave the run parked exactly as it was. Read from
+  // the top-level workflow's declarations, which is the same set the server
+  // records on the run and checks a delivery against - a called workflow's own
+  // `signals:` is not what authorizes a delivery to this run, so it is not what
+  // is reported here either.
+  bool policed = 5;
 }
 
 // Diagnostic is one problem found in a Flowfile, positioned in its source.

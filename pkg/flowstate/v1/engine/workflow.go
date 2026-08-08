@@ -307,7 +307,12 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 	// first moments is exactly when somebody asks what it is doing — "nowhere yet"
 	// is a better answer than an error that reads like a broken worker.
 	position := &progress{}
-	if err := setProgressQuery(ctx, position); err != nil {
+
+	// Registered here, beside the position, because one query answers both:
+	// what a run is parked on is asked in the same breath as where it has got
+	// to. See [setProgressQuery] and [waitRegistry].
+	parked := &waitRegistry{}
+	if err := setProgressQuery(ctx, position, parked); err != nil {
 		return nil, fmt.Errorf("register progress query: %w", err)
 	}
 	if err := setStateQuery(ctx, position); err != nil {
@@ -377,6 +382,7 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		// run that suspended. A wait consumes from here before it blocks.
 		signals:  &signalCarry{pending: st.GetPendingSignals()},
 		progress: position,
+		waits:    parked,
 
 		// The compensations registered by segments that already ran, oldest first.
 		// A saga is exactly the workload that outlives one segment — provision,
