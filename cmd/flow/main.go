@@ -1732,7 +1732,16 @@ flow get flowstate-workflow-3f7c --run-id 0198f1e2-...`,
 		Short: "Send a signal to a waiting run",
 		Long: "Deliver a signal to a run waiting for one, which is how a human approval reaches " +
 			"a workload. The payload becomes the waiting step's outputs, so its keys are what " +
-			"later steps read as ${step_id.key}.",
+			"later steps read as ${step_id.key}.\n\n" +
+			// The numbers are the constants, not a prose copy of them: a limit
+			// documented by hand is a limit that drifts the day it changes.
+			fmt.Sprintf("Two limits, both worth knowing before designing a payload. A payload over "+
+				"%d KiB is refused synchronously, with the size and the limit named — send a "+
+				"reference to something large rather than the thing itself, since the payload "+
+				"travels with the run from then on. And a signal that arrives before its gate is "+
+				"reached is held for it, at most %d across all names with the earliest kept: "+
+				"sending does not fail when the run is elsewhere, it waits.",
+				v1.MaxSignalPayloadBytes/1024, v1.MaxPendingSignals),
 		Args: cobra.ExactArgs(2),
 		RunE: runSignal,
 		Example: `# Approve a deploy waiting on a gate:
