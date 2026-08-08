@@ -17,32 +17,33 @@
 # catch-all `log` stub, and a reminder that went out when none was due has
 # nothing to match.
 #
-# # The ceiling: this file cannot script "the third period"
+# # `at:` names a period, so the cases below name theirs
 #
-# A signal scripted for *any* moment after the first deadline is delivered as
-# soon as that first deadline lapses — `at: 721h` and `at: 3000h` produce the
-# identical run, one reminder and then the interrupt. The local driver's timed
-# wait hands its clock participation to a helper goroutine and takes it back
-# after the wait returns (`waitForSignalLocally`, pkg/flowstate/v1/wait_local.go),
-# and in the window between those two the scripted signal is the clock's only
-# participant, so the clock advances straight to it. So "two deadlines pass,
-# *then* the customer acts" is not a sequence this harness can express, and the
-# first case below claims one reminder rather than pretending to more.
+# Every `at:` here is read against the same virtual clock the workflow's own
+# `timeout:` is, so which period a signal lands in is arithmetic anyone can do
+# from the file: the billing period is 720h, so 800h is the second period and
+# 2000h is the third. A signal scripted past a period's deadline is not
+# deliverable in that period — the wait lapses, sends its reminder, and goes
+# round again — and it waits, queued, for whichever later period the clock
+# reaches its moment in.
 #
-# What that costs is smaller than it looks, because the multi-period behaviour
-# is pinned by the third case instead: twelve consecutive lapses, each one
-# doing the work and going round again. What is genuinely not covered is an
-# interrupt arriving after several periods rather than after one, and the
-# difference between those two is arithmetic on a counter this file already
-# checks once per iteration.
+# This did not always hold, and the case named for the third period below is
+# the one that would not have. Until #278 the local driver's timed wait handed
+# its clock participation to a helper goroutine for the duration and took it
+# back afterwards, and in that window a scripted signal was the clock's only
+# participant — so the clock advanced straight to it and every `at:` past the
+# first deadline collapsed onto the first lapse. `at: 721h` and `at: 3000h`
+# produced the identical run. Two of the cases below now differ only in that
+# number, which is the whole of the proof that it means something.
 edition: v2026.2
 tests:
   - name: a deadline lapses, the reminder goes out, and the renewal that follows stops the loop
     workflow: ./workflow.yaml
     signals:
-      # Scripted for after the first billing period, so that period lapses and
-      # sends its reminder before the customer acts. See the ceiling above for
-      # why a larger number would not buy a third iteration.
+      # 800h is eighty hours into the second billing period, so the first
+      # period lapses and sends its reminder and the customer acts during the
+      # second. The next case is this one with a bigger number and nothing
+      # else changed.
       - name: subscription-changed
         at: 800h
         payload:
@@ -73,6 +74,44 @@ tests:
         # iteration it was answered — `update:` never runs on that one, which
         # is why this is 1 and not 2.
         reminders_sent: 1
+        decision: renewed
+
+  - name: two billing periods go by with their reminders before the customer renews in the third
+    workflow: ./workflow.yaml
+    # This is the shape the example exists for, and the one the file could not
+    # express before #278: several reminder periods elapse, *then* the customer
+    # acts. It differs from the case above in one number.
+    signals:
+      # 2000h is 560 hours into the third billing period (the deadlines are at
+      # 720h and 1440h). Both of those lapse and send their reminders; the
+      # third period's wait is the one this answers.
+      - name: subscription-changed
+        at: 2000h
+        payload:
+          decision: renewed
+    stubs:
+      - task: log
+        where: inputs.message == "watching acme's subscription for a renewal decision"
+        returns: {}
+      # One stub for both reminders, and it has to hold for each: `sent` is 0
+      # on the first and 1 on the second, so the messages differ and both must
+      # agree with the counter their own iteration carried. There is no
+      # catch-all `log` stub, so a third reminder — which is what a signal that
+      # collapsed onto the wrong period would prevent, and what a loop that
+      # reminded on its closing iteration would add — arrives here unmatched
+      # and fails the case.
+      - task: log
+        where: "inputs.message == 'reminder %d for acme: the subscription renews soon'.format([sent + 1])"
+        returns: {}
+    expect:
+      ran: [opened, reminders]
+      outputs:
+        # Two, exactly: not one (the whole of the old defect) and not three
+        # (the closing iteration skips `remind` and never reaches `update:`).
+        # Asserted as a number rather than a bound because the bound is the
+        # point — a case that said "at least one" is satisfied by the run this
+        # one exists to keep out.
+        reminders_sent: 2
         decision: renewed
 
   - name: a customer who cancels before the first deadline is never reminded at all

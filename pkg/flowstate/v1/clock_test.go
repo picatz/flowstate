@@ -208,3 +208,141 @@ func TestVirtualClockAdvanceDeliversScriptedTimes(t *testing.T) {
 	clock.Advance(start)
 	require.Equal(t, start.Add(15*time.Minute), clock.Now())
 }
+
+// TestVirtualClockDiscardWithdrawsADeadlineNobodyIsWaitingFor is the unit-level
+// half of #278's second finding. A bounded `wait_for_signal:` that its signal
+// answered leaves its own timeout registered and unfired; if that deadline
+// stayed a candidate, the clock would advance the whole run to a moment the
+// wait had already stopped needing.
+//
+// Both directions are asserted, because "Discard removes it" and "Discard
+// leaves the count able to advance at all" are separate claims: the discarded
+// deadline must not be advanced to, *and* the deadline that remains must still
+// be reached.
+func TestVirtualClockDiscardWithdrawsADeadlineNobodyIsWaitingFor(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clock := v1.NewVirtualClock(start)
+
+	// Three participants for two deadlines, so the clock holds still while
+	// this test sets up: it advances only once everything registered is
+	// parked, and one entered participant here never parks at all.
+	clock.Enter()
+	clock.Enter()
+	clock.Enter()
+
+	abandoned := clock.After(time.Hour)
+	kept := clock.After(10 * time.Hour)
+
+	require.Equal(t, start, clock.Now())
+	require.Equal(t, 2, clock.Pending())
+
+	v1.DiscardTimer(clock, abandoned)
+	require.Equal(t, 1, clock.Pending(), "Discard did not withdraw the deadline")
+
+	// Discarding a deadline that was never issued, and one already discarded,
+	// both do nothing — so a `defer DiscardTimer(...)` on every path out of a
+	// wait is safe without first working out which path was taken.
+	v1.DiscardTimer(clock, abandoned)
+	v1.DiscardTimer(clock, make(chan time.Time))
+	require.Equal(t, 1, clock.Pending())
+
+	// The remaining deadline is still reachable, and it is the one the clock
+	// advances to: the discard took the parked count down with it, rather
+	// than leaving the clock believing one more thing is parked than is —
+	// which would have held the clock at the epoch forever. Withdrawing the
+	// two unparked participants is what leaves `kept` as the only thing left.
+	clock.Leave()
+	clock.Leave()
+
+	select {
+	case got := <-kept:
+		require.Equal(t, start.Add(10*time.Hour), got)
+	default:
+		t.Fatal("the surviving deadline was never reached")
+	}
+	require.Equal(t, start.Add(10*time.Hour), clock.Now())
+
+	select {
+	case <-abandoned:
+		t.Fatal("a discarded deadline fired anyway")
+	default:
+	}
+}
+
+// TestDeliveringWithdrawsTheAnsweredWaitsDeadline pins the window that made
+// #278's third attempt necessary, and it pins it deterministically rather than
+// by soaking.
+//
+// A bounded `wait_for_signal:` registers a deadline with the clock. The moment
+// its payload is queued that deadline is moot, but the goroutine it belongs to
+// is only *runnable*, not running — the Go scheduler decides when it gets to
+// withdraw it, and under GOMAXPROCS=1 that can be a long time. Any other
+// participant touching the clock in between (another scripted sender merely
+// registering its own `at:` is enough) finds a parked count inflated by a
+// deadline nobody is waiting under any more, and moves time on it. The
+// observable consequence was a gate reporting `timed_out` or not depending on
+// interleaving, which is the whole defect class #278 is about.
+//
+// So the assertion is made on the *delivering* goroutine, immediately after
+// Deliver returns and before the woken run can possibly have run: nothing is
+// pending. If withdrawal ever moves back out of the delivery, this fails
+// without needing a scheduler to cooperate.
+func TestDeliveringWithdrawsTheAnsweredWaitsDeadline(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clock := v1.NewVirtualClock(start)
+
+	signals := v1.NewLocalSignals()
+
+	// Two participants, the pair `flow test` always has: the run's own, held
+	// from out here the way runCase holds it, and this goroutine standing in
+	// for a scripted sender that has not delivered yet. Without the second the
+	// gate would be the only thing registered with the clock and would lapse
+	// at once, which is the correct answer when nothing is ever going to
+	// answer it and not the case under test here.
+	clock.Enter()
+	clock.Enter()
+
+	ctx := v1.NewContextWithClock(t.Context(), clock)
+	ctx = v1.NewContextWithSignalWaiter(ctx, signals)
+	ctx = v1.NewContextWithHeldRunParticipant(ctx)
+
+	type result struct {
+		outputs *v1.Workflow_StepOutputs
+		err     error
+	}
+	done := make(chan result, 1)
+	go func() {
+		outputs, err := v1.Run(ctx, gatedLocalWorkflow(720*time.Hour))
+		done <- result{outputs: outputs, err: err}
+	}()
+
+	// One pending deadline is the gate's, and its being pending is what says
+	// the run is blocked on it — the state this test needs to catch.
+	require.Eventually(t, func() bool { return clock.Pending() == 1 },
+		2*time.Second, time.Millisecond, "the gate never registered its deadline")
+
+	require.NoError(t, signals.Deliver("deploy-approved", &v1.Node_Outputs{
+		NamedValues: map[string]*v1.Value{"approved": v1.NewLiteral(true)},
+	}))
+
+	require.Equal(t, 0, clock.Pending(),
+		"the answered gate's deadline was still pending when Deliver returned, so a "+
+			"participant touching the clock before the woken run could withdraw it would "+
+			"advance the whole run to a month it never spent")
+
+	clock.Leave() // the sender is done, exactly as a scripted one would be.
+
+	got := <-done
+	require.NoError(t, got.err)
+	clock.Leave()
+
+	approval := got.outputs.GetStepValues()["approval"].GetNamedValues()
+	require.False(t, approval[v1.TimedOutOutput].GetLiteral().GetBoolValue(),
+		"the gate reported a timeout although its signal was delivered")
+	require.Equal(t, start, clock.Now(),
+		"a gate answered without ever lapsing spent time it was not owed")
+}
