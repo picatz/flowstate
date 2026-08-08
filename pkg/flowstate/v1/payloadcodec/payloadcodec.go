@@ -93,7 +93,7 @@ import (
 // be wrapped in something that states its expansion before it can be configured
 // here, because an expansion nobody has stated is one nobody has checked
 // against the blob limit. Name is the other addition, and it earns its place at
-// the diagnostic surface , "which codec was this history written with" is the
+// the diagnostic surface: "which codec was this history written with" is the
 // first question asked about a payload that will not decode, and a %T of a
 // wrapper answers it badly.
 //
