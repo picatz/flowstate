@@ -25,6 +25,27 @@
 // unstubbed task: `flow test`'s whole promise is that nothing it runs reaches
 // a real dependency, and a secret backend is exactly such a dependency.
 //
+// # Identities are declared, checked by the real policy, and never attested
+//
+// A workflow's `signals:` policy is authorization, and a case exercises it by
+// naming the two parties that policy is written about: [Test.Starter] is who
+// the run started as, and a [SignalScript.Sender] is who a scripted delivery
+// stands in for. Both are read by [v1.SignalPolicyCheck] - the function
+// `FlowstateServer.Signal` itself calls - so a rule that admits an approver in
+// production admits them here, one that refuses them refuses them here, and
+// `distinct_from_starter:` refuses the approver who is this run's own starter
+// (#344 slice 3).
+//
+// Neither is an attestation, and the harness is careful to keep saying so.
+// A scripted delivery carries [v1.RehearsalSignalSender] - identity populated,
+// `local` true - the same shape `flow run local --signal-as-subject` delivers
+// and the shape the durable driver refuses outright, so a gate's own
+// `sender.local` output reads true and `!sender.local` keeps meaning "a server
+// accepted this". A starter reaches the signal policy and nothing else:
+// `run.identity` stays empty and `run.local` true for every case, as it does
+// for every local run, because a local run must never look like an attested
+// production one.
+//
 // # Why this runs the local driver only
 //
 // `flow test` is not a second execution engine. It is [v1.RunWithInputs] with
@@ -41,11 +62,14 @@ package flowtest
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/goccy/go-yaml"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 )
 
@@ -148,6 +172,31 @@ type Test struct {
 	// Signals scripts what to deliver to a `wait_for_signal:` step, and when.
 	Signals []SignalScript `yaml:"signals"`
 
+	// Starter is who this case runs as: the identity a `signals:` policy's
+	// `distinct_from_starter:` compares a scripted [SignalScript.Sender]
+	// against, exactly as `flow run local`'s `--as-subject` and its siblings
+	// name it for a rehearsal on the command line (#344 slice 3).
+	//
+	// Without it a case runs as nobody, which is what every case did before
+	// this field existed and remains the default: an empty identity that is
+	// *recorded* rather than unknown, so a `distinct_from_starter:` policy
+	// admits a scripted approver instead of refusing every case outright
+	// (see [v1.NewPolicedLocalSignals]'s hasStarter parameter, and runCase).
+	// The consequence worth stating is that "nobody" is distinct from every
+	// named approver, so the refusal `distinct_from_starter:` exists to
+	// produce is unreachable until a case names a starter - which is the
+	// whole reason this field exists.
+	//
+	// It is who the run *starts as*, not who it is attested to be. Nothing
+	// here is authenticated, and it deliberately does not reach
+	// `run.identity`: the local driver answers that with an empty identity
+	// and `run.local` true for every run, `flow run local --as-subject`
+	// included, because a local run must never look like an attested
+	// production one (eval.go's own eval, invariant 3). A case asserting on
+	// `run.identity.subject` therefore sees "" here whatever this field says,
+	// the same value `flow run local` shows it.
+	Starter *ScriptedIdentity `yaml:"starter"`
+
 	// Expect is what the run must have done to pass.
 	Expect Expectation `yaml:"expect"`
 }
@@ -248,8 +297,8 @@ type SignalScript struct {
 	// exactly as `flow signal`'s would be.
 	Payload map[string]any `yaml:"payload"`
 
-	// Sender attests who sent this signal, checked against the workflow's own
-	// declared `signals:` policy for Name exactly as
+	// Sender is who this signal stands in for, checked against the workflow's
+	// own declared `signals:` policy for Name exactly as
 	// `FlowstateServer.Signal` checks a durable one — through
 	// [v1.SignalPolicyCheck], the same function, so a policy that would
 	// refuse this sender in production refuses it here too rather than
@@ -258,36 +307,124 @@ type SignalScript struct {
 	// direction once a workflow's `if:` started trusting `signals:` for
 	// authorization).
 	//
+	// It stands in for that approver; it never claims anybody authenticated
+	// them. The delivery carries [v1.RehearsalSignalSender], identity
+	// populated and `local` true, which is the same shape `flow run local
+	// --signal-as-subject` delivers (#349) and the shape the durable driver
+	// refuses outright. So a gate's own `sender.local` output reads true
+	// under `flow test`, and `!sender.local` keeps meaning "a server accepted
+	// this" for a workflow author: the contract [v1.SignalWaiter] states it,
+	// which a scripted sender used to break by delivering with `local` false
+	// and rendering exactly like an attested production sender.
+	//
 	// Omitted under a signal that carries no declared policy: the signal is
-	// delivered as [v1.LocalSignalSender] always was, unattested. Omitted
-	// under a signal that *does* declare a policy: the delivery is still
-	// checked, as an unattested, empty identity — which a real policy's
-	// `allow:` rule can never match (every rule requires a non-empty
-	// subject, namespace, or claim; see signalpolicy.go's
-	// ruleMatchesEverySender) — so an author who forgets `sender:` gets a
-	// refused delivery and a diagnostic naming why, not a silent pass. That
-	// is the deliberate fail-closed answer, not an oversight: a scripted
-	// signal is exactly as unattested as `flow run local --signal` unless a
-	// case says otherwise.
-	Sender *ScriptedSender `yaml:"sender"`
+	// delivered as [v1.LocalSignalSender] always was, standing in for nobody.
+	// Omitted under a signal that *does* declare a policy: the delivery is
+	// still checked, as an empty identity — which a real policy's `allow:`
+	// rule can never match (every rule requires a non-empty subject,
+	// namespace, or claim; see signalpolicy.go's ruleMatchesEverySender) — so
+	// an author who forgets `sender:` gets a refused delivery rather than a
+	// silent pass. That is the deliberate fail-closed answer, not an
+	// oversight: a scripted signal stands in for exactly as little as `flow
+	// run local --signal` does unless a case says otherwise.
+	//
+	// A refused delivery is not reported as a diagnostic of its own, and that
+	// is production's shape rather than an omission: the waiting step is
+	// never told anything was sent (see [v1.LocalSignals.DeliverFrom]), so
+	// the gate lapses at its own `timeout:` and the case fails against
+	// whatever it expected of that. What a mistake in the *file* gets instead
+	// is a refusal when the file loads - see [checkScriptedIdentity], which
+	// exists precisely so a malformed identity is not rendered as a gate
+	// nobody answered.
+	Sender *ScriptedIdentity `yaml:"sender"`
 }
 
-// ScriptedSender is the identity a [SignalScript] attests, the same fields
-// [v1.WorkloadIdentity] carries — subject and issuer together, never subject
-// alone, for the identical multi-IdP reason `flow validate` requires a
+// ScriptedIdentity is an identity a case names, either the sender of a
+// scripted signal ([SignalScript.Sender]) or the run's own starter
+// ([Test.Starter]), carrying the fields [v1.WorkloadIdentity] does that a `signals:` policy is
+// matched on: subject and issuer together, never subject alone, for the
+// identical multi-IdP reason `flow validate` requires a
 // [v1.SignalPolicyRule.subject] to be issuer-qualified.
-type ScriptedSender struct {
-	// Subject is the attested caller, matched against a policy rule's
-	// `subject:` as `<issuer>#<subject>` — see [v1.QualifiedSubject].
+//
+// One type for both ends on purpose. `distinct_from_starter:` compares the two
+// against each other, through [v1.QualifiedSubject] on each, so a case whose
+// starter and sender were spelled with two different sets of fields would be a
+// comparison an author could not read - the same reasoning that made
+// `--signal-as-subject` rhyme with `--as-subject` on the command line rather
+// than invent a second vocabulary.
+//
+// Nothing here is attested, and nothing here is minted, signed, or carried
+// anywhere: the values live in one process, for one case, and are discarded
+// with it.
+type ScriptedIdentity struct {
+	// Subject is the caller this identity stands in for, matched against a
+	// policy rule's `subject:` as `<issuer>#<subject>` — see
+	// [v1.QualifiedSubject].
 	Subject string `yaml:"subject"`
 
-	// Issuer identifies which identity provider attested Subject.
+	// Issuer identifies which identity provider would have attested Subject.
 	Issuer string `yaml:"issuer"`
 
-	// Claims are additional attested facts, matched against a policy rule's
-	// `claims:` — every key the rule names must be present here with the
-	// same value.
+	// Namespace is the tenant this identity belongs to, matched against a
+	// policy rule's `namespace:`.
+	Namespace string `yaml:"namespace"`
+
+	// Claims are additional facts, matched against a policy rule's `claims:`
+	// — every key the rule names must be present here with the same value.
 	Claims map[string]string `yaml:"claims"`
+}
+
+// checkScriptedIdentity refuses an identity no policy could ever read the way
+// its author meant it, when the file loads rather than when a case runs.
+//
+// where names the position in the file a reader has to look at - `test "x"
+// starter:`, `test "x" signal 2 sender:` - because a `*.test.yaml` is
+// identified by case name throughout this loader (see [parseSource]) rather
+// than by line and column: every diagnostic here names the case, what is
+// wrong, and what to do instead, which is the shape CLAUDE.md's "diagnostics
+// are a feature" asks for and the shape the rest of this file already has.
+//
+// Both rules are fail-closed readings of a policy that would otherwise refuse
+// silently, at a gate, a whole virtual day later:
+//
+//   - A subject with no issuer (or an issuer with no subject) matches
+//     "#alice", which no `allow:` rule can carry: `flow validate` refuses an
+//     unqualified rule `subject:` outright. `flow run local` refuses the same
+//     half-pair on the command line, and for the same reason.
+//   - A claim with an empty name or an empty value cannot be what an author
+//     meant, and is matched literally rather than ignored - the mistake
+//     `--signal-as-claim`'s own NAME=VALUE check refuses.
+func checkScriptedIdentity(where string, identity *ScriptedIdentity) error {
+	if identity == nil {
+		return nil
+	}
+
+	if (identity.Subject == "") != (identity.Issuer == "") {
+		return fmt.Errorf(
+			"%s names a subject or an issuer without the other; give both, because a rule matches %q "+
+				"and never a bare subject - a subject is only unique within its issuer",
+			where, v1.QualifiedSubject("<issuer>", "<subject>"))
+	}
+
+	// Sorted, so a file with two bad claims reports the same one every time:
+	// a diagnostic that changes between runs of the same input is one nobody
+	// can write a test against, this package's own included.
+	for _, name := range slices.Sorted(maps.Keys(identity.Claims)) {
+		value := identity.Claims[name]
+
+		empty := "value"
+		if name == "" {
+			empty = "name"
+		}
+		if name == "" || value == "" {
+			return fmt.Errorf(
+				"%s declares a claim with an empty %s; a claim is matched literally, so write it as "+
+					"`name: value` with both present, or drop it",
+				where, empty)
+		}
+	}
+
+	return nil
 }
 
 // Expectation is what a case's run must have produced to pass.
@@ -434,6 +571,23 @@ func parseSource(data []byte, requireWorkflow bool) (*File, error) {
 			// timing [secrets.ParseRef]'s own doc gives for a Flowfile.
 			if _, err := secrets.ParseRef(ref); err != nil {
 				return nil, fmt.Errorf("test %q secrets: %w", test.Name, err)
+			}
+		}
+		if err := checkScriptedIdentity(fmt.Sprintf("test %q starter:", test.Name), test.Starter); err != nil {
+			return nil, err
+		}
+		for j, signal := range test.Signals {
+			// Checked at load, alongside every other shape check in this
+			// loop, rather than when the scripted goroutine delivers: a
+			// delivery refused there disappears the way a production
+			// PermissionDenied does (see [v1.LocalSignals.DeliverFrom]), so
+			// the case would report a gate that timed out and never the
+			// mistake in the file that caused it.
+			if err := checkScriptedIdentity(
+				fmt.Sprintf("test %q signal %d (%q) sender:", test.Name, j+1, signal.Name),
+				signal.Sender,
+			); err != nil {
+				return nil, err
 			}
 		}
 		for j, stub := range test.Stubs {

@@ -10,6 +10,25 @@
 # `deploy`, because a scripted signal always looked unattested and the old
 # `if:` gated on attestation directly. Now the gate is `signals:`'s job, and
 # `flow test` enforces it the same way production does.
+#
+# A case says who its run *starts* as with `starter:` (#344 slice 3), the way
+# `flow run local --as-subject` says it on the command line, and that is what
+# makes the last clause of this workflow's policy testable at all:
+# `distinct_from_starter: true` compares the scripted `sender:` against it, so
+# the separation of duties this gate promises is exercised in both directions
+# below - the approver this run named is admitted, and that same approver is
+# refused the moment they are also the person who asked for the deploy. Every
+# other case here names no `starter:` and so runs as nobody, which is what
+# every case did before the field existed: nobody is distinct from everybody,
+# so the clause has nothing to refuse.
+#
+# What `starter:` does not do is make the run look attested. It reaches the
+# signal policy and nothing else: `run.identity.subject` still reads empty and
+# `run.local` still reads true, exactly as they do under `flow run local`, so
+# the `request` step's own log line here still names "an unattested caller".
+# The scripted `sender:` is the same kind of assertion - it stands in for an
+# approver, and the gate's `sender.local` output reads true to say so, which
+# is why `deploy`'s `if:` may never gate on attestation itself.
 edition: v2026.2
 tests:
   - name: "a sender satisfying signals: deploys"
@@ -36,6 +55,106 @@ tests:
       outputs:
         decision: deployed
         approver_subject: sre-lead@example.com
+
+  # The pair `distinct_from_starter: true` exists for, and the reason this
+  # file needs a `starter:` to state it: the two cases differ in exactly one
+  # value - who started the run - and nothing else. The approver, the claim,
+  # the payload and the inputs are identical.
+  - name: a distinct starter admits the approver this run named
+    workflow: ./workflow.yaml
+    starter:
+      subject: release-requester@example.com
+      issuer: https://issuer.example.com
+    inputs:
+      version: v1.4.2
+      environment: production
+      expected_approver: sre-lead@example.com
+    signals:
+      - name: deploy-approved
+        payload:
+          approved: true
+        sender:
+          subject: sre-lead@example.com
+          issuer: https://issuer.example.com
+          claims:
+            team: release-managers
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [request, settle, approval, deploy]
+      skipped: [rejected, expired]
+      outputs:
+        decision: deployed
+        approver_subject: sre-lead@example.com
+
+  # Refused for being the run's own starter, not for anything about the
+  # payload: the sender satisfies the rule's `subject:` and its `claims:`
+  # exactly, which is the point - `distinct_from_starter:` is the one clause a
+  # correctly-claimed, correctly-named approver still cannot get past. The
+  # signal never reaches the step, so the gate lapses at its own timeout and
+  # the run reports `expired`, the same answer nobody answering at all
+  # produces. That is what production does too: `FlowstateServer.Signal`
+  # refuses with PermissionDenied and the workflow is never told anything was
+  # sent.
+  - name: the starter cannot approve their own deploy
+    workflow: ./workflow.yaml
+    starter:
+      subject: sre-lead@example.com
+      issuer: https://issuer.example.com
+    inputs:
+      version: v1.4.2
+      environment: production
+      expected_approver: sre-lead@example.com
+    signals:
+      - name: deploy-approved
+        payload:
+          approved: true
+        sender:
+          subject: sre-lead@example.com
+          issuer: https://issuer.example.com
+          claims:
+            team: release-managers
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [request, settle, approval, expired]
+      skipped: [deploy, rejected]
+      outputs:
+        decision: expired
+        approver_subject: ""
+
+  # The same starter, refused for a different reason and from the other side:
+  # an approver who is distinct from the starter but is not the one this run
+  # named. Distinctness is a clause of the policy, never the whole of it.
+  - name: a distinct approver the run did not name is still refused
+    workflow: ./workflow.yaml
+    starter:
+      subject: release-requester@example.com
+      issuer: https://issuer.example.com
+    inputs:
+      version: v1.4.2
+      environment: production
+      expected_approver: sre-lead@example.com
+    signals:
+      - name: deploy-approved
+        payload:
+          approved: true
+        sender:
+          subject: someone-else@example.com
+          issuer: https://issuer.example.com
+          claims:
+            team: release-managers
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [request, settle, approval, expired]
+      skipped: [deploy, rejected]
+      outputs:
+        decision: expired
+        approver_subject: ""
 
   - name: "an approved payload from a sender signals: refuses never reaches the gate"
     workflow: ./workflow.yaml

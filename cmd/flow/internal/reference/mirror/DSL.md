@@ -3668,6 +3668,32 @@ Binding a sender to each `--signal` would buy that case at the price of a second
 syntax on a flag whose first one is already a shell-quoted JSON document, and no
 example in the corpus needs it yet.
 
+### The same two parties, in a `*.test.yaml`
+
+A rehearsal on a command line is something an author does once. The version that
+survives is a case in the file beside the workflow, so `flow test` says the same two
+things: a scripted signal's `sender:` names who a delivery stands in for, and a case's
+own `starter:` names who the run started as - the two `distinct_from_starter:` compares.
+Both carry `subject:`, `issuer:`, `namespace:` and `claims:`, one spelling for both ends
+of that comparison, and both are checked by `SignalPolicyCheck`, the function the server
+calls. So the pair a policy exists to keep apart is exercised in the file's own tests, in
+both directions: the approver a run names is admitted, and that same approver is refused
+the moment they are also the person who asked.
+
+A case that names no `starter:` runs as nobody, which is what every case did before the
+field existed. Nobody is *recorded* rather than unknown - a run that could not say who
+started it would have every `distinct_from_starter:` policy refuse it outright, which
+would take the admit direction away from the author entirely - so the refusal only
+becomes reachable when a case names a starter, which is the whole reason to name one.
+
+Neither field makes a case look attested. A scripted `sender:` delivers as a rehearsal,
+`sender.local` true, the same marker `--signal-as-subject` carries and the same one the
+durable driver refuses; a `starter:` reaches the signal policy and nothing else, leaving
+`run.identity` empty and `run.local` true exactly as every local run reports them. A
+scripted sender that rendered as an attested one was a real inconsistency for as long as
+it lasted: `!sender.local` is what a workflow author reads to mean "a server accepted
+this", and a test harness is the last place that may be untrue.
+
 ## The standing rule
 
 Every claim in a design document about what this codebase currently does is a claim,

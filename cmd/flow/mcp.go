@@ -953,11 +953,17 @@ const testToolDescription = "Run a Flowfile against inline test cases the way `f
 	"does, or anything about durability — flowstate_run_local's own limits, on top of never running a " +
 	"real task at all.\n\n" +
 	"`tests` is a `*.test.yaml` document: `tests:` names one or more cases, each with an optional " +
-	"`inputs:`, `stubs:`, `signals:`, and an `expect:` the run must satisfy — `expect.outputs` compares " +
+	"`inputs:`, `stubs:`, `signals:`, `starter:`, and an `expect:` the run must satisfy — `expect.outputs` compares " +
 	"the workflow's declared `outputs:`, `expect.failed`/`expect.error_contains` assert the run failing " +
 	"outright, `expect.compensated` the undo log, and `expect.ran`/`expect.skipped` step presence. A " +
 	"case's own `workflow:` field is accepted, for compatibility with a file written to disk, but is " +
 	"never consulted — every case here runs against the `workflow` argument, not a sibling file.\n\n" +
+	"To exercise a workflow's `signals:` policy: a scripted signal's `sender:` names who the delivery " +
+	"stands in for and `starter:` names who the run started as, each carrying `subject:`/`issuer:` " +
+	"together, `namespace:` and `claims:`, and both checked by the same policy function the server " +
+	"calls, so `distinct_from_starter:` refuses a sender who is the run's own starter here exactly as " +
+	"production would. Neither is attested: a delivery stands in for its sender, which is why a gate's " +
+	"own `sender.local` output reads true, and `starter:` never reaches `run.identity`.\n\n" +
 	"Answers with the same v1.TestReport `flow test -o json` writes: one verdict per case, and for a case " +
 	"that did not pass, its unmet expectations as positioned diagnostics. A case that never reached a " +
 	"verdict at all — the workflow failed to compile, a stub named a task with no matching invocation, or " +
