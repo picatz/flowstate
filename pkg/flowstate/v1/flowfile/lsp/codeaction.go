@@ -5,6 +5,7 @@ import (
 
 	"github.com/sourcegraph/go-lsp"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
@@ -19,7 +20,13 @@ import (
 // cannot disagree about what a migration produces — the same property the
 // formatting handler holds against `flow fmt`.
 //
-// # Why every action carries the whole document
+// A second source joins it below, and the two are not the same kind of thing.
+// The migrations here are computed by re-running a rewriter over the document; a
+// suggested edit is computed by the check that found the problem, at the moment
+// it was holding the source it names. The next section is about which of those
+// can honestly claim a range.
+//
+// # Why every migration action carries the whole document
 //
 // [flowfile.FixResult] reports a change as a line number and a sentence. It does
 // not report the range the edit covered, and it cannot be asked to: a single
@@ -33,10 +40,27 @@ import (
 // twice — see CLAUDE.md, "A rewriter has to know what the grammar binds" — and an
 // editor assembling partial edits out of an API that does not describe them would
 // be making that same mistake one layer up, with the author's buffer as the thing
-// at stake. So every action this file offers carries one full-document
+// at stake. So every migration action this file offers carries one full-document
 // [lsp.TextEdit] holding [flowfile.FixResult.Source] verbatim, and the titles say
 // so. A quickfix offered on a line is a way of *reaching* the migration from where
 // the problem is; it is not a claim that only that line changes.
+//
+// # Why a suggested edit may be narrow
+//
+// A [v1.SuggestedEdit] on a diagnostic is the opposite case, and the difference
+// is not one of confidence. A `FixResult`'s line number is a *guess* at where an
+// edit landed: it is read back out of a rewriting pass that has already run,
+// composed with other passes, against a document that no longer exists by the
+// time the result is returned. A suggested edit's range is a *fact* the check
+// recorded while it was looking at the token: the span of the key it is about to
+// report, taken from the same node the diagnostic's own line and column come
+// from.
+//
+// So these actions carry exactly the range the validator measured, converted
+// into the editor's coordinates and nothing more. Nothing in this file decides
+// what an edit covers, which is the property that keeps the rewriter mistake
+// from reappearing one layer up: a range this package cannot convert produces no
+// action at all, rather than an action covering its best guess.
 //
 // # Refusals draw nothing
 //
@@ -105,10 +129,13 @@ type codeActionContext struct {
 	Only        []lsp.CodeActionKind `json:"only,omitempty"`
 }
 
-// codeActions returns the migrations offered for a document over a range.
+// codeActions returns everything offered for a document over a range: the
+// migrations, and the repairs the validator suggested.
 //
-// Nil when there is nothing to offer: a document that does not parse, one Fix
-// leaves byte-identical, or one whose only findings are refusals.
+// Nil when there is nothing to offer. The two sources are independent, which is
+// why they are gathered separately rather than one after the other in a single
+// pass: a document Fix leaves byte-identical can still hold a misspelled key,
+// and a document full of migrations may carry no suggested edit at all.
 func codeActions(doc *document, params codeActionParams) []codeAction {
 	if doc.tooLarge || doc.parseErr != nil {
 		// A document the server did not analyze, or one that is not YAML at all.
@@ -118,6 +145,96 @@ func codeActions(doc *document, params codeActionParams) []codeAction {
 		return nil
 	}
 
+	actions := migrationActions(doc, params)
+	if wants(params.Context.Only, lsp.CAKQuickFix) {
+		actions = append(actions, suggestedEditActions(doc, params)...)
+	}
+	return actions
+}
+
+// suggestedEditActions returns one quickfix per edit the validator suggested for
+// a problem the request's range covers.
+//
+// Narrow, and derived rather than computed: every range here was measured by the
+// check that reported the problem, and this only converts it. See the note at the
+// top of this file on why that is a different claim from the migrations'.
+//
+// An edit is offered whole or not at all. A change whose range this document
+// cannot resolve, a range that runs backwards, or an edit carrying no changes
+// makes the whole edit unofferable, because applying part of one would leave the
+// buffer in a state nothing described. That is the same fail-closed direction the
+// refusals above take.
+func suggestedEditActions(doc *document, params codeActionParams) []codeAction {
+	var actions []codeAction
+	for _, carried := range diagnoseCarried(doc) {
+		for _, edit := range carried.source.Edits {
+			if !overlaps(carried.published.Range, params.Range) {
+				continue
+			}
+			changes, ok := textEdits(doc, edit)
+			if !ok {
+				continue
+			}
+			actions = append(actions, codeAction{
+				Title: edit.GetTitle(),
+				Kind:  lsp.CAKQuickFix,
+				// Exactly the diagnostic this repairs, so the lightbulb hangs
+				// off that squiggle. The published diagnostic rather than one
+				// the client sent: an editor filters what it sends by range,
+				// and an action must name the problem it actually answers.
+				Diagnostics: []lsp.Diagnostic{carried.published},
+				Edit: &lsp.WorkspaceEdit{
+					Changes: map[string][]lsp.TextEdit{string(doc.uri): changes},
+				},
+			})
+			if len(actions) == maxQuickFixes {
+				return actions
+			}
+		}
+	}
+	return actions
+}
+
+// textEdits converts a suggested edit's changes into the editor's coordinates,
+// or reports that it cannot.
+func textEdits(doc *document, edit *v1.SuggestedEdit) ([]lsp.TextEdit, bool) {
+	if len(edit.GetChanges()) == 0 {
+		return nil, false
+	}
+	out := make([]lsp.TextEdit, 0, len(edit.GetChanges()))
+	for _, change := range edit.GetChanges() {
+		rng, ok := rangeOfSourceRange(doc, change.GetRange())
+		if !ok {
+			return nil, false
+		}
+		out = append(out, lsp.TextEdit{Range: rng, NewText: change.GetNewText()})
+	}
+	return out, true
+}
+
+// rangeOfSourceRange converts a schema source range into an editor range.
+//
+// The schema counts 1-based lines and 1-based code point columns, which is what
+// the YAML parser reports and so what [lineIndex.offsetOfYAML] already reads. A
+// range naming no line is not converted at all: zero means unknown there, and an
+// unknown position turned into line 1 would put an edit at the top of a file.
+func rangeOfSourceRange(doc *document, r *v1.SourceRange) (lsp.Range, bool) {
+	if r.GetStartLine() == 0 || r.GetEndLine() == 0 {
+		return lsp.Range{}, false
+	}
+	start := doc.index.offsetOfYAML(int(r.GetStartLine()), int(r.GetStartColumn()))
+	end := doc.index.offsetOfYAML(int(r.GetEndLine()), int(r.GetEndColumn()))
+	if end < start {
+		return lsp.Range{}, false
+	}
+	return doc.index.rangeOfOffsets(start, end), true
+}
+
+// migrationActions returns the `flow fix` migrations offered over a range.
+//
+// Nil when there is nothing to migrate: a document Fix leaves byte-identical, or
+// one whose only findings are refusals.
+func migrationActions(doc *document, params codeActionParams) []codeAction {
 	result, err := flowfile.Fix([]byte(doc.text))
 	if err != nil || !result.Changed() {
 		return nil

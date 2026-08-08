@@ -10,6 +10,21 @@ import (
 	"github.com/sourcegraph/go-lsp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+)
+
+// The classes a validator diagnostic is published under, which this server no
+// longer invents: these are read from the registry that assigns them, so a case
+// below states which *kind* of problem it expects and cannot drift from what
+// `flow validate --output json` says about the same file.
+// Only the classes the cases below actually expect are named. The registry has
+// more, and listing them here would be a second copy of it that nothing checks.
+var (
+	codeGeneral             = string(v1.DiagnosticCodeGeneral)
+	codeUnknownTask         = string(v1.DiagnosticCodeUnknownTask)
+	codeUnresolvedReference = string(v1.DiagnosticCodeUnresolvedReference)
+	codeTypeMismatch        = string(v1.DiagnosticCodeTypeMismatch)
 )
 
 // TestDiagnosticsOverProtocol checks the diagnostics an editor actually receives,
@@ -127,7 +142,7 @@ steps:
 edition: v2026.2
 `,
 			want: []want{{
-				code:       codeFlowfile,
+				code:       codeUnknownTask,
 				severity:   lsp.Error,
 				contains:   `unknown task "shell"`,
 				underlines: "shell",
@@ -148,7 +163,7 @@ edition: v2026.2
 			// language server's contribution is the range: the key is what is
 			// misspelled, not the value written under it.
 			want: []want{{
-				code:       codeFlowfile,
+				code:       codeGeneral,
 				severity:   lsp.Error,
 				contains:   `did you mean "message"?`,
 				underlines: "mesage",
@@ -164,7 +179,7 @@ steps:
 edition: v2026.2
 `,
 			want: []want{{
-				code:     codeFlowfile,
+				code:     codeGeneral,
 				severity: lsp.Error,
 				contains: `task "http" requires input "url" (a string)`,
 			}},
@@ -181,7 +196,7 @@ edition: v2026.2
 			// Here the key is fine and the value is not, so the range moves to the
 			// value. Which of the two is at fault comes from the schema.
 			want: []want{{
-				code:       codeFlowfile,
+				code:       codeTypeMismatch,
 				severity:   lsp.Error,
 				contains:   "expected a string, but this is a list",
 				underlines: "1, 2",
@@ -198,7 +213,7 @@ edition: v2026.2
 			// step must be belongs with the compiler that enforces it. Only the
 			// position is improved.
 			want: []want{{
-				code:       codeFlowfile,
+				code:       codeGeneral,
 				severity:   lsp.Error,
 				contains:   "must have one of for_each, loop, parallel, sleep, wait_until, wait_for_signal, call, http, or log",
 				underlines: "a",
@@ -219,7 +234,7 @@ steps:
 edition: v2026.2
 `,
 			want: []want{{
-				code:     codeFlowfile,
+				code:     codeGeneral,
 				severity: lsp.Error,
 				contains: "a step does exactly one kind of work",
 			}},
@@ -266,7 +281,7 @@ steps:
 edition: v2026.2
 `,
 			want: []want{{
-				code:       codeFlowfile,
+				code:       codeUnresolvedReference,
 				severity:   lsp.Error,
 				contains:   `references step "b", which runs later`,
 				underlines: "${steps.b.status_code}",
@@ -285,7 +300,7 @@ steps:
 edition: v2026.2
 `,
 			want: []want{{
-				code:       codeFlowfile,
+				code:       codeGeneral,
 				severity:   lsp.Error,
 				contains:   "duplicate id",
 				underlines: "a",
@@ -311,7 +326,7 @@ steps:
 edition: v2026.2
 `,
 			want: []want{{
-				code:       codeFlowfile,
+				code:       codeGeneral,
 				severity:   lsp.Error,
 				contains:   "mixes literal text with an expression",
 				underlines: `"cost is ${ ] not cel} dollars"`,
@@ -344,7 +359,7 @@ steps:
 edition: v2026.2
 `,
 			want: []want{{
-				code:       codeFlowfile,
+				code:       codeGeneral,
 				severity:   lsp.Error,
 				contains:   "step has no id",
 				underlines: "- log:",
@@ -359,7 +374,7 @@ steps:
       message: hello
 `,
 			want: []want{{
-				code:     codeFlowfile,
+				code:     codeGeneral,
 				severity: lsp.Error,
 				contains: "workflow has no name",
 			}},
@@ -368,7 +383,7 @@ steps:
 			name: "workflow with no steps",
 			src:  "name: empty\n" + editionSuffix,
 			want: []want{{
-				code:     codeFlowfile,
+				code:     codeGeneral,
 				severity: lsp.Error,
 				contains: "workflow has no steps",
 			}},

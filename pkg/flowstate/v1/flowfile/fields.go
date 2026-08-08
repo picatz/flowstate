@@ -27,6 +27,17 @@ type field struct {
 	name  string
 	key   ast.Node
 	value ast.Node
+
+	// merged is true when this entry reached the mapping through a `<<:` rather
+	// than being written in it.
+	//
+	// Carried for one reason, and it is a rewriting reason: key and value then
+	// point into the *anchor*, which may be merged into any number of other
+	// mappings. Replacing the source that key covers would edit the anchor,
+	// which is a change to every site the anchor reaches and not to the one the
+	// diagnostic names. Nothing that reads a merged entry's value cares, which
+	// is why the flag says how it arrived rather than where it lives.
+	merged bool
 }
 
 // A fieldSet is the fields of one mapping, addressable by name.
@@ -71,13 +82,65 @@ func (c *compiler) check(entries []entry, r ref, known []string) *fieldSet {
 
 				continue
 			}
-			c.report(spanOfNode(e.key), r, "unknown key %q; %s", e.name, expectedKeys(e.name, known))
+			c.reportWith(spanOfNode(e.key), r, renameKeyEdit(e, entries, known),
+				"unknown key %q; %s", e.name, expectedKeys(e.name, known))
 			continue
 		}
 		fs.index[e.name] = len(fs.list)
 		fs.list = append(fs.list, e)
 	}
 	return fs
+}
+
+// renameKeyEdit offers the rename an unknown key's nearest match describes, or
+// nothing when this key is not one a rewriter may safely touch.
+//
+// The suggestion itself is [expectedKeys]'s: the same nearest match the sentence
+// names, so the edit and the prose cannot say different things. What this adds is
+// the judgement the schema's edits field demands of whoever fills it, which for a
+// key rename is three questions, all of them about the *source* rather than about
+// the suggestion:
+//
+//   - Would the rename write a key the mapping already has? Then applying it
+//     turns one problem into a duplicate key, which YAML resolves by silently
+//     dropping one of them. A file that loses a value it wrote is a worse
+//     outcome than the diagnostic it started with.
+//   - Did the entry arrive through a `<<:`? Then its key lives in the anchor,
+//     and replacing that source edits every mapping the anchor is merged into
+//     rather than the one being reported. See [field.merged].
+//   - Is the source the bare name? A quoted key's span covers the quotes, so
+//     replacing it with a bare name deletes them, and a key that needed quoting
+//     stops being the key it was. Rather than reason about which quoting styles
+//     survive, the edit is offered only where the text and the name are the same
+//     string, which is the overwhelmingly common spelling and the one that needs
+//     no reasoning at all.
+//
+// Nothing here checks whether the *suggestion* is a sensible thing to write,
+// because a key is a key: a grammar mapping's keys bind no names in CEL, which is
+// what keeps this clear of the four bare names the two `flow fix` corruptions
+// turned on (CLAUDE.md, "A rewriter has to know what the grammar binds").
+func renameKeyEdit(e entry, entries []entry, known []string) []*v1.SuggestedEdit {
+	suggestion, ok := nearest(e.name, known)
+	if !ok {
+		return nil
+	}
+	if e.merged {
+		return nil
+	}
+	for _, other := range entries {
+		if other.name == suggestion {
+			return nil
+		}
+	}
+	if tokenText(nodeToken(e.key)) != e.name {
+		return nil
+	}
+
+	edit := replaceSpan(fmt.Sprintf("rename to `%s`", suggestion), spanOfNode(e.key), suggestion)
+	if edit == nil {
+		return nil
+	}
+	return []*v1.SuggestedEdit{edit}
 }
 
 // expectedKeys says what could have been written instead, naming the nearest
@@ -219,6 +282,7 @@ func (c *compiler) entries(n ast.Node, path string, r ref) ([]entry, bool) {
 					continue
 				}
 				seen[e.name] = true
+				e.merged = true
 				out = append(out, e)
 			}
 			continue

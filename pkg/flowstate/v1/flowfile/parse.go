@@ -561,12 +561,25 @@ type ref struct {
 
 // report records one problem.
 func (c *compiler) report(span Span, r ref, format string, args ...any) {
+	c.reportWith(span, r, nil, format, args...)
+}
+
+// reportWith records one problem alongside the repairs a program may apply to
+// the source, which is [compiler.report] for the few checks that can name the
+// exact text they would write.
+//
+// Separate rather than a variadic on report, so that adding an edit to a site is
+// a visible change at that site: a checker offering one is asserting it knows
+// what the region it is replacing means, and that assertion should be readable
+// in the call.
+func (c *compiler) reportWith(span Span, r ref, edits []*v1.SuggestedEdit, format string, args ...any) {
 	message := fmt.Sprintf(format, args...)
 
 	d := Diagnostic{
 		Line:    span.Start.Line,
 		Column:  span.Start.Column,
 		Message: message,
+		Edits:   edits,
 	}
 	switch {
 	case r.input != "":
