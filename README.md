@@ -138,7 +138,12 @@ arguments are given with --input name=value or --input-file inputs.json
 
 Hand the same file to a server backed by Temporal ([Quickstart](#quickstart) below),
 and approve it from another terminal with `flow signal <id> deploy-approved --data
-'{"approved": true}'`. A worker restart while it waits changes nothing, because
+'{"approved": true}'`. One note if you try that against the Quickstart's dev setup:
+`--insecure-no-auth` makes every caller the same anonymous principal, and this gate
+pins a specific approver who must not be the starter, so it will refuse you (which
+is the gate working). Rehearse it with `flow test` above, or run the server with
+`--auth-policy` and two real identities ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)).
+A worker restart while it waits changes nothing, because
 nothing local was holding the wait. Both drivers render a finished run through one
 renderer, so a local rehearsal and a durable run answer with the same final document.
 
