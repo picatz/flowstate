@@ -1086,6 +1086,12 @@ func (e *executor) runIterationsConcurrently(loop *v1.ForEach, iterator string, 
 					// last — two identical queries could disagree. The nil
 					// guards in progress's methods exist for exactly this.
 					progress: nil,
+
+					// Carried, unlike progress: an iteration parked on a gate
+					// is this run parked on that gate, and gates held by
+					// several iterations at once are a set with several
+					// members rather than a contested position.
+					waits: e.waits,
 				}
 				if err := worker.runNodes(loop.GetBody(), depth, susp); err != nil {
 					errs[i] = err

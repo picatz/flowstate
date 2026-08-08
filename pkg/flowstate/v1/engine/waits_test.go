@@ -215,3 +215,45 @@ func TestACarriedSignalIsNotAGate(t *testing.T) {
 	assert.Equal(t, "pause", during.GetStepId(),
 		"the query landed somewhere other than the sleep, so the empty answer above proves nothing")
 }
+
+// TestGatesInsideAConcurrentLoopAreReported pins the join the parallel-branch
+// test cannot see: the worker built for a `max_parallel > 1` iteration is a
+// different construction site from the one built for a `parallel:` branch, and
+// only the latter carried the wait registry at first. A gate inside a
+// concurrent iteration then executed correctly and reported nothing, which is
+// exactly the silent variant of #347's problem, and a driver disagreement,
+// since the local driver carries its registry through this shape.
+func TestGatesInsideAConcurrentLoopAreReported(t *testing.T) {
+	t.Parallel()
+
+	env := newWaitEnv(t)
+	parked, queryErr := askDuring(t, env, 30*time.Second)
+
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: &v1.Workflow{
+		Name: "concurrent-gates",
+		Steps: []*v1.Node{{
+			Id: "fan",
+			Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+				Items:       v1.NewExpr("['a', 'b']"),
+				Iterator:    "item",
+				MaxParallel: 2,
+				Body:        []*v1.Node{signalStep("gate", "go", 45*time.Second)},
+			}},
+		}},
+	}})
+
+	require.True(t, env.IsWorkflowCompleted())
+	require.NoError(t, env.GetWorkflowError())
+	require.NoError(t, *queryErr)
+
+	waits := parked.GetPendingWaits()
+	require.Len(t, waits, 2,
+		"two iterations parked on the same gate are two held gates, not one")
+	for _, w := range waits {
+		assert.Equal(t, "gate", w.GetStepId())
+		assert.Equal(t, "go", w.GetSignalName())
+		assert.NotNil(t, w.GetDeadline(), "the wait is bounded, so its deadline is exact")
+	}
+	assert.Equal(t, "fan", parked.GetStepId(),
+		"the position stopped at the loop, same as the parallel block, which is why the waits carry their own step ids")
+}
