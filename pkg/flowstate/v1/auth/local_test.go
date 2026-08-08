@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
 	"github.com/picatz/jose/pkg/jwt"
 	"github.com/stretchr/testify/require"
 )
@@ -88,7 +89,7 @@ func TestRunModeClaimCannotBeCarried(t *testing.T) {
 // relying party that can read claims (GCP, Anthropic, OpenAI) even though AWS
 // STS cannot.
 func TestRunModeClaimReflectsConstructor(t *testing.T) {
-	clock := newTestClock(referenceTime)
+	clock := authtest.NewClock(referenceTime)
 	issuer, _ := newIssuer(t, clock)
 
 	t.Run("server-attested", func(t *testing.T) {
@@ -130,7 +131,7 @@ func TestRunModeClaimReflectsConstructor(t *testing.T) {
 // matches on workload.namespace, which #243 requires stay unchanged, and the
 // same rule is what decides whether the credential request is allowed at all.
 func TestLocalRunAssumptionPolicyIsUnchanged(t *testing.T) {
-	clock := newTestClock(referenceTime)
+	clock := authtest.NewClock(referenceTime)
 	issuer, _ := newIssuer(t, clock)
 
 	party := newRelyingParty(t, func(w http.ResponseWriter, r *http.Request, body recordedRequest) {

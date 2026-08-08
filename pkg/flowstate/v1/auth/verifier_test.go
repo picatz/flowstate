@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
 	"github.com/picatz/jose/pkg/header"
 	"github.com/picatz/jose/pkg/jwa"
 	"github.com/picatz/jose/pkg/jwk"
@@ -38,17 +39,17 @@ func newVerifier(t *testing.T, policy auth.Policy, opts ...auth.Option) *auth.OI
 // trusted issuer.
 func TestOIDCVerifierRejects(t *testing.T) {
 	var (
-		key         = newECDSAKey(t, "primary")
-		unpublished = newECDSAKey(t, "unpublished")
-		issuer      = newTestIssuer(t, key)
-		clock       = newTestClock(referenceTime)
+		key         = authtest.GenerateKey("primary", jwa.ES256)
+		unpublished = authtest.GenerateKey("unpublished", jwa.ES256)
+		clock       = authtest.NewClock(referenceTime)
+		issuer      = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
 	)
 
 	verifier := newVerifier(t,
 		auth.Policy{
 			Issuers: []auth.TrustedIssuer{{
 				Name:      "test",
-				Issuer:    issuer.url,
+				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
 				Role:      "operator",
 			}},
@@ -60,8 +61,17 @@ func TestOIDCVerifierRejects(t *testing.T) {
 	)
 
 	// claims returns the claims of a valid token, for a case to spoil.
-	claims := func() jwt.ClaimsSet {
-		return standardClaims(issuer.url, "workflow-runner", "flowstate", referenceTime)
+	claims := func() map[string]any {
+		return issuer.Claims(authtest.WithSubject("workflow-runner"), authtest.WithAudience("flowstate"))
+	}
+
+	// mint returns a token of the same shape, missing whatever the options say
+	// it is missing.
+	mint := func(options ...authtest.TokenOption) string {
+		return issuer.MintToken(nil, append([]authtest.TokenOption{
+			authtest.WithSubject("workflow-runner"),
+			authtest.WithAudience("flowstate"),
+		}, options...)...)
 	}
 
 	tests := []struct {
@@ -82,14 +92,14 @@ func TestOIDCVerifierRejects(t *testing.T) {
 		{
 			name: "only two segments",
 			token: func(t *testing.T) string {
-				return dropSignature(t, key.sign(t, claims()))
+				return dropSignature(t, issuer.MintToken(claims()))
 			},
 			wantErr: auth.ErrMalformedToken,
 		},
 		{
 			name: "signature is not base64url",
 			token: func(t *testing.T) string {
-				return key.sign(t, claims()) + "!!"
+				return issuer.MintToken(claims()) + "!!"
 			},
 			wantErr: auth.ErrMalformedToken,
 		},
@@ -103,24 +113,24 @@ func TestOIDCVerifierRejects(t *testing.T) {
 		{
 			name: "HMAC token signed with a shared secret",
 			token: func(t *testing.T) string {
-				return hmacToken(t, key.id, []byte("a-32-byte-long-secret-for-hmac!!"), claims())
+				return hmacToken(t, key.ID(), []byte("a-32-byte-long-secret-for-hmac!!"), claims())
 			},
 			wantErr: auth.ErrDisallowedAlgorithm,
 		},
 		{
 			name: "algorithm confusion: HMAC token signed with the issuer's public key",
 			token: func(t *testing.T) string {
-				return hmacToken(t, key.id, publicKeyBytes(t, key.public), claims())
+				return hmacToken(t, key.ID(), publicKeyBytes(t, key.Public()), claims())
 			},
 			wantErr: auth.ErrDisallowedAlgorithm,
 		},
 		{
 			name: "algorithm confusion: RSA header over an ECDSA signature",
 			token: func(t *testing.T) string {
-				return key.signWithHeader(t, header.Parameters{
+				return key.Sign(map[string]any{
 					header.Type:      jwt.Type,
 					header.Algorithm: jwa.RS256,
-					header.KeyID:     key.id,
+					header.KeyID:     key.ID(),
 				}, claims())
 			},
 			wantErr: auth.ErrDisallowedAlgorithm,
@@ -130,7 +140,7 @@ func TestOIDCVerifierRejects(t *testing.T) {
 			token: func(t *testing.T) string {
 				spoiled := claims()
 				spoiled[jwt.ExpirationTime] = referenceTime.Add(-time.Minute).Unix()
-				return key.sign(t, spoiled)
+				return issuer.MintToken(spoiled)
 			},
 			wantErr: auth.ErrTokenExpired,
 		},
@@ -139,7 +149,7 @@ func TestOIDCVerifierRejects(t *testing.T) {
 			token: func(t *testing.T) string {
 				spoiled := claims()
 				spoiled[jwt.NotBefore] = referenceTime.Add(time.Hour).Unix()
-				return key.sign(t, spoiled)
+				return issuer.MintToken(spoiled)
 			},
 			wantErr: auth.ErrTokenNotYetValid,
 		},
@@ -148,52 +158,42 @@ func TestOIDCVerifierRejects(t *testing.T) {
 			token: func(t *testing.T) string {
 				spoiled := claims()
 				spoiled[jwt.IssuedAt] = referenceTime.Add(time.Hour).Unix()
-				return key.sign(t, spoiled)
+				return issuer.MintToken(spoiled)
 			},
 			wantErr: auth.ErrTokenNotYetValid,
 		},
 		{
 			name: "no expiry, so it would never stop working",
-			token: func(t *testing.T) string {
-				spoiled := claims()
-				delete(spoiled, jwt.ExpirationTime)
-				return key.sign(t, spoiled)
+			token: func(*testing.T) string {
+				return mint(authtest.Without(jwt.ExpirationTime))
 			},
 			wantErr: auth.ErrMissingClaim,
 		},
 		{
 			name: "no issued-at",
-			token: func(t *testing.T) string {
-				spoiled := claims()
-				delete(spoiled, jwt.IssuedAt)
-				return key.sign(t, spoiled)
+			token: func(*testing.T) string {
+				return mint(authtest.Without(jwt.IssuedAt))
 			},
 			wantErr: auth.ErrMissingClaim,
 		},
 		{
 			name: "no subject",
-			token: func(t *testing.T) string {
-				spoiled := claims()
-				delete(spoiled, jwt.Subject)
-				return key.sign(t, spoiled)
+			token: func(*testing.T) string {
+				return mint(authtest.Without(jwt.Subject))
 			},
 			wantErr: auth.ErrMissingClaim,
 		},
 		{
 			name: "no audience",
-			token: func(t *testing.T) string {
-				spoiled := claims()
-				delete(spoiled, jwt.Audience)
-				return key.sign(t, spoiled)
+			token: func(*testing.T) string {
+				return mint(authtest.WithoutAudience())
 			},
 			wantErr: auth.ErrMissingClaim,
 		},
 		{
 			name: "no issuer",
-			token: func(t *testing.T) string {
-				spoiled := claims()
-				delete(spoiled, jwt.Issuer)
-				return key.sign(t, spoiled)
+			token: func(*testing.T) string {
+				return mint(authtest.Without(jwt.Issuer))
 			},
 			wantErr: auth.ErrMissingClaim,
 		},
@@ -202,7 +202,7 @@ func TestOIDCVerifierRejects(t *testing.T) {
 			token: func(t *testing.T) string {
 				spoiled := claims()
 				spoiled[jwt.Audience] = "some-other-service"
-				return key.sign(t, spoiled)
+				return issuer.MintToken(spoiled)
 			},
 			wantErr: auth.ErrInvalidAudience,
 		},
@@ -211,7 +211,7 @@ func TestOIDCVerifierRejects(t *testing.T) {
 			token: func(t *testing.T) string {
 				spoiled := claims()
 				spoiled[jwt.Audience] = []string{"some-other-service", "https://example.com"}
-				return key.sign(t, spoiled)
+				return issuer.MintToken(spoiled)
 			},
 			wantErr: auth.ErrInvalidAudience,
 		},
@@ -220,7 +220,7 @@ func TestOIDCVerifierRejects(t *testing.T) {
 			token: func(t *testing.T) string {
 				spoiled := claims()
 				spoiled[jwt.Issuer] = "https://issuer.invalid"
-				return key.sign(t, spoiled)
+				return issuer.MintToken(spoiled)
 			},
 			wantErr: auth.ErrUntrustedIssuer,
 		},
@@ -228,32 +228,32 @@ func TestOIDCVerifierRejects(t *testing.T) {
 			name: "issuer that only looks like ours",
 			token: func(t *testing.T) string {
 				spoiled := claims()
-				spoiled[jwt.Issuer] = issuer.url + "/"
-				return key.sign(t, spoiled)
+				spoiled[jwt.Issuer] = issuer.URL() + "/"
+				return issuer.MintToken(spoiled)
 			},
 			wantErr: auth.ErrUntrustedIssuer,
 		},
 		{
 			name: "tampered signature",
 			token: func(t *testing.T) string {
-				return tamperSignature(t, key.sign(t, claims()))
+				return tamperSignature(t, issuer.MintToken(claims()))
 			},
 			wantErr: auth.ErrInvalidSignature,
 		},
 		{
 			name: "signed by a key the issuer does not publish",
 			token: func(t *testing.T) string {
-				return unpublished.sign(t, claims())
+				return issuer.MintToken(claims(), authtest.SignedBy(unpublished))
 			},
 			wantErr: auth.ErrUnknownKey,
 		},
 		{
 			name: "signed by an unpublished key claiming a published key id",
 			token: func(t *testing.T) string {
-				return unpublished.signWithHeader(t, header.Parameters{
+				return unpublished.Sign(map[string]any{
 					header.Type:      jwt.Type,
 					header.Algorithm: jwa.ES256,
-					header.KeyID:     key.id,
+					header.KeyID:     key.ID(),
 				}, claims())
 			},
 			wantErr: auth.ErrInvalidSignature,
@@ -261,10 +261,10 @@ func TestOIDCVerifierRejects(t *testing.T) {
 		{
 			name: "critical header extension we do not understand",
 			token: func(t *testing.T) string {
-				return key.signWithHeader(t, header.Parameters{
+				return key.Sign(map[string]any{
 					header.Type:      jwt.Type,
 					header.Algorithm: jwa.ES256,
-					header.KeyID:     key.id,
+					header.KeyID:     key.ID(),
 					header.Critical:  []string{"https://flowstate.example/must-understand"},
 				}, claims())
 			},
@@ -273,10 +273,10 @@ func TestOIDCVerifierRejects(t *testing.T) {
 		{
 			name: "header type that is not a JWT",
 			token: func(t *testing.T) string {
-				return key.signWithHeader(t, header.Parameters{
+				return key.Sign(map[string]any{
 					header.Type:      "JWE",
 					header.Algorithm: jwa.ES256,
-					header.KeyID:     key.id,
+					header.KeyID:     key.ID(),
 				}, claims())
 			},
 			wantErr: auth.ErrMalformedToken,
@@ -284,9 +284,9 @@ func TestOIDCVerifierRejects(t *testing.T) {
 		{
 			name: "no algorithm in the header",
 			token: func(t *testing.T) string {
-				return key.signWithHeader(t, header.Parameters{
+				return key.Sign(map[string]any{
 					header.Type:  jwt.Type,
-					header.KeyID: key.id,
+					header.KeyID: key.ID(),
 				}, claims())
 			},
 			wantErr: auth.ErrMalformedToken,
@@ -294,10 +294,10 @@ func TestOIDCVerifierRejects(t *testing.T) {
 		{
 			name: "algorithm the issuer's policy does not allow",
 			token: func(t *testing.T) string {
-				return key.signWithHeader(t, header.Parameters{
+				return key.Sign(map[string]any{
 					header.Type:      jwt.Type,
 					header.Algorithm: jwa.ES384,
-					header.KeyID:     key.id,
+					header.KeyID:     key.ID(),
 				}, claims())
 			},
 			wantErr: auth.ErrDisallowedAlgorithm,
@@ -307,10 +307,10 @@ func TestOIDCVerifierRejects(t *testing.T) {
 			token: func(t *testing.T) string {
 				spoiled := claims()
 				spoiled[jwt.ExpirationTime] = referenceTime.Add(time.Hour).Format(time.RFC3339)
-				return key.signWithHeader(t, header.Parameters{
+				return key.Sign(map[string]any{
 					header.Type:      jwt.Type,
 					header.Algorithm: jwa.ES256,
-					header.KeyID:     key.id,
+					header.KeyID:     key.ID(),
 				}, spoiled)
 			},
 			wantErr: auth.ErrMalformedToken,
@@ -320,10 +320,10 @@ func TestOIDCVerifierRejects(t *testing.T) {
 			token: func(t *testing.T) string {
 				spoiled := claims()
 				spoiled[jwt.Subject] = 1234
-				return key.signWithHeader(t, header.Parameters{
+				return key.Sign(map[string]any{
 					header.Type:      jwt.Type,
 					header.Algorithm: jwa.ES256,
-					header.KeyID:     key.id,
+					header.KeyID:     key.ID(),
 				}, spoiled)
 			},
 			wantErr: auth.ErrMalformedToken,
@@ -346,51 +346,47 @@ func TestOIDCVerifierRejects(t *testing.T) {
 func TestOIDCVerifierAccepts(t *testing.T) {
 	tests := []struct {
 		name   string
-		key    func(t *testing.T) *testKey
-		claims func(issuer string) jwt.ClaimsSet
+		key    func(t *testing.T) *authtest.Key
+		claims func(issuer *authtest.Issuer) map[string]any
 		check  func(t *testing.T, principal auth.Principal)
 	}{
 		{
 			name: "RS256",
-			key:  func(t *testing.T) *testKey { return newRSAKey(t, "rsa") },
+			key:  func(t *testing.T) *authtest.Key { return authtest.GenerateKey("rsa", jwa.RS256) },
 		},
 		{
 			name: "ES256",
-			key:  func(t *testing.T) *testKey { return newECDSAKey(t, "ec") },
+			key:  func(t *testing.T) *authtest.Key { return authtest.GenerateKey("ec", jwa.ES256) },
 		},
 		{
 			name: "ES512",
-			key:  func(t *testing.T) *testKey { return newECDSA521Key(t, "ec-521") },
+			key:  func(t *testing.T) *authtest.Key { return authtest.GenerateKey("ec-521", jwa.ES512) },
 		},
 		{
 			name: "EdDSA",
-			key:  func(t *testing.T) *testKey { return newEd25519Key(t, "ed25519") },
+			key:  func(t *testing.T) *authtest.Key { return authtest.GenerateKey("ed25519", jwa.EdDSA) },
 		},
 		{
 			name: "key declaring its own algorithm",
-			key: func(t *testing.T) *testKey {
-				key := newECDSAKey(t, "ec")
-				key.declareAlg = true
-				return key
+			key: func(t *testing.T) *authtest.Key {
+				return authtest.GenerateKey("ec", jwa.ES256, authtest.PublishAlgorithm(jwa.ES256))
 			},
 		},
 		{
 			name: "key published for signature use",
-			key: func(t *testing.T) *testKey {
-				key := newECDSAKey(t, "ec")
-				key.use = "sig"
-				return key
+			key: func(t *testing.T) *authtest.Key {
+				return authtest.GenerateKey("ec", jwa.ES256, authtest.PublishUse("sig"))
 			},
 		},
 		{
 			name: "no key id, when the issuer publishes exactly one key",
-			key:  func(t *testing.T) *testKey { return newECDSAKey(t, "") },
+			key:  func(t *testing.T) *authtest.Key { return authtest.GenerateKey("", jwa.ES256) },
 		},
 		{
 			name: "audience as a list containing ours",
-			key:  func(t *testing.T) *testKey { return newECDSAKey(t, "ec") },
-			claims: func(issuer string) jwt.ClaimsSet {
-				claims := standardClaims(issuer, "workflow-runner", "", referenceTime)
+			key:  func(t *testing.T) *authtest.Key { return authtest.GenerateKey("ec", jwa.ES256) },
+			claims: func(issuer *authtest.Issuer) map[string]any {
+				claims := issuer.Claims(authtest.WithSubject("workflow-runner"), authtest.WithoutAudience())
 				claims[jwt.Audience] = []string{"some-other-service", "flowstate"}
 				return claims
 			},
@@ -401,9 +397,9 @@ func TestOIDCVerifierAccepts(t *testing.T) {
 		},
 		{
 			name: "extra claims are carried through",
-			key:  func(t *testing.T) *testKey { return newECDSAKey(t, "ec") },
-			claims: func(issuer string) jwt.ClaimsSet {
-				claims := standardClaims(issuer, "workflow-runner", "flowstate", referenceTime)
+			key:  func(t *testing.T) *authtest.Key { return authtest.GenerateKey("ec", jwa.ES256) },
+			claims: func(issuer *authtest.Issuer) map[string]any {
+				claims := issuer.Claims(authtest.WithSubject("workflow-runner"), authtest.WithAudience("flowstate"))
 				claims["email"] = "someone@example.com"
 				claims["groups"] = []string{"platform", "sre"}
 				return claims
@@ -423,18 +419,18 @@ func TestOIDCVerifierAccepts(t *testing.T) {
 		},
 		{
 			name: "token that is nearly expired",
-			key:  func(t *testing.T) *testKey { return newECDSAKey(t, "ec") },
-			claims: func(issuer string) jwt.ClaimsSet {
-				claims := standardClaims(issuer, "workflow-runner", "flowstate", referenceTime)
+			key:  func(t *testing.T) *authtest.Key { return authtest.GenerateKey("ec", jwa.ES256) },
+			claims: func(issuer *authtest.Issuer) map[string]any {
+				claims := issuer.Claims(authtest.WithSubject("workflow-runner"), authtest.WithAudience("flowstate"))
 				claims[jwt.ExpirationTime] = referenceTime.Add(time.Second).Unix()
 				return claims
 			},
 		},
 		{
 			name: "not-before that has passed",
-			key:  func(t *testing.T) *testKey { return newECDSAKey(t, "ec") },
-			claims: func(issuer string) jwt.ClaimsSet {
-				claims := standardClaims(issuer, "workflow-runner", "flowstate", referenceTime)
+			key:  func(t *testing.T) *authtest.Key { return authtest.GenerateKey("ec", jwa.ES256) },
+			claims: func(issuer *authtest.Issuer) map[string]any {
+				claims := issuer.Claims(authtest.WithSubject("workflow-runner"), authtest.WithAudience("flowstate"))
 				claims[jwt.NotBefore] = referenceTime.Add(-time.Minute).Unix()
 				return claims
 			},
@@ -445,15 +441,15 @@ func TestOIDCVerifierAccepts(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			var (
 				key    = test.key(t)
-				issuer = newTestIssuer(t, key)
-				clock  = newTestClock(referenceTime)
+				clock  = authtest.NewClock(referenceTime)
+				issuer = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
 			)
 
 			verifier := newVerifier(t,
 				auth.Policy{
 					Issuers: []auth.TrustedIssuer{{
 						Name:      "test",
-						Issuer:    issuer.url,
+						Issuer:    issuer.URL(),
 						Audiences: []string{"flowstate"},
 						Role:      "operator",
 					}},
@@ -461,19 +457,19 @@ func TestOIDCVerifierAccepts(t *testing.T) {
 				auth.WithClock(clock.Now),
 			)
 
-			claims := standardClaims(issuer.url, "workflow-runner", "flowstate", referenceTime)
+			claims := issuer.Claims(authtest.WithSubject("workflow-runner"), authtest.WithAudience("flowstate"))
 			if test.claims != nil {
-				claims = test.claims(issuer.url)
+				claims = test.claims(issuer)
 			}
 
-			principal, err := verifier.Verify(t.Context(), key.sign(t, claims))
+			principal, err := verifier.Verify(t.Context(), issuer.MintToken(claims))
 			require.NoError(t, err)
 
-			require.Equal(t, issuer.url, principal.Issuer)
+			require.Equal(t, issuer.URL(), principal.Issuer)
 			require.Equal(t, "test", principal.IssuerName)
 			require.Equal(t, "workflow-runner", principal.Subject)
 			require.Equal(t, "operator", principal.Role)
-			require.Equal(t, issuer.url+"#workflow-runner", principal.ID())
+			require.Equal(t, issuer.URL()+"#workflow-runner", principal.ID())
 			require.False(t, principal.IsZero())
 			require.False(t, principal.IsAnonymous())
 			require.Equal(t, referenceTime.Unix(), principal.IssuedAt.Unix())
@@ -534,16 +530,16 @@ func TestOIDCVerifierClockSkew(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			var (
-				key    = newECDSAKey(t, "ec")
-				issuer = newTestIssuer(t, key)
-				clock  = newTestClock(referenceTime)
+				key    = authtest.GenerateKey("ec", jwa.ES256)
+				clock  = authtest.NewClock(referenceTime)
+				issuer = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
 			)
 
 			verifier := newVerifier(t,
 				auth.Policy{
 					Issuers: []auth.TrustedIssuer{{
 						Name:      "test",
-						Issuer:    issuer.url,
+						Issuer:    issuer.URL(),
 						Audiences: []string{"flowstate"},
 					}},
 				},
@@ -551,11 +547,11 @@ func TestOIDCVerifierClockSkew(t *testing.T) {
 				auth.WithClockSkew(test.skew),
 			)
 
-			claims := standardClaims(issuer.url, "runner", "flowstate", referenceTime)
+			claims := issuer.Claims(authtest.WithSubject("runner"), authtest.WithAudience("flowstate"))
 			claims[jwt.ExpirationTime] = test.expiresAt.Unix()
 			claims[jwt.IssuedAt] = test.issuedAt.Unix()
 
-			_, err := verifier.Verify(t.Context(), key.sign(t, claims))
+			_, err := verifier.Verify(t.Context(), issuer.MintToken(claims))
 			if test.wantErr == nil {
 				require.NoError(t, err)
 				return
@@ -570,17 +566,17 @@ func TestOIDCVerifierClockSkew(t *testing.T) {
 // once the cache expires.
 func TestOIDCVerifierKeyRotation(t *testing.T) {
 	var (
-		oldKey = newECDSAKey(t, "old")
-		newKey = newECDSAKey(t, "new")
-		issuer = newTestIssuer(t, oldKey)
-		clock  = newTestClock(referenceTime)
+		oldKey = authtest.GenerateKey("old", jwa.ES256)
+		newKey = authtest.GenerateKey("new", jwa.ES256)
+		clock  = authtest.NewClock(referenceTime)
+		issuer = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(oldKey))
 	)
 
 	verifier := newVerifier(t,
 		auth.Policy{
 			Issuers: []auth.TrustedIssuer{{
 				Name:      "test",
-				Issuer:    issuer.url,
+				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
 			}},
 		},
@@ -589,51 +585,51 @@ func TestOIDCVerifierKeyRotation(t *testing.T) {
 		auth.WithMinKeyRefreshInterval(time.Minute),
 	)
 
-	claims := func() jwt.ClaimsSet {
-		return standardClaims(issuer.url, "runner", "flowstate", clock.Now())
+	claims := func() map[string]any {
+		return issuer.Claims(authtest.WithSubject("runner"), authtest.WithAudience("flowstate"))
 	}
 
 	// The original key works, and its key set is cached rather than refetched.
-	_, err := verifier.Verify(t.Context(), oldKey.sign(t, claims()))
+	_, err := verifier.Verify(t.Context(), issuer.MintToken(claims(), authtest.SignedBy(oldKey)))
 	require.NoError(t, err)
 
-	_, err = verifier.Verify(t.Context(), oldKey.sign(t, claims()))
+	_, err = verifier.Verify(t.Context(), issuer.MintToken(claims(), authtest.SignedBy(oldKey)))
 	require.NoError(t, err)
 
-	_, jwksRequests := issuer.requests()
+	jwksRequests := issuer.Requests().JWKS
 	require.Equal(t, 1, jwksRequests, "the cached key set should be reused")
 
 	// The issuer rotates: both keys are published for an overlap period.
-	issuer.setKeys(oldKey, newKey)
+	issuer.SetKeys(oldKey, newKey)
 
 	// A token signed with the new key names a key id the cache has never seen,
 	// which is what triggers a refetch. The rate limit has to be past first.
 	clock.Advance(2 * time.Minute)
 
-	principal, err := verifier.Verify(t.Context(), newKey.sign(t, claims()))
+	principal, err := verifier.Verify(t.Context(), issuer.MintToken(claims(), authtest.SignedBy(newKey)))
 	require.NoError(t, err, "a rotated-in key should be picked up automatically")
 	require.Equal(t, "runner", principal.Subject)
 
-	_, jwksRequests = issuer.requests()
+	jwksRequests = issuer.Requests().JWKS
 	require.Equal(t, 2, jwksRequests, "an unknown key id should cause exactly one refetch")
 
 	// Both keys work during the overlap.
-	_, err = verifier.Verify(t.Context(), oldKey.sign(t, claims()))
+	_, err = verifier.Verify(t.Context(), issuer.MintToken(claims(), authtest.SignedBy(oldKey)))
 	require.NoError(t, err)
 
 	// The issuer finishes the rotation by withdrawing the old key. Tokens signed
 	// with it keep working only until the cached key set expires.
-	issuer.setKeys(newKey)
+	issuer.SetKeys(newKey)
 
-	_, err = verifier.Verify(t.Context(), oldKey.sign(t, claims()))
+	_, err = verifier.Verify(t.Context(), issuer.MintToken(claims(), authtest.SignedBy(oldKey)))
 	require.NoError(t, err, "the withdrawn key is still cached")
 
 	clock.Advance(16 * time.Minute)
 
-	_, err = verifier.Verify(t.Context(), oldKey.sign(t, claims()))
+	_, err = verifier.Verify(t.Context(), issuer.MintToken(claims(), authtest.SignedBy(oldKey)))
 	require.ErrorIs(t, err, auth.ErrUnknownKey, "a withdrawn key must stop working once the cache expires")
 
-	_, err = verifier.Verify(t.Context(), newKey.sign(t, claims()))
+	_, err = verifier.Verify(t.Context(), issuer.MintToken(claims(), authtest.SignedBy(newKey)))
 	require.NoError(t, err)
 }
 
@@ -642,16 +638,16 @@ func TestOIDCVerifierKeyRotation(t *testing.T) {
 // ids.
 func TestOIDCVerifierRefetchRateLimit(t *testing.T) {
 	var (
-		key    = newECDSAKey(t, "primary")
-		issuer = newTestIssuer(t, key)
-		clock  = newTestClock(referenceTime)
+		key    = authtest.GenerateKey("primary", jwa.ES256)
+		clock  = authtest.NewClock(referenceTime)
+		issuer = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
 	)
 
 	verifier := newVerifier(t,
 		auth.Policy{
 			Issuers: []auth.TrustedIssuer{{
 				Name:      "test",
-				Issuer:    issuer.url,
+				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
 			}},
 		},
@@ -660,30 +656,32 @@ func TestOIDCVerifierRefetchRateLimit(t *testing.T) {
 	)
 
 	// Prime the cache with a legitimate request.
-	_, err := verifier.Verify(t.Context(), key.sign(t, standardClaims(issuer.url, "runner", "flowstate", referenceTime)))
+	_, err := verifier.Verify(t.Context(), issuer.MintToken(nil, authtest.WithSubject("runner"), authtest.WithAudience("flowstate")))
 	require.NoError(t, err)
 
-	_, before := issuer.requests()
+	before := issuer.Requests().JWKS
 	require.Equal(t, 1, before)
 
 	// A stream of tokens naming key ids that do not exist.
 	for range 50 {
-		attacker := newECDSAKey(t, "forged")
-		_, err := verifier.Verify(t.Context(), attacker.sign(t, standardClaims(issuer.url, "attacker", "flowstate", referenceTime)))
+		attacker := authtest.GenerateKey("forged", jwa.ES256)
+		_, err := verifier.Verify(t.Context(), issuer.MintToken(nil,
+			authtest.WithSubject("attacker"), authtest.WithAudience("flowstate"), authtest.SignedBy(attacker)))
 		require.ErrorIs(t, err, auth.ErrUnknownKey)
 	}
 
-	_, after := issuer.requests()
+	after := issuer.Requests().JWKS
 	require.Equal(t, before, after, "unknown key ids must not reach the issuer again within the refresh interval")
 
 	// Once the interval passes, one more refetch is allowed.
 	clock.Advance(2 * time.Minute)
 
-	attacker := newECDSAKey(t, "forged")
-	_, err = verifier.Verify(t.Context(), attacker.sign(t, standardClaims(issuer.url, "attacker", "flowstate", referenceTime)))
+	attacker := authtest.GenerateKey("forged", jwa.ES256)
+	_, err = verifier.Verify(t.Context(), issuer.MintToken(nil,
+		authtest.WithSubject("attacker"), authtest.WithAudience("flowstate"), authtest.SignedBy(attacker)))
 	require.ErrorIs(t, err, auth.ErrUnknownKey)
 
-	_, later := issuer.requests()
+	later := issuer.Requests().JWKS
 	require.Equal(t, after+1, later)
 }
 
@@ -692,90 +690,90 @@ func TestOIDCVerifierRefetchRateLimit(t *testing.T) {
 func TestOIDCVerifierIssuerUnavailable(t *testing.T) {
 	tests := []struct {
 		name     string
-		sabotage func(t *testing.T, issuer *testIssuer)
+		sabotage func(t *testing.T, issuer *authtest.Issuer)
 		wantErr  error
 	}{
 		{
 			name: "key set endpoint is failing",
-			sabotage: func(t *testing.T, issuer *testIssuer) {
-				issuer.setJWKSStatus(http.StatusInternalServerError)
+			sabotage: func(t *testing.T, issuer *authtest.Issuer) {
+				issuer.SetKeySetResponse(http.StatusInternalServerError, nil)
 			},
 			wantErr: auth.ErrIssuerUnavailable,
 		},
 		{
 			name: "key set is not JSON",
-			sabotage: func(t *testing.T, issuer *testIssuer) {
-				issuer.setJWKSBody([]byte("<html>not a key set</html>"))
+			sabotage: func(t *testing.T, issuer *authtest.Issuer) {
+				issuer.SetKeySetResponse(http.StatusOK, []byte("<html>not a key set</html>"))
 			},
 			wantErr: auth.ErrIssuerUnavailable,
 		},
 		{
 			name: "key set is empty",
-			sabotage: func(t *testing.T, issuer *testIssuer) {
-				issuer.setJWKSBody([]byte(`{"keys":[]}`))
+			sabotage: func(t *testing.T, issuer *authtest.Issuer) {
+				issuer.SetKeySetResponse(http.StatusOK, []byte(`{"keys":[]}`))
 			},
 			wantErr: auth.ErrIssuerUnavailable,
 		},
 		{
 			name: "key set holds nothing usable for signatures",
-			sabotage: func(t *testing.T, issuer *testIssuer) {
-				issuer.setJWKSBody([]byte(`{"keys":[{"kty":"oct","kid":"symmetric","k":"c2VjcmV0"}]}`))
+			sabotage: func(t *testing.T, issuer *authtest.Issuer) {
+				issuer.SetKeySetResponse(http.StatusOK, []byte(`{"keys":[{"kty":"oct","kid":"symmetric","k":"c2VjcmV0"}]}`))
 			},
 			wantErr: auth.ErrIssuerUnavailable,
 		},
 		{
 			name: "key set is unreasonably large",
-			sabotage: func(t *testing.T, issuer *testIssuer) {
+			sabotage: func(t *testing.T, issuer *authtest.Issuer) {
 				// The padding goes inside an otherwise usable key, so that this
 				// case can only pass because of the size limit.
-				key := newECDSAKey(t, "primary").jwk(t)
+				key := authtest.GenerateKey("primary", jwa.ES256).JWK()
 				key["x5t#S256"] = strings.Repeat("a", 2<<20)
 
 				body, err := json.Marshal(jwk.Set{Keys: []jwk.Value{key}})
 				require.NoError(t, err)
 				require.Greater(t, len(body), 1<<20)
 
-				issuer.setJWKSBody(body)
+				issuer.SetKeySetResponse(http.StatusOK, body)
 			},
 			wantErr: auth.ErrIssuerUnavailable,
 		},
 		{
 			name: "RSA key is too small to be trusted",
-			sabotage: func(t *testing.T, issuer *testIssuer) {
+			sabotage: func(t *testing.T, issuer *authtest.Issuer) {
 				// A 512-bit modulus, which RFC 7518 forbids for RS256.
-				issuer.setJWKSBody([]byte(`{"keys":[{"kty":"RSA","kid":"weak","n":"1TCB4nCyfmXVKMbCXPMHKzGVzGHLGxHUCbLmiHOWmXKfYMuqzzGKcVLQVvKKmfMGvFLLnKmVjJJKPBLXBnEQnQ","e":"AQAB"}]}`))
+				issuer.SetKeySetResponse(http.StatusOK, []byte(`{"keys":[{"kty":"RSA","kid":"weak","n":"1TCB4nCyfmXVKMbCXPMHKzGVzGHLGxHUCbLmiHOWmXKfYMuqzzGKcVLQVvKKmfMGvFLLnKmVjJJKPBLXBnEQnQ","e":"AQAB"}]}`))
 			},
 			wantErr: auth.ErrIssuerUnavailable,
 		},
 		{
 			name: "discovery document claims a different issuer",
-			sabotage: func(t *testing.T, issuer *testIssuer) {
-				issuer.setDiscoveryIssuer("https://issuer.invalid")
+			sabotage: func(t *testing.T, issuer *authtest.Issuer) {
+				issuer.SetDiscoveredIssuer("https://issuer.invalid")
 			},
 			wantErr: auth.ErrIssuerUnavailable,
 		},
 		{
 			name: "discovery document advertises no key set",
-			sabotage: func(t *testing.T, issuer *testIssuer) {
-				issuer.setDiscoveryHandler(func(w http.ResponseWriter, r *http.Request) {
-					_, _ = w.Write([]byte(`{"issuer":"` + issuer.url + `"}`))
+			sabotage: func(t *testing.T, issuer *authtest.Issuer) {
+				issuer.SetDiscoveryHandler(func(w http.ResponseWriter, r *http.Request) {
+					_, _ = w.Write([]byte(`{"issuer":"` + issuer.URL() + `"}`))
 				})
 			},
 			wantErr: auth.ErrIssuerUnavailable,
 		},
 		{
 			name: "discovery document points its key set at an unprotected host",
-			sabotage: func(t *testing.T, issuer *testIssuer) {
-				issuer.setDiscoveryHandler(func(w http.ResponseWriter, r *http.Request) {
-					_, _ = w.Write([]byte(`{"issuer":"` + issuer.url + `","jwks_uri":"http://keys.example.com/jwks"}`))
+			sabotage: func(t *testing.T, issuer *authtest.Issuer) {
+				issuer.SetDiscoveryHandler(func(w http.ResponseWriter, r *http.Request) {
+					_, _ = w.Write([]byte(`{"issuer":"` + issuer.URL() + `","jwks_uri":"http://keys.example.com/jwks"}`))
 				})
 			},
 			wantErr: auth.ErrIssuerUnavailable,
 		},
 		{
 			name: "discovery endpoint is missing",
-			sabotage: func(t *testing.T, issuer *testIssuer) {
-				issuer.setDiscoveryHandler(func(w http.ResponseWriter, r *http.Request) {
+			sabotage: func(t *testing.T, issuer *authtest.Issuer) {
+				issuer.SetDiscoveryHandler(func(w http.ResponseWriter, r *http.Request) {
 					w.WriteHeader(http.StatusNotFound)
 				})
 			},
@@ -786,9 +784,9 @@ func TestOIDCVerifierIssuerUnavailable(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			var (
-				key    = newECDSAKey(t, "primary")
-				issuer = newTestIssuer(t, key)
-				clock  = newTestClock(referenceTime)
+				key    = authtest.GenerateKey("primary", jwa.ES256)
+				clock  = authtest.NewClock(referenceTime)
+				issuer = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
 			)
 
 			test.sabotage(t, issuer)
@@ -797,14 +795,14 @@ func TestOIDCVerifierIssuerUnavailable(t *testing.T) {
 				auth.Policy{
 					Issuers: []auth.TrustedIssuer{{
 						Name:      "test",
-						Issuer:    issuer.url,
+						Issuer:    issuer.URL(),
 						Audiences: []string{"flowstate"},
 					}},
 				},
 				auth.WithClock(clock.Now),
 			)
 
-			token := key.sign(t, standardClaims(issuer.url, "runner", "flowstate", referenceTime))
+			token := issuer.MintToken(nil, authtest.WithSubject("runner"), authtest.WithAudience("flowstate"))
 
 			_, err := verifier.Verify(t.Context(), token)
 			require.ErrorIs(t, err, test.wantErr)
@@ -821,16 +819,16 @@ func TestOIDCVerifierIssuerUnavailable(t *testing.T) {
 // for discovery.
 func TestOIDCVerifierPrime(t *testing.T) {
 	var (
-		key    = newECDSAKey(t, "primary")
-		issuer = newTestIssuer(t, key)
-		clock  = newTestClock(referenceTime)
+		key    = authtest.GenerateKey("primary", jwa.ES256)
+		clock  = authtest.NewClock(referenceTime)
+		issuer = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
 	)
 
 	verifier := newVerifier(t,
 		auth.Policy{
 			Issuers: []auth.TrustedIssuer{{
 				Name:      "test",
-				Issuer:    issuer.url,
+				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
 			}},
 		},
@@ -839,21 +837,23 @@ func TestOIDCVerifierPrime(t *testing.T) {
 
 	require.NoError(t, verifier.Prime(t.Context()))
 
-	discovery, jwks := issuer.requests()
+	requests := issuer.Requests()
+	discovery, jwks := requests.Discovery, requests.JWKS
 	require.Equal(t, 1, discovery)
 	require.Equal(t, 1, jwks)
 
 	// Priming again while the keys are cached does nothing.
 	require.NoError(t, verifier.Prime(t.Context()))
 
-	discovery, jwks = issuer.requests()
+	requests = issuer.Requests()
+	discovery, jwks = requests.Discovery, requests.JWKS
 	require.Equal(t, 1, discovery)
 	require.Equal(t, 1, jwks)
 
-	_, err := verifier.Verify(t.Context(), key.sign(t, standardClaims(issuer.url, "runner", "flowstate", referenceTime)))
+	_, err := verifier.Verify(t.Context(), issuer.MintToken(nil, authtest.WithSubject("runner"), authtest.WithAudience("flowstate")))
 	require.NoError(t, err)
 
-	_, jwks = issuer.requests()
+	jwks = issuer.Requests().JWKS
 	require.Equal(t, 1, jwks, "verification should use the primed keys")
 }
 
@@ -862,16 +862,16 @@ func TestOIDCVerifierPrime(t *testing.T) {
 // holds up under the race detector.
 func TestOIDCVerifierConcurrent(t *testing.T) {
 	var (
-		key    = newECDSAKey(t, "primary")
-		issuer = newTestIssuer(t, key)
-		clock  = newTestClock(referenceTime)
+		key    = authtest.GenerateKey("primary", jwa.ES256)
+		clock  = authtest.NewClock(referenceTime)
+		issuer = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
 	)
 
 	verifier := newVerifier(t,
 		auth.Policy{
 			Issuers: []auth.TrustedIssuer{{
 				Name:      "test",
-				Issuer:    issuer.url,
+				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
 				Role:      "operator",
 			}},
@@ -879,7 +879,7 @@ func TestOIDCVerifierConcurrent(t *testing.T) {
 		auth.WithClock(clock.Now),
 	)
 
-	token := key.sign(t, standardClaims(issuer.url, "runner", "flowstate", referenceTime))
+	token := issuer.MintToken(nil, authtest.WithSubject("runner"), authtest.WithAudience("flowstate"))
 
 	const callers = 32
 
@@ -895,7 +895,8 @@ func TestOIDCVerifierConcurrent(t *testing.T) {
 	}
 	wait.Wait()
 
-	discovery, jwks := issuer.requests()
+	requests := issuer.Requests()
+	discovery, jwks := requests.Discovery, requests.JWKS
 	require.Equal(t, 1, discovery, "concurrent first requests should share one discovery")
 	require.Equal(t, 1, jwks, "concurrent first requests should share one key set fetch")
 }
@@ -904,12 +905,12 @@ func TestOIDCVerifierConcurrent(t *testing.T) {
 // document can still be used by naming its key set directly.
 func TestOIDCVerifierStaticJWKSURL(t *testing.T) {
 	var (
-		key    = newECDSAKey(t, "primary")
-		issuer = newTestIssuer(t, key)
-		clock  = newTestClock(referenceTime)
+		key    = authtest.GenerateKey("primary", jwa.ES256)
+		clock  = authtest.NewClock(referenceTime)
+		issuer = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
 	)
 
-	issuer.setDiscoveryHandler(func(w http.ResponseWriter, r *http.Request) {
+	issuer.SetDiscoveryHandler(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("discovery should not be attempted when a key set URL is configured")
 	})
 
@@ -917,18 +918,19 @@ func TestOIDCVerifierStaticJWKSURL(t *testing.T) {
 		auth.Policy{
 			Issuers: []auth.TrustedIssuer{{
 				Name:      "test",
-				Issuer:    issuer.url,
+				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
-				JWKSURL:   issuer.url + "/jwks",
+				JWKSURL:   issuer.URL() + "/jwks",
 			}},
 		},
 		auth.WithClock(clock.Now),
 	)
 
-	_, err := verifier.Verify(t.Context(), key.sign(t, standardClaims(issuer.url, "runner", "flowstate", referenceTime)))
+	_, err := verifier.Verify(t.Context(), issuer.MintToken(nil, authtest.WithSubject("runner"), authtest.WithAudience("flowstate")))
 	require.NoError(t, err)
 
-	discovery, jwks := issuer.requests()
+	requests := issuer.Requests()
+	discovery, jwks := requests.Discovery, requests.JWKS
 	require.Zero(t, discovery)
 	require.Equal(t, 1, jwks)
 }
@@ -938,24 +940,24 @@ func TestOIDCVerifierStaticJWKSURL(t *testing.T) {
 // each key until one happens to work.
 func TestOIDCVerifierAmbiguousKey(t *testing.T) {
 	var (
-		signer = newECDSAKey(t, "")
-		other  = newECDSAKey(t, "")
-		issuer = newTestIssuer(t, signer, other)
-		clock  = newTestClock(referenceTime)
+		signer = authtest.GenerateKey("", jwa.ES256)
+		other  = authtest.GenerateKey("", jwa.ES256)
+		clock  = authtest.NewClock(referenceTime)
+		issuer = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(signer, other))
 	)
 
 	verifier := newVerifier(t,
 		auth.Policy{
 			Issuers: []auth.TrustedIssuer{{
 				Name:      "test",
-				Issuer:    issuer.url,
+				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
 			}},
 		},
 		auth.WithClock(clock.Now),
 	)
 
-	token := signer.sign(t, standardClaims(issuer.url, "runner", "flowstate", referenceTime))
+	token := issuer.MintToken(nil, authtest.WithSubject("runner"), authtest.WithAudience("flowstate"))
 
 	_, err := verifier.Verify(t.Context(), token)
 	require.ErrorIs(t, err, auth.ErrUnknownKey)
@@ -965,7 +967,7 @@ func TestOIDCVerifierAmbiguousKey(t *testing.T) {
 	_, err = verifier.Verify(t.Context(), token)
 	require.ErrorIs(t, err, auth.ErrUnknownKey)
 
-	_, jwksRequests := issuer.requests()
+	jwksRequests := issuer.Requests().JWKS
 	require.Equal(t, 1, jwksRequests)
 }
 
@@ -975,10 +977,10 @@ func TestOIDCVerifierAmbiguousKey(t *testing.T) {
 // permits.
 func TestOIDCVerifierPerIssuerAlgorithms(t *testing.T) {
 	var (
-		rsaKey = newRSAKey(t, "rsa")
-		ecKey  = newECDSAKey(t, "ec")
-		issuer = newTestIssuer(t, rsaKey, ecKey)
-		clock  = newTestClock(referenceTime)
+		rsaKey = authtest.GenerateKey("rsa", jwa.RS256)
+		ecKey  = authtest.GenerateKey("ec", jwa.ES256)
+		clock  = authtest.NewClock(referenceTime)
+		issuer = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(rsaKey, ecKey))
 	)
 
 	verifier := newVerifier(t,
@@ -986,14 +988,14 @@ func TestOIDCVerifierPerIssuerAlgorithms(t *testing.T) {
 			Issuers: []auth.TrustedIssuer{
 				{
 					Name:       "rsa-only",
-					Issuer:     issuer.url,
+					Issuer:     issuer.URL(),
 					Audiences:  []string{"flowstate"},
 					Algorithms: []jwa.Algorithm{jwa.RS256},
 					Role:       "rsa-caller",
 				},
 				{
 					Name:       "ec-only",
-					Issuer:     issuer.url,
+					Issuer:     issuer.URL(),
 					Audiences:  []string{"flowstate"},
 					Algorithms: []jwa.Algorithm{jwa.ES256},
 					Role:       "ec-caller",
@@ -1003,14 +1005,14 @@ func TestOIDCVerifierPerIssuerAlgorithms(t *testing.T) {
 		auth.WithClock(clock.Now),
 	)
 
-	claims := standardClaims(issuer.url, "runner", "flowstate", referenceTime)
+	claims := issuer.Claims(authtest.WithSubject("runner"), authtest.WithAudience("flowstate"))
 
-	principal, err := verifier.Verify(t.Context(), rsaKey.sign(t, claims))
+	principal, err := verifier.Verify(t.Context(), issuer.MintToken(claims, authtest.SignedBy(rsaKey)))
 	require.NoError(t, err)
 	require.Equal(t, "rsa-caller", principal.Role)
 	require.Equal(t, "rsa-only", principal.IssuerName)
 
-	principal, err = verifier.Verify(t.Context(), ecKey.sign(t, claims))
+	principal, err = verifier.Verify(t.Context(), issuer.MintToken(claims, authtest.SignedBy(ecKey)))
 	require.NoError(t, err)
 	require.Equal(t, "ec-caller", principal.Role, "the EC token must be admitted by the entry that allows ES256")
 	require.Equal(t, "ec-only", principal.IssuerName)
@@ -1019,31 +1021,30 @@ func TestOIDCVerifierPerIssuerAlgorithms(t *testing.T) {
 // TestOIDCVerifierDeclaredAlgorithmMismatch checks that a key published for one
 // algorithm cannot be used to verify a token claiming another.
 func TestOIDCVerifierDeclaredAlgorithmMismatch(t *testing.T) {
-	key := newECDSAKey(t, "ec")
-	key.declareAlg = true
-	key.algorithm = jwa.ES512 // published as ES512, but signs ES256 below
+	// Published as ES512, but signs ES256 below.
+	key := authtest.GenerateKey("ec", jwa.ES256, authtest.PublishAlgorithm(jwa.ES512))
 
 	var (
-		issuer = newTestIssuer(t, key)
-		clock  = newTestClock(referenceTime)
+		clock  = authtest.NewClock(referenceTime)
+		issuer = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
 	)
 
 	verifier := newVerifier(t,
 		auth.Policy{
 			Issuers: []auth.TrustedIssuer{{
 				Name:      "test",
-				Issuer:    issuer.url,
+				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
 			}},
 		},
 		auth.WithClock(clock.Now),
 	)
 
-	token := key.signWithHeader(t, header.Parameters{
+	token := key.Sign(map[string]any{
 		header.Type:      jwt.Type,
 		header.Algorithm: jwa.ES256,
-		header.KeyID:     key.id,
-	}, standardClaims(issuer.url, "runner", "flowstate", referenceTime))
+		header.KeyID:     key.ID(),
+	}, issuer.Claims(authtest.WithSubject("runner"), authtest.WithAudience("flowstate")))
 
 	_, err := verifier.Verify(t.Context(), token)
 	require.ErrorIs(t, err, auth.ErrDisallowedAlgorithm)
@@ -1118,13 +1119,13 @@ func TestNewOIDCVerifierRejectsBadConfiguration(t *testing.T) {
 // instead of holding it open.
 func TestOIDCVerifierFetchTimeout(t *testing.T) {
 	var (
-		key    = newECDSAKey(t, "primary")
-		issuer = newTestIssuer(t, key)
-		clock  = newTestClock(referenceTime)
+		key    = authtest.GenerateKey("primary", jwa.ES256)
+		clock  = authtest.NewClock(referenceTime)
+		issuer = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
 		block  = make(chan struct{})
 	)
 
-	issuer.setDiscoveryHandler(func(w http.ResponseWriter, r *http.Request) {
+	issuer.SetDiscoveryHandler(func(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-block:
 		case <-r.Context().Done():
@@ -1136,7 +1137,7 @@ func TestOIDCVerifierFetchTimeout(t *testing.T) {
 		auth.Policy{
 			Issuers: []auth.TrustedIssuer{{
 				Name:      "test",
-				Issuer:    issuer.url,
+				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
 			}},
 		},
@@ -1145,7 +1146,7 @@ func TestOIDCVerifierFetchTimeout(t *testing.T) {
 	)
 
 	start := time.Now()
-	_, err := verifier.Verify(t.Context(), key.sign(t, standardClaims(issuer.url, "runner", "flowstate", referenceTime)))
+	_, err := verifier.Verify(t.Context(), issuer.MintToken(nil, authtest.WithSubject("runner"), authtest.WithAudience("flowstate")))
 	require.ErrorIs(t, err, auth.ErrIssuerUnavailable)
 	require.Less(t, time.Since(start), 5*time.Second)
 }
@@ -1154,16 +1155,16 @@ func TestOIDCVerifierFetchTimeout(t *testing.T) {
 // do not describe the trust policy, while the errors an operator sees do.
 func TestOIDCVerifierErrorDetail(t *testing.T) {
 	var (
-		key    = newECDSAKey(t, "primary")
-		issuer = newTestIssuer(t, key)
-		clock  = newTestClock(referenceTime)
+		key    = authtest.GenerateKey("primary", jwa.ES256)
+		clock  = authtest.NewClock(referenceTime)
+		issuer = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
 	)
 
 	verifier := newVerifier(t,
 		auth.Policy{
 			Issuers: []auth.TrustedIssuer{{
 				Name:      "test",
-				Issuer:    issuer.url,
+				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
 				Require:   []auth.ClaimRule{auth.RequireClaim("repository", "picatz/flowstate")},
 			}},
@@ -1171,10 +1172,10 @@ func TestOIDCVerifierErrorDetail(t *testing.T) {
 		auth.WithClock(clock.Now),
 	)
 
-	claims := standardClaims(issuer.url, "runner", "flowstate", referenceTime)
+	claims := issuer.Claims(authtest.WithSubject("runner"), authtest.WithAudience("flowstate"))
 	claims["repository"] = "attacker/fork"
 
-	_, err := verifier.Verify(t.Context(), key.sign(t, claims))
+	_, err := verifier.Verify(t.Context(), issuer.MintToken(claims))
 	require.ErrorIs(t, err, auth.ErrClaimMismatch)
 
 	// The operator-facing error names the rule, the expected values, and what the

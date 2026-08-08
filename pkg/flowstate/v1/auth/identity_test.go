@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
 	"github.com/picatz/jose/pkg/jwa"
 	"github.com/stretchr/testify/require"
 )
@@ -123,7 +124,7 @@ func TestIdentityFromPrincipal(t *testing.T) {
 // way a credential escapes, and each of these types is one an operator will
 // reasonably want to log.
 func TestOutboundValuesNeverLogSecrets(t *testing.T) {
-	clock := newTestClock(referenceTime)
+	clock := authtest.NewClock(referenceTime)
 	issuer, _ := newIssuer(t, clock)
 
 	party := newRelyingParty(t, func(w http.ResponseWriter, r *http.Request, body recordedRequest) {
@@ -261,7 +262,7 @@ func TestNamespaceGrammarAppliesAtSubjectMinting(t *testing.T) {
 // the exchangers a policy builds, since that is the only way a deployment behind a
 // proxy can federate at all.
 func TestFederationHTTPClientIsUsed(t *testing.T) {
-	clock := newTestClock(referenceTime)
+	clock := authtest.NewClock(referenceTime)
 
 	party := newRelyingParty(t, func(w http.ResponseWriter, r *http.Request, body recordedRequest) {
 		writeJSON(t, w, http.StatusOK, map[string]any{

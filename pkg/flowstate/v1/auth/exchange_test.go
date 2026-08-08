@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -121,7 +122,7 @@ func serialized(t *testing.T, assertion auth.Assertion) auth.Assertion {
 
 // TestTokenExchanger covers RFC 8693 token exchange, the standards-based path.
 func TestTokenExchanger(t *testing.T) {
-	clock := newTestClock(referenceTime)
+	clock := authtest.NewClock(referenceTime)
 	issuer, _ := newIssuer(t, clock)
 
 	party := newRelyingParty(t, func(w http.ResponseWriter, r *http.Request, body recordedRequest) {
@@ -180,7 +181,7 @@ func TestTokenExchanger(t *testing.T) {
 // TestTokenExchangerRejects covers the answers a relying party can give that must
 // not become a credential.
 func TestTokenExchangerRejects(t *testing.T) {
-	clock := newTestClock(referenceTime)
+	clock := authtest.NewClock(referenceTime)
 	issuer, _ := newIssuer(t, clock)
 
 	tests := []struct {
@@ -280,7 +281,7 @@ func TestTokenExchangerRejects(t *testing.T) {
 // TestClientCredentialsExchanger covers the client credentials grant, both
 // secretless and with a secret.
 func TestClientCredentialsExchanger(t *testing.T) {
-	clock := newTestClock(referenceTime)
+	clock := authtest.NewClock(referenceTime)
 	issuer, _ := newIssuer(t, clock)
 
 	party := newRelyingParty(t, func(w http.ResponseWriter, r *http.Request, body recordedRequest) {
@@ -345,7 +346,7 @@ func TestClientCredentialsExchanger(t *testing.T) {
 
 // TestAWSExchanger covers STS AssumeRoleWithWebIdentity.
 func TestAWSExchanger(t *testing.T) {
-	clock := newTestClock(referenceTime)
+	clock := authtest.NewClock(referenceTime)
 	issuer, _ := newIssuer(t, clock)
 
 	expiry := referenceTime.Add(time.Hour).UTC()
@@ -420,7 +421,7 @@ func TestAWSExchanger(t *testing.T) {
 // TestAWSExchangerRejects covers AWS refusing the assertion, and configurations
 // that must not be built.
 func TestAWSExchangerRejects(t *testing.T) {
-	clock := newTestClock(referenceTime)
+	clock := authtest.NewClock(referenceTime)
 	issuer, _ := newIssuer(t, clock)
 
 	t.Run("AWS refuses the role", func(t *testing.T) {
@@ -508,7 +509,7 @@ func TestAWSExchangerRejects(t *testing.T) {
 // TestGCPExchanger covers Google Cloud Workload Identity Federation, including
 // service account impersonation.
 func TestGCPExchanger(t *testing.T) {
-	clock := newTestClock(referenceTime)
+	clock := authtest.NewClock(referenceTime)
 	issuer, _ := newIssuer(t, clock)
 
 	const pool = "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/flowstate"
@@ -645,7 +646,7 @@ func TestExchangerRejectsUnprotectedEndpoints(t *testing.T) {
 // workflow-history rule enforceable: a credential's secret cannot be printed,
 // logged, or serialized, and one that has been serialized fails closed.
 func TestCredentialNeverRevealsItself(t *testing.T) {
-	clock := newTestClock(referenceTime)
+	clock := authtest.NewClock(referenceTime)
 	issuer, _ := newIssuer(t, clock)
 
 	party := newRelyingParty(t, func(w http.ResponseWriter, r *http.Request, body recordedRequest) {

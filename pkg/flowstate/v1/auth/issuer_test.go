@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
 	"github.com/picatz/jose/pkg/jwa"
 	"github.com/stretchr/testify/require"
 )
@@ -41,7 +42,7 @@ func testStepRef() auth.StepRef {
 // The server is created before the issuer, because the issuer has to be told the
 // URL it is reachable at, and dispatches to whatever handler the issuer later
 // installs.
-func newIssuer(t *testing.T, clock *testClock, opts ...auth.IssuerOption) (*auth.Issuer, *httptest.Server) {
+func newIssuer(t *testing.T, clock *authtest.Clock, opts ...auth.IssuerOption) (*auth.Issuer, *httptest.Server) {
 	t.Helper()
 
 	var (
@@ -159,7 +160,7 @@ func TestWorkloadIdentitySubject(t *testing.T) {
 // credential Flowstate signs, so refusing to make one is always safer than making
 // one that says less than it appears to.
 func TestIssuerMintRejects(t *testing.T) {
-	clock := newTestClock(referenceTime)
+	clock := authtest.NewClock(referenceTime)
 	issuer, _ := newIssuer(t, clock)
 
 	tests := []struct {
@@ -244,7 +245,7 @@ func TestIssuerMintRejects(t *testing.T) {
 // If Flowstate cannot verify its own identity through its own published metadata,
 // no other relying party will either.
 func TestIssuerRoundTrip(t *testing.T) {
-	clock := newTestClock(referenceTime)
+	clock := authtest.NewClock(referenceTime)
 	issuer, server := newIssuer(t, clock)
 
 	const audience = "sts.amazonaws.com"
@@ -301,7 +302,7 @@ func TestIssuerRoundTrip(t *testing.T) {
 // merely careless relying party could present a Flowstate assertion to every other
 // system that trusts Flowstate.
 func TestIssuerAssertionIsAudienceScoped(t *testing.T) {
-	clock := newTestClock(referenceTime)
+	clock := authtest.NewClock(referenceTime)
 	issuer, server := newIssuer(t, clock)
 
 	assertion, err := issuer.Mint(t.Context(), testIdentity(), testStepRef(), "sts.amazonaws.com")
@@ -326,7 +327,7 @@ func TestIssuerAssertionIsAudienceScoped(t *testing.T) {
 // TestIssuerAssertionExpires checks that an assertion stops working, and that the
 // lifetime cannot be configured long enough to be a standing grant.
 func TestIssuerAssertionExpires(t *testing.T) {
-	clock := newTestClock(referenceTime)
+	clock := authtest.NewClock(referenceTime)
 	issuer, server := newIssuer(t, clock, auth.WithAssertionLifetime(2*time.Minute))
 
 	assertion, err := issuer.Mint(t.Context(), testIdentity(), testStepRef(), "flowstate-test")
@@ -484,7 +485,7 @@ func TestSigningKey(t *testing.T) {
 // signed with the old key keep verifying for as long as the operator configured,
 // and stop afterwards.
 func TestIssuerRotation(t *testing.T) {
-	clock := newTestClock(referenceTime)
+	clock := authtest.NewClock(referenceTime)
 	issuer, server := newIssuer(t, clock, auth.WithKeyRetention(time.Hour))
 
 	const audience = "flowstate-test"
@@ -550,7 +551,7 @@ func TestIssuerRotation(t *testing.T) {
 
 // TestIssuerHandler checks the surface other systems read to establish trust.
 func TestIssuerHandler(t *testing.T) {
-	clock := newTestClock(referenceTime)
+	clock := authtest.NewClock(referenceTime)
 	issuer, server := newIssuer(t, clock)
 
 	t.Run("discovery document", func(t *testing.T) {
@@ -614,7 +615,7 @@ func TestIssuerHandler(t *testing.T) {
 // TestAssertionNeverRevealsItsToken checks that the one value in an assertion that
 // is a credential cannot escape through printing or serialization.
 func TestAssertionNeverRevealsItsToken(t *testing.T) {
-	clock := newTestClock(referenceTime)
+	clock := authtest.NewClock(referenceTime)
 	issuer, _ := newIssuer(t, clock)
 
 	assertion, err := issuer.Mint(t.Context(), testIdentity(), testStepRef(), "flowstate-test")

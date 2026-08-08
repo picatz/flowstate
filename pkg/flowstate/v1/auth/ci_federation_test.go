@@ -2,19 +2,15 @@ package auth_test
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/picatz/jose/pkg/jwa"
-	"github.com/picatz/jose/pkg/jwk"
-	"github.com/picatz/jose/pkg/jwt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
 )
 
 // These tests describe what a trust policy can and cannot do with a token from a
@@ -24,9 +20,11 @@ import (
 // "repository_owner", "ref", "workflow", "job_workflow_ref", "event_name" and
 // "runner_environment" beside it.
 //
-// Nothing here reaches the network. The issuer is an httptest server in this
+// Nothing here reaches the network. The issuer is an authtest.Issuer in this
 // process publishing a key generated here, so the claim shape is the only thing
-// borrowed from the real provider.
+// borrowed from the real provider. The claim set itself stays in this file:
+// authtest knows nothing about any provider's claim names, which is what keeps
+// it usable for the next one.
 //
 // They exist because the two halves of "can this be configured" are answered in
 // different files: whether a token verifies at all (verifier.go, jwks.go,
@@ -35,31 +33,43 @@ import (
 // second is where a CI token's claim values and the namespace grammar disagree,
 // and a test that only asserted the first would report the whole thing working.
 
-// ciClaims returns the claims a CI-issued token carries, in the shape GitHub
-// Actions mints them.
-func ciClaims(issuer, owner, repo, branch, audience string, now time.Time) jwt.ClaimsSet {
-	claims := standardClaims(
-		issuer,
-		"repo:"+owner+"/"+repo+":ref:refs/heads/"+branch,
-		audience,
-		now,
+// ciClaims returns the claims a CI-issued token carries beside the registered
+// ones, in the shape GitHub Actions mints them.
+//
+// This lives here rather than in the authtest package, which knows nothing
+// about any particular provider's claim names. A claim set is what a test
+// describes; the double mints what it is given.
+func ciClaims(owner, repo, branch string) map[string]any {
+	return map[string]any{
+		"repository":            owner + "/" + repo,
+		"repository_owner":      owner,
+		"repository_visibility": "private",
+		"ref":                   "refs/heads/" + branch,
+		"ref_type":              "branch",
+		"workflow":              "deploy",
+		"workflow_ref":          owner + "/" + repo + "/.github/workflows/deploy.yml@refs/heads/" + branch,
+		"job_workflow_ref":      owner + "/" + repo + "/.github/workflows/deploy.yml@refs/heads/" + branch,
+		"event_name":            "push",
+		"runner_environment":    "github-hosted",
+		"actor":                 "octocat",
+		"run_id":                "1234567890",
+		"run_attempt":           "1",
+	}
+}
+
+// ciSubject returns the "sub" such a token carries, which names a repository
+// and a ref rather than a person.
+func ciSubject(owner, repo, branch string) string {
+	return "repo:" + owner + "/" + repo + ":ref:refs/heads/" + branch
+}
+
+// ciToken mints a token of that shape, addressed to the given audience.
+func ciToken(issuer *authtest.Issuer, owner, repo, branch, audience string) string {
+	return issuer.MintToken(
+		ciClaims(owner, repo, branch),
+		authtest.WithSubject(ciSubject(owner, repo, branch)),
+		authtest.WithAudience(audience),
 	)
-
-	claims["repository"] = owner + "/" + repo
-	claims["repository_owner"] = owner
-	claims["repository_visibility"] = "private"
-	claims["ref"] = "refs/heads/" + branch
-	claims["ref_type"] = "branch"
-	claims["workflow"] = "deploy"
-	claims["workflow_ref"] = owner + "/" + repo + "/.github/workflows/deploy.yml@refs/heads/" + branch
-	claims["job_workflow_ref"] = owner + "/" + repo + "/.github/workflows/deploy.yml@refs/heads/" + branch
-	claims["event_name"] = "push"
-	claims["runner_environment"] = "github-hosted"
-	claims["actor"] = "octocat"
-	claims["run_id"] = "1234567890"
-	claims["run_attempt"] = "1"
-
-	return claims
 }
 
 // TestCIIssuedTokenVerifies is the base case: a trust policy naming the CI
@@ -68,14 +78,14 @@ func ciClaims(issuer, owner, repo, branch, audience string, now time.Time) jwt.C
 func TestCIIssuedTokenVerifies(t *testing.T) {
 	t.Parallel()
 
-	key := newRSAKey(t, "gha-key-1")
-	issuer := newTestIssuer(t, key)
-	clock := newTestClock(time.Now())
+	key := authtest.GenerateKey("gha-key-1", jwa.RS256)
+	clock := authtest.NewClock(time.Now())
+	issuer := newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
 
 	policy := auth.Policy{
 		Issuers: []auth.TrustedIssuer{{
 			Name:       "ci-deploy",
-			Issuer:     issuer.url,
+			Issuer:     issuer.URL(),
 			Audiences:  []string{"flowstate"},
 			Algorithms: []jwa.Algorithm{jwa.RS256},
 			Require: []auth.ClaimRule{
@@ -93,12 +103,12 @@ func TestCIIssuedTokenVerifies(t *testing.T) {
 	require.NoError(t, err)
 
 	t.Run("admits the workload the rules name", func(t *testing.T) {
-		token := key.sign(t, ciClaims(issuer.url, "octo-org", "octo-repo", "main", "flowstate", clock.Now()))
+		token := ciToken(issuer, "octo-org", "octo-repo", "main", "flowstate")
 
 		principal, err := verifier.Verify(context.Background(), token)
 		require.NoError(t, err)
 
-		assert.Equal(t, issuer.url, principal.Issuer)
+		assert.Equal(t, issuer.URL(), principal.Issuer)
 		assert.Equal(t, "repo:octo-org/octo-repo:ref:refs/heads/main", principal.Subject)
 		assert.Equal(t, "ci-deploy", principal.IssuerName)
 		assert.Equal(t, "deployer", principal.Role)
@@ -117,7 +127,7 @@ func TestCIIssuedTokenVerifies(t *testing.T) {
 	})
 
 	t.Run("refuses another branch of the same repository", func(t *testing.T) {
-		token := key.sign(t, ciClaims(issuer.url, "octo-org", "octo-repo", "topic", "flowstate", clock.Now()))
+		token := ciToken(issuer, "octo-org", "octo-repo", "topic", "flowstate")
 
 		_, err := verifier.Verify(context.Background(), token)
 		require.Error(t, err)
@@ -125,7 +135,7 @@ func TestCIIssuedTokenVerifies(t *testing.T) {
 	})
 
 	t.Run("refuses another repository of the same owner", func(t *testing.T) {
-		token := key.sign(t, ciClaims(issuer.url, "octo-org", "other-repo", "main", "flowstate", clock.Now()))
+		token := ciToken(issuer, "octo-org", "other-repo", "main", "flowstate")
 
 		_, err := verifier.Verify(context.Background(), token)
 		require.Error(t, err)
@@ -137,7 +147,7 @@ func TestCIIssuedTokenVerifies(t *testing.T) {
 		// addressed to the repository owner's URL. That token is refused here,
 		// which is the whole point of requiring an audience: it is what a job
 		// has to opt into, per job, to address this deployment.
-		token := key.sign(t, ciClaims(issuer.url, "octo-org", "octo-repo", "main", "https://github.com/octo-org", clock.Now()))
+		token := ciToken(issuer, "octo-org", "octo-repo", "main", "https://github.com/octo-org")
 
 		_, err := verifier.Verify(context.Background(), token)
 		require.Error(t, err)
@@ -145,9 +155,9 @@ func TestCIIssuedTokenVerifies(t *testing.T) {
 	})
 
 	t.Run("refuses a token older than the issuer entry allows", func(t *testing.T) {
-		token := key.sign(t, ciClaims(issuer.url, "octo-org", "octo-repo", "main", "flowstate", clock.Now()))
+		token := ciToken(issuer, "octo-org", "octo-repo", "main", "flowstate")
 
-		aged := newTestClock(clock.Now().Add(11 * time.Minute))
+		aged := authtest.NewClock(clock.Now().Add(11 * time.Minute))
 		agedVerifier, err := auth.NewOIDCVerifier(policy, auth.WithClock(aged.Now))
 		require.NoError(t, err)
 
@@ -164,45 +174,35 @@ func TestCIIssuedTokenVerifies(t *testing.T) {
 func TestCIIssuerWithPathDiscovers(t *testing.T) {
 	t.Parallel()
 
-	key := newRSAKey(t, "gha-key-1")
-	clock := newTestClock(time.Now())
+	key := authtest.GenerateKey("gha-key-1", jwa.RS256)
+	clock := authtest.NewClock(time.Now())
 
-	var base string
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/octo-enterprise/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"issuer":   base + "/octo-enterprise",
-			"jwks_uri": base + "/.well-known/jwks",
-		})
-	})
-	mux.HandleFunc("/.well-known/jwks", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(jwk.Set{Keys: []jwk.Value{key.jwk(t)}})
-	})
-
-	server := httptest.NewServer(mux)
-	t.Cleanup(server.Close)
-	base = server.URL
-
-	issuerURL := base + "/octo-enterprise"
+	// The identifier carries the organization, and the keys are published at
+	// the host root, which is the arrangement a self-hosted deployment of such
+	// a provider serves.
+	issuer := newTestIssuer(t,
+		authtest.WithClock(clock.Now),
+		authtest.WithKeys(key),
+		authtest.WithIssuerPath("/octo-enterprise"),
+		authtest.WithJWKSPath("/.well-known/jwks"),
+	)
 
 	verifier, err := auth.NewOIDCVerifier(auth.Policy{
 		Issuers: []auth.TrustedIssuer{{
 			Name:      "ci-enterprise",
-			Issuer:    issuerURL,
+			Issuer:    issuer.URL(),
 			Audiences: []string{"flowstate"},
 			Namespace: "platform",
 		}},
 	}, auth.WithClock(clock.Now))
 	require.NoError(t, err)
 
-	token := key.sign(t, ciClaims(issuerURL, "octo-org", "octo-repo", "main", "flowstate", clock.Now()))
+	token := ciToken(issuer, "octo-org", "octo-repo", "main", "flowstate")
 
 	principal, err := verifier.Verify(context.Background(), token)
 	require.NoError(t, err)
-	assert.Equal(t, issuerURL, principal.Issuer)
+	assert.Equal(t, issuer.URL(), principal.Issuer)
+	assert.Contains(t, issuer.URL(), "/octo-enterprise")
 }
 
 // TestCITenantFromClaim is the gap. A CI platform serving several teams is
@@ -216,9 +216,9 @@ func TestCIIssuerWithPathDiscovers(t *testing.T) {
 func TestCITenantFromClaim(t *testing.T) {
 	t.Parallel()
 
-	key := newRSAKey(t, "gha-key-1")
-	issuer := newTestIssuer(t, key)
-	clock := newTestClock(time.Now())
+	key := authtest.GenerateKey("gha-key-1", jwa.RS256)
+	clock := authtest.NewClock(time.Now())
+	issuer := newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
 
 	verifierFor := func(t *testing.T, claim string) *auth.OIDCVerifier {
 		t.Helper()
@@ -226,7 +226,7 @@ func TestCITenantFromClaim(t *testing.T) {
 		verifier, err := auth.NewOIDCVerifier(auth.Policy{
 			Issuers: []auth.TrustedIssuer{{
 				Name:           "ci",
-				Issuer:         issuer.url,
+				Issuer:         issuer.URL(),
 				Audiences:      []string{"flowstate"},
 				NamespaceClaim: claim,
 			}},
@@ -238,7 +238,7 @@ func TestCITenantFromClaim(t *testing.T) {
 
 	t.Run("repository_owner maps when the login is already a legal namespace", func(t *testing.T) {
 		verifier := verifierFor(t, "repository_owner")
-		token := key.sign(t, ciClaims(issuer.url, "octo-org", "octo-repo", "main", "flowstate", clock.Now()))
+		token := ciToken(issuer, "octo-org", "octo-repo", "main", "flowstate")
 
 		principal, err := verifier.Verify(context.Background(), token)
 		require.NoError(t, err)
@@ -247,7 +247,7 @@ func TestCITenantFromClaim(t *testing.T) {
 
 	t.Run("repository_owner is refused when the login carries uppercase", func(t *testing.T) {
 		verifier := verifierFor(t, "repository_owner")
-		token := key.sign(t, ciClaims(issuer.url, "Octo-Org", "octo-repo", "main", "flowstate", clock.Now()))
+		token := ciToken(issuer, "Octo-Org", "octo-repo", "main", "flowstate")
 
 		_, err := verifier.Verify(context.Background(), token)
 		require.Error(t, err)
@@ -256,7 +256,7 @@ func TestCITenantFromClaim(t *testing.T) {
 
 	t.Run("repository_owner is refused when the login carries an underscore", func(t *testing.T) {
 		verifier := verifierFor(t, "repository_owner")
-		token := key.sign(t, ciClaims(issuer.url, "octo_org", "octo-repo", "main", "flowstate", clock.Now()))
+		token := ciToken(issuer, "octo_org", "octo-repo", "main", "flowstate")
 
 		_, err := verifier.Verify(context.Background(), token)
 		require.Error(t, err)
@@ -265,7 +265,7 @@ func TestCITenantFromClaim(t *testing.T) {
 
 	t.Run("repository can never map, because it always contains a separator", func(t *testing.T) {
 		verifier := verifierFor(t, "repository")
-		token := key.sign(t, ciClaims(issuer.url, "octo-org", "octo-repo", "main", "flowstate", clock.Now()))
+		token := ciToken(issuer, "octo-org", "octo-repo", "main", "flowstate")
 
 		_, err := verifier.Verify(context.Background(), token)
 		require.Error(t, err)
@@ -279,27 +279,32 @@ func TestCITenantFromClaim(t *testing.T) {
 func TestCIClaimsCarriedIntoRunIdentity(t *testing.T) {
 	t.Parallel()
 
-	key := newRSAKey(t, "gha-key-1")
-	issuer := newTestIssuer(t, key)
-	clock := newTestClock(time.Now())
+	key := authtest.GenerateKey("gha-key-1", jwa.RS256)
+	clock := authtest.NewClock(time.Now())
+	issuer := newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
 
 	verifier, err := auth.NewOIDCVerifier(auth.Policy{
 		Issuers: []auth.TrustedIssuer{{
 			Name:      "ci",
-			Issuer:    issuer.url,
+			Issuer:    issuer.URL(),
 			Audiences: []string{"flowstate"},
 			Namespace: "platform",
 		}},
 	}, auth.WithClock(clock.Now))
 	require.NoError(t, err)
 
-	claims := ciClaims(issuer.url, "octo-org", "octo-repo", "main", "flowstate", clock.Now())
+	claims := ciClaims("octo-org", "octo-repo", "main")
 	// A claim that is not a string, to show what the carrying step does with
 	// one. A CI platform mints its own counters as strings, but an operator can
 	// name any claim here.
 	claims["private_repo"] = true
 
-	principal, err := verifier.Verify(context.Background(), key.sign(t, claims))
+	token := issuer.MintToken(claims,
+		authtest.WithSubject(ciSubject("octo-org", "octo-repo", "main")),
+		authtest.WithAudience("flowstate"),
+	)
+
+	principal, err := verifier.Verify(context.Background(), token)
 	require.NoError(t, err)
 
 	identity := auth.IdentityFromPrincipal(
@@ -310,7 +315,7 @@ func TestCIClaimsCarriedIntoRunIdentity(t *testing.T) {
 	)
 
 	assert.Equal(t, "repo:octo-org/octo-repo:ref:refs/heads/main", identity.Subject)
-	assert.Equal(t, issuer.url, identity.Issuer)
+	assert.Equal(t, issuer.URL(), identity.Issuer)
 
 	// The verified caller's namespace wins over the deployment's fallback.
 	assert.Equal(t, "platform", identity.Namespace)

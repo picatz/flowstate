@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
+	"github.com/picatz/jose/pkg/jwa"
 	"github.com/picatz/jose/pkg/jwt"
 	"github.com/stretchr/testify/require"
 )
@@ -19,16 +21,16 @@ import (
 // platform is configuration, not code.
 func TestWorkloadIdentityFederation(t *testing.T) {
 	var (
-		actionsKey = newECDSAKey(t, "actions")
-		actions    = newTestIssuer(t, actionsKey)
+		clock = authtest.NewClock(referenceTime)
 
-		clusterKey = newRSAKey(t, "cluster")
-		cluster    = newTestIssuer(t, clusterKey)
+		actionsKey = authtest.GenerateKey("actions", jwa.ES256)
+		actions    = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(actionsKey))
 
-		cloudKey = newECDSAKey(t, "cloud")
-		cloud    = newTestIssuer(t, cloudKey)
+		clusterKey = authtest.GenerateKey("cluster", jwa.RS256)
+		cluster    = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(clusterKey))
 
-		clock = newTestClock(referenceTime)
+		cloudKey = authtest.GenerateKey("cloud", jwa.ES256)
+		cloud    = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(cloudKey))
 	)
 
 	policy := auth.Policy{
@@ -38,7 +40,7 @@ func TestWorkloadIdentityFederation(t *testing.T) {
 			// one that follows, so it is listed first.
 			{
 				Name:      "ci-main",
-				Issuer:    actions.url,
+				Issuer:    actions.URL(),
 				Audiences: []string{"flowstate"},
 				Require: []auth.ClaimRule{
 					auth.RequireClaim("repository", "picatz/flowstate"),
@@ -51,7 +53,7 @@ func TestWorkloadIdentityFederation(t *testing.T) {
 			// with a lesser role.
 			{
 				Name:      "ci-branch",
-				Issuer:    actions.url,
+				Issuer:    actions.URL(),
 				Audiences: []string{"flowstate"},
 				Require: []auth.ClaimRule{
 					auth.RequireClaim("repository", "picatz/flowstate"),
@@ -62,7 +64,7 @@ func TestWorkloadIdentityFederation(t *testing.T) {
 			// tokens carry an array audience.
 			{
 				Name:      "cluster-runners",
-				Issuer:    cluster.url,
+				Issuer:    cluster.URL(),
 				Audiences: []string{"flowstate"},
 				Require: []auth.ClaimRule{
 					auth.RequireClaimAnyOf("sub",
@@ -76,7 +78,7 @@ func TestWorkloadIdentityFederation(t *testing.T) {
 			// account email and a verification claim that is a JSON boolean.
 			{
 				Name:      "cloud-workload",
-				Issuer:    cloud.url,
+				Issuer:    cloud.URL(),
 				Audiences: []string{"https://flowstate.example.com"},
 				Require: []auth.ClaimRule{
 					auth.RequireClaim("email", "flowstate@project.iam.example.com"),
@@ -98,13 +100,13 @@ func TestWorkloadIdentityFederation(t *testing.T) {
 		{
 			name: "CI token from the main branch gets the privileged role",
 			token: func(t *testing.T) string {
-				claims := standardClaims(actions.url, "repo:picatz/flowstate:ref:refs/heads/main", "flowstate", referenceTime)
+				claims := actions.Claims(authtest.WithSubject("repo:picatz/flowstate:ref:refs/heads/main"), authtest.WithAudience("flowstate"))
 				claims["repository"] = "picatz/flowstate"
 				claims["ref"] = "refs/heads/main"
-				return actionsKey.sign(t, claims)
+				return actions.MintToken(claims)
 			},
 			want: auth.Principal{
-				Issuer:     actions.url,
+				Issuer:     actions.URL(),
 				IssuerName: "ci-main",
 				Subject:    "repo:picatz/flowstate:ref:refs/heads/main",
 				Role:       "deployer",
@@ -113,13 +115,13 @@ func TestWorkloadIdentityFederation(t *testing.T) {
 		{
 			name: "CI token from another branch falls through to the lesser role",
 			token: func(t *testing.T) string {
-				claims := standardClaims(actions.url, "repo:picatz/flowstate:ref:refs/heads/topic", "flowstate", referenceTime)
+				claims := actions.Claims(authtest.WithSubject("repo:picatz/flowstate:ref:refs/heads/topic"), authtest.WithAudience("flowstate"))
 				claims["repository"] = "picatz/flowstate"
 				claims["ref"] = "refs/heads/topic"
-				return actionsKey.sign(t, claims)
+				return actions.MintToken(claims)
 			},
 			want: auth.Principal{
-				Issuer:     actions.url,
+				Issuer:     actions.URL(),
 				IssuerName: "ci-branch",
 				Subject:    "repo:picatz/flowstate:ref:refs/heads/topic",
 				Role:       "reader",
@@ -128,37 +130,37 @@ func TestWorkloadIdentityFederation(t *testing.T) {
 		{
 			name: "CI token from a fork of the repository is refused",
 			token: func(t *testing.T) string {
-				claims := standardClaims(actions.url, "repo:attacker/flowstate:ref:refs/heads/main", "flowstate", referenceTime)
+				claims := actions.Claims(authtest.WithSubject("repo:attacker/flowstate:ref:refs/heads/main"), authtest.WithAudience("flowstate"))
 				claims["repository"] = "attacker/flowstate"
 				claims["ref"] = "refs/heads/main"
-				return actionsKey.sign(t, claims)
+				return actions.MintToken(claims)
 			},
 			wantErr: auth.ErrClaimMismatch,
 		},
 		{
 			name: "CI token missing the claims the policy requires is refused",
 			token: func(t *testing.T) string {
-				claims := standardClaims(actions.url, "repo:picatz/flowstate:ref:refs/heads/main", "flowstate", referenceTime)
-				return actionsKey.sign(t, claims)
+				claims := actions.Claims(authtest.WithSubject("repo:picatz/flowstate:ref:refs/heads/main"), authtest.WithAudience("flowstate"))
+				return actions.MintToken(claims)
 			},
 			wantErr: auth.ErrClaimMismatch,
 		},
 		{
 			name: "CI token older than the issuer's maximum age is refused",
 			token: func(t *testing.T) string {
-				claims := standardClaims(actions.url, "repo:picatz/flowstate:ref:refs/heads/main", "flowstate", referenceTime)
+				claims := actions.Claims(authtest.WithSubject("repo:picatz/flowstate:ref:refs/heads/main"), authtest.WithAudience("flowstate"))
 				claims[jwt.IssuedAt] = referenceTime.Add(-time.Hour).Unix()
 				claims[jwt.ExpirationTime] = referenceTime.Add(time.Hour).Unix()
 				claims["repository"] = "picatz/flowstate"
 				claims["ref"] = "refs/heads/main"
-				return actionsKey.sign(t, claims)
+				return actions.MintToken(claims)
 			},
 			// The narrow entry rejects it on age, the broader one has no age
 			// limit but does not require the ref, so it admits the caller as a
 			// reader. This is what entry ordering means, and why the age limit
 			// belongs on every entry that needs it.
 			want: auth.Principal{
-				Issuer:     actions.url,
+				Issuer:     actions.URL(),
 				IssuerName: "ci-branch",
 				Subject:    "repo:picatz/flowstate:ref:refs/heads/main",
 				Role:       "reader",
@@ -167,12 +169,12 @@ func TestWorkloadIdentityFederation(t *testing.T) {
 		{
 			name: "cluster token with an array audience is accepted",
 			token: func(t *testing.T) string {
-				claims := standardClaims(cluster.url, "system:serviceaccount:flowstate:runner", "", referenceTime)
+				claims := cluster.Claims(authtest.WithSubject("system:serviceaccount:flowstate:runner"), authtest.WithoutAudience())
 				claims[jwt.Audience] = []string{"flowstate", "https://kubernetes.default.svc"}
-				return clusterKey.sign(t, claims)
+				return cluster.MintToken(claims)
 			},
 			want: auth.Principal{
-				Issuer:     cluster.url,
+				Issuer:     cluster.URL(),
 				IssuerName: "cluster-runners",
 				Subject:    "system:serviceaccount:flowstate:runner",
 				Role:       "runner",
@@ -181,11 +183,11 @@ func TestWorkloadIdentityFederation(t *testing.T) {
 		{
 			name: "cluster token for the other permitted service account is accepted",
 			token: func(t *testing.T) string {
-				claims := standardClaims(cluster.url, "system:serviceaccount:flowstate:scheduler", "flowstate", referenceTime)
-				return clusterKey.sign(t, claims)
+				claims := cluster.Claims(authtest.WithSubject("system:serviceaccount:flowstate:scheduler"), authtest.WithAudience("flowstate"))
+				return cluster.MintToken(claims)
 			},
 			want: auth.Principal{
-				Issuer:     cluster.url,
+				Issuer:     cluster.URL(),
 				IssuerName: "cluster-runners",
 				Subject:    "system:serviceaccount:flowstate:scheduler",
 				Role:       "runner",
@@ -194,21 +196,21 @@ func TestWorkloadIdentityFederation(t *testing.T) {
 		{
 			name: "cluster token for a service account in another namespace is refused",
 			token: func(t *testing.T) string {
-				claims := standardClaims(cluster.url, "system:serviceaccount:default:runner", "flowstate", referenceTime)
-				return clusterKey.sign(t, claims)
+				claims := cluster.Claims(authtest.WithSubject("system:serviceaccount:default:runner"), authtest.WithAudience("flowstate"))
+				return cluster.MintToken(claims)
 			},
 			wantErr: auth.ErrClaimMismatch,
 		},
 		{
 			name: "cloud token with a boolean claim is accepted",
 			token: func(t *testing.T) string {
-				claims := standardClaims(cloud.url, "108452345678901234567", "https://flowstate.example.com", referenceTime)
+				claims := cloud.Claims(authtest.WithSubject("108452345678901234567"), authtest.WithAudience("https://flowstate.example.com"))
 				claims["email"] = "flowstate@project.iam.example.com"
 				claims["email_verified"] = true
-				return cloudKey.sign(t, claims)
+				return cloud.MintToken(claims)
 			},
 			want: auth.Principal{
-				Issuer:     cloud.url,
+				Issuer:     cloud.URL(),
 				IssuerName: "cloud-workload",
 				Subject:    "108452345678901234567",
 				Role:       "runner",
@@ -217,20 +219,20 @@ func TestWorkloadIdentityFederation(t *testing.T) {
 		{
 			name: "cloud token whose email is not verified is refused",
 			token: func(t *testing.T) string {
-				claims := standardClaims(cloud.url, "108452345678901234567", "https://flowstate.example.com", referenceTime)
+				claims := cloud.Claims(authtest.WithSubject("108452345678901234567"), authtest.WithAudience("https://flowstate.example.com"))
 				claims["email"] = "flowstate@project.iam.example.com"
 				claims["email_verified"] = false
-				return cloudKey.sign(t, claims)
+				return cloud.MintToken(claims)
 			},
 			wantErr: auth.ErrClaimMismatch,
 		},
 		{
 			name: "cloud token addressed to another deployment is refused",
 			token: func(t *testing.T) string {
-				claims := standardClaims(cloud.url, "108452345678901234567", "https://other.example.com", referenceTime)
+				claims := cloud.Claims(authtest.WithSubject("108452345678901234567"), authtest.WithAudience("https://other.example.com"))
 				claims["email"] = "flowstate@project.iam.example.com"
 				claims["email_verified"] = true
-				return cloudKey.sign(t, claims)
+				return cloud.MintToken(claims)
 			},
 			wantErr: auth.ErrInvalidAudience,
 		},
@@ -240,8 +242,8 @@ func TestWorkloadIdentityFederation(t *testing.T) {
 				// The claims say the cluster, the signature is the CI
 				// provider's: trusting several issuers must not mean trusting
 				// any of their keys for all of them.
-				claims := standardClaims(cluster.url, "system:serviceaccount:flowstate:runner", "flowstate", referenceTime)
-				return actionsKey.sign(t, claims)
+				claims := cluster.Claims(authtest.WithSubject("system:serviceaccount:flowstate:runner"), authtest.WithAudience("flowstate"))
+				return actions.MintToken(claims)
 			},
 			wantErr: auth.ErrUnknownKey,
 		},
@@ -271,16 +273,16 @@ func TestWorkloadIdentityFederation(t *testing.T) {
 // claim, such as group membership, holds when any member matches.
 func TestWorkloadIdentityFederationListClaim(t *testing.T) {
 	var (
-		key    = newECDSAKey(t, "primary")
-		issuer = newTestIssuer(t, key)
-		clock  = newTestClock(referenceTime)
+		key    = authtest.GenerateKey("primary", jwa.ES256)
+		clock  = authtest.NewClock(referenceTime)
+		issuer = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
 	)
 
 	verifier := newVerifier(t,
 		auth.Policy{
 			Issuers: []auth.TrustedIssuer{{
 				Name:      "idp",
-				Issuer:    issuer.url,
+				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
 				Require:   []auth.ClaimRule{auth.RequireClaim("groups", "platform")},
 				Role:      "operator",
@@ -325,10 +327,10 @@ func TestWorkloadIdentityFederationListClaim(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			claims := standardClaims(issuer.url, "someone", "flowstate", referenceTime)
+			claims := issuer.Claims(authtest.WithSubject("someone"), authtest.WithAudience("flowstate"))
 			claims["groups"] = test.groups
 
-			principal, err := verifier.Verify(t.Context(), key.sign(t, claims))
+			principal, err := verifier.Verify(t.Context(), issuer.MintToken(claims))
 			if test.wantErr != nil {
 				require.ErrorIs(t, err, test.wantErr)
 				return
