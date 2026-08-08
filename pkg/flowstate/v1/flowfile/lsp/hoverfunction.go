@@ -49,7 +49,7 @@ func hoverFunction(doc *document, v *value, cursor int) *lsp.Hover {
 		return nil
 	}
 
-	rng := doc.index.rangeOfOffsets(v.exprOffset+span[0], v.exprOffset+span[1])
+	rng := v.exprSpanOrWhole(doc.index, span[0], span[1])
 
 	if fn.Name == "" {
 		// A namespace rather than a function: the cursor is on `math` in

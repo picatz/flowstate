@@ -93,6 +93,41 @@ type value struct {
 	// one surface over: a wrong position is worse than no position, because a
 	// wrong one is believed.
 	inline bool
+
+	// lineMap places each line of the decoded text back in the document, for a
+	// value whose text is not contiguous but whose *lines* still are.
+	//
+	// A literal block scalar (`|`, `|-`, `|+`) is the case: the decoder strips
+	// each content line's indentation and joins the lines with the newlines that
+	// were already there, so every byte of the decoded text is still a byte of
+	// the document — just not at a fixed distance from the start. One addition
+	// per line recovers the position exactly.
+	//
+	// It is deliberately not `inline`. That flag's contract is that *one*
+	// addition works everywhere in the value, and three consumers do that
+	// arithmetic on the strength of it; a value with a line map does not satisfy
+	// it and must never be handed to code that assumes it does. Ask through
+	// [value.exprSpan], [value.textSpan] and [value.exprCursor], which know both
+	// shapes, rather than reading either field.
+	//
+	// Folding is what a line map cannot survive: `>-` turns the breaks into
+	// spaces before the model sees the text, so a byte of the decoded text is not
+	// a byte of any document line. Those values have neither flag, and get whole
+	// ranges or nothing — see #306.
+	lineMap []lineSpan
+}
+
+// A lineSpan places one line of a value's decoded text in the document.
+//
+// The three numbers are one line's worth of the same fact: the line's bytes
+// begin at textStart in the decoded text, at docStart in the document, and run
+// for length bytes with no rewriting in between. A terminator is not covered by
+// either offset, because a literal scalar's line break is one byte on both
+// sides and lands between spans.
+type lineSpan struct {
+	textStart int
+	docStart  int
+	length    int
 }
 
 // An entry is one key/value pair of a YAML mapping.
@@ -972,17 +1007,25 @@ func buildValue(n ast.Node, ix *lineIndex) *value {
 
 	case *ast.LiteralNode:
 		// A block scalar. Its content spans lines, and the parser's reconstruction
-		// of it is folded text rather than the exact source slice, so its length
-		// cannot be used to measure a range and no offset inside it maps back to
-		// the document by addition. That is the whole of what a block scalar
-		// lacks, and it is what `inline` records.
+		// of it is not the exact source slice, so its length cannot be used to
+		// measure a range and no *single* offset maps it back to the document.
+		// That is what `inline` being false records.
 		//
 		// What it does not lack is being an expression. The compiler reads a
 		// block scalar's decoded text exactly as it reads any other scalar's, so
 		// `message: |-` with `${greeting}` under it evaluates and a broken one
 		// fails `flow validate` at the header's position. Recognizing the fence
 		// is therefore the same question here as anywhere, asked with the same
-		// rule; only the inner positions are unavailable.
+		// rule.
+		//
+		// How much of a position is available depends on which block scalar it
+		// is, and the difference is the folding. A literal one (`|`) never joins
+		// two lines: the decoder strips each line's indentation and keeps the
+		// breaks, so every byte of the decoded text is still a byte of the
+		// document and one addition *per line* finds it — that is the lineMap. A
+		// folded one (`>`) turns the breaks into spaces before the model sees the
+		// text, and no arithmetic recovers what was joined; it keeps the whole
+		// range and nothing finer.
 		v := &value{kind: kindScalar}
 		if t.Value != nil {
 			v.text = t.Value.Value
@@ -990,13 +1033,22 @@ func buildValue(n ast.Node, ix *lineIndex) *value {
 		start := ix.offsetOfYAML(tok.Position.Line, tok.Position.Column)
 		v.textOffset = start
 		v.rng = blockScalarRange(ix, start, t)
+		if t.Value != nil && strings.HasPrefix(tok.Value, literalIndicator) {
+			v.lineMap = literalLineMap(ix, max(tok.Position.Line-1, 0), t.Value.GetToken().Origin, v.text)
+		}
 		if source, ok := flowfile.SplitFence(v.text); ok && source != "" {
 			v.fenced = true
 			v.expr = source
+			// The range stays the whole of the value's lines. It is what a
+			// diagnostic falls back to when a position cannot be mapped, and it
+			// is the gate a consumer asks before looking for a cursor — both want
+			// the generous answer, since the exact one is [value.exprCursor]'s
+			// job and it declines a position it cannot place.
 			v.exprRange = v.rng
-			// exprOffset is deliberately left zero: there is no offset that would
-			// be correct, and a plausible-looking one — the header's start — is
-			// exactly what a consumer that forgot to check `inline` would use.
+			// exprOffset is deliberately left zero: no single offset would be
+			// correct for either kind of block scalar, and a plausible-looking
+			// one — the header's start — is exactly what a consumer that reached
+			// past the mapping methods would use.
 		}
 		return v
 	}
@@ -1068,6 +1120,209 @@ const (
 	exprOpen  = "${"
 	exprClose = "}"
 )
+
+// literalIndicator opens a block scalar the decoder will not fold. The header
+// may carry an indentation digit and a chomping sign after it — `|2-` is one
+// header — so it is a prefix test and not an equality.
+const literalIndicator = "|"
+
+// A spanMapper turns a byte span of some source text into the document range
+// that text occupies, and reports false where the source has no such place —
+// which is the whole of what a caller needs to know about how the value was
+// written.
+type spanMapper func(start, end int) (lsp.Range, bool)
+
+// exprMapper and textMapper hand out that view of a value's expression source
+// and of its decoded text.
+func (v *value) exprMapper(ix *lineIndex) spanMapper {
+	return func(start, end int) (lsp.Range, bool) { return v.exprSpan(ix, start, end) }
+}
+
+func (v *value) textMapper(ix *lineIndex) spanMapper {
+	return func(start, end int) (lsp.Range, bool) { return v.textSpan(ix, start, end) }
+}
+
+// textSpan returns the document range covering [start,end) of the value's
+// decoded text, and reports false when the value has no position mapping to
+// answer with.
+//
+// This and its two neighbours are the only readers of `inline` and `lineMap`,
+// on purpose. Whether a value's positions come from one addition or one per
+// line is a property of how the parser handed the text over, and a consumer
+// asking about a cursor has no business knowing which — the last time three
+// consumers each did this arithmetic themselves, each had to be taught
+// separately that a block scalar cannot support it.
+func (v *value) textSpan(ix *lineIndex, start, end int) (lsp.Range, bool) {
+	from, ok := v.docOffsetOfText(start)
+	if !ok {
+		return lsp.Range{}, false
+	}
+	to, ok := v.docOffsetOfText(end)
+	if !ok {
+		return lsp.Range{}, false
+	}
+	return ix.rangeOfOffsets(from, to), true
+}
+
+// exprSpan returns the document range covering [start,end) of the value's
+// expression source.
+//
+// The expression sits inside the fence, so its offsets are the text's shifted by
+// the opening `${`. That shift is the whole of the "first line is different"
+// problem: an expression's line 1 begins two bytes into the text's line 1 and
+// every later line begins where the text's does. Adding it before the line
+// lookup, rather than to a column afterwards, is what keeps that from becoming a
+// per-line special case to get wrong.
+func (v *value) exprSpan(ix *lineIndex, start, end int) (lsp.Range, bool) {
+	if !v.fenced {
+		return lsp.Range{}, false
+	}
+	return v.textSpan(ix, start+len(exprOpen), end+len(exprOpen))
+}
+
+// exprSpanOrWhole is [value.exprSpan] for a caller with nowhere to decline to:
+// hover has already decided there is something to say, and a hover with no range
+// underlines nothing at all. The whole value's range is the same coarse-and-true
+// answer a diagnostic falls back to.
+func (v *value) exprSpanOrWhole(ix *lineIndex, start, end int) lsp.Range {
+	if rng, ok := v.exprSpan(ix, start, end); ok {
+		return rng
+	}
+	return v.exprRange
+}
+
+// exprCursor returns the offset within the value's expression source that a
+// document position names, and reports false when the position is not inside
+// that source — the header line of a block scalar, the indentation stripped off
+// a content line, or anywhere at all in a value with no mapping.
+func (v *value) exprCursor(ix *lineIndex, pos lsp.Position) (int, bool) {
+	if !v.fenced {
+		return 0, false
+	}
+	off, ok := v.textOffsetOfDoc(ix.offsetOfPosition(pos))
+	if !ok {
+		return 0, false
+	}
+	cursor := off - len(exprOpen)
+	if cursor < 0 || cursor > len(v.expr) {
+		return 0, false
+	}
+	return cursor, true
+}
+
+// docOffsetOfText converts an offset within the decoded text to a document byte
+// offset.
+func (v *value) docOffsetOfText(off int) (int, bool) {
+	if off < 0 || off > len(v.text) {
+		return 0, false
+	}
+	if v.lineMap == nil {
+		if !v.inline {
+			return 0, false
+		}
+		return v.textOffset + off, true
+	}
+	for _, s := range v.lineMap {
+		// The end of a line is included, so a range ending at the last byte of a
+		// line resolves rather than falling through to the next one.
+		if off >= s.textStart && off <= s.textStart+s.length {
+			return s.docStart + (off - s.textStart), true
+		}
+	}
+	return 0, false
+}
+
+// textOffsetOfDoc converts a document byte offset to an offset within the
+// decoded text.
+func (v *value) textOffsetOfDoc(off int) (int, bool) {
+	if v.lineMap == nil {
+		if !v.inline {
+			return 0, false
+		}
+		rel := off - v.textOffset
+		if rel < 0 || rel > len(v.text) {
+			return 0, false
+		}
+		return rel, true
+	}
+	for _, s := range v.lineMap {
+		if off >= s.docStart && off <= s.docStart+s.length {
+			return s.textStart + (off - s.docStart), true
+		}
+	}
+	return 0, false
+}
+
+// literalLineMap builds the mapping from a literal block scalar's decoded text
+// back into the document, one content line at a time.
+//
+// origin is the content token's raw slice — the source the parser cut before
+// decoding it — which begins at column zero of the line after the header and is
+// byte-identical to the document from there. headerLine0 is the 0-based line the
+// `|` was written on.
+//
+// The indentation each line lost is not recomputed from the header's indicator,
+// because that is a second implementation of the decoder and would have to agree
+// with it about every case the indicator decides: an explicit indentation digit,
+// a line indented deeper than the block (whose extra spaces are *content* in a
+// literal scalar and are kept), a blank line with no indentation to strip. It is
+// measured instead — the decoded line is what is left of the source line, so the
+// difference in their lengths is what was removed. That answer cannot disagree
+// with the decoder, because it is read off the decoder's own output.
+//
+// It reports false rather than guessing whenever the two do not line up: a
+// source line that is not the document's, a decoded line that is not a suffix of
+// it, or anything but blanks in front of the content. A value with no map falls
+// back to the coarse whole-value range, which is the same answer a folded scalar
+// gets, and the same reason: a wrong position is worse than none.
+func literalLineMap(ix *lineIndex, headerLine0 int, origin, text string) []lineSpan {
+	if origin == "" || text == "" {
+		return nil
+	}
+	src := strings.Split(origin, "\n")
+	decoded := strings.Split(text, "\n")
+
+	// Text ending in a newline splits with a trailing empty element that is the
+	// position after the last line rather than a line of its own — `|` and `|+`
+	// both produce one. Dropping exactly that element keeps the two lists in step
+	// without swallowing a real blank line.
+	if n := len(decoded); n > 1 && decoded[n-1] == "" {
+		decoded = decoded[:n-1]
+	}
+
+	spans := make([]lineSpan, 0, len(decoded))
+	textStart := 0
+	for i, d := range decoded {
+		line0 := headerLine0 + 1 + i
+		if i >= len(src) || line0 >= ix.lineCount() {
+			return nil
+		}
+		// The document's own line, not the origin's copy of it, decides — and
+		// they must agree. That equality is what proves the origin still aligns
+		// with the file, which everything below reads positions out of.
+		if src[i] != ix.line(line0) {
+			return nil
+		}
+		// A CRLF document keeps its carriage return in the source line and loses
+		// it in the decoded one: it is part of the break, not of the content, so
+		// it affects only where a line ends and never where one begins.
+		content := strings.TrimSuffix(src[i], "\r")
+		if !strings.HasSuffix(content, d) {
+			return nil
+		}
+		indent := content[:len(content)-len(d)]
+		if strings.TrimLeft(indent, " \t") != "" {
+			return nil
+		}
+		spans = append(spans, lineSpan{
+			textStart: textStart,
+			docStart:  ix.lineStart(line0) + len(indent),
+			length:    len(d),
+		})
+		textStart += len(d) + 1
+	}
+	return spans
+}
 
 // blockScalarRange returns the range a block scalar occupies: its header line
 // through the last line holding content.

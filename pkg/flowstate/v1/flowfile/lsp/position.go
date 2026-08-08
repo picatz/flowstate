@@ -63,6 +63,19 @@ func (ix *lineIndex) line(n int) string {
 	return ix.lines[n]
 }
 
+// lineStart returns the byte offset in the document where a 0-based line
+// begins, clamped like [lineIndex.line] so a line an editor has since removed
+// yields a position rather than a panic.
+func (ix *lineIndex) lineStart(n int) int {
+	if n < 0 {
+		return 0
+	}
+	if n >= len(ix.starts) {
+		return len(ix.text)
+	}
+	return ix.starts[n]
+}
+
 // utf16Len returns the number of UTF-16 code units s encodes, which is the unit
 // an LSP character offset counts.
 func utf16Len(s string) int {
