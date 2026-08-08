@@ -257,3 +257,35 @@ func TestGatesInsideAConcurrentLoopAreReported(t *testing.T) {
 	assert.Equal(t, "fan", parked.GetStepId(),
 		"the position stopped at the loop, same as the parallel block, which is why the waits carry their own step ids")
 }
+
+// TestAnEarlySignalInTheSameRunSkipsThePrompt pins the third arrival shape,
+// found in review. A signal can land after this run segment began but before
+// the gate is reached, in which case it is buffered on the channel rather than
+// carried in the run's state, and the carried-signal peek above does not see
+// it. The gate still resolves without ever parking, so the prompt must not be
+// evaluated, exactly as the local driver's queue peek already decides; a
+// prompt that fails at runtime otherwise fails the run on this driver alone,
+// which is the driver disagreement this test exists to keep dead.
+func TestAnEarlySignalInTheSameRunSkipsThePrompt(t *testing.T) {
+	t.Parallel()
+
+	env := newWaitEnv(t)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow("approve", &v1.SignalDelivery{})
+	}, time.Minute)
+
+	gate := signalStep("gate", "approve", time.Hour)
+	gate.GetWait().GetSignal().Prompt = v1.NewExpr("inputs.missing")
+
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: &v1.Workflow{
+		Name: "early-in-segment",
+		Steps: []*v1.Node{
+			sleepStep("lead", 30*time.Minute),
+			gate,
+		},
+	}})
+
+	require.True(t, env.IsWorkflowCompleted())
+	require.NoError(t, env.GetWorkflowError(),
+		"a gate answered before it was reached evaluated its prompt anyway and failed the run")
+}

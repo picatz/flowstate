@@ -133,6 +133,24 @@ func (e *executor) waitForSignal(node *v1.Node, signal *v1.Signal, timeout time.
 		return v1.SignalOutputs(payload, sender, false), nil
 	}
 
+	// The same signal, one segment younger: delivered after this run began but
+	// before this step was reached, so it sits buffered on the channel rather
+	// than carried in the run's state. Consumed here, before the bound and the
+	// prompt, for the reason the carried one is: this gate resolves without
+	// ever parking. The local driver peeks its own delivered queue at exactly
+	// this point, so without this peek the two drivers disagree about whether
+	// the prompt of a gate nobody ever saw held was evaluated at all, which a
+	// prompt that fails at runtime turns into a run failing on one driver and
+	// finishing on the other.
+	channel := workflow.GetSignalChannel(e.ctx, name)
+
+	var early v1.SignalDelivery
+	if channel.ReceiveAsync(&early) {
+		workflow.GetLogger(e.ctx).Info("step consumed a signal that arrived earlier in this run",
+			"id", node.GetId(), "signal", name)
+		return v1.SignalOutputs(early.GetPayload(), early.GetSender(), false), nil
+	}
+
 	// A bound that has already lapsed. Answered before the selector rather than
 	// through a zero-length timer, because a selector holding both a ready channel
 	// and an already-fired timer may take either, and "which one" would then be a
@@ -175,8 +193,6 @@ func (e *executor) waitForSignal(node *v1.Node, signal *v1.Signal, timeout time.
 
 	leave := e.waits.enter(e.pendingWait(node, signal, deadline, prompt, promptCut))
 	defer leave()
-
-	channel := workflow.GetSignalChannel(e.ctx, name)
 
 	var delivery v1.SignalDelivery
 
