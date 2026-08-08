@@ -117,6 +117,15 @@ jobs:
       - name: Test plugin modules
         run: make test-plugins
 
+      # A different schedule, not a longer one. The step above runs at the
+      # runner's GOMAXPROCS, where the local harness's virtual clock reaches
+      # only the interleavings parallelism happens to produce; GOMAXPROCS=1
+      # reaches the ones it does not. Cheap enough to sit in this job rather
+      # than earn one of its own — see the Makefile target for why it is
+      # scoped to the package whose every claim is an ordering claim.
+      - name: Ordering claims hold under a different schedule
+        run: make test-ordering
+
       # The same mechanism as the proto job's generated-code check, on the four
       # reference documents that are derived rather than written: the task
       # reference from the registry, the CLI reference from the cobra tree, the
