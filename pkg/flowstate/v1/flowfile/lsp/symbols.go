@@ -1,7 +1,15 @@
 package lsp
 
 import (
+	"io"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+
 	"github.com/sourcegraph/go-lsp"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
 // A Flowfile is a list of steps, so its outline is the list of steps, and
@@ -67,7 +75,7 @@ func documentSymbols(doc *document) []lsp.SymbolInformation {
 }
 
 // definitionAt resolves a ${steps.<id>.<output>} reference to the step's id
-// declaration.
+// declaration, and a `call:` target to the file it names.
 //
 // Only a reference to an earlier step resolves. A forward reference is a mistake
 // the diagnostics already report, and jumping to it would suggest it works.
@@ -78,6 +86,14 @@ func definitionAt(doc *document, pos lsp.Position) []lsp.Location {
 	from := doc.parsed.stepAt(pos)
 	if from == nil {
 		return nil
+	}
+
+	// A call's target is not an expression, so it is answered before the walk
+	// below rather than inside it. It is also the only definition in this
+	// language that is in another file — every other one is a position in the
+	// document the cursor is already in.
+	if locations := callDefinition(doc, from, pos); locations != nil {
+		return locations
 	}
 
 	var locations []lsp.Location
@@ -116,4 +132,118 @@ func definitionAt(doc *document, pos lsp.Position) []lsp.Location {
 		}
 	}
 	return nil
+}
+
+// callDefinition resolves a `call:` step's target — when the cursor is on it —
+// to the Flowfile it names.
+//
+// A call is the one place a Flowfile names another file, so it is the one place
+// this language has a definition that is not a position in the document already
+// open. Three things decide whether there is an answer, and each of them can only
+// take one away:
+//
+//   - Where the path is resolved from. A call is relative to the calling *file's*
+//     own directory — not the editor's working directory, not a workspace root —
+//     and the rule is asked of [flowfile.ResolveCallTarget], the same function the
+//     compiler asks. A second path rule here is how an editor comes to navigate
+//     to a file the run does not compile.
+//   - Whether the caller has a location at all. An untitled buffer has no
+//     directory for a relative path to mean anything against, which is the same
+//     answer [document.filesystemPath] gives the diagnostics.
+//   - Whether the file is there. A [lsp.Location] naming a path that does not
+//     exist opens an editor on nothing, or worse, on an empty buffer it offers to
+//     create — a wrong answer where silence is a correct one. Whether a missing
+//     callee is *reported* belongs to the validator and is not touched here.
+//
+// The stat, and the bounded read below it, are I/O on an explicit
+// go-to-definition request rather than on the keystroke path — which is the
+// distinction that keeps this on the right side of the rule that keeps DNS out of
+// a validator.
+func callDefinition(doc *document, from *parsedStep, pos lsp.Position) []lsp.Location {
+	if from.callEntry == nil || !contains(from.callEntry.valueRange(), pos) {
+		return nil
+	}
+
+	target := from.callEntry.valueText()
+	if target == "" {
+		return nil
+	}
+
+	callerPath, ok := doc.filesystemPath()
+	if !ok {
+		return nil
+	}
+
+	located := flowfile.ResolveCallTarget(callerPath, target)
+	if located.Refusal != flowfile.CallTargetResolved {
+		// A path the compiler refuses to read — absolute, or climbing out of the
+		// calling file's directory. The diagnostic already says so; navigating
+		// there anyway would say the call works.
+		return nil
+	}
+
+	info, err := os.Stat(located.Path)
+	if err != nil || !info.Mode().IsRegular() {
+		return nil
+	}
+
+	return []lsp.Location{{URI: fileURI(located.Path), Range: calleeRange(located.Path)}}
+}
+
+// calleeRange is where in the called file to put the cursor: its `name:`, or the
+// start of the file when there is not one to find.
+//
+// A callee's name is what the author is going to the file to see, and landing on
+// it rather than on line one is the difference between arriving in a file and
+// arriving at the thing that was named. It is best effort by construction — a
+// callee that does not parse, or is too large to be worth reading, still has a
+// first line, and arriving there is a better answer than not arriving.
+//
+// The read is bounded by [maxDocumentBytes], the same bound an open document
+// gets. Nothing about being on the other end of a `call:` makes a file smaller,
+// and a definition request must not turn into an unbounded read of whatever the
+// path happens to name.
+func calleeRange(path string) lsp.Range {
+	f, err := os.Open(path)
+	if err != nil {
+		return documentStart
+	}
+	defer f.Close()
+
+	// One byte past the bound, so that a file at exactly the limit is read whole
+	// and one above it is recognizable as over rather than silently truncated
+	// into a document that parses as something its author did not write.
+	data, err := io.ReadAll(io.LimitReader(f, maxDocumentBytes+1))
+	if err != nil || len(data) > maxDocumentBytes {
+		return documentStart
+	}
+
+	text := string(data)
+	parsed, err := parseFlowfile(text, newLineIndex(text))
+	if err != nil || parsed == nil || parsed.nameEntry == nil {
+		return documentStart
+	}
+	return parsed.nameEntry.valueRange()
+}
+
+// fileURI renders a filesystem path as the `file://` URI an editor is handed
+// back.
+//
+// Built through [url.URL] rather than by concatenation, for the reason
+// [document.filesystemPath] parses one rather than trimming a prefix: a path
+// holding a space, a `#`, or anything non-ASCII has to arrive percent-encoded or
+// the client resolves a different path than the one meant — and this is the
+// direction that produces the encoding the other direction is careful to undo.
+func fileURI(path string) lsp.DocumentURI {
+	slashed := filepath.ToSlash(path)
+
+	// A Windows path begins with its drive letter, and a URI path must begin
+	// with a separator; `C:/x` becomes `/C:/x`, which is the spelling
+	// filesystemPath reads back.
+	if !strings.HasPrefix(slashed, "/") {
+		slashed = "/" + slashed
+	}
+
+	u := url.URL{Scheme: "file", Path: slashed}
+	return lsp.DocumentURI(u.String())
 }

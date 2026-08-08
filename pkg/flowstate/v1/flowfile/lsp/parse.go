@@ -170,6 +170,18 @@ type parsedStep struct {
 	// standing forEachEntry gives a `for_each` block.
 	loopEntry *entry
 
+	// callEntry is a `call:` and its value: the path of another Flowfile, relative
+	// to this file's own directory.
+	//
+	// Held on the model rather than looked up among the step's other keys because
+	// it is the one value in a Flowfile that names a *file*, and go-to-definition
+	// follows it — the only definition this language has that lives outside the
+	// document. Recording it here is what keeps that answer from being derived by
+	// searching for a key called `call`, which is the same mistake `timeout:`
+	// taught: a word can be spelled in more than one position, and the model is
+	// where the question of which one this is has already been settled.
+	callEntry *entry
+
 	// waitUntilEntry is a wait whose value is an expression naming the moment to
 	// wait for.
 	//
@@ -711,6 +723,13 @@ func fillParsedStep(s *parsedStep, entries []*entry) {
 				continue
 			}
 			s.loopEntry = e
+		case "call":
+			// Only the scalar form names a file. `call:` written as a mapping is a
+			// mistake the validator reports, and there would be no path in it to
+			// resolve.
+			if s.callEntry == nil && e.value != nil && e.value.kind == kindScalar {
+				s.callEntry = e
+			}
 		default:
 			// A task — decided by flowfile.StepTaskKeys, the same call the compiler
 			// makes, so the editor underlines the token `flow validate` names.
