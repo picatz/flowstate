@@ -73,13 +73,7 @@ import (
 // that can hold registrations can be passed one — including a test environment
 // wrapping a real worker.
 func Register(w worker.Registry, runtime ...TaskRuntimeConfig) {
-	w.RegisterWorkflowWithOptions(Run, workflow.RegisterOptions{
-		// Pinned, so an in-flight run is never handed to a different interpreter
-		// than the one that has been executing it. On a worker that has not opted
-		// into versioning this is inert: the SDK records it and the server has no
-		// deployment to pin to.
-		VersioningBehavior: workflow.VersioningBehaviorPinned,
-	})
+	RegisterWorkflows(w)
 
 	w.RegisterActivity(Task)
 	w.RegisterActivity(TaskInScope)
@@ -97,6 +91,36 @@ func Register(w worker.Registry, runtime ...TaskRuntimeConfig) {
 	// interpreter names it, and a name history contains is a name a worker must
 	// still answer to.
 	w.RegisterActivity(TaskWithPrev)
+}
+
+// WorkflowRegistry is the workflow half of [worker.Registry].
+//
+// It exists because the other thing that has to hold this package's workflow
+// registration is not a worker at all: [worker.WorkflowReplayer], which replays a
+// recorded history against current code and therefore registers workflows and
+// nothing else — an activity is never executed during a replay, only named by the
+// history. Narrowing the parameter is what lets the replay corpus in
+// replay_test.go register [Run] the way a real worker does rather than by hand,
+// which matters more here than it looks: replaying against different registration
+// options than production uses would make the gate answer a question nobody asked.
+type WorkflowRegistry interface {
+	RegisterWorkflowWithOptions(w any, options workflow.RegisterOptions)
+}
+
+// RegisterWorkflows installs the interpreter workflow, and only the workflow.
+//
+// The single caller that is not [Register] is the replay gate. Keeping the
+// options here, in one function both reach, is the same argument [Register]'s own
+// doc makes about its five lines: a registration is a thing to get exactly right
+// once.
+func RegisterWorkflows(r WorkflowRegistry) {
+	r.RegisterWorkflowWithOptions(Run, workflow.RegisterOptions{
+		// Pinned, so an in-flight run is never handed to a different interpreter
+		// than the one that has been executing it. On a worker that has not opted
+		// into versioning this is inert: the SDK records it and the server has no
+		// deployment to pin to.
+		VersioningBehavior: workflow.VersioningBehaviorPinned,
+	})
 }
 
 // DeploymentOptions builds the worker's versioning configuration.
