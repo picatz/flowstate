@@ -99,7 +99,11 @@ func definitionAt(doc *document, pos lsp.Position) []lsp.Location {
 	var locations []lsp.Location
 	for _, in := range from.expressionEntries() {
 		walkValues(in.value, func(v *value) {
-			if locations != nil || !v.fenced || !contains(v.exprRange, pos) {
+			// Only an inline fence has a cursor position inside it to resolve.
+			// A jump computed from a folded offset would land on whatever name
+			// happens to sit at that byte, which is a worse answer than none:
+			// go-to-definition is trusted to be right when it moves at all.
+			if locations != nil || !v.fenced || !v.inline || !contains(v.exprRange, pos) {
 				return
 			}
 			cursor := doc.index.offsetOfPosition(pos) - v.exprOffset
