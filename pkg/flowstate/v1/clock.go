@@ -308,10 +308,11 @@ func (c *VirtualClock) Leave() {
 // is not evidence that the clock should move: a participant that has just made
 // another one runnable.
 //
-// `flow test`'s scripted signal delivery is that caller. Its goroutine parks
-// on the moment its `at:` names, delivers, and is then done — but the run it
-// delivered to is, at that instant, awake and about to carry on, and has no
-// way to have said so yet. [VirtualClock.Leave]'s own advance would run in
+// `flow test`'s scripted signal delivery is that caller, and only on the
+// deliveries that actually woke a wait — [LocalSignals.DeliverFromWaking] is
+// what tells it which those were. Its goroutine parks on the moment its `at:`
+// names, delivers, and is then done — but the run it woke is, at that instant,
+// awake and about to carry on, and has no way to have said so yet. [VirtualClock.Leave]'s own advance would run in
 // that window, and a run inside a bounded `wait_for_signal:` still has its own
 // timeout registered until it gets far enough to withdraw it — so the clock
 // would find one parked timer, one participant, and jump the whole run forward
