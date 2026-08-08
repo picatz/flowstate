@@ -312,6 +312,24 @@ func redactGetResponse(response *v1.GetResponse, workflow *v1.Workflow, reveal b
 
 	clone.RunOutputs = redactRunOutputs(clone.RunOutputs, sensitive, false)
 
+	// [v1.GetResponse.Starter] passes through untouched, deliberately, and it is
+	// worth saying so rather than leaving it to the absence of a line.
+	//
+	// What this file redacts is *the workload's data* - values a run computed or
+	// was given, whose sensitivity is a property of a specification this call
+	// site may not hold. A starter is not that. It is metadata the service itself
+	// recorded about the run at submit, from the authenticated caller, in exactly
+	// the form the run's own [v1.WorkloadIdentity] already carries and the form a
+	// `signals:` rule already names - the same class as the workflow id, the run
+	// id and the timestamps beside it, none of which are redacted either. A
+	// caller authorized to read this response is, by construction, authorized
+	// within the tenant that submitted the run.
+	//
+	// It is also the one field here whose whole purpose is to be *compared*: the
+	// reason it carries the raw `issuer#subject` rather than a display form is so
+	// a surface can check it against a policy rule. Redacting it would leave a
+	// field that exists to be compared and cannot be.
+
 	if outs, ok := clone.Kind.(*v1.GetResponse_Outputs); ok && outs.Outputs != nil {
 		outs.Outputs.RunOutputs = redactRunOutputs(outs.Outputs.RunOutputs, sensitive, false)
 		outs.Outputs = redactStepOutputs(outs.Outputs, sensitive, false)

@@ -367,6 +367,12 @@ func validateAtDepth(wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnos
 	// so one call here covers the whole tree.
 	ds = append(ds, checkSensitiveLog(wf)...)
 
+	// A `wait_for_signal:`'s `prompt:` that reaches an input declared
+	// `sensitive:`, or holds a secret reference - see sensitive_prompt.go for
+	// why the rule there is wider than the one above it. Recurses on its own,
+	// the same way the two checks above do.
+	ds = append(ds, checkSensitivePrompt(wf)...)
+
 	// Tasks and expression references.
 	scope := newRefScope(wf)
 	for i, node := range wf.GetSteps() {
@@ -1878,6 +1884,16 @@ func validateWait(id string, wait *v1.Wait, scope refScope, index int, wf *v1.Wo
 		// step-level span first, pointing the diagnostic at the valid outer
 		// timeout while the faulty expression sat one level down (#318 review).
 		ds = append(ds, validateInputRefs(id, "wait_for_signal.timeout", computed, waiting, index, wf)...)
+	}
+	if prompt := wait.GetSignal().GetPrompt(); prompt != nil {
+		// Named with its full path for the reason `timeout:` is: a step may carry
+		// other keys called `prompt` in future, and a bare field name makes Locate
+		// find whichever span it reaches first.
+		//
+		// Checked against `waiting` and not against the shaping scope below: a
+		// prompt is evaluated when the wait *parks*, so the wait's own result does
+		// not exist yet and `${payload.x}` here really is naming a step.
+		ds = append(ds, validateInputRefs(id, "wait_for_signal.prompt", prompt, waiting, index, wf)...)
 	}
 
 	// A `wait_for_signal:`'s own `outputs:` sees three more names than the rest of

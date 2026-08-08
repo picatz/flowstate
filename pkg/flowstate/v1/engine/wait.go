@@ -133,6 +133,24 @@ func (e *executor) waitForSignal(node *v1.Node, signal *v1.Signal, timeout time.
 		return v1.SignalOutputs(payload, sender, false), nil
 	}
 
+	// The same signal, one segment younger: delivered after this run began but
+	// before this step was reached, so it sits buffered on the channel rather
+	// than carried in the run's state. Consumed here, before the bound and the
+	// prompt, for the reason the carried one is: this gate resolves without
+	// ever parking. The local driver peeks its own delivered queue at exactly
+	// this point, so without this peek the two drivers disagree about whether
+	// the prompt of a gate nobody ever saw held was evaluated at all, which a
+	// prompt that fails at runtime turns into a run failing on one driver and
+	// finishing on the other.
+	channel := workflow.GetSignalChannel(e.ctx, name)
+
+	var early v1.SignalDelivery
+	if channel.ReceiveAsync(&early) {
+		workflow.GetLogger(e.ctx).Info("step consumed a signal that arrived earlier in this run",
+			"id", node.GetId(), "signal", name)
+		return v1.SignalOutputs(early.GetPayload(), early.GetSender(), false), nil
+	}
+
 	// A bound that has already lapsed. Answered before the selector rather than
 	// through a zero-length timer, because a selector holding both a ready channel
 	// and an already-fired timer may take either, and "which one" would then be a
@@ -158,10 +176,23 @@ func (e *executor) waitForSignal(node *v1.Node, signal *v1.Signal, timeout time.
 	if bounded {
 		deadline = timestamppb.New(workflow.Now(e.ctx).Add(timeout))
 	}
-	leave := e.waits.enter(e.pendingWait(node, signal, deadline))
-	defer leave()
 
-	channel := workflow.GetSignalChannel(e.ctx, name)
+	// The question this gate is asking, resolved here - at the same point the
+	// wait announces itself, and after both ways above that a wait resolves
+	// without ever parking. `workflow.Now` again, which replays to the instant it
+	// first returned, so a prompt naming `now` reads the same on every replay.
+	//
+	// A prompt that fails to evaluate fails the step, exactly as a `timeout:`
+	// that fails to evaluate does, and the local driver fails at the same point:
+	// a gate that parks with no question would leave an approver looking at a
+	// blank where the decision was meant to be.
+	prompt, promptCut, err := v1.EvalSignalPrompt(context.Background(), signal, e.scope, workflow.Now(e.ctx))
+	if err != nil {
+		return nil, nodeFailed(err)
+	}
+
+	leave := e.waits.enter(e.pendingWait(node, signal, deadline, prompt, promptCut))
+	defer leave()
 
 	var delivery v1.SignalDelivery
 

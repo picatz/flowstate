@@ -3,6 +3,7 @@ package tests
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -43,6 +44,21 @@ type WantWait struct {
 	SignalName  string
 	Policed     bool
 	HasDeadline bool
+
+	// Prompt is the exact text the gate must report as its question, compared
+	// exactly rather than by presence - unlike HasDeadline, whose value
+	// legitimately differs between a replay-safe clock and a virtual one. A
+	// prompt is computed from the specification and the run's own scope, both
+	// identical on the two drivers, so anything weaker than equality would leave
+	// room for exactly the disagreement this table exists to rule out. Empty
+	// means the gate must report no question at all.
+	Prompt string
+
+	// PromptTruncated is whether the gate must report its question as cut short
+	// at [v1.MaxWaitPromptBytes]. Both drivers read that bound from the package
+	// they both import, so a driver answering differently here is a driver that
+	// found a second copy of it.
+	PromptTruncated bool
 }
 
 // PendingWaitCase is a workflow that parks, what it must say while parked, and
@@ -110,6 +126,51 @@ func PendingWaitCases() []PendingWaitCase {
 			}},
 		},
 		{
+			// The whole point of a prompt: the gate says what agreeing to it
+			// means, computed from the run's own scope rather than written as a
+			// fixed string, so the question names the particulars this run is
+			// about.
+			Name: "a gate reports the question it is asking, computed from the run's scope",
+			Workflow: &v1.Workflow{
+				Name: "asking-gate",
+				Vars: map[string]*v1.Value{"target": v1.NewValue("production")},
+				Steps: []*v1.Node{
+					askingGate("release", "release-approved", time.Hour,
+						v1.NewExpr(`"deploy to " + vars.target + "?"`)),
+				},
+			},
+			Release: []string{"release-approved"},
+			Want: []WantWait{{
+				StepID:      "release",
+				SignalName:  "release-approved",
+				HasDeadline: true,
+				Prompt:      "deploy to production?",
+			}},
+		},
+		{
+			// A prompt whose text is as long as whatever a caller passed into it
+			// is a prompt whose length the author did not choose. Cut at
+			// [v1.MaxWaitPromptBytes] and flagged, on both drivers, from the one
+			// constant both read - a silently short question is one somebody
+			// might answer having read half of it.
+			Name: "a question longer than the bound is cut, and says it was cut",
+			Workflow: &v1.Workflow{
+				Name: "long-question",
+				Steps: []*v1.Node{
+					askingGate("verbose", "eventually", time.Hour,
+						v1.NewValue(strings.Repeat("q", v1.MaxWaitPromptBytes+64))),
+				},
+			},
+			Release: []string{"eventually"},
+			Want: []WantWait{{
+				StepID:          "verbose",
+				SignalName:      "eventually",
+				HasDeadline:     true,
+				Prompt:          strings.Repeat("q", v1.MaxWaitPromptBytes),
+				PromptTruncated: true,
+			}},
+		},
+		{
 			Name: "a gate inside a sequential loop reports the loop as its path",
 			Workflow: &v1.Workflow{
 				Name: "gate-in-loop",
@@ -145,6 +206,14 @@ func signalGate(id, name string, timeout time.Duration) *v1.Node {
 	}
 
 	return &v1.Node{Id: id, Kind: &v1.Node_Wait{Wait: wait}}
+}
+
+// askingGate returns a signal gate that also asks a question.
+func askingGate(id, name string, timeout time.Duration, prompt *v1.Value) *v1.Node {
+	node := signalGate(id, name, timeout)
+	node.GetWait().GetSignal().Prompt = prompt
+
+	return node
 }
 
 // AssertPendingWaits checks that what a driver reported a run parked on is
@@ -184,6 +253,19 @@ func AssertPendingWaits(t testing.TB, got []*v1.PendingWait, want []WantWait) {
 		if diff := comparePaths(wait.GetPath(), expected.Path); diff != "" {
 			t.Errorf("step %q reported path %v, want %v (%s)",
 				expected.StepID, wait.GetPath(), expected.Path, diff)
+		}
+
+		if wait.GetPrompt() != expected.Prompt {
+			t.Errorf("step %q reported prompt %q, want %q. A gate's question is computed from the "+
+				"specification and the run's own scope, both identical on either driver, so a "+
+				"difference here is a rehearsal telling an author something production will not",
+				expected.StepID, wait.GetPrompt(), expected.Prompt)
+		}
+
+		if wait.GetPromptTruncated() != expected.PromptTruncated {
+			t.Errorf("step %q reported prompt_truncated=%v, want %v. Both drivers read the bound from "+
+				"v1.MaxWaitPromptBytes, so a disagreement here means one of them found a second copy of it",
+				expected.StepID, wait.GetPromptTruncated(), expected.PromptTruncated)
 		}
 
 		if wait.GetPoliced() != expected.Policed {
@@ -230,8 +312,9 @@ func describeWaits(waits []*v1.PendingWait) string {
 		if wait.GetDeadline() != nil {
 			deadline = wait.GetDeadline().AsTime().String()
 		}
-		described = append(described, fmt.Sprintf("{step %q path %v signal %q policed=%v %s}",
-			wait.GetStepId(), wait.GetPath(), wait.GetSignalName(), wait.GetPoliced(), deadline))
+		described = append(described, fmt.Sprintf("{step %q path %v signal %q policed=%v %s prompt %q cut=%v}",
+			wait.GetStepId(), wait.GetPath(), wait.GetSignalName(), wait.GetPoliced(), deadline,
+			wait.GetPrompt(), wait.GetPromptTruncated()))
 	}
 	sort.Strings(described)
 

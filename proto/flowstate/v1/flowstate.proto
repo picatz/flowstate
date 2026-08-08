@@ -1459,6 +1459,61 @@ message Signal {
   // other step output. What compaction *does* need is that the references these
   // expressions make are collected — see `CollectNodeRefs`.
   map<string, Value> outputs = 2;
+
+  // Prompt is what this gate is asking for, in the author's own words, carried
+  // to whoever is being asked.
+  //
+  // A gate could say which signal releases it and could not say what agreeing
+  // to it means. `deploy-approved` is a routing key, not a question: an
+  // operator holding a run id learned the name to send and nothing about what
+  // they would be approving. This is the sentence that was missing, and it
+  // travels on [PendingWait.prompt] so every surface that reports a parked gate
+  // reports it.
+  //
+  // An expression rather than a literal string, because the interesting part of
+  // an approval is the particulars: `${"deploy %s to %s?".format([inputs.version,
+  // inputs.environment])}` says which build and which environment, and a fixed
+  // string cannot. A plain unfenced string is still a plain string, exactly as
+  // it is in every other input position.
+  //
+  // # When it is evaluated, and what it sees
+  //
+  // Once, at the moment the wait begins parking, on both drivers - the same
+  // point the wait announces itself to the reporting registry, and after both
+  // ways a wait can resolve without parking at all (a signal that arrived
+  // early, a bound that had already lapsed). A gate the run walks straight
+  // through evaluates no prompt, because it never asks anybody anything.
+  //
+  // It sees the enclosing scope and [NowIdentifier], the same names
+  // `timeout:` sees. It does *not* see `payload`, `sender` or `timed_out`:
+  // those are the wait's result, and the result does not exist yet when the
+  // question is asked. That asymmetry with `outputs:` is the honest one, and
+  // it is why this is a sibling of that key rather than an entry in it.
+  //
+  // A prompt that fails to evaluate fails the step, exactly as a `timeout:`
+  // that fails to evaluate does. Silently parking with no question is the one
+  // outcome worth refusing: nobody would learn the gate had asked anything, and
+  // an approver would be shown a blank where the decision was supposed to be.
+  //
+  // # Sensitivity, which is why this field is not simply a string
+  //
+  // The evaluated text is rendered into *other people's* clients - an approver
+  // who is not the run's author, and who was given a run id rather than the
+  // file. So the rule the `log:` lint draws at direct surfacing is drawn wider
+  // here: a prompt may not *reach* an input declared `sensitive:` at all, by any
+  // spelling, and may not hold a `${secret(...)}` reference. Both are refused at
+  // compile where they are statically knowable, and refused again fail-closed at
+  // submit by [CheckWaitPromptsAreAskable]. A prompt that still holds a secret
+  // reference when it is evaluated - a specification built in process, never
+  // parsed and never submitted - renders as a refusal rather than as the secret.
+  //
+  // # Bounded
+  //
+  // The evaluated text is bounded by [MaxWaitPromptBytes], read by both drivers
+  // from the package both import. Text past the bound is cut and
+  // [PendingWait.prompt_truncated] says so, because a question a reader cannot
+  // tell was cut short is a question they may answer having read half of it.
+  Value prompt = 3;
 }
 
 // SignalSender is who the server attests sent a signal — never what the
@@ -3052,6 +3107,45 @@ message GetResponse {
   // finished run's state is its outputs, which the oneof above already
   // answers.
   EntityState entity_state = 11;
+
+  // Starter is who submitted this run, as the qualified `issuer#subject` string
+  // the server recorded on it at submit.
+  //
+  // # Why it was invisible, and why that mattered
+  //
+  // A run has always recorded its starter - `FlowstateServer.Signal` reads it
+  // out of the run's memo to enforce [SignalPolicy.distinct_from_starter] - and
+  // no RPC answered with it. So a workflow could declare "the approver may not
+  // be whoever asked for this", the server could enforce it exactly, and nobody
+  // outside the server could see the fact being compared against. An operator
+  // told `PermissionDenied` on a `flow signal` had no way to learn that they
+  // were being refused for being the starter, and a surface rendering an
+  // approval gate could not say who was asking.
+  //
+  // # Why the raw qualified string, not a rendered display form
+  //
+  // Because `issuer#subject` is exactly what a [SignalPolicyRule.subject] names,
+  // and [QualifiedSubject] is the one join that produces it. A surface holding
+  // this can compare it to a policy rule, or to its own caller's identity, with
+  // a string equality that is the same comparison [SignalPolicyCheck] makes.
+  // Rendering it - splitting it, shortening it, dropping the issuer - would give
+  // this field a second, prettier spelling of an identity that this schema is
+  // otherwise careful to keep in exactly one form, and a reader who compared the
+  // pretty one would have written a check that passes for a subject minted by a
+  // different identity provider. A client that wants a display form can cut on
+  // the separator; a client that wants to compare must not have to reassemble.
+  //
+  // # Absent means absent
+  //
+  // Empty for a run started before the starter was recorded at all, and for one
+  // whose memo could not be read. There is no compatibility arm and no
+  // placeholder: "this server does not know who started this run" is a true
+  // answer and a different one from any subject, and a reader must not be handed
+  // something that compares equal to a real identity. Authorization never reads
+  // this field - it reads the same memo itself, and denies rather than proceeds
+  // when the answer is missing (see the server's authorizeSignal) - so an empty
+  // value here weakens nothing.
+  string starter = 12;
 }
 
 // EntityState is a bounded projection of a running workload's carried state,
@@ -3272,6 +3366,30 @@ message PendingWait {
   // `signals:` is not what authorizes a delivery to this run, so it is not what
   // is reported here either.
   bool policed = 5;
+
+  // Prompt is what this gate is asking for, evaluated from [Signal.prompt] at
+  // the moment the wait parked. Empty where the author wrote none.
+  //
+  // Everything the message-level comment says about this projection being
+  // non-secret by construction has to keep being true with a prompt in it, and
+  // a prompt is the one member here that is *not* simply a name written in the
+  // file - it is a value the file computed. That is exactly why [Signal.prompt]
+  // refuses to reach a `sensitive:` input or a secret reference: the containment
+  // argument is made at the field that produces the text, so this field carries
+  // text that was already refused the chance to hold anything private. A prompt
+  // that could not be produced safely arrives here as a refusal marker, never as
+  // the value it would have surfaced.
+  string prompt = 6;
+
+  // PromptTruncated is true when Prompt is shorter than what the author's
+  // expression produced, because it ran past [MaxWaitPromptBytes].
+  //
+  // A flag rather than an ellipsis somebody has to recognize, for
+  // [RunProgress.pending_waits_truncated]'s reason turned on a single value: a
+  // person deciding whether to approve something must be able to tell that they
+  // are reading part of the question. Truncation is at a UTF-8 boundary, so what
+  // is reported is always text rather than half a rune.
+  bool prompt_truncated = 7;
 }
 
 // Diagnostic is one problem found in a Flowfile, positioned in its source.

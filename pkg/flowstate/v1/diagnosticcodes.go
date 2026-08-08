@@ -83,6 +83,16 @@ const (
 	// distinct class rather than a general refusal because the fix is specific:
 	// log something derived from the value instead of the value itself.
 	DiagnosticCodeSensitiveInLog DiagnosticCode = "sensitive-in-log"
+
+	// DiagnosticCodeSensitiveInPrompt marks a `wait_for_signal:`'s `prompt:`
+	// that reaches an input declared `sensitive:`, or that holds a secret
+	// reference. A distinct class from the `log:` one it is a sibling of,
+	// because the rule is deliberately wider: a log message is read by the run's
+	// own operator, so that check refuses only direct surfacing, while a prompt
+	// is rendered to whoever is being asked to approve - somebody handed a run
+	// id rather than the file - so reaching the value at all is refused, derived
+	// or not.
+	DiagnosticCodeSensitiveInPrompt DiagnosticCode = "sensitive-in-prompt"
 )
 
 // DiagnosticCodeInfo is one entry of the registry [DiagnosticCodes] returns —
@@ -148,6 +158,12 @@ func DiagnosticCodes() []DiagnosticCodeInfo {
 			Description: "An input declared `sensitive:` is written directly into a `log:` message, " +
 				"where it would be recorded in run history and stdout in the clear; log a " +
 				"value derived from it instead of the value itself.",
+		},
+		{
+			Code: DiagnosticCodeSensitiveInPrompt,
+			Description: "A `wait_for_signal:`'s `prompt:` reaches an input declared `sensitive:`, or " +
+				"holds a secret reference; a prompt is rendered to whoever is being asked to " +
+				"approve, so ask the question without that value in it.",
 		},
 	}
 }

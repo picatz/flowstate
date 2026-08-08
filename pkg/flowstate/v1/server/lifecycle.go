@@ -250,6 +250,53 @@ func starterAsIdentity(memo *common.Memo) (*v1.WorkloadIdentity, bool, error) {
 	return &v1.WorkloadIdentity{Issuer: issuer, Subject: subject}, true, nil
 }
 
+// reportedStarter is who started a run, in the form [v1.GetResponse.Starter]
+// carries: the qualified "issuer#subject" string, empty when there is none to
+// report.
+//
+// One derivation, shared with the authorization path rather than parallel to it:
+// this reads [memoStarter], which is the same function [starterAsIdentity] reads
+// for [authorizeSignal]'s `distinct_from_starter` comparison, off the same
+// Describe response. A second reader that split or normalized the memo its own
+// way is how a surface comes to display an identity that the check compares
+// differently.
+//
+// An unreadable memo reports empty rather than an error, and that is not a
+// weakening of anything. [FlowstateServer.Get] is a read: nothing is authorized
+// on the strength of this field, and the handler that does authorize a delivery
+// reads the memo itself and *denies* when it cannot (see [authorizeSignal]). So
+// the two honest answers a reader can be given here - "nobody recorded one" and
+// "this could not be read" - are the same answer as far as a reader may act on
+// it, which is: do not treat anything as this run's starter. Reporting a
+// placeholder instead would hand them a string that compares equal to nothing
+// real, which is the one outcome worth ruling out.
+// A third case joins those two, and it is the reason this is not simply
+// [memoStarter]. [starterMemoEntry] writes the memo unconditionally, so an
+// unauthenticated submission - only possible in development - records the
+// qualified form of two empty strings, which is the bare separator and names
+// nobody. Reported as empty as well: a reader asking who started a run needs
+// "nobody this server can name", and handing them a one-character string that
+// is not a subject invites a comparison that can only ever be wrong.
+//
+// That deliberately does not distinguish "unauthenticated starter" from
+// "nothing recorded", and it does not need to - both are the same answer to the
+// only question this field is asked. [authorizeSignal] keeps the distinction,
+// because `distinct_from_starter` genuinely does have to compare against an
+// empty subject rather than refuse for want of one; it reads [memoStarter]
+// itself and is untouched by this.
+func reportedStarter(resp *workflowservice.DescribeWorkflowExecutionResponse) string {
+	starter, ok, err := memoStarter(resp.GetWorkflowExecutionInfo().GetMemo())
+	if err != nil || !ok {
+		return ""
+	}
+
+	if starter == v1.QualifiedSubject("", "") {
+		return ""
+	}
+
+	return starter
+}
+
 // memoTenant reads the namespace recorded on a run when it started.
 //
 // Takes the memo rather than a Describe response because a listing carries the

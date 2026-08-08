@@ -34,6 +34,14 @@ func newWaitEnv(t *testing.T) *testsuite.TestWorkflowEnvironment {
 	env.OnActivity(engine.TaskWithPrev, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskWithPrev)
 	env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 
+	// A workflow's own `vars:` are evaluated in an activity, so a wait whose
+	// expression reads one - a gate whose `prompt:` names `vars.target` - needs
+	// this registered or the run fails before it ever parks. Registered here
+	// rather than in the one test that needs it, because "this environment runs
+	// the engine" is what every caller of this helper means, and a caller
+	// discovering an unregistered activity learns nothing about waiting.
+	env.RegisterActivity(engine.WorkflowVars)
+
 	return env
 }
 

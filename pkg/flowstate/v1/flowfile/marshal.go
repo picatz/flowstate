@@ -647,6 +647,20 @@ func waitToYAML(wait *v1.Wait) (string, any, error) {
 		// command silently removes. `varsToYAML` records the same lesson.
 		mapping := yaml.MapSlice{{Key: "name", Value: kind.Signal.GetName()}}
 
+		// Directly after the name, because that is the order the two read in: what
+		// the gate is called, then what it is asking. Written back through
+		// [inputValueToYAML], the same writer `outputs:` entries use, so a fenced
+		// prompt comes back fenced and a plain sentence comes back plain - the
+		// round trip `signals.go` records the lesson of, where a key nothing wrote
+		// back was a key `flow fmt` silently deleted.
+		if prompt := kind.Signal.GetPrompt(); prompt != nil {
+			value, err := inputValueToYAML(prompt)
+			if err != nil {
+				return "", nil, fmt.Errorf("wait_for_signal prompt: %w", err)
+			}
+			mapping = append(mapping, yaml.MapItem{Key: "prompt", Value: value})
+		}
+
 		switch {
 		case wait.GetTimeoutExpr() != nil:
 			value, err := fencedExprToYAML(wait.GetTimeoutExpr())
