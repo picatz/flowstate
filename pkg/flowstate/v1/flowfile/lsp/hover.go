@@ -614,13 +614,27 @@ func hoverStepOutput(doc *document, from *parsedStep, ref reference, rng lsp.Ran
 	}
 	def, known := doc.tasks.Lookup(target.taskName)
 
+	shaping := target.shapingEntry()
+
 	var b strings.Builder
 	if ref.output == "" {
 		fmt.Fprintf(&b, "**`%s`** — step %d", rootedRef(target.id, ""), target.index+1)
 		if known {
 			fmt.Fprintf(&b, ", running the `%s` task", def.Name)
-			if names := fieldNames(def.Outputs); len(names) > 0 {
-				fmt.Fprintf(&b, "\n\nOutputs: `%s`", strings.Join(names, "`, `"))
+			switch {
+			case shaping != nil:
+				// The descriptor's names are exactly what shaping removed, so
+				// listing them here would hand the reader references nothing
+				// produces.
+				if names, ok := shapedOutputNames(shaping); ok && len(names) > 0 {
+					fmt.Fprintf(&b, "\n\nOutputs, named by its `%s:` shaping: `%s`", taskShapingKey, strings.Join(names, "`, `"))
+				} else {
+					fmt.Fprintf(&b, "\n\nIts `%s:` replaces the task's declared outputs with names that expression computes.", taskShapingKey)
+				}
+			default:
+				if names := fieldNames(def.Outputs); len(names) > 0 {
+					fmt.Fprintf(&b, "\n\nOutputs: `%s`", strings.Join(names, "`, `"))
+				}
 			}
 		}
 		return markdownHover(b.String(), rng)
@@ -629,6 +643,26 @@ func hoverStepOutput(doc *document, from *parsedStep, ref reference, rng lsp.Ran
 	fmt.Fprintf(&b, "**`%s`**", rootedRef(target.id, ref.output))
 	if !known {
 		fmt.Fprintf(&b, "\n\nOutput of step `%s`, whose task `%s` is not registered.", target.id, target.taskName)
+		return markdownHover(b.String(), rng)
+	}
+	if shaping != nil {
+		// A shaped step's outputs are the shaping's, so the descriptor is not
+		// consulted at all: its types describe values the step no longer
+		// produces, and "does not declare" — true one branch down for an
+		// unshaped step — would here be false about a file `flow validate`
+		// accepts. The type is whatever the shaping expression yields, which is
+		// not statically known, so none is claimed.
+		names, ok := shapedOutputNames(shaping)
+		if ok && slices.Contains(names, ref.output) {
+			fmt.Fprintf(&b, "\n\nShaped output of step `%s` on line %d: the step's `%s:` replaces what the `%s` task declares, and names this output itself.",
+				target.id, target.rng.Start.Line+1, taskShapingKey, def.Name)
+			return markdownHover(b.String(), rng)
+		}
+		fmt.Fprintf(&b, "\n\nOutput of step `%s` on line %d, whose `%s:` replaces what the `%s` task declares — what the step produces is decided by that expression.",
+			target.id, target.rng.Start.Line+1, taskShapingKey, def.Name)
+		if ok && len(names) > 0 {
+			fmt.Fprintf(&b, " It names `%s`.", strings.Join(names, "`, `"))
+		}
 		return markdownHover(b.String(), rng)
 	}
 	fd := findField(def.Outputs, ref.output)
