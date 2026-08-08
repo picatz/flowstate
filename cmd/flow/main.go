@@ -219,12 +219,23 @@ func temporalConfig(ctx context.Context, flags temporalFlags) (temporalclient.Co
 		return temporalclient.Config{}, err
 	}
 
+	// The payload codec, resolved once for the process and carried on the
+	// configuration rather than passed to Dial: `flow server` builds a pool from
+	// this same value, one client per mapped Temporal namespace, and a codec
+	// that covered only the fallback client would leave every mapped tenant's
+	// payloads in plaintext. See [payloadCodecConfig].
+	codec, err := payloadCodecConfig()
+	if err != nil {
+		return temporalclient.Config{}, err
+	}
+
 	cfg := temporalclient.Config{
 		Address:        flags.address,
 		Namespace:      flags.namespace,
 		Profile:        flags.profile,
 		MetricsHandler: metricsHandler,
 		Interceptors:   temporalClientInterceptors(),
+		Codec:          codec,
 	}
 
 	if flags.verbose {
@@ -343,6 +354,18 @@ func runWorker(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer c.Close()
+
+	// The interpreter's own copy of the converter this client was built with.
+	// Workflow-side code replaces the context's converter to decode a signal in
+	// either wire shape, and the SDK offers no way to read the one it is
+	// replacing — so without this the wrapper would fall back to the default
+	// converter and quietly fail to decode every signal on a deployment with a
+	// codec. See engine/codec.go.
+	workerCodec, err := payloadCodecConfig()
+	if err != nil {
+		return err
+	}
+	engine.UseCodec(workerCodec)
 
 	// Before the worker starts polling, because a worker that accepted a step for
 	// a plugin task it has not registered yet would answer `unknown task` for a
