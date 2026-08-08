@@ -35,7 +35,7 @@ import (
 // friction that makes a feature feel heavier than it is.
 
 // signalKeys are the keys of the mapping form of wait_for_signal.
-var signalKeys = []string{"name", "timeout", "outputs"}
+var signalKeys = []string{"name", "timeout", "prompt", "outputs"}
 
 // parseDuration reads a duration the way the DSL writes one, which is
 // [v1.ParseDuration] — Go's syntax, plus days.
@@ -217,6 +217,32 @@ func (c *compiler) waitForSignal(n ast.Node, path string, r ref) *v1.Wait {
 			return nil
 		}
 		wait.GetSignal().Outputs = shaped
+	}
+
+	// `prompt:` is what the gate is asking for, in the author's own words -
+	// read here for `outputs:`'s reason, because only a signal wait asks anybody
+	// anything. `sleep:` and `wait_until:` are refused the key by the grammar
+	// rather than by a check, since neither takes a mapping at all.
+	//
+	// [compiler.inputValue] is the reader, which is the same helper a task input
+	// and an `outputs:` entry go through: a fence means here what it means
+	// everywhere else, and an unfenced string stays the plain sentence it looks
+	// like. What is different is only what a prompt may *reach*, which is
+	// [checkSensitivePrompt]'s business and not this function's.
+	if f, found := fields.get("prompt"); found {
+		promptPath := fieldPath(path, "prompt")
+
+		// Recorded for `timeout:`'s reason: [compiler.expression] records only the
+		// expression's own span, so without a value span at this path a diagnostic
+		// about the prompt would land on the whole step instead of on the line.
+		c.pos.record(promptPath, spanOfNode(c.resolveQuiet(f.value)))
+
+		prompt := c.inputValue(f.value, promptPath,
+			ref{step: r.step, path: promptPath, label: "wait_for_signal prompt"})
+		if prompt == nil {
+			return nil
+		}
+		wait.GetSignal().Prompt = prompt
 	}
 
 	if f, found := fields.get("timeout"); found {

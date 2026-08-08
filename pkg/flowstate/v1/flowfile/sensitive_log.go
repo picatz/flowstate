@@ -71,27 +71,13 @@ import (
 // `sensitive:` into the log in the clear. See this file's doc for the boundary
 // it draws and the two sinks it deliberately does not cover.
 func checkSensitiveLog(wf *v1.Workflow) Diagnostics {
-	sensitive := sensitiveInputNames(wf)
+	sensitive := v1.SensitiveInputNames(wf)
 	if len(sensitive) == 0 {
 		// No sensitive inputs, nothing this lint can fire on — and the common
 		// case, so it costs one map build and returns.
 		return nil
 	}
 	return sensitiveLogInNodes(wf.GetSteps(), sensitive)
-}
-
-// sensitiveInputNames is the set of this workflow's inputs declared `sensitive:`.
-func sensitiveInputNames(wf *v1.Workflow) map[string]bool {
-	var names map[string]bool
-	for _, decl := range wf.GetDeclaredInputs() {
-		if decl.GetSensitive() {
-			if names == nil {
-				names = make(map[string]bool)
-			}
-			names[decl.GetName()] = true
-		}
-	}
-	return names
 }
 
 // sensitiveLogInNodes walks a list of sibling steps and, on its own, every

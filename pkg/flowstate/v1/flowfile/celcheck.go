@@ -154,6 +154,7 @@ func checkNodeExpressions(nodes []*v1.Node) Diagnostics {
 			ds = append(ds, typeErrors(id, "wait_until", kind.Wait.GetUntil())...)
 			ds = append(ds, typeErrors(id, "sleep", kind.Wait.GetDurationExpr())...)
 			ds = append(ds, typeErrors(id, "timeout", kind.Wait.GetTimeoutExpr())...)
+			ds = append(ds, typeErrors(id, "prompt", kind.Wait.GetSignal().GetPrompt())...)
 			shaped := kind.Wait.GetSignal().GetOutputs()
 			for _, name := range slices.Sorted(maps.Keys(shaped)) {
 				ds = append(ds, typeErrors(id, "outputs."+name, shaped[name])...)

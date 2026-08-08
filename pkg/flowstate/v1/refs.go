@@ -379,6 +379,15 @@ func CollectNodeRefs(node *Node, prev *Workflow_StepOutputs, refs map[string]map
 			CollectValueRefs(value, prev, refs)
 		}
 
+		// A `wait_for_signal:`'s own `prompt:` - the fifth expression position a
+		// wait can hold. It is evaluated when the wait *parks*, so unlike the
+		// shaping above it runs before any Continue-As-New the wait causes; a
+		// gate that lapses, is resumed and parks again on a later segment
+		// evaluates it a second time, on the far side of the compaction that
+		// would otherwise have dropped the step it names. Growing the message
+		// means growing this.
+		CollectValueRefs(kind.Wait.GetSignal().GetPrompt(), prev, refs)
+
 	case *Node_Call:
 		for _, value := range kind.Call.GetArguments() {
 			CollectValueRefs(value, prev, refs)

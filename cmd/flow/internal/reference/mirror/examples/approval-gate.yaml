@@ -192,9 +192,36 @@ steps:
   # `approver_subject` output below still need it, and re-exposing costs a line.
   # Reading a name this block dropped is a `flow validate` error, not an empty
   # value that quietly takes the other branch.
+  # `prompt:` is the question this gate is asking, and it exists because
+  # `deploy-approved` is a routing key rather than a question. Everything that
+  # makes this decision a decision - which build, which environment, who asked -
+  # was in this file, and whoever was being asked had a run id instead of this
+  # file. So the question got asked out of band, in a message somebody typed by
+  # hand, and the run and the question could drift apart with nothing to notice.
+  #
+  # It rides on the same answer that already reports a parked gate, so `flow get`
+  # on a run stuck here now says what agreeing to it would mean.
+  #
+  # Evaluated once, the moment this wait parks - not when it resolves - so it
+  # sees `inputs.*`, `steps.*` and `now`, and deliberately not `payload`,
+  # `sender` or `timed_out`: those are the wait's *result*, which does not exist
+  # yet when the question is asked. A gate released by a signal that arrived
+  # early never parks, and so never asks anything.
+  #
+  # `run.identity.subject` is read here for the same reason the `request` step
+  # above reads it: it is what the server attested about whoever submitted this
+  # run, so the approver is told who they are approving *for* rather than
+  # whatever a caller typed into an argument. `flow get` reports that subject on
+  # its own now too (`starter`), which is the fact `distinct_from_starter` above
+  # is checked against - so an approver refused for being the starter can see
+  # why.
   - id: approval
     wait_for_signal:
       name: deploy-approved
+      prompt: >-
+        ${"Approve deploying %s to %s, requested by %s?".format(
+            [inputs.version, inputs.environment,
+             run.identity.subject == "" ? "an unattested caller" : run.identity.subject])}
       timeout: 24h
       outputs:
         # The gate itself, stated once — and stated as the *outcome* rather than

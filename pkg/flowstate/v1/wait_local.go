@@ -479,7 +479,7 @@ func runWait(ctx context.Context, node *Node, wait *Wait, scope *Scope) (*Node_O
 			return nil, err
 		}
 
-		outputs, err := waitForSignalLocally(ctx, clock, node, kind.Signal, timeout, bounded)
+		outputs, err := waitForSignalLocally(ctx, clock, node, kind.Signal, scope, timeout, bounded)
 		if err != nil {
 			return nil, err
 		}
@@ -557,7 +557,15 @@ func waitLocally(ctx context.Context, clock Clock, d time.Duration) (*Node_Outpu
 // <= 0` used to be the encoding for "no timeout", so a bound that computed to zero
 // read as a gate that blocks forever. The two drivers answer this identically
 // because they are given the same two values by [EvalWaitTimeout].
-func waitForSignalLocally(ctx context.Context, clock Clock, node *Node, signal *Signal, timeout time.Duration, bounded bool) (*Node_Outputs, error) {
+func waitForSignalLocally(
+	ctx context.Context,
+	clock Clock,
+	node *Node,
+	signal *Signal,
+	scope *Scope,
+	timeout time.Duration,
+	bounded bool,
+) (*Node_Outputs, error) {
 	name := signal.GetName()
 
 	// A bound that has already lapsed, answered before anything blocks — the same
@@ -597,9 +605,18 @@ func waitForSignalLocally(ctx context.Context, clock Clock, node *Node, signal *
 			}
 		}
 
+		// The question this gate is asking, resolved at the instant it is known
+		// to be parking and after the delivery already in hand was taken above.
+		// The durable driver evaluates at exactly this point in its own arm, so
+		// a gate that never blocked asks nothing on either driver.
+		prompt, promptCut, err := EvalSignalPrompt(ctx, signal, scope, clock.Now())
+		if err != nil {
+			return nil, err
+		}
+
 		// Announced with no deadline, which is the honest answer for a gate
 		// that blocks until somebody acts rather than a deadline nobody set.
-		defer announceLocalWait(ctx, node, signal, nil)()
+		defer announceLocalWait(ctx, node, signal, nil, prompt, promptCut)()
 
 		rejoin := LeaveClockWhile(ctx)
 		defer rejoin()
@@ -650,6 +667,15 @@ func waitForSignalLocally(ctx context.Context, clock Clock, node *Node, signal *
 		return SignalOutputs(delivered.GetPayload(), delivered.GetSender(), false), nil
 	}
 
+	// The question this gate is asking, resolved at the instant it is known to
+	// be parking - after the delivery already in hand was taken above, so a gate
+	// this run walks straight through asks nobody anything. The durable driver
+	// evaluates at the matching point in its own arm.
+	prompt, promptCut, err := EvalSignalPrompt(ctx, signal, scope, clock.Now())
+	if err != nil {
+		return nil, err
+	}
+
 	// Announced from here, the instant this wait is known to be parking: a
 	// delivery already in hand was taken above, and a bound that had already
 	// lapsed returned further above still. Both drivers announce at that same
@@ -659,7 +685,7 @@ func waitForSignalLocally(ctx context.Context, clock Clock, node *Node, signal *
 	// The deadline is read from the run's clock rather than from the wall
 	// clock, so a `flow test` case under a [VirtualClock] reports the moment
 	// the workload will actually see, not one in a different year.
-	defer announceLocalWait(ctx, node, signal, timestamppb.New(clock.Now().Add(timeout)))()
+	defer announceLocalWait(ctx, node, signal, timestamppb.New(clock.Now().Add(timeout)), prompt, promptCut)()
 
 	waitCtx, cancel := context.WithCancel(ctx)
 	defer cancel()

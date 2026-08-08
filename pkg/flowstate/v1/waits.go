@@ -248,17 +248,32 @@ func enterConcurrentWait(ctx context.Context) context.Context {
 //
 // deadline is nil where the author wrote no `timeout:`, which is a different
 // fact from a deadline not yet reached: that gate blocks until somebody acts.
-func announceLocalWait(ctx context.Context, node *Node, signal *Signal, deadline *timestamppb.Timestamp) func() {
+//
+// prompt is what the gate is asking for, already evaluated and already bounded
+// by [EvalSignalPrompt]. Evaluated by the caller rather than here, and that
+// placement is load-bearing: a prompt that fails to evaluate fails the step, and
+// this function does nothing at all when nobody is watching, so evaluating it
+// here would make a run fail only while somebody was looking at it.
+func announceLocalWait(
+	ctx context.Context,
+	node *Node,
+	signal *Signal,
+	deadline *timestamppb.Timestamp,
+	prompt string,
+	promptTruncated bool,
+) func() {
 	reporting, ok := waitReportingFromContext(ctx)
 	if !ok {
 		return func() {}
 	}
 
 	return reporting.waits.enter(&PendingWait{
-		StepId:     node.GetId(),
-		Path:       reporting.ancestry,
-		SignalName: signal.GetName(),
-		Deadline:   deadline,
-		Policed:    reporting.policies[signal.GetName()] != nil,
+		StepId:          node.GetId(),
+		Path:            reporting.ancestry,
+		SignalName:      signal.GetName(),
+		Deadline:        deadline,
+		Policed:         reporting.policies[signal.GetName()] != nil,
+		Prompt:          prompt,
+		PromptTruncated: promptTruncated,
 	})
 }

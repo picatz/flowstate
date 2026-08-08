@@ -3526,6 +3526,111 @@ the name on the step that owns the data, which covers the approval-gate class â€
 gate, one source â€” and nothing here forecloses a broader answer if the corpus grows
 one.
 
+## The ninth round: a gate says what it is asking for
+
+### A signal name is a routing key, not a question
+
+`wait_for_signal: deploy-approved` tells a sender what to send. It says nothing about
+what agreeing means. Everything that made the decision a decision - which build, which
+environment, who asked for it - was written in the file, and the person being asked had
+a run id instead of the file.
+
+So the question got asked somewhere else: a chat message somebody typed by hand, a
+ticket, a shoulder tap. Two things then existed that were supposed to say the same
+thing, with nothing keeping them in agreement - the shape this document keeps
+returning to. A run could be re-submitted for a different version and the sentence
+in the chat window would still describe the old one.
+
+### `prompt:`, beside `name:` and `timeout:`
+
+```yaml
+- id: approval
+  wait_for_signal:
+    name: deploy-approved
+    prompt: ${"Approve deploying %s to %s?".format([inputs.version, inputs.environment])}
+    timeout: 24h
+```
+
+An expression, for the reason the whole key exists: the interesting part of an
+approval is the particulars, and a fixed string cannot name them. A plain unfenced
+string is still a plain string, exactly as in every other input position.
+
+It travels on the answer that already reports a parked gate - the same query, the
+same message, one more field - so every surface that could already say *which* gate a
+run is held at can now say what that gate is asking. Nothing had to learn about it
+twice.
+
+### When it is evaluated, and what that decides
+
+At the moment the wait *parks*, on both drivers, at the same point the gate announces
+itself. That is one instruction and it settles three questions.
+
+A gate that never parks asks nobody anything: a signal that arrived early, or a bound
+that had already lapsed, resolves the wait above the announcement, so no prompt is
+evaluated and none is reported. A run that walked straight through a gate never
+claimed to be held at one, and now it never claims to have asked a question either.
+
+The names it sees are the ones `timeout:` sees - the enclosing scope, plus `now`.
+Deliberately *not* `payload`, `sender` or `timed_out`. Those are the wait's result,
+and the result does not exist when the question is asked. That asymmetry is why this
+is a sibling of `outputs:` rather than an entry in it, and why `flow fix` needed no
+change: the `now` subtraction already covers the whole `wait_for_signal:` subtree,
+while the result subtraction is narrower and stops at `outputs:`, which is exactly the
+extent that was already correct.
+
+And a prompt that fails to evaluate fails the step, the same as a `timeout:` that
+fails to evaluate. Parking silently with no question is the outcome worth refusing:
+an approver would be shown a blank where the decision was meant to be, and nobody
+would learn the gate had asked anything.
+
+### Sensitivity: reaching, not surfacing
+
+The evaluated text is rendered into *other people's* clients. That one fact decides
+the rule, and it decides it differently from the `log:` lint this is otherwise a
+sibling of.
+
+A log message is read by the operator of the run that produced it, so that lint
+refuses only *direct* surfacing and leaves a derived value alone - `${hash(inputs.token)}`
+is a digest an author chose precisely so the value does not appear, and refusing it
+would train them to distrust the check. A prompt goes to somebody handed a run id
+rather than the file, and a prompt that merely *varies* with a private value discloses
+it: `${inputs.salary > 100000 ? "a large raise" : "a small raise"}` surfaces nothing
+verbatim and tells its reader the bracket.
+
+So a prompt may not reach an input declared `sensitive:` at all, by any spelling, and
+may not hold a `${secret(...)}` reference. The false-positive cost that argument
+usually carries is small here in a way it is not for `log:`: a workflow that declares
+nothing `sensitive:` is never examined, so the only authors who can meet this refusal
+are the ones who already said some input of theirs is private.
+
+Three layers, one rule. The compiler refuses it against a line and a column
+(`sensitive-in-prompt`). The submit boundary refuses it again, for a specification
+that never was a Flowfile, beside the identical check on `vars:`. And a prompt that
+still holds a secret reference when it is evaluated - a specification assembled in
+process and executed directly, which reaches neither of the first two - renders as
+`[prompt withheld: it names a secret]` rather than as the secret. `inputs[<computed>]`
+is refused too, and only where the workflow declares something sensitive: a check that
+cannot decide must not allow.
+
+### Bounded, and it says when it was cut
+
+The evaluated text is capped at `v1.MaxWaitPromptBytes` (2 KiB), read by both drivers
+from the package both import - one constant cannot disagree with itself, and a bound
+that did would make the truncation flag mean two things depending on which driver
+answered. The author chooses the expression; a caller chooses the values it
+interpolates, and a run may hold up to `v1.MaxPendingWaits` gates at once.
+
+Truncation is at a UTF-8 boundary and is reported, never silent: a question a reader
+cannot tell was cut short is one they may answer having read half of it.
+
+### What it deliberately does not do
+
+It does not sanitize the text for whatever renders it. A prompt can contain
+newlines and control characters, exactly as a signal payload and a step's outputs
+already can, and the surface that displays untrusted text is the place that question
+belongs - not this field, which would be one renderer's escaping rules baked into
+the schema.
+
 ## The standing rule
 
 Every claim in a design document about what this codebase currently does is a claim,

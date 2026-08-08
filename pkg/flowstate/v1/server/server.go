@@ -928,7 +928,13 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 				Status:     respStatus,
 				StartTime:  start,
 				CloseTime:  closed,
-				Progress:   runProgress(ctx, temporal, resp),
+				// Who submitted this run, off the same Describe response
+				// everything else here comes from and through the same reader
+				// authorization uses. See [reportedStarter]; empty is a real
+				// answer, and there is no compatibility arm for a run that
+				// predates the memo key.
+				Starter:  reportedStarter(resp),
+				Progress: runProgress(ctx, temporal, resp),
 				// From the same Describe response the status came from, so the
 				// answer to "why has this been RUNNING for six hours" costs no
 				// further round trip. See pendingActivities for what is and is
@@ -958,6 +964,12 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 				Status:     respStatus,
 				StartTime:  start,
 				CloseTime:  closed,
+				// Who submitted this run, off the same Describe response
+				// everything else here comes from and through the same reader
+				// authorization uses. See [reportedStarter]; empty is a real
+				// answer, and there is no compatibility arm for a run that
+				// predates the memo key.
+				Starter: reportedStarter(resp),
 				Kind: &v1.GetResponse_Outputs{
 					Outputs: &result,
 				},
@@ -979,6 +991,12 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 				Status:     respStatus,
 				StartTime:  start,
 				CloseTime:  closed,
+				// Who submitted this run, off the same Describe response
+				// everything else here comes from and through the same reader
+				// authorization uses. See [reportedStarter]; empty is a real
+				// answer, and there is no compatibility arm for a run that
+				// predates the memo key.
+				Starter: reportedStarter(resp),
 				Kind: &v1.GetResponse_Error{
 					Error: failureError(ctx, temporal, req.Msg.GetWorkflowId(), req.Msg.GetRunId(), respStatus),
 				},

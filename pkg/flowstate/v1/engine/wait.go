@@ -158,7 +158,22 @@ func (e *executor) waitForSignal(node *v1.Node, signal *v1.Signal, timeout time.
 	if bounded {
 		deadline = timestamppb.New(workflow.Now(e.ctx).Add(timeout))
 	}
-	leave := e.waits.enter(e.pendingWait(node, signal, deadline))
+
+	// The question this gate is asking, resolved here - at the same point the
+	// wait announces itself, and after both ways above that a wait resolves
+	// without ever parking. `workflow.Now` again, which replays to the instant it
+	// first returned, so a prompt naming `now` reads the same on every replay.
+	//
+	// A prompt that fails to evaluate fails the step, exactly as a `timeout:`
+	// that fails to evaluate does, and the local driver fails at the same point:
+	// a gate that parks with no question would leave an approver looking at a
+	// blank where the decision was meant to be.
+	prompt, promptCut, err := v1.EvalSignalPrompt(context.Background(), signal, e.scope, workflow.Now(e.ctx))
+	if err != nil {
+		return nil, nodeFailed(err)
+	}
+
+	leave := e.waits.enter(e.pendingWait(node, signal, deadline, prompt, promptCut))
 	defer leave()
 
 	channel := workflow.GetSignalChannel(e.ctx, name)

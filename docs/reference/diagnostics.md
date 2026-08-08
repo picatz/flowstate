@@ -18,3 +18,4 @@ everything else is `general`, and that is documented rather than pretended away.
 | `placement-refusal` | A construct is refused at the position it is written — an `undo:` the engine cannot order, a loop nested inside another loop. |
 | `retired-key` | A bare name is the pre-rooting spelling of a step reference; `flow fix` rewrites it rather than an author needing to decide what to write. |
 | `sensitive-in-log` | An input declared `sensitive:` is written directly into a `log:` message, where it would be recorded in run history and stdout in the clear; log a value derived from it instead of the value itself. |
+| `sensitive-in-prompt` | A `wait_for_signal:`'s `prompt:` reaches an input declared `sensitive:`, or holds a secret reference; a prompt is rendered to whoever is being asked to approve, so ask the question without that value in it. |

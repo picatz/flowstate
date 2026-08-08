@@ -158,6 +158,17 @@ var dslKeys = map[string][]dslKey{
 		{name: "name", detail: "string", docs: "The signal this step waits for, and what a sender addresses with `flow signal <workflow-id> <name>`."},
 		{name: "timeout", detail: "duration", docs: "Bounds the wait. A gate that lapses is not a failure: the step produces `timed_out: true` and the run carries on, " +
 			"so an author branches on it with `if: ${!" + v1.StepsRoot + ".approval.timed_out}`. Omit it to wait indefinitely."},
+		{name: "prompt", detail: "string or expression", docs: "What this gate is asking for, carried to whoever is being asked.\n\n" +
+			"A signal name is a routing key: `deploy-approved` says what to send and nothing about what agreeing means. " +
+			"This is the sentence, and it rides along on every surface that reports a parked gate - so an operator holding a run id " +
+			"learns the question rather than only the name.\n\n" +
+			"```yaml\nprompt: ${\"deploy %s to %s?\".format([" + v1.InputsRoot + ".version, " + v1.InputsRoot + ".environment])}\n```\n\n" +
+			"Evaluated once, the moment the wait *parks*, with `" + v1.NowIdentifier + "` bound over the ordinary scope - the same names `timeout:` sees. " +
+			"Not `" + v1.PayloadOutput + "`, `" + v1.SenderOutput + "` or `" + v1.TimedOutOutput + "`: those are the wait's result, and the result does not exist yet when the question is asked. " +
+			"A gate released by a signal that arrived early never parks, so it asks nothing.\n\n" +
+			"It may not reach an input declared `sensitive:`, by any spelling, and may not hold a `${secret(...)}` reference - " +
+			"a prompt is rendered to somebody who was handed a run id rather than this file, so the rule is reaching rather than surfacing. " +
+			"The evaluated text is bounded, and a prompt that was cut says so rather than looking complete."},
 		{name: "outputs", detail: "map", docs: "Shapes what this step produces, the way the http task's own `outputs:` shapes a response.\n\n" +
 			"Each value is evaluated once, the moment the wait resolves, with the wait's result bound bare — `" +
 			v1.PayloadOutput + "`, `" + v1.SenderOutput + "`, `" + v1.TimedOutOutput + "`, and `" + v1.NowIdentifier +

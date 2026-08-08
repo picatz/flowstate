@@ -77,6 +77,16 @@ func BindRunInputs(wf *Workflow, submitted map[string]*Value) (map[string]*Value
 		return nil, err
 	}
 
+	// Beside it, at the same boundary and for the same reason. A gate's
+	// `prompt:` is rendered to whoever is being asked to approve - somebody who
+	// was handed a run id rather than this file - so a prompt reaching a
+	// `sensitive:` input or holding a secret reference is refused here, in the
+	// specification that never was a Flowfile, exactly as the compiler refuses
+	// it against a line and a column. See [CheckWaitPromptsAreAskable].
+	if err := CheckWaitPromptsAreAskable(wf); err != nil {
+		return nil, err
+	}
+
 	declared := make(map[string]*InputDeclaration, len(wf.GetDeclaredInputs()))
 	for _, declaration := range wf.GetDeclaredInputs() {
 		declared[declaration.GetName()] = declaration

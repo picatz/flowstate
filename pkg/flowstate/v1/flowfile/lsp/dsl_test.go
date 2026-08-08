@@ -162,7 +162,13 @@ func TestDSLKeysMatchTheDSL(t *testing.T) {
 				Kind: &v1.Node_Wait{Wait: &v1.Wait{
 					Kind: &v1.Wait_Signal{Signal: &v1.Signal{
 						Name: "deploy-approved",
-						// The gate's own `outputs:` shaping, which is the third
+						// What the gate is asking for. Set here rather than left
+						// out because this test only knows the keys its fixture
+						// reaches - a key nothing populates is invisible to both
+						// directions of the comparison, which is how three wait
+						// keys once stayed missing while this was green.
+						Prompt: v1.NewExpr(`"approve the deploy?"`),
+						// The gate's own `outputs:` shaping, which is the fourth
 						// key of this block and the only one whose values are
 						// expressions in a scope of their own.
 						Outputs: map[string]*v1.Value{
@@ -1322,6 +1328,7 @@ steps:
   - id: approval
     wait_for_signal:
       name: deploy-approved
+      prompt: approve the deploy?
       timeout: 24h
       outputs:
         approved: ${has(payload.approved) && payload.approved}

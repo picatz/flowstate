@@ -118,12 +118,28 @@ func (r *waitRegistry) isTruncated() bool {
 // deadline is nil for a wait the author wrote no `timeout:` for, which is a
 // different fact from a deadline that has not been reached yet: that gate
 // blocks until somebody acts.
-func (e *executor) pendingWait(node *v1.Node, signal *v1.Signal, deadline *timestamppb.Timestamp) *v1.PendingWait {
+//
+// prompt is what the gate is asking for, already evaluated and already bounded
+// by [v1.EvalSignalPrompt]. Taken as a value rather than evaluated here, because
+// evaluating it can fail the step and this function is called from one place
+// that is already inside the wait's own error handling - and because the local
+// driver's matching function takes it the same way, which is what keeps the two
+// evaluating at one point each rather than at whichever point their reporting
+// happens to sit at.
+func (e *executor) pendingWait(
+	node *v1.Node,
+	signal *v1.Signal,
+	deadline *timestamppb.Timestamp,
+	prompt string,
+	promptTruncated bool,
+) *v1.PendingWait {
 	return &v1.PendingWait{
-		StepId:     node.GetId(),
-		Path:       e.progress.ancestors(),
-		SignalName: signal.GetName(),
-		Deadline:   deadline,
+		StepId:          node.GetId(),
+		Path:            e.progress.ancestors(),
+		SignalName:      signal.GetName(),
+		Deadline:        deadline,
+		Prompt:          prompt,
+		PromptTruncated: promptTruncated,
 		// The top-level workflow's declarations, never the callee's: a
 		// delivery to this run is authorized against the policy the server
 		// recorded on it at submit, which is the root spec's, so reporting a

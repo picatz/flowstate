@@ -133,6 +133,30 @@ func diagnosticCodeCases() []diagnosticCodeCase {
 			},
 		},
 		{
+			name: "sensitive in prompt",
+			code: v1.DiagnosticCodeSensitiveInPrompt,
+			step: "gate",
+			workflow: &v1.Workflow{
+				Name: "sensitive-in-prompt",
+				DeclaredInputs: []*v1.InputDeclaration{
+					{Name: "salary", Sensitive: true},
+				},
+				Steps: []*v1.Node{{
+					Id: "gate",
+					Kind: &v1.Node_Wait{Wait: &v1.Wait{
+						Kind: &v1.Wait_Signal{Signal: &v1.Signal{
+							Name: "approve",
+							// Derived rather than surfaced, on purpose: the `log:`
+							// lint's sibling would let this through, and a prompt
+							// rule that caught only the verbatim spelling would
+							// tell an approver the salary bracket anyway.
+							Prompt: v1.NewExpr(`inputs.salary > 100000 ? "a large raise" : "a small raise"`),
+						}},
+					}},
+				}},
+			},
+		},
+		{
 			name: "retired key",
 			code: v1.DiagnosticCodeRetiredKey,
 			step: "b",
