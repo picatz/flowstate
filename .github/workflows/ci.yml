@@ -314,7 +314,11 @@ jobs:
       # auth tests already run in the test job, and running them twice would
       # make a failure here ambiguous about which half broke.
       - name: Verify a real CI token against the real issuer
-        run: GOMEMLIMIT=1GiB go test -v -timeout 300s -run TestRealCIToken ./pkg/flowstate/v1/auth/
+        # FLOWSTATE_REQUIRE_REAL_TOKEN turns the test's everywhere-else skip
+        # into a failure here: this job exists to run the live check, so an
+        # absent token endpoint means the grant or the variables regressed, and
+        # a green skip would be the gate passing while verifying nothing.
+        run: FLOWSTATE_REQUIRE_REAL_TOKEN=1 GOMEMLIMIT=1GiB go test -v -timeout 300s -run TestRealCIToken ./pkg/flowstate/v1/auth/
 
   # Bounded per CLAUDE.md's fuzz recipe: `-parallel 1` and a memory limit because a
   # fuzzer's purpose is to find the input that explodes, `-fuzztime 30s` per target

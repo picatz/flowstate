@@ -63,6 +63,16 @@ func TestRealCITokenVerifies(t *testing.T) {
 	requestURL := os.Getenv("ACTIONS_ID_TOKEN_REQUEST_URL")
 	requestToken := os.Getenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
 	if requestURL == "" || requestToken == "" {
+		// The one environment that must not take this exit is the federation CI
+		// job itself, which exists to run the live check and sets the flag below
+		// to say so. A skip there is how a permission regression or a renamed
+		// endpoint variable turns the gate green while verifying nothing, which
+		// is the fail-open shape wearing a skip message.
+		if os.Getenv("FLOWSTATE_REQUIRE_REAL_TOKEN") != "" {
+			t.Fatal("this job requires the live token check (FLOWSTATE_REQUIRE_REAL_TOKEN is set) and the runner's " +
+				"OIDC token endpoint is absent; the job has lost id-token: write, or the endpoint variables were " +
+				"renamed, and either way the gate was about to pass without verifying anything")
+		}
 		t.Skip("no GitHub Actions OIDC token endpoint in the environment (ACTIONS_ID_TOKEN_REQUEST_URL and ACTIONS_ID_TOKEN_REQUEST_TOKEN are set only inside a job granted id-token: write), so there is no real issuer to verify against here; the offline coverage of the same policy shapes is TestCIIssuedTokenVerifies and its neighbours in ci_federation_test.go, which run everywhere")
 	}
 
@@ -122,6 +132,27 @@ func TestRealCITokenVerifies(t *testing.T) {
 	claimed, ok := principal.StringClaim("repository")
 	require.True(t, ok, "the repository claim is missing from the verified principal")
 	assert.Equal(t, repository, claimed)
+
+	// The claims real policies pin beyond the repository, asserted for shape
+	// rather than exact value because their values are event-dependent: `ref`
+	// differs between a push and a pull request, and `job_workflow_ref` carries
+	// the triggering ref in its tail. What is stable, and what a policy relies
+	// on, is that each is present, non-empty, and shaped as documented. Without
+	// these, the provider could rename or drop the claims the offline tests and
+	// the documented policies require, and this gate would stay green.
+	ref, ok := principal.StringClaim("ref")
+	require.True(t, ok, "the ref claim is missing; policies pinning a branch cannot be written against this provider anymore")
+	assert.True(t, strings.HasPrefix(ref, "refs/"), "ref %q is no longer a fully qualified git ref", ref)
+
+	workflowRef, ok := principal.StringClaim("job_workflow_ref")
+	require.True(t, ok, "the job_workflow_ref claim is missing; policies pinning a reusable workflow cannot be written against this provider anymore")
+	assert.True(t, strings.HasPrefix(workflowRef, repository+"/"),
+		"job_workflow_ref %q no longer starts with the repository, so a policy pinning it would pin the wrong thing", workflowRef)
+
+	runnerEnv, ok := principal.StringClaim("runner_environment")
+	require.True(t, ok, "the runner_environment claim is missing; policies distinguishing hosted from self-hosted runners cannot be written anymore")
+	assert.Contains(t, []string{"github-hosted", "self-hosted"}, runnerEnv,
+		"runner_environment %q is outside the documented vocabulary", runnerEnv)
 
 	t.Run("a verifier pinning another repository refuses the same token", func(t *testing.T) {
 		// The negative direction, against the real token rather than a minted
