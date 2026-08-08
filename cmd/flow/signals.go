@@ -86,7 +86,7 @@ func withLocalSignals(ctx context.Context, cmd *cobra.Command, workflow *v1.Work
 		Namespace: starter.Namespace,
 	}, true)
 
-	reportRehearsalSender(cmd.OutOrStdout(), sender)
+	reportRehearsalSender(cmd.ErrOrStderr(), sender)
 
 	for _, flag := range flags {
 		name, payload, err := parseSignalFlag(flag)
@@ -164,7 +164,9 @@ func rehearsalSignalSender(cmd *cobra.Command, delivered int) (*v1.SignalSender,
 }
 
 // reportRehearsalSender says whose approval this run is standing in for,
-// before the run starts.
+// before the run starts. It narrates on stderr, as [reportUnansweredGates]
+// does, because stdout is the run's single result document: an author piping
+// `-o json` through jq must never find prose ahead of it.
 //
 // A rehearsal identity is not a real one, and the run's own answer already says
 // so - `${approval.sender.local}` reads true either way - but the answer is

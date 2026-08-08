@@ -68,7 +68,10 @@ func TestRehearsedSignalReachesAPolicedGate(t *testing.T) {
 	cmd := rehearsingAs(t, "sre-lead@example.com", "https://issuer.example.com", "team=release-managers")
 
 	out := &strings.Builder{}
-	cmd.SetOut(out)
+	cmd.SetErr(out)
+
+	stdout := &strings.Builder{}
+	cmd.SetOut(stdout)
 
 	ctx, err := withLocalSignals(t.Context(), cmd, policedGateWorkflow(), nil, []string{
 		`deploy-approved={"approved": true}`,
@@ -92,6 +95,10 @@ func TestRehearsedSignalReachesAPolicedGate(t *testing.T) {
 	require.Contains(t, out.String(), "rehearsing --signal deliveries as",
 		"a run standing in for an approver said nothing about it; a rehearsal identity that is "+
 			"not visible in the output is one an author can mistake for a real approval")
+
+	require.Empty(t, stdout.String(),
+		"the rehearsal notice reached stdout, which is the run's single result document; "+
+			"`-o json | jq` would receive prose ahead of the JSON")
 	require.Contains(t, out.String(), "https://issuer.example.com#sre-lead@example.com")
 }
 

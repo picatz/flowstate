@@ -191,8 +191,13 @@ func TestPolicedGateExampleRehearsesLocally(t *testing.T) {
 			"unreachable locally:\nstdout:\n%s\nstderr:\n%s", out.String(), errOut.String())
 	}
 
-	// And it said it was a rehearsal, on the way past.
-	if !strings.Contains(out.String(), "rehearsing --signal deliveries as") {
-		t.Fatalf("nothing in the output marks this as a rehearsal identity:\nstdout:\n%s", out.String())
+	// And it said it was a rehearsal, on the way past. On stderr, where the
+	// command narrates, because stdout is the run's single result document
+	// and a `-o json | jq` pipeline must never find prose ahead of it.
+	if !strings.Contains(errOut.String(), "rehearsing --signal deliveries as") {
+		t.Fatalf("nothing in the output marks this as a rehearsal identity:\nstderr:\n%s", errOut.String())
+	}
+	if strings.Contains(out.String(), "rehearsing --signal deliveries as") {
+		t.Fatalf("the rehearsal notice reached stdout, ahead of the result document:\nstdout:\n%s", out.String())
 	}
 }
