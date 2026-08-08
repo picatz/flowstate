@@ -40,6 +40,119 @@ import (
 // way [maxNodes] bounds one file's own alias expansion.
 const maxCallExpansionNodes = 100_000
 
+// A CallRefusal says why a `call:` target names nothing the calling file is
+// allowed to read, or [CallTargetResolved] when it names something it is.
+type CallRefusal int
+
+const (
+	// CallTargetResolved means the target is a path the caller may read — that
+	// it exists is a separate question, and deliberately not asked here.
+	CallTargetResolved CallRefusal = iota
+
+	// CallRefusedNoCallerLocation means the calling file has no location of its
+	// own, so there is no directory a relative path could be resolved against.
+	CallRefusedNoCallerLocation
+
+	// CallRefusedAbsolute means the target is an absolute path, which a call
+	// may not name.
+	CallRefusedAbsolute
+
+	// CallRefusedClimbs means the target, as written, climbs above the calling
+	// file's own directory.
+	CallRefusedClimbs
+
+	// CallRefusedEscapesThroughSymlink means the target stays inside the
+	// calling file's directory as written but lands outside it once symlinks
+	// are followed.
+	CallRefusedEscapesThroughSymlink
+)
+
+// A CallTarget is where a `call:` target lands on disk, and whether the calling
+// file is allowed to read it.
+//
+// Path is the fully resolved location — every symlink in the caller's directory
+// and in the target followed — which is meaningful for two of the outcomes: it
+// is the file to read when Refusal is [CallTargetResolved], and it is the place
+// the target escaped *to* when Refusal is [CallRefusedEscapesThroughSymlink],
+// which is what the refusal has to name to be actionable. For the other
+// refusals there was never a path to speak of and it is empty.
+type CallTarget struct {
+	Path string
+
+	// CallerDir is the calling file's own directory, symlinks resolved. Set
+	// alongside Path when there was one to compare against.
+	CallerDir string
+
+	Refusal CallRefusal
+}
+
+// ResolveCallTarget resolves a `call:` target written in the file at callerPath,
+// applying the whole of the rule a call is subject to: relative to the calling
+// *file's* directory, never absolute, never above that directory as written, and
+// never above it once symlinks are followed.
+//
+// Exported because two readers ask this question and must get one answer. The
+// compiler asks it to decide which file to compile; the language server asks it
+// to decide which file go-to-definition opens. A second derivation of the rule
+// in the editor is how the editor and the engine come to disagree about which
+// file a call names — the author navigates to one file and the run compiles
+// another, with nothing anywhere saying they differ.
+//
+// It performs no I/O beyond following symlinks, and never reports whether the
+// target exists: a missing file is the caller's to handle, because the compiler
+// treats it as a diagnostic and the language server treats it as nothing to
+// navigate to.
+func ResolveCallTarget(callerPath, target string) CallTarget {
+	if callerPath == "" {
+		return CallTarget{Refusal: CallRefusedNoCallerLocation}
+	}
+
+	if filepath.IsAbs(target) {
+		return CallTarget{Refusal: CallRefusedAbsolute}
+	}
+
+	clean := filepath.ToSlash(filepath.Clean(target))
+	if clean == ".." || strings.HasPrefix(clean, "../") {
+		return CallTarget{Refusal: CallRefusedClimbs}
+	}
+
+	callerDir := filepath.Dir(callerPath)
+	resolved := filepath.Clean(filepath.Join(callerDir, target))
+
+	// The lexical check above refuses `../` climbing out of callerDir in the
+	// path as *written*, but a path that stays lexically inside it can still
+	// land outside on disk: an in-directory symlink pointing elsewhere follows
+	// right through that check, the same class of hole as the git plugin's
+	// symlink-through-entry. So containment is checked again here, against
+	// where the path actually resolves to once every symlink in it — in
+	// callerDir and in the target — is followed, and refused on the real
+	// location rather than the written one.
+	//
+	// EvalSymlinks requires the path to exist, so a target that is merely
+	// missing (no symlink involved at all) falls through as resolved, and
+	// whoever reads it reports that in the ordinary way; what is refused here
+	// is specifically a real path outside callerDir, not a path that cannot be
+	// resolved at all.
+	if realCallerDir, err := filepath.EvalSymlinks(callerDir); err == nil {
+		if realResolved, err := filepath.EvalSymlinks(resolved); err == nil {
+			rel, relErr := filepath.Rel(realCallerDir, realResolved)
+			escapes := relErr != nil || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(filepath.ToSlash(rel), "../")
+			if escapes {
+				return CallTarget{Path: realResolved, CallerDir: realCallerDir, Refusal: CallRefusedEscapesThroughSymlink}
+			}
+
+			// Report the fully-resolved real path from here on, not the symlink
+			// path just verified: re-deriving it from `resolved` after the check
+			// above would leave a window between the check and the read for the
+			// symlink to be repointed in.
+			resolved = realResolved
+		}
+		return CallTarget{Path: resolved, CallerDir: realCallerDir}
+	}
+
+	return CallTarget{Path: resolved, CallerDir: callerDir}
+}
+
 // call compiles a `call:` step: resolves the callee relative to this file's
 // own directory, compiles it, and checks `with:` against what it declares.
 //
@@ -54,65 +167,32 @@ func (c *compiler) call(pathNode ast.Node, stepPath, kindPath string, r ref, wit
 		return nil
 	}
 
-	if c.filePath == "" {
+	located := ResolveCallTarget(c.filePath, target)
+	switch located.Refusal {
+	case CallRefusedNoCallerLocation:
 		c.report(spanOfNode(pathNode), callRef,
 			"calls %q, but this file was compiled with no location of its own to resolve a "+
 				"relative path against; compile it as a file rather than from bytes alone — "+
 				"`flow validate`, `flow run` and the language server all do", target)
 		return nil
-	}
-
-	if filepath.IsAbs(target) {
+	case CallRefusedAbsolute:
 		c.report(spanOfNode(pathNode), callRef,
 			"calls %q, an absolute path; a call is resolved relative to the file that calls "+
 				"it and may not name an absolute one", target)
 		return nil
-	}
-
-	clean := filepath.ToSlash(filepath.Clean(target))
-	if clean == ".." || strings.HasPrefix(clean, "../") {
+	case CallRefusedClimbs:
 		c.report(spanOfNode(pathNode), callRef,
 			"calls %q, which climbs above the directory of the file that calls it; a call may "+
 				"reach anything at or below its own file's directory and nothing above it", target)
 		return nil
+	case CallRefusedEscapesThroughSymlink:
+		c.report(spanOfNode(pathNode), callRef,
+			"calls %q, which resolves — through a symlink — to %q, outside %q; a call may "+
+				"reach anything at or below its own file's directory and nothing above it, "+
+				"and a symlink does not change what \"at or below\" means", target, located.Path, located.CallerDir)
+		return nil
 	}
-
-	callerDir := filepath.Dir(c.filePath)
-	resolved := filepath.Clean(filepath.Join(callerDir, target))
-
-	// The lexical check above refuses `../` climbing out of callerDir in the
-	// path as *written*, but a path that stays lexically inside it can still
-	// land outside on disk: an in-directory symlink pointing elsewhere follows
-	// right through that check, the same class of hole as the git plugin's
-	// symlink-through-entry. So containment is checked again here, against
-	// where the path actually resolves to once every symlink in it — in
-	// callerDir and in the target — is followed, and refused on the real
-	// location rather than the written one.
-	//
-	// EvalSymlinks requires the path to exist, so a target that is merely
-	// missing (no symlink involved at all) falls through to the read below,
-	// which reports that in the ordinary way; what is refused here is
-	// specifically a real path outside callerDir, not a path that cannot be
-	// resolved at all.
-	if realCallerDir, err := filepath.EvalSymlinks(callerDir); err == nil {
-		if realResolved, err := filepath.EvalSymlinks(resolved); err == nil {
-			rel, relErr := filepath.Rel(realCallerDir, realResolved)
-			escapes := relErr != nil || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(filepath.ToSlash(rel), "../")
-			if escapes {
-				c.report(spanOfNode(pathNode), callRef,
-					"calls %q, which resolves — through a symlink — to %q, outside %q; a call may "+
-						"reach anything at or below its own file's directory and nothing above it, "+
-						"and a symlink does not change what \"at or below\" means", target, realResolved, realCallerDir)
-				return nil
-			}
-
-			// Read via the fully-resolved real path from here on, not the
-			// symlink path just verified: re-deriving it from `resolved` after
-			// the check above would leave a window between the check and the
-			// read for the symlink to be repointed in.
-			resolved = realResolved
-		}
-	}
+	resolved := located.Path
 
 	// The chain of files compiling this one, including this file itself — so
 	// that a direct self-call (A calls A) is caught by the same walk as a

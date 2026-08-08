@@ -1,11 +1,15 @@
 package lsp
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/sourcegraph/go-lsp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
 const navigationSource = `edition: v2026.2
@@ -236,4 +240,255 @@ func TestSymbolsAndDefinitionOnUnparseableDocument(t *testing.T) {
 
 	assert.Empty(t, c.symbols("file:///broken.yaml"))
 	assert.Empty(t, c.definition("file:///broken.yaml", 3, 5))
+}
+
+// callerSource is a one-step Flowfile whose step calls target.
+func callerSource(target string) string {
+	return `edition: v2026.2
+name: caller
+steps:
+  - id: provision
+    call: ` + target + `
+    with:
+      tenant: acme
+`
+}
+
+// calleeSource is a Flowfile that takes the argument callerSource binds, so that
+// a call to it is a *valid* one and nothing under test is deciding on the
+// strength of a diagnostic somewhere else.
+func calleeSource(name string) string {
+	return `edition: v2026.2
+name: ` + name + `
+inputs:
+  tenant:
+    type: string
+    required: true
+steps:
+  - id: announce
+    log:
+      message: hello
+`
+}
+
+// callTargetPosition is a position inside a call's target value, wherever the
+// fixture put it.
+func callTargetPosition(t *testing.T, src, target string) lsp.Position {
+	t.Helper()
+	return positionOf(t, src, "call: "+target, len("call: ")+1)
+}
+
+// TestDefinitionFollowsACall checks the one definition this language has that
+// lives in another file.
+//
+// A `call:` is what makes a set of Flowfiles a graph rather than a pile, and the
+// whole risk in following one is that the editor resolves the path by a different
+// rule than the compiler — so these assert on the URI that comes back, not merely
+// that something did.
+func TestDefinitionFollowsACall(t *testing.T) {
+	t.Parallel()
+
+	t.Run("resolves to the file the call names", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		callee := filepath.Join(dir, "callee.yaml")
+		require.NoError(t, os.WriteFile(callee, []byte(calleeSource("provision-tenant")), 0o644))
+
+		src := callerSource("./callee.yaml")
+		caller := filepath.Join(dir, "workflow.yaml")
+		require.NoError(t, os.WriteFile(caller, []byte(src), 0o644))
+
+		c := newClient(t)
+		c.initialize()
+		uri := "file://" + caller
+		params := c.open(uri, src)
+		require.Empty(t, messages(params.Diagnostics), "premise: the call itself is valid")
+
+		pos := callTargetPosition(t, src, "./callee.yaml")
+		got := c.definition(uri, pos.Line, pos.Character)
+		require.Len(t, got, 1)
+		assert.Equal(t, fileURI(callee), got[0].URI, "the called file, not the calling one")
+
+		// The callee's `name:`, which is what someone opening the file went there
+		// to see — asserted by reading the range out of the callee's own text.
+		assert.Equal(t, "provision-tenant", textInRange(calleeSource("provision-tenant"), got[0].Range))
+	})
+
+	t.Run("a callee that does not parse still has a first line to arrive at", func(t *testing.T) {
+		t.Parallel()
+
+		// Landing on `name:` is the better answer, not the condition for giving
+		// one: a callee too broken to read a name out of is exactly the file an
+		// author is trying to get to, and refusing to navigate there would make
+		// the feature stop working when it is most wanted.
+		dir := t.TempDir()
+		callee := filepath.Join(dir, "callee.yaml")
+		require.NoError(t, os.WriteFile(callee, []byte("name: [unclosed\n"), 0o644))
+
+		src := callerSource("./callee.yaml")
+		caller := filepath.Join(dir, "workflow.yaml")
+		require.NoError(t, os.WriteFile(caller, []byte(src), 0o644))
+
+		c := newClient(t)
+		c.initialize()
+		uri := "file://" + caller
+		c.open(uri, src)
+
+		pos := callTargetPosition(t, src, "./callee.yaml")
+		got := c.definition(uri, pos.Line, pos.Character)
+		require.Len(t, got, 1)
+		assert.Equal(t, fileURI(callee), got[0].URI)
+		assert.Equal(t, documentStart, got[0].Range)
+	})
+
+	t.Run("a callee that is not there is no location at all", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		src := callerSource("./missing.yaml")
+		caller := filepath.Join(dir, "workflow.yaml")
+		require.NoError(t, os.WriteFile(caller, []byte(src), 0o644))
+
+		c := newClient(t)
+		c.initialize()
+		uri := "file://" + caller
+		params := c.open(uri, src)
+		require.NotEmpty(t, params.Diagnostics, "premise: the compiler reports the missing callee")
+
+		pos := callTargetPosition(t, src, "./missing.yaml")
+		assert.Empty(t, c.definition(uri, pos.Line, pos.Character),
+			"opening an editor on a path that does not exist is worse than answering nothing")
+	})
+
+	t.Run("a target climbing out of the caller's directory is no location at all", func(t *testing.T) {
+		t.Parallel()
+
+		// The case a second path rule gets wrong, in the direction this language
+		// actually decided: a call may reach anything at or below its own file's
+		// directory and nothing above it, so `../other/workflow.yaml` is refused
+		// by the compiler even when a file is sitting right there. An editor that
+		// resolved it by plain path joining would navigate to a file the run
+		// refuses to compile — which is exactly the disagreement sharing
+		// flowfile.ResolveCallTarget exists to prevent.
+		root := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(root, "other"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(root, "other", "workflow.yaml"),
+			[]byte(calleeSource("sibling")), 0o644))
+		require.NoError(t, os.MkdirAll(filepath.Join(root, "here"), 0o755))
+
+		src := callerSource("../other/workflow.yaml")
+		caller := filepath.Join(root, "here", "workflow.yaml")
+		require.NoError(t, os.WriteFile(caller, []byte(src), 0o644))
+
+		c := newClient(t)
+		c.initialize()
+		uri := "file://" + caller
+		params := c.open(uri, src)
+		require.NotEmpty(t, params.Diagnostics, "premise: the compiler refuses a call that climbs")
+
+		pos := callTargetPosition(t, src, "../other/workflow.yaml")
+		assert.Empty(t, c.definition(uri, pos.Line, pos.Character))
+	})
+
+	t.Run("nowhere else on the step answers with the callee", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "callee.yaml"),
+			[]byte(calleeSource("provision-tenant")), 0o644))
+
+		src := callerSource("./callee.yaml")
+		caller := filepath.Join(dir, "workflow.yaml")
+		require.NoError(t, os.WriteFile(caller, []byte(src), 0o644))
+
+		c := newClient(t)
+		c.initialize()
+		uri := "file://" + caller
+		c.open(uri, src)
+
+		for _, where := range []struct {
+			name   string
+			needle string
+			offset int
+		}{
+			{"on the step's id", "id: provision", len("id: ")},
+			{"on the call key itself", "call: ./callee.yaml", 0},
+			{"on a with: argument", "tenant: acme", 0},
+			{"on the with: value", "tenant: acme", len("tenant: ")},
+		} {
+			t.Run(where.name, func(t *testing.T) {
+				pos := positionOf(t, src, where.needle, where.offset)
+				assert.Empty(t, c.definition(uri, pos.Line, pos.Character),
+					"only the target value navigates to the callee")
+			})
+		}
+	})
+
+	t.Run("a document with no filesystem location resolves nothing", func(t *testing.T) {
+		t.Parallel()
+
+		// An untitled buffer has no directory for a relative path to mean
+		// anything against, so there is nothing to guess at — the same answer the
+		// diagnostics give it.
+		src := callerSource("./callee.yaml")
+
+		c := newClient(t)
+		c.initialize()
+		const uri = "untitled:Untitled-1"
+		c.open(uri, src)
+
+		pos := callTargetPosition(t, src, "./callee.yaml")
+		assert.Empty(t, c.definition(uri, pos.Line, pos.Character))
+	})
+}
+
+// TestDefinitionResolvesACallAgainstTheCallingFile is the case a second path rule
+// gets wrong: a call is relative to the calling *file's* directory, and to
+// nothing else — not the process's working directory, which in an editor is
+// wherever the editor happened to be started.
+//
+// Not parallel, and top-level rather than a subtest, because it changes the
+// working directory, which is process-wide and refused inside a parallel tree.
+func TestDefinitionResolvesACallAgainstTheCallingFile(t *testing.T) {
+	// Not parallel: it changes the working directory, which is process-wide.
+
+	// Two files at the same relative path, one under the caller's directory
+	// and a decoy under the working directory. Only a rule anchored to the
+	// *calling file* picks the first, and only asserting on the URI can tell
+	// the two apart.
+	elsewhere := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(elsewhere, "workflows"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(elsewhere, "workflows", "callee.yaml"),
+		[]byte(calleeSource("decoy")), 0o644))
+	t.Chdir(elsewhere)
+
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "workflows"), 0o755))
+	callee := filepath.Join(dir, "workflows", "callee.yaml")
+	require.NoError(t, os.WriteFile(callee, []byte(calleeSource("the-real-one")), 0o644))
+
+	src := callerSource("./workflows/callee.yaml")
+	caller := filepath.Join(dir, "workflow.yaml")
+	require.NoError(t, os.WriteFile(caller, []byte(src), 0o644))
+
+	c := newClient(t)
+	c.initialize()
+	uri := "file://" + caller
+	c.open(uri, src)
+
+	pos := callTargetPosition(t, src, "./workflows/callee.yaml")
+	got := c.definition(uri, pos.Line, pos.Character)
+	require.Len(t, got, 1)
+	assert.Equal(t, fileURI(callee), got[0].URI)
+	assert.Equal(t, "the-real-one", textInRange(calleeSource("the-real-one"), got[0].Range),
+		"the decoy under the working directory must not win")
+
+	// And the compiler, reading the same file from the same place, embedded
+	// that same callee — the agreement the shared resolution exists for,
+	// asserted rather than assumed.
+	compiled, _, err := flowfile.ParseAt([]byte(src), caller)
+	require.NoError(t, err)
+	require.Len(t, compiled.GetSteps(), 1)
+	assert.Equal(t, "the-real-one", compiled.GetSteps()[0].GetCall().GetWorkflow().GetName())
 }
