@@ -546,3 +546,24 @@ func decodeClaims(t *testing.T, token string) map[string]any {
 
 	return claims
 }
+
+// TestWithAudienceRefusesEmptiness pins the closing of the disguised audience
+// hole: a computed slice expanding to nothing, or carrying an empty string,
+// must fail at the option rather than mint `aud: []` or `aud: ""` past the
+// fail-closed contract.
+func TestWithAudienceRefusesEmptiness(t *testing.T) {
+	t.Parallel()
+
+	assert.Panics(t, func() {
+		var none []string
+		authtest.WithAudience(none...)
+	}, "an empty expansion counted as the audience having been named")
+
+	assert.Panics(t, func() {
+		authtest.WithAudience("")
+	}, "an empty audience string minted a token no verifier should accept")
+
+	assert.Panics(t, func() {
+		authtest.WithAudience("flowstate", "")
+	}, "one empty member hid behind a real one")
+}

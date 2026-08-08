@@ -62,7 +62,21 @@ func WithSubject(subject string) TokenOption {
 // audience a policy does not list is the single most valuable negative case a
 // trust policy has, because a deployment that never checks the audience will
 // accept every token the provider mints for anyone.
+//
+// At least one audience is required and none may be empty, immediately rather
+// than at mint. A computed slice that expanded to nothing, or to "", would
+// otherwise count as the audience having been named and mint `aud: []` or
+// `aud: ""`, which is the audience hole wearing this option as a disguise;
+// omission has exactly one spelling, [WithoutAudience].
 func WithAudience(audience ...string) TokenOption {
+	if len(audience) == 0 {
+		panic("authtest: WithAudience needs at least one audience; a token with none is minted with WithoutAudience, by name")
+	}
+	for _, a := range audience {
+		if a == "" {
+			panic("authtest: WithAudience was handed an empty audience, which would mint a token no verifier should accept; name a real audience or write WithoutAudience")
+		}
+	}
 	return func(o *tokenOptions) {
 		o.audience = slices.Clone(audience)
 		o.audienceNamed = true
