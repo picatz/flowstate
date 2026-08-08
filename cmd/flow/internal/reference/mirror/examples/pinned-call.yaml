@@ -1,0 +1,63 @@
+# `digest:` pins a `call:` to the exact bytes of the callee the author reviewed.
+#
+# A call already embeds its callee: the compiler reads the file, compiles it, and
+# carries the whole thing into the submitted run, so a run means the same on its
+# last segment as on its first. What that leaves open is *which* version of the
+# file got embedded. Whoever compiles this workflow compiles whatever is on disk
+# beside them at that moment, and a callee that changed between the review and
+# the submit is a change nothing anywhere had to notice.
+#
+# The pin closes that. It is the caller saying "the file I read hashed to this",
+# and the compiler checks the claim against the bytes it just read, before it
+# compiles them. Match, and the run is exactly the run this file describes with
+# no pin at all. Mismatch, and there is no run: `flow validate` and `flow run`
+# both refuse, naming the digest the file has now.
+#
+# # Updating it
+#
+# When the callee legitimately changes, the refusal prints the digest it hashes
+# to, so adopting the new version is reading what changed and then pasting that
+# line in. Deliberately manual: a pin that a tool refreshed for you would record
+# that a file changed rather than that a person read the change, which is the
+# only thing it was ever worth recording.
+#
+#     $ shasum -a 256 examples/pinned-call/workflows/grant-access.yaml
+#
+# is the other way to get it, and it agrees, because the digest is over the
+# callee's bytes and nothing else.
+#
+# # What it does not buy
+#
+# It is not a signature, and it says nothing about where the file came from: a
+# pin proves the bytes are the bytes, not that they are good ones. It is also
+# over bytes rather than meaning, so reformatting the callee changes its digest
+# even where the workflow is identical. `flow fmt` rewrites a file from its
+# parsed form, which is a byte change like any other, and needs the pin updated
+# the same way. `digest:` is optional for exactly this reason: pin the callees
+# whose change should stop the world, and leave the rest unpinned.
+edition: v2026.2
+name: pinned-call
+
+steps:
+  # The pin sits beside `call:`, the way `with:` does, because it is a property
+  # of this call rather than of the work the callee does. Both are only
+  # meaningful here: written on a step that calls nothing, each is refused
+  # rather than ignored, since a check nobody performs reads exactly like one
+  # that passed.
+  - id: grant
+    call: ./workflows/grant-access.yaml
+    digest: sha256:ec39f1e8130cb6c45037153deb2fcd5ece3e0e0162b7d44c89be2bdebbea3f46
+    with:
+      user: ada
+      role: reviewer
+
+  # Nothing downstream reads the pin: it was checked when this file compiled, so
+  # the call reads back exactly as an unpinned one does.
+  - id: announce
+    log:
+      message: ${'access granted, recorded as ' + steps.grant.grant_id}
+
+outputs:
+  grant:
+    value: ${steps.grant.grant_id}
+    description: the grant the pinned callee recorded

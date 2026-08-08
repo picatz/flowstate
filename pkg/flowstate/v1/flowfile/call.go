@@ -3,8 +3,10 @@ package flowfile
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/goccy/go-yaml/ast"
@@ -27,6 +29,21 @@ import (
 // files has to be caught the way an anchor cycle already is, and the total
 // compiled size has to be bounded by breadth rather than by depth, because a
 // diamond of calls multiplies breadth exactly as a repeated YAML alias does.
+//
+// A caller may also pin what it is calling. `digest:` beside a `call:` is the
+// content hash of the callee as the author last read it, and it is verified
+// against the bytes this compiles, at the moment it compiles them. It is a
+// property of the *file* rather than of the run: the schema already carries
+// SourceDigest, which records what was embedded, so nothing downstream of the
+// compiler reads a pin and there is nothing there for it to read. Either the
+// pin matched, and the run is the run it would have been anyway, or it did not,
+// and there is no run.
+//
+// A pin is not written back out. [Marshal] renders a [v1.Workflow] and a pin is
+// not part of one, so `flow fmt` drops it the way it drops a comment. Which is
+// the same fact from the other side: a pin is over *bytes*, so anything that
+// rewrites the callee, a formatter as readily as an author, changes its digest
+// and needs the pin updated. That is the mechanism working rather than failing.
 
 // maxCallExpansionNodes bounds the total compiled node count across every
 // callee resolved while compiling one file's whole call tree.
@@ -158,8 +175,8 @@ func ResolveCallTarget(callerPath, target string) CallTarget {
 //
 // stepPath is the step's own path, for addressing `with:` and its entries;
 // kindPath addresses the `call:` value itself. withField is the step's `with:`
-// field, if it wrote one.
-func (c *compiler) call(pathNode ast.Node, stepPath, kindPath string, r ref, withField field, hasWith bool) *v1.Call {
+// field, if it wrote one, and digestField its `digest:` pin.
+func (c *compiler) call(pathNode ast.Node, stepPath, kindPath string, r ref, withField field, hasWith bool, digestField field, hasDigest bool) *v1.Call {
 	callRef := ref{step: r.step, path: kindPath, label: "call"}
 
 	target, ok := c.text(pathNode, kindPath, callRef)
@@ -234,20 +251,33 @@ func (c *compiler) call(pathNode ast.Node, stepPath, kindPath string, r ref, wit
 		return nil
 	}
 
+	// Hashed from the bytes just read, before anything else is done with them, so
+	// that the digest an author's pin is checked against and the digest recorded
+	// on the compiled call are two readings of one array already in memory.
+	//
+	// Never re-read from disk to check a pin. A second read is a second file, as
+	// far as anything can tell: it leaves a window between the bytes that were
+	// verified and the bytes that get embedded, which is precisely the gap a pin
+	// exists to close.
+	sourceDigest := formatSourceDigest(data)
+
+	// Checked before the callee is compiled, and refused rather than reported
+	// alongside whatever compiling it would say.
+	//
+	// Fail closed: a pin that does not verify says the caller has not authorized
+	// these bytes, so there is nothing to gain by type-checking `with:` against a
+	// file the author never sanctioned, and a page of diagnostics drawn from it
+	// would bury the one that explains them.
+	if hasDigest && !c.verifySourcePin(digestField.value, stepPath, r, target, sourceDigest) {
+		return nil
+	}
+
 	callee, _, err := parse(data, resolved, ancestors, c.callBudget)
 	if err != nil {
 		c.report(spanOfNode(pathNode), callRef,
 			"calls %q, which failed to compile:\n%s", target, indentLines(err.Error()))
 		return nil
 	}
-
-	// Taken from the same bytes the compile above read, at the same moment —
-	// never recomputed later and never checked against anything, exactly like
-	// Source itself. It is a record of which bytes actually produced this
-	// embedded specification, for whoever audits a run afterward, not an
-	// instruction anything here or later acts on.
-	digest := sha256.Sum256(data)
-	sourceDigest := "sha256:" + hex.EncodeToString(digest[:])
 
 	// Enforced immediately after this callee is known, rather than only once at
 	// the end of the whole tree — an early call in a wide tree must not let a
@@ -263,6 +293,11 @@ func (c *compiler) call(pathNode ast.Node, stepPath, kindPath string, r ref, wit
 		return nil
 	}
 
+	// SourceDigest records which bytes produced the embedded specification, for
+	// whoever audits a run afterward. When the step wrote a `digest:` it is also
+	// the value that pin was just held against, which is the whole of what the
+	// pin buys: the same string, from the same read, checked once here rather
+	// than written down twice and never compared.
 	call := &v1.Call{Workflow: callee, Source: target, SourceDigest: sourceDigest}
 
 	args := map[string]*v1.Value{}
@@ -306,6 +341,100 @@ func (c *compiler) call(pathNode ast.Node, stepPath, kindPath string, r ref, wit
 	}
 
 	return call
+}
+
+// A `digest:` pin is written as the algorithm, a colon, and the hash in hex:
+// `sha256:` followed by 64 characters. That is the form [v1.Call]'s SourceDigest
+// is already recorded in and the form a container image reference uses, so an
+// author reading a compiled run and an author writing a pin see one spelling.
+const (
+	sourceDigestPrefix = "sha256:"
+	sourceDigestHexLen = sha256.Size * 2
+)
+
+// formatSourceDigest renders a callee's bytes as the digest this package writes
+// everywhere: lower-case hex, algorithm first.
+//
+// One function because there is one spelling. A pin is compared against what
+// this returns and every diagnostic prints what this returns, so the digest an
+// author is told to adopt is the digest that will then match.
+func formatSourceDigest(data []byte) string {
+	sum := sha256.Sum256(data)
+	return sourceDigestPrefix + hex.EncodeToString(sum[:])
+}
+
+// verifySourcePin checks an author's `digest:` against the callee's bytes, and
+// reports whether the call may go on being compiled.
+//
+// actual is the digest of the bytes already read, never a fresh hash of a fresh
+// read: see [compiler.call].
+//
+// # Case
+//
+// A pin is compared lower-cased. Hex has no case and neither does the algorithm
+// label, so `SHA256:AB12…` and `sha256:ab12…` name the same bytes, and refusing
+// one of them would be refusing a pin copied out of a tool that renders
+// upper-case for a difference that means nothing. The tree writes exactly one
+// form, [formatSourceDigest]'s, from [hex.EncodeToString], which is lower-case,
+// so that is the form every diagnostic prints and the form a pin normalizes to
+// before being compared.
+func (c *compiler) verifySourcePin(pinNode ast.Node, stepPath string, r ref, target, actual string) bool {
+	pinPath := fieldPath(stepPath, "digest")
+	pinRef := ref{step: r.step, path: pinPath, label: "digest"}
+
+	written, ok := c.text(pinNode, pinPath, pinRef)
+	if !ok {
+		return false
+	}
+	pin := strings.ToLower(written)
+
+	if !wellFormedSourcePin(pin) {
+		c.report(spanOfNode(pinNode), pinRef,
+			"is %s, which is not the shape of a pin; write `sha256:` and the 64 hex characters "+
+				"of the callee's SHA-256, which for %q is `digest: %s` right now",
+			describeWrittenPin(written), target, actual)
+		return false
+	}
+
+	if pin != actual {
+		c.report(spanOfNode(pinNode), pinRef,
+			"pins %q at %s, but that file hashes to %s right now; a mismatch means the callee "+
+				"changed since the pin was written, so read what it does now and then write "+
+				"`digest: %s` to adopt it",
+			target, pin, actual, actual)
+		return false
+	}
+
+	return true
+}
+
+// wellFormedSourcePin reports whether a lower-cased pin is written the way a
+// digest is written here.
+//
+// Length before content, deliberately. The pin is text an outside party chose,
+// bounded only by the megabyte a whole Flowfile may be, and a fixed-width hash
+// is the one input where the cheap check is also the complete one.
+func wellFormedSourcePin(pin string) bool {
+	digits, ok := strings.CutPrefix(pin, sourceDigestPrefix)
+	if !ok || len(digits) != sourceDigestHexLen {
+		return false
+	}
+	_, err := hex.DecodeString(digits)
+	return err == nil
+}
+
+// describeWrittenPin renders what the author wrote, for the diagnostic above,
+// without echoing an arbitrarily long value into a message.
+//
+// A pin is a fixed-length string, so something several times longer than one is
+// not a near miss worth quoting back at whoever wrote it, and what is quoted
+// back would otherwise be up to a megabyte of somebody else's choosing, printed
+// into an editor's problem list.
+func describeWrittenPin(written string) string {
+	if len(written) > 2*(len(sourceDigestPrefix)+sourceDigestHexLen) {
+		return fmt.Sprintf("%d characters long", len(written))
+	}
+	return strconv.Quote(written)
 }
 
 // callArguments compiles a call's `with:` mapping: one value per bound

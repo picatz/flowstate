@@ -1,0 +1,24 @@
+# Running this is what keeps the pin honest.
+#
+# `flow test examples/` compiles the caller, and compiling it is what verifies
+# the pin, so an edit to `workflows/grant-access.yaml` that nobody re-pinned
+# fails here rather than months later on somebody's submit. There is no
+# assertion below about the digest, and there does not need to be one: a stale
+# pin means this file never gets as far as running.
+edition: v2026.2
+tests:
+  - name: a pinned call runs exactly as an unpinned one does
+    workflow: ./workflow.yaml
+    stubs:
+      # `log` is the only task either file uses and produces no outputs, so
+      # stubbing it changes nothing observable. It is here because the callee's
+      # steps really do execute through the same local driver, which is the
+      # thing worth showing about testing a composition.
+      - task: log
+        returns: {}
+    expect:
+      ran: [grant, announce]
+      outputs:
+        # Read back from the callee's own `outputs:`, which is the proof the
+        # verified bytes are the ones that ran.
+        grant: ada:reviewer

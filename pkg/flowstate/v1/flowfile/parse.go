@@ -72,7 +72,11 @@ var (
 	// anything beside `call:`; [validate.go] is where a `with:` on any other kind
 	// of step is refused, since that is a property of the *file* and belongs
 	// there rather than here.
-	stepPropertyKeys = []string{"id", "description", "if", "vars", "timeout", "retry", "continue_on_error", "undo", "with"}
+	//
+	// `digest` is the second of those: the content hash the caller pins its
+	// callee to, checked against the bytes the call reads when this file is
+	// compiled. See [compiler.verifySourcePin].
+	stepPropertyKeys = []string{"id", "description", "if", "vars", "timeout", "retry", "continue_on_error", "undo", "with", "digest"}
 
 	// nodeKindKeys are the kinds of work that are not a task, and so name a node
 	// kind in the schema rather than anything in the registry.
@@ -1326,7 +1330,8 @@ func (c *compiler) step(n ast.Node, path string) *v1.Node {
 			}
 		case "call":
 			withField, hasWith := fields.get("with")
-			if call := c.call(kind.value, path, kindPath, r, withField, hasWith); call != nil {
+			digestField, hasDigest := fields.get("digest")
+			if call := c.call(kind.value, path, kindPath, r, withField, hasWith, digestField, hasDigest); call != nil {
 				step.Kind = &v1.Node_Call{Call: call}
 			}
 		default:
@@ -1346,11 +1351,22 @@ func (c *compiler) step(n ast.Node, path string) *v1.Node {
 	// Reported here rather than silently accepted, for the reason every unknown
 	// or misplaced key is: an author who moved a call's arguments onto some
 	// other step gets no signal that they no longer bind anything.
+	//
+	// `digest:` is the same rule with a sharper edge. It is a *check*, and a
+	// check nothing performs reads to whoever wrote it exactly like one that
+	// passed, so a pin sitting on a step with no `call:` under it is the one
+	// misplaced key that must never be quietly tolerated.
 	if len(kinds) != 1 || kinds[0].name != "call" {
 		if f, found := fields.get("with"); found {
 			c.report(spanOfNode(f.key), r,
 				"`with:` binds a called workflow's declared inputs and is only meaningful "+
 					"beside `call:`, which this step does not have")
+		}
+		if f, found := fields.get("digest"); found {
+			c.report(spanOfNode(f.key), r,
+				"`digest:` pins the file a `call:` reads to the bytes it had when the pin was "+
+					"written, and is only meaningful beside `call:`, which this step does not have; "+
+					"nothing would verify it here, and a pin nobody checks reads like one that passed")
 		}
 	}
 

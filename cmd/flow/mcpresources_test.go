@@ -211,6 +211,7 @@ var examplesNeedingAFile = map[string]bool{
 	"call-a-workflow":                true,
 	"enterprise-customer-onboarding": true,
 	"fan-out-calls":                  true,
+	"pinned-call":                    true,
 	"progressive-rollout":            true,
 }
 

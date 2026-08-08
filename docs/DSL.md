@@ -3126,6 +3126,60 @@ total compiled size is bounded by breadth — [`maxCallExpansionNodes`](../pkg/f
 four whole copies of `c`'s steps, the same shape a repeated YAML alias has, and nothing
 here deduplicates a callee compiled more than once.
 
+### Pinning what a call reads
+
+Compile-time resolution answers *when* a callee is read and leaves open *which* bytes
+were read. Whoever compiles the caller compiles whatever is on disk beside them at
+that moment, and a callee edited between a review and a submit is a change nothing in
+the pipeline had to notice. A caller that cares says so:
+
+```yaml
+- id: provision
+  call: ./workflows/provision-tenant.yaml
+  digest: sha256:0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0
+  with:
+    tenant: ${inputs.tenant}
+```
+
+`digest:` is optional, and it is a property of the file rather than of the run. The
+compiler hashes the callee's bytes once, checks the pin against that hash before
+compiling them, and embeds the same bytes it just verified: one read, so there is no
+window between the check and the embed for the file to change in. A matching pin
+compiles to exactly what the same file compiles to with no pin at all, which is why
+nothing in the schema was added for it. What was already there is `Call.source_digest`,
+the record of which bytes produced the embedded specification, and a pin is that field
+finally having a reader.
+
+A mismatch is refused with a position on the pin, and names the digest the file has
+now, so adopting a reviewed change is a paste:
+
+```
+49:13: step "grant": digest pins "./workflows/grant-access.yaml" at sha256:ec39…3f46,
+but that file hashes to sha256:d4b8…6d42 right now; a mismatch means the callee changed
+since the pin was written, so read what it does now and then write `digest: sha256:d4b8…6d42`
+to adopt it
+```
+
+Deliberately manual. A tool that refreshed the pin for you would record that a file
+changed rather than that a person read the change, which is the only thing worth
+recording. Three further properties follow from the pin being over bytes:
+
+- **It is identity, not validity.** A callee that still compiles perfectly, and would
+  still bind every argument, is refused all the same when it is not the callee that was
+  reviewed. That is the whole point: `flow validate` already answers the other question.
+- **Reformatting counts as a change.** `flow fmt` rewrites a file from its parsed form,
+  so it changes the callee's bytes and every pin on it, and drops a pin from a caller it
+  rewrites the way it drops a comment. Pin the callees whose change should stop the
+  world, and leave the rest unpinned.
+- **It is not a signature.** It says the bytes are the bytes, not that they came from
+  anywhere in particular or that they are good ones.
+
+Written on a step with no `call:` under it, `digest:` is refused rather than ignored,
+for the reason any misplaced key is and one more: a check nothing performs reads to
+whoever wrote it exactly like a check that passed. `examples/pinned-call/` is the file,
+with a test, and the test is what keeps the pin honest in CI: compiling the caller is
+what verifies it, so a callee edited without re-pinning fails there.
+
 ### The suspension rule
 
 A call may suspend. A long-running caller may Continue-As-New in the middle of a
@@ -3172,6 +3226,10 @@ referencing its earlier ones, on a specification that never changed.
 - `with:` naming an input the callee does not declare, or omitting one the callee
   requires and has no default for.
 - A secret reference bound through `with:`, bare or nested in a structure.
+- A `digest:` that does not match the callee's bytes, or that is not written as
+  `sha256:` and 64 hex characters. Hex has no case, so a pin is compared lower-cased and
+  every digest reported is written that way.
+- A `digest:` on a step with no `call:` under it, since nothing there would verify it.
 - `undo:` on the `call:` step itself — a call has no effect of its own to take back;
   the compensation belongs on the callee's own steps (below), and the diagnostic says
   so by name rather than lumping a call in with a wait's or a `parallel:` block's "no
