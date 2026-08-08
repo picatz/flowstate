@@ -25,7 +25,15 @@ issuers:
     issuer: https://token.actions.githubusercontent.com
     audiences: [flowstate]
     algorithms: [RS256]
-    # The tenant, read off a claim the issuer signed.
+    # The tenant, read off a claim the issuer signed. The value read must be
+    # lowercase letters, digits, and dashes, at most 63 characters; an org
+    # login outside that grammar (uppercase letters or an underscore, both
+    # legal on GitHub) is refused at verification rather than admitted. Such
+    # an org needs its own issuer entry with a fixed `namespace:` and a
+    # `require:` rule pinning its repository, placed ABOVE this one: entries
+    # are tried in order, this entry has no `require:` rules so it admits the
+    # token first, and a namespace it cannot map is a rejection, never a
+    # reason to try the next entry.
     namespace_claim: repository_owner
 
   # A second platform, pinned to one tenant outright rather than reading a claim.
