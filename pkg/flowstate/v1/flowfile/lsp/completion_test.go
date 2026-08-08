@@ -148,7 +148,7 @@ edition: v2026.2
 			notWant: []string{
 				"alpha", // a step, reachable only as steps.alpha
 				"beta",  // and its own step besides
-				"now",   // bound in wait_until and nowhere else
+				"now",   // bound only inside a wait's expressions
 			},
 		},
 		{
