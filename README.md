@@ -265,7 +265,8 @@ spelling has been retired, and `flow compile` shows what a correct file *becomes
 
 ## Start here
 
-- **Writing workflows by hand?** [Quickstart](#quickstart) below, then
+- **Writing workflows by hand?** `flow init` writes a workflow and its test to start from —
+  [Quickstart](#quickstart) below runs both without a server. Then
   [docs/DSL.md](docs/DSL.md) for the language and [examples/](examples/README.md) for
   working files to pattern-match against.
 - **An agent using Flowstate?** `flow mcp` serves the same surface over stdio — validate,
@@ -276,7 +277,36 @@ spelling has been retired, and `flow compile` shows what a correct file *becomes
 
 ## Quickstart
 
-Start a local Temporal development server:
+Nothing below this line needs a server, a worker, or Temporal. Scaffold a workflow and
+its test, run it, and run the test:
+
+```console
+$ go run ./cmd/flow init my-pipeline
++ created my-pipeline/workflow.yaml
++ created my-pipeline/workflow.test.yaml
+
+NEXT
+  flow run local my-pipeline/workflow.yaml
+  flow test my-pipeline
+
+$ go run ./cmd/flow run local my-pipeline/workflow.yaml
+INFO hello, world
+COMPLETED workflow my-pipeline
+{"stepValues":{"greet":{"namedValues":{}}}, "runOutputs":null}
+
+$ go run ./cmd/flow test my-pipeline
+PASS  my-pipeline/workflow.test.yaml: the greeting uses the input it was given
+```
+
+That is the whole of the local loop, and it is worth rehearsing with: the two drivers are
+one execution model, so conditions, retries, timeouts, loops and waits behave here the way
+they behave in production.
+
+### Durably, on Temporal
+
+What the local loop cannot give you is durability — a local run is a process, with no run
+id, nothing watching it, and no survival past the command being interrupted. For that,
+start a local Temporal development server:
 
 ```console
 $ temporal server start-dev

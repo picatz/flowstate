@@ -627,6 +627,8 @@ What it cannot give you is durability. A local run is a process: it has no run i
 
 Arguments are given the same way `flow run` takes them — --input name=value or --input-file inputs.json — and are bound against the workflow's `inputs:` by the same function the server binds them with, so a rehearsal refuses what production refuses.
 
+One limit worth knowing before writing a rule about who is running. --as-subject and its siblings name the identity this rehearsal's secret rules and plugin tasks see. They do not make the run attested: a local run has no server in front of it to attest anything, so `run.identity` and the task-shape and egress rules keep reading it as having no caller. A rule keyed on identity.namespace therefore matches nothing here, and can refuse locally what production allows.
+
 Examples:
 
 ```sh
