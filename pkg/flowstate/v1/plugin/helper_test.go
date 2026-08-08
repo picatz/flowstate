@@ -65,6 +65,15 @@ func fakeMode() string {
 func runFakePlugin() int {
 	mode := fakeMode()
 
+	// The error-pipeline conformance fixture is a *real* SDK plugin rather than a
+	// hand-rolled handler, because it exists to prove the SDK's own error
+	// serialization survives the wire — see [TestPluginErrorPipelineRoundTrip].
+	// [sdk.Run] installs its own host-exit watch and serving, so this returns
+	// before the by-hand fake path below.
+	if mode == "errors" {
+		return runErrorsPlugin()
+	}
+
 	// Every fake exits when the host goes away, which is what a real plugin's
 	// SDK does and what the orphan tests rely on.
 	go exitWhenHostExits()
