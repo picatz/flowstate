@@ -446,6 +446,20 @@ func hoverBareName(from *parsedStep, name string, clock, shaping bool, rng lsp.R
 		if loop.iteratorName() != name {
 			continue
 		}
+		// Two blocks bind a name bare for their body, and they bind different
+		// things: a `for_each` binds the current item of a list that existed
+		// before the loop began, a `loop:` binds a value the loop itself carries
+		// and rewrites. One sentence for both would be wrong about one of them,
+		// and a wrong answer here is worse than none — it describes a value the
+		// engine does not hold.
+		if loop.loopEntry != nil {
+			return markdownHover(fmt.Sprintf(
+				"**`%s`** — the value the `%s` loop carries between iterations.\n\n"+
+					"`init:` gives it its first value, the body reads it, and `update:` "+
+					"computes the next one after each pass. The final value is reported "+
+					"through `${%s.%s.state}`; body outputs do not escape the loop.",
+				name, loop.id, v1.StepsRoot, loop.id), rng)
+		}
 		return markdownHover(fmt.Sprintf(
 			"**`%s`** — the current item of the `%s` loop.\n\n"+
 				"Its type is whatever the loop's `items` expression yields an element of. "+

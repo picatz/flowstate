@@ -275,6 +275,18 @@ func (s *parsedStep) expressionEntries() []*entry {
 	}
 	entries = append(entries, s.waitShapingEntries...)
 
+	// A loop's own `init:`, `update:` and `until:` are deliberately absent,
+	// though they are expressions and adding them is one obvious line. Every
+	// consumer of this list evaluates against the *step's* scope, and those
+	// three are evaluated in scopes no other position has: `update:` and
+	// `until:` read the carried value and the just-finished body's outputs —
+	// both of which the step's own scope refuses, the body's steps being later
+	// in document order — while `init:` runs before the binding exists at all.
+	// Walked with the step's scope, a carried name that collides with a profile
+	// function would be described as that function: the same confidently-wrong
+	// answer the `join` fix below exists to prevent, reintroduced one key over.
+	// Silence until the scope is modeled entry-aware — see #306.
+
 	// A step's `vars:` bindings, which are expressions like any other value here and
 	// were missing from this list until the retirement edition made them the place
 	// most expressions are written. An author who moved a value out of a `cel:` step
@@ -315,14 +327,40 @@ func (s *parsedStep) bindsWaitResult(e *entry) bool {
 
 // kind names the kind of work a step does, for the outline and for diagnostics
 // that need to say what a step is.
+// kind names the kind of work a step does, in the grammar's own spelling.
+//
+// Two surfaces read it, and they are why the answer has to cover every kind the
+// model records rather than the three it grew up with. The outline's second
+// column is this string, so a `call:` or a gate with a blank there reads as a
+// step the tool does not understand. And hover and completion write it into a
+// sentence — "a variable the enclosing X declares" — where a missing word is
+// not a blank cell but a malformed sentence: `loop` is the main enclosing block
+// that declares `vars:`, and hovering a loop-scoped variable rendered
+// "the enclosing  declares" for as long as this switch stopped at three.
+//
+// The empty default is the honest answer for the two shapes the model does not
+// record: `sleep:`, whose value is one duration with nothing under it, and a
+// gate written in its scalar form (`wait_for_signal: name`), which
+// [parsedStep.waitForSignalEntry] deliberately does not hold. Neither can
+// enclose anything or declare a var, so neither can reach the sentence above —
+// the blank is confined to the outline column, where it costs a label rather
+// than the grammar of a sentence.
 func (s *parsedStep) kind() string {
 	switch {
 	case s.taskEntry != nil:
 		return "task"
 	case s.forEachEntry != nil:
 		return "for_each"
+	case s.loopEntry != nil:
+		return "loop"
 	case s.parallelEntry != nil:
 		return "parallel"
+	case s.callEntry != nil:
+		return "call"
+	case s.waitUntilEntry != nil:
+		return "wait_until"
+	case s.waitForSignalEntry != nil:
+		return "wait_for_signal"
 	default:
 		return ""
 	}
@@ -349,7 +387,7 @@ func (s *parsedStep) entryForField(field string) *entry {
 	if in := s.input(field); in != nil {
 		return in
 	}
-	for _, group := range [][]*entry{s.entries, nestedEntries(s.forEachEntry), nestedEntries(s.retryEntry)} {
+	for _, group := range [][]*entry{s.entries, nestedEntries(s.forEachEntry), nestedEntries(s.loopEntry), nestedEntries(s.retryEntry)} {
 		for _, e := range group {
 			if e.key == field {
 				return e
@@ -544,6 +582,22 @@ func collectSteps(steps *entry, parent *parsedStep, scope []scopeFrame, ix *line
 				}
 			}
 		}
+		// A `loop:` body, under the same frame shape a `for_each` body gets,
+		// because the visibility rules are the same rule: body outputs do not
+		// escape, and the body reads a binding the block declares bare. This
+		// recursion was missing for as long as `loop:` existed, which made the
+		// whole body invisible to the model — its steps absent from the outline,
+		// its expressions attributed to nothing, and hover, completion and
+		// definition all silent inside it while the validator resolved every one
+		// of those names happily. Not a wrong answer, which would at least be
+		// noticed, but no answer, which reads as the tool having nothing to say.
+		if s.loopEntry != nil && s.loopEntry.value != nil {
+			for _, le := range s.loopEntry.value.entries {
+				if le.key == "steps" {
+					collectSteps(le, s, append(slices.Clip(scope), scopeFrame{block: s, branch: -1}), ix, out)
+				}
+			}
+		}
 	}
 }
 
@@ -615,20 +669,39 @@ func (s *parsedStep) iteratorsInScope() []*parsedStep {
 	return loops
 }
 
-// iteratorName returns the variable a for_each step binds each item to, falling
-// back to the engine's own default rather than a copy of it.
+// iteratorName returns the variable a block binds bare for its body — the item a
+// `for_each` yields, or the value a `loop:` carries.
+//
+// The defaults differ, and the difference is the engine's, checked against
+// `flow validate` rather than assumed: a `for_each` that writes no `as:` binds
+// [v1.DefaultIterator], but a `loop:` that writes no `as:` binds *nothing* —
+// stateless or stateful alike, `${item}` in its body is an unknown name.
+// Sharing the fallback read as symmetry and was an invention: it would have
+// offered, resolved, and documented a binding the validator rejects, which is
+// the one thing this package must never do.
 func (s *parsedStep) iteratorName() string {
-	if s.forEachEntry == nil || s.forEachEntry.value == nil {
-		return ""
+	if s.forEachEntry != nil && s.forEachEntry.value != nil {
+		if name := blockAs(s.forEachEntry); name != "" {
+			return name
+		}
+		return v1.DefaultIterator
 	}
-	for _, e := range s.forEachEntry.value.entries {
+	if s.loopEntry != nil && s.loopEntry.value != nil {
+		return blockAs(s.loopEntry)
+	}
+	return ""
+}
+
+// blockAs reads a block's `as:` name, or "" when it writes none.
+func blockAs(block *entry) string {
+	for _, e := range block.value.entries {
 		if e.key == "as" {
 			if name := e.valueText(); name != "" {
 				return name
 			}
 		}
 	}
-	return v1.DefaultIterator
+	return ""
 }
 
 // loopResultsOutput is the single output a for_each step reports.

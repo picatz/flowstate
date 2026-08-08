@@ -532,13 +532,22 @@ func scopeFromModel(doc *document, from *parsedStep) refScope {
 		if name == "" {
 			continue
 		}
+		// The same split hover makes, for the same reason: a `loop:` binds the
+		// value it carries, not an item of a pre-existing list, and a menu that
+		// says "loop item" about carried state teaches the wrong model.
+		detail, docs := "loop item", fmt.Sprintf(
+			"The current item of the %s loop. Its type is whatever the loop's items expression yields an element of.",
+			loop.id)
+		if loop.loopEntry != nil {
+			detail, docs = "carried value", fmt.Sprintf(
+				"The value the %s loop carries between iterations: init sets it, the body reads it, update computes the next one.",
+				loop.id)
+		}
 		scope.locals = append(scope.locals, refCandidate{
 			name:   name,
 			kind:   lsp.CIKVariable,
-			detail: "loop item",
-			docs: fmt.Sprintf(
-				"The current item of the %s loop. Its type is whatever the loop's items expression yields an element of.",
-				loop.id),
+			detail: detail,
+			docs:   docs,
 		})
 	}
 

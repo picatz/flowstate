@@ -327,10 +327,22 @@ func checkExpressions(doc *document, set *diagnosticSet) []lsp.Range {
 				// at. The validator reports it with a message saying how to fix it,
 				// so it is left to that rather than guessed at here.
 
-				case deferred && v.kind == kindScalar && v == in.value && v.text != "":
+				case deferred && v.kind == kindScalar && v == in.value && v.text != "" &&
+					!strings.Contains(v.text, "${"):
 					// An input the task evaluates itself is expression source
 					// directly, without a fence. The validator does not parse
 					// these, so this is the only check they get.
+					//
+					// A text carrying `${` is excluded, because it is not that
+					// case: it is a *fenced* value this model failed to mark as
+					// one. A block scalar — `outputs: >-` with `${ ... }` under
+					// it — reaches here with fenced false, and handing its text
+					// to CEL squiggles the fence itself as two syntax errors on
+					// a file `flow validate` accepts. A missing diagnostic
+					// beats a false one, so the unmarked fence gets silence
+					// rather than a confident wrong answer. (Found the moment
+					// loop bodies joined the model: examples/paged-fan-out
+					// writes exactly this shape inside one.)
 					found = reportCELErrors(doc, set, env, v.text, v.textOffset, v.rng)
 				}
 				if found {
