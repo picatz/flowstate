@@ -271,6 +271,55 @@ jobs:
       - name: Static analysis
         run: GOTOOLCHAIN=go1.26.5 go run honnef.co/go/tools/cmd/staticcheck@${{ env.STATICCHECK_VERSION }} ./...
 
+  # The one job with a real identity provider on the other end. Everything in
+  # pkg/flowstate/v1/auth verifies tokens from an in-process stand-in issuer,
+  # which proves this repository's reading of the specification and cannot prove
+  # that the provider people actually configure still serves what that reading
+  # assumes. Here the runner mints a genuine OIDC token, discovery runs against
+  # token.actions.githubusercontent.com, and the policy pins the repository
+  # claim to whichever repository is running the job, so a fork proves the same
+  # thing about itself rather than passing on a loose assertion.
+  #
+  # `id-token: write` is why this is a separate job rather than a step in the
+  # test job: it is what makes the runner's token endpoint answer at all, and it
+  # is granted to this job only. `contents: read` is restated because naming
+  # permissions on a job replaces the top-level block for that job rather than
+  # adding to it, and every other job keeps the read-only default untouched.
+  #
+  # Network to the issuer is a precondition, not an accident: this is the only
+  # check here that talks to a third party at run time. The test skips, loudly
+  # and with a sentence, anywhere the token endpoint is absent, so the same
+  # command is honest on a laptop and on a fork without the permission.
+  #
+  # Advisory for the 48h window CLAUDE.md gives every newly added check, for the
+  # same reason staticcheck and the fuzz smoke job had one: a check nobody has
+  # run against this tree can go red on code nobody touched. When the window
+  # closes, drop `continue-on-error` and let it be required. A failure here is
+  # still a failure to read: either the provider changed, or this repository
+  # cannot federate the identity it claims to.
+  federation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # -run so this job is the real-issuer check and nothing else; the offline
+      # auth tests already run in the test job, and running them twice would
+      # make a failure here ambiguous about which half broke.
+      - name: Verify a real CI token against the real issuer
+        # FLOWSTATE_REQUIRE_REAL_TOKEN turns the test's everywhere-else skip
+        # into a failure here: this job exists to run the live check, so an
+        # absent token endpoint means the grant or the variables regressed, and
+        # a green skip would be the gate passing while verifying nothing.
+        run: FLOWSTATE_REQUIRE_REAL_TOKEN=1 GOMEMLIMIT=1GiB go test -v -timeout 300s -run TestRealCIToken ./pkg/flowstate/v1/auth/
+
   # Bounded per CLAUDE.md's fuzz recipe: `-parallel 1` and a memory limit because a
   # fuzzer's purpose is to find the input that explodes, `-fuzztime 30s` per target
   # because that bounds time and not memory. Four targets now: the round-trip one
