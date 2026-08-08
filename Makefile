@@ -1,4 +1,4 @@
-.PHONY: check test test-plugins test-fast fmt docs
+.PHONY: check test test-plugins test-ordering test-fast fmt docs
 
 # Full CI-parity loop, verbatim commands, in CI order. See CLAUDE.md.
 check:
@@ -12,6 +12,7 @@ check:
 	fi
 	$(MAKE) test
 	$(MAKE) test-plugins
+	$(MAKE) test-ordering
 	go run ./cmd/flow fix --check examples/
 	go run ./cmd/flow test examples/
 	docker compose -f examples/observability/docker-compose.yaml config -q
@@ -45,6 +46,24 @@ test-plugins:
 		fmt_out="$$(gofmt -l $$module)"; \
 		if [ -n "$$fmt_out" ]; then echo "gofmt: $$fmt_out"; exit 1; fi; \
 	done
+
+# The packages whose correctness is an *ordering* claim, run under a schedule
+# that interleaves differently rather than one that runs harder.
+#
+# `-cpu=1` is the whole point, and it is not a smaller version of `-count`.
+# GOMAXPROCS=1 forces goroutines to interleave only at yield points instead of
+# running truly in parallel, which reaches orderings a multi-core run reaches
+# rarely or never. The local test harness's virtual clock decides when time
+# moves from how many participants are parked, so every claim it makes is an
+# ordering claim: a defect there shows up as a *wrong answer* — a gate that
+# should have lapsed reporting that it did not — rather than as a crash a race
+# detector would catch.
+#
+# Sized to be cheap enough to keep: seconds, not minutes. It exists because
+# `-race -count=3` at the default GOMAXPROCS ran clean against a defect that
+# `-cpu=1` reproduced three times in ten (#278).
+test-ordering:
+	GOMEMLIMIT=1GiB go test -race -cpu=1 -count=20 -timeout 300s ./pkg/flowstate/v1/flowtest/
 
 # Bounded fast tier for the inner loop.
 test-fast:

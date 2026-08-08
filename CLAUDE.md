@@ -85,6 +85,7 @@ behind it too.
     go vet ./...
     gofmt -l ./cmd ./pkg                       # must print nothing
     GOMEMLIMIT=2GiB go test -race -timeout 900s ./...
+    GOMEMLIMIT=1GiB go test -race -cpu=1 -count=20 -timeout 300s ./pkg/flowstate/v1/flowtest/
     go run ./cmd/flow fix --check examples/*/workflow.yaml
     go run ./cmd/flow test examples/
     docker compose -f examples/observability/docker-compose.yaml config -q
@@ -100,6 +101,19 @@ behind it too.
 toolchain pins below already applied. Prefer it, and keep it and this section
 saying the same thing — a copy of a command list is a thing that drifts, and the
 whole point of the list is that it is what CI runs.
+
+The `-cpu=1` line is not a smaller version of the one above it, and reaching for
+more `-count` instead will not substitute. `GOMAXPROCS=1` makes goroutines
+interleave only at yield points rather than running truly in parallel, so it
+reaches orderings a multi-core run reaches rarely or never — it schedules
+*differently*, not *harder*. It is scoped to `flowtest` because that package's
+virtual clock decides when time moves from how many participants are parked,
+which makes every claim it makes an ordering claim. The failure mode is the
+reason it earns a line: a defect there is a **wrong answer** — a gate that
+should have lapsed reporting that it did not — rather than a crash the race
+detector would catch, so nothing else in the list can see it. #278's follow-on
+ran clean under `-race -count=3` and reproduced three times in ten under
+`-cpu=1`.
 
 Four of those repay the trouble in ways that are not obvious.
 
