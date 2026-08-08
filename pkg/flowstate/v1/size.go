@@ -28,6 +28,55 @@ import (
 //   - [MaxRunStateBytes] is checked at Continue-As-New, where the state is no
 //     longer a prediction. It is the backstop, and it fails the run.
 const (
+	// TemporalDefaultBlobLimitBytes is the payload size Temporal refuses past,
+	// at its default configuration.
+	//
+	// Named rather than left as arithmetic inside [MaxRunStateBytes] because it
+	// is not only that constant's business any more. A deployment may configure
+	// a payload codec, and an encrypting codec expands what it is handed, so the
+	// question "does a maximal run state still fit once it is encoded" has to be
+	// asked somewhere, by something that can name the limit it is asking about.
+	// See `payloadcodec.Config.Validate`, which asks it at startup: the answer
+	// is a property of the deployment's configuration, never of a running
+	// workflow, so nothing here may be read inside workflow code.
+	TemporalDefaultBlobLimitBytes = 2 << 20
+
+	// RunStateReserveBytes is what [MaxRunStateBytes] leaves unspent under
+	// [TemporalDefaultBlobLimitBytes], and it has two claimants.
+	//
+	// [PayloadEnvelopeReserveBytes] is the part that is not anybody's to spend:
+	// the run state travels inside a payload, with metadata and encoding
+	// headers, and proto.Size measures the message rather than the envelope. The
+	// rest, [MaxCodecExpansionBytes], is what a configured codec may add.
+	//
+	// Splitting a reserve that was one number is what lets the codec check be
+	// exact instead of guessing at somebody else's headroom, and the split is
+	// arithmetic on this constant rather than a second literal so the parts
+	// cannot come to disagree with the whole.
+	RunStateReserveBytes = 64 << 10
+
+	// PayloadEnvelopeReserveBytes is the part of [RunStateReserveBytes] kept for
+	// the payload wrapped around a run state, before any codec sees it.
+	//
+	// Generous for what it holds. A payload's envelope is its metadata map (a
+	// converter name, a message's full name) plus the field framing around the
+	// data, which is tens of bytes, not thousands. It is four kibibytes because
+	// spending headroom in the safe direction is the same judgement
+	// [MaxRunStateBytes] already makes: what this reserve buys is a diagnosis
+	// instead of a hang, and what it costs is nothing anyone can measure.
+	PayloadEnvelopeReserveBytes = 4 << 10
+
+	// MaxCodecExpansionBytes is what a payload codec may add to a maximal run
+	// state and still be allowed to start.
+	//
+	// A nonce, an authentication tag, and a key id are tens of bytes per
+	// payload, so this is not a tight budget for anything that encrypts one
+	// payload as one payload. It is tight for a codec that expands per byte:
+	// armouring the ciphertext in base64 costs a third of two mebibytes, which
+	// no reserve carved out of the blob limit could ever cover. That is the
+	// answer such a codec should get, and it should get it at startup.
+	MaxCodecExpansionBytes = RunStateReserveBytes - PayloadEnvelopeReserveBytes
+
 	// MaxSpecBytes bounds a submitted workflow specification.
 	//
 	// One mebibyte, which is deliberately the same number the Flowfile parser
@@ -46,6 +95,14 @@ const (
 	// little early produces a diagnosis; failing a little late produces the hang
 	// this exists to prevent, so the headroom is spent in the safe direction.
 	//
+	// Spelled as the blob limit minus its reserve, rather than as the same
+	// subtraction written out, because the reserve now has to be divisible: a
+	// deployment with a payload codec spends part of it on ciphertext overhead,
+	// and the startup check that decides whether a codec fits has to be reading
+	// the same number this bound was cut from. One constant cannot disagree with
+	// itself. The value is unchanged and must stay unchanged: it is written into
+	// the history of every run that has already suspended.
+	//
 	// A constant rather than configuration, and that is not a shortcut. This is
 	// checked inside workflow code, so its value is a determinism input: a limit
 	// read from an environment variable would be a different number on a worker
@@ -57,7 +114,7 @@ const (
 	// raising this to match. History that large is a problem of its own, and the
 	// fix for a run that reaches it is almost always a workload that should carry
 	// less.
-	MaxRunStateBytes = 2<<20 - 64<<10
+	MaxRunStateBytes = TemporalDefaultBlobLimitBytes - RunStateReserveBytes
 
 	// MaxSignalPayloadBytes bounds one signal's payload, at the server's door.
 	//
@@ -93,6 +150,27 @@ const (
 	// number every deployment agrees on is one an author can design against.
 	MaxSignalPayloadBytes = 64 << 10
 )
+
+// The parts still spell the whole, checked by the compiler.
+//
+// [MaxRunStateBytes] is a determinism input, so its value is not a preference:
+// runs that suspended under 2 MiB minus 64 KiB replay against that number, and a
+// worker that computes a different one from the same history can take a branch
+// the history does not record. Now that the value is assembled from parts, a
+// change to any part is a change to it, and the parts are edited for reasons
+// that have nothing to do with replay. So the literal it has always been is
+// written down once more, here, where its only job is to refuse to compile if it
+// ever stops agreeing.
+//
+// Conversion of a negative constant to an unsigned type is a compile-time error,
+// and both differences are taken so that drift in either direction is caught.
+const _ = uint(MaxRunStateBytes-(2<<20-64<<10)) + uint((2<<20-64<<10)-MaxRunStateBytes)
+
+// And the envelope's share leaves a codec something, which is the only reading
+// of the split under which a deployment can configure a codec at all. Raising
+// [PayloadEnvelopeReserveBytes] to the whole reserve would refuse every codec
+// that adds a single byte, silently and at startup, on every deployment.
+const _ = uint(MaxCodecExpansionBytes - 1)
 
 // CheckSpecSize reports whether a specification is small enough to run.
 //

@@ -27,17 +27,35 @@ import (
 // key story, and that lookup is the part this spike deliberately does not
 // invent.
 func payloadCodecConfig() (payloadcodec.Config, error) {
-	cfg := payloadcodec.Config{}
+	cfg, err := resolvePayloadCodec()
+	if err != nil {
+		return payloadcodec.Config{}, err
+	}
 
 	// Validated at resolution rather than at the first payload: a codec that
 	// cannot come up must stop the command, not fail the first run that reaches
-	// it. Cheap now, and it is the check that will matter when this reaches a
-	// KMS.
+	// it. Cheap for the null codec, and it is already load bearing for anything
+	// else: this is where a codec whose ciphertext would not fit inside
+	// Temporal's blob limit is refused, before a run can wedge on it. See
+	// `payloadcodec.Config.Validate`.
 	if err := cfg.Validate(); err != nil {
 		return payloadcodec.Config{}, err
 	}
 
 	return cfg, nil
+}
+
+// resolvePayloadCodec is the lookup itself, held in a variable so that the
+// checking above it can be tested against a codec that fails it.
+//
+// A seam rather than a fixture: the prototype resolves the null codec, which
+// passes every check, so with the lookup written inline there is no way to reach
+// the refusals from either entry point, and a refusal nothing can reach is a
+// refusal nobody has seen work. What replaces this body is the plugin lookup,
+// and the tests that swap it are the ones that will still be asking the right
+// question afterwards.
+var resolvePayloadCodec = func() (payloadcodec.Config, error) {
+	return payloadcodec.Config{}, nil
 }
 
 // localPayloadCodec resolves the codec for a local run, and applies it nowhere.

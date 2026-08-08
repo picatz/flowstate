@@ -3,9 +3,12 @@ package payloadcodec_test
 import (
 	"bytes"
 	"errors"
+	"math"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	commonpb "go.temporal.io/api/common/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
 	"google.golang.org/protobuf/proto"
@@ -165,4 +168,148 @@ func TestDecodeToleratesPayloadsItNeverWrote(t *testing.T) {
 	require.NoError(t, newToyConfig(t).DataConverter().FromPayload(plain, &decoded),
 		"a codec refused a payload written before it was configured")
 	require.True(t, proto.Equal(original, &decoded))
+}
+
+// expandingCodec is the null codec with a declaration bolted on, which is the
+// only part of a codec the startup check reads.
+//
+// It deliberately does not expand anything when it encodes: the check is a check
+// of what a codec *says about itself*, made before any payload exists, and a
+// test that had to encode two mebibytes to ask the question would be testing a
+// different one.
+type expandingCodec struct {
+	name     string
+	declared func(plain int) int
+}
+
+func (c expandingCodec) Name() string { return c.name }
+
+func (c expandingCodec) Encode(p []*commonpb.Payload) ([]*commonpb.Payload, error) { return p, nil }
+
+func (c expandingCodec) Decode(p []*commonpb.Payload) ([]*commonpb.Payload, error) { return p, nil }
+
+func (c expandingCodec) MaxEncodedSize(plain int) int { return c.declared(plain) }
+
+// byFixedOverhead is the shape of every codec that encrypts one payload as one
+// payload: a nonce, a tag, a key id, and nothing that grows with the plaintext.
+func byFixedOverhead(name string, overhead int) payloadcodec.Codec {
+	return expandingCodec{name: name, declared: func(plain int) int { return plain + overhead }}
+}
+
+// TestTheNullCodecFitsWithoutAnExemption pins that the default passes the check
+// by arithmetic rather than by being skipped. A check every real deployment runs
+// and the default does not is a check whose failure mode nobody meets until they
+// configure something.
+func TestTheNullCodecFitsWithoutAnExemption(t *testing.T) {
+	t.Parallel()
+
+	require.NoError(t, payloadcodec.Config{}.Validate())
+	require.Equal(t, v1.MaxRunStateBytes, payloadcodec.Null().MaxEncodedSize(v1.MaxRunStateBytes),
+		"the identity codec is no longer the identity on sizes")
+}
+
+// TestCodecExpansionIsCheckedAtItsExactBoundary decides the boundary rather than
+// leaving it to whichever comparison somebody typed.
+//
+// The budget is spendable to the last byte: a codec whose worst case lands
+// exactly on Temporal's limit produces a payload Temporal stores, so refusing it
+// would be refusing a deployment that works. One byte further is the run that
+// wedges, and it is refused at startup.
+func TestCodecExpansionIsCheckedAtItsExactBoundary(t *testing.T) {
+	t.Parallel()
+
+	t.Run("exactly at the limit starts", func(t *testing.T) {
+		t.Parallel()
+
+		require.NoError(t, payloadcodec.Config{
+			Codec: byFixedOverhead("exact-fit", v1.MaxCodecExpansionBytes),
+		}.Validate())
+	})
+
+	t.Run("one byte past the limit is refused", func(t *testing.T) {
+		t.Parallel()
+
+		err := payloadcodec.Config{
+			Codec: byFixedOverhead("one-too-many", v1.MaxCodecExpansionBytes+1),
+		}.Validate()
+
+		require.Error(t, err, "a codec that overflows the blob limit by a byte was allowed to start")
+		require.Contains(t, err.Error(), `"one-too-many"`, "the refusal does not name the codec")
+		require.Contains(t, err.Error(), "which is 1 over",
+			"the refusal does not say by how much, which is what tells an operator whether "+
+				"this is a codec to trim or a codec to replace")
+	})
+}
+
+// TestCodecThatCannotFitIsRefusedWithSomethingActionable is the negative
+// direction the whole slice exists for: a codec whose ciphertext cannot fit
+// where its plaintext did must stop the process, not the first run that reaches
+// it.
+//
+// The advice is asserted too, because there is an obvious wrong answer here and
+// an operator reading a size error will reach for it. Raising the cluster's blob
+// limit does not help: [v1.MaxRunStateBytes] is compiled in, being a determinism
+// input, so it does not move with the cluster's configuration.
+func TestCodecThatCannotFitIsRefusedWithSomethingActionable(t *testing.T) {
+	t.Parallel()
+
+	// Base64 armour over the ciphertext: a third of two mebibytes, which no
+	// reserve carved out of the blob limit could ever cover.
+	armoured := expandingCodec{
+		name:     "armoured-aesgcm",
+		declared: func(plain int) int { return (plain+2)/3*4 + 64 },
+	}
+
+	err := payloadcodec.Config{Codec: armoured}.Validate()
+	require.Error(t, err)
+
+	msg := err.Error()
+	require.Contains(t, msg, `"armoured-aesgcm"`, "the refusal does not name the codec")
+	require.Contains(t, msg, strconv.Itoa(v1.TemporalDefaultBlobLimitBytes), "the limit is not stated")
+	require.Contains(t, msg, strconv.Itoa(v1.MaxCodecExpansionBytes), "the budget is not stated")
+	require.Contains(t, msg, strconv.Itoa(v1.MaxRunStateBytes), "the run state bound is not stated")
+	require.Contains(t, msg, "leaner", "the refusal does not say what to do")
+	require.Contains(t, msg, "Raising the cluster's blob limit is not the fix",
+		"the refusal leaves an operator to reach for the wrong lever")
+}
+
+// TestADeclarationBelowItsInputIsRefused covers the answer that is not too big
+// but is not an answer: a bound under its own input.
+//
+// Fail closed rather than clamp. The likeliest way to produce one is arithmetic
+// that overflowed, and an implementation that has overflowed at two mebibytes is
+// not one whose bound should be trusted at any other size.
+func TestADeclarationBelowItsInputIsRefused(t *testing.T) {
+	t.Parallel()
+
+	err := payloadcodec.Config{
+		Codec: expandingCodec{name: "shrinking", declared: func(plain int) int { return plain - 1 }},
+	}.Validate()
+
+	require.Error(t, err, "a codec declaring a bound below its own input was allowed to start")
+	require.Contains(t, err.Error(), `"shrinking"`)
+	require.Contains(t, err.Error(), "smaller than the input")
+
+	// Overflow is the same shape and gets the same answer.
+	require.Error(t, payloadcodec.Config{
+		Codec: expandingCodec{name: "overflowing", declared: func(int) int { return math.MinInt }},
+	}.Validate())
+}
+
+// TestValidateChecksTheSizeOfTheCarriedRunState pins *which* size the check asks
+// about. It is the maximal run state plus the envelope the run state travels
+// inside, because the codec is handed the payload rather than the message, and a
+// codec that expands per byte expands the envelope too.
+func TestValidateChecksTheSizeOfTheCarriedRunState(t *testing.T) {
+	t.Parallel()
+
+	var asked []int
+	require.NoError(t, payloadcodec.Config{
+		Codec: expandingCodec{name: "observer", declared: func(plain int) int {
+			asked = append(asked, plain)
+			return plain
+		}},
+	}.Validate())
+
+	require.Equal(t, []int{v1.MaxRunStateBytes + v1.PayloadEnvelopeReserveBytes}, asked)
 }

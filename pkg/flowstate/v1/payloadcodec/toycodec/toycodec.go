@@ -22,6 +22,7 @@ import (
 	"fmt"
 
 	commonpb "go.temporal.io/api/common/v1"
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec"
@@ -85,6 +86,45 @@ func (c *Codec) Encode(payloads []*commonpb.Payload) ([]*commonpb.Payload, error
 		}
 	}
 	return out, nil
+}
+
+// encodedEnvelopeSize is what an encoded payload costs before its data: the
+// metadata entry this codec stamps, framed on the wire.
+//
+// Measured from an empty-data payload of exactly the shape [Codec.Encode]
+// builds, rather than counted out by hand, because a hand count is a copy of the
+// wire format that drifts the first time [encodingName] is renamed. A payload
+// with no data omits the data field entirely, so this is the metadata and
+// nothing else.
+var encodedEnvelopeSize = proto.Size(&commonpb.Payload{
+	Metadata: map[string][]byte{encodingMetadataKey: []byte(encodingName)},
+})
+
+// dataField is Payload.data's field number, taken from the descriptor for the
+// same reason: the framing around the ciphertext is a tag plus a length, and
+// the tag's width depends on a number that belongs to the schema.
+var dataField = (&commonpb.Payload{}).ProtoReflect().Descriptor().Fields().ByName("data").Number()
+
+// MaxEncodedSize implements [payloadcodec.Codec], exactly rather than
+// approximately.
+//
+// AES-GCM's output length is its input plus the tag, and this codec prefixes the
+// nonce, so every term is known: the ciphertext is the marshaled payload plus a
+// nonce and a tag, and the encoded payload is that ciphertext framed as bytes
+// alongside the encoding metadata. proto.Marshal produces exactly proto.Size
+// bytes, so the answer is reached rather than merely respected, which is what
+// TestMaxEncodedSizeIsTheSizeEncodeProduces asserts payload by payload.
+//
+// Being exact is the point of declaring at all. A codec that padded this out
+// would pass the startup check on nothing that a leaner declaration would have
+// failed, but it would fail deployments that fit, and it would do so at startup
+// where the operator has no way to see the slack.
+func (c *Codec) MaxEncodedSize(plain int) int {
+	if plain < 0 {
+		plain = 0
+	}
+	sealed := c.aead.NonceSize() + plain + c.aead.Overhead()
+	return encodedEnvelopeSize + protowire.SizeTag(dataField) + protowire.SizeBytes(sealed)
 }
 
 // Decode implements [payloadcodec.Codec].
