@@ -479,7 +479,38 @@ func bindsClock(key string, path []string) bool {
 		return key == waitUntilKey || key == sleepKey
 	case endsWith(path, "wait_for_signal"):
 		return key == signalTimeoutKey
-	case endsWith(path, "wait_for_signal", "outputs"):
+	case withinWaitOutputsShaping(path):
+		return true
+	}
+	return false
+}
+
+// withinWaitOutputsShaping reports whether path descends from a signal's
+// `outputs:` shaping, at any depth beneath it.
+//
+// A shaping value can itself be a mapping (`outputs: { audit: { observed_at:
+// ${...} } }`), and every level below `outputs:` is still evaluated in the
+// wait's scope: validateWait builds the shaping scope once, from the waiting
+// one, and walks every entry the shaping mapping holds regardless of how deep
+// it nests. An exact-suffix check on `[wait_for_signal, outputs]` saw only the
+// entries directly under `outputs:` and stopped there, which is the DSL saying
+// more than the editor did about the same file.
+//
+// The pair must be adjacent (`wait_for_signal` immediately followed by
+// `outputs`), and `wait_for_signal` must sit directly under a step, the same
+// level [bindsClock]'s own `wait_for_signal` case reads a step's `timeout:`
+// at. That excludes a step-level `timeout:` (which never has `outputs` under
+// it) and a task's own shaping `outputs:` (whose ancestor is a task name, not
+// `wait_for_signal`), so a task input named `outputs` with a nested map is
+// left alone.
+func withinWaitOutputsShaping(path []string) bool {
+	for i := 0; i+1 < len(path); i++ {
+		if path[i] != "wait_for_signal" || path[i+1] != taskShapingKey {
+			continue
+		}
+		if i == 0 || path[i-1] != "steps" {
+			continue
+		}
 		return true
 	}
 	return false

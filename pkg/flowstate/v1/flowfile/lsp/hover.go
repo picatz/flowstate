@@ -699,14 +699,14 @@ func hoverStepOutput(doc *document, from *parsedStep, ref reference, rng lsp.Ran
 func nowDoc() string {
 	return fmt.Sprintf(
 		"**`%s`** · `timestamp` — the moment the wait is evaluated.\n\n"+
-			"Bound inside a wait (`%s:`, an expression-valued `%s:`, and a signal's `%s:`) "+
-			"and nowhere else, from the clock the driver controls, so a "+
+			"Bound inside a wait (`%s:`, an expression-valued `%s:`, a signal's `%s:`, and a "+
+			"signal's `%s:` shaping) and nowhere else, from the clock the driver controls, so a "+
 			"deadline computed from it survives replay and a worker restart. A task input is "+
 			"resolved inside an activity, which has no clock that survives a retry: a `%s` there "+
 			"would read differently on every attempt, so the name is not bound in one. Compute "+
 			"the moment or the length in the wait itself, or pass a time in as an input.\n\n"+
 			"Durations build from `%s`, so a deadline reads as `${%s + days(3)}`.",
-		v1.NowIdentifier, waitUntilKey, sleepKey, signalTimeoutKey, v1.NowIdentifier,
+		v1.NowIdentifier, waitUntilKey, sleepKey, signalTimeoutKey, taskShapingKey, v1.NowIdentifier,
 		strings.Join(v1.DurationUnits(), "`, `"), v1.NowIdentifier)
 }
 
