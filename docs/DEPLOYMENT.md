@@ -111,12 +111,11 @@ and `flow server` with no per-tenant flags gets you.
   namespace and it holds everyone's history.
 - ❌ **Cannot claim plugin or process containment.** A launched plugin runs
   with the worker's authority; see [above](#the-worker-is-the-tenancy-boundary).
-- ❌ **Cannot claim per-tenant egress.** One worker, one netpolicy
-  configuration — every tenant's `http:` steps are governed by the same
-  allow/deny rules. Verified: netpolicy's CEL environments (`rules.go`,
-  `newRuleCompiler`) declare only `url`/`scheme`/`host`/`port`/`method`/`path`
-  and, for a reused connection, `ip` — no `workload` or namespace attribute
-  exists for an egress rule to key on at all.
+- ⚠️ **Per-tenant egress is a Tier 1b property, not a limitation of the tier.**
+  One worker still runs one netpolicy configuration, but that configuration's
+  CEL rules can now key on the calling tenant — see Tier 1b below. A single
+  rule set that ignores identity governs every tenant's `http:` steps alike;
+  writing an identity-scoped rule is what makes egress per-tenant on one worker.
 
 ### Tier 1b — shared worker, per-tenant policy rules
 
@@ -151,6 +150,20 @@ cheap to turn on, and undocumented until now.
   (`--auth-policy`'s `secrets:` rules and `--task-policy`'s rules), governing
   two separate decisions — don't conflate them when writing one deployment's
   configuration.
+- ✅ **Egress keyed on `identity.namespace` is now real (#240).** The egress
+  CEL environment carries an `identity` object — `identity.subject`, `.issuer`,
+  `.namespace`, `.claims` — the same run identity the secret and task rules
+  read, from the same source. So `identity.namespace == "team-a" && host ==
+  "partner-a.example.com"` in one worker's `--egress-policy` file lets team-a
+  reach a host that every other tenant on that worker is denied — the one
+  asymmetry that previously kept egress out of this tier. It is available in
+  both rule scopes, so a resolved-address rule (`... && ip == "10.0.0.5"`) can
+  be tenant-scoped too. Fail-closed like the others: a run with no attested
+  identity (a local run, or one predating identity) presents an empty namespace
+  and matches no tenant rule. `examples/egress-policy.yaml` is the worked
+  example. This is Tier 1b — one shared worker — not the per-tenant worker of
+  Tier 2, which remains the stronger answer where history privacy is also
+  required.
 - ❌ Still no history privacy and no plugin/process containment — those are
   Tier 2 properties, not policy-rule properties.
 

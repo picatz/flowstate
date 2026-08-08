@@ -60,6 +60,15 @@
 //   - method  string, the HTTP method as written
 //   - path    string, the URL path
 //   - ip      string, the resolved address the connection is being made to
+//   - identity object, the workload identity of the run making the request, with
+//     string fields subject, issuer, and namespace and a claims map — see
+//     [Identity]. On a shared worker this is what lets a rule scope egress by
+//     tenant, the same identity secret-access and task-shape rules already read.
+//     A run that carries no attested identity — a local run, or one that predates
+//     identity — presents every field empty, which a rule requiring a tenant does
+//     not match, so an identity-scoped allowlist denies it. The value is supplied
+//     by the task making the request; a request not made through a Flowstate task
+//     sees the empty identity.
 //
 // Attributes are normalized to the form the request will actually take, so that a
 // rule cannot be evaded by spelling the same target differently. host is
@@ -70,11 +79,14 @@
 //
 // A rule that references ip is evaluated in the dialer, once per address, and may
 // only combine ip with the attributes that identify a connection: scheme, host,
-// and port. Those are exactly the attributes that stay true for every request
-// sharing a connection, so a connection-scoped rule cannot be bypassed by
-// connection reuse. Combining ip with method, path, or url is rejected when the
-// policy is built, with an error that says so. Every other rule is evaluated once
-// per request, before any connection is made, and applies to every redirect hop.
+// port, and identity. Those are exactly the attributes that stay true for every
+// request sharing a connection, so a connection-scoped rule cannot be bypassed by
+// connection reuse. identity is available in both scopes because it is fixed for
+// the run, so "this tenant may reach this address range" is expressible as a
+// connection-scoped rule and "this tenant may reach this URL" as a request-scoped
+// one. Combining ip with method, path, or url is rejected when the policy is
+// built, with an error that says so. Every other rule is evaluated once per
+// request, before any connection is made, and applies to every redirect hop.
 //
 // Precedence, in order:
 //
@@ -338,12 +350,13 @@ func (p *Policy) checkRequest(req *http.Request) error {
 	}
 
 	return p.requestRules.evaluate(req.Context(), target, map[string]any{
-		"url":    target,
-		"scheme": scheme,
-		"host":   ruleHost(req.URL),
-		"port":   int64(port),
-		"method": req.Method,
-		"path":   rulePath(req.URL),
+		"url":      target,
+		"scheme":   scheme,
+		"host":     ruleHost(req.URL),
+		"port":     int64(port),
+		"method":   req.Method,
+		"path":     rulePath(req.URL),
+		"identity": identityFromContext(req.Context()),
 	})
 }
 
@@ -471,10 +484,11 @@ func (p *Policy) controlDial(ctx context.Context, network, address string, _ sys
 	}
 
 	return p.connRules.evaluate(ctx, address, map[string]any{
-		"scheme": a.scheme,
-		"host":   a.host,
-		"port":   int64(addrPort.Port()),
-		"ip":     normalize(addrPort.Addr()).String(),
+		"scheme":   a.scheme,
+		"host":     a.host,
+		"port":     int64(addrPort.Port()),
+		"ip":       normalize(addrPort.Addr()).String(),
+		"identity": identityFromContext(ctx),
 	})
 }
 

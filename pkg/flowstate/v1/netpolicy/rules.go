@@ -3,6 +3,7 @@ package netpolicy
 import (
 	"context"
 	"fmt"
+	"reflect"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/ext"
@@ -121,9 +122,19 @@ type ruleCompiler struct {
 // pathological rule cannot become a denial of service, and cost tracking is
 // enabled alongside it because the limit is only enforced when costs are tracked.
 func newRuleCompiler(costLimit uint64) (*ruleCompiler, error) {
+	// The workload identity is fixed for the lifetime of a run, so it is known in
+	// both scopes: a request-scoped rule can gate a URL by tenant, and a
+	// connection-scoped rule can gate a resolved address by tenant. Declaring it as
+	// a native type makes a rule naming `identity.nonexistent` a build-time error
+	// rather than one that silently never matches.
+	identityDecls := []cel.EnvOption{
+		ext.NativeTypes(ext.ParseStructTag("cel"), reflect.TypeOf(Identity{})),
+		cel.Variable("identity", cel.ObjectType(identityTypeName)),
+	}
+
 	// Request-scoped attributes are known before a connection is made and are
 	// fixed for the lifetime of one request.
-	requestEnv, err := cel.NewEnv(
+	requestEnv, err := cel.NewEnv(append([]cel.EnvOption{
 		cel.Variable("url", cel.StringType),
 		cel.Variable("scheme", cel.StringType),
 		cel.Variable("host", cel.StringType),
@@ -131,7 +142,7 @@ func newRuleCompiler(costLimit uint64) (*ruleCompiler, error) {
 		cel.Variable("method", cel.StringType),
 		cel.Variable("path", cel.StringType),
 		ext.Strings(ext.StringsVersion(5)),
-	)
+	}, identityDecls...)...)
 	if err != nil {
 		return nil, fmt.Errorf("building request rule environment: %w", err)
 	}
@@ -139,13 +150,13 @@ func newRuleCompiler(costLimit uint64) (*ruleCompiler, error) {
 	// Connection-scoped attributes are the ones that identify a connection, and
 	// are therefore the ones that remain true for every request that reuses it.
 	// Deliberately absent: method, path, and url, which vary per request.
-	connEnv, err := cel.NewEnv(
+	connEnv, err := cel.NewEnv(append([]cel.EnvOption{
 		cel.Variable("scheme", cel.StringType),
 		cel.Variable("host", cel.StringType),
 		cel.Variable("port", cel.IntType),
 		cel.Variable("ip", cel.StringType),
 		ext.Strings(ext.StringsVersion(5)),
-	)
+	}, identityDecls...)...)
 	if err != nil {
 		return nil, fmt.Errorf("building connection rule environment: %w", err)
 	}

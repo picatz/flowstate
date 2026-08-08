@@ -21,8 +21,18 @@ egress:
 
   # Allow rules make the policy an allowlist: a request must match one. These
   # are CEL, the same language workflow expressions are written in, over url,
-  # scheme, host, port, method, path, and (connection-scoped) ip.
+  # scheme, host, port, method, path, (connection-scoped) ip, and identity —
+  # the workload identity of the run, with string fields subject, issuer, and
+  # namespace and a claims map. On a shared worker, identity is what scopes
+  # egress by tenant: it is the same identity secret-access and task-shape
+  # rules read, so all three surfaces gate on one notion of who is running.
   allow:
+    # Only team-a may reach the partner API. Another tenant on this worker does
+    # not match this rule — and matches no other — so its request is denied,
+    # the asymmetry the identity dimension exists to close. A run with no
+    # attested identity presents an empty namespace and is denied here too.
+    - identity.namespace == "team-a" && host == "partner-a.example.com"
+    # GitHub's read API is reachable by every tenant.
     - host == "api.github.com" || host.endsWith(".githubusercontent.com")
 
   # Deny beats allow, and a rule that fails to evaluate denies the request.
