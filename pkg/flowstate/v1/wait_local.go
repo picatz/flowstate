@@ -44,11 +44,14 @@ type SignalWaiter interface {
 	// WaitForSignal blocks until a signal of the given name is available, and
 	// returns what it carried and who it is from.
 	//
-	// The sender is always [LocalSignalSender]: a local run has no authenticated
+	// The sender never claims to be attested: a local run has no authenticated
 	// caller for anything to attest, and every implementation of this interface
-	// exists only to deliver signals to one. See [LocalSignalSender] for why that
-	// is a distinct, honest value rather than an empty [SignalSender] that would
-	// read the same as a signal recorded before sender attestation existed.
+	// exists only to deliver signals to one. It is [LocalSignalSender] for a
+	// delivery that stands in for nobody, and [RehearsalSignalSender] for one a
+	// caller asked to stand in for a named approver - both marked local, which
+	// is what keeps either of them distinguishable from an attested production
+	// sender, and from an empty [SignalSender] that would read the same as a
+	// signal recorded before sender attestation existed.
 	WaitForSignal(ctx context.Context, name string) (*Node_Outputs, *SignalSender, error)
 }
 
@@ -61,8 +64,68 @@ type SignalWaiter interface {
 // failed to attest — three different situations a workflow author cannot tell
 // apart from `${approval.sender}` alone. `Local: true` names this one
 // explicitly, so a local run's gate output never looks like a production one.
+//
+// It carries no identity at all, which is what separates it from
+// [RehearsalSignalSender]: this delivery stands in for nobody, and a policy's
+// `allow:` rule that names anybody in particular refuses it - locally exactly
+// as production refuses an unattested caller.
 func LocalSignalSender() *SignalSender {
 	return &SignalSender{Local: true}
+}
+
+// RehearsalSignalSender is the sender a local run asserts on behalf of an
+// approver it has no way to authenticate: `flow run local --signal-as-subject`
+// and its siblings.
+//
+// A gate whose `signals:` policy names an approver is, without this,
+// unreachable locally. Every `--signal` delivery carried [LocalSignalSender],
+// which attests nobody, and no `allow:` rule a real deployment would write can
+// match nobody - so the one workflow shape most worth rehearsing before
+// production, an approval gate with authorization in `signals:` rather than in
+// an `if:`, could only ever be rehearsed as the case where the approval is
+// refused. That is a driver disagreement of the kind CLAUDE.md's "both
+// execution drivers must agree" exists to catch, and this closes it: the same
+// [SignalPolicyCheck] runs against the same identity on both drivers, so a
+// rule that admits an approver in production admits them in a rehearsal, and
+// one that refuses them refuses them here too.
+//
+// # The marker is structural, and it is the same one [LocalSignalSender] uses
+//
+// `Local: true` beside a populated `Identity` is a shape the durable path
+// cannot produce. A durable sender is built in exactly two places, both from
+// the server's own attestation of a caller (`server/lifecycle.go`'s Signal and
+// SignalWithStart), and neither sets `Local` - the schema has no field a
+// request could set it through either, so nothing a caller sends can reach it.
+// The durable side refuses the shape outright regardless, before it consults
+// any policy at all (see `authorizeSignal`), so that this stays a refusal
+// rather than a fact about which constructors happen to exist today.
+//
+// It is also visible where it matters most, in the run's own answer: a
+// rehearsed gate's `sender.local` output reads true, exactly as it does for an
+// unattested local delivery, so `!sender.local` keeps meaning "the server
+// accepted this" for a workflow author. A rehearsal asserts who an approver
+// would have been; it never claims anybody attested it.
+//
+// identity is what a `signals:` rule is matched against - the `issuer`,
+// `subject`, `namespace` and `claims` fields [signalPolicyRuleMatches] reads.
+// Nothing here is minted, signed, or carried anywhere: the value lives in one
+// process, for one run, and is discarded with it.
+func RehearsalSignalSender(identity *WorkloadIdentity) *SignalSender {
+	return &SignalSender{Identity: identity, Local: true}
+}
+
+// IsRehearsalSignalSender reports whether sender is a rehearsal identity a
+// local run asserted ([RehearsalSignalSender]) rather than either an attested
+// production sender or the plain unattested [LocalSignalSender].
+//
+// The three are distinguishable by shape alone, which is the point: local with
+// no identity is "nobody authenticated this, and it claims nobody", local with
+// an identity is "nobody authenticated this, and it stands in for somebody",
+// and not-local is "a server attested this". A caller reporting what a local
+// run is about to do - `flow run local` says so on its way past the gate -
+// reads this rather than re-deriving the pair of conditions.
+func IsRehearsalSignalSender(sender *SignalSender) bool {
+	return sender.GetLocal() && sender.GetIdentity() != nil
 }
 
 // signalWaiterKey is the context key carrying the waiter.

@@ -1518,7 +1518,15 @@ flow validate examples/hello-world/workflow.yaml`,
 			"see. They do not make the run attested: a local run has no server in front of it " +
 			"to attest anything, so `run.identity` and the task-shape and egress rules keep " +
 			"reading it as having no caller. A rule keyed on identity.namespace therefore " +
-			"matches nothing here, and can refuse locally what production allows.",
+			"matches nothing here, and can refuse locally what production allows.\n\n" +
+			"A gate is the one place that limit is lifted, because a gate is the thing worth " +
+			"rehearsing. --signal-as-subject and its siblings name the approver a --signal " +
+			"delivery stands in for, and the workflow's own `signals:` policy is then checked " +
+			"here by the same function the server checks it with - so an approver a rule admits " +
+			"in production opens the gate here, one it refuses is refused here, and an approver " +
+			"who is this run's own starter is refused by `distinct_from_starter:` on both. It " +
+			"remains a rehearsal, and says so: nothing attested it, and the gate's own " +
+			"`sender.local` output reads true.",
 		Args: cobra.MinimumNArgs(1),
 		RunE: runLocalWorkflow,
 		Example: `# Run a workflow locally:
@@ -1536,6 +1544,9 @@ flow run local examples/hello-world/workflow.yaml -o json | jq -r .status
 # Run a workflow with an approval gate, answering the gate up front:
 flow run local examples/expense-approval/workflow.yaml --input-file examples/expense-approval/inputs.json --signal manager-approved='{"approved": true}'
 
+# Rehearse a gate whose signals: policy names its approver, standing in for them:
+flow run local examples/approval-gate/workflow.yaml --input-file examples/approval-gate/inputs.json --signal deploy-approved='{"approved": true}' --signal-as-subject sre-lead@example.com --signal-as-issuer https://issuer.example.com --signal-as-claim team=release-managers
+
 # Run a workflow that takes arguments, and read what it answered with:
 flow run local examples/computed-outputs/workflow.yaml --input release=2026.9.0 -o json | jq .runOutputs`,
 	}
@@ -1552,6 +1563,26 @@ flow run local examples/computed-outputs/workflow.yaml --input release=2026.9.0 
 	// buffers signals for a run.
 	runLocalCmd.Flags().StringArray("signal", nil,
 		`answer a wait_for_signal step, as name=json (repeatable), e.g. --signal deploy-approved='{"approved": true}'`)
+
+	// Who those answers are from. A gate whose `signals:` policy names an
+	// approver is unreachable without this: a delivery attesting nobody matches
+	// no `allow:` rule, so the only rehearsal available was the refusal. These
+	// name the approver every --signal of this run stands in for, and the same
+	// check production runs then admits or refuses it here - including
+	// `distinct_from_starter:`, compared against --as-subject/--as-issuer.
+	//
+	// Spelled to rhyme with --as-subject and its siblings, which name the
+	// starter, because they answer the same shape of question about the other
+	// party. Deliberately no --signal-as-deployment: no `signals:` rule can
+	// match on a deployment, so a flag for it would rehearse nothing.
+	runLocalCmd.Flags().String("signal-as-subject", "",
+		"authenticated subject to deliver --signal as, with --signal-as-issuer (local runs only)")
+	runLocalCmd.Flags().String("signal-as-issuer", "",
+		"authenticated issuer to deliver --signal as, with --signal-as-subject (local runs only)")
+	runLocalCmd.Flags().String("signal-as-namespace", "",
+		"tenant namespace to deliver --signal as (local runs only)")
+	runLocalCmd.Flags().StringArray("signal-as-claim", nil,
+		"authenticated string claim NAME=VALUE to deliver --signal as (repeatable)")
 
 	// Worker command, which starts a Temporal worker to process workflows and activities.
 	workerCmd := &cobra.Command{

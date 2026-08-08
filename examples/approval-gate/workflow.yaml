@@ -15,6 +15,23 @@ description: >-
 #
 #   flow signal <workflow-id> deploy-approved --data '{"approved": true}'
 #
+# Rehearse the same gate on a laptop, standing in for the approver `signals:`
+# below names:
+#
+#   flow run local examples/approval-gate/workflow.yaml \
+#     --input-file examples/approval-gate/inputs.json \
+#     --signal deploy-approved='{"approved": true}' \
+#     --signal-as-subject sre-lead@example.com \
+#     --signal-as-issuer https://issuer.example.com \
+#     --signal-as-claim team=release-managers
+#
+# That is an assertion, not an attestation: nothing authenticated it, the gate's
+# own `sender.local` output says so, and the durable driver refuses a sender
+# carrying that mark outright. What it buys is that the policy below is checked
+# by the same function the server checks it with, so dropping the claim, naming
+# a different approver, or making the approver this run's own starter
+# (`--as-subject`) each fails here for the reason it would fail in production.
+#
 # Notice there is no "who approved this" in that payload. That used to be a `by:`
 # field the sender typed in themselves — which meant anyone allowed to send this
 # signal could claim to be anyone. `steps.approval.sender` below is not that: it

@@ -3631,6 +3631,43 @@ already can, and the surface that displays untrusted text is the place that ques
 belongs - not this field, which would be one renderer's escaping rules baked into
 the schema.
 
+### Rehearsing the gate, and who a rehearsal stands in for
+
+A `signals:` policy made a gate real and made it unrehearsable in the same stroke.
+`flow run local --signal` had no way to say who a delivery was from, so every local
+delivery was unattested, and an `allow:` rule that names an approver matches nobody.
+The one workflow shape most worth trying before production - a gate whose
+authorization lives in `signals:` rather than in the file's own `if:` - could be
+rehearsed only as its own refusal.
+
+`--signal-as-subject`, `--signal-as-issuer`, `--signal-as-namespace` and
+`--signal-as-claim` name the approver a delivery stands in for. They rhyme with
+`--as-subject` and its siblings, which name the run's own starter, because they
+answer the same shape of question about the other party - and the pairing is not
+decorative: `distinct_from_starter:` compares the one against the other, so a
+rehearsal that names the same person for both is refused locally for the reason
+production refuses it.
+
+The identity is asserted, never attested, and the design turns on the two staying
+distinguishable. A rehearsed delivery carries the same `local` marker an unattested
+one always carried, so `sender.local` still reads true and `!sender.local` still
+means "the server accepted this" for a workflow reading its own gate. The marker is
+structural rather than a convention: `local` set beside a populated `identity` is a
+shape the durable path has no constructor for and no wire field a caller could reach,
+and the server refuses it outright before consulting any policy, so "a rehearsal
+never authorizes a durable run" is enforced rather than merely unlikely.
+
+What is shared is the decision itself. Both drivers reach `SignalPolicyCheck` with an
+identity and the run's starter, so a rule that admits an approver in production admits
+them on a laptop, one that refuses them refuses them there, and the cases pinning that
+live in `pkg/flowstate/v1/tests` where both drivers run them.
+
+The limit worth stating: the flags name one approver for the whole run, so a workflow
+with two gates expecting two different people is rehearsed one approver at a time.
+Binding a sender to each `--signal` would buy that case at the price of a second value
+syntax on a flag whose first one is already a shell-quoted JSON document, and no
+example in the corpus needs it yet.
+
 ## The standing rule
 
 Every claim in a design document about what this codebase currently does is a claim,

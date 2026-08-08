@@ -35,21 +35,34 @@ var ()
 // Every `--signal` delivered through this command goes through
 // [v1.SignalPolicyCheck] before it reaches a waiting step, exactly as a durable
 // `flow signal` does through `FlowstateServer.Signal` — see
-// [v1.NewPolicedLocalSignals]. `--signal` has no way to attest a sender's
-// identity (unlike `flow test`'s scripted `sender:`), so its delivery is always
-// [v1.LocalSignalSender] — unattested — which a real policy's `allow:` rule can
-// never match. A workflow whose gate declares a `signals:` policy is therefore
-// unreachable through `--signal` today, honestly: that is the same limit
-// `examples/approval-gate/workflow.yaml`'s own header comment already names for
-// `flow run local` generally, not a new one this introduces.
+// [v1.NewPolicedLocalSignals].
+//
+// # Rehearsing who sent it (#349)
+//
+// A delivery used to carry [v1.LocalSignalSender] always - unattested, which no
+// `allow:` rule a real deployment writes can match - so a workflow whose gate
+// declares a `signals:` policy could only ever be rehearsed as the case where
+// the approval is refused. --signal-as-subject and its siblings name the
+// approver a delivery stands in for, and the same [v1.SignalPolicyCheck] then
+// admits or refuses it here for the same reason production would. The identity
+// is a rehearsal and says so: it is delivered as [v1.RehearsalSignalSender],
+// whose `local` marker the durable path refuses outright.
+//
+// Named for the whole run rather than per --signal, and that is a limit worth
+// stating: a workflow with two gates expecting two different approvers can be
+// rehearsed one approver at a time. The alternative spelling - a sender bound
+// to each --signal - buys that case at the cost of a second value syntax on a
+// flag whose first one is already a shell-quoted JSON document, and the flags
+// here read the way `--as-subject` already reads for the starter.
 //
 // --as-subject/--as-issuer/--as-namespace/--as-claim name this run's own
-// starter, for `distinct_from_starter` only — the identity a `--signal`ed
-// sender is checked against, not the sender's own identity (which, per the
-// paragraph above, never carries one). A separate starter identity from
-// [WorkloadIdentity]'s zero value distinguishes "this local run started as
-// nobody" from "this local run started as somebody, but who is unknown" —
-// see [v1.NewPolicedLocalSignals]'s hasStarter parameter.
+// starter, which is what a `distinct_from_starter:` policy compares a sender
+// against - so a rehearsal whose --signal-as-subject equals its --as-subject is
+// refused here exactly as production refuses an approver approving their own
+// request. A separate starter identity from [WorkloadIdentity]'s zero value
+// distinguishes "this local run started as nobody" from "this local run started
+// as somebody, but who is unknown" - see [v1.NewPolicedLocalSignals]'s
+// hasStarter parameter.
 func withLocalSignals(ctx context.Context, cmd *cobra.Command, workflow *v1.Workflow, inputs map[string]*v1.Value, flags []string) (context.Context, error) {
 	policies, err := resolvedLocalSignalPolicies(ctx, workflow, inputs)
 	if err != nil {
@@ -61,6 +74,11 @@ func withLocalSignals(ctx context.Context, cmd *cobra.Command, workflow *v1.Work
 		return nil, err
 	}
 
+	sender, err := rehearsalSignalSender(cmd, len(flags))
+	if err != nil {
+		return nil, err
+	}
+
 	signals := v1.NewPolicedLocalSignals(policies, &v1.WorkloadIdentity{
 		Subject:   starter.Subject,
 		Issuer:    starter.Issuer,
@@ -68,20 +86,129 @@ func withLocalSignals(ctx context.Context, cmd *cobra.Command, workflow *v1.Work
 		Namespace: starter.Namespace,
 	}, true)
 
-	answered := make(map[string]bool, len(flags))
+	reportRehearsalSender(cmd.ErrOrStderr(), sender)
 
 	for _, flag := range flags {
 		name, payload, err := parseSignalFlag(flag)
 		if err != nil {
 			return nil, err
 		}
-		if err := signals.Deliver(name, payload); err != nil {
-			return nil, err
+		if err := signals.DeliverFrom(name, payload, sender); err != nil {
+			return nil, refusedLocalSignal(name, sender, err)
 		}
-		answered[name] = true
 	}
 
 	return v1.NewContextWithSignalWaiter(ctx, signals), nil
+}
+
+// rehearsalSignalSender reads --signal-as-subject and its siblings into the
+// sender every --signal delivery of this run carries.
+//
+// [v1.LocalSignalSender] when none of them was given, which is the behavior
+// every local run had before these flags existed: a delivery that stands in for
+// nobody. Naming any of them asks for [v1.RehearsalSignalSender] instead, which
+// stands in for the named approver and is still marked local.
+//
+// delivered is how many --signal flags this run carries, and naming a sender
+// for a run that delivers no signal at all is refused rather than ignored:
+// there is no reading of it that does anything, and an author who typed it
+// meant to answer a gate. Silence there would let a rehearsal that never
+// exercised its gate look exactly like one that did - see CLAUDE.md's
+// "diagnostics are a feature."
+func rehearsalSignalSender(cmd *cobra.Command, delivered int) (*v1.SignalSender, error) {
+	subject, _ := cmd.Flags().GetString("signal-as-subject")
+	issuer, _ := cmd.Flags().GetString("signal-as-issuer")
+	namespace, _ := cmd.Flags().GetString("signal-as-namespace")
+	entries, _ := cmd.Flags().GetStringArray("signal-as-claim")
+
+	if subject == "" && issuer == "" && namespace == "" && len(entries) == 0 {
+		return v1.LocalSignalSender(), nil
+	}
+
+	if delivered == 0 {
+		return nil, fmt.Errorf(
+			"--signal-as-* names who a signal came from, but this run delivers no --signal for it to " +
+				"come from; add the delivery, e.g. --signal deploy-approved='{\"approved\": true}'")
+	}
+
+	// A subject and an issuer travel together or not at all, because a rule
+	// matches the two joined ([v1.QualifiedSubject]) and never a bare subject:
+	// a subject is only unique within its issuer. Refusing half of the pair
+	// here reports the mistake as itself, rather than as a gate that mystifies
+	// an author by timing out against a policy their subject genuinely matches.
+	if (subject == "") != (issuer == "") {
+		return nil, fmt.Errorf(
+			"--signal-as-subject and --signal-as-issuer are given together or not at all: an `allow:` "+
+				"rule matches %q, never a bare subject, because a subject is only unique within its "+
+				"issuer", v1.QualifiedSubject("<issuer>", "<subject>"))
+	}
+
+	claims := make(map[string]string, len(entries))
+	for _, entry := range entries {
+		name, value, found := strings.Cut(entry, "=")
+		if !found || name == "" || value == "" {
+			return nil, fmt.Errorf("invalid --signal-as-claim %q: want NAME=VALUE", entry)
+		}
+		if _, duplicate := claims[name]; duplicate {
+			return nil, fmt.Errorf("duplicate --signal-as-claim %q", name)
+		}
+		claims[name] = value
+	}
+
+	return v1.RehearsalSignalSender(&v1.WorkloadIdentity{
+		Subject:   subject,
+		Issuer:    issuer,
+		Namespace: namespace,
+		Claims:    claims,
+	}), nil
+}
+
+// reportRehearsalSender says whose approval this run is standing in for,
+// before the run starts. It narrates on stderr, as [reportUnansweredGates]
+// does, because stdout is the run's single result document: an author piping
+// `-o json` through jq must never find prose ahead of it.
+//
+// A rehearsal identity is not a real one, and the run's own answer already says
+// so - `${approval.sender.local}` reads true either way - but the answer is
+// read after the fact, by whoever thinks to look. An author who has just
+// watched a policed gate open wants to know on the spot that it opened for an
+// identity this command asserted rather than one anybody authenticated.
+func reportRehearsalSender(out io.Writer, sender *v1.SignalSender) {
+	if !v1.IsRehearsalSignalSender(sender) {
+		return
+	}
+
+	identity := sender.GetIdentity()
+
+	described := v1.QualifiedSubject(identity.GetIssuer(), identity.GetSubject())
+	if identity.GetSubject() == "" {
+		described = "an approver with no subject"
+	}
+
+	fmt.Fprintf(out,
+		"rehearsing --signal deliveries as %s; nothing attested this, and the gate's sender.local "+
+			"output still reports true\n", described)
+}
+
+// refusedLocalSignal explains a delivery this workflow's own `signals:` policy
+// refused, in terms of what production would have done with it.
+//
+// The refusal itself is the point of the feature rather than a failure of it:
+// the same [v1.SignalPolicyCheck] runs on both drivers, so a rehearsal refused
+// here is an approval that would come back as PermissionDenied in production.
+// What differs is when an author finds out, and that is worth saying: durably
+// the sender is refused and the run keeps waiting, while here the answers are
+// given up front, so there is nothing left to wait for and no reason to hold
+// the terminal open until the gate's own timeout to prove it.
+func refusedLocalSignal(name string, sender *v1.SignalSender, err error) error {
+	if v1.IsRehearsalSignalSender(sender) {
+		return fmt.Errorf("%w\n  --signal-as-* asserts who this delivery is from; `flow signal` in "+
+			"production would be refused with PermissionDenied for the same reason, and the run would "+
+			"go on waiting", err)
+	}
+
+	return fmt.Errorf("%w\n  this delivery attests nobody, which no `allow:` rule matches; "+
+		"--signal-as-subject and --signal-as-issuer name the approver %q stands in for", err, name)
 }
 
 // resolvedLocalSignalPolicies is workflow's declared `signals:` — if any —

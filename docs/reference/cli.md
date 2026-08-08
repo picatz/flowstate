@@ -629,6 +629,8 @@ Arguments are given the same way `flow run` takes them — --input name=value or
 
 One limit worth knowing before writing a rule about who is running. --as-subject and its siblings name the identity this rehearsal's secret rules and plugin tasks see. They do not make the run attested: a local run has no server in front of it to attest anything, so `run.identity` and the task-shape and egress rules keep reading it as having no caller. A rule keyed on identity.namespace therefore matches nothing here, and can refuse locally what production allows.
 
+A gate is the one place that limit is lifted, because a gate is the thing worth rehearsing. --signal-as-subject and its siblings name the approver a --signal delivery stands in for, and the workflow's own `signals:` policy is then checked here by the same function the server checks it with - so an approver a rule admits in production opens the gate here, one it refuses is refused here, and an approver who is this run's own starter is refused by `distinct_from_starter:` on both. It remains a rehearsal, and says so: nothing attested it, and the gate's own `sender.local` output reads true.
+
 Examples:
 
 ```sh
@@ -646,6 +648,9 @@ flow run local examples/hello-world/workflow.yaml -o json | jq -r .status
 
 # Run a workflow with an approval gate, answering the gate up front:
 flow run local examples/expense-approval/workflow.yaml --input-file examples/expense-approval/inputs.json --signal manager-approved='{"approved": true}'
+
+# Rehearse a gate whose signals: policy names its approver, standing in for them:
+flow run local examples/approval-gate/workflow.yaml --input-file examples/approval-gate/inputs.json --signal deploy-approved='{"approved": true}' --signal-as-subject sre-lead@example.com --signal-as-issuer https://issuer.example.com --signal-as-claim team=release-managers
 
 # Run a workflow that takes arguments, and read what it answered with:
 flow run local examples/computed-outputs/workflow.yaml --input release=2026.9.0 -o json | jq .runOutputs
@@ -687,6 +692,10 @@ flow run local examples/computed-outputs/workflow.yaml --input release=2026.9.0 
 | `--secret-vault-path-prefix <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_PATH_PREFIX` | path prefix inside the mount, above the namespace segment (default $FLOWSTATE_SECRET_VAULT_PATH_PREFIX) |
 | `--secret-vault-token-file <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_TOKEN_FILE` | file holding a static Vault client token, re-read per login (default $FLOWSTATE_SECRET_VAULT_TOKEN_FILE; falls back to $FLOWSTATE_SECRET_VAULT_TOKEN directly, for a development vault or a test) |
 | `--signal <string,...>` | `stringArray` | — | — | answer a wait_for_signal step, as name=json (repeatable), e.g. --signal deploy-approved='{"approved": true}' |
+| `--signal-as-claim <string,...>` | `stringArray` | — | — | authenticated string claim NAME=VALUE to deliver --signal as (repeatable) |
+| `--signal-as-issuer <string>` | `string` | — | — | authenticated issuer to deliver --signal as, with --signal-as-subject (local runs only) |
+| `--signal-as-namespace <string>` | `string` | — | — | tenant namespace to deliver --signal as (local runs only) |
+| `--signal-as-subject <string>` | `string` | — | — | authenticated subject to deliver --signal as, with --signal-as-issuer (local runs only) |
 | `--task-policy <string>` | `string` | — | `FLOWSTATE_TASK_POLICY` | path to a task-shape policy (YAML) governing which identities may dispatch which tasks (default $FLOWSTATE_TASK_POLICY); with nothing configured, every task dispatches exactly as it does today — see #187 |
 
 ## `flow schedule`
