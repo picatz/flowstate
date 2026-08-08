@@ -183,11 +183,21 @@ func (p *Positions) Locate(step, field string) (Span, bool) {
 	// every registered name is tried. Only one of them can be a key of this step,
 	// because a step does exactly one kind of work, so there is no ambiguity to
 	// resolve: at most one candidate exists in the map.
-	candidates := make([]string, 0, len(v1.TaskNames())+2)
+	candidates := make([]string, 0, len(v1.TaskNames())+3)
 	for _, task := range v1.TaskNames() {
 		candidates = append(candidates, base+"."+task+"."+field)
 	}
 	candidates = append(candidates, base+"."+field, base+".for_each."+field)
+
+	// A `wait_for_signal:` mapping's own fields — its `timeout:` expression and
+	// each `outputs.<name>` shaping entry — are recorded under the key the author
+	// wrote them in, one level below the step, exactly as a loop's are under
+	// `for_each`. Without this candidate a diagnostic about one of them fell back
+	// to the whole step, so the squiggle sat on `- id:` while the expression at
+	// fault was lines away (#318). A step does one kind of work, so at most one of
+	// these candidates can exist in the map and adding this one cannot make the
+	// search ambiguous.
+	candidates = append(candidates, base+".wait_for_signal."+field)
 
 	for _, candidate := range candidates {
 		if span, ok := p.At(candidate); ok {

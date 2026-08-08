@@ -223,6 +223,14 @@ func (c *compiler) waitForSignal(n ast.Node, path string, r ref) *v1.Wait {
 		timeoutPath := fieldPath(path, "timeout")
 		timeoutRef := ref{step: r.step, path: timeoutPath, label: "wait_for_signal timeout"}
 
+		// Recorded here because neither reading below does: a literal duration
+		// compiles through [compiler.duration] and an expression through
+		// [compiler.expression], which records only the expression's own span.
+		// Without a value span at this path, a validator diagnostic about the
+		// timeout — an unknown name in `timeout: ${...}` — had nowhere to land
+		// but the whole step (#318).
+		c.pos.record(timeoutPath, spanOfNode(c.resolveQuiet(f.value)))
+
 		if computed, isExpr := c.computedDuration(f.value, timeoutPath, timeoutRef); isExpr {
 			if computed == nil {
 				return nil

@@ -508,7 +508,24 @@ func (s *parsedStep) entryForField(field string) *entry {
 	if in := s.input(field); in != nil {
 		return in
 	}
-	for _, group := range [][]*entry{s.entries, nestedEntries(s.forEachEntry), nestedEntries(s.loopEntry), nestedEntries(s.retryEntry)} {
+	// A `wait_for_signal:`'s shaping entries, which the validator names as
+	// `outputs.<name>` — a dotted field, because the entry's own key alone would
+	// collide with the http task's `outputs:` input. The prefixed lookup is what
+	// lets a bad reference inside one land on that expression instead of on the
+	// step (#318); the entries are only ever populated on a gate written in its
+	// mapping form, so a task input spelled `outputs.x` cannot reach them.
+	if name, isShaping := strings.CutPrefix(field, "outputs."); isShaping {
+		for _, e := range s.waitShapingEntries {
+			if e.key == name {
+				return e
+			}
+		}
+	}
+
+	// The gate's own keys come last so that a step-level key spelled the same —
+	// the step's `timeout:`, which bounds an attempt rather than the wait —
+	// resolves first, exactly as hover keeps the two apart.
+	for _, group := range [][]*entry{s.entries, nestedEntries(s.forEachEntry), nestedEntries(s.loopEntry), nestedEntries(s.retryEntry), nestedEntries(s.waitForSignalEntry)} {
 		for _, e := range group {
 			if e.key == field {
 				return e
