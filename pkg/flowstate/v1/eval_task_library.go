@@ -490,6 +490,23 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 			body = strings.NewReader(bodyText)
 		}
 
+		// Carry the run's attested identity into the egress policy, so a rule can
+		// scope this request by tenant (#240). It is rendered from the one
+		// WorkloadIdentity the scope carries — the same source the secret-access and
+		// task-shape policies read — rather than derived a second way, which is what
+		// keeps the three surfaces agreeing about who is calling. A local run's scope
+		// has no identity: that renders as the empty identity, which an
+		// identity-scoped allow rule declines to match, exactly as the task-shape
+		// surface behaves.
+		if id := scope.GetIdentity(); id != nil {
+			ctx = netpolicy.ContextWithIdentity(ctx, netpolicy.Identity{
+				Subject:   id.GetSubject(),
+				Issuer:    id.GetIssuer(),
+				Namespace: id.GetNamespace(),
+				Claims:    id.GetClaims(),
+			})
+		}
+
 		httpReq, err := http.NewRequestWithContext(ctx, taskInputs.GetMethod(), requestURL, body)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create HTTP request: %w", err)
