@@ -121,7 +121,7 @@ func TestParseHandlesShapesTheDSLDoesNotExpect(t *testing.T) {
 		check func(t *testing.T, doc *document)
 	}{
 		{
-			name: "a block scalar is recorded without a multi-line range",
+			name: "a block scalar is recorded by whole lines and not by columns",
 			src: `name: block
 steps:
   - id: a
@@ -135,12 +135,18 @@ edition: v2026.2
 				expr := doc.parsed.steps[0].input("message")
 				require.NotNil(t, expr)
 				require.NotNil(t, expr.value)
-				// The range stays on one line: a folded reconstruction cannot be
-				// measured against the source.
-				assert.Equal(t, expr.value.rng.Start.Line, expr.value.rng.End.Line)
-				// A block scalar is never treated as a ${...} expression, because
-				// the compiler does not treat one as one either.
+				// The range runs from the header line to the last content line.
+				// Whole lines are as fine as it gets: a folded reconstruction
+				// cannot be measured against the source column by column.
+				assert.Equal(t, 4, expr.value.rng.Start.Line)
+				assert.Equal(t, 5, expr.value.rng.End.Line)
+				// `1 + 1` is expression source but it is not written as a fence,
+				// and the compiler asks the same question of a block scalar as of
+				// any other — so this one is not an expression to either of them.
 				assert.False(t, expr.value.fenced)
+				// Nothing derived from a block scalar carries inner positions,
+				// whether or not it turned out to be fenced.
+				assert.False(t, expr.value.inline)
 			},
 		},
 		{

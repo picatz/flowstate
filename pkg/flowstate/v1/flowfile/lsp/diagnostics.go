@@ -289,7 +289,7 @@ func checkExpressions(doc *document, set *diagnosticSet) []lsp.Range {
 	// step runs. Nothing about them is deferred, since there is no task to defer to.
 	for _, in := range doc.parsed.expressionEntries() {
 		walkValues(in.value, func(v *value) {
-			if v.fenced && reportCELErrors(doc, set, env, v.expr, v.exprOffset, v.exprRange) {
+			if v.fenced && reportCELErrors(doc, set, env, v.expr, v.exprOffset, v.exprRange, v.inline) {
 				flagged = append(flagged, v.rng)
 			}
 		})
@@ -320,7 +320,9 @@ func checkExpressions(doc *document, set *diagnosticSet) []lsp.Range {
 				case v.fenced:
 					// Anything fenced is checked, valid or not: a broken
 					// expression is the case a precise position matters most for.
-					found = reportCELErrors(doc, set, env, v.expr, v.exprOffset, v.exprRange)
+					// How precise a position is available depends on how the
+					// fence was written, which is what the last argument carries.
+					found = reportCELErrors(doc, set, env, v.expr, v.exprOffset, v.exprRange, v.inline)
 
 				// A scalar containing a fence but not made of one — `${a} and ${b}`,
 				// or an unterminated `${` — is a mistake with no inner span to point
@@ -333,17 +335,21 @@ func checkExpressions(doc *document, set *diagnosticSet) []lsp.Range {
 					// directly, without a fence. The validator does not parse
 					// these, so this is the only check they get.
 					//
-					// A text carrying `${` is excluded, because it is not that
-					// case: it is a *fenced* value this model failed to mark as
-					// one. A block scalar — `outputs: >-` with `${ ... }` under
-					// it — reaches here with fenced false, and handing its text
-					// to CEL squiggles the fence itself as two syntax errors on
-					// a file `flow validate` accepts. A missing diagnostic
-					// beats a false one, so the unmarked fence gets silence
-					// rather than a confident wrong answer. (Found the moment
-					// loop bodies joined the model: examples/paged-fan-out
-					// writes exactly this shape inside one.)
-					found = reportCELErrors(doc, set, env, v.text, v.textOffset, v.rng)
+					// A text carrying `${` is excluded, because a fence is not
+					// this case whatever else it is. The shape that first needed
+					// the guard — a whole fence written as a block scalar, which
+					// reached here unmarked and was squiggled as two syntax
+					// errors on a file `flow validate` accepts — now takes the
+					// fenced branch above and is checked properly.
+					//
+					// What still arrives here is a fence this model deliberately
+					// does not claim: an unterminated `${`, or text that mixes a
+					// fence with prose around it. Neither is CEL, and neither has
+					// an inner span worth guessing at; the validator reports both
+					// with a message saying how to fix them. So the guard stays,
+					// on the same rule as before — a missing diagnostic beats a
+					// false one.
+					found = reportCELErrors(doc, set, env, v.text, v.textOffset, v.rng, v.inline)
 				}
 				if found {
 					flagged = append(flagged, v.rng)
@@ -356,7 +362,14 @@ func checkExpressions(doc *document, set *diagnosticSet) []lsp.Range {
 
 // reportCELErrors parses src and reports each syntax error at its position in the
 // document.
-func reportCELErrors(doc *document, set *diagnosticSet, env *cel.Env, src string, srcOffset int, whole lsp.Range) bool {
+//
+// inline says whether src's bytes sit contiguously at srcOffset — see
+// [value.inline]. When they do not, every error is reported against whole. That
+// is coarse, and it is the point: a squiggle covering the value an author wrote
+// is always about the thing they are looking at, whereas a line and column
+// resolved against folded text names a position that exists in the parser's copy
+// and not in the file.
+func reportCELErrors(doc *document, set *diagnosticSet, env *cel.Env, src string, srcOffset int, whole lsp.Range, inline bool) bool {
 	if strings.TrimSpace(src) == "" {
 		return false
 	}
@@ -366,7 +379,7 @@ func reportCELErrors(doc *document, set *diagnosticSet, env *cel.Env, src string
 	}
 	for _, e := range issues.Errors() {
 		rng := whole
-		if e.Location != nil {
+		if inline && e.Location != nil {
 			off := srcOffset + offsetInExpr(src, e.Location.Line(), e.Location.Column())
 			if end := srcOffset + len(src); off < end {
 				rng = doc.index.rangeOfOffsets(off, off+tokenWidth(src[off-srcOffset:]))

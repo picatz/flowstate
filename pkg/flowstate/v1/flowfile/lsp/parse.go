@@ -77,6 +77,22 @@ type value struct {
 	// diagnostics do anyway — and a broken expression still needs a position, so
 	// recognizing the fence has to work without the answer.
 	fenced bool
+
+	// inline reports that the decoded text — and so the expr cut out of it —
+	// occupies a contiguous run of the document's own bytes, so an offset within
+	// it maps to a document offset by adding textOffset or exprOffset. Every
+	// consumer doing that arithmetic must ask this first.
+	//
+	// It is false wherever the parser hands back something it rewrote rather than
+	// sliced: a block scalar, a plain scalar written across lines — in both the
+	// line breaks have already become spaces before the model sees the text — and
+	// a quoted scalar carrying an escape. In each, an offset into the text names a
+	// place the document does not have. The honest answer there is the whole of
+	// the value's range, or nothing at all. A position computed anyway would land
+	// in the middle of some other line, which is the `flow fix` corruption class
+	// one surface over: a wrong position is worse than no position, because a
+	// wrong one is believed.
+	inline bool
 }
 
 // An entry is one key/value pair of a YAML mapping.
@@ -957,15 +973,31 @@ func buildValue(n ast.Node, ix *lineIndex) *value {
 	case *ast.LiteralNode:
 		// A block scalar. Its content spans lines, and the parser's reconstruction
 		// of it is folded text rather than the exact source slice, so its length
-		// cannot be used to measure a range. The range is the header line — enough
-		// to point at, and never pointing at the wrong thing.
+		// cannot be used to measure a range and no offset inside it maps back to
+		// the document by addition. That is the whole of what a block scalar
+		// lacks, and it is what `inline` records.
+		//
+		// What it does not lack is being an expression. The compiler reads a
+		// block scalar's decoded text exactly as it reads any other scalar's, so
+		// `message: |-` with `${greeting}` under it evaluates and a broken one
+		// fails `flow validate` at the header's position. Recognizing the fence
+		// is therefore the same question here as anywhere, asked with the same
+		// rule; only the inner positions are unavailable.
 		v := &value{kind: kindScalar}
 		if t.Value != nil {
 			v.text = t.Value.Value
 		}
 		start := ix.offsetOfYAML(tok.Position.Line, tok.Position.Column)
 		v.textOffset = start
-		v.rng = restOfLine(ix, start)
+		v.rng = blockScalarRange(ix, start, t)
+		if source, ok := flowfile.SplitFence(v.text); ok && source != "" {
+			v.fenced = true
+			v.expr = source
+			v.exprRange = v.rng
+			// exprOffset is deliberately left zero: there is no offset that would
+			// be correct, and a plausible-looking one — the header's start — is
+			// exactly what a consumer that forgot to check `inline` would use.
+		}
 		return v
 	}
 
@@ -975,22 +1007,43 @@ func buildValue(n ast.Node, ix *lineIndex) *value {
 	raw := n.String()
 	start := ix.offsetOfYAML(tok.Position.Line, tok.Position.Column)
 	content := start
+	inline := true
 	if len(raw) >= 2 && (raw[0] == '"' || raw[0] == '\'') && raw[len(raw)-1] == raw[0] {
 		content++
+		// The quotes are allowed to be the difference between the source and the
+		// decoded text, and nothing else is: an escape — `\n` in a double-quoted
+		// scalar, `''` in a single-quoted one — rewrites the bytes, and after
+		// that an offset into the decoded text is a different place from the same
+		// offset into the source. Comparing the lengths asks exactly that, which
+		// no pattern over the raw text would.
+		inline = len(tok.Value) == len(raw)-2
 	}
 	v := &value{
 		kind:       kindScalar,
 		text:       tok.Value,
 		textOffset: content,
 		rng:        ix.rangeOfOffsets(start, start+len(raw)),
+		inline:     inline,
 	}
 
 	// A value written across lines is not measurable by length, for the same
-	// reason a block scalar is not, so it gets its header line and no expression
-	// scan. The compiler does not treat a multi-line scalar as an expression
-	// either, so nothing is lost.
+	// reason a block scalar is not, so it gets its first line and no inner
+	// positions.
+	//
+	// It used to get no fence scan at all, on the stated ground that "the
+	// compiler does not treat a multi-line scalar as an expression either". That
+	// was not true and is easy to check: a plain scalar broken over two lines
+	// decodes to one folded line, [flowfile.SplitFence] matches it, and the
+	// engine evaluates it. So the scan runs here too, and only the arithmetic is
+	// withheld.
 	if strings.Contains(raw, "\n") {
 		v.rng = restOfLine(ix, start)
+		v.inline = false
+		if source, ok := flowfile.SplitFence(v.text); ok && source != "" {
+			v.fenced = true
+			v.expr = source
+			v.exprRange = v.rng
+		}
 		return v
 	}
 
@@ -1015,6 +1068,41 @@ const (
 	exprOpen  = "${"
 	exprClose = "}"
 )
+
+// blockScalarRange returns the range a block scalar occupies: its header line
+// through the last line holding content.
+//
+// The extent comes from the content token's Origin, which is the raw source the
+// parser cut before folding it — the one thing about a block scalar that has not
+// been rewritten. Only whole lines are taken from it. Columns inside a folded
+// scalar correspond to nothing in the document, so a range claiming to know one
+// would be the wrong-position class this file is careful about; whole lines are
+// the finest honest grain.
+//
+// The header line alone is the fallback whenever the origin is missing or says
+// something smaller, because a range that is too short still points at the value
+// while one that is too long swallows the keys after it.
+func blockScalarRange(ix *lineIndex, headerStart int, t *ast.LiteralNode) lsp.Range {
+	header := restOfLine(ix, headerStart)
+	if t.Value == nil {
+		return header
+	}
+	origin := strings.TrimRight(strings.TrimLeft(t.Value.GetToken().Origin, "\r\n"), " \t\r\n")
+	if origin == "" {
+		return header
+	}
+
+	// The origin begins on the line after the header, so its last line is the
+	// header's line plus one plus however many line breaks it holds.
+	end := min(header.Start.Line+1+strings.Count(origin, "\n"), ix.lineCount()-1)
+	if end <= header.End.Line {
+		return header
+	}
+	return lsp.Range{
+		Start: header.Start,
+		End:   lsp.Position{Line: end, Character: utf16Len(ix.line(end))},
+	}
+}
 
 // restOfLine returns the range from a byte offset to the end of its line.
 func restOfLine(ix *lineIndex, start int) lsp.Range {

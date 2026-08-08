@@ -55,7 +55,12 @@ func hoverAt(doc *document, pos lsp.Position) *lsp.Hover {
 		clock := step.bindsNow(in)
 		shaping := step.bindsWaitResult(in)
 		walkValues(in.value, func(v *value) {
-			if found != nil || !v.fenced || !contains(v.exprRange, pos) {
+			// `inline` and not merely `fenced`: describing what is under the
+			// cursor means finding the cursor in the expression source, and a
+			// fence written as a block scalar has no such correspondence to
+			// offer. Answering nothing there is the remaining half of #306;
+			// answering from a folded offset would describe the wrong name.
+			if found != nil || !v.fenced || !v.inline || !contains(v.exprRange, pos) {
 				return
 			}
 			found = hoverReference(doc, step, v, clock, shaping, pos)
@@ -349,7 +354,8 @@ func hoverDocumentExpression(doc *document, pos lsp.Position) *lsp.Hover {
 	for _, in := range doc.parsed.expressionEntries() {
 		var found *lsp.Hover
 		walkValues(in.value, func(v *value) {
-			if found != nil || !v.fenced || !contains(v.exprRange, pos) {
+			// Not inline means no cursor to compute — see the walk in [hoverAt].
+			if found != nil || !v.fenced || !v.inline || !contains(v.exprRange, pos) {
 				return
 			}
 
