@@ -58,6 +58,40 @@ const (
 	// fix for a run that reaches it is almost always a workload that should carry
 	// less.
 	MaxRunStateBytes = 2<<20 - 64<<10
+
+	// MaxSignalPayloadBytes bounds one signal's payload, at the server's door.
+	//
+	// The payload is the one part of a run's carried state a party *other than
+	// the run's owner* chooses the size of. A signal that arrives before its
+	// gate is carried across Continue-As-New (see [MaxPendingSignals]), and the
+	// carry is weighed by [CheckRunStateSize] — whose outcome is failing the
+	// run. Without a bound of its own, an authorized sender's payloads become a
+	// way to push someone else's run over that limit: the sender gets a success
+	// response at send time, and the run dies later with a state-size diagnosis
+	// pointing at nothing the operator can see the cause of. Bounding the
+	// payload where it is chosen puts the refusal on the party who can act on
+	// it, at the moment they act.
+	//
+	// The arithmetic this buys, stated rather than implied: [MaxPendingSignals]
+	// alone caps a hostile carry at 128 payloads of whatever Temporal's blob
+	// limit admits — hundreds of mebibytes attempted against a two-mebibyte
+	// budget. With this bound the worst-case product is 128 × 64 KiB = 8 MiB,
+	// still more than a run can carry, so [CheckRunStateSize] remains the
+	// backstop for a carry that is pathological in *count* — but a realistic
+	// carry of a handful of maximal payloads now fits, and no single sender's
+	// single send can be the surprise.
+	//
+	// 64 KiB is generous for what a payload is: a signal's payload becomes the
+	// waiting step's outputs — an approval, an entity mutation, a callback's
+	// result — not a document. Raising it later is compatible; lowering it
+	// breaks senders, so it starts at the small end of plausible.
+	//
+	// Enforced at the server RPCs, deliberately not inside workflow code: the
+	// door is where the sender is, and a constant only workflow code reads
+	// would put the refusal back at Continue-As-New. It is still a constant
+	// rather than configuration for the same reason its siblings are — one
+	// number every deployment agrees on is one an author can design against.
+	MaxSignalPayloadBytes = 64 << 10
 )
 
 // CheckSpecSize reports whether a specification is small enough to run.
@@ -78,6 +112,27 @@ func CheckSpecSize(wf *Workflow) error {
 			"store for one run. Move large values out of the specification — fetch them in a step, or "+
 			"reference them — rather than writing them into it",
 		size, MaxSpecBytes)
+}
+
+// CheckSignalPayloadSize reports whether a signal's payload is small enough to
+// deliver.
+//
+// Called at the server's Signal and SignalWithStart handlers, before any round
+// trip to Temporal: an oversized payload is refused synchronously, to the party
+// who chose its size, with the number they need to act on it. See
+// [MaxSignalPayloadBytes] for why the bound lives at the door rather than in
+// the carry.
+func CheckSignalPayloadSize(payload *Node_Outputs) error {
+	size := proto.Size(payload)
+	if size <= MaxSignalPayloadBytes {
+		return nil
+	}
+
+	return fmt.Errorf(
+		"the signal payload is %d bytes, over the %d byte limit; "+
+			"a payload becomes the waiting step's outputs and is carried with the run, "+
+			"so send a reference to something large rather than the thing itself",
+		size, MaxSignalPayloadBytes)
 }
 
 // CheckRunStateSize reports whether a run's state can be carried forward.
