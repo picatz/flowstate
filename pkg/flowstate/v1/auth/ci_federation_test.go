@@ -32,6 +32,18 @@ import (
 // (policy.go's namespaceFor, through namespace.go's ValidateNamespace). The
 // second is where a CI token's claim values and the namespace grammar disagree,
 // and a test that only asserted the first would report the whole thing working.
+//
+// These stay offline, and a second file carries the other half. What is written
+// here is this package's reading of the specification and of a provider's
+// documented claim shape: it runs on a laptop, on a fork, and with the network
+// unplugged, and it fails when this package's own behavior changes. What it
+// cannot tell anyone is whether the provider still serves the discovery
+// document, key set, algorithm and claim names that reading assumes, because
+// the issuer answering is one written in this file. That is realtoken_test.go,
+// which asks a GitHub Actions runner for a real token and verifies it through
+// live discovery, and which skips everywhere the runner's token endpoint is
+// absent. Neither replaces the other: a change in this package fails here, a
+// change at the provider fails there, and only the pair distinguishes the two.
 
 // ciClaims returns the claims a CI-issued token carries beside the registered
 // ones, in the shape GitHub Actions mints them.
