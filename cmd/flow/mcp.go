@@ -496,6 +496,20 @@ func mcpHandler(
 			return toolError(err), nil
 		}
 
+		// The bound this surface already holds `run_local` to, applied where
+		// every other tool leaves — see [maxMCPResultBytes]. Refusing rather
+		// than shortening, because nothing here knows which field of an
+		// arbitrary response could be dropped without changing what it says,
+		// and half a JSON document is not a smaller answer but an unreadable
+		// one.
+		if len(encoded) > maxMCPResultBytes {
+			return toolError(fmt.Errorf(
+				"%s answered with %d bytes, over this surface's %d byte limit, so nothing was returned "+
+					"rather than a document cut short; ask for less — a single run by id rather than a "+
+					"listing, a smaller page, or a narrower filter",
+				mcpToolName(method.name), len(encoded), maxMCPResultBytes)), nil
+		}
+
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: string(encoded)}},
 		}, nil
@@ -532,19 +546,33 @@ func toolError(err error) *mcp.CallToolResult {
 // runLocalToolName is the tool an agent calls to execute what it just wrote.
 const runLocalToolName = mcpToolPrefix + "run_local"
 
-// maxRunLocalResultBytes bounds the tool's answer.
+// maxMCPResultBytes bounds what any tool on this surface may answer with.
 //
-// An agent-facing surface is an untrusted-consumer surface: the run's outputs
-// are whatever the submitted workflow chose to produce, and a workflow that
-// produces a megabyte of step outputs would otherwise spend it all in a model's
-// context window. [v1.MaxRunStateBytes] is the wrong number here — it bounds
-// what Temporal can carry, which is nearly two megabytes and has nothing to do
-// with what is useful to read.
+// An agent-facing surface is an untrusted-consumer surface: a run's outputs are
+// whatever the submitted workflow chose to produce, and a workflow producing a
+// megabyte of step outputs would otherwise spend it all in a model's context
+// window. [v1.MaxRunStateBytes] is the wrong number here — it bounds what
+// Temporal can carry, which is nearly two megabytes and has nothing to do with
+// what is useful to read.
 //
-// Exceeding it drops the outputs and says so, rather than cutting the document
-// short: a truncated JSON document is one a caller cannot parse at all, which
-// turns a large answer into no answer.
-const maxRunLocalResultBytes = 256 << 10
+// It is one constant for the whole surface rather than one per tool, which is
+// the correction #300 records. It began life bounding `run_local` alone,
+// because that was the tool being designed when the rule was written — and
+// every other tool answers over [mcpHandler], which had no bound at all. So
+// `flowstate_get` could return the whole two megabytes the paragraph above
+// calls the wrong number, on the same surface, from the same session. A bound
+// belongs on the path every answer leaves through, not on the tool whose
+// review happened to raise it; the same argument plugin/transport.go makes for
+// putting the HTTP cap on the RoundTripper rather than on a library option.
+//
+// How it is enforced differs by what the tool knows, and only there.
+// `run_local` degrades by *shape* — drop the transcript, then the outputs —
+// because it understands its own document. [mcpHandler] cannot: a protojson
+// response has no field it knows is safe to drop, so it refuses with a bounded,
+// parseable error naming what to ask for instead. Both refuse to cut a document
+// short, because a truncated JSON body is one a caller cannot parse at all,
+// which turns a large answer into no answer.
+const maxMCPResultBytes = 256 << 10
 
 // maxRunLocalLogRecords bounds how many `log:` lines are carried back.
 //
@@ -989,7 +1017,7 @@ func testReportFailed(report *v1.TestReport) bool {
 // ever runs.
 const maxTestFailureMessageBytes = 4 << 10
 
-// renderTestResult brings a v1.TestReport under maxRunLocalResultBytes —
+// renderTestResult brings a v1.TestReport under maxMCPResultBytes —
 // [renderRunLocalResult]'s own bound and its own discipline, reused rather
 // than reinvented: stop at a document that still parses, and say what left
 // rather than truncating bytes into something a caller cannot decode. The
@@ -1003,7 +1031,7 @@ func renderTestResult(report *v1.TestReport) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("rendering the report: %w", err)
 	}
-	if len(encoded) <= maxRunLocalResultBytes {
+	if len(encoded) <= maxMCPResultBytes {
 		return encoded, nil
 	}
 
@@ -1027,7 +1055,7 @@ func renderTestResult(report *v1.TestReport) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("rendering the report: %w", err)
 	}
-	if len(encoded) <= maxRunLocalResultBytes {
+	if len(encoded) <= maxMCPResultBytes {
 		return encoded, nil
 	}
 
@@ -1043,7 +1071,7 @@ func renderTestResult(report *v1.TestReport) ([]byte, error) {
 		if caseError == "" && len(c.GetFailures()) > 0 {
 			caseError = fmt.Sprintf(
 				"%d failure(s); their diagnostics were dropped because the answer exceeded %d bytes",
-				len(c.GetFailures()), maxRunLocalResultBytes)
+				len(c.GetFailures()), maxMCPResultBytes)
 		}
 		summary.Cases = append(summary.Cases, &v1.TestCase{
 			Name:     c.GetName(),
@@ -1198,20 +1226,20 @@ func renderRunLocalResult(response *v1.GetResponse, logs []runLocalLogRecord) ([
 	if err != nil {
 		return nil, fmt.Errorf("rendering the answer: %w", err)
 	}
-	if len(encoded) <= maxRunLocalResultBytes {
+	if len(encoded) <= maxMCPResultBytes {
 		return encoded, nil
 	}
 
 	// First the logs, which are commentary on the outputs.
 	result := runLocalResult{
 		Run:  run,
-		Note: fmt.Sprintf("logs were dropped: the answer exceeded %d bytes", maxRunLocalResultBytes),
+		Note: fmt.Sprintf("logs were dropped: the answer exceeded %d bytes", maxMCPResultBytes),
 	}
 	encoded, err = json.Marshal(result)
 	if err != nil {
 		return nil, fmt.Errorf("rendering the answer: %w", err)
 	}
-	if len(encoded) <= maxRunLocalResultBytes {
+	if len(encoded) <= maxMCPResultBytes {
 		return encoded, nil
 	}
 
@@ -1229,11 +1257,11 @@ func renderRunLocalResult(response *v1.GetResponse, logs []runLocalLogRecord) ([
 	encoded, err = renderTrimmedRun(trimmed, fmt.Sprintf(
 		"the step outputs and logs were dropped: the answer exceeded %d bytes. "+
 			"Have the workflow carry less, or read the values it needs in a step of its own",
-		maxRunLocalResultBytes))
+		maxMCPResultBytes))
 	if err != nil {
 		return nil, err
 	}
-	if len(encoded) <= maxRunLocalResultBytes {
+	if len(encoded) <= maxMCPResultBytes {
 		return encoded, nil
 	}
 
@@ -1248,7 +1276,7 @@ func renderRunLocalResult(response *v1.GetResponse, logs []runLocalLogRecord) ([
 	encoded, err = renderTrimmedRun(trimmed, fmt.Sprintf(
 		"the declared outputs, step outputs and logs were dropped: the answer exceeded %d bytes. "+
 			"Read what the run produced with `flow get`, or have the workflow answer with less",
-		maxRunLocalResultBytes))
+		maxMCPResultBytes))
 	if err != nil {
 		return nil, err
 	}
