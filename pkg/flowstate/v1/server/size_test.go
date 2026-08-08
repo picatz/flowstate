@@ -15,7 +15,6 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
 )
 
 // A run that cannot continue must fail, and these two tests are about the one
@@ -43,32 +42,6 @@ func bulky(id string, size int) *v1.Node {
 		Kind: &v1.Node_Task{Task: &v1.Task{
 			Name:   "log",
 			Inputs: map[string]*v1.Value{"message": v1.NewLiteral(strings.Repeat(id, size))},
-		}},
-	}
-}
-
-// producing returns a step whose *output* is a large string, built by the step
-// rather than written into the file.
-//
-// This is the shape the submit check cannot see, and it takes a request to make
-// now: no task returns a value except `http`, so the size has to come back from
-// somewhere. The loopback server generates it rather than echoing it, which keeps
-// the specification tiny while the run's state grows — the asymmetry the test is
-// about.
-//
-// Which is worth saying plainly, because it reads like a workaround and is not:
-// this is now the *only* way a run's carried state grows at all. A workload that
-// reads a large document is an http step, and its response is what it carries.
-func producing(id, httpBaseURL string, size int) *v1.Node {
-	return &v1.Node{
-		Id: id,
-		Kind: &v1.Node_Task{Task: &v1.Task{
-			Name: "http",
-			Inputs: map[string]*v1.Value{
-				"method":  v1.NewLiteral("GET"),
-				"url":     v1.NewLiteral(fmt.Sprintf("%s/bytes/%d", httpBaseURL, size)),
-				"outputs": v1.NewExpr(`{"chunk": response.body}`),
-			},
 		}},
 	}
 }
@@ -128,29 +101,49 @@ func TestARunTooLargeToCarryFailsRatherThanWedging(t *testing.T) {
 
 	temporal, _ := newTemporalNamespace(t)
 	startWorker(t, temporal)
-	httpBaseURL := tests.NewHTTPServer(t)
 
 	// A specification that is small, and a run that is not.
 	//
 	// This is the shape the submit check structurally cannot catch. A loop carries
-	// the results of every iteration so far in its resume frame, so the state grows
-	// with the number of iterations while the specification stays exactly the size
-	// it was written at. Nothing weighable at submit predicts it — the item count
-	// can even be an expression, computed at run time from a step's output.
-	const iterations = 60
-	items := make([]any, iterations)
-	for i := range items {
-		items[i] = "item"
-	}
+	// its `state:` forward in the resume frame across every Continue-As-New, so a
+	// state that grows each iteration grows the run while the specification stays
+	// exactly the size it was written at. Nothing weighable at submit predicts it.
+	//
+	// The growth is folded through `update:` from a literal already in the spec,
+	// rather than accumulated in `results`: a `for_each`'s and a `loop:`'s `results`
+	// are each bounded in bytes at [v1.MaxLoopResultsBytes] (a quarter of the
+	// run-state budget, #229 and its `for_each` sibling), so neither `results` field
+	// can be the vehicle that carries a run past the *whole* run-state bound — it
+	// would hit its own named bound first. A loop's `state:` is deliberately left
+	// un-sub-bounded — the aggregate escape hatch #229 kept open — so it is what
+	// reaches this backstop now, which is exactly the run-state check this test is
+	// about. (This fixture used to grow a `for_each`'s `results`; that path is now
+	// bounded before it can wedge, which is a different guarantee proven elsewhere.)
+	const chunkBytes = 40 << 10
+	big := strings.Repeat("x", chunkBytes)
 
 	spec := &v1.Workflow{
-		Name: "grows-while-running",
+		Name:    "grows-while-running",
+		Profile: v1.CurrentProfile,
 		Steps: []*v1.Node{{
 			Id: "each",
-			Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
-				Items:    v1.NewLiteralList(items...),
-				Iterator: "one",
-				Body:     []*v1.Node{producing("chunk", httpBaseURL, 40<<10)},
+			Kind: &v1.Node_Loop{Loop: &v1.Loop{
+				State:   "acc",
+				Initial: v1.NewLiteral(""),
+				// Each iteration appends a spec-embedded chunk to the carried state,
+				// so the state — and thus the run — grows ~40 KiB per iteration while
+				// `results` stays empty (the body has no outputs). `until: false`
+				// never stops it; the run-state bound does, which is the point.
+				Update:        v1.NewExpr(fmt.Sprintf("acc + %q", big)),
+				Until:         v1.NewExpr("false"),
+				MaxIterations: 1000,
+				Body: []*v1.Node{{
+					Id: "tick",
+					Kind: &v1.Node_Task{Task: &v1.Task{
+						Name:   "log",
+						Inputs: map[string]*v1.Value{"message": v1.NewLiteral("tick")},
+					}},
+				}},
 			}},
 		}},
 	}

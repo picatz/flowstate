@@ -274,6 +274,60 @@ func TestAccumulateLoopResult(t *testing.T) {
 	})
 }
 
+// TestAccumulateForEachResult is TestAccumulateLoopResult's `for_each` sibling:
+// the same byte bound, reached rather than merely respected, but reporting the
+// `for_each`-appropriate diagnostic. A `for_each` has no `max_iterations:` or
+// `state:` to offer as a remedy, so its message names neither — a loop's remedy
+// text on a `for_each` failure would be the false diagnostic CLAUDE.md's
+// "Diagnostics are a feature" warns against.
+func TestAccumulateForEachResult(t *testing.T) {
+	bigIteration := func(n int) *v1.Workflow_StepOutputs {
+		return &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+			"body": {NamedValues: map[string]*v1.Value{
+				"blob": v1.NewLiteral(strings.Repeat("x", n)),
+			}},
+		}}
+	}
+
+	t.Run("well under the bound accumulates without error", func(t *testing.T) {
+		var results []*v1.Workflow_StepOutputs
+		bytes := 0
+		var err error
+		for i := 0; i < 3; i++ {
+			results, bytes, err = v1.AccumulateForEachResult(results, bytes, bigIteration(100))
+			require.NoError(t, err)
+		}
+		require.Len(t, results, 3)
+		require.Positive(t, bytes)
+	})
+
+	t.Run("the bound is reached, not merely respected", func(t *testing.T) {
+		var results []*v1.Workflow_StepOutputs
+		bytes := 0
+		var err error
+
+		// An iteration landing just under the shared bound must be accepted — the
+		// same constant a `loop:` is weighed against, since the two share the field.
+		results, bytes, err = v1.AccumulateForEachResult(results, bytes, bigIteration(v1.MaxLoopResultsBytes-1024))
+		require.NoError(t, err, "an iteration that lands just under the bound must be accepted")
+		require.LessOrEqual(t, bytes, v1.MaxLoopResultsBytes)
+
+		// A further iteration crossing the bound must fail, naming the bound and a
+		// `for_each`-appropriate remedy.
+		_, bytes, err = v1.AccumulateForEachResult(results, bytes, bigIteration(4096))
+		require.Error(t, err, "an iteration that crosses the bound must be refused")
+		require.Greater(t, bytes, v1.MaxLoopResultsBytes,
+			"the failure must correspond to the bound actually having been exceeded, not merely approached")
+		require.Contains(t, err.Error(), "byte limit")
+		require.Contains(t, err.Error(), "for_each",
+			"the diagnostic must name the construct that overflowed")
+		require.Contains(t, err.Error(), "fewer items",
+			"the remedy must be one a for_each actually has, not a loop's max_iterations:")
+		require.NotContains(t, err.Error(), "max_iterations",
+			"a for_each has no max_iterations: to lower — naming it would be a false diagnostic")
+	})
+}
+
 // TestLoopResultsSize covers the seed a resumed segment starts its running
 // byte count from — results arriving from a prior segment were accumulated
 // there, not here, so their size has to be recomputed rather than assumed
