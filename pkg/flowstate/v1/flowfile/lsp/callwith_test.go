@@ -30,6 +30,8 @@ inputs:
     type: string
     required: true
     description: Name of the tenant to provision.
+    min_len: 3
+    max_len: 63
     must: this.size() > 2
   region:
     type: string
@@ -330,6 +332,8 @@ steps:
 		assert.Contains(t, got, "Input of workflow `provision-tenant`, declared in `"+callee+"`.",
 			"the answer names the file it came from, which is the file the reader cannot see")
 		assert.Contains(t, got, "Name of the tenant to provision.")
+		assert.Contains(t, got, "Held to at least 3 characters, at most 63 characters.",
+			"a declared bound is checked at validation exactly as must: is, so a hover showing one and not the other tells half the contract")
 		assert.Contains(t, got, "Must satisfy `this.size() > 2`.")
 	})
 
@@ -407,4 +411,52 @@ func mustRead(t *testing.T, path string) string {
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
 	return string(data)
+}
+
+// TestCompletionDecodesTheCallTargetAsYAML pins the scanner's reading of the
+// `call:` line to YAML's rather than to substring surgery. Each spelling below
+// is a valid way to write the same target, and each defeated the old trimming
+// in a different way: a comment after a quoted scalar left the quotes on, an
+// anchor stayed glued to the path, and an escape in a double-quoted scalar
+// stayed escaped. The wrong reading is not a missing menu, it is
+// ResolveCallTarget handed a filename that does not exist.
+func TestCompletionDecodesTheCallTargetAsYAML(t *testing.T) {
+	t.Parallel()
+
+	for name, target := range map[string]string{
+		"quoted then a comment": `"./callee.yaml" # provisions the tenant`,
+		"anchored":              `&provision ./callee.yaml`,
+		"single quoted":         `'./callee.yaml'`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+			caller, _, pos := writeCall(t, dir, "callee.yaml", withCallerSource(target))
+
+			c := newClient(t)
+			c.initialize()
+			uri := "file://" + caller
+			c.open(uri, mustRead(t, caller))
+
+			got := c.complete(uri, pos.Line, pos.Character)
+			assert.Equal(t, []string{"tenant", "region", "dry_run"}, labels(got.Items),
+				"a decoded target reaches the same callee however it is spelled")
+		})
+	}
+
+	t.Run("a flow collection is not a path", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		caller, _, pos := writeCall(t, dir, "callee.yaml", withCallerSource(`["./callee.yaml"]`))
+
+		c := newClient(t)
+		c.initialize()
+		uri := "file://" + caller
+		c.open(uri, mustRead(t, caller))
+
+		got := c.complete(uri, pos.Line, pos.Character)
+		assert.Empty(t, got.Items, "a shape that cannot be a path offers nothing rather than a guess")
+	})
 }

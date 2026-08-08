@@ -1,10 +1,14 @@
 package lsp
 
 import (
-	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/goccy/go-yaml/ast"
+	"github.com/goccy/go-yaml/parser"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
 // Completion cannot use the YAML parser. A document being typed is usually not
@@ -185,7 +189,7 @@ func fillStep(ix *lineIndex, s *outlineStep, entryIndent int, tasks *v1.Registry
 			}
 		case indent == contentIndent && key == "call":
 			if s.callTarget == "" {
-				s.callTarget = unquote(rest)
+				s.callTarget = scalarText(rest)
 			}
 		case indent == contentIndent && key == "with":
 			inWith, withIndent = true, indent
@@ -224,6 +228,39 @@ func fillStep(ix *lineIndex, s *outlineStep, entryIndent int, tasks *v1.Registry
 }
 
 // unquote removes the surrounding quotes of a YAML scalar, if any.
+// scalarText decodes rest, the text a line scanner found after a key, the way
+// YAML reads it rather than the way substring surgery does: quoting unwraps
+// with its escapes resolved, an anchor unwraps to the value it names, and a
+// trailing comment drops even after a quoted scalar. The distinction matters
+// where the answer becomes a filename: [unquote]'s trimming hands
+// ResolveCallTarget a path with an anchor or a quote still in it, which then
+// names a file that does not exist.
+//
+// Anything the line does not fully carry answers empty, and empty means "no
+// target" downstream, which is the honest reading: a block scalar's content
+// lives on the lines below the header, and a flow collection is not a path.
+func scalarText(rest string) string {
+	if strings.TrimSpace(rest) == "" {
+		return ""
+	}
+	f, err := parser.ParseBytes([]byte(rest), 0)
+	if err != nil || len(f.Docs) != 1 || f.Docs[0].Body == nil {
+		return ""
+	}
+	node := f.Docs[0].Body
+	if anchor, ok := node.(*ast.AnchorNode); ok {
+		node = anchor.Value
+	}
+	if _, ok := node.(*ast.StringNode); !ok {
+		return ""
+	}
+	tok := node.GetToken()
+	if tok == nil {
+		return ""
+	}
+	return tok.Value
+}
+
 func unquote(s string) string {
 	s = strings.TrimSpace(s)
 	if len(s) >= 2 && (s[0] == '"' || s[0] == '\'') && s[len(s)-1] == s[0] {

@@ -262,10 +262,35 @@ func callInputDoc(declaration *v1.InputDeclaration, called calledWorkflow) strin
 	if description := declaration.GetDescription(); description != "" {
 		fmt.Fprintf(&b, "\n\n%s", description)
 	}
+	if bounds := declaredBounds(declaration); len(bounds) > 0 {
+		fmt.Fprintf(&b, "\n\nHeld to %s.", strings.Join(bounds, ", "))
+	}
 	if must := declaration.GetMust(); must != "" {
 		fmt.Fprintf(&b, "\n\nMust satisfy `%s`.", must)
 	}
 	return b.String()
+}
+
+// declaredBounds renders a declaration's length and item bounds as short
+// phrases, in the same voice [constraints] uses for the schema's own rules.
+// They are part of the contract the callee holds an argument to, checked at
+// validation exactly as `must:` is, so a hover that shows one and not the
+// other tells an author only half of what their value must be.
+func declaredBounds(declaration *v1.InputDeclaration) []string {
+	var out []string
+	if declaration.MinLen != nil {
+		out = append(out, fmt.Sprintf("at least %d characters", declaration.GetMinLen()))
+	}
+	if declaration.MaxLen != nil {
+		out = append(out, fmt.Sprintf("at most %d characters", declaration.GetMaxLen()))
+	}
+	if declaration.MinItems != nil {
+		out = append(out, fmt.Sprintf("at least %d item(s)", declaration.GetMinItems()))
+	}
+	if declaration.MaxItems != nil {
+		out = append(out, fmt.Sprintf("at most %d item(s)", declaration.GetMaxItems()))
+	}
+	return out
 }
 
 // declaredValueText renders a declared literal, a default, for a popup, and
