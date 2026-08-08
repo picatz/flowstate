@@ -407,7 +407,7 @@ func referenceScope(doc *document, pos lsp.Position, clock bool, current *outlin
 
 	var scope refScope
 	if from := stepAtIfParsed(doc, pos); from != nil {
-		scope = scopeFromModel(doc, from)
+		scope = scopeFromModel(doc, from, from.loopScopeAt(pos))
 	} else {
 		scope = scopeFromOutline(earlier, currentIndent, doc.tasks)
 	}
@@ -512,7 +512,12 @@ func stepAtIfParsed(doc *document, pos lsp.Position) *parsedStep {
 }
 
 // scopeFromModel builds the candidate lists using the engine's scoping rules.
-func scopeFromModel(doc *document, from *parsedStep) refScope {
+//
+// ls names which of a loop's own scopes the cursor's expression is evaluated
+// in — [loopScopeAfterBody] inside `until:`/`update:`, where the carried state
+// and the body's top-level steps are readable — and loopScopeNone everywhere
+// else, including `init:`, whose scope is the step's own.
+func scopeFromModel(doc *document, from *parsedStep, ls loopScope) refScope {
 	var scope refScope
 
 	// The step's own `vars:`, first because they are the nearest binding there is —
@@ -524,6 +529,24 @@ func scopeFromModel(doc *document, from *parsedStep) refScope {
 	// author declaring `vars:` two lines above got a menu that did not contain what
 	// they had just written.
 	scope.locals = append(scope.locals, varsCandidates(from.varsEntry, "a variable this step declares")...)
+
+	// The carried state a loop's own `until:`/`update:` read, bound under its
+	// `as:` name. Only the after-body flavor offers it: in `init:` the value
+	// does not exist yet — that expression is defining it — and offering it
+	// there would teach a reference the validator refuses. A loop without `as:`
+	// binds nothing, which iteratorName answering "" already says.
+	if ls == loopScopeAfterBody && from.loopEntry != nil {
+		if name := from.iteratorName(); name != "" {
+			scope.locals = append(scope.locals, refCandidate{
+				name:   name,
+				kind:   lsp.CIKVariable,
+				detail: "carried value",
+				docs: fmt.Sprintf(
+					"The value the %s loop carries between iterations: init sets it, the body reads it, update computes the next one.",
+					from.id),
+			})
+		}
+	}
 
 	// Innermost loop first: standing in nested bodies, the nearest binding is the
 	// one most likely to be wanted.
@@ -555,7 +578,7 @@ func scopeFromModel(doc *document, from *parsedStep) refScope {
 	// just above you is the one most often referenced.
 	for i := len(doc.parsed.steps) - 1; i >= 0; i-- {
 		s := doc.parsed.steps[i]
-		if s.id == "" || !visibleFrom(s, from) {
+		if s.id == "" || !visibleFromEntry(s, from, ls) {
 			continue
 		}
 		scope.steps = append(scope.steps, stepCandidate(s, doc.tasks))

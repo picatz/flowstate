@@ -54,6 +54,7 @@ func hoverAt(doc *document, pos lsp.Position) *lsp.Hover {
 		var found *lsp.Hover
 		clock := step.bindsNow(in)
 		shaping := step.bindsWaitResult(in)
+		ls := step.loopScopeOf(in)
 		walkValues(in.value, func(v *value) {
 			// Being fenced is not enough: describing what is under the cursor
 			// means finding the cursor *in the expression source*, and whether a
@@ -68,7 +69,7 @@ func hoverAt(doc *document, pos lsp.Position) *lsp.Hover {
 			if !ok {
 				return
 			}
-			found = hoverReference(doc, step, v, cursor, clock, shaping)
+			found = hoverReference(doc, step, v, cursor, clock, shaping, ls)
 		})
 		if found != nil {
 			return found
@@ -301,7 +302,10 @@ func stepDoc(step *parsedStep, def v1.TaskDef, taskKnown bool) string {
 // position, because resolving one to the other is the caller's business: only
 // the value knows whether its text is one contiguous run of the document or a
 // run per line, and a caller that has an offset has already been told yes.
-func hoverReference(doc *document, from *parsedStep, v *value, cursor int, clock, shaping bool) *lsp.Hover {
+//
+// ls names which of a loop's own scopes the expression is evaluated in, and
+// loopScopeNone everywhere else — see [parsedStep.loopScopeOf].
+func hoverReference(doc *document, from *parsedStep, v *value, cursor int, clock, shaping bool, ls loopScope) *lsp.Hover {
 	ref := referenceAt(v.expr, cursor)
 	if ref.empty() {
 		// No reference here, which does not mean nothing is here. `referenceAt`
@@ -328,11 +332,11 @@ func hoverReference(doc *document, from *parsedStep, v *value, cursor int, clock
 		// returns the rooted reference for the whole word regardless of which segment
 		// the cursor is in, so `${steps.web.body.upperAscii()}` answered with the
 		// output's documentation while the author pointed at the call after it.
-		return hoverStepOutput(doc, from, ref, rng)
+		return hoverStepOutput(doc, from, ref, rng, ls)
 	}
 
 	if ref.step == "" {
-		if h := hoverBareName(from, ref.local, clock, shaping, rng); h != nil {
+		if h := hoverBareName(from, ref.local, clock, shaping, ls, rng); h != nil {
 			return h
 		}
 	}
@@ -444,7 +448,7 @@ const varsKeyword = "vars"
 // answer to `${now}` written in a task input is not this documentation — it is the
 // validator's diagnostic saying the name is not bound there, and describing it as
 // though it were would contradict a squiggle the author is looking at.
-func hoverBareName(from *parsedStep, name string, clock, shaping bool, rng lsp.Range) *lsp.Hover {
+func hoverBareName(from *parsedStep, name string, clock, shaping bool, ls loopScope, rng lsp.Range) *lsp.Hover {
 	if clock && name == v1.NowIdentifier {
 		return markdownHover(nowDoc(), rng)
 	}
@@ -457,6 +461,16 @@ func hoverBareName(from *parsedStep, name string, clock, shaping bool, rng lsp.R
 			return markdownHover(doc, rng)
 		}
 	}
+	// The loop's own carried state, in the two expressions the loop evaluates
+	// after its body. `init:` deliberately does not reach here: it is *defining*
+	// that value, so the name is not bound in it, and describing it as the
+	// carried value would document a binding the engine refuses — inside `init:`
+	// a name spelled like a profile function still *is* that function, which is
+	// what the fallback below answers. A loop without `as:` carries nothing and
+	// binds nothing, which iteratorName answering "" already says.
+	if ls == loopScopeAfterBody && from.loopEntry != nil && name != "" && name == from.iteratorName() {
+		return markdownHover(loopStateDoc(name, from), rng)
+	}
 	for _, loop := range from.iteratorsInScope() {
 		if loop.iteratorName() != name {
 			continue
@@ -468,12 +482,7 @@ func hoverBareName(from *parsedStep, name string, clock, shaping bool, rng lsp.R
 		// and a wrong answer here is worse than none — it describes a value the
 		// engine does not hold.
 		if loop.loopEntry != nil {
-			return markdownHover(fmt.Sprintf(
-				"**`%s`** — the value the `%s` loop carries between iterations.\n\n"+
-					"`init:` gives it its first value, the body reads it, and `update:` "+
-					"computes the next one after each pass. The final value is reported "+
-					"through `${%s.%s.state}`; body outputs do not escape the loop.",
-				name, loop.id, v1.StepsRoot, loop.id), rng)
+			return markdownHover(loopStateDoc(name, loop), rng)
 		}
 		return markdownHover(fmt.Sprintf(
 			"**`%s`** — the current item of the `%s` loop.\n\n"+
@@ -550,6 +559,22 @@ func waitResultDoc(name string) string {
 	}
 }
 
+// loopStateDoc describes the value a `loop:` carries, under the name its `as:`
+// binds.
+//
+// One rendering for the two places the binding is readable — the body, and the
+// loop's own `until:`/`update:` — because they are one binding: an author who
+// hovers the name in the body and then in `until:` must not be told two
+// different things about one value.
+func loopStateDoc(name string, loop *parsedStep) string {
+	return fmt.Sprintf(
+		"**`%s`** — the value the `%s` loop carries between iterations.\n\n"+
+			"`init:` gives it its first value, the body reads it, and `update:` "+
+			"computes the next one after each pass. The final value is reported "+
+			"through `${%s.%s.state}`; body outputs do not escape the loop.",
+		name, loop.id, v1.StepsRoot, loop.id)
+}
+
 // blocksAround returns the blocks enclosing a step, nearest first.
 func blocksAround(from *parsedStep) []*parsedStep {
 	var out []*parsedStep
@@ -577,9 +602,12 @@ func varEntry(vars *entry, name string) *entry {
 }
 
 // hoverStepOutput describes a reference rooted under `steps.`.
-func hoverStepOutput(doc *document, from *parsedStep, ref reference, rng lsp.Range) *lsp.Hover {
+//
+// ls widens visibility for a loop's `until:`/`update:`, which read the body's
+// own top-level steps — see [visibleFromEntry].
+func hoverStepOutput(doc *document, from *parsedStep, ref reference, rng lsp.Range, ls loopScope) *lsp.Hover {
 	target := doc.parsed.step(ref.step)
-	if !visibleFrom(target, from) {
+	if !visibleFromEntry(target, from, ls) {
 		// Not a step, or one whose outputs this step cannot see. The diagnostics
 		// say so; hover stays quiet rather than repeating it.
 		return nil
