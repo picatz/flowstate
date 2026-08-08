@@ -340,8 +340,11 @@ which is the correct configuration for one that should not handle secrets at all
 
 The value's lifetime is deliberately narrow: it exists inside the activity that uses it, for
 that call. It is not returned as a step output, not logged, and not carried in an error. The
-engine cannot enforce that by construction alone, so the value type refuses to serialize
-itself, redacts itself when formatted, and errors are scrubbed before leaving the activity.
+engine cannot enforce that by construction alone, so the value type marshals to a redacted
+placeholder rather than its value, refuses to *de*serialize — a secret comes from a
+resolver, never from data — redacts itself when formatted, and errors are scrubbed before
+leaving the activity. Marshaling succeeds redacted rather than failing because a failure
+invites a caller to fall back to something less careful.
 A revealed value cannot be wiped from memory — Go strings are immutable — so the guarantee is
 about where a value travels, not how long it lives.
 
@@ -378,19 +381,22 @@ Discovery follows the convention that has worked elsewhere: an executable named
 `flowstate-plugin-<name>`, found on a configured path. Nothing is loaded to discover
 what a plugin does; the engine asks it.
 
-**The service is the extension interface, in-process or not.** There is no
-hand-written Go interface a provider must satisfy alongside the RPC service — the
-generated service interface *is* the contract. Connect generates client and handler
-interfaces with identical signatures, so one implementation satisfies both: an
-environment or file provider is a plain Go type implementing `SecretService` with no
-server and no socket, a plugin-backed provider is a Connect client to the same
-service, and the engine cannot tell them apart or need to.
+**The service is the wire contract; the engine's contract is `secrets.Provider`.**
+Out of process, a secrets backend speaks the generated `SecretService` — that is
+what makes a plugin writable in any language. In process, the contract every
+backend satisfies is the hand-written two-method `secrets.Provider` (`Scheme`,
+`Resolve`), and a plugin-backed provider is a one-direction adapter
+(`plugin/secrets.go`) from the service onto it. The engine dispatches to a plugin
+exactly as it does to the built-in environment and file providers, because that is
+the whole of what a secrets backend is.
 
-That collapses a whole layer. A second Go interface mirroring the service would be a
-second definition of the same contract — the drift the proto-first invariant exists
-to prevent — and would need an adapter in both directions. Extending the protocol
-extends both paths at once, and an in-process provider costs no serialization,
-because nothing serializes when the call is a Go method call.
+The hand-written interface is not proto-first drift; it is the documented exception
+to it. `Resolve` returns a `Secret` — a type defined by the boundary it refuses to
+cross, which marshals only as a redacted placeholder — while the generated service
+must return a message that *carries the value*, since carrying it over a local
+socket is how a plugin hands a secret to the engine at all. A contract whose return
+type must never serialize cannot be the generated one, so the adapter runs in
+exactly one direction: wire value in, sealed `Secret` out, never back.
 
 A plugin task is indistinguishable from a built-in one to the rest of the system,
 because a plugin ships protobuf descriptors for its inputs and outputs. Validation,
@@ -480,11 +486,13 @@ every task's function signature to carry a value most tasks never need. Filling
 those fields is the run's authenticated identity crossing into
 `plugin.NewContextWithIdentity`, installed at every entry point that can execute a
 task on either driver: `engine/runtime.go`'s `taskActivities.context` for the
-authorized activities, and `engine/activities.go`'s `Task`, `TaskWithPrev` and
-`TaskInScope` directly, all reading the same `RunState.Identity` `#187`'s
-task-shape policy threads into every one of them — the same value, and often the
-same call, that secret resolution reaches through `ContextWithTaskRuntime` on the
-authorized arms. `cmd/flow/secrets.go`'s `withLocalTaskRuntime` is the identical
+authorized activities, and `engine/activities.go`'s `Task` and `TaskInScope`
+directly, reading the same `RunState.Identity` `#187`'s task-shape policy threads
+into them — the same value, and often the same call, that secret resolution
+reaches through `ContextWithTaskRuntime` on the authorized arms. `TaskWithPrev` is
+the one deliberate exception: its signature is frozen for histories recorded
+before scopes existed, so it installs an explicit all-empty caller rather than
+reading an identity it has no way to be handed. `cmd/flow/secrets.go`'s `withLocalTaskRuntime` is the identical
 seam for the local driver. An identity that was never established — a local
 rehearsal with no `--as-subject`, or a run predating this field — crosses as an
 explicit, present, all-empty caller rather than as a missing context value or a
@@ -547,7 +555,7 @@ A run proceeds through the layers in one direction:
 Flowfile (YAML+CEL)
   │  compile: parse, resolve ${...} to CEL ASTs, validate against the registry
   ▼
-Workflow (Protobuf spec)  ── validated by protovalidate; content-addressable
+Workflow (Protobuf spec)  ── validated by protovalidate; size-bounded (CheckSpecSize)
   │  submit
   ▼
 Control plane (Connect RPC)  ── authenticate, authorize, record ownership
