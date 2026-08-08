@@ -1,0 +1,34 @@
+# A library workflow: something several callers reuse, which is exactly the file
+# a caller wants to pin. It has no idea it is being pinned, and nothing here is
+# written differently because it is. A pin is the *caller's* record of what it
+# reviewed.
+#
+# Editing this file is allowed and expected. It changes the file's bytes, so it
+# changes its digest, so every caller pinning it stops compiling until somebody
+# reads the change and re-pins. That is the trade the pin buys, and it is the
+# whole of it.
+edition: v2026.2
+name: grant-access
+
+inputs:
+  user:
+    type: string
+    required: true
+    description: who is being granted access
+  role:
+    type: string
+    required: true
+    description: which role they are being granted
+
+steps:
+  - id: record
+    log:
+      message: ${'granting ' + inputs.role + ' to ' + inputs.user}
+      fields:
+        user: ${inputs.user}
+        role: ${inputs.role}
+
+outputs:
+  grant_id:
+    value: ${inputs.user + ':' + inputs.role}
+    description: the grant this run recorded

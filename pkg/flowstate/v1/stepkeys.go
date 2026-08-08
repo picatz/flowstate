@@ -62,6 +62,18 @@ var grammarStepKeys = []string{
 	// is: not itself a kind of work.
 	"with",
 
+	// The digest a `call:` may be pinned to: the callee's content hash as the
+	// caller last reviewed it, verified when the file is compiled. Only
+	// meaningful beside `call:`, exactly as `with:` is, and a step property for
+	// the same reason.
+	//
+	// A general word, and taking it costs a plugin the task name, which is the
+	// trade `timeout` and `retry` already make. It is grammar being built rather than a
+	// roadmap noun, which is the bar the comment above sets, and leaving it free
+	// would let a plugin register `digest` and make `digest:` on a step mean
+	// either a pin or that task, with no way for the parser to choose.
+	"digest",
+
 	// Retired at edition v2026.2, and reserved rather than released.
 	//
 	// A retired name is still a word the grammar has an opinion about: the parser
