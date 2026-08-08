@@ -864,7 +864,7 @@ edition: v2026.2
 	t.Run("diagnostics reach inside a loop body", func(t *testing.T) {
 		found := false
 		for _, d := range params.Diagnostics {
-			if d.Code == codeFlowfile && textInRange(src, d.Range) == "mesage" {
+			if d.Code == codeGeneral && textInRange(src, d.Range) == "mesage" {
 				found = true
 			}
 		}
@@ -1253,7 +1253,7 @@ func TestDurationsAreChecked(t *testing.T) {
 				return
 			}
 			require.Len(t, params.Diagnostics, 1, "got %v", messages(params.Diagnostics))
-			assert.Equal(t, codeFlowfile, params.Diagnostics[0].Code)
+			assert.Equal(t, codeGeneral, params.Diagnostics[0].Code)
 			assert.Contains(t, params.Diagnostics[0].Message, tt.wantText)
 			assert.Equal(t, tt.underlines, textInRange(src, params.Diagnostics[0].Range))
 		})

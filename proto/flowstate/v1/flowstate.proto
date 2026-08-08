@@ -3454,6 +3454,106 @@ message Diagnostic {
   // complete. The full set, generated from the registry that assigns them so
   // it cannot drift, is docs/reference/diagnostics.md.
   string code = 8;
+
+  // Edits are repairs a program may apply to the source without understanding
+  // the diagnostic, each one complete on its own.
+  //
+  // Empty is the common and honest answer, and is what every diagnostic
+  // answers unless the checker that raised it could name the exact source it
+  // would replace and the exact text to put there. Most cannot: a missing
+  // required input, a reference to a step that does not exist, a value the
+  // schema refuses are all problems where only the author knows what was
+  // meant, and an edit invented for one of them would be a rewriter guessing.
+  // `flow fix` has corrupted valid files twice by guessing at scope (see
+  // CLAUDE.md, "A rewriter has to know what the grammar binds"), and this
+  // field carries the same hazard to every consumer at once, so a checker that
+  // is not certain leaves it empty.
+  //
+  // More than one entry means the repairs are alternatives, offered for a
+  // person or an agent to choose between. They are never applied together.
+  repeated SuggestedEdit edits = 9;
+}
+
+// SourceRange is a region of a file's source text, in the units [Diagnostic]
+// already positions itself in.
+//
+// The same coordinates rather than byte offsets, because a message carrying two
+// coordinate systems asks every reader to know which one each field speaks, and
+// the reader that guesses wrong edits the wrong text. Lines and columns are
+// 1-based and columns count Unicode code points, exactly as [Diagnostic.line]
+// and [Diagnostic.column] do; zero means unknown, for the same reason it does
+// there.
+//
+// The end is exclusive, so a range over a four-character key on one line ends
+// four columns past where it starts. An editor underlines that region and a
+// program replacing it replaces exactly that much.
+message SourceRange {
+  // StartLine is the 1-based line the region begins on, or zero when unknown.
+  uint32 start_line = 1;
+
+  // StartColumn is the 1-based column the region begins at, counting
+  // characters rather than bytes, or zero when only the line is known.
+  uint32 start_column = 2;
+
+  // EndLine is the 1-based line the region ends on, or zero when unknown.
+  uint32 end_line = 3;
+
+  // EndColumn is the 1-based column just past the region's last character, or
+  // zero when only the line is known.
+  uint32 end_column = 4;
+}
+
+// TextChange replaces the source a range covers with new text.
+//
+// One primitive rather than separate insert, delete, and replace forms: an
+// empty range inserts, empty text deletes, and neither empty replaces, so a
+// consumer implements one operation and gets all three.
+message TextChange {
+  // Range is the source this change replaces.
+  //
+  // Required, because a change with no range names no text, and a consumer
+  // that defaulted it to the start of the file would write the change into
+  // somebody's first line.
+  SourceRange range = 1 [(buf.validate.field).required = true];
+
+  // NewText is what the range's source becomes. Empty deletes it.
+  string new_text = 2;
+}
+
+// SuggestedEdit is one repair for the diagnostic carrying it, complete and
+// independently applyable.
+//
+// Complete means a consumer applies every change in it and stops: nothing else
+// has to run afterwards for the problem this diagnostic names to be repaired.
+// It is not a promise the file is then free of problems. A repair can surface
+// one the mistake was masking, exactly as fixing a syntax error lets the type
+// checker finally read the line: renaming a misspelled key exposes its value to
+// checks that could not run while the key was unknown. What the edit does
+// promise is that it introduces nothing: applied to source where the diagnostic
+// holds, it never manufactures a problem the file did not already contain,
+// which is what the guards on the offering site are for. Independently applyable
+// means it stands alone rather than composing with a sibling, so two edits on
+// one diagnostic are alternatives to choose between and never a sequence.
+//
+// Both properties are what let an agent apply one without reading the message.
+// A partial edit would leave a file in a state nothing described, and edits
+// that had to be applied in order would make correctness depend on a rule that
+// is nowhere in the message.
+message SuggestedEdit {
+  // Title says what applying this does, imperatively and in a few words:
+  // "rename to `message`". It is what an editor puts in a menu and what a log
+  // records when an agent applies one.
+  //
+  // Required, because an unlabeled choice is not a choice, and these are
+  // offered as alternatives.
+  string title = 1 [(buf.validate.field).required = true];
+
+  // Changes are the edits to make, all of them, in any order. They never
+  // overlap.
+  //
+  // At least one, since a suggestion that changes nothing is a suggestion a
+  // consumer would offer and then appear to fail at.
+  repeated TextChange changes = 2 [(buf.validate.field).repeated = {min_items: 1}];
 }
 
 // DiagnosticReport is what one file's check produced.

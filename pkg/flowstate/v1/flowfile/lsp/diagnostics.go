@@ -36,16 +36,60 @@ import (
 // a user can tell a Flowfile problem from their YAML plugin's opinion.
 const diagnosticSource = "flowstate"
 
-// Stable codes, so an editor can group or filter and a user can search.
+// Stable codes for the problems this package finds itself, so an editor can
+// group or filter and a user can search.
+//
+// There is deliberately no code here for a problem the validator found. Those
+// carry [v1.DiagnosticCode] already, assigned where the check lives and
+// published unchanged by `flow validate --output json` and the Validate RPC, and
+// this server used to overwrite all of them with a single constant spelling
+// "flowfile". An editor could then filter every Flowfile problem or none, while
+// a program reading the same file over JSON could tell an unknown task from an
+// unresolved reference. Two surfaces disagreeing about what a problem *is* is
+// the drift the schema type exists to prevent, so the code published here is the
+// one the message carries.
 const (
 	codeYAMLSyntax = "yaml-syntax"
 	codeCELSyntax  = "cel-syntax"
-	codeFlowfile   = "flowfile"
 	codeTooLarge   = "document-too-large"
 )
 
-// diagnose returns every problem found in a document.
+// A carried diagnostic is one problem as the editor sees it, beside the
+// validator's own diagnostic that produced it.
+//
+// The validator's diagnostic is kept rather than projected away because it holds
+// what an editor cannot recompute: the suggested edits, whose ranges were
+// measured by the check that found the problem. Deriving those from the
+// published diagnostic would mean re-deciding, in this package, which text a
+// repair covers, and a rewriter that decides that for itself is exactly the
+// mistake `flow fix` has twice paid for.
+//
+// Source is the zero diagnostic for the problems this package finds itself: a
+// YAML syntax error, a CEL syntax error, a document too large to analyze. Those
+// carry no edits, so nothing downstream has to distinguish them.
+type carriedDiagnostic struct {
+	published lsp.Diagnostic
+	source    flowfile.Diagnostic
+}
+
+// diagnose returns every problem found in a document, as an editor is told about
+// them.
 func diagnose(doc *document) []lsp.Diagnostic {
+	carried := diagnoseCarried(doc)
+	out := make([]lsp.Diagnostic, 0, len(carried))
+	for _, c := range carried {
+		out = append(out, c.published)
+	}
+	return out
+}
+
+// diagnoseCarried returns every problem found in a document, each beside the
+// validator diagnostic it came from.
+//
+// The one that does the work; [diagnose] is the projection of it that the
+// publishing path wants. Code actions take this one, because an action is
+// derived from what the validator said rather than from what was published.
+func diagnoseCarried(doc *document) []carriedDiagnostic {
 	set := &diagnosticSet{}
 
 	if doc.tooLarge {
@@ -116,13 +160,16 @@ func diagnose(doc *document) []lsp.Diagnostic {
 			// this is the same mistake described twice.
 			continue
 		}
-		set.add(lsp.Diagnostic{
+		set.addFrom(lsp.Diagnostic{
 			Range:    rng,
 			Severity: lsp.Error,
 			Source:   diagnosticSource,
-			Code:     codeFlowfile,
-			Message:  d.Message,
-		})
+			// The class the validator assigned, published as it stands rather
+			// than replaced with a constant naming the checker: see the note on
+			// the codes above.
+			Code:    d.Proto().GetCode(),
+			Message: d.Message,
+		}, d)
 	}
 
 	return set.sorted()
@@ -133,11 +180,18 @@ func diagnose(doc *document) []lsp.Diagnostic {
 // Duplicates are possible because two sources can legitimately notice the same
 // problem, and an editor renders a doubled message as two overlapping squiggles.
 type diagnosticSet struct {
-	items []lsp.Diagnostic
+	items []carriedDiagnostic
 	seen  map[string]bool
 }
 
+// add records a problem this package found itself, which has no validator
+// diagnostic behind it.
 func (s *diagnosticSet) add(d lsp.Diagnostic) {
+	s.addFrom(d, flowfile.Diagnostic{})
+}
+
+// addFrom records a problem beside the validator diagnostic it was built from.
+func (s *diagnosticSet) addFrom(d lsp.Diagnostic, source flowfile.Diagnostic) {
 	key := fmt.Sprintf("%d:%d-%d:%d|%s",
 		d.Range.Start.Line, d.Range.Start.Character,
 		d.Range.End.Line, d.Range.End.Character, d.Message)
@@ -148,28 +202,28 @@ func (s *diagnosticSet) add(d lsp.Diagnostic) {
 		return
 	}
 	s.seen[key] = true
-	s.items = append(s.items, d)
+	s.items = append(s.items, carriedDiagnostic{published: d, source: source})
 }
 
 func (s *diagnosticSet) empty() bool { return len(s.items) == 0 }
 
 // sorted returns the diagnostics in source order, so the same document always
 // produces the same report.
-func (s *diagnosticSet) sorted() []lsp.Diagnostic {
+func (s *diagnosticSet) sorted() []carriedDiagnostic {
 	out := s.items
 	if out == nil {
 		// An empty, non-nil slice: the protocol distinguishes "no problems" from
 		// a missing field, and null would leave stale diagnostics in some clients.
-		out = []lsp.Diagnostic{}
+		out = []carriedDiagnostic{}
 	}
-	slices.SortStableFunc(out, func(a, b lsp.Diagnostic) int {
-		if a.Range.Start.Line != b.Range.Start.Line {
-			return a.Range.Start.Line - b.Range.Start.Line
+	slices.SortStableFunc(out, func(a, b carriedDiagnostic) int {
+		if a.published.Range.Start.Line != b.published.Range.Start.Line {
+			return a.published.Range.Start.Line - b.published.Range.Start.Line
 		}
-		if a.Range.Start.Character != b.Range.Start.Character {
-			return a.Range.Start.Character - b.Range.Start.Character
+		if a.published.Range.Start.Character != b.published.Range.Start.Character {
+			return a.published.Range.Start.Character - b.published.Range.Start.Character
 		}
-		return strings.Compare(a.Message, b.Message)
+		return strings.Compare(a.published.Message, b.published.Message)
 	})
 	return out
 }
@@ -228,8 +282,13 @@ func addCompileFailure(doc *document, set *diagnosticSet, err error) {
 			Range:    documentStart,
 			Severity: lsp.Error,
 			Source:   diagnosticSource,
-			Code:     codeFlowfile,
-			Message:  err.Error(),
+			// A compile failure that arrived as a bare error rather than as
+			// positioned diagnostics has no class of its own to publish, and
+			// "general" is what the same failure is published as everywhere
+			// else. Inventing a code here would be this server describing a
+			// problem in words no other surface uses.
+			Code:    string(v1.DiagnosticCodeGeneral),
+			Message: err.Error(),
 		})
 	}
 }

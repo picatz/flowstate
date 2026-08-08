@@ -113,6 +113,22 @@ type Diagnostic struct {
 	// site only needs to set this when its diagnostic belongs to one of the
 	// classes worth branching on.
 	Code v1.DiagnosticCode
+
+	// Edits are repairs a program may apply to the source, each complete and
+	// independently applyable, and each an alternative to its siblings rather
+	// than a step in a sequence.
+	//
+	// Held as the schema type rather than as a Go shape projected into it,
+	// because unlike everything above it there is no second thing this package
+	// does with an edit: nothing here applies one, [Diagnostic.Error] does not
+	// render one, and the only consumers are the surfaces that read the schema
+	// message. A parallel Go definition would be a second description of a
+	// contract with one description's worth of use.
+	//
+	// Nil at almost every site, which is the honest answer rather than an
+	// omission: see the schema's own doc on [v1.Diagnostic.Edits] for why a
+	// checker that cannot name the exact replacement leaves this empty.
+	Edits []*v1.SuggestedEdit
 }
 
 // Error renders the diagnostic in the conventional line:column: message form so it
@@ -2319,6 +2335,7 @@ func (d Diagnostic) Proto() *v1.Diagnostic {
 		Kind:    d.Kind,
 		Value:   d.Value,
 		Code:    string(code),
+		Edits:   d.Edits,
 	}
 }
 
