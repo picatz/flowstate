@@ -9,7 +9,7 @@ that only ever offers things the engine will accept.
 | Feature | What you get |
 | --- | --- |
 | **Diagnostics** | YAML syntax errors, CEL syntax errors underlined inside the expression, unknown tasks, duplicate and unusable step ids, references to steps that do not exist or have not run yet, inputs a task does not declare (with a spelling suggestion), required inputs left out, an input a task used to accept and no longer does — reported as a key that can be deleted rather than as a misspelling of something else, malformed step timeouts and retry intervals, a `log:` message that interpolates an input declared `sensitive:` — the `sensitive-in-log` lint, which names what to log instead — a step that is no kind of work or more than one, a step named the retired bare way rather than under `steps.` — reported as a migration with the command that performs it, not as an unknown name — and an `edition:` this build does not compile, which is reported on its own since every other complaint would be describing the wrong grammar. |
-| **Hover** | A task's summary and full typed signature; an input's type, whether it is required, and the value constraints the schema enforces; what a `${steps.<id>.<output>}` reference resolves to, what type it produces — when the registry declares one; an output shaped by the step's own `outputs:` has no type to claim — and which line declared it; what the root `steps` itself is; what a loop's iterator binds; what `now` is inside a `wait_until:`, and why it is bound only there; what a `${secret('scheme:name')}` reference names; what each `Flowfile` key means. |
+| **Hover** | A task's summary and full typed signature; an input's type, whether it is required, and the value constraints the schema enforces; what a `${steps.<id>.<output>}` reference resolves to, what type it produces when the registry declares one (an output shaped by the step's own `outputs:` has no type to claim), and which line declared it; what the root `steps` itself is; what a loop's iterator binds; what `now` is inside a wait's expressions (`wait_until:`, an expression-valued `sleep:`, a signal's `timeout:`) and why it is bound only there; what a `${secret('scheme:name')}` reference names; what each `Flowfile` key means. |
 | **Completion** | Task names where a step's keys go, alongside `id`/`if`/`timeout` and the other kinds; input keys under the task's own name, required ones first, already-written ones omitted; the names in scope inside `${...}` (see the scoping rules below); and the document's own keys (`id`, `if`, `timeout`, `retry`, `for_each`, `parallel`, …). |
 | **Go to definition** | Jump from a `${steps.<id>.<output>}` reference to that step's `id:` declaration, from a loop's bare iterator name to the loop that binds it, and from a `call:` target to the called Flowfile — opened at its `name:`, and resolved relative to the calling file's own directory by the same rule the compiler uses, so the file you arrive in is the file the run compiles. A call the compiler would refuse, or one naming a file that is not there, navigates nowhere rather than somewhere wrong. |
 | **Document symbols** | An outline of the workflow's steps, each labelled with the task it runs, and for a nested step the block it belongs to. |
@@ -43,8 +43,10 @@ each level is answered from a different place:
    item is usually what is wanted. The binding depends on where the cursor is:
    inside a `for_each` body it is the iterator; inside a `loop:`'s
    `until:`/`update:` it is the carried state under its `as:` name; inside a
-   `wait_until:` it is `now`; and inside a `wait_for_signal:`'s `outputs:`
-   shaping it is `payload`, `sender`, and `timed_out`.
+   wait's own expressions (`wait_until:`, an expression-valued `sleep:`, a
+   signal's `timeout:`) it is `now`; and inside a `wait_for_signal:`'s
+   `outputs:` shaping it is `payload`, `sender`, and `timed_out`, with `now`
+   still bound because the shaping is evaluated in the wait's own scope.
 2. **After `steps.`** — the ids of the steps whose outputs exist at that point,
    labelled with what each one runs: the task's name, or `for_each`, `loop` or
    `parallel` for a block.
@@ -56,14 +58,14 @@ each level is answered from a different place:
    shape inside a value is not something the schema describes and a guess would
    be a wrong one.
 
-Two things follow from the split that are easy to miss. `now` is offered under
-`wait_until:` and nowhere else — rightly not in a task input, where the validator
-refuses it because a task input is resolved inside an activity that has no clock
-surviving a retry. But the validator actually binds `now` for all three of a
-wait's expressions — a computed `sleep:` and a signal's `timeout:` accept it too —
-so under those two keys completion is currently narrower than what validates, and
-hover's description of `now` shares the same too-narrow claim; widening both is
-tracked as [#319](https://github.com/picatz/flowstate/issues/319).
+Two things follow from the split that are easy to miss. `now` is offered inside a
+wait's expressions and nowhere else: rightly not in a task input, where the
+validator refuses it because a task input is resolved inside an activity that has
+no clock surviving a retry. The set matches what validates: all three of a wait's
+expressions (`wait_until:`, a computed `sleep:`, and a signal's `timeout:`)
+plus the signal's `outputs:` shaping, which is evaluated in the wait's own scope.
+Completion and hover used to stop at `wait_until:`, which was
+[#319](https://github.com/picatz/flowstate/issues/319).
 
 And a bare qualifier gets nothing: `${item.` could only be a binding, whose element
 type is not statically known, or a step reference written the retired way — and

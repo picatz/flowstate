@@ -1005,7 +1005,7 @@ edition: v2026.2
 				"loop":     "the enclosing loop has not finished, so it has no results yet",
 				"left":     "a parallel branch that has not run yet",
 				"after":    "a later step",
-				"now":      "the clock is bound in wait_until, not in a task input",
+				"now":      "the clock is bound in a wait's expressions, not in a task input",
 			},
 		},
 		{

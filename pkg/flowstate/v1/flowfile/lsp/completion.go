@@ -420,8 +420,8 @@ func referenceScope(doc *document, pos lsp.Position, clock bool, current *outlin
 	}
 
 	if clock {
-		// Bound by the engine for one key and nowhere else — which is why it is
-		// added here rather than living in the scope every expression gets. A task
+		// Bound by the engine for a wait's expressions and nowhere else, which is
+		// why it is added here rather than living in the scope every expression gets. A task
 		// input has no clock that survives a retry, and the validator says so with
 		// a diagnostic; offering the name there would be walking an author into it.
 		scope.locals = append(scope.locals, refCandidate{
@@ -437,13 +437,19 @@ func referenceScope(doc *document, pos lsp.Position, clock bool, current *outlin
 	return scope
 }
 
-// waitUntilKey is the step key whose expression binds the clock.
+// waitUntilKey, sleepKey and signalTimeoutKey are the three keys whose
+// expressions the engine evaluates as a wait's, and so binds the clock into.
 //
-// Written once, next to the only thing that reads it, because it is the join of
-// two facts that live apart: v1 owns the name `now` and the DSL owns the key. The
-// key itself is checked against the grammar by TestDSLKeysMatchTheDSL, which is
-// what keeps a renamed key from leaving this pointing at nothing.
-const waitUntilKey = "wait_until"
+// Written once, next to the things that read them, [bindsClock] and nowDoc,
+// because each is the join of two facts that live apart: v1 owns the name `now`
+// and the DSL owns the keys. The keys themselves are checked against the grammar
+// by TestDSLKeysMatchTheDSL, which is what keeps a renamed key from leaving
+// these pointing at nothing.
+const (
+	waitUntilKey     = "wait_until"
+	sleepKey         = "sleep"
+	signalTimeoutKey = "timeout"
+)
 
 // bindsClock reports whether an expression written after a key is a wait's, and
 // so has `now` bound in it.
@@ -453,14 +459,61 @@ const waitUntilKey = "wait_until"
 // wait the grammar defines, while the same word among a task's inputs would be
 // that task's input and is resolved somewhere with no clock in it. Asking only the
 // key would offer `now` there, and a candidate an author accepts in a place the
-// validator refuses is the failure this package exists to avoid.
+// validator refuses is the failure this package exists to avoid. The level is
+// also all that separates a signal's `timeout:` from the step's own: the step's
+// bounds one attempt and has no clock in it, and `retry:`'s durations sit under
+// their own key and are excluded the same way.
+//
+// The set is the validator's (flowfile's validateWait, which takes it from where
+// the engine evaluates waits): all three of a wait's own expressions, plus a
+// signal's `outputs:` shaping, whose scope validateWait builds from the waiting
+// one, so the clock is bound there alongside the wait's result names.
 //
 // It is the line scan's answer to the question [parsedStep.bindsNow] answers from
 // the model, and the two are separate on purpose: completion is asked for while a
 // document does not parse, which is exactly when there is no model to ask. The
 // rule they implement is one rule, so a change to either belongs in both.
 func bindsClock(key string, path []string) bool {
-	return key == waitUntilKey && endsWith(path, "steps")
+	switch {
+	case endsWith(path, "steps"):
+		return key == waitUntilKey || key == sleepKey
+	case endsWith(path, "wait_for_signal"):
+		return key == signalTimeoutKey
+	case withinWaitOutputsShaping(path):
+		return true
+	}
+	return false
+}
+
+// withinWaitOutputsShaping reports whether path descends from a signal's
+// `outputs:` shaping, at any depth beneath it.
+//
+// A shaping value can itself be a mapping (`outputs: { audit: { observed_at:
+// ${...} } }`), and every level below `outputs:` is still evaluated in the
+// wait's scope: validateWait builds the shaping scope once, from the waiting
+// one, and walks every entry the shaping mapping holds regardless of how deep
+// it nests. An exact-suffix check on `[wait_for_signal, outputs]` saw only the
+// entries directly under `outputs:` and stopped there, which is the DSL saying
+// more than the editor did about the same file.
+//
+// The pair must be adjacent (`wait_for_signal` immediately followed by
+// `outputs`), and `wait_for_signal` must sit directly under a step, the same
+// level [bindsClock]'s own `wait_for_signal` case reads a step's `timeout:`
+// at. That excludes a step-level `timeout:` (which never has `outputs` under
+// it) and a task's own shaping `outputs:` (whose ancestor is a task name, not
+// `wait_for_signal`), so a task input named `outputs` with a nested map is
+// left alone.
+func withinWaitOutputsShaping(path []string) bool {
+	for i := 0; i+1 < len(path); i++ {
+		if path[i] != "wait_for_signal" || path[i+1] != taskShapingKey {
+			continue
+		}
+		if i == 0 || path[i-1] != "steps" {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // waitResultCandidates are the names bound bare inside a `wait_for_signal:`'s

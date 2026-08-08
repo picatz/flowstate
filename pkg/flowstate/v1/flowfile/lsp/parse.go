@@ -261,6 +261,28 @@ type parsedStep struct {
 	// one whose expression most often names another step.
 	waitUntilEntry *entry
 
+	// sleepEntry is a `sleep:` whose value is written as an expression, the
+	// computed-duration form the compiler recognizes by the fence
+	// (flowfile's computedDuration: `sleep: 30s` is a literal and
+	// `sleep: ${inputs.grace}` is an expression, with nothing between them
+	// ambiguous). Only the expression form is recorded, because a literal
+	// duration holds no expression for hover, diagnostics, or the clock binding
+	// to attach to; the key itself is documented from the DSL table either way.
+	//
+	// It is here for the reason waitUntilEntry is: the engine binds the clock
+	// into every one of a wait's expressions, not only `wait_until:` (see
+	// [parsedStep.bindsNow]), and an entry this model does not hold is an
+	// expression no editor surface can see.
+	sleepEntry *entry
+
+	// waitTimeoutEntry is a `wait_for_signal:`'s own `timeout:`, again only in
+	// its expression form and by the same fence rule as sleepEntry. Kept apart
+	// from the step's timeoutEntry for the reason waitForSignalEntry is: the two
+	// are spelled the same and mean different things: the step's bounds one
+	// attempt and is no wait expression, while this one is evaluated by the
+	// engine with the clock bound in it.
+	waitTimeoutEntry *entry
+
 	// varsEntry is the step's own `vars:` block, whose *values* are expressions and
 	// whose *keys* are the bare names those values are bound to.
 	//
@@ -334,6 +356,12 @@ func (s *parsedStep) expressionEntries() []*entry {
 	if s.waitUntilEntry != nil {
 		entries = append(entries, s.waitUntilEntry)
 	}
+	if s.sleepEntry != nil {
+		entries = append(entries, s.sleepEntry)
+	}
+	if s.waitTimeoutEntry != nil {
+		entries = append(entries, s.waitTimeoutEntry)
+	}
 	entries = append(entries, s.waitShapingEntries...)
 
 	// A loop's own `init:`, `until:` and `update:`, which are expressions
@@ -362,7 +390,15 @@ func (s *parsedStep) expressionEntries() []*entry {
 	return append(entries, s.inputs...)
 }
 
-// bindsNow reports whether an entry is the one the engine binds the clock into.
+// bindsNow reports whether an entry is one the engine binds the clock into.
+//
+// The set is the validator's, which takes it from where the engine evaluates
+// waits (flowfile's validateWait): all three of a wait's own expressions
+// (`wait_until:`, an expression-valued `sleep:`, and a signal's `timeout:`) plus
+// a signal's `outputs:` shaping, whose scope validateWait builds from the
+// waiting one, so `now` is bound there alongside the wait's result. The clock is
+// the node kind's, not one field's, and answering for fewer entries than the
+// validator accepts is the drift #319 pinned.
 //
 // It is asked of the entry rather than of its key, because a key is a word and
 // two different things can be spelled the same: `wait_until:` under a step is the
@@ -375,7 +411,11 @@ func (s *parsedStep) expressionEntries() []*entry {
 // because it is asked for while a document does not parse and there is no model
 // then to ask. One rule, two readers: a change to either belongs in both.
 func (s *parsedStep) bindsNow(e *entry) bool {
-	return e != nil && (e == s.waitUntilEntry || s.bindsWaitResult(e))
+	if e == nil {
+		return false
+	}
+	return e == s.waitUntilEntry || e == s.sleepEntry || e == s.waitTimeoutEntry ||
+		s.bindsWaitResult(e)
 }
 
 // bindsWaitResult reports whether an entry is one of a `wait_for_signal:`'s
@@ -459,13 +499,15 @@ func (s *parsedStep) loopScopeAt(pos lsp.Position) loopScope {
 // that declares `vars:`, and hovering a loop-scoped variable rendered
 // "the enclosing  declares" for as long as this switch stopped at three.
 //
-// The empty default is the honest answer for the two shapes the model does not
-// record: `sleep:`, whose value is one duration with nothing under it, and a
-// gate written in its scalar form (`wait_for_signal: name`), which
-// [parsedStep.waitForSignalEntry] deliberately does not hold. Neither can
-// enclose anything or declare a var, so neither can reach the sentence above —
-// the blank is confined to the outline column, where it costs a label rather
-// than the grammar of a sentence.
+// The empty default is the honest answer for the two shapes this switch does
+// not name: `sleep:`, whose expression form the model now records in
+// [parsedStep.sleepEntry] for the expression it holds, but whose literal form
+// is one duration with nothing under it, and a gate written in its scalar
+// form (`wait_for_signal: name`), which [parsedStep.waitForSignalEntry]
+// deliberately does not hold. Neither can enclose anything or declare a var,
+// so neither can reach the sentence above; the blank is confined to the
+// outline column, where it costs a label rather than the grammar of a
+// sentence.
 func (s *parsedStep) kind() string {
 	switch {
 	case s.taskEntry != nil:
@@ -924,10 +966,27 @@ func fillParsedStep(s *parsedStep, entries []*entry) {
 			if s.waitForSignalEntry == nil && e.value != nil && e.value.kind == kindMapping {
 				s.waitForSignalEntry = e
 				for _, we := range e.value.entries {
-					if we.key == "outputs" {
+					switch we.key {
+					case "outputs":
 						s.waitShapingEntries = nestedEntries(we)
+					case "timeout":
+						// Only the expression form, by the same fence rule
+						// `sleep:` follows below: a literal duration carries no
+						// expression, and the key's own documentation comes from
+						// the DSL table at this level either way.
+						if s.waitTimeoutEntry == nil && we.value != nil && we.value.fenced {
+							s.waitTimeoutEntry = we
+						}
 					}
 				}
+			}
+		case "sleep":
+			// Only the expression form has anything for this model to hold. The
+			// fence decides, which is the compiler's own rule (computedDuration):
+			// `sleep: 30s` is a literal duration with no expression in it, and
+			// recording it would put a non-expression in expressionEntries.
+			if s.sleepEntry == nil && e.value != nil && e.value.fenced {
+				s.sleepEntry = e
 			}
 		case "wait_until":
 			// A case of its own rather than falling through to the task branch
