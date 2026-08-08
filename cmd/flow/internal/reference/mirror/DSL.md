@@ -523,6 +523,12 @@ attempts: measured, a one-expression step retried three times counts 3 locally a
 would be 1 there. No corpus workflow retries a step carrying an expression, so no row
 above is affected — but the local count is an upper bound, not an equal one.
 
+*Since written:* the site set has grown past four — evaluation now also happens at
+`EvalWaitDuration`/`EvalWaitTimeout`, `ShapeSignalOutputs`, a loop's
+`init:`/`update:`/`until:`, declared-output evaluation, a `call:`'s `with:` binding,
+and `must:` constraints. The measurements here were taken against the four-site
+language and are kept as they were, not re-run.
+
 None of which decides it, because the corpus is not what this costs on. A loop is,
 because the body is evaluated once per item. Measured over a one-step body with a
 condition, a `vars:` entry, and one task input:
@@ -555,6 +561,12 @@ that put secrets out of workflow history in the first place.
 Either mocks match against inputs with references still unresolved, or the `secret:`
 taint machinery lands before `flow test` does. This is a design bug in the proposal,
 not a detail of implementation.
+
+*Since written:* `flow test` shipped (`cmd/flow/test.go`, `flowtest/`) before the
+taint, by a third mechanism neither branch above anticipated:
+`flowtest/secrets.go`'s `resolveSecretInputs` resolves `${secret(...)}` references
+through a test-only provider — so mocks never see a production value — and fails
+closed on any reference it cannot resolve.
 
 **Plugins do not get CEL functions.** Accepted from the proposal and restated here
 because it will be asked for repeatedly: an IPC call inside a cost-bounded,
@@ -1029,6 +1041,11 @@ authors stop hand-building secret-bearing headers), an `idempotency_key`, and
 declared egress capabilities. Each interacts with policy or secrets and none blocks
 the vocabulary work.
 
+*Since written:* structured auth shipped, under a different spelling — `bearer` and
+`credential` inputs on the `http` task (`TaskDef.AuthorityInputs`/`CredentialInputs`
+in `eval_task_library.go`; `examples/http-secret/`, `examples/http-federated/`).
+Only `idempotency_key` and the Flowfile-declared egress capabilities remain held.
+
 ### `triggers:` — the file declares a cadence, a person creates it *(landed)*
 
 A workload that has to run every night is not an unusual workload; it is most of the
@@ -1256,7 +1273,7 @@ policy is, in its own reviewed change.
 | `printf:` | **retired at v2026.2 (landed)** | `format()` in the profile (already present) |
 | `iterator:` | **retired at v2026.2 (landed)** | `as:` |
 | bare `status_code`/`body`/`headers`/`json` | **rerooted (landed)** | `response.*` |
-| `http:` | kept | — (auth, idempotency key, egress declarations held) |
+| `http:` | kept | — (auth landed as `bearer:`/`credential:`; idempotency key, egress declarations held) |
 | `log:` | **new (landed)** | — |
 | `exec:` | new, gated on its policy | — |
 | `value:` | refused for now, name reserved | `vars:` until a corpus file proves otherwise |
@@ -1317,6 +1334,10 @@ Phase 3's `call:` — the answer is the `outputs:` contract, which is not built.
 was already scheduled as the phase that ships the contract with its checker. It is now
 also the phase that restores a capability the sweep removed, and it should be sequenced
 knowing that rather than as the type system arriving on its own timetable.
+
+*Since written:* it did ship that way — the contract landed as `declared_outputs`
+(`examples/computed-outputs/` exercises it), and a run's computed result is nameable
+again.
 
 ### The corpus is the acceptance list
 
@@ -1402,7 +1423,9 @@ And the CI-pipeline corpus entry, which is the same language plus the Phase 3
 plugin surface and a policied `exec` — the file that makes "could be used for CI"
 a demonstration rather than a claim. **It does not compile today, deliberately:** it is
 the acceptance target for Phase 3, and this build answers it with `unknown key
-"plugins"`, `unknown key "github.clone"`, and `unknown task "exec"`. That is the corpus
+"plugins"`, the installation-question diagnostic for `github.clone` (`no plugin task
+"github.clone" is registered here; if the "github" plugin is installed on the worker
+this will run on, the file is fine…`), and `unknown task "exec"`. That is the corpus
 rule working as intended — a design that has not landed, kept visible — rather than a
 file that has gone stale.
 
@@ -1569,8 +1592,10 @@ reserved-keyword diagnostics for the grammar Phase 4 will need; `vars:` is in bo
 its positions, the profile is pinned, and the three tasks are gone from the schema.
 Phase 2 is what the sweep leaves load-bearing, per [the
 sweep](#one-edition-one-sweep-and-what-the-rewriter-may-not-guess): with no local task
-returning a value, `http` and `for_each` are the only steps that produce outputs, so
-the `outputs:` contract is now the only route by which a run can report a computed
+returning a value, every step output is something handed in from outside — `http`,
+`for_each`, a `loop:`'s `results`/`state`, a wait's `timed_out`/`payload`/`sender` —
+so the `outputs:` contract, which has since shipped as `declared_outputs`
+(`examples/computed-outputs/`), is the only route by which a run can report a computed
 result at all.
 
 The `plugins:`
@@ -2194,8 +2219,9 @@ with a command whose only payload is that.
 
 A callee's own steps may carry `undo:`, and a compensation they register lands on the
 same run-level [`UndoLog`](../pkg/flowstate/v1/undo.go) a top-level step's would —
-`v1.UndoScopeCall` is one of the two placements `CheckUndoPlacement` allows, alongside
-the run's own top level. Nothing about *how* a compensation reaches the log changed to
+`v1.UndoScopeCall` is one of the three placements `CheckUndoPlacement` allows,
+alongside the run's own top level and a `loop:` body; only `UndoScopeConcurrent` is
+refused. Nothing about *how* a compensation reaches the log changed to
 make this true: the durable executor already shared `e.undo` by pointer with the
 executor a call descends into, for the same reason it shares `signals` and `progress`
 across every level — a compensation belongs to the run, not to the level that happens
@@ -2568,9 +2594,10 @@ the same iteration count and the same state transitions.
   with carried state by construction — iteration N+1's state *is* iteration N's output,
   so they cannot run at once — which is why a loop has no `max_parallel:` at all, and a
   concurrent variant would need a different meaning for "carry" that is not obvious.
-  Nested loops work as written (the executor recurses), but their suspend/compaction
-  interaction across two `loop_state` frames wants its own cases before it is claimed,
-  so it is neither advertised nor exercised yet.
+  Nested loops are refused by the validator with a positioned diagnostic
+  (`flowfile/validate.go`, locked by `flowfile/loopnesting_test.go`) that recommends
+  hoisting the inner loop into a `call:`, because their suspend/compaction
+  interaction across two `loop_state` frames wants its own cases before it is claimed.
 - **A pre-body `while`.** Deferred as unnecessary: the do-while covers it (guard the
   body with an `if:`), and adding a second loop mode is 2ⁿ dialects for a shape the
   first already reaches.
@@ -2623,6 +2650,13 @@ of those three is a *new* namespace with a new source of values, so they are thr
 features rather than the remainder of this one, and none of them is bought by the work
 above. (The `cel` task's `vars` input is unrelated — a task input, not a scope.)
 
+*Since written:* all three namespaces exist now. `vars:` landed in its Flowfile
+positions, `inputs.*` shipped with its schema half (`InputDeclaration`,
+`Workflow.declared_inputs`, `pkg/flowstate/v1/inputs.go`), and `run.*` shipped as a
+closed field set — `identity`, `local`, `workflow_id`, `run_id`
+(`pkg/flowstate/v1/run_identity.go`); see the `run.*` note near the top of this
+document.
+
 Remaining in Phase 1: `vars` in its three positions, one pinned profile, and the
 reserved-keyword diagnostics. Pinning the profile is the only Phase 1 item that needs a
 schema break, so it goes last rather than first. `inputs` is not a Phase 1 item at all; it
@@ -2643,6 +2677,15 @@ pinned and `libs:` is deleted, `edition:` is required and `v`-prefixed, and `ech
 refused. **Phase 1 shrank the language further than this section planned**, which is the
 paragraph below's problem: the sweep left `http` and `for_each` as the only steps that
 produce outputs, so a run has no way to report a value it computed rather than fetched.
+
+*Since written, once more:* both halves of that have moved. `inputs.*` and `run.*`
+are no longer unstarted — both shipped (`pkg/flowstate/v1/inputs.go`,
+`pkg/flowstate/v1/run_identity.go`; the next annotation below records the `inputs:`
+landing). And `http` and `for_each` are no longer the only producers: `loop:`
+produces `results` and `state` (`pkg/flowstate/v1/loop.go`), a wait produces
+`timed_out` plus a signal's `payload` and `sender` and shaped `outputs:`
+(`pkg/flowstate/v1/wait.go`), and declared `outputs:` give a run a way to report a
+computed value (`examples/computed-outputs/`).
 
 **Phase 2 — the contract, with its checker.** `inputs`, `outputs`, `check:`,
 `env.Check` at validate and in the LSP, typed hover, the absent/null/default matrix,
@@ -2682,11 +2725,11 @@ mapped 1:1 onto `buf.validate`'s own names — `pattern`, `min_len`, `max_len` f
 string, `min`/`max` for an int or float, `min_items`/`max_items`/`unique` for a
 list — plus `must:`, a CEL predicate over `this` kept strictly as the escape hatch
 the standard rules exist to make unnecessary for the common case. Both messages
-gained `must:`; `InputDeclaration` additionally gained `example:` (illustrative,
-never applied at runtime, checked against the declaration's own type and
-constraints at compile so a stale example is a diagnostic) and `sensitive:`
-(display etiquette — not containment, and the docs say so plainly — for a view to
-redact by default). Enforced at every surface the design named: statically on a
+gained `must:` and `sensitive:` (display etiquette — not containment, and the docs
+say so plainly — for a view to redact by default); `InputDeclaration` additionally
+gained `example:` (illustrative, never applied at runtime, checked against the
+declaration's own type and constraints at compile so a stale example is a
+diagnostic). Enforced at every surface the design named: statically on a
 literal at author time (`flow validate`, with a position), at submit through
 `BindRunInputs` (the primary fail-closed gate), at a `call:` boundary's `with:`
 argument, and on a declared output's own computed value before it is reported —
@@ -2730,7 +2773,9 @@ specification some worker may still be replaying must never come back with a
 new meaning. `buf breaking` needed the one-commit `ignore_only` scoped to
 `FIELD_NO_DELETE` that pattern always needs when a field goes from present to
 reserved in a single diff — see `proto/buf.yaml`'s own comment, due to come
-out in the commit after this one reaches `main`.
+out in the commit after this one reaches `main`. (*Since written:* it came
+out as promised — `buf.yaml` today suppresses nothing, and its comment
+records the pattern as "used six times and removed six times".)
 
 The parser still recognizes the word. `pattern:` written today is refused
 with a diagnostic that names the replacement and echoes the author's own
@@ -2828,7 +2873,9 @@ were field numbers 11 and 12, `unique` was 15; none of the three is a map, so
 alongside any of them. `buf breaking` needed the identical one-commit `ignore_only`
 scoped to `FIELD_NO_DELETE` that `pattern:`'s retirement needed, for the identical
 reason — see `proto/buf.yaml`'s own comment, due to come out in the commit after
-this one reaches `main`.
+this one reaches `main`. (*Since written:* it did — `buf.yaml` today suppresses
+nothing, and its comment records the pattern as "used six times and removed six
+times".)
 
 The parser still recognizes all three words. Each is refused with a diagnostic
 naming the replacement; `min:`/`max:` echo the author's own number back into a
