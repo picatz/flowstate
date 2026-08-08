@@ -76,6 +76,13 @@ const (
 	// distinctly from an unresolved reference because the fix is a rewrite
 	// rather than a decision about what to write.
 	DiagnosticCodeRetiredKey DiagnosticCode = "retired-key"
+
+	// DiagnosticCodeSensitiveInLog marks an input declared `sensitive:` whose
+	// value is written straight into a `log:` message — bare, or concatenated
+	// into it — where it would land in run history and stdout in the clear. A
+	// distinct class rather than a general refusal because the fix is specific:
+	// log something derived from the value instead of the value itself.
+	DiagnosticCodeSensitiveInLog DiagnosticCode = "sensitive-in-log"
 )
 
 // DiagnosticCodeInfo is one entry of the registry [DiagnosticCodes] returns —
@@ -135,6 +142,12 @@ func DiagnosticCodes() []DiagnosticCodeInfo {
 			Code: DiagnosticCodeRetiredKey,
 			Description: "A bare name is the pre-rooting spelling of a step reference; `flow fix` " +
 				"rewrites it rather than an author needing to decide what to write.",
+		},
+		{
+			Code: DiagnosticCodeSensitiveInLog,
+			Description: "An input declared `sensitive:` is written directly into a `log:` message, " +
+				"where it would be recorded in run history and stdout in the clear; log a " +
+				"value derived from it instead of the value itself.",
 		},
 	}
 }

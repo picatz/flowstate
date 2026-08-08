@@ -115,6 +115,24 @@ func diagnosticCodeCases() []diagnosticCodeCase {
 			},
 		},
 		{
+			name: "sensitive in log",
+			code: v1.DiagnosticCodeSensitiveInLog,
+			step: "leak",
+			workflow: &v1.Workflow{
+				Name: "sensitive-in-log",
+				DeclaredInputs: []*v1.InputDeclaration{
+					{Name: "token", Sensitive: true},
+				},
+				Steps: []*v1.Node{{
+					Id: "leak",
+					Kind: &v1.Node_Task{Task: &v1.Task{
+						Name:   "log",
+						Inputs: map[string]*v1.Value{"message": v1.NewExpr("inputs.token")},
+					}},
+				}},
+			},
+		},
+		{
 			name: "retired key",
 			code: v1.DiagnosticCodeRetiredKey,
 			step: "b",
