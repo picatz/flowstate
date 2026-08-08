@@ -341,14 +341,33 @@ func waitLocally(ctx context.Context, clock Clock, d time.Duration) (*Node_Outpu
 // still unblock the same way it always has, without every implementation of
 // that interface having to learn about a clock of its own.
 //
-// This goroutine's own registration with clock is withdrawn for the whole of
-// the blocking receive below, timed or not — see [LeaveClockWhile]. Waiting
-// for a signal is waiting on something the clock does not control, so this
-// goroutine never parks on it the way a [Clock.After] caller does; without
-// withdrawing, a [VirtualClock] with nothing else running could never see
-// every participant parked, and could never advance to deliver whatever
-// `flow test`'s own scripted signal sender is waiting to send — the run
-// would hang rather than resolve.
+// An *untimed* wait withdraws this goroutine's registration with clock for
+// the whole of the blocking receive below — see [LeaveClockWhile]. Waiting
+// for a signal with no deadline is waiting on something the clock does not
+// control, so this goroutine never parks on it the way a [Clock.After] caller
+// does; without withdrawing, a [VirtualClock] with nothing else running could
+// never see every participant parked, and could never advance to deliver
+// whatever `flow test`'s own scripted signal sender is waiting to send — the
+// run would hang rather than resolve.
+//
+// A *bounded* wait does the opposite, and the difference is the whole of #278.
+// A bounded wait registers its own deadline with the clock, so this goroutine
+// is parked on the clock in the only sense the clock cares about: something it
+// is holding will resolve when time moves. It therefore stays registered for
+// the entire wait, and the timer it registered is what lets the clock advance.
+// The alternative — withdraw, and have a helper goroutine hold a replacement
+// slot for the duration — is what shipped, and it could not be made correct:
+// participation moved from this goroutine to the helper at the start of the
+// wait and back at the end, and in the window between the helper dropping its
+// slot and this goroutine reclaiming one, a scripted signal parked on a far
+// later moment was the clock's *only* participant. The clock did exactly what
+// it is supposed to do with a lone parked participant — advanced to its
+// deadline — and delivered a signal timestamped for the fifth period into the
+// second. Holding one registration across the whole wait means there is no
+// such window to lose: the earliest of (this wait's timeout, the next scripted
+// signal) wins, every time, because both are pending deadlines on one clock
+// with a participant count that never dips.
+//
 // bounded says whether a `timeout:` was written, carried separately from its
 // value for the reason the durable driver's own [engine] arm carries it: `timeout
 // <= 0` used to be the encoding for "no timeout", so a bound that computed to zero
@@ -390,20 +409,24 @@ func waitForSignalLocally(ctx context.Context, clock Clock, signal *Signal, time
 	waitCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// The helper goroutine below is registered as a clock participant here,
-	// on this goroutine, before anything is given up — not inside the
-	// goroutine itself, and not after spawning it. `go func(){...}` only
-	// queues the goroutine; nothing here waits for the scheduler to actually
-	// start running it before this goroutine's own LeaveClockWhile, a few
-	// lines down, gives up its slot. Registering the replacement afterward
-	// (or worse, from inside the not-yet-running goroutine) would leave a
-	// window where the clock's own participant count is one short of the
-	// truth — long enough, on an unlucky schedule, for a [VirtualClock] to
-	// see every *currently counted* participant parked and advance straight
-	// past this wait's own timeout to whatever the next deadline is, which
-	// is exactly the bug this ordering exists to close: the timeout would
-	// lose a race it should always win against anything scheduled later.
-	helperLeave := EnterClock(ctx)
+	// Registered here, on this goroutine, while it is still a clock
+	// participant — not from inside the watcher below. `go func(){...}` only
+	// queues a goroutine; a deadline that exists only once the scheduler has
+	// got round to running it is a deadline the clock cannot weigh against
+	// anything else pending in the meantime. Registering it inline makes the
+	// candidate set the clock compares — this timeout against every scripted
+	// signal — the same on every schedule.
+	deadline := clock.After(timeout)
+
+	// Discarded on the way out, because a wait answered by its signal leaves
+	// its own timeout pending and unfired. Under a [VirtualClock] a pending
+	// deadline is not inert: it is a moment the clock will advance to as soon
+	// as everything still registered is parked, so a gate answered at 10h
+	// would drag the run's clock to the 720h its timeout never needed, and
+	// every later `at:`, `now`, and deadline in the run would be measured from
+	// a moment the workflow never actually reached. See [DiscardTimer], which
+	// is a no-op on a timer that already fired and on [RealClock].
+	defer DiscardTimer(clock, deadline)
 
 	// timedOut is closed exactly when the clock's own deadline is what ended
 	// waitCtx, as opposed to the caller's context being cancelled for an
@@ -411,23 +434,34 @@ func waitForSignalLocally(ctx context.Context, clock Clock, signal *Signal, time
 	// wall-clock version of this function drew by checking for
 	// context.DeadlineExceeded specifically, which a derived context.Cancel
 	// cannot report on its own.
+	//
+	// watching is closed when the goroutine below has returned. It is waited
+	// for before this function returns so that nothing is still holding
+	// waitCtx or deadline once the wait is over — a watcher outliving its wait
+	// is a goroutine racing the *next* wait's bookkeeping.
 	timedOut := make(chan struct{})
+	watching := make(chan struct{})
 	go func() {
-		defer helperLeave()
+		defer close(watching)
 
 		select {
-		case <-clock.After(timeout):
+		case <-deadline:
 			close(timedOut)
 			cancel()
 		case <-waitCtx.Done():
 		}
 	}()
 
-	// This goroutine's own participation is given up only now — after the
-	// helper's replacement registration above already exists, so the two
-	// are never simultaneously absent.
-	rejoin := LeaveClockWhile(ctx)
-	defer rejoin()
+	// On the way out: cancel first, so a wait its signal answered releases the
+	// watcher rather than leaving it parked on a deadline nobody needs, then
+	// wait for the watcher to have actually gone. Written as a defer so every
+	// return path below takes it, and registered after the discard above so it
+	// runs before it — the deadline is withdrawn only once nothing is still
+	// selecting on it.
+	defer func() {
+		cancel()
+		<-watching
+	}()
 
 	payload, sender, err := waiter.WaitForSignal(waitCtx, name)
 	if err == nil {

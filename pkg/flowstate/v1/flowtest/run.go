@@ -392,7 +392,24 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 	for _, j := range jobs {
 		clock.Enter()
 		go func(j job) {
-			defer clock.Leave()
+			// Withdrawn quietly once this goroutine actually delivered
+			// something, and ordinarily otherwise. A delivery makes the run
+			// runnable at an instant the clock cannot yet know about, so a
+			// departure that advanced the clock right then would move time on
+			// the run's behalf before the run has had a chance to withdraw the
+			// deadline its answered wait no longer needs — see
+			// [v1.VirtualClock.LeaveQuietly]. A goroutine that delivered
+			// nothing woke nobody, and its departure is exactly the ordinary
+			// "one fewer thing to wait for" [v1.VirtualClock.Leave] exists to
+			// act on.
+			delivered := false
+			defer func() {
+				if delivered {
+					clock.LeaveQuietly()
+					return
+				}
+				clock.Leave()
+			}()
 			defer func() { done <- struct{}{} }()
 
 			select {
@@ -418,6 +435,7 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 			}
 
 			_ = signals.DeliverFrom(j.name, &v1.Node_Outputs{NamedValues: v1.NewNamedValues(j.payload)}, j.sender)
+			delivered = true
 		}(j)
 	}
 

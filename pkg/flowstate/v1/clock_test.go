@@ -208,3 +208,108 @@ func TestVirtualClockAdvanceDeliversScriptedTimes(t *testing.T) {
 	clock.Advance(start)
 	require.Equal(t, start.Add(15*time.Minute), clock.Now())
 }
+
+// TestVirtualClockDiscardWithdrawsADeadlineNobodyIsWaitingFor is the unit-level
+// half of #278's second finding. A bounded `wait_for_signal:` that its signal
+// answered leaves its own timeout registered and unfired; if that deadline
+// stayed a candidate, the clock would advance the whole run to a moment the
+// wait had already stopped needing.
+//
+// Both directions are asserted, because "Discard removes it" and "Discard
+// leaves the count able to advance at all" are separate claims: the discarded
+// deadline must not be advanced to, *and* the deadline that remains must still
+// be reached.
+func TestVirtualClockDiscardWithdrawsADeadlineNobodyIsWaitingFor(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clock := v1.NewVirtualClock(start)
+
+	// Three participants for two deadlines, so the clock holds still while
+	// this test sets up: it advances only once everything registered is
+	// parked, and one entered participant here never parks at all.
+	clock.Enter()
+	clock.Enter()
+	clock.Enter()
+
+	abandoned := clock.After(time.Hour)
+	kept := clock.After(10 * time.Hour)
+
+	require.Equal(t, start, clock.Now())
+	require.Equal(t, 2, clock.Pending())
+
+	v1.DiscardTimer(clock, abandoned)
+	require.Equal(t, 1, clock.Pending(), "Discard did not withdraw the deadline")
+
+	// Discarding a deadline that was never issued, and one already discarded,
+	// both do nothing — so a `defer DiscardTimer(...)` on every path out of a
+	// wait is safe without first working out which path was taken.
+	v1.DiscardTimer(clock, abandoned)
+	v1.DiscardTimer(clock, make(chan time.Time))
+	require.Equal(t, 1, clock.Pending())
+
+	// The remaining deadline is still reachable, and it is the one the clock
+	// advances to: the discard took the parked count down with it, rather
+	// than leaving the clock believing one more thing is parked than is —
+	// which would have held the clock at the epoch forever. Withdrawing the
+	// two unparked participants is what leaves `kept` as the only thing left.
+	clock.Leave()
+	clock.Leave()
+
+	select {
+	case got := <-kept:
+		require.Equal(t, start.Add(10*time.Hour), got)
+	default:
+		t.Fatal("the surviving deadline was never reached")
+	}
+	require.Equal(t, start.Add(10*time.Hour), clock.Now())
+
+	select {
+	case <-abandoned:
+		t.Fatal("a discarded deadline fired anyway")
+	default:
+	}
+}
+
+// TestVirtualClockLeaveQuietlyDoesNotAdvance pins the difference between the
+// two ways a participant can withdraw. [v1.VirtualClock.Leave] advances,
+// because one fewer participant can be what makes every remaining one parked.
+// [v1.VirtualClock.LeaveQuietly] does not, for the participant whose departure
+// follows it having just made another participant runnable — `flow test`'s
+// scripted signal delivery — which the clock has no other way to know about.
+func TestVirtualClockLeaveQuietlyDoesNotAdvance(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	for _, tc := range []struct {
+		name  string
+		leave func(c *v1.VirtualClock)
+		want  time.Time
+	}{
+		{name: "Leave advances", leave: (*v1.VirtualClock).Leave, want: start.Add(time.Hour)},
+		{name: "LeaveQuietly does not", leave: (*v1.VirtualClock).LeaveQuietly, want: start},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			clock := v1.NewVirtualClock(start)
+			clock.Enter() // the participant that parks, below.
+			clock.Enter() // the participant that withdraws.
+
+			ch := clock.After(time.Hour)
+
+			tc.leave(clock)
+			require.Equal(t, tc.want, clock.Now())
+
+			fired := false
+			select {
+			case <-ch:
+				fired = true
+			default:
+			}
+			require.Equal(t, tc.want.Equal(start.Add(time.Hour)), fired,
+				"the pending deadline's fate did not match the clock's own")
+		})
+	}
+}

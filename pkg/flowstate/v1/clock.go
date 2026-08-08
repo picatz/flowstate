@@ -122,6 +122,35 @@ func EnterClock(ctx context.Context) (leave func()) {
 	return p.Leave
 }
 
+// ClockTimerDiscarder is implemented by a [Clock] whose caller can say it has
+// stopped waiting for a deadline it registered with [Clock.After].
+//
+// [VirtualClock] implements it; [RealClock] does not, and does not need to. A
+// wall-clock timer nobody is receiving from costs a little memory until it
+// fires and is then collected, and nothing else can observe it. A *virtual*
+// one is observable by everything: an unfired deadline is a moment the clock
+// will advance to the instant every registered participant is parked, so a
+// timeout abandoned by a wait its signal already answered would silently pull
+// the whole run's notion of "now" forward to a moment the workflow never
+// reached.
+type ClockTimerDiscarder interface {
+	// Discard withdraws a pending deadline previously returned by
+	// [Clock.After]. Discarding a deadline that has already fired, or one
+	// this clock never issued, does nothing.
+	Discard(ch <-chan time.Time)
+}
+
+// DiscardTimer tells clock that the caller has stopped waiting for a deadline
+// it got from [Clock.After], if clock is a [ClockTimerDiscarder]. A no-op
+// otherwise, and a no-op for a deadline that already fired — so it is safe to
+// `defer` on every path out of a wait without first working out which of the
+// two ended it.
+func DiscardTimer(clock Clock, ch <-chan time.Time) {
+	if d, ok := clock.(ClockTimerDiscarder); ok {
+		d.Discard(ch)
+	}
+}
+
 // clockRunParticipantHeldKey marks a context whose run-level clock participant
 // is already registered by an outer caller.
 type clockRunParticipantHeldKey struct{}
@@ -149,9 +178,14 @@ func NewContextWithHeldRunParticipant(ctx context.Context) context.Context {
 // and returns the matching leave — unless the context says an outer caller
 // already holds it (see [NewContextWithHeldRunParticipant]), in which case it
 // does nothing and that outer caller's own leave is what eventually withdraws
-// the run. This is what [eval] calls for the run as a whole; a per-wait
-// participant such as a signal timeout's helper goroutine still uses
-// [EnterClock] directly, because it is a genuinely distinct participant.
+// the run. This is what [eval] calls for the run as a whole.
+//
+// Nothing registers a *per-wait* participant. A bounded wait registers its own
+// deadline instead and keeps the run's single registration for the duration
+// (see [waitForSignalLocally]); handing participation back and forth per wait
+// is what #278 turned out to be. `flow test`'s scripted signal senders are the
+// only other participants, and each is a genuinely separate one — a goroutine
+// with its own deadline, running alongside the run rather than on its behalf.
 func EnterClockForWholeRun(ctx context.Context) (leave func()) {
 	if _, held := ctx.Value(clockRunParticipantHeldKey{}).(struct{}); held {
 		return func() {}
@@ -269,6 +303,32 @@ func (c *VirtualClock) Leave() {
 	c.advanceLocked()
 }
 
+// LeaveQuietly unregisters a participant registered by a matching
+// [VirtualClock.Enter] *without* advancing, for the one caller whose departure
+// is not evidence that the clock should move: a participant that has just made
+// another one runnable.
+//
+// `flow test`'s scripted signal delivery is that caller. Its goroutine parks
+// on the moment its `at:` names, delivers, and is then done — but the run it
+// delivered to is, at that instant, awake and about to carry on, and has no
+// way to have said so yet. [VirtualClock.Leave]'s own advance would run in
+// that window, and a run inside a bounded `wait_for_signal:` still has its own
+// timeout registered until it gets far enough to withdraw it — so the clock
+// would find one parked timer, one participant, and jump the whole run forward
+// to a deadline the wait it belonged to had already stopped needing. That is
+// the same class of mistake as #278 itself: time moving on the strength of a
+// participant count that is momentarily a lie.
+//
+// Nothing stalls as a result. The participant this one woke is running, and
+// whatever it does next — park on another deadline, withdraw the deadline it
+// no longer needs, or finish and release the run's own registration — goes
+// through this clock and advances it then, with the count telling the truth.
+func (c *VirtualClock) LeaveQuietly() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.participants--
+}
+
 // After implements [Clock].
 func (c *VirtualClock) After(d time.Duration) <-chan time.Time {
 	c.mu.Lock()
@@ -295,6 +355,35 @@ func (c *VirtualClock) After(d time.Duration) <-chan time.Time {
 	c.parked++
 	c.advanceLocked()
 	return ch
+}
+
+// Discard implements [ClockTimerDiscarder].
+//
+// Removing a pending deadline can itself be what makes every remaining
+// participant parked — the discarding goroutine is about to go on and do
+// something else — so this advances afterward for the same reason
+// [VirtualClock.Leave] does.
+func (c *VirtualClock) Discard(ch <-chan time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	live := c.timers[:0]
+	for _, t := range c.timers {
+		if !t.fired && (<-chan time.Time)(t.ch) == ch {
+			// The parked count follows the timer: it was incremented when
+			// After registered this deadline and is decremented by firing,
+			// so a deadline that leaves without firing has to account for
+			// itself here or the clock permanently believes one more
+			// participant is parked than actually is — which is the
+			// arithmetic that decides whether it advances at all.
+			c.parked--
+			continue
+		}
+		live = append(live, t)
+	}
+	c.timers = live
+
+	c.advanceLocked()
 }
 
 // advanceLocked jumps now to the soonest pending deadline and fires every
