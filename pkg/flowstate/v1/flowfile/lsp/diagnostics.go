@@ -289,7 +289,7 @@ func checkExpressions(doc *document, set *diagnosticSet) []lsp.Range {
 	// step runs. Nothing about them is deferred, since there is no task to defer to.
 	for _, in := range doc.parsed.expressionEntries() {
 		walkValues(in.value, func(v *value) {
-			if v.fenced && reportCELErrors(doc, set, env, v.expr, v.exprOffset, v.exprRange, v.inline) {
+			if v.fenced && reportCELErrors(doc, set, env, v.expr, v.exprMapper(doc.index), v.exprRange) {
 				flagged = append(flagged, v.rng)
 			}
 		})
@@ -322,7 +322,7 @@ func checkExpressions(doc *document, set *diagnosticSet) []lsp.Range {
 					// expression is the case a precise position matters most for.
 					// How precise a position is available depends on how the
 					// fence was written, which is what the last argument carries.
-					found = reportCELErrors(doc, set, env, v.expr, v.exprOffset, v.exprRange, v.inline)
+					found = reportCELErrors(doc, set, env, v.expr, v.exprMapper(doc.index), v.exprRange)
 
 				// A scalar containing a fence but not made of one — `${a} and ${b}`,
 				// or an unterminated `${` — is a mistake with no inner span to point
@@ -349,7 +349,7 @@ func checkExpressions(doc *document, set *diagnosticSet) []lsp.Range {
 					// with a message saying how to fix them. So the guard stays,
 					// on the same rule as before — a missing diagnostic beats a
 					// false one.
-					found = reportCELErrors(doc, set, env, v.text, v.textOffset, v.rng, v.inline)
+					found = reportCELErrors(doc, set, env, v.text, v.textMapper(doc.index), v.rng)
 				}
 				if found {
 					flagged = append(flagged, v.rng)
@@ -363,13 +363,13 @@ func checkExpressions(doc *document, set *diagnosticSet) []lsp.Range {
 // reportCELErrors parses src and reports each syntax error at its position in the
 // document.
 //
-// inline says whether src's bytes sit contiguously at srcOffset — see
-// [value.inline]. When they do not, every error is reported against whole. That
-// is coarse, and it is the point: a squiggle covering the value an author wrote
-// is always about the thing they are looking at, whereas a line and column
-// resolved against folded text names a position that exists in the parser's copy
-// and not in the file.
-func reportCELErrors(doc *document, set *diagnosticSet, env *cel.Env, src string, srcOffset int, whole lsp.Range, inline bool) bool {
+// span maps a byte span of src to the document, and reports false where it
+// cannot — see [value.exprSpan]. Every error it declines is reported against
+// whole instead. That is coarse, and it is the point: a squiggle covering the
+// value an author wrote is always about the thing they are looking at, whereas a
+// line and column resolved against folded text names a position that exists in
+// the parser's copy and not in the file.
+func reportCELErrors(doc *document, set *diagnosticSet, env *cel.Env, src string, span spanMapper, whole lsp.Range) bool {
 	if strings.TrimSpace(src) == "" {
 		return false
 	}
@@ -379,10 +379,20 @@ func reportCELErrors(doc *document, set *diagnosticSet, env *cel.Env, src string
 	}
 	for _, e := range issues.Errors() {
 		rng := whole
-		if inline && e.Location != nil {
-			off := srcOffset + offsetInExpr(src, e.Location.Line(), e.Location.Column())
-			if end := srcOffset + len(src); off < end {
-				rng = doc.index.rangeOfOffsets(off, off+tokenWidth(src[off-srcOffset:]))
+		if e.Location != nil {
+			// CEL's line and column address the expression source, so they are
+			// turned into an offset within it before anything is asked about the
+			// document — an expression's line 1 does not start where a document
+			// line does, and the shift belongs to the mapping rather than to a
+			// column here.
+			//
+			// An error at the very end of the source is left with the whole
+			// range: it is where CEL puts "this expression is unfinished", which
+			// names no token to underline.
+			if off := offsetInExpr(src, e.Location.Line(), e.Location.Column()); off < len(src) {
+				if r, ok := span(off, off+tokenWidth(src[off:])); ok {
+					rng = r
+				}
 			}
 		}
 		set.add(lsp.Diagnostic{

@@ -55,15 +55,20 @@ func hoverAt(doc *document, pos lsp.Position) *lsp.Hover {
 		clock := step.bindsNow(in)
 		shaping := step.bindsWaitResult(in)
 		walkValues(in.value, func(v *value) {
-			// `inline` and not merely `fenced`: describing what is under the
-			// cursor means finding the cursor in the expression source, and a
-			// fence written as a block scalar has no such correspondence to
-			// offer. Answering nothing there is the remaining half of #306;
-			// answering from a folded offset would describe the wrong name.
-			if found != nil || !v.fenced || !v.inline || !contains(v.exprRange, pos) {
+			// Being fenced is not enough: describing what is under the cursor
+			// means finding the cursor *in the expression source*, and whether a
+			// value can answer that depends on how the parser handed its text
+			// over. [value.exprCursor] is the one place that knows, and it
+			// declines rather than compute a position from folded text — which
+			// would describe whatever name happened to sit at that byte.
+			if found != nil || !v.fenced || !contains(v.exprRange, pos) {
 				return
 			}
-			found = hoverReference(doc, step, v, clock, shaping, pos)
+			cursor, ok := v.exprCursor(doc.index, pos)
+			if !ok {
+				return
+			}
+			found = hoverReference(doc, step, v, cursor, clock, shaping)
 		})
 		if found != nil {
 			return found
@@ -292,9 +297,11 @@ func stepDoc(step *parsedStep, def v1.TaskDef, taskKnown bool) string {
 
 // hoverReference describes a ${...} reference: which step produces the value, the
 // task that produces it, and the output's declared type.
-func hoverReference(doc *document, from *parsedStep, v *value, clock, shaping bool, pos lsp.Position) *lsp.Hover {
-	// The character offset of the cursor within the expression source.
-	cursor := doc.index.offsetOfPosition(pos) - v.exprOffset
+// The cursor arrives as an offset into that source rather than as a document
+// position, because resolving one to the other is the caller's business: only
+// the value knows whether its text is one contiguous run of the document or a
+// run per line, and a caller that has an offset has already been told yes.
+func hoverReference(doc *document, from *parsedStep, v *value, cursor int, clock, shaping bool) *lsp.Hover {
 	ref := referenceAt(v.expr, cursor)
 	if ref.empty() {
 		// No reference here, which does not mean nothing is here. `referenceAt`
@@ -307,11 +314,11 @@ func hoverReference(doc *document, from *parsedStep, v *value, clock, shaping bo
 	// A secret reference resolves to neither a step nor a binding, so it is
 	// described before either lookup.
 	if name, span, err := secretRefAt(v.expr, cursor); err == nil {
-		rng := doc.index.rangeOfOffsets(v.exprOffset+span[0], v.exprOffset+span[1])
+		rng := v.exprSpanOrWhole(doc.index, span[0], span[1])
 		return markdownHover(secretDoc(name), rng)
 	}
 
-	rng := doc.index.rangeOfOffsets(v.exprOffset+ref.span[0], v.exprOffset+ref.span[1])
+	rng := v.exprSpanOrWhole(doc.index, ref.span[0], ref.span[1])
 	if ref.step != "" && cursor <= ref.span[1] {
 		// A rooted reference, and the cursor is inside it. Nothing within one is a
 		// call — `${steps.web.value}` names an output, and `value` is also a function
@@ -354,17 +361,19 @@ func hoverDocumentExpression(doc *document, pos lsp.Position) *lsp.Hover {
 	for _, in := range doc.parsed.expressionEntries() {
 		var found *lsp.Hover
 		walkValues(in.value, func(v *value) {
-			// Not inline means no cursor to compute — see the walk in [hoverAt].
-			if found != nil || !v.fenced || !v.inline || !contains(v.exprRange, pos) {
+			// No mappable cursor means no answer — see the walk in [hoverAt].
+			if found != nil || !v.fenced || !contains(v.exprRange, pos) {
 				return
 			}
-
-			cursor := doc.index.offsetOfPosition(pos) - v.exprOffset
+			cursor, ok := v.exprCursor(doc.index, pos)
+			if !ok {
+				return
+			}
 
 			// A secret is the one reference that resolves here, because it is
 			// resolved by the worker rather than out of the run's state.
 			if name, span, err := secretRefAt(v.expr, cursor); err == nil {
-				rng := doc.index.rangeOfOffsets(v.exprOffset+span[0], v.exprOffset+span[1])
+				rng := v.exprSpanOrWhole(doc.index, span[0], span[1])
 				found = markdownHover(secretDoc(name), rng)
 
 				return
@@ -379,7 +388,7 @@ func hoverDocumentExpression(doc *document, pos lsp.Position) *lsp.Hover {
 
 				return
 			}
-			rng := doc.index.rangeOfOffsets(v.exprOffset+ref.span[0], v.exprOffset+ref.span[1])
+			rng := v.exprSpanOrWhole(doc.index, ref.span[0], ref.span[1])
 
 			switch {
 			case ref.step != "" || ref.local == v1.StepsRoot:
