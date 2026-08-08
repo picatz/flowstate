@@ -124,6 +124,17 @@ type TrustedIssuer struct {
 	// The claim must be present and a non-empty string in every token, or the
 	// caller is rejected with [ErrNoNamespace]. A verified caller whose tenant
 	// cannot be determined is not admitted to a shared one.
+	//
+	// The claim's value must also satisfy the namespace grammar checked by
+	// [ValidateNamespace] (lowercase ASCII letters, digits, and dashes, dash not
+	// first). A value that does not is refused at verification, the same way a
+	// missing claim is: the caller is rejected with [ErrNoNamespace] rather than
+	// admitted to a default tenant. For an issuer whose tenant-shaped claims
+	// cannot satisfy that grammar, such as GitHub Actions' "repository" claim
+	// (`<owner>/<name>`) or a "repository_owner" whose org login has uppercase
+	// letters or an underscore, the answer is not a looser grammar. It is one
+	// issuer entry per tenant, each with a fixed Namespace and a Require rule
+	// that pins the claim identifying that tenant.
 	NamespaceClaim string `json:"namespace_claim,omitempty" yaml:"namespace_claim,omitempty"`
 
 	// JWKSURL is the issuer's JSON Web Key Set URL. Leave it empty to discover
