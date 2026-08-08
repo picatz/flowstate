@@ -185,6 +185,28 @@ func (s *FlowstateServer) signalPolicies(memo *common.Memo) (map[string]*v1.Sign
 // starter, or a run with no starter recorded to compare against at all, is
 // refused. There is no third outcome once a policy is declared.
 func (s *FlowstateServer) authorizeSignal(resp *workflowservice.DescribeWorkflowExecutionResponse, name string, sender *v1.SignalSender) error {
+	// A sender marked local is a local driver's own value - [v1.LocalSignalSender]
+	// for a delivery that attests nobody, [v1.RehearsalSignalSender] for one a
+	// `flow run local --signal-as-subject` rehearsal asserts on an approver's
+	// behalf - and neither is a thing this path may ever authorize. It is
+	// refused ahead of the zero case below rather than inside the policy check,
+	// because the shape is wrong whatever the run declares: an unpoliced signal
+	// delivered by a rehearsal identity is as impossible as a policed one.
+	//
+	// Nothing constructs this today. Both durable senders are built from
+	// [FlowstateServer.identityFor]'s attestation with `local` left false, and
+	// [v1.SignalRequest] has no field a caller could set it through - the
+	// schema is the first refusal. This is the second, so that "a rehearsal
+	// identity never satisfies a policy in production" is a rule the durable
+	// driver enforces rather than a property of which constructors happen to
+	// exist. See [v1.RehearsalSignalSender] for why the marker is structural.
+	if sender.GetLocal() {
+		return connect.NewError(connect.CodePermissionDenied,
+			fmt.Errorf("signal %q: this sender is marked as a local rehearsal identity, which nothing "+
+				"authenticated; a rehearsal stands in for an approver on a local run and never "+
+				"authorizes a durable one", name))
+	}
+
 	policies, hasMemo, err := s.signalPolicies(resp.GetWorkflowExecutionInfo().GetMemo())
 	if err != nil {
 		// The memo is there and unreadable — nothing can be concluded about what
