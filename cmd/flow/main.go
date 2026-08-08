@@ -219,12 +219,23 @@ func temporalConfig(ctx context.Context, flags temporalFlags) (temporalclient.Co
 		return temporalclient.Config{}, err
 	}
 
+	// The payload codec, resolved once for the process and carried on the
+	// configuration rather than passed to Dial: `flow server` builds a pool from
+	// this same value, one client per mapped Temporal namespace, and a codec
+	// that covered only the fallback client would leave every mapped tenant's
+	// payloads in plaintext. See [payloadCodecConfig].
+	codec, err := payloadCodecConfig()
+	if err != nil {
+		return temporalclient.Config{}, err
+	}
+
 	cfg := temporalclient.Config{
 		Address:        flags.address,
 		Namespace:      flags.namespace,
 		Profile:        flags.profile,
 		MetricsHandler: metricsHandler,
 		Interceptors:   temporalClientInterceptors(),
+		Codec:          codec,
 	}
 
 	if flags.verbose {
@@ -343,6 +354,18 @@ func runWorker(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer c.Close()
+
+	// The interpreter's own copy of the converter this client was built with.
+	// Workflow-side code replaces the context's converter to decode a signal in
+	// either wire shape, and the SDK offers no way to read the one it is
+	// replacing, so without this the wrapper would fall back to the default
+	// converter and quietly fail to decode every signal on a deployment with a
+	// codec. See engine/codec.go.
+	workerCodec, err := payloadCodecConfig()
+	if err != nil {
+		return err
+	}
+	engine.UseCodec(workerCodec)
 
 	// Before the worker starts polling, because a worker that accepted a step for
 	// a plugin task it has not registered yet would answer `unknown task` for a
@@ -575,7 +598,17 @@ func runServer(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--task-queue-prefix: %w", err)
 	}
 
-	serverOpts := []server.Option{}
+	// The same converter every client dialed from cfg was built with, taken
+	// from cfg itself rather than resolved a second time, so the two cannot
+	// disagree about which codec this process runs.
+	//
+	// This is the read side of the write side. A memo is encoded with the
+	// client's converter, so on a deployment with a codec configured every memo
+	// this server writes is ciphertext; a server reading them back with the SDK
+	// default would decode none of them, answer "this run is not yours" for
+	// every run, and hide the whole deployment from the tenants that own it.
+	// See [server.WithDataConverter].
+	serverOpts := []server.Option{server.WithDataConverter(cfg.Codec.DataConverter())}
 	if taskQueues.Enabled() {
 		serverOpts = append(serverOpts, server.WithTaskQueues(taskQueues))
 	}

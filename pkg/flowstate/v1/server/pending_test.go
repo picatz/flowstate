@@ -22,7 +22,7 @@ func TestPendingActivitiesProjectWhatTemporalReports(t *testing.T) {
 
 	next := timestamppb.New(time.Date(2026, 7, 31, 5, 0, 0, 0, time.UTC))
 
-	out := pendingActivities(&workflowservice.DescribeWorkflowExecutionResponse{
+	out := New(nil).pendingActivities(&workflowservice.DescribeWorkflowExecutionResponse{
 		PendingActivities: []*workflowpb.PendingActivityInfo{
 			{
 				Attempt:       5,
@@ -46,13 +46,13 @@ func TestNothingPendingIsAbsentNotEmpty(t *testing.T) {
 	// Nil rather than an empty slice, so protojson renders the field as [] via
 	// EmitUnpopulated and a consumer distinguishes nothing by length alone —
 	// and so the common case allocates nothing.
-	assert.Nil(t, pendingActivities(&workflowservice.DescribeWorkflowExecutionResponse{}))
+	assert.Nil(t, New(nil).pendingActivities(&workflowservice.DescribeWorkflowExecutionResponse{}))
 }
 
 func TestARunningAttemptHasNoInventedSchedule(t *testing.T) {
 	t.Parallel()
 
-	out := pendingActivities(&workflowservice.DescribeWorkflowExecutionResponse{
+	out := New(nil).pendingActivities(&workflowservice.DescribeWorkflowExecutionResponse{
 		PendingActivities: []*workflowpb.PendingActivityInfo{
 			{Attempt: 2, LastFailure: &failurepb.Failure{Message: "timed out"}},
 		},

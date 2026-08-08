@@ -10,7 +10,6 @@ import (
 	enums "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/workflow/v1"
 	"go.temporal.io/api/workflowservice/v1"
-	"go.temporal.io/sdk/converter"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -185,7 +184,7 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 		scanned += len(resp.GetExecutions())
 
 		for _, execution := range resp.GetExecutions() {
-			if !ownedBy(caller, execution.GetMemo()) {
+			if !s.ownedBy(caller, execution.GetMemo()) {
 				continue
 			}
 
@@ -200,7 +199,7 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 				continue
 			}
 
-			run := summarize(execution)
+			run := s.summarize(execution)
 
 			// Applied after the tenant check and after the continued-as-new skip,
 			// which is the only correct order. A filter is the caller's question
@@ -251,7 +250,7 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 // reading what one produced is Get, one run at a time and one authorization
 // decision at a time. A list that carried outputs would make "show me my runs"
 // the cheapest way to read every workload's data at once.
-func summarize(execution *workflow.WorkflowExecutionInfo) *v1.RunSummary {
+func (s *FlowstateServer) summarize(execution *workflow.WorkflowExecutionInfo) *v1.RunSummary {
 	start, close := runTimes(execution)
 
 	return &v1.RunSummary{
@@ -260,7 +259,7 @@ func summarize(execution *workflow.WorkflowExecutionInfo) *v1.RunSummary {
 		Status:     runStatus(execution.GetStatus()),
 		StartTime:  start,
 		CloseTime:  close,
-		Name:       workflowNameOf(execution),
+		Name:       s.workflowNameOf(execution),
 	}
 }
 
@@ -287,18 +286,21 @@ func summarize(execution *workflow.WorkflowExecutionInfo) *v1.RunSummary {
 // [RunFilter]'s `name` comparison sees — a bare `name == "..."` never
 // matches such a run, and `name == ""` does.
 //
-// Decoded with the SDK's own default data converter, matching the encoding
-// side in [workflowNameMemoEntry] exactly — a second decoder that guessed at
-// the payload's encoding would be the shared-encoder lesson violated in the
-// other direction.
-func workflowNameOf(execution *workflow.WorkflowExecutionInfo) string {
+// Decoded with this server's own data converter, which is the one the client
+// that wrote the memo encodes with, matching the encoding side in
+// [workflowNameMemoEntry] exactly. A second decoder that guessed at the
+// payload's encoding would be the shared-encoder lesson violated in the other
+// direction, and naming the SDK default here rather than the configured
+// converter would be the same mistake with a payload codec configured. See
+// [WithDataConverter].
+func (s *FlowstateServer) workflowNameOf(execution *workflow.WorkflowExecutionInfo) string {
 	payload, ok := execution.GetMemo().GetFields()[workflowNameMemoKey]
 	if !ok {
 		return ""
 	}
 
 	var name string
-	if err := converter.GetDefaultDataConverter().FromPayload(payload, &name); err != nil {
+	if err := s.dataConverter.FromPayload(payload, &name); err != nil {
 		// A payload under this key that does not decode as a string is not this
 		// deployment's doing — see [workflowNameOf]'s own doc — so the honest
 		// answer is "no name available", the same as when the key is absent,

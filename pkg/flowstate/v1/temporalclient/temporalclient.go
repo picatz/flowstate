@@ -41,6 +41,8 @@ import (
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/contrib/envconfig"
 	"go.temporal.io/sdk/interceptor"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec"
 )
 
 // DefaultAddress is the frontend address used when nothing is configured, which
@@ -93,6 +95,21 @@ type Config struct {
 	// fallback client and left every tenant's namespace untraced — the same
 	// shape of gap MetricsHandler was added to close.
 	Interceptors []interceptor.ClientInterceptor
+
+	// Codec is the payload codec every client this configuration dials is built
+	// with, together with the failure converter that must accompany it. See
+	// [payloadcodec.Config].
+	//
+	// It lives here for the reason MetricsHandler and Interceptors do, and the
+	// reason matters more for this field than for either of those: [NewPool]
+	// dials one client per mapped Temporal namespace from this same value, so a
+	// codec passed to Dial as a parameter would encrypt the fallback client's
+	// payloads and write every tenant's namespace in plaintext. A seam with a
+	// per-tenant hole is not a seam.
+	//
+	// The zero value is the null codec, which is byte-for-byte what a
+	// deployment had before this field existed.
+	Codec payloadcodec.Config
 }
 
 // Options resolves c into Temporal client options.
@@ -137,6 +154,15 @@ func (c Config) Options() (client.Options, error) {
 	// interceptors today, and a future SDK that does should not have them
 	// silently dropped by this package.
 	opts.Interceptors = append(opts.Interceptors, c.Interceptors...)
+
+	// Checked here rather than at the first payload, and applied last so that
+	// nothing above can leave a client half-configured: a data converter with
+	// the codec and a failure converter without it is the fail-open pairing
+	// [payloadcodec.Config.Apply] exists to make unrepresentable.
+	if err := c.Codec.Validate(); err != nil {
+		return client.Options{}, err
+	}
+	c.Codec.Apply(&opts)
 
 	return opts, nil
 }

@@ -1029,7 +1029,7 @@ func TestAPreMemoRunIsHonestlyExcludedFromANameFilter(t *testing.T) {
 	// Owned by the caller, but with no name at all — runOwnedByWithName skips
 	// the memo entry entirely when name is "".
 	preMemo := runOwnedByWithName(t, "run-from-before-the-memo-key-existed", "", "")
-	require.Equal(t, "", workflowNameOf(preMemo), "a pre-memo run must report no name, not a coerced one")
+	require.Equal(t, "", New(nil).workflowNameOf(preMemo), "a pre-memo run must report no name, not a coerced one")
 
 	temporal := &mocks.Client{}
 	temporal.On("ListWorkflow", mock.Anything, mock.Anything).Return(

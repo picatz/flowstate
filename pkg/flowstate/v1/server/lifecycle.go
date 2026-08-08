@@ -11,7 +11,6 @@ import (
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
-	"go.temporal.io/sdk/converter"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -68,7 +67,7 @@ func (s *FlowstateServer) authorizeRun(ctx context.Context, workflowID, runID st
 		return nil, nil, notFound(workflowID)
 	}
 
-	if !ownedBy(caller, resp.GetWorkflowExecutionInfo().GetMemo()) {
+	if !s.ownedBy(caller, resp.GetWorkflowExecutionInfo().GetMemo()) {
 		return nil, nil, notFound(workflowID)
 	}
 
@@ -82,8 +81,8 @@ func (s *FlowstateServer) authorizeRun(ctx context.Context, workflowID, runID st
 // different problems, but they are the same question asked once or asked in a
 // loop, and two copies of it would eventually disagree — at which point a run
 // hidden from Get would still appear in List, which is the whole of the breach.
-func ownedBy(caller string, memo *common.Memo) bool {
-	recorded, err := memoTenant(memo)
+func (s *FlowstateServer) ownedBy(caller string, memo *common.Memo) bool {
+	recorded, err := s.memoTenant(memo)
 	switch {
 	case errors.Is(err, errNoTenantRecorded):
 		// A run started before tenants were recorded. It is reachable only from
@@ -137,14 +136,14 @@ func notFound(workflowID string) *connect.Error {
 // every sender, is therefore not a policy this server ever wrote — it is
 // truncation, a bit flip, or a byte sequence nothing here produced — and is
 // refused exactly like a payload that fails to decode at all.
-func signalPolicies(memo *common.Memo) (map[string]*v1.SignalPolicy, bool, error) {
+func (s *FlowstateServer) signalPolicies(memo *common.Memo) (map[string]*v1.SignalPolicy, bool, error) {
 	payload, ok := memo.GetFields()[signalPolicyMemoKey]
 	if !ok {
 		return nil, false, nil
 	}
 
 	var encoded []byte
-	if err := converter.GetDefaultDataConverter().FromPayload(payload, &encoded); err != nil {
+	if err := s.dataConverter.FromPayload(payload, &encoded); err != nil {
 		return nil, false, fmt.Errorf("server: reading the signal policy recorded on a run: %w", err)
 	}
 
@@ -185,8 +184,8 @@ func signalPolicies(memo *common.Memo) (map[string]*v1.SignalPolicy, bool, error
 // `distinct_from_starter` — a sender who turns out to be this run's own
 // starter, or a run with no starter recorded to compare against at all, is
 // refused. There is no third outcome once a policy is declared.
-func authorizeSignal(resp *workflowservice.DescribeWorkflowExecutionResponse, name string, sender *v1.SignalSender) error {
-	policies, hasMemo, err := signalPolicies(resp.GetWorkflowExecutionInfo().GetMemo())
+func (s *FlowstateServer) authorizeSignal(resp *workflowservice.DescribeWorkflowExecutionResponse, name string, sender *v1.SignalSender) error {
+	policies, hasMemo, err := s.signalPolicies(resp.GetWorkflowExecutionInfo().GetMemo())
 	if err != nil {
 		// The memo is there and unreadable — nothing can be concluded about what
 		// this run's policy actually says, so nobody may act on the strength of a
@@ -215,7 +214,7 @@ func authorizeSignal(resp *workflowservice.DescribeWorkflowExecutionResponse, na
 	// held one as. Splitting it back into issuer/subject fields here is safe
 	// because [v1.QualifiedSubject] is exactly how SignalPolicyCheck rejoins
 	// them before comparing — the same join, not a second parse of it.
-	starterIdentity, hasStarter, err := starterAsIdentity(resp.GetWorkflowExecutionInfo().GetMemo())
+	starterIdentity, hasStarter, err := s.starterAsIdentity(resp.GetWorkflowExecutionInfo().GetMemo())
 	if err != nil {
 		// Same rule as an undecodable signal policy: nothing can be concluded
 		// about who started this run, so nobody may act on the strength of a
@@ -240,8 +239,8 @@ func authorizeSignal(resp *workflowservice.DescribeWorkflowExecutionResponse, na
 // joined them with. [v1.LooksLikeQualifiedSubject] is what guarantees every
 // qualified string this server ever wrote has exactly one such separator, so
 // this split is never ambiguous for a starter this server itself recorded.
-func starterAsIdentity(memo *common.Memo) (*v1.WorkloadIdentity, bool, error) {
-	starter, hasStarter, err := memoStarter(memo)
+func (s *FlowstateServer) starterAsIdentity(memo *common.Memo) (*v1.WorkloadIdentity, bool, error) {
+	starter, hasStarter, err := s.memoStarter(memo)
 	if err != nil || !hasStarter {
 		return nil, hasStarter, err
 	}
@@ -302,14 +301,14 @@ func reportedStarter(resp *workflowservice.DescribeWorkflowExecutionResponse) st
 // Takes the memo rather than a Describe response because a listing carries the
 // same memo on every execution it returns, which is what makes filtering a page
 // of runs cost nothing beyond the listing itself — no second call per run.
-func memoTenant(memo *common.Memo) (string, error) {
+func (s *FlowstateServer) memoTenant(memo *common.Memo) (string, error) {
 	payload, ok := memo.GetFields()[namespaceMemoKey]
 	if !ok {
 		return "", errNoTenantRecorded
 	}
 
 	var namespace string
-	if err := converter.GetDefaultDataConverter().FromPayload(payload, &namespace); err != nil {
+	if err := s.dataConverter.FromPayload(payload, &namespace); err != nil {
 		return "", fmt.Errorf("server: reading the tenant recorded on a run: %w", err)
 	}
 
@@ -327,14 +326,14 @@ func memoTenant(memo *common.Memo) (string, error) {
 // policy never sets `distinct_from_starter`. [authorizeSignal] is what turns
 // "absent, but the flag demands the comparison" into a denial — this
 // function only reports what the memo holds.
-func memoStarter(memo *common.Memo) (string, bool, error) {
+func (s *FlowstateServer) memoStarter(memo *common.Memo) (string, bool, error) {
 	payload, ok := memo.GetFields()[starterMemoKey]
 	if !ok {
 		return "", false, nil
 	}
 
 	var starter string
-	if err := converter.GetDefaultDataConverter().FromPayload(payload, &starter); err != nil {
+	if err := s.dataConverter.FromPayload(payload, &starter); err != nil {
 		return "", false, fmt.Errorf("server: reading the starter recorded on a run: %w", err)
 	}
 
@@ -408,7 +407,7 @@ func (s *FlowstateServer) Signal(ctx context.Context, req *connect.Request[v1.Si
 	// gets PermissionDenied synchronously, not a signal silently dropped or a
 	// wait that quietly never resolves. See [authorizeSignal] for the
 	// zero-case and fail-closed rules this enforces.
-	if err := authorizeSignal(resp, req.Msg.GetName(), sender); err != nil {
+	if err := s.authorizeSignal(resp, req.Msg.GetName(), sender); err != nil {
 		return nil, err
 	}
 
@@ -491,7 +490,7 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 	created := true
 	if _, resp, err := s.authorizeRun(ctx, workflowID, ""); err == nil {
 		created = false
-		if err := authorizeSignal(resp, req.Msg.GetName(), sender); err != nil {
+		if err := s.authorizeSignal(resp, req.Msg.GetName(), sender); err != nil {
 			return nil, err
 		}
 	} else if connect.CodeOf(err) != connect.CodeNotFound {
