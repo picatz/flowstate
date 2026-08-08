@@ -275,16 +275,17 @@ func (s *parsedStep) expressionEntries() []*entry {
 	}
 	entries = append(entries, s.waitShapingEntries...)
 
-	// A loop's own expressions — what it starts as, how it advances, and when it
-	// stops. `as:` is a name and `steps:` belongs to the body's own steps, so
-	// only the three expression-bearing keys are taken, the same selection
-	// `itemsEntry` makes for a `for_each`.
-	for _, le := range nestedEntries(s.loopEntry) {
-		switch le.key {
-		case "init", "update", "until":
-			entries = append(entries, le)
-		}
-	}
+	// A loop's own `init:`, `update:` and `until:` are deliberately absent,
+	// though they are expressions and adding them is one obvious line. Every
+	// consumer of this list evaluates against the *step's* scope, and those
+	// three are evaluated in scopes no other position has: `update:` and
+	// `until:` read the carried value and the just-finished body's outputs —
+	// both of which the step's own scope refuses, the body's steps being later
+	// in document order — while `init:` runs before the binding exists at all.
+	// Walked with the step's scope, a carried name that collides with a profile
+	// function would be described as that function: the same confidently-wrong
+	// answer the `join` fix below exists to prevent, reintroduced one key over.
+	// Silence until the scope is modeled entry-aware — see #306.
 
 	// A step's `vars:` bindings, which are expressions like any other value here and
 	// were missing from this list until the retirement edition made them the place
@@ -669,17 +670,30 @@ func (s *parsedStep) iteratorsInScope() []*parsedStep {
 }
 
 // iteratorName returns the variable a block binds bare for its body — the item a
-// `for_each` yields, or the value a `loop:` carries — falling back to the
-// engine's own default rather than a copy of it. The two blocks share the
-// default deliberately: `item` is what either binds when it writes no `as:`.
+// `for_each` yields, or the value a `loop:` carries.
+//
+// The defaults differ, and the difference is the engine's, checked against
+// `flow validate` rather than assumed: a `for_each` that writes no `as:` binds
+// [v1.DefaultIterator], but a `loop:` that writes no `as:` binds *nothing* —
+// stateless or stateful alike, `${item}` in its body is an unknown name.
+// Sharing the fallback read as symmetry and was an invention: it would have
+// offered, resolved, and documented a binding the validator rejects, which is
+// the one thing this package must never do.
 func (s *parsedStep) iteratorName() string {
-	block := s.forEachEntry
-	if block == nil {
-		block = s.loopEntry
+	if s.forEachEntry != nil && s.forEachEntry.value != nil {
+		if name := blockAs(s.forEachEntry); name != "" {
+			return name
+		}
+		return v1.DefaultIterator
 	}
-	if block == nil || block.value == nil {
-		return ""
+	if s.loopEntry != nil && s.loopEntry.value != nil {
+		return blockAs(s.loopEntry)
 	}
+	return ""
+}
+
+// blockAs reads a block's `as:` name, or "" when it writes none.
+func blockAs(block *entry) string {
 	for _, e := range block.value.entries {
 		if e.key == "as" {
 			if name := e.valueText(); name != "" {
@@ -687,7 +701,7 @@ func (s *parsedStep) iteratorName() string {
 			}
 		}
 	}
-	return v1.DefaultIterator
+	return ""
 }
 
 // loopResultsOutput is the single output a for_each step reports.

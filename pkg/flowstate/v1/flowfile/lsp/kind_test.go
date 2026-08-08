@@ -232,3 +232,38 @@ steps:
 	assert.NotContains(t, got, "fetch",
 		"a body step's outputs do not escape the loop, and offering one resolves to a name the validator rejects")
 }
+
+// TestALoopWithoutAsBindsNothing is the default the two blocks do not share,
+// checked against the engine rather than assumed: a `for_each` with no `as:`
+// binds `item`, and a `loop:` with no `as:` binds nothing at all — `flow
+// validate` refuses `${item}` in its body, stateless and stateful alike. An
+// early draft of this branch gave both blocks the same fallback, which would
+// have offered a name the validator rejects; Codex's review caught it, and this
+// is the direction that keeps it out.
+func TestALoopWithoutAsBindsNothing(t *testing.T) {
+	t.Parallel()
+
+	const src = `edition: v2026.2
+name: stateless
+steps:
+  - id: poll
+    loop:
+      until: ${true}
+      max_iterations: 3
+      steps:
+        - id: check
+          log:
+            message: ${|}
+`
+
+	c := newClient(t)
+	c.initialize()
+
+	clean, pos := splitCursor(t, src)
+	c.open("file:///stateless-loop.yaml", clean)
+	got := labels(c.complete("file:///stateless-loop.yaml", pos.Line, pos.Character).Items)
+
+	assert.NotContains(t, got, v1.DefaultIterator,
+		"a loop with no as: binds nothing, and offering %q teaches a name the validator rejects",
+		v1.DefaultIterator)
+}
