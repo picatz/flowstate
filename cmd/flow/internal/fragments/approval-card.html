@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<!--
+  The Flowstate approval card.
+
+  What it is: one hand-written, dependency-free document served as the MCP Apps
+  resource ui://flowstate/approval-card. It renders the gates a run is parked on
+  and offers, per gate, an approve and a reject that travel as a flowstate_signal
+  tool call. There is no build step, no bundler and no framework: it is reviewed
+  as code in the diff, which is the whole reason it is small enough to read.
+
+  What it is not: an authority. The MCP Apps specification does not guarantee that
+  a host asks its user before forwarding a tool call a view makes, so nothing here
+  may be the thing that decides an approval is allowed. Every button is a
+  flowstate_signal the server authorizes on its own terms, against the same signal
+  policy a `flow signal` from a terminal is checked against. This document reaches
+  no RPC a direct caller could not, and the tool it calls is visible to the model:
+  a tool hidden from the model but callable from a card would be a card-only
+  capability by another spelling.
+
+  Where its data comes from: the ui/notifications/tool-result notification the
+  host delivers on this connection, and nowhere else. There is no coordinate
+  written down in this file. A card that carried its own run id would sign
+  whatever run it was built with rather than the run being displayed.
+
+  Accessibility posture (WCAG 2.2 AA is the target this aims at, and the parts of
+  it a static document can carry):
+    * Every action is a real <button> inside a <form>-free flow, so it is in the
+      tab order, is operable with Enter and Space, and is announced as a button.
+      Nothing here is a clickable <div>.
+    * Every control has a programmatic name: the comment box has a <label> bound
+      by `for`, and each decision button carries an aria-label naming the gate it
+      answers, so a screen reader hears "Approve deploy-approved" rather than a
+      list of identical "Approve"s.
+    * :focus-visible is styled with a 2px outline and an offset, and the outline
+      is never removed. The default ring is only ever replaced, never suppressed.
+    * Status is a live region (role="status", aria-live="polite"), so the result
+      of a decision is announced without moving focus.
+    * Structure is semantic: one <h1>, an <h2> per gate, a <dl> for the run's
+      facts. Each gate is a <section> named by its heading via aria-labelledby.
+    * Colour is never the only carrier: a policed gate says "policed", a lapsing
+      gate prints its deadline, and every state is a word before it is a hue.
+      This is the same rule docs/CLI_DESIGN.md holds the terminal surface to.
+    * The palette meets 4.5:1 against its background in both schemes, and the
+      document follows prefers-color-scheme rather than choosing for the reader.
+    * Text is not scaled to the viewport and nothing is positioned absolutely, so
+      the card reflows at 200% zoom and at 320px wide.
+
+  What no test in this repository can assert about this file: that a host really
+  sandboxes it, that the restrictive default Content-Security-Policy is really
+  enforced, and that a host really asks a human before forwarding a tools/call.
+  Those are host behaviours, checked by hand against a real host and recorded in
+  the pull request, never claimed by CI.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Flowstate approval</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #ffffff;
+        --fg: #1b1b1f;
+        --muted: #55555f;
+        --line: #d3d3da;
+        --accent: #1c4fd8;
+        --danger: #a3182a;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #16161a;
+          --fg: #ececf1;
+          --muted: #a8a8b4;
+          --line: #3a3a44;
+          --accent: #9db4ff;
+          --danger: #ff9aa5;
+        }
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        padding: 1rem;
+        background: var(--bg);
+        color: var(--fg);
+        font: 1rem/1.5 system-ui, sans-serif;
+      }
+
+      h1 {
+        font-size: 1.125rem;
+        margin: 0 0 0.75rem;
+      }
+
+      h2 {
+        font-size: 1rem;
+        margin: 0 0 0.25rem;
+      }
+
+      dl {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 0.125rem 0.75rem;
+        margin: 0 0 1rem;
+      }
+
+      dt {
+        color: var(--muted);
+      }
+
+      dd {
+        margin: 0;
+        overflow-wrap: anywhere;
+      }
+
+      section {
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 0.75rem;
+        margin: 0 0 0.75rem;
+      }
+
+      p {
+        margin: 0 0 0.5rem;
+      }
+
+      .prompt {
+        font-weight: 600;
+      }
+
+      .facts {
+        color: var(--muted);
+        font-size: 0.875rem;
+      }
+
+      label {
+        display: block;
+        margin: 0.5rem 0 0.25rem;
+        color: var(--muted);
+        font-size: 0.875rem;
+      }
+
+      input {
+        width: 100%;
+        padding: 0.375rem 0.5rem;
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        background: var(--bg);
+        color: var(--fg);
+        font: inherit;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        margin-top: 0.75rem;
+      }
+
+      button {
+        padding: 0.375rem 0.875rem;
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        background: var(--bg);
+        color: var(--fg);
+        font: inherit;
+        cursor: pointer;
+      }
+
+      button.approve {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+
+      button.reject {
+        border-color: var(--danger);
+        color: var(--danger);
+      }
+
+      button[disabled] {
+        cursor: default;
+        opacity: 0.6;
+      }
+
+      :focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+
+      #status:empty {
+        display: none;
+      }
+
+      #status {
+        border-left: 3px solid var(--line);
+        padding-left: 0.5rem;
+      }
+    </style>
+  </head>
+
+  <body>
+    <main>
+      <h1 id="title">Approvals waiting on you</h1>
+
+      <dl id="run">
+        <dt>Workflow</dt>
+        <dd id="run-workflow"></dd>
+        <dt>Run</dt>
+        <dd id="run-id"></dd>
+        <dt>Status</dt>
+        <dd id="run-status"></dd>
+        <dt>Started by</dt>
+        <dd id="run-starter"></dd>
+      </dl>
+
+      <div id="gates"></div>
+
+      <p id="status" role="status" aria-live="polite"></p>
+    </main>
+
+    <template id="gate">
+      <section>
+        <h2 class="gate-name"></h2>
+        <p class="prompt"></p>
+        <p class="facts"></p>
+        <label class="comment-label">Comment (optional)</label>
+        <input class="comment" type="text" autocomplete="off" />
+        <div class="actions">
+          <button type="button" class="approve">Approve</button>
+          <button type="button" class="reject">Reject</button>
+        </div>
+      </section>
+    </template>
+
+    <script>
+      (function () {
+        "use strict";
+
+        // The dialect, named once. These are the MCP Apps method names this
+        // document speaks; nothing else is sent and nothing else is handled.
+        var TOOL_RESULT = "ui/notifications/tool-result";
+        var INITIALIZED = "ui/notifications/initialized";
+        var INITIALIZE = "ui/initialize";
+        var PROTOCOL = "2026-01-26";
+
+        var nextId = 1;
+        var pending = {};
+
+        // Everything the card knows about the run it is displaying. Populated
+        // only by applyToolResult, below, and read only by the bridge.
+        var run = {
+          workflowId: "",
+          runId: "",
+          status: "",
+          starter: "",
+          truncated: false,
+          gates: [],
+        };
+
+        // send is the one place a message with an id leaves this document, so
+        // there is one correlation table rather than two. Both the handshake and
+        // every decision go through it.
+        function send(message) {
+          return new Promise(function (resolve, reject) {
+            pending[message.id] = { resolve: resolve, reject: reject };
+            window.parent.postMessage(message, "*");
+          });
+        }
+
+        function post(message) {
+          window.parent.postMessage(message, "*");
+        }
+
+        function request(method, params) {
+          return send({
+            jsonrpc: "2.0",
+            id: nextId++,
+            method: method,
+            params: params,
+          });
+        }
+
+        function notify(method, params) {
+          post({ jsonrpc: "2.0", method: method, params: params });
+        }
+
+        // BRIDGE-BEGIN
+        // signalRequest is the only place in this document where a card action
+        // becomes a tool call, so it is the only place a coordinate could be
+        // invented. Every value it sends is read off `gate`, which applyToolResult
+        // built from the tool result this connection delivered.
+        //
+        // No runId is sent, deliberately. SignalRequest.run_id pins a delivery to
+        // one run of a workload, and the schema says in as many words that a human
+        // approving a gate is approving the workload rather than one attempt at
+        // it: a card left open across a Continue-As-New would otherwise address a
+        // run that is no longer current and the approval would be refused. The run
+        // id is displayed, because an operator reading the card wants it; it is
+        // not what the signal is addressed to.
+        function signalRequest(id, gate, approved, comment) {
+          var named = { approved: { literal: { boolValue: approved } } };
+          if (comment) {
+            named.comment = { literal: { stringValue: comment } };
+          }
+          return {
+            jsonrpc: "2.0",
+            id: id,
+            method: "tools/call",
+            params: {
+              name: "flowstate_signal",
+              arguments: {
+                workflowId: gate.workflowId,
+                name: gate.signalName,
+                payload: { namedValues: named },
+              },
+            },
+          };
+        }
+        // BRIDGE-END
+
+        // BINDING-BEGIN
+        // applyToolResult is the only writer of `run`. The host hands the card the
+        // flowstate_get result as a CallToolResult; its first text part is the
+        // protojson of a GetResponse, which is the same document a model reading
+        // the plain result gets and the same one `flow get -o json` prints. There
+        // is no second dialect for the card to consume, which is what keeps a host
+        // without this extension whole.
+        function applyToolResult(params) {
+          var text = firstText(params);
+          if (!text) {
+            return;
+          }
+
+          var response;
+          try {
+            response = JSON.parse(text);
+          } catch (err) {
+            return;
+          }
+
+          var progress = response.progress || {};
+          var waits = progress.pendingWaits || [];
+
+          run = {
+            workflowId: response.workflowId || "",
+            runId: response.runId || "",
+            status: response.status || "",
+            starter: response.starter || "",
+            truncated: progress.pendingWaitsTruncated === true,
+            gates: [],
+          };
+
+          for (var i = 0; i < waits.length; i++) {
+            var wait = waits[i];
+            run.gates.push({
+              workflowId: run.workflowId,
+              signalName: wait.signalName || "",
+              stepId: wait.stepId || "",
+              path: wait.path || [],
+              prompt: wait.prompt || "",
+              promptTruncated: wait.promptTruncated === true,
+              deadline: wait.deadline || "",
+              policed: wait.policed === true,
+            });
+          }
+
+          render();
+        }
+        // BINDING-END
+
+        function firstText(result) {
+          var content = (result && result.content) || [];
+          for (var i = 0; i < content.length; i++) {
+            if (content[i] && content[i].type === "text") {
+              return content[i].text;
+            }
+          }
+          return "";
+        }
+
+        // Every insertion goes through textContent. Nothing in this document
+        // assigns innerHTML, outerHTML, or calls insertAdjacentHTML: a run's
+        // prompt, step ids and starter are values the workflow and its callers
+        // chose, and markup is not one of the things they get to choose.
+        function setText(node, value) {
+          node.textContent = value;
+        }
+
+        function factsFor(gate) {
+          var parts = ["signal " + gate.signalName, "step " + gate.stepId];
+          if (gate.path.length > 0) {
+            parts.push("inside " + gate.path.join(" / "));
+          }
+          parts.push(gate.deadline ? "lapses " + gate.deadline : "no deadline");
+          parts.push(gate.policed ? "policed" : "not policed");
+          if (gate.promptTruncated) {
+            parts.push("prompt shown in part only");
+          }
+          return parts.join(" · ");
+        }
+
+        function render() {
+          setText(document.getElementById("run-workflow"), run.workflowId);
+          setText(document.getElementById("run-id"), run.runId);
+          setText(document.getElementById("run-status"), run.status);
+          setText(
+            document.getElementById("run-starter"),
+            run.starter || "not recorded by this server"
+          );
+
+          var host = document.getElementById("gates");
+          while (host.firstChild) {
+            host.removeChild(host.firstChild);
+          }
+
+          if (run.gates.length === 0) {
+            var none = document.createElement("p");
+            setText(none, "This run is not waiting on an approval right now.");
+            host.appendChild(none);
+            return;
+          }
+
+          for (var i = 0; i < run.gates.length; i++) {
+            host.appendChild(gateElement(run.gates[i], i));
+          }
+
+          if (run.truncated) {
+            var more = document.createElement("p");
+            setText(more, "More gates are open than this answer carries.");
+            host.appendChild(more);
+          }
+        }
+
+        function gateElement(gate, index) {
+          var node = document
+            .getElementById("gate")
+            .content.cloneNode(true);
+
+          var section = node.querySelector("section");
+          var heading = node.querySelector(".gate-name");
+          var headingID = "gate-" + index;
+          heading.id = headingID;
+          section.setAttribute("aria-labelledby", headingID);
+          setText(heading, gate.signalName);
+
+          setText(
+            node.querySelector(".prompt"),
+            gate.prompt || "This gate was written without a prompt."
+          );
+          setText(node.querySelector(".facts"), factsFor(gate));
+
+          var comment = node.querySelector(".comment");
+          var label = node.querySelector(".comment-label");
+          comment.id = "comment-" + index;
+          label.setAttribute("for", comment.id);
+
+          var approve = node.querySelector(".approve");
+          var reject = node.querySelector(".reject");
+          approve.setAttribute("aria-label", "Approve " + gate.signalName);
+          reject.setAttribute("aria-label", "Reject " + gate.signalName);
+
+          approve.addEventListener("click", function () {
+            decide(gate, true, comment.value, [approve, reject]);
+          });
+          reject.addEventListener("click", function () {
+            decide(gate, false, comment.value, [approve, reject]);
+          });
+
+          return node;
+        }
+
+        function decide(gate, approved, comment, buttons) {
+          var word = approved ? "Approving" : "Rejecting";
+          announce(word + " " + gate.signalName + "...");
+          setDisabled(buttons, true);
+
+          send(signalRequest(nextId++, gate, approved, comment)).then(
+            function (result) {
+              if (result && result.isError) {
+                setDisabled(buttons, false);
+                announce(
+                  "The server refused it: " +
+                    (firstText(result) || "no reason given")
+                );
+                return;
+              }
+              announce(
+                (approved ? "Approved " : "Rejected ") + gate.signalName + "."
+              );
+            },
+            function (err) {
+              setDisabled(buttons, false);
+              announce("It could not be sent: " + String(err));
+            }
+          );
+        }
+
+        function setDisabled(buttons, disabled) {
+          for (var i = 0; i < buttons.length; i++) {
+            buttons[i].disabled = disabled;
+          }
+        }
+
+        function announce(text) {
+          setText(document.getElementById("status"), text);
+        }
+
+        window.addEventListener("message", function (event) {
+          // The frame is sandboxed and its origin is opaque, so an origin
+          // comparison would compare nothing. What is checkable is the sender:
+          // the host is the parent frame, and a message from anywhere else is
+          // not the host.
+          if (event.source !== window.parent) {
+            return;
+          }
+
+          var data = event.data;
+          if (!data || data.jsonrpc !== "2.0") {
+            return;
+          }
+
+          if (data.method === TOOL_RESULT) {
+            applyToolResult(data.params);
+            return;
+          }
+
+          if (data.id === undefined || data.id === null) {
+            return;
+          }
+
+          var waiter = pending[data.id];
+          if (!waiter) {
+            return;
+          }
+          delete pending[data.id];
+
+          if (data.error) {
+            waiter.reject(new Error(data.error.message || "the host refused it"));
+            return;
+          }
+          waiter.resolve(data.result);
+        });
+
+        render();
+
+        request(INITIALIZE, {
+          protocolVersion: PROTOCOL,
+          appCapabilities: { availableDisplayModes: ["inline"] },
+          clientInfo: { name: "flowstate-approval-card", version: "1" },
+        }).then(
+          function () {
+            notify(INITIALIZED, {});
+          },
+          function () {
+            // A host that refuses the handshake gets no notification and the
+            // card stays as it is: a rendered nothing, rather than a card that
+            // pretends to be connected to something.
+            announce("This host did not complete the app handshake.");
+          }
+        );
+      })();
+    </script>
+  </body>
+</html>

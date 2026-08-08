@@ -1,7 +1,6 @@
 package flowfile
 
 import (
-	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -347,20 +346,24 @@ func (c *compiler) call(pathNode ast.Node, stepPath, kindPath string, r ref, wit
 // `sha256:` followed by 64 characters. That is the form [v1.Call]'s SourceDigest
 // is already recorded in and the form a container image reference uses, so an
 // author reading a compiled run and an author writing a pin see one spelling.
+//
+// Both the spelling and the hashing now live in [v1.ContentDigest], because a
+// second surface needed to name bytes by their hash and a second helper beside
+// it would have been the same value written down twice. These names stay as the
+// compiler's local vocabulary for what that function produces.
 const (
-	sourceDigestPrefix = "sha256:"
-	sourceDigestHexLen = sha256.Size * 2
+	sourceDigestPrefix = v1.ContentDigestPrefix
+	sourceDigestHexLen = v1.ContentDigestHexLen
 )
 
-// formatSourceDigest renders a callee's bytes as the digest this package writes
+// formatSourceDigest renders a callee's bytes as the digest this tree writes
 // everywhere: lower-case hex, algorithm first.
 //
 // One function because there is one spelling. A pin is compared against what
 // this returns and every diagnostic prints what this returns, so the digest an
 // author is told to adopt is the digest that will then match.
 func formatSourceDigest(data []byte) string {
-	sum := sha256.Sum256(data)
-	return sourceDigestPrefix + hex.EncodeToString(sum[:])
+	return v1.ContentDigest(data)
 }
 
 // verifySourcePin checks an author's `digest:` against the callee's bytes, and

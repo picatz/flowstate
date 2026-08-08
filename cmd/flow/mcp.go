@@ -62,7 +62,18 @@ const mcpToolPrefix = "flowstate_"
 var mcpDescriptions = map[string]string{
 	"Run": "Submit a compiled workflow specification to run durably. Returns ids to watch it by; it does not wait. " +
 		"Author a Flowfile, check it with flowstate_validate, compile it with flowstate_compile, and submit the result here.",
-	"Get":             "Report a run's status, timing, current position, and its outputs once finished.",
+	"Get": "Report a run's status, timing, current position, its outputs once finished, who started it, and " +
+		"every approval gate it is parked on right now: for each, the question the gate is asking, the signal " +
+		"name that releases it, whether a deadline lapses it, and whether the workflow declares a policy over " +
+		"who may answer.\n\n" +
+		"To approve or reject one, call flowstate_signal with this run's workflowId, name set to the gate's " +
+		"signalName, and payload.namedValues.approved set to {\"literal\": {\"boolValue\": true}} or false. " +
+		"Address the workflow rather than a run: a run id pins the delivery to one attempt, and a workload " +
+		"that has been continued as new since the gate opened will refuse it.\n\n" +
+		"Over stdio the signal is delivered as this process's own identity, not as the identity of whoever " +
+		"asked for it. Nothing on this transport can attest that a particular human approved anything, and an " +
+		"interactive card rendering this result changes none of that; an attested approver waits on the remote " +
+		"MCP surface.",
 	"Signal":          "Deliver a named signal to a run waiting for one — how an approval reaches a workload.",
 	"SignalWithStart": "Deliver a named signal to the entity holding a business key — an order id, a subscription id — creating that entity if this is the first event for the key. Use this rather than flowstate_run whenever the key, not a run id, is what you have: it is atomic, so two callers racing on the same key produce one entity, not two.",
 	"List":            "List the caller's runs, paged. A short or empty page with a nextPageToken is not the end of the listing; keep paging.",
@@ -81,6 +92,30 @@ var mcpDescriptions = map[string]string{
 	"PauseSchedule":    "Stop a schedule firing without deleting it, recording a note saying why.",
 	"ResumeSchedule":   "Let a paused schedule fire again. Firings missed while it was paused are not made up.",
 	"TriggerSchedule":  "Fire a schedule now rather than waiting for its cadence, which is how a schedule is tested. It returns no run id; describe the schedule to see what it started.",
+}
+
+// mcpToolViews names the tool each UI resource renders, by RPC.
+//
+// One entry, and choosing it was the design decision worth writing down.
+// [v1.GetResponse] is the only answer on this surface that carries both a run's
+// coordinates and its open gates: `progress.pending_waits` reports each parked
+// `wait_for_signal:` with the prompt the author wrote, the signal name that
+// releases it, its deadline and whether it is policed, and `starter` says who
+// asked for the run - which is exactly the set an approval card has to render,
+// and exactly the set a `distinct_from_starter` policy is compared against.
+//
+// The alternatives do not hold the data. `flowstate_signal` answers with an empty
+// SignalResponse, so a card on it would have nothing to draw and would be a form
+// rather than a view of anything. `flowstate_list` reports many runs and no gates
+// at all: it can say a run is RUNNING and cannot say it is waiting on a person.
+// So the tool that reports a run and its pending gates is Get, and it is the one
+// the card is declared on.
+//
+// A map keyed by RPC name rather than a field on [serviceMethod], so that the set
+// of tools carrying a view is one reviewable list, in the file that explains why
+// a view is not a permission.
+var mcpToolViews = map[string]string{
+	"Get": mcpApprovalCardURI,
 }
 
 // runMCP implements the mcp sub-command.
@@ -143,9 +178,21 @@ func runMCP(cmd *cobra.Command, args []string) error {
 	// why a nil client is safe for exactly these two methods.
 	local := server.New(nil)
 
-	srv := mcp.NewServer(&mcp.Implementation{Name: "flowstate", Version: version}, nil)
+	return serveMCPTools(cmd.Context(), newMCPServer(version), local, remoteClient, cmd)
+}
 
-	return serveMCPTools(cmd.Context(), srv, local, remoteClient, cmd)
+// newMCPServer constructs the server an agent connects to, capabilities and all.
+//
+// One constructor, shared with the tests, for the reason [addMCPCapabilities] is
+// one registration: a second construction is a second set of capabilities, and
+// the one an agent negotiates against would eventually stop being the one the
+// tests negotiate against. The extension declared here is what a host reads to
+// learn that this server serves views at all.
+func newMCPServer(version string) *mcp.Server {
+	return mcp.NewServer(
+		&mcp.Implementation{Name: "flowstate", Version: version},
+		&mcp.ServerOptions{Capabilities: mcpUIServerCapabilities()},
+	)
 }
 
 // serveMCPTools registers one tool per RPC and runs the server on stdio.
@@ -175,6 +222,7 @@ func addMCPCapabilities(
 ) {
 	addMCPTools(srv, local, remote, posture)
 	addMCPResources(srv, local)
+	addMCPUIResources(srv)
 }
 
 // addMCPTools registers one tool per RPC, plus the one that is not an RPC.
@@ -185,11 +233,16 @@ func addMCPTools(
 	posture *cobra.Command,
 ) {
 	for _, method := range workflowServiceMethods() {
-		srv.AddTool(&mcp.Tool{
+		tool := &mcp.Tool{
 			Name:        mcpToolName(method.name),
 			Description: mcpDescriptions[method.name],
 			InputSchema: schemaForMessage(method.input),
-		}, mcpHandler(method, local, remote, posture))
+		}
+		if view, ok := mcpToolViews[method.name]; ok {
+			tool.Meta = mcpUIToolMeta(view)
+		}
+
+		srv.AddTool(tool, mcpHandler(method, local, remote, posture))
 	}
 
 	srv.AddTool(runLocalTool(), runLocalToolHandler(posture))

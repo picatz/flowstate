@@ -283,6 +283,13 @@ func (s *FlowstateServer) starterAsIdentity(memo *common.Memo) (*v1.WorkloadIden
 // because `distinct_from_starter` genuinely does have to compare against an
 // empty subject rather than refuse for want of one; it reads [FlowstateServer.memoStarter]
 // itself and is untouched by this.
+//
+// A method rather than a free function because [FlowstateServer.memoStarter] is
+// one: a memo is read back through the server's configured data converter, so a
+// deployment that configures a payload codec has this read through the codec too.
+// A package-level reader would have had to reach for the default converter, which
+// is the one way this could come to report an empty starter on exactly the
+// deployments that encrypt their history.
 func (s *FlowstateServer) reportedStarter(resp *workflowservice.DescribeWorkflowExecutionResponse) string {
 	starter, ok, err := s.memoStarter(resp.GetWorkflowExecutionInfo().GetMemo())
 	if err != nil || !ok {
