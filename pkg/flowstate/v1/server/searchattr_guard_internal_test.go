@@ -61,7 +61,13 @@ func TestNoSearchAttributeIsBuiltOutsideTheOneConstructor(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	require.NoError(t, err)
 
-	declarations := 0
+	// Declaring a key, building an attribute set, and binding a value to a key
+	// are the three spellings a projection can start with; a guard that watched
+	// only declarations would stay green while an existing key was reused with
+	// a run-input-derived value somewhere else.
+	tokens := []string{"NewSearchAttributeKey", "NewSearchAttributes(", ".ValueSet("}
+
+	permitted := 0
 	checked := 0
 	for _, entry := range entries {
 		name := entry.Name()
@@ -78,25 +84,36 @@ func TestNoSearchAttributeIsBuiltOutsideTheOneConstructor(t *testing.T) {
 			if strings.HasPrefix(trimmed, "//") {
 				continue
 			}
-			if !strings.Contains(trimmed, "NewSearchAttributeKey") {
+			matched := false
+			for _, token := range tokens {
+				if strings.Contains(trimmed, token) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
 				continue
 			}
 			if name == "server.go" {
-				declarations++
+				permitted++
 				continue
 			}
-			t.Errorf("%s: %s\n\ndeclare the key in server.go's var block beside runSearchAttributes "+
-				"instead, where the projection rule is written: deployment- or identity-derived values "+
-				"only, never anything from inputs, outputs, or payloads. A key declared elsewhere is a "+
+			t.Errorf("%s: %s\n\nbuild the projection in server.go, in or beside runSearchAttributes, "+
+				"where the rule is written: deployment- or identity-derived values only, never "+
+				"anything from inputs, outputs, or payloads. A construction site elsewhere is a "+
 				"projection nothing reviews against that rule.", name, trimmed)
 		}
 	}
 
 	require.Greater(t, checked, 0, "this guard read no source files, so it proves nothing")
 
-	// The two permitted declarations have to still be there: a guard that
-	// passes because the declarations moved out of server.go entirely would
-	// prove the opposite of what it says.
-	require.Equal(t, 2, declarations,
-		"server.go should declare exactly the two pinned search-attribute keys")
+	// The permitted sites have to still be there, and there are exactly five:
+	// the two key declarations, one NewSearchAttributes call, and one ValueSet
+	// per key inside runSearchAttributes. A guard that passes because they all
+	// moved out of server.go would prove the opposite of what it says, and a
+	// sixth site in server.go is a new projection that has to be reviewed
+	// against the rule and then counted here, deliberately.
+	require.Equal(t, 5, permitted,
+		"server.go's search-attribute surface changed; review the new site against the projection "+
+			"rule, then update this count")
 }
