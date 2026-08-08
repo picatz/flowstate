@@ -1,9 +1,11 @@
 package lsp
 
 import (
+	"context"
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/sourcegraph/go-lsp"
 
@@ -142,14 +144,181 @@ func newDocument(uri lsp.DocumentURI, version int, text string, tasks *v1.Regist
 	return doc
 }
 
+// A build is one document notification that has arrived and not yet landed.
+//
+// It exists so a request can tell "there is nothing here" from "there is
+// something here and it is not finished yet". Those are the same answer to
+// [documentStore.get] and they must not be the same answer to a client: the
+// first is honestly null, and the second is #317: a hover returning null for a
+// document the editor opened a microsecond earlier, which reads to a user as the
+// feature having nothing to say about that position.
+//
+// The two waits below are different questions and so have different bounds.
+const (
+	// documentSettleGrace is how long a request waits for a build to be
+	// *registered* when the store has never heard of the URI.
+	//
+	// Served through [NewHandler], the grace should never be what answers: a
+	// build is announced on the connection's read loop before dispatch, so any
+	// request sent after a document notification finds it registered already,
+	// and a URI with no document and no build is one that genuinely was never
+	// opened. The grace is the fallback for a server wired without that wrapper
+	// — jsonrpc2.AsyncHandler alone starts a goroutine per message and lets the
+	// scheduler order them, leaving a window between a didOpen being dispatched
+	// and this store hearing about it. A tenth of a second is orders of
+	// magnitude more than that window ordinarily is, and it is the whole cost
+	// paid by a request for a URI that was never opened.
+	documentSettleGrace = 100 * time.Millisecond
+
+	// documentBuildTimeout is how long a request waits for a build it has seen
+	// registered to finish. That is a bounded parse of at most
+	// [maxDocumentBytes], so this is a ceiling and not an expectation.
+	//
+	// Reaching it does not fail the request: the caller answers from whatever
+	// version it has, because a slightly stale answer is worth more to an author
+	// than a null one.
+	documentBuildTimeout = 2 * time.Second
+)
+
 // A documentStore holds the documents an editor has open, keyed by URI.
 type documentStore struct {
-	mu   sync.RWMutex
+	mu   sync.Mutex
 	docs map[lsp.DocumentURI]*document
+
+	// building counts the document notifications in flight per URI: incremented
+	// before the parse starts, decremented once the result is in docs.
+	building map[lsp.DocumentURI]int
+
+	// settled is closed and replaced on every change to docs or building, which
+	// is how a waiter is woken without polling. Nil until someone waits.
+	settled chan struct{}
+}
+
+// beginBuild records that a document notification for uri is being handled.
+//
+// Called before the parse rather than after it, because the parse is the long
+// part: registering afterwards would leave the window this whole mechanism
+// exists to close.
+func (s *documentStore) beginBuild(uri lsp.DocumentURI) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.building == nil {
+		s.building = make(map[lsp.DocumentURI]int)
+	}
+	s.building[uri]++
+	s.wakeLocked()
+}
+
+// endBuild records that one has finished, landed or discarded as stale.
+func (s *documentStore) endBuild(uri lsp.DocumentURI) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.building[uri] <= 1 {
+		delete(s.building, uri)
+	} else {
+		s.building[uri]--
+	}
+	s.wakeLocked()
+}
+
+// wakeLocked releases every waiter so each can re-read the store. Callers hold
+// s.mu.
+func (s *documentStore) wakeLocked() {
+	if s.settled != nil {
+		close(s.settled)
+		s.settled = nil
+	}
+}
+
+// settledLocked returns the channel a waiter blocks on until the next change.
+// Callers hold s.mu.
+func (s *documentStore) settledLocked() chan struct{} {
+	if s.settled == nil {
+		s.settled = make(chan struct{})
+	}
+	return s.settled
+}
+
+// await returns the document open under uri, waiting for a build that has
+// arrived and not yet landed.
+//
+// This is what every position request reads through, and it differs from
+// [documentStore.get] in one way: an absent document is not immediately an
+// answer. A request may have been started before the notification that builds
+// the document it asks about, so an absent document is a question rather than an
+// answer: is one coming? The store can say, because a build announces itself
+// before it parses.
+//
+// The wait ends on whichever comes first: the document being current, the
+// request being cancelled, the connection dropping, or a bound expiring. It
+// never ends on nothing. A language server that blocks forever because a build
+// it was promised never arrived is not failing closed, it is hanging, and an
+// editor with a hover spinner that never resolves is worse off than one told
+// null.
+//
+// When a bound expires the current document is returned anyway, absent or not,
+// so a request that outlives a slow build still answers from the previous
+// version rather than from nothing.
+func (s *documentStore) await(ctx context.Context, disconnected <-chan struct{}, uri lsp.DocumentURI) (*document, bool) {
+	now := time.Now()
+	graceDeadline := now.Add(documentSettleGrace)
+	buildDeadline := now.Add(documentBuildTimeout)
+
+	// Whether a build was ever seen registered decides which bound applies: the
+	// short one is for finding out that nothing is coming, the long one is for
+	// waiting on something that is.
+	sawBuild := false
+
+	for {
+		s.mu.Lock()
+		doc, ok := s.docs[uri]
+		inFlight := s.building[uri]
+		settled := s.settledLocked()
+		s.mu.Unlock()
+
+		if inFlight > 0 {
+			sawBuild = true
+		}
+		// A document with nothing in flight behind it is the current one. With a
+		// build in flight it is not: during a burst of keystrokes the store holds
+		// a version the client has already replaced, and answering from it would
+		// describe text the author is no longer looking at.
+		if ok && inFlight == 0 {
+			return doc, true
+		}
+
+		deadline := graceDeadline
+		if sawBuild {
+			deadline = buildDeadline
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return doc, ok
+		}
+
+		timer := time.NewTimer(remaining)
+		select {
+		case <-settled:
+			timer.Stop()
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, false
+		case <-disconnected:
+			timer.Stop()
+			return nil, false
+		}
+	}
 }
 
 // open records a newly opened document and returns it.
 func (s *documentStore) open(uri lsp.DocumentURI, version int, text string, tasks *v1.Registry) *document {
+	// Announced before the parse and retired after the result is stored, so a
+	// request that arrives in between waits for this rather than reading past it.
+	// Deferred so a panic in the parse cannot leave a gate that never opens.
+	s.beginBuild(uri)
+	defer s.endBuild(uri)
+
 	doc := newDocument(uri, version, text, tasks)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -157,6 +326,7 @@ func (s *documentStore) open(uri lsp.DocumentURI, version int, text string, task
 		s.docs = make(map[lsp.DocumentURI]*document)
 	}
 	s.docs[uri] = doc
+	s.wakeLocked()
 	return doc
 }
 
@@ -176,6 +346,12 @@ func (s *documentStore) open(uri lsp.DocumentURI, version int, text string, task
 // it outright. Document versions are monotonic per the spec, so comparing them
 // restores the ordering the wrapper discarded.
 func (s *documentStore) change(uri lsp.DocumentURI, version int, changes []lsp.TextDocumentContentChangeEvent, tasks *v1.Registry) *document {
+	// See [documentStore.open]. Registered before s.mu is taken and retired after
+	// it is released: deferred calls run last-in-first-out, so the unlock below
+	// happens first and endBuild is free to take the lock itself.
+	s.beginBuild(uri)
+	defer s.endBuild(uri)
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -207,13 +383,19 @@ func (s *documentStore) change(uri lsp.DocumentURI, version int, changes []lsp.T
 		s.docs = make(map[lsp.DocumentURI]*document)
 	}
 	s.docs[uri] = doc
+	s.wakeLocked()
 	return doc
 }
 
-// get returns the document open under uri, if any.
+// get returns the document open under uri, if any, without waiting for a build
+// that has not landed.
+//
+// Position requests use [documentStore.await] instead. This is for the callers
+// with nothing to wait for: a notification that re-publishes what is already
+// there, and the tests that drive the store directly.
 func (s *documentStore) get(uri lsp.DocumentURI) (*document, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	doc, ok := s.docs[uri]
 	return doc, ok
 }
@@ -223,4 +405,9 @@ func (s *documentStore) close(uri lsp.DocumentURI) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.docs, uri)
+	// Woken because the store changed, the same as every other mutation here: a
+	// waiter re-reads and decides for itself. It is the one mutation that can
+	// take a document away, and a waiter must not be left holding a channel that
+	// nothing will ever close.
+	s.wakeLocked()
 }
