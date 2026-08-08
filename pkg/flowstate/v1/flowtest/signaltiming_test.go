@@ -24,6 +24,23 @@ import (
 // it. Every `at:` past the first deadline therefore collapsed onto the first
 // lapse: `at: 721h` and `at: 3000h` produced identical runs.
 //
+// # These need GOMAXPROCS=1 to be worth much
+//
+// Everything below is an ordering claim, and the orderings that break are the
+// ones where a goroutine stays runnable for a long time without being run.
+// That is not what a loaded machine produces — it is what *one* processor
+// produces, so the soak that matters is:
+//
+//	GOMEMLIMIT=2GiB go test -race -cpu=1 -count=20 ./pkg/flowstate/v1/flowtest/
+//
+// A defect that survived `-race -count=3` at the default GOMAXPROCS failed six
+// runs in ten under `-cpu=1`, and the two are not the same test run harder:
+// the second one schedules differently rather than more. Add `-cpu=1` before
+// concluding that anything here is deterministic. The other half of the bar is
+// the corpus itself, forty consecutive `flow test examples/` runs, which is
+// what catches an ordering that only arises with a real workflow's step
+// sequence behind it.
+//
 // The corpus could not see this, and the reason is the reason it shipped:
 // every gate case in it scripted a signal for the *first* open wait, which is
 // exactly the situation where the collapse is invisible — there is no second

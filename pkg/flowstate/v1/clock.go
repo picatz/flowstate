@@ -303,33 +303,6 @@ func (c *VirtualClock) Leave() {
 	c.advanceLocked()
 }
 
-// LeaveQuietly unregisters a participant registered by a matching
-// [VirtualClock.Enter] *without* advancing, for the one caller whose departure
-// is not evidence that the clock should move: a participant that has just made
-// another one runnable.
-//
-// `flow test`'s scripted signal delivery is that caller, and only on the
-// deliveries that actually woke a wait — [LocalSignals.DeliverFromWaking] is
-// what tells it which those were. Its goroutine parks on the moment its `at:`
-// names, delivers, and is then done — but the run it woke is, at that instant,
-// awake and about to carry on, and has no way to have said so yet. [VirtualClock.Leave]'s own advance would run in
-// that window, and a run inside a bounded `wait_for_signal:` still has its own
-// timeout registered until it gets far enough to withdraw it — so the clock
-// would find one parked timer, one participant, and jump the whole run forward
-// to a deadline the wait it belonged to had already stopped needing. That is
-// the same class of mistake as #278 itself: time moving on the strength of a
-// participant count that is momentarily a lie.
-//
-// Nothing stalls as a result. The participant this one woke is running, and
-// whatever it does next — park on another deadline, withdraw the deadline it
-// no longer needs, or finish and release the run's own registration — goes
-// through this clock and advances it then, with the count telling the truth.
-func (c *VirtualClock) LeaveQuietly() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.participants--
-}
-
 // After implements [Clock].
 func (c *VirtualClock) After(d time.Duration) <-chan time.Time {
 	c.mu.Lock()

@@ -271,45 +271,78 @@ func TestVirtualClockDiscardWithdrawsADeadlineNobodyIsWaitingFor(t *testing.T) {
 	}
 }
 
-// TestVirtualClockLeaveQuietlyDoesNotAdvance pins the difference between the
-// two ways a participant can withdraw. [v1.VirtualClock.Leave] advances,
-// because one fewer participant can be what makes every remaining one parked.
-// [v1.VirtualClock.LeaveQuietly] does not, for the participant whose departure
-// follows it having just made another participant runnable — `flow test`'s
-// scripted signal delivery — which the clock has no other way to know about.
-func TestVirtualClockLeaveQuietlyDoesNotAdvance(t *testing.T) {
+// TestDeliveringWithdrawsTheAnsweredWaitsDeadline pins the window that made
+// #278's third attempt necessary, and it pins it deterministically rather than
+// by soaking.
+//
+// A bounded `wait_for_signal:` registers a deadline with the clock. The moment
+// its payload is queued that deadline is moot, but the goroutine it belongs to
+// is only *runnable*, not running — the Go scheduler decides when it gets to
+// withdraw it, and under GOMAXPROCS=1 that can be a long time. Any other
+// participant touching the clock in between (another scripted sender merely
+// registering its own `at:` is enough) finds a parked count inflated by a
+// deadline nobody is waiting under any more, and moves time on it. The
+// observable consequence was a gate reporting `timed_out` or not depending on
+// interleaving, which is the whole defect class #278 is about.
+//
+// So the assertion is made on the *delivering* goroutine, immediately after
+// Deliver returns and before the woken run can possibly have run: nothing is
+// pending. If withdrawal ever moves back out of the delivery, this fails
+// without needing a scheduler to cooperate.
+func TestDeliveringWithdrawsTheAnsweredWaitsDeadline(t *testing.T) {
 	t.Parallel()
 
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clock := v1.NewVirtualClock(start)
 
-	for _, tc := range []struct {
-		name  string
-		leave func(c *v1.VirtualClock)
-		want  time.Time
-	}{
-		{name: "Leave advances", leave: (*v1.VirtualClock).Leave, want: start.Add(time.Hour)},
-		{name: "LeaveQuietly does not", leave: (*v1.VirtualClock).LeaveQuietly, want: start},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
+	signals := v1.NewLocalSignals()
 
-			clock := v1.NewVirtualClock(start)
-			clock.Enter() // the participant that parks, below.
-			clock.Enter() // the participant that withdraws.
+	// Two participants, the pair `flow test` always has: the run's own, held
+	// from out here the way runCase holds it, and this goroutine standing in
+	// for a scripted sender that has not delivered yet. Without the second the
+	// gate would be the only thing registered with the clock and would lapse
+	// at once, which is the correct answer when nothing is ever going to
+	// answer it and not the case under test here.
+	clock.Enter()
+	clock.Enter()
 
-			ch := clock.After(time.Hour)
+	ctx := v1.NewContextWithClock(t.Context(), clock)
+	ctx = v1.NewContextWithSignalWaiter(ctx, signals)
+	ctx = v1.NewContextWithHeldRunParticipant(ctx)
 
-			tc.leave(clock)
-			require.Equal(t, tc.want, clock.Now())
-
-			fired := false
-			select {
-			case <-ch:
-				fired = true
-			default:
-			}
-			require.Equal(t, tc.want.Equal(start.Add(time.Hour)), fired,
-				"the pending deadline's fate did not match the clock's own")
-		})
+	type result struct {
+		outputs *v1.Workflow_StepOutputs
+		err     error
 	}
+	done := make(chan result, 1)
+	go func() {
+		outputs, err := v1.Run(ctx, gatedLocalWorkflow(720*time.Hour))
+		done <- result{outputs: outputs, err: err}
+	}()
+
+	// One pending deadline is the gate's, and its being pending is what says
+	// the run is blocked on it — the state this test needs to catch.
+	require.Eventually(t, func() bool { return clock.Pending() == 1 },
+		2*time.Second, time.Millisecond, "the gate never registered its deadline")
+
+	require.NoError(t, signals.Deliver("deploy-approved", &v1.Node_Outputs{
+		NamedValues: map[string]*v1.Value{"approved": v1.NewLiteral(true)},
+	}))
+
+	require.Equal(t, 0, clock.Pending(),
+		"the answered gate's deadline was still pending when Deliver returned, so a "+
+			"participant touching the clock before the woken run could withdraw it would "+
+			"advance the whole run to a month it never spent")
+
+	clock.Leave() // the sender is done, exactly as a scripted one would be.
+
+	got := <-done
+	require.NoError(t, got.err)
+	clock.Leave()
+
+	approval := got.outputs.GetStepValues()["approval"].GetNamedValues()
+	require.False(t, approval[v1.TimedOutOutput].GetLiteral().GetBoolValue(),
+		"the gate reported a timeout although its signal was delivered")
+	require.Equal(t, start, clock.Now(),
+		"a gate answered without ever lapsing spent time it was not owed")
 }

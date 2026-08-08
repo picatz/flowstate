@@ -109,17 +109,19 @@ type LocalSignals struct {
 	mu     sync.Mutex
 	queues map[string]chan *SignalDelivery
 
-	// waiting counts, per signal name, how many waits are currently blocked
-	// on it — entered before a wait blocks and left after it stops, so a
-	// non-zero count means "a delivery made now will wake somebody."
+	// waits holds, per signal name, the waits currently blocked on it, each
+	// carrying how to withdraw the deadline it is waiting under (nil for an
+	// untimed one). Announced before a wait blocks and removed after it
+	// stops.
 	//
-	// That is a question only a *virtual* clock needs answered, and the
-	// reason is [LocalSignals.DeliverFromWaking]'s: a sender that woke a run
-	// must not also move time on its way out, because the run it woke has not
-	// had a chance to say it is running. A sender that woke nobody has to
-	// move time, or a case whose scripted signal names a moment the run is
-	// spending elsewhere would stop the clock dead.
-	waiting map[string]int
+	// This exists for one reason, and it is a *virtual* clock's: a wait that
+	// has just been handed its payload has no further use for its deadline,
+	// and a deadline still registered is a moment [VirtualClock] will advance
+	// the whole run to as soon as everything is parked. The withdrawal has to
+	// happen at the instant the payload becomes visible and under the same
+	// lock, because between those two instants the woken run is runnable and
+	// cannot say so — see [LocalSignals.DeliverFrom] and [signalWait].
+	waits map[string][]*signalWait
 
 	// policies is nil for an unpoliced [LocalSignals] — every delivery
 	// succeeds, the zero case [SignalPolicyAllows]'s own doc comment
@@ -193,6 +195,13 @@ func (s *LocalSignals) queue(name string) chan *SignalDelivery {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	return s.queueLocked(name)
+}
+
+// queueLocked is [LocalSignals.queue] for a caller already holding s.mu —
+// which is every path that has to decide something about a wait and deliver to
+// it, or arm a deadline against it, without the two being separable.
+func (s *LocalSignals) queueLocked(name string) chan *SignalDelivery {
 	if s.queues == nil {
 		s.queues = make(map[string]chan *SignalDelivery)
 	}
@@ -232,30 +241,25 @@ func (s *LocalSignals) Deliver(name string, payload *Node_Outputs) error {
 // eventually reports timed_out, not an error. That is deliberate: a refused
 // signal reaching the step as if delivered would be the exact failure this
 // function exists to close.
+// # Delivering withdraws the deadline of the wait it answers
+//
+// A wait blocked on name has, if it was written with a `timeout:`, a deadline
+// registered with the run's clock. The instant this payload is queued that
+// deadline is moot — the wait has its answer — and under a [VirtualClock] a
+// deadline that is merely moot is not inert: it is a moment the clock will
+// advance the whole run to as soon as everything registered is parked, and
+// every later moment in the run is then measured from a moment the workflow
+// never spent.
+//
+// Withdrawing it is therefore done here, while s.mu is held and before the
+// payload is visible to anyone, rather than left to the woken wait. Between a
+// payload becoming visible and the goroutine it woke being scheduled, that
+// goroutine is runnable and has no way to say so, and any other participant's
+// clock call in that window — another scripted sender merely registering its
+// own `at:` is enough — finds a parked count inflated by a deadline nobody is
+// waiting under any more and moves time on it. That window is what #278's
+// first two attempts each left open somewhere else.
 func (s *LocalSignals) DeliverFrom(name string, payload *Node_Outputs, sender *SignalSender) error {
-	_, err := s.DeliverFromWaking(name, payload, sender)
-	return err
-}
-
-// DeliverFromWaking is [LocalSignals.DeliverFrom] with one more answer:
-// whether a wait was blocked on name at the instant this payload became
-// visible to it.
-//
-// One caller, and it is a clock question rather than a delivery one. `flow
-// test`'s scripted senders run as participants of a [VirtualClock], and a
-// participant's departure ordinarily lets the clock advance. A sender that
-// just woke a run must not: the run is runnable at that instant and has no way
-// to have said so, and a bounded `wait_for_signal:` it just answered still has
-// its own deadline registered until it gets far enough to withdraw it — so the
-// clock would move the whole run forward on the strength of a wait that had
-// already ended. A sender that woke *nobody* is the opposite case and must
-// advance, or a signal scripted for a moment the run is spending in a `sleep:`
-// elsewhere would leave the clock with no one left to move it. Answering both
-// with one value, decided while the delivery is being made rather than after,
-// is what keeps them from being a race. See [VirtualClock.LeaveQuietly].
-//
-// A refused delivery reports false: nothing was queued, so nothing was woken.
-func (s *LocalSignals) DeliverFromWaking(name string, payload *Node_Outputs, sender *SignalSender) (woke bool, err error) {
 	if payload == nil {
 		// An empty payload rather than nil, so the waiting step's outputs exist
 		// and `${approval.timed_out}` resolves whether or not a sender sent
@@ -265,59 +269,133 @@ func (s *LocalSignals) DeliverFromWaking(name string, payload *Node_Outputs, sen
 
 	if policy, declared := s.policies[name]; declared {
 		if err := SignalPolicyCheck(policy, sender.GetIdentity(), s.starter, s.hasStarter); err != nil {
-			return false, fmt.Errorf("flowstate: signal %q refused: %w", name, err)
+			return fmt.Errorf("flowstate: signal %q refused: %w", name, err)
 		}
 	}
 
 	delivery := &SignalDelivery{Payload: payload, Sender: sender}
-	queue := s.queue(name)
 
-	// The waiter count is read under the same lock the queue send is made
-	// under, and the count is entered *before* a wait blocks — so "somebody
-	// was waiting" cannot be observed a moment too late to be true.
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	select {
-	case queue <- delivery:
-		return s.waiting[name] > 0, nil
+	case s.queueLocked(name) <- delivery:
 	default:
-		return false, fmt.Errorf(
+		return fmt.Errorf(
 			"flowstate: %d signals named %q are already waiting to be read", localSignalQueueDepth, name)
 	}
+
+	// One payload answers one wait, so one deadline is withdrawn: the first
+	// still holding one. Deliveries and waits are both FIFO here, and a name
+	// with several waits blocked on it is a workflow with concurrent gates on
+	// the same signal — whichever of them this payload reaches, exactly one
+	// stops needing its deadline.
+	for _, wait := range s.waits[name] {
+		if wait.withdrawDeadline() {
+			break
+		}
+	}
+
+	return nil
 }
 
-// signalPeeker is a [SignalWaiter] that keeps enough bookkeeping for a bounded
-// wait to be precise about time: it can say a wait is about to block before it
-// blocks, and hand over a delivery already in its queue without blocking.
+// signalPeeker is a [SignalWaiter] that keeps the bookkeeping a bounded wait
+// needs to be exact about time: it can announce a wait before it blocks, hand
+// over a delivery already queued without blocking, and — the part that matters
+// — arm a deadline atomically with respect to delivery, so that a wait can
+// never be answered and still be holding a live deadline.
 //
 // Deliberately unexported, interface and methods both. Nothing outside this
 // package implements or calls it, and a [SignalWaiter] that does not implement
-// it simply gets the ordinary blocking path — correct, and less exact about
-// when a virtual clock may move. See [waitForSignalLocally] for the two things
-// the ordering buys, and [LocalSignals.DeliverFromWaking] for the other side
-// of the same bookkeeping.
+// it falls back to the ordinary blocking path, which is correct and merely
+// less exact about when a virtual clock may move.
 type signalPeeker interface {
-	enterSignalWait(name string) (leave func())
+	enterSignalWait(name string) (wait *signalWait, leave func())
 	tryReceiveSignal(name string) (*SignalDelivery, bool)
 }
 
+// signalWait is one announced wait on one signal name, and the withdrawal for
+// whatever deadline it is waiting under.
+//
+// Both fields are read and written under its [LocalSignals]'s own mu — the
+// same lock a delivery is made under, which is the whole point: arming a
+// deadline and answering the wait it belongs to cannot interleave.
+type signalWait struct {
+	signals  *LocalSignals
+	withdraw func()
+}
+
 // enterSignalWait implements [signalPeeker].
-func (s *LocalSignals) enterSignalWait(name string) (leave func()) {
+func (s *LocalSignals) enterSignalWait(name string) (*signalWait, func()) {
+	wait := &signalWait{signals: s}
+
 	s.mu.Lock()
-	if s.waiting == nil {
-		s.waiting = map[string]int{}
+	if s.waits == nil {
+		s.waits = map[string][]*signalWait{}
 	}
-	s.waiting[name]++
+	s.waits[name] = append(s.waits[name], wait)
 	s.mu.Unlock()
 
-	return func() {
+	return wait, func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		if s.waiting[name]--; s.waiting[name] <= 0 {
-			delete(s.waiting, name)
+
+		blocked := s.waits[name]
+		for i, w := range blocked {
+			if w == wait {
+				s.waits[name] = append(blocked[:i], blocked[i+1:]...)
+				break
+			}
+		}
+		if len(s.waits[name]) == 0 {
+			delete(s.waits, name)
 		}
 	}
+}
+
+// armDeadline registers this wait's deadline with clock and records how to
+// withdraw it, or reports the delivery that makes a deadline unnecessary.
+//
+// The two are one operation, under one lock, and that is the fix for the
+// nondeterminism the two earlier attempts at #278 each had a version of.
+// Arming and then recording separately leaves a window in which a delivery can
+// answer a wait whose deadline nothing knows how to withdraw; checking for a
+// delivery and then arming leaves the mirror-image window. Here, a caller
+// either gets a payload and registers no deadline at all, or registers one
+// that is withdrawable from the instant it exists.
+func (w *signalWait) armDeadline(clock Clock, name string, timeout time.Duration) (deadline <-chan time.Time, delivery *SignalDelivery, delivered bool) {
+	s := w.signals
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	select {
+	case delivery := <-s.queueLocked(name):
+		// Answered before it ever waited, so no deadline is created — a gate
+		// that does not wait must not spend its `timeout:` either. See
+		// [waitForSignalLocally].
+		return nil, delivery, true
+	default:
+	}
+
+	deadline = clock.After(timeout)
+	w.withdraw = func() { DiscardTimer(clock, deadline) }
+
+	return deadline, nil, false
+}
+
+// withdrawDeadline withdraws this wait's deadline if it has one, reporting
+// whether it did. Called with its [LocalSignals]'s mu held.
+func (w *signalWait) withdrawDeadline() bool {
+	if w.withdraw == nil {
+		return false
+	}
+
+	withdraw := w.withdraw
+	w.withdraw = nil
+	withdraw()
+
+	return true
 }
 
 // tryReceiveSignal implements [signalPeeker].
@@ -342,7 +420,8 @@ func (s *LocalSignals) tryReceiveSignal(name string) (*SignalDelivery, bool) {
 // author's file nor the durable driver has any notion of a coin flip deciding
 // between them.
 func (s *LocalSignals) WaitForSignal(ctx context.Context, name string) (*Node_Outputs, *SignalSender, error) {
-	defer s.enterSignalWait(name)()
+	_, leave := s.enterSignalWait(name)
+	defer leave()
 
 	select {
 	case delivery := <-s.queue(name):
@@ -509,54 +588,54 @@ func waitForSignalLocally(ctx context.Context, clock Clock, signal *Signal, time
 		return SignalOutputs(payload, sender, false), nil
 	}
 
-	// Two things happen before a deadline is registered with the clock, and
-	// both are about a bounded wait being honest about *when* it is waiting.
-	//
-	// This wait is announced first, so that a delivery arriving from here on
-	// knows it woke somebody. That matters to a [VirtualClock] alone, and it
-	// is [LocalSignals.DeliverFromWaking]'s doc that says why; announcing it
-	// after the deadline exists would leave a window in which a sender saw an
-	// empty room, moved time on its way out, and reached the next scripted
-	// moment while this wait was a hair from blocking on the one before it.
-	//
-	// Then a delivery already in hand is taken, and no deadline is registered
-	// at all. Registering one would be visible even though this gate never
-	// blocks on it: under a [VirtualClock] with nothing left to hold time
-	// back, a deadline registered by the only unparked participant is reached
-	// at once, so a gate answered before it was even reached would still move
-	// the run's clock forward by its whole `timeout:` — and every later
-	// scripted moment in the case is then measured from a moment the workflow
-	// never spent. The durable driver has the same property for the same
-	// reason: Temporal hands over a buffered signal without the workflow's
-	// timer coming into it at all.
-	if peeker, ok := waiter.(signalPeeker); ok {
-		defer peeker.enterSignalWait(name)()
-
-		if delivery, got := peeker.tryReceiveSignal(name); got {
-			return SignalOutputs(delivery.GetPayload(), delivery.GetSender(), false), nil
+	// This wait is announced to the waiter before it does anything else, so
+	// that from here on a delivery for this name knows which wait it answers
+	// and can withdraw that wait's deadline as part of making the payload
+	// visible — see [LocalSignals.DeliverFrom]. Everything below is written so
+	// that the wait never holds a deadline the deliverer cannot reach.
+	var (
+		deadline    <-chan time.Time
+		armDeadline = func() (<-chan time.Time, *SignalDelivery, bool) {
+			// The fallback for a [SignalWaiter] that keeps no bookkeeping:
+			// register the deadline plainly. Correct, and merely less exact
+			// about when a virtual clock may move.
+			return clock.After(timeout), nil, false
 		}
+	)
+
+	if peeker, ok := waiter.(signalPeeker); ok {
+		wait, leave := peeker.enterSignalWait(name)
+		defer leave()
+
+		armDeadline = func() (<-chan time.Time, *SignalDelivery, bool) {
+			return wait.armDeadline(clock, name, timeout)
+		}
+	}
+
+	// Arming is where a payload already in hand is taken, and taking it
+	// registers no deadline at all. Registering one would be visible even
+	// though this gate never blocks on it: under a [VirtualClock] with nothing
+	// left to hold time back, a deadline registered by the only unparked
+	// participant is reached at once, so a gate answered before it was even
+	// reached would still move the run's clock forward by its whole
+	// `timeout:` — and every later scripted moment in the case is then
+	// measured from a moment the workflow never spent. The durable driver has
+	// the same property for the same reason: Temporal hands over a buffered
+	// signal without the workflow's timer coming into it at all.
+	deadline, delivered, wasDelivered := armDeadline()
+	if wasDelivered {
+		return SignalOutputs(delivered.GetPayload(), delivered.GetSender(), false), nil
 	}
 
 	waitCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// Registered here, on this goroutine, while it is still a clock
-	// participant — not from inside the watcher below. `go func(){...}` only
-	// queues a goroutine; a deadline that exists only once the scheduler has
-	// got round to running it is a deadline the clock cannot weigh against
-	// anything else pending in the meantime. Registering it inline makes the
-	// candidate set the clock compares — this timeout against every scripted
-	// signal — the same on every schedule.
-	deadline := clock.After(timeout)
-
-	// Discarded on the way out, because a wait answered by its signal leaves
-	// its own timeout pending and unfired. Under a [VirtualClock] a pending
-	// deadline is not inert: it is a moment the clock will advance to as soon
-	// as everything still registered is parked, so a gate answered at 10h
-	// would drag the run's clock to the 720h its timeout never needed, and
-	// every later `at:`, `now`, and deadline in the run would be measured from
-	// a moment the workflow never actually reached. See [DiscardTimer], which
-	// is a no-op on a timer that already fired and on [RealClock].
+	// Discarded on the way out as a backstop, for the paths where nothing else
+	// did: a wait that lapsed has already fired its deadline (a no-op here),
+	// and a wait its signal answered had it withdrawn at delivery. What is
+	// left is a wait its *run* ended — a cancelled context — whose deadline
+	// would otherwise stay pending. [DiscardTimer] is a no-op on a timer that
+	// already fired, on one already withdrawn, and on [RealClock].
 	defer DiscardTimer(clock, deadline)
 
 	// timedOut is closed exactly when the clock's own deadline is what ended

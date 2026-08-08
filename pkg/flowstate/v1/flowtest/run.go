@@ -392,29 +392,7 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 	for _, j := range jobs {
 		clock.Enter()
 		go func(j job) {
-			// Withdrawn quietly when this delivery actually woke a wait, and
-			// ordinarily otherwise — the distinction is the clock's, not the
-			// signal's, and [v1.LocalSignals.DeliverFromWaking] is what
-			// answers it while the delivery is being made rather than after.
-			//
-			// A woken run is runnable at an instant the clock cannot know
-			// about, so a departure that advanced time right then would move
-			// it on the run's behalf before the run could withdraw the
-			// deadline its answered wait no longer needs, and the case would
-			// see moments it never reached (see
-			// [v1.VirtualClock.LeaveQuietly]). A departure that woke nobody is
-			// the opposite: it is the ordinary "one fewer thing to wait for"
-			// that [v1.VirtualClock.Leave] exists to act on, and withdrawing
-			// it quietly would leave a run parked on a `sleep:` with nothing
-			// left to move the clock at all.
-			woke := false
-			defer func() {
-				if woke {
-					clock.LeaveQuietly()
-					return
-				}
-				clock.Leave()
-			}()
+			defer clock.Leave()
 			defer func() { done <- struct{}{} }()
 
 			select {
@@ -439,7 +417,7 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 			default:
 			}
 
-			woke, _ = signals.DeliverFromWaking(j.name, &v1.Node_Outputs{NamedValues: v1.NewNamedValues(j.payload)}, j.sender)
+			_ = signals.DeliverFrom(j.name, &v1.Node_Outputs{NamedValues: v1.NewNamedValues(j.payload)}, j.sender)
 		}(j)
 	}
 
