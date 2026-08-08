@@ -69,23 +69,38 @@ steps:
         ${"%s requests deploying %s to %s".format(
             [run.identity.subject, inputs.version, inputs.environment])}
 
+  # One question: did the payload say yes — stated once, on the step that
+  # produced the data. Three outcomes, not two: a payload is whatever the
+  # sender chose to send, so a signal carrying no `approved` field at all is
+  # representable, and it is neither an approval nor a rejection. `signals:`
+  # above already refused any signal whose sender was unattested, wrongly
+  # claimed, mismatched, or this run's own starter — before it ever reached
+  # this step.
   - id: approval
     wait_for_signal:
       name: deploy-approved
       timeout: 24h
+      outputs:
+        outcome: >-
+          ${has(payload.approved)
+            ? (payload.approved ? "deployed" : "rejected")
+            : "expired"}
+        sender: ${sender}
 
-  # One question: did the payload say yes. `signals:` above already refused
-  # any signal whose sender was unattested, wrongly claimed, mismatched, or
-  # this run's own starter — before it ever reached this step.
   - id: deploy
-    if: ${has(steps.approval.payload.approved) && steps.approval.payload.approved}
+    if: ${steps.approval.outcome == "deployed"}
     log:
       message: ${"deploying, approved by %s".format([steps.approval.sender.identity.subject])}
 
-  - id: expired
-    if: ${steps.approval.timed_out}
+  - id: rejected
+    if: ${steps.approval.outcome == "rejected"}
     log:
-      message: nobody approved in time
+      message: ${"%s declined the deploy".format([steps.approval.sender.identity.subject])}
+
+  - id: expired
+    if: ${steps.approval.outcome == "expired"}
+    log:
+      message: nobody decided in time
 ```
 
 `steps.approval.sender` is not something the approver typed in — it is who the server
@@ -96,7 +111,9 @@ caller to set. A payload is evidence; a sender is identity — see
 Notice what `deploy`'s `if:` does *not* say. Earlier versions of this example restated
 "was the sender attested," "is it the approver this run expects," and "is it not the run's
 own starter" by hand, inside the workflow — a six-clause condition, negated again for the
-refusal branch, and re-derived a third and fourth time in this file's declared outputs.
+refusal branch, and re-derived a third and fourth time in the full example's declared
+outputs (elided from the snippet above, which is why the branches switch on the one
+`outcome` name the wait's own `outputs:` records).
 Four copies of one predicate, kept in agreement by nothing but review
 ([#207](https://github.com/picatz/flowstate/issues/207)). None of that was ever workflow
 logic: `FlowstateServer.Signal` already refuses a signal that fails any of it,
@@ -137,6 +154,7 @@ PASS  examples/approval-gate/workflow.test.yaml: an explicit rejection is honore
 PASS  examples/approval-gate/workflow.test.yaml: nobody answers, and the gate lapses at its own timeout
 PASS  examples/approval-gate/workflow.test.yaml: a version that is not semver is refused before the first step runs
 PASS  examples/approval-gate/workflow.test.yaml: an environment outside the known set is refused before the first step runs
+PASS  examples/approval-gate/workflow.test.yaml: a signal carrying no decision is not a rejection
 ```
 
 `flow run local --signal` cannot reach `deploy` for this file, and that is deliberate
@@ -257,8 +275,8 @@ spelling has been retired, and `flow compile` shows what a correct file *becomes
 | **Waits & signals** | `sleep:`, `wait_until:` a computed moment, `wait_for_signal:` — durable timers and human approval gates, at no worker cost while parked | [approval-gate](examples/approval-gate) · [wait-until-a-moment](examples/wait-until-a-moment) |
 | **Undo** | `undo:` — saga compensation, registered the moment a step succeeds, run in reverse when a later step fails or `flow cancel` asks — including inside a `loop:` body and across a `call:` | [saga-provisioning](examples/saga-provisioning) · [order-fulfillment](examples/order-fulfillment) · [progressive-rollout](examples/progressive-rollout) |
 | **Secrets** | `${secret('scheme:name')}` — a reference, resolved only inside the task activity that needs it and scrubbed from what a step reports, never in workflow history | [http-secret](examples/http-secret) · [worker-side secrets](docs/CLI.md#worker-side-secrets) |
-| **Policy & egress** | Default-deny network egress: public addresses only, CEL rules on url/scheme/host/port/ip, redirects re-checked, responses capped | [egress-policy.yaml](examples/egress-policy.yaml), a worked and fully-annotated policy |
-| **Plugins** | Out-of-process tasks and secret backends over Connect RPC: `vcs`, `git` (including its idempotent write task), `github`, and an SDK to write your own | [plugins/vcs](plugins/vcs) · [plugins/git](plugins/git) · [plugins/github](plugins/github) · [plugin/sdk](pkg/flowstate/v1/plugin/sdk) |
+| **Policy & egress** | Default-deny network egress: public addresses only, CEL rules on url/scheme/host/port/method/path/ip and the workload's identity (subject, issuer, namespace, claims), redirects re-checked, responses capped | [egress-policy.yaml](examples/egress-policy.yaml), a worked and fully-annotated policy |
+| **Plugins** | Out-of-process tasks and secret backends over Connect RPC: `vcs`, `git` (including its idempotent write task), `github`, `sql` (`sql.query`/`sql.exec` over sqlite and postgres), `codex` (a bounded agentic run as a durable step), and an SDK to write your own | [plugins/vcs](plugins/vcs) · [plugins/git](plugins/git) · [plugins/github](plugins/github) · [plugins/sql](plugins/sql) · [plugins/codex](plugins/codex) · [plugin/sdk](pkg/flowstate/v1/plugin/sdk) |
 | **Embedding** | `pkg/flowstate/embed` — compile a Flowfile from bytes, register your own Go functions as tasks, run locally or durably against a Temporal worker you own, all as a Go library | [EMBEDDING.md](docs/EMBEDDING.md) · [examples/embedding](examples/embedding) |
 | **Examples** | Over thirty worked Flowfiles; four carry a README naming the one durability property they demonstrate, over a business transaction rather than infrastructure | [examples/README.md](examples/README.md) |
 | **Editor, agent, terminal** | Diagnostics and completion in your editor (`flow lsp`), a control plane for an agent (`flow mcp`), a live view of a running workload (`flow watch`) | [EDITORS.md](docs/EDITORS.md) · [flow mcp](docs/CLI.md#flow-mcp-the-same-surface-for-an-agent) |
