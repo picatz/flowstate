@@ -4602,6 +4602,18 @@ type RunRequest struct {
 	// `TEAM` + `A_KEY` because every character legal in the prefix was also legal in
 	// the name. Here, neither half can contain the separator, so there is only ever
 	// one place the string could have been split, and it is the right one.
+	//
+	// # The key is metadata, not a secret
+	//
+	// A workflow id is visibility data: the cluster indexes it, every listing
+	// and every UI shows it, and no payload codec can ever cover it, because
+	// encrypting the address a workload is reached at would leave nothing to
+	// reach it by. On a deployment that encrypts payloads, this key is still at
+	// rest in plaintext. Name the workload by what it is publicly known as, an
+	// order id or a subscription id, and never by a value the codec exists to
+	// protect. The same rule holds for search attributes, and for the same
+	// structural reason; the guard is `runSearchAttributes` in
+	// `pkg/flowstate/v1/server`.
 	EntityKey     *string `protobuf:"bytes,3,opt,name=entity_key,json=entityKey,proto3,oneof" json:"entity_key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
