@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Waiting, for the local driver.
@@ -477,7 +479,7 @@ func runWait(ctx context.Context, node *Node, wait *Wait, scope *Scope) (*Node_O
 			return nil, err
 		}
 
-		outputs, err := waitForSignalLocally(ctx, clock, kind.Signal, timeout, bounded)
+		outputs, err := waitForSignalLocally(ctx, clock, node, kind.Signal, timeout, bounded)
 		if err != nil {
 			return nil, err
 		}
@@ -555,7 +557,7 @@ func waitLocally(ctx context.Context, clock Clock, d time.Duration) (*Node_Outpu
 // <= 0` used to be the encoding for "no timeout", so a bound that computed to zero
 // read as a gate that blocks forever. The two drivers answer this identically
 // because they are given the same two values by [EvalWaitTimeout].
-func waitForSignalLocally(ctx context.Context, clock Clock, signal *Signal, timeout time.Duration, bounded bool) (*Node_Outputs, error) {
+func waitForSignalLocally(ctx context.Context, clock Clock, node *Node, signal *Signal, timeout time.Duration, bounded bool) (*Node_Outputs, error) {
 	name := signal.GetName()
 
 	// A bound that has already lapsed, answered before anything blocks — the same
@@ -578,6 +580,27 @@ func waitForSignalLocally(ctx context.Context, clock Clock, signal *Signal, time
 	}
 
 	if !bounded {
+		// A delivery already in hand is taken before anything is announced, so
+		// that a gate this run walks straight through is never reported as a
+		// gate it is held at. That is the same point the durable driver draws
+		// the line at: it consumes a carried signal above its own announcement
+		// (see engine/wait.go's takePendingSignal), and a run whose approval
+		// arrived early parks on nothing on either driver.
+		//
+		// Taking it here rather than leaving it to the receive below changes
+		// nothing about which delivery answers this wait: [LocalSignals.WaitForSignal]
+		// does exactly this non-blocking take first, for the reason its own
+		// comment gives, and this is that take moved one call earlier.
+		if peeker, ok := waiter.(signalPeeker); ok {
+			if delivery, took := peeker.tryReceiveSignal(name); took {
+				return SignalOutputs(delivery.GetPayload(), delivery.GetSender(), false), nil
+			}
+		}
+
+		// Announced with no deadline, which is the honest answer for a gate
+		// that blocks until somebody acts rather than a deadline nobody set.
+		defer announceLocalWait(ctx, node, signal, nil)()
+
 		rejoin := LeaveClockWhile(ctx)
 		defer rejoin()
 
@@ -626,6 +649,17 @@ func waitForSignalLocally(ctx context.Context, clock Clock, signal *Signal, time
 	if wasDelivered {
 		return SignalOutputs(delivered.GetPayload(), delivered.GetSender(), false), nil
 	}
+
+	// Announced from here, the instant this wait is known to be parking: a
+	// delivery already in hand was taken above, and a bound that had already
+	// lapsed returned further above still. Both drivers announce at that same
+	// point in their own arm, so a wait that never blocked is reported by
+	// neither.
+	//
+	// The deadline is read from the run's clock rather than from the wall
+	// clock, so a `flow test` case under a [VirtualClock] reports the moment
+	// the workload will actually see, not one in a different year.
+	defer announceLocalWait(ctx, node, signal, timestamppb.New(clock.Now().Add(timeout)))()
 
 	waitCtx, cancel := context.WithCancel(ctx)
 	defer cancel()

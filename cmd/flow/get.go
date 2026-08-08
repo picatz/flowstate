@@ -111,6 +111,13 @@ func runGet(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(surface.Err, "  %s\n", surface.ErrTheme.Muted.Render(line))
 	}
 
+	// What the run is waiting for a person to do. A gate names the signal an
+	// operator has to send, which is the one thing a position cannot say: `on
+	// approval` tells somebody where the run is and not what would move it.
+	for _, line := range pendingWaitLines(msg.GetProgress(), time.Now()) {
+		fmt.Fprintf(surface.Err, "  %s\n", surface.ErrTheme.Muted.Render(line))
+	}
+
 	// What the workflow said it would report, named before the transcript is written
 	// out beneath it — the same section `flow run` and `flow watch` finish with,
 	// through the same function, so one finished run reads the same however it was
@@ -237,6 +244,59 @@ func positionPath(progress *v1.RunProgress) string {
 	}
 
 	return position
+}
+
+// pendingWaitLines renders the gates a run is parked on, one sentence each.
+//
+// The signal name is the point of the line: it is the argument `flow signal`
+// takes, and before this it could only be recovered from the file the run was
+// compiled from. The deadline is rendered as a countdown for [runAge]'s reason,
+// against a moment the caller supplies rather than one this reads, so a rendered
+// line is a fact about the answer rather than about when it happened to print.
+//
+// Nothing is printed for a run with no gates open, and nothing for a run whose
+// worker did not answer: both are the empty set here, and the difference between
+// them is one the position beside this already reports (an unset progress is
+// "nobody answered", see [runPosition]).
+//
+// A truncated answer says so rather than quietly reading as the whole of it,
+// which is the rule the schema states for the flag itself.
+func pendingWaitLines(progress *v1.RunProgress, now time.Time) []string {
+	waits := progress.GetPendingWaits()
+	if len(waits) == 0 {
+		return nil
+	}
+
+	lines := make([]string, 0, len(waits)+1)
+	for _, wait := range waits {
+		where := wait.GetStepId()
+		if path := wait.GetPath(); len(path) > 0 {
+			where = strings.Join(path, " > ") + " > " + where
+		}
+
+		line := fmt.Sprintf("waiting at %s for signal %q", where, wait.GetSignalName())
+		if wait.GetPoliced() {
+			// Said because the two ways a signal fails to arrive look identical
+			// from here: nobody sent one, and the server refused the one that
+			// was sent.
+			line += " (authorized senders only)"
+		}
+		if deadline := wait.GetDeadline(); deadline != nil {
+			if left := deadline.AsTime().Sub(now); left > 0 {
+				line += fmt.Sprintf(", lapsing in %s", roundedDuration(left))
+			} else {
+				line += ", lapsing now"
+			}
+		}
+
+		lines = append(lines, line)
+	}
+
+	if progress.GetPendingWaitsTruncated() {
+		lines = append(lines, "and more gates than this run reports")
+	}
+
+	return lines
 }
 
 // pendingActivityLines renders what Temporal is retrying, one sentence each.

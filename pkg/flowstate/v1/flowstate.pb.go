@@ -5207,8 +5207,40 @@ type RunProgress struct {
 	// budget it is measured against is per segment too. It is progress against a
 	// suspend, not against the workload.
 	CompletedSteps int32 `protobuf:"varint,3,opt,name=completed_steps,json=completedSteps,proto3" json:"completed_steps,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// PendingWaits are the signal waits the run is parked on right now.
+	//
+	// Here rather than in a message of its own beside `progress` on GetResponse,
+	// and rather than behind a second query: one query already reaches the worker
+	// for exactly this run's live state, the answer is the same size class as a
+	// step id and a short path, and it is answerable from the same moment. A
+	// second query would cost a second round trip on every `flow get` of a
+	// running run to learn something the first one already had in hand. The
+	// separate query [EntityState] gets is the counter-example that proves the
+	// rule: that answer can be as large as an author's own `vars:`, which is why
+	// it carries its own bound and its own cost.
+	//
+	// Empty is a real answer and a different one from unset. An unset
+	// [RunProgress] means no worker answered (see GetResponse.progress); an empty
+	// list inside one that *is* set means this run is parked on nothing, which is
+	// to say it is working rather than waiting.
+	//
+	// Where a position stops at the boundary of concurrent work, this does not:
+	// a position is singular and a set of waits is not, so a run holding two
+	// gates open in two parallel branches reports both.
+	PendingWaits []*PendingWait `protobuf:"bytes,4,rep,name=pending_waits,json=pendingWaits,proto3" json:"pending_waits,omitempty"`
+	// PendingWaitsTruncated is true when this answer reports fewer waits than the
+	// run is actually parked on, because the run held more than the reporting
+	// bound (`v1.MaxPendingWaits`, in `pkg/flowstate/v1/waits.go`, which both drivers read).
+	//
+	// A flag rather than silence, for [EntityState.truncated]'s reason: a reader
+	// must never mistake "some of the waits" for "all of the waits". Unlike that
+	// field it keeps the entries it did collect, because the bound here is a
+	// count rather than a size, and the first waits of a run holding hundreds are
+	// still the answer to "what is this parked on" rather than a partial map
+	// whose keys a caller might index by.
+	PendingWaitsTruncated bool `protobuf:"varint,5,opt,name=pending_waits_truncated,json=pendingWaitsTruncated,proto3" json:"pending_waits_truncated,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *RunProgress) Reset() {
@@ -5260,6 +5292,149 @@ func (x *RunProgress) GetCompletedSteps() int32 {
 		return x.CompletedSteps
 	}
 	return 0
+}
+
+func (x *RunProgress) GetPendingWaits() []*PendingWait {
+	if x != nil {
+		return x.PendingWaits
+	}
+	return nil
+}
+
+func (x *RunProgress) GetPendingWaitsTruncated() bool {
+	if x != nil {
+		return x.PendingWaitsTruncated
+	}
+	return false
+}
+
+// PendingWait is one signal wait a run is parked on right now, answered by the
+// running workflow itself through the same query [RunProgress] is.
+//
+// Signal waits only. A run asleep on a timer is waiting for nothing anyone can
+// do anything about and its deadline is already implied by the step it is on,
+// while a run parked on a `wait_for_signal:` is waiting on a *person* - and
+// "which gate, and may I open it" is the question that could not be answered
+// before this existed. An operator holding a run id had no way to learn the
+// signal name to send.
+//
+// # Everything here is non-secret by construction
+//
+// A step id, a path of step ids, a signal name and a deadline: all four are
+// written in the specification by its author or computed from a timeout the
+// author wrote, and none is derived from a task's inputs, a response body, or a
+// resolved secret. That is the same discipline `v1.Phase` enforces with an
+// unexported field, applied to a projection whose members happen to already be
+// names rather than values. A payload a sender delivered is deliberately not
+// here: that is the one thing about a wait that could carry anything.
+type PendingWait struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// StepId is the waiting step's own id.
+	//
+	// The waiting step, not [RunProgress.step_id]'s top-level one, and the
+	// difference is what makes this useful: two gates open at once in two
+	// parallel branches share a top-level step, so reporting that one would give
+	// both entries the same name and neither an answer.
+	StepId string `protobuf:"bytes,1,opt,name=step_id,json=stepId,proto3" json:"step_id,omitempty"`
+	// Path is the position of the waiting step from the top-level step inward,
+	// outermost first, excluding the waiting step itself: a wait inside a loop
+	// body reports the loop.
+	//
+	// Empty for a top-level wait, and empty inside concurrent work for the reason
+	// [RunProgress.path] stops there - the run has no single position to describe
+	// that wait's ancestry with. StepId and SignalName are exact in both cases,
+	// which is what an operator needs to act.
+	Path []string `protobuf:"bytes,2,rep,name=path,proto3" json:"path,omitempty"`
+	// SignalName is the name a sender must deliver to release this wait. It is
+	// the string `flow signal <run> <name>` takes.
+	SignalName string `protobuf:"bytes,3,opt,name=signal_name,json=signalName,proto3" json:"signal_name,omitempty"`
+	// Deadline is when this wait lapses of its own accord, set only where the
+	// author wrote a `timeout:`.
+	//
+	// Unset means the gate blocks until somebody acts, which is a different
+	// situation and not a missing value: it is the spelling this schema
+	// recommends for an approval, and a run parked on one will wait as long as
+	// the run itself is allowed to live.
+	Deadline *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=deadline,proto3,oneof" json:"deadline,omitempty"`
+	// Policed is true when the workflow's own `signals:` declares a policy for
+	// SignalName, so a delivery is authorized against it before it reaches this
+	// step.
+	//
+	// Reported because the two failure modes look identical from outside: a
+	// signal sent to an unpoliced name that nobody is waiting for, and a signal
+	// refused by a policy, both leave the run parked exactly as it was. Read from
+	// the top-level workflow's declarations, which is the same set the server
+	// records on the run and checks a delivery against - a called workflow's own
+	// `signals:` is not what authorizes a delivery to this run, so it is not what
+	// is reported here either.
+	Policed       bool `protobuf:"varint,5,opt,name=policed,proto3" json:"policed,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PendingWait) Reset() {
+	*x = PendingWait{}
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[40]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PendingWait) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PendingWait) ProtoMessage() {}
+
+func (x *PendingWait) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[40]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PendingWait.ProtoReflect.Descriptor instead.
+func (*PendingWait) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{40}
+}
+
+func (x *PendingWait) GetStepId() string {
+	if x != nil {
+		return x.StepId
+	}
+	return ""
+}
+
+func (x *PendingWait) GetPath() []string {
+	if x != nil {
+		return x.Path
+	}
+	return nil
+}
+
+func (x *PendingWait) GetSignalName() string {
+	if x != nil {
+		return x.SignalName
+	}
+	return ""
+}
+
+func (x *PendingWait) GetDeadline() *timestamppb.Timestamp {
+	if x != nil {
+		return x.Deadline
+	}
+	return nil
+}
+
+func (x *PendingWait) GetPoliced() bool {
+	if x != nil {
+		return x.Policed
+	}
+	return false
 }
 
 // Diagnostic is one problem found in a Flowfile, positioned in its source.
@@ -5324,7 +5499,7 @@ type Diagnostic struct {
 
 func (x *Diagnostic) Reset() {
 	*x = Diagnostic{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[40]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5336,7 +5511,7 @@ func (x *Diagnostic) String() string {
 func (*Diagnostic) ProtoMessage() {}
 
 func (x *Diagnostic) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[40]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5349,7 +5524,7 @@ func (x *Diagnostic) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Diagnostic.ProtoReflect.Descriptor instead.
 func (*Diagnostic) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{40}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *Diagnostic) GetLine() uint32 {
@@ -5430,7 +5605,7 @@ type DiagnosticReport struct {
 
 func (x *DiagnosticReport) Reset() {
 	*x = DiagnosticReport{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[41]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5442,7 +5617,7 @@ func (x *DiagnosticReport) String() string {
 func (*DiagnosticReport) ProtoMessage() {}
 
 func (x *DiagnosticReport) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[41]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5455,7 +5630,7 @@ func (x *DiagnosticReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DiagnosticReport.ProtoReflect.Descriptor instead.
 func (*DiagnosticReport) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{41}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *DiagnosticReport) GetFile() string {
@@ -5491,7 +5666,7 @@ type ValidationReport struct {
 
 func (x *ValidationReport) Reset() {
 	*x = ValidationReport{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[42]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5503,7 +5678,7 @@ func (x *ValidationReport) String() string {
 func (*ValidationReport) ProtoMessage() {}
 
 func (x *ValidationReport) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[42]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5516,7 +5691,7 @@ func (x *ValidationReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ValidationReport.ProtoReflect.Descriptor instead.
 func (*ValidationReport) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{42}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *ValidationReport) GetFiles() []*DiagnosticReport {
@@ -5543,7 +5718,7 @@ type FixChange struct {
 
 func (x *FixChange) Reset() {
 	*x = FixChange{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[43]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5555,7 +5730,7 @@ func (x *FixChange) String() string {
 func (*FixChange) ProtoMessage() {}
 
 func (x *FixChange) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[43]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5568,7 +5743,7 @@ func (x *FixChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FixChange.ProtoReflect.Descriptor instead.
 func (*FixChange) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{43}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *FixChange) GetLine() uint32 {
@@ -5616,7 +5791,7 @@ type FixReport struct {
 
 func (x *FixReport) Reset() {
 	*x = FixReport{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[44]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5628,7 +5803,7 @@ func (x *FixReport) String() string {
 func (*FixReport) ProtoMessage() {}
 
 func (x *FixReport) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[44]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5641,7 +5816,7 @@ func (x *FixReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FixReport.ProtoReflect.Descriptor instead.
 func (*FixReport) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{44}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *FixReport) GetFile() string {
@@ -5702,7 +5877,7 @@ type FmtReport struct {
 
 func (x *FmtReport) Reset() {
 	*x = FmtReport{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[45]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5714,7 +5889,7 @@ func (x *FmtReport) String() string {
 func (*FmtReport) ProtoMessage() {}
 
 func (x *FmtReport) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[45]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5727,7 +5902,7 @@ func (x *FmtReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FmtReport.ProtoReflect.Descriptor instead.
 func (*FmtReport) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{45}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *FmtReport) GetFile() string {
@@ -5767,7 +5942,7 @@ type FixReports struct {
 
 func (x *FixReports) Reset() {
 	*x = FixReports{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[46]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5779,7 +5954,7 @@ func (x *FixReports) String() string {
 func (*FixReports) ProtoMessage() {}
 
 func (x *FixReports) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[46]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5792,7 +5967,7 @@ func (x *FixReports) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FixReports.ProtoReflect.Descriptor instead.
 func (*FixReports) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{46}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *FixReports) GetFiles() []*FixReport {
@@ -5814,7 +5989,7 @@ type FmtReports struct {
 
 func (x *FmtReports) Reset() {
 	*x = FmtReports{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[47]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5826,7 +6001,7 @@ func (x *FmtReports) String() string {
 func (*FmtReports) ProtoMessage() {}
 
 func (x *FmtReports) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[47]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5839,7 +6014,7 @@ func (x *FmtReports) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FmtReports.ProtoReflect.Descriptor instead.
 func (*FmtReports) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{47}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *FmtReports) GetFiles() []*FmtReport {
@@ -5883,7 +6058,7 @@ type TestCase struct {
 
 func (x *TestCase) Reset() {
 	*x = TestCase{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[48]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5895,7 +6070,7 @@ func (x *TestCase) String() string {
 func (*TestCase) ProtoMessage() {}
 
 func (x *TestCase) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[48]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5908,7 +6083,7 @@ func (x *TestCase) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TestCase.ProtoReflect.Descriptor instead.
 func (*TestCase) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{48}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *TestCase) GetName() string {
@@ -5969,7 +6144,7 @@ type TestReport struct {
 
 func (x *TestReport) Reset() {
 	*x = TestReport{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[49]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5981,7 +6156,7 @@ func (x *TestReport) String() string {
 func (*TestReport) ProtoMessage() {}
 
 func (x *TestReport) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[49]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5994,7 +6169,7 @@ func (x *TestReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TestReport.ProtoReflect.Descriptor instead.
 func (*TestReport) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{49}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *TestReport) GetFile() string {
@@ -6031,7 +6206,7 @@ type TestReports struct {
 
 func (x *TestReports) Reset() {
 	*x = TestReports{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[50]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6043,7 +6218,7 @@ func (x *TestReports) String() string {
 func (*TestReports) ProtoMessage() {}
 
 func (x *TestReports) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[50]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6056,7 +6231,7 @@ func (x *TestReports) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TestReports.ProtoReflect.Descriptor instead.
 func (*TestReports) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{50}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *TestReports) GetFiles() []*TestReport {
@@ -6126,7 +6301,7 @@ type WorkloadIdentity struct {
 
 func (x *WorkloadIdentity) Reset() {
 	*x = WorkloadIdentity{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[51]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6138,7 +6313,7 @@ func (x *WorkloadIdentity) String() string {
 func (*WorkloadIdentity) ProtoMessage() {}
 
 func (x *WorkloadIdentity) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[51]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6151,7 +6326,7 @@ func (x *WorkloadIdentity) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkloadIdentity.ProtoReflect.Descriptor instead.
 func (*WorkloadIdentity) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{51}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *WorkloadIdentity) GetSubject() string {
@@ -6289,7 +6464,7 @@ type Frame struct {
 
 func (x *Frame) Reset() {
 	*x = Frame{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[52]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6301,7 +6476,7 @@ func (x *Frame) String() string {
 func (*Frame) ProtoMessage() {}
 
 func (x *Frame) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[52]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6314,7 +6489,7 @@ func (x *Frame) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Frame.ProtoReflect.Descriptor instead.
 func (*Frame) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{52}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *Frame) GetNextNode() int32 {
@@ -6447,7 +6622,7 @@ type RunState struct {
 
 func (x *RunState) Reset() {
 	*x = RunState{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[53]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6459,7 +6634,7 @@ func (x *RunState) String() string {
 func (*RunState) ProtoMessage() {}
 
 func (x *RunState) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[53]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6472,7 +6647,7 @@ func (x *RunState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunState.ProtoReflect.Descriptor instead.
 func (*RunState) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{53}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *RunState) GetWorkflow() *Workflow {
@@ -6578,7 +6753,7 @@ type SignalRequest struct {
 
 func (x *SignalRequest) Reset() {
 	*x = SignalRequest{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[54]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6590,7 +6765,7 @@ func (x *SignalRequest) String() string {
 func (*SignalRequest) ProtoMessage() {}
 
 func (x *SignalRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[54]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6603,7 +6778,7 @@ func (x *SignalRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignalRequest.ProtoReflect.Descriptor instead.
 func (*SignalRequest) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{54}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *SignalRequest) GetWorkflowId() string {
@@ -6642,7 +6817,7 @@ type SignalResponse struct {
 
 func (x *SignalResponse) Reset() {
 	*x = SignalResponse{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[55]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6654,7 +6829,7 @@ func (x *SignalResponse) String() string {
 func (*SignalResponse) ProtoMessage() {}
 
 func (x *SignalResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[55]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6667,7 +6842,7 @@ func (x *SignalResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignalResponse.ProtoReflect.Descriptor instead.
 func (*SignalResponse) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{55}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{56}
 }
 
 // SignalWithStartRequest delivers a signal to an entity, creating it first if it
@@ -6725,7 +6900,7 @@ type SignalWithStartRequest struct {
 
 func (x *SignalWithStartRequest) Reset() {
 	*x = SignalWithStartRequest{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[56]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6737,7 +6912,7 @@ func (x *SignalWithStartRequest) String() string {
 func (*SignalWithStartRequest) ProtoMessage() {}
 
 func (x *SignalWithStartRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[56]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6750,7 +6925,7 @@ func (x *SignalWithStartRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignalWithStartRequest.ProtoReflect.Descriptor instead.
 func (*SignalWithStartRequest) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{56}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *SignalWithStartRequest) GetEntityKey() string {
@@ -6805,7 +6980,7 @@ type SignalWithStartResponse struct {
 
 func (x *SignalWithStartResponse) Reset() {
 	*x = SignalWithStartResponse{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[57]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6817,7 +6992,7 @@ func (x *SignalWithStartResponse) String() string {
 func (*SignalWithStartResponse) ProtoMessage() {}
 
 func (x *SignalWithStartResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[57]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6830,7 +7005,7 @@ func (x *SignalWithStartResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignalWithStartResponse.ProtoReflect.Descriptor instead.
 func (*SignalWithStartResponse) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{57}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{58}
 }
 
 func (x *SignalWithStartResponse) GetWorkflowId() string {
@@ -6875,7 +7050,7 @@ type CancelRequest struct {
 
 func (x *CancelRequest) Reset() {
 	*x = CancelRequest{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[58]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6887,7 +7062,7 @@ func (x *CancelRequest) String() string {
 func (*CancelRequest) ProtoMessage() {}
 
 func (x *CancelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[58]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6900,7 +7075,7 @@ func (x *CancelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelRequest.ProtoReflect.Descriptor instead.
 func (*CancelRequest) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{58}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *CancelRequest) GetWorkflowId() string {
@@ -6925,7 +7100,7 @@ type CancelResponse struct {
 
 func (x *CancelResponse) Reset() {
 	*x = CancelResponse{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[59]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6937,7 +7112,7 @@ func (x *CancelResponse) String() string {
 func (*CancelResponse) ProtoMessage() {}
 
 func (x *CancelResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[59]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6950,7 +7125,7 @@ func (x *CancelResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelResponse.ProtoReflect.Descriptor instead.
 func (*CancelResponse) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{59}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{60}
 }
 
 // TerminateRequest stops a run immediately, without letting it clean up.
@@ -6978,7 +7153,7 @@ type TerminateRequest struct {
 
 func (x *TerminateRequest) Reset() {
 	*x = TerminateRequest{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[60]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6990,7 +7165,7 @@ func (x *TerminateRequest) String() string {
 func (*TerminateRequest) ProtoMessage() {}
 
 func (x *TerminateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[60]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7003,7 +7178,7 @@ func (x *TerminateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TerminateRequest.ProtoReflect.Descriptor instead.
 func (*TerminateRequest) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{60}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *TerminateRequest) GetWorkflowId() string {
@@ -7035,7 +7210,7 @@ type TerminateResponse struct {
 
 func (x *TerminateResponse) Reset() {
 	*x = TerminateResponse{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[61]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7047,7 +7222,7 @@ func (x *TerminateResponse) String() string {
 func (*TerminateResponse) ProtoMessage() {}
 
 func (x *TerminateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[61]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7060,7 +7235,7 @@ func (x *TerminateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TerminateResponse.ProtoReflect.Descriptor instead.
 func (*TerminateResponse) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{61}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{62}
 }
 
 // ListRequest asks for the caller's runs.
@@ -7126,7 +7301,7 @@ type ListRequest struct {
 
 func (x *ListRequest) Reset() {
 	*x = ListRequest{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[62]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7138,7 +7313,7 @@ func (x *ListRequest) String() string {
 func (*ListRequest) ProtoMessage() {}
 
 func (x *ListRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[62]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7151,7 +7326,7 @@ func (x *ListRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRequest.ProtoReflect.Descriptor instead.
 func (*ListRequest) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{62}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{63}
 }
 
 func (x *ListRequest) GetPageSize() int32 {
@@ -7210,7 +7385,7 @@ type RunSummary struct {
 
 func (x *RunSummary) Reset() {
 	*x = RunSummary{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[63]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[64]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7222,7 +7397,7 @@ func (x *RunSummary) String() string {
 func (*RunSummary) ProtoMessage() {}
 
 func (x *RunSummary) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[63]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[64]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7235,7 +7410,7 @@ func (x *RunSummary) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunSummary.ProtoReflect.Descriptor instead.
 func (*RunSummary) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{63}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{64}
 }
 
 func (x *RunSummary) GetWorkflowId() string {
@@ -7300,7 +7475,7 @@ type ListResponse struct {
 
 func (x *ListResponse) Reset() {
 	*x = ListResponse{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[64]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[65]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7312,7 +7487,7 @@ func (x *ListResponse) String() string {
 func (*ListResponse) ProtoMessage() {}
 
 func (x *ListResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[64]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[65]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7325,7 +7500,7 @@ func (x *ListResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListResponse.ProtoReflect.Descriptor instead.
 func (*ListResponse) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{64}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{65}
 }
 
 func (x *ListResponse) GetRuns() []*RunSummary {
@@ -7362,7 +7537,7 @@ type SourceFile struct {
 
 func (x *SourceFile) Reset() {
 	*x = SourceFile{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[65]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[66]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7374,7 +7549,7 @@ func (x *SourceFile) String() string {
 func (*SourceFile) ProtoMessage() {}
 
 func (x *SourceFile) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[65]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[66]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7387,7 +7562,7 @@ func (x *SourceFile) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SourceFile.ProtoReflect.Descriptor instead.
 func (*SourceFile) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{65}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{66}
 }
 
 func (x *SourceFile) GetName() string {
@@ -7419,7 +7594,7 @@ type ValidateRequest struct {
 
 func (x *ValidateRequest) Reset() {
 	*x = ValidateRequest{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[66]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[67]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7431,7 +7606,7 @@ func (x *ValidateRequest) String() string {
 func (*ValidateRequest) ProtoMessage() {}
 
 func (x *ValidateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[66]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[67]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7444,7 +7619,7 @@ func (x *ValidateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ValidateRequest.ProtoReflect.Descriptor instead.
 func (*ValidateRequest) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{66}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{67}
 }
 
 func (x *ValidateRequest) GetFiles() []*SourceFile {
@@ -7469,7 +7644,7 @@ type ValidateResponse struct {
 
 func (x *ValidateResponse) Reset() {
 	*x = ValidateResponse{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[67]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[68]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7481,7 +7656,7 @@ func (x *ValidateResponse) String() string {
 func (*ValidateResponse) ProtoMessage() {}
 
 func (x *ValidateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[67]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[68]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7494,7 +7669,7 @@ func (x *ValidateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ValidateResponse.ProtoReflect.Descriptor instead.
 func (*ValidateResponse) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{67}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{68}
 }
 
 func (x *ValidateResponse) GetReport() *ValidationReport {
@@ -7519,7 +7694,7 @@ type CompileRequest struct {
 
 func (x *CompileRequest) Reset() {
 	*x = CompileRequest{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[68]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[69]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7531,7 +7706,7 @@ func (x *CompileRequest) String() string {
 func (*CompileRequest) ProtoMessage() {}
 
 func (x *CompileRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[68]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[69]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7544,7 +7719,7 @@ func (x *CompileRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompileRequest.ProtoReflect.Descriptor instead.
 func (*CompileRequest) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{68}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{69}
 }
 
 func (x *CompileRequest) GetFile() *SourceFile {
@@ -7569,7 +7744,7 @@ type CompileResponse struct {
 
 func (x *CompileResponse) Reset() {
 	*x = CompileResponse{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[69]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[70]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7581,7 +7756,7 @@ func (x *CompileResponse) String() string {
 func (*CompileResponse) ProtoMessage() {}
 
 func (x *CompileResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[69]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[70]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7594,7 +7769,7 @@ func (x *CompileResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompileResponse.ProtoReflect.Descriptor instead.
 func (*CompileResponse) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{69}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{70}
 }
 
 func (x *CompileResponse) GetWorkflow() *Workflow {
@@ -7621,7 +7796,7 @@ type GetCatalogRequest struct {
 
 func (x *GetCatalogRequest) Reset() {
 	*x = GetCatalogRequest{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[70]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[71]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7633,7 +7808,7 @@ func (x *GetCatalogRequest) String() string {
 func (*GetCatalogRequest) ProtoMessage() {}
 
 func (x *GetCatalogRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[70]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[71]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7646,7 +7821,7 @@ func (x *GetCatalogRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCatalogRequest.ProtoReflect.Descriptor instead.
 func (*GetCatalogRequest) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{70}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{71}
 }
 
 // GetCatalogResponse is the deployment's capability.
@@ -7659,7 +7834,7 @@ type GetCatalogResponse struct {
 
 func (x *GetCatalogResponse) Reset() {
 	*x = GetCatalogResponse{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[71]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[72]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7671,7 +7846,7 @@ func (x *GetCatalogResponse) String() string {
 func (*GetCatalogResponse) ProtoMessage() {}
 
 func (x *GetCatalogResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[71]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[72]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7684,7 +7859,7 @@ func (x *GetCatalogResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCatalogResponse.ProtoReflect.Descriptor instead.
 func (*GetCatalogResponse) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{71}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{72}
 }
 
 func (x *GetCatalogResponse) GetCatalog() *TaskCatalog {
@@ -7713,7 +7888,7 @@ type ScheduleActionResult struct {
 
 func (x *ScheduleActionResult) Reset() {
 	*x = ScheduleActionResult{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[72]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[73]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7725,7 +7900,7 @@ func (x *ScheduleActionResult) String() string {
 func (*ScheduleActionResult) ProtoMessage() {}
 
 func (x *ScheduleActionResult) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[72]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[73]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7738,7 +7913,7 @@ func (x *ScheduleActionResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScheduleActionResult.ProtoReflect.Descriptor instead.
 func (*ScheduleActionResult) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{72}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{73}
 }
 
 func (x *ScheduleActionResult) GetScheduleTime() *timestamppb.Timestamp {
@@ -7794,7 +7969,7 @@ type ScheduleSummary struct {
 
 func (x *ScheduleSummary) Reset() {
 	*x = ScheduleSummary{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[73]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[74]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7806,7 +7981,7 @@ func (x *ScheduleSummary) String() string {
 func (*ScheduleSummary) ProtoMessage() {}
 
 func (x *ScheduleSummary) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[73]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[74]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7819,7 +7994,7 @@ func (x *ScheduleSummary) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScheduleSummary.ProtoReflect.Descriptor instead.
 func (*ScheduleSummary) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{73}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{74}
 }
 
 func (x *ScheduleSummary) GetName() string {
@@ -7902,7 +8077,7 @@ type ScheduleDescription struct {
 
 func (x *ScheduleDescription) Reset() {
 	*x = ScheduleDescription{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[74]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[75]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7914,7 +8089,7 @@ func (x *ScheduleDescription) String() string {
 func (*ScheduleDescription) ProtoMessage() {}
 
 func (x *ScheduleDescription) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[74]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[75]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7927,7 +8102,7 @@ func (x *ScheduleDescription) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScheduleDescription.ProtoReflect.Descriptor instead.
 func (*ScheduleDescription) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{74}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{75}
 }
 
 func (x *ScheduleDescription) GetName() string {
@@ -8041,7 +8216,7 @@ type CreateScheduleRequest struct {
 
 func (x *CreateScheduleRequest) Reset() {
 	*x = CreateScheduleRequest{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[75]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[76]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8053,7 +8228,7 @@ func (x *CreateScheduleRequest) String() string {
 func (*CreateScheduleRequest) ProtoMessage() {}
 
 func (x *CreateScheduleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[75]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[76]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8066,7 +8241,7 @@ func (x *CreateScheduleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateScheduleRequest.ProtoReflect.Descriptor instead.
 func (*CreateScheduleRequest) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{75}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{76}
 }
 
 func (x *CreateScheduleRequest) GetWorkflow() *Workflow {
@@ -8111,7 +8286,7 @@ type CreateScheduleResponse struct {
 
 func (x *CreateScheduleResponse) Reset() {
 	*x = CreateScheduleResponse{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[76]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[77]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8123,7 +8298,7 @@ func (x *CreateScheduleResponse) String() string {
 func (*CreateScheduleResponse) ProtoMessage() {}
 
 func (x *CreateScheduleResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[76]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[77]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8136,7 +8311,7 @@ func (x *CreateScheduleResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateScheduleResponse.ProtoReflect.Descriptor instead.
 func (*CreateScheduleResponse) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{76}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{77}
 }
 
 func (x *CreateScheduleResponse) GetSchedule() *ScheduleDescription {
@@ -8169,7 +8344,7 @@ type ListSchedulesRequest struct {
 
 func (x *ListSchedulesRequest) Reset() {
 	*x = ListSchedulesRequest{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[77]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[78]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8181,7 +8356,7 @@ func (x *ListSchedulesRequest) String() string {
 func (*ListSchedulesRequest) ProtoMessage() {}
 
 func (x *ListSchedulesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[77]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[78]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8194,7 +8369,7 @@ func (x *ListSchedulesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSchedulesRequest.ProtoReflect.Descriptor instead.
 func (*ListSchedulesRequest) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{77}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{78}
 }
 
 // ListSchedulesResponse returns the caller's schedules.
@@ -8216,7 +8391,7 @@ type ListSchedulesResponse struct {
 
 func (x *ListSchedulesResponse) Reset() {
 	*x = ListSchedulesResponse{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[78]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[79]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8228,7 +8403,7 @@ func (x *ListSchedulesResponse) String() string {
 func (*ListSchedulesResponse) ProtoMessage() {}
 
 func (x *ListSchedulesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[78]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[79]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8241,7 +8416,7 @@ func (x *ListSchedulesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSchedulesResponse.ProtoReflect.Descriptor instead.
 func (*ListSchedulesResponse) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{78}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{79}
 }
 
 func (x *ListSchedulesResponse) GetSchedules() []*ScheduleSummary {
@@ -8268,7 +8443,7 @@ type DescribeScheduleRequest struct {
 
 func (x *DescribeScheduleRequest) Reset() {
 	*x = DescribeScheduleRequest{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[79]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[80]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8280,7 +8455,7 @@ func (x *DescribeScheduleRequest) String() string {
 func (*DescribeScheduleRequest) ProtoMessage() {}
 
 func (x *DescribeScheduleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[79]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[80]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8293,7 +8468,7 @@ func (x *DescribeScheduleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DescribeScheduleRequest.ProtoReflect.Descriptor instead.
 func (*DescribeScheduleRequest) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{79}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{80}
 }
 
 func (x *DescribeScheduleRequest) GetName() string {
@@ -8313,7 +8488,7 @@ type DescribeScheduleResponse struct {
 
 func (x *DescribeScheduleResponse) Reset() {
 	*x = DescribeScheduleResponse{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[80]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[81]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8325,7 +8500,7 @@ func (x *DescribeScheduleResponse) String() string {
 func (*DescribeScheduleResponse) ProtoMessage() {}
 
 func (x *DescribeScheduleResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[80]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[81]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8338,7 +8513,7 @@ func (x *DescribeScheduleResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DescribeScheduleResponse.ProtoReflect.Descriptor instead.
 func (*DescribeScheduleResponse) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{80}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{81}
 }
 
 func (x *DescribeScheduleResponse) GetSchedule() *ScheduleDescription {
@@ -8358,7 +8533,7 @@ type DeleteScheduleRequest struct {
 
 func (x *DeleteScheduleRequest) Reset() {
 	*x = DeleteScheduleRequest{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[81]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[82]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8370,7 +8545,7 @@ func (x *DeleteScheduleRequest) String() string {
 func (*DeleteScheduleRequest) ProtoMessage() {}
 
 func (x *DeleteScheduleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[81]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[82]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8383,7 +8558,7 @@ func (x *DeleteScheduleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteScheduleRequest.ProtoReflect.Descriptor instead.
 func (*DeleteScheduleRequest) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{81}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{82}
 }
 
 func (x *DeleteScheduleRequest) GetName() string {
@@ -8402,7 +8577,7 @@ type DeleteScheduleResponse struct {
 
 func (x *DeleteScheduleResponse) Reset() {
 	*x = DeleteScheduleResponse{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[82]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[83]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8414,7 +8589,7 @@ func (x *DeleteScheduleResponse) String() string {
 func (*DeleteScheduleResponse) ProtoMessage() {}
 
 func (x *DeleteScheduleResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[82]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[83]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8427,7 +8602,7 @@ func (x *DeleteScheduleResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteScheduleResponse.ProtoReflect.Descriptor instead.
 func (*DeleteScheduleResponse) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{82}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{83}
 }
 
 // PauseScheduleRequest stops a schedule firing without removing it.
@@ -8446,7 +8621,7 @@ type PauseScheduleRequest struct {
 
 func (x *PauseScheduleRequest) Reset() {
 	*x = PauseScheduleRequest{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[83]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[84]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8458,7 +8633,7 @@ func (x *PauseScheduleRequest) String() string {
 func (*PauseScheduleRequest) ProtoMessage() {}
 
 func (x *PauseScheduleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[83]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[84]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8471,7 +8646,7 @@ func (x *PauseScheduleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PauseScheduleRequest.ProtoReflect.Descriptor instead.
 func (*PauseScheduleRequest) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{83}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{84}
 }
 
 func (x *PauseScheduleRequest) GetName() string {
@@ -8497,7 +8672,7 @@ type PauseScheduleResponse struct {
 
 func (x *PauseScheduleResponse) Reset() {
 	*x = PauseScheduleResponse{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[84]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[85]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8509,7 +8684,7 @@ func (x *PauseScheduleResponse) String() string {
 func (*PauseScheduleResponse) ProtoMessage() {}
 
 func (x *PauseScheduleResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[84]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[85]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8522,7 +8697,7 @@ func (x *PauseScheduleResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PauseScheduleResponse.ProtoReflect.Descriptor instead.
 func (*PauseScheduleResponse) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{84}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{85}
 }
 
 // ResumeScheduleRequest lets a paused schedule fire again.
@@ -8538,7 +8713,7 @@ type ResumeScheduleRequest struct {
 
 func (x *ResumeScheduleRequest) Reset() {
 	*x = ResumeScheduleRequest{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[85]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[86]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8550,7 +8725,7 @@ func (x *ResumeScheduleRequest) String() string {
 func (*ResumeScheduleRequest) ProtoMessage() {}
 
 func (x *ResumeScheduleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[85]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[86]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8563,7 +8738,7 @@ func (x *ResumeScheduleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResumeScheduleRequest.ProtoReflect.Descriptor instead.
 func (*ResumeScheduleRequest) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{85}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{86}
 }
 
 func (x *ResumeScheduleRequest) GetName() string {
@@ -8589,7 +8764,7 @@ type ResumeScheduleResponse struct {
 
 func (x *ResumeScheduleResponse) Reset() {
 	*x = ResumeScheduleResponse{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[86]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[87]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8601,7 +8776,7 @@ func (x *ResumeScheduleResponse) String() string {
 func (*ResumeScheduleResponse) ProtoMessage() {}
 
 func (x *ResumeScheduleResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[86]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[87]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8614,7 +8789,7 @@ func (x *ResumeScheduleResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResumeScheduleResponse.ProtoReflect.Descriptor instead.
 func (*ResumeScheduleResponse) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{86}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{87}
 }
 
 // TriggerScheduleRequest fires a schedule now, without waiting for its cadence.
@@ -8627,7 +8802,7 @@ type TriggerScheduleRequest struct {
 
 func (x *TriggerScheduleRequest) Reset() {
 	*x = TriggerScheduleRequest{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[87]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[88]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8639,7 +8814,7 @@ func (x *TriggerScheduleRequest) String() string {
 func (*TriggerScheduleRequest) ProtoMessage() {}
 
 func (x *TriggerScheduleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[87]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[88]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8652,7 +8827,7 @@ func (x *TriggerScheduleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TriggerScheduleRequest.ProtoReflect.Descriptor instead.
 func (*TriggerScheduleRequest) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{87}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{88}
 }
 
 func (x *TriggerScheduleRequest) GetName() string {
@@ -8677,7 +8852,7 @@ type TriggerScheduleResponse struct {
 
 func (x *TriggerScheduleResponse) Reset() {
 	*x = TriggerScheduleResponse{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[88]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[89]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8689,7 +8864,7 @@ func (x *TriggerScheduleResponse) String() string {
 func (*TriggerScheduleResponse) ProtoMessage() {}
 
 func (x *TriggerScheduleResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[88]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[89]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8702,7 +8877,7 @@ func (x *TriggerScheduleResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TriggerScheduleResponse.ProtoReflect.Descriptor instead.
 func (*TriggerScheduleResponse) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{88}
+	return file_flowstate_v1_flowstate_proto_rawDescGZIP(), []int{89}
 }
 
 // StepOutputs is a map of step IDs to their outputs. Each step's outputs are
@@ -8752,7 +8927,7 @@ type Workflow_StepOutputs struct {
 
 func (x *Workflow_StepOutputs) Reset() {
 	*x = Workflow_StepOutputs{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[89]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[90]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8764,7 +8939,7 @@ func (x *Workflow_StepOutputs) String() string {
 func (*Workflow_StepOutputs) ProtoMessage() {}
 
 func (x *Workflow_StepOutputs) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[89]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[90]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8806,7 +8981,7 @@ type Node_Outputs struct {
 
 func (x *Node_Outputs) Reset() {
 	*x = Node_Outputs{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[96]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[97]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8818,7 +8993,7 @@ func (x *Node_Outputs) String() string {
 func (*Node_Outputs) ProtoMessage() {}
 
 func (x *Node_Outputs) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[96]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[97]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8850,7 +9025,7 @@ type Parallel_Branch struct {
 
 func (x *Parallel_Branch) Reset() {
 	*x = Parallel_Branch{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[103]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[104]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8862,7 +9037,7 @@ func (x *Parallel_Branch) String() string {
 func (*Parallel_Branch) ProtoMessage() {}
 
 func (x *Parallel_Branch) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[103]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[104]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8895,7 +9070,7 @@ type Value_Error struct {
 
 func (x *Value_Error) Reset() {
 	*x = Value_Error{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[105]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[106]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8907,7 +9082,7 @@ func (x *Value_Error) String() string {
 func (*Value_Error) ProtoMessage() {}
 
 func (x *Value_Error) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[105]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[106]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8969,7 +9144,7 @@ type Value_Structure struct {
 
 func (x *Value_Structure) Reset() {
 	*x = Value_Structure{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[106]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[107]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8981,7 +9156,7 @@ func (x *Value_Structure) String() string {
 func (*Value_Structure) ProtoMessage() {}
 
 func (x *Value_Structure) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[106]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[107]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9048,7 +9223,7 @@ type Value_Structure_List struct {
 
 func (x *Value_Structure_List) Reset() {
 	*x = Value_Structure_List{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[107]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[108]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9060,7 +9235,7 @@ func (x *Value_Structure_List) String() string {
 func (*Value_Structure_List) ProtoMessage() {}
 
 func (x *Value_Structure_List) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[107]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[108]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9096,7 +9271,7 @@ type Value_Structure_Map struct {
 
 func (x *Value_Structure_Map) Reset() {
 	*x = Value_Structure_Map{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[108]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[109]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9108,7 +9283,7 @@ func (x *Value_Structure_Map) String() string {
 func (*Value_Structure_Map) ProtoMessage() {}
 
 func (x *Value_Structure_Map) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[108]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[109]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9157,7 +9332,7 @@ type Task_Log struct {
 
 func (x *Task_Log) Reset() {
 	*x = Task_Log{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[110]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[111]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9169,7 +9344,7 @@ func (x *Task_Log) String() string {
 func (*Task_Log) ProtoMessage() {}
 
 func (x *Task_Log) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[110]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[111]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9197,7 +9372,7 @@ type Task_HTTP struct {
 
 func (x *Task_HTTP) Reset() {
 	*x = Task_HTTP{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[111]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[112]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9209,7 +9384,7 @@ func (x *Task_HTTP) String() string {
 func (*Task_HTTP) ProtoMessage() {}
 
 func (x *Task_HTTP) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[111]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[112]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9254,7 +9429,7 @@ type Task_Log_Inputs struct {
 
 func (x *Task_Log_Inputs) Reset() {
 	*x = Task_Log_Inputs{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[113]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[114]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9266,7 +9441,7 @@ func (x *Task_Log_Inputs) String() string {
 func (*Task_Log_Inputs) ProtoMessage() {}
 
 func (x *Task_Log_Inputs) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[113]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[114]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9317,7 +9492,7 @@ type Task_Log_Outputs struct {
 
 func (x *Task_Log_Outputs) Reset() {
 	*x = Task_Log_Outputs{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[114]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[115]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9329,7 +9504,7 @@ func (x *Task_Log_Outputs) String() string {
 func (*Task_Log_Outputs) ProtoMessage() {}
 
 func (x *Task_Log_Outputs) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[114]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[115]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9482,7 +9657,7 @@ type Task_HTTP_Inputs struct {
 
 func (x *Task_HTTP_Inputs) Reset() {
 	*x = Task_HTTP_Inputs{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[116]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[117]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9494,7 +9669,7 @@ func (x *Task_HTTP_Inputs) String() string {
 func (*Task_HTTP_Inputs) ProtoMessage() {}
 
 func (x *Task_HTTP_Inputs) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[116]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[117]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9639,7 +9814,7 @@ type Task_HTTP_Outputs struct {
 
 func (x *Task_HTTP_Outputs) Reset() {
 	*x = Task_HTTP_Outputs{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[117]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[118]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9651,7 +9826,7 @@ func (x *Task_HTTP_Outputs) String() string {
 func (*Task_HTTP_Outputs) ProtoMessage() {}
 
 func (x *Task_HTTP_Outputs) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[117]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[118]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9723,7 +9898,7 @@ type RunResponse_Error struct {
 
 func (x *RunResponse_Error) Reset() {
 	*x = RunResponse_Error{}
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[124]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[125]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9735,7 +9910,7 @@ func (x *RunResponse_Error) String() string {
 func (*RunResponse_Error) ProtoMessage() {}
 
 func (x *RunResponse_Error) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_flowstate_proto_msgTypes[124]
+	mi := &file_flowstate_v1_flowstate_proto_msgTypes[125]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10228,11 +10403,21 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"\aattempt\x18\x01 \x01(\x05R\aattempt\x12!\n" +
 	"\flast_failure\x18\x02 \x01(\tR\vlastFailure\x12Y\n" +
 	"\x1bnext_attempt_scheduled_time\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\x18nextAttemptScheduledTime\x12\x14\n" +
-	"\x05phase\x18\x04 \x01(\tR\x05phase\"c\n" +
+	"\x05phase\x18\x04 \x01(\tR\x05phase\"\xdb\x01\n" +
 	"\vRunProgress\x12\x17\n" +
 	"\astep_id\x18\x01 \x01(\tR\x06stepId\x12\x12\n" +
 	"\x04path\x18\x02 \x03(\tR\x04path\x12'\n" +
-	"\x0fcompleted_steps\x18\x03 \x01(\x05R\x0ecompletedSteps\"\xc2\x01\n" +
+	"\x0fcompleted_steps\x18\x03 \x01(\x05R\x0ecompletedSteps\x12>\n" +
+	"\rpending_waits\x18\x04 \x03(\v2\x19.flowstate.v1.PendingWaitR\fpendingWaits\x126\n" +
+	"\x17pending_waits_truncated\x18\x05 \x01(\bR\x15pendingWaitsTruncated\"\xbf\x01\n" +
+	"\vPendingWait\x12\x17\n" +
+	"\astep_id\x18\x01 \x01(\tR\x06stepId\x12\x12\n" +
+	"\x04path\x18\x02 \x03(\tR\x04path\x12\x1f\n" +
+	"\vsignal_name\x18\x03 \x01(\tR\n" +
+	"signalName\x12;\n" +
+	"\bdeadline\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampH\x00R\bdeadline\x88\x01\x01\x12\x18\n" +
+	"\apoliced\x18\x05 \x01(\bR\apolicedB\v\n" +
+	"\t_deadline\"\xc2\x01\n" +
 	"\n" +
 	"Diagnostic\x12\x12\n" +
 	"\x04line\x18\x01 \x01(\rR\x04line\x12\x16\n" +
@@ -10493,7 +10678,7 @@ func file_flowstate_v1_flowstate_proto_rawDescGZIP() []byte {
 }
 
 var file_flowstate_v1_flowstate_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
-var file_flowstate_v1_flowstate_proto_msgTypes = make([]protoimpl.MessageInfo, 134)
+var file_flowstate_v1_flowstate_proto_msgTypes = make([]protoimpl.MessageInfo, 135)
 var file_flowstate_v1_flowstate_proto_goTypes = []any{
 	(InputDeclaration_Type)(0),       // 0: flowstate.v1.InputDeclaration.Type
 	(ScheduleTrigger_Overlap)(0),     // 1: flowstate.v1.ScheduleTrigger.Overlap
@@ -10541,124 +10726,125 @@ var file_flowstate_v1_flowstate_proto_goTypes = []any{
 	(*EntityState)(nil),              // 43: flowstate.v1.EntityState
 	(*PendingActivity)(nil),          // 44: flowstate.v1.PendingActivity
 	(*RunProgress)(nil),              // 45: flowstate.v1.RunProgress
-	(*Diagnostic)(nil),               // 46: flowstate.v1.Diagnostic
-	(*DiagnosticReport)(nil),         // 47: flowstate.v1.DiagnosticReport
-	(*ValidationReport)(nil),         // 48: flowstate.v1.ValidationReport
-	(*FixChange)(nil),                // 49: flowstate.v1.FixChange
-	(*FixReport)(nil),                // 50: flowstate.v1.FixReport
-	(*FmtReport)(nil),                // 51: flowstate.v1.FmtReport
-	(*FixReports)(nil),               // 52: flowstate.v1.FixReports
-	(*FmtReports)(nil),               // 53: flowstate.v1.FmtReports
-	(*TestCase)(nil),                 // 54: flowstate.v1.TestCase
-	(*TestReport)(nil),               // 55: flowstate.v1.TestReport
-	(*TestReports)(nil),              // 56: flowstate.v1.TestReports
-	(*WorkloadIdentity)(nil),         // 57: flowstate.v1.WorkloadIdentity
-	(*Frame)(nil),                    // 58: flowstate.v1.Frame
-	(*RunState)(nil),                 // 59: flowstate.v1.RunState
-	(*SignalRequest)(nil),            // 60: flowstate.v1.SignalRequest
-	(*SignalResponse)(nil),           // 61: flowstate.v1.SignalResponse
-	(*SignalWithStartRequest)(nil),   // 62: flowstate.v1.SignalWithStartRequest
-	(*SignalWithStartResponse)(nil),  // 63: flowstate.v1.SignalWithStartResponse
-	(*CancelRequest)(nil),            // 64: flowstate.v1.CancelRequest
-	(*CancelResponse)(nil),           // 65: flowstate.v1.CancelResponse
-	(*TerminateRequest)(nil),         // 66: flowstate.v1.TerminateRequest
-	(*TerminateResponse)(nil),        // 67: flowstate.v1.TerminateResponse
-	(*ListRequest)(nil),              // 68: flowstate.v1.ListRequest
-	(*RunSummary)(nil),               // 69: flowstate.v1.RunSummary
-	(*ListResponse)(nil),             // 70: flowstate.v1.ListResponse
-	(*SourceFile)(nil),               // 71: flowstate.v1.SourceFile
-	(*ValidateRequest)(nil),          // 72: flowstate.v1.ValidateRequest
-	(*ValidateResponse)(nil),         // 73: flowstate.v1.ValidateResponse
-	(*CompileRequest)(nil),           // 74: flowstate.v1.CompileRequest
-	(*CompileResponse)(nil),          // 75: flowstate.v1.CompileResponse
-	(*GetCatalogRequest)(nil),        // 76: flowstate.v1.GetCatalogRequest
-	(*GetCatalogResponse)(nil),       // 77: flowstate.v1.GetCatalogResponse
-	(*ScheduleActionResult)(nil),     // 78: flowstate.v1.ScheduleActionResult
-	(*ScheduleSummary)(nil),          // 79: flowstate.v1.ScheduleSummary
-	(*ScheduleDescription)(nil),      // 80: flowstate.v1.ScheduleDescription
-	(*CreateScheduleRequest)(nil),    // 81: flowstate.v1.CreateScheduleRequest
-	(*CreateScheduleResponse)(nil),   // 82: flowstate.v1.CreateScheduleResponse
-	(*ListSchedulesRequest)(nil),     // 83: flowstate.v1.ListSchedulesRequest
-	(*ListSchedulesResponse)(nil),    // 84: flowstate.v1.ListSchedulesResponse
-	(*DescribeScheduleRequest)(nil),  // 85: flowstate.v1.DescribeScheduleRequest
-	(*DescribeScheduleResponse)(nil), // 86: flowstate.v1.DescribeScheduleResponse
-	(*DeleteScheduleRequest)(nil),    // 87: flowstate.v1.DeleteScheduleRequest
-	(*DeleteScheduleResponse)(nil),   // 88: flowstate.v1.DeleteScheduleResponse
-	(*PauseScheduleRequest)(nil),     // 89: flowstate.v1.PauseScheduleRequest
-	(*PauseScheduleResponse)(nil),    // 90: flowstate.v1.PauseScheduleResponse
-	(*ResumeScheduleRequest)(nil),    // 91: flowstate.v1.ResumeScheduleRequest
-	(*ResumeScheduleResponse)(nil),   // 92: flowstate.v1.ResumeScheduleResponse
-	(*TriggerScheduleRequest)(nil),   // 93: flowstate.v1.TriggerScheduleRequest
-	(*TriggerScheduleResponse)(nil),  // 94: flowstate.v1.TriggerScheduleResponse
-	(*Workflow_StepOutputs)(nil),     // 95: flowstate.v1.Workflow.StepOutputs
-	nil,                              // 96: flowstate.v1.Workflow.LabelsEntry
-	nil,                              // 97: flowstate.v1.Workflow.VarsEntry
-	nil,                              // 98: flowstate.v1.Workflow.SignalsEntry
-	nil,                              // 99: flowstate.v1.Workflow.StepOutputs.StepValuesEntry
-	nil,                              // 100: flowstate.v1.SignalPolicyRule.ClaimsEntry
-	nil,                              // 101: flowstate.v1.RunOutputs.ValuesEntry
-	(*Node_Outputs)(nil),             // 102: flowstate.v1.Node.Outputs
-	nil,                              // 103: flowstate.v1.Node.VarsEntry
-	nil,                              // 104: flowstate.v1.Node.Outputs.NamedValuesEntry
-	nil,                              // 105: flowstate.v1.Signal.OutputsEntry
-	nil,                              // 106: flowstate.v1.Scope.VarsEntry
-	nil,                              // 107: flowstate.v1.Scope.AmbientVarsEntry
-	nil,                              // 108: flowstate.v1.Scope.InputsEntry
-	(*Parallel_Branch)(nil),          // 109: flowstate.v1.Parallel.Branch
-	nil,                              // 110: flowstate.v1.Call.ArgumentsEntry
-	(*Value_Error)(nil),              // 111: flowstate.v1.Value.Error
-	(*Value_Structure)(nil),          // 112: flowstate.v1.Value.Structure
-	(*Value_Structure_List)(nil),     // 113: flowstate.v1.Value.Structure.List
-	(*Value_Structure_Map)(nil),      // 114: flowstate.v1.Value.Structure.Map
-	nil,                              // 115: flowstate.v1.Value.Structure.Map.EntriesEntry
-	(*Task_Log)(nil),                 // 116: flowstate.v1.Task.Log
-	(*Task_HTTP)(nil),                // 117: flowstate.v1.Task.HTTP
-	nil,                              // 118: flowstate.v1.Task.InputsEntry
-	(*Task_Log_Inputs)(nil),          // 119: flowstate.v1.Task.Log.Inputs
-	(*Task_Log_Outputs)(nil),         // 120: flowstate.v1.Task.Log.Outputs
-	nil,                              // 121: flowstate.v1.Task.Log.Inputs.FieldsEntry
-	(*Task_HTTP_Inputs)(nil),         // 122: flowstate.v1.Task.HTTP.Inputs
-	(*Task_HTTP_Outputs)(nil),        // 123: flowstate.v1.Task.HTTP.Outputs
-	nil,                              // 124: flowstate.v1.Task.HTTP.Inputs.HeadersEntry
-	nil,                              // 125: flowstate.v1.Task.HTTP.Inputs.OutputsEntry
-	nil,                              // 126: flowstate.v1.Task.HTTP.Inputs.QueryEntry
-	nil,                              // 127: flowstate.v1.Task.HTTP.Inputs.FormEntry
-	nil,                              // 128: flowstate.v1.Task.HTTP.Outputs.HeadersEntry
-	nil,                              // 129: flowstate.v1.RunRequest.InputsEntry
-	(*RunResponse_Error)(nil),        // 130: flowstate.v1.RunResponse.Error
-	nil,                              // 131: flowstate.v1.EntityState.VarsEntry
-	nil,                              // 132: flowstate.v1.EntityState.LoopStateEntry
-	nil,                              // 133: flowstate.v1.WorkloadIdentity.ClaimsEntry
-	nil,                              // 134: flowstate.v1.Frame.CallVarsEntry
-	nil,                              // 135: flowstate.v1.RunState.VarsEntry
-	nil,                              // 136: flowstate.v1.RunState.InputsEntry
-	nil,                              // 137: flowstate.v1.SignalWithStartRequest.InputsEntry
-	nil,                              // 138: flowstate.v1.ScheduleDescription.InputsEntry
-	nil,                              // 139: flowstate.v1.CreateScheduleRequest.InputsEntry
-	(*durationpb.Duration)(nil),      // 140: google.protobuf.Duration
-	(*timestamppb.Timestamp)(nil),    // 141: google.protobuf.Timestamp
-	(*v1alpha1.ParsedExpr)(nil),      // 142: google.api.expr.v1alpha1.ParsedExpr
-	(*v1alpha1.Value)(nil),           // 143: google.api.expr.v1alpha1.Value
+	(*PendingWait)(nil),              // 46: flowstate.v1.PendingWait
+	(*Diagnostic)(nil),               // 47: flowstate.v1.Diagnostic
+	(*DiagnosticReport)(nil),         // 48: flowstate.v1.DiagnosticReport
+	(*ValidationReport)(nil),         // 49: flowstate.v1.ValidationReport
+	(*FixChange)(nil),                // 50: flowstate.v1.FixChange
+	(*FixReport)(nil),                // 51: flowstate.v1.FixReport
+	(*FmtReport)(nil),                // 52: flowstate.v1.FmtReport
+	(*FixReports)(nil),               // 53: flowstate.v1.FixReports
+	(*FmtReports)(nil),               // 54: flowstate.v1.FmtReports
+	(*TestCase)(nil),                 // 55: flowstate.v1.TestCase
+	(*TestReport)(nil),               // 56: flowstate.v1.TestReport
+	(*TestReports)(nil),              // 57: flowstate.v1.TestReports
+	(*WorkloadIdentity)(nil),         // 58: flowstate.v1.WorkloadIdentity
+	(*Frame)(nil),                    // 59: flowstate.v1.Frame
+	(*RunState)(nil),                 // 60: flowstate.v1.RunState
+	(*SignalRequest)(nil),            // 61: flowstate.v1.SignalRequest
+	(*SignalResponse)(nil),           // 62: flowstate.v1.SignalResponse
+	(*SignalWithStartRequest)(nil),   // 63: flowstate.v1.SignalWithStartRequest
+	(*SignalWithStartResponse)(nil),  // 64: flowstate.v1.SignalWithStartResponse
+	(*CancelRequest)(nil),            // 65: flowstate.v1.CancelRequest
+	(*CancelResponse)(nil),           // 66: flowstate.v1.CancelResponse
+	(*TerminateRequest)(nil),         // 67: flowstate.v1.TerminateRequest
+	(*TerminateResponse)(nil),        // 68: flowstate.v1.TerminateResponse
+	(*ListRequest)(nil),              // 69: flowstate.v1.ListRequest
+	(*RunSummary)(nil),               // 70: flowstate.v1.RunSummary
+	(*ListResponse)(nil),             // 71: flowstate.v1.ListResponse
+	(*SourceFile)(nil),               // 72: flowstate.v1.SourceFile
+	(*ValidateRequest)(nil),          // 73: flowstate.v1.ValidateRequest
+	(*ValidateResponse)(nil),         // 74: flowstate.v1.ValidateResponse
+	(*CompileRequest)(nil),           // 75: flowstate.v1.CompileRequest
+	(*CompileResponse)(nil),          // 76: flowstate.v1.CompileResponse
+	(*GetCatalogRequest)(nil),        // 77: flowstate.v1.GetCatalogRequest
+	(*GetCatalogResponse)(nil),       // 78: flowstate.v1.GetCatalogResponse
+	(*ScheduleActionResult)(nil),     // 79: flowstate.v1.ScheduleActionResult
+	(*ScheduleSummary)(nil),          // 80: flowstate.v1.ScheduleSummary
+	(*ScheduleDescription)(nil),      // 81: flowstate.v1.ScheduleDescription
+	(*CreateScheduleRequest)(nil),    // 82: flowstate.v1.CreateScheduleRequest
+	(*CreateScheduleResponse)(nil),   // 83: flowstate.v1.CreateScheduleResponse
+	(*ListSchedulesRequest)(nil),     // 84: flowstate.v1.ListSchedulesRequest
+	(*ListSchedulesResponse)(nil),    // 85: flowstate.v1.ListSchedulesResponse
+	(*DescribeScheduleRequest)(nil),  // 86: flowstate.v1.DescribeScheduleRequest
+	(*DescribeScheduleResponse)(nil), // 87: flowstate.v1.DescribeScheduleResponse
+	(*DeleteScheduleRequest)(nil),    // 88: flowstate.v1.DeleteScheduleRequest
+	(*DeleteScheduleResponse)(nil),   // 89: flowstate.v1.DeleteScheduleResponse
+	(*PauseScheduleRequest)(nil),     // 90: flowstate.v1.PauseScheduleRequest
+	(*PauseScheduleResponse)(nil),    // 91: flowstate.v1.PauseScheduleResponse
+	(*ResumeScheduleRequest)(nil),    // 92: flowstate.v1.ResumeScheduleRequest
+	(*ResumeScheduleResponse)(nil),   // 93: flowstate.v1.ResumeScheduleResponse
+	(*TriggerScheduleRequest)(nil),   // 94: flowstate.v1.TriggerScheduleRequest
+	(*TriggerScheduleResponse)(nil),  // 95: flowstate.v1.TriggerScheduleResponse
+	(*Workflow_StepOutputs)(nil),     // 96: flowstate.v1.Workflow.StepOutputs
+	nil,                              // 97: flowstate.v1.Workflow.LabelsEntry
+	nil,                              // 98: flowstate.v1.Workflow.VarsEntry
+	nil,                              // 99: flowstate.v1.Workflow.SignalsEntry
+	nil,                              // 100: flowstate.v1.Workflow.StepOutputs.StepValuesEntry
+	nil,                              // 101: flowstate.v1.SignalPolicyRule.ClaimsEntry
+	nil,                              // 102: flowstate.v1.RunOutputs.ValuesEntry
+	(*Node_Outputs)(nil),             // 103: flowstate.v1.Node.Outputs
+	nil,                              // 104: flowstate.v1.Node.VarsEntry
+	nil,                              // 105: flowstate.v1.Node.Outputs.NamedValuesEntry
+	nil,                              // 106: flowstate.v1.Signal.OutputsEntry
+	nil,                              // 107: flowstate.v1.Scope.VarsEntry
+	nil,                              // 108: flowstate.v1.Scope.AmbientVarsEntry
+	nil,                              // 109: flowstate.v1.Scope.InputsEntry
+	(*Parallel_Branch)(nil),          // 110: flowstate.v1.Parallel.Branch
+	nil,                              // 111: flowstate.v1.Call.ArgumentsEntry
+	(*Value_Error)(nil),              // 112: flowstate.v1.Value.Error
+	(*Value_Structure)(nil),          // 113: flowstate.v1.Value.Structure
+	(*Value_Structure_List)(nil),     // 114: flowstate.v1.Value.Structure.List
+	(*Value_Structure_Map)(nil),      // 115: flowstate.v1.Value.Structure.Map
+	nil,                              // 116: flowstate.v1.Value.Structure.Map.EntriesEntry
+	(*Task_Log)(nil),                 // 117: flowstate.v1.Task.Log
+	(*Task_HTTP)(nil),                // 118: flowstate.v1.Task.HTTP
+	nil,                              // 119: flowstate.v1.Task.InputsEntry
+	(*Task_Log_Inputs)(nil),          // 120: flowstate.v1.Task.Log.Inputs
+	(*Task_Log_Outputs)(nil),         // 121: flowstate.v1.Task.Log.Outputs
+	nil,                              // 122: flowstate.v1.Task.Log.Inputs.FieldsEntry
+	(*Task_HTTP_Inputs)(nil),         // 123: flowstate.v1.Task.HTTP.Inputs
+	(*Task_HTTP_Outputs)(nil),        // 124: flowstate.v1.Task.HTTP.Outputs
+	nil,                              // 125: flowstate.v1.Task.HTTP.Inputs.HeadersEntry
+	nil,                              // 126: flowstate.v1.Task.HTTP.Inputs.OutputsEntry
+	nil,                              // 127: flowstate.v1.Task.HTTP.Inputs.QueryEntry
+	nil,                              // 128: flowstate.v1.Task.HTTP.Inputs.FormEntry
+	nil,                              // 129: flowstate.v1.Task.HTTP.Outputs.HeadersEntry
+	nil,                              // 130: flowstate.v1.RunRequest.InputsEntry
+	(*RunResponse_Error)(nil),        // 131: flowstate.v1.RunResponse.Error
+	nil,                              // 132: flowstate.v1.EntityState.VarsEntry
+	nil,                              // 133: flowstate.v1.EntityState.LoopStateEntry
+	nil,                              // 134: flowstate.v1.WorkloadIdentity.ClaimsEntry
+	nil,                              // 135: flowstate.v1.Frame.CallVarsEntry
+	nil,                              // 136: flowstate.v1.RunState.VarsEntry
+	nil,                              // 137: flowstate.v1.RunState.InputsEntry
+	nil,                              // 138: flowstate.v1.SignalWithStartRequest.InputsEntry
+	nil,                              // 139: flowstate.v1.ScheduleDescription.InputsEntry
+	nil,                              // 140: flowstate.v1.CreateScheduleRequest.InputsEntry
+	(*durationpb.Duration)(nil),      // 141: google.protobuf.Duration
+	(*timestamppb.Timestamp)(nil),    // 142: google.protobuf.Timestamp
+	(*v1alpha1.ParsedExpr)(nil),      // 143: google.api.expr.v1alpha1.ParsedExpr
+	(*v1alpha1.Value)(nil),           // 144: google.api.expr.v1alpha1.Value
 }
 var file_flowstate_v1_flowstate_proto_depIdxs = []int32{
 	14,  // 0: flowstate.v1.Workflow.steps:type_name -> flowstate.v1.Node
-	96,  // 1: flowstate.v1.Workflow.labels:type_name -> flowstate.v1.Workflow.LabelsEntry
-	97,  // 2: flowstate.v1.Workflow.vars:type_name -> flowstate.v1.Workflow.VarsEntry
+	97,  // 1: flowstate.v1.Workflow.labels:type_name -> flowstate.v1.Workflow.LabelsEntry
+	98,  // 2: flowstate.v1.Workflow.vars:type_name -> flowstate.v1.Workflow.VarsEntry
 	9,   // 3: flowstate.v1.Workflow.declared_inputs:type_name -> flowstate.v1.InputDeclaration
 	10,  // 4: flowstate.v1.Workflow.declared_outputs:type_name -> flowstate.v1.OutputDeclaration
 	12,  // 5: flowstate.v1.Workflow.triggers:type_name -> flowstate.v1.Triggers
-	98,  // 6: flowstate.v1.Workflow.signals:type_name -> flowstate.v1.Workflow.SignalsEntry
+	99,  // 6: flowstate.v1.Workflow.signals:type_name -> flowstate.v1.Workflow.SignalsEntry
 	8,   // 7: flowstate.v1.SignalPolicy.allow:type_name -> flowstate.v1.SignalPolicyRule
-	100, // 8: flowstate.v1.SignalPolicyRule.claims:type_name -> flowstate.v1.SignalPolicyRule.ClaimsEntry
+	101, // 8: flowstate.v1.SignalPolicyRule.claims:type_name -> flowstate.v1.SignalPolicyRule.ClaimsEntry
 	31,  // 9: flowstate.v1.SignalPolicyRule.subject_from:type_name -> flowstate.v1.Value
 	0,   // 10: flowstate.v1.InputDeclaration.type:type_name -> flowstate.v1.InputDeclaration.Type
 	31,  // 11: flowstate.v1.InputDeclaration.default:type_name -> flowstate.v1.Value
 	31,  // 12: flowstate.v1.InputDeclaration.example:type_name -> flowstate.v1.Value
 	31,  // 13: flowstate.v1.OutputDeclaration.value:type_name -> flowstate.v1.Value
-	101, // 14: flowstate.v1.RunOutputs.values:type_name -> flowstate.v1.RunOutputs.ValuesEntry
+	102, // 14: flowstate.v1.RunOutputs.values:type_name -> flowstate.v1.RunOutputs.ValuesEntry
 	13,  // 15: flowstate.v1.Triggers.schedule:type_name -> flowstate.v1.ScheduleTrigger
-	140, // 16: flowstate.v1.ScheduleTrigger.every:type_name -> google.protobuf.Duration
-	140, // 17: flowstate.v1.ScheduleTrigger.jitter:type_name -> google.protobuf.Duration
+	141, // 16: flowstate.v1.ScheduleTrigger.every:type_name -> google.protobuf.Duration
+	141, // 17: flowstate.v1.ScheduleTrigger.jitter:type_name -> google.protobuf.Duration
 	1,   // 18: flowstate.v1.ScheduleTrigger.overlap:type_name -> flowstate.v1.ScheduleTrigger.Overlap
 	38,  // 19: flowstate.v1.Node.task:type_name -> flowstate.v1.Task
 	25,  // 20: flowstate.v1.Node.for_each:type_name -> flowstate.v1.ForEach
@@ -10668,207 +10854,209 @@ var file_flowstate_v1_flowstate_proto_depIdxs = []int32{
 	27,  // 24: flowstate.v1.Node.loop:type_name -> flowstate.v1.Loop
 	31,  // 25: flowstate.v1.Node.condition:type_name -> flowstate.v1.Value
 	29,  // 26: flowstate.v1.Node.policy:type_name -> flowstate.v1.StepPolicy
-	103, // 27: flowstate.v1.Node.vars:type_name -> flowstate.v1.Node.VarsEntry
+	104, // 27: flowstate.v1.Node.vars:type_name -> flowstate.v1.Node.VarsEntry
 	15,  // 28: flowstate.v1.Node.undo:type_name -> flowstate.v1.Compensation
 	38,  // 29: flowstate.v1.Compensation.task:type_name -> flowstate.v1.Task
 	38,  // 30: flowstate.v1.PendingUndo.task:type_name -> flowstate.v1.Task
-	140, // 31: flowstate.v1.Wait.duration:type_name -> google.protobuf.Duration
+	141, // 31: flowstate.v1.Wait.duration:type_name -> google.protobuf.Duration
 	31,  // 32: flowstate.v1.Wait.until:type_name -> flowstate.v1.Value
 	19,  // 33: flowstate.v1.Wait.signal:type_name -> flowstate.v1.Signal
 	31,  // 34: flowstate.v1.Wait.duration_expr:type_name -> flowstate.v1.Value
-	140, // 35: flowstate.v1.Wait.timeout:type_name -> google.protobuf.Duration
+	141, // 35: flowstate.v1.Wait.timeout:type_name -> google.protobuf.Duration
 	31,  // 36: flowstate.v1.Wait.timeout_expr:type_name -> flowstate.v1.Value
-	105, // 37: flowstate.v1.Signal.outputs:type_name -> flowstate.v1.Signal.OutputsEntry
-	57,  // 38: flowstate.v1.SignalSender.identity:type_name -> flowstate.v1.WorkloadIdentity
-	141, // 39: flowstate.v1.SignalSender.accepted_at:type_name -> google.protobuf.Timestamp
-	102, // 40: flowstate.v1.PendingSignal.payload:type_name -> flowstate.v1.Node.Outputs
+	106, // 37: flowstate.v1.Signal.outputs:type_name -> flowstate.v1.Signal.OutputsEntry
+	58,  // 38: flowstate.v1.SignalSender.identity:type_name -> flowstate.v1.WorkloadIdentity
+	142, // 39: flowstate.v1.SignalSender.accepted_at:type_name -> google.protobuf.Timestamp
+	103, // 40: flowstate.v1.PendingSignal.payload:type_name -> flowstate.v1.Node.Outputs
 	20,  // 41: flowstate.v1.PendingSignal.sender:type_name -> flowstate.v1.SignalSender
-	102, // 42: flowstate.v1.SignalDelivery.payload:type_name -> flowstate.v1.Node.Outputs
+	103, // 42: flowstate.v1.SignalDelivery.payload:type_name -> flowstate.v1.Node.Outputs
 	20,  // 43: flowstate.v1.SignalDelivery.sender:type_name -> flowstate.v1.SignalSender
-	95,  // 44: flowstate.v1.Scope.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
-	106, // 45: flowstate.v1.Scope.vars:type_name -> flowstate.v1.Scope.VarsEntry
-	107, // 46: flowstate.v1.Scope.ambient_vars:type_name -> flowstate.v1.Scope.AmbientVarsEntry
-	108, // 47: flowstate.v1.Scope.inputs:type_name -> flowstate.v1.Scope.InputsEntry
-	57,  // 48: flowstate.v1.Scope.identity:type_name -> flowstate.v1.WorkloadIdentity
+	96,  // 44: flowstate.v1.Scope.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
+	107, // 45: flowstate.v1.Scope.vars:type_name -> flowstate.v1.Scope.VarsEntry
+	108, // 46: flowstate.v1.Scope.ambient_vars:type_name -> flowstate.v1.Scope.AmbientVarsEntry
+	109, // 47: flowstate.v1.Scope.inputs:type_name -> flowstate.v1.Scope.InputsEntry
+	58,  // 48: flowstate.v1.Scope.identity:type_name -> flowstate.v1.WorkloadIdentity
 	24,  // 49: flowstate.v1.Scope.address:type_name -> flowstate.v1.RunAddress
 	31,  // 50: flowstate.v1.ForEach.items:type_name -> flowstate.v1.Value
 	14,  // 51: flowstate.v1.ForEach.body:type_name -> flowstate.v1.Node
-	109, // 52: flowstate.v1.Parallel.branches:type_name -> flowstate.v1.Parallel.Branch
+	110, // 52: flowstate.v1.Parallel.branches:type_name -> flowstate.v1.Parallel.Branch
 	14,  // 53: flowstate.v1.Loop.body:type_name -> flowstate.v1.Node
 	31,  // 54: flowstate.v1.Loop.until:type_name -> flowstate.v1.Value
 	31,  // 55: flowstate.v1.Loop.initial:type_name -> flowstate.v1.Value
 	31,  // 56: flowstate.v1.Loop.update:type_name -> flowstate.v1.Value
 	6,   // 57: flowstate.v1.Call.workflow:type_name -> flowstate.v1.Workflow
-	110, // 58: flowstate.v1.Call.arguments:type_name -> flowstate.v1.Call.ArgumentsEntry
-	140, // 59: flowstate.v1.StepPolicy.timeout:type_name -> google.protobuf.Duration
+	111, // 58: flowstate.v1.Call.arguments:type_name -> flowstate.v1.Call.ArgumentsEntry
+	141, // 59: flowstate.v1.StepPolicy.timeout:type_name -> google.protobuf.Duration
 	30,  // 60: flowstate.v1.StepPolicy.retry:type_name -> flowstate.v1.RetryPolicy
-	140, // 61: flowstate.v1.RetryPolicy.initial_interval:type_name -> google.protobuf.Duration
-	140, // 62: flowstate.v1.RetryPolicy.max_interval:type_name -> google.protobuf.Duration
-	142, // 63: flowstate.v1.Value.expr:type_name -> google.api.expr.v1alpha1.ParsedExpr
-	143, // 64: flowstate.v1.Value.literal:type_name -> google.api.expr.v1alpha1.Value
-	111, // 65: flowstate.v1.Value.error:type_name -> flowstate.v1.Value.Error
+	141, // 61: flowstate.v1.RetryPolicy.initial_interval:type_name -> google.protobuf.Duration
+	141, // 62: flowstate.v1.RetryPolicy.max_interval:type_name -> google.protobuf.Duration
+	143, // 63: flowstate.v1.Value.expr:type_name -> google.api.expr.v1alpha1.ParsedExpr
+	144, // 64: flowstate.v1.Value.literal:type_name -> google.api.expr.v1alpha1.Value
+	112, // 65: flowstate.v1.Value.error:type_name -> flowstate.v1.Value.Error
 	17,  // 66: flowstate.v1.Value.secret_ref:type_name -> flowstate.v1.SecretRef
-	112, // 67: flowstate.v1.Value.structure:type_name -> flowstate.v1.Value.Structure
+	113, // 67: flowstate.v1.Value.structure:type_name -> flowstate.v1.Value.Structure
 	34,  // 68: flowstate.v1.TaskCatalog.tasks:type_name -> flowstate.v1.TaskDescription
 	33,  // 69: flowstate.v1.TaskCatalog.cel_functions:type_name -> flowstate.v1.CELFunction
 	37,  // 70: flowstate.v1.TaskDescription.inputs:type_name -> flowstate.v1.TaskField
 	37,  // 71: flowstate.v1.TaskDescription.outputs:type_name -> flowstate.v1.TaskField
 	36,  // 72: flowstate.v1.PluginCatalog.plugins:type_name -> flowstate.v1.PluginDescription
 	34,  // 73: flowstate.v1.PluginDescription.tasks:type_name -> flowstate.v1.TaskDescription
-	118, // 74: flowstate.v1.Task.inputs:type_name -> flowstate.v1.Task.InputsEntry
+	119, // 74: flowstate.v1.Task.inputs:type_name -> flowstate.v1.Task.InputsEntry
 	6,   // 75: flowstate.v1.RunRequest.workflow:type_name -> flowstate.v1.Workflow
-	129, // 76: flowstate.v1.RunRequest.inputs:type_name -> flowstate.v1.RunRequest.InputsEntry
+	130, // 76: flowstate.v1.RunRequest.inputs:type_name -> flowstate.v1.RunRequest.InputsEntry
 	5,   // 77: flowstate.v1.RunResponse.status:type_name -> flowstate.v1.RunResponse.Status
-	130, // 78: flowstate.v1.RunResponse.error:type_name -> flowstate.v1.RunResponse.Error
-	95,  // 79: flowstate.v1.RunResponse.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
+	131, // 78: flowstate.v1.RunResponse.error:type_name -> flowstate.v1.RunResponse.Error
+	96,  // 79: flowstate.v1.RunResponse.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
 	5,   // 80: flowstate.v1.GetResponse.status:type_name -> flowstate.v1.RunResponse.Status
-	130, // 81: flowstate.v1.GetResponse.error:type_name -> flowstate.v1.RunResponse.Error
-	95,  // 82: flowstate.v1.GetResponse.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
-	141, // 83: flowstate.v1.GetResponse.start_time:type_name -> google.protobuf.Timestamp
-	141, // 84: flowstate.v1.GetResponse.close_time:type_name -> google.protobuf.Timestamp
+	131, // 81: flowstate.v1.GetResponse.error:type_name -> flowstate.v1.RunResponse.Error
+	96,  // 82: flowstate.v1.GetResponse.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
+	142, // 83: flowstate.v1.GetResponse.start_time:type_name -> google.protobuf.Timestamp
+	142, // 84: flowstate.v1.GetResponse.close_time:type_name -> google.protobuf.Timestamp
 	45,  // 85: flowstate.v1.GetResponse.progress:type_name -> flowstate.v1.RunProgress
 	44,  // 86: flowstate.v1.GetResponse.pending_activities:type_name -> flowstate.v1.PendingActivity
 	11,  // 87: flowstate.v1.GetResponse.run_outputs:type_name -> flowstate.v1.RunOutputs
 	43,  // 88: flowstate.v1.GetResponse.entity_state:type_name -> flowstate.v1.EntityState
-	131, // 89: flowstate.v1.EntityState.vars:type_name -> flowstate.v1.EntityState.VarsEntry
-	132, // 90: flowstate.v1.EntityState.loop_state:type_name -> flowstate.v1.EntityState.LoopStateEntry
-	141, // 91: flowstate.v1.PendingActivity.next_attempt_scheduled_time:type_name -> google.protobuf.Timestamp
-	46,  // 92: flowstate.v1.DiagnosticReport.diagnostics:type_name -> flowstate.v1.Diagnostic
-	47,  // 93: flowstate.v1.ValidationReport.files:type_name -> flowstate.v1.DiagnosticReport
-	49,  // 94: flowstate.v1.FixReport.changes:type_name -> flowstate.v1.FixChange
-	46,  // 95: flowstate.v1.FixReport.refusals:type_name -> flowstate.v1.Diagnostic
-	46,  // 96: flowstate.v1.FixReport.notes:type_name -> flowstate.v1.Diagnostic
-	46,  // 97: flowstate.v1.FmtReport.refusals:type_name -> flowstate.v1.Diagnostic
-	50,  // 98: flowstate.v1.FixReports.files:type_name -> flowstate.v1.FixReport
-	51,  // 99: flowstate.v1.FmtReports.files:type_name -> flowstate.v1.FmtReport
-	46,  // 100: flowstate.v1.TestCase.failures:type_name -> flowstate.v1.Diagnostic
-	140, // 101: flowstate.v1.TestCase.duration:type_name -> google.protobuf.Duration
-	54,  // 102: flowstate.v1.TestReport.cases:type_name -> flowstate.v1.TestCase
-	55,  // 103: flowstate.v1.TestReports.files:type_name -> flowstate.v1.TestReport
-	133, // 104: flowstate.v1.WorkloadIdentity.claims:type_name -> flowstate.v1.WorkloadIdentity.ClaimsEntry
-	95,  // 105: flowstate.v1.Frame.results:type_name -> flowstate.v1.Workflow.StepOutputs
-	95,  // 106: flowstate.v1.Frame.call_outputs:type_name -> flowstate.v1.Workflow.StepOutputs
-	134, // 107: flowstate.v1.Frame.call_vars:type_name -> flowstate.v1.Frame.CallVarsEntry
-	31,  // 108: flowstate.v1.Frame.loop_state:type_name -> flowstate.v1.Value
-	6,   // 109: flowstate.v1.RunState.workflow:type_name -> flowstate.v1.Workflow
-	95,  // 110: flowstate.v1.RunState.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
-	58,  // 111: flowstate.v1.RunState.frames:type_name -> flowstate.v1.Frame
-	57,  // 112: flowstate.v1.RunState.identity:type_name -> flowstate.v1.WorkloadIdentity
-	21,  // 113: flowstate.v1.RunState.pending_signals:type_name -> flowstate.v1.PendingSignal
-	135, // 114: flowstate.v1.RunState.vars:type_name -> flowstate.v1.RunState.VarsEntry
-	136, // 115: flowstate.v1.RunState.inputs:type_name -> flowstate.v1.RunState.InputsEntry
-	11,  // 116: flowstate.v1.RunState.run_outputs:type_name -> flowstate.v1.RunOutputs
-	16,  // 117: flowstate.v1.RunState.pending_undo:type_name -> flowstate.v1.PendingUndo
-	102, // 118: flowstate.v1.SignalRequest.payload:type_name -> flowstate.v1.Node.Outputs
-	6,   // 119: flowstate.v1.SignalWithStartRequest.workflow:type_name -> flowstate.v1.Workflow
-	137, // 120: flowstate.v1.SignalWithStartRequest.inputs:type_name -> flowstate.v1.SignalWithStartRequest.InputsEntry
-	102, // 121: flowstate.v1.SignalWithStartRequest.payload:type_name -> flowstate.v1.Node.Outputs
-	5,   // 122: flowstate.v1.RunSummary.status:type_name -> flowstate.v1.RunResponse.Status
-	141, // 123: flowstate.v1.RunSummary.start_time:type_name -> google.protobuf.Timestamp
-	141, // 124: flowstate.v1.RunSummary.close_time:type_name -> google.protobuf.Timestamp
-	69,  // 125: flowstate.v1.ListResponse.runs:type_name -> flowstate.v1.RunSummary
-	71,  // 126: flowstate.v1.ValidateRequest.files:type_name -> flowstate.v1.SourceFile
-	48,  // 127: flowstate.v1.ValidateResponse.report:type_name -> flowstate.v1.ValidationReport
-	71,  // 128: flowstate.v1.CompileRequest.file:type_name -> flowstate.v1.SourceFile
-	6,   // 129: flowstate.v1.CompileResponse.workflow:type_name -> flowstate.v1.Workflow
-	47,  // 130: flowstate.v1.CompileResponse.report:type_name -> flowstate.v1.DiagnosticReport
-	32,  // 131: flowstate.v1.GetCatalogResponse.catalog:type_name -> flowstate.v1.TaskCatalog
-	141, // 132: flowstate.v1.ScheduleActionResult.schedule_time:type_name -> google.protobuf.Timestamp
-	141, // 133: flowstate.v1.ScheduleActionResult.actual_time:type_name -> google.protobuf.Timestamp
-	141, // 134: flowstate.v1.ScheduleSummary.next_run_time:type_name -> google.protobuf.Timestamp
-	13,  // 135: flowstate.v1.ScheduleDescription.trigger:type_name -> flowstate.v1.ScheduleTrigger
-	141, // 136: flowstate.v1.ScheduleDescription.next_run_times:type_name -> google.protobuf.Timestamp
-	78,  // 137: flowstate.v1.ScheduleDescription.recent_runs:type_name -> flowstate.v1.ScheduleActionResult
-	138, // 138: flowstate.v1.ScheduleDescription.inputs:type_name -> flowstate.v1.ScheduleDescription.InputsEntry
-	6,   // 139: flowstate.v1.CreateScheduleRequest.workflow:type_name -> flowstate.v1.Workflow
-	139, // 140: flowstate.v1.CreateScheduleRequest.inputs:type_name -> flowstate.v1.CreateScheduleRequest.InputsEntry
-	80,  // 141: flowstate.v1.CreateScheduleResponse.schedule:type_name -> flowstate.v1.ScheduleDescription
-	79,  // 142: flowstate.v1.ListSchedulesResponse.schedules:type_name -> flowstate.v1.ScheduleSummary
-	80,  // 143: flowstate.v1.DescribeScheduleResponse.schedule:type_name -> flowstate.v1.ScheduleDescription
-	99,  // 144: flowstate.v1.Workflow.StepOutputs.step_values:type_name -> flowstate.v1.Workflow.StepOutputs.StepValuesEntry
-	11,  // 145: flowstate.v1.Workflow.StepOutputs.run_outputs:type_name -> flowstate.v1.RunOutputs
-	31,  // 146: flowstate.v1.Workflow.VarsEntry.value:type_name -> flowstate.v1.Value
-	7,   // 147: flowstate.v1.Workflow.SignalsEntry.value:type_name -> flowstate.v1.SignalPolicy
-	102, // 148: flowstate.v1.Workflow.StepOutputs.StepValuesEntry.value:type_name -> flowstate.v1.Node.Outputs
-	31,  // 149: flowstate.v1.RunOutputs.ValuesEntry.value:type_name -> flowstate.v1.Value
-	104, // 150: flowstate.v1.Node.Outputs.named_values:type_name -> flowstate.v1.Node.Outputs.NamedValuesEntry
-	31,  // 151: flowstate.v1.Node.VarsEntry.value:type_name -> flowstate.v1.Value
-	31,  // 152: flowstate.v1.Node.Outputs.NamedValuesEntry.value:type_name -> flowstate.v1.Value
-	31,  // 153: flowstate.v1.Signal.OutputsEntry.value:type_name -> flowstate.v1.Value
-	31,  // 154: flowstate.v1.Scope.VarsEntry.value:type_name -> flowstate.v1.Value
-	31,  // 155: flowstate.v1.Scope.AmbientVarsEntry.value:type_name -> flowstate.v1.Value
-	31,  // 156: flowstate.v1.Scope.InputsEntry.value:type_name -> flowstate.v1.Value
-	14,  // 157: flowstate.v1.Parallel.Branch.steps:type_name -> flowstate.v1.Node
-	31,  // 158: flowstate.v1.Call.ArgumentsEntry.value:type_name -> flowstate.v1.Value
-	3,   // 159: flowstate.v1.Value.Error.code:type_name -> flowstate.v1.Value.Error.Code
-	113, // 160: flowstate.v1.Value.Structure.list:type_name -> flowstate.v1.Value.Structure.List
-	114, // 161: flowstate.v1.Value.Structure.map:type_name -> flowstate.v1.Value.Structure.Map
-	31,  // 162: flowstate.v1.Value.Structure.List.values:type_name -> flowstate.v1.Value
-	115, // 163: flowstate.v1.Value.Structure.Map.entries:type_name -> flowstate.v1.Value.Structure.Map.EntriesEntry
-	31,  // 164: flowstate.v1.Value.Structure.Map.EntriesEntry.value:type_name -> flowstate.v1.Value
-	31,  // 165: flowstate.v1.Task.InputsEntry.value:type_name -> flowstate.v1.Value
-	4,   // 166: flowstate.v1.Task.Log.Inputs.level:type_name -> flowstate.v1.Task.Log.Level
-	121, // 167: flowstate.v1.Task.Log.Inputs.fields:type_name -> flowstate.v1.Task.Log.Inputs.FieldsEntry
-	124, // 168: flowstate.v1.Task.HTTP.Inputs.headers:type_name -> flowstate.v1.Task.HTTP.Inputs.HeadersEntry
-	31,  // 169: flowstate.v1.Task.HTTP.Inputs.bearer:type_name -> flowstate.v1.Value
-	125, // 170: flowstate.v1.Task.HTTP.Inputs.outputs:type_name -> flowstate.v1.Task.HTTP.Inputs.OutputsEntry
-	126, // 171: flowstate.v1.Task.HTTP.Inputs.query:type_name -> flowstate.v1.Task.HTTP.Inputs.QueryEntry
-	31,  // 172: flowstate.v1.Task.HTTP.Inputs.json:type_name -> flowstate.v1.Value
-	127, // 173: flowstate.v1.Task.HTTP.Inputs.form:type_name -> flowstate.v1.Task.HTTP.Inputs.FormEntry
-	31,  // 174: flowstate.v1.Task.HTTP.Inputs.expect:type_name -> flowstate.v1.Value
-	128, // 175: flowstate.v1.Task.HTTP.Outputs.headers:type_name -> flowstate.v1.Task.HTTP.Outputs.HeadersEntry
-	143, // 176: flowstate.v1.Task.HTTP.Outputs.json:type_name -> google.api.expr.v1alpha1.Value
-	31,  // 177: flowstate.v1.Task.HTTP.Inputs.OutputsEntry.value:type_name -> flowstate.v1.Value
-	31,  // 178: flowstate.v1.Task.HTTP.Inputs.QueryEntry.value:type_name -> flowstate.v1.Value
-	31,  // 179: flowstate.v1.Task.HTTP.Inputs.FormEntry.value:type_name -> flowstate.v1.Value
-	31,  // 180: flowstate.v1.RunRequest.InputsEntry.value:type_name -> flowstate.v1.Value
-	31,  // 181: flowstate.v1.EntityState.VarsEntry.value:type_name -> flowstate.v1.Value
-	31,  // 182: flowstate.v1.EntityState.LoopStateEntry.value:type_name -> flowstate.v1.Value
-	31,  // 183: flowstate.v1.Frame.CallVarsEntry.value:type_name -> flowstate.v1.Value
-	31,  // 184: flowstate.v1.RunState.VarsEntry.value:type_name -> flowstate.v1.Value
-	31,  // 185: flowstate.v1.RunState.InputsEntry.value:type_name -> flowstate.v1.Value
-	31,  // 186: flowstate.v1.SignalWithStartRequest.InputsEntry.value:type_name -> flowstate.v1.Value
-	31,  // 187: flowstate.v1.ScheduleDescription.InputsEntry.value:type_name -> flowstate.v1.Value
-	31,  // 188: flowstate.v1.CreateScheduleRequest.InputsEntry.value:type_name -> flowstate.v1.Value
-	39,  // 189: flowstate.v1.WorkflowService.Run:input_type -> flowstate.v1.RunRequest
-	41,  // 190: flowstate.v1.WorkflowService.Get:input_type -> flowstate.v1.GetRequest
-	60,  // 191: flowstate.v1.WorkflowService.Signal:input_type -> flowstate.v1.SignalRequest
-	62,  // 192: flowstate.v1.WorkflowService.SignalWithStart:input_type -> flowstate.v1.SignalWithStartRequest
-	68,  // 193: flowstate.v1.WorkflowService.List:input_type -> flowstate.v1.ListRequest
-	64,  // 194: flowstate.v1.WorkflowService.Cancel:input_type -> flowstate.v1.CancelRequest
-	66,  // 195: flowstate.v1.WorkflowService.Terminate:input_type -> flowstate.v1.TerminateRequest
-	72,  // 196: flowstate.v1.WorkflowService.Validate:input_type -> flowstate.v1.ValidateRequest
-	74,  // 197: flowstate.v1.WorkflowService.Compile:input_type -> flowstate.v1.CompileRequest
-	76,  // 198: flowstate.v1.WorkflowService.GetCatalog:input_type -> flowstate.v1.GetCatalogRequest
-	81,  // 199: flowstate.v1.WorkflowService.CreateSchedule:input_type -> flowstate.v1.CreateScheduleRequest
-	83,  // 200: flowstate.v1.WorkflowService.ListSchedules:input_type -> flowstate.v1.ListSchedulesRequest
-	85,  // 201: flowstate.v1.WorkflowService.DescribeSchedule:input_type -> flowstate.v1.DescribeScheduleRequest
-	87,  // 202: flowstate.v1.WorkflowService.DeleteSchedule:input_type -> flowstate.v1.DeleteScheduleRequest
-	89,  // 203: flowstate.v1.WorkflowService.PauseSchedule:input_type -> flowstate.v1.PauseScheduleRequest
-	91,  // 204: flowstate.v1.WorkflowService.ResumeSchedule:input_type -> flowstate.v1.ResumeScheduleRequest
-	93,  // 205: flowstate.v1.WorkflowService.TriggerSchedule:input_type -> flowstate.v1.TriggerScheduleRequest
-	40,  // 206: flowstate.v1.WorkflowService.Run:output_type -> flowstate.v1.RunResponse
-	42,  // 207: flowstate.v1.WorkflowService.Get:output_type -> flowstate.v1.GetResponse
-	61,  // 208: flowstate.v1.WorkflowService.Signal:output_type -> flowstate.v1.SignalResponse
-	63,  // 209: flowstate.v1.WorkflowService.SignalWithStart:output_type -> flowstate.v1.SignalWithStartResponse
-	70,  // 210: flowstate.v1.WorkflowService.List:output_type -> flowstate.v1.ListResponse
-	65,  // 211: flowstate.v1.WorkflowService.Cancel:output_type -> flowstate.v1.CancelResponse
-	67,  // 212: flowstate.v1.WorkflowService.Terminate:output_type -> flowstate.v1.TerminateResponse
-	73,  // 213: flowstate.v1.WorkflowService.Validate:output_type -> flowstate.v1.ValidateResponse
-	75,  // 214: flowstate.v1.WorkflowService.Compile:output_type -> flowstate.v1.CompileResponse
-	77,  // 215: flowstate.v1.WorkflowService.GetCatalog:output_type -> flowstate.v1.GetCatalogResponse
-	82,  // 216: flowstate.v1.WorkflowService.CreateSchedule:output_type -> flowstate.v1.CreateScheduleResponse
-	84,  // 217: flowstate.v1.WorkflowService.ListSchedules:output_type -> flowstate.v1.ListSchedulesResponse
-	86,  // 218: flowstate.v1.WorkflowService.DescribeSchedule:output_type -> flowstate.v1.DescribeScheduleResponse
-	88,  // 219: flowstate.v1.WorkflowService.DeleteSchedule:output_type -> flowstate.v1.DeleteScheduleResponse
-	90,  // 220: flowstate.v1.WorkflowService.PauseSchedule:output_type -> flowstate.v1.PauseScheduleResponse
-	92,  // 221: flowstate.v1.WorkflowService.ResumeSchedule:output_type -> flowstate.v1.ResumeScheduleResponse
-	94,  // 222: flowstate.v1.WorkflowService.TriggerSchedule:output_type -> flowstate.v1.TriggerScheduleResponse
-	206, // [206:223] is the sub-list for method output_type
-	189, // [189:206] is the sub-list for method input_type
-	189, // [189:189] is the sub-list for extension type_name
-	189, // [189:189] is the sub-list for extension extendee
-	0,   // [0:189] is the sub-list for field type_name
+	132, // 89: flowstate.v1.EntityState.vars:type_name -> flowstate.v1.EntityState.VarsEntry
+	133, // 90: flowstate.v1.EntityState.loop_state:type_name -> flowstate.v1.EntityState.LoopStateEntry
+	142, // 91: flowstate.v1.PendingActivity.next_attempt_scheduled_time:type_name -> google.protobuf.Timestamp
+	46,  // 92: flowstate.v1.RunProgress.pending_waits:type_name -> flowstate.v1.PendingWait
+	142, // 93: flowstate.v1.PendingWait.deadline:type_name -> google.protobuf.Timestamp
+	47,  // 94: flowstate.v1.DiagnosticReport.diagnostics:type_name -> flowstate.v1.Diagnostic
+	48,  // 95: flowstate.v1.ValidationReport.files:type_name -> flowstate.v1.DiagnosticReport
+	50,  // 96: flowstate.v1.FixReport.changes:type_name -> flowstate.v1.FixChange
+	47,  // 97: flowstate.v1.FixReport.refusals:type_name -> flowstate.v1.Diagnostic
+	47,  // 98: flowstate.v1.FixReport.notes:type_name -> flowstate.v1.Diagnostic
+	47,  // 99: flowstate.v1.FmtReport.refusals:type_name -> flowstate.v1.Diagnostic
+	51,  // 100: flowstate.v1.FixReports.files:type_name -> flowstate.v1.FixReport
+	52,  // 101: flowstate.v1.FmtReports.files:type_name -> flowstate.v1.FmtReport
+	47,  // 102: flowstate.v1.TestCase.failures:type_name -> flowstate.v1.Diagnostic
+	141, // 103: flowstate.v1.TestCase.duration:type_name -> google.protobuf.Duration
+	55,  // 104: flowstate.v1.TestReport.cases:type_name -> flowstate.v1.TestCase
+	56,  // 105: flowstate.v1.TestReports.files:type_name -> flowstate.v1.TestReport
+	134, // 106: flowstate.v1.WorkloadIdentity.claims:type_name -> flowstate.v1.WorkloadIdentity.ClaimsEntry
+	96,  // 107: flowstate.v1.Frame.results:type_name -> flowstate.v1.Workflow.StepOutputs
+	96,  // 108: flowstate.v1.Frame.call_outputs:type_name -> flowstate.v1.Workflow.StepOutputs
+	135, // 109: flowstate.v1.Frame.call_vars:type_name -> flowstate.v1.Frame.CallVarsEntry
+	31,  // 110: flowstate.v1.Frame.loop_state:type_name -> flowstate.v1.Value
+	6,   // 111: flowstate.v1.RunState.workflow:type_name -> flowstate.v1.Workflow
+	96,  // 112: flowstate.v1.RunState.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
+	59,  // 113: flowstate.v1.RunState.frames:type_name -> flowstate.v1.Frame
+	58,  // 114: flowstate.v1.RunState.identity:type_name -> flowstate.v1.WorkloadIdentity
+	21,  // 115: flowstate.v1.RunState.pending_signals:type_name -> flowstate.v1.PendingSignal
+	136, // 116: flowstate.v1.RunState.vars:type_name -> flowstate.v1.RunState.VarsEntry
+	137, // 117: flowstate.v1.RunState.inputs:type_name -> flowstate.v1.RunState.InputsEntry
+	11,  // 118: flowstate.v1.RunState.run_outputs:type_name -> flowstate.v1.RunOutputs
+	16,  // 119: flowstate.v1.RunState.pending_undo:type_name -> flowstate.v1.PendingUndo
+	103, // 120: flowstate.v1.SignalRequest.payload:type_name -> flowstate.v1.Node.Outputs
+	6,   // 121: flowstate.v1.SignalWithStartRequest.workflow:type_name -> flowstate.v1.Workflow
+	138, // 122: flowstate.v1.SignalWithStartRequest.inputs:type_name -> flowstate.v1.SignalWithStartRequest.InputsEntry
+	103, // 123: flowstate.v1.SignalWithStartRequest.payload:type_name -> flowstate.v1.Node.Outputs
+	5,   // 124: flowstate.v1.RunSummary.status:type_name -> flowstate.v1.RunResponse.Status
+	142, // 125: flowstate.v1.RunSummary.start_time:type_name -> google.protobuf.Timestamp
+	142, // 126: flowstate.v1.RunSummary.close_time:type_name -> google.protobuf.Timestamp
+	70,  // 127: flowstate.v1.ListResponse.runs:type_name -> flowstate.v1.RunSummary
+	72,  // 128: flowstate.v1.ValidateRequest.files:type_name -> flowstate.v1.SourceFile
+	49,  // 129: flowstate.v1.ValidateResponse.report:type_name -> flowstate.v1.ValidationReport
+	72,  // 130: flowstate.v1.CompileRequest.file:type_name -> flowstate.v1.SourceFile
+	6,   // 131: flowstate.v1.CompileResponse.workflow:type_name -> flowstate.v1.Workflow
+	48,  // 132: flowstate.v1.CompileResponse.report:type_name -> flowstate.v1.DiagnosticReport
+	32,  // 133: flowstate.v1.GetCatalogResponse.catalog:type_name -> flowstate.v1.TaskCatalog
+	142, // 134: flowstate.v1.ScheduleActionResult.schedule_time:type_name -> google.protobuf.Timestamp
+	142, // 135: flowstate.v1.ScheduleActionResult.actual_time:type_name -> google.protobuf.Timestamp
+	142, // 136: flowstate.v1.ScheduleSummary.next_run_time:type_name -> google.protobuf.Timestamp
+	13,  // 137: flowstate.v1.ScheduleDescription.trigger:type_name -> flowstate.v1.ScheduleTrigger
+	142, // 138: flowstate.v1.ScheduleDescription.next_run_times:type_name -> google.protobuf.Timestamp
+	79,  // 139: flowstate.v1.ScheduleDescription.recent_runs:type_name -> flowstate.v1.ScheduleActionResult
+	139, // 140: flowstate.v1.ScheduleDescription.inputs:type_name -> flowstate.v1.ScheduleDescription.InputsEntry
+	6,   // 141: flowstate.v1.CreateScheduleRequest.workflow:type_name -> flowstate.v1.Workflow
+	140, // 142: flowstate.v1.CreateScheduleRequest.inputs:type_name -> flowstate.v1.CreateScheduleRequest.InputsEntry
+	81,  // 143: flowstate.v1.CreateScheduleResponse.schedule:type_name -> flowstate.v1.ScheduleDescription
+	80,  // 144: flowstate.v1.ListSchedulesResponse.schedules:type_name -> flowstate.v1.ScheduleSummary
+	81,  // 145: flowstate.v1.DescribeScheduleResponse.schedule:type_name -> flowstate.v1.ScheduleDescription
+	100, // 146: flowstate.v1.Workflow.StepOutputs.step_values:type_name -> flowstate.v1.Workflow.StepOutputs.StepValuesEntry
+	11,  // 147: flowstate.v1.Workflow.StepOutputs.run_outputs:type_name -> flowstate.v1.RunOutputs
+	31,  // 148: flowstate.v1.Workflow.VarsEntry.value:type_name -> flowstate.v1.Value
+	7,   // 149: flowstate.v1.Workflow.SignalsEntry.value:type_name -> flowstate.v1.SignalPolicy
+	103, // 150: flowstate.v1.Workflow.StepOutputs.StepValuesEntry.value:type_name -> flowstate.v1.Node.Outputs
+	31,  // 151: flowstate.v1.RunOutputs.ValuesEntry.value:type_name -> flowstate.v1.Value
+	105, // 152: flowstate.v1.Node.Outputs.named_values:type_name -> flowstate.v1.Node.Outputs.NamedValuesEntry
+	31,  // 153: flowstate.v1.Node.VarsEntry.value:type_name -> flowstate.v1.Value
+	31,  // 154: flowstate.v1.Node.Outputs.NamedValuesEntry.value:type_name -> flowstate.v1.Value
+	31,  // 155: flowstate.v1.Signal.OutputsEntry.value:type_name -> flowstate.v1.Value
+	31,  // 156: flowstate.v1.Scope.VarsEntry.value:type_name -> flowstate.v1.Value
+	31,  // 157: flowstate.v1.Scope.AmbientVarsEntry.value:type_name -> flowstate.v1.Value
+	31,  // 158: flowstate.v1.Scope.InputsEntry.value:type_name -> flowstate.v1.Value
+	14,  // 159: flowstate.v1.Parallel.Branch.steps:type_name -> flowstate.v1.Node
+	31,  // 160: flowstate.v1.Call.ArgumentsEntry.value:type_name -> flowstate.v1.Value
+	3,   // 161: flowstate.v1.Value.Error.code:type_name -> flowstate.v1.Value.Error.Code
+	114, // 162: flowstate.v1.Value.Structure.list:type_name -> flowstate.v1.Value.Structure.List
+	115, // 163: flowstate.v1.Value.Structure.map:type_name -> flowstate.v1.Value.Structure.Map
+	31,  // 164: flowstate.v1.Value.Structure.List.values:type_name -> flowstate.v1.Value
+	116, // 165: flowstate.v1.Value.Structure.Map.entries:type_name -> flowstate.v1.Value.Structure.Map.EntriesEntry
+	31,  // 166: flowstate.v1.Value.Structure.Map.EntriesEntry.value:type_name -> flowstate.v1.Value
+	31,  // 167: flowstate.v1.Task.InputsEntry.value:type_name -> flowstate.v1.Value
+	4,   // 168: flowstate.v1.Task.Log.Inputs.level:type_name -> flowstate.v1.Task.Log.Level
+	122, // 169: flowstate.v1.Task.Log.Inputs.fields:type_name -> flowstate.v1.Task.Log.Inputs.FieldsEntry
+	125, // 170: flowstate.v1.Task.HTTP.Inputs.headers:type_name -> flowstate.v1.Task.HTTP.Inputs.HeadersEntry
+	31,  // 171: flowstate.v1.Task.HTTP.Inputs.bearer:type_name -> flowstate.v1.Value
+	126, // 172: flowstate.v1.Task.HTTP.Inputs.outputs:type_name -> flowstate.v1.Task.HTTP.Inputs.OutputsEntry
+	127, // 173: flowstate.v1.Task.HTTP.Inputs.query:type_name -> flowstate.v1.Task.HTTP.Inputs.QueryEntry
+	31,  // 174: flowstate.v1.Task.HTTP.Inputs.json:type_name -> flowstate.v1.Value
+	128, // 175: flowstate.v1.Task.HTTP.Inputs.form:type_name -> flowstate.v1.Task.HTTP.Inputs.FormEntry
+	31,  // 176: flowstate.v1.Task.HTTP.Inputs.expect:type_name -> flowstate.v1.Value
+	129, // 177: flowstate.v1.Task.HTTP.Outputs.headers:type_name -> flowstate.v1.Task.HTTP.Outputs.HeadersEntry
+	144, // 178: flowstate.v1.Task.HTTP.Outputs.json:type_name -> google.api.expr.v1alpha1.Value
+	31,  // 179: flowstate.v1.Task.HTTP.Inputs.OutputsEntry.value:type_name -> flowstate.v1.Value
+	31,  // 180: flowstate.v1.Task.HTTP.Inputs.QueryEntry.value:type_name -> flowstate.v1.Value
+	31,  // 181: flowstate.v1.Task.HTTP.Inputs.FormEntry.value:type_name -> flowstate.v1.Value
+	31,  // 182: flowstate.v1.RunRequest.InputsEntry.value:type_name -> flowstate.v1.Value
+	31,  // 183: flowstate.v1.EntityState.VarsEntry.value:type_name -> flowstate.v1.Value
+	31,  // 184: flowstate.v1.EntityState.LoopStateEntry.value:type_name -> flowstate.v1.Value
+	31,  // 185: flowstate.v1.Frame.CallVarsEntry.value:type_name -> flowstate.v1.Value
+	31,  // 186: flowstate.v1.RunState.VarsEntry.value:type_name -> flowstate.v1.Value
+	31,  // 187: flowstate.v1.RunState.InputsEntry.value:type_name -> flowstate.v1.Value
+	31,  // 188: flowstate.v1.SignalWithStartRequest.InputsEntry.value:type_name -> flowstate.v1.Value
+	31,  // 189: flowstate.v1.ScheduleDescription.InputsEntry.value:type_name -> flowstate.v1.Value
+	31,  // 190: flowstate.v1.CreateScheduleRequest.InputsEntry.value:type_name -> flowstate.v1.Value
+	39,  // 191: flowstate.v1.WorkflowService.Run:input_type -> flowstate.v1.RunRequest
+	41,  // 192: flowstate.v1.WorkflowService.Get:input_type -> flowstate.v1.GetRequest
+	61,  // 193: flowstate.v1.WorkflowService.Signal:input_type -> flowstate.v1.SignalRequest
+	63,  // 194: flowstate.v1.WorkflowService.SignalWithStart:input_type -> flowstate.v1.SignalWithStartRequest
+	69,  // 195: flowstate.v1.WorkflowService.List:input_type -> flowstate.v1.ListRequest
+	65,  // 196: flowstate.v1.WorkflowService.Cancel:input_type -> flowstate.v1.CancelRequest
+	67,  // 197: flowstate.v1.WorkflowService.Terminate:input_type -> flowstate.v1.TerminateRequest
+	73,  // 198: flowstate.v1.WorkflowService.Validate:input_type -> flowstate.v1.ValidateRequest
+	75,  // 199: flowstate.v1.WorkflowService.Compile:input_type -> flowstate.v1.CompileRequest
+	77,  // 200: flowstate.v1.WorkflowService.GetCatalog:input_type -> flowstate.v1.GetCatalogRequest
+	82,  // 201: flowstate.v1.WorkflowService.CreateSchedule:input_type -> flowstate.v1.CreateScheduleRequest
+	84,  // 202: flowstate.v1.WorkflowService.ListSchedules:input_type -> flowstate.v1.ListSchedulesRequest
+	86,  // 203: flowstate.v1.WorkflowService.DescribeSchedule:input_type -> flowstate.v1.DescribeScheduleRequest
+	88,  // 204: flowstate.v1.WorkflowService.DeleteSchedule:input_type -> flowstate.v1.DeleteScheduleRequest
+	90,  // 205: flowstate.v1.WorkflowService.PauseSchedule:input_type -> flowstate.v1.PauseScheduleRequest
+	92,  // 206: flowstate.v1.WorkflowService.ResumeSchedule:input_type -> flowstate.v1.ResumeScheduleRequest
+	94,  // 207: flowstate.v1.WorkflowService.TriggerSchedule:input_type -> flowstate.v1.TriggerScheduleRequest
+	40,  // 208: flowstate.v1.WorkflowService.Run:output_type -> flowstate.v1.RunResponse
+	42,  // 209: flowstate.v1.WorkflowService.Get:output_type -> flowstate.v1.GetResponse
+	62,  // 210: flowstate.v1.WorkflowService.Signal:output_type -> flowstate.v1.SignalResponse
+	64,  // 211: flowstate.v1.WorkflowService.SignalWithStart:output_type -> flowstate.v1.SignalWithStartResponse
+	71,  // 212: flowstate.v1.WorkflowService.List:output_type -> flowstate.v1.ListResponse
+	66,  // 213: flowstate.v1.WorkflowService.Cancel:output_type -> flowstate.v1.CancelResponse
+	68,  // 214: flowstate.v1.WorkflowService.Terminate:output_type -> flowstate.v1.TerminateResponse
+	74,  // 215: flowstate.v1.WorkflowService.Validate:output_type -> flowstate.v1.ValidateResponse
+	76,  // 216: flowstate.v1.WorkflowService.Compile:output_type -> flowstate.v1.CompileResponse
+	78,  // 217: flowstate.v1.WorkflowService.GetCatalog:output_type -> flowstate.v1.GetCatalogResponse
+	83,  // 218: flowstate.v1.WorkflowService.CreateSchedule:output_type -> flowstate.v1.CreateScheduleResponse
+	85,  // 219: flowstate.v1.WorkflowService.ListSchedules:output_type -> flowstate.v1.ListSchedulesResponse
+	87,  // 220: flowstate.v1.WorkflowService.DescribeSchedule:output_type -> flowstate.v1.DescribeScheduleResponse
+	89,  // 221: flowstate.v1.WorkflowService.DeleteSchedule:output_type -> flowstate.v1.DeleteScheduleResponse
+	91,  // 222: flowstate.v1.WorkflowService.PauseSchedule:output_type -> flowstate.v1.PauseScheduleResponse
+	93,  // 223: flowstate.v1.WorkflowService.ResumeSchedule:output_type -> flowstate.v1.ResumeScheduleResponse
+	95,  // 224: flowstate.v1.WorkflowService.TriggerSchedule:output_type -> flowstate.v1.TriggerScheduleResponse
+	208, // [208:225] is the sub-list for method output_type
+	191, // [191:208] is the sub-list for method input_type
+	191, // [191:191] is the sub-list for extension type_name
+	191, // [191:191] is the sub-list for extension extendee
+	0,   // [0:191] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_flowstate_proto_init() }
@@ -10910,18 +11098,19 @@ func file_flowstate_v1_flowstate_proto_init() {
 		(*GetResponse_Error)(nil),
 		(*GetResponse_Outputs)(nil),
 	}
-	file_flowstate_v1_flowstate_proto_msgTypes[106].OneofWrappers = []any{
+	file_flowstate_v1_flowstate_proto_msgTypes[40].OneofWrappers = []any{}
+	file_flowstate_v1_flowstate_proto_msgTypes[107].OneofWrappers = []any{
 		(*Value_Structure_List_)(nil),
 		(*Value_Structure_Map_)(nil),
 	}
-	file_flowstate_v1_flowstate_proto_msgTypes[116].OneofWrappers = []any{}
+	file_flowstate_v1_flowstate_proto_msgTypes[117].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_flowstate_proto_rawDesc), len(file_flowstate_v1_flowstate_proto_rawDesc)),
 			NumEnums:      6,
-			NumMessages:   134,
+			NumMessages:   135,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

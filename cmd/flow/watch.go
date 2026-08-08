@@ -500,6 +500,19 @@ type watchState struct {
 	// would be reporting the terminal rather than the run.
 	pending []string
 
+	// waits are the gates the run is parked on, already rendered.
+	//
+	// Rendered at absorb time for the reason pending is: one of these sentences
+	// carries a countdown to a gate's deadline, and the moment to measure it
+	// against is the moment the answer was observed rather than whichever redraw
+	// happens to display it.
+	//
+	// No key beside it, unlike pendingKeys, and that is not an omission. A gate
+	// is a step, so reaching one and leaving one both move the position, which
+	// this shape already treats as news; a key here would be a second way to say
+	// the same thing, and a countdown in it would make every poll a change.
+	waits []string
+
 	// pendingKeys is the part of pending that means something has changed: the
 	// attempt count and the last failure, one string per activity.
 	//
@@ -508,6 +521,12 @@ type watchState struct {
 	// change — one line per second in the plain shape, which is the `flow get` loop
 	// this command exists to replace.
 	pendingKeys []string
+
+	// waitKeys is the stable identity of the held gates, for the same purpose
+	// pendingKeys serves for retries: deciding whether anything changed. The
+	// rendered wait lines cannot serve, because they carry a deadline
+	// countdown measured from the observation, which differs at every poll.
+	waitKeys []string
 
 	// failure is a failed run's message, empty until there is one.
 	failure string
@@ -593,6 +612,7 @@ func (s *watchState) absorb(at time.Time, response *v1.GetResponse, err error) w
 	steps := completedSteps(response)
 	position := positionPath(response.GetProgress())
 	pendingKeys := pendingActivityKeys(response.GetPendingActivities())
+	waitKeys := pendingWaitKeys(response.GetProgress())
 
 	// No separate "is this the first answer" flag, and the reason is the guard above
 	// rather than an oversight: the zero value of status is UNSPECIFIED, and an
@@ -606,11 +626,18 @@ func (s *watchState) absorb(at time.Time, response *v1.GetResponse, err error) w
 	// its third step, or an activity that fails and is scheduled again, has changed
 	// in the only sense a reader cares about. Without them the "nothing has changed
 	// yet" rule suppresses exactly the news this command exists to deliver.
+	// The wait set is its own ground for the same reason retries are, and with
+	// a sharper edge: a gate opening or closing inside concurrent work moves
+	// neither the position (those workers deliberately carry none) nor the
+	// pending activities, so without this key the news that a run is now
+	// waiting on somebody, or has stopped, is exactly the change a poll
+	// swallows.
 	changed := recovered ||
 		s.status != response.GetStatus() ||
 		s.runID != response.GetRunId() ||
 		s.position != position ||
 		!slices.Equal(s.pendingKeys, pendingKeys) ||
+		!slices.Equal(s.waitKeys, waitKeys) ||
 		!slices.Equal(s.steps, steps)
 
 	s.response = response
@@ -619,7 +646,9 @@ func (s *watchState) absorb(at time.Time, response *v1.GetResponse, err error) w
 	s.steps = steps
 	s.position = position
 	s.pending = pendingActivityLines(response.GetPendingActivities(), at)
+	s.waits = pendingWaitLines(response.GetProgress(), at)
 	s.pendingKeys = pendingKeys
+	s.waitKeys = waitKeys
 	if failure := response.GetError(); failure != nil {
 		s.failure = failure.GetMessage()
 	}
@@ -689,6 +718,17 @@ func (s *watchState) line(theme ui.Theme) string {
 		line += fmt.Sprintf(" (%s)", pending)
 	}
 
+	// The gates it is parked on, through `flow get`'s own renderer for that
+	// renderer's reason: a person who asks once and a person who watches are
+	// reading about one run, and a second wording of "waiting for signal x" is
+	// how the two come to describe it differently.
+	//
+	// Rendered at absorb time like the retries above, so the countdown to a
+	// gate's deadline is measured against the moment the answer was observed.
+	for _, wait := range s.waits {
+		line += fmt.Sprintf(" (%s)", wait)
+	}
+
 	if len(s.steps) > 0 {
 		line += fmt.Sprintf(" after %s", strings.Join(s.steps, ", "))
 	}
@@ -711,6 +751,27 @@ func pendingActivityKeys(pending []*v1.PendingActivity) []string {
 	keys := make([]string, 0, len(pending))
 	for _, activity := range pending {
 		keys = append(keys, fmt.Sprintf("%d\x00%s", activity.GetAttempt(), activity.GetLastFailure()))
+	}
+
+	return keys
+}
+
+// pendingWaitKeys reduces the held gates to what identifies them across polls:
+// which step, where, which signal, policed or not, and the deadline's fixed
+// instant rather than the countdown to it. A gate entering or leaving is a
+// change worth reporting; the same gate ten seconds closer to its deadline is
+// not, or a bounded wait would make every poll "news".
+func pendingWaitKeys(progress *v1.RunProgress) []string {
+	waits := progress.GetPendingWaits()
+	if len(waits) == 0 {
+		return nil
+	}
+
+	keys := make([]string, 0, len(waits))
+	for _, wait := range waits {
+		keys = append(keys, fmt.Sprintf("%s\x00%s\x00%s\x00%t\x00%d",
+			wait.GetStepId(), wait.GetPath(), wait.GetSignalName(), wait.GetPoliced(),
+			wait.GetDeadline().GetSeconds()))
 	}
 
 	return keys

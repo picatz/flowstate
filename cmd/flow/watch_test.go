@@ -1248,3 +1248,39 @@ func TestClientPollerClassifiesRefusals(t *testing.T) {
 		})
 	}
 }
+
+// TestWatchCountsAGateChangeAsAChange is the concurrent-work direction of the
+// change detector. A gate opening or closing inside a parallel block or a
+// concurrent loop moves neither the position (those workers deliberately carry
+// none) nor the pending activities, so without a wait-set key the news that a
+// run is now waiting on somebody, or has stopped, is exactly the change a poll
+// swallows. The deadline countdown must not count: the same gate ten seconds
+// closer to its bound is not news.
+func TestWatchCountsAGateChangeAsAChange(t *testing.T) {
+	state := newWatchState("flowstate-workflow-3f7c", nil)
+
+	parked := func(deadline *timestamppb.Timestamp, names ...string) *v1.GetResponse {
+		progress := &v1.RunProgress{StepId: "both"}
+		for _, name := range names {
+			progress.PendingWaits = append(progress.PendingWaits, &v1.PendingWait{
+				StepId:     name + "_gate",
+				SignalName: name,
+				Deadline:   deadline,
+			})
+		}
+		return &v1.GetResponse{Status: v1.RunResponse_STATUS_RUNNING, Progress: progress}
+	}
+
+	deadline := timestamppb.New(observed.Add(45 * time.Second))
+
+	require.True(t, state.absorb(observed, parked(deadline, "left"), nil).Changed,
+		"the first answer went unreported")
+	require.False(t, state.absorb(observed.Add(10*time.Second), parked(deadline, "left"), nil).Changed,
+		"the same gate closer to its deadline was reported as news, so a bounded wait makes every poll a change")
+
+	require.True(t, state.absorb(observed, parked(deadline, "left", "right"), nil).Changed,
+		"a second gate opened inside concurrent work and the poll swallowed it")
+	require.True(t, state.absorb(observed, parked(deadline, "right"), nil).Changed,
+		"a gate was released and the poll swallowed it, leaving the view naming a gate nobody holds")
+	require.False(t, state.absorb(observed, parked(deadline, "right"), nil).Changed)
+}

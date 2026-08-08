@@ -937,6 +937,12 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 	// filled in. See [LocalRunAddress].
 	scope.Address = NewLocalRunAddress()
 
+	// The declarations a wait reports itself policed against, recorded once for
+	// the run and from the top-level workflow only: a delivery is authorized
+	// against the root's `signals:`, so a callee's own would be the wrong answer
+	// to report. A no-op where nobody installed a [PendingWaits] to watch with.
+	ctx = contextWithWaitPolicies(ctx, w.GetSignals())
+
 	if runtime, ok := ctx.Value(secretRuntimeKey{}).(TaskRuntime); ok && runtime.Step.Workflow == "" {
 		runtime.Step.Workflow = w.GetName()
 		ctx = ContextWithTaskRuntime(ctx, runtime)
@@ -1158,6 +1164,17 @@ func runNode(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, place
 		return runStepWithPolicy(ctx, n.Task, node.GetPolicy(), scope)
 
 	case *Node_ForEach:
+		// A wait inside the body reports this step as its nearest enclosing one,
+		// unless the loop declares concurrency, which the durable driver runs
+		// with no position at all, and this driver therefore reports with none
+		// either even though it runs the iterations sequentially. See
+		// [waitReporting.unpositioned].
+		if n.ForEach.GetMaxParallel() > 1 {
+			ctx = enterConcurrentWait(ctx)
+		} else {
+			ctx = pushWaitAncestor(ctx, node.GetId())
+		}
+
 		return runForEach(ctx, n.ForEach, scope, depth)
 
 	case *Node_Loop:
@@ -1166,10 +1183,13 @@ func runNode(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, place
 		// A `loop:` written inside a for_each body or a parallel branch is legal,
 		// and must not become an escape hatch out of the concurrency refusal that
 		// already applies there.
-		return runLoop(ctx, n.Loop, scope, undo, placement.IntoLoop(), depth)
+		return runLoop(pushWaitAncestor(ctx, node.GetId()), n.Loop, scope, undo, placement.IntoLoop(), depth)
 
 	case *Node_Parallel:
-		return nil, runParallel(ctx, n.Parallel, scope, depth)
+		// Branches are concurrent work, whatever order this driver happens to
+		// run them in, so a wait inside one reports no ancestry: the position
+		// the durable driver refuses to claim.
+		return nil, runParallel(enterConcurrentWait(ctx), n.Parallel, scope, depth)
 
 	case *Node_Wait:
 		return runWait(ctx, node, n.Wait, scope)
@@ -1180,7 +1200,7 @@ func runNode(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, place
 		// [UndoScopeCall]. A call reached from inside a for_each body or a
 		// parallel branch must not become an escape hatch out of the
 		// concurrency refusal just because a call sits between the two.
-		return runCall(ctx, n.Call, scope, undo, placement.IntoCall(), depth+1)
+		return runCall(pushWaitAncestor(ctx, node.GetId()), n.Call, scope, undo, placement.IntoCall(), depth+1)
 
 	default:
 		return nil, fmt.Errorf("unsupported node kind: %T", n)
