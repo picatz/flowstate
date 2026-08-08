@@ -345,13 +345,13 @@ func TestTheTestToolRefusesUnparseableSources(t *testing.T) {
 //
 // The bound is asserted reached, not merely respected (CLAUDE.md): the
 // unbounded message is built first and checked to actually exceed
-// maxRunLocalResultBytes, so a cap that silently never engaged would fail
+// maxMCPResultBytes, so a cap that silently never engaged would fail
 // this test rather than pass it by accident.
 func TestTheTestToolAnswerIsBounded(t *testing.T) {
 	t.Parallel()
 
-	huge := strings.Repeat("x", 2<<20) // 2 MiB, well past maxRunLocalResultBytes.
-	require.Greater(t, len(huge), maxRunLocalResultBytes,
+	huge := strings.Repeat("x", 2<<20) // 2 MiB, well past maxMCPResultBytes.
+	require.Greater(t, len(huge), maxMCPResultBytes,
 		"the fixture is not actually large enough to force renderTestResult to shrink anything")
 
 	session := connectMCP(t, defaultLocalRunPosture())
@@ -380,7 +380,7 @@ outputs:
 	require.True(t, result.IsError)
 
 	encoded := result.Content[0].(*mcp.TextContent).Text
-	assert.LessOrEqual(t, len(encoded), maxRunLocalResultBytes,
+	assert.LessOrEqual(t, len(encoded), maxMCPResultBytes,
 		"a case's own comparison spent %d bytes of a model's context", len(encoded))
 
 	require.Len(t, answer.Cases, 1)

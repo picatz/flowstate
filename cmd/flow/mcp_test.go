@@ -820,7 +820,7 @@ func TestTheRunLocalAnswerIsBounded(t *testing.T) {
 
 	encoded, err := renderRunLocalResult(response, []runLocalLogRecord{{Level: "INFO", Message: "hi"}})
 	require.NoError(t, err)
-	assert.LessOrEqual(t, len(encoded), maxRunLocalResultBytes,
+	assert.LessOrEqual(t, len(encoded), maxMCPResultBytes,
 		"a run's outputs are the workflow's choice, and this one spent %d bytes of a model's context",
 		len(encoded))
 
@@ -861,7 +861,7 @@ func TestTheRunLocalAnswerIsBoundedByItsDeclaredOutputs(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	assert.LessOrEqual(t, len(encoded), maxRunLocalResultBytes,
+	assert.LessOrEqual(t, len(encoded), maxMCPResultBytes,
 		"a declared output is the workflow's choice too, and this one spent %d bytes of a model's context",
 		len(encoded))
 
@@ -902,7 +902,7 @@ func TestADeclaredOutputThatFitsSurvivesTheTranscript(t *testing.T) {
 		[]runLocalLogRecord{{Level: "INFO", Message: "hi"}},
 	)
 	require.NoError(t, err)
-	assert.LessOrEqual(t, len(encoded), maxRunLocalResultBytes)
+	assert.LessOrEqual(t, len(encoded), maxMCPResultBytes)
 
 	var answer runLocalAnswer
 	require.NoError(t, json.Unmarshal(encoded, &answer))
