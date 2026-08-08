@@ -9,7 +9,7 @@ import (
 // # One resolution point, both drivers
 //
 // `flow server` and `flow worker` reach this through [temporalConfig], which is
-// the single place a Temporal client's options are built — including the pool
+// the single place a Temporal client's options are built, including the pool
 // that dials one client per mapped namespace, so a codec cannot end up covering
 // some tenants and not others. `flow run local` reaches it through
 // [localPayloadCodec] below. Both call this, so a deployment cannot rehearse
@@ -22,9 +22,9 @@ import (
 // The null codec, and only the null codec. That is the whole of the prototype's
 // claim: the slot exists, is threaded identically, and defaults to the behavior
 // every deployment already has. What belongs here in the real slice is the
-// plugin lookup — a codec is a plugin process, like a secrets backend, with key
+// plugin lookup, a codec is a plugin process, like a secrets backend, with key
 // custody unified with `flow keys` and the issuer material rather than a second
-// key story — and that lookup is the part this spike deliberately does not
+// key story, and that lookup is the part this spike deliberately does not
 // invent.
 func payloadCodecConfig() (payloadcodec.Config, error) {
 	cfg := payloadcodec.Config{}
@@ -60,8 +60,8 @@ func payloadCodecConfig() (payloadcodec.Config, error) {
 // misconfigured learns it at the rehearsal, which is what a local run is for.
 //
 // This is a no-op by design and by argument, not by omission. If the local
-// driver ever grows durable state — a local history, a resumable run, a
-// `flow test` fixture written to disk — that state is a boundary, and the codec
+// driver ever grows durable state, a local history, a resumable run, a
+// `flow test` fixture written to disk, that state is a boundary, and the codec
 // belongs on it. That is the moment to change this function, and the reason to
 // come looking for it.
 func localPayloadCodec() (payloadcodec.Config, error) {

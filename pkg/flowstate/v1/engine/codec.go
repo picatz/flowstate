@@ -26,7 +26,7 @@ import (
 // # Why a process value rather than a parameter
 //
 // The workflow-side converter is worker configuration, and the Go SDK carries it
-// on the workflow context — but it exposes no public getter, only
+// on the workflow context, but it exposes no public getter, only
 // [workflow.WithDataConverter] to replace it (go.temporal.io/sdk@v1.47.0
 // workflow/workflow_options.go:48). So the wrapper cannot ask the context what
 // it is about to override. Until the SDK offers a getter, or the interpreter is
@@ -39,7 +39,7 @@ import (
 // It is not a branch. Nothing here decides what a run does; it decides how bytes
 // already in history are read back into a value, which is the same job the SDK's
 // own worker-level converter does. A worker configured with a different codec
-// than the one that wrote a payload cannot decode it — but that is true of the
+// than the one that wrote a payload cannot decode it, but that is true of the
 // SDK's converter too, and it fails loudly at the decode rather than quietly at a
 // different branch. Invariant 4's rule is about the interpreter's decisions being
 // a pure function of history; a decoder is upstream of that.

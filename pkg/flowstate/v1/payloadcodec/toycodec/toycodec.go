@@ -1,7 +1,7 @@
 // Package toycodec is a payload codec for tests, and for nothing else.
 //
 // It exists so a round-trip test can prove that a configured codec is actually
-// on the path a payload takes — that history holds bytes the default converter
+// on the path a payload takes, that history holds bytes the default converter
 // cannot read, and that the worker reads them back. Proving that needs a codec
 // whose output is unmistakably not the plaintext; it does not need a key
 // custody story, which is [github.com/picatz/flowstate/issues/353] workstream
@@ -40,7 +40,7 @@ const encodingName = "binary/flowstate-toy-aesgcm"
 
 // Codec is an AES-256-GCM codec over the whole serialized payload.
 //
-// Encoding the entire payload — metadata included — rather than only its data
+// Encoding the entire payload, metadata included, rather than only its data
 // is deliberate: a payload's metadata says which converter wrote it and, for a
 // proto payload, the message's full name. "This run carried a
 // flowstate.v1.RunState" is a small leak, but the seam is easier to reason

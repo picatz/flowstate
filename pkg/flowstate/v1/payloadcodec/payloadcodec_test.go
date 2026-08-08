@@ -30,7 +30,7 @@ func newToyConfig(t *testing.T) payloadcodec.Config {
 
 // TestZeroConfigIsTheNullCodec pins the default. Every deployment that has
 // configured nothing must get exactly the payload path it had before this
-// package existed — not a codec converter wrapping an identity codec, which
+// package existed, not a codec converter wrapping an identity codec, which
 // would be a different set of bytes for the same value.
 func TestZeroConfigIsTheNullCodec(t *testing.T) {
 	t.Parallel()
@@ -67,8 +67,8 @@ func TestCodecRoundTripsAValue(t *testing.T) {
 // says something, and the one CLAUDE.md's "test that A cannot reach B" rule
 // asks for: a round trip through one converter proves the converter is
 // self-consistent, not that anything was encrypted. What proves the seam is that
-// the substrate's own default converter — which is what anyone reading history
-// without the key has — can neither read the value nor find it in the bytes.
+// the substrate's own default converter, which is what anyone reading history
+// without the key has, can neither read the value nor find it in the bytes.
 func TestEncodedPayloadIsNotReadableWithoutTheCodec(t *testing.T) {
 	t.Parallel()
 
@@ -105,7 +105,7 @@ func TestApplySetsBothConverters(t *testing.T) {
 //
 // The SDK's default failure converter writes a failure's message and stack trace
 // into history as plain strings (go.temporal.io/sdk@v1.47.0
-// internal/failure_converter.go:41 — EncodeCommonAttributes defaults to false),
+// internal/failure_converter.go:41, EncodeCommonAttributes defaults to false),
 // and an error message is where a rejected value usually ends up. So the
 // question is not whether the option exists but whether it is on exactly when a
 // codec is, without an operator having to know to ask.

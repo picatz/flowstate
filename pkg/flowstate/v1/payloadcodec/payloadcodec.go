@@ -28,7 +28,7 @@
 // default false). An encrypted history whose error strings quote the values
 // that caused the error is the fail-open composition this repo already knows
 // by name. So [Config.FailureConverter] turns that option on whenever, and only
-// whenever, a codec is configured — the operator never gets to configure one
+// whenever, a codec is configured: the operator never gets to configure one
 // without the other.
 //
 // # The null codec is the default, and is not a placeholder
@@ -55,7 +55,7 @@ import (
 // so: a Flowstate codec is usable anywhere the SDK takes a codec, and the SDK's
 // own codecs are usable here, without an adapter that could get the direction
 // wrong. Name is the addition, and it earns its place at the diagnostic surface
-// — "which codec was this history written with" is the first question asked
+// , "which codec was this history written with" is the first question asked
 // about a payload that will not decode, and a %T of a wrapper answers it badly.
 //
 // Implementations must be safe for concurrent use: one codec serves every
@@ -82,7 +82,7 @@ type Codec interface {
 //
 // It is a codec rather than an absence so that the presence of a codec is never
 // the thing a call site branches on. The one place enablement is asked about is
-// [Config.Enabled], and it is asked for exactly two reasons — whether to turn
+// [Config.Enabled], and it is asked for exactly two reasons, whether to turn
 // failure encoding on, and what to say at startup.
 type nullCodec struct{}
 
@@ -106,7 +106,7 @@ func IsNull(c Codec) bool {
 // every client, worker, and local run.
 //
 // The zero value is the null codec, so a deployment that configures nothing
-// behaves exactly as it did before this existed — including its failure
+// behaves exactly as it did before this existed, including its failure
 // converter, which stays the SDK default.
 type Config struct {
 	// Codec encrypts payloads. Nil means [Null].
@@ -153,7 +153,7 @@ func (c Config) DataConverter() converter.DataConverter {
 // Message and stack trace encoding is on exactly when a codec is configured.
 // The SDK's default leaves both in plaintext in history
 // (go.temporal.io/sdk@v1.47.0 internal/failure_converter.go:41), and an error
-// string is where the value that caused the error usually ends up — so an
+// string is where the value that caused the error usually ends up, so an
 // encrypted history with plaintext failures is not "mostly encrypted", it is a
 // seam with a hole in the shape of every bad input.
 //
