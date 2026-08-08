@@ -18,7 +18,7 @@ import (
 // payload-codec bypass the moment one does not: the server encodes a signal's
 // payload with the client's codec converter, history holds ciphertext, and the
 // interpreter then hands those bytes to a converter that knows nothing about the
-// codec. The decode fails, and a failed signal decode is not loud —
+// codec. The decode fails, and a failed signal decode is not loud:
 // channelImpl.Receive logs a corrupted signal and keeps waiting, exactly as
 // [withSignalDeliveryCompat]'s own comment warns. An approval would be silently
 // lost on every encrypted deployment.

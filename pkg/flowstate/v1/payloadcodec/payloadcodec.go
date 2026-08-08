@@ -31,6 +31,27 @@
 // whenever, a codec is configured: the operator never gets to configure one
 // without the other.
 //
+// # Memos are ciphertext, and every read goes through this converter
+//
+// A memo is not exempt. The Go SDK encodes memo values with the *user's*
+// converter and falls back to the default only if that fails
+// (go.temporal.io/sdk@v1.47.0 internal/internal_workflow_client.go's
+// encodeMemoValue, gated on SDKFlagMemoUserDCEncode, which defaults to true), so
+// on a deployment that configures a codec here every memo the API server writes
+// is encrypted at rest. That is the policy rather than an accident: a run's
+// tenant, its starter, and its declared signal policy are exactly the fields
+// worth encrypting.
+//
+// The consequence is that reading them is not optional plumbing. Whatever
+// [Config.DataConverter] returns has to reach every read site too, or the reads
+// decode nothing and the server answers "no such run" to the tenant that owns
+// it. `server.WithDataConverter` is that half, and `flow server` passes it the
+// same resolved config the Temporal client got.
+//
+// Search attributes are the exception and cannot be covered: the SDK always
+// encodes those with the default converter, because the cluster has to index
+// them. Nothing payload-derived may ever be projected into one.
+//
 // # The null codec is the default, and is not a placeholder
 //
 // [Null] is what an unconfigured deployment runs, and it is deliberately a real

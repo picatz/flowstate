@@ -12,7 +12,6 @@ import (
 	enums "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
-	"go.temporal.io/sdk/converter"
 	// Aliased because the local name `temporal` is taken throughout this file by
 	// the Temporal *client* a tenant's schedules live on, and shadowing the package
 	// with the client is how a sentinel comparison silently stops compiling.
@@ -388,7 +387,7 @@ func (s *FlowstateServer) ListSchedules(ctx context.Context, req *connect.Reques
 		// answered. See this file's header: the two protections fail differently,
 		// and a listing is precisely where a wrong answer is cheapest to get and
 		// most expensive to notice.
-		if !ownedBy(namespace, entry.Memo) {
+		if !s.ownedBy(namespace, entry.Memo) {
 			continue
 		}
 
@@ -540,7 +539,7 @@ func (s *FlowstateServer) authorizeSchedule(ctx context.Context, name string) (c
 		return nil, noSuchSchedule(name)
 	}
 
-	if !ownedBy(namespace, description.Memo) {
+	if !s.ownedBy(namespace, description.Memo) {
 		return nil, noSuchSchedule(name)
 	}
 
@@ -584,7 +583,7 @@ func (s *FlowstateServer) describeSchedule(ctx context.Context, temporal client.
 		return nil, noSuchSchedule(name)
 	}
 
-	if !ownedBy(namespace, description.Memo) {
+	if !s.ownedBy(namespace, description.Memo) {
 		return nil, noSuchSchedule(name)
 	}
 
@@ -634,7 +633,7 @@ func (s *FlowstateServer) describeSchedule(ctx context.Context, temporal client.
 	// value ever reaches [reported] — see that function's own comment for the
 	// fail-closed case this branch's `state != nil` guard already produces for "no
 	// spec at all."
-	if state := storedRunState(description.Schedule.Action); state != nil {
+	if state := s.storedRunState(description.Schedule.Action); state != nil {
 		reported.WorkflowName = state.GetWorkflow().GetName()
 		reported.Inputs = redactInputs(state.GetInputs(), sensitiveInputNames(state.GetWorkflow()))
 		reported.Trigger = state.GetWorkflow().GetTriggers().GetSchedule()
@@ -746,10 +745,11 @@ func redactInputs(inputs map[string]*v1.Value, sensitive map[string]bool) map[st
 //
 // Describe returns the action's arguments as payloads rather than as the values
 // that went in — the SDK says so — so this decodes the one argument
-// `engine.Run` takes, through the same default data converter that encoded it.
+// `engine.Run` takes, through the same data converter that encoded it, which is
+// this server's own rather than the SDK default. See [WithDataConverter].
 // Nil for anything unexpected, which every caller treats as "not known" rather than
 // as an error.
-func storedRunState(action client.ScheduleAction) *v1.RunState {
+func (s *FlowstateServer) storedRunState(action client.ScheduleAction) *v1.RunState {
 	workflowAction, ok := action.(*client.ScheduleWorkflowAction)
 	if !ok || len(workflowAction.Args) != 1 {
 		return nil
@@ -761,7 +761,7 @@ func storedRunState(action client.ScheduleAction) *v1.RunState {
 	}
 
 	var state v1.RunState
-	if err := converter.GetDefaultDataConverter().FromPayload(payload, &state); err != nil {
+	if err := s.dataConverter.FromPayload(payload, &state); err != nil {
 		return nil
 	}
 

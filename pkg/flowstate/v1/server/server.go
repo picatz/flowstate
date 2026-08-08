@@ -33,6 +33,13 @@ func New(temporalClient client.Client, opts ...Option) *FlowstateServer {
 	s := &FlowstateServer{
 		temporalClient: temporalClient,
 		maxStepsPerRun: maxStepsPerRunFromEnv(),
+		// The one place this package names the SDK default. Every read of a
+		// memo, a schedule's stored arguments, or a heartbeat detail goes
+		// through s.dataConverter, so a deployment that configures a payload
+		// codec configures it once, here, through [WithDataConverter]. See
+		// that option for why a second GetDefaultDataConverter call anywhere
+		// else in this package is a bug rather than a shortcut.
+		dataConverter: converter.GetDefaultDataConverter(),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -188,6 +195,52 @@ type FlowstateServer struct {
 	// succeeded against this deployment's Temporal namespace before the server
 	// started serving. See [WithSearchAttributesRegistered].
 	searchAttributesRegistered bool
+
+	// dataConverter reads everything this server wrote through a Temporal
+	// client: memos, a schedule's stored arguments, an activity's heartbeat
+	// details. It is set in [New] and never nil. See [WithDataConverter].
+	dataConverter converter.DataConverter
+}
+
+// WithDataConverter sets the data converter this server reads its own recorded
+// values back with: a run's tenant and starter memos, the signal policy memo,
+// the workflow-name memo, a schedule's stored run state, and an activity's
+// heartbeat details.
+//
+// It exists because the write side is not this server's choice. A memo value is
+// encoded with the *client's* data converter, not the SDK default: the Go SDK
+// encodes it with the user's converter and falls back to the default only if
+// that fails (go.temporal.io/sdk@v1.47.0 internal/internal_workflow_client.go's
+// encodeMemoValue, gated on SDKFlagMemoUserDCEncode, which defaults to true). So
+// on a deployment that configures a payload codec, every memo this server writes
+// is ciphertext, and a server that read it back with the default converter would
+// decode nothing. [FlowstateServer.ownedBy] would answer false for every run,
+// and every tenant would be told "no such run" about runs it owns. That is not a
+// hypothetical: it is what the codec knob would ship with behind it if the read
+// side did not move with the write side.
+//
+// Hence one converter, both directions. Whatever `payloadcodec.Config`'s
+// DataConverter handed the Temporal client is what belongs here, and `flow
+// server` passes exactly that, from the same resolved config.
+//
+// The zero value keeps today's behavior byte for byte: a server built without
+// this option reads with [converter.GetDefaultDataConverter], which is what an
+// unconfigured deployment's client writes with.
+//
+// Search attributes are deliberately not covered, and cannot be: the SDK always
+// encodes those with the default converter because the cluster has to index
+// them. That asymmetry is why nothing payload-derived may ever be projected into
+// one.
+func WithDataConverter(dc converter.DataConverter) Option {
+	return func(s *FlowstateServer) {
+		if dc == nil {
+			// A nil converter would be a silent outage of exactly the shape
+			// this option exists to prevent, so it is refused by being ignored:
+			// the server keeps the default [New] gave it.
+			return
+		}
+		s.dataConverter = dc
+	}
 }
 
 // WithSearchAttributesRegistered tells the server it may project a run's
@@ -933,7 +986,7 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 				// answer to "why has this been RUNNING for six hours" costs no
 				// further round trip. See pendingActivities for what is and is
 				// not claimed.
-				PendingActivities: pendingActivities(resp),
+				PendingActivities: s.pendingActivities(resp),
 				// The one field on this response that answers what a healthy
 				// entity actually holds — see [entityState]'s own comment for
 				// why a run that is, by design, always RUNNING was otherwise
@@ -1100,13 +1153,13 @@ func failureError(
 // about a running attempt on a response whose subject is the run: a `flow get`
 // that failed because a heartbeat payload was written by something encoding
 // differently would be refusing to answer a question it can answer.
-func heartbeatPhase(details *commonpb.Payloads) string {
+func (s *FlowstateServer) heartbeatPhase(details *commonpb.Payloads) string {
 	if details == nil || len(details.GetPayloads()) == 0 {
 		return ""
 	}
 
 	var phase string
-	if err := converter.GetDefaultDataConverter().FromPayload(details.GetPayloads()[0], &phase); err != nil {
+	if err := s.dataConverter.FromPayload(details.GetPayloads()[0], &phase); err != nil {
 		return ""
 	}
 
@@ -1281,7 +1334,7 @@ func entityState(ctx context.Context, temporal client.Client, resp *workflowserv
 // of fields Temporal already answered with — no further round trip, and
 // nothing inferred: an activity mid-retry has an attempt count and a last
 // failure, and which *step* it is remains the progress query's answer.
-func pendingActivities(resp *workflowservice.DescribeWorkflowExecutionResponse) []*v1.PendingActivity {
+func (s *FlowstateServer) pendingActivities(resp *workflowservice.DescribeWorkflowExecutionResponse) []*v1.PendingActivity {
 	infos := resp.GetPendingActivities()
 	if len(infos) == 0 {
 		return nil
@@ -1314,7 +1367,7 @@ func pendingActivities(resp *workflowservice.DescribeWorkflowExecutionResponse) 
 		// run: a `flow get` that failed because a heartbeat payload was written by
 		// something that encodes differently would be refusing to answer a question
 		// it can answer.
-		pending.Phase = heartbeatPhase(info.GetHeartbeatDetails())
+		pending.Phase = s.heartbeatPhase(info.GetHeartbeatDetails())
 
 		out = append(out, pending)
 	}

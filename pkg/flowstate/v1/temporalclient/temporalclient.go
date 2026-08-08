@@ -97,7 +97,7 @@ type Config struct {
 	Interceptors []interceptor.ClientInterceptor
 
 	// Codec is the payload codec every client this configuration dials is built
-	// with, together with the failure converter that must accompany it — see
+	// with, together with the failure converter that must accompany it. See
 	// [payloadcodec.Config].
 	//
 	// It lives here for the reason MetricsHandler and Interceptors do, and the

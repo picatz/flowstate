@@ -358,7 +358,7 @@ func runWorker(cmd *cobra.Command, args []string) error {
 	// The interpreter's own copy of the converter this client was built with.
 	// Workflow-side code replaces the context's converter to decode a signal in
 	// either wire shape, and the SDK offers no way to read the one it is
-	// replacing — so without this the wrapper would fall back to the default
+	// replacing, so without this the wrapper would fall back to the default
 	// converter and quietly fail to decode every signal on a deployment with a
 	// codec. See engine/codec.go.
 	workerCodec, err := payloadCodecConfig()
@@ -598,7 +598,17 @@ func runServer(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--task-queue-prefix: %w", err)
 	}
 
-	serverOpts := []server.Option{}
+	// The same converter every client dialed from cfg was built with, taken
+	// from cfg itself rather than resolved a second time, so the two cannot
+	// disagree about which codec this process runs.
+	//
+	// This is the read side of the write side. A memo is encoded with the
+	// client's converter, so on a deployment with a codec configured every memo
+	// this server writes is ciphertext; a server reading them back with the SDK
+	// default would decode none of them, answer "this run is not yours" for
+	// every run, and hide the whole deployment from the tenants that own it.
+	// See [server.WithDataConverter].
+	serverOpts := []server.Option{server.WithDataConverter(cfg.Codec.DataConverter())}
 	if taskQueues.Enabled() {
 		serverOpts = append(serverOpts, server.WithTaskQueues(taskQueues))
 	}

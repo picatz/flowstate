@@ -78,8 +78,8 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 
 	// Resolved and validated here, and applied nowhere: a local run has no
 	// boundary for a codec to sit on. What this buys is that a codec which
-	// cannot come up refuses the rehearsal exactly as it refuses the worker —
-	// see [localPayloadCodec] for the argument, which is deliberately an
+	// cannot come up refuses the rehearsal exactly as it refuses the worker.
+	// See [localPayloadCodec] for the argument, which is deliberately an
 	// argument rather than an omission.
 	if _, err := localPayloadCodec(); err != nil {
 		return err

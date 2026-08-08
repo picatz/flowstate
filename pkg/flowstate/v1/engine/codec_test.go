@@ -21,8 +21,8 @@ import (
 // path or it is not.
 //
 // These tests deliberately do not call t.Parallel. [engine.UseDataConverter]
-// sets a process value — see engine/codec.go for why the SDK leaves no
-// alternative — and Go runs serial tests alone, before any parallel test in the
+// sets a process value (see engine/codec.go for why the SDK leaves no
+// alternative) and Go runs serial tests alone, before any parallel test in the
 // package resumes. A parallel test here would run beside every other test in the
 // package with the codec still installed, and they would all lose their signals.
 
@@ -117,7 +117,7 @@ func TestCodecCoversInputsSignalsAndOutputs(t *testing.T) {
 // correct only while every deployment uses the default converter. This
 // reproduces what that costs on a deployment with a codec: the payload is
 // ciphertext, the default converter cannot read it, and channelImpl.Receive
-// treats an undecodable signal as corrupted — logs it and keeps waiting. The run
+// treats an undecodable signal as corrupted: it logs it and keeps waiting. The run
 // does not fail. The approval is simply gone.
 func TestSignalsAreLostWhenTheInterpreterBypassesTheCodec(t *testing.T) {
 	toy, err := toycodec.New(bytes.Repeat([]byte{0x2a}, 32))
@@ -144,7 +144,7 @@ func TestSignalsAreLostWhenTheInterpreterBypassesTheCodec(t *testing.T) {
 
 	// The approval never reached the workflow. What that looks like from the
 	// outside is the point: not a decode error surfaced to anyone, but a gate
-	// that keeps waiting — the SDK logs "Corrupted signal received on channel
+	// that keeps waiting. The SDK logs "Corrupted signal received on channel
 	// deploy-approved" and carries on. Here the run then runs out its clock. On
 	// a real deployment it waits for as long as the wait allows, and an operator
 	// sees a run that is simply stuck.

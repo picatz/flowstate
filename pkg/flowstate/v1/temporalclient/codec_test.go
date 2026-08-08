@@ -15,9 +15,9 @@ import (
 // TestOptionsCarryTheCodec pins the single construction point.
 //
 // [temporalclient.Config.Options] is the one function that turns this
-// deployment's configuration into client options, and both things that dial —
-// [temporalclient.Dial] and [temporalclient.NewPool], which dials one client per
-// mapped Temporal namespace — go through it. Asserting here rather than at each
+// deployment's configuration into client options, and both things that dial go
+// through it: [temporalclient.Dial], and [temporalclient.NewPool], which dials
+// one client per mapped Temporal namespace. Asserting here rather than at each
 // call site is the point: a codec applied at Dial would encrypt the fallback
 // client's payloads and write every mapped tenant's in plaintext.
 func TestOptionsCarryTheCodec(t *testing.T) {
