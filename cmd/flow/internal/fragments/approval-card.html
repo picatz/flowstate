@@ -434,6 +434,17 @@
           }
         }
 
+        // A wait only gets decision buttons when its author wrote a prompt.
+        //
+        // The prompt is the one signal in the data that a human was asked a
+        // question this card's yes-or-no answer fits. A wait written without
+        // one may be expecting a payload with an entirely different shape, an
+        // order update, a batch of fields, and releasing it with {approved}
+        // would hand the workflow a payload its expressions were never
+        // written against. That wait is still shown, because an operator
+        // wants to know the run is parked on it; it is answered with
+        // flowstate_signal and the payload the workflow actually expects,
+        // which the card cannot compose and does not pretend to.
         function gateElement(gate, index) {
           var node = document
             .getElementById("gate")
@@ -446,19 +457,32 @@
           section.setAttribute("aria-labelledby", headingID);
           setText(heading, gate.signalName);
 
-          setText(
-            node.querySelector(".prompt"),
-            gate.prompt || "This gate was written without a prompt."
-          );
           setText(node.querySelector(".facts"), factsFor(gate));
 
           var comment = node.querySelector(".comment");
           var label = node.querySelector(".comment-label");
+          var approve = node.querySelector(".approve");
+          var reject = node.querySelector(".reject");
+
+          if (!gate.prompt) {
+            setText(
+              node.querySelector(".prompt"),
+              "This wait asks no question, so it is not answered from here: " +
+                "it expects whatever payload the workflow declared, through " +
+                "flowstate_signal."
+            );
+            comment.remove();
+            label.remove();
+            approve.remove();
+            reject.remove();
+            return node;
+          }
+
+          setText(node.querySelector(".prompt"), gate.prompt);
+
           comment.id = "comment-" + index;
           label.setAttribute("for", comment.id);
 
-          var approve = node.querySelector(".approve");
-          var reject = node.querySelector(".reject");
           approve.setAttribute("aria-label", "Approve " + gate.signalName);
           reject.setAttribute("aria-label", "Reject " + gate.signalName);
 

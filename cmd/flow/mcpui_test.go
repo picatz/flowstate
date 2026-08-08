@@ -677,3 +677,37 @@ func looksAbsolute(reference string) bool {
 
 	return strings.HasPrefix(trimmed, "//") || strings.Contains(trimmed, "://")
 }
+
+// TestAWaitWithoutAPromptOffersNoDecision holds the boundary the Codex review
+// on this change drew: a card that turned every pending wait into an approval
+// gate would release a wait expecting an order update, or any other payload
+// shape, with {approved} instead, and the workflow's own expressions would
+// then read fields that are not there. The prompt is the author's opt-in: a
+// wait that asks no question gets its facts rendered and no buttons, and the
+// card says the answer travels through flowstate_signal with the payload the
+// workflow declared.
+//
+// Pinned the way the bridge is pinned, by shape: the promptless branch must
+// remove every control and return before any click listener is attached, so
+// there is no path from a promptless wait to a decide() call.
+func TestAWaitWithoutAPromptOffersNoDecision(t *testing.T) {
+	t.Parallel()
+
+	code := withoutComments(fragments.ApprovalCard())
+
+	guard := regexp.MustCompile(
+		`if \(!gate\.prompt\) \{[^}]*approve\.remove\(\);[^}]*reject\.remove\(\);[^}]*return node;`)
+	assert.Regexp(t, guard, code,
+		"the promptless branch no longer strips the decision buttons before returning; every "+
+			"pending wait would offer Approve and Reject, including waits whose payload shape "+
+			"{approved} can never satisfy")
+
+	listeners := regexp.MustCompile(`addEventListener\("click"`)
+	returnThenListen := strings.Index(code, "approve.remove();")
+	firstListener := listeners.FindStringIndex(code)
+	if assert.NotNil(t, firstListener, "the card should attach its click listeners somewhere") {
+		assert.Less(t, returnThenListen, firstListener[0],
+			"the promptless return must come before any click listener attaches, or a promptless "+
+				"gate still wires a decision")
+	}
+}
