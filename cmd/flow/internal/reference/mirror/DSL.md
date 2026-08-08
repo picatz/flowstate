@@ -566,7 +566,9 @@ not a detail of implementation.
 taint, by a third mechanism neither branch above anticipated:
 `flowtest/secrets.go`'s `resolveSecretInputs` resolves `${secret(...)}` references
 through a test-only provider — so mocks never see a production value — and fails
-closed on any reference it cannot resolve.
+closed on any reference it cannot resolve, whether written as a whole input or
+nested inside a structured one (`headers:`, `json:`, `form:`), naming the entry's
+path either way.
 
 **Plugins do not get CEL functions.** Accepted from the proposal and restated here
 because it will be asked for repeatedly: an IPC call inside a cost-bounded,
@@ -1592,11 +1594,14 @@ reserved-keyword diagnostics for the grammar Phase 4 will need; `vars:` is in bo
 its positions, the profile is pinned, and the three tasks are gone from the schema.
 Phase 2 is what the sweep leaves load-bearing, per [the
 sweep](#one-edition-one-sweep-and-what-the-rewriter-may-not-guess): with no local task
-returning a value, every step output is something handed in from outside — `http`,
-`for_each`, a `loop:`'s `results`/`state`, a wait's `timed_out`/`payload`/`sender` —
-so the `outputs:` contract, which has since shipped as `declared_outputs`
-(`examples/computed-outputs/`), is the only route by which a run can report a computed
-result at all.
+returning a value, a step output is either something handed in from outside (`http`,
+`for_each`, a wait's `timed_out`/`payload`/`sender`) or a `loop:`'s
+`results`/`state`, the one workflow-computed exception: `update:` is evaluated by
+the workflow itself and `state` publishes its final value (`LoopNextState`/
+`LoopStateOutputs`, `examples/loop-accumulate/`). Either way the `outputs:`
+contract, which has since shipped as `declared_outputs`
+(`examples/computed-outputs/`), is the only route by which a run can report a
+computed result at the run level.
 
 The `plugins:`
 header and dotted-key resolution land in Phase 3 with `call:`. `exec` lands only

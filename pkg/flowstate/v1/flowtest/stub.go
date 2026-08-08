@@ -241,7 +241,7 @@ func (s *stubbedTask) fn(name string) v1.TaskFunc {
 // since stubs existed, and the alternative — silently changing what
 // `inputs.url` means in every test file in the corpus — is worse than one
 // documented collision. See [Stub.Where].
-func stubActivation(ctx context.Context, scope *v1.Scope, inputs map[string]*v1.Value, resolvedSecrets map[string]string) (cel.Activation, error) {
+func stubActivation(ctx context.Context, scope *v1.Scope, inputs map[string]*v1.Value, resolvedSecrets map[string]any) (cel.Activation, error) {
 	native := make(map[string]any, len(inputs))
 	for name, v := range inputs {
 		if lit := v.GetLiteral(); lit != nil {
@@ -252,6 +252,11 @@ func stubActivation(ctx context.Context, scope *v1.Scope, inputs map[string]*v1.
 			native[name] = value
 			continue
 		}
+		// A whole-input reference resolves to its plaintext, and a structured
+		// input holding one — `headers:`, `json:`, `form:` — resolves to the
+		// native map or list the task itself would see, so `where:` can match
+		// on `inputs.headers.Authorization` the same way it matches on
+		// `inputs.bearer`. See [resolveSecretInputs].
 		if value, ok := resolvedSecrets[name]; ok {
 			native[name] = value
 			continue

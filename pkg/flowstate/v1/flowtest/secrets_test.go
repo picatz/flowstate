@@ -140,6 +140,191 @@ tests:
 	require.True(t, c.GetPassed(), "failures: %v", c.GetFailures())
 }
 
+// TestRunFileNestedSecretWithNoEntryIsRefused is #321's broken direction: a
+// workflow whose only reference is *nested* inside `headers:`, a position
+// [v1.TaskDef.NestedSecretInputs] admits, with no `secrets:` entry must be
+// refused naming the entry's path, not silently matched by an unconditional
+// stub. Before the nested walk, resolveSecretInputs looked only at whole
+// inputs, so this exact case passed: fail-open where the mechanism promises
+// fail-closed. The direct-input siblings of this pair are
+// [TestRunFileSecretWithNoEntryIsRefused] and
+// [TestRunFileSecretResolvesFromTestFile], which pin that the whole-input
+// path did not move.
+func TestRunFileNestedSecretWithNoEntryIsRefused(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/workflow.yaml", `
+edition: v2026.2
+name: header-request
+steps:
+  - id: call
+    http:
+      url: https://api.example.com/status
+      headers:
+        Authorization: ${secret('env:TOKEN')}
+`)
+	writeFile(t, dir+"/workflow.test.yaml", `
+tests:
+  - name: no secrets entry for a nested reference
+    workflow: ./workflow.yaml
+    stubs:
+      - task: http
+        returns:
+          status_code: 200
+    expect:
+      ran: [call]
+`)
+
+	report := flowtest.RunFile(dir + "/workflow.test.yaml")
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 1)
+
+	c := report.GetCases()[0]
+	require.False(t, c.GetPassed(), "a case with no `secrets:` entry for a nested env:TOKEN must not pass")
+	require.NotEmpty(t, c.GetFailures())
+
+	found := false
+	for _, f := range c.GetFailures() {
+		if f.GetField() == "expect.failed" {
+			require.Contains(t, f.GetMessage(), "headers.Authorization",
+				"the refusal must name the path of the entry holding the reference")
+			require.Contains(t, f.GetMessage(), "env:TOKEN")
+			require.Contains(t, f.GetMessage(), "secrets:")
+			found = true
+		}
+	}
+	require.True(t, found, "expected an expect.failed diagnostic naming headers.Authorization and env:TOKEN; got %v", c.GetFailures())
+}
+
+// TestRunFileNestedSecretResolvesFromTestFile is the control for the case
+// above: the same fixture with the secret declared passes, and the stub's
+// `where:` observes the resolved plaintext at its place *inside* the
+// structure — `inputs.headers.Authorization` — proof the resolved value folds
+// into the activation in the shape the task itself would see, alongside the
+// structure's literal entries.
+func TestRunFileNestedSecretResolvesFromTestFile(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/workflow.yaml", `
+edition: v2026.2
+name: header-request
+steps:
+  - id: call
+    http:
+      url: https://api.example.com/status
+      headers:
+        Authorization: ${secret('env:TOKEN')}
+        Accept: application/json
+`)
+	writeFile(t, dir+"/workflow.test.yaml", `
+tests:
+  - name: the stub observes the resolved nested secret
+    workflow: ./workflow.yaml
+    secrets:
+      env:TOKEN: s3cr3t-value
+    stubs:
+      - task: http
+        where: inputs.headers.Authorization == 's3cr3t-value' && inputs.headers.Accept == 'application/json'
+        returns:
+          status_code: 200
+    expect:
+      ran: [call]
+`)
+
+	report := flowtest.RunFile(dir + "/workflow.test.yaml")
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 1)
+
+	c := report.GetCases()[0]
+	require.True(t, c.GetPassed(), "failures: %v", c.GetFailures())
+}
+
+// TestRunFileNestedSecretTwoLevelsDeep pins that the walk recurses rather
+// than stopping at depth one: a reference two structures down — a map inside
+// a map, in `json:` — is refused naming its full path when undeclared, and
+// resolves for `where:` at that same path when declared.
+func TestRunFileNestedSecretTwoLevelsDeep(t *testing.T) {
+	t.Parallel()
+
+	const workflow = `
+edition: v2026.2
+name: deep-json
+steps:
+  - id: call
+    http:
+      url: https://api.example.com/login
+      method: POST
+      json:
+        auth:
+          token: ${secret('env:TOKEN')}
+`
+
+	t.Run("undeclared is refused naming the path", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		writeFile(t, dir+"/workflow.yaml", workflow)
+		writeFile(t, dir+"/workflow.test.yaml", `
+tests:
+  - name: no secrets entry two levels down
+    workflow: ./workflow.yaml
+    stubs:
+      - task: http
+        returns:
+          status_code: 200
+    expect:
+      ran: [call]
+`)
+
+		report := flowtest.RunFile(dir + "/workflow.test.yaml")
+		require.Empty(t, report.GetRefused())
+		require.Len(t, report.GetCases(), 1)
+
+		c := report.GetCases()[0]
+		require.False(t, c.GetPassed(), "a reference two levels deep must be refused, not skipped")
+
+		found := false
+		for _, f := range c.GetFailures() {
+			if f.GetField() == "expect.failed" {
+				require.Contains(t, f.GetMessage(), "json.auth.token")
+				require.Contains(t, f.GetMessage(), "env:TOKEN")
+				found = true
+			}
+		}
+		require.True(t, found, "expected a diagnostic naming json.auth.token; got %v", c.GetFailures())
+	})
+
+	t.Run("declared resolves at the path", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		writeFile(t, dir+"/workflow.yaml", workflow)
+		writeFile(t, dir+"/workflow.test.yaml", `
+tests:
+  - name: resolved two levels down
+    workflow: ./workflow.yaml
+    secrets:
+      env:TOKEN: deep-value
+    stubs:
+      - task: http
+        where: inputs.json.auth.token == 'deep-value'
+        returns:
+          status_code: 200
+    expect:
+      ran: [call]
+`)
+
+		report := flowtest.RunFile(dir + "/workflow.test.yaml")
+		require.Empty(t, report.GetRefused())
+		require.Len(t, report.GetCases(), 1)
+
+		c := report.GetCases()[0]
+		require.True(t, c.GetPassed(), "failures: %v", c.GetFailures())
+	})
+}
+
 // TestLoadRejectsMalformedSecretRef checks that a `secrets:` key that is not
 // a well-formed "scheme:name" reference fails when the file loads, the same
 // timing a malformed stub or signal already fails at.
