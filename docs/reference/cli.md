@@ -216,6 +216,41 @@ flow get flowstate-workflow-3f7c --run-id 0198f1e2-...
 | `--run-id <string>` | `string` | — | — | ask about one attempt of the workload; unset asks about whichever is current |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
 
+## `flow init`
+
+Scaffold a workflow and its tests in a directory
+
+```
+flow init [dir] [flags]
+```
+
+Write a starter Flowfile and the test file that goes with it into a directory, creating the directory if it does not exist. With no argument the files land in the current directory, and the workflow is named after the directory holding it.
+
+Nothing is ever overwritten: if either file exists already the command refuses and writes neither, naming the file that stopped it.
+
+What it writes is in the edition this build speaks, and passes `flow validate`, `flow test` and `flow fix --check` the moment it lands.
+
+Examples:
+
+```sh
+# Scaffold in the current directory, named after it:
+flow init
+
+# Scaffold a new directory, creating it:
+flow init deploy-frontend
+
+# Choose the workflow's name rather than taking the directory's:
+flow init . --name nightly-report
+
+# What the scaffold is for — run it, then run its tests:
+flow run local ./workflow.yaml
+flow test .
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `--name <string>` | `string` | — | — | the workflow's name; unset takes the target directory's name |
+
 ## `flow jwt`
 
 Sign and inspect JSON Web Tokens for admin debugging

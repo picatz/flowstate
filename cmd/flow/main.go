@@ -1949,6 +1949,14 @@ flow lsp --plugin-dir ./plugins`,
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(validateCmd)
 
+	// First in the group because it is first in the order somebody does things:
+	// `init` writes the file every other command in this group reads, and a
+	// newcomer scanning the list for where to start finds it above `validate`
+	// rather than under a heading that assumes they already have a Flowfile.
+	initCmd := newInitCommand()
+	initCmd.GroupID = "workflow"
+	rootCmd.AddCommand(initCmd)
+
 	// Grouped with the other commands that read a Flowfile without running one.
 	// Left out, it lands under the bare "Commands" heading beside `help` and
 	// `completion`, which is where an author stops looking.
