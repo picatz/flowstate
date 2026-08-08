@@ -208,7 +208,7 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 		if err := decode(req, &params); err != nil {
 			return nil, err
 		}
-		doc, ok := s.docs.get(params.TextDocument.URI)
+		doc, ok := s.awaitDoc(ctx, conn, params.TextDocument.URI)
 		if !ok {
 			return nil, nil
 		}
@@ -219,7 +219,7 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 		if err := decode(req, &params); err != nil {
 			return nil, err
 		}
-		doc, ok := s.docs.get(params.TextDocument.URI)
+		doc, ok := s.awaitDoc(ctx, conn, params.TextDocument.URI)
 		if !ok {
 			return &lsp.CompletionList{Items: []lsp.CompletionItem{}}, nil
 		}
@@ -230,7 +230,7 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 		if err := decode(req, &params); err != nil {
 			return nil, err
 		}
-		doc, ok := s.docs.get(params.TextDocument.URI)
+		doc, ok := s.awaitDoc(ctx, conn, params.TextDocument.URI)
 		if !ok {
 			return []lsp.Location{}, nil
 		}
@@ -245,7 +245,7 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 		if err := decode(req, &params); err != nil {
 			return nil, err
 		}
-		doc, ok := s.docs.get(params.TextDocument.URI)
+		doc, ok := s.awaitDoc(ctx, conn, params.TextDocument.URI)
 		if !ok {
 			return []lsp.SymbolInformation{}, nil
 		}
@@ -256,7 +256,7 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 		if err := decode(req, &params); err != nil {
 			return nil, err
 		}
-		doc, ok := s.docs.get(params.TextDocument.URI)
+		doc, ok := s.awaitDoc(ctx, conn, params.TextDocument.URI)
 		if !ok {
 			return []lsp.TextEdit{}, nil
 		}
@@ -275,7 +275,7 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 		if err := decode(req, &params); err != nil {
 			return nil, err
 		}
-		doc, ok := s.docs.get(params.TextDocument.URI)
+		doc, ok := s.awaitDoc(ctx, conn, params.TextDocument.URI)
 		if !ok {
 			return []codeAction{}, nil
 		}
@@ -291,9 +291,13 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 
 	case "$/cancelRequest", "$/setTrace", "$/logTrace", "workspace/didChangeConfiguration",
 		"workspace/didChangeWatchedFiles":
-		// Accepted and ignored. Cancellation is not honored because every
-		// request here is bounded by the document size and completes in well
-		// under the time an editor would wait.
+		// Accepted and ignored. Per-request cancellation is not routed: the
+		// analysis a request runs is bounded by the document size and finishes
+		// well inside what an editor would wait. The one place a request can
+		// block instead of compute is the wait for a document's build in
+		// [FlowfileServer.awaitDoc], and that is bounded twice over and unblocks
+		// on the connection's context and on the connection dropping, so a
+		// cancelled request costs a bounded wait rather than a stuck one.
 		return nil, nil
 	}
 
@@ -381,6 +385,27 @@ func capabilities() serverCapabilities {
 			DocumentFormattingProvider: true,
 		},
 	}
+}
+
+// awaitDoc returns the document a request asks about, waiting for a build that
+// has arrived and not yet landed.
+//
+// Every request that reads a document goes through this rather than through
+// [documentStore.get], because the connection wraps this handler in
+// jsonrpc2.AsyncHandler: a goroutine is started per message from the read loop,
+// so messages begin in arrival order and then race. A client is entitled to send
+// didOpen and a hover for the cursor's position without waiting in between, and
+// it is not entitled to be told null for the document it just opened. Reading
+// the store directly answered from whether didOpen's goroutine happened to have
+// got there first.
+//
+// The wait is bounded and cancellable, and both matter. The request's context
+// carries the client's cancellation and the process's shutdown, and the
+// connection's disconnect channel covers an editor that exits without saying so.
+// A request that outlives either answers with whatever the store holds, which is
+// the empty answer for a document that was never opened.
+func (s *FlowfileServer) awaitDoc(ctx context.Context, conn *jsonrpc2.Conn, uri lsp.DocumentURI) (*document, bool) {
+	return s.docs.await(ctx, conn.DisconnectNotify(), uri)
 }
 
 // publish sends the diagnostics for a document, including when there are none.

@@ -27,6 +27,9 @@ import (
 type client struct {
 	t    *testing.T
 	conn *jsonrpc2.Conn
+	// server is the handler on the other end of the pipe, for the few tests that
+	// need to look at what the server settled on rather than at what it replied.
+	server *FlowfileServer
 
 	mu sync.Mutex
 	// published records every publishDiagnostics notification, in order.
@@ -53,7 +56,7 @@ func newClientFor(t *testing.T, server *FlowfileServer) *client {
 	t.Helper()
 
 	serverSide, clientSide := net.Pipe()
-	c := &client{t: t, notified: map[string]int{}}
+	c := &client{t: t, notified: map[string]int{}, server: server}
 
 	// The server is wrapped in AsyncHandler exactly as the command does, so the
 	// tests run against the same concurrency the real server sees.
@@ -175,6 +178,41 @@ func (c *client) open(uri, text string) lsp.PublishDiagnosticsParams {
 		},
 	}))
 	return c.await(wait)
+}
+
+// openNoWait sends didOpen and returns as soon as the notification is on the
+// wire, with no wait for the diagnostics it triggers.
+//
+// This is what an editor does. [client.open]'s wait is politeness the protocol
+// does not require, and it is also a grace period the server should not need: it
+// gives the didOpen handler a whole round trip to build the document in before
+// any position request is sent. Tests that use it can never see a request racing
+// the build behind it, which is the whole of #317.
+func (c *client) openNoWait(uri, text string) {
+	c.t.Helper()
+	require.NoError(c.t, c.conn.Notify(c.t.Context(), "textDocument/didOpen", lsp.DidOpenTextDocumentParams{
+		TextDocument: lsp.TextDocumentItem{
+			URI:        lsp.DocumentURI(uri),
+			LanguageID: "flowfile",
+			Version:    1,
+			Text:       text,
+		},
+	}))
+}
+
+// changeNoWait sends a full-text didChange without waiting for diagnostics, the
+// way a burst of keystrokes arrives.
+func (c *client) changeNoWait(uri, text string, version int) {
+	c.t.Helper()
+	require.NoError(c.t, c.conn.Notify(c.t.Context(), "textDocument/didChange", lsp.DidChangeTextDocumentParams{
+		TextDocument:   lsp.VersionedTextDocumentIdentifier{TextDocumentIdentifier: lsp.TextDocumentIdentifier{URI: lsp.DocumentURI(uri)}, Version: version},
+		ContentChanges: []lsp.TextDocumentContentChangeEvent{{Text: text}},
+	}))
+}
+
+// serverDoc returns the document the server currently holds for a URI.
+func (c *client) serverDoc(uri string) (*document, bool) {
+	return c.server.docs.get(lsp.DocumentURI(uri))
 }
 
 // change sends a full-text didChange and waits for the diagnostics it triggers.
