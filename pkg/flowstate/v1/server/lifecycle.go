@@ -314,6 +314,16 @@ func (s *FlowstateServer) Signal(ctx context.Context, req *connect.Request[v1.Si
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
+	// Before the tenancy round trip below, deliberately: an oversized payload
+	// is refused for what it is, at zero cost, to the one party who can shrink
+	// it — see [v1.MaxSignalPayloadBytes] for the carry arithmetic this
+	// protects. The payload is the one part of a run's carried state somebody
+	// other than the run's owner sizes, and without this the refusal would
+	// land at the run's next Continue-As-New instead, on the wrong party.
+	if err := v1.CheckSignalPayloadSize(req.Msg.GetPayload()); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
 	workflowID, runID := req.Msg.GetWorkflowId(), req.Msg.GetRunId()
 
 	// Acted on through the client authorization used, so the run signalled is the
@@ -370,6 +380,13 @@ func (s *FlowstateServer) Signal(ctx context.Context, req *connect.Request[v1.Si
 // closes that a caller doing its own Describe-then-Run-or-Signal cannot.
 func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Request[v1.SignalWithStartRequest]) (*connect.Response[v1.SignalWithStartResponse], error) {
 	if err := v1.Validate(req.Msg); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	// The same door check [FlowstateServer.Signal] makes, for the same reason:
+	// this RPC delivers a payload too, and one door with a bound and one
+	// without is no bound at all.
+	if err := v1.CheckSignalPayloadSize(req.Msg.GetPayload()); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
