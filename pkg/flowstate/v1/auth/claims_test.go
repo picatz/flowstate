@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
 	"github.com/picatz/jose/pkg/header"
 	"github.com/picatz/jose/pkg/jwa"
 	"github.com/picatz/jose/pkg/jwt"
@@ -18,16 +19,16 @@ import (
 // buggy one might, and the verifier has to refuse them rather than misread them.
 func TestOIDCVerifierMalformedClaims(t *testing.T) {
 	var (
-		key    = newECDSAKey(t, "primary")
-		issuer = newTestIssuer(t, key)
-		clock  = newTestClock(referenceTime)
+		key    = authtest.GenerateKey("primary", jwa.ES256)
+		clock  = authtest.NewClock(referenceTime)
+		issuer = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
 	)
 
 	verifier := newVerifier(t,
 		auth.Policy{
 			Issuers: []auth.TrustedIssuer{{
 				Name:      "test",
-				Issuer:    issuer.url,
+				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
 				Require:   []auth.ClaimRule{auth.RequireClaim("tenant", "acme")},
 			}},
@@ -37,75 +38,75 @@ func TestOIDCVerifierMalformedClaims(t *testing.T) {
 
 	// sign builds a token with arbitrary claim values, bypassing the checks the
 	// JOSE builder applies to registered claims.
-	sign := func(t *testing.T, spoil func(claims jwt.ClaimsSet)) string {
+	sign := func(t *testing.T, spoil func(claims map[string]any)) string {
 		t.Helper()
 
-		claims := standardClaims(issuer.url, "runner", "flowstate", referenceTime)
+		claims := issuer.Claims(authtest.WithSubject("runner"), authtest.WithAudience("flowstate"))
 		claims["tenant"] = "acme"
 		spoil(claims)
 
-		return key.signWithHeader(t, header.Parameters{
+		return key.Sign(map[string]any{
 			header.Type:      jwt.Type,
 			header.Algorithm: jwa.ES256,
-			header.KeyID:     key.id,
+			header.KeyID:     key.ID(),
 		}, claims)
 	}
 
 	tests := []struct {
 		name    string
-		spoil   func(claims jwt.ClaimsSet)
+		spoil   func(claims map[string]any)
 		wantErr error
 	}{
 		{
 			name:    "audience is a number",
-			spoil:   func(claims jwt.ClaimsSet) { claims[jwt.Audience] = 42 },
+			spoil:   func(claims map[string]any) { claims[jwt.Audience] = 42 },
 			wantErr: auth.ErrMalformedToken,
 		},
 		{
 			name:    "audience list holds a number",
-			spoil:   func(claims jwt.ClaimsSet) { claims[jwt.Audience] = []any{"flowstate", 42} },
+			spoil:   func(claims map[string]any) { claims[jwt.Audience] = []any{"flowstate", 42} },
 			wantErr: auth.ErrMalformedToken,
 		},
 		{
 			name:    "audience is empty",
-			spoil:   func(claims jwt.ClaimsSet) { claims[jwt.Audience] = "" },
+			spoil:   func(claims map[string]any) { claims[jwt.Audience] = "" },
 			wantErr: auth.ErrMissingClaim,
 		},
 		{
 			name:    "audience list holds only empty values",
-			spoil:   func(claims jwt.ClaimsSet) { claims[jwt.Audience] = []any{"", ""} },
+			spoil:   func(claims map[string]any) { claims[jwt.Audience] = []any{"", ""} },
 			wantErr: auth.ErrMissingClaim,
 		},
 		{
 			name:    "not-before is a string",
-			spoil:   func(claims jwt.ClaimsSet) { claims[jwt.NotBefore] = "yesterday" },
+			spoil:   func(claims map[string]any) { claims[jwt.NotBefore] = "yesterday" },
 			wantErr: auth.ErrMalformedToken,
 		},
 		{
 			name:    "issuer is a number",
-			spoil:   func(claims jwt.ClaimsSet) { claims[jwt.Issuer] = 42 },
+			spoil:   func(claims map[string]any) { claims[jwt.Issuer] = 42 },
 			wantErr: auth.ErrMalformedToken,
 		},
 		{
 			name:    "issuer is empty",
-			spoil:   func(claims jwt.ClaimsSet) { claims[jwt.Issuer] = "" },
+			spoil:   func(claims map[string]any) { claims[jwt.Issuer] = "" },
 			wantErr: auth.ErrMissingClaim,
 		},
 		{
 			name:    "subject is empty",
-			spoil:   func(claims jwt.ClaimsSet) { claims[jwt.Subject] = "" },
+			spoil:   func(claims map[string]any) { claims[jwt.Subject] = "" },
 			wantErr: auth.ErrMissingClaim,
 		},
 		{
 			name: "a claim rule cannot be satisfied by an object",
-			spoil: func(claims jwt.ClaimsSet) {
+			spoil: func(claims map[string]any) {
 				claims["tenant"] = map[string]any{"name": "acme"}
 			},
 			wantErr: auth.ErrClaimMismatch,
 		},
 		{
 			name: "a claim rule cannot be satisfied by null",
-			spoil: func(claims jwt.ClaimsSet) {
+			spoil: func(claims map[string]any) {
 				claims["tenant"] = nil
 			},
 			wantErr: auth.ErrClaimMismatch,
@@ -127,16 +128,16 @@ func TestOIDCVerifierMalformedClaims(t *testing.T) {
 // message.
 func TestOIDCVerifierBoundsClaimValuesInErrors(t *testing.T) {
 	var (
-		key    = newECDSAKey(t, "primary")
-		issuer = newTestIssuer(t, key)
-		clock  = newTestClock(referenceTime)
+		key    = authtest.GenerateKey("primary", jwa.ES256)
+		clock  = authtest.NewClock(referenceTime)
+		issuer = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
 	)
 
 	verifier := newVerifier(t,
 		auth.Policy{
 			Issuers: []auth.TrustedIssuer{{
 				Name:      "test",
-				Issuer:    issuer.url,
+				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
 				Require:   []auth.ClaimRule{auth.RequireClaim("tenant", "acme")},
 			}},
@@ -144,10 +145,10 @@ func TestOIDCVerifierBoundsClaimValuesInErrors(t *testing.T) {
 		auth.WithClock(clock.Now),
 	)
 
-	claims := standardClaims(issuer.url, "runner", "flowstate", referenceTime)
+	claims := issuer.Claims(authtest.WithSubject("runner"), authtest.WithAudience("flowstate"))
 	claims["tenant"] = strings.Repeat("padding", 1_000)
 
-	_, err := verifier.Verify(t.Context(), key.sign(t, claims))
+	_, err := verifier.Verify(t.Context(), issuer.MintToken(claims))
 	require.ErrorIs(t, err, auth.ErrClaimMismatch)
 
 	var mismatch *auth.ClaimMismatchError
@@ -174,9 +175,9 @@ func (t *countingTransport) RoundTrip(req *http.Request) (*http.Response, error)
 // roots, or instrumentation.
 func TestOIDCVerifierWithHTTPClient(t *testing.T) {
 	var (
-		key    = newECDSAKey(t, "primary")
-		issuer = newTestIssuer(t, key)
-		clock  = newTestClock(referenceTime)
+		key    = authtest.GenerateKey("primary", jwa.ES256)
+		clock  = authtest.NewClock(referenceTime)
+		issuer = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
 	)
 
 	transport := &countingTransport{next: http.DefaultTransport}
@@ -185,7 +186,7 @@ func TestOIDCVerifierWithHTTPClient(t *testing.T) {
 		auth.Policy{
 			Issuers: []auth.TrustedIssuer{{
 				Name:      "test",
-				Issuer:    issuer.url,
+				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
 			}},
 		},
@@ -193,7 +194,7 @@ func TestOIDCVerifierWithHTTPClient(t *testing.T) {
 		auth.WithHTTPClient(&http.Client{Transport: transport}),
 	)
 
-	_, err := verifier.Verify(t.Context(), key.sign(t, standardClaims(issuer.url, "runner", "flowstate", referenceTime)))
+	_, err := verifier.Verify(t.Context(), issuer.MintToken(nil, authtest.WithSubject("runner"), authtest.WithAudience("flowstate")))
 	require.NoError(t, err)
 
 	// One discovery request and one key set request, both through our client.
@@ -204,7 +205,7 @@ func TestOIDCVerifierWithHTTPClient(t *testing.T) {
 		auth.Policy{
 			Issuers: []auth.TrustedIssuer{{
 				Name:      "test",
-				Issuer:    issuer.url,
+				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
 			}},
 		},
@@ -212,6 +213,6 @@ func TestOIDCVerifierWithHTTPClient(t *testing.T) {
 		auth.WithHTTPClient(nil),
 	)
 
-	_, err = verifier.Verify(t.Context(), key.sign(t, standardClaims(issuer.url, "runner", "flowstate", referenceTime)))
+	_, err = verifier.Verify(t.Context(), issuer.MintToken(nil, authtest.WithSubject("runner"), authtest.WithAudience("flowstate")))
 	require.NoError(t, err)
 }

@@ -14,6 +14,8 @@ import (
 	"connectrpc.com/authn"
 	"connectrpc.com/connect"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
+	"github.com/picatz/jose/pkg/jwa"
 	"github.com/picatz/jose/pkg/jwt"
 	"github.com/stretchr/testify/require"
 )
@@ -81,16 +83,16 @@ func callRPC(t *testing.T, server *httptest.Server, authorization string) (int, 
 // handler, which are refused, and what a refused caller is told.
 func TestAuthenticator(t *testing.T) {
 	var (
-		key    = newECDSAKey(t, "primary")
-		issuer = newTestIssuer(t, key)
-		clock  = newTestClock(referenceTime)
+		key    = authtest.GenerateKey("primary", jwa.ES256)
+		clock  = authtest.NewClock(referenceTime)
+		issuer = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
 	)
 
 	verifier := newVerifier(t,
 		auth.Policy{
 			Issuers: []auth.TrustedIssuer{{
 				Name:      "idp",
-				Issuer:    issuer.url,
+				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
 				Require:   []auth.ClaimRule{auth.RequireClaim("repository", "picatz/flowstate")},
 				Role:      "operator",
@@ -113,8 +115,8 @@ func TestAuthenticator(t *testing.T) {
 
 	server := serveAuthenticated(t, authenticator)
 
-	validClaims := func() jwt.ClaimsSet {
-		claims := standardClaims(issuer.url, "runner", "flowstate", referenceTime)
+	validClaims := func() map[string]any {
+		claims := issuer.Claims(authtest.WithSubject("runner"), authtest.WithAudience("flowstate"))
 		claims["repository"] = "picatz/flowstate"
 		return claims
 	}
@@ -131,14 +133,14 @@ func TestAuthenticator(t *testing.T) {
 		{
 			name: "valid token",
 			authorization: func(t *testing.T) string {
-				return "Bearer " + key.sign(t, validClaims())
+				return "Bearer " + issuer.MintToken(validClaims())
 			},
 			wantStatus: http.StatusOK,
 		},
 		{
 			name: "lowercase bearer scheme, which RFC 9110 allows",
 			authorization: func(t *testing.T) string {
-				return "bearer " + key.sign(t, validClaims())
+				return "bearer " + issuer.MintToken(validClaims())
 			},
 			wantStatus: http.StatusOK,
 		},
@@ -177,7 +179,7 @@ func TestAuthenticator(t *testing.T) {
 			authorization: func(t *testing.T) string {
 				claims := validClaims()
 				claims[jwt.ExpirationTime] = referenceTime.Add(-time.Hour).Unix()
-				return "Bearer " + key.sign(t, claims)
+				return "Bearer " + issuer.MintToken(claims)
 			},
 			wantStatus:  http.StatusUnauthorized,
 			wantMessage: "token is expired",
@@ -187,7 +189,7 @@ func TestAuthenticator(t *testing.T) {
 			authorization: func(t *testing.T) string {
 				claims := validClaims()
 				claims[jwt.Audience] = "some-other-service"
-				return "Bearer " + key.sign(t, claims)
+				return "Bearer " + issuer.MintToken(claims)
 			},
 			wantStatus:  http.StatusUnauthorized,
 			wantMessage: "token audience is not accepted",
@@ -199,7 +201,7 @@ func TestAuthenticator(t *testing.T) {
 			authorization: func(t *testing.T) string {
 				claims := validClaims()
 				claims["repository"] = "attacker/fork"
-				return "Bearer " + key.sign(t, claims)
+				return "Bearer " + issuer.MintToken(claims)
 			},
 			wantStatus:  http.StatusUnauthorized,
 			wantMessage: "token is not accepted by the trust policy",
@@ -211,7 +213,7 @@ func TestAuthenticator(t *testing.T) {
 			authorization: func(t *testing.T) string {
 				claims := validClaims()
 				claims[jwt.Issuer] = "https://issuer.invalid"
-				return "Bearer " + key.sign(t, claims)
+				return "Bearer " + issuer.MintToken(claims)
 			},
 			wantStatus:  http.StatusUnauthorized,
 			wantMessage: "untrusted token issuer",
@@ -219,7 +221,7 @@ func TestAuthenticator(t *testing.T) {
 		{
 			name: "tampered token",
 			authorization: func(t *testing.T) string {
-				return "Bearer " + tamperSignature(t, key.sign(t, validClaims()))
+				return "Bearer " + tamperSignature(t, issuer.MintToken(validClaims()))
 			},
 			wantStatus:  http.StatusUnauthorized,
 			wantMessage: "invalid token signature",
@@ -245,7 +247,7 @@ func TestAuthenticator(t *testing.T) {
 			if test.wantStatus == http.StatusOK {
 				var response authenticatedResponse
 				require.NoError(t, json.Unmarshal([]byte(body), &response))
-				require.Equal(t, issuer.url+"#runner", response.ID)
+				require.Equal(t, issuer.URL()+"#runner", response.ID)
 				require.Equal(t, "operator", response.Role)
 				require.False(t, response.Anonymous)
 				return
@@ -279,8 +281,9 @@ func TestAuthenticator(t *testing.T) {
 // the API open.
 func TestAuthenticatorWithoutVerifier(t *testing.T) {
 	var (
-		key    = newECDSAKey(t, "primary")
-		issuer = newTestIssuer(t, key)
+		key    = authtest.GenerateKey("primary", jwa.ES256)
+		clock  = authtest.NewClock(referenceTime)
+		issuer = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
 	)
 
 	tests := []struct {
@@ -302,7 +305,7 @@ func TestAuthenticatorWithoutVerifier(t *testing.T) {
 			server := serveAuthenticated(t, test.authenticator)
 
 			// Even a well-formed token from a real issuer is refused.
-			token := key.sign(t, standardClaims(issuer.url, "runner", "flowstate", referenceTime))
+			token := issuer.MintToken(nil, authtest.WithSubject("runner"), authtest.WithAudience("flowstate"))
 
 			status, body := callRPC(t, server, "Bearer "+token)
 			require.Equal(t, http.StatusUnauthorized, status)
@@ -319,18 +322,18 @@ func TestAuthenticatorWithoutVerifier(t *testing.T) {
 // infrastructure problem from a bad credential.
 func TestAuthenticatorWithUnavailableIssuer(t *testing.T) {
 	var (
-		key    = newECDSAKey(t, "primary")
-		issuer = newTestIssuer(t, key)
-		clock  = newTestClock(referenceTime)
+		key    = authtest.GenerateKey("primary", jwa.ES256)
+		clock  = authtest.NewClock(referenceTime)
+		issuer = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
 	)
 
-	issuer.setJWKSStatus(http.StatusServiceUnavailable)
+	issuer.SetKeySetResponse(http.StatusServiceUnavailable, nil)
 
 	verifier := newVerifier(t,
 		auth.Policy{
 			Issuers: []auth.TrustedIssuer{{
 				Name:      "idp",
-				Issuer:    issuer.url,
+				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
 			}},
 		},
@@ -339,7 +342,7 @@ func TestAuthenticatorWithUnavailableIssuer(t *testing.T) {
 
 	server := serveAuthenticated(t, auth.NewAuthenticator(verifier))
 
-	token := key.sign(t, standardClaims(issuer.url, "runner", "flowstate", referenceTime))
+	token := issuer.MintToken(nil, authtest.WithSubject("runner"), authtest.WithAudience("flowstate"))
 
 	status, body := callRPC(t, server, "Bearer "+token)
 	require.Equal(t, http.StatusUnauthorized, status)

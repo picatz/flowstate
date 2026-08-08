@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
 	"github.com/picatz/jose/pkg/jwa"
 	"github.com/stretchr/testify/require"
 )
@@ -343,7 +344,7 @@ issuers:
 // system would use if it happened to be written in Go, and the same one Flowstate
 // uses to verify tokens from GitHub or Kubernetes.
 func TestFederationRoundTrip(t *testing.T) {
-	clock := newTestClock(referenceTime)
+	clock := authtest.NewClock(referenceTime)
 
 	// Flowstate's own identity endpoint, whose URL has to exist before the issuer
 	// that serves it can be told what it is.

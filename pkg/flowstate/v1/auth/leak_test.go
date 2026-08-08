@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
 	"github.com/picatz/jose/pkg/jwa"
 	"github.com/stretchr/testify/require"
 )
@@ -56,7 +57,7 @@ type exported struct {
 // this package produces, in every containment shape and with every verb, and
 // requires that no secret appears in any of them.
 func TestSecretsNeverLeakThroughContainingStructs(t *testing.T) {
-	clock := newTestClock(referenceTime)
+	clock := authtest.NewClock(referenceTime)
 	issuer, _ := newIssuer(t, clock)
 
 	party := newRelyingParty(t, func(w http.ResponseWriter, r *http.Request, body recordedRequest) {
@@ -215,7 +216,7 @@ func (e outsideExchanger) Exchange(ctx context.Context, assertion auth.Assertion
 // outside this package, which is the whole claim the [auth.Exchanger] interface
 // makes.
 func TestThirdPartyExchanger(t *testing.T) {
-	clock := newTestClock(referenceTime)
+	clock := authtest.NewClock(referenceTime)
 	issuer, _ := newIssuer(t, clock)
 
 	broker, err := auth.NewBroker(issuer,
@@ -275,7 +276,7 @@ func TestThirdPartyExchanger(t *testing.T) {
 // did not hide it from the code that legitimately needs it. A type that leaks
 // nothing because it carries nothing would pass every test above.
 func TestSecretsStillReadableAfterRedaction(t *testing.T) {
-	clock := newTestClock(referenceTime)
+	clock := authtest.NewClock(referenceTime)
 	issuer, _ := newIssuer(t, clock)
 
 	assertion := mintAssertion(t, issuer, "https://as.example.com")

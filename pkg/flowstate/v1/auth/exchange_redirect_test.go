@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
 )
 
 // An exchange sends a signed assertion, and it sends it in the request *body*.
@@ -35,7 +36,7 @@ import (
 // The second must never see the assertion, and the operator must be told why
 // rather than left with a transport error.
 func TestAnExchangeDoesNotReplayTheAssertionToAnotherHost(t *testing.T) {
-	clock := newTestClock(referenceTime)
+	clock := authtest.NewClock(referenceTime)
 	issuer, _ := newIssuer(t, clock)
 
 	elsewhere := newRelyingParty(t, func(w http.ResponseWriter, r *http.Request, body recordedRequest) {
@@ -90,7 +91,7 @@ func TestAnExchangeDoesNotReplayTheAssertionToAnotherHost(t *testing.T) {
 // nothing. Refusing redirects everywhere would have been the tidier change and
 // the wrong one.
 func TestFetchingKeysStillFollowsARedirect(t *testing.T) {
-	clock := newTestClock(referenceTime)
+	clock := authtest.NewClock(referenceTime)
 	issuer, keys := newIssuer(t, clock)
 
 	// Where the key set actually lives now: the issuer's own server, which is

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -90,7 +91,7 @@ func (e *recordingExchanger) fail(err error) {
 // TestBrokerAssumePolicy covers who may assume what. Deny must win, an errored rule
 // must refuse, and a target nobody configured must never be reachable.
 func TestBrokerAssumePolicy(t *testing.T) {
-	clock := newTestClock(referenceTime)
+	clock := authtest.NewClock(referenceTime)
 
 	tests := []struct {
 		name       string
@@ -242,7 +243,7 @@ func TestBrokerAssumePolicy(t *testing.T) {
 // TestBrokerMintsScopedAssertions checks that the assertion presented to a relying
 // party is the one that party requires, and no more.
 func TestBrokerMintsScopedAssertions(t *testing.T) {
-	clock := newTestClock(referenceTime)
+	clock := authtest.NewClock(referenceTime)
 	issuer, server := newIssuer(t, clock)
 
 	var (
@@ -285,7 +286,7 @@ func TestBrokerMintsScopedAssertions(t *testing.T) {
 // it, while policy still evaluates the workload's real subject. Otherwise an
 // override would be a way to escape the assumption rules.
 func TestBrokerSubjectOverride(t *testing.T) {
-	clock := newTestClock(referenceTime)
+	clock := authtest.NewClock(referenceTime)
 	issuer, _ := newIssuer(t, clock)
 
 	exchanger := newRecordingExchanger("client-credentials", "https://as.example.com", clock.Now)
@@ -322,7 +323,7 @@ func TestBrokerSubjectOverride(t *testing.T) {
 // TestBrokerCaching checks that a short-lived credential is reused until shortly
 // before it expires, and then replaced.
 func TestBrokerCaching(t *testing.T) {
-	clock := newTestClock(referenceTime)
+	clock := authtest.NewClock(referenceTime)
 	issuer, _ := newIssuer(t, clock)
 
 	exchanger := newRecordingExchanger("aws-sts", "sts.amazonaws.com", clock.Now)
@@ -370,7 +371,7 @@ func TestBrokerCaching(t *testing.T) {
 // act for different callers, and a relying party may well authorize on that, so a
 // credential obtained for one caller must never be handed to the other.
 func TestBrokerCacheIsolation(t *testing.T) {
-	clock := newTestClock(referenceTime)
+	clock := authtest.NewClock(referenceTime)
 	issuer, _ := newIssuer(t, clock)
 
 	exchanger := newRecordingExchanger("aws-sts", "sts.amazonaws.com", clock.Now)
@@ -436,7 +437,7 @@ func TestBrokerCacheIsolation(t *testing.T) {
 // TestBrokerExchangeFailure checks that a failed exchange is reported and not
 // cached, so a transient failure does not become a lasting one.
 func TestBrokerExchangeFailure(t *testing.T) {
-	clock := newTestClock(referenceTime)
+	clock := authtest.NewClock(referenceTime)
 	issuer, _ := newIssuer(t, clock)
 
 	exchanger := newRecordingExchanger("aws-sts", "sts.amazonaws.com", clock.Now)
@@ -461,7 +462,7 @@ func TestBrokerExchangeFailure(t *testing.T) {
 // TestBrokerRejectsUnusableCredentials checks that an exchanger returning something
 // unusable is an error rather than a credential nobody can rely on.
 func TestBrokerRejectsUnusableCredentials(t *testing.T) {
-	clock := newTestClock(referenceTime)
+	clock := authtest.NewClock(referenceTime)
 	issuer, _ := newIssuer(t, clock)
 
 	t.Run("a credential with no expiry", func(t *testing.T) {
@@ -497,7 +498,7 @@ func TestBrokerRejectsUnusableCredentials(t *testing.T) {
 // TestNewBrokerRejectsBadConfiguration checks that unusable configuration fails at
 // startup, where an operator will see it.
 func TestNewBrokerRejectsBadConfiguration(t *testing.T) {
-	clock := newTestClock(referenceTime)
+	clock := authtest.NewClock(referenceTime)
 	issuer, _ := newIssuer(t, clock)
 
 	exchanger := newRecordingExchanger("aws-sts", "sts.amazonaws.com", clock.Now)
@@ -584,7 +585,7 @@ func TestNewBrokerRejectsBadConfiguration(t *testing.T) {
 // TestBrokerAuthorize checks the path a task actually uses: the credential goes
 // straight onto the request, so the task never holds the secret.
 func TestBrokerAuthorize(t *testing.T) {
-	clock := newTestClock(referenceTime)
+	clock := authtest.NewClock(referenceTime)
 	issuer, _ := newIssuer(t, clock)
 
 	party := newRelyingParty(t, func(w http.ResponseWriter, r *http.Request, body recordedRequest) {
@@ -632,7 +633,7 @@ func TestBrokerAuthorize(t *testing.T) {
 // produce one exchange rather than one each, that different targets do not wait for
 // each other, and that the broker holds up under the race detector.
 func TestBrokerConcurrent(t *testing.T) {
-	clock := newTestClock(referenceTime)
+	clock := authtest.NewClock(referenceTime)
 	issuer, _ := newIssuer(t, clock)
 
 	var (
@@ -672,7 +673,7 @@ func TestBrokerConcurrent(t *testing.T) {
 // credentials without limit. Every step of every run is its own identity, so an
 // unbounded cache would grow forever.
 func TestBrokerCacheIsBounded(t *testing.T) {
-	clock := newTestClock(referenceTime)
+	clock := authtest.NewClock(referenceTime)
 	issuer, _ := newIssuer(t, clock)
 
 	exchanger := newRecordingExchanger("aws-sts", "sts.amazonaws.com", clock.Now)

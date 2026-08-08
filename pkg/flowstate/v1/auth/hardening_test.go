@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
 	"github.com/picatz/jose/pkg/header"
 	"github.com/picatz/jose/pkg/jwa"
 	"github.com/picatz/jose/pkg/jwt"
@@ -26,16 +27,16 @@ import (
 // than on the algorithm never being eligible.
 func TestOIDCVerifierRejectsHMACBeforeResolvingAKey(t *testing.T) {
 	var (
-		key    = newECDSAKey(t, "primary")
-		issuer = newTestIssuer(t, key)
-		clock  = newTestClock(referenceTime)
+		key    = authtest.GenerateKey("primary", jwa.ES256)
+		clock  = authtest.NewClock(referenceTime)
+		issuer = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
 	)
 
 	verifier := newVerifier(t,
 		auth.Policy{
 			Issuers: []auth.TrustedIssuer{{
 				Name:      "test",
-				Issuer:    issuer.url,
+				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
 			}},
 		},
@@ -44,13 +45,14 @@ func TestOIDCVerifierRejectsHMACBeforeResolvingAKey(t *testing.T) {
 
 	// The classic attack: the issuer's published public key, used as an HMAC
 	// secret, so that a verifier which treats "a key is a key" accepts it.
-	token := hmacToken(t, key.id, publicKeyBytes(t, key.public),
-		standardClaims(issuer.url, "attacker", "flowstate", referenceTime))
+	token := hmacToken(t, key.ID(), publicKeyBytes(t, key.Public()),
+		issuer.Claims(authtest.WithSubject("attacker"), authtest.WithAudience("flowstate")))
 
 	_, err := verifier.Verify(t.Context(), token)
 	require.ErrorIs(t, err, auth.ErrDisallowedAlgorithm)
 
-	discovery, jwks := issuer.requests()
+	requests := issuer.Requests()
+	discovery, jwks := requests.Discovery, requests.JWKS
 	require.Zero(t, discovery, "an HMAC token must be refused before the issuer is contacted")
 	require.Zero(t, jwks, "an HMAC token must never reach a published key")
 }
@@ -64,16 +66,16 @@ func TestOIDCVerifierRejectsHMACBeforeResolvingAKey(t *testing.T) {
 // can reach the port, keeps this host from ever caching keys.
 func TestOIDCVerifierCancelledRequestDoesNotPoisonKeyCache(t *testing.T) {
 	var (
-		key    = newECDSAKey(t, "primary")
-		issuer = newTestIssuer(t, key)
-		clock  = newTestClock(referenceTime)
+		key    = authtest.GenerateKey("primary", jwa.ES256)
+		clock  = authtest.NewClock(referenceTime)
+		issuer = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
 	)
 
 	verifier := newVerifier(t,
 		auth.Policy{
 			Issuers: []auth.TrustedIssuer{{
 				Name:      "test",
-				Issuer:    issuer.url,
+				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
 			}},
 		},
@@ -81,7 +83,7 @@ func TestOIDCVerifierCancelledRequestDoesNotPoisonKeyCache(t *testing.T) {
 		auth.WithMinKeyRefreshInterval(time.Minute),
 	)
 
-	token := key.sign(t, standardClaims(issuer.url, "runner", "flowstate", referenceTime))
+	token := issuer.MintToken(nil, authtest.WithSubject("runner"), authtest.WithAudience("flowstate"))
 
 	// A caller that has already given up, arriving before any keys are cached.
 	abandoned, cancel := context.WithCancel(t.Context())
@@ -105,12 +107,12 @@ func TestOIDCVerifierCancelledRequestDoesNotPoisonKeyCache(t *testing.T) {
 func TestOIDCVerifierRefusesKeySetRedirectedToPlainHTTP(t *testing.T) {
 	tests := []struct {
 		name    string
-		target  func(issuer *testIssuer) string
+		target  func(issuer *authtest.Issuer) string
 		wantErr error
 	}{
 		{
 			name:    "redirected to an unprotected host",
-			target:  func(*testIssuer) string { return "http://keys.example.invalid/jwks" },
+			target:  func(*authtest.Issuer) string { return "http://keys.example.invalid/jwks" },
 			wantErr: auth.ErrIssuerUnavailable,
 		},
 		{
@@ -118,32 +120,32 @@ func TestOIDCVerifierRefusesKeySetRedirectedToPlainHTTP(t *testing.T) {
 			// Redirects are still followed when they stay somewhere the transport
 			// rules allow, so this pins that the check is about the scheme rather
 			// than about redirects in general.
-			target: func(issuer *testIssuer) string { return issuer.url + "/jwks" },
+			target: func(issuer *authtest.Issuer) string { return issuer.URL() + "/jwks" },
 		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			var (
-				key    = newECDSAKey(t, "primary")
-				issuer = newTestIssuer(t, key)
-				clock  = newTestClock(referenceTime)
+				key    = authtest.GenerateKey("primary", jwa.ES256)
+				clock  = authtest.NewClock(referenceTime)
+				issuer = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
 			)
 
-			issuer.setJWKSRedirect(test.target(issuer))
+			issuer.RedirectKeySet(test.target(issuer))
 
 			verifier := newVerifier(t,
 				auth.Policy{
 					Issuers: []auth.TrustedIssuer{{
 						Name:      "test",
-						Issuer:    issuer.url,
+						Issuer:    issuer.URL(),
 						Audiences: []string{"flowstate"},
 					}},
 				},
 				auth.WithClock(clock.Now),
 			)
 
-			token := key.sign(t, standardClaims(issuer.url, "runner", "flowstate", referenceTime))
+			token := issuer.MintToken(nil, authtest.WithSubject("runner"), authtest.WithAudience("flowstate"))
 
 			_, err := verifier.Verify(t.Context(), token)
 			if test.wantErr == nil {
@@ -161,18 +163,18 @@ func TestOIDCVerifierRefusesKeySetRedirectedToPlainHTTP(t *testing.T) {
 // allowance that on-demand fetching needs.
 func TestOIDCVerifierPrimeFailureDoesNotBlockRecovery(t *testing.T) {
 	var (
-		key    = newECDSAKey(t, "primary")
-		issuer = newTestIssuer(t, key)
-		clock  = newTestClock(referenceTime)
+		key    = authtest.GenerateKey("primary", jwa.ES256)
+		clock  = authtest.NewClock(referenceTime)
+		issuer = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
 	)
 
-	issuer.setJWKSStatus(http.StatusServiceUnavailable)
+	issuer.SetKeySetResponse(http.StatusServiceUnavailable, nil)
 
 	verifier := newVerifier(t,
 		auth.Policy{
 			Issuers: []auth.TrustedIssuer{{
 				Name:      "test",
-				Issuer:    issuer.url,
+				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
 			}},
 		},
@@ -184,9 +186,9 @@ func TestOIDCVerifierPrimeFailureDoesNotBlockRecovery(t *testing.T) {
 
 	// The issuer recovers immediately. Without moving the clock, the next request
 	// must still be able to fetch.
-	issuer.setJWKSStatus(http.StatusOK)
+	issuer.SetKeySetResponse(http.StatusOK, nil)
 
-	principal, err := verifier.Verify(t.Context(), key.sign(t, standardClaims(issuer.url, "runner", "flowstate", referenceTime)))
+	principal, err := verifier.Verify(t.Context(), issuer.MintToken(nil, authtest.WithSubject("runner"), authtest.WithAudience("flowstate")))
 	require.NoError(t, err, "a failed prime must not rate limit the first real request")
 	require.Equal(t, "runner", principal.Subject)
 }
@@ -197,17 +199,17 @@ func TestOIDCVerifierPrimeFailureDoesNotBlockRecovery(t *testing.T) {
 // keeps the guarantee here rather than in a dependency's omissions.
 func TestOIDCVerifierRejectsTokenNominatedKeys(t *testing.T) {
 	var (
-		key      = newECDSAKey(t, "primary")
-		attacker = newECDSAKey(t, "primary") // same key id, attacker's key
-		issuer   = newTestIssuer(t, key)
-		clock    = newTestClock(referenceTime)
+		key      = authtest.GenerateKey("primary", jwa.ES256)
+		attacker = authtest.GenerateKey("primary", jwa.ES256) // same key id, attacker's key
+		clock    = authtest.NewClock(referenceTime)
+		issuer   = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
 	)
 
 	verifier := newVerifier(t,
 		auth.Policy{
 			Issuers: []auth.TrustedIssuer{{
 				Name:      "test",
-				Issuer:    issuer.url,
+				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
 			}},
 		},
@@ -222,7 +224,7 @@ func TestOIDCVerifierRejectsTokenNominatedKeys(t *testing.T) {
 		{
 			name:  "an inline key",
 			param: header.JSONWebKey,
-			value: attacker.jwk(t),
+			value: attacker.JWK(),
 		},
 		{
 			name:  "a key set URL of its own",
@@ -243,12 +245,12 @@ func TestOIDCVerifierRejectsTokenNominatedKeys(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			token := attacker.signWithHeader(t, header.Parameters{
+			token := attacker.Sign(map[string]any{
 				header.Type:      jwt.Type,
 				header.Algorithm: jwa.ES256,
-				header.KeyID:     attacker.id,
+				header.KeyID:     attacker.ID(),
 				test.param:       test.value,
-			}, standardClaims(issuer.url, "attacker", "flowstate", referenceTime))
+			}, issuer.Claims(authtest.WithSubject("attacker"), authtest.WithAudience("flowstate")))
 
 			_, err := verifier.Verify(t.Context(), token)
 			require.ErrorIs(t, err, auth.ErrMalformedToken)
@@ -262,16 +264,16 @@ func TestOIDCVerifierRejectsTokenNominatedKeys(t *testing.T) {
 // one to verify with it, must not be able to disagree.
 func TestOIDCVerifierKeyIDHandling(t *testing.T) {
 	var (
-		key    = newECDSAKey(t, "")
-		issuer = newTestIssuer(t, key)
-		clock  = newTestClock(referenceTime)
+		key    = authtest.GenerateKey("", jwa.ES256)
+		clock  = authtest.NewClock(referenceTime)
+		issuer = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
 	)
 
 	verifier := newVerifier(t,
 		auth.Policy{
 			Issuers: []auth.TrustedIssuer{{
 				Name:      "test",
-				Issuer:    issuer.url,
+				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
 			}},
 		},
@@ -311,7 +313,7 @@ func TestOIDCVerifierKeyIDHandling(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			params := header.Parameters{
+			params := map[string]any{
 				header.Type:      jwt.Type,
 				header.Algorithm: jwa.ES256,
 			}
@@ -319,7 +321,7 @@ func TestOIDCVerifierKeyIDHandling(t *testing.T) {
 				params[header.KeyID] = test.keyID
 			}
 
-			token := key.signWithHeader(t, params, standardClaims(issuer.url, "runner", "flowstate", referenceTime))
+			token := key.Sign(params, issuer.Claims(authtest.WithSubject("runner"), authtest.WithAudience("flowstate")))
 
 			_, err := verifier.Verify(t.Context(), token)
 			if test.wantErr == nil {
@@ -337,16 +339,16 @@ func TestOIDCVerifierKeyIDHandling(t *testing.T) {
 // serialized into an audit record.
 func TestOIDCVerifierRejectsImplausibleTimestamps(t *testing.T) {
 	var (
-		key    = newECDSAKey(t, "primary")
-		issuer = newTestIssuer(t, key)
-		clock  = newTestClock(referenceTime)
+		key    = authtest.GenerateKey("primary", jwa.ES256)
+		clock  = authtest.NewClock(referenceTime)
+		issuer = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
 	)
 
 	verifier := newVerifier(t,
 		auth.Policy{
 			Issuers: []auth.TrustedIssuer{{
 				Name:      "test",
-				Issuer:    issuer.url,
+				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
 			}},
 		},
@@ -365,20 +367,20 @@ func TestOIDCVerifierRejectsImplausibleTimestamps(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			claims := standardClaims(issuer.url, "runner", "flowstate", referenceTime)
+			claims := issuer.Claims(authtest.WithSubject("runner"), authtest.WithAudience("flowstate"))
 			claims[test.claim] = test.value
 
-			_, err := verifier.Verify(t.Context(), key.signWithHeader(t, header.Parameters{
+			_, err := verifier.Verify(t.Context(), key.Sign(map[string]any{
 				header.Type:      jwt.Type,
 				header.Algorithm: jwa.ES256,
-				header.KeyID:     key.id,
+				header.KeyID:     key.ID(),
 			}, claims))
 			require.ErrorIs(t, err, auth.ErrMalformedToken)
 		})
 	}
 
 	t.Run("an accepted principal can always be recorded", func(t *testing.T) {
-		principal, err := verifier.Verify(t.Context(), key.sign(t, standardClaims(issuer.url, "runner", "flowstate", referenceTime)))
+		principal, err := verifier.Verify(t.Context(), issuer.MintToken(nil, authtest.WithSubject("runner"), authtest.WithAudience("flowstate")))
 		require.NoError(t, err)
 
 		recorded, err := json.Marshal(principal)
@@ -393,16 +395,16 @@ func TestOIDCVerifierRejectsImplausibleTimestamps(t *testing.T) {
 // believes it excluded.
 func TestOIDCVerifierRejectsAlgorithmHeaderTricks(t *testing.T) {
 	var (
-		key    = newECDSAKey(t, "primary")
-		issuer = newTestIssuer(t, key)
-		clock  = newTestClock(referenceTime)
+		key    = authtest.GenerateKey("primary", jwa.ES256)
+		clock  = authtest.NewClock(referenceTime)
+		issuer = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
 	)
 
 	verifier := newVerifier(t,
 		auth.Policy{
 			Issuers: []auth.TrustedIssuer{{
 				Name:      "test",
-				Issuer:    issuer.url,
+				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
 			}},
 		},
@@ -427,11 +429,11 @@ func TestOIDCVerifierRejectsAlgorithmHeaderTricks(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			token := key.signWithHeader(t, header.Parameters{
+			token := key.Sign(map[string]any{
 				header.Type:      jwt.Type,
 				header.Algorithm: test.algorithm,
-				header.KeyID:     key.id,
-			}, standardClaims(issuer.url, "runner", "flowstate", referenceTime))
+				header.KeyID:     key.ID(),
+			}, issuer.Claims(authtest.WithSubject("runner"), authtest.WithAudience("flowstate")))
 
 			_, err := verifier.Verify(t.Context(), token)
 			require.ErrorIs(t, err, test.wantErr)
@@ -444,52 +446,32 @@ func TestOIDCVerifierRejectsAlgorithmHeaderTricks(t *testing.T) {
 // HTTP header limit applies.
 func TestOIDCVerifierRejectsOversizedToken(t *testing.T) {
 	var (
-		key    = newECDSAKey(t, "primary")
-		issuer = newTestIssuer(t, key)
-		clock  = newTestClock(referenceTime)
+		key    = authtest.GenerateKey("primary", jwa.ES256)
+		clock  = authtest.NewClock(referenceTime)
+		issuer = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
 	)
 
 	verifier := newVerifier(t,
 		auth.Policy{
 			Issuers: []auth.TrustedIssuer{{
 				Name:      "test",
-				Issuer:    issuer.url,
+				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
 			}},
 		},
 		auth.WithClock(clock.Now),
 	)
 
-	claims := standardClaims(issuer.url, "runner", "flowstate", referenceTime)
+	claims := issuer.Claims(authtest.WithSubject("runner"), authtest.WithAudience("flowstate"))
 	claims["padding"] = strings.Repeat("x", 128<<10)
 
-	_, err := verifier.Verify(t.Context(), key.sign(t, claims))
+	_, err := verifier.Verify(t.Context(), issuer.MintToken(claims))
 	require.ErrorIs(t, err, auth.ErrMalformedToken)
 
-	discovery, jwks := issuer.requests()
+	requests := issuer.Requests()
+	discovery, jwks := requests.Discovery, requests.JWKS
 	require.Zero(t, discovery, "an oversized token must be refused before any work is done for it")
 	require.Zero(t, jwks)
-}
-
-// keyForAlgorithm returns a signing key for the given algorithm.
-func keyForAlgorithm(t *testing.T, alg jwa.Algorithm) *testKey {
-	t.Helper()
-
-	switch alg {
-	case jwa.RS256, jwa.RS384, jwa.RS512, jwa.PS256, jwa.PS384, jwa.PS512:
-		key := newRSAKey(t, "rsa")
-		key.algorithm = alg
-		return key
-	case jwa.ES256:
-		return newECDSAKey(t, "ec-256")
-	case jwa.ES512:
-		return newECDSA521Key(t, "ec-521")
-	case jwa.EdDSA:
-		return newEd25519Key(t, "ed25519")
-	default:
-		t.Fatalf("no test key for algorithm %q", alg)
-		return nil
-	}
 }
 
 // TestOIDCVerifierVerifiesEveryAdvertisedAlgorithm checks that every algorithm in
@@ -503,16 +485,16 @@ func TestOIDCVerifierVerifiesEveryAdvertisedAlgorithm(t *testing.T) {
 	for _, alg := range auth.DefaultAlgorithms() {
 		t.Run(alg, func(t *testing.T) {
 			var (
-				key    = keyForAlgorithm(t, alg)
-				issuer = newTestIssuer(t, key)
-				clock  = newTestClock(referenceTime)
+				key    = authtest.GenerateKey("signing", alg)
+				clock  = authtest.NewClock(referenceTime)
+				issuer = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
 			)
 
 			verifier := newVerifier(t,
 				auth.Policy{
 					Issuers: []auth.TrustedIssuer{{
 						Name:      "test",
-						Issuer:    issuer.url,
+						Issuer:    issuer.URL(),
 						Audiences: []string{"flowstate"},
 						// The policy allows only this algorithm, so the token can
 						// only be verified the way it claims to be signed.
@@ -522,13 +504,13 @@ func TestOIDCVerifierVerifiesEveryAdvertisedAlgorithm(t *testing.T) {
 				auth.WithClock(clock.Now),
 			)
 
-			principal, err := verifier.Verify(t.Context(), key.sign(t, standardClaims(issuer.url, "runner", "flowstate", referenceTime)))
+			principal, err := verifier.Verify(t.Context(), issuer.MintToken(nil, authtest.WithSubject("runner"), authtest.WithAudience("flowstate")))
 			require.NoError(t, err, "algorithm %q is advertised by DefaultAlgorithms but cannot verify a token", alg)
 			require.Equal(t, "runner", principal.Subject)
 
 			// A tampered signature must still fail, so that a passing case above
 			// cannot be a signature check that was skipped.
-			_, err = verifier.Verify(t.Context(), tamperSignature(t, key.sign(t, standardClaims(issuer.url, "runner", "flowstate", referenceTime))))
+			_, err = verifier.Verify(t.Context(), tamperSignature(t, issuer.MintToken(nil, authtest.WithSubject("runner"), authtest.WithAudience("flowstate"))))
 			require.Error(t, err, "algorithm %q accepted a tampered signature", alg)
 		})
 	}

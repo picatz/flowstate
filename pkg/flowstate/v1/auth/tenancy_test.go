@@ -4,7 +4,8 @@ import (
 	"testing"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
-	"github.com/picatz/jose/pkg/jwt"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
+	"github.com/picatz/jose/pkg/jwa"
 	"github.com/stretchr/testify/require"
 )
 
@@ -16,7 +17,7 @@ func TestNamespaceFromTrustPolicy(t *testing.T) {
 	tests := []struct {
 		name          string
 		issuer        func(url string) auth.TrustedIssuer
-		claims        func(claims jwt.ClaimsSet)
+		claims        func(claims map[string]any)
 		wantNamespace string
 		wantErr       error
 	}{
@@ -38,7 +39,7 @@ func TestNamespaceFromTrustPolicy(t *testing.T) {
 					NamespaceClaim: "tenant",
 				}
 			},
-			claims:        func(claims jwt.ClaimsSet) { claims["tenant"] = "acme" },
+			claims:        func(claims map[string]any) { claims["tenant"] = "acme" },
 			wantNamespace: "acme",
 		},
 		{
@@ -66,7 +67,7 @@ func TestNamespaceFromTrustPolicy(t *testing.T) {
 					NamespaceClaim: "tenant",
 				}
 			},
-			claims:  func(claims jwt.ClaimsSet) { claims["tenant"] = "" },
+			claims:  func(claims map[string]any) { claims["tenant"] = "" },
 			wantErr: auth.ErrNoNamespace,
 		},
 		{
@@ -77,7 +78,7 @@ func TestNamespaceFromTrustPolicy(t *testing.T) {
 					NamespaceClaim: "tenant",
 				}
 			},
-			claims:  func(claims jwt.ClaimsSet) { claims["tenant"] = 42 },
+			claims:  func(claims map[string]any) { claims["tenant"] = 42 },
 			wantErr: auth.ErrNoNamespace,
 		},
 		{
@@ -90,7 +91,7 @@ func TestNamespaceFromTrustPolicy(t *testing.T) {
 			},
 			// A namespace reaches an assertion subject, so a value containing the
 			// separator could make one tenant's workload look like another's.
-			claims:  func(claims jwt.ClaimsSet) { claims["tenant"] = "acme/prod/deploy" },
+			claims:  func(claims map[string]any) { claims["tenant"] = "acme/prod/deploy" },
 			wantErr: auth.ErrNoNamespace,
 		},
 	}
@@ -98,22 +99,22 @@ func TestNamespaceFromTrustPolicy(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			var (
-				key    = newECDSAKey(t, "primary")
-				issuer = newTestIssuer(t, key)
-				clock  = newTestClock(referenceTime)
+				key    = authtest.GenerateKey("primary", jwa.ES256)
+				clock  = authtest.NewClock(referenceTime)
+				issuer = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
 			)
 
 			verifier := newVerifier(t,
-				auth.Policy{Issuers: []auth.TrustedIssuer{test.issuer(issuer.url)}},
+				auth.Policy{Issuers: []auth.TrustedIssuer{test.issuer(issuer.URL())}},
 				auth.WithClock(clock.Now),
 			)
 
-			claims := standardClaims(issuer.url, "runner", "flowstate", referenceTime)
+			claims := issuer.Claims(authtest.WithSubject("runner"), authtest.WithAudience("flowstate"))
 			if test.claims != nil {
 				test.claims(claims)
 			}
 
-			principal, err := verifier.Verify(t.Context(), key.sign(t, claims))
+			principal, err := verifier.Verify(t.Context(), issuer.MintToken(claims))
 
 			if test.wantErr != nil {
 				require.ErrorIs(t, err, test.wantErr)
