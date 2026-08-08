@@ -243,6 +243,18 @@ type parsedStep struct {
 	// where the question of which one this is has already been settled.
 	callEntry *entry
 
+	// withEntry is a `call:` step's `with:` block, whose *keys* are the names of
+	// the callee's declared inputs and whose *values* are the arguments bound to
+	// them.
+	//
+	// Held beside callEntry because the two are one construct: a `with:` key
+	// means nothing without the target that says what may be written there, and
+	// hover on such a key is answered out of the callee's own declarations. It
+	// is not among the step's expression entries, because the values are checked
+	// against the callee's declared types by the compiler and are described by
+	// nothing this model holds.
+	withEntry *entry
+
 	// waitUntilEntry is a wait whose value is an expression naming the moment to
 	// wait for.
 	//
@@ -1047,6 +1059,13 @@ func fillParsedStep(s *parsedStep, entries []*entry) {
 			// resolve.
 			if s.callEntry == nil && e.value != nil && e.value.kind == kindScalar {
 				s.callEntry = e
+			}
+		case "with":
+			// Only the mapping form binds arguments. `with:` written as a scalar
+			// is a mistake the validator reports, and there would be no keys in
+			// it to describe.
+			if s.withEntry == nil && e.value != nil && e.value.kind == kindMapping {
+				s.withEntry = e
 			}
 		default:
 			// A task — decided by flowfile.StepTaskKeys, the same call the compiler

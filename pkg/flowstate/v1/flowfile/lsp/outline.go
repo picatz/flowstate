@@ -34,6 +34,21 @@ type outlineStep struct {
 	taskName  string
 	inputKeys []string
 
+	// callTarget is the path written beside `call:`, empty for a step that is
+	// not a call.
+	//
+	// Recorded here for the reason taskName is: the keys a step's block takes
+	// come from somewhere outside this file, and the scanner is what completion
+	// asks while the document is mid-edit. A call's `with:` keys are the
+	// callee's declared inputs, so the target is the one thing needed to go and
+	// read them.
+	callTarget string
+
+	// withKeys are the argument names this step's `with:` block already binds,
+	// in source order. Completion leaves them out of the menu the way inputKeys
+	// are left out of a task's.
+	withKeys []string
+
 	// startLine is the line of the dash that opens the step and endLine the last
 	// line belonging to it, both 0-based.
 	startLine int
@@ -122,6 +137,12 @@ func fillStep(ix *lineIndex, s *outlineStep, entryIndent int, tasks *v1.Registry
 	// The column the input mapping's own keys sit at, learned from the first one.
 	inputKeyIndent := -1
 
+	// The same two facts for a call's `with:` block, kept apart from the task's
+	// because a step is one or the other and reusing the pair would let a
+	// half-typed step carry one block's state into the other.
+	inWith, withIndent := false, -1
+	withKeyIndent := -1
+
 	for l := s.startLine; l <= s.endLine; l++ {
 		line := ix.line(l)
 		if strings.TrimSpace(line) == "" || strings.HasPrefix(strings.TrimSpace(line), "#") {
@@ -148,16 +169,35 @@ func fillStep(ix *lineIndex, s *outlineStep, entryIndent int, tasks *v1.Registry
 			contentIndent = indent
 		}
 		if indent <= contentIndent {
-			inTask, inInputs = false, false
+			inTask, inInputs, inWith = false, false, false
 		}
 		if inInputs && indent <= inputsIndent {
 			inInputs = false
+		}
+		if inWith && indent <= withIndent {
+			inWith = false
 		}
 
 		switch {
 		case indent == contentIndent && key == "id":
 			if s.id == "" {
 				s.id, s.idLine = unquote(rest), l
+			}
+		case indent == contentIndent && key == "call":
+			if s.callTarget == "" {
+				s.callTarget = unquote(rest)
+			}
+		case indent == contentIndent && key == "with":
+			inWith, withIndent = true, indent
+		case inWith && indent > withIndent:
+			// Only the argument mapping's own keys are arguments. A key at a
+			// deeper column belongs to a value one of them is bound to, and is
+			// not an argument name, which is the rule an input key follows below.
+			if withKeyIndent < 0 {
+				withKeyIndent = indent
+			}
+			if indent == withKeyIndent {
+				s.withKeys = append(s.withKeys, key)
 			}
 		case indent == contentIndent && isRegisteredTask(tasks, key):
 			// The key is the task, and everything under it is an input.

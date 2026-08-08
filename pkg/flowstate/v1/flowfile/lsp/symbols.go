@@ -1,7 +1,6 @@
 package lsp
 
 import (
-	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -220,22 +219,13 @@ func callDefinition(doc *document, from *parsedStep, pos lsp.Position) []lsp.Loc
 // callee that does not parse, or is too large to be worth reading, still has a
 // first line, and arriving there is a better answer than not arriving.
 //
-// The read is bounded by [maxDocumentBytes], the same bound an open document
-// gets. Nothing about being on the other end of a `call:` makes a file smaller,
-// and a definition request must not turn into an unbounded read of whatever the
-// path happens to name.
+// The read is [readCalleeSource], bounded by [maxDocumentBytes], the same bound
+// an open document gets. Nothing about being on the other end of a `call:` makes
+// a file smaller, and a definition request must not turn into an unbounded read
+// of whatever the path happens to name.
 func calleeRange(path string) lsp.Range {
-	f, err := os.Open(path)
-	if err != nil {
-		return documentStart
-	}
-	defer f.Close()
-
-	// One byte past the bound, so that a file at exactly the limit is read whole
-	// and one above it is recognizable as over rather than silently truncated
-	// into a document that parses as something its author did not write.
-	data, err := io.ReadAll(io.LimitReader(f, maxDocumentBytes+1))
-	if err != nil || len(data) > maxDocumentBytes {
+	data, ok := readCalleeSource(path)
+	if !ok {
 		return documentStart
 	}
 
