@@ -249,6 +249,12 @@ func completeAt(doc *document, pos lsp.Position) *lsp.CompletionList {
 
 	// The cursor is where a key goes.
 	switch {
+	case endsWith(path, "steps", "with"):
+		// A call's arguments, which are the callee's declared inputs and live in
+		// another file. Both keys of the path are checked rather than the last
+		// one alone: `with:` is a step key, so the level is what separates it
+		// from a task input a plugin happens to have called the same thing.
+		return list(callArgumentCandidates(doc, current, word, replace))
 	case insideATask(path, doc.tasks):
 		// The keys under a task's own name are its inputs, which come from its
 		// schema rather than from this package's table.

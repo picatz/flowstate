@@ -100,6 +100,14 @@ func hoverAt(doc *document, pos lsp.Position) *lsp.Hover {
 		return markdownHover(inputDoc(def, in.key, fd), in.keyRange)
 	}
 
+	// An argument bound under a `call:` step's `with:`, whose name and meaning
+	// are declared in the file the call names. Answered before the step's own
+	// keys for the reason an input key is: it is the innermost thing at the
+	// position, and `with:` itself is documented one level out.
+	if h := hoverCallArgument(doc, step, pos); h != nil {
+		return h
+	}
+
 	// The task name, which is the step key naming it.
 	if step.taskEntry != nil && contains(step.taskEntry.keyRange, pos) {
 		if !taskKnown {
