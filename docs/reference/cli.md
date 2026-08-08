@@ -928,6 +928,8 @@ flow signal [workflow-id] [signal-name] [flags]
 
 Deliver a signal to a run waiting for one, which is how a human approval reaches a workload. The payload becomes the waiting step's outputs, so its keys are what later steps read as ${step_id.key}.
 
+Two limits, both worth knowing before designing a payload. A payload over 64 KiB is refused synchronously, with the size and the limit named — send a reference to something large rather than the thing itself, since the payload travels with the run from then on. And a signal that arrives before its gate is reached is held for it, at most 128 across all names with the earliest kept: sending does not fail when the run is elsewhere, it waits.
+
 Examples:
 
 ```sh
