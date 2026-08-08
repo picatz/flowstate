@@ -488,7 +488,7 @@ func TestSignalPolicyMemoEntryResolvesSubjectFromAndClearsIt(t *testing.T) {
 
 // TestStarterMemoEntryRecordsTheQualifiedIdentity checks the second shared
 // helper submit uses: the starter entry is the same "<issuer>#<subject>"
-// form [v1.QualifiedSubject] produces everywhere else, so [memoStarter] and
+// form [v1.QualifiedSubject] produces everywhere else, so [FlowstateServer.memoStarter] and
 // [v1.SignalPolicyRule.subject] read identically shaped strings.
 func TestStarterMemoEntryRecordsTheQualifiedIdentity(t *testing.T) {
 	identity := &v1types.WorkloadIdentity{Issuer: "https://issuer.example.com", Subject: "requester@example.com"}

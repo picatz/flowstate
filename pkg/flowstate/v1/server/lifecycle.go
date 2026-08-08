@@ -254,7 +254,7 @@ func (s *FlowstateServer) starterAsIdentity(memo *common.Memo) (*v1.WorkloadIden
 // report.
 //
 // One derivation, shared with the authorization path rather than parallel to it:
-// this reads [memoStarter], which is the same function [starterAsIdentity] reads
+// this reads [FlowstateServer.memoStarter], which is the same function [starterAsIdentity] reads
 // for [authorizeSignal]'s `distinct_from_starter` comparison, off the same
 // Describe response. A second reader that split or normalized the memo its own
 // way is how a surface comes to display an identity that the check compares
@@ -270,7 +270,7 @@ func (s *FlowstateServer) starterAsIdentity(memo *common.Memo) (*v1.WorkloadIden
 // placeholder instead would hand them a string that compares equal to nothing
 // real, which is the one outcome worth ruling out.
 // A third case joins those two, and it is the reason this is not simply
-// [memoStarter]. [starterMemoEntry] writes the memo unconditionally, so an
+// [FlowstateServer.memoStarter]. [starterMemoEntry] writes the memo unconditionally, so an
 // unauthenticated submission - only possible in development - records the
 // qualified form of two empty strings, which is the bare separator and names
 // nobody. Reported as empty as well: a reader asking who started a run needs
@@ -281,10 +281,10 @@ func (s *FlowstateServer) starterAsIdentity(memo *common.Memo) (*v1.WorkloadIden
 // "nothing recorded", and it does not need to - both are the same answer to the
 // only question this field is asked. [authorizeSignal] keeps the distinction,
 // because `distinct_from_starter` genuinely does have to compare against an
-// empty subject rather than refuse for want of one; it reads [memoStarter]
+// empty subject rather than refuse for want of one; it reads [FlowstateServer.memoStarter]
 // itself and is untouched by this.
-func reportedStarter(resp *workflowservice.DescribeWorkflowExecutionResponse) string {
-	starter, ok, err := memoStarter(resp.GetWorkflowExecutionInfo().GetMemo())
+func (s *FlowstateServer) reportedStarter(resp *workflowservice.DescribeWorkflowExecutionResponse) string {
+	starter, ok, err := s.memoStarter(resp.GetWorkflowExecutionInfo().GetMemo())
 	if err != nil || !ok {
 		return ""
 	}

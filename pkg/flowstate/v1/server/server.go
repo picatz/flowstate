@@ -312,7 +312,7 @@ const signalPolicyMemoKey = "flowstate.signalPolicy"
 // [FlowstateServer.Run] and [FlowstateServer.CreateSchedule] use to write
 // it, for the identical "one function, two callers" reason
 // [signalPolicyMemoEntry] exists. Absent on a run started before this key
-// existed; see [memoStarter] in lifecycle.go for what that absence means to
+// existed; see [FlowstateServer.memoStarter] in lifecycle.go for what that absence means to
 // [authorizeSignal].
 const starterMemoKey = "flowstate.starter"
 
@@ -331,7 +331,7 @@ const starterMemoKey = "flowstate.starter"
 // follows a few lines above every caller of this function: a memo entry
 // that is unconditionally present is what lets a reader tell "recorded as
 // empty" apart from "never recorded at all", which is exactly the
-// distinction [memoStarter] needs to answer a run that predates this key.
+// distinction [FlowstateServer.memoStarter] needs to answer a run that predates this key.
 func starterMemoEntry(identity *v1.WorkloadIdentity) map[string]any {
 	return map[string]any{
 		starterMemoKey: v1.QualifiedSubject(identity.GetIssuer(), identity.GetSubject()),
@@ -983,10 +983,10 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 				CloseTime:  closed,
 				// Who submitted this run, off the same Describe response
 				// everything else here comes from and through the same reader
-				// authorization uses. See [reportedStarter]; empty is a real
+				// authorization uses. See [FlowstateServer.reportedStarter]; empty is a real
 				// answer, and there is no compatibility arm for a run that
 				// predates the memo key.
-				Starter:  reportedStarter(resp),
+				Starter:  s.reportedStarter(resp),
 				Progress: runProgress(ctx, temporal, resp),
 				// From the same Describe response the status came from, so the
 				// answer to "why has this been RUNNING for six hours" costs no
@@ -1019,10 +1019,10 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 				CloseTime:  closed,
 				// Who submitted this run, off the same Describe response
 				// everything else here comes from and through the same reader
-				// authorization uses. See [reportedStarter]; empty is a real
+				// authorization uses. See [FlowstateServer.reportedStarter]; empty is a real
 				// answer, and there is no compatibility arm for a run that
 				// predates the memo key.
-				Starter: reportedStarter(resp),
+				Starter: s.reportedStarter(resp),
 				Kind: &v1.GetResponse_Outputs{
 					Outputs: &result,
 				},
@@ -1046,10 +1046,10 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 				CloseTime:  closed,
 				// Who submitted this run, off the same Describe response
 				// everything else here comes from and through the same reader
-				// authorization uses. See [reportedStarter]; empty is a real
+				// authorization uses. See [FlowstateServer.reportedStarter]; empty is a real
 				// answer, and there is no compatibility arm for a run that
 				// predates the memo key.
-				Starter: reportedStarter(resp),
+				Starter: s.reportedStarter(resp),
 				Kind: &v1.GetResponse_Error{
 					Error: failureError(ctx, temporal, req.Msg.GetWorkflowId(), req.Msg.GetRunId(), respStatus),
 				},

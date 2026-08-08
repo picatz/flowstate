@@ -13,7 +13,7 @@ import (
 	v1types "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
-// [reportedStarter] read directly, beside the end-to-end tests that go through a
+// [FlowstateServer.reportedStarter] read directly, beside the end-to-end tests that go through a
 // real server.
 //
 // The two answer different questions and neither covers the other. The
@@ -48,7 +48,7 @@ func TestReportedStarterReadsWhatTheCurrentWriterRecords(t *testing.T) {
 
 	starter := v1types.QualifiedSubject("https://issuer.example.com", "requester@example.com")
 
-	assert.Equal(t, starter, reportedStarter(memoWithStarterValue(t, starter)),
+	assert.Equal(t, starter, New(nil).reportedStarter(memoWithStarterValue(t, starter)),
 		"a run whose memo records a starter reported something else, so a surface comparing this "+
 			"against a signal policy rule would compare the wrong string")
 }
@@ -75,10 +75,10 @@ func TestReportedStarterOnARunPredatingTheKeyReportsNothing(t *testing.T) {
 		},
 	}
 
-	assert.Empty(t, reportedStarter(old),
+	assert.Empty(t, New(nil).reportedStarter(old),
 		"a run started before the starter memo key existed reported a starter, so this build "+
 			"invented one for a run that never recorded it")
-	assert.False(t, v1types.LooksLikeQualifiedSubject(reportedStarter(old)),
+	assert.False(t, v1types.LooksLikeQualifiedSubject(New(nil).reportedStarter(old)),
 		"the answer for a run with no recorded starter has the shape of a subject a policy rule "+
 			"would accept")
 }
@@ -103,7 +103,7 @@ func TestReportedStarterOnAnUnreadableMemoReportsNothing(t *testing.T) {
 		},
 	}
 
-	assert.Empty(t, reportedStarter(corrupt),
+	assert.Empty(t, New(nil).reportedStarter(corrupt),
 		"a memo whose starter entry could not be decoded produced a starter anyway")
 }
 
@@ -116,12 +116,12 @@ func TestReportedStarterOnAnUnreadableMemoReportsNothing(t *testing.T) {
 // Reported as empty rather than passed through, because a reader handed "#"
 // would have a string that is not a subject and compares equal to no rule. The
 // authorization path keeps the distinction this drops, deliberately: see
-// [reportedStarter].
+// [FlowstateServer.reportedStarter].
 func TestReportedStarterOnAnUnauthenticatedSubmissionReportsNothing(t *testing.T) {
 	t.Parallel()
 
 	recorded := starterMemoEntry(&v1types.WorkloadIdentity{})[starterMemoKey].(string)
 
-	assert.Empty(t, reportedStarter(memoWithStarterValue(t, recorded)),
+	assert.Empty(t, New(nil).reportedStarter(memoWithStarterValue(t, recorded)),
 		"a run submitted by nobody reported %q as its starter", recorded)
 }
