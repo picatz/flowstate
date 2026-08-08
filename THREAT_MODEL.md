@@ -84,10 +84,15 @@ Temporal namespace and they have substrate access, because the Flowstate API's
 tenancy governs the Flowstate API and nothing downstream of it.
 
 **A network attacker on egress paths.** Sees and can answer requests a task makes.
-Bounded by TLS 1.2 or better with verified certificates, categorical address denial,
-per-hop redirect re-checks, and a response body cap
+Bounded by categorical address denial, per-hop redirect re-checks with the https to
+http downgrade refused, and a response body cap
 (`pkg/flowstate/v1/netpolicy/netpolicy.go:9-20`, `:499`,
-`pkg/flowstate/v1/netpolicy/options.go:35`, `:38`). Can still return hostile content,
+`pkg/flowstate/v1/netpolicy/options.go:35`, `:38`). The TLS floor (1.2 or better,
+verified certificates) applies only to https requests, and the default scheme set
+allows plain `http` too (`pkg/flowstate/v1/netpolicy/options.go:110`), so a workflow
+that asks for an `http://` URL gets traffic an on-path attacker can read and modify.
+A deployment that wants the TLS guarantee on every request restricts `schemes` to
+`https` in its egress policy. Either way the attacker can return hostile content,
 which becomes step output, which becomes history and possibly an agent's context.
 
 **A compromised or malicious plugin.** Holds the worker's process authority. This is
@@ -116,9 +121,16 @@ seam that would is specified in #353 A.1 and #113, not landed
 
 ### Author to deployment
 
-**Today.** A Flowfile cannot name its tenant, a fairness weight, or a signal sender.
-Egress, secret access, and task shape are configured on the worker and on the server,
-never in the file. `flow validate` reports properties of the file and stays silent
+**Today.** A Flowfile cannot name its tenant or a fairness weight, and it cannot
+forge a sender: the identity a signal arrives with is attested by the server from
+the authenticated caller, never claimed by the file or the payload. What the file
+*does* control is the gate itself: top-level `signals:` is author-written policy,
+an author may weaken or delete it, and a signal name with no policy admits any
+authenticated caller in the tenant. An approval gate is therefore author-declared
+and deployment-attested, not author-proof; the author-proof layer is deployment
+policy of the #187 shape, which can require that a workflow of a given shape carry
+the gate. Egress, secret access, and task shape are configured on the worker and on
+the server, never in the file. `flow validate` reports properties of the file and stays silent
 about deployment decisions, deliberately, so a diagnostic never asserts a rule the
 author's machine may not share (`docs/DEPLOYMENT.md:134-152`,
 `pkg/flowstate/v1/eval_task_http_check.go:17-25`).
@@ -374,9 +386,15 @@ of the assertion minted for it (`:53-59`). Rotated-out keys stay published only 
 `DefaultKeyRetention`, twenty four hours (`:41-45`). Which workload may assume which
 target is CEL, evaluated under a cost limit
 (`pkg/flowstate/v1/auth/assume.go:11-15`). Key custody is a PKCS#8 PEM file that
-`flow keys` writes at mode 0600 and verifies after writing, refusing to leave a key
-at a wider mode (`cmd/flow/keys.go:228-280`). Inbound, the mirrored bound is audience
-plus optional `MaxTokenAge` (`pkg/flowstate/v1/auth/policy.go:88`, `:156`).
+`flow keys` writes at mode 0600 and, everywhere except Windows, verifies after
+writing (`cmd/flow/keys.go:228-280`). Two qualifications: on Windows the permission
+check is deliberately skipped, because POSIX bits are synthesized there and access
+is governed by filesystem ACL defaults the check cannot see; and on a filesystem
+that reports a wider mode, the command errors without deleting the already-written
+key, so the residual risk in both cases is a key on disk under whatever protection
+the filesystem gave it, which custody procedures have to cover rather than assume
+away. Inbound, the mirrored bound is audience plus optional `MaxTokenAge`
+(`pkg/flowstate/v1/auth/policy.go:88`, `:156`).
 
 **What is not bounded.** There is no revocation of an already-minted assertion inside
 its lifetime, no threshold or HSM custody, and no separation between the codec keys
