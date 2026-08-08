@@ -82,7 +82,7 @@ func (c *compiler) check(entries []entry, r ref, known []string) *fieldSet {
 
 				continue
 			}
-			c.reportWith(spanOfNode(e.key), r, renameKeyEdit(e, entries, known),
+			c.reportWith(spanOfNode(e.key), r, c.renameKeyEdit(e, entries, known),
 				"unknown key %q; %s", e.name, expectedKeys(e.name, known))
 			continue
 		}
@@ -108,6 +108,13 @@ func (c *compiler) check(entries []entry, r ref, known []string) *fieldSet {
 //   - Did the entry arrive through a `<<:`? Then its key lives in the anchor,
 //     and replacing that source edits every mapping the anchor is merged into
 //     rather than the one being reported. See [field.merged].
+//   - Does the key's source sit inside any `&anchor`'s value? Every `*alias`
+//     of that anchor reads the same text, so the rename that repairs the
+//     reporting site rewrites every reading site, and an alias can sit in a
+//     context where the key being renamed away is legal. The merge-key flag
+//     cannot see this case: a mapping written whole as an anchor and read
+//     through a bare alias arrives here with `merged` false, because
+//     [compiler.resolve] unwraps the anchor before the entries are built.
 //   - Is the source the bare name? A quoted key's span covers the quotes, so
 //     replacing it with a bare name deletes them, and a key that needed quoting
 //     stops being the key it was. Rather than reason about which quoting styles
@@ -119,12 +126,15 @@ func (c *compiler) check(entries []entry, r ref, known []string) *fieldSet {
 // because a key is a key: a grammar mapping's keys bind no names in CEL, which is
 // what keeps this clear of the four bare names the two `flow fix` corruptions
 // turned on (CLAUDE.md, "A rewriter has to know what the grammar binds").
-func renameKeyEdit(e entry, entries []entry, known []string) []*v1.SuggestedEdit {
+func (c *compiler) renameKeyEdit(e entry, entries []entry, known []string) []*v1.SuggestedEdit {
 	suggestion, ok := nearest(e.name, known)
 	if !ok {
 		return nil
 	}
 	if e.merged {
+		return nil
+	}
+	if c.inAnchoredSource(spanOfNode(e.key)) {
 		return nil
 	}
 	for _, other := range entries {
@@ -141,6 +151,43 @@ func renameKeyEdit(e entry, entries []entry, known []string) []*v1.SuggestedEdit
 		return nil
 	}
 	return []*v1.SuggestedEdit{edit}
+}
+
+// inAnchoredSource reports whether a span lies inside the value of any anchor
+// in the document.
+//
+// [compiler.anchors] is filled by a collection pass before any mapping is
+// checked, so by the time a diagnostic is being built the set is complete. The
+// comparison is by position: anchors share the one source text with everything
+// else, so a key whose span sits inside an anchor value's span is a key whose
+// bytes an alias elsewhere reads.
+func (c *compiler) inAnchoredSource(span Span) bool {
+	if !span.IsValid() {
+		return true
+	}
+	for _, target := range c.anchors {
+		enclosing := spanOfNode(target)
+		if !enclosing.IsValid() || !enclosing.End.IsValid() {
+			continue
+		}
+		if positionBefore(span.Start, enclosing.Start) {
+			continue
+		}
+		if positionBefore(enclosing.End, span.End) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// positionBefore reports whether a comes strictly before b in the document,
+// comparing the line first and the column within it.
+func positionBefore(a, b Position) bool {
+	if a.Line != b.Line {
+		return a.Line < b.Line
+	}
+	return a.Column < b.Column
 }
 
 // expectedKeys says what could have been written instead, naming the nearest

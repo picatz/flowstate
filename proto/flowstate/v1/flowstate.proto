@@ -3524,7 +3524,14 @@ message TextChange {
 // independently applyable.
 //
 // Complete means a consumer applies every change in it and stops: nothing else
-// has to run afterwards for the file to be repaired. Independently applyable
+// has to run afterwards for the problem this diagnostic names to be repaired.
+// It is not a promise the file is then free of problems. A repair can surface
+// one the mistake was masking, exactly as fixing a syntax error lets the type
+// checker finally read the line: renaming a misspelled key exposes its value to
+// checks that could not run while the key was unknown. What the edit does
+// promise is that it introduces nothing: applied to source where the diagnostic
+// holds, it never manufactures a problem the file did not already contain,
+// which is what the guards on the offering site are for. Independently applyable
 // means it stands alone rather than composing with a sibling, so two edits on
 // one diagnostic are alternatives to choose between and never a sequence.
 //

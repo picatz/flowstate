@@ -335,7 +335,7 @@ steps:
 }
 
 // TestNoSuggestedEditThroughAMergeKey is the first negative direction, and the
-// reason [field.merged] exists.
+// reason [field.shared] exists.
 //
 // A key that arrived through `<<:` is written once in the anchor and read by
 // every mapping merging it. Replacing the source the diagnostic names would edit
@@ -371,6 +371,47 @@ steps:
 		require.Empty(t, d.GetEdits(), "an edit that would rewrite the anchor")
 	}
 	require.Equal(t, 2, reported, "both steps should still be told about the key")
+}
+
+// TestNoSuggestedEditInsideAnAnchoredOrAliasedMapping is the same refusal for
+// the other two spellings of shared source, which the merge-key guard alone
+// does not cover: a mapping written as an `&anchor`, and one written as a bare
+// `*alias` of it.
+//
+// The alias case is the sharper of the two. The aliased mapping is the anchor's
+// source read from a second place, and that second place can be a context where
+// the key being renamed away is perfectly legal, so an edit that repairs the
+// reporting site can corrupt a site that was never wrong. The anchor case is
+// its prerequisite: source that may be aliased later is source with an unknown
+// number of readers, so neither side of the pair is one a rewriter may touch.
+// The diagnostics themselves are still reported, exactly as the merge-key case
+// keeps them.
+func TestNoSuggestedEditInsideAnAnchoredOrAliasedMapping(t *testing.T) {
+	t.Parallel()
+
+	const src = `edition: v2026.2
+name: anchored
+steps:
+  - &tpl
+    id: a
+    timeou: 5s
+    log:
+      message: hi
+  - *tpl
+`
+
+	ds := problems(t, []byte(src))
+
+	reported := 0
+	for _, d := range ds {
+		if !strings.Contains(d.GetMessage(), `unknown key "timeou"`) {
+			continue
+		}
+		reported++
+		require.Empty(t, d.GetEdits(),
+			"an edit into source an anchor or alias shares; applying it at one site rewrites every site")
+	}
+	require.NotZero(t, reported, "the unknown key inside the anchored mapping should still be reported")
 }
 
 // TestNoSuggestedEditWhenTheSuggestionIsAlreadyWritten is the second negative
