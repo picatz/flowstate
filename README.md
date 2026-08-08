@@ -363,6 +363,7 @@ binary's own command tree, with which environment variable feeds each flag's def
 
 | Command | What it does |
 | --- | --- |
+| `flow init [dir]` | Scaffold a starter Flowfile and the test file that goes with it, named after the directory unless `--name` says otherwise. Never overwrites: a file already there stops it. |
 | `flow validate <file...>` | Check Flowfiles without executing them. `--output json` or `jsonl` carries the diagnostics as data. |
 | `flow compile <file>` | Print the workflow specification a Flowfile compiles to — the same `Workflow` message `flow run` submits — executing nothing and contacting no server. |
 | `flow fix <path...>` | Rewrite Flowfiles from a retired spelling into the current one, preserving comments and formatting. `--check` reports and writes nothing. |
