@@ -2,6 +2,8 @@ package flowstatev1_test
 
 import (
 	"fmt"
+
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"strings"
 	"testing"
 
@@ -160,4 +162,36 @@ func TestNestedSecretIsNotInAnyRenderingOfTheInputs(t *testing.T) {
 	// The reference is still there, in the same renderings — the positive half,
 	// which is what stops the assertion above from passing on an empty structure.
 	require.Contains(t, fmt.Sprintf("%v", inputs), "API_TOKEN")
+}
+
+// A reference nested past the walk's depth bound must still answer true from
+// ValueHoldsSecretRef: every caller of that answer is a refusal or authority
+// gate (the registry's authority gate, the plugin input and output refusals,
+// flow test's resolver gate), and the compiler admits nesting deeper than the
+// walk inspects, so a silent cutoff was a fail-open at depth 33 for all of
+// them at once. "Too deep to scan" reads as "may hold one".
+func TestASecretRefBelowTheDepthBoundStillAnswersTrue(t *testing.T) {
+	t.Parallel()
+
+	ref := &v1.Value{Kind: &v1.Value_SecretRef{SecretRef: &v1.SecretRef{Scheme: "env", Name: "TOKEN"}}}
+
+	wrap := func(inner *v1.Value, levels int) *v1.Value {
+		for range levels {
+			inner = &v1.Value{Kind: &v1.Value_Structure_{Structure: &v1.Value_Structure{
+				Kind: &v1.Value_Structure_Map_{Map: &v1.Value_Structure_Map{
+					Entries: map[string]*v1.Value{"k": inner},
+				}},
+			}}}
+		}
+		return inner
+	}
+
+	// In range: exact answers in both directions.
+	require.True(t, v1.ValueHoldsSecretRef(wrap(ref, 31)), "a ref within the walk's reach must be seen")
+	plain := &v1.Value{Kind: &v1.Value_Literal{Literal: &expr.Value{Kind: &expr.Value_StringValue{StringValue: "x"}}}}
+	require.False(t, v1.ValueHoldsSecretRef(wrap(plain, 31)), "a literal within reach must not be reported")
+
+	// Past the bound: conservative, regardless of what actually sits below.
+	require.True(t, v1.ValueHoldsSecretRef(wrap(ref, 40)), "a ref past the bound must not vanish from the answer")
+	require.True(t, v1.ValueHoldsSecretRef(wrap(plain, 40)), "past the bound the walk cannot know, so it must say may-hold")
 }

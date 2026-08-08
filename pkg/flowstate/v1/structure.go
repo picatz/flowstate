@@ -43,6 +43,11 @@ const maxStructureDepth = 32
 // secret", which is why it looks inside structures where [Value.GetSecretRef]
 // cannot: a reference in a header map is as much a secret read as one written as
 // the whole value of `bearer:`.
+// A value nested past the walk's depth bound answers true: the question is
+// whether executing needs the authority, and a structure too deep to inspect
+// may need it, so every consumer (the registry's authority gate, the plugin
+// input and output refusals, flow test's resolver gate) fails closed rather
+// than open at depth.
 func ValueHoldsSecretRef(v *Value) bool {
 	found := false
 	walkSecretRefs(v, 0, func(*SecretRef) bool {
@@ -69,6 +74,13 @@ func SecretRefsIn(task *Task) []string {
 	var refs []string
 	for _, value := range task.GetInputs() {
 		walkSecretRefs(value, 0, func(ref *SecretRef) bool {
+			if ref == nil {
+				// The walk hit its depth bound: something below may be a
+				// reference it cannot name. Naming surfaces stay exact and
+				// skip it; the authority question is ValueHoldsSecretRef's,
+				// which answers conservatively.
+				return true
+			}
 			refs = append(refs, secretRefText(ref))
 			return true
 		})
@@ -79,9 +91,19 @@ func SecretRefsIn(task *Task) []string {
 }
 
 // walkSecretRefs visits every reference in v, stopping early when visit says so.
+//
+// Past maxStructureDepth the walk cannot see what is below, and it visits nil to
+// say so rather than walking on or staying silent: a visitor deciding an
+// authority or refusal question must treat "too deep to scan" as "may hold one",
+// because the compiler admits deeper nesting than this walk inspects and a
+// silent cutoff turned every consumer into a fail-open gate at depth 33
+// (#329 review). A visitor that only names references skips the nil.
 func walkSecretRefs(v *Value, depth int, visit func(*SecretRef) bool) bool {
-	if v == nil || depth > maxStructureDepth {
+	if v == nil {
 		return true
+	}
+	if depth > maxStructureDepth {
+		return visit(nil)
 	}
 
 	switch kind := v.GetKind().(type) {
