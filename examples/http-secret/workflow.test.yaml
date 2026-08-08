@@ -23,16 +23,20 @@ tests:
         where: "'bearer' in inputs && inputs.bearer == 'test-api-token-not-a-real-credential'"
         returns:
           status_code: 200
-      # The second step carries the same reference inside `headers:` rather than
-      # in a top-level input, and its absence from `inputs` here is the
-      # assertion. A `where:` clause is built from a task's *literal* inputs, so
-      # a fully-literal `headers:` map would appear — this one does not, because
-      # one of its entries is still a reference at the moment the task is
-      # invoked. That is invariant 7 observed from outside: the entry stayed a
-      # reference through compilation and through the activity payload, and only
-      # the worker setting the header would have resolved it.
+      # The second step carries the same reference inside `headers:` rather
+      # than in a top-level input, and it resolves by the same rule: the entry
+      # stayed a reference through compilation (invariant 7), and `flow test`
+      # resolved it from this file's `secrets:` block at the task boundary,
+      # so the `where:` observes the plaintext at its place inside the
+      # structure, alongside the literal `Accept` entry, exactly the shape the
+      # real task would see. A nested reference this file did not bind would
+      # be refused naming its path (`headers.X-Api-Key`), the same fail-closed
+      # direction the second case below proves for `bearer:`.
       - task: http
-        where: "!('bearer' in inputs) && !('headers' in inputs)"
+        where: >-
+          !('bearer' in inputs)
+          && inputs.headers['X-Api-Key'] == 'test-api-token-not-a-real-credential'
+          && inputs.headers.Accept == 'application/json'
         returns:
           status_code: 200
     expect:

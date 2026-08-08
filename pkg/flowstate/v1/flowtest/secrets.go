@@ -122,6 +122,13 @@ func (p *testSecretProvider) Resolve(_ context.Context, req secrets.Request) (se
 // reference with no matching `secrets:` entry is refused before any matcher
 // runs, whether or not `where:` ever mentions the input carrying it.
 //
+// A reference may also sit *inside* an input, nested in a structure: the
+// positions [v1.TaskDef.NestedSecretInputs] admits, `headers:`, `json:`,
+// `form:` for http. Those are resolved here too, by the same rule and
+// through the same test-only provider. [v1.ValueHoldsSecretRef] decides which
+// inputs the walk owes a look, so the answer to "where can a reference sit"
+// stays the schema package's rather than growing a second definition here.
+//
 // It fails closed rather than silently, on the same reasoning
 // [unstubbedTaskFn] applies to a task with no stub at all: an unresolved
 // reference must never look like an empty value, and must never reach a real
@@ -129,33 +136,104 @@ func (p *testSecretProvider) Resolve(_ context.Context, req secrets.Request) (se
 // see [secretRuntime]'s doc for why that backend is never the one consulted
 // here.
 //
-// The returned map holds the resolved plaintext, keyed by input name, for
-// [compiledStub.matches] to fold into the `where:` activation. It is not the
-// reference's job to stay redacted here: the value a case supplies in its own
-// `secrets:` block is a value the test's author already wrote down in the
-// clear, in the same file.
-func resolveSecretInputs(ctx context.Context, inputs map[string]*v1.Value) (map[string]string, error) {
-	var resolved map[string]string
+// The returned map holds the resolved values, keyed by input name, for
+// [stubActivation] to fold into the `where:` activation: a whole-input
+// reference resolves to its plaintext string, and a structured input resolves
+// to the native map or list the task itself would see: literal entries as
+// literals, references as the plaintext they name. It is not the reference's
+// job to stay redacted here: the value a case supplies in its own `secrets:`
+// block is a value the test's author already wrote down in the clear, in the
+// same file.
+func resolveSecretInputs(ctx context.Context, inputs map[string]*v1.Value) (map[string]any, error) {
+	var resolved map[string]any
 
 	for name, value := range inputs {
-		ref := value.GetSecretRef()
-		if ref == nil {
+		if !v1.ValueHoldsSecretRef(value) {
 			continue
 		}
 
+		native, err := resolveSecretValue(ctx, value, name, 0)
+		if err != nil {
+			return nil, err
+		}
+
+		if resolved == nil {
+			resolved = make(map[string]any, len(inputs))
+		}
+		resolved[name] = native
+	}
+
+	return resolved, nil
+}
+
+// maxSecretInputDepth bounds the walk below, mirroring the schema package's
+// own maxStructureDepth: an input reaching here has already been compiled
+// under that bound, but this walk is recursive and recursion gets its own
+// bound rather than an assumption about who called it.
+const maxSecretInputDepth = 32
+
+// resolveSecretValue resolves one value of an input that holds a reference
+// somewhere, mirroring the walk the http task's own valueToNative performs at
+// eval time: a reference resolves to plaintext, a literal converts as-is, a
+// structure recurses. path names the position the way an author wrote it
+// (`headers.Authorization`, `json.auth.token`, `json.keys[0]`), so a refusal
+// points at the entry rather than only at the input.
+func resolveSecretValue(ctx context.Context, v *v1.Value, path string, depth int) (any, error) {
+	if depth > maxSecretInputDepth {
+		return nil, fmt.Errorf("flow test: input %q: nested more than %d levels deep", path, maxSecretInputDepth)
+	}
+
+	if ref := v.GetSecretRef(); ref != nil {
 		secret, err := v1.ResolveSecret(ctx, ref)
 		if err != nil {
 			return nil, fmt.Errorf(
 				"flow test: input %q names secret %q, but this case does not resolve it (%v); "+
 					"add a `secrets:` entry binding %q to a value — flow test never resolves a real secret",
-				name, secrets.RefString(ref), err, secrets.RefString(ref))
+				path, secrets.RefString(ref), err, secrets.RefString(ref))
 		}
-
-		if resolved == nil {
-			resolved = make(map[string]string, len(inputs))
-		}
-		resolved[name] = secret.Reveal()
+		return secret.Reveal(), nil
 	}
 
-	return resolved, nil
+	if lit := v.GetLiteral(); lit != nil {
+		native, err := literalToGo(lit)
+		if err != nil {
+			return nil, fmt.Errorf("flow test: input %q: %w", path, err)
+		}
+		return native, nil
+	}
+
+	if structure := v.GetStructure(); structure != nil {
+		switch kind := structure.GetKind().(type) {
+		case *v1.Value_Structure_List_:
+			list := make([]any, 0, len(kind.List.GetValues()))
+			for i, element := range kind.List.GetValues() {
+				native, err := resolveSecretValue(ctx, element, fmt.Sprintf("%s[%d]", path, i), depth+1)
+				if err != nil {
+					return nil, err
+				}
+				list = append(list, native)
+			}
+			return list, nil
+
+		case *v1.Value_Structure_Map_:
+			entries := kind.Map.GetEntries()
+			object := make(map[string]any, len(entries))
+			for name, entry := range entries {
+				native, err := resolveSecretValue(ctx, entry, path+"."+name, depth+1)
+				if err != nil {
+					return nil, err
+				}
+				object[name] = native
+			}
+			return object, nil
+		}
+	}
+
+	// The compiler admits only literals and references inside a structure that
+	// holds a reference, so nothing else should reach here; refused rather
+	// than skipped, because a value this walk cannot resolve must never look
+	// like one it did.
+	return nil, fmt.Errorf(
+		"flow test: input %q holds a %T alongside a secret reference, which flow test cannot resolve",
+		path, v.GetKind())
 }
