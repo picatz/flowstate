@@ -52,7 +52,11 @@ Submit a compiled workflow specification to run durably. Returns ids to watch it
 
 ## `flowstate_get`
 
-Report a run's status, timing, current position, and its outputs once finished.
+Report a run's status, timing, current position, its outputs once finished, who started it, and every approval gate it is parked on right now: for each, the question the gate is asking, the signal name that releases it, whether a deadline lapses it, and whether the workflow declares a policy over who may answer.
+
+To approve or reject one, call flowstate_signal with this run's workflowId, name set to the gate's signalName, and payload.namedValues.approved set to {"literal": {"boolValue": true}} or false. Address the workflow rather than a run: a run id pins the delivery to one attempt, and a workload that has been continued as new since the gate opened will refuse it.
+
+Over stdio the signal is delivered as this process's own identity, not as the identity of whoever asked for it. Nothing on this transport can attest that a particular human approved anything, and an interactive card rendering this result changes none of that; an attested approver waits on the remote MCP surface.
 
 ## `flowstate_signal`
 

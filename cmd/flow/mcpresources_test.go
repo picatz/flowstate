@@ -37,13 +37,20 @@ func TestResourcesMatchTheInventory(t *testing.T) {
 	t.Parallel()
 
 	inventory := map[string]string{
-		mcpDSLResourceURI:     mcpMarkdownMIME,
+		mcpDSLResourceURI: mcpMarkdownMIME,
+		// The one resource on this surface that is not reference material and
+		// not addressed to a model at all: the MCP Apps view a host renders for
+		// flowstate_get. It is listed because the extension requires a view to be
+		// predeclared and enumerable, which is what lets a host prefetch it and a
+		// reviewer inspect it, and its description says plainly that a model has
+		// no reason to read its bytes.
+		mcpApprovalCardURI:    mcpUIAppMIME,
 		mcpCatalogResourceURI: mcpJSONMIME,
 	}
 	for _, name := range reference.ExampleNames() {
 		inventory[mcpExamplePrefix+name] = mcpYAMLMIME
 	}
-	require.Greater(t, len(inventory), 2, "no examples are embedded; the mirror is empty")
+	require.Greater(t, len(inventory), 3, "no examples are embedded; the mirror is empty")
 
 	session := connectMCP(t, defaultLocalRunPosture())
 

@@ -1,0 +1,17 @@
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "tools/call",
+  "params": {
+    "name": "flowstate_signal",
+    "arguments": {
+      "workflowId": "expense-report-4417",
+      "name": "manager-approved",
+      "payload": {
+        "namedValues": {
+          "approved": {"literal": {"boolValue": false}}
+        }
+      }
+    }
+  }
+}
