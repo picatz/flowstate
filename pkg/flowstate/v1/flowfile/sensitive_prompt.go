@@ -22,7 +22,7 @@ import (
 // operator of the run that produced it.
 //
 // It does not hold here. A prompt that varies with a private value tells its
-// reader something about that value whether or not the value itself appears —
+// reader something about that value whether or not the value itself appears:
 // "approve the payment of ${inputs.salary > 100000 ? 'a large' : 'a small'}
 // amount" surfaces nothing verbatim and discloses the thing anyway, to somebody
 // the author never decided to disclose it to. So this refuses the *reach*:
@@ -30,8 +30,8 @@ import (
 //
 // The false-diagnostic risk that argument usually carries is small here in a way
 // it is not for `log:`, and that is the second half of the case. A workflow that
-// declares nothing `sensitive:` can never trip this — the check returns before
-// looking at a single expression — so the only authors who see it are the ones
+// declares nothing `sensitive:` can never trip this (the check returns before
+// looking at a single expression), so the only authors who see it are the ones
 // who already told this system that some input of theirs is private.
 //
 // # And it refuses what it cannot decide
@@ -46,7 +46,7 @@ import (
 //
 // The rule itself lives in [v1.CheckWaitPromptsAreAskable], which is what the
 // submit boundary calls for a specification that never was a Flowfile. This file
-// is that same rule with a line and a column attached — it does not re-decide
+// is that same rule with a line and a column attached; it does not re-decide
 // anything, it asks the same function and positions the answer. A prompt that
 // still holds a secret reference when it is evaluated renders as a refusal
 // marker instead of a value; see [v1.PromptWithheldSecret].
@@ -56,7 +56,7 @@ import (
 //
 // Positioned per step by asking [v1.CheckWaitPromptsAreAskable] about one step
 // at a time, so the message the author reads and the message a submitted
-// specification is refused with are the same sentence — a second wording here
+// specification is refused with are the same sentence; a second wording here
 // would be the "same mistake in two voices" this package already avoids
 // elsewhere.
 func checkSensitivePrompt(wf *v1.Workflow) Diagnostics {
@@ -64,7 +64,7 @@ func checkSensitivePrompt(wf *v1.Workflow) Diagnostics {
 }
 
 // sensitivePromptInNodes walks a list of sibling steps and, on its own, every
-// for_each/loop body and parallel branch — the same recursion
+// for_each/loop body and parallel branch, the same recursion
 // [sensitiveLogInNodes] does, for the same reason: `inputs.<name>` means the
 // same workflow input at any nesting depth.
 //
@@ -128,7 +128,7 @@ func sensitivePromptInStep(node *v1.Node, sensitive map[string]bool) (Diagnostic
 // the names, each marked sensitive.
 //
 // Only sensitive names, because that is the only property of a declaration the
-// rule reads — an input this returns nothing for is one the rule has no opinion
+// rule reads: an input this returns nothing for is one the rule has no opinion
 // about, which is exactly its behavior against the real workflow. Handing it the
 // whole `inputs:` block would work too and would tie this call to fields the
 // rule does not consult.

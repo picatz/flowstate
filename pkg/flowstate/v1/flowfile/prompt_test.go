@@ -16,7 +16,7 @@ import (
 //
 // The round trip is the one that has bitten before. `flow fix` and `flow fmt`
 // rewrite a file through [flowfile.Marshal], so a key the writer does not know
-// about is a key the command silently *deletes* — signals.go records that lesson
+// about is a key the command silently *deletes*; signals.go records that lesson
 // and marshal.go's own comment repeats it. A test that only proves the parser
 // accepts the key would go green through exactly that failure.
 
@@ -60,7 +60,7 @@ func TestAPromptCompilesAndValidates(t *testing.T) {
 }
 
 // TestAnUnfencedPromptStaysAPlainSentence pins that this position reads a fence
-// the way every other input position does — a plain string is a plain string,
+// the way every other input position does: a plain string is a plain string,
 // not expression source. Getting this backwards is how `sleep: 30s` would have
 // become the CEL expression `30s`.
 func TestAnUnfencedPromptStaysAPlainSentence(t *testing.T) {
@@ -142,11 +142,11 @@ func TestAPromptSeesNoneOfTheWaitsOwnResult(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEmpty(t, ds,
 		"a prompt read `payload` as the wait's own result, which does not exist when the question "+
-			"is asked — so the name silently means something no step produced")
+			"is asked, so the name silently means something no step produced")
 }
 
 // TestAPromptReachingASensitiveInputIsRefusedAtItsOwnLine is the lint, through a
-// file, with a position — the compile layer of the rule sensitive_prompt.go
+// file, with a position, the compile layer of the rule sensitive_prompt.go
 // documents. Derived rather than surfaced on purpose: this is the case the
 // `log:` lint deliberately allows and this one deliberately does not.
 func TestAPromptReachingASensitiveInputIsRefusedAtItsOwnLine(t *testing.T) {

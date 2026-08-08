@@ -68,8 +68,8 @@ func TestASecretPromptRendersAsARefusalRatherThanTheSecret(t *testing.T) {
 // `fmt` cannot call a method on a value it reaches through an unexported field,
 // so a redacting String method protects a value printed directly and does
 // nothing for the same value inside a struct or a slice. The answer here is not
-// a String method at all — the secret is never resolved, so there is nothing to
-// redact — and that is exactly the claim worth pinning: a [v1.PendingWait]
+// a String method at all (the secret is never resolved, so there is nothing to
+// redact), and that is exactly the claim worth pinning: a [v1.PendingWait]
 // carrying a refused prompt holds the marker and not the material, whichever way
 // it is printed, and whatever it is printed inside.
 func TestARefusedPromptStaysContainedInEveryFormattingShape(t *testing.T) {
@@ -233,7 +233,7 @@ func TestALongPromptIsCutAtTheBoundAndSaysSo(t *testing.T) {
 // TestAPromptIsCutOnARuneBoundary is the half a byte-count bound gets wrong.
 //
 // A question cut mid-rune renders as a replacement character in whatever is
-// showing it, which reads as corruption rather than as a bound being reached —
+// showing it, which reads as corruption rather than as a bound being reached;
 // and the reader cannot tell which.
 func TestAPromptIsCutOnARuneBoundary(t *testing.T) {
 	t.Parallel()
