@@ -158,7 +158,7 @@ func newLSPClient(t *testing.T, tasks *flowstatev1.Registry) *lspClient {
 	serverConn := jsonrpc2.NewConn(
 		context.Background(),
 		jsonrpc2.NewBufferedStream(serverSide, jsonrpc2.VSCodeObjectCodec{}),
-		jsonrpc2.AsyncHandler(&lspserver.FlowfileServer{Tasks: tasks}),
+		lspserver.NewHandler(&lspserver.FlowfileServer{Tasks: tasks}),
 	)
 
 	c.conn = jsonrpc2.NewConn(

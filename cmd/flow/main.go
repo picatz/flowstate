@@ -901,7 +901,11 @@ func runLSP(cmd *cobra.Command, args []string) error {
 		jsonrpc2.NewBufferedStream(stdio{}, jsonrpc2.VSCodeObjectCodec{}),
 		// The registry the host registered into, handed over rather than reached
 		// for, so that what this server knows is what this command launched.
-		jsonrpc2.AsyncHandler(&lsp.FlowfileServer{Tasks: v1.DefaultRegistry()}),
+		// lsp.NewHandler rather than jsonrpc2.AsyncHandler: same
+		// goroutine-per-message serving, with document builds announced in
+		// arrival order first, which is what keeps a request behind a didOpen
+		// from answering before the open lands.
+		lsp.NewHandler(&lsp.FlowfileServer{Tasks: v1.DefaultRegistry()}),
 	)
 
 	// NewConn serves in a background goroutine and returns immediately, so

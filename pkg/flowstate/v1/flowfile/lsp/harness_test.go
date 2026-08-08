@@ -58,12 +58,12 @@ func newClientFor(t *testing.T, server *FlowfileServer) *client {
 	serverSide, clientSide := net.Pipe()
 	c := &client{t: t, notified: map[string]int{}, server: server}
 
-	// The server is wrapped in AsyncHandler exactly as the command does, so the
+	// The server is wrapped in NewHandler exactly as the command does, so the
 	// tests run against the same concurrency the real server sees.
 	serverConn := jsonrpc2.NewConn(
 		context.Background(),
 		jsonrpc2.NewBufferedStream(serverSide, jsonrpc2.VSCodeObjectCodec{}),
-		jsonrpc2.AsyncHandler(server),
+		NewHandler(server),
 	)
 
 	c.conn = jsonrpc2.NewConn(
@@ -380,7 +380,7 @@ func newRawPeerFor(t *testing.T, server *FlowfileServer) *rawPeer {
 	serverConn := jsonrpc2.NewConn(
 		context.Background(),
 		jsonrpc2.NewBufferedStream(serverSide, jsonrpc2.VSCodeObjectCodec{}),
-		jsonrpc2.AsyncHandler(server),
+		NewHandler(server),
 	)
 
 	p := &rawPeer{

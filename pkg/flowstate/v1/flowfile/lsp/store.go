@@ -158,14 +158,16 @@ const (
 	// documentSettleGrace is how long a request waits for a build to be
 	// *registered* when the store has never heard of the URI.
 	//
-	// It covers exactly one window: the connection wraps this server in
-	// jsonrpc2.AsyncHandler, which starts a goroutine per message from the read
-	// loop, so didOpen and the hover behind it are started in arrival order and
-	// then make progress in whatever order the scheduler picks. From the read
-	// loop's `go` to this store hearing about the document is a decode and a few
-	// hundred instructions; a tenth of a second is orders of magnitude more than
-	// that window can be, and it is the whole cost paid by a request for a URI
-	// that genuinely was never opened.
+	// Served through [NewHandler], the grace should never be what answers: a
+	// build is announced on the connection's read loop before dispatch, so any
+	// request sent after a document notification finds it registered already,
+	// and a URI with no document and no build is one that genuinely was never
+	// opened. The grace is the fallback for a server wired without that wrapper
+	// — jsonrpc2.AsyncHandler alone starts a goroutine per message and lets the
+	// scheduler order them, leaving a window between a didOpen being dispatched
+	// and this store hearing about it. A tenth of a second is orders of
+	// magnitude more than that window ordinarily is, and it is the whole cost
+	// paid by a request for a URI that was never opened.
 	documentSettleGrace = 100 * time.Millisecond
 
 	// documentBuildTimeout is how long a request waits for a build it has seen

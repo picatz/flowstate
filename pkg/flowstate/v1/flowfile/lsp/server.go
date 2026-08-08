@@ -18,8 +18,9 @@ import (
 // A FlowfileServer answers Language Server Protocol requests about Flowfiles.
 //
 // The zero value is ready to use and safe for concurrent use, which matters
-// because the connection wraps this handler in jsonrpc2.AsyncHandler: an editor
-// will have a hover in flight while a keystroke is being processed.
+// because the connection serves this handler through [NewHandler], one
+// goroutine per message: an editor will have a hover in flight while a
+// keystroke is being processed.
 type FlowfileServer struct {
 	// Logger receives protocol-level messages. When nil, [slog.Default] is used,
 	// which the command routes to standard error — standard output carries the
@@ -391,13 +392,14 @@ func capabilities() serverCapabilities {
 // has arrived and not yet landed.
 //
 // Every request that reads a document goes through this rather than through
-// [documentStore.get], because the connection wraps this handler in
-// jsonrpc2.AsyncHandler: a goroutine is started per message from the read loop,
-// so messages begin in arrival order and then race. A client is entitled to send
+// [documentStore.get], because the connection serves this handler through
+// [NewHandler]: a goroutine is started per message from the read loop, so
+// messages begin in arrival order and then race. A client is entitled to send
 // didOpen and a hover for the cursor's position without waiting in between, and
 // it is not entitled to be told null for the document it just opened. Reading
 // the store directly answered from whether didOpen's goroutine happened to have
-// got there first.
+// got there first; waiting here, on a build [NewHandler] announced in arrival
+// order, is what answers from the document instead.
 //
 // The wait is bounded and cancellable, and both matter. The request's context
 // carries the client's cancellation and the process's shutdown, and the
