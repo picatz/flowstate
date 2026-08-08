@@ -27,6 +27,34 @@ type TaskFunc func(ctx context.Context, inputs map[string]*Value, scope *Scope) 
 // definitions, so a task cannot behave one way and document another. In
 // particular, the engine consults these fields rather than testing a task's name,
 // which is what keeps adding a task from requiring engine changes.
+//
+// # Why this is a Go struct and not a schema message
+//
+// Types describing this system live in the schema, not as hand-written Go
+// structs. This is the exception the rule names: a type defined by a boundary it
+// refuses to cross. [TaskDef.Fn] is a Go func and [TaskDef.Inputs]/[TaskDef.Outputs]
+// are live [protoreflect.MessageDescriptor] values — a running program's behavior
+// and a resolved view of the type registry. Neither survives serialization, so
+// this cannot be a message however much of it looks like data.
+//
+// That leaves three names for task-shaped things, which reads like the same shape
+// written down three times and is not. There is one source and two projections,
+// each aimed at a different boundary:
+//
+//   - TaskDef is the truth, in process.
+//   - [TaskDescription] is the flattened view a client or editor reads, derived
+//     from a TaskDef by [DescribeTask] — descriptors rendered into TaskField
+//     lists, because the reader wants field names and types rather than a
+//     descriptor it has no registry to resolve.
+//   - plugin/v1's TaskManifest is the wire form a plugin sends so the host can
+//     rebuild a TaskDef, which is why it carries descriptors as bytes: that is
+//     how a descriptor crosses a process. What it deliberately omits, and why, is
+//     recorded where it is rebuilt (pkg/flowstate/v1/plugin's taskDef).
+//
+// Both projections are generated from this struct rather than maintained beside
+// it, so adding a field here is not an obligation in two other places — but
+// deciding whether a *plugin* can express a new field is a real decision, and it
+// belongs in that same rebuild site rather than here.
 type TaskDef struct {
 	// Name is how a Flowfile refers to this task.
 	Name string
