@@ -673,7 +673,14 @@ func scopeFromOutline(earlier []*outlineStep, currentIndent int, tasks *v1.Regis
 		if def, ok := tasks.Lookup(s.taskName); ok {
 			c.detail = def.Name
 			c.docs = fmt.Sprintf("Runs the %s task.", def.Name)
-			c.outputs = taskOutputs(def)
+			// The line scan sees input keys but not their values, so a step
+			// that shapes — the same presence rule the validator and the model
+			// use — gets no output candidates here rather than the declared
+			// names its shaping removed. Offering too little is the scan's
+			// stated posture; offering a name nothing produces is the failure.
+			if !slices.Contains(s.inputKeys, taskShapingKey) {
+				c.outputs = taskOutputs(def)
+			}
 		}
 		scope.steps = append(scope.steps, c)
 	}
@@ -706,10 +713,41 @@ func stepCandidate(s *parsedStep, tasks *v1.Registry) refCandidate {
 		if def, ok := tasks.Lookup(s.taskName); ok {
 			c.detail = def.Name
 			c.docs = fmt.Sprintf("Runs the %s task.", def.Name)
-			c.outputs = taskOutputs(def)
+			if shaping := s.shapingEntry(); shaping != nil {
+				// The declared outputs are exactly what shaping removed, so they
+				// are not candidates: accepting one would write a reference
+				// nothing produces. The shaping's own names are offered when
+				// they are statically knowable, and nothing is offered when they
+				// are not — a fabricated name is worse than an empty menu.
+				c.docs = fmt.Sprintf("Runs the %s task. Its %s: replaces the task's declared outputs with names of its own.", def.Name, taskShapingKey)
+				c.outputs = shapedOutputCandidates(s, def)
+			} else {
+				c.outputs = taskOutputs(def)
+			}
 		}
 	}
 	return c
+}
+
+// shapedOutputCandidates renders a shaped step's own output names, or nothing
+// when the shaping expression keeps them to itself.
+func shapedOutputCandidates(s *parsedStep, def v1.TaskDef) []refOutput {
+	names, ok := shapedOutputNames(s.shapingEntry())
+	if !ok {
+		return nil
+	}
+	out := make([]refOutput, 0, len(names))
+	for _, name := range names {
+		out = append(out, refOutput{
+			name: name,
+			// The type is whatever the shaping expression yields for this key,
+			// which is not statically known, so none is claimed.
+			detail: "shaped output",
+			docs: fmt.Sprintf("Shaped output of step %s: its %s: names this output itself, replacing what the %s task declares.",
+				s.id, taskShapingKey, def.Name),
+		})
+	}
+	return out
 }
 
 // taskOutputs renders a task's declared outputs as reference candidates.
