@@ -1873,7 +1873,11 @@ func validateWait(id string, wait *v1.Wait, scope refScope, index int, wf *v1.Wo
 		ds = append(ds, validateInputRefs(id, "sleep", computed, waiting, index, wf)...)
 	}
 	if computed := wait.GetTimeoutExpr(); computed != nil {
-		ds = append(ds, validateInputRefs(id, "timeout", computed, waiting, index, wf)...)
+		// Named with its full path, not bare "timeout": a step-level `timeout:`
+		// is legal beside a signal's, and a bare field made Locate find the
+		// step-level span first, pointing the diagnostic at the valid outer
+		// timeout while the faulty expression sat one level down (#318 review).
+		ds = append(ds, validateInputRefs(id, "wait_for_signal.timeout", computed, waiting, index, wf)...)
 	}
 
 	// A `wait_for_signal:`'s own `outputs:` sees three more names than the rest of

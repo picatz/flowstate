@@ -522,6 +522,17 @@ func (s *parsedStep) entryForField(field string) *entry {
 		}
 	}
 
+	// The gate's own `timeout:`, named with its full path by the validator so
+	// it can never be confused with the step-level key spelled the same. The
+	// qualified lookup resolves inside the gate's mapping only.
+	if name, isWait := strings.CutPrefix(field, "wait_for_signal."); isWait {
+		for _, e := range nestedEntries(s.waitForSignalEntry) {
+			if e.key == name {
+				return e
+			}
+		}
+	}
+
 	// The gate's own keys come last so that a step-level key spelled the same —
 	// the step's `timeout:`, which bounds an attempt rather than the wait —
 	// resolves first, exactly as hover keeps the two apart.

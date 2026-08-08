@@ -115,7 +115,7 @@ steps:
 
 	d := ds[0]
 	assert.Equal(t, "gate", d.Step)
-	assert.Equal(t, "timeout", d.Field)
+	assert.Equal(t, "wait_for_signal.timeout", d.Field)
 	assert.Equal(t, `references unknown name "q"`+unknownBareNameHelp, d.Message)
 
 	// The `${q}` on line 7, column 16 — not `- id: gate` at 4:5.
