@@ -330,17 +330,23 @@ func checkRunStateFits(codec Codec) error {
 			codec.Name(), encoded, plain)
 	}
 
-	if encoded > v1.TemporalDefaultBlobLimitBytes {
+	// The ceiling is under the blob limit by the framing reserve, because the
+	// blob check weighs the payload inside the Payloads message, the command,
+	// and the history event wrapped around it, and none of that framing is the
+	// codec's to know about.
+	if encoded > v1.TemporalDefaultBlobLimitBytes-v1.ContinueAsNewFramingReserveBytes {
+		ceiling := v1.TemporalDefaultBlobLimitBytes - v1.ContinueAsNewFramingReserveBytes
 		return fmt.Errorf(
 			"payload codec %q expands a maximal run state to %d bytes, which is %d over the %d bytes "+
-				"Temporal will store for one payload: a run that reached it would fail its Continue-As-New, "+
+				"available under Temporal's %d byte blob limit once the framing the substrate wraps "+
+				"around the payload is reserved: a run that reached it would fail its Continue-As-New, "+
 				"and a failed workflow task is retried forever, so the run would report RUNNING and never finish. "+
 				"A codec has %d bytes to spend on top of the %d byte run state and the %d byte payload "+
 				"envelope around it, and this one declares %d. Raising the cluster's blob limit is not the "+
 				"fix, since flowstate's run state bound is compiled in and would not move with it: the "+
 				"codec has to be leaner, with less per-payload metadata, a shorter key id, or no per-byte "+
 				"growth such as base64 armour",
-			codec.Name(), encoded, encoded-v1.TemporalDefaultBlobLimitBytes, v1.TemporalDefaultBlobLimitBytes,
+			codec.Name(), encoded, encoded-ceiling, ceiling, v1.TemporalDefaultBlobLimitBytes,
 			v1.MaxCodecExpansionBytes, v1.MaxRunStateBytes, v1.PayloadEnvelopeReserveBytes, encoded-plain)
 	}
 

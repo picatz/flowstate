@@ -66,8 +66,24 @@ const (
 	// instead of a hang, and what it costs is nothing anyone can measure.
 	PayloadEnvelopeReserveBytes = 4 << 10
 
+	// ContinueAsNewFramingReserveBytes is headroom above what the codec
+	// produces, for what the substrate wraps around it before the blob check
+	// runs.
+	//
+	// The encoded payload is not what Temporal weighs. It is carried inside a
+	// Payloads message, inside a Continue-As-New command, inside a history
+	// event, each adding tags and length prefixes, and the size check applies
+	// to the serialized whole. A ceiling set exactly at the blob limit would
+	// therefore admit a codec whose output wedges anyway, over by precisely
+	// the framing nobody counted. Kibibytes for what is tens of bytes of
+	// framing, because this is the same judgement every reserve here makes:
+	// failing a little early is a diagnosis, failing a little late is the
+	// hang.
+	ContinueAsNewFramingReserveBytes = 4 << 10
+
 	// MaxCodecExpansionBytes is what a payload codec may add to a maximal run
-	// state and still be allowed to start.
+	// state and still be allowed to start: the reserve, less the envelope
+	// under the codec and the framing above it.
 	//
 	// A nonce, an authentication tag, and a key id are tens of bytes per
 	// payload, so this is not a tight budget for anything that encrypts one
@@ -75,7 +91,7 @@ const (
 	// armouring the ciphertext in base64 costs a third of two mebibytes, which
 	// no reserve carved out of the blob limit could ever cover. That is the
 	// answer such a codec should get, and it should get it at startup.
-	MaxCodecExpansionBytes = RunStateReserveBytes - PayloadEnvelopeReserveBytes
+	MaxCodecExpansionBytes = RunStateReserveBytes - PayloadEnvelopeReserveBytes - ContinueAsNewFramingReserveBytes
 
 	// MaxSpecBytes bounds a submitted workflow specification.
 	//
@@ -166,10 +182,11 @@ const (
 // and both differences are taken so that drift in either direction is caught.
 const _ = uint(MaxRunStateBytes-(2<<20-64<<10)) + uint((2<<20-64<<10)-MaxRunStateBytes)
 
-// And the envelope's share leaves a codec something, which is the only reading
-// of the split under which a deployment can configure a codec at all. Raising
-// [PayloadEnvelopeReserveBytes] to the whole reserve would refuse every codec
-// that adds a single byte, silently and at startup, on every deployment.
+// And the reserves' shares leave a codec something, which is the only reading
+// of the split under which a deployment can configure a codec at all. Growing
+// [PayloadEnvelopeReserveBytes] or [ContinueAsNewFramingReserveBytes] to
+// swallow the whole reserve would refuse every codec that adds a single byte,
+// silently and at startup, on every deployment.
 const _ = uint(MaxCodecExpansionBytes - 1)
 
 // CheckSpecSize reports whether a specification is small enough to run.
