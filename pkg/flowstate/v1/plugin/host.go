@@ -2,15 +2,19 @@ package plugin
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
+	"os"
 	"slices"
 	"sync"
 
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
+	"google.golang.org/protobuf/proto"
 )
 
 // Host discovers, launches, supervises, and talks to plugin processes.
@@ -386,6 +390,14 @@ func (h *Host) Catalog() *flowstatev1.PluginCatalog {
 
 	for _, p := range plugins {
 		manifest := p.Manifest()
+		tasks := byPlugin[p.Name()]
+		schemaBytes, _ := (proto.MarshalOptions{Deterministic: true}).Marshal(&flowstatev1.PluginDescription{Tasks: tasks})
+		schemaSum := sha256.Sum256(schemaBytes)
+		distributionDigest := ""
+		if binary, err := os.ReadFile(p.Path()); err == nil {
+			sum := sha256.Sum256(binary)
+			distributionDigest = "sha256:" + hex.EncodeToString(sum[:])
+		}
 
 		catalog.Plugins = append(catalog.Plugins, &flowstatev1.PluginDescription{
 			Name:        p.Name(),
@@ -397,8 +409,11 @@ func (h *Host) Catalog() *flowstatev1.PluginCatalog {
 			// is refused at bind time, and reporting what the plugin asked for
 			// would tell an operator it resolves something it will not be asked
 			// to resolve.
-			SecretSchemes: p.Schemes(),
-			Tasks:         byPlugin[p.Name()],
+			SecretSchemes:      p.Schemes(),
+			Tasks:              tasks,
+			ProtocolVersion:    uint32(p.ProtocolVersion()),
+			TaskSchemaDigest:   "sha256:" + hex.EncodeToString(schemaSum[:]),
+			DistributionDigest: distributionDigest,
 		})
 	}
 

@@ -202,6 +202,16 @@ func (p *Plugin) Name() string { return p.name }
 // Path returns the binary the plugin was launched from.
 func (p *Plugin) Path() string { return p.path }
 
+// ProtocolVersion is the negotiated wire protocol of the current instance.
+func (p *Plugin) ProtocolVersion() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.inst == nil {
+		return 0
+	}
+	return p.inst.protocolVersion
+}
+
 // Manifest returns what the plugin said about itself. The result is a shared
 // message and must not be modified; clone it if it needs to be.
 func (p *Plugin) Manifest() *pluginv1.PluginManifest {

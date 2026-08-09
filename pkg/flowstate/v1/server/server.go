@@ -161,6 +161,16 @@ func WithCredentialTargets(targets ...string) Option {
 	}
 }
 
+// WithPluginCatalog supplies the server/worker capability snapshot used to pin
+// plugin requirements before a durable run is accepted.
+func WithPluginCatalog(catalog *v1.PluginCatalog) Option {
+	return func(s *FlowstateServer) {
+		if catalog != nil {
+			s.pluginCatalog = proto.Clone(catalog).(*v1.PluginCatalog)
+		}
+	}
+}
+
 // FlowstateServer implements the flowstatev1connect.WorkflowServiceHandler interface
 // and provides methods to run and get the status of workflows using Temporal.
 type FlowstateServer struct {
@@ -190,6 +200,7 @@ type FlowstateServer struct {
 	identityClaims              []string
 	credentialTargets           []string
 	credentialTargetsConfigured bool
+	pluginCatalog               *v1.PluginCatalog
 
 	// searchAttributesRegistered records whether [EnsureSearchAttributesRegistered]
 	// succeeded against this deployment's Temporal namespace before the server
@@ -677,6 +688,11 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 // "May create" is therefore the floor for every call through that RPC, not
 // only the ones that end up creating.
 func (s *FlowstateServer) validateSubmission(wf *v1.Workflow, rawInputs map[string]*v1.Value) (map[string]*v1.Value, error) {
+	if len(wf.GetPluginRequirements()) > 0 {
+		if err := v1.ResolvePlugins(wf, s.pluginCatalog); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("resolving plugins before durable execution: %w", err))
+		}
+	}
 	if s.credentialTargetsConfigured {
 		if err := v1.ValidateCredentialTargets(wf, s.credentialTargets); err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
