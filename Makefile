@@ -1,4 +1,4 @@
-.PHONY: check test test-plugins test-ordering test-fast fmt docs
+.PHONY: check test test-plugins test-ordering test-fast fuzz-smoke fmt docs
 
 # Full CI-parity loop, verbatim commands, in CI order. See CLAUDE.md.
 check:
@@ -15,6 +15,7 @@ check:
 	$(MAKE) test-ordering
 	go run ./cmd/flow fix --check examples/
 	go run ./cmd/flow test examples/
+	$(MAKE) fuzz-smoke
 	docker compose -f examples/observability/docker-compose.yaml config -q
 	go run ./cmd/flow docs generate && git diff --exit-code -- docs/reference/
 	go generate ./cmd/flow/internal/reference && git diff --exit-code -- cmd/flow/internal/reference/
@@ -23,6 +24,16 @@ check:
 	go run github.com/bufbuild/buf/cmd/buf@v1.72.0 generate && git diff --exit-code
 	GOTOOLCHAIN=go1.26.5 go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 	GOTOOLCHAIN=go1.26.5 go run honnef.co/go/tools/cmd/staticcheck@2026.1 ./...
+
+# The four bounded fuzz smokes CI's fuzz-smoke job runs, verbatim, so the local
+# gate cannot pass a commit the required job rejects. Time-bounded, single
+# worker, memory-bounded: a fuzzer's purpose is to find the input that
+# explodes, and these bounds are what make it safe to run on every push.
+fuzz-smoke:
+	GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzRoundTrip -fuzztime 30s ./pkg/flowstate/v1/flowfile/
+	GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzCELCompile -fuzztime 30s ./pkg/flowstate/v1/flowfile/
+	GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzMCPToolArguments -fuzztime 30s ./cmd/flow/
+	GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzMessageDescriptor -fuzztime 30s ./pkg/flowstate/v1/plugin/
 
 # Bounded full test run (no -short). CI's `test` step runs this target rather
 # than its own copy of the command, so the bound cannot drift between the two —
