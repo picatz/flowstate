@@ -48,6 +48,12 @@ func (c *countingCodec) Decode(p []*commonpb.Payload) ([]*commonpb.Payload, erro
 	return c.inner.Decode(p)
 }
 
+// Counting adds no bytes, so the declaration is the wrapped codec's. A wrapper
+// that forwarded this without thinking would be declaring somebody else's
+// overhead as its own, which is exactly the mistake the method exists to make
+// visible; here it is true because this wrapper writes nothing.
+func (c *countingCodec) MaxEncodedSize(plain int) int { return c.inner.MaxEncodedSize(plain) }
+
 // gatedWorkflow is a run that carries a payload in and a payload out and waits
 // for a signal in between: input state, signal delivery, and result, which is
 // every payload shape a run of this engine has.

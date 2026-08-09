@@ -66,3 +66,29 @@ var errNotAcceptable = errTest("refused: card ending 4242 is not accepted")
 type errTest string
 
 func (e errTest) Error() string { return string(e) }
+
+// A codec whose ciphertext cannot fit inside the blob limit never becomes
+// client options: the same declaration [payloadcodec.Config.Validate] checks
+// has to be checked on this path too, because this is the path `flow worker`
+// and `flow server` build their clients through. Only the CLI's own resolution
+// refusing it would leave a worker constructed some other way to start, write
+// history, and wedge a run at its first Continue-As-New.
+func TestOptionsRefuseACodecThatCannotFit(t *testing.T) {
+	t.Parallel()
+
+	_, err := temporalclient.Config{Codec: payloadcodec.Config{Codec: overExpandingCodec{}}}.Options()
+	require.Error(t, err,
+		"a codec that expands past the blob limit was turned into client options; a worker built "+
+			"from them would wedge the first run that reaches a Continue-As-New")
+	require.Contains(t, err.Error(), "over-expanding",
+		"the refusal does not name the codec, so an operator cannot tell which configuration to fix")
+}
+
+// overExpandingCodec declares more expansion than any reserve can cover. Only
+// the declaration matters to the test: Encode and Decode are the identity, and
+// are never reached, because the refusal happens before a payload exists.
+type overExpandingCodec struct{ payloadcodec.Codec }
+
+func (overExpandingCodec) Name() string { return "over-expanding" }
+
+func (overExpandingCodec) MaxEncodedSize(plain int) int { return plain + plain/2 }

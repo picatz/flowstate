@@ -52,6 +52,18 @@
 // encodes those with the default converter, because the cluster has to index
 // them. Nothing payload-derived may ever be projected into one.
 //
+// # Ciphertext has to fit where the plaintext did
+//
+// A run's carried state is bounded in plaintext, inside workflow code, because
+// that bound is a determinism input (`v1.MaxRunStateBytes`). Temporal's blob
+// limit applies to what comes out of this seam. A codec that expands therefore
+// moves the real ceiling, and the failure it moves it into is a hang rather
+// than an error: Continue-As-New fails the workflow task, the workflow task is
+// retried forever, and the run reports RUNNING. So [Codec] declares its
+// worst-case expansion and [Config.Validate] checks it at startup, against a
+// maximal run state, before any payload exists. A codec that does not fit does
+// not start.
+//
 // # The null codec is the default, and is not a placeholder
 //
 // [Null] is what an unconfigured deployment runs, and it is deliberately a real
@@ -67,17 +79,23 @@ import (
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/temporal"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
 // Codec encodes and decodes payload bytes on their way to and from the
 // substrate.
 //
-// The two methods are [converter.PayloadCodec]'s, unchanged and deliberately
-// so: a Flowstate codec is usable anywhere the SDK takes a codec, and the SDK's
-// own codecs are usable here, without an adapter that could get the direction
-// wrong. Name is the addition, and it earns its place at the diagnostic surface
-// , "which codec was this history written with" is the first question asked
-// about a payload that will not decode, and a %T of a wrapper answers it badly.
+// Encode and Decode are [converter.PayloadCodec]'s, unchanged and deliberately
+// so: a Flowstate codec is usable anywhere the SDK takes a codec, without an
+// adapter that could get the direction wrong. The other direction no longer
+// holds, and that is the point of [Codec.MaxEncodedSize]: an SDK codec has to
+// be wrapped in something that states its expansion before it can be configured
+// here, because an expansion nobody has stated is one nobody has checked
+// against the blob limit. Name is the other addition, and it earns its place at
+// the diagnostic surface: "which codec was this history written with" is the
+// first question asked about a payload that will not decode, and a %T of a
+// wrapper answers it badly.
 //
 // Implementations must be safe for concurrent use: one codec serves every
 // worker goroutine.
@@ -86,6 +104,39 @@ type Codec interface {
 	// contain key material, a key id that is itself a secret, or anything
 	// derived from a payload.
 	Name() string
+
+	// MaxEncodedSize reports the largest encoded size Encode may produce for
+	// one payload of plain bytes, where both sides are measured as proto.Size
+	// of a payload: what goes in is the payload the data converter built, and
+	// what comes out is the payload the substrate will store.
+	//
+	// This is a promise the implementation makes about itself, and it is
+	// checked once, at startup, against what Temporal will store for a maximal
+	// run state (see [Config.Validate]). It is never called on a payload path
+	// and never inside workflow code: it takes a size rather than a payload
+	// precisely so that no implementation can be tempted to answer by encoding
+	// something.
+	//
+	// Three requirements, each of which a wrong answer here would break:
+	//
+	//   - It must be an upper bound. Encode producing more than this is a run
+	//     that wedges at a Continue-As-New, which is the hang
+	//     [v1.MaxRunStateBytes] exists to convert into an answer.
+	//   - It must be tight enough to be worth declaring. A codec that answers
+	//     with a gibibyte satisfies "upper bound" and refuses to start, so an
+	//     implementation states the overhead it actually adds, and its tests
+	//     encode payloads and check that the declaration is approached rather
+	//     than merely respected.
+	//   - It must be monotone in plain, and never below it. A compressing
+	//     codec's worst case is incompressible input, so its bound is still at
+	//     least its input; a declaration under its input is a bound that is not
+	//     one, and [Config.Validate] refuses it rather than trusting it.
+	//
+	// A batch is the sum of its payloads, not this: a codec with per-payload
+	// overhead expands k payloads by k times that overhead, and k is the SDK's
+	// choice rather than a size. The one call site is the run state carried
+	// across a Continue-As-New, which is one payload.
+	MaxEncodedSize(plain int) int
 
 	// Encode is called on the way out, with payloads that are never nil, and
 	// must not mutate its argument.
@@ -112,6 +163,18 @@ func (nullCodec) Name() string { return "none" }
 func (nullCodec) Encode(p []*commonpb.Payload) ([]*commonpb.Payload, error) { return p, nil }
 
 func (nullCodec) Decode(p []*commonpb.Payload) ([]*commonpb.Payload, error) { return p, nil }
+
+// MaxEncodedSize is the identity, because Encode is. A deployment that has
+// configured nothing must pass the startup check by arithmetic rather than by
+// exemption: there is no branch in [Config.Validate] that skips the null codec,
+// so the check itself is exercised on every process that starts.
+func (nullCodec) MaxEncodedSize(plain int) int { return plain }
+
+// A Flowstate codec is still an SDK codec, checked by the compiler rather than
+// asserted in prose: [Config.DataConverter] hands one straight to
+// [converter.NewCodecDataConverter], and the day that stops compiling is the day
+// this package needs an adapter instead of a doc comment.
+var _ converter.PayloadCodec = Codec(nil)
 
 // Null returns the identity codec, which is the default for every deployment
 // that has not configured one.
@@ -216,5 +279,76 @@ func (c Config) Validate() error {
 	if codec.Name() == "" {
 		return fmt.Errorf("payload codec: a codec must name itself, for diagnostics")
 	}
+	return checkRunStateFits(codec)
+}
+
+// checkRunStateFits refuses a codec whose ciphertext would not fit where its
+// plaintext does.
+//
+// # What this is defending
+//
+// [v1.MaxRunStateBytes] is measured on the plaintext, with proto.Size, inside
+// workflow code, because it is a determinism input and cannot be anything else.
+// Temporal's blob limit is enforced on what the data converter chain produced,
+// which on a deployment with a codec is ciphertext nobody measured. So a run
+// state that passes [v1.CheckRunStateSize] can still be refused by the server,
+// and the refusal lands on a Continue-As-New: the workflow task fails, is
+// retried forever, and the run reports RUNNING while doing nothing. Encryption
+// must not put back the hang the bound was written to remove.
+//
+// # Why here, and only here
+//
+// This asks a codec how much it expands, which is a question about the
+// deployment's configuration, not about a run. Asking it inside workflow code
+// would make replay depend on which codec a worker was started with. Asking it
+// at the first Continue-As-New would be a diagnosis produced by the run that
+// dies of it. So it is asked once, where configuration is loaded, by the one
+// function every construction point already calls: fail closed, at startup,
+// before a single payload exists.
+//
+// # The arithmetic
+//
+// A maximal run state is [v1.MaxRunStateBytes] of message inside a payload,
+// which is why the envelope is added on the input side rather than subtracted
+// from the limit: the codec is handed the payload, not the message, and a codec
+// that expands per byte expands the envelope too.
+func checkRunStateFits(codec Codec) error {
+	const plain = v1.MaxRunStateBytes + v1.PayloadEnvelopeReserveBytes
+
+	encoded := codec.MaxEncodedSize(plain)
+
+	// A bound below its own input is not a bound, and the likeliest way to
+	// produce one is arithmetic that overflowed. Refusing beats trusting: an
+	// implementation that answers this way has not thought about the question,
+	// and the whole check rests on the answer.
+	if encoded < plain {
+		return fmt.Errorf(
+			"payload codec %q declares a worst-case encoded size of %d bytes for %d bytes of input, "+
+				"which is smaller than the input: MaxEncodedSize is an upper bound on what Encode may "+
+				"produce, and even a compressing codec's worst case is input it cannot compress. "+
+				"Check the declaration for arithmetic that overflowed",
+			codec.Name(), encoded, plain)
+	}
+
+	// The ceiling is under the blob limit by the framing reserve, because the
+	// blob check weighs the payload inside the Payloads message, the command,
+	// and the history event wrapped around it, and none of that framing is the
+	// codec's to know about.
+	if encoded > v1.TemporalDefaultBlobLimitBytes-v1.ContinueAsNewFramingReserveBytes {
+		ceiling := v1.TemporalDefaultBlobLimitBytes - v1.ContinueAsNewFramingReserveBytes
+		return fmt.Errorf(
+			"payload codec %q expands a maximal run state to %d bytes, which is %d over the %d bytes "+
+				"available under Temporal's %d byte blob limit once the framing the substrate wraps "+
+				"around the payload is reserved: a run that reached it would fail its Continue-As-New, "+
+				"and a failed workflow task is retried forever, so the run would report RUNNING and never finish. "+
+				"A codec has %d bytes to spend on top of the %d byte run state and the %d byte payload "+
+				"envelope around it, and this one declares %d. Raising the cluster's blob limit is not the "+
+				"fix, since flowstate's run state bound is compiled in and would not move with it: the "+
+				"codec has to be leaner, with less per-payload metadata, a shorter key id, or no per-byte "+
+				"growth such as base64 armour",
+			codec.Name(), encoded, encoded-ceiling, ceiling, v1.TemporalDefaultBlobLimitBytes,
+			v1.MaxCodecExpansionBytes, v1.MaxRunStateBytes, v1.PayloadEnvelopeReserveBytes, encoded-plain)
+	}
+
 	return nil
 }
