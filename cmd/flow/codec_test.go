@@ -43,6 +43,8 @@ type oversizedCodec struct{}
 
 func (oversizedCodec) Name() string { return "test-armoured" }
 
+func (oversizedCodec) CurrentKeyID() string { return "test-armoured-key" }
+
 func (oversizedCodec) Encode(p []*commonpb.Payload) ([]*commonpb.Payload, error) { return p, nil }
 
 func (oversizedCodec) Decode(p []*commonpb.Payload) ([]*commonpb.Payload, error) { return p, nil }
@@ -121,6 +123,8 @@ func TestBothEntryPointsAcceptACodecThatFits(t *testing.T) {
 type fittingCodec struct{}
 
 func (fittingCodec) Name() string { return "test-fits" }
+
+func (fittingCodec) CurrentKeyID() string { return "test-fits-key" }
 
 func (fittingCodec) Encode(p []*commonpb.Payload) ([]*commonpb.Payload, error) { return p, nil }
 

@@ -91,4 +91,9 @@ type overExpandingCodec struct{ payloadcodec.Codec }
 
 func (overExpandingCodec) Name() string { return "over-expanding" }
 
+// Declared rather than inherited from the embedded nil interface: the startup
+// check asks for the key id before it asks for the size, so a codec that
+// answered this by dereferencing nothing would panic in place of being refused.
+func (overExpandingCodec) CurrentKeyID() string { return "over-expanding-key" }
+
 func (overExpandingCodec) MaxEncodedSize(plain int) int { return plain + plain/2 }
