@@ -22,8 +22,9 @@ import (
 //
 // A Host is safe for concurrent use.
 type Host struct {
-	cfg Config
-	log *slog.Logger
+	cfg       Config
+	log       *slog.Logger
+	telemetry telemetry
 
 	// procCtx bounds every plugin process. Close cancels it, which is what makes
 	// shutdown reach processes that are mid-launch as well as ones already
@@ -59,13 +60,14 @@ func NewHost(cfg Config) (*Host, error) {
 	procCtx, cancel := context.WithCancel(context.Background())
 
 	return &Host{
-		cfg:      cfg,
-		log:      cfg.logger(),
-		procCtx:  procCtx,
-		cancel:   cancel,
-		plugins:  make(map[string]*Plugin),
-		schemes:  make(map[string]*Plugin),
-		taskDefs: make(map[string]taskBinding),
+		cfg:       cfg,
+		log:       cfg.logger(),
+		telemetry: newTelemetry(cfg),
+		procCtx:   procCtx,
+		cancel:    cancel,
+		plugins:   make(map[string]*Plugin),
+		schemes:   make(map[string]*Plugin),
+		taskDefs:  make(map[string]taskBinding),
 	}, nil
 }
 
@@ -83,6 +85,8 @@ func NewHost(cfg Config) (*Host, error) {
 // The context bounds the work of opening. It does not bound the plugins' lives:
 // they run until [Host.Close].
 func (h *Host) Open(ctx context.Context) error {
+	ctx, span := h.telemetry.tracer.Start(ctx, "flowstate.plugin.host.open")
+	defer span.End()
 	h.mu.Lock()
 	switch {
 	case h.closed:

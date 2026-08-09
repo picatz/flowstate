@@ -87,8 +87,13 @@ func (p *Plugin) taskFunc(manifest *pluginv1.TaskManifest) flowstatev1.TaskFunc 
 	secretInputs := manifest.GetSecretInputs()
 
 	return func(ctx context.Context, inputs map[string]*flowstatev1.Value, scope *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
+		ctx = telemetryBaggage(ctx, p.name, qualified)
+		ctx, _, finish := p.telemetry.start(ctx, "execute", p.name, qualified)
+		var callErr error
+		defer func() { finish(callErr) }()
 		inst, err := p.ready()
 		if err != nil {
+			callErr = err
 			// Unavailability is the one retryable classification, so a step's
 			// retry policy gets to decide whether to wait out a restart.
 			return nil, flowstatev1.NewTaskError(qualified, flowstatev1.ErrorKindUpstream, err)
@@ -101,6 +106,7 @@ func (p *Plugin) taskFunc(manifest *pluginv1.TaskManifest) flowstatev1.TaskFunc 
 		// happen, and for the boundary this local transport depends on.
 		resolvedInputs, scrubber, err := resolvePluginSecretInputs(ctx, qualified, secretInputs, inputs)
 		if err != nil {
+			callErr = err
 			return nil, err
 		}
 
@@ -131,6 +137,7 @@ func (p *Plugin) taskFunc(manifest *pluginv1.TaskManifest) flowstatev1.TaskFunc 
 
 		resp, err := inst.clients.task.Execute(callCtx, connect.NewRequest(request))
 		if err != nil {
+			callErr = err
 			// Classified before it is scrubbed — see [taskError] for why the
 			// order is load-bearing — and scrubbed before it is wrapped, so
 			// that a resolved secret a peer reflected back through an RPC
@@ -142,6 +149,7 @@ func (p *Plugin) taskFunc(manifest *pluginv1.TaskManifest) flowstatev1.TaskFunc 
 
 		outputs := resp.Msg.GetOutputs()
 		if err := scrubPluginOutputs(scrubber, outputs); err != nil {
+			callErr = err
 			return nil, flowstatev1.NewTaskError(qualified, flowstatev1.ErrorKindInvalidInput, err)
 		}
 

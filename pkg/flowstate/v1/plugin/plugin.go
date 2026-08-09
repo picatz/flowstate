@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"google.golang.org/protobuf/proto"
 
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
@@ -149,13 +151,14 @@ type Plugin struct {
 	procCtx context.Context
 	cancel  context.CancelFunc
 
-	mu       sync.RWMutex
-	inst     *instance
-	manifest *pluginv1.PluginManifest
-	state    State
-	lastErr  error
-	restarts int
-	health   Health
+	mu        sync.RWMutex
+	inst      *instance
+	manifest  *pluginv1.PluginManifest
+	state     State
+	lastErr   error
+	restarts  int
+	health    Health
+	telemetry telemetry
 
 	supervisorDone chan struct{}
 	closeOnce      sync.Once
@@ -176,6 +179,7 @@ func newPlugin(hostCtx context.Context, cfg Config, found Found) (*Plugin, error
 		procCtx:        procCtx,
 		cancel:         cancel,
 		state:          StateStarting,
+		telemetry:      newTelemetry(cfg),
 		supervisorDone: make(chan struct{}),
 	}
 
@@ -310,10 +314,13 @@ func (p *Plugin) callContext(ctx context.Context) (context.Context, context.Canc
 // CheckHealth polls the plugin now, rather than waiting for the next scheduled
 // poll, and records the result.
 func (p *Plugin) CheckHealth(ctx context.Context) Health {
+	ctx, _, finish := p.telemetry.start(ctx, "health", p.name, "")
 	inst, err := p.ready()
 	if err != nil {
 		health := Health{Status: HealthUnreachable, CheckedAt: time.Now(), Err: err}
 		p.recordHealth(health)
+		p.telemetry.health.Add(ctx, 1, metric.WithAttributes(attribute.String("flowstate.plugin.name", p.name), attribute.String("flowstate.plugin.health.status", health.Status.String())))
+		finish(err)
 		return health
 	}
 
@@ -344,6 +351,8 @@ func (p *Plugin) CheckHealth(ctx context.Context) Health {
 	}
 
 	p.recordHealth(health)
+	p.telemetry.health.Add(ctx, 1, metric.WithAttributes(attribute.String("flowstate.plugin.name", p.name), attribute.String("flowstate.plugin.health.status", health.Status.String())))
+	finish(health.Err)
 	return health
 }
 
@@ -358,13 +367,18 @@ func (p *Plugin) recordHealth(h Health) {
 // itself. It is the whole of what has to succeed for a plugin to be usable, and
 // it is the same on the first launch and on every relaunch.
 func (p *Plugin) start() (*instance, *pluginv1.PluginManifest, error) {
-	inst, err := launch(p.procCtx, p.cfg, Found{Name: p.name, Path: p.path})
+	ctx, _, finish := p.telemetry.start(p.procCtx, "start", p.name, "")
+	var startErr error
+	defer func() { finish(startErr) }()
+	inst, err := launch(ctx, p.cfg, Found{Name: p.name, Path: p.path})
 	if err != nil {
+		startErr = err
 		return nil, nil, err
 	}
 
 	manifest, err := p.describe(inst)
 	if err != nil {
+		startErr = err
 		inst.stop(context.Background(), p.cfg.ShutdownGrace)
 		return nil, nil, err
 	}
@@ -614,6 +628,7 @@ func (p *Plugin) restart() bool {
 	p.restarts++
 	attempt := p.restarts
 	p.mu.Unlock()
+	p.telemetry.restarts.Add(p.procCtx, 1)
 
 	budget := p.cfg.MaxRestarts
 	if budget < 0 || attempt > budget {

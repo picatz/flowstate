@@ -8,6 +8,9 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/internal/protocol"
 )
 
@@ -95,6 +98,11 @@ const (
 // configuration for one that should not run third-party code, and it is the
 // default so that it takes a decision to change.
 type Config struct {
+	// TracerProvider and MeterProvider receive host-side plugin telemetry. Nil
+	// uses OpenTelemetry's global provider, which is a no-op unless the host has
+	// configured a backend.
+	TracerProvider trace.TracerProvider
+	MeterProvider  metric.MeterProvider
 	// SearchPath is the list of directories to discover plugins in, in
 	// precedence order: a plugin found in an earlier directory shadows one of
 	// the same name in a later one.
