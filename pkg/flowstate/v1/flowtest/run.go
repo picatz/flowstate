@@ -10,7 +10,6 @@ import (
 
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/types/known/durationpb"
-	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
@@ -182,15 +181,27 @@ func runCase(test *Test, load func() (*v1.Workflow, error)) *v1.TestCase {
 		policies = resolved
 	}
 
-	// hasStarter true with an empty identity, not false: `flow test` has no
-	// concept of "who ran this test" to begin with, which is a known fact —
-	// nobody — not a gap in a record the way a durable run predating
-	// [starterMemoKey] is. Treating it as unknown (hasStarter false) would
-	// make every `distinct_from_starter` policy unconditionally refuse every
-	// case, including one that scripts a genuinely qualifying `sender:` —
-	// the happy path this harness exists to let an author exercise at all.
-	// See [v1.NewPolicedLocalSignals]'s own doc comment.
-	signals := v1.NewPolicedLocalSignals(policies, &v1.WorkloadIdentity{}, true)
+	// Who this case runs as, for the one question a starter answers locally:
+	// what `distinct_from_starter:` compares a scripted `sender:` against.
+	// [Test.Starter] names it, the way `flow run local --as-subject` names it
+	// for a rehearsal on the command line; a case that names none runs as
+	// nobody, exactly as every case did before that field existed.
+	//
+	// hasStarter true either way, and never false: a case that named no
+	// starter ran as nobody, which is a known fact, because a `flow test` case has
+	// no concept of "who ran this test" unless the case says: it is not a gap in a
+	// record the way a durable run predating [starterMemoKey] is. Treating it
+	// as unknown would make every `distinct_from_starter` policy
+	// unconditionally refuse every case, including one that scripts a
+	// genuinely qualifying `sender:`, the happy path this harness exists to
+	// let an author exercise at all. See [v1.NewPolicedLocalSignals]'s own doc
+	// comment.
+	//
+	// It reaches the signal policy and nothing else. `run.identity` stays
+	// empty with `run.local` true, as it does for every local run including
+	// `flow run local --as-subject`: a local run must never look like an
+	// attested production one (eval.go's eval). See [Test.Starter].
+	signals := v1.NewPolicedLocalSignals(policies, scriptedIdentity(test.Starter), true)
 	ctx = v1.NewContextWithSignalWaiter(ctx, signals)
 
 	// Hold the run's own clock participant before any scripted signal can park,
@@ -429,26 +440,60 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 }
 
 // scriptedSender renders a [SignalScript]'s optional `sender:` as the
-// [v1.SignalSender] [v1.LocalSignals.DeliverFrom] attests — a real,
-// non-local identity when a case names one, or the same unattested
-// [v1.LocalSignalSender] a script with no `sender:` always delivered as,
-// before this field existed.
-func scriptedSender(s *ScriptedSender) *v1.SignalSender {
+// [v1.SignalSender] [v1.LocalSignals.DeliverFrom] carries: the rehearsal
+// identity [v1.RehearsalSignalSender] builds when a case names one, or the
+// [v1.LocalSignalSender] standing in for nobody that a script with no
+// `sender:` always delivered as.
+//
+// # Why a rehearsal and not an attested sender (#344 slice 3)
+//
+// This used to build the sender by hand with `Local` left false, on the
+// reading that a scripted `sender:` attests a real identity the way a durable
+// signal's does. It does not: nothing authenticated it, and `flow test` has no
+// server in front of it that could. [v1.SignalWaiter]'s own contract says so
+// outright - every local delivery, "`flow run local --signal` or a `flow test`
+// script", is marked local - and the observable consequence of getting it
+// wrong is the one that matters: a gate's `sender.local` output read false,
+// so a scripted sender rendered exactly like an attested production one and
+// `!sender.local` stopped meaning "a server accepted this" in the one place
+// an author checks it.
+//
+// Marked local, the shape is the same one `flow run local --signal-as-subject`
+// delivers, which the durable driver refuses outright (`authorizeSignal`), and
+// the policy decision is unchanged either way: [v1.SignalPolicyCheck] reads the
+// identity, never the marker.
+//
+// AcceptedAt is left unset for the same reason, and that is a deliberate
+// narrowing of what this used to report: it is when a *server* accepted a
+// delivery, and no server did. A rehearsal that filled it in with the case's
+// own epoch was reporting an acceptance that never happened, which is the same
+// mistake in a second field.
+func scriptedSender(s *ScriptedIdentity) *v1.SignalSender {
 	if s == nil {
 		return v1.LocalSignalSender()
 	}
 
-	return &v1.SignalSender{
-		Identity: &v1.WorkloadIdentity{
-			Subject: s.Subject,
-			Issuer:  s.Issuer,
-			Claims:  s.Claims,
-		},
-		AcceptedAt: timestamppb.New(epoch),
-		// Local left false, deliberately: a scripted sender: attests a real
-		// identity, the same way a durable signal's sender always does — see
-		// [v1.SignalSender.Local]'s own doc comment for why that field must
-		// never read true for anything but a genuinely unattested delivery.
+	return v1.RehearsalSignalSender(scriptedIdentity(s))
+}
+
+// scriptedIdentity renders a [ScriptedIdentity] as the [v1.WorkloadIdentity] a
+// `signals:` policy is matched against - one conversion for both ends of that
+// comparison, because `distinct_from_starter:` compares a sender's rendering
+// against a starter's and two conversions could disagree about a field.
+//
+// A nil identity renders as an empty one rather than nil, which is what a case
+// declaring no `starter:` means: this run started as nobody, recorded, rather
+// than a starter nobody wrote down. See [Test.Starter] and runCase.
+func scriptedIdentity(s *ScriptedIdentity) *v1.WorkloadIdentity {
+	if s == nil {
+		return &v1.WorkloadIdentity{}
+	}
+
+	return &v1.WorkloadIdentity{
+		Subject:   s.Subject,
+		Issuer:    s.Issuer,
+		Namespace: s.Namespace,
+		Claims:    s.Claims,
 	}
 }
 

@@ -104,7 +104,10 @@ func testInputSchema() map[string]any {
 				"type": "string",
 				"description": "A `*.test.yaml` document: `tests:` names one or more cases, each with an " +
 					"optional `inputs:`, `stubs:` replacing task behavior, `signals:` scripting what a " +
-					"wait_for_signal step receives and when, and an `expect:` the run must satisfy. A " +
+					"wait_for_signal step receives and when (each with an optional `sender:` naming who " +
+					"it stands in for), an optional `starter:` naming who the run starts as - what a " +
+					"`signals:` policy's `distinct_from_starter:` compares a sender against - and an " +
+					"`expect:` the run must satisfy. A " +
 					"case's own `workflow:` field is accepted, for compatibility with a file written to " +
 					"disk, but is never consulted here — every case runs against the `workflow` argument " +
 					"above, not a sibling file.",
