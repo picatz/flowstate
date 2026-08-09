@@ -188,12 +188,12 @@ func runCase(test *Test, load func() (*v1.Workflow, error)) *v1.TestCase {
 	// nobody, exactly as every case did before that field existed.
 	//
 	// hasStarter true either way, and never false: a case that named no
-	// starter ran as nobody, which is a known fact — a `flow test` case has
-	// no concept of "who ran this test" unless the case says — not a gap in a
+	// starter ran as nobody, which is a known fact, because a `flow test` case has
+	// no concept of "who ran this test" unless the case says: it is not a gap in a
 	// record the way a durable run predating [starterMemoKey] is. Treating it
 	// as unknown would make every `distinct_from_starter` policy
 	// unconditionally refuse every case, including one that scripts a
-	// genuinely qualifying `sender:` — the happy path this harness exists to
+	// genuinely qualifying `sender:`, the happy path this harness exists to
 	// let an author exercise at all. See [v1.NewPolicedLocalSignals]'s own doc
 	// comment.
 	//

@@ -320,9 +320,9 @@ type SignalScript struct {
 	// Omitted under a signal that carries no declared policy: the signal is
 	// delivered as [v1.LocalSignalSender] always was, standing in for nobody.
 	// Omitted under a signal that *does* declare a policy: the delivery is
-	// still checked, as an empty identity — which a real policy's `allow:`
+	// still checked, as an empty identity, which a real policy's `allow:`
 	// rule can never match (every rule requires a non-empty subject,
-	// namespace, or claim; see signalpolicy.go's ruleMatchesEverySender) — so
+	// namespace, or claim; see signalpolicy.go's ruleMatchesEverySender), so
 	// an author who forgets `sender:` gets a refused delivery rather than a
 	// silent pass. That is the deliberate fail-closed answer, not an
 	// oversight: a scripted signal stands in for exactly as little as `flow
@@ -358,7 +358,7 @@ type SignalScript struct {
 // with it.
 type ScriptedIdentity struct {
 	// Subject is the caller this identity stands in for, matched against a
-	// policy rule's `subject:` as `<issuer>#<subject>` — see
+	// policy rule's `subject:` as `<issuer>#<subject>`; see
 	// [v1.QualifiedSubject].
 	Subject string `yaml:"subject"`
 
@@ -370,7 +370,7 @@ type ScriptedIdentity struct {
 	Namespace string `yaml:"namespace"`
 
 	// Claims are additional facts, matched against a policy rule's `claims:`
-	// — every key the rule names must be present here with the same value.
+	// every key the rule names must be present here with the same value.
 	Claims map[string]string `yaml:"claims"`
 }
 

@@ -953,11 +953,11 @@ const testToolDescription = "Run a Flowfile against inline test cases the way `f
 	"does, or anything about durability — flowstate_run_local's own limits, on top of never running a " +
 	"real task at all.\n\n" +
 	"`tests` is a `*.test.yaml` document: `tests:` names one or more cases, each with an optional " +
-	"`inputs:`, `stubs:`, `signals:`, `starter:`, and an `expect:` the run must satisfy — `expect.outputs` compares " +
+	"`inputs:`, `stubs:`, `signals:`, `starter:`, and an `expect:` the run must satisfy: `expect.outputs` compares " +
 	"the workflow's declared `outputs:`, `expect.failed`/`expect.error_contains` assert the run failing " +
 	"outright, `expect.compensated` the undo log, and `expect.ran`/`expect.skipped` step presence. A " +
 	"case's own `workflow:` field is accepted, for compatibility with a file written to disk, but is " +
-	"never consulted — every case here runs against the `workflow` argument, not a sibling file.\n\n" +
+	"never consulted: every case here runs against the `workflow` argument, not a sibling file.\n\n" +
 	"To exercise a workflow's `signals:` policy: a scripted signal's `sender:` names who the delivery " +
 	"stands in for and `starter:` names who the run started as, each carrying `subject:`/`issuer:` " +
 	"together, `namespace:` and `claims:`, and both checked by the same policy function the server " +
