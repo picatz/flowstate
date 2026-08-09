@@ -1175,7 +1175,7 @@ func runNode(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, place
 			ctx = pushWaitAncestor(ctx, node.GetId())
 		}
 
-		return runForEach(ctx, n.ForEach, scope, depth)
+		return runForEach(ctx, n.ForEach, scope, undo, depth)
 
 	case *Node_Loop:
 		// The body's placement composes with the scope this loop itself sits in
@@ -1189,7 +1189,7 @@ func runNode(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, place
 		// Branches are concurrent work, whatever order this driver happens to
 		// run them in, so a wait inside one reports no ancestry: the position
 		// the durable driver refuses to claim.
-		return nil, runParallel(enterConcurrentWait(ctx), n.Parallel, scope, depth)
+		return nil, runParallel(enterConcurrentWait(ctx), n.Parallel, scope, undo, depth)
 
 	case *Node_Wait:
 		return runWait(ctx, node, n.Wait, scope)
@@ -1287,7 +1287,7 @@ func runCall(ctx context.Context, call *Call, scope *Scope, undo *UndoLog, place
 // without reproducing anything an author can act on — and sequential execution
 // makes a local run's output deterministic, which is what makes it useful for
 // comparison.
-func runForEach(ctx context.Context, loop *ForEach, scope *Scope, depth int) (*Node_Outputs, error) {
+func runForEach(ctx context.Context, loop *ForEach, scope *Scope, undo *UndoLog, depth int) (*Node_Outputs, error) {
 	items, err := ResolveItems(ctx, loop, scope)
 	if err != nil {
 		return nil, err
@@ -1312,12 +1312,14 @@ func runForEach(ctx context.Context, loop *ForEach, scope *Scope, depth int) (*N
 		iterationScope := scope.WithLocal(name, item)
 		iterationScope.Outputs = iterationOutputs
 
-		// nil log and UndoScopeConcurrent: a compensation may not be written in a
-		// for_each body, and [CheckUndoPlacement] refuses one rather than this level
-		// quietly ignoring it.
-		if err := runNodes(ctx, loop.GetBody(), iterationScope, nil, UndoScopeConcurrent, depth); err != nil {
+		// Accumulate privately, then merge by iteration index. Completion time is
+		// deliberately not part of the compensation ordering contract.
+		iterationUndo := NewUndoLog(nil)
+		if err := runNodes(ctx, loop.GetBody(), iterationScope, iterationUndo, UndoScopeConcurrent, depth); err != nil {
+			undo.Append(iterationUndo)
 			return nil, fmt.Errorf("iteration %d: %w", i, err)
 		}
+		undo.Append(iterationUndo)
 
 		// The same byte bound the durable driver applies to a `for_each`'s
 		// accumulating `results`, at the same point — right after an iteration's
@@ -1459,7 +1461,7 @@ func onlyBodyOutputs(body []*Node, scope *Workflow_StepOutputs) *Workflow_StepOu
 // iterations do: determinism. Because branches may not depend on each other's
 // outputs, running them in order produces the same result the durable driver
 // reaches concurrently.
-func runParallel(ctx context.Context, parallel *Parallel, scope *Scope, depth int) error {
+func runParallel(ctx context.Context, parallel *Parallel, scope *Scope, undo *UndoLog, depth int) error {
 	before := &Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}}
 	for k, v := range scope.GetOutputs().GetStepValues() {
 		before.StepValues[k] = v
@@ -1479,9 +1481,12 @@ func runParallel(ctx context.Context, parallel *Parallel, scope *Scope, depth in
 		// went missing in the first place: it names the two fields somebody was
 		// thinking about, and silently omits every other one the type grows.
 		branchScope := scope.WithOutputs(branchOutputs)
-		if err := runNodes(ctx, branch.GetSteps(), branchScope, nil, UndoScopeConcurrent, depth); err != nil {
+		branchUndo := NewUndoLog(nil)
+		if err := runNodes(ctx, branch.GetSteps(), branchScope, branchUndo, UndoScopeConcurrent, depth); err != nil {
+			undo.Append(branchUndo)
 			return fmt.Errorf("branch %d: %w", i, err)
 		}
+		undo.Append(branchUndo)
 
 		for _, node := range branch.GetSteps() {
 			if outputs, ok := branchOutputs.GetStepValues()[node.GetId()]; ok {

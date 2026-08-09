@@ -164,6 +164,15 @@ func fails(id, base, token string) *v1.Node {
 	}
 }
 
+func recordsItem(id, base, iterator string) *v1.Node {
+	return &v1.Node{Id: id, Kind: &v1.Node_Task{Task: &v1.Task{
+		Name: "http", Inputs: map[string]*v1.Value{
+			"url":     v1.NewExpr(`"` + base + `/do/" + ` + iterator),
+			"outputs": v1.NewExpr(`{"said": response.body}`),
+		},
+	}}}
+}
+
 // UndoCases are the shared saga cases. Both drivers run every one of them.
 func UndoCases(base string) []UndoCase {
 	notFound := func(token string) string {
@@ -171,6 +180,18 @@ func UndoCases(base string) []UndoCase {
 	}
 
 	return []UndoCase{
+		{
+			Name: "for_each compensations use reverse input order rather than completion order",
+			Workflow: &v1.Workflow{Name: "undo-for-each-order", Profile: v1.CurrentProfile, Steps: []*v1.Node{
+				{Id: "fan", Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+					Items: v1.NewExpr(`["a", "b"]`), Iterator: "item", MaxParallel: 2,
+					Body: []*v1.Node{undoing(recordsItem("inner", base, "item"), base, "/do/undo")},
+				}}},
+				fails("boom", base, "boom"),
+			}},
+			Fails: true, Summary: `; compensation ran in reverse order: undid "inner", undid "inner"`,
+			Recorded: []string{"a", "b", "boom", "undo-b", "undo-a"},
+		},
 		{
 			// The shape the whole feature is for: two things provisioned, the third
 			// fails, and the first two come back off in the opposite order.
@@ -444,7 +465,7 @@ func UndoCancellationCases(base string) []UndoCancellationCase {
 // and with a position — see `flowfile`'s tests — and this is the backstop for a
 // specification that never went through a Flowfile at all.
 func UndoPlacementCases(base string) []UndoCase {
-	return []UndoCase{
+	cases := []UndoCase{
 		{
 			Name: "a compensation inside a for_each body is refused",
 			Workflow: &v1.Workflow{
@@ -651,6 +672,10 @@ func UndoPlacementCases(base string) []UndoCase {
 			Fails: true,
 		},
 	}
+	// Concurrent bodies now have a structural ordering key. The only remaining
+	// placement refusals are compensations attached to control-flow nodes rather
+	// than to the successful task that produced the effect.
+	return cases[3:5]
 }
 
 // UndoCallCases are the shared cases for compensation composing *through* a

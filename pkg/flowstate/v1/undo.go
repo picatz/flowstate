@@ -92,6 +92,18 @@ func (l *UndoLog) Register(entry *PendingUndo) {
 	l.pending = append(l.pending, entry)
 }
 
+// Append registers a completed concurrent child's compensations as one ordered
+// range. Concurrent children accumulate privately and their parent appends those
+// ranges by the child's stable DSL position (iteration index or branch index),
+// never by completion time. This structural position is the ordering key shared
+// by both drivers; entries inside a child retain their own registration order.
+func (l *UndoLog) Append(child *UndoLog) {
+	if l == nil || child == nil {
+		return
+	}
+	l.pending = append(l.pending, child.pending...)
+}
+
 // Pending returns the compensations registered so far, oldest first, for carrying
 // across a Continue-As-New.
 func (l *UndoLog) Pending() []*PendingUndo {
@@ -344,10 +356,9 @@ func withSelfOutputs(scope *Scope, id string, outputs *Node_Outputs) *Workflow_S
 //     iteration boundary sits in the middle of it. See issue #219's decision
 //     for the call half (compose-through, zero new API surface) and #253's for
 //     the loop half.
-//   - [UndoScopeConcurrent] (`for_each`, `parallel`) is refused. Local runs
-//     iterations and branches sequentially for determinism; the durable driver
-//     may run them at once. A saga spanning a fan-out would undo in one order
-//     locally and another in production.
+//   - [UndoScopeConcurrent] (`for_each`, `parallel`) accumulates one private log
+//     per child. The parent merges by iteration or branch index, making the
+//     structural position—not completion time—the shared ordering key.
 //
 // # Why a `loop:` body accepts one, when it used to be refused
 //
@@ -384,8 +395,8 @@ const (
 	// compile-time-vendored, and composed onto the caller's run-level undo log.
 	UndoScopeCall
 
-	// UndoScopeConcurrent is a `for_each` body or a `parallel` branch, where
-	// registration order is not the same on both drivers.
+	// UndoScopeConcurrent is a `for_each` body or a `parallel` branch. Its parent
+	// imposes structural order when it merges the child's private log.
 	UndoScopeConcurrent
 
 	// UndoScopeLoop is a `loop:` body — sequential on both drivers, registering
@@ -492,18 +503,6 @@ func (s UndoScope) IntoLoop() UndoScope {
 func CheckUndoPlacement(node *Node, placement UndoScope) error {
 	if node.GetUndo() == nil {
 		return nil
-	}
-
-	if placement == UndoScopeConcurrent {
-		return fmt.Errorf(
-			"`undo:` is only supported on a top-level step, a step inside a `call:`, or a step "+
-				"inside a `loop:` body, and this one is inside a for_each body or a parallel "+
-				"branch; compensations run in reverse registration order, and the order work "+
-				"registers in inside concurrent control flow is not the same under `flow run "+
-				"local` as it is durably, so a saga written here would be rehearsed in one order "+
-				"and run in another. Move the compensated step out of the block, or undo the "+
-				"block as a whole from the step that follows it (step %q)",
-			node.GetId())
 	}
 
 	if node.GetTask() == nil {
