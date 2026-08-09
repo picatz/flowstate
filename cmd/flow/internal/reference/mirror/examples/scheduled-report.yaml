@@ -67,6 +67,14 @@ triggers:
     # terminate_other and allow_all.
     overlap: skip
 
+    # Recover a firing missed during a short control-plane outage, but never turn a
+    # forgotten schedule into a year's worth of work. Misses older than six hours
+    # are dropped and `skip` above prevents recovered work piling up behind a run.
+    catchup_window: 6h
+
+    # Stop producing reports after a terminal failure until an operator has looked.
+    pause_on_failure: true
+
 steps:
   - id: gather
     vars:

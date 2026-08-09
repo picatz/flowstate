@@ -1124,11 +1124,21 @@ The checker is deliberately generous: `L`, `W`, `15#3` and `?` are cron syntax i
 not model, and it lets them through rather than inventing a restriction Flowstate does
 not have.
 
-Not surfaced yet, each additive with no break: calendar specs and their `skip`
-exceptions (a cron expression says the same thing in a notation people already know),
-`start_at`/`end_at` bounds, the catchup window, pause-on-failure, a limit on the number
-of firings, and backfill. An operator wanting one today reaches for the `temporal` CLI
-against the schedule Flowstate created.
+The same block also accepts explicit `calendars`, inclusive RFC3339 `start_at` and
+`end_at` bounds, `catchup_window`, and `pause_on_failure`. Calendar, cron, and interval
+cadences are unioned. Catch-up is automatic recovery after the Temporal service was
+unavailable: only firings no older than the declared window are considered, and the
+normal overlap policy still applies. `pause_on_failure` pauses after a firing times out
+or exhausts retries; with `allow_all`, an already-started concurrent firing cannot be
+recalled.
+
+Backfill is different: it is an explicit create-time operator request over a closed
+historical interval, not a lasting property of the Flowfile. Flowstate accepts at most
+10 ranges spanning at most 31 days in total, validates every start is before its end,
+and then lets Temporal evaluate the declared cadence inside those ranges. Each range
+may override overlap; without an override the schedule policy applies. These bounds
+are deliberately far below “all history”, so recovering a missed window cannot
+accidentally turn into unbounded execution.
 
 ### `${...}` stays; `!expr` is refused
 

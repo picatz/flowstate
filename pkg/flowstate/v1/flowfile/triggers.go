@@ -3,11 +3,13 @@ package flowfile
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	yaml "github.com/goccy/go-yaml"
 	"github.com/goccy/go-yaml/ast"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // `triggers:` — how a file says it is meant to start without anybody asking.
@@ -33,7 +35,8 @@ import (
 var triggerKeys = []string{"schedule"}
 
 // scheduleKeys are what a schedule says about when it fires.
-var scheduleKeys = []string{"cron", "every", "time_zone", "jitter", "overlap"}
+var scheduleKeys = []string{"cron", "every", "time_zone", "jitter", "overlap", "calendars", "start_at", "end_at", "catchup_window", "pause_on_failure"}
+var calendarKeys = []string{"second", "minute", "hour", "day_of_month", "month", "year", "day_of_week", "comment"}
 
 // triggers compiles the top-level `triggers:` block.
 //
@@ -144,7 +147,105 @@ func (c *compiler) scheduleTrigger(n ast.Node, path string, r ref) *v1.ScheduleT
 		}
 	}
 
+	for _, key := range []string{"start_at", "end_at"} {
+		if f, found := fields.get(key); found {
+			p := fieldPath(path, key)
+			rr := ref{path: p, label: "schedule " + key}
+			if text, ok := c.text(f.value, p, rr); ok {
+				at, err := time.Parse(time.RFC3339, text)
+				if err != nil {
+					c.report(spanOfNode(f.value), rr, "must be an RFC3339 timestamp such as 2026-08-09T09:00:00Z")
+				} else if key == "start_at" {
+					schedule.StartAt = timestamppb.New(at)
+				} else {
+					schedule.EndAt = timestamppb.New(at)
+				}
+			}
+		}
+	}
+	if f, found := fields.get("catchup_window"); found {
+		p := fieldPath(path, "catchup_window")
+		if d, ok := c.duration(f.value, p, ref{path: p, label: "schedule catchup_window"}); ok {
+			schedule.CatchupWindow = d
+		}
+	}
+	if f, found := fields.get("pause_on_failure"); found {
+		p := fieldPath(path, "pause_on_failure")
+		if b, ok := c.boolean(f.value, p, ref{path: p, label: "schedule pause_on_failure"}); ok {
+			schedule.PauseOnFailure = b
+		}
+	}
+	if f, found := fields.get("calendars"); found {
+		p := fieldPath(path, "calendars")
+		schedule.Calendars = c.calendarSpecs(f.value, p)
+	}
+
 	return schedule
+}
+
+func (c *compiler) calendarSpecs(n ast.Node, path string) []*v1.ScheduleTrigger_Calendar {
+	resolved := c.resolve(n, path, ref{path: path, label: "schedule calendars"})
+	if resolved == nil {
+		return nil
+	}
+	nodes := []ast.Node{resolved}
+	if seq, ok := resolved.(*ast.SequenceNode); ok {
+		nodes = seq.Values
+	}
+	out := make([]*v1.ScheduleTrigger_Calendar, 0, len(nodes))
+	for i, node := range nodes {
+		p := indexPath(path, i)
+		fields, ok := c.fields(node, p, ref{path: p, label: "schedule calendar"}, calendarKeys)
+		if !ok {
+			c.report(spanOfNode(node), ref{path: p, label: "schedule calendar"}, "is a mapping of calendar fields")
+			continue
+		}
+		cal := &v1.ScheduleTrigger_Calendar{}
+		for _, key := range calendarKeys[:7] {
+			f, found := fields.get(key)
+			if !found {
+				continue
+			}
+			ranges := c.calendarRanges(f.value, fieldPath(p, key), key)
+			switch key {
+			case "second":
+				cal.Second = ranges
+			case "minute":
+				cal.Minute = ranges
+			case "hour":
+				cal.Hour = ranges
+			case "day_of_month":
+				cal.DayOfMonth = ranges
+			case "month":
+				cal.Month = ranges
+			case "year":
+				cal.Year = ranges
+			case "day_of_week":
+				cal.DayOfWeek = ranges
+			}
+		}
+		if f, found := fields.get("comment"); found {
+			if s, ok := c.text(f.value, fieldPath(p, "comment"), ref{path: fieldPath(p, "comment"), label: "calendar comment"}); ok {
+				cal.Comment = s
+			}
+		}
+		out = append(out, cal)
+	}
+	return out
+}
+
+func (c *compiler) calendarRanges(n ast.Node, path, label string) []*v1.ScheduleTrigger_Calendar_Range {
+	nodes := []ast.Node{n}
+	if seq, ok := c.resolve(n, path, ref{path: path, label: label}).(*ast.SequenceNode); ok {
+		nodes = seq.Values
+	}
+	out := make([]*v1.ScheduleTrigger_Calendar_Range, 0, len(nodes))
+	for i, node := range nodes {
+		if value, ok := c.integer(node, indexPath(path, i), ref{path: indexPath(path, i), label: label}, 0, 3000); ok {
+			out = append(out, &v1.ScheduleTrigger_Calendar_Range{Start: value})
+		}
+	}
+	return out
 }
 
 // cronExpressions reads `cron:`, written either as one expression or as a list.
@@ -240,6 +341,46 @@ func scheduleTriggerToYAML(schedule *v1.ScheduleTrigger) (yaml.MapSlice, error) 
 	if overlap := schedule.GetOverlap(); overlap != v1.ScheduleTrigger_OVERLAP_UNSPECIFIED {
 		doc = append(doc, yaml.MapItem{Key: "overlap", Value: v1.OverlapName(overlap)})
 	}
+	if at := schedule.GetStartAt(); at != nil {
+		doc = append(doc, yaml.MapItem{Key: "start_at", Value: at.AsTime().Format(time.RFC3339)})
+	}
+	if at := schedule.GetEndAt(); at != nil {
+		doc = append(doc, yaml.MapItem{Key: "end_at", Value: at.AsTime().Format(time.RFC3339)})
+	}
+	if d := schedule.GetCatchupWindow(); d != nil {
+		doc = append(doc, yaml.MapItem{Key: "catchup_window", Value: durationToYAML(d)})
+	}
+	if schedule.GetPauseOnFailure() {
+		doc = append(doc, yaml.MapItem{Key: "pause_on_failure", Value: true})
+	}
+	if len(schedule.GetCalendars()) > 0 {
+		calendars := make([]yaml.MapSlice, 0, len(schedule.GetCalendars()))
+		for _, cal := range schedule.GetCalendars() {
+			m := yaml.MapSlice{}
+			for _, entry := range []struct {
+				name   string
+				ranges []*v1.ScheduleTrigger_Calendar_Range
+			}{{"second", cal.GetSecond()}, {"minute", cal.GetMinute()}, {"hour", cal.GetHour()}, {"day_of_month", cal.GetDayOfMonth()}, {"month", cal.GetMonth()}, {"year", cal.GetYear()}, {"day_of_week", cal.GetDayOfWeek()}} {
+				if len(entry.ranges) == 0 {
+					continue
+				}
+				values := make([]int32, 0, len(entry.ranges))
+				for _, r := range entry.ranges {
+					values = append(values, r.GetStart())
+				}
+				var value any = values
+				if len(values) == 1 {
+					value = values[0]
+				}
+				m = append(m, yaml.MapItem{Key: entry.name, Value: value})
+			}
+			if cal.GetComment() != "" {
+				m = append(m, yaml.MapItem{Key: "comment", Value: cal.GetComment()})
+			}
+			calendars = append(calendars, m)
+		}
+		doc = append(doc, yaml.MapItem{Key: "calendars", Value: calendars})
+	}
 
 	if len(doc) == 0 {
 		// A schedule with nothing in it would be written as an empty mapping, which
@@ -291,7 +432,7 @@ func validateTriggers(wf *v1.Workflow) Diagnostics {
 		ds = append(ds, Diagnostic{Field: field, Message: err.Error()})
 	}
 
-	if zone := schedule.GetTimeZone(); zone != "" && len(schedule.GetCron()) == 0 {
+	if zone := schedule.GetTimeZone(); zone != "" && len(schedule.GetCron()) == 0 && len(schedule.GetCalendars()) == 0 {
 		// An interval is measured from the epoch and has no calendar in it, so a zone
 		// beside one does nothing. Reported because a line that does nothing was
 		// written by somebody who believed it did — the rule this file's diagnostics

@@ -127,6 +127,9 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf(
 			"workflow %q cannot be scheduled: %w", workflow.GetName(), err))
 	}
+	if err := v1.CheckScheduleBackfill(req.Msg.GetBackfill()); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
 
 	// Bound here, once, through the very function `Run` and `flow run local` bind
 	// with. Every firing then starts from the checked and defaulted map rather than
@@ -238,10 +241,13 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 	}
 
 	_, err = temporal.ScheduleClient().Create(ctx, client.ScheduleOptions{
-		ID:      scheduleIDFor(namespace, name),
-		Spec:    spec,
-		Overlap: overlapOf(trigger.GetOverlap()),
-		Paused:  req.Msg.GetPaused(),
+		ID:               scheduleIDFor(namespace, name),
+		Spec:             spec,
+		Overlap:          overlapOf(trigger.GetOverlap()),
+		Paused:           req.Msg.GetPaused(),
+		CatchupWindow:    trigger.GetCatchupWindow().AsDuration(),
+		PauseOnFailure:   trigger.GetPauseOnFailure(),
+		ScheduleBackfill: scheduleBackfillsOf(req.Msg.GetBackfill()),
 
 		// The tenant, recorded the same way and under the same key a run records
 		// it, so [ownedBy] answers for a schedule without a second implementation
@@ -790,6 +796,16 @@ func scheduleSpecOf(trigger *v1.ScheduleTrigger) (client.ScheduleSpec, error) {
 		CronExpressions: trigger.GetCron(),
 		TimeZoneName:    trigger.GetTimeZone(),
 		Jitter:          trigger.GetJitter().AsDuration(),
+		StartAt:         trigger.GetStartAt().AsTime(),
+		EndAt:           trigger.GetEndAt().AsTime(),
+	}
+	for _, calendar := range trigger.GetCalendars() {
+		spec.Calendars = append(spec.Calendars, client.ScheduleCalendarSpec{
+			Second: scheduleRangesOf(calendar.GetSecond()), Minute: scheduleRangesOf(calendar.GetMinute()),
+			Hour: scheduleRangesOf(calendar.GetHour()), DayOfMonth: scheduleRangesOf(calendar.GetDayOfMonth()),
+			Month: scheduleRangesOf(calendar.GetMonth()), Year: scheduleRangesOf(calendar.GetYear()),
+			DayOfWeek: scheduleRangesOf(calendar.GetDayOfWeek()), Comment: calendar.GetComment(),
+		})
 	}
 
 	if every := trigger.GetEvery(); every != nil {
@@ -799,12 +815,28 @@ func scheduleSpecOf(trigger *v1.ScheduleTrigger) (client.ScheduleSpec, error) {
 	// Checked again here rather than trusted from the caller's own validation, for
 	// the reason `Run` re-validates a specification the CLI already checked: a bound
 	// enforced by whoever happened to call is not a bound.
-	if len(spec.CronExpressions) == 0 && len(spec.Intervals) == 0 {
+	if len(spec.CronExpressions) == 0 && len(spec.Intervals) == 0 && len(spec.Calendars) == 0 {
 		return client.ScheduleSpec{}, errors.New(
 			"the schedule says nothing about when to fire; write `cron:` or `every:` under `triggers.schedule`")
 	}
 
 	return spec, nil
+}
+
+func scheduleRangesOf(in []*v1.ScheduleTrigger_Calendar_Range) []client.ScheduleRange {
+	out := make([]client.ScheduleRange, 0, len(in))
+	for _, r := range in {
+		out = append(out, client.ScheduleRange{Start: int(r.GetStart()), End: int(r.GetEnd()), Step: int(r.GetStep())})
+	}
+	return out
+}
+
+func scheduleBackfillsOf(in []*v1.ScheduleBackfill) []client.ScheduleBackfill {
+	out := make([]client.ScheduleBackfill, 0, len(in))
+	for _, b := range in {
+		out = append(out, client.ScheduleBackfill{Start: b.GetStartAt().AsTime(), End: b.GetEndAt().AsTime(), Overlap: overlapOf(b.GetOverlap())})
+	}
+	return out
 }
 
 // overlapOf maps the declared overlap policy onto Temporal's.

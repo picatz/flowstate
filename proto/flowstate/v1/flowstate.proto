@@ -893,18 +893,10 @@ message Triggers {
 //
 // # What is here, and what is deliberately not yet
 //
-// Here: cron expressions, a plain interval, a time zone, jitter, and the overlap
-// policy. That set was chosen as the smallest one that answers the questions
-// anybody asks before running a schedule in production — when does it fire, in
-// whose clock, and what happens if the last one has not finished.
-//
-// Not here, and each additive later with no break: calendar specs and their
-// `skip` exceptions (a cron expression says the same thing and is the spelling
-// people arrive already knowing), `start_at`/`end_at` bounds, the catchup window,
-// pause-on-failure, a limit on the number of firings, and backfill. Their absence
-// is a smaller surface rather than a missing capability — an operator wanting one
-// today reaches for the `temporal` CLI against the schedule this created, and the
-// day one is added it is a field here and a key in `triggers.schedule`.
+// Cron expressions, intervals and explicit calendars are unioned. Start/end
+// bounds constrain that union, catch-up limits automatic missed-fire recovery,
+// and overlap and pause-on-failure define how executions interact. Backfill is
+// creation-only and therefore lives on [CreateScheduleRequest], not here.
 //
 // # Where the arguments are not
 //
@@ -917,6 +909,23 @@ message Triggers {
 // precedence rule between a default and a schedule's override is a rule somebody
 // has to learn for no benefit.
 message ScheduleTrigger {
+  // Calendar is an explicit calendar cadence. Each range is inclusive; an end
+  // of zero means the start value, and step defaults to one.
+  message Calendar {
+    message Range {
+      int32 start = 1;
+      int32 end = 2;
+      int32 step = 3;
+    }
+    repeated Range second = 1;
+    repeated Range minute = 2;
+    repeated Range hour = 3;
+    repeated Range day_of_month = 4;
+    repeated Range month = 5;
+    repeated Range year = 6;
+    repeated Range day_of_week = 7;
+    string comment = 8 [(buf.validate.field).string = {max_len: 256}];
+  }
   // Overlap says what happens when a firing comes due while the previous run is
   // still going.
   //
@@ -1033,6 +1042,31 @@ message ScheduleTrigger {
     (google.api.field_behavior) = OPTIONAL,
     (buf.validate.field).enum = {defined_only: true}
   ];
+
+  // Calendars are unioned with cron and interval cadences.
+  repeated Calendar calendars = 6 [(buf.validate.field).repeated = {max_items: 32}];
+
+  // StartAt and EndAt form an inclusive window in which firings may occur.
+  google.protobuf.Timestamp start_at = 7 [(google.api.field_behavior) = OPTIONAL];
+  google.protobuf.Timestamp end_at = 8 [(google.api.field_behavior) = OPTIONAL];
+
+  // CatchupWindow limits how late a missed firing may be recovered. Requiring
+  // an explicit bounded value avoids Temporal's much larger server default.
+  google.protobuf.Duration catchup_window = 9 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).duration = {gte: {seconds: 60}, lte: {seconds: 2592000}}
+  ];
+
+  // PauseOnFailure pauses after an action exhausts its retries or times out.
+  bool pause_on_failure = 10 [(google.api.field_behavior) = OPTIONAL];
+}
+
+// ScheduleBackfill asks creation to evaluate a closed historical interval.
+// The server additionally limits the number of intervals and their total span.
+message ScheduleBackfill {
+  google.protobuf.Timestamp start_at = 1 [(buf.validate.field).required = true];
+  google.protobuf.Timestamp end_at = 2 [(buf.validate.field).required = true];
+  ScheduleTrigger.Overlap overlap = 3 [(buf.validate.field).enum = {defined_only: true}];
 }
 
 // Node represents a step in the workflow. Each node can be a task or another type of operation.
@@ -4737,6 +4771,11 @@ message CreateScheduleRequest {
   // what makes creating one safe to rehearse — create paused, describe it, and
   // resume when the next firing time is one somebody meant.
   bool paused = 4 [(google.api.field_behavior) = OPTIONAL];
+
+  // Backfill is deliberately creation-only: it is an operator request, not a
+  // perpetual property of the workload. At most 10 intervals spanning no more
+  // than 31 days in total are accepted.
+  repeated ScheduleBackfill backfill = 5 [(buf.validate.field).repeated = {max_items: 10}];
 }
 
 // CreateScheduleResponse confirms the schedule and describes what was created.

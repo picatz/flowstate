@@ -13,6 +13,7 @@ import (
 
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // `flow schedule` — the act a `triggers:` block does not perform.
@@ -71,12 +72,17 @@ func runScheduleCreate(cmd *cobra.Command, args []string) error {
 
 	name, _ := cmd.Flags().GetString("name")
 	paused, _ := cmd.Flags().GetBool("paused")
+	backfills, err := scheduleBackfillFlags(cmd)
+	if err != nil {
+		return err
+	}
 
 	request := &v1.CreateScheduleRequest{
 		Workflow: workflow,
 		Inputs:   inputs,
 		Name:     name,
 		Paused:   paused,
+		Backfill: backfills,
 	}
 	if err := v1.Validate(request); err != nil {
 		return err
@@ -101,6 +107,30 @@ func runScheduleCreate(cmd *cobra.Command, args []string) error {
 	// visible in the first two of these and almost never visible in the expression
 	// that produced them, so this is the moment to show them.
 	return writeScheduleText(surface, schedule)
+}
+
+func scheduleBackfillFlags(cmd *cobra.Command) ([]*v1.ScheduleBackfill, error) {
+	values, _ := cmd.Flags().GetStringSlice("backfill")
+	out := make([]*v1.ScheduleBackfill, 0, len(values))
+	for _, value := range values {
+		startText, endText, ok := strings.Cut(value, "..")
+		if !ok {
+			return nil, fmt.Errorf("backfill %q must be START..END using RFC3339 timestamps", value)
+		}
+		start, err := time.Parse(time.RFC3339, startText)
+		if err != nil {
+			return nil, fmt.Errorf("backfill start %q: %w", startText, err)
+		}
+		end, err := time.Parse(time.RFC3339, endText)
+		if err != nil {
+			return nil, fmt.Errorf("backfill end %q: %w", endText, err)
+		}
+		out = append(out, &v1.ScheduleBackfill{StartAt: timestamppb.New(start), EndAt: timestamppb.New(end)})
+	}
+	if err := v1.CheckScheduleBackfill(out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // runScheduleList reports the schedules belonging to the caller.
@@ -359,6 +389,21 @@ func describeCadence(trigger *v1.ScheduleTrigger) string {
 	if overlap := trigger.GetOverlap(); overlap != v1.ScheduleTrigger_OVERLAP_UNSPECIFIED {
 		parts = append(parts, "on overlap "+v1.OverlapName(overlap))
 	}
+	if len(trigger.GetCalendars()) > 0 {
+		parts = append(parts, fmt.Sprintf("%d calendar specification(s)", len(trigger.GetCalendars())))
+	}
+	if start := trigger.GetStartAt(); start != nil {
+		parts = append(parts, "from "+start.AsTime().UTC().Format(time.RFC3339))
+	}
+	if end := trigger.GetEndAt(); end != nil {
+		parts = append(parts, "through "+end.AsTime().UTC().Format(time.RFC3339))
+	}
+	if window := trigger.GetCatchupWindow(); window != nil {
+		parts = append(parts, "catch up within "+window.AsDuration().String())
+	}
+	if trigger.GetPauseOnFailure() {
+		parts = append(parts, "pause on failure")
+	}
 
 	return strings.Join(parts, ", ")
 }
@@ -446,6 +491,8 @@ flow schedule create report.yaml --name report-us --input region=us-east-1`,
 		"what to call the schedule; unset takes the workflow's own name, which is what one cadence per workflow wants")
 	createCmd.Flags().Bool("paused", false,
 		"create the schedule without letting it fire, so its next firing times can be read before it takes one")
+	createCmd.Flags().StringSlice("backfill", nil,
+		"bounded missed window to recover at creation, START..END in RFC3339; repeat at most 10 times (31 days total)")
 
 	listCmd := &cobra.Command{
 		Use:   "list",

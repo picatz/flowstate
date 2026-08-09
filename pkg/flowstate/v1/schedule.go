@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // What a schedule can be wrong about before a cluster ever sees it.
@@ -49,8 +50,14 @@ func CheckScheduleTrigger(trigger *ScheduleTrigger) error {
 	// is a line that reads as if the schedule fires, written by somebody who
 	// believed it did. A schedule with no cadence at all is created successfully by
 	// Temporal and never fires, which is the silent failure worth refusing.
-	if len(trigger.GetCron()) == 0 && trigger.GetEvery() == nil {
+	if len(trigger.GetCron()) == 0 && trigger.GetEvery() == nil && len(trigger.GetCalendars()) == 0 {
 		return fmt.Errorf("a schedule needs a cadence: write `cron:` with a cron expression, or `every:` with an interval such as 15m")
+	}
+	if start, end := trigger.GetStartAt(), trigger.GetEndAt(); start != nil && end != nil && !start.AsTime().Before(end.AsTime()) {
+		return fmt.Errorf("schedule start_at must be before end_at")
+	}
+	if trigger.GetCatchupWindow() != nil && trigger.GetCatchupWindow().AsDuration() < time.Minute {
+		return fmt.Errorf("schedule catchup_window must be at least 1m")
 	}
 
 	if zone := trigger.GetTimeZone(); zone != "" {
@@ -59,6 +66,34 @@ func CheckScheduleTrigger(trigger *ScheduleTrigger) error {
 		}
 	}
 
+	return nil
+}
+
+const (
+	MaxScheduleBackfills    = 10
+	MaxScheduleBackfillSpan = 31 * 24 * time.Hour
+)
+
+// CheckScheduleBackfill bounds an operator-requested historical replay before
+// it can turn a short outage into an unbounded burst of executions.
+func CheckScheduleBackfill(backfills []*ScheduleBackfill) error {
+	if len(backfills) > MaxScheduleBackfills {
+		return fmt.Errorf("backfill has %d ranges; at most %d are allowed", len(backfills), MaxScheduleBackfills)
+	}
+	var total time.Duration
+	for i, b := range backfills {
+		if b == nil || b.GetStartAt() == nil || b.GetEndAt() == nil {
+			return fmt.Errorf("backfill %d needs start_at and end_at", i+1)
+		}
+		span := b.GetEndAt().AsTime().Sub(b.GetStartAt().AsTime())
+		if span <= 0 {
+			return fmt.Errorf("backfill %d start_at must be before end_at", i+1)
+		}
+		total += span
+	}
+	if total > MaxScheduleBackfillSpan {
+		return fmt.Errorf("backfill spans %s; the maximum total span is %s", total, MaxScheduleBackfillSpan)
+	}
 	return nil
 }
 

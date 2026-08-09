@@ -2,13 +2,29 @@ package flowstatev1_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
+
+func TestScheduleBoundsAndBackfillAreBounded(t *testing.T) {
+	now := time.Now().UTC()
+	require.ErrorContains(t, v1.CheckScheduleTrigger(&v1.ScheduleTrigger{
+		Every: durationpb.New(time.Hour), StartAt: timestamppb.New(now), EndAt: timestamppb.New(now.Add(-time.Hour)),
+	}), "start_at must be before end_at")
+
+	require.NoError(t, v1.CheckScheduleBackfill([]*v1.ScheduleBackfill{{
+		StartAt: timestamppb.New(now.Add(-time.Hour)), EndAt: timestamppb.New(now),
+	}}))
+	require.ErrorContains(t, v1.CheckScheduleBackfill([]*v1.ScheduleBackfill{{
+		StartAt: timestamppb.New(now.Add(-32 * 24 * time.Hour)), EndAt: timestamppb.New(now),
+	}}), "maximum total span")
+}
 
 // TestCronExpressionsThatCannotBeRight covers what the checker must refuse.
 //
