@@ -52,9 +52,16 @@ import (
 // crosses a boundary, and there is nothing to serialize until #374's envelope
 // grows a field for it.
 type venue struct {
+	// local reports which venue this is, explicitly. The address cannot carry
+	// that distinction on its own: `--address=` hands the server path an empty
+	// string it will still dial, and a venue line that read the emptiness as
+	// "local" would misreport exactly the fact it exists to state.
+	local bool
+
 	// address is the server this run is being submitted to, exactly as
 	// `--address` or FLOWSTATE_ADDRESS spelled it. Empty for the local venue,
-	// which contacts nothing.
+	// which contacts nothing, and possibly empty for a server run whose caller
+	// explicitly blanked the flag, which still dials.
 	address string
 
 	// identity describes the credential this command will present, in the
@@ -64,7 +71,7 @@ type venue struct {
 }
 
 // localVenue is this process.
-func localVenue() venue { return venue{} }
+func localVenue() venue { return venue{local: true} }
 
 // serverVenue is the deployment a run is being submitted to.
 //
@@ -121,14 +128,22 @@ func presentedIdentity(tokenFile string, getenv func(string) string) string {
 func (v venue) announce(surface *ui.UI) {
 	theme := surface.ErrTheme
 
-	if v.address == "" {
+	if v.local {
 		fmt.Fprintf(surface.Err, "%s %s\n", theme.Muted.Render("running"), theme.Strong.Render("locally"))
 
 		return
 	}
 
+	// A blanked flag still reaches here as the server venue, and the honest
+	// rendering of that is to say the address is empty rather than to print
+	// the emptiness and let the line read as a rendering bug.
+	address := v.address
+	if address == "" {
+		address = "an empty --address"
+	}
+
 	fmt.Fprintf(surface.Err, "%s %s %s %s\n",
-		theme.Muted.Render("running on"), theme.Strong.Render(v.address),
+		theme.Muted.Render("running on"), theme.Strong.Render(address),
 		theme.Muted.Render("as"), theme.Strong.Render(v.identity))
 }
 

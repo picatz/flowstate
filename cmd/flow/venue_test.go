@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+
+	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -193,4 +195,22 @@ func TestTheAnnouncementNamesACredentialWithoutRevealingIt(t *testing.T) {
 			assert.Empty(t, out.String(), "the announcement reached the answer stream")
 		})
 	}
+}
+
+// TestABlankedAddressIsStillTheServerVenue is the review finding: `--address=`
+// hands the server path an empty string it will still dial, so the venue line
+// must not read the emptiness as "locally". The distinction is a kind, not an
+// address comparison.
+func TestABlankedAddressIsStillTheServerVenue(t *testing.T) {
+	t.Parallel()
+
+	var out, errOut strings.Builder
+	surface := ui.Plain(&out, &errOut)
+
+	serverVenue(serverFlags{address: ""}, func(string) string { return "" }).announce(surface)
+
+	assert.NotContains(t, errOut.String(), "locally",
+		"a server run with a blanked --address reported the local venue")
+	assert.Contains(t, errOut.String(), "an empty --address",
+		"the blank address should be named rather than rendered as nothing")
 }
