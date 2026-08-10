@@ -154,7 +154,7 @@ flow fix --stdout old.yaml > new.yaml
 
 ## `flow fmt`
 
-Rewrite Flowfiles into the form flowfile.Marshal writes
+Rewrite Flowfiles into the form flowfile.Format writes, keeping comments
 
 ```
 flow fmt [path...] [flags]
@@ -162,9 +162,9 @@ flow fmt [path...] [flags]
 
 Rewrite a Flowfile from its parsed form rather than editing its source text, the way `flow fix` does. A directory is walked for .yaml and .yml files.
 
-This is not comment-preserving or whitespace-preserving: every comment, every blank line, the order a mapping's keys were written in, and a string literal's quote style are all normalized away, because they are not part of the parsed workflow this reads a file into. Running it over a hand-formatted, commented file is a one-time, reviewable loss of that formatting. Check the diff before committing it, the same as any other rewrite.
+Comments are kept, carried onto the document this writes at the key, value or list entry they were written against. Whitespace is not: blank lines, the order a mapping's keys were written in, and a string literal's quote style are all normalized away, because they are not part of the parsed workflow this reads a file into.
 
-A file that does not parse is reported with its position and left untouched.
+A file that does not parse is reported with its position and left untouched, and so is a file carrying a comment this cannot keep, which happens when what the comment was written against is not written back in the same shape.
 
 `--output json` or `--output jsonl` turns `--check` into a report a program reads instead of scrapes: which files would change, and which were refused, per file. CI that wants structured data rather than stderr text asks for one of those.
 

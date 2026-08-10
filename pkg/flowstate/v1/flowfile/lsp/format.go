@@ -39,11 +39,12 @@ func formatEdits(doc *document) []lsp.TextEdit {
 		return nil
 	}
 
-	formatted, err := flowfile.Marshal(workflow)
+	formatted, err := flowfile.Format([]byte(doc.text), workflow)
 	if err != nil {
 		// A workflow this build itself just compiled but cannot write back out —
 		// an expression built from a macro, or a literal `${` — is not a shape a
-		// formatter can produce an edit for either. `flow fmt` reports this as a
+		// formatter can produce an edit for either, and neither is a document
+		// holding a comment the rewrite cannot keep. `flow fmt` reports this as a
 		// refusal on the file; here there is no stream to report it on, so the
 		// honest answer is the same one a parse failure gets: nothing.
 		return nil

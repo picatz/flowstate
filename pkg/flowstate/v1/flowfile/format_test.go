@@ -1,0 +1,469 @@
+package flowfile_test
+
+import (
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
+)
+
+// Every case here compares bytes.
+//
+// That is the lesson `flow fix` paid for twice: a rewritten file that still
+// validates proves only that the result is *a* Flowfile, not that it is the one
+// the author wrote. A deleted comment does not fail validation either, which is
+// exactly how `flow fmt` deleted every comment in the scaffold the CLI itself
+// writes (#381) while its own tests stayed green.
+
+// formatFile compiles src and formats it, failing the test on either error.
+func formatFile(t *testing.T, src string) string {
+	t.Helper()
+
+	workflow, err := flowfile.Unmarshal([]byte(src))
+	require.NoError(t, err, "the fixture does not compile, so it cannot say anything about formatting")
+
+	out, err := flowfile.Format([]byte(src), workflow)
+	require.NoError(t, err, "the fixture was refused")
+	return string(out)
+}
+
+// TestFormatKeepsCommentsInEveryPositionTheGrammarAllows walks the positions a
+// comment can be written in and states the whole output for each, byte for byte.
+//
+// Written as whole documents rather than as "the output still contains the
+// comment" for the reason the fix tests are: a comment that survives in the wrong
+// place is its own corruption. A note about a timeout that ends up over the retry
+// below it now says something false.
+func TestFormatKeepsCommentsInEveryPositionTheGrammarAllows(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name string
+		src  string
+		want string
+	}{
+		{
+			name: "top of file, above a key, trailing a value, and under the last key",
+			src: `# The file starts by saying what grammar it is in.
+# Two lines of it.
+edition: v2026.2
+name: greeter # what the run is called
+description: greets
+
+# What the run is given.
+inputs:
+  name:
+    # who to greet
+    type: string
+    default: world # the default
+
+vars:
+  # a value every step can reach
+  greeting: hello
+
+steps:
+  # the only step
+  - id: greet
+    log: # the work
+      message: ${'hello, ' + inputs.name}
+  # the second step
+  - id: again
+    log:
+      message: bye
+# a footer at the end of the file
+`,
+			want: `# The file starts by saying what grammar it is in.
+# Two lines of it.
+edition: v2026.2
+name: greeter # what the run is called
+description: greets
+
+# What the run is given.
+inputs:
+  name:
+    # who to greet
+    type: string
+    default: world # the default
+vars:
+  # a value every step can reach
+  greeting: hello
+steps:
+# the only step
+- id: greet
+  log: # the work
+    message: ${"hello, " + inputs.name}
+# the second step
+- id: again
+  log:
+    message: bye
+# a footer at the end of the file
+`,
+		},
+		{
+			name: "inside nested control flow, and beside a folded scalar the formatter unfolds",
+			src: `edition: v2026.2
+name: shapes
+description: >-
+  A folded description the formatter unfolds, with a comment above the key it
+  belongs to.
+steps:
+  - id: fan
+    for_each:
+      items: ${[1, 2]}
+      as: n
+      steps:
+        # inside a loop body
+        - id: inner
+          log:
+            message: ${string(n)}
+  - id: branches
+    parallel:
+      - steps:
+          # inside a parallel branch
+          - id: left
+            log:
+              message: left
+      - steps:
+          - id: right
+            log:
+              message: right
+  - id: hold
+    sleep: 30s # a wait
+`,
+			want: `edition: v2026.2
+name: shapes
+description: A folded description the formatter unfolds, with a comment above the key it belongs to.
+steps:
+- id: fan
+  for_each:
+    items: ${[1, 2]}
+    as: "n"
+    steps:
+    # inside a loop body
+    - id: inner
+      log:
+        message: ${string(n)}
+- id: branches
+  parallel:
+  - steps:
+    # inside a parallel branch
+    - id: left
+      log:
+        message: left
+  - steps:
+    - id: right
+      log:
+        message: right
+- id: hold
+  sleep: 30s # a wait
+`,
+		},
+		{
+			name: "above a block scalar",
+			src: `edition: v2026.2
+name: blocks
+steps:
+  - id: greet
+    log:
+      # above a literal block scalar
+      message: |-
+        first line
+        second line
+`,
+			want: `edition: v2026.2
+name: blocks
+steps:
+- id: greet
+  log:
+    # above a literal block scalar
+    message: |-
+      first line
+      second line
+`,
+		},
+		{
+			name: "beside an anchor and the alias that reads it",
+			src: `edition: v2026.2
+name: anchored
+vars:
+  # the anchored value
+  base: &base hello
+steps:
+  # above a step that reads an alias
+  - id: greet
+    log:
+      message: *base
+`,
+			want: `edition: v2026.2
+name: anchored
+vars:
+  # the anchored value
+  base: hello
+steps:
+# above a step that reads an alias
+- id: greet
+  log:
+    message: hello
+`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, test.want, formatFile(t, test.src))
+		})
+	}
+}
+
+// TestFormatMovesACommentWithTheKeyItSitsAbove is the property that makes this
+// survive a formatter that reorders anything.
+//
+// A comment is carried by the *path* of what it was written against rather than
+// by where it sat, so sorting a task's inputs takes each comment along with its
+// key instead of leaving both notes over whichever key ends up first.
+func TestFormatMovesACommentWithTheKeyItSitsAbove(t *testing.T) {
+	t.Parallel()
+
+	const src = `edition: v2026.2
+name: sorted
+steps:
+  - id: fetch
+    http:
+      # last alphabetically, written first
+      url: https://example.com
+      # first alphabetically, written last
+      method: GET
+`
+
+	const want = `edition: v2026.2
+name: sorted
+steps:
+- id: fetch
+  http:
+    # first alphabetically, written last
+    method: GET
+    # last alphabetically, written first
+    url: https://example.com
+`
+
+	assert.Equal(t, want, formatFile(t, src))
+}
+
+// TestFormatWithoutCommentsWritesExactlyMarshalsBytes holds the other end of the
+// promise: carrying comments must not have moved the canonical shape a file with
+// none formats to. A formatter that changes its mind about the ordinary file is a
+// diff in every repository that uses it.
+func TestFormatWithoutCommentsWritesExactlyMarshalsBytes(t *testing.T) {
+	t.Parallel()
+
+	for _, src := range []string{
+		`edition: v2026.2
+name: greeter
+steps:
+  - id: greet
+    log:
+      message: hello world
+`,
+		`edition: v2026.2
+name: shapes
+description: >-
+  Folded, and unfolded on the way back out.
+inputs:
+  name:
+    type: string
+    default: world
+vars:
+  greeting: hello
+steps:
+  - id: fan
+    for_each:
+      items: ${[1, 2]}
+      as: n
+      steps:
+        - id: inner
+          log:
+            message: ${string(n)}
+  - id: hold
+    sleep: 30s
+outputs:
+  done:
+    value: ${true}
+`,
+	} {
+		workflow, err := flowfile.Unmarshal([]byte(src))
+		require.NoError(t, err)
+
+		marshalled, err := flowfile.Marshal(workflow)
+		require.NoError(t, err)
+
+		formatted, err := flowfile.Format([]byte(src), workflow)
+		require.NoError(t, err)
+
+		assert.Equal(t, string(marshalled), string(formatted),
+			"a file with no comments formats to something other than Marshal's own bytes")
+	}
+}
+
+// TestFormatIsIdempotent is what makes the command safe in a pre-commit hook. The
+// comments are the part at risk: a blank line or an indent that shifts by one on
+// every pass would be a file that never settles.
+func TestFormatIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	const src = `# a header
+edition: v2026.2
+name: greeter # trailing
+inputs:
+  name:
+    # above a nested key
+    type: string
+steps:
+  # above the step
+  - id: greet
+    log: # after a key
+      message: hello
+  # above the second step
+  - id: again
+    log:
+      message: bye
+# a footer
+`
+
+	once := formatFile(t, src)
+	twice := formatFile(t, once)
+	assert.Equal(t, once, twice, "formatting a formatted file changed it again")
+}
+
+// TestFormatRefusesACommentItCannotKeep is the fail-closed half.
+//
+// Not every comment has somewhere to go: the compiler expands a merge key away,
+// and a mapping of expressions is written back as one expression, so a comment
+// written inside either has no key left to sit above. Dropping it would be the
+// silent loss this whole file exists to stop, so the format is refused and the
+// caller writes nothing at all.
+func TestFormatRefusesACommentItCannotKeep(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name string
+		src  string
+		line int
+	}{
+		{
+			name: "inside a mapping reached through a merge key",
+			src: `edition: v2026.2
+name: merged
+vars:
+  common: &common
+    message: hello
+steps:
+  - id: greet
+    log:
+      # a comment inside a mapping the compiler expands away
+      <<: *common
+`,
+			line: 9,
+		},
+		{
+			name: "inside a block written back as one expression",
+			src: `edition: v2026.2
+name: report
+steps:
+  - id: report
+    log:
+      message: done
+      fields:
+        # which value survived escaping
+        q: ${"x"}
+`,
+			line: 8,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			workflow, err := flowfile.Unmarshal([]byte(test.src))
+			require.NoError(t, err, "the fixture does not compile")
+
+			out, err := flowfile.Format([]byte(test.src), workflow)
+			require.Error(t, err, "a comment with nowhere to go was written away silently")
+			assert.Nil(t, out, "a refusal handed back bytes a caller could write")
+
+			var diagnostics flowfile.Diagnostics
+			require.True(t, errors.As(err, &diagnostics),
+				"the refusal is not positioned, so an author cannot find the comment that caused it")
+			require.Len(t, diagnostics, 1)
+			assert.Equal(t, test.line, diagnostics[0].Line)
+			assert.Contains(t, diagnostics[0].Message, "comment cannot be kept")
+		})
+	}
+}
+
+// TestFormatKeepsACommentWhoseKeyContainsAPathSeparator checks the addressing
+// itself rather than the formatting.
+//
+// Comments are anchored by a path assembled from keys, and a key here may contain
+// a dot or a bracket, which is what a YAML path is written with. Two keys that
+// differ only in where the dots fall must not resolve to the same anchor, or one
+// comment lands on the other's key.
+func TestFormatKeepsACommentWhoseKeyContainsAPathSeparator(t *testing.T) {
+	t.Parallel()
+
+	const src = `edition: v2026.2
+name: dotted
+steps:
+  - id: send
+    http:
+      method: POST
+      url: https://example.com
+      headers:
+        # about the first header
+        x.a.b: one
+        # about the second header
+        x.a:
+          b: two
+`
+
+	const want = `edition: v2026.2
+name: dotted
+steps:
+- id: send
+  http:
+    headers:
+      # about the first header
+      x.a.b: one
+      # about the second header
+      x.a:
+        b: two
+    method: POST
+    url: https://example.com
+`
+
+	assert.Equal(t, want, formatFile(t, src))
+}
+
+// TestFormatRefusesSourceItCannotRead is the fail-closed reading of an unreadable
+// source: not seeing a comment is not the same as there being none, so a source
+// this cannot parse is refused rather than formatted without its comments.
+func TestFormatRefusesSourceItCannotRead(t *testing.T) {
+	t.Parallel()
+
+	const src = `edition: v2026.2
+name: greeter
+steps:
+  - id: greet
+    log:
+      message: hello
+`
+
+	workflow, err := flowfile.Unmarshal([]byte(src))
+	require.NoError(t, err)
+
+	_, err = flowfile.Format([]byte("name: x\n  steps: [\n"), workflow)
+	require.Error(t, err)
+	assert.True(t, strings.Contains(err.Error(), "could not be read"),
+		"the refusal does not say that the source could not be read: %v", err)
+}

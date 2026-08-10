@@ -28,19 +28,24 @@ func readWorkflowFile(t *testing.T, path string) []byte {
 	return data
 }
 
-// TestFormattingReturnsMarshalsOutput is the property the feature exists for: a
-// formatting request produces the same document `flow fmt` would write, through
-// the same [flowfile.Marshal] path.
-func TestFormattingReturnsMarshalsOutput(t *testing.T) {
+// TestFormattingReturnsWhatTheCommandWrites is the property the feature exists
+// for: a formatting request produces the same document `flow fmt` would write,
+// through the same [flowfile.Format] path, comments and all. An editor that
+// formats on save is the surface where a dropped comment is hardest to notice,
+// because the file was never diffed before it was written back.
+func TestFormattingReturnsWhatTheCommandWrites(t *testing.T) {
 	t.Parallel()
 
-	const src = `# a comment Marshal does not carry through
+	// Indented under `steps:`, which is not how the document is written back, so
+	// there is something to reformat and the comment has to survive the rewrite
+	// rather than the document being handed back untouched.
+	const src = `# a comment formatting carries through
 edition: v2026.2
 name: greeter
 steps:
-- id: greet
-  log:
-    message: hello world
+  - id: greet
+    log:
+      message: hello world
 `
 
 	c := newClient(t)
@@ -52,10 +57,12 @@ steps:
 
 	workflow, err := flowfile.Unmarshal([]byte(src))
 	require.NoError(t, err)
-	want, err := flowfile.Marshal(workflow)
+	want, err := flowfile.Format([]byte(src), workflow)
 	require.NoError(t, err)
 
 	assert.Equal(t, string(want), edits[0].NewText)
+	assert.Contains(t, edits[0].NewText, "# a comment formatting carries through",
+		"formatting on save deleted the document's comments")
 	assert.Equal(t, 0, edits[0].Range.Start.Line)
 	assert.Equal(t, 0, edits[0].Range.Start.Character)
 }
@@ -145,13 +152,20 @@ func TestFormattingRoundTripsExamples(t *testing.T) {
 			require.NoError(t, err)
 			workflow, _, err := flowfile.ParseFile(abs)
 			require.NoError(t, err)
-			want, err := flowfile.Marshal(workflow)
-			require.NoError(t, err)
 
 			uri := "file://" + abs
 			c := newClient(t)
 			c.initialize()
 			c.open(uri, string(data))
+
+			want, err := flowfile.Format(data, workflow)
+			if err != nil {
+				// A file carrying a comment the rewrite cannot keep is refused
+				// rather than written without it, and a refusal has no edit to
+				// offer: the same answer a document that does not compile gets.
+				assert.Empty(t, c.format(uri))
+				return
+			}
 
 			edits := c.format(uri)
 			if string(want) == string(data) {
