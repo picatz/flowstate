@@ -1,4 +1,4 @@
-.PHONY: check test test-plugins test-ordering test-fast fuzz-smoke fmt docs appearance appearance-update
+.PHONY: check test test-plugins test-ordering test-fast fuzz-smoke fmt docs docs-preview appearance appearance-update
 
 # Full CI-parity loop, verbatim commands, in CI order. See CLAUDE.md.
 check:
@@ -92,6 +92,24 @@ fmt:
 # with `git diff --exit-code`, so this is what to run when that pin fails.
 docs:
 	go run ./cmd/flow docs generate
+
+# Preview how this module's godoc renders, the way pkg.go.dev and gopls-on-hover
+# will show it, by serving the working tree locally at http://localhost:8080.
+# This is a preview tool, not a gate: it is deliberately NOT part of `check` or
+# CI, it just closes the read-it-back loop for a doc PR the way `docs` closes it
+# for reference docs. Ctrl-C to stop.
+#
+# Two rendering gotchas worth knowing before you rely on the preview:
+#
+#   - A [Symbol] doc link only resolves when the identifier is importable from
+#     the package the comment lives in. A link to something unimportable renders
+#     as literal brackets, not a link, so cross-package links need the full
+#     import path (`[pkg/flowstate/v1.Workflow]`), not a bare local name.
+#   - A code block needs the blank-comment-line-then-indent shape: an empty `//`
+#     line, then lines indented under it. Without the blank line first, the
+#     indented text renders as an ordinary paragraph rather than as code.
+docs-preview:
+	go run golang.org/x/pkgsite/cmd/pkgsite@latest -http localhost:8080 .
 
 # Record the CLI's styled surfaces with charmbracelet/vhs and compare them
 # against the goldens under cmd/flow/internal/appearance/testdata. Needs vhs,
