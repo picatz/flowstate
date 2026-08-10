@@ -179,6 +179,19 @@ jobs:
       - name: Example workflows pass their own tests, every branch reached or reasoned
         run: go run ./cmd/flow test --coverage-required examples/
 
+      # `flow breaking` is `buf breaking` one level up: a workflow's declared
+      # inputs and outputs are a contract, and composition vendors a callee at
+      # compile time (#172), so an interface break strikes the callee author's
+      # next compile rather than a running spec. This closes that gap where `buf
+      # breaking` closes it for the proto, in the callee author's own CI. The
+      # comparison is against origin/main, which the default checkout does not
+      # fetch, so it is fetched explicitly here (the proto job takes fetch-depth:
+      # 0 for the same reason). A break fails the same way validate does.
+      - name: Fetch base branch for the breaking check
+        run: git fetch --no-tags --depth=1 origin main:refs/remotes/origin/main
+      - name: Example workflow contracts did not shrink against main
+        run: go run ./cmd/flow breaking --against origin/main examples/
+
       # The observability lab is eight services of other people's software, so
       # standing it up here would make this repository's build depend on seven
       # registries and a Temporal cluster coming up in time. What is checked is

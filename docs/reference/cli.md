@@ -44,6 +44,35 @@ flow lsp
 | `--no-color` | `bool` | `false` | — | disable colour on every stream, the same way NO_COLOR does; it is the most explicit ask, so it wins over CLICOLOR_FORCE and the terminal's own capabilities |
 | `-v, --verbose` | `bool` | `false` | — | enable verbose logging |
 
+## `flow breaking`
+
+Report workflows whose declared inputs or outputs broke a contract
+
+```
+flow breaking [path...] [flags]
+```
+
+Compile every Flowfile at the working tree and at a git ref, match workflows by `name:`, and report interface breaks: a declared input that a caller must now supply, an input whose type narrowed, an input removed, a declared output removed or renamed, or a constraint tightened. Loosening a contract passes, mirroring `buf breaking`: a contract may grow, not shrink.
+
+The comparison is over the compiled protos, not the YAML text, so it is immune to formatting and comment churn. Each finding names the position in the working-tree file, what broke, and what to do instead. Exit is 1 on any finding, 0 on none, the same as `validate`.
+
+A named file is taken as given; a directory is walked for Flowfiles, the same walk `validate` and `test` use. The `--against` ref must be present in the local git history: fetch the base branch first, exactly as the `buf breaking` check does.
+
+Examples:
+
+```sh
+# Check every example against the base branch.
+# Fetch it first, the same way the buf breaking check does: git fetch origin main
+flow breaking --against origin/main examples/
+
+# Check one workflow against the last commit:
+flow breaking --against HEAD~1 examples/hello-world/workflow.yaml
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `--against <string>` | `string` | — | — | git ref holding the old contract to compare the working tree against, such as origin/main |
+
 ## `flow cancel`
 
 Ask a run to stop, letting it clean up
