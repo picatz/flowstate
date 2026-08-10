@@ -868,6 +868,15 @@ func documentedEnvironmentVariables() []environmentVariable {
 			read: "cmd/flow/serverdev.go, go.temporal.io/sdk envconfig",
 		},
 		{
+			name:  "TEMPORAL_CONFIG_FILE",
+			value: "unset",
+			purpose: "Path to the TOML configuration file the profile is read from, honoured by the SDK's " +
+				"environment configuration wherever a cluster is dialed. Refused by `flow server dev` for " +
+				"the same reason as `TEMPORAL_ADDRESS`: an explicit file pointing at another cluster would " +
+				"be the same silent misrouting through a different spelling.",
+			read: "cmd/flow/serverdev.go, go.temporal.io/sdk envconfig",
+		},
+		{
 			name:    "TEMPORAL_TASK_QUEUE",
 			value:   "flowstate-run-task-queue",
 			purpose: "Default for `--task-queue`: the queue workers serve and workflows are routed to.",
