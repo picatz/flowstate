@@ -324,10 +324,11 @@ func TestCodeActionHonorsTheClientsKindFilter(t *testing.T) {
 //
 // Formatting and migrating both replace the whole document, and both are reachable
 // from the same buffer, so a handler that reached for the wrong one would still
-// produce a valid file — and would silently throw away every comment in a diff an
-// author was about to read as a migration. The two are told apart here by the thing
-// that distinguishes them: `flow fix` copies untouched lines through byte for byte,
-// and Marshal renders from the parsed model and keeps no comments at all.
+// produce a valid file, and would quietly reformat a diff an author was about to
+// read as a migration. The two are told apart here by what is left of the original
+// layout: `flow fix` copies untouched lines through byte for byte, while formatting
+// renders the document again and normalizes how it is written. Both keep every
+// comment (#381), so a comment is no longer what distinguishes them.
 func TestCodeActionEditIsFixsOutputRatherThanMarshals(t *testing.T) {
 	t.Parallel()
 
@@ -347,17 +348,19 @@ func TestCodeActionEditIsFixsOutputRatherThanMarshals(t *testing.T) {
 	require.Equal(t, fixedSource(t, legacySource), migrated)
 
 	assert.Contains(t, migrated, "# header, written by a human",
-		"the migration dropped a comment, which means it went through the formatter")
+		"the migration dropped a comment, which no rewriter here is allowed to do")
+	assert.Contains(t, migrated, "\n  - id: show",
+		"the migration reindented the list, which means it went through the formatter")
 
-	// And the two really are distinguishable on this document: what Marshal writes
-	// for the migrated file is not what Fix wrote, so the assertion above is not
-	// vacuous.
+	// And the two really are distinguishable on this document: what formatting
+	// writes for the migrated file is not what Fix wrote, so the assertion above is
+	// not vacuous.
 	workflow, err := flowfile.Unmarshal([]byte(migrated))
 	require.NoError(t, err, "the migration produced something that does not compile")
-	formatted, err := flowfile.Marshal(workflow)
+	formatted, err := flowfile.Format([]byte(migrated), workflow)
 	require.NoError(t, err)
 	require.NotEqual(t, migrated, string(formatted),
-		"Fix and Marshal agree on this document, so it cannot tell the two apart")
+		"Fix and Format agree on this document, so it cannot tell the two apart")
 
 	// Once migrated, the roles swap: there is nothing left to migrate, and
 	// formatting is the only rewriter with an opinion.

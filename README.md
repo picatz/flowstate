@@ -335,7 +335,7 @@ binary's own command tree, with which environment variable feeds each flag's def
 | `flow validate <file...>` | Check Flowfiles without executing them. `--output json` or `jsonl` carries the diagnostics as data. |
 | `flow compile <file>` | Print the workflow specification a Flowfile compiles to, the same `Workflow` message `flow run` submits, executing nothing and contacting no server. |
 | `flow fix <path...>` | Rewrite Flowfiles from a retired spelling into the current one, preserving comments and formatting. `--check` reports and writes nothing. |
-| `flow fmt <path...>` | Rewrite Flowfiles into the form `flowfile.Marshal` writes; unlike `flow fix`, from the parsed workflow rather than the source text. |
+| `flow fmt <path...>` | Rewrite Flowfiles into the form `flowfile.Format` writes; unlike `flow fix`, from the parsed workflow rather than the source text, with the source's comments carried across. |
 | `flow run <file>` | Submit a workflow to a server, which runs it durably, and follow it. Arguments come from `--input name=value` or `--input-file inputs.json`. |
 | `flow run local <file>` | Run a workflow in this process, no server and no Temporal. Same `--input`/`--input-file`, and answers signal gates from `--signal name=json`. |
 | `flow test [path...]` | Run a workflow's own `*.test.yaml` files: stubbed task responses, scripted signals, and a virtual clock, entirely through the local driver, so a `sleep: 24h` resolves in well under a second. `--output json` or `jsonl` reports what ran as data. |
