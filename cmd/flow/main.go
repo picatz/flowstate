@@ -1861,6 +1861,15 @@ flow lsp --plugin-dir ./plugins`,
 	compileCmd := newCompileCommand()
 	compileCmd.GroupID = "workflow"
 	rootCmd.AddCommand(compileCmd)
+
+	// Beside `validate` and `test`, the other two commands that read a Flowfile
+	// without running it. `buf breaking` guards the proto contract; this guards
+	// the contract one level up, a workflow's declared inputs and outputs, in the
+	// callee author's own CI at the moment of the change (#419).
+	breakingCmd := newBreakingCommand()
+	breakingCmd.GroupID = "workflow"
+	rootCmd.AddCommand(breakingCmd)
+
 	rootCmd.AddCommand(tasksCmd)
 	rootCmd.AddCommand(taskCmd)
 	rootCmd.AddCommand(pluginsCmd)
