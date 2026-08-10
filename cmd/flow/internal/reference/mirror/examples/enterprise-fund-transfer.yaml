@@ -127,6 +127,26 @@ steps:
     wait_for_signal:
       name: transfer-approved
       timeout: 4h
+      outputs:
+        # What the desk said, stated ONCE here on the step that produced it,
+        # the way approval-gate shapes its gate. The raw facts below - did a
+        # payload arrive, what was in it, did the gate lapse - used to be
+        # re-derived in every reader: `debit`/`credit`/`notify_settlement` all
+        # asked `has(payload.approved) && payload.approved`, `rejected` and
+        # `refused_malformed_payload` hand-negated pieces of it, and both
+        # `outputs:` spelled the whole ladder again. Every reader now compares
+        # this one recorded name.
+        #
+        # Four states, and the order is the point: only `timed_out` produces
+        # `expired`, so a signal that answered with no usable `approved` field
+        # is `malformed`, never mistaken for a timeout - the exact bug
+        # `refused_malformed_payload` exists to not repeat.
+        outcome: >-
+          ${timed_out
+            ? "expired"
+            : (has(payload.approved)
+                ? (payload.approved ? "approved" : "rejected")
+                : "malformed")}
 
   # Cleared to move: either the amount never needed a gate, or the gate was
   # answered yes. `signals:` above is what makes that a real check - an
@@ -137,7 +157,7 @@ steps:
   - id: debit
     if: >-
       ${inputs.amount_cents < inputs.approval_threshold_cents ||
-        (has(steps.approval.payload.approved) && steps.approval.payload.approved)}
+        steps.approval.outcome == "approved"}
     http:
       method: POST
       url: https://ledger.internal.example.com/debit
@@ -162,7 +182,7 @@ steps:
   - id: credit
     if: >-
       ${inputs.amount_cents < inputs.approval_threshold_cents ||
-        (has(steps.approval.payload.approved) && steps.approval.payload.approved)}
+        steps.approval.outcome == "approved"}
     http:
       method: POST
       url: https://ledger.internal.example.com/credit
@@ -188,7 +208,7 @@ steps:
   - id: notify_settlement
     if: >-
       ${inputs.amount_cents < inputs.approval_threshold_cents ||
-        (has(steps.approval.payload.approved) && steps.approval.payload.approved)}
+        steps.approval.outcome == "approved"}
     http:
       method: POST
       url: https://settlements.internal.example.com/notify
@@ -200,14 +220,15 @@ steps:
   - id: rejected
     if: >-
       ${inputs.amount_cents >= inputs.approval_threshold_cents &&
-        has(steps.approval.payload.approved) && !steps.approval.payload.approved}
+        steps.approval.outcome == "rejected"}
     log:
       level: warn
       message: ${"transfer of %d cents was rejected".format([inputs.amount_cents])}
 
   - id: expired
     if: >-
-      ${inputs.amount_cents >= inputs.approval_threshold_cents && steps.approval.timed_out}
+      ${inputs.amount_cents >= inputs.approval_threshold_cents &&
+        steps.approval.outcome == "expired"}
     log:
       level: warn
       message: ${"approval for %d cents lapsed; the transfer did not happen".format([inputs.amount_cents])}
@@ -226,9 +247,7 @@ steps:
   - id: refused_malformed_payload
     if: >-
       ${inputs.amount_cents >= inputs.approval_threshold_cents &&
-        !steps.approval.timed_out &&
-        !(has(steps.approval.payload.approved) && steps.approval.payload.approved) &&
-        !(has(steps.approval.payload.approved) && !steps.approval.payload.approved)}
+        steps.approval.outcome == "malformed"}
     log:
       level: warn
       message: >-
@@ -245,11 +264,11 @@ outputs:
     value: >-
       ${inputs.amount_cents < inputs.approval_threshold_cents
         ? "transferred"
-        : (steps.approval.timed_out
+        : (steps.approval.outcome == "expired"
             ? "expired"
-            : ((has(steps.approval.payload.approved) && steps.approval.payload.approved)
+            : (steps.approval.outcome == "approved"
                 ? "transferred"
-                : ((has(steps.approval.payload.approved) && !steps.approval.payload.approved)
+                : (steps.approval.outcome == "rejected"
                     ? "rejected"
                     : "refused_malformed_payload")))}
     description: >-
@@ -260,7 +279,7 @@ outputs:
   debit_reference:
     value: >-
       ${(inputs.amount_cents < inputs.approval_threshold_cents ||
-          (has(steps.approval.payload.approved) && steps.approval.payload.approved))
+          steps.approval.outcome == "approved")
         ? steps.debit.reference
         : ""}
     description: the ledger's debit reference, empty unless the transfer actually cleared
