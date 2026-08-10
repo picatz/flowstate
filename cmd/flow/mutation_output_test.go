@@ -27,12 +27,16 @@ import (
 // that grows silently is one nobody can rely on being complete.
 var mutationKeys = []string{"result", "runId", "scheduleName", "signalName", "verb", "workflowId"}
 
-// mutationDocument is the shape [mutationResult] promises, spelled out again here
-// rather than reused from the source.
+// mutationDocument is the shape [v1.MutationResult] promises, spelled out again
+// here rather than reused from the source.
 //
-// Deliberately a second copy: a test that unmarshals into the very struct that
-// marshalled it agrees with any renaming, including one that breaks every caller.
-// This one is written the way a consumer would write it, from the help text.
+// Deliberately a second copy, and more so now that the source is a schema message:
+// a test that unmarshals into the generated struct agrees with any renaming of a
+// field, including one `buf breaking` would allow because the wire number did not
+// move. protojson derives the JSON name from the proto field name, so
+// `workflow_id` becoming `workflow_identifier` is a break every script sees and no
+// schema check reports. This copy is written the way a consumer would write it,
+// from the help text.
 type mutationDocument struct {
 	Verb         string `json:"verb"`
 	WorkflowID   string `json:"workflowId"`
@@ -154,13 +158,23 @@ func TestSignalJSONIsTheOnlyThingOnStdout(t *testing.T) {
 	// was asked: two signals to one run are two different acts, and a document that
 	// named neither would leave a script unable to tell them apart in a log.
 	assert.Equal(t, "deploy-approved", document.SignalName)
-	assert.Equal(t, "applied", document.Result)
+
+	// Delivered rather than applied, and this is the assertion that keeps it that
+	// way. The server has taken the signal; whether the workflow ever observes it
+	// is a different question, because a signal still pending when the run
+	// continues as new is dropped once the carry limit is full. "applied" would
+	// hand a script a claim about the workflow that nothing on this side can make.
+	assert.Equal(t, "delivered", document.Result)
 
 	// The verb whose prose has always gone to stdout, which is why this assertion
 	// earns its place here more than anywhere else in the file: the human line and
 	// the document would otherwise share a stream.
+	//
+	// Matched on the sentence rather than on the word "delivered", which is now
+	// also the result value: a bare substring check would pass on an empty stdout
+	// and fail on a correct document, which is the wrong answer in both directions.
 	require.Empty(t, stderr)
-	require.NotContains(t, stdout, "delivered",
+	require.NotContains(t, stdout, "delivered deploy-approved to deploy-abc123",
 		"the human line reached stdout alongside the document")
 
 	require.NotNil(t, fake.got, "nothing reached the server")
@@ -239,8 +253,17 @@ func TestMutationJSONLIsOneCompactLine(t *testing.T) {
 	lines := strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")
 	require.Len(t, lines, 1, "jsonl wrote more than the one record a single act has")
 	require.NotContains(t, lines[0], "\n")
+
+	// Compared after collapsing the whitespace protojson puts after a comma, which
+	// is deliberately unstable: the encoder adds an extra space or not depending on
+	// a per-binary seed, precisely so that nobody pins its bytes. Everything worth
+	// pinning survives the collapse. The keys are the schema's lowerCamel names in
+	// field-number order, every field is present including the four this verb does
+	// not fill, and there is no indentation, so a line-oriented reader gets a whole
+	// record per line.
 	require.Equal(t, `{"verb":"schedule pause","workflowId":"","runId":"","scheduleName":"nightly-report","signalName":"","result":"applied"}`,
-		lines[0], "the compact form is not compact, so a line-oriented reader gets a partial record")
+		strings.ReplaceAll(lines[0], ", ", ","),
+		"the compact form is not the shape a line-oriented reader was promised")
 }
 
 // TestMutationTextOutputIsUnchanged is the other half of "additive".

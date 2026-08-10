@@ -216,7 +216,7 @@ func runScheduleDelete(cmd *cobra.Command, args []string) error {
 	}
 
 	if format.Machine() {
-		return writeMutationResult(newSurface(cmd), format, mutationResult{
+		return writeMutationResult(newSurface(cmd), format, &v1.MutationResult{
 			Verb:         "schedule delete",
 			ScheduleName: name,
 			Result:       resultApplied,
@@ -257,7 +257,7 @@ func runSchedulePause(cmd *cobra.Command, args []string) error {
 	// so a document distinguishing them would be guessing. That is the second fact
 	// picatz/flowstate#374 wants these responses to start carrying.
 	if format.Machine() {
-		return writeMutationResult(newSurface(cmd), format, mutationResult{
+		return writeMutationResult(newSurface(cmd), format, &v1.MutationResult{
 			Verb:         "schedule pause",
 			ScheduleName: name,
 			Result:       resultApplied,
@@ -291,7 +291,7 @@ func runScheduleResume(cmd *cobra.Command, args []string) error {
 	}
 
 	if format.Machine() {
-		return writeMutationResult(newSurface(cmd), format, mutationResult{
+		return writeMutationResult(newSurface(cmd), format, &v1.MutationResult{
 			Verb:         "schedule resume",
 			ScheduleName: name,
 			Result:       resultApplied,
@@ -330,7 +330,7 @@ func runScheduleTrigger(cmd *cobra.Command, args []string) error {
 	// picatz/flowstate#374 most wants TriggerScheduleResponse to carry, since it is
 	// what a caller needs for the follow-up `flow watch`.
 	if format.Machine() {
-		return writeMutationResult(newSurface(cmd), format, mutationResult{
+		return writeMutationResult(newSurface(cmd), format, &v1.MutationResult{
 			Verb:         "schedule trigger",
 			ScheduleName: name,
 			Result:       resultRequested,

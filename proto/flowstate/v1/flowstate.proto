@@ -4884,3 +4884,97 @@ message TriggerScheduleRequest {
 // `DescribeSchedule` reports it as a recent run once it has been taken, which is
 // what the CLI points at.
 message TriggerScheduleResponse {}
+
+// MutationResult is the answer a mutation gives to a program.
+//
+// Every mutation on this service answers with an empty message today:
+// `CancelResponse`, `TerminateResponse`, `SignalResponse`, and the four
+// schedule mutations. A caller that changed something therefore has nothing to
+// read back and has to ask the server a second time to learn what it just did,
+// which is a round trip for facts the calling process already held. This
+// message is the envelope that closes that gap, and it is deliberately one
+// shape across every mutation verb rather than one per verb: a caller writes a
+// single expression, and a verb added later is already covered by it.
+//
+// It belongs in the schema because it travels. A document a script indexes by
+// name is a contract with everything downstream, and a contract this project
+// keeps is one the schema describes: the field names come from here, protojson
+// renders it, and `buf breaking` guards it exactly as it guards every message a
+// caller reads off an RPC.
+//
+// What may appear here is bounded by what the process performing the mutation
+// knows for certain, which is what it asked and that the server accepted the
+// asking. Nothing is inferred about the resulting state of a run or a schedule,
+// because inventing "the run is now cancelled" out of an empty response is the
+// one claim these surfaces have always refused to make. As those responses gain
+// fields of their own (picatz/flowstate#374), this becomes the smaller half of
+// an answer rather than the whole of it.
+message MutationResult {
+  // Verb is the act that produced this result, spelled the way a caller asked
+  // for it and without the binary name: "cancel", "terminate", "signal",
+  // "schedule pause".
+  //
+  // Carried so that a log of these documents, or a pipeline handling several,
+  // says what each one was. Read out of its invocation, a result is otherwise
+  // an identifier and a word with no verb attached to either.
+  string verb = 1;
+
+  // WorkflowId names the workload acted on, and is empty on the schedule verbs.
+  string workflow_id = 2;
+
+  // RunId is the attempt the request was pinned to, and is empty when the
+  // caller pinned none.
+  //
+  // Empty is the usual case and means the request addressed whichever run of
+  // the workload is current. This is the run id that was sent rather than the
+  // one the server resolved, which is the point of reporting it: a caller can
+  // tell a request that named an attempt from one that took the current attempt
+  // without knowing which attempt that turned out to be.
+  string run_id = 3;
+
+  // ScheduleName names the schedule acted on, and is empty on the run verbs.
+  //
+  // A name rather than an id, because that is what the schema calls it
+  // ([ScheduleDescription.name]) and a schedule has no other identity. Spelling
+  // it "schedule_id" here would invent a second word for one concept.
+  string schedule_name = 4;
+
+  // SignalName is the signal that was sent, and is empty on every other verb.
+  //
+  // Part of what was done rather than only of what was addressed: two signals
+  // to one run are two different acts, and a result naming neither leaves a
+  // reader unable to tell them apart afterwards.
+  string signal_name = 5;
+
+  // Result is how far the act got, which is the distinction these verbs turn on
+  // and the one that decides whether a caller may build on the answer.
+  //
+  // Three words, and the differences between them are load bearing.
+  //
+  // "applied" is an act that is true once the server has answered: terminating
+  // a run, and deleting, pausing or resuming a schedule. The new state is in
+  // effect at that point, so a caller may act on it directly.
+  //
+  // "requested" is an act the server has accepted and has not yet performed.
+  // Cancellation is cooperative, so the run has been told and is still finishing
+  // its response; a triggered schedule fires after the answer, which is also why
+  // there is no run id to report alongside it. A caller that needs the outcome
+  // has to go and read it.
+  //
+  // "delivered" belongs to the signal verb, and it is neither of the other two
+  // on purpose. The server has taken the signal, either into the gate that was
+  // waiting or into the bounded pending set for a gate the run has not reached
+  // yet, and that is the whole of what anything on this side can claim. A signal
+  // still pending when the run continues as new is dropped once the carry limit
+  // is full, so a workflow that never observes it is a possible ending of a
+  // delivery that succeeded. "applied" would promise that the workflow acted on
+  // it, which no surface here is in a position to know.
+  //
+  // A string rather than an enum, because this is the calling process reporting
+  // how far its own request got rather than a state the server models, and the
+  // vocabulary grows as those empty responses gain the fields that would let an
+  // answer be more precise. An enum here would freeze a set that is still
+  // learning its own distinctions, and would rename every value a caller reads
+  // today.
+  string result = 6;
+}

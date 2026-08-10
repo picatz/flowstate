@@ -42,10 +42,10 @@ func runCancel(cmd *cobra.Command, args []string) error {
 	// finishing its response. A document claiming "applied" is a claim somebody
 	// would build on.
 	if format.Machine() {
-		return writeMutationResult(newSurface(cmd), format, mutationResult{
+		return writeMutationResult(newSurface(cmd), format, &v1.MutationResult{
 			Verb:       "cancel",
-			WorkflowID: workflowID,
-			RunID:      runID,
+			WorkflowId: workflowID,
+			RunId:      runID,
 			Result:     resultRequested,
 		})
 	}
@@ -96,10 +96,10 @@ func runTerminate(cmd *cobra.Command, args []string) error {
 	// gone by the time the server answers. This is the one run verb whose past
 	// tense is honest, which is why the two carry different words.
 	if format.Machine() {
-		return writeMutationResult(newSurface(cmd), format, mutationResult{
+		return writeMutationResult(newSurface(cmd), format, &v1.MutationResult{
 			Verb:       "terminate",
-			WorkflowID: workflowID,
-			RunID:      runID,
+			WorkflowId: workflowID,
+			RunId:      runID,
 			Result:     resultApplied,
 		})
 	}

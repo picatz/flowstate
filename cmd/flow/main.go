@@ -1810,10 +1810,13 @@ flow get flowstate-workflow-3f7c --run-id 0198f1e2-...`,
 				"reached is held for it, at most %d across all names with the earliest kept: "+
 				"sending does not fail when the run is elsewhere, it waits.",
 				v1.MaxSignalPayloadBytes/1024, v1.MaxPendingSignals) + mutationFlagHelp +
-			"\n\n`result` is \"applied\" once the server has taken the signal, and `signalName` is " +
+			"\n\n`result` is \"delivered\" once the server has taken the signal, and `signalName` is " +
 			"which one: two signals to one run are two acts, so the name is part of the result " +
-			"rather than only of the request. Being held for a gate not reached yet counts as " +
-			"applied, because the server answers the same either way.",
+			"rather than only of the request. \"delivered\" rather than \"applied\" because it is a " +
+			"claim about the server and not about the workflow: being held for a gate not reached " +
+			"yet counts as delivered, and a signal still held when the run continues as new is " +
+			"dropped once the pending limit above is full, so a workflow that never sees it is a " +
+			"possible ending of a delivery that succeeded.",
 		Args: cobra.ExactArgs(2),
 		RunE: runSignal,
 		Example: `# Approve a deploy waiting on a gate:

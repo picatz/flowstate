@@ -378,18 +378,24 @@ func runSignal(cmd *cobra.Command, args []string) error {
 		return refusedRun("signalling", workflowID, server, err)
 	}
 
-	// Applied: the server has taken the signal, either into the gate that was
-	// waiting or into the bounded pending set for a gate not reached yet. Both are
-	// deliveries as far as a sender is concerned, and the schema says nothing that
-	// would let this document tell them apart. That distinction is one of the facts
-	// picatz/flowstate#374 wants a non-empty SignalResponse to carry.
+	// Delivered rather than applied, and the difference is not pedantry. The server
+	// has taken the signal, either into the gate that was waiting or into the
+	// bounded pending set for a gate not reached yet, and that is the whole of what
+	// this process is in a position to claim. A signal still pending when the run
+	// continues as new is dropped once the carry limit is full (`drainSignals` in
+	// pkg/flowstate/v1/engine/wait.go), so a workflow that never observes it is a
+	// possible ending of a delivery that succeeded. "applied" would tell a script
+	// the workflow acted on it, which nothing here knows and which the schema says
+	// nothing that would let this document find out. Which of the two happened is
+	// one of the facts picatz/flowstate#374 wants a non-empty SignalResponse to
+	// carry.
 	if format.Machine() {
-		return writeMutationResult(newSurface(cmd), format, mutationResult{
+		return writeMutationResult(newSurface(cmd), format, &v1.MutationResult{
 			Verb:       "signal",
-			WorkflowID: workflowID,
-			RunID:      runID,
+			WorkflowId: workflowID,
+			RunId:      runID,
 			SignalName: name,
-			Result:     resultApplied,
+			Result:     resultDelivered,
 		})
 	}
 

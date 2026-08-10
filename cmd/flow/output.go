@@ -1,8 +1,6 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"maps"
 	"os"
@@ -114,7 +112,7 @@ func (f OutputFormat) Machine() bool { return f == FormatJSON || f == FormatJSON
 // something: `flow cancel` was once the example of a command with only an account
 // to give, but which run it acted on and whether the act is done are answers, and a
 // script that cannot read them has to ask the server a second time. See
-// [mutationResult] for what those verbs render.
+// [v1.MutationResult] for what those verbs render.
 //
 // Still excluded are the verbs whose whole output is the account: `flow server` and
 // `flow worker` narrate a process that is running, and there is no moment at which
@@ -127,10 +125,13 @@ func addOutputFlag(cmd *cobra.Command) {
 
 	// The description says "named fields" rather than "the server's own schema",
 	// which is what it used to say, because that promise stopped being true for
-	// every verb the moment the mutations gained the flag: they answer with the
-	// envelope in [mutationResult], since the RPCs behind them answer with nothing.
-	// A flag help that overstates its contract is worse than one that is vague
-	// about it, and each verb's own help names the document it writes.
+	// every verb the moment the mutations gained the flag: they answer with
+	// [v1.MutationResult] rather than with a response, since the RPCs behind them
+	// answer with nothing. The schema still describes it, so a field is as
+	// addressable and as guarded there as anywhere else, but it is this process's
+	// account of its own request rather than something the server sent. A flag help
+	// that overstates its contract is worse than one that is vague about it, and
+	// each verb's own help names the document it writes.
 	cmd.Flags().StringP("output", "o", string(FormatText),
 		"how to render the answer: "+strings.Join(names, ", ")+". "+
 			"json and jsonl are named fields rather than columns, so a value is addressable "+
@@ -188,53 +189,32 @@ func writeJSON(surface *ui.UI, format OutputFormat, message proto.Message) error
 //
 // The shape is one envelope shared by every mutation verb rather than seven, so a
 // caller writes one `jq` expression and a verb added later is already covered. It
-// is a hand-written struct and not a schema message because every one of these RPCs
-// answers with an empty message today (`CancelResponse{}`, `SignalResponse{}`,
-// `TriggerScheduleResponse{}`, and so on), so there is no schema field to render.
-// That emptiness is the real defect, filed as picatz/flowstate#374: a server that
-// says nothing about a mutation cannot tell any surface whether the act changed
-// anything. When those messages gain fields, this envelope is what gets replaced by
-// protojson of the response, exactly as `get` and `list` already do.
+// is [v1.MutationResult], a schema message like every other document this CLI
+// writes, and for the reason the schema exists at all: it travels. It was briefly a
+// hand-written struct here on the argument that these RPCs answer with an empty
+// message today (`CancelResponse{}`, `SignalResponse{}`, `TriggerScheduleResponse{}`,
+// and so on) and so have no field to render, but that argues about where the values
+// come from rather than about where the *shape* is described, and the shape is the
+// part a script depends on. In the schema it is versioned, rendered by the one
+// encoder, and guarded by `buf breaking` along with everything else a caller reads.
+//
+// The emptiness of those responses is still the real defect, filed as
+// picatz/flowstate#374: a server that says nothing about a mutation cannot tell any
+// surface whether the act changed anything. When those messages gain fields, this
+// envelope stops being the whole answer and starts being the part of it this
+// process knows, beside protojson of the response, exactly as `get` and `list`
+// already render one.
 //
 // So the rule for what may appear here: only what this process knows for certain,
 // which is what it asked and that the server accepted the asking. Nothing is
 // inferred about the resulting state, because inventing "the run is now cancelled"
 // out of an empty response is precisely the claim the prose on stderr has always
 // refused to make.
-type mutationResult struct {
-	// Verb is the command path without the binary name: "cancel", "terminate",
-	// "signal", "schedule pause". Carried so that a log of these documents, or a
-	// pipeline handling several, says what each one was.
-	Verb string `json:"verb"`
 
-	// WorkflowID and RunID name the run acted on, empty on the schedule verbs.
-	//
-	// RunID is empty when the caller did not pin one, which is the usual case and
-	// means the request addressed whichever run is current.
-	WorkflowID string `json:"workflowId"`
-	RunID      string `json:"runId"`
-
-	// ScheduleName names the schedule acted on, empty on the run verbs.
-	//
-	// A name rather than an id, because that is what the schema calls it
-	// (`ScheduleDescription.name`, which `flow schedule list -o jsonl | jq -r
-	// .name` already reads) and a schedule has no other identity. Spelling it
-	// "scheduleId" here would invent a second word for one concept.
-	ScheduleName string `json:"scheduleName"`
-
-	// SignalName is the signal delivered, empty on every other verb. Part of what
-	// was done rather than of what was addressed: two signals to one run are two
-	// different acts.
-	SignalName string `json:"signalName"`
-
-	// Result is whether the act is done or is under way, which is the distinction
-	// these verbs turn on and the one their prose has always drawn.
-	Result string `json:"result"`
-}
-
+// The vocabulary of `result`, which is the field a caller branches on.
 const (
 	// resultApplied is an act that is true once the server has answered:
-	// terminating a run, delivering a signal, deleting or pausing a schedule.
+	// terminating a run, deleting, pausing or resuming a schedule.
 	resultApplied = "applied"
 
 	// resultRequested is an act the server has accepted and not yet performed.
@@ -244,37 +224,33 @@ const (
 	// to report. Saying "applied" for either would hand a script the claim the
 	// prose deliberately does not make.
 	resultRequested = "requested"
+
+	// resultDelivered is the signal verb, and it is neither of the other two.
+	//
+	// The server has taken the signal, into the waiting gate or into the bounded
+	// pending set for a gate the run has not reached yet. That is a claim about
+	// the server and not about the workflow: a signal still pending when the run
+	// continues as new is dropped once the carry limit is full (see
+	// `drainSignals` in pkg/flowstate/v1/engine/wait.go), so a workflow that
+	// never observes the signal is a possible ending of a delivery that
+	// succeeded. "applied" would promise the workflow acted on it, and this
+	// process cannot know that.
+	resultDelivered = "delivered"
 )
 
 // writeMutationResult writes the document a mutation verb answers with.
 //
-// Every field is written even when empty, which is [marshalJSON]'s EmitUnpopulated
-// rule applied to a shape protojson does not render: a consumer indexing `.runId`
-// on a schedule verb should find `""` rather than a missing key, because the two
-// are the same question and only one of them is answerable without knowing the
-// shape in advance.
+// Rendered by [writeJSON] like every other answer, which is what makes the field
+// names the schema's rather than this file's, and which carries EmitUnpopulated
+// with it: a consumer indexing `.runId` on a schedule verb finds `""` rather than a
+// missing key, because the two are the same question and only one of them is
+// answerable without knowing the shape in advance.
 //
 // json and jsonl differ only in indentation here. A mutation is a single act, so
 // the line-per-record form has exactly one record, and refusing `-o jsonl` would
 // make a script that formats every flow invocation the same way special-case these.
-func writeMutationResult(surface *ui.UI, format OutputFormat, result mutationResult) error {
-	encoded, err := json.Marshal(result)
-	if err != nil {
-		return fmt.Errorf("rendering the result as %s: %w", format, err)
-	}
-
-	if format == FormatJSON {
-		var indented bytes.Buffer
-		if err := json.Indent(&indented, encoded, "", "  "); err != nil {
-			return fmt.Errorf("rendering the result as %s: %w", format, err)
-		}
-
-		encoded = indented.Bytes()
-	}
-
-	_, err = fmt.Fprintf(surface.Out, "%s\n", encoded)
-
-	return err
+func writeMutationResult(surface *ui.UI, format OutputFormat, result *v1.MutationResult) error {
+	return writeJSON(surface, format, result)
 }
 
 // mutationFlagHelp is the paragraph every mutation verb's Long text ends with.
@@ -285,10 +261,12 @@ func writeMutationResult(surface *ui.UI, format OutputFormat, result mutationRes
 // sending them to the source to find out would defeat the flag.
 const mutationFlagHelp = "\n\nWith `-o json` (or `-o jsonl` for one line), stdout carries a single result " +
 	"document and nothing else, while the prose above is not written: " +
-	"`{\"verb\", \"workflowId\", \"runId\", \"scheduleName\", \"signalName\", \"result\"}`, where " +
-	"`result` is \"applied\" for an act that is done when the server answers and \"requested\" for " +
-	"one it has accepted and not yet performed. Fields that do not apply to a verb are present and " +
-	"empty, so one expression reads every one of them."
+	"`{\"verb\", \"workflowId\", \"runId\", \"scheduleName\", \"signalName\", \"result\"}`, the " +
+	"schema's `flowstate.v1.MutationResult`. `result` is \"applied\" for an act that is done when " +
+	"the server answers, \"requested\" for one it has accepted and not yet performed, and " +
+	"\"delivered\" for a signal the server has taken, which says nothing about whether the workflow " +
+	"went on to observe it. Fields that do not apply to a verb are present and empty, so one " +
+	"expression reads every one of them."
 
 // writeRun writes a finished run, in the shape the format asks for.
 //

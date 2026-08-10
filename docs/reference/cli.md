@@ -54,7 +54,7 @@ flow cancel [workflow-id] [flags]
 
 Ask a run to stop. Cancellation is cooperative: the run is told to stop and gets to finish responding, so a workload that has to release a lock or undo a partial change still does. A step that declares an `undo:` is taken back, in reverse order, within a bounded budget — the run reports what came off and what did not. A run wedged on something that never returns may not stop at all — `flow terminate` is the answer then, and not before.
 
-With `-o json` (or `-o jsonl` for one line), stdout carries a single result document and nothing else, while the prose above is not written: `{"verb", "workflowId", "runId", "scheduleName", "signalName", "result"}`, where `result` is "applied" for an act that is done when the server answers and "requested" for one it has accepted and not yet performed. Fields that do not apply to a verb are present and empty, so one expression reads every one of them.
+With `-o json` (or `-o jsonl` for one line), stdout carries a single result document and nothing else, while the prose above is not written: `{"verb", "workflowId", "runId", "scheduleName", "signalName", "result"}`, the schema's `flowstate.v1.MutationResult`. `result` is "applied" for an act that is done when the server answers, "requested" for one it has accepted and not yet performed, and "delivered" for a signal the server has taken, which says nothing about whether the workflow went on to observe it. Fields that do not apply to a verb are present and empty, so one expression reads every one of them.
 
 `result` is "requested" here and never "applied", because cancellation is cooperative: the run has been told and is still finishing. `flow get` is what answers whether it has stopped.
 
@@ -764,7 +764,7 @@ flow schedule delete [name] [flags]
 
 Delete a schedule. Future firings stop; runs it has already started are ordinary workloads and keep going, so stopping one of those is `flow cancel`. Prefer `flow schedule pause` when the arrangement should survive whatever is wrong right now.
 
-With `-o json` (or `-o jsonl` for one line), stdout carries a single result document and nothing else, while the prose above is not written: `{"verb", "workflowId", "runId", "scheduleName", "signalName", "result"}`, where `result` is "applied" for an act that is done when the server answers and "requested" for one it has accepted and not yet performed. Fields that do not apply to a verb are present and empty, so one expression reads every one of them.
+With `-o json` (or `-o jsonl` for one line), stdout carries a single result document and nothing else, while the prose above is not written: `{"verb", "workflowId", "runId", "scheduleName", "signalName", "result"}`, the schema's `flowstate.v1.MutationResult`. `result` is "applied" for an act that is done when the server answers, "requested" for one it has accepted and not yet performed, and "delivered" for a signal the server has taken, which says nothing about whether the workflow went on to observe it. Fields that do not apply to a verb are present and empty, so one expression reads every one of them.
 
 `result` is "applied": the schedule is gone when the server answers.
 
@@ -849,7 +849,7 @@ flow schedule pause [name] [flags]
 
 Stop a schedule firing while leaving it in place, which is what an incident wants: the arrangement is still there and still reviewable, and it is not running.
 
-With `-o json` (or `-o jsonl` for one line), stdout carries a single result document and nothing else, while the prose above is not written: `{"verb", "workflowId", "runId", "scheduleName", "signalName", "result"}`, where `result` is "applied" for an act that is done when the server answers and "requested" for one it has accepted and not yet performed. Fields that do not apply to a verb are present and empty, so one expression reads every one of them.
+With `-o json` (or `-o jsonl` for one line), stdout carries a single result document and nothing else, while the prose above is not written: `{"verb", "workflowId", "runId", "scheduleName", "signalName", "result"}`, the schema's `flowstate.v1.MutationResult`. `result` is "applied" for an act that is done when the server answers, "requested" for one it has accepted and not yet performed, and "delivered" for a signal the server has taken, which says nothing about whether the workflow went on to observe it. Fields that do not apply to a verb are present and empty, so one expression reads every one of them.
 
 `result` is "applied" whether or not the schedule was already paused: the server answers the same either way, so the document does not guess.
 
@@ -880,7 +880,7 @@ flow schedule resume [name] [flags]
 
 Let a paused schedule fire again, from its next scheduled time. Firings missed while it was paused are not made up.
 
-With `-o json` (or `-o jsonl` for one line), stdout carries a single result document and nothing else, while the prose above is not written: `{"verb", "workflowId", "runId", "scheduleName", "signalName", "result"}`, where `result` is "applied" for an act that is done when the server answers and "requested" for one it has accepted and not yet performed. Fields that do not apply to a verb are present and empty, so one expression reads every one of them.
+With `-o json` (or `-o jsonl` for one line), stdout carries a single result document and nothing else, while the prose above is not written: `{"verb", "workflowId", "runId", "scheduleName", "signalName", "result"}`, the schema's `flowstate.v1.MutationResult`. `result` is "applied" for an act that is done when the server answers, "requested" for one it has accepted and not yet performed, and "delivered" for a signal the server has taken, which says nothing about whether the workflow went on to observe it. Fields that do not apply to a verb are present and empty, so one expression reads every one of them.
 
 `result` is "applied": the schedule is live when the server answers.
 
@@ -910,7 +910,7 @@ flow schedule trigger [name] [flags]
 
 Fire a schedule now. This is what makes a schedule testable: it exercises the arguments the schedule stored, the tenant it records on the runs it starts and the queue it puts them on, none of which running the workflow by hand would prove. A paused schedule fires too, which is what `create --paused`, `trigger`, `resume` is for.
 
-With `-o json` (or `-o jsonl` for one line), stdout carries a single result document and nothing else, while the prose above is not written: `{"verb", "workflowId", "runId", "scheduleName", "signalName", "result"}`, where `result` is "applied" for an act that is done when the server answers and "requested" for one it has accepted and not yet performed. Fields that do not apply to a verb are present and empty, so one expression reads every one of them.
+With `-o json` (or `-o jsonl` for one line), stdout carries a single result document and nothing else, while the prose above is not written: `{"verb", "workflowId", "runId", "scheduleName", "signalName", "result"}`, the schema's `flowstate.v1.MutationResult`. `result` is "applied" for an act that is done when the server answers, "requested" for one it has accepted and not yet performed, and "delivered" for a signal the server has taken, which says nothing about whether the workflow went on to observe it. Fields that do not apply to a verb are present and empty, so one expression reads every one of them.
 
 `result` is "requested" and `workflowId` is empty, because the cluster starts the run after answering: `flow schedule describe` is what names the run once it exists.
 
@@ -980,9 +980,9 @@ Deliver a signal to a run waiting for one, which is how a human approval reaches
 
 Two limits, both worth knowing before designing a payload. A payload over 64 KiB is refused synchronously, with the size and the limit named — send a reference to something large rather than the thing itself, since the payload travels with the run from then on. And a signal that arrives before its gate is reached is held for it, at most 128 across all names with the earliest kept: sending does not fail when the run is elsewhere, it waits.
 
-With `-o json` (or `-o jsonl` for one line), stdout carries a single result document and nothing else, while the prose above is not written: `{"verb", "workflowId", "runId", "scheduleName", "signalName", "result"}`, where `result` is "applied" for an act that is done when the server answers and "requested" for one it has accepted and not yet performed. Fields that do not apply to a verb are present and empty, so one expression reads every one of them.
+With `-o json` (or `-o jsonl` for one line), stdout carries a single result document and nothing else, while the prose above is not written: `{"verb", "workflowId", "runId", "scheduleName", "signalName", "result"}`, the schema's `flowstate.v1.MutationResult`. `result` is "applied" for an act that is done when the server answers, "requested" for one it has accepted and not yet performed, and "delivered" for a signal the server has taken, which says nothing about whether the workflow went on to observe it. Fields that do not apply to a verb are present and empty, so one expression reads every one of them.
 
-`result` is "applied" once the server has taken the signal, and `signalName` is which one: two signals to one run are two acts, so the name is part of the result rather than only of the request. Being held for a gate not reached yet counts as applied, because the server answers the same either way.
+`result` is "delivered" once the server has taken the signal, and `signalName` is which one: two signals to one run are two acts, so the name is part of the result rather than only of the request. "delivered" rather than "applied" because it is a claim about the server and not about the workflow: being held for a gate not reached yet counts as delivered, and a signal still held when the run continues as new is dropped once the pending limit above is full, so a workflow that never sees it is a possible ending of a delivery that succeeded.
 
 Examples:
 
@@ -1049,7 +1049,7 @@ flow terminate [workflow-id] [flags]
 
 Stop a run immediately. No further step runs and nothing the workload would have done on the way out is done, so anything it was responsible for releasing stays held. Prefer `flow cancel`; reach for this when a run must stop now, or when cancelling did not stop it.
 
-With `-o json` (or `-o jsonl` for one line), stdout carries a single result document and nothing else, while the prose above is not written: `{"verb", "workflowId", "runId", "scheduleName", "signalName", "result"}`, where `result` is "applied" for an act that is done when the server answers and "requested" for one it has accepted and not yet performed. Fields that do not apply to a verb are present and empty, so one expression reads every one of them.
+With `-o json` (or `-o jsonl` for one line), stdout carries a single result document and nothing else, while the prose above is not written: `{"verb", "workflowId", "runId", "scheduleName", "signalName", "result"}`, the schema's `flowstate.v1.MutationResult`. `result` is "applied" for an act that is done when the server answers, "requested" for one it has accepted and not yet performed, and "delivered" for a signal the server has taken, which says nothing about whether the workflow went on to observe it. Fields that do not apply to a verb are present and empty, so one expression reads every one of them.
 
 `result` is "applied" here, unlike `flow cancel`: termination is not cooperative, so the run is already gone when the server answers.
 
