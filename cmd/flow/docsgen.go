@@ -526,7 +526,7 @@ func mcpTools() []mcpTool {
 	for _, method := range workflowServiceMethods() {
 		tools = append(tools, mcpTool{
 			name:        mcpToolName(method.name),
-			description: mcpDescriptions[method.name],
+			description: mcpToolDescription(method.name),
 			request:     string(method.input.FullName()),
 			local:       mcpLocalTools[method.name],
 		})

@@ -197,7 +197,7 @@ func TestAHostNegotiatingTheExtensionIsToldTheServerSupportsIt(t *testing.T) {
 func TestTheToolResultStandsAloneWithoutTheExtension(t *testing.T) {
 	t.Parallel()
 
-	description := mcpDescriptions["Get"]
+	description := mcpToolDescription("Get")
 
 	for _, needed := range []string{
 		"flowstate_signal",

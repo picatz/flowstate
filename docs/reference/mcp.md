@@ -36,75 +36,133 @@ rather than failing opaquely when `--address` was not given.
 
 ## `flowstate_validate`
 
-Check Flowfile YAML sources and report positioned diagnostics without executing anything. Pure and safe to loop on; answers locally, no server needed.
+Validate checks Flowfiles and returns their diagnostics, executing nothing.
+
+`flow validate` does this offline and must keep doing so: a validator that needs a server is one that stops working on an aeroplane, and invariant 8 says a first run needs no infrastructure. This is not a replacement for that. It is the same check for a caller who has no filesystem to point the command at (a browser, a CI service, an agent writing a file it has not saved), and it answers with the very same `ValidationReport` message the command prints, from the very same code, so there is no second validator to disagree with the first.
+
+Pure by construction, which is what makes it the useful one to hand an agent: it reads nothing, writes nothing, and starts nothing, so it can be looped on unattended in a way none of the verbs above can.
+
+Authenticated like everything else here, because checking a file is work somebody's CPU does. Bounded like everything else that takes input somebody else chose: see ValidateRequest.
+
+Answers locally, in this process. No server and no Temporal needed.
 
 ## `flowstate_compile`
 
-Compile Flowfile YAML into the workflow specification flowstate_run submits. A file with problems answers with its diagnostics and no specification. Answers locally, no server needed.
+Compile turns Flowfile source into the specification Run takes, executing nothing.
+
+It exists because Validate alone left a caller one step short: an agent could check a file and could submit a compiled specification, and nothing on the wire connected the two, because the compiler lived only in the CLI, so a caller with no `flow` binary could author a correct file it had no way to run. Same terms as Validate: the same compiler the CLI uses, pure, bounded by the schema, authenticated like everything else.
+
+A file that does not compile answers with its diagnostics rather than an RPC error, because "your file has a problem at line 12" is an answer, not a failure to answer.
+
+Answers locally, in this process. No server and no Temporal needed.
 
 ## `flowstate_get_catalog`
 
-What this build can execute: every task with its typed inputs and outputs, and every CEL function an expression may call. Read this before writing a Flowfile. Answers locally, no server needed.
+GetCatalog returns what this deployment can execute: every task with its typed inputs and outputs, and every CEL function an expression may call.
+
+Read it before writing a workflow. What it lists is the whole of what a step may name and what an expression may call, so a file checked against it is a file this deployment can actually run.
+
+The registry is the single source of truth for capability, and until this existed the only way to ask it was to run `flow tasks` on a machine with the same build, which is not the same question. A worker that loaded plugins can run tasks this binary has never heard of, so "what tasks exist" is a property of a deployment, and a caller writing a workflow for it needs the deployment's answer rather than their laptop's.
+
+`TaskCatalog`'s own comment anticipated this RPC, and returning that message unchanged is the point: an editor, an agent, a documentation generator and `flow tasks --output json` all read one shape.
+
+Answers locally, in this process. No server and no Temporal needed.
 
 ## `flowstate_run`
 
-Submit a compiled workflow specification to run durably. Returns ids to watch it by; it does not wait. Author a Flowfile, check it with flowstate_validate, compile it with flowstate_compile, and submit the result here.
+Run submits a compiled workflow specification and starts it running durably.
+
+It answers with the ids to watch the run by, and it does not wait. A workload may take a week; a caller made to hold a connection open for one is a caller that cannot survive its own restart. Follow the run with `Get`, using the ids this returns.
+
+What it takes is the specification `Compile` produces, not Flowfile source. The path from a file somebody wrote is therefore `Validate`, `Compile`, Run, and each step answers with something a caller can act on: diagnostics, then a specification, then a running workload.
 
 ## `flowstate_get`
 
-Report a run's status, timing, current position, its outputs once finished, who started it, and every approval gate it is parked on right now: for each, the question the gate is asking, the signal name that releases it, whether a deadline lapses it, and whether the workflow declares a policy over who may answer.
+Get reports one run: its status, its timing, where it has reached, its outputs once it has finished, who started it, and every approval gate it is parked on right now.
 
-To approve or reject one, call flowstate_signal with this run's workflowId, name set to the gate's signalName, and payload.namedValues.approved set to {"literal": {"boolValue": true}} or false. Address the workflow rather than a run: a run id pins the delivery to one attempt, and a workload that has been continued as new since the gate opened will refuse it.
+For each open gate the answer carries the question the gate asks, the signal name that releases it, whether a deadline lapses it, and whether the workflow declares a policy over who may answer. That set is what an approval surface has to render, and it is what a `distinct_from_starter` policy is compared against.
+
+To answer a gate, call `Signal` with the gate's signal name and a payload carrying the decision. Address the workflow rather than a run: a run id pins delivery to one attempt, and a workload that has been continued as new since the gate opened will refuse it.
+
+On this surface that call is flowstate_signal, with this run's workflowId, name set to the gate's signalName, and payload.namedValues.approved set to {"literal": {"boolValue": true}} or false.
 
 Over stdio the signal is delivered as this process's own identity, not as the identity of whoever asked for it. Nothing on this transport can attest that a particular human approved anything, and an interactive card rendering this result changes none of that; an attested approver waits on the remote MCP surface.
 
 ## `flowstate_signal`
 
-Deliver a named signal to a run waiting for one — how an approval reaches a workload.
+Signal delivers a signal to a run waiting for one, which is how a human approval reaches a workload.
+
+This addresses a durable run. A local run is a process with nobody to signal it once it has started, so `flow run local` answers its gates from flags instead. What the two drivers share is the payload and everything downstream of it: the same signal name, the same outputs, the same expressions reading them. That is the part that has to match for a local run to tell an author what production will do.
 
 ## `flowstate_signal_with_start`
 
-Deliver a named signal to the entity holding a business key — an order id, a subscription id — creating that entity if this is the first event for the key. Use this rather than flowstate_run whenever the key, not a run id, is what you have: it is atomic, so two callers racing on the same key produce one entity, not two.
+SignalWithStart delivers a signal to the entity holding a business key, an order id or a subscription id, creating that entity if this is the first event for the key.
+
+Use this rather than `Run` whenever the key, and not a run id, is what a caller has. It is atomic, so two callers racing on the same key produce one entity rather than two. The entity is created from `SignalWithStartRequest.workflow` and `SignalWithStartRequest.inputs` when nothing is running under `SignalWithStartRequest.entity_key` yet. See `SignalWithStartRequest` for the two authorization questions this decides separately and the race this closes that Run-then-Signal cannot.
 
 ## `flowstate_list`
 
-List the caller's runs, paged. A short or empty page with a nextPageToken is not the end of the listing; keep paging.
+List returns a page of the runs belonging to the caller's tenant.
+
+The filtering is done here rather than by Temporal, and that follows from how Run records a tenant: as a memo, because a memo needs no cluster-side registration and a first run therefore needs nothing but `temporal server start-dev`. Temporal cannot query a memo. A search attribute could be queried, but it would make listing your own runs fail until an operator had registered the attribute, and a basic verb that does not work out of the box is worse than one that scans.
+
+So the scan is bounded instead, and the bound is on how many executions the server reads rather than on how many it returns: a caller asking for ten runs in a namespace holding a hundred thousand must not be able to make the server walk all of them. See ListResponse.next_page_token for what that means for a caller: a short or empty page is not the end of the listing.
 
 ## `flowstate_cancel`
 
-Ask a run to stop, letting it clean up on the way out.
+Cancel asks a run to stop and lets it clean up on the way out.
 
 ## `flowstate_terminate`
 
-Stop a run immediately, running none of its cleanup. Prefer cancel.
+Terminate stops a run immediately, running none of its cleanup. Prefer Cancel; see CancelRequest for when this is the right answer anyway.
 
 ## `flowstate_create_schedule`
 
-Create a schedule that runs a workflow specification on the cadence its triggers.schedule declares. Arguments are bound and type-checked here, once, rather than at each firing. Create it paused to read its next firing times before it takes one.
+CreateSchedule arranges for a workflow to run on a cadence.
+
+The act a `triggers:` block does not perform. A file may declare that it is meant to run nightly, and that declaration does nothing until this is called. A file that starts running on its own when it merges is a surprise, and one whose first firing is indistinguishable from somebody having meant it.
+
+Everything that can be refused is refused here, where a person is present: the specification is validated and size-checked exactly as `Run` does it, the arguments are bound against the workflow's declarations through the very same `BindRunInputs`, and the cadence must say when it fires. What fires at three in the morning has already been checked.
+
+Create it paused when the cadence is the part in doubt. A paused schedule reports the times it would fire without taking one of them, which is the cheapest way to find out that "every Monday" meant something other than what was intended.
 
 ## `flowstate_list_schedules`
 
-List the caller's schedules, with whether each is live and when it next fires.
+ListSchedules returns the schedules belonging to the caller's tenant, each with whether it is live and when it next fires.
+
+A bounded scan filtered by the tenant recorded on each schedule, for the reason `List` scans runs: the tenant is a memo, which Temporal cannot query, and a memo is what keeps this working against `temporal server start-dev` with nothing registered. Unlike runs there is no paging; see `ListSchedulesRequest` for why, and for what the response says instead.
 
 ## `flowstate_describe_schedule`
 
-Report one schedule: its cadence, the arguments every firing runs with, when it next fires, and what it has run lately.
+DescribeSchedule reports one schedule: its cadence, its arguments, when it next fires and what it has done lately.
 
 ## `flowstate_delete_schedule`
 
-Delete a schedule. Future firings stop; runs it already started are unaffected and are cancelled with flowstate_cancel.
+DeleteSchedule removes a schedule, so that it fires no more.
+
+Runs it already started are unaffected. They are ordinary workloads, and stopping one is `Cancel`.
 
 ## `flowstate_pause_schedule`
 
-Stop a schedule firing without deleting it, recording a note saying why.
+PauseSchedule stops a schedule firing without removing it, which is what an incident wants: the arrangement is still there, still reviewable, and not running.
+
+The note it records is what the next person to find it paused will read, so it is worth writing for them rather than for the person pausing it.
 
 ## `flowstate_resume_schedule`
 
-Let a paused schedule fire again. Firings missed while it was paused are not made up.
+ResumeSchedule lets a paused schedule fire again.
+
+Firings missed while it was paused are not made up. Resuming is the schedule starting from now, not the schedule catching up, which is the behavior an incident wants: an arrangement paused for six hours must not answer being resumed with six hours of backlog.
 
 ## `flowstate_trigger_schedule`
 
-Fire a schedule now rather than waiting for its cadence, which is how a schedule is tested. It returns no run id; describe the schedule to see what it started.
+TriggerSchedule fires a schedule now, without waiting for its cadence.
+
+The verb that makes a schedule testable. Creating one and waiting until Tuesday to find out whether it works is not a development loop, and the alternative, running the workflow by hand, proves the workflow rather than the schedule: it does not exercise the arguments the schedule stored, the tenant it records on the runs it starts, or the queue it puts them on.
+
+It fires even a paused schedule, which is Temporal's behavior and the useful one: create paused, trigger once to see what happens, then resume.
+
+It answers with no run id. The cluster takes the action after answering, so what the firing started is read back with `DescribeSchedule` rather than returned here.
 
 ## `flowstate_run_local`
 

@@ -4790,6 +4790,17 @@ func (x *TaskField) GetConstraints() []string {
 	return nil
 }
 
+// Task is the unit of work a step dispatches: a name saying which task, and the
+// inputs that task takes.
+//
+// The inputs are a map of [Value] rather than a per-task message, because the
+// set of tasks is open. A plugin adds one at run time, and a wire shape holding
+// a closed union of every task's arguments could not carry a task this build has
+// never heard of. What keeps that from being untyped is [TaskCatalog]: each task
+// declares its fields and their constraints there, the registry checks a step's
+// inputs against that declaration before anything runs, and the nested Inputs
+// and Outputs messages below give the built-in tasks the same shapes in Go that
+// a plugin's manifest gives its own.
 type Task struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Tasks have specific names that identify the type of task being performed,
@@ -7545,6 +7556,13 @@ func (x *SignalRequest) GetPayload() *Node_Outputs {
 	return nil
 }
 
+// SignalResponse is empty: a delivered signal has nothing to report.
+//
+// The absence of a body is the whole of the answer, and it is a narrow one. It
+// says the cluster accepted the signal for the workload, not that a waiting step
+// consumed it, and not that whatever the payload asks for has happened. A caller
+// that needs to know what the run did with it reads the run back with
+// [WorkflowService.Get].
 type SignalResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -7699,6 +7717,8 @@ func (x *SignalWithStartRequest) GetPayload() *Node_Outputs {
 	return nil
 }
 
+// SignalWithStartResponse identifies the entity the signal reached, and says
+// whether this call is what brought it into existence.
 type SignalWithStartResponse struct {
 	state      protoimpl.MessageState `protogen:"open.v1"`
 	WorkflowId string                 `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
@@ -7828,6 +7848,12 @@ func (x *CancelRequest) GetRunId() string {
 	return ""
 }
 
+// CancelResponse is empty: the request to stop was accepted, and that is all it
+// claims.
+//
+// Cancellation is cooperative, so this answers that the run has been asked to
+// stop rather than that it has stopped. Cleanup runs after this returns, and a
+// caller that needs the run's final status polls [WorkflowService.Get] for it.
 type CancelResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -7938,6 +7964,13 @@ func (x *TerminateRequest) GetReason() string {
 	return ""
 }
 
+// TerminateResponse is empty: the run is stopped, and there was no cleanup to
+// report on.
+//
+// Unlike [CancelResponse] this is not an acceptance that something will happen
+// later. Termination is immediate, so the absence of a body here is the absence
+// of anything further to say, and the account of why it was stopped is the
+// reason recorded on the execution rather than anything returned to the caller.
 type TerminateResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields

@@ -16,6 +16,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/protodoc"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
 
@@ -135,23 +136,17 @@ func rpcNameOfTool(tool string) string {
 	return b.String()
 }
 
-// TestEveryToolHasADescription keeps the hand-written prose complete.
+// TestEveryToolHasADescription keeps the prose complete.
 //
-// Read off the registered tools rather than off the descriptions map, because
-// the map covers only the RPC half: a local tool shipping mute would have been
-// invisible to the map-shaped version of this test.
+// Read off the registered tools rather than off the RPC set, because the RPCs
+// are only one half: a local tool shipping mute would have been invisible to a
+// service-shaped version of this test.
 func TestEveryToolHasADescription(t *testing.T) {
 	t.Parallel()
 
-	names := serviceMethodNames(t)
-
-	for name := range names {
-		assert.NotEmpty(t, mcpDescriptions[name],
+	for name := range serviceMethodNames(t) {
+		assert.NotEmpty(t, mcpToolDescription(name),
 			"rpc %s has no description; a mute tool is one a model cannot choose", name)
-	}
-	for name := range mcpDescriptions {
-		assert.True(t, names[name],
-			"mcpDescriptions describes %q, which the service does not declare", name)
 	}
 
 	for _, tool := range registeredTools(t) {
@@ -159,6 +154,37 @@ func TestEveryToolHasADescription(t *testing.T) {
 			"tool %s has no description; a mute tool is one a model cannot choose", tool.Name)
 		assert.NotNil(t, tool.InputSchema,
 			"tool %s advertises no input schema", tool.Name)
+	}
+}
+
+// TestEveryToolDescriptionComesFromTheSchema is the half of #424 that a
+// non-empty check cannot see.
+//
+// "Not empty" is satisfied by a sentence typed here beside the code, which is
+// precisely the arrangement this slice retired: prose about an RPC written twice,
+// where the copy next to the Go is the one that stays behind when the schema
+// moves. So the assertion is provenance rather than presence. Every RPC tool's
+// description must *begin* with the leading comment its RPC carries in
+// proto/flowstate/v1/flowstate.proto, byte for byte, which no hand-written
+// string can satisfy by accident.
+//
+// Begin with rather than equal, because a tool may add a note about this surface
+// after it (see mcpToolNotes). Those are the declared exception, and the shape of
+// the check keeps them honest in the one way that matters: a note can only be
+// appended, so nothing here can quietly replace what the schema says.
+func TestEveryToolDescriptionComesFromTheSchema(t *testing.T) {
+	t.Parallel()
+
+	for name := range serviceMethodNames(t) {
+		comment, ok := protodoc.Method(workflowServiceName, protoreflect.Name(name))
+		require.True(t, ok,
+			"rpc %s carries no leading comment in the schema; write one in "+
+				"proto/flowstate/v1/flowstate.proto, which is where this surface's prose lives", name)
+		require.NotEmpty(t, comment)
+
+		assert.True(t, strings.HasPrefix(mcpToolDescription(name), comment),
+			"flowstate_%s's description does not start with %s's own schema comment; a description "+
+				"written beside this code is a second copy of what the schema already says", name, name)
 	}
 }
 
