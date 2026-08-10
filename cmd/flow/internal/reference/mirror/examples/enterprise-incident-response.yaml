@@ -194,15 +194,40 @@ steps:
     wait_for_signal:
       name: remediation-authorized
       timeout: 1h
+      outputs:
+        # The authorization decision, stated ONCE here on the step that
+        # produced it, the way approval-gate shapes its gate. The six-line
+        # predicate below - attested, said yes, a real subject, and a separate
+        # identity from whoever opened the incident - used to be written four
+        # times: positive in `authorized`'s `if:`, hand-negated in `refused`'s,
+        # and re-derived again in each of the two `outputs:`. The hand-negated
+        # copy is the one a De Morgan slip corrupts without review noticing.
+        # Every reader now compares this recorded name.
+        #
+        # `run.local`/`sender.local` are read here exactly as they were in the
+        # raw predicate: a flow test rehearsal is always local, so `authorized`
+        # is unreachable here by design (see the test's coverage note) and this
+        # shapes to `refused` or `unremediated` in a rehearsal, never
+        # `authorized`.
+        outcome: >-
+          ${timed_out
+            ? "unremediated"
+            : ((has(payload.authorized) && payload.authorized &&
+                !sender.local && !run.local &&
+                sender.identity.subject != "" &&
+                !(sender.identity.subject == run.identity.subject &&
+                  sender.identity.issuer == run.identity.issuer))
+               ? "authorized"
+               : "refused")}
+        # Re-exposed because `outputs:` replaces what the wait produced:
+        # `authorized`'s log line and the `authorized_by` output still name the
+        # attested signer.
+        sender: ${sender}
 
   - id: authorized
     if: >-
       ${((!steps.responder_ack.timed_out) || (steps.responder_ack.timed_out && !steps.escalated_ack.timed_out)) &&
-        has(steps.remediation_ack.payload.authorized) && steps.remediation_ack.payload.authorized &&
-        !steps.remediation_ack.sender.local && !run.local &&
-        steps.remediation_ack.sender.identity.subject != "" &&
-        !(steps.remediation_ack.sender.identity.subject == run.identity.subject &&
-          steps.remediation_ack.sender.identity.issuer == run.identity.issuer)}
+        steps.remediation_ack.outcome == "authorized"}
     log:
       message: >-
         ${"remediation for %s authorized by %s".format(
@@ -217,12 +242,7 @@ steps:
   - id: refused
     if: >-
       ${((!steps.responder_ack.timed_out) || (steps.responder_ack.timed_out && !steps.escalated_ack.timed_out)) &&
-        !steps.remediation_ack.timed_out &&
-        !(has(steps.remediation_ack.payload.authorized) && steps.remediation_ack.payload.authorized &&
-          !steps.remediation_ack.sender.local && !run.local &&
-          steps.remediation_ack.sender.identity.subject != "" &&
-          !(steps.remediation_ack.sender.identity.subject == run.identity.subject &&
-            steps.remediation_ack.sender.identity.issuer == run.identity.issuer))}
+        steps.remediation_ack.outcome == "refused"}
     log:
       level: warn
       message: >-
@@ -233,25 +253,17 @@ outputs:
     value: >-
       ${(steps.responder_ack.timed_out && steps.escalated_ack.timed_out)
         ? "unclaimed"
-        : (has(steps.remediation_ack.payload.authorized) && steps.remediation_ack.payload.authorized &&
-            !steps.remediation_ack.sender.local && !run.local &&
-            steps.remediation_ack.sender.identity.subject != "" &&
-            !(steps.remediation_ack.sender.identity.subject == run.identity.subject &&
-              steps.remediation_ack.sender.identity.issuer == run.identity.issuer))
-          ? "remediated"
-          : (steps.remediation_ack.timed_out
-              ? "claimed_unremediated"
-              : "refused")}
+        : (steps.remediation_ack.outcome == "authorized"
+            ? "remediated"
+            : (steps.remediation_ack.outcome == "unremediated"
+                ? "claimed_unremediated"
+                : "refused"))}
     description: how this incident's runbook ended
 
   authorized_by:
     value: >-
       ${(!(steps.responder_ack.timed_out && steps.escalated_ack.timed_out) &&
-          has(steps.remediation_ack.payload.authorized) && steps.remediation_ack.payload.authorized &&
-          !steps.remediation_ack.sender.local && !run.local &&
-          steps.remediation_ack.sender.identity.subject != "" &&
-          !(steps.remediation_ack.sender.identity.subject == run.identity.subject &&
-            steps.remediation_ack.sender.identity.issuer == run.identity.issuer))
+          steps.remediation_ack.outcome == "authorized")
         ? steps.remediation_ack.sender.identity.subject
         : ""}
     description: >-

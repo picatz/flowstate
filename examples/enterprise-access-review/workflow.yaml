@@ -128,6 +128,29 @@ steps:
     wait_for_signal:
       name: attestation-recorded
       timeout: 72h
+      outputs:
+        # The attestation test, stated ONCE here on the step that produced the
+        # data, the way approval-gate shapes its gate. It used to be written
+        # four times: positive in `recorded`'s `if:`, negated by hand in
+        # `unattested`'s, and re-derived again in each of the two `outputs:`
+        # below. Nothing kept the four in agreement except review, and the
+        # hand-negated copy is the one a De Morgan slip corrupts silently. Now
+        # every reader compares this recorded name.
+        #
+        # Three states, not two: a signal that arrived but does not clear the
+        # test is `unattested`, and a gate that lapsed is `expired`. `timed_out`
+        # tells those apart, and only a timeout ever produces `expired`.
+        outcome: >-
+          ${(has(payload.attested) && payload.attested &&
+              !sender.local && !run.local &&
+              sender.identity.subject != "" &&
+              sender.identity.subject == inputs.expected_reviewer)
+            ? "attested"
+            : (timed_out ? "expired" : "unattested")}
+        # Re-exposed because `outputs:` replaces what the wait produced:
+        # `recorded`'s log line and the `attested_by` output below still name
+        # the attested sender.
+        sender: ${sender}
 
   # Attested, and by someone real: the sender was actually authenticated (not
   # a local run), said yes, and is the reviewer this run declared it expects.
@@ -139,11 +162,7 @@ steps:
   # access review is not the same conflict of interest a self-approved
   # deploy is.
   - id: recorded
-    if: >-
-      ${has(steps.attestation.payload.attested) && steps.attestation.payload.attested &&
-        !steps.attestation.sender.local && !run.local &&
-        steps.attestation.sender.identity.subject != "" &&
-        steps.attestation.sender.identity.subject == inputs.expected_reviewer}
+    if: ${steps.attestation.outcome == "attested"}
     log:
       message: >-
         ${"access review attested by %s for %d grant(s)".format(
@@ -157,32 +176,19 @@ steps:
   # so "attested sender who is not the expected reviewer" still has to be
   # checked here rather than delegated to `signals:` entirely.
   - id: unattested
-    if: >-
-      ${!(has(steps.attestation.payload.attested) && steps.attestation.payload.attested &&
-        !steps.attestation.sender.local && !run.local &&
-        steps.attestation.sender.identity.subject != "" &&
-        steps.attestation.sender.identity.subject == inputs.expected_reviewer)}
+    if: ${steps.attestation.outcome != "attested"}
     log:
       level: warn
       message: access review closed without a valid attestation
 
 outputs:
   outcome:
-    value: >-
-      ${(has(steps.attestation.payload.attested) && steps.attestation.payload.attested &&
-          !steps.attestation.sender.local && !run.local &&
-          steps.attestation.sender.identity.subject != "" &&
-          steps.attestation.sender.identity.subject == inputs.expected_reviewer)
-        ? "attested"
-        : (steps.attestation.timed_out ? "expired" : "unattested")}
+    value: ${steps.attestation.outcome}
     description: whether a real attestation closed this review, and why not if it did not
 
   attested_by:
     value: >-
-      ${(has(steps.attestation.payload.attested) && steps.attestation.payload.attested &&
-          !steps.attestation.sender.local && !run.local &&
-          steps.attestation.sender.identity.subject != "" &&
-          steps.attestation.sender.identity.subject == inputs.expected_reviewer)
+      ${steps.attestation.outcome == "attested"
         ? steps.attestation.sender.identity.subject
         : ""}
     description: >-
