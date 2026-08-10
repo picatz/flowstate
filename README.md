@@ -247,8 +247,17 @@ here the way they behave in production.
 
 What the local loop cannot give you is durability. A local run is a process, with no
 run id, nothing watching it, and no survival past the command being interrupted. For
-that, start a local [Temporal development server](https://docs.temporal.io/cli), a
-Flowstate worker, and the Flowstate API server, each in its own terminal:
+that you need a Temporal server, a Flowstate worker, and the Flowstate API server.
+One command assembles all three, on loopback, ephemeral:
+
+```console
+$ go run ./cmd/flow server dev
+```
+
+It downloads the [Temporal CLI](https://docs.temporal.io/cli) on first use, caches it,
+and stops everything it started when you press Ctrl-C. Pass `--db ./flowstate.db` to
+keep the runs. It prints the postures it takes on your behalf, which are the same ones
+the three commands below take, because it is those three commands in one process:
 
 ```console
 $ temporal server start-dev
@@ -346,6 +355,7 @@ binary's own command tree, with which environment variable feeds each flag's def
 | `flow plugins` | List the plugins on a search path and the tasks each adds, by launching them and asking. |
 | `flow worker` | Start a Temporal worker, which is what actually executes steps. |
 | `flow server` | Start the Flowstate API server that accepts workflows. |
+| `flow server dev` | Start the whole stack in one command on loopback: Temporal, the server, and a worker. Ephemeral unless `--db`, and every insecure posture it takes is stated at start-up. |
 | `flow lsp` | Serve the Flowfile language server over stdin and stdout, for editor diagnostics. |
 | `flow mcp` | Serve the control plane to an AI agent over stdin and stdout. See [flow mcp](docs/CLI.md#flow-mcp-the-same-surface-for-an-agent). |
 | `flow keys` | Generate and inspect signing keys for workload identity. |
