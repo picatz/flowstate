@@ -22,13 +22,23 @@ import (
 // CLAUDE.md's proto-first section for the boundary this sits on the near
 // side of.
 type versionInfo struct {
-	Version   string `json:"version"`
-	Commit    string `json:"commit"`
-	Date      string `json:"date"`
-	GoVersion string `json:"goVersion"`
-	OS        string `json:"os"`
-	Arch      string `json:"arch"`
-	Modified  bool   `json:"modified"`
+	Version string `json:"version"`
+	Commit  string `json:"commit"`
+
+	// CommitDate is vcs.time: the time of the commit the binary was built
+	// from, not the moment of compilation. A freshly built binary of an old
+	// commit carries an old date here, honestly; nothing in a module-aware
+	// build records the compile time itself.
+	CommitDate string `json:"commitDate"`
+	GoVersion  string `json:"goVersion"`
+	OS         string `json:"os"`
+	Arch       string `json:"arch"`
+
+	// Modified is "true", "false", or "unknown". A string rather than a bool
+	// because absence is a real answer: a binary built with -buildvcs=false
+	// has no vcs.modified setting, and a zero-valued bool would assert the
+	// tree was clean when nothing recorded whether it was.
+	Modified string `json:"modified"`
 }
 
 // resolveVersionInfo reads what the toolchain stamped into this binary.
@@ -47,6 +57,7 @@ func resolveVersionInfo() versionInfo {
 		GoVersion: runtime.Version(),
 		OS:        runtime.GOOS,
 		Arch:      runtime.GOARCH,
+		Modified:  "unknown",
 	}
 
 	if info.Version == "" || info.Version == "dev" {
@@ -56,7 +67,7 @@ func resolveVersionInfo() versionInfo {
 	buildInfo, ok := debug.ReadBuildInfo()
 	if !ok {
 		info.Commit = "unknown"
-		info.Date = "unknown"
+		info.CommitDate = "unknown"
 		return info
 	}
 
@@ -73,17 +84,21 @@ func resolveVersionInfo() versionInfo {
 		case "vcs.revision":
 			info.Commit = setting.Value
 		case "vcs.time":
-			info.Date = setting.Value
+			info.CommitDate = setting.Value
 		case "vcs.modified":
-			info.Modified = setting.Value == "true"
+			if setting.Value == "true" {
+				info.Modified = "true"
+			} else {
+				info.Modified = "false"
+			}
 		}
 	}
 
 	if info.Commit == "" {
 		info.Commit = "unknown"
 	}
-	if info.Date == "" {
-		info.Date = "unknown"
+	if info.CommitDate == "" {
+		info.CommitDate = "unknown"
 	}
 
 	return info
@@ -98,15 +113,17 @@ func resolveVersionInfo() versionInfo {
 func newVersionCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "version",
-		Short: "Print the build version, commit, and date",
+		Short: "Print the version, commit, and commit date",
 		Long: "Print what the toolchain stamped into this binary: version, commit, " +
-			"build date, the Go version it was compiled with, and the platform it " +
-			"was built for.\n\n" +
+			"the commit's date, the Go version it was compiled with, and the " +
+			"platform it was built for. The date is the commit's, because that " +
+			"is what a module-aware build records; nothing stamps the moment of " +
+			"compilation.\n\n" +
 			"Answered entirely from what this binary already carries, no network " +
 			"call, so it works the same offline as everything else here. When " +
 			"nothing was stamped (a plain `go build` with no -ldflags and no module " +
 			"information) it says so honestly: \"devel\" for the version, \"unknown\" " +
-			"for the commit and date, rather than a number invented for the " +
+			"for the commit and its date, rather than a number invented for the " +
 			"occasion.",
 		Args: cobra.NoArgs,
 		RunE: runVersion,
@@ -121,6 +138,11 @@ flow version -o json | jq -e '.version != "devel"'`,
 	}
 
 	addOutputFlag(cmd)
+	// This command's machine output is its own small document, not a server
+	// message, and the shared flag help promises protojson of an RPC response.
+	// Say what is true instead.
+	cmd.Flags().Lookup("output").Usage = "how to render the answer: text, json, jsonl. " +
+		"The JSON shape is this command's own documented field set, not a server message"
 
 	return cmd
 }
@@ -145,9 +167,9 @@ func runVersion(cmd *cobra.Command, args []string) error {
 // promises: every field named in the issue, on stdout, since this is the
 // answer and not an account of how it was produced.
 func writeVersionText(surface *ui.UI, info versionInfo) error {
-	_, err := fmt.Fprintf(surface.Out, "%s %s (commit %s, built %s, %s, %s/%s)\n",
+	_, err := fmt.Fprintf(surface.Out, "%s %s (commit %s, committed %s, %s, %s/%s)\n",
 		surface.Theme.Strong.Render("flow"), info.Version,
-		info.Commit, info.Date, info.GoVersion, info.OS, info.Arch)
+		info.Commit, info.CommitDate, info.GoVersion, info.OS, info.Arch)
 	return err
 }
 

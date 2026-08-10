@@ -44,7 +44,7 @@ func TestResolveVersionInfoIsHonestWithNothingStamped(t *testing.T) {
 
 	assert.NotEmpty(t, info.Version, "version must never be empty")
 	assert.NotEmpty(t, info.Commit, "commit must never be empty")
-	assert.NotEmpty(t, info.Date, "date must never be empty")
+	assert.NotEmpty(t, info.CommitDate, "date must never be empty")
 	assert.NotEqual(t, "0", info.Version, "a made-up version is worse than an honest devel")
 
 	// go test itself is a module-aware build, so debug.ReadBuildInfo always
@@ -81,14 +81,14 @@ func TestRunVersionTextIsAPlainLine(t *testing.T) {
 	assert.Len(t, lines, 1, "the default text form should be one plain line: %q", stdout)
 	assert.Contains(t, stdout, "flow")
 	assert.Contains(t, stdout, "commit")
-	assert.Contains(t, stdout, "built")
+	assert.Contains(t, stdout, "committed", "the text line speaks the commit's date, not a build time it does not know")
 }
 
 // versionJSONFields is the stable field set #373 asks -o json for. A test
 // keyed on JSON tags rather than on field order, so reordering the struct's
 // fields cannot pass this by accident the way a byte-for-byte comparison
 // would let it.
-var versionJSONFields = []string{"version", "commit", "date", "goVersion", "os", "arch", "modified"}
+var versionJSONFields = []string{"version", "commit", "commitDate", "goVersion", "os", "arch", "modified"}
 
 // TestRunVersionJSONParsesWithDocumentedFields is #373's machine-readable
 // requirement, proven the way a consumer would use it: parse the output and
@@ -111,9 +111,11 @@ func TestRunVersionJSONParsesWithDocumentedFields(t *testing.T) {
 			gotVersion, ok := document["version"].(string)
 			assert.True(t, ok && gotVersion != "", "version must be a non-empty string")
 
-			modified, ok := document["modified"].(bool)
-			assert.True(t, ok, "modified must be a boolean")
-			_ = modified
+			modified, ok := document["modified"].(string)
+			assert.True(t, ok, "modified is tri-state and must be a string")
+			assert.Contains(t, []string{"true", "false", "unknown"}, modified,
+				"modified answers only true, false, or unknown: absence of the vcs "+
+					"setting is a real answer and must never read as a clean tree")
 		})
 	}
 }
@@ -130,7 +132,7 @@ func TestRunVersionJSONRoundTripsIntoVersionInfo(t *testing.T) {
 
 	assert.NotEmpty(t, info.Version)
 	assert.NotEmpty(t, info.Commit)
-	assert.NotEmpty(t, info.Date)
+	assert.NotEmpty(t, info.CommitDate)
 	assert.NotEmpty(t, info.GoVersion)
 	assert.NotEmpty(t, info.OS)
 	assert.NotEmpty(t, info.Arch)

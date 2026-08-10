@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -115,4 +116,21 @@ func TestSuggestedErrorPreservesTheOriginalMessage(t *testing.T) {
 
 	assert.Equal(t, text, wrapped.Error(), "suggestedError changed the message it was given")
 	assert.True(t, isUsageError(wrapped), "a suggestedError lost its usage-error classification")
+}
+
+// TestAnImplausiblyLongTypoGetsNoScan pins the input bound: a typed name
+// longer than any command or flag this tree could plausibly hold is refused
+// before the edit-distance scan, because the cost of that scan grows with
+// the product of the two strings and the typed side arrives from argv.
+func TestAnImplausiblyLongTypoGetsNoScan(t *testing.T) {
+	root := newRootCommand()
+	listCmd, _, err := root.Find([]string{"list"})
+	require.NoError(t, err)
+
+	typed := strings.Repeat("x", 64*1024)
+
+	assert.Nil(t, commandSuggestions(root, typed),
+		"a 64KB argument should be refused before the scan, not scanned")
+	assert.Nil(t, flagSuggestions(listCmd, typed),
+		"the flag half carries the same bound")
 }

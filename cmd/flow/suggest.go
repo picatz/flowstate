@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -38,6 +39,10 @@ const maxSuggestions = 2
 // that text has to stay cobra's own and unchanged, and why the ranked
 // version is drawn separately, in this CLI's own voice.
 func commandSuggestions(parent *cobra.Command, typed string) []string {
+	if utf8.RuneCountInString(typed) > maxSuggestionInput {
+		return nil
+	}
+
 	type candidate struct {
 		name     string
 		distance int
@@ -65,6 +70,10 @@ func commandSuggestions(parent *cobra.Command, typed string) []string {
 // by the time a ParseFlags error reaches [flagErrorFunc]) by how close their
 // name is to typed, closest first, capped at maxSuggestions.
 func flagSuggestions(cmd *cobra.Command, typed string) []string {
+	if utf8.RuneCountInString(typed) > maxSuggestionInput {
+		return nil
+	}
+
 	type candidate struct {
 		name     string
 		distance int
@@ -114,10 +123,19 @@ func rankedNames[T any](candidates []T, key func(T) (name string, distance int))
 	return names
 }
 
+// maxSuggestionInput bounds the typed name a suggestion is computed for. The
+// candidates are this CLI's own short names, but the typo arrives from a
+// command line a script may have assembled, and the distance scan below is
+// work proportional to its length times every candidate: input an outside
+// party sizes gets a bound matched to what it can spend (CLAUDE.md). Nothing
+// within two edits of a real name can be longer than the longest name plus
+// two, so refusing long input costs no suggestion anybody could have earned.
+const maxSuggestionInput = 64
+
 // levenshtein returns the edit distance between a and b: the fewest single
 // character insertions, deletions, and substitutions that turn one into the
-// other. Command and flag names are a handful of characters, so no bound
-// beyond their own length is needed.
+// other. Callers bound the typed side by [maxSuggestionInput]; candidate
+// names bound themselves.
 func levenshtein(a, b string) int {
 	ar, br := []rune(a), []rune(b)
 
