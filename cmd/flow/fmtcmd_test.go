@@ -515,10 +515,43 @@ func TestFmtKeepsEveryCommentInTheScaffoldItWasGiven(t *testing.T) {
 		}
 	}
 
-	// And the run really did rewrite the file, so the comments above did not
-	// survive by nothing having happened.
-	if formatted == scaffold {
-		t.Fatal("the scaffold was already formatted, so nothing here was at risk")
+	// The scaffold is written in the formatter's canonical shape (#451), so this
+	// run kept every comment by changing nothing at all. That is the stronger
+	// guarantee, held to the byte by TestFmtOnTheScaffoldIsANoOp; here it is
+	// enough that no comment went missing.
+	if formatted != scaffold {
+		t.Errorf("fmt changed the scaffold when it should have been a no-op:\n--- before\n%s\n--- after\n%s", scaffold, formatted)
+	}
+}
+
+// TestFmtOnTheScaffoldIsANoOp is the fix for #451's first residue: `flow fmt` on
+// a fresh `flow init` output must change nothing.
+//
+// Byte equality rather than "still validates", for the reason every test in this
+// file states it: a scaffold the formatter rewrites is the CLI disagreeing with
+// itself about canonical form, and a scaffold whose folded description unfolds or
+// whose list re-indents teaches the shape `flow fmt` was about to undo. The
+// several names cover a plain identifier and the quoted forms yamlName produces,
+// because the name is the one line of the template that varies.
+func TestFmtOnTheScaffoldIsANoOp(t *testing.T) {
+	for _, name := range []string{"greeter", "nightly-report", "001", "true"} {
+		t.Run(name, func(t *testing.T) {
+			scaffold := []byte(starterWorkflow(name))
+
+			workflow, err := flowfile.Unmarshal(scaffold)
+			if err != nil {
+				t.Fatalf("the scaffold does not compile, so it cannot be canonical: %v", err)
+			}
+
+			formatted, err := flowfile.Format(scaffold, workflow)
+			if err != nil {
+				t.Fatalf("fmt refused the scaffold: %v", err)
+			}
+
+			if !bytes.Equal(scaffold, formatted) {
+				t.Errorf("fmt is not a no-op on the scaffold:\n--- scaffold\n%s\n--- formatted\n%s", scaffold, formatted)
+			}
+		})
 	}
 }
 

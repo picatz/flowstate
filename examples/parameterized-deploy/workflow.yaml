@@ -75,8 +75,8 @@ steps:
       target: ${inputs.service + ' in ' + inputs.region}
     log:
       message: ${'planning ' + target}
+      # `fields:` are string-valued, so a number is rendered rather than passed.
       fields:
-        # `fields:` are string-valued, so a number is rendered rather than passed.
         replicas: ${string(inputs.replicas)}
 
   # An input deciding whether a step runs at all. A skipped step produces no outputs,
@@ -86,9 +86,9 @@ steps:
     http:
       method: POST
       url: https://httpbin.org/anything
+      # A task input reading an argument, which is the ordinary case: the workflow
+      # is the same either way, and what it does with the world is parameterized.
       json:
-        # A task input reading an argument, which is the ordinary case: the workflow
-        # is the same either way, and what it does with the world is parameterized.
         service: ${inputs.service}
         region: ${inputs.region}
         replicas: ${inputs.replicas}
