@@ -6,7 +6,7 @@ toolchain go1.26.5
 
 require (
 	github.com/picatz/flowstate v0.0.0-00010101000000-000000000000
-	google.golang.org/genproto/googleapis/api v0.0.0-20260526163538-3dc84a4a5aaa
+	google.golang.org/genproto/googleapis/api v0.0.0-20260803160001-6ac0973c030d
 	google.golang.org/protobuf v1.36.11
 )
 
@@ -14,18 +14,18 @@ require github.com/BurntSushi/toml v1.6.0
 
 require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/go-logr/logr v1.4.3 // indirect
+	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
-	go.opentelemetry.io/otel v1.44.0 // indirect
-	go.opentelemetry.io/otel/metric v1.44.0 // indirect
-	go.opentelemetry.io/otel/trace v1.44.0 // indirect
+	go.opentelemetry.io/otel v1.45.0 // indirect
+	go.opentelemetry.io/otel/metric v1.45.0 // indirect
+	go.opentelemetry.io/otel/trace v1.45.0 // indirect
 )
 
 require (
-	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.9-20250912141014-52f32327d4b0.1 // indirect
-	buf.build/go/protovalidate v1.0.0 // indirect
-	cel.dev/expr v0.25.1 // indirect
+	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.11-20260709200747-435963d16310.1 // indirect
+	buf.build/go/protovalidate v1.2.0 // indirect
+	cel.dev/expr v0.25.2 // indirect
 	connectrpc.com/authn v0.2.0 // indirect
 	connectrpc.com/connect v1.20.0 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
@@ -38,7 +38,7 @@ require (
 	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260803160001-6ac0973c030d // indirect
 )
 
 // This plugin is a separate module specifically so that

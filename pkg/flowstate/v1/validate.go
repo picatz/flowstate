@@ -178,7 +178,7 @@ type Violation struct {
 	Rule string
 
 	// Message explains the failure in terms a workflow author can act on, such
-	// as "value must be a valid URI".
+	// as "must be a valid URI".
 	Message string
 }
 

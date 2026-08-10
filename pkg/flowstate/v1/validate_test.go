@@ -335,7 +335,7 @@ func TestValidateErrorClassification(t *testing.T) {
 func TestValidateErrorMessage(t *testing.T) {
 	single := v1.Validate(&v1.Task_HTTP_Inputs{Url: "not a url"})
 	require.EqualError(t, single,
-		"invalid flowstate.v1.Task.HTTP.Inputs: url: value must be a valid URI (string.uri)")
+		"invalid flowstate.v1.Task.HTTP.Inputs: url: must be a valid URI (string.uri)")
 
 	multi := v1.Validate(&v1.Workflow{})
 	require.ErrorContains(t, multi, "invalid flowstate.v1.Workflow: 2 rules violated:")
@@ -373,8 +373,8 @@ func TestValidateViolationString(t *testing.T) {
 	}{
 		{
 			name: "field and rule",
-			in:   v1.Violation{Field: "url", Rule: "string.uri", Message: "value must be a valid URI"},
-			want: "url: value must be a valid URI (string.uri)",
+			in:   v1.Violation{Field: "url", Rule: "string.uri", Message: "must be a valid URI"},
+			want: "url: must be a valid URI (string.uri)",
 		},
 		{
 			name: "no field",
