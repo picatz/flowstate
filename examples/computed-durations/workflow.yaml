@@ -99,14 +99,29 @@ steps:
         ${timestamp(inputs.sign_off_by) > now
             ? timestamp(inputs.sign_off_by) - now
             : duration("0s")}
+      outputs:
+        # Shape the answer once, here, on the step that produced it, the same
+        # way approval-gate shapes its gate. "signed off" was written twice
+        # below: once positive in `activate`'s `if:` and once hand-negated in
+        # `lapsed`'s. Two copies of one predicate are one review away from
+        # disagreeing, so both branches read this recorded name instead.
+        #
+        # `has(payload.approved)` guards the read: a lapsed gate carries no
+        # payload, and a signal is free to arrive without the field.
+        outcome: >-
+          ${has(payload.approved) && payload.approved ? "signed_off" : "unsigned"}
+        # Re-exposed because `outputs:` replaces what the wait produced: the
+        # `outcome` output below still reads `timed_out` to tell a lapsed
+        # deadline apart from a plain answer.
+        timed_out: ${timed_out}
 
   - id: activate
-    if: ${has(steps.sign_off.payload.approved) && steps.sign_off.payload.approved}
+    if: ${steps.sign_off.outcome == "signed_off"}
     log:
       message: ${"%s tenant signed off, activating".format([inputs.plan])}
 
   - id: lapsed
-    if: ${!(has(steps.sign_off.payload.approved) && steps.sign_off.payload.approved)}
+    if: ${steps.sign_off.outcome == "unsigned"}
     log:
       level: warn
       message: sign-off did not arrive before the contract deadline

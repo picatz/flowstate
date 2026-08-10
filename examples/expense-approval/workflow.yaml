@@ -84,6 +84,29 @@ steps:
     wait_for_signal:
       name: manager-approved
       timeout: 4s
+      outputs:
+        # What the manager said, shaped ONCE here on the step that produced it,
+        # the way approval-gate shapes its gate. "manager approved" was written
+        # five times below - in `reimburse`'s `if:` and its log line, in
+        # `outcome`, in `approved_by`, and hand-negated in `deny`'s `if:` - and
+        # nothing kept those copies in agreement except review. Every reader now
+        # compares this recorded name.
+        #
+        # Four states, because "answered" is not one thing: a payload can carry
+        # `approved: true`, `approved: false`, or neither, and a gate can lapse.
+        # `no_decision` (answered without an `approved` field, not a timeout) is
+        # kept distinct so it takes no branch, exactly as the raw predicates did.
+        outcome: >-
+          ${timed_out
+            ? "expired"
+            : (has(payload.approved)
+                ? (payload.approved ? "approved" : "rejected")
+                : "no_decision")}
+        # Re-exposed because `outputs:` replaces what the wait produced:
+        # `escalate` and `finance_review` still branch on `timed_out`, and
+        # `reimburse`'s log line and `approved_by` still name the sender.
+        timed_out: ${timed_out}
+        sender: ${sender}
 
   # The escalation is a real step, not a comment saying one should exist —
   # this is the difference between "escalates" and "eventually times out
@@ -104,6 +127,21 @@ steps:
     wait_for_signal:
       name: finance-approved
       timeout: 3s
+      outputs:
+        # The finance gate, shaped the same way as the manager gate above and
+        # for the same reason: "finance approved" was re-derived in `reimburse`,
+        # `outcome`, and hand-negated in `deny`. Only ever read on the path
+        # where the manager gate lapsed, so a reader always guards it with
+        # `steps.manager_review.outcome == "expired"` first, the same short
+        # circuit the raw predicates used.
+        outcome: >-
+          ${timed_out
+            ? "expired"
+            : (has(payload.approved)
+                ? (payload.approved ? "approved" : "rejected")
+                : "no_decision")}
+        # Re-exposed for `reimburse`'s log line and `approved_by`.
+        sender: ${sender}
 
   # `has()` guards every read of a payload that might not exist — a lapsed
   # gate carries no payload, and the manager gate not having timed out means
@@ -112,11 +150,11 @@ steps:
   # right side that would otherwise reach a step that never ran.
   - id: reimburse
     if: >-
-      ${(has(steps.manager_review.payload.approved) && steps.manager_review.payload.approved) ||
-        (steps.manager_review.timed_out && has(steps.finance_review.payload.approved) && steps.finance_review.payload.approved)}
+      ${steps.manager_review.outcome == "approved" ||
+        (steps.manager_review.outcome == "expired" && steps.finance_review.outcome == "approved")}
     log:
       message: >-
-        ${(has(steps.manager_review.payload.approved) && steps.manager_review.payload.approved)
+        ${steps.manager_review.outcome == "approved"
           ? "reimbursing %s $%.2f, approved by %s".format(
               [inputs.employee, inputs.amount, steps.manager_review.sender.identity.subject])
           : "reimbursing %s $%.2f, approved by finance (%s) after the manager did not respond".format(
@@ -127,9 +165,9 @@ steps:
   # what they share is that the money does not move.
   - id: deny
     if: >-
-      ${(has(steps.manager_review.payload.approved) && !steps.manager_review.payload.approved) ||
-        (steps.manager_review.timed_out && has(steps.finance_review.payload.approved) && !steps.finance_review.payload.approved) ||
-        (steps.manager_review.timed_out && steps.finance_review.timed_out)}
+      ${steps.manager_review.outcome == "rejected" ||
+        (steps.manager_review.outcome == "expired" && steps.finance_review.outcome == "rejected") ||
+        (steps.manager_review.outcome == "expired" && steps.finance_review.outcome == "expired")}
     log:
       level: warn
       message: ${"%s's expense report was not approved".format([inputs.employee])}
@@ -141,11 +179,11 @@ outputs:
   # "denied" for anyone deciding whether to ask again.
   outcome:
     value: >-
-      ${(has(steps.manager_review.payload.approved) && steps.manager_review.payload.approved)
+      ${steps.manager_review.outcome == "approved"
         ? "approved_by_manager"
-        : (steps.manager_review.timed_out && has(steps.finance_review.payload.approved) && steps.finance_review.payload.approved)
+        : (steps.manager_review.outcome == "expired" && steps.finance_review.outcome == "approved")
           ? "approved_after_escalation"
-          : (steps.manager_review.timed_out && steps.finance_review.timed_out)
+          : (steps.manager_review.outcome == "expired" && steps.finance_review.outcome == "expired")
             ? "denied_no_response"
             : "denied"}
     description: which gate decided the report, or why neither did
@@ -154,9 +192,9 @@ outputs:
     description: the amount this run decided about
   approved_by:
     value: >-
-      ${(has(steps.manager_review.payload.approved) && steps.manager_review.payload.approved)
+      ${steps.manager_review.outcome == "approved"
         ? steps.manager_review.sender.identity.subject
-        : (steps.manager_review.timed_out && has(steps.finance_review.payload.approved) && steps.finance_review.payload.approved)
+        : (steps.manager_review.outcome == "expired" && steps.finance_review.outcome == "approved")
           ? steps.finance_review.sender.identity.subject
           : ""}
     description: >-
