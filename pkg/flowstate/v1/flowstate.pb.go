@@ -1563,15 +1563,30 @@ type ScheduleTrigger struct {
 	// Overlap is what happens when a firing comes due with the last run still
 	// going. Unset takes Temporal's default, which is to skip.
 	Overlap ScheduleTrigger_Overlap `protobuf:"varint,5,opt,name=overlap,proto3,enum=flowstate.v1.ScheduleTrigger_Overlap" json:"overlap,omitempty"`
-	// Calendars are unioned with cron and interval cadences.
+	// Calendars are unioned with cron and interval cadences: a schedule fires at
+	// every time any of the three matches, so a calendar beside a cron expression
+	// adds firings rather than filtering them.
 	Calendars []*ScheduleTrigger_Calendar `protobuf:"bytes,6,rep,name=calendars,proto3" json:"calendars,omitempty"`
-	// StartAt and EndAt form an inclusive window in which firings may occur.
+	// StartAt and EndAt bound the window in which firings may occur, inclusively
+	// at both ends. Either may be written alone. A start that is not before its
+	// end is refused at creation, because such a schedule can never fire and would
+	// be created successfully by Temporal all the same.
 	StartAt *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=start_at,json=startAt,proto3" json:"start_at,omitempty"`
 	EndAt   *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=end_at,json=endAt,proto3" json:"end_at,omitempty"`
-	// CatchupWindow limits how late a missed firing may be recovered. Requiring
-	// an explicit bounded value avoids Temporal's much larger server default.
+	// CatchupWindow limits how late a missed firing may still be taken when the
+	// Temporal service returns from an outage.
+	//
+	// Optional here, but never absent by the time Temporal sees it: an unset
+	// window is one Temporal defaults to *one year*, so a schedule that says
+	// nothing would take a year of missed firings at once. The server therefore
+	// substitutes its own bounded default (`v1.DefaultScheduleCatchupWindow`) for
+	// an absent value, and this field is how an operator asks for a different one,
+	// up to thirty days.
 	CatchupWindow *durationpb.Duration `protobuf:"bytes,9,opt,name=catchup_window,json=catchupWindow,proto3" json:"catchup_window,omitempty"`
-	// PauseOnFailure pauses after an action exhausts its retries or times out.
+	// PauseOnFailure pauses the whole schedule after an action exhausts its
+	// retries or times out, so a workload failing every hour stops at the first
+	// failure rather than at the hundredth. A firing already started is not
+	// recalled.
 	PauseOnFailure bool `protobuf:"varint,10,opt,name=pause_on_failure,json=pauseOnFailure,proto3" json:"pause_on_failure,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
@@ -1677,8 +1692,16 @@ func (x *ScheduleTrigger) GetPauseOnFailure() bool {
 	return false
 }
 
-// ScheduleBackfill asks creation to evaluate a closed historical interval.
-// The server additionally limits the number of intervals and their total span.
+// ScheduleBackfill asks creation to evaluate the declared cadence over a
+// historical interval, taking the actions it would have taken then, now.
+//
+// The interval is half-open: Temporal evaluates times *after* start_at and up
+// to and including end_at, so a start written at exactly the first firing time
+// wanted excludes it. Write the start a moment earlier.
+//
+// The server bounds both how many intervals are accepted and their total span,
+// because a backfill is the one place where a single request decides how many
+// executions a cluster starts at once.
 type ScheduleBackfill struct {
 	state         protoimpl.MessageState  `protogen:"open.v1"`
 	StartAt       *timestamppb.Timestamp  `protobuf:"bytes,1,opt,name=start_at,json=startAt,proto3" json:"start_at,omitempty"`
@@ -8720,8 +8743,10 @@ type CreateScheduleRequest struct {
 	// resume when the next firing time is one somebody meant.
 	Paused bool `protobuf:"varint,4,opt,name=paused,proto3" json:"paused,omitempty"`
 	// Backfill is deliberately creation-only: it is an operator request, not a
-	// perpetual property of the workload. At most 10 intervals spanning no more
-	// than 31 days in total are accepted.
+	// perpetual property of the workload, which is why it is here and not in the
+	// Flowfile's `triggers.schedule` block. At most 10 intervals spanning no more
+	// than 31 days in total are accepted, and both bounds are enforced by
+	// `v1.CheckScheduleBackfill` on every path that can create a schedule.
 	Backfill      []*ScheduleBackfill `protobuf:"bytes,5,rep,name=backfill,proto3" json:"backfill,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -9489,8 +9514,13 @@ func (x *Workflow_StepOutputs) GetRunOutputs() *RunOutputs {
 	return nil
 }
 
-// Calendar is an explicit calendar cadence. Each range is inclusive; an end
-// of zero means the start value, and step defaults to one.
+// Calendar is an explicit calendar cadence, matched field by field the way a
+// cron expression is: a time matches when at least one range of every field
+// matches it. A field nobody writes takes Temporal's default for that field —
+// second, minute and hour default to zero, and the three date fields match
+// everything — which is why a calendar with no fields at all is refused rather
+// than compiled: it means 00:00:00 every day, and nobody writes that by
+// meaning it.
 type ScheduleTrigger_Calendar struct {
 	state         protoimpl.MessageState            `protogen:"open.v1"`
 	Second        []*ScheduleTrigger_Calendar_Range `protobuf:"bytes,1,rep,name=second,proto3" json:"second,omitempty"`
@@ -9591,11 +9621,21 @@ func (x *ScheduleTrigger_Calendar) GetComment() string {
 	return ""
 }
 
+// Range is a low-to-high span of one field, written in a Flowfile as a whole
+// number, a list of them, or `{start: 9, end: 17, step: 2}`.
 type ScheduleTrigger_Calendar_Range struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Start         int32                  `protobuf:"varint,1,opt,name=start,proto3" json:"start,omitempty"`
-	End           int32                  `protobuf:"varint,2,opt,name=end,proto3" json:"end,omitempty"`
-	Step          int32                  `protobuf:"varint,3,opt,name=step,proto3" json:"step,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Start is the first value the range matches, and the only required one.
+	Start int32 `protobuf:"varint,1,opt,name=start,proto3" json:"start,omitempty"`
+	// End is the last value, inclusive. Zero means no end was written, which
+	// matches the start alone — the schema cannot distinguish an unwritten end
+	// from one written as zero, and Temporal reads both the same way. An end
+	// below the start is refused rather than passed on, since Temporal would
+	// silently narrow it to the start.
+	End int32 `protobuf:"varint,2,opt,name=end,proto3" json:"end,omitempty"`
+	// Step is how far apart the matched values are. Zero means no step was
+	// written, which takes every value in the range.
+	Step          int32 `protobuf:"varint,3,opt,name=step,proto3" json:"step,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }

@@ -35,8 +35,25 @@ import (
 var triggerKeys = []string{"schedule"}
 
 // scheduleKeys are what a schedule says about when it fires.
-var scheduleKeys = []string{"cron", "every", "time_zone", "jitter", "overlap", "calendars", "start_at", "end_at", "catchup_window", "pause_on_failure"}
-var calendarKeys = []string{"second", "minute", "hour", "day_of_month", "month", "year", "day_of_week", "comment"}
+//
+// In the order [scheduleTriggerToYAML] writes them, which is the order a reader
+// wants them in: the cadence first, then how it is read, then the window it is
+// bounded by, then what happens when a firing is late or fails.
+var scheduleKeys = []string{
+	"cron", "every", "calendars", "time_zone", "jitter", "overlap",
+	"start_at", "end_at", "catchup_window", "pause_on_failure",
+}
+
+// calendarKeys are the fields of one calendar.
+//
+// The seven Temporal matches a time against come from
+// [v1.ScheduleCalendarFieldNames] rather than being written out again, so the
+// parser cannot know a different set of fields from the checker that bounds them,
+// and `comment`, which says why the calendar is there and matches nothing.
+var calendarKeys = append(v1.ScheduleCalendarFieldNames(), "comment")
+
+// calendarRangeKeys are the long spelling of one range within a calendar field.
+var calendarRangeKeys = []string{"start", "end", "step"}
 
 // triggers compiles the top-level `triggers:` block.
 //
@@ -99,8 +116,9 @@ func (c *compiler) scheduleTrigger(n ast.Node, path string, r ref) *v1.ScheduleT
 	fields, ok := c.fields(n, path, r, scheduleKeys)
 	if !ok {
 		c.report(spanOfNode(n), r,
-			"says when the workflow runs: `cron:` with a cron expression, or `every:` with an interval "+
-				"such as 15m, and optionally `time_zone:`, `jitter:` and `overlap:`")
+			"says when the workflow runs: `cron:` with a cron expression, `every:` with an interval such as "+
+				"15m, or `calendars:` with explicit times, and optionally `time_zone:`, `jitter:`, `overlap:`, "+
+				"`start_at:`, `end_at:`, `catchup_window:` and `pause_on_failure:`")
 
 		return nil
 	}
@@ -183,68 +201,192 @@ func (c *compiler) scheduleTrigger(n ast.Node, path string, r ref) *v1.ScheduleT
 	return schedule
 }
 
+// calendarSpecs reads `calendars:`, written as one calendar or as a list of them.
+//
+// One or many, the spelling [cronExpressions] already uses for the same schema
+// shape and for the same reason: a file naming a single calendar should not have to
+// write a one-element list to say so.
 func (c *compiler) calendarSpecs(n ast.Node, path string) []*v1.ScheduleTrigger_Calendar {
 	resolved := c.resolve(n, path, ref{path: path, label: "schedule calendars"})
 	if resolved == nil {
 		return nil
 	}
+
+	// Recorded for the block as a whole, because the diagnostics
+	// [v1.CheckScheduleTrigger] returns are about a calendar rather than about one
+	// number in it (an empty calendar, or a range that runs backwards), and a
+	// diagnostic with no position is one the author has to go looking for.
+	c.pos.record(path, spanOfNode(resolved))
+
 	nodes := []ast.Node{resolved}
 	if seq, ok := resolved.(*ast.SequenceNode); ok {
 		nodes = seq.Values
 	}
+
 	out := make([]*v1.ScheduleTrigger_Calendar, 0, len(nodes))
 	for i, node := range nodes {
 		p := indexPath(path, i)
-		fields, ok := c.fields(node, p, ref{path: p, label: "schedule calendar"}, calendarKeys)
+		r := ref{path: p, label: "schedule calendar"}
+
+		fields, ok := c.fields(node, p, r, calendarKeys)
 		if !ok {
-			c.report(spanOfNode(node), ref{path: p, label: "schedule calendar"}, "is a mapping of calendar fields")
+			c.report(spanOfNode(node), r,
+				"is a mapping naming the times to match: %s, each written as a whole number, a list of them, "+
+					"or `{start: 9, end: 17, step: 2}`", strings.Join(v1.ScheduleCalendarFieldNames(), ", "))
+
 			continue
 		}
-		cal := &v1.ScheduleTrigger_Calendar{}
-		for _, key := range calendarKeys[:7] {
+
+		calendar := &v1.ScheduleTrigger_Calendar{}
+		for _, key := range v1.ScheduleCalendarFieldNames() {
 			f, found := fields.get(key)
 			if !found {
 				continue
 			}
+
 			ranges := c.calendarRanges(f.value, fieldPath(p, key), key)
 			switch key {
 			case "second":
-				cal.Second = ranges
+				calendar.Second = ranges
 			case "minute":
-				cal.Minute = ranges
+				calendar.Minute = ranges
 			case "hour":
-				cal.Hour = ranges
+				calendar.Hour = ranges
 			case "day_of_month":
-				cal.DayOfMonth = ranges
+				calendar.DayOfMonth = ranges
 			case "month":
-				cal.Month = ranges
+				calendar.Month = ranges
 			case "year":
-				cal.Year = ranges
+				calendar.Year = ranges
 			case "day_of_week":
-				cal.DayOfWeek = ranges
+				calendar.DayOfWeek = ranges
 			}
 		}
+
 		if f, found := fields.get("comment"); found {
-			if s, ok := c.text(f.value, fieldPath(p, "comment"), ref{path: fieldPath(p, "comment"), label: "calendar comment"}); ok {
-				cal.Comment = s
+			commentPath := fieldPath(p, "comment")
+			if s, ok := c.text(f.value, commentPath, ref{path: commentPath, label: "calendar comment"}); ok {
+				calendar.Comment = s
 			}
 		}
-		out = append(out, cal)
+
+		out = append(out, calendar)
 	}
+
 	return out
 }
 
-func (c *compiler) calendarRanges(n ast.Node, path, label string) []*v1.ScheduleTrigger_Calendar_Range {
-	nodes := []ast.Node{n}
-	if seq, ok := c.resolve(n, path, ref{path: path, label: label}).(*ast.SequenceNode); ok {
-		nodes = seq.Values
+// calendarRanges reads one calendar field: `hour: 9`, `hour: [9, 17]`, or the long
+// form `hour: {start: 9, end: 17, step: 2}`.
+//
+// The long form exists because the schema has three numbers in a range and a
+// grammar that can only spell one of them makes the other two unreachable. That is
+// house rule that a capability is not done until a Flowfile can express it. The
+// short form stays because `hour: 9` is what almost every calendar says.
+//
+// Each number is bounded by [v1.ScheduleCalendarFieldBounds] rather than by a
+// range wide enough for every field, so `month: 13` is refused where it is written
+// instead of being carried to a cluster that refuses it at 03:00. The bounds come
+// from the same table [v1.CheckScheduleTrigger] uses: one spelling, so a field
+// widened there cannot stay narrow here.
+func (c *compiler) calendarRanges(n ast.Node, path, field string) []*v1.ScheduleTrigger_Calendar_Range {
+	resolved := c.resolve(n, path, ref{path: path, label: "schedule calendar " + field})
+	if resolved == nil {
+		return nil
 	}
+
+	nodes, listed := []ast.Node{resolved}, false
+	if seq, ok := resolved.(*ast.SequenceNode); ok {
+		nodes, listed = seq.Values, true
+	}
+
 	out := make([]*v1.ScheduleTrigger_Calendar_Range, 0, len(nodes))
 	for i, node := range nodes {
-		if value, ok := c.integer(node, indexPath(path, i), ref{path: indexPath(path, i), label: label}, 0, 3000); ok {
-			out = append(out, &v1.ScheduleTrigger_Calendar_Range{Start: value})
+		p := path
+		if listed {
+			p = indexPath(path, i)
+		}
+
+		if r := c.calendarRange(node, p, field); r != nil {
+			out = append(out, r)
 		}
 	}
+
+	return out
+}
+
+// calendarRange reads one range of one calendar field, in either spelling.
+func (c *compiler) calendarRange(n ast.Node, path, field string) *v1.ScheduleTrigger_Calendar_Range {
+	low, high, known := v1.ScheduleCalendarFieldBounds(field)
+	if !known {
+		// Unreachable while calendarKeys is derived from the same table, and cheap
+		// insurance against the day it is not: a field nobody can bound is a field
+		// nobody should be compiling.
+		return nil
+	}
+
+	r := ref{path: path, label: "schedule calendar " + field}
+
+	resolved := c.resolve(n, path, r)
+	if resolved == nil {
+		return nil
+	}
+
+	// The short form is anything that is not a mapping, so that a scalar which is
+	// not a number is reported by [compiler.integer] as the number it should have
+	// been rather than as a mapping it was never trying to be.
+	switch resolved.(type) {
+	case *ast.MappingNode, *ast.MappingValueNode:
+	default:
+		value, ok := c.integer(resolved, path, r, int64(low), int64(high))
+		if !ok {
+			return nil
+		}
+
+		return &v1.ScheduleTrigger_Calendar_Range{Start: value}
+	}
+
+	fields, ok := c.fields(resolved, path, r, calendarRangeKeys)
+	if !ok {
+		return nil
+	}
+
+	// `start:` is required in the long form: the schema's zero is a real value in
+	// four of the seven fields, so a range with no start written would compile to
+	// second zero rather than to the absence somebody meant.
+	f, found := fields.get("start")
+	if !found {
+		c.report(spanOfNode(resolved), r, "needs a `start:`; a range with no start does not say where it begins")
+
+		return nil
+	}
+
+	startPath := fieldPath(path, "start")
+	start, ok := c.integer(f.value, startPath, ref{path: startPath, label: "schedule calendar " + field + " start"}, int64(low), int64(high))
+	if !ok {
+		return nil
+	}
+
+	out := &v1.ScheduleTrigger_Calendar_Range{Start: start}
+
+	// The end is bounded from zero rather than from the field's own minimum,
+	// because zero is the schema's "no end written". [v1.CheckScheduleTrigger]
+	// holds the rest of the relationship, including that an end may not precede
+	// its start.
+	if f, found := fields.get("end"); found {
+		endPath := fieldPath(path, "end")
+		if end, ok := c.integer(f.value, endPath, ref{path: endPath, label: "schedule calendar " + field + " end"}, 0, int64(high)); ok {
+			out.End = end
+		}
+	}
+
+	if f, found := fields.get("step"); found {
+		stepPath := fieldPath(path, "step")
+		if step, ok := c.integer(f.value, stepPath, ref{path: stepPath, label: "schedule calendar " + field + " step"}, 1, int64(high)); ok {
+			out.Step = step
+		}
+	}
+
 	return out
 }
 
@@ -330,6 +472,10 @@ func scheduleTriggerToYAML(schedule *v1.ScheduleTrigger) (yaml.MapSlice, error) 
 		doc = append(doc, yaml.MapItem{Key: "every", Value: durationToYAML(every)})
 	}
 
+	if calendars := schedule.GetCalendars(); len(calendars) > 0 {
+		doc = append(doc, yaml.MapItem{Key: "calendars", Value: calendarsToYAML(calendars)})
+	}
+
 	if zone := schedule.GetTimeZone(); zone != "" {
 		doc = append(doc, yaml.MapItem{Key: "time_zone", Value: zone})
 	}
@@ -341,45 +487,21 @@ func scheduleTriggerToYAML(schedule *v1.ScheduleTrigger) (yaml.MapSlice, error) 
 	if overlap := schedule.GetOverlap(); overlap != v1.ScheduleTrigger_OVERLAP_UNSPECIFIED {
 		doc = append(doc, yaml.MapItem{Key: "overlap", Value: v1.OverlapName(overlap)})
 	}
+
 	if at := schedule.GetStartAt(); at != nil {
-		doc = append(doc, yaml.MapItem{Key: "start_at", Value: at.AsTime().Format(time.RFC3339)})
+		doc = append(doc, yaml.MapItem{Key: "start_at", Value: at.AsTime().UTC().Format(time.RFC3339)})
 	}
+
 	if at := schedule.GetEndAt(); at != nil {
-		doc = append(doc, yaml.MapItem{Key: "end_at", Value: at.AsTime().Format(time.RFC3339)})
+		doc = append(doc, yaml.MapItem{Key: "end_at", Value: at.AsTime().UTC().Format(time.RFC3339)})
 	}
-	if d := schedule.GetCatchupWindow(); d != nil {
-		doc = append(doc, yaml.MapItem{Key: "catchup_window", Value: durationToYAML(d)})
+
+	if window := schedule.GetCatchupWindow(); window != nil {
+		doc = append(doc, yaml.MapItem{Key: "catchup_window", Value: durationToYAML(window)})
 	}
+
 	if schedule.GetPauseOnFailure() {
 		doc = append(doc, yaml.MapItem{Key: "pause_on_failure", Value: true})
-	}
-	if len(schedule.GetCalendars()) > 0 {
-		calendars := make([]yaml.MapSlice, 0, len(schedule.GetCalendars()))
-		for _, cal := range schedule.GetCalendars() {
-			m := yaml.MapSlice{}
-			for _, entry := range []struct {
-				name   string
-				ranges []*v1.ScheduleTrigger_Calendar_Range
-			}{{"second", cal.GetSecond()}, {"minute", cal.GetMinute()}, {"hour", cal.GetHour()}, {"day_of_month", cal.GetDayOfMonth()}, {"month", cal.GetMonth()}, {"year", cal.GetYear()}, {"day_of_week", cal.GetDayOfWeek()}} {
-				if len(entry.ranges) == 0 {
-					continue
-				}
-				values := make([]int32, 0, len(entry.ranges))
-				for _, r := range entry.ranges {
-					values = append(values, r.GetStart())
-				}
-				var value any = values
-				if len(values) == 1 {
-					value = values[0]
-				}
-				m = append(m, yaml.MapItem{Key: entry.name, Value: value})
-			}
-			if cal.GetComment() != "" {
-				m = append(m, yaml.MapItem{Key: "comment", Value: cal.GetComment()})
-			}
-			calendars = append(calendars, m)
-		}
-		doc = append(doc, yaml.MapItem{Key: "calendars", Value: calendars})
 	}
 
 	if len(doc) == 0 {
@@ -392,6 +514,77 @@ func scheduleTriggerToYAML(schedule *v1.ScheduleTrigger) (yaml.MapSlice, error) 
 	}
 
 	return doc, nil
+}
+
+// calendarsToYAML writes `calendars:` back out.
+//
+// Every field of every range is written, and that is the whole point of this
+// function rather than a nicety: [Marshal] is the inverse of [Parse], and a writer
+// that knew only a range's start turned `hour: {start: 9, end: 17, step: 2}` into
+// `hour: 9`, a `flow fmt` that silently deletes eight of an author's nine firing
+// times, which is the exact class of corruption CLAUDE.md names as the worst thing
+// this repository can do.
+func calendarsToYAML(calendars []*v1.ScheduleTrigger_Calendar) []yaml.MapSlice {
+	out := make([]yaml.MapSlice, 0, len(calendars))
+	for _, calendar := range calendars {
+		written := yaml.MapSlice{}
+
+		for i, name := range v1.ScheduleCalendarFieldNames() {
+			ranges := scheduleCalendarRanges(calendar)[i]
+			if len(ranges) == 0 {
+				continue
+			}
+
+			values := make([]any, 0, len(ranges))
+			for _, r := range ranges {
+				values = append(values, calendarRangeToYAML(r))
+			}
+
+			// A single range is written bare rather than as a one-element list, the
+			// spelling `cron:` uses and the one [calendarRanges] reads back.
+			var value any = values
+			if len(values) == 1 {
+				value = values[0]
+			}
+
+			written = append(written, yaml.MapItem{Key: name, Value: value})
+		}
+
+		if comment := calendar.GetComment(); comment != "" {
+			written = append(written, yaml.MapItem{Key: "comment", Value: comment})
+		}
+
+		out = append(out, written)
+	}
+
+	return out
+}
+
+// calendarRangeToYAML writes a range in the shortest spelling that loses nothing.
+func calendarRangeToYAML(r *v1.ScheduleTrigger_Calendar_Range) any {
+	if r.GetEnd() == 0 && r.GetStep() == 0 {
+		return r.GetStart()
+	}
+
+	written := yaml.MapSlice{{Key: "start", Value: r.GetStart()}}
+	if r.GetEnd() != 0 {
+		written = append(written, yaml.MapItem{Key: "end", Value: r.GetEnd()})
+	}
+	if r.GetStep() != 0 {
+		written = append(written, yaml.MapItem{Key: "step", Value: r.GetStep()})
+	}
+
+	return written
+}
+
+// scheduleCalendarRanges returns a calendar's ranges in the field order
+// [v1.ScheduleCalendarFieldNames] gives, so a walk over one cannot fall out of
+// step with the names it is writing.
+func scheduleCalendarRanges(calendar *v1.ScheduleTrigger_Calendar) [][]*v1.ScheduleTrigger_Calendar_Range {
+	return [][]*v1.ScheduleTrigger_Calendar_Range{
+		calendar.GetSecond(), calendar.GetMinute(), calendar.GetHour(), calendar.GetDayOfMonth(),
+		calendar.GetMonth(), calendar.GetYear(), calendar.GetDayOfWeek(),
+	}
 }
 
 // validateTriggers reports what is wrong with a declared trigger.
@@ -422,10 +615,13 @@ func validateTriggers(wf *v1.Workflow) Diagnostics {
 	// neither key is there, which is exactly when there is nothing more specific to
 	// point at.
 	field := "triggers.schedule"
-	if len(schedule.GetCron()) > 0 {
+	switch {
+	case len(schedule.GetCron()) > 0:
 		field = "triggers.schedule.cron"
-	} else if schedule.GetEvery() != nil {
+	case schedule.GetEvery() != nil:
 		field = "triggers.schedule.every"
+	case len(schedule.GetCalendars()) > 0:
+		field = "triggers.schedule.calendars"
 	}
 
 	if err := v1.CheckScheduleTrigger(schedule); err != nil {

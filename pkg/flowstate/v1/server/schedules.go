@@ -127,6 +127,7 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf(
 			"workflow %q cannot be scheduled: %w", workflow.GetName(), err))
 	}
+
 	if err := v1.CheckScheduleBackfill(req.Msg.GetBackfill()); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
@@ -245,7 +246,7 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 		Spec:             spec,
 		Overlap:          overlapOf(trigger.GetOverlap()),
 		Paused:           req.Msg.GetPaused(),
-		CatchupWindow:    trigger.GetCatchupWindow().AsDuration(),
+		CatchupWindow:    scheduleCatchupWindowOf(trigger),
 		PauseOnFailure:   trigger.GetPauseOnFailure(),
 		ScheduleBackfill: scheduleBackfillsOf(req.Msg.GetBackfill()),
 
@@ -796,9 +797,24 @@ func scheduleSpecOf(trigger *v1.ScheduleTrigger) (client.ScheduleSpec, error) {
 		CronExpressions: trigger.GetCron(),
 		TimeZoneName:    trigger.GetTimeZone(),
 		Jitter:          trigger.GetJitter().AsDuration(),
-		StartAt:         trigger.GetStartAt().AsTime(),
-		EndAt:           trigger.GetEndAt().AsTime(),
 	}
+
+	// Assigned only when the bound was written, and the reason is a trap the
+	// generated accessors set: `(*timestamppb.Timestamp)(nil).AsTime()` is not the
+	// zero `time.Time` that means "unset" to the SDK. It is 1970-01-01, a real
+	// instant. Copied in unconditionally, a schedule with no `end_at`, which is
+	// every schedule anybody has created so far, reaches Temporal declaring that
+	// it ended before it was written, and is created with no future firing at all.
+	// The one thing worse than a schedule that does not fire is a schedule that
+	// does not fire and reports success, which is exactly what that was. The two
+	// server tests that describe a live schedule's next firing times caught it.
+	if start := trigger.GetStartAt(); start != nil {
+		spec.StartAt = start.AsTime()
+	}
+	if end := trigger.GetEndAt(); end != nil {
+		spec.EndAt = end.AsTime()
+	}
+
 	for _, calendar := range trigger.GetCalendars() {
 		spec.Calendars = append(spec.Calendars, client.ScheduleCalendarSpec{
 			Second: scheduleRangesOf(calendar.GetSecond()), Minute: scheduleRangesOf(calendar.GetMinute()),
@@ -823,7 +839,35 @@ func scheduleSpecOf(trigger *v1.ScheduleTrigger) (client.ScheduleSpec, error) {
 	return spec, nil
 }
 
+// scheduleCatchupWindowOf is how late a missed firing may still be taken.
+//
+// The default is applied here rather than left to the cluster, because Temporal's
+// own default for an unset window is one year: a schedule that says nothing about
+// catch-up would take a year of missed firings the moment a long outage ended,
+// which is the unbounded burst these controls exist to prevent. An absent field is
+// not an operator asking for a year, it is an operator not having thought about it,
+// and the fail-closed answer to that is the bounded default rather than the
+// largest number in the system. Saying `catchup_window:` explicitly still gets
+// anything up to [v1.MaxScheduleCatchupWindow].
+func scheduleCatchupWindowOf(trigger *v1.ScheduleTrigger) time.Duration {
+	if window := trigger.GetCatchupWindow(); window != nil {
+		return window.AsDuration()
+	}
+
+	return v1.DefaultScheduleCatchupWindow
+}
+
+// scheduleRangesOf projects a calendar field's ranges onto Temporal's.
+//
+// Nil for a field nobody wrote rather than an empty slice, because the two mean
+// different things to Temporal: an absent `Hour` takes the field's default, and
+// the distinction is what keeps a calendar that names only a day of the month
+// from being read as one that names an hour too.
 func scheduleRangesOf(in []*v1.ScheduleTrigger_Calendar_Range) []client.ScheduleRange {
+	if len(in) == 0 {
+		return nil
+	}
+
 	out := make([]client.ScheduleRange, 0, len(in))
 	for _, r := range in {
 		out = append(out, client.ScheduleRange{Start: int(r.GetStart()), End: int(r.GetEnd()), Step: int(r.GetStep())})
@@ -831,7 +875,16 @@ func scheduleRangesOf(in []*v1.ScheduleTrigger_Calendar_Range) []client.Schedule
 	return out
 }
 
+// scheduleBackfillsOf projects the create-time replay request onto Temporal's.
+//
+// Every range here has been through [v1.CheckScheduleBackfill] already, both at
+// the CLI and again in [FlowstateServer.CreateSchedule], so this is a projection
+// and holds no bound of its own.
 func scheduleBackfillsOf(in []*v1.ScheduleBackfill) []client.ScheduleBackfill {
+	if len(in) == 0 {
+		return nil
+	}
+
 	out := make([]client.ScheduleBackfill, 0, len(in))
 	for _, b := range in {
 		out = append(out, client.ScheduleBackfill{Start: b.GetStartAt().AsTime(), End: b.GetEndAt().AsTime(), Overlap: overlapOf(b.GetOverlap())})

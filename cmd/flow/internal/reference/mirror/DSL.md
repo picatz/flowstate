@@ -1124,21 +1124,94 @@ The checker is deliberately generous: `L`, `W`, `15#3` and `?` are cron syntax i
 not model, and it lets them through rather than inventing a restriction Flowstate does
 not have.
 
-The same block also accepts explicit `calendars`, inclusive RFC3339 `start_at` and
-`end_at` bounds, `catchup_window`, and `pause_on_failure`. Calendar, cron, and interval
-cadences are unioned. Catch-up is automatic recovery after the Temporal service was
-unavailable: only firings no older than the declared window are considered, and the
-normal overlap policy still applies. `pause_on_failure` pauses after a firing times out
-or exhausts retries; with `allow_all`, an already-started concurrent firing cannot be
-recalled.
+**Bounded recovery: the window, the catch-up, and what happens after a failure.** The
+same block accepts four more keys, and each one exists to make a schedule's behavior
+after something has gone wrong a thing somebody wrote down rather than a default they
+inherited.
 
-Backfill is different: it is an explicit create-time operator request over a closed
-historical interval, not a lasting property of the Flowfile. Flowstate accepts at most
-10 ranges spanning at most 31 days in total, validates every start is before its end,
-and then lets Temporal evaluate the declared cadence inside those ranges. Each range
-may override overlap; without an override the schedule policy applies. These bounds
-are deliberately far below “all history”, so recovering a missed window cannot
-accidentally turn into unbounded execution.
+```yaml
+triggers:
+  schedule:
+    cron: "0 7 * * MON-FRI"
+
+    # The window firings may happen in, inclusive at both ends. Either may be
+    # written alone, and a start that is not before its end is refused: such a
+    # schedule can never fire, and Temporal would create it happily.
+    start_at: 2026-01-01T00:00:00Z
+    end_at: 2027-01-01T00:00:00Z
+
+    # How late a missed firing may still be taken when the service comes back.
+    catchup_window: 6h
+
+    # Stop the schedule at the first firing that exhausts its retries or times
+    # out, rather than at the hundredth.
+    pause_on_failure: true
+```
+
+`catchup_window` is the one with a default worth knowing. Leaving it out does not mean
+"no catch-up": Temporal's own default for an unset window is **one year**, so a
+schedule silent on the subject would take a year of missed firings the moment a long
+outage ended. Flowstate substitutes a bounded default of one hour before the schedule
+is created, and this key is how a workload asks for more, up to thirty days. Whatever
+the window, the overlap policy still applies to what comes out of it, which is why the
+example above pairs a six-hour window with `overlap: skip`.
+
+**`calendars:` says when in a calendar's own terms.** A cron expression says the same
+thing in a notation most people arrive already knowing, so `calendars:` is for the
+cadence that is awkward to write as one, and for the range spelling that cron hides
+inside a string:
+
+```yaml
+triggers:
+  schedule:
+    calendars:
+      # Every second hour from 09:00 to 17:00, Monday to Friday.
+      - hour: {start: 9, end: 17, step: 2}
+        minute: 0
+        day_of_week: {start: 1, end: 5}
+        comment: office hours
+
+      # The first of the month, at 06:00. A field is a whole number, a list of
+      # them, or the long form above.
+      - day_of_month: 1
+        hour: 6
+```
+
+Calendars, cron expressions and `every:` are **unioned**: a schedule fires at every
+time any of them matches, so a calendar written beside a cron expression adds firings
+rather than narrowing them. Each field is bounded by what Temporal allows in it: 0-59
+for seconds and minutes, 0-23 for hours, 1-31 for days of the month, 1-12 for months,
+0-6 for days of the week (0 is Sunday), and years from 1970. So `month: 13` is reported
+with a line and a column rather than carried to a cluster that refuses it at 03:00.
+Two further refusals are about what a value *means* rather than its range: a
+calendar with no fields at all, which Temporal reads as 00:00:00 every day, and a range
+that counts down, which Temporal silently narrows to its start.
+
+A field nobody writes takes Temporal's default for that field. Seconds, minutes and
+hours default to zero; days of the month, months and days of the week match everything.
+That is why the second calendar above fires once, at 06:00, rather than sixty times in
+the 06:00 hour.
+
+**Backfill is not written here at all.** Recovering a window that was missed is an
+operator request about one moment, not a lasting property of the workload, so it lives
+on the command that creates the schedule:
+
+```console
+$ flow schedule create report.yaml --backfill 2026-08-01T00:00:00Z..2026-08-03T00:00:00Z
+```
+
+At most 10 ranges are accepted, spanning at most 31 days in total, and both bounds are
+checked by the same function whether the request came from the CLI or from the API.
+Two bounds rather than one because they bound different things: the count bounds how
+many evaluations the cluster is asked for, and the total span bounds how much history
+those evaluations cover, which is what decides how many executions come out. One 40-day
+range and forty 1-day ranges are the same burst.
+
+The interval Temporal evaluates is **half-open**: times after the start and up to and
+including the end. A start written at exactly the first firing time wanted therefore
+excludes it, and the fix is to write the start a moment earlier. Each range may name
+its own `overlap` to say what recovered work does when it meets a run already going;
+without one the schedule's own policy applies.
 
 ### `${...}` stays; `!expr` is refused
 

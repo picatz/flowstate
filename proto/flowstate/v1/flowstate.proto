@@ -909,12 +909,29 @@ message Triggers {
 // precedence rule between a default and a schedule's override is a rule somebody
 // has to learn for no benefit.
 message ScheduleTrigger {
-  // Calendar is an explicit calendar cadence. Each range is inclusive; an end
-  // of zero means the start value, and step defaults to one.
+  // Calendar is an explicit calendar cadence, matched field by field the way a
+  // cron expression is: a time matches when at least one range of every field
+  // matches it. A field nobody writes takes Temporal's default for that field:
+  // second, minute and hour default to zero, and the three date fields match
+  // everything. That is why a calendar with no fields at all is refused rather
+  // than compiled: it means 00:00:00 every day, and nobody writes that by
+  // meaning it.
   message Calendar {
+    // Range is a low-to-high span of one field, written in a Flowfile as a whole
+    // number, a list of them, or `{start: 9, end: 17, step: 2}`.
     message Range {
+      // Start is the first value the range matches, and the only required one.
       int32 start = 1;
+
+      // End is the last value, inclusive. Zero means no end was written, which
+      // matches the start alone. The schema cannot distinguish an unwritten end
+      // from one written as zero, and Temporal reads both the same way. An end
+      // below the start is refused rather than passed on, since Temporal would
+      // silently narrow it to the start.
       int32 end = 2;
+
+      // Step is how far apart the matched values are. Zero means no step was
+      // written, which takes every value in the range.
       int32 step = 3;
     }
     repeated Range second = 1;
@@ -1043,26 +1060,49 @@ message ScheduleTrigger {
     (buf.validate.field).enum = {defined_only: true}
   ];
 
-  // Calendars are unioned with cron and interval cadences.
+  // Calendars are unioned with cron and interval cadences: a schedule fires at
+  // every time any of the three matches, so a calendar beside a cron expression
+  // adds firings rather than filtering them.
   repeated Calendar calendars = 6 [(buf.validate.field).repeated = {max_items: 32}];
 
-  // StartAt and EndAt form an inclusive window in which firings may occur.
+  // StartAt and EndAt bound the window in which firings may occur, inclusively
+  // at both ends. Either may be written alone. A start that is not before its
+  // end is refused at creation, because such a schedule can never fire and would
+  // be created successfully by Temporal all the same.
   google.protobuf.Timestamp start_at = 7 [(google.api.field_behavior) = OPTIONAL];
   google.protobuf.Timestamp end_at = 8 [(google.api.field_behavior) = OPTIONAL];
 
-  // CatchupWindow limits how late a missed firing may be recovered. Requiring
-  // an explicit bounded value avoids Temporal's much larger server default.
+  // CatchupWindow limits how late a missed firing may still be taken when the
+  // Temporal service returns from an outage.
+  //
+  // Optional here, but never absent by the time Temporal sees it: an unset
+  // window is one Temporal defaults to *one year*, so a schedule that says
+  // nothing would take a year of missed firings at once. The server therefore
+  // substitutes its own bounded default (`v1.DefaultScheduleCatchupWindow`) for
+  // an absent value, and this field is how an operator asks for a different one,
+  // up to thirty days.
   google.protobuf.Duration catchup_window = 9 [
     (google.api.field_behavior) = OPTIONAL,
     (buf.validate.field).duration = {gte: {seconds: 60}, lte: {seconds: 2592000}}
   ];
 
-  // PauseOnFailure pauses after an action exhausts its retries or times out.
+  // PauseOnFailure pauses the whole schedule after an action exhausts its
+  // retries or times out, so a workload failing every hour stops at the first
+  // failure rather than at the hundredth. A firing already started is not
+  // recalled.
   bool pause_on_failure = 10 [(google.api.field_behavior) = OPTIONAL];
 }
 
-// ScheduleBackfill asks creation to evaluate a closed historical interval.
-// The server additionally limits the number of intervals and their total span.
+// ScheduleBackfill asks creation to evaluate the declared cadence over a
+// historical interval, taking the actions it would have taken then, now.
+//
+// The interval is half-open: Temporal evaluates times *after* start_at and up
+// to and including end_at, so a start written at exactly the first firing time
+// wanted excludes it. Write the start a moment earlier.
+//
+// The server bounds both how many intervals are accepted and their total span,
+// because a backfill is the one place where a single request decides how many
+// executions a cluster starts at once.
 message ScheduleBackfill {
   google.protobuf.Timestamp start_at = 1 [(buf.validate.field).required = true];
   google.protobuf.Timestamp end_at = 2 [(buf.validate.field).required = true];
@@ -4773,8 +4813,10 @@ message CreateScheduleRequest {
   bool paused = 4 [(google.api.field_behavior) = OPTIONAL];
 
   // Backfill is deliberately creation-only: it is an operator request, not a
-  // perpetual property of the workload. At most 10 intervals spanning no more
-  // than 31 days in total are accepted.
+  // perpetual property of the workload, which is why it is here and not in the
+  // Flowfile's `triggers.schedule` block. At most 10 intervals spanning no more
+  // than 31 days in total are accepted, and both bounds are enforced by
+  // `v1.CheckScheduleBackfill` on every path that can create a schedule.
   repeated ScheduleBackfill backfill = 5 [(buf.validate.field).repeated = {max_items: 10}];
 }
 

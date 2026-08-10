@@ -54,10 +54,27 @@ func CheckScheduleTrigger(trigger *ScheduleTrigger) error {
 		return fmt.Errorf("a schedule needs a cadence: write `cron:` with a cron expression, or `every:` with an interval such as 15m")
 	}
 	if start, end := trigger.GetStartAt(), trigger.GetEndAt(); start != nil && end != nil && !start.AsTime().Before(end.AsTime()) {
-		return fmt.Errorf("schedule start_at must be before end_at")
+		return fmt.Errorf("the schedule's `start_at` (%s) is not before its `end_at` (%s), so no firing time can "+
+			"fall between them and the schedule would never fire; write the earlier instant first",
+			start.AsTime().UTC().Format(time.RFC3339), end.AsTime().UTC().Format(time.RFC3339))
 	}
-	if trigger.GetCatchupWindow() != nil && trigger.GetCatchupWindow().AsDuration() < time.Minute {
-		return fmt.Errorf("schedule catchup_window must be at least 1m")
+
+	if window := trigger.GetCatchupWindow(); window != nil {
+		switch d := window.AsDuration(); {
+		case d < MinScheduleCatchupWindow:
+			return fmt.Errorf("`catchup_window:` is %s; the shortest window that can recover anything is %s, "+
+				"and leaving the key out takes %s", d, MinScheduleCatchupWindow, DefaultScheduleCatchupWindow)
+		case d > MaxScheduleCatchupWindow:
+			return fmt.Errorf("`catchup_window:` is %s; the longest window is %s, because a window longer than "+
+				"that turns a forgotten schedule into an unbounded burst of runs the moment a cluster returns",
+				d, MaxScheduleCatchupWindow)
+		}
+	}
+
+	for i, calendar := range trigger.GetCalendars() {
+		if err := checkScheduleCalendar(i, calendar); err != nil {
+			return err
+		}
 	}
 
 	if zone := trigger.GetTimeZone(); zone != "" {
@@ -69,6 +86,34 @@ func CheckScheduleTrigger(trigger *ScheduleTrigger) error {
 	return nil
 }
 
+// The catch-up window's bounds, and what an unset one takes.
+//
+// Temporal leaves an unset window to the *server's* default, which is one year,
+// so a schedule that says nothing about catch-up is a schedule that will, after a
+// long enough outage, take a year of missed firings at once. That is the exact
+// unbounded burst this surface exists to refuse, and "the field is optional" is not
+// a bound. [DefaultScheduleCatchupWindow] is therefore applied by the server when
+// the field is absent, which makes the maximum below a real ceiling rather than a
+// ceiling on the values somebody bothered to write.
+//
+// An hour is chosen because it is the window in which recovering a missed firing is
+// still recovery rather than archaeology: a firing an hour late is usually still
+// wanted, and a schedule that wants more says so in one line and gets up to thirty
+// days of it.
+const (
+	MinScheduleCatchupWindow     = time.Minute
+	MaxScheduleCatchupWindow     = 30 * 24 * time.Hour
+	DefaultScheduleCatchupWindow = time.Hour
+)
+
+// The bounds on an operator-requested historical replay.
+//
+// Two bounds rather than one, because they bound different resources and an
+// attacker (or a tired operator) picks whichever the other one leaves open. The
+// count bounds how many separate evaluations the cluster is asked for; the total
+// span bounds how much *time* those evaluations cover, which is what decides how
+// many executions come out of them. One 40-day range and forty 1-day ranges are the
+// same burst, and only checking both refuses both.
 const (
 	MaxScheduleBackfills    = 10
 	MaxScheduleBackfillSpan = 31 * 24 * time.Hour
@@ -76,24 +121,175 @@ const (
 
 // CheckScheduleBackfill bounds an operator-requested historical replay before
 // it can turn a short outage into an unbounded burst of executions.
+//
+// The budget is spent down rather than accumulated, and that is not a style
+// preference. `time.Duration` is a signed 64-bit nanosecond count, and RFC3339
+// admits years far enough apart that `Time.Sub` saturates at its maximum. Two
+// such ranges summed wrap *negative*, and a total below zero is a total below 31
+// days. Subtracting each span from what is left instead can never wrap, because a
+// span is only ever subtracted after it has been shown to fit.
 func CheckScheduleBackfill(backfills []*ScheduleBackfill) error {
 	if len(backfills) > MaxScheduleBackfills {
-		return fmt.Errorf("backfill has %d ranges; at most %d are allowed", len(backfills), MaxScheduleBackfills)
+		return fmt.Errorf("the backfill asks for %d ranges; at most %d are accepted, because a backfill is a "+
+			"bounded recovery of a window somebody can name rather than a replay of history",
+			len(backfills), MaxScheduleBackfills)
 	}
-	var total time.Duration
+
+	remaining := MaxScheduleBackfillSpan
 	for i, b := range backfills {
-		if b == nil || b.GetStartAt() == nil || b.GetEndAt() == nil {
-			return fmt.Errorf("backfill %d needs start_at and end_at", i+1)
+		if b.GetStartAt() == nil || b.GetEndAt() == nil {
+			return fmt.Errorf("backfill range %d needs both a start and an end, written as START..END with "+
+				"RFC3339 timestamps", i+1)
 		}
-		span := b.GetEndAt().AsTime().Sub(b.GetStartAt().AsTime())
-		if span <= 0 {
-			return fmt.Errorf("backfill %d start_at must be before end_at", i+1)
+
+		start, end := b.GetStartAt().AsTime(), b.GetEndAt().AsTime()
+		if !start.Before(end) {
+			return fmt.Errorf("backfill range %d starts at %s and ends at %s; the start must come first",
+				i+1, start.UTC().Format(time.RFC3339), end.UTC().Format(time.RFC3339))
 		}
-		total += span
+
+		// Saturating rather than wrapping: `Sub` clamps at the maximum duration, and
+		// a clamped span is astronomically larger than what remains, so it is refused
+		// here instead of being carried into an accumulator that could wrap.
+		span := end.Sub(start)
+		if span > remaining {
+			return fmt.Errorf("the backfill covers more than %s of history in total; range %d alone would take "+
+				"it past that. Recover the window that was missed, and leave the rest",
+				MaxScheduleBackfillSpan, i+1)
+		}
+		remaining -= span
 	}
-	if total > MaxScheduleBackfillSpan {
-		return fmt.Errorf("backfill spans %s; the maximum total span is %s", total, MaxScheduleBackfillSpan)
+
+	return nil
+}
+
+// scheduleCalendarField names one field of a calendar and the values Temporal
+// allows in it.
+//
+// Written once here because three surfaces need the same numbers: the Flowfile
+// parser, which reports an out-of-range value against the line it is on; this
+// checker, which is what the server and `flow schedule create` ask; and the prose
+// in docs/DSL.md. The bounds are Temporal's own (see client.ScheduleCalendarSpec):
+// a value outside one is refused by every cluster in the world, which is exactly
+// the line docs/DSL.md draws for what a validator may report.
+type scheduleCalendarField struct {
+	name string
+	min  int32
+	max  int32
+}
+
+// scheduleCalendarFields are the calendar's fields, in the order one is written.
+var scheduleCalendarFields = []scheduleCalendarField{
+	{name: "second", min: 0, max: 59},
+	{name: "minute", min: 0, max: 59},
+	{name: "hour", min: 0, max: 23},
+	{name: "day_of_month", min: 1, max: 31},
+	{name: "month", min: 1, max: 12},
+	{name: "year", min: int32(cronYear.min), max: int32(cronYear.max)},
+	{name: "day_of_week", min: 0, max: 6},
+}
+
+// ScheduleCalendarFieldNames are the keys a calendar may hold, in the order a
+// calendar is written, for a parser that needs the same list.
+func ScheduleCalendarFieldNames() []string {
+	names := make([]string, 0, len(scheduleCalendarFields))
+	for _, field := range scheduleCalendarFields {
+		names = append(names, field.name)
 	}
+
+	return names
+}
+
+// ScheduleCalendarFieldBounds returns the values a named calendar field allows,
+// so the Flowfile parser bounds each field with the numbers this checker uses
+// rather than a second copy of them.
+func ScheduleCalendarFieldBounds(name string) (low, high int32, known bool) {
+	for _, field := range scheduleCalendarFields {
+		if field.name == name {
+			return field.min, field.max, true
+		}
+	}
+
+	return 0, 0, false
+}
+
+// scheduleCalendarRanges returns a calendar's ranges in the field order above,
+// so a walk over a calendar cannot forget a field the schema has.
+func scheduleCalendarRanges(calendar *ScheduleTrigger_Calendar) [][]*ScheduleTrigger_Calendar_Range {
+	return [][]*ScheduleTrigger_Calendar_Range{
+		calendar.GetSecond(), calendar.GetMinute(), calendar.GetHour(), calendar.GetDayOfMonth(),
+		calendar.GetMonth(), calendar.GetYear(), calendar.GetDayOfWeek(),
+	}
+}
+
+// checkScheduleCalendar refuses a calendar that cannot mean what it says.
+//
+// An empty calendar is refused rather than defaulted, and it is the case worth
+// naming: Temporal reads a calendar with no fields as 00:00:00 every day, so
+// `calendars: [{}]` is a schedule that fires daily at midnight, written by
+// somebody who meant something else and told nothing. It is the same silent
+// success [CheckScheduleTrigger] refuses for a schedule with no cadence at all.
+func checkScheduleCalendar(index int, calendar *ScheduleTrigger_Calendar) error {
+	ranges := scheduleCalendarRanges(calendar)
+
+	empty := true
+	for _, field := range ranges {
+		if len(field) > 0 {
+			empty = false
+			break
+		}
+	}
+	if empty {
+		return fmt.Errorf("calendar %d says nothing about when to fire; a calendar with no fields means "+
+			"00:00:00 every day, which is a cadence nobody wrote. Name at least one of %s",
+			index+1, strings.Join(ScheduleCalendarFieldNames(), ", "))
+	}
+
+	for i, field := range scheduleCalendarFields {
+		for _, r := range ranges[i] {
+			if err := checkScheduleCalendarRange(index, field, r); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// checkScheduleCalendarRange checks one range of one calendar field.
+//
+// An `end` of zero is the schema's "no end written", which Temporal reads as the
+// start alone, so it is accepted whatever the start is, and every other value has
+// to be inside the field's range and at or after the start. A descending range is
+// refused rather than passed on, because Temporal silently narrows one to its start
+// and the author of `hour: {start: 17, end: 9}` did not ask for 17:00 only.
+func checkScheduleCalendarRange(index int, field scheduleCalendarField, r *ScheduleTrigger_Calendar_Range) error {
+	if r == nil {
+		return fmt.Errorf("calendar %d has an empty %s range; write a whole number, or a mapping of "+
+			"`start:`, `end:` and `step:`", index+1, field.name)
+	}
+
+	if r.GetStart() < field.min || r.GetStart() > field.max {
+		return fmt.Errorf("calendar %d has %s starting at %d, which is outside %d-%d",
+			index+1, field.name, r.GetStart(), field.min, field.max)
+	}
+
+	if end := r.GetEnd(); end != 0 {
+		if end < field.min || end > field.max {
+			return fmt.Errorf("calendar %d has %s ending at %d, which is outside %d-%d",
+				index+1, field.name, end, field.min, field.max)
+		}
+		if end < r.GetStart() {
+			return fmt.Errorf("calendar %d has %s running from %d down to %d; a range is written low to high, "+
+				"and a descending one matches its start alone", index+1, field.name, r.GetStart(), end)
+		}
+	}
+
+	if step := r.GetStep(); step < 0 {
+		return fmt.Errorf("calendar %d has a %s step of %d; a step counts forward, and leaving it out "+
+			"takes every value in the range", index+1, field.name, step)
+	}
+
 	return nil
 }
 
