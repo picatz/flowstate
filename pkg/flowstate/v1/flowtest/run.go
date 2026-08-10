@@ -37,14 +37,19 @@ func RunFile(path string) *v1.TestReport {
 }
 
 // RunFileWithCoverage is [RunFile] and, alongside the report, the branch
-// coverage the file's cases achieved over the workflow they target (issue
-// #420): which of that workflow's steps at least one case ran, and which no
-// case ever reached.
+// coverage the file's cases achieved (issue #420): which of a targeted
+// workflow's steps at least one case ran, and which no case ever reached.
 //
-// Coverage is nil for a file that produced no case with a compiled workflow to
-// account for (a refused file, or one whose every case failed to compile),
-// where a "0/0 steps reached" line would say less than nothing. See [Coverage].
-func RunFileWithCoverage(path string) (*v1.TestReport, *Coverage) {
+// One [Coverage] per workflow the file's cases target, sorted by workflow
+// identity. A `*.test.yaml` usually tests one workflow and this is a single
+// entry, but each case names its own `workflow:`, so a file may target several,
+// and coverage is kept separate per workflow so a step one workflow reaches
+// never masks the same step id left unreached in another (Finding 3).
+//
+// Nil for a file that produced no case with a compiled workflow to account for
+// (a refused file, or one whose every case failed to compile), where a "0/0
+// steps reached" line would say less than nothing. See [Coverage].
+func RunFileWithCoverage(path string) (*v1.TestReport, []*Coverage) {
 	report := &v1.TestReport{File: path}
 
 	file, err := Load(path)
@@ -65,15 +70,19 @@ func RunFileWithCoverage(path string) (*v1.TestReport, *Coverage) {
 	// [RunSource]: the loader is the only part of one case's run that differs
 	// between a file on disk and a workflow submitted as bytes.
 	for _, test := range file.Tests {
+		// The workflow's resolved path is its coverage identity: each case names
+		// its own `workflow:`, so this is what keeps two workflows' coverage
+		// apart within one file (Finding 3).
+		identity := WorkflowPath(path, &test)
 		result, spec, transcript := runCase(&test, func() (*v1.Workflow, error) {
-			workflow, _, err := flowfile.ParseFile(WorkflowPath(path, &test))
+			workflow, _, err := flowfile.ParseFile(identity)
 			if err != nil {
 				return nil, fmt.Errorf("loading workflow %q: %w", test.Workflow, err)
 			}
 			return workflow, nil
 		})
 		report.Cases = append(report.Cases, result)
-		coverage.observe(spec, transcript)
+		coverage.observe(identity, spec, transcript)
 	}
 
 	return report, coverage.result()

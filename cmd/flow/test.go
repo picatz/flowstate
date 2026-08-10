@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -110,6 +109,12 @@ func runTest(cmd *cobra.Command, paths []string) error {
 	)
 	for _, path := range files {
 		report, coverage := flowtest.RunFileWithCoverage(path)
+		// Attach each workflow's coverage to the report so the whole document
+		// renders through protojson: there is one rendering of the report and no
+		// second, hand-shaped encoder beside it to disagree with the first.
+		for _, c := range coverage {
+			report.Coverage = append(report.Coverage, c.Report())
+		}
 		results = append(results, testFileResult{report: report, coverage: coverage})
 
 		if !machine {
@@ -129,14 +134,20 @@ func runTest(cmd *cobra.Command, paths []string) error {
 		// A failure only when the run opted in: coverage is otherwise a result,
 		// not a verdict. Both an unrecorded gap and a stale record fail, because
 		// a record that no longer describes a real residual is a false statement
-		// about the suite, not a smaller one than a gap.
-		if coverageRequired && coverage != nil && (len(coverage.Gaps()) > 0 || len(coverage.Stale) > 0) {
-			anyFailed = true
+		// about the suite, not a smaller one than a gap. Checked per workflow the
+		// file targets, so a gap in one workflow is not masked by another
+		// (Finding 3).
+		if coverageRequired {
+			for _, c := range coverage {
+				if len(c.Gaps()) > 0 || len(c.Stale) > 0 {
+					anyFailed = true
+				}
+			}
 		}
 	}
 
 	if machine {
-		if err := writeTestResults(surface, format, results, coverageRequired); err != nil {
+		if err := writeTestResults(surface, format, results); err != nil {
 			return err
 		}
 	}
@@ -148,12 +159,12 @@ func runTest(cmd *cobra.Command, paths []string) error {
 }
 
 // testFileResult pairs one file's report with the branch coverage its cases
-// achieved, so the two travel together into rendering. coverage is nil for a
-// file with no workflow to account for (a refused file); see
-// [flowtest.RunFileWithCoverage].
+// achieved, one entry per workflow the file targeted, so the two travel
+// together into rendering. coverage is nil for a file with no workflow to
+// account for (a refused file); see [flowtest.RunFileWithCoverage].
 type testFileResult struct {
 	report   *v1.TestReport
-	coverage *flowtest.Coverage
+	coverage []*flowtest.Coverage
 }
 
 // printTestReport renders one file's report in the CLI's ordinary text style:
@@ -186,8 +197,10 @@ func printTestReport(out io.Writer, theme ui.Theme, report *v1.TestReport) {
 	}
 }
 
-// printCoverage renders one file's branch coverage: how many of the workflow's
-// steps at least one case reached, and the complement it never did.
+// printCoverage renders one file's branch coverage, one line per workflow the
+// file's cases targeted: how many of that workflow's steps at least one case
+// reached, and the complement it never did. A file testing one workflow, the
+// ordinary case, prints exactly one line.
 //
 // A result, not a diagnostic (#420): `flow validate` has no warning tier, but
 // `flow test` owns its own output and a coverage line is an account of what the
@@ -196,156 +209,79 @@ func printTestReport(out io.Writer, theme ui.Theme, report *v1.TestReport) {
 // accepted residual, named plainly with the reason. A stale record, a reason
 // kept past the branch it explained, is called out on its own line so it is not
 // mistaken for either.
-func printCoverage(out io.Writer, theme ui.Theme, report *v1.TestReport, coverage *flowtest.Coverage, required bool) {
-	if coverage == nil {
-		return
-	}
-
+func printCoverage(out io.Writer, theme ui.Theme, report *v1.TestReport, coverage []*flowtest.Coverage, required bool) {
+	// Labelled by the test file, not the workflow, so a file testing one
+	// workflow prints the exact line it always did. A file targeting several
+	// prints one line each, sharing the label and distinguished by content and
+	// by the per-workflow identity the machine report carries.
 	file := theme.Muted.Render(report.GetFile())
-	summary := fmt.Sprintf("%d/%d steps reached", len(coverage.Reached), coverage.Total())
+	for _, cov := range coverage {
+		summary := fmt.Sprintf("%d/%d steps reached", len(cov.Reached), cov.Total())
 
-	gaps := coverage.Gaps()
-	tail := ""
-	if len(gaps) > 0 {
-		phrase := "never ran: " + strings.Join(gaps, ", ")
-		// Coloured as a fault only where the run opted in to treat it as one;
-		// otherwise it is a fact worth reading, not a failure.
-		if required {
-			phrase = theme.Danger.Render(phrase)
-		} else {
-			phrase = theme.Warning.Render(phrase)
+		gaps := cov.Gaps()
+		tail := ""
+		if len(gaps) > 0 {
+			phrase := "never ran: " + strings.Join(gaps, ", ")
+			// Coloured as a fault only where the run opted in to treat it as
+			// one; otherwise it is a fact worth reading, not a failure.
+			if required {
+				phrase = theme.Danger.Render(phrase)
+			} else {
+				phrase = theme.Warning.Render(phrase)
+			}
+			tail += "; " + phrase
 		}
-		tail += "; " + phrase
-	}
-	if len(coverage.Accepted) > 0 {
-		accepted := make([]string, 0, len(coverage.Accepted))
-		for step := range coverage.Accepted {
-			accepted = append(accepted, step)
+		if len(cov.Accepted) > 0 {
+			accepted := make([]string, 0, len(cov.Accepted))
+			for step := range cov.Accepted {
+				accepted = append(accepted, step)
+			}
+			sort.Strings(accepted)
+			tail += "; " + theme.Muted.Render("accepted-unreached: "+strings.Join(accepted, ", "))
 		}
-		sort.Strings(accepted)
-		tail += "; " + theme.Muted.Render("accepted-unreached: "+strings.Join(accepted, ", "))
-	}
 
-	fmt.Fprintf(out, "%s  %s%s\n", file, summary, tail)
+		fmt.Fprintf(out, "%s  %s%s\n", file, summary, tail)
 
-	for _, stale := range coverage.Stale {
-		fmt.Fprintf(out, "       %s\n", theme.Danger.Render(stale))
+		for _, stale := range cov.Stale {
+			fmt.Fprintf(out, "       %s\n", theme.Danger.Render(stale))
+		}
 	}
 }
 
-// coverageDoc is coverage as it rides the machine output: a `coverage` key
-// merged into each file's report object, so a consumer already reading
-// `.files[].cases` finds `.files[].coverage` beside it.
+// writeTestResults emits the machine report.
 //
-// Field names follow protojson's camelCase so the whole document reads with one
-// convention, even though this part is hand-shaped rather than schema-derived
-// (issue #420 keeps coverage out of the schema).
-type coverageDoc struct {
-	StepsTotal   int               `json:"stepsTotal"`
-	StepsReached int               `json:"stepsReached"`
-	Reached      []string          `json:"reached"`
-	Unreached    []string          `json:"unreached"`
-	Gaps         []string          `json:"gaps"`
-	Accepted     map[string]string `json:"accepted"`
-	Stale        []string          `json:"stale"`
-	Required     bool              `json:"required"`
-}
-
-func newCoverageDoc(coverage *flowtest.Coverage, required bool) *coverageDoc {
-	doc := &coverageDoc{
-		StepsTotal:   coverage.Total(),
-		StepsReached: len(coverage.Reached),
-		Reached:      coverage.Reached,
-		Unreached:    coverage.Unreached,
-		Gaps:         coverage.Gaps(),
-		Accepted:     coverage.Accepted,
-		Stale:        coverage.Stale,
-		Required:     required,
-	}
-	// Empty slices rather than null, matching protojson's EmitUnpopulated
-	// posture on the schema fields beside them: a consumer indexing the array
-	// finds a list to range over rather than a null to guard.
-	if doc.Reached == nil {
-		doc.Reached = []string{}
-	}
-	if doc.Unreached == nil {
-		doc.Unreached = []string{}
-	}
-	if doc.Gaps == nil {
-		doc.Gaps = []string{}
-	}
-	if doc.Accepted == nil {
-		doc.Accepted = map[string]string{}
-	}
-	if doc.Stale == nil {
-		doc.Stale = []string{}
-	}
-	return doc
-}
-
-// writeTestResults emits the machine report, merging each file's coverage into
-// its report object.
-//
-// The report fields are rendered by protojson (through [marshalJSON]) and pass
-// through untouched as raw JSON; only the `coverage` object and the wrapper are
-// hand-shaped. So the schema half keeps protojson's field names and enum
-// spellings, and there is no second rendering of the report to disagree with
-// the first, which is the mixing the house rule against "one thing spelled
-// twice" warns about.
-func writeTestResults(surface *ui.UI, format OutputFormat, results []testFileResult, required bool) error {
-	objects := make([]json.RawMessage, 0, len(results))
-	for _, r := range results {
-		merged, err := mergeCoverageIntoReport(r.report, r.coverage, required)
-		if err != nil {
-			return err
-		}
-		objects = append(objects, merged)
-	}
-
+// Coverage is a schema field on each [v1.TestReport] now
+// ([v1.TestReport.Coverage]), attached before this is called, so the whole
+// document renders through protojson (via [marshalJSON]): one encoder, the
+// schema's field names and enum spellings, and no second rendering of the
+// report to disagree with the first, which is the mixing the house rule against
+// "one thing spelled twice" warns about. JSONL emits one report per line; JSON
+// wraps them in a [v1.TestReports] envelope, the same `{"files": [...]}` shape
+// as before.
+func writeTestResults(surface *ui.UI, format OutputFormat, results []testFileResult) error {
 	if format == FormatJSONL {
-		for _, obj := range objects {
-			if _, err := fmt.Fprintf(surface.Out, "%s\n", obj); err != nil {
+		for _, r := range results {
+			encoded, err := marshalJSON(r.report, false)
+			if err != nil {
+				return fmt.Errorf("rendering a test report: %w", err)
+			}
+			if _, err := fmt.Fprintf(surface.Out, "%s\n", encoded); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
 
-	document, err := json.MarshalIndent(map[string]any{"files": objects}, "", "  ")
+	reports := &v1.TestReports{Files: make([]*v1.TestReport, 0, len(results))}
+	for _, r := range results {
+		reports.Files = append(reports.Files, r.report)
+	}
+	encoded, err := marshalJSON(reports, true)
 	if err != nil {
 		return fmt.Errorf("rendering the test report as %s: %w", format, err)
 	}
-	_, err = fmt.Fprintf(surface.Out, "%s\n", document)
+	_, err = fmt.Fprintf(surface.Out, "%s\n", encoded)
 	return err
-}
-
-// mergeCoverageIntoReport renders one TestReport through protojson and adds a
-// `coverage` key beside its fields. A file with no coverage to account for gets
-// no key rather than a null one, the same way it gets no coverage line.
-func mergeCoverageIntoReport(report *v1.TestReport, coverage *flowtest.Coverage, required bool) (json.RawMessage, error) {
-	encoded, err := marshalJSON(report, false)
-	if err != nil {
-		return nil, fmt.Errorf("rendering a test report: %w", err)
-	}
-
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(encoded, &fields); err != nil {
-		return nil, fmt.Errorf("reading back a rendered test report: %w", err)
-	}
-
-	if coverage != nil {
-		covBytes, err := json.Marshal(newCoverageDoc(coverage, required))
-		if err != nil {
-			return nil, fmt.Errorf("rendering coverage: %w", err)
-		}
-		fields["coverage"] = covBytes
-	}
-
-	merged, err := json.Marshal(fields)
-	if err != nil {
-		return nil, fmt.Errorf("assembling a test report: %w", err)
-	}
-	return merged, nil
 }
 
 // collectTestFiles expands the paths given into the *.test.yaml files to run,

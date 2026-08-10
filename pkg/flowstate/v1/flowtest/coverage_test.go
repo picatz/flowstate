@@ -1,6 +1,7 @@
 package flowtest_test
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -75,12 +76,14 @@ tests:
       skipped: [on_ready, on_failed]
 `)
 
-	report, coverage := flowtest.RunFileWithCoverage(dir + "/x.test.yaml")
+	report, coverages := flowtest.RunFileWithCoverage(dir + "/x.test.yaml")
 	require.Empty(t, report.GetRefused())
 	for _, c := range report.GetCases() {
 		require.True(t, c.GetPassed(), "case %q failed: %v", c.GetName(), c.GetFailures())
 	}
-	require.NotNil(t, coverage)
+	// One workflow targeted, so one coverage entry.
+	require.Len(t, coverages, 1)
+	coverage := coverages[0]
 
 	// The negative direction, which is the issue's whole point: on_failed is
 	// unreached, even though the second case asserts it was skipped. Being in
@@ -144,11 +147,12 @@ tests:
       ran: [fan]
 `)
 
-	report, coverage := flowtest.RunFileWithCoverage(dir + "/x.test.yaml")
+	report, coverages := flowtest.RunFileWithCoverage(dir + "/x.test.yaml")
 	require.Empty(t, report.GetRefused())
 	require.Len(t, report.GetCases(), 1)
 	require.True(t, report.GetCases()[0].GetPassed(), "%v", report.GetCases()[0].GetFailures())
-	require.NotNil(t, coverage)
+	require.Len(t, coverages, 1)
+	coverage := coverages[0]
 
 	// `fan` (the container) and `touched` (a body step every iteration ran) are
 	// reached; `never` (a body step no iteration's `if:` admitted) is not.
@@ -200,8 +204,9 @@ coverage:
   allow_unreached:
     rare: this branch is left for a follow-up case; recorded so it is a decision, not a hole.
 `)
-		_, coverage := flowtest.RunFileWithCoverage(dir + "/ok.test.yaml")
-		require.NotNil(t, coverage)
+		_, coverages := flowtest.RunFileWithCoverage(dir + "/ok.test.yaml")
+		require.Len(t, coverages, 1)
+		coverage := coverages[0]
 		assert.Equal(t, []string{"rare"}, coverage.Unreached)
 		assert.Contains(t, coverage.Accepted, "rare")
 		assert.Empty(t, coverage.Gaps(), "a recorded residual must not read as a gap")
@@ -224,8 +229,9 @@ coverage:
   allow_unreached:
     rare: stale claim; a case does reach this now.
 `)
-		_, coverage := flowtest.RunFileWithCoverage(dir + "/stale.test.yaml")
-		require.NotNil(t, coverage)
+		_, coverages := flowtest.RunFileWithCoverage(dir + "/stale.test.yaml")
+		require.Len(t, coverages, 1)
+		coverage := coverages[0]
 		assert.Empty(t, coverage.Unreached, "every step was reached")
 		assert.Empty(t, coverage.Accepted, "a reached step cannot be an accepted residual")
 		require.Len(t, coverage.Stale, 1, "a record for a reached step must be reported stale")
@@ -249,13 +255,112 @@ coverage:
   allow_unreached:
     no_such_step: names a step that does not exist.
 `)
-		_, coverage := flowtest.RunFileWithCoverage(dir + "/ghost.test.yaml")
-		require.NotNil(t, coverage)
+		_, coverages := flowtest.RunFileWithCoverage(dir + "/ghost.test.yaml")
+		require.Len(t, coverages, 1)
+		coverage := coverages[0]
 		require.Len(t, coverage.Stale, 1)
 		assert.Contains(t, coverage.Stale[0], "no_such_step")
 		// `rare` is still a genuine gap, unaffected by the bad record.
 		assert.Equal(t, []string{"rare"}, coverage.Gaps())
 	})
+}
+
+// TestCoverageDoesNotBleedAcrossWorkflows is Finding 3 in the negative
+// direction the house rules insist on (CLAUDE.md, "test that A cannot reach B"):
+// a single `*.test.yaml` whose cases target two different workflows that share a
+// step id, where one workflow reaches the shared step and the other leaves it
+// unreached. Coverage is keyed by workflow, so the reached one must not mask the
+// unreached one - the second workflow's `shared` must still show UNREACHED.
+//
+// Without the per-workflow keying (unioning every case's steps into one set)
+// `shared` is marked reached by the first workflow and the second's gap
+// vanishes, a false pass under `--coverage-required`. That is the bug this test
+// bites: revert [coverageAccumulator] to a single universe/reached pair and this
+// fails, because there is then one coverage in which `shared` is reached.
+func TestCoverageDoesNotBleedAcrossWorkflows(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+
+	// Workflow A reaches `shared`: it runs unconditionally.
+	writeFile(t, dir+"/a.yaml", `
+edition: v2026.2
+name: a
+steps:
+  - id: shared
+    log:
+      message: a reaches shared
+`)
+	// Workflow B also has a `shared` step, but gated behind an `if:` no case
+	// satisfies, so B never reaches it. `anchor` gives B a step that does run.
+	writeFile(t, dir+"/b.yaml", `
+edition: v2026.2
+name: b
+inputs:
+  mode:
+    type: string
+    required: true
+steps:
+  - id: anchor
+    log:
+      message: b anchor
+  - id: shared
+    if: ${inputs.mode == 'never'}
+    log:
+      message: b shared
+`)
+	// One test file, two cases, each naming its own workflow.
+	writeFile(t, dir+"/x.test.yaml", `
+tests:
+  - name: workflow A reaches shared
+    workflow: ./a.yaml
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [shared]
+  - name: workflow B never reaches shared
+    workflow: ./b.yaml
+    inputs:
+      mode: common
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [anchor]
+      skipped: [shared]
+`)
+
+	report, coverages := flowtest.RunFileWithCoverage(dir + "/x.test.yaml")
+	require.Empty(t, report.GetRefused())
+	for _, c := range report.GetCases() {
+		require.True(t, c.GetPassed(), "case %q failed: %v", c.GetName(), c.GetFailures())
+	}
+
+	// Two workflows targeted, so two coverage entries, one per workflow.
+	require.Len(t, coverages, 2, "coverage must be kept per workflow, not unioned")
+
+	byWorkflow := map[string]*flowtest.Coverage{}
+	for _, c := range coverages {
+		byWorkflow[filepath.Base(c.Workflow)] = c
+	}
+
+	a := byWorkflow["a.yaml"]
+	b := byWorkflow["b.yaml"]
+	require.NotNil(t, a, "coverage for a.yaml")
+	require.NotNil(t, b, "coverage for b.yaml")
+
+	// A reaches its shared step.
+	assert.Equal(t, []string{"shared"}, a.Reached)
+	assert.Empty(t, a.Unreached)
+
+	// The whole point, in the negative direction: B's `shared` is UNREACHED and
+	// must not be masked by A having reached a step of the same id.
+	assert.Equal(t, []string{"shared"}, b.Unreached,
+		"the second workflow's shared step must show unreached, not be masked by the first")
+	assert.Equal(t, []string{"anchor"}, b.Reached)
+	assert.Equal(t, []string{"shared"}, b.Gaps(),
+		"B's unreached shared step is a genuine gap under --coverage-required")
 }
 
 // TestCoverageAllowUnreachedRequiresAReason pins that the file grammar refuses

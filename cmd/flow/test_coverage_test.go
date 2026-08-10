@@ -128,9 +128,10 @@ coverage:
 }
 
 // TestFlowTestJSONCarriesCoverage is the machine-output half of #420: the
-// coverage sets ride beside each file's report so CI reads them rather than
+// coverage sets ride the report as a schema field so CI reads them rather than
 // scraping the prose line, and the report fields protojson already emitted stay
-// exactly where they were.
+// exactly where they were. Coverage is `repeated CoverageReport coverage`, one
+// per workflow the file targets, each carrying the workflow it accounts for.
 func TestFlowTestJSONCarriesCoverage(t *testing.T) {
 	dir := writeCoverageFixture(t, "")
 
@@ -144,7 +145,8 @@ func TestFlowTestJSONCarriesCoverage(t *testing.T) {
 				Name   string `json:"name"`
 				Passed bool   `json:"passed"`
 			} `json:"cases"`
-			Coverage struct {
+			Coverage []struct {
+				Workflow     string   `json:"workflow"`
 				StepsTotal   int      `json:"stepsTotal"`
 				StepsReached int      `json:"stepsReached"`
 				Reached      []string `json:"reached"`
@@ -160,9 +162,14 @@ func TestFlowTestJSONCarriesCoverage(t *testing.T) {
 	require.Len(t, doc.Files[0].Cases, 1)
 	assert.True(t, doc.Files[0].Cases[0].Passed)
 
-	// The coverage half is beside it, carrying the unreached branch by name.
-	assert.Equal(t, 2, doc.Files[0].Coverage.StepsTotal)
-	assert.Equal(t, 1, doc.Files[0].Coverage.StepsReached)
-	assert.Equal(t, []string{"rare"}, doc.Files[0].Coverage.Unreached)
-	assert.Equal(t, []string{"rare"}, doc.Files[0].Coverage.Gaps)
+	// The coverage half is a schema field beside it: one CoverageReport for the
+	// one workflow this file targets, carrying the unreached branch by name and
+	// naming the workflow it accounts for.
+	require.Len(t, doc.Files[0].Coverage, 1)
+	cov := doc.Files[0].Coverage[0]
+	assert.Contains(t, cov.Workflow, "workflow.yaml")
+	assert.Equal(t, 2, cov.StepsTotal)
+	assert.Equal(t, 1, cov.StepsReached)
+	assert.Equal(t, []string{"rare"}, cov.Unreached)
+	assert.Equal(t, []string{"rare"}, cov.Gaps)
 }
