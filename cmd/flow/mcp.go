@@ -109,6 +109,15 @@ var mcpToolNotes = map[string]string{
 		"asked for it. Nothing on this transport can attest that a particular human approved anything, and an " +
 		"interactive card rendering this result changes none of that; an attested approver waits on the remote " +
 		"MCP surface.",
+
+	// A fact about where this surface dispatches the call, which the schema's
+	// GetCatalog cannot know: runMCP answers it from the in-process server, so
+	// against a deployment addressed with --address the catalog described is
+	// this binary's own build, and a deployment running other plugins or
+	// another version answers the wire RPC differently.
+	"GetCatalog": "On this surface the answer is this binary's own build (its task registry and any plugins " +
+		"this process started), not the deployment --address points at; a deployment with other plugins or " +
+		"another version may differ.",
 }
 
 // mcpLocalToolNote says that a tool needs nothing stood up, for the tools where

@@ -66,6 +66,8 @@ The registry is the single source of truth for capability, and until this existe
 
 `TaskCatalog`'s own comment anticipated this RPC, and returning that message unchanged is the point: an editor, an agent, a documentation generator and `flow tasks --output json` all read one shape.
 
+On this surface the answer is this binary's own build (its task registry and any plugins this process started), not the deployment --address points at; a deployment with other plugins or another version may differ.
+
 Answers locally, in this process. No server and no Temporal needed.
 
 ## `flowstate_run`
