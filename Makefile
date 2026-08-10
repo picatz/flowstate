@@ -104,7 +104,10 @@ docs:
 #   - A [Symbol] doc link only resolves when the identifier is importable from
 #     the package the comment lives in. A link to something unimportable renders
 #     as literal brackets, not a link, so cross-package links need the full
-#     import path (`[pkg/flowstate/v1.Workflow]`), not a bare local name.
+#     import path (`[github.com/picatz/flowstate/pkg/flowstate/v1.Workflow]`), not
+#     a bare local name or a slash-qualified fragment (a name with slashes is
+#     read as an import path, so `[pkg/flowstate/v1.Workflow]` links to a package
+#     that does not exist).
 #   - A code block needs the blank-comment-line-then-indent shape: an empty `//`
 #     line, then lines indented under it. Without the blank line first, the
 #     indented text renders as an ordinary paragraph rather than as code.
