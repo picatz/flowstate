@@ -47,6 +47,13 @@ func TestEveryTaskActivityHeartbeats(t *testing.T) {
 	require.Contains(t, registered, "WorkflowVars")
 	delete(registered, "WorkflowVars")
 
+	// CheckPlugins is absent for the same kind of reason: it compares a run's
+	// pinned plugin tuples against a snapshot this process took at startup. No
+	// network, no plugin process, nothing it waits on. Named here rather than
+	// filtered silently, so an activity that can be slow cannot arrive quietly.
+	require.Contains(t, registered, "CheckPlugins")
+	delete(registered, "CheckPlugins")
+
 	require.NotEmpty(t, registered,
 		"no activities were found in versioning.go, so this asserted nothing")
 

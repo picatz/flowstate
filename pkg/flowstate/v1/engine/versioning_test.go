@@ -98,8 +98,14 @@ func TestRegisterInstallsEverythingHistoryCanName(t *testing.T) {
 	// in history before its first step. An activity added and left unregistered is
 	// not a build error and not a test failure anywhere else — it is a run that
 	// cannot finish on a worker that does not answer to the name.
+	// CheckPlugins joins it for the same reason and one of its own: a run pinned
+	// to a plugin names it in history before its first step, and the worker that
+	// must refuse such a run is exactly the worker that has no plugins. An
+	// unregistered activity there would refuse it too, with "unknown activity
+	// type" instead of a sentence naming the plugin, which reads as a broken
+	// worker rather than a rollout that is half done.
 	require.ElementsMatch(t,
-		[]string{"Task", "TaskInScope", "TaskWithPrev", "TaskAuthorized", "TaskInScopeAuthorized", "WorkflowVars"}, registry.activities)
+		[]string{"Task", "TaskInScope", "TaskWithPrev", "TaskAuthorized", "TaskInScopeAuthorized", "WorkflowVars", "CheckPlugins"}, registry.activities)
 }
 
 // TestRegisterPinsTheInterpreter is the assertion the whole versioning posture

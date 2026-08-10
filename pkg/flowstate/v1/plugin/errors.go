@@ -42,6 +42,13 @@ var (
 	// no capabilities, or one that changed across a restart.
 	ErrManifest = errors.New("plugin: invalid manifest")
 
+	// ErrDistribution reports that the executable behind a plugin changed while
+	// the plugin was running. It is separate from [ErrManifest] because it is a
+	// different fact and a worse one: a manifest that changed says the plugin
+	// admits to being something else, and this says it does not: same name, same
+	// version, same tasks, different bytes.
+	ErrDistribution = errors.New("plugin: distribution changed")
+
 	// ErrDuplicateScheme reports that two plugins claim one secret scheme. Two
 	// answers for one scheme is a configuration error, not something to resolve
 	// by which plugin happened to load first.

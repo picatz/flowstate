@@ -51,7 +51,7 @@ const (
 // misspelled `timout:` that is silently ignored does nothing at run time and gives
 // the author no reason to doubt it, which is the worst of both outcomes.
 var (
-	workflowKeys = []string{"edition", "name", "description", "inputs", "outputs", "vars", "steps", "triggers", "signals"}
+	workflowKeys = []string{"edition", "name", "description", "inputs", "outputs", "vars", "steps", "triggers", "signals", "plugins"}
 
 	// The keys of one input declaration and of one output declaration. Both are
 	// mappings keyed by the name being declared, so these are the keys *under* a
@@ -670,6 +670,10 @@ func (c *compiler) compile(file *ast.File) *v1.Workflow {
 	// whatever the worker executing it happens to ship with.
 	workflow := &v1.Workflow{Profile: v1.CurrentProfile}
 
+	if f, found := fields.get("plugins"); found {
+		workflow.PluginRequirements = c.pluginRequirements(f.value, "plugins", ref{path: "plugins", label: "plugins"})
+	}
+
 	if f, found := fields.get("name"); found {
 		name, _ := c.text(f.value, "name", ref{path: "name", label: "name"})
 		workflow.Name = name
@@ -727,6 +731,32 @@ func (c *compiler) compile(file *ast.File) *v1.Workflow {
 	}
 
 	return workflow
+}
+
+func (c *compiler) pluginRequirements(n ast.Node, path string, r ref) []*v1.PluginRequirement {
+	c.pos.record(path, spanOfNode(c.resolveQuiet(n)))
+	entries, ok := c.entries(n, path, r)
+	if !ok {
+		return nil
+	}
+	if len(entries) > 64 {
+		c.report(spanOfNode(n), r, "plugins has %d entries; at most 64 are allowed", len(entries))
+	}
+	out := make([]*v1.PluginRequirement, 0, len(entries))
+	for _, e := range entries {
+		p := fieldPath(path, e.name)
+		version, ok := c.text(e.value, "plugin version", ref{path: p, label: e.name})
+		if !ok {
+			continue
+		}
+		if !v1.ValidPluginVersion(version) {
+			c.report(spanOfNode(e.value), ref{path: p, label: e.name},
+				"plugin %q requires a semantic version written as vMAJOR.MINOR.PATCH, but %q was written here", e.name, version)
+			continue
+		}
+		out = append(out, &v1.PluginRequirement{Name: e.name, MinimumVersion: version})
+	}
+	return out
 }
 
 // declaredInputs compiles the top-level `inputs:` block: one entry per parameter a
