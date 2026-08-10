@@ -381,6 +381,47 @@ tests:
 	require.True(t, c.GetPassed(), "error: %s failures: %v", c.GetError(), c.GetFailures())
 }
 
+// TestPluginTaskStubByStepIdCompilesAndRuns is the step-form counterpart of
+// TestP2PluginTaskStubCompilesAndRuns: the same plugin task this build never
+// registers, stubbed by the step id that invokes it rather than by the task
+// name, must compile and run just the same. The concern is that resolving a
+// step id to its task needs the compiled workflow, which lands after the parse
+// a task-form stub pre-registers a synthetic shape for. It holds because
+// [flowfile.Parse] does not reject an unregistered task on its own (a bare or
+// dotted unknown name parses; task existence is a separate validation the run
+// path does not invoke), so the workflow compiles, the step resolves to
+// slack.post, and the case registry answers it.
+func TestPluginTaskStubByStepIdCompilesAndRuns(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/workflow.yaml", `
+edition: v2026.2
+name: plugin-wf
+steps:
+  - id: a
+    slack.post:
+      channel: general
+`)
+	writeFile(t, dir+"/x.test.yaml", `
+tests:
+  - name: stub a plugin task by the step that invokes it
+    workflow: ./workflow.yaml
+    stubs:
+      - step: a
+        returns:
+          ok: true
+    expect:
+      ran: [a]
+`)
+
+	report := flowtest.RunFile(dir + "/x.test.yaml")
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 1)
+	c := report.GetCases()[0]
+	require.True(t, c.GetPassed(), "error: %s failures: %v", c.GetError(), c.GetFailures())
+}
+
 // TestP2LargeInt64PrecisionIsNotLost is P2-2: two int64s on either side of
 // float64's 2^53 mantissa boundary must compare as different — a comparison
 // that round-trips both sides through float64 first would make this pass for
