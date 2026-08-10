@@ -16,6 +16,7 @@ check:
 	go run ./cmd/flow fix --check examples/
 	go run ./cmd/flow test examples/
 	$(MAKE) fuzz-smoke
+	$(MAKE) appearance
 	docker compose -f examples/observability/docker-compose.yaml config -q
 	go run ./cmd/flow docs generate && git diff --exit-code -- docs/reference/
 	go generate ./cmd/flow/internal/reference && git diff --exit-code -- cmd/flow/internal/reference/
