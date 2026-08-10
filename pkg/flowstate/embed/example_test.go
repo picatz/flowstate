@@ -60,7 +60,11 @@ steps:
 	}
 
 	// 4. Read a step's output back out of the result.
-	greeting := outputs.GetStepValues()["welcome"].GetNamedValues()["greeting"].GetLiteral().GetStringValue()
+	greeting, ok := embed.StepOutputString(outputs, "welcome", "greeting")
+	if !ok {
+		fmt.Println("no greeting output from step welcome")
+		return
+	}
 	fmt.Println(greeting)
 
 	// Output:

@@ -773,49 +773,12 @@ func compareOutputs(want map[string]any, got map[string]*v1.Value) []*v1.Diagnos
 	return failures
 }
 
-// literalToGo converts a resolved CEL literal into a plain Go value, the same
-// conversion [v1.NewValue] performs in reverse when a test file's YAML
-// becomes a stub's canned outputs.
+// literalToGo converts a resolved CEL literal into a plain Go value. It is
+// [v1.LiteralToGo], the one spelling of that conversion this package shares
+// with [v1] itself and with `embed`, kept as a local name so the call sites
+// below did not need touching when the switch moved to [v1].
 func literalToGo(v *expr.Value) (any, error) {
-	switch kind := v.GetKind().(type) {
-	case nil, *exprValueNull:
-		return nil, nil
-	case *exprValueString:
-		return kind.StringValue, nil
-	case *exprValueInt64:
-		return kind.Int64Value, nil
-	case *exprValueUint64:
-		return kind.Uint64Value, nil
-	case *exprValueDouble:
-		return kind.DoubleValue, nil
-	case *exprValueBool:
-		return kind.BoolValue, nil
-	case *exprValueBytes:
-		return kind.BytesValue, nil
-	case *exprValueList:
-		list := make([]any, 0, len(kind.ListValue.GetValues()))
-		for i, element := range kind.ListValue.GetValues() {
-			native, err := literalToGo(element)
-			if err != nil {
-				return nil, fmt.Errorf("element %d: %w", i, err)
-			}
-			list = append(list, native)
-		}
-		return list, nil
-	case *exprValueMap:
-		object := make(map[string]any, len(kind.MapValue.GetEntries()))
-		for _, entry := range kind.MapValue.GetEntries() {
-			name := entry.GetKey().GetStringValue()
-			native, err := literalToGo(entry.GetValue())
-			if err != nil {
-				return nil, fmt.Errorf("key %q: %w", name, err)
-			}
-			object[name] = native
-		}
-		return object, nil
-	default:
-		return nil, fmt.Errorf("a %T cannot be compared", kind)
-	}
+	return v1.LiteralToGo(v)
 }
 
 // looseEqual compares a YAML-decoded expectation against a value that came
@@ -961,18 +924,3 @@ func asFloatOnly(v any) (float64, bool) {
 		return 0, false
 	}
 }
-
-// The concrete *expr.Value_* types, aliased so [literalToGo]'s switch reads
-// against the same names eval_task_http.go's literalToNative does, without
-// this package reaching into that unexported function directly.
-type (
-	exprValueNull   = expr.Value_NullValue
-	exprValueString = expr.Value_StringValue
-	exprValueInt64  = expr.Value_Int64Value
-	exprValueUint64 = expr.Value_Uint64Value
-	exprValueDouble = expr.Value_DoubleValue
-	exprValueBool   = expr.Value_BoolValue
-	exprValueBytes  = expr.Value_BytesValue
-	exprValueList   = expr.Value_ListValue
-	exprValueMap    = expr.Value_MapValue
-)

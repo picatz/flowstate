@@ -779,6 +779,64 @@ func newValueExprWithErr(exprStr string) (*Value, error) {
 	}, nil
 }
 
+// LiteralToGo converts a resolved CEL literal into a plain Go value,
+// recursively for a list or a map. It is the reverse of what [NewValue]
+// performs when a Go value becomes a literal.
+//
+// This is the one spelling of that conversion: flowtest and embed both call
+// it rather than each keeping their own copy of the switch, so a step's
+// recorded value reads back the same way no matter which package reads it.
+func LiteralToGo(v *expr.Value) (any, error) {
+	switch kind := v.GetKind().(type) {
+	case nil, *expr.Value_NullValue:
+		return nil, nil
+	case *expr.Value_StringValue:
+		return kind.StringValue, nil
+	case *expr.Value_Int64Value:
+		return kind.Int64Value, nil
+	case *expr.Value_Uint64Value:
+		return kind.Uint64Value, nil
+	case *expr.Value_DoubleValue:
+		return kind.DoubleValue, nil
+	case *expr.Value_BoolValue:
+		return kind.BoolValue, nil
+	case *expr.Value_BytesValue:
+		return kind.BytesValue, nil
+	case *expr.Value_ListValue:
+		list := make([]any, 0, len(kind.ListValue.GetValues()))
+		for i, element := range kind.ListValue.GetValues() {
+			native, err := LiteralToGo(element)
+			if err != nil {
+				return nil, fmt.Errorf("element %d: %w", i, err)
+			}
+			list = append(list, native)
+		}
+		return list, nil
+	case *expr.Value_MapValue:
+		object := make(map[string]any, len(kind.MapValue.GetEntries()))
+		for _, entry := range kind.MapValue.GetEntries() {
+			// A Go map[string]any cannot hold an integer, unsigned, or
+			// boolean CEL key, and GetStringValue would silently return ""
+			// for every one of them, collapsing distinct entries into a
+			// single object[""] and reporting success. Fail closed on a key
+			// this target cannot represent rather than corrupt the result.
+			key, ok := entry.GetKey().GetKind().(*expr.Value_StringValue)
+			if !ok {
+				return nil, fmt.Errorf("map key of type %T cannot be converted to a Go map key: only string keys are supported", entry.GetKey().GetKind())
+			}
+			name := key.StringValue
+			native, err := LiteralToGo(entry.GetValue())
+			if err != nil {
+				return nil, fmt.Errorf("key %q: %w", name, err)
+			}
+			object[name] = native
+		}
+		return object, nil
+	default:
+		return nil, fmt.Errorf("a %T cannot be converted to a Go value", kind)
+	}
+}
+
 func NewValue(v any) *Value {
 	if v == nil {
 		return &Value{

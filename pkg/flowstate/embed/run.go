@@ -213,3 +213,65 @@ func RunLocal(ctx context.Context, workflow *Workflow, opts RunOptions) (*v1.Wor
 
 	return v1.RunWithInputs(ctx, workflow, v1.NewNamedValues(opts.Inputs))
 }
+
+// StepOutput returns the named output of a step from what [RunLocal]
+// returned, as a plain Go value, with ok reporting whether it found one.
+//
+// ok is false, with a nil value, whenever the step named did not run or ran
+// but produced no output of that name. Both are typos or logic errors an
+// author should see, not a silent zero value read out of a raw map index.
+// ok is also false for outputs, present in outputs, that RunLocal itself
+// reports as nil.
+//
+// A found value is converted with [v1.LiteralToGo], the same conversion
+// `flow test` uses to compare a stub's canned output against a `.test.yaml`
+// expectation, so a list or a map comes back as the Go slice or map an
+// author expects rather than a CEL literal they would otherwise have to
+// unwrap by hand. A found output whose value is not a literal, such as a
+// secret reference reflected back unresolved, is reported as ok=false rather
+// than as an error, matching this accessor's "found or not" contract.
+func StepOutput(outputs *v1.Workflow_StepOutputs, step, name string) (any, bool) {
+	if outputs == nil {
+		return nil, false
+	}
+
+	values := outputs.GetStepValues()[step]
+	if values == nil {
+		return nil, false
+	}
+
+	value := values.GetNamedValues()[name]
+	if value == nil {
+		return nil, false
+	}
+
+	literal := value.GetLiteral()
+	if literal == nil {
+		return nil, false
+	}
+
+	native, err := v1.LiteralToGo(literal)
+	if err != nil {
+		return nil, false
+	}
+
+	return native, true
+}
+
+// StepOutputString is [StepOutput] for the common case of reading a string
+// output, so a caller does not need a type assertion for the facade's
+// flagship example. ok is false under every condition [StepOutput] itself
+// reports false for, and also when the output exists but is not a string.
+func StepOutputString(outputs *v1.Workflow_StepOutputs, step, name string) (string, bool) {
+	value, ok := StepOutput(outputs, step, name)
+	if !ok {
+		return "", false
+	}
+
+	str, ok := value.(string)
+	if !ok {
+		return "", false
+	}
+
+	return str, true
+}
