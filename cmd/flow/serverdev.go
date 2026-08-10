@@ -277,21 +277,24 @@ func devRefusals(flags devFlags, getenv devEnv) error {
 		return err
 	}
 
-	// This command *is* the Temporal cluster. An address or a profile pointing
-	// at somebody else's would go unused, and the silence is the problem,
-	// because the operator who exported it believes their runs are landing
-	// there.
-	for _, name := range []string{"TEMPORAL_ADDRESS", "TEMPORAL_PROFILE"} {
+	// This command *is* the Temporal cluster. An address, a profile, or an
+	// explicit configuration file pointing at somebody else's would go unused,
+	// and the silence is the problem, because the operator who exported it
+	// believes their runs are landing there. TEMPORAL_CONFIG_FILE is in the
+	// list because the client configuration loader reads it exactly as it
+	// reads the other two; leaving it out would be the same misrouting
+	// through a different spelling.
+	for _, name := range []string{"TEMPORAL_ADDRESS", "TEMPORAL_PROFILE", "TEMPORAL_CONFIG_FILE"} {
 		value := getenv(name)
 		if value == "" {
 			continue
 		}
 
 		return fmt.Errorf(
-			"refusing to start: %s=%s names a Temporal cluster, and `flow server dev` starts one of "+
-				"its own: every run would land in the ephemeral server this command creates rather "+
-				"than in the cluster you configured, and nothing would say so. Unset %s to use this "+
-				"command's own server, or run the stack against yours with "+
+			"refusing to start: %s=%s points this process at Temporal configuration of your own, and "+
+				"`flow server dev` starts a cluster of its own: every run would land in the ephemeral "+
+				"server this command creates rather than where you configured, and nothing would say "+
+				"so. Unset %s to use this command's own server, or run the stack against yours with "+
 				"`flow server --insecure-no-auth` and `flow worker --%s`",
 			name, value, name, allowUnversionedFlag)
 	}

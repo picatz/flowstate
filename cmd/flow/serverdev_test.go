@@ -125,6 +125,12 @@ func TestServerDevRefusesToComposeIntoSomethingElse(t *testing.T) {
 			getenv:  env("TEMPORAL_PROFILE", "staging"),
 			refused: "TEMPORAL_PROFILE=staging",
 		},
+		{
+			name:    "somebody else's Temporal, named by an explicit config file",
+			flags:   devFlags{listen: "localhost:9233"},
+			getenv:  env("TEMPORAL_CONFIG_FILE", "/etc/temporal/staging.toml"),
+			refused: "TEMPORAL_CONFIG_FILE=/etc/temporal/staging.toml",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := devRefusals(tc.flags, tc.getenv)
@@ -324,6 +330,7 @@ func TestServerDevReachesADurableRunInTwoCommands(t *testing.T) {
 	// what is under test.
 	for _, name := range []string{
 		"FLOWSTATE_ADDRESS", "FLOWSTATE_AUTH_POLICY", "TEMPORAL_ADDRESS", "TEMPORAL_PROFILE",
+		"TEMPORAL_CONFIG_FILE",
 	} {
 		t.Setenv(name, "")
 	}
@@ -355,7 +362,14 @@ func TestServerDevReachesADurableRunInTwoCommands(t *testing.T) {
 	if err != nil {
 		// Loudly, and only for the one environment failure that is not a
 		// finding about this code: the dev server is a `temporal` binary this
-		// machine may have neither cached nor be able to fetch.
+		// machine may have neither cached nor be able to fetch. Any other
+		// startup error is exactly what this gate exists to catch (a worker
+		// registration break, a bad SDK option, a listener failure), so it
+		// fails rather than skipping; a skip that swallowed those would let CI
+		// pass while the command cannot start at all.
+		if !devServerUnavailable(err) {
+			t.Fatalf("`flow server dev` failed to start, and not for want of a Temporal binary: %v", err)
+		}
 		t.Skipf("SKIPPING the two-command gate: this environment cannot start a Temporal dev server (%v). "+
 			"That is an environment limitation, not a passing test: nothing below this line ran.", err)
 	}
@@ -463,4 +477,32 @@ func assertNothingAnswersAt(t *testing.T, address string) {
 
 		time.Sleep(200 * time.Millisecond)
 	}
+}
+
+// devServerUnavailable reports whether err is the one environment failure the
+// two-command gate may skip on: this machine cannot provide a `temporal`
+// binary, because the SDK could not download one and none was cached. Matched
+// on the download and exec failure shapes the SDK and the OS produce, and
+// nothing broader: an unrecognized startup error is a finding about this
+// command, and skipping on it would let CI pass while `flow server dev`
+// cannot start at all.
+func devServerUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	text := err.Error()
+	for _, marker := range []string{
+		"unable to download",
+		"failed to download",
+		"download temporal",
+		"no such host",
+		"executable file not found",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+
+	return false
 }
