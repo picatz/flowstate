@@ -21,8 +21,8 @@ import (
 // message naming a Protobuf message and no line:
 //
 //	invalid flowstate.v1.Task.HTTP.Inputs: 2 rules violated:
-//	- url: value must be a valid URI (string.uri)
-//	- method: value does not match regex pattern `^(?i)(GET|POST|PUT|PATCH|DELETE)$`
+//	- url: must be a valid URI (string.uri)
+//	- method: does not match regex pattern `^(?i)(GET|POST|PUT|PATCH|DELETE)$`
 //
 // Everything in that sentence was knowable while the author was still looking at the
 // file. What the validator lacked was not the information but the question.

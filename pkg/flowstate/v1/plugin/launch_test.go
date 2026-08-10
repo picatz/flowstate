@@ -122,10 +122,14 @@ func TestOpenRefusesBadPlugins(t *testing.T) {
 			// The schema's own min_items rule catches this one, which is the
 			// right place for it: the manifest is refused before any of the
 			// host's own reasoning runs.
-			name:        "plugin advertising nothing",
-			mode:        "no-caps",
-			wantErr:     ErrManifest,
-			wantMessage: "capabilities: value must contain at least 1 item",
+			name:    "plugin advertising nothing",
+			mode:    "no-caps",
+			wantErr: ErrManifest,
+			// The min_items rule is what refuses this; the exact framing around
+			// it is the validator's to phrase and has changed across releases
+			// (the field prefix, an "(s)", a trailing rule id), so pin only the
+			// clause that names the violated rule, not the sentence it sits in.
+			wantMessage: "must contain at least 1 item",
 		},
 		{
 			// The case the host's own check is for: capabilities that satisfy
