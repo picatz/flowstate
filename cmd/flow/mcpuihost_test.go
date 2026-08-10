@@ -183,6 +183,46 @@ func (h *cardHarness) spoof(t *testing.T, response *v1.GetResponse) {
 	h.page.evaluate(t, h.ctx, 0, "window.__spoof("+jsString(t, marshalGetResponse(t, response))+"), true", nil)
 }
 
+// watchNeighbourSentinels installs a listener inside the card's frame that
+// records the harness's own sentinel messages as they arrive.
+//
+// In the isolated world, which is what makes it usable as evidence: the card's
+// document cannot see this listener and this listener cannot change the card's
+// state. It observes the frame receiving a message and nothing else. The card's
+// own listener sees the same events, and ignores these ones, because a sentinel
+// carries no jsonrpc member.
+func (h *cardHarness) watchNeighbourSentinels(t *testing.T) {
+	t.Helper()
+
+	h.inView(t, `(function () {
+		window.__sentinels = [];
+		window.addEventListener('message', function (event) {
+			var data = event.data || {};
+			if (typeof data.flowstateHarnessSentinel === 'string') {
+				window.__sentinels.push(data.flowstateHarnessSentinel);
+			}
+		});
+		return true;
+	})()`, nil)
+}
+
+// neighbourSentinel has the neighbouring frame send the card a message the card
+// can only ignore, and waits for the card's frame to have received it.
+//
+// This is the barrier the negative test needs. It travels the neighbour's
+// channel, the same one a spoof travels, so it cannot arrive before a spoof sent
+// ahead of it; and it carries nothing the card would act on, so it cannot
+// overwrite whatever a spoof did.
+func (h *cardHarness) neighbourSentinel(t *testing.T, name string) {
+	t.Helper()
+
+	h.page.evaluate(t, h.ctx, 0, "window.__neighbourSentinel("+jsString(t, name)+"), true", nil)
+	h.untilInView(t,
+		"(window.__sentinels || []).indexOf("+jsString(t, name)+") !== -1",
+		"the neighbour's sentinel never reached the card's frame, so nothing can be concluded about "+
+			"what the frame did with the message sent before it")
+}
+
 // respond answers a tools/call the card made.
 func (h *cardHarness) respond(t *testing.T, id int, result map[string]any) {
 	t.Helper()
@@ -586,9 +626,18 @@ func TestARefusedSignalReEnablesTheDecisionAndSaysSo(t *testing.T) {
 		"isError": true,
 	})
 
+	// The count is part of the predicate, and it is the whole point of writing it
+	// this way. `every` over an empty list is true, so a card that answered a
+	// refusal by removing its decisions altogether would satisfy a bare `every`
+	// immediately: the person deciding would be left with a gate that is still
+	// open and no way to answer it, and the test would call that a pass. Both
+	// buttons have to be there, and both have to be live.
 	harness.untilInView(t,
-		"Array.from(document.querySelectorAll('section:nth-of-type(1) button')).every(function (b) { return !b.disabled; })",
-		"the decision buttons never came back after the server refused the signal")
+		"(function () {"+
+			" var buttons = document.querySelectorAll('section:nth-of-type(1) button');"+
+			" return buttons.length === 2 && Array.from(buttons).every(function (b) { return !b.disabled; });"+
+			"})()",
+		"the two decision buttons never came back, live, after the server refused the signal")
 
 	status := harness.text(t, "#status")
 	assert.Contains(t, status, "The server refused it",
@@ -610,9 +659,16 @@ func TestARefusedSignalReEnablesTheDecisionAndSaysSo(t *testing.T) {
 // workload, and the card must not render it, which is to say must not become
 // willing to sign it.
 //
-// The proof that "nothing happened" happened is a barrier rather than a sleep: a
-// real delivery is sent from the host afterwards and waited for, so the spoof
-// has demonstrably been delivered and processed before the assertion is made.
+// The proof that "nothing happened" happened is a barrier rather than a sleep,
+// and the barrier is deliberately not a second delivery from the host. A real
+// delivery rewrites the very state a spoof would have changed, so a card that
+// accepted the spoof and was then corrected by the host looks exactly like a
+// card that refused it; and the two travel different window-to-window channels,
+// which orders neither against the other. The barrier here is a message from the
+// neighbour itself: same channel as the spoof, therefore delivered after it, and
+// carrying nothing the card would act on, therefore unable to repair the state
+// under test. When it has arrived, whatever the card did with the spoof it has
+// already done.
 func TestAMessageFromANeighbouringFrameIsIgnored(t *testing.T) {
 	harness := newCardHarness(t)
 
@@ -620,20 +676,18 @@ func TestAMessageFromANeighbouringFrameIsIgnored(t *testing.T) {
 	harness.untilInView(t, "document.querySelectorAll('section').length === 2",
 		"the delivered tool result never rendered")
 
+	harness.watchNeighbourSentinels(t)
+
 	spoofed := waitingRun()
 	spoofed.WorkflowId = "attacker-controlled-workload"
 	spoofed.Progress.PendingWaits = spoofed.Progress.PendingWaits[:1]
 	spoofed.Progress.PendingWaits[0].SignalName = "release-funds"
 	harness.spoof(t, spoofed)
 
-	// The barrier: a delivery from the real host, whose effect is visible.
-	barrier := waitingRun()
-	barrier.Starter = "barrier@example.com"
-	harness.deliver(t, barrier)
-	harness.untilInView(t,
-		"document.getElementById('run-starter').textContent === 'barrier@example.com'",
-		"the host's own delivery never arrived, so nothing can be concluded about the spoof")
+	harness.neighbourSentinel(t, "after-the-spoof")
 
+	// The card is still showing the run its host delivered, which is the whole
+	// claim: the spoof has been through the card's listener and changed nothing.
 	assert.Equal(t, "expense-report-4417", harness.text(t, "#run-workflow"),
 		"a frame that is not the card's host changed the workload the card displays, and therefore "+
 			"the workload its approve button would sign")
@@ -642,6 +696,16 @@ func TestAMessageFromANeighbouringFrameIsIgnored(t *testing.T) {
 	harness.inView(t, "Array.from(document.querySelectorAll('section h2')).map(function (h) { return h.textContent; })", &headings)
 	assert.Equal(t, []string{"manager-approved", "update"}, headings,
 		"a neighbouring frame replaced the gates on offer")
+
+	// The host itself is still heard, which is the other half of a sender check:
+	// a card that refused everything would pass every assertion above and be
+	// useless.
+	current := waitingRun()
+	current.Starter = "second-delivery@example.com"
+	harness.deliver(t, current)
+	harness.untilInView(t,
+		"document.getElementById('run-starter').textContent === 'second-delivery@example.com'",
+		"the card stopped accepting deliveries from its own host")
 
 	// And the click that follows still addresses the real run.
 	harness.inView(t, "document.querySelector('section:nth-of-type(1) .approve').click(), true", nil)

@@ -133,6 +133,24 @@
           );
         };
 
+        // __neighbourSentinel has that same neighbour send the card a second
+        // message, one the card cannot act on however it is treated: it carries
+        // no jsonrpc member, so the card's listener returns before it reaches
+        // any branch that changes anything.
+        //
+        // It is a barrier rather than a payload. Both messages travel the same
+        // window-to-window channel, and postMessage delivers in order along one
+        // channel, so a sentinel the card's frame has received is proof that the
+        // spoof sent before it was received and handled first. A barrier made of
+        // a real delivery cannot say that, because a delivery overwrites the
+        // state a spoof would have changed.
+        window.__neighbourSentinel = function (name) {
+          proxy.contentWindow.postMessage(
+            { relay: "spoof", message: { flowstateHarnessSentinel: name } },
+            sandboxOrigin
+          );
+        };
+
         // __calls is the tool calls the card has made, in order.
         window.__calls = function () {
           return window.__transcript

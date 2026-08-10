@@ -74,7 +74,7 @@ func chromiumCandidates() []string {
 	}
 
 	if root := os.Getenv("PLAYWRIGHT_BROWSERS_PATH"); root != "" {
-		candidates = append(candidates, filepath.Join(root, "chromium"))
+		candidates = append(candidates, playwrightCandidates(root)...)
 	}
 
 	for _, name := range []string{
@@ -86,6 +86,51 @@ func chromiumCandidates() []string {
 		if found, err := exec.LookPath(name); err == nil {
 			candidates = append(candidates, found)
 		}
+	}
+
+	return candidates
+}
+
+// playwrightCandidates are the executables a Playwright browsers directory may
+// hold, in the order they are tried.
+//
+// `<root>/chromium` first, because that is the symlink this repository's
+// development containers put there, and a plain path costs nothing to try. It is
+// not what `playwright install` writes, though: a real install nests the
+// executable under a versioned directory, `chromium-1194/chrome-linux/chrome` on
+// Linux and `chrome-linux64` on the builds that use that name, so a lookup that
+// only knows the flat path misses every standard install and the test skips on a
+// machine that has a browser sitting right there.
+//
+// The headless shell Playwright installs beside it, `chromium_headless_shell-*`,
+// is deliberately not looked at. It speaks the devtools protocol and launches
+// happily, and it is still the wrong browser for these tests: the shell does not
+// put a sandboxed opaque-origin frame in a target of its own, so the view never
+// appears as an attachable target and every test here fails on its own budget
+// rather than skipping. Pointing this harness at one produces, three times over:
+//
+//	no attached target whose URL ends with "/view" ever appeared; the browser
+//	has [http://127.0.0.1:46081/?sandbox=http%3A%2F%2F127.0.0.1%3A45635]
+//	(context deadline exceeded)
+//
+// The frame boundary is the thing under test, so a browser that does not give
+// the harness a way through it is not a browser these tests can run in.
+//
+// Any full build present is good enough, so the matches are taken in the order
+// [filepath.Glob] returns them rather than sorted by version: this picks a
+// browser, it does not pick the newest one.
+func playwrightCandidates(root string) []string {
+	candidates := []string{filepath.Join(root, "chromium")}
+
+	for _, pattern := range []string{
+		filepath.Join(root, "chromium-*", "chrome-linux", "chrome"),
+		filepath.Join(root, "chromium-*", "chrome-linux64", "chrome"),
+	} {
+		// The only error [filepath.Glob] reports is a malformed pattern, and
+		// these patterns are literals with one `*` in them. A root that does not
+		// exist is simply no matches.
+		matches, _ := filepath.Glob(pattern)
+		candidates = append(candidates, matches...)
 	}
 
 	return candidates
