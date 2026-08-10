@@ -321,16 +321,16 @@ jobs:
   # and with a sentence, anywhere the token endpoint is absent, so the same
   # command is honest on a laptop and on a fork without the permission.
   #
-  # Advisory for the 48h window CLAUDE.md gives every newly added check, for the
-  # same reason staticcheck and the fuzz smoke job had one: a check nobody has
-  # run against this tree can go red on code nobody touched. When the window
-  # closes, drop `continue-on-error` and let it be required. A failure here is
-  # still a failure to read: either the provider changed, or this repository
-  # cannot federate the identity it claims to.
+  # Required since 2026-08-10: the 48h advisory window CLAUDE.md gives every
+  # newly added check (the same one staticcheck and the fuzz smoke job had, for
+  # the same reason, a check nobody has run against this tree can go red on code
+  # nobody touched) opened when this job landed on 2026-08-08 and closed with the
+  # job green on every main run since. So a failure here is now a finding to
+  # read, never flake to wave through: either the provider changed, or this
+  # repository cannot federate the identity it claims to.
   federation:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    continue-on-error: true
     permissions:
       contents: read
       id-token: write
