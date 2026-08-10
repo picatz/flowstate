@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<!--
+  The neighbour: a frame beside the view, on an opaque origin of its own, that
+  forwards whatever it is handed to the view.
+
+  It reaches the view as window.parent.frames[0], which is a WindowProxy any
+  document may postMessage to regardless of origin. That is the whole point: a
+  view cannot stop a neighbour from sending it something, so the only defence is
+  the view checking who sent it. The card checks event.source against its parent,
+  and this frame is not that.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>neighbour</title>
+  </head>
+
+  <body>
+    <script>
+      (function () {
+        "use strict";
+
+        window.addEventListener("message", function (event) {
+          if (event.source !== window.parent) {
+            return;
+          }
+
+          var view = window.parent.frames[0];
+          if (!view) {
+            return;
+          }
+
+          view.postMessage(event.data, "*");
+        });
+      })();
+    </script>
+  </body>
+</html>
