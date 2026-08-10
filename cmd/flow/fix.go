@@ -52,8 +52,8 @@ func newFixCommand() *cobra.Command {
 			"preserving comments, formatting, and everything the change does not touch. " +
 			"A directory is walked for .yaml and .yml files. A file with nothing to change is left " +
 			"byte for byte as it was.\n\n" +
-			"Shapes that cannot be rewritten without guessing — a task written in flow style, or one " +
-			"standing behind a YAML alias — are reported with their position and left alone, so the " +
+			"Shapes that cannot be rewritten without guessing (a task written in flow style, or one " +
+			"standing behind a YAML alias) are reported with their position and left alone, so the " +
 			"file is never silently mangled.\n\n" +
 			"`--output json` or `--output jsonl` turns `--check` into a report a program reads " +
 			"instead of scrapes: what changed or would change, and what was refused, per file. CI " +

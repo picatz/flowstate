@@ -135,10 +135,10 @@ func sensitiveLogInTask(stepID string, task *v1.Task, sensitive map[string]bool)
 		Message: fmt.Sprintf(
 			"input %q is declared `sensitive:`, and a `log:` message is written to run "+
 				"history and to stdout in the clear, so interpolating it here writes the "+
-				"value everywhere that log can be read — which is exactly what `sensitive:` "+
+				"value everywhere that log can be read, which is exactly what `sensitive:` "+
 				"exists to prevent. Log something derived from it instead of the value "+
 				"itself: a boolean like ${inputs.%s != \"\"} to record that it was supplied, "+
-				"a length, or a redaction — or drop it from the message.",
+				"a length, or a redaction, or drop it from the message.",
 			name, name),
 	}, true
 }

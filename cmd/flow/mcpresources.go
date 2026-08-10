@@ -84,7 +84,7 @@ func addMCPResources(srv *mcp.Server, local *server.FlowstateServer) {
 		MIMEType: mcpJSONMIME,
 		Description: "What this build can execute, as the JSON of a GetCatalogResponse: every task " +
 			"with its typed inputs and outputs, and every CEL function an expression may call. The " +
-			"same answer flowstate_get_catalog gives, without spending a tool call — read it as a " +
+			"same answer flowstate_get_catalog gives, without spending a tool call. Read it as a " +
 			"resource when you are about to author, and call the tool when you need it mid-reasoning.",
 	}, mcpCatalogResourceHandler(local))
 
@@ -98,7 +98,7 @@ func addMCPResources(srv *mcp.Server, local *server.FlowstateServer) {
 		Title:       "Example Flowfile",
 		MIMEType:    mcpYAMLMIME,
 		Description: "One example workflow from the repository's examples/ directory, by its " +
-			"directory name — flowstate://docs/examples/hello-world, flowstate://docs/examples/" +
+			"directory name: flowstate://docs/examples/hello-world, flowstate://docs/examples/" +
 			"http-json. Each is a complete Flowfile that CI runs, so it is a working reference " +
 			"rather than a fragment. The names are listed as resources of their own.",
 	}, mcpExampleResourceHandler())

@@ -373,8 +373,8 @@ flow list --all --filter 'status == "FAILED" && start_time > timestamp("2026-08-
 # the guard is not decoration: CEL's && absorbs the error from the side it skips.
 flow list --all --filter 'finished && close_time - start_time > duration("1h")'
 
-# Only one workload's runs. WorkflowType can't answer this — every run's is
-# "Run", the one interpreter workflow — so name is the workflow's own declared
+# Only one workload's runs. WorkflowType can't answer this: every run's is
+# "Run", the one interpreter workflow, so name is the workflow's own declared
 # name instead, and it is empty for a run older than this field.
 flow list --all --filter 'name == "nightly-etl"'`,
 	}
@@ -387,8 +387,8 @@ flow list --all --filter 'name == "nightly-etl"'`,
 	listCmd.Flags().String("filter", "",
 		"keep only the runs a CEL expression answers yes about, over `workflow_id`, "+
 			"`run_id`, `status`, `start_time`, `close_time`, `finished`, and `name` "+
-			"(the workflow's own declared name, empty for a run older than this field) "+
-			`— for example status == "FAILED"`)
+			"(the workflow's own declared name, empty for a run older than this field); "+
+			`for example status == "FAILED"`)
 	listCmd.Flags().String("page-token", "",
 		"continue a previous listing from where it stopped")
 	listCmd.Flags().Bool("all", false,
@@ -404,8 +404,8 @@ flow list --all --filter 'name == "nightly-etl"'`,
 		Long: "Ask a run to stop. Cancellation is cooperative: the run is told to stop and " +
 			"gets to finish responding, so a workload that has to release a lock or undo a " +
 			"partial change still does. A step that declares an `undo:` is taken back, in " +
-			"reverse order, within a bounded budget — the run reports what came off and what " +
-			"did not. A run wedged on something that never returns may not stop at all — " +
+			"reverse order, within a bounded budget, and the run reports what came off and what " +
+			"did not. A run wedged on something that never returns may not stop at all: " +
 			"`flow terminate` is the answer then, and not before." + mutationFlagHelp +
 			"\n\n`result` is \"requested\" here and never \"applied\", because cancellation is " +
 			"cooperative: the run has been told and is still finishing. `flow get` is what " +

@@ -510,7 +510,7 @@ func validateWorkflowVars(wf *v1.Workflow) Diagnostics {
 				Field: field, Value: ref,
 				Message: fmt.Sprintf(
 					"a var may not read an input: `%s:` is evaluated before the run's arguments are in "+
-						"scope, so write `%s.%s` where the value is used — in a step's `if:`, its own "+
+						"scope, so write `%s.%s` where the value is used: in a step's `if:`, its own "+
 						"`vars:`, or a task input",
 					v1.VarsRoot, v1.InputsRoot, ref),
 			})
@@ -604,7 +604,7 @@ func unknownTaskMessage(name string) string {
 	if plugin, _, dotted := strings.Cut(name, "."); dotted {
 		return fmt.Sprintf("no plugin task %q is registered here; if the %q plugin "+
 			"is installed on the worker this will run on, the file is fine and this "+
-			"process simply has not loaded it — `flow plugins` shows what a plugin "+
+			"process simply has not loaded it; `flow plugins` shows what a plugin "+
 			"directory provides", name, plugin)
 	}
 	return fmt.Sprintf("unknown task %q; available tasks are %s",
@@ -867,12 +867,12 @@ func validateNamedLoop(stepID string, loop *v1.Loop, enclosing refScope, index i
 	var ds Diagnostics
 
 	if len(loop.GetBody()) == 0 {
-		ds = append(ds, Diagnostic{Step: stepID, Field: "loop", Message: "steps is required — a loop needs a body to run each iteration"})
+		ds = append(ds, Diagnostic{Step: stepID, Field: "loop", Message: "steps is required: a loop needs a body to run each iteration"})
 	}
 	if loop.GetUntil() == nil {
 		ds = append(ds, Diagnostic{
 			Step: stepID, Field: "until",
-			Message: "until is required — a loop with no condition on when to stop never stops",
+			Message: "until is required: a loop with no condition on when to stop never stops",
 		})
 	}
 
@@ -957,7 +957,7 @@ func validateNamedLoop(stepID string, loop *v1.Loop, enclosing refScope, index i
 	if bodyHasNestedLoop(loop.GetBody()) {
 		ds = append(ds, Diagnostic{
 			Step: stepID, Field: "loop",
-			Message: "a loop inside a loop is not supported in this edition — the Continue-As-New " +
+			Message: "a loop inside a loop is not supported in this edition: the Continue-As-New " +
 				"interaction across two carried-state frames is not exercised yet; hoist the inner " +
 				"loop into a called workflow (`call:`) and loop over that, or flatten the two into one",
 			Code: v1.DiagnosticCodePlacementRefusal,
@@ -1443,8 +1443,8 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 			// here, and what to do instead.
 			ds = append(ds, Diagnostic{
 				Step: stepID, Field: inputName,
-				Message: "`now` is only available inside a wait — `sleep:`, `wait_until:`, and a " +
-					"signal's `timeout:` — where the engine binds it to the moment the wait is " +
+				Message: "`now` is only available inside a wait (`sleep:`, `wait_until:`, and a " +
+					"signal's `timeout:`) where the engine binds it to the moment the wait is " +
 					"evaluated; a task input is resolved inside an activity, which has no clock that " +
 					"survives a retry, so compute the moment or the length in the wait itself, or pass " +
 					"the time in as an input",
@@ -1520,7 +1520,7 @@ func unresolvedInput(stepID, inputName, ref string, scope refScope) Diagnostic {
 	switch {
 	case len(declared) == 0:
 		message += "; this workflow declares no `inputs:`, which is a top-level block naming what a " +
-			"run may be started with — each with a `type:` — read as `" + v1.InputsRoot + ".<name>`"
+			"run may be started with (each with a `type:`), read as `" + v1.InputsRoot + ".<name>`"
 	default:
 		if suggestion, ok := nearest(ref, declared); ok {
 			message += fmt.Sprintf("; did you mean %q?", suggestion)
@@ -2121,7 +2121,7 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, wf *v1.Workflow) (
 			return Diagnostic{
 				Step: stepID, Field: inputName, Value: ref.Output,
 				Message: fmt.Sprintf(
-					"step %q has no output %q; `%s` is the name the loop binds *inside* itself (its `as:`), which does not exist out here — the carried value is read as `%s.%s.state`",
+					"step %q has no output %q; `%s` is the name the loop binds *inside* itself (its `as:`), which does not exist out here; the carried value is read as `%s.%s.state`",
 					ref.ID, ref.Output, ref.Output, v1.StepsRoot, ref.ID),
 				Code: v1.DiagnosticCodeUnresolvedReference,
 			}, true
@@ -2149,10 +2149,10 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, wf *v1.Workflow) (
 		message := fmt.Sprintf("step %q has no output %q; its `outputs:` replaces what the wait produces, and it produces %s",
 			ref.ID, ref.Output, strings.Join(names, ", "))
 		if suggestion, ok := nearest(ref.Output, names); ok {
-			message = fmt.Sprintf("step %q has no output %q; its `outputs:` replaces what the wait produces — did you mean %q?",
+			message = fmt.Sprintf("step %q has no output %q; its `outputs:` replaces what the wait produces; did you mean %q?",
 				ref.ID, ref.Output, suggestion)
 		} else if ref.Output == v1.PayloadOutput || ref.Output == v1.SenderOutput || ref.Output == v1.TimedOutOutput {
-			message += fmt.Sprintf("; `%s` is one of the wait's own outputs, which shaping dropped — re-expose it with `%s: ${%s}`",
+			message += fmt.Sprintf("; `%s` is one of the wait's own outputs, which shaping dropped; re-expose it with `%s: ${%s}`",
 				ref.Output, ref.Output, ref.Output)
 		}
 

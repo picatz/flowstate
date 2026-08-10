@@ -294,7 +294,7 @@ func workerDeployment(cmd *cobra.Command, flags temporalFlags) (worker.Deploymen
 	return worker.DeploymentOptions{}, fmt.Errorf(
 		"refusing to start an unversioned worker: this worker evaluates workflow expressions "+
 			"(step conditions, a loop's items:, a step's vars:, task inputs) in workflow code, so the "+
-			"expression engine built into this binary decides what they mean — and with no version, "+
+			"expression engine built into this binary decides what they mean; with no version, "+
 			"deploying a different binary changes what every run already in flight computes, including "+
 			"where a run resumes after continue-as-new. Pass --deployment-name and --build-id "+
 			"(or FLOWSTATE_DEPLOYMENT_NAME and FLOWSTATE_BUILD_ID) to pin each run to the interpreter "+
@@ -1143,7 +1143,7 @@ func newRootCommand() *cobra.Command {
 		Use:   "flow",
 		Short: "Durable, policy-governed workload engine",
 		Long: "Flowstate runs workloads that have to finish correctly despite crashes, network " +
-			"failures, and long waits. You write one as a Flowfile — YAML with CEL expressions — " +
+			"failures, and long waits. You write one as a Flowfile (YAML with CEL expressions) " +
 			"and run it in this process or durably on Temporal. The two behave the same, which is " +
 			"what makes a local run worth rehearsing with.",
 		Version: version,
@@ -1190,7 +1190,7 @@ flow lsp`,
 	// explicit ask, wins over NO_COLOR, CLICOLOR_FORCE, and everything else in the
 	// environment.
 	rootCmd.PersistentFlags().Bool("no-color", false,
-		"disable colour on every stream, the same way NO_COLOR does — the most explicit ask, "+
+		"disable colour on every stream, the same way NO_COLOR does; it is the most explicit ask, "+
 			"so it wins over CLICOLOR_FORCE and the terminal's own capabilities")
 
 	// Run command, which executes a workflow using the Flowstate service.
@@ -1240,12 +1240,12 @@ flow validate examples/hello-world/workflow.yaml`,
 			"server.\n\nThis is the rehearsal, and it is worth rehearsing with because the two " +
 			"drivers are one execution model: conditions, retries, timeouts, loops and waits " +
 			"behave here the way they behave in production, and the answer comes back in the " +
-			"same document `flow run` writes — so a `jq` expression written against one works " +
+			"same document `flow run` writes, so a `jq` expression written against one works " +
 			"against the other.\n\nWhat it cannot give you is durability. A local run is a " +
 			"process: it has no run id, nothing can watch it, and it does not survive this " +
 			"command being interrupted.\n\n" +
-			"Arguments are given the same way `flow run` takes them — --input name=value or " +
-			"--input-file inputs.json — and are bound against the workflow's `inputs:` by the " +
+			"Arguments are given the same way `flow run` takes them (--input name=value or " +
+			"--input-file inputs.json) and are bound against the workflow's `inputs:` by the " +
 			"same function the server binds them with, so a rehearsal refuses what production " +
 			"refuses.\n\n" +
 			"One limit worth knowing before writing a rule about who is running. --as-subject " +
@@ -1325,13 +1325,13 @@ flow run local examples/computed-outputs/workflow.yaml --input release=2026.9.0 
 		Short: "Start a worker",
 		Long: "Start a Temporal worker: the process that actually runs a workflow's steps. " +
 			"The server submits work to Temporal and a worker polling its task queue is what picks " +
-			"it up, so nothing a deployment accepts runs until at least one worker is up — the two " +
+			"it up, so nothing a deployment accepts runs until at least one worker is up: the two " +
 			"never talk to each other, they meet at Temporal. With --deployment-name and --build-id " +
 			"it claims a Worker Deployment version, pinning every run already in flight to the " +
 			"interpreter it started on: a later deploy changes what new runs compute, not what " +
 			"in-flight ones do, until each reaches continue-as-new. With --tenant it executes one " +
 			"namespace's runs and refuses every other outright, rather than running them with this " +
-			"worker's secrets, egress policy and plugins — which needs a queue of its own, named by " +
+			"worker's secrets, egress policy and plugins, which needs a queue of its own, named by " +
 			"--task-queue-prefix (the value the server was started with) or given as --task-queue.",
 		RunE: runWorker,
 		Example: `# Start a worker, pinned so a deploy does not change runs already in flight:
@@ -1354,7 +1354,7 @@ flow worker --namespace production --deployment-name flowstate --build-id "$(git
 		Short: "Start a server",
 		Long: "Start the Flowstate control plane: the Connect (HTTP/gRPC) endpoint every CLI verb and " +
 			"`flow mcp` reaches a deployment through. It authenticates each caller and maps them onto " +
-			"a tenant, then submits accepted runs to Temporal, where the workers execute them — the " +
+			"a tenant, then submits accepted runs to Temporal, where the workers execute them: the " +
 			"server schedules, lists and reports on runs, it does not run their steps itself. " +
 			"Authentication is fail-closed: it serves only with a trust policy configured " +
 			"(--auth-policy, naming the issuers and claims to accept) or with authentication waived " +
@@ -1526,7 +1526,7 @@ flow get flowstate-workflow-3f7c --run-id 0198f1e2-...`,
 			// The numbers are the constants, not a prose copy of them: a limit
 			// documented by hand is a limit that drifts the day it changes.
 			fmt.Sprintf("Two limits, both worth knowing before designing a payload. A payload over "+
-				"%d KiB is refused synchronously, with the size and the limit named — send a "+
+				"%d KiB is refused synchronously, with the size and the limit named; send a "+
 				"reference to something large rather than the thing itself, since the payload "+
 				"travels with the run from then on. And a signal that arrives before its gate is "+
 				"reached is held for it, at most %d across all names with the earliest kept: "+
@@ -1688,7 +1688,7 @@ flow plugins -o json | jq -r '.plugins[] | select(.tasks[].name == "example.gree
 			"Beside the tools, the server publishes read-only resources: the whole DSL " +
 			"reference at flowstate://docs/dsl, the task catalog as JSON at " +
 			"flowstate://catalog/tasks, and every example Flowfile under " +
-			"flowstate://docs/examples/ — embedded at build time, so an agent can read the " +
+			"flowstate://docs/examples/, embedded at build time, so an agent can read the " +
 			"language and working references without a checkout nearby. See docs/CLI.md " +
 			"for client configuration.",
 		Args: cobra.NoArgs,

@@ -94,8 +94,8 @@ func (c *compiler) signalPolicy(n ast.Node, path string, r ref) *v1.SignalPolicy
 	fields, ok := c.fields(n, path, r, signalPolicyKeys)
 	if !ok {
 		c.report(spanOfNode(n), r,
-			"is a mapping saying who may deliver this signal: `allow:`, a list of rules — "+
-				"each with a `subject:`, a `namespace:`, `claims:`, or a combination — and an "+
+			"is a mapping saying who may deliver this signal: `allow:`, a list of rules "+
+				"(each with a `subject:`, a `namespace:`, `claims:`, or a combination) and an "+
 				"optional `distinct_from_starter:`")
 		return nil
 	}
@@ -103,7 +103,7 @@ func (c *compiler) signalPolicy(n ast.Node, path string, r ref) *v1.SignalPolicy
 	f, found := fields.get("allow")
 	if !found {
 		c.report(spanOfNode(n), r,
-			"declares no `allow:` list, so it authorizes nobody — write at least one rule, "+
+			"declares no `allow:` list, so it authorizes nobody; write at least one rule, "+
 				"or remove this signal's policy so the signal keeps today's behavior "+
 				"(any authenticated caller in the run's tenant may deliver it)")
 		return nil
@@ -187,7 +187,7 @@ func (c *compiler) signalPolicyRule(n ast.Node, path string, r ref) *v1.SignalPo
 				if !v1.LooksLikeQualifiedSubject(subject) {
 					c.report(spanOfNode(f.value), subjectRef,
 						"is %q, which is not \"<issuer>#<subject>\"; a bare subject is refused because a "+
-							"subject is only unique within its issuer — two identity providers can mint the "+
+							"subject is only unique within its issuer: two identity providers can mint the "+
 							"same subject for different callers, and matching on subject alone would "+
 							"authorize the wrong one's signal. Write both, joined by a single '#'",
 						subject)
@@ -218,7 +218,7 @@ func (c *compiler) signalPolicyRule(n ast.Node, path string, r ref) *v1.SignalPo
 
 	if !anyField {
 		c.report(spanOfNode(n), r,
-			"sets none of `subject:`, `namespace:`, or `claims:`, so it would match every sender — "+
+			"sets none of `subject:`, `namespace:`, or `claims:`, so it would match every sender; "+
 				"give it something to check, or remove the rule")
 		return nil
 	}
@@ -417,7 +417,7 @@ func validateSignals(wf *v1.Workflow) Diagnostics {
 			if rule.GetSubject() == "" && !interpolated && rule.GetNamespace() == "" && len(rule.GetClaims()) == 0 {
 				ds = append(ds, Diagnostic{
 					Field: indexPath(fieldPath(field, "allow"), i),
-					Message: "sets no `subject:`, `namespace:`, or `claims:`, so it matches every sender — " +
+					Message: "sets no `subject:`, `namespace:`, or `claims:`, so it matches every sender; " +
 						"give it something to check, or remove the rule",
 				})
 			}
@@ -441,7 +441,7 @@ func validateSignals(wf *v1.Workflow) Diagnostics {
 				ds = append(ds, Diagnostic{
 					Field: indexPath(fieldPath(field, "allow"), i) + ".subject",
 					Message: "is an expression resolved from this run's own inputs, but the rule sets no " +
-						"`namespace:` or `claims:` alongside it — an interpolated subject must be narrowed " +
+						"`namespace:` or `claims:` alongside it; an interpolated subject must be narrowed " +
 						"by a constraint the caller cannot choose, or the caller would be choosing their " +
 						"own authorization; add a `namespace:` or `claims:` entry, or write the subject " +
 						"as a literal",

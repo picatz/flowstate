@@ -4,7 +4,7 @@
 
 Every stable `code` a [`Diagnostic`](../../proto/flowstate/v1/flowstate.proto)
 carries, so a program can decide what a validation failure *is* without parsing
-`message` — which this project reserves the right to reword. Deliberately small:
+`message`, which this project reserves the right to reword. Deliberately small:
 only the classes an agent is actually expected to branch on have their own code,
 everything else is `general`, and that is documented rather than pretended away.
 

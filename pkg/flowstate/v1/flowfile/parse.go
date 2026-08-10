@@ -175,17 +175,17 @@ var retiredStepKeys = map[string]string{
 	// is now looking for where it went.
 	"echo": "`echo:` is retired, and which replaces it depends on what the step was for: " +
 		"a value later steps read is `vars:` at the top of the file, read as `${vars.<name>}`; " +
-		"a line for a person to see is `log:`. `echo` was doing both under a name that means neither — " +
+		"a line for a person to see is `log:`. `echo` was doing both under a name that means neither: " +
 		"it returned a value, which is not what a message is for. Run `flow fix`: it rewrites the first " +
 		"and reports the second, since only you know which was meant",
 
 	"printf": "`printf:` is retired: the profile ships CEL's strings extension, so a format is an " +
-		"expression like any other — `${'hello %s, %d left'.format([vars.name, 0])}`. `format` is " +
+		"expression like any other: `${'hello %s, %d left'.format([vars.name, 0])}`. `format` is " +
 		"specified at the CEL level, which is the determinism story a task wrapping Go's `fmt` could " +
 		"never have. Run `flow fix` to rewrite it",
 
 	"cel": "`cel:` is retired: an expression is a *value* now rather than a step that produces one, " +
-		"so write it where the value is wanted — inline as `${...}`, or once at the top under `vars:` " +
+		"so write it where the value is wanted: inline as `${...}`, or once at the top under `vars:` " +
 		"if more than one step needs it. The name answered \"which evaluator?\" when the question was " +
 		"\"what does this value do?\". Run `flow fix`: it rewrites a step whose result is read into a " +
 		"`vars:` binding and reports one whose result is not",
@@ -211,9 +211,9 @@ func retiredPatternMessage(n ast.Node) string {
 
 	regex, ok := scalarText(n)
 	if !ok {
-		return fmt.Sprintf("%s — write `must: this.matches('<the same regular expression>')` instead", remedy)
+		return fmt.Sprintf("%s. Write `must: this.matches('<the same regular expression>')` instead", remedy)
 	}
-	return fmt.Sprintf("%s — write `must: this.matches(%s)` instead", remedy, celMatchesArgument(regex))
+	return fmt.Sprintf("%s. Write `must: this.matches(%s)` instead", remedy, celMatchesArgument(regex))
 }
 
 // celMatchesArgument renders regex as a CEL string literal suitable for
@@ -266,14 +266,14 @@ func retiredMinMaxMessage(key string, n ast.Node) string {
 	remedy := fmt.Sprintf(
 		"`%s:` is removed: on `type: int` its bound is stored as a float64 and can silently accept "+
 			"a value the bound was written to refuse once the number is large enough to lose precision "+
-			"in that conversion — `must: this %s <N>` is exact at every magnitude either declared type allows",
+			"in that conversion. `must: this %s <N>` is exact at every magnitude either declared type allows",
 		key, op)
 
 	text, ok := numericScalarText(n)
 	if !ok {
-		return fmt.Sprintf("%s — write `must: this %s <the same number>` instead", remedy, op)
+		return fmt.Sprintf("%s. Write `must: this %s <the same number>` instead", remedy, op)
 	}
-	return fmt.Sprintf("%s — write `must: this %s %s` instead", remedy, op, text)
+	return fmt.Sprintf("%s. Write `must: this %s %s` instead", remedy, op, text)
 }
 
 // numericScalarText returns the literal source text of an integer or float
@@ -296,7 +296,7 @@ func numericScalarText(n ast.Node) (string, bool) {
 // so this is a constant message rather than one built per occurrence.
 const retiredUniqueMessage = "`unique:` is removed: `must: this == this.distinct()` says the identical " +
 	"thing, through the one constraint language this schema has, instead of a second one that " +
-	"duplicated a corner of it — write `must: this == this.distinct()` instead"
+	"duplicated a corner of it. Write `must: this == this.distinct()` instead"
 
 // StepTaskKeys reports which of a step's keys name the task it runs, in the order
 // they were written.
@@ -1467,7 +1467,7 @@ func (c *compiler) undo(n ast.Node, path string, r ref) *v1.Compensation {
 
 	if _, empty := n.(*ast.NullNode); empty {
 		c.report(spanOfNode(n), r,
-			"`undo:` must name the task that takes this step back, with its inputs beneath it — "+
+			"`undo:` must name the task that takes this step back, with its inputs beneath it, "+
 				"the same shape as the step's own work")
 
 		return nil
@@ -1479,7 +1479,7 @@ func (c *compiler) undo(n ast.Node, path string, r ref) *v1.Compensation {
 	}
 	if len(entries) == 0 {
 		c.report(spanOfNode(n), r,
-			"`undo:` must name the task that takes this step back, with its inputs beneath it — "+
+			"`undo:` must name the task that takes this step back, with its inputs beneath it, "+
 				"the same shape as the step's own work")
 
 		return nil
@@ -1643,7 +1643,7 @@ func (c *compiler) loop(n ast.Node, path string, r ref) *v1.Loop {
 		loop.Until = c.exprValue(f.value, untilPath,
 			ref{step: r.step, path: untilPath, label: "loop until"})
 	} else {
-		c.report(spanOfNode(n), r, "loop requires until, the condition that stops it — a loop with no bound on when it ends never ends")
+		c.report(spanOfNode(n), r, "loop requires until, the condition that stops it: a loop with no bound on when it ends never ends")
 	}
 
 	if f, found := fields.get("max_iterations"); found {

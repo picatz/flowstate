@@ -599,7 +599,7 @@ func mcpHandler(
 		if len(encoded) > maxMCPResultBytes {
 			return toolError(fmt.Errorf(
 				"%s answered with %d bytes, over this surface's %d byte limit, so nothing was returned "+
-					"rather than a document cut short; ask for less — a single run by id rather than a "+
+					"rather than a document cut short; ask for less: a single run by id rather than a "+
 					"listing, a smaller page, or a narrower filter",
 				mcpToolName(method.name), len(encoded), maxMCPResultBytes)), nil
 		}
@@ -678,8 +678,8 @@ const maxRunLocalLogRecords = 200
 // runLocalToolDescription is written for the model that has to decide whether
 // this is the tool it wants, and what it will and will not have proved by using
 // it.
-const runLocalToolDescription = "Execute a Flowfile immediately, in this process, with no server and no Temporal " +
-	"— the same rehearsal `flow run local` performs. Use it to verify a workflow you just authored: " +
+const runLocalToolDescription = "Execute a Flowfile immediately, in this process, with no server and no Temporal, " +
+	"the same rehearsal `flow run local` performs. Use it to verify a workflow you just authored: " +
 	"conditions, retries, timeouts, loops, waits and step outputs behave here the way they behave in " +
 	"production, and the answer is the same document flowstate_get returns for a durable run.\n\n" +
 	"Fail-closed by default: network egress from `http:` steps is denied and no secret scheme is " +
@@ -977,21 +977,21 @@ const testToolName = mcpToolPrefix + "test"
 // testToolDescription is written for the model choosing between this tool and
 // flowstate_run_local.
 const testToolDescription = "Run a Flowfile against inline test cases the way `flow test` runs a *.test.yaml " +
-	"beside a workflow on disk — the identical machinery (flowtest.RunSource), on bytes submitted here " +
+	"beside a workflow on disk: the identical machinery (flowtest.RunSource), on bytes submitted here " +
 	"instead of two files. Every task the workflow would otherwise call is replaced: a stub answers with " +
 	"its `returns:`, or fails the way its `fails:` describes, and any task this case invokes with no " +
 	"matching stub is refused rather than run for real, naming the task and how many stubs were declared " +
 	"for it. Time is virtual, so a case with `sleep: 24h` resolves in under a second, and a " +
 	"wait_for_signal step is answered by `signals:` scripted for a chosen offset from the run's start.\n\n" +
 	"Needs no egress policy and no operator opt-in, unlike flowstate_run_local: a stubbed run never " +
-	"invokes a real task's implementation at all — not `http`, not a plugin task registered by " +
-	"--plugin-dir — so there is no network for a policy to govern, and no secret this tool could resolve " +
+	"invokes a real task's implementation at all (not `http`, not a plugin task registered by " +
+	"--plugin-dir) so there is no network for a policy to govern, and no secret this tool could resolve " +
 	"even where one is configured. Reach for this first, while authoring: it proves conditions, retries, " +
 	"`undo:` compensation, and data-flow expressions without ever touching a network. Reach for " +
 	"flowstate_run_local afterward, once egress is configured, to rehearse the real effect of whichever " +
 	"task you deliberately left unstubbed.\n\n" +
 	"What it does not prove: that a real task behaves the way a stub's `returns:` or `fails:` says it " +
-	"does, or anything about durability — flowstate_run_local's own limits, on top of never running a " +
+	"does, or anything about durability: flowstate_run_local's own limits, on top of never running a " +
 	"real task at all.\n\n" +
 	"`tests` is a `*.test.yaml` document: `tests:` names one or more cases, each with an optional " +
 	"`inputs:`, `stubs:`, `signals:`, `starter:`, and an `expect:` the run must satisfy: `expect.outputs` compares " +
@@ -1007,8 +1007,8 @@ const testToolDescription = "Run a Flowfile against inline test cases the way `f
 	"own `sender.local` output reads true, and `starter:` never reaches `run.identity`.\n\n" +
 	"Answers with the same v1.TestReport `flow test -o json` writes: one verdict per case, and for a case " +
 	"that did not pass, its unmet expectations as positioned diagnostics. A case that never reached a " +
-	"verdict at all — the workflow failed to compile, a stub named a task with no matching invocation, or " +
-	"the run failed in a way the case did not declare with `expect.failed` — reports why in `error` " +
+	"verdict at all (the workflow failed to compile, a stub named a task with no matching invocation, or " +
+	"the run failed in a way the case did not declare with `expect.failed`) reports why in `error` " +
 	"instead of `failures`. `refused` is set instead of any case running at all when the submitted " +
 	"`tests` document itself does not parse."
 
@@ -1240,7 +1240,7 @@ func runLocalSignalFlags(signals map[string]json.RawMessage) ([]string, error) {
 	for name, payload := range signals {
 		if strings.Contains(name, "=") {
 			return nil, fmt.Errorf("signal name %q contains '=': a signal name is the one its "+
-				"wait_for_signal step declares — a letter or digit, then letters, digits, - or _", name)
+				"wait_for_signal step declares: a letter or digit, then letters, digits, - or _", name)
 		}
 
 		flags = append(flags, name+"="+string(payload))

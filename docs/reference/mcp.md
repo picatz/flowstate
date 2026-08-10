@@ -7,8 +7,8 @@ RPC becomes one tool, discovered by walking the service descriptor rather than
 kept in a list, so an RPC added to the schema is a tool the day the code is
 regenerated.
 
-**Answers locally** means the tool needs no server and no Temporal: authoring —
-validate, compile, read the catalog, rehearse a run — works with nothing else
+**Answers locally** means the tool needs no server and no Temporal: authoring
+(validate, compile, read the catalog, rehearse a run) works with nothing else
 stood up. The rest address durable runs, which only a server has, and say so
 rather than failing opaquely when `--address` was not given.
 
@@ -168,7 +168,7 @@ It answers with no run id. The cluster takes the action after answering, so what
 
 ## `flowstate_run_local`
 
-Execute a Flowfile immediately, in this process, with no server and no Temporal — the same rehearsal `flow run local` performs. Use it to verify a workflow you just authored: conditions, retries, timeouts, loops, waits and step outputs behave here the way they behave in production, and the answer is the same document flowstate_get returns for a durable run.
+Execute a Flowfile immediately, in this process, with no server and no Temporal, the same rehearsal `flow run local` performs. Use it to verify a workflow you just authored: conditions, retries, timeouts, loops, waits and step outputs behave here the way they behave in production, and the answer is the same document flowstate_get returns for a durable run.
 
 Fail-closed by default: network egress from `http:` steps is denied and no secret scheme is registered unless the operator started this server with the flags that permit them (--egress-policy, --secret-env, --secret-dir, --auth-policy). Nothing in this tool's arguments can widen that, so a denied request means the server was not configured for it, not that the workflow is wrong.
 
@@ -180,15 +180,15 @@ Answers with {"run": <GetResponse>, "logs": [...]}: the run's status, timing and
 
 ## `flowstate_test`
 
-Run a Flowfile against inline test cases the way `flow test` runs a *.test.yaml beside a workflow on disk — the identical machinery (flowtest.RunSource), on bytes submitted here instead of two files. Every task the workflow would otherwise call is replaced: a stub answers with its `returns:`, or fails the way its `fails:` describes, and any task this case invokes with no matching stub is refused rather than run for real, naming the task and how many stubs were declared for it. Time is virtual, so a case with `sleep: 24h` resolves in under a second, and a wait_for_signal step is answered by `signals:` scripted for a chosen offset from the run's start.
+Run a Flowfile against inline test cases the way `flow test` runs a *.test.yaml beside a workflow on disk: the identical machinery (flowtest.RunSource), on bytes submitted here instead of two files. Every task the workflow would otherwise call is replaced: a stub answers with its `returns:`, or fails the way its `fails:` describes, and any task this case invokes with no matching stub is refused rather than run for real, naming the task and how many stubs were declared for it. Time is virtual, so a case with `sleep: 24h` resolves in under a second, and a wait_for_signal step is answered by `signals:` scripted for a chosen offset from the run's start.
 
-Needs no egress policy and no operator opt-in, unlike flowstate_run_local: a stubbed run never invokes a real task's implementation at all — not `http`, not a plugin task registered by --plugin-dir — so there is no network for a policy to govern, and no secret this tool could resolve even where one is configured. Reach for this first, while authoring: it proves conditions, retries, `undo:` compensation, and data-flow expressions without ever touching a network. Reach for flowstate_run_local afterward, once egress is configured, to rehearse the real effect of whichever task you deliberately left unstubbed.
+Needs no egress policy and no operator opt-in, unlike flowstate_run_local: a stubbed run never invokes a real task's implementation at all (not `http`, not a plugin task registered by --plugin-dir) so there is no network for a policy to govern, and no secret this tool could resolve even where one is configured. Reach for this first, while authoring: it proves conditions, retries, `undo:` compensation, and data-flow expressions without ever touching a network. Reach for flowstate_run_local afterward, once egress is configured, to rehearse the real effect of whichever task you deliberately left unstubbed.
 
-What it does not prove: that a real task behaves the way a stub's `returns:` or `fails:` says it does, or anything about durability — flowstate_run_local's own limits, on top of never running a real task at all.
+What it does not prove: that a real task behaves the way a stub's `returns:` or `fails:` says it does, or anything about durability: flowstate_run_local's own limits, on top of never running a real task at all.
 
 `tests` is a `*.test.yaml` document: `tests:` names one or more cases, each with an optional `inputs:`, `stubs:`, `signals:`, `starter:`, and an `expect:` the run must satisfy: `expect.outputs` compares the workflow's declared `outputs:`, `expect.failed`/`expect.error_contains` assert the run failing outright, `expect.compensated` the undo log, and `expect.ran`/`expect.skipped` step presence. A case's own `workflow:` field is accepted, for compatibility with a file written to disk, but is never consulted: every case here runs against the `workflow` argument, not a sibling file.
 
 To exercise a workflow's `signals:` policy: a scripted signal's `sender:` names who the delivery stands in for and `starter:` names who the run started as, each carrying `subject:`/`issuer:` together, `namespace:` and `claims:`, and both checked by the same policy function the server calls, so `distinct_from_starter:` refuses a sender who is the run's own starter here exactly as production would. Neither is attested: a delivery stands in for its sender, which is why a gate's own `sender.local` output reads true, and `starter:` never reaches `run.identity`.
 
-Answers with the same v1.TestReport `flow test -o json` writes: one verdict per case, and for a case that did not pass, its unmet expectations as positioned diagnostics. A case that never reached a verdict at all — the workflow failed to compile, a stub named a task with no matching invocation, or the run failed in a way the case did not declare with `expect.failed` — reports why in `error` instead of `failures`. `refused` is set instead of any case running at all when the submitted `tests` document itself does not parse.
+Answers with the same v1.TestReport `flow test -o json` writes: one verdict per case, and for a case that did not pass, its unmet expectations as positioned diagnostics. A case that never reached a verdict at all (the workflow failed to compile, a stub named a task with no matching invocation, or the run failed in a way the case did not declare with `expect.failed`) reports why in `error` instead of `failures`. `refused` is set instead of any case running at all when the submitted `tests` document itself does not parse.
 

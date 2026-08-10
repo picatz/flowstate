@@ -101,7 +101,7 @@ flow init deploy-frontend
 # Choose the workflow's name rather than taking the directory's:
 flow init . --name nightly-report
 
-# What the scaffold is for — run it, then run its tests:
+# What the scaffold is for. Run it, then run its tests:
 flow run local ./workflow.yaml
 flow test .`,
 	}
@@ -359,7 +359,7 @@ steps:
   - id: greet
     log:
       # ${...} is CEL, and an expression is the whole value rather than a
-      # fragment spliced into text — so a greeting is built in CEL. A run's
+      # fragment spliced into text, so a greeting is built in CEL. A run's
       # inputs, earlier steps' outputs, and anything enclosing control flow
       # bound are all in scope.
       message: ${'hello, ' + inputs.name}
@@ -385,7 +385,7 @@ tests:
       name: flowstate
     stubs:
       # ` + "`where:`" + ` is the assertion. A ` + "`log`" + ` invocation whose message is anything
-      # else matches no stub and fails the case — which ` + "`ran:`" + ` alone could not
+      # else matches no stub and fails the case, which ` + "`ran:`" + ` alone could not
       # notice.
       - task: log
         where: inputs.message == 'hello, flowstate'

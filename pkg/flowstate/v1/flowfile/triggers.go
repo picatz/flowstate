@@ -81,8 +81,8 @@ func (c *compiler) triggers(key, n ast.Node, path string, r ref) *v1.Triggers {
 		// the author no reason to doubt the file — which is the outcome this
 		// repository ranks worst.
 		c.report(spanOrKey(n, key), r,
-			"declares no trigger; the one kind today is `schedule:`, or remove the block — "+
-				"an empty `triggers:` reads as if this workflow starts on its own, and it does not")
+			"declares no trigger; the one kind today is `schedule:`, or remove the block. "+
+				"An empty `triggers:` reads as if this workflow starts on its own, and it does not")
 
 		return nil
 	}
@@ -603,8 +603,8 @@ func validateTriggers(wf *v1.Workflow) Diagnostics {
 	if schedule == nil {
 		return Diagnostics{{
 			Field: "triggers",
-			Message: "declares no trigger; the one kind today is `schedule:`, or remove the block — " +
-				"an empty `triggers:` reads as if this workflow starts on its own, and it does not",
+			Message: "declares no trigger; the one kind today is `schedule:`, or remove the block. " +
+				"An empty `triggers:` reads as if this workflow starts on its own, and it does not",
 		}}
 	}
 

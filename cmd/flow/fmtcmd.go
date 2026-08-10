@@ -65,7 +65,7 @@ func newFmtCommand() *cobra.Command {
 			"line, the order a mapping's keys were written in, and a string literal's quote style " +
 			"are all normalized away, because they are not part of the parsed workflow this reads a " +
 			"file into. Running it over a hand-formatted, commented file is a one-time, reviewable " +
-			"loss of that formatting — check the diff before committing it, the same as any other " +
+			"loss of that formatting. Check the diff before committing it, the same as any other " +
 			"rewrite.\n\n" +
 			"A file that does not parse is reported with its position and left untouched.\n\n" +
 			"`--output json` or `--output jsonl` turns `--check` into a report a program reads " +

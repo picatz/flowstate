@@ -39,7 +39,7 @@ func newCompileCommand() *cobra.Command {
 			"This is the sibling of `flow validate` and the two answer different questions. " +
 			"`flow validate` answers whether a file is correct, and its answer is the list of " +
 			"problems. This answers what a correct file becomes, and its answer is the " +
-			"specification — the same `Workflow` message `flow run` submits, so a reviewer, a " +
+			"specification: the same `Workflow` message `flow run` submits, so a reviewer, a " +
 			"diff, or a tool reading a step's compiled expressions is reading exactly what " +
 			"would have executed.\n\n" +
 			"A file with problems is refused: the diagnostics go to standard error in the " +

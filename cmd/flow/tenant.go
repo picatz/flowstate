@@ -73,8 +73,8 @@ func workerTaskQueue(flags temporalFlags) (string, error) {
 	if !queues.Enabled() {
 		return "", fmt.Errorf(
 			"--tenant %q needs a task queue of its own: this worker refuses every run belonging to "+
-				"another tenant, so on the shared queue %q — where every tenant's runs are submitted "+
-				"when the server routes nothing — it would fail other tenants' work rather than leave "+
+				"another tenant, so on the shared queue %q (where every tenant's runs are submitted "+
+				"when the server routes nothing) it would fail other tenants' work rather than leave "+
 				"it to the general fleet. Pass --task-queue-prefix with the same value `flow server` "+
 				"was started with, or name this fleet's queue with --task-queue",
 			flags.tenant, engine.RunTaskQueueName)

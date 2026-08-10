@@ -18,7 +18,7 @@ Durable, policy-governed workload engine
 flow [command]
 ```
 
-Flowstate runs workloads that have to finish correctly despite crashes, network failures, and long waits. You write one as a Flowfile — YAML with CEL expressions — and run it in this process or durably on Temporal. The two behave the same, which is what makes a local run worth rehearsing with.
+Flowstate runs workloads that have to finish correctly despite crashes, network failures, and long waits. You write one as a Flowfile (YAML with CEL expressions) and run it in this process or durably on Temporal. The two behave the same, which is what makes a local run worth rehearsing with.
 
 Examples:
 
@@ -41,7 +41,7 @@ flow lsp
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
-| `--no-color` | `bool` | `false` | — | disable colour on every stream, the same way NO_COLOR does — the most explicit ask, so it wins over CLICOLOR_FORCE and the terminal's own capabilities |
+| `--no-color` | `bool` | `false` | — | disable colour on every stream, the same way NO_COLOR does; it is the most explicit ask, so it wins over CLICOLOR_FORCE and the terminal's own capabilities |
 | `-v, --verbose` | `bool` | `false` | — | enable verbose logging |
 
 ## `flow cancel`
@@ -52,7 +52,7 @@ Ask a run to stop, letting it clean up
 flow cancel [workflow-id] [flags]
 ```
 
-Ask a run to stop. Cancellation is cooperative: the run is told to stop and gets to finish responding, so a workload that has to release a lock or undo a partial change still does. A step that declares an `undo:` is taken back, in reverse order, within a bounded budget — the run reports what came off and what did not. A run wedged on something that never returns may not stop at all — `flow terminate` is the answer then, and not before.
+Ask a run to stop. Cancellation is cooperative: the run is told to stop and gets to finish responding, so a workload that has to release a lock or undo a partial change still does. A step that declares an `undo:` is taken back, in reverse order, within a bounded budget, and the run reports what came off and what did not. A run wedged on something that never returns may not stop at all: `flow terminate` is the answer then, and not before.
 
 With `-o json` (or `-o jsonl` for one line), stdout carries a single result document and nothing else, while the prose above is not written: `{"verb", "workflowId", "runId", "scheduleName", "signalName", "result"}`, the schema's `flowstate.v1.MutationResult`. `result` is "applied" for an act that is done when the server answers, "requested" for one it has accepted and not yet performed, and "delivered" for a signal the server has taken, which says nothing about whether the workflow went on to observe it. Fields that do not apply to a verb are present and empty, so one expression reads every one of them.
 
@@ -88,7 +88,7 @@ flow compile [workflow-file] [flags]
 
 Compile a Flowfile and write the resulting workflow specification to standard output, executing nothing and contacting no server.
 
-This is the sibling of `flow validate` and the two answer different questions. `flow validate` answers whether a file is correct, and its answer is the list of problems. This answers what a correct file becomes, and its answer is the specification — the same `Workflow` message `flow run` submits, so a reviewer, a diff, or a tool reading a step's compiled expressions is reading exactly what would have executed.
+This is the sibling of `flow validate` and the two answer different questions. `flow validate` answers whether a file is correct, and its answer is the list of problems. This answers what a correct file becomes, and its answer is the specification: the same `Workflow` message `flow run` submits, so a reviewer, a diff, or a tool reading a step's compiled expressions is reading exactly what would have executed.
 
 A file with problems is refused: the diagnostics go to standard error in the same `file:line:column: message` form `flow validate` writes, standard output stays empty, and the exit status is non-zero. A specification handed out beside a list of its problems would be an invitation to run it anyway.
 
@@ -123,7 +123,7 @@ flow fix [path...] [flags]
 
 Rewrite Flowfiles written in an older edition of the language into the current one, preserving comments, formatting, and everything the change does not touch. A directory is walked for .yaml and .yml files. A file with nothing to change is left byte for byte as it was.
 
-Shapes that cannot be rewritten without guessing — a task written in flow style, or one standing behind a YAML alias — are reported with their position and left alone, so the file is never silently mangled.
+Shapes that cannot be rewritten without guessing (a task written in flow style, or one standing behind a YAML alias) are reported with their position and left alone, so the file is never silently mangled.
 
 `--output json` or `--output jsonl` turns `--check` into a report a program reads instead of scrapes: what changed or would change, and what was refused, per file. CI that wants structured data rather than stderr text asks for one of those.
 
@@ -162,7 +162,7 @@ flow fmt [path...] [flags]
 
 Rewrite a Flowfile from its parsed form rather than editing its source text, the way `flow fix` does. A directory is walked for .yaml and .yml files.
 
-This is not comment-preserving or whitespace-preserving: every comment, every blank line, the order a mapping's keys were written in, and a string literal's quote style are all normalized away, because they are not part of the parsed workflow this reads a file into. Running it over a hand-formatted, commented file is a one-time, reviewable loss of that formatting — check the diff before committing it, the same as any other rewrite.
+This is not comment-preserving or whitespace-preserving: every comment, every blank line, the order a mapping's keys were written in, and a string literal's quote style are all normalized away, because they are not part of the parsed workflow this reads a file into. Running it over a hand-formatted, commented file is a one-time, reviewable loss of that formatting. Check the diff before committing it, the same as any other rewrite.
 
 A file that does not parse is reported with its position and left untouched.
 
@@ -220,7 +220,7 @@ flow get flowstate-workflow-3f7c --run-id 0198f1e2-...
 |---|---|---|---|---|
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
-| `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only — the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
+| `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only: the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
 | `--run-id <string>` | `string` | — | — | ask about one attempt of the workload; unset asks about whichever is current |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
 
@@ -250,7 +250,7 @@ flow init deploy-frontend
 # Choose the workflow's name rather than taking the directory's:
 flow init . --name nightly-report
 
-# What the scaffold is for — run it, then run its tests:
+# What the scaffold is for. Run it, then run its tests:
 flow run local ./workflow.yaml
 flow test .
 ```
@@ -420,8 +420,8 @@ flow list --all --filter 'status == "FAILED" && start_time > timestamp("2026-08-
 # the guard is not decoration: CEL's && absorbs the error from the side it skips.
 flow list --all --filter 'finished && close_time - start_time > duration("1h")'
 
-# Only one workload's runs. WorkflowType can't answer this — every run's is
-# "Run", the one interpreter workflow — so name is the workflow's own declared
+# Only one workload's runs. WorkflowType can't answer this: every run's is
+# "Run", the one interpreter workflow, so name is the workflow's own declared
 # name instead, and it is empty for a run older than this field.
 flow list --all --filter 'name == "nightly-etl"'
 ```
@@ -430,7 +430,7 @@ flow list --all --filter 'name == "nightly-etl"'
 |---|---|---|---|---|
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
 | `--all` | `bool` | `false` | — | keep asking until the listing is exhausted, rather than returning one page |
-| `--filter <string>` | `string` | — | — | keep only the runs a CEL expression answers yes about, over `workflow_id`, `run_id`, `status`, `start_time`, `close_time`, `finished`, and `name` (the workflow's own declared name, empty for a run older than this field) — for example status == "FAILED" |
+| `--filter <string>` | `string` | — | — | keep only the runs a CEL expression answers yes about, over `workflow_id`, `run_id`, `status`, `start_time`, `close_time`, `finished`, and `name` (the workflow's own declared name, empty for a run older than this field); for example status == "FAILED" |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--page-size <int32>` | `int32` | `0` | — | how many runs to return per page; unset takes the server's default |
 | `--page-token <string>` | `string` | — | — | continue a previous listing from where it stopped |
@@ -476,7 +476,7 @@ Serve every workflow-service RPC as an MCP tool over stdin and stdout, with inpu
 
 flowstate_run_local executes a submitted Flowfile here, the way `flow run local` does. What such a run may reach is decided by the flags this process is started with and by nothing a client sends: with no flags, egress is denied and no secret scheme is registered.
 
-Beside the tools, the server publishes read-only resources: the whole DSL reference at flowstate://docs/dsl, the task catalog as JSON at flowstate://catalog/tasks, and every example Flowfile under flowstate://docs/examples/ — embedded at build time, so an agent can read the language and working references without a checkout nearby. See docs/CLI.md for client configuration.
+Beside the tools, the server publishes read-only resources: the whole DSL reference at flowstate://docs/dsl, the task catalog as JSON at flowstate://catalog/tasks, and every example Flowfile under flowstate://docs/examples/, embedded at build time, so an agent can read the language and working references without a checkout nearby. See docs/CLI.md for client configuration.
 
 Examples:
 
@@ -508,12 +508,12 @@ flow mcp --plugin-dir ./plugins
 | `--as-namespace <string>` | `string` | — | — | tenant namespace to rehearse policy as (local runs only) |
 | `--as-subject <string>` | `string` | `local-user` | — | authenticated subject to rehearse policy as (local runs only) |
 | `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to an access policy whose secrets rules authorize local runs served to an agent |
-| `--egress-policy <string>` | `string` | — | `FLOWSTATE_EGRESS_POLICY` | path to an egress policy (YAML) governing the http task (default $FLOWSTATE_EGRESS_POLICY); when set it replaces the default policy entirely, and FLOWSTATE_ALLOW_LOOPBACK_EGRESS is ignored — a file that wants loopback says allow_loopback: true |
+| `--egress-policy <string>` | `string` | — | `FLOWSTATE_EGRESS_POLICY` | path to an egress policy (YAML) governing the http task (default $FLOWSTATE_EGRESS_POLICY); when set it replaces the default policy entirely, and FLOWSTATE_ALLOW_LOOPBACK_EGRESS is ignored; a file that wants loopback says allow_loopback: true |
 | `--identity-key <string>` | `string` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
 | `--plugin-dir <string,...>` | `stringArray` | — | — | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
-| `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only — the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
+| `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only: the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
 | `--run-local-timeout <duration>` | `duration` | `2m0s` | — | how long a flowstate_run_local call may execute for before the run is stopped and reported as timed out |
 | `--secret-command <string,...>` | `stringArray` | — | `FLOWSTATE_SECRET_COMMAND` | argv of the command that resolves command: secrets, repeatable in order (executable first);"{{name}}" and, with --secret-command-namespaced, "{{namespace}}" are substituted literally into one argument, never through a shell (default $FLOWSTATE_SECRET_COMMAND, :-separated) |
 | `--secret-command-namespaced` | `bool` | `false` | — | substitute "{{namespace}}" in --secret-command with the tenant's namespace |
@@ -536,7 +536,7 @@ flow mcp --plugin-dir ./plugins
 | `--secret-vault-namespace <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_NAMESPACE` | Vault Enterprise or OpenBao namespace header (default $FLOWSTATE_SECRET_VAULT_NAMESPACE; this is the vault's own namespace, not the tenant namespace a run authenticates with) |
 | `--secret-vault-path-prefix <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_PATH_PREFIX` | path prefix inside the mount, above the namespace segment (default $FLOWSTATE_SECRET_VAULT_PATH_PREFIX) |
 | `--secret-vault-token-file <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_TOKEN_FILE` | file holding a static Vault client token, re-read per login (default $FLOWSTATE_SECRET_VAULT_TOKEN_FILE; falls back to $FLOWSTATE_SECRET_VAULT_TOKEN directly, for a development vault or a test) |
-| `--task-policy <string>` | `string` | — | `FLOWSTATE_TASK_POLICY` | path to a task-shape policy (YAML) governing which identities may dispatch which tasks (default $FLOWSTATE_TASK_POLICY); with nothing configured, every task dispatches exactly as it does today — see #187 |
+| `--task-policy <string>` | `string` | — | `FLOWSTATE_TASK_POLICY` | path to a task-shape policy (YAML) governing which identities may dispatch which tasks (default $FLOWSTATE_TASK_POLICY); with nothing configured, every task dispatches exactly as it does today (see #187) |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
 
 ## `flow plugins`
@@ -616,7 +616,7 @@ flow validate examples/hello-world/workflow.yaml
 | `--interval <duration>` | `duration` | `1s` | — | how often to ask the server, clamped to a floor of 250ms |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--plain` | `bool` | `false` | — | print one line per change instead of drawing a live view, even on a terminal |
-| `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only — the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
+| `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only: the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
 
 ## `flow run local`
@@ -629,11 +629,11 @@ flow run local [workflow-file] [flags]
 
 Execute a workload in this process, without Temporal and without a Flowstate server.
 
-This is the rehearsal, and it is worth rehearsing with because the two drivers are one execution model: conditions, retries, timeouts, loops and waits behave here the way they behave in production, and the answer comes back in the same document `flow run` writes — so a `jq` expression written against one works against the other.
+This is the rehearsal, and it is worth rehearsing with because the two drivers are one execution model: conditions, retries, timeouts, loops and waits behave here the way they behave in production, and the answer comes back in the same document `flow run` writes, so a `jq` expression written against one works against the other.
 
 What it cannot give you is durability. A local run is a process: it has no run id, nothing can watch it, and it does not survive this command being interrupted.
 
-Arguments are given the same way `flow run` takes them — --input name=value or --input-file inputs.json — and are bound against the workflow's `inputs:` by the same function the server binds them with, so a rehearsal refuses what production refuses.
+Arguments are given the same way `flow run` takes them (--input name=value or --input-file inputs.json) and are bound against the workflow's `inputs:` by the same function the server binds them with, so a rehearsal refuses what production refuses.
 
 One limit worth knowing before writing a rule about who is running. --as-subject and its siblings name the identity this rehearsal's secret rules and plugin tasks see. They do not make the run attested: a local run has no server in front of it to attest anything, so `run.identity` and the task-shape and egress rules keep reading it as having no caller. A rule keyed on identity.namespace therefore matches nothing here, and can refuse locally what production allows.
 
@@ -672,12 +672,12 @@ flow run local examples/computed-outputs/workflow.yaml --input release=2026.9.0 
 | `--as-namespace <string>` | `string` | — | — | tenant namespace to rehearse policy as (local runs only) |
 | `--as-subject <string>` | `string` | `local-user` | — | authenticated subject to rehearse policy as (local runs only) |
 | `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to an access policy whose secrets rules authorize this local rehearsal |
-| `--egress-policy <string>` | `string` | — | `FLOWSTATE_EGRESS_POLICY` | path to an egress policy (YAML) governing the http task (default $FLOWSTATE_EGRESS_POLICY); when set it replaces the default policy entirely, and FLOWSTATE_ALLOW_LOOPBACK_EGRESS is ignored — a file that wants loopback says allow_loopback: true |
+| `--egress-policy <string>` | `string` | — | `FLOWSTATE_EGRESS_POLICY` | path to an egress policy (YAML) governing the http task (default $FLOWSTATE_EGRESS_POLICY); when set it replaces the default policy entirely, and FLOWSTATE_ALLOW_LOOPBACK_EGRESS is ignored; a file that wants loopback says allow_loopback: true |
 | `--identity-key <string>` | `string` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets |
 | `--input <string,...>` | `stringArray` | — | — | an argument this run is started with, as name=value (repeatable). The workflow's `inputs:` declaration decides how the value is read: an int is parsed as a number, a bool as true/false, and a list or struct as JSON |
 | `--input-file <string>` | `string` | — | — | a JSON object of arguments, keyed by input name. Values arrive with the types JSON gives them; a --input flag of the same name wins over the file |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
-| `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only — the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
+| `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only: the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
 | `--secret-command <string,...>` | `stringArray` | — | `FLOWSTATE_SECRET_COMMAND` | argv of the command that resolves command: secrets, repeatable in order (executable first);"{{name}}" and, with --secret-command-namespaced, "{{namespace}}" are substituted literally into one argument, never through a shell (default $FLOWSTATE_SECRET_COMMAND, :-separated) |
 | `--secret-command-namespaced` | `bool` | `false` | — | substitute "{{namespace}}" in --secret-command with the tenant's namespace |
 | `--secret-dir <string>` | `string` | — | `FLOWSTATE_SECRET_DIR` | directory containing file: secrets (default $FLOWSTATE_SECRET_DIR) |
@@ -704,7 +704,7 @@ flow run local examples/computed-outputs/workflow.yaml --input release=2026.9.0 
 | `--signal-as-issuer <string>` | `string` | — | — | authenticated issuer to deliver --signal as, with --signal-as-subject (local runs only) |
 | `--signal-as-namespace <string>` | `string` | — | — | tenant namespace to deliver --signal as (local runs only) |
 | `--signal-as-subject <string>` | `string` | — | — | authenticated subject to deliver --signal as, with --signal-as-issuer (local runs only) |
-| `--task-policy <string>` | `string` | — | `FLOWSTATE_TASK_POLICY` | path to a task-shape policy (YAML) governing which identities may dispatch which tasks (default $FLOWSTATE_TASK_POLICY); with nothing configured, every task dispatches exactly as it does today — see #187 |
+| `--task-policy <string>` | `string` | — | `FLOWSTATE_TASK_POLICY` | path to a task-shape policy (YAML) governing which identities may dispatch which tasks (default $FLOWSTATE_TASK_POLICY); with nothing configured, every task dispatches exactly as it does today (see #187) |
 
 ## `flow schedule`
 
@@ -714,7 +714,7 @@ Create and manage schedules that run workflows on a cadence
 flow schedule [command]
 ```
 
-Create and manage schedules. A Flowfile declares the cadence it is meant to run at in a `triggers:` block, and that declaration does nothing until `flow schedule create` is run against it — a file that starts running on its own when it merges is a surprise, and `flow run` therefore never creates one.
+Create and manage schedules. A Flowfile declares the cadence it is meant to run at in a `triggers:` block, and that declaration does nothing until `flow schedule create` is run against it: a file that starts running on its own when it merges is a surprise, and `flow run` therefore never creates one.
 
 A schedule belongs to your tenant and is named within it, so two teams may both have a `nightly-report` without either learning of the other. Firings act as the identity that created the schedule, frozen at that moment.
 
@@ -726,7 +726,7 @@ Create a schedule from a Flowfile's triggers block
 flow schedule create [file] [flags]
 ```
 
-Create a schedule that runs a Flowfile's workflow on the cadence its `triggers:` block declares. The specification, its arguments and the cadence are all checked here, while you are present to be told — nothing is left to fail at three in the morning.
+Create a schedule that runs a Flowfile's workflow on the cadence its `triggers:` block declares. The specification, its arguments and the cadence are all checked here, while you are present to be told, so nothing is left to fail at three in the morning.
 
 Examples:
 
@@ -793,7 +793,7 @@ Show one schedule: its cadence, arguments, next firings and recent runs
 flow schedule describe [name] [flags]
 ```
 
-Show one schedule in full — the cadence as the file declared it, the arguments every firing starts its run with, when it next fires, and what it has run lately.
+Show one schedule in full: the cadence as the file declared it, the arguments every firing starts its run with, when it next fires, and what it has run lately.
 
 Examples:
 
@@ -941,7 +941,7 @@ Start a server
 flow server [command] [flags]
 ```
 
-Start the Flowstate control plane: the Connect (HTTP/gRPC) endpoint every CLI verb and `flow mcp` reaches a deployment through. It authenticates each caller and maps them onto a tenant, then submits accepted runs to Temporal, where the workers execute them — the server schedules, lists and reports on runs, it does not run their steps itself. Authentication is fail-closed: it serves only with a trust policy configured (--auth-policy, naming the issuers and claims to accept) or with authentication waived out loud (--insecure-no-auth, for local development), and never by defaulting open.
+Start the Flowstate control plane: the Connect (HTTP/gRPC) endpoint every CLI verb and `flow mcp` reaches a deployment through. It authenticates each caller and maps them onto a tenant, then submits accepted runs to Temporal, where the workers execute them: the server schedules, lists and reports on runs, it does not run their steps itself. Authentication is fail-closed: it serves only with a trust policy configured (--auth-policy, naming the issuers and claims to accept) or with authentication waived out loud (--insecure-no-auth, for local development), and never by defaulting open.
 
 Examples:
 
@@ -1009,7 +1009,7 @@ flow server dev -o json
 | `--allow-insecure-plugin-dir` | `bool` | `false` | — | permit a plugin directory other users can write to, which lets them choose what this worker runs |
 | `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to an access policy whose secrets rules authorize worker-side resolution. Only its secrets section is read: this command serves every caller anonymously, so the policy's issuers go unused, and inheriting the path from $FLOWSTATE_AUTH_POLICY is refused rather than silently ignoring the authentication a deployment configured |
 | `--db <string>` | `string` | — | — | persist Temporal to a sqlite file at this path, so runs survive a restart; unset keeps everything in memory and nothing outlives the process |
-| `--egress-policy <string>` | `string` | — | `FLOWSTATE_EGRESS_POLICY` | path to an egress policy (YAML) governing the http task (default $FLOWSTATE_EGRESS_POLICY); when set it replaces the default policy entirely, and FLOWSTATE_ALLOW_LOOPBACK_EGRESS is ignored — a file that wants loopback says allow_loopback: true |
+| `--egress-policy <string>` | `string` | — | `FLOWSTATE_EGRESS_POLICY` | path to an egress policy (YAML) governing the http task (default $FLOWSTATE_EGRESS_POLICY); when set it replaces the default policy entirely, and FLOWSTATE_ALLOW_LOOPBACK_EGRESS is ignored; a file that wants loopback says allow_loopback: true |
 | `--identity-key <string>` | `string` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets |
 | `--listen <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address the Flowstate server listens on (default $FLOWSTATE_ADDRESS); loopback only, and a port of 0 takes a free one |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
@@ -1037,7 +1037,7 @@ flow server dev -o json
 | `--secret-vault-namespace <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_NAMESPACE` | Vault Enterprise or OpenBao namespace header (default $FLOWSTATE_SECRET_VAULT_NAMESPACE; this is the vault's own namespace, not the tenant namespace a run authenticates with) |
 | `--secret-vault-path-prefix <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_PATH_PREFIX` | path prefix inside the mount, above the namespace segment (default $FLOWSTATE_SECRET_VAULT_PATH_PREFIX) |
 | `--secret-vault-token-file <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_TOKEN_FILE` | file holding a static Vault client token, re-read per login (default $FLOWSTATE_SECRET_VAULT_TOKEN_FILE; falls back to $FLOWSTATE_SECRET_VAULT_TOKEN directly, for a development vault or a test) |
-| `--task-policy <string>` | `string` | — | `FLOWSTATE_TASK_POLICY` | path to a task-shape policy (YAML) governing which identities may dispatch which tasks (default $FLOWSTATE_TASK_POLICY); with nothing configured, every task dispatches exactly as it does today — see #187 |
+| `--task-policy <string>` | `string` | — | `FLOWSTATE_TASK_POLICY` | path to a task-shape policy (YAML) governing which identities may dispatch which tasks (default $FLOWSTATE_TASK_POLICY); with nothing configured, every task dispatches exactly as it does today (see #187) |
 | `--ui-port <int>` | `int` | `8233` | — | port for Temporal's web UI, where a run's history is readable; 0 serves no UI |
 
 ## `flow signal`
@@ -1050,7 +1050,7 @@ flow signal [workflow-id] [signal-name] [flags]
 
 Deliver a signal to a run waiting for one, which is how a human approval reaches a workload. The payload becomes the waiting step's outputs, so its keys are what later steps read as ${step_id.key}.
 
-Two limits, both worth knowing before designing a payload. A payload over 64 KiB is refused synchronously, with the size and the limit named — send a reference to something large rather than the thing itself, since the payload travels with the run from then on. And a signal that arrives before its gate is reached is held for it, at most 128 across all names with the earliest kept: sending does not fail when the run is elsewhere, it waits.
+Two limits, both worth knowing before designing a payload. A payload over 64 KiB is refused synchronously, with the size and the limit named; send a reference to something large rather than the thing itself, since the payload travels with the run from then on. And a signal that arrives before its gate is reached is held for it, at most 128 across all names with the earliest kept: sending does not fail when the run is elsewhere, it waits.
 
 With `-o json` (or `-o jsonl` for one line), stdout carries a single result document and nothing else, while the prose above is not written: `{"verb", "workflowId", "runId", "scheduleName", "signalName", "result"}`, the schema's `flowstate.v1.MutationResult`. `result` is "applied" for an act that is done when the server answers, "requested" for one it has accepted and not yet performed, and "delivered" for a signal the server has taken, which says nothing about whether the workflow went on to observe it. Fields that do not apply to a verb are present and empty, so one expression reads every one of them.
 
@@ -1140,7 +1140,7 @@ flow task run example.greet --input name=world --plugin-dir ./plugins
 | `--as-namespace <string>` | `string` | — | — | tenant namespace to rehearse policy as (local runs only) |
 | `--as-subject <string>` | `string` | `local-user` | — | authenticated subject to rehearse policy as (local runs only) |
 | `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to an access policy whose secrets rules authorize this local rehearsal |
-| `--egress-policy <string>` | `string` | — | `FLOWSTATE_EGRESS_POLICY` | path to an egress policy (YAML) governing the http task (default $FLOWSTATE_EGRESS_POLICY); when set it replaces the default policy entirely, and FLOWSTATE_ALLOW_LOOPBACK_EGRESS is ignored — a file that wants loopback says allow_loopback: true |
+| `--egress-policy <string>` | `string` | — | `FLOWSTATE_EGRESS_POLICY` | path to an egress policy (YAML) governing the http task (default $FLOWSTATE_EGRESS_POLICY); when set it replaces the default policy entirely, and FLOWSTATE_ALLOW_LOOPBACK_EGRESS is ignored; a file that wants loopback says allow_loopback: true |
 | `--identity-key <string>` | `string` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets |
 | `--input <string,...>` | `stringArray` | — | — | an argument this run is started with, as name=value (repeatable). The workflow's `inputs:` declaration decides how the value is read: an int is parsed as a number, a bool as true/false, and a list or struct as JSON |
 | `--input-file <string>` | `string` | — | — | a JSON object of arguments, keyed by input name. Values arrive with the types JSON gives them; a --input flag of the same name wins over the file |
@@ -1148,7 +1148,7 @@ flow task run example.greet --input name=world --plugin-dir ./plugins
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
 | `--plugin-dir <string,...>` | `stringArray` | — | — | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
-| `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only — the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
+| `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only: the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
 | `--secret-command <string,...>` | `stringArray` | — | `FLOWSTATE_SECRET_COMMAND` | argv of the command that resolves command: secrets, repeatable in order (executable first);"{{name}}" and, with --secret-command-namespaced, "{{namespace}}" are substituted literally into one argument, never through a shell (default $FLOWSTATE_SECRET_COMMAND, :-separated) |
 | `--secret-command-namespaced` | `bool` | `false` | — | substitute "{{namespace}}" in --secret-command with the tenant's namespace |
 | `--secret-dir <string>` | `string` | — | `FLOWSTATE_SECRET_DIR` | directory containing file: secrets (default $FLOWSTATE_SECRET_DIR) |
@@ -1171,7 +1171,7 @@ flow task run example.greet --input name=world --plugin-dir ./plugins
 | `--secret-vault-path-prefix <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_PATH_PREFIX` | path prefix inside the mount, above the namespace segment (default $FLOWSTATE_SECRET_VAULT_PATH_PREFIX) |
 | `--secret-vault-token-file <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_TOKEN_FILE` | file holding a static Vault client token, re-read per login (default $FLOWSTATE_SECRET_VAULT_TOKEN_FILE; falls back to $FLOWSTATE_SECRET_VAULT_TOKEN directly, for a development vault or a test) |
 | `--sensitive <string,...>` | `stringArray` | — | — | treat this input as `sensitive: true` is treated in a file: withheld from the invocation echo unless --reveal-sensitive is typed (repeatable). An input the task's own schema declares as carrying authority is withheld without being named here. Display etiquette only: the value still reaches the task, and a value that must not is a ${secret(...)} reference instead |
-| `--task-policy <string>` | `string` | — | `FLOWSTATE_TASK_POLICY` | path to a task-shape policy (YAML) governing which identities may dispatch which tasks (default $FLOWSTATE_TASK_POLICY); with nothing configured, every task dispatches exactly as it does today — see #187 |
+| `--task-policy <string>` | `string` | — | `FLOWSTATE_TASK_POLICY` | path to a task-shape policy (YAML) governing which identities may dispatch which tasks (default $FLOWSTATE_TASK_POLICY); with nothing configured, every task dispatches exactly as it does today (see #187) |
 
 ## `flow tasks`
 
@@ -1336,9 +1336,9 @@ flow watch [workflow-id] [flags]
 
 Follow a run until it finishes.
 
-Where there is a terminal this draws a live view of the run, on stderr, so the outputs it produced still go to stdout the way `flow get` writes them — one invocation can show progress on a terminal and pipe its answer to jq. Where there is not, it prints one line per change instead, so it is safe in a script or a CI job. --output json or jsonl draws no view at all: json is the final state as one document, jsonl is one document per change, which is a live event stream a program can read as it arrives.
+Where there is a terminal this draws a live view of the run, on stderr, so the outputs it produced still go to stdout the way `flow get` writes them: one invocation can show progress on a terminal and pipe its answer to jq. Where there is not, it prints one line per change instead, so it is safe in a script or a CI job. --output json or jsonl draws no view at all: json is the final state as one document, jsonl is one document per change, which is a live event stream a program can read as it arrives.
 
-The exit code reports the run: 0 when it completed, non-zero when it failed, was canceled, terminated, or timed out — so `flow watch` can gate a pipeline without anything having to parse its output.
+The exit code reports the run: 0 when it completed, non-zero when it failed, was canceled, terminated, or timed out, so `flow watch` can gate a pipeline without anything having to parse its output.
 
 Examples:
 
@@ -1365,7 +1365,7 @@ flow watch flowstate-workflow-3f7c >/dev/null && ./promote.sh
 | `--interval <duration>` | `duration` | `1s` | — | how often to ask the server, clamped to a floor of 250ms |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--plain` | `bool` | `false` | — | print one line per change instead of drawing a live view, even on a terminal |
-| `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only — the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
+| `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only: the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
 | `--run-id <string>` | `string` | — | — | pin the watch to one run of the workload; unset follows whichever run is current |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
 
@@ -1377,7 +1377,7 @@ Start a worker
 flow worker [flags]
 ```
 
-Start a Temporal worker: the process that actually runs a workflow's steps. The server submits work to Temporal and a worker polling its task queue is what picks it up, so nothing a deployment accepts runs until at least one worker is up — the two never talk to each other, they meet at Temporal. With --deployment-name and --build-id it claims a Worker Deployment version, pinning every run already in flight to the interpreter it started on: a later deploy changes what new runs compute, not what in-flight ones do, until each reaches continue-as-new. With --tenant it executes one namespace's runs and refuses every other outright, rather than running them with this worker's secrets, egress policy and plugins — which needs a queue of its own, named by --task-queue-prefix (the value the server was started with) or given as --task-queue.
+Start a Temporal worker: the process that actually runs a workflow's steps. The server submits work to Temporal and a worker polling its task queue is what picks it up, so nothing a deployment accepts runs until at least one worker is up: the two never talk to each other, they meet at Temporal. With --deployment-name and --build-id it claims a Worker Deployment version, pinning every run already in flight to the interpreter it started on: a later deploy changes what new runs compute, not what in-flight ones do, until each reaches continue-as-new. With --tenant it executes one namespace's runs and refuses every other outright, rather than running them with this worker's secrets, egress policy and plugins, which needs a queue of its own, named by --task-queue-prefix (the value the server was started with) or given as --task-queue.
 
 Examples:
 
@@ -1403,7 +1403,7 @@ flow worker --namespace production --deployment-name flowstate --build-id "$(git
 | `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to an access policy whose secrets rules authorize worker-side resolution |
 | `--build-id <string>` | `string` | — | `FLOWSTATE_BUILD_ID` | version identifier for this worker's binary, unique per build. Required with --deployment-name |
 | `--deployment-name <string>` | `string` | — | `FLOWSTATE_DEPLOYMENT_NAME` | Worker Deployment this worker belongs to. With --build-id, pins every in-flight run to the interpreter version it started on; a run moves to the current version only at continue-as-new |
-| `--egress-policy <string>` | `string` | — | `FLOWSTATE_EGRESS_POLICY` | path to an egress policy (YAML) governing the http task (default $FLOWSTATE_EGRESS_POLICY); when set it replaces the default policy entirely, and FLOWSTATE_ALLOW_LOOPBACK_EGRESS is ignored — a file that wants loopback says allow_loopback: true |
+| `--egress-policy <string>` | `string` | — | `FLOWSTATE_EGRESS_POLICY` | path to an egress policy (YAML) governing the http task (default $FLOWSTATE_EGRESS_POLICY); when set it replaces the default policy entirely, and FLOWSTATE_ALLOW_LOOPBACK_EGRESS is ignored; a file that wants loopback says allow_loopback: true |
 | `--identity-key <string>` | `string` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets |
 | `--namespace <string>` | `string` | — | — | Temporal namespace (overrides environment configuration) |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
@@ -1431,7 +1431,7 @@ flow worker --namespace production --deployment-name flowstate --build-id "$(git
 | `--secret-vault-namespace <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_NAMESPACE` | Vault Enterprise or OpenBao namespace header (default $FLOWSTATE_SECRET_VAULT_NAMESPACE; this is the vault's own namespace, not the tenant namespace a run authenticates with) |
 | `--secret-vault-path-prefix <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_PATH_PREFIX` | path prefix inside the mount, above the namespace segment (default $FLOWSTATE_SECRET_VAULT_PATH_PREFIX) |
 | `--secret-vault-token-file <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_TOKEN_FILE` | file holding a static Vault client token, re-read per login (default $FLOWSTATE_SECRET_VAULT_TOKEN_FILE; falls back to $FLOWSTATE_SECRET_VAULT_TOKEN directly, for a development vault or a test) |
-| `--task-policy <string>` | `string` | — | `FLOWSTATE_TASK_POLICY` | path to a task-shape policy (YAML) governing which identities may dispatch which tasks (default $FLOWSTATE_TASK_POLICY); with nothing configured, every task dispatches exactly as it does today — see #187 |
+| `--task-policy <string>` | `string` | — | `FLOWSTATE_TASK_POLICY` | path to a task-shape policy (YAML) governing which identities may dispatch which tasks (default $FLOWSTATE_TASK_POLICY); with nothing configured, every task dispatches exactly as it does today (see #187) |
 | `--task-queue <string>` | `string` | `flowstate-run-task-queue` | `TEMPORAL_TASK_QUEUE` | task queue for Temporal workflows and activities |
 | `--task-queue-prefix <string>` | `string` | — | `FLOWSTATE_TASK_QUEUE_PREFIX` | route each tenant's runs to a task queue of their own, named <prefix>_<namespace>, so a per-tenant worker fleet can be addressed; unset means every tenant shares the single default queue, which is the zero-configuration behavior |
 | `--tenant <string>` | `string` | — | — | execute only this Flowstate namespace's runs, refusing any other tenant's outright rather than executing it with this worker's secrets, egress policy and plugins. Pass an empty value (--tenant=) for the default tenant of an untenanted deployment. Needs a queue of this worker's own: either --task-queue-prefix (the same value the server was started with) or an explicit --task-queue |

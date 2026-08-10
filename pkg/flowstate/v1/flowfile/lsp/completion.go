@@ -98,26 +98,26 @@ var dslKeys = map[string][]dslKey{
 		{name: "edition", detail: "version", docs: "Required. Names the grammar this file is written in, as a v-prefixed date: `" + flowfile.CurrentEdition + "`.\n\n" +
 			"It exists so that a build can *refuse* a file rather than silently reinterpret it: surface syntax here gets no deprecation window, " +
 			"and a file that says which grammar it was written in is a file `flow fix` can rewrite across that boundary. " +
-			"It was optional once, which was the one thing it could not afford to be — leaving it out did not mean \"any grammar\", it meant being read as whichever grammar came next.\n\n" +
+			"It was optional once, which was the one thing it could not afford to be: leaving it out did not mean \"any grammar\", it meant being read as whichever grammar came next.\n\n" +
 			"`flow fix` writes it, below any header comment, so no one has to type it.\n\n" +
-			"It is not a compatibility switch. A build compiles one grammar — this one knows " + editionList + " — and declaring anything else is refused, not translated."},
+			"It is not a compatibility switch. A build compiles one grammar (this one knows " + editionList + "), and declaring anything else is refused, not translated."},
 		{name: "name", detail: "string", docs: "What this workflow is called."},
 		{name: "description", detail: "string", docs: "Optional prose about the workflow."},
 		{name: "vars", detail: "map", docs: "Names values once, for the whole file. Every step reads them as `${" + v1.VarsRoot + ".<name>}`.\n\n" +
 			"Rooted rather than bare because a var is *ambient*: it is in scope everywhere rather than bound where you read it, the same distinction that makes a step's outputs `" + v1.StepsRoot + ".<id>.<output>` and a loop's binding bare.\n\n" +
-			"Evaluated once, before the first step runs — so a var may use literals, operators and the profile's functions, and may not read a step, another var, or anything else that does not exist yet. " +
+			"Evaluated once, before the first step runs. A var may therefore use literals, operators and the profile's functions, and may not read a step, another var, or anything else that does not exist yet. " +
 			"The `${...}` fence is still required for an expression: without it the value is the text as written, which is what lets a var hold the literal string `steps.greet.result`.\n\n" +
-			"A `${secret(...)}` reference may not be stored here — a var is evaluated by the workflow and its value is written to durable history. Write the reference on the task input that consumes the secret instead."},
+			"A `${secret(...)}` reference may not be stored here: a var is evaluated by the workflow and its value is written to durable history. Write the reference on the task input that consumes the secret instead."},
 		{name: "steps", detail: "list", docs: "The steps to run, in order. Each step may reference the outputs of the steps before it."},
 	},
 	"steps": {
 		{name: "id", detail: "string", docs: "How later steps reference this one, as `${" + v1.StepsRoot + ".<id>.<output>}`. Must be a valid CEL identifier and unique in the workflow."},
 		{name: "description", detail: "string", docs: "Optional prose about this step: why it is here, which the mechanics under it cannot say.\n\n" +
-			"A property of the step rather than of the work it does, so every kind of step can carry one — a `for_each` or a `sleep` as readily as a task. " +
+			"A property of the step rather than of the work it does, so every kind of step can carry one, a `for_each` or a `sleep` as readily as a task. " +
 			"It belongs here, directly under `id`, and not under the task's own key: the keys there are that task's inputs, so a `description` written among them asks for an input by that name."},
 		{name: "for_each", detail: "map", docs: "Repeat a body of steps once per item of a list. " + oneStepKind},
 		{name: "loop", detail: "map", docs: "Repeat a body of steps, carrying a value from one iteration to the next, until a condition holds or `max_iterations:` is reached. " + oneStepKind + "\n\n" +
-			"The body runs, then `until:` is checked — so `until:` reads what the body produced, which is what lets a loop page a cursor until the last page reports it is done. " +
+			"The body runs, then `until:` is checked, so `until:` reads what the body produced, which is what lets a loop page a cursor until the last page reports it is done. " +
 			"`as:` names the carried value, `init:` is what it holds first, `update:` computes the next from the body's outputs. " +
 			"Reaching `max_iterations:` without `until:` holding is a distinct failure, not a silent stop. Reports `results` (one entry per iteration) and, when it carries state, `state` (the final value)."},
 		{name: "parallel", detail: "list", docs: "Run branches of steps concurrently. " + oneStepKind},
@@ -130,29 +130,29 @@ var dslKeys = map[string][]dslKey{
 			"Write `wait_for_signal: deploy-approved`, or a mapping with `name:` and `timeout:`. " +
 			"What the sender sent becomes this step's outputs. " + oneStepKind},
 		{name: "call", detail: "string", docs: "Run another Flowfile as a step, resolved relative to *this file's* own directory at compile time. " + oneStepKind + "\n\n" +
-			"The callee runs isolated: its steps see only its bound arguments (`with:`) and the profile — not this file's steps or `vars:`. " +
+			"The callee runs isolated: its steps see only its bound arguments (`with:`) and the profile, not this file's steps or `vars:`. " +
 			"What it declares in its own `outputs:` comes back under this step's id, the way a task's would."},
 		{name: "if", detail: "expression", docs: "A condition deciding whether the step runs, written as `${...}`. A step that is skipped produces no outputs."},
 		{name: "vars", detail: "map", docs: "Names values for this step, read *bare*: `${modified}`.\n\n" +
-			"Bare rather than rooted because these are author-chosen and lexically local — the same standing as the name a loop binds — where the workflow's `vars:` are ambient and so are rooted. " +
+			"Bare rather than rooted because these are author-chosen and lexically local (the same standing as the name a loop binds), where the workflow's `vars:` are ambient and so are rooted. " +
 			"They are private to the step: on a `for_each` or `parallel:` they reach the whole body, and nowhere else. Pass a value to a *later* step through its outputs instead.\n\n" +
-			"A name already bound by an enclosing loop or step is refused rather than shadowed, and a var may not read its siblings — `vars:` is a mapping, so there is no order that would make one available to another. " +
+			"A name already bound by an enclosing loop or step is refused rather than shadowed, and a var may not read its siblings: `vars:` is a mapping, so there is no order that would make one available to another. " +
 			"Everything else in scope is fair: `" + v1.VarsRoot + ".<name>`, the outputs of steps already run, and any enclosing binding.\n\n" +
 			"A `${secret(...)}` reference may not be stored here either, for the same reason it may not go in the workflow's own `vars:`. Write it on the task input that consumes the secret."},
 		{name: "timeout", detail: "duration", docs: "Bounds one attempt at the step, written as `30s`, `5m`, or `1h`."},
 		{name: "retry", detail: "map", docs: "How a failed attempt is retried. Omit it to use the engine's defaults."},
 		{name: "continue_on_error", detail: "bool", docs: "Let the run proceed when this step fails. A cancellation is not a failure, so this does not tolerate one."},
-		{name: "undo", detail: "map", docs: "How this step is taken back when a *later* step fails and the run cannot continue — the saga compensation for what it did.\n\n" +
+		{name: "undo", detail: "map", docs: "How this step is taken back when a *later* step fails and the run cannot continue: the saga compensation for what it did.\n\n" +
 			"Written as the task that undoes it, with its inputs beneath: the same shape as the step's own work, because it is the same kind of thing. " +
-			"A compensation is one task — it cannot loop, branch, wait, or carry an `undo:` of its own.\n\n" +
+			"A compensation is one task: it cannot loop, branch, wait, or carry an `undo:` of its own.\n\n" +
 			"Registered when this step *succeeds*, and never otherwise: a step skipped by its `if:` did nothing, and a step that failed may have applied part of its effect, which the engine will not guess at. " +
 			"Compensations then run in reverse order, because steps depend forwards.\n\n" +
-			"Its inputs are resolved the moment the step succeeds, in that step's scope with its own outputs added — so `${" + v1.StepsRoot + ".<this step>.<output>}` is the reference to use, and it is the one place a step may name itself. " +
+			"Its inputs are resolved the moment the step succeeds, in that step's scope with its own outputs added, so `${" + v1.StepsRoot + ".<this step>.<output>}` is the reference to use, and it is the one place a step may name itself. " +
 			"A run that failed and compensated still reports FAILED; what it undid is in the failure.\n\n" +
 			"Top-level task steps only in this version. Inside a `for_each` body or a `parallel:` branch it is refused, because the order work registers in there is not the same under `flow run local` as it is durably."},
-		{name: "with", detail: "map", docs: "Arguments binding the callee's declared `inputs:`, resolved in *this* file's scope — the same scope a task's inputs are resolved in. " +
+		{name: "with", detail: "map", docs: "Arguments binding the callee's declared `inputs:`, resolved in *this* file's scope, the same scope a task's inputs are resolved in. " +
 			"Only meaningful beside `call:`. Checked against what the callee declares when this file is compiled: a missing required input or an argument it does not declare is refused here, not at run time.\n\n" +
-			"A secret reference may not be bound through `with:` — pass it to the task that needs it inside the callee instead."},
+			"A secret reference may not be bound through `with:`. Pass it to the task that needs it inside the callee instead."},
 	},
 	"wait_for_signal": {
 		{name: "name", detail: "string", docs: "The signal this step waits for, and what a sender addresses with `flow signal <workflow-id> <name>`."},
@@ -170,12 +170,12 @@ var dslKeys = map[string][]dslKey{
 			"a prompt is rendered to somebody who was handed a run id rather than this file, so the rule is reaching rather than surfacing. " +
 			"The evaluated text is bounded, and a prompt that was cut says so rather than looking complete."},
 		{name: "outputs", detail: "map", docs: "Shapes what this step produces, the way the http task's own `outputs:` shapes a response.\n\n" +
-			"Each value is evaluated once, the moment the wait resolves, with the wait's result bound bare — `" +
+			"Each value is evaluated once, the moment the wait resolves, with the wait's result bound bare (`" +
 			v1.PayloadOutput + "`, `" + v1.SenderOutput + "`, `" + v1.TimedOutOutput + "`, and `" + v1.NowIdentifier +
-			"` — over the ordinary scope, so `" + v1.StepsRoot + ".*` and `" + v1.InputsRoot + ".*` read here as they do in an `if:`:\n\n" +
+			"`) over the ordinary scope, so `" + v1.StepsRoot + ".*` and `" + v1.InputsRoot + ".*` read here as they do in an `if:`:\n\n" +
 			"```yaml\noutputs:\n  approved: ${has(" + v1.PayloadOutput + ".approved) && " + v1.PayloadOutput + ".approved}\n  " +
 			v1.TimedOutOutput + ": ${" + v1.TimedOutOutput + "}\n```\n\n" +
-			"It **replaces** the wait's own outputs rather than adding to them, exactly as the http task's does — so `" +
+			"It **replaces** the wait's own outputs rather than adding to them, exactly as the http task's does, so `" +
 			v1.PayloadOutput + "` and `" + v1.SenderOutput + "` are gone unless a line re-exposes them, and reading one that was dropped is a `flow validate` error rather than an empty value.\n\n" +
 			"The point is to state a gate once: later `if:`s and the workflow's `outputs:` read `${" + v1.StepsRoot +
 			".approval.approved}` instead of each re-deriving the condition, so the report cannot disagree with the branch that ran."},
@@ -183,7 +183,7 @@ var dslKeys = map[string][]dslKey{
 	"for_each": {
 		{name: "items", detail: "expression", docs: "An expression producing the list to iterate, written as `${...}`."},
 		{name: "as", detail: "string", docs: "Names the variable bound to the current item, read bare inside the body: `${name}`. Defaults to `item`.\n\n" +
-			"Reads as the sentence it is — *for each item as name* — and names the binding rather than the mechanism. It was `iterator:`; `flow fix` rewrites that."},
+			"Reads as the sentence it is (*for each item as name*) and names the binding rather than the mechanism. It was `iterator:`; `flow fix` rewrites that."},
 		{name: "max_parallel", detail: "int", docs: "How many iterations may run at once. Omitted, `0` or `1` runs them one at a time.\n\n" +
 			"Zero is accepted rather than refused because it is the field's own zero value: a spec built " +
 			"without it and one that sets it to nothing mean the same thing, and the schema says so with `gte: 0`."},
@@ -191,11 +191,11 @@ var dslKeys = map[string][]dslKey{
 	},
 	"loop": {
 		{name: "as", detail: "string", docs: "Names the value carried between iterations, read bare inside the body, `until:` and `update:`: `${cursor}`.\n\n" +
-			"The same standing as a `for_each` binding — author-chosen and lexically local. Optional: a loop that carries nothing omits `as:`, `init:` and `update:` together. A name that collides with an enclosing binding, `now`, or a root is refused."},
+			"The same standing as a `for_each` binding: author-chosen and lexically local. Optional: a loop that carries nothing omits `as:`, `init:` and `update:` together. A name that collides with an enclosing binding, `now`, or a root is refused."},
 		{name: "init", detail: "expression", docs: "The value the carried state holds on the first iteration, written as `${...}`. Evaluated once before the loop, so it cannot read the state it defines. Required when `as:` is set."},
-		{name: "update", detail: "expression", docs: "Computes the next iteration's carried state from the current one and the body's outputs, written as `${...}` — `${" + v1.StepsRoot + ".page.next_cursor}` or `${acc + n}`. Evaluated after the body. Required when `as:` is set."},
+		{name: "update", detail: "expression", docs: "Computes the next iteration's carried state from the current one and the body's outputs, written as `${...}`: `${" + v1.StepsRoot + ".page.next_cursor}` or `${acc + n}`. Evaluated after the body. Required when `as:` is set."},
 		{name: "until", detail: "expression", docs: "The stop condition, written as `${...}` producing a boolean. Evaluated after the body each iteration, so it reads the body's own outputs. When it holds, the loop stops."},
-		{name: "max_iterations", detail: "int", docs: "The hard ceiling on how many times the body runs. Omitted or `0` uses the engine's default. Reaching it without `until:` holding fails the run distinctly rather than stopping silently — a loop that could run forever is one the engine must be able to stop."},
+		{name: "max_iterations", detail: "int", docs: "The hard ceiling on how many times the body runs. Omitted or `0` uses the engine's default. Reaching it without `until:` holding fails the run distinctly rather than stopping silently: a loop that could run forever is one the engine must be able to stop."},
 		{name: "steps", detail: "list", docs: "The body run each iteration."},
 	},
 	"parallel": {
@@ -555,13 +555,13 @@ func waitResultCandidates(path []string) []refCandidate {
 			kind:   lsp.CIKVariable,
 			detail: "map",
 			docs: "What the sender sent, unchanged and untrusted. Bound bare here because this expression is the wait's own; " +
-				"from a later step the same data is `${" + v1.StepsRoot + ".<id>." + v1.PayloadOutput + "}` — unless this `outputs:` block drops it, which it does unless a line re-exposes it.",
+				"from a later step the same data is `${" + v1.StepsRoot + ".<id>." + v1.PayloadOutput + "}`, unless this `outputs:` block drops it, which it does unless a line re-exposes it.",
 		},
 		{
 			name:   v1.SenderOutput,
 			kind:   lsp.CIKVariable,
 			detail: "map",
-			docs:   "Who the server attests sent the signal — `" + v1.SenderOutput + ".identity.subject`, `." + v1.SenderOutput + ".local` — never anything the payload claims.",
+			docs:   "Who the server attests sent the signal: `" + v1.SenderOutput + ".identity.subject`, `." + v1.SenderOutput + ".local`. Never anything the payload claims.",
 		},
 		{
 			name:   v1.TimedOutOutput,

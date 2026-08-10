@@ -240,14 +240,14 @@ func newWatchCommand() *cobra.Command {
 		Short: "Follow a run until it finishes",
 		Long: "Follow a run until it finishes.\n\n" +
 			"Where there is a terminal this draws a live view of the run, on stderr, so the " +
-			"outputs it produced still go to stdout the way `flow get` writes them — one " +
+			"outputs it produced still go to stdout the way `flow get` writes them: one " +
 			"invocation can show progress on a terminal and pipe its answer to jq. Where " +
 			"there is not, it prints one line per change instead, so it is safe in a script " +
 			"or a CI job. --output json or jsonl draws no view at all: json is the final " +
 			"state as one document, jsonl is one document per change, which is a live event " +
 			"stream a program can read as it arrives.\n\n" +
 			"The exit code reports the run: 0 when it completed, non-zero when it failed, " +
-			"was canceled, terminated, or timed out — so `flow watch` can gate a pipeline " +
+			"was canceled, terminated, or timed out, so `flow watch` can gate a pipeline " +
 			"without anything having to parse its output.",
 		Example: `# Follow a run on a terminal.
 flow watch flowstate-workflow-3f7c
