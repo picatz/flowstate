@@ -580,6 +580,8 @@ flow run [command] [workflow-file] [flags]
 
 Start a workload on a Flowstate server and follow the run until it finishes.
 
+This verb always means the server, and it never falls back to running the workload here when no server answers: a network failure must not turn a deploy into a laptop run. `flow run local` is the other venue, and each run says which one it is on before it starts, so the address a shell happens to carry is never something to find out afterwards.
+
 Following works exactly as `flow watch` does, because it is the same code: a live view where there is a terminal, one line per change where there is not, and the outputs on stdout when the run produced them. The exit code is the run's, so `flow run x && ./promote.sh` behaves the way a shell reader expects.
 
 Stopping watching does not stop the run. The workflow id is printed as soon as the run starts, so `flow watch` can pick it up again afterwards.

@@ -468,6 +468,13 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Before the file is read, which is the earliest this command can say
+	// anything: a run that never starts still says where it was going, so
+	// `flow run typo.yaml` in a shell holding a production address reports the
+	// address as well as the typo. See venue.go for the model, and for why the
+	// tenant the server will derive is not part of the sentence.
+	announceVenue(cmd, serverVenue(serverFlagsOf(cmd), os.Getenv))
+
 	workflow, err := loadWorkflow(args[0])
 	if err != nil {
 		return err
@@ -1198,6 +1205,11 @@ flow lsp`,
 		Use:   "run [workflow-file]",
 		Short: "Run a workflow and follow it",
 		Long: "Start a workload on a Flowstate server and follow the run until it finishes.\n\n" +
+			"This verb always means the server, and it never falls back to running the " +
+			"workload here when no server answers: a network failure must not turn a " +
+			"deploy into a laptop run. `flow run local` is the other venue, and each run " +
+			"says which one it is on before it starts, so the address a shell happens to " +
+			"carry is never something to find out afterwards.\n\n" +
 			"Following works exactly as `flow watch` does, because it is the same code: a " +
 			"live view where there is a terminal, one line per change where there is not, " +
 			"and the outputs on stdout when the run produced them. The exit code is the " +
