@@ -160,10 +160,11 @@ func envSegment(s string) string {
 func greet(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
 	// The SDK extracted the host's W3C parent before invoking us. Using its
 	// configured tracer therefore makes this a child of the plugin RPC without
-	// selecting an exporter or telemetry backend here.
+	// selecting an exporter or telemetry backend here. Nothing below makes an
+	// outbound call, so the child context the tracer returns is discarded; a
+	// task that calls anything would thread it through instead.
 	if tracer := sdk.Tracer(ctx); tracer != nil {
-		spanCtx, span := tracer.Start(ctx, "example.greet")
-		ctx = spanCtx
+		_, span := tracer.Start(ctx, "example.greet")
 		defer span.End()
 	}
 	var in examplev1.GreetInputs

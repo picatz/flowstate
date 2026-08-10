@@ -376,7 +376,7 @@ func (p *Plugin) start() (*instance, *pluginv1.PluginManifest, error) {
 		return nil, nil, err
 	}
 
-	manifest, err := p.describe(inst)
+	manifest, err := p.describe(ctx, inst)
 	if err != nil {
 		startErr = err
 		inst.stop(context.Background(), p.cfg.ShutdownGrace)
@@ -396,8 +396,11 @@ func (p *Plugin) start() (*instance, *pluginv1.PluginManifest, error) {
 }
 
 // describe calls Describe and refuses anything the host cannot accept.
-func (p *Plugin) describe(inst *instance) (*pluginv1.PluginManifest, error) {
-	ctx, cancel := context.WithTimeout(p.procCtx, p.cfg.DescribeTimeout)
+// describe asks the plugin who it is, on the context its caller's span lives
+// in, so the mandatory first RPC is a child of the start trace rather than a
+// root of its own.
+func (p *Plugin) describe(ctx context.Context, inst *instance) (*pluginv1.PluginManifest, error) {
+	ctx, cancel := context.WithTimeout(ctx, p.cfg.DescribeTimeout)
 	defer cancel()
 
 	resp, err := inst.clients.plugin.Describe(ctx, connect.NewRequest(&pluginv1.DescribeRequest{
@@ -628,7 +631,6 @@ func (p *Plugin) restart() bool {
 	p.restarts++
 	attempt := p.restarts
 	p.mu.Unlock()
-	p.telemetry.restarts.Add(p.procCtx, 1)
 
 	budget := p.cfg.MaxRestarts
 	if budget < 0 || attempt > budget {
@@ -642,6 +644,11 @@ func (p *Plugin) restart() bool {
 	if !p.sleep(backoffFor(attempt, p.cfg.RestartBackoff, p.cfg.MaxRestartBackoff)) {
 		return false
 	}
+
+	// Counted here, after the budget said yes and the backoff was not cancelled
+	// by shutdown, so the metric reports relaunches actually attempted rather
+	// than intentions: a plugin with MaxRestarts zero records none.
+	p.telemetry.restarts.Add(p.procCtx, 1)
 
 	inst, manifest, err := p.start()
 	if err != nil {

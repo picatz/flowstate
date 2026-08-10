@@ -137,14 +137,18 @@ func (p *Plugin) taskFunc(manifest *pluginv1.TaskManifest) flowstatev1.TaskFunc 
 
 		resp, err := inst.clients.task.Execute(callCtx, connect.NewRequest(request))
 		if err != nil {
-			callErr = err
 			// Classified before it is scrubbed — see [taskError] for why the
 			// order is load-bearing — and scrubbed before it is wrapped, so
 			// that a resolved secret a peer reflected back through an RPC
 			// failure — the same hazard the http task's own scrubber exists
 			// for — cannot reach the task error this becomes, which is
-			// surfaced to users and written to workflow history.
-			return nil, taskError(qualified, p.name, err, scrubber)
+			// surfaced to users and written to workflow history. The scrubbed
+			// error is also what the telemetry span records: an exported trace
+			// is exactly as durable and as readable as history, so the raw RPC
+			// error may not take the side door a span would give it.
+			scrubbed := taskError(qualified, p.name, err, scrubber)
+			callErr = scrubbed
+			return nil, scrubbed
 		}
 
 		outputs := resp.Msg.GetOutputs()

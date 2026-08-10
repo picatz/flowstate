@@ -37,7 +37,7 @@ func newTelemetry(cfg Config) telemetry {
 		mp = otel.GetMeterProvider()
 	}
 	m := mp.Meter(instrumentationName)
-	d, _ := m.Float64Histogram("flowstate.plugin.execution.duration", metric.WithUnit("s"))
+	d, _ := m.Float64Histogram("flowstate.plugin.operation.duration", metric.WithUnit("s"))
 	c, _ := m.Int64Counter("flowstate.plugin.calls")
 	h, _ := m.Int64Counter("flowstate.plugin.health.checks")
 	r, _ := m.Int64Counter("flowstate.plugin.restarts")
@@ -75,13 +75,14 @@ func propagationInterceptor(plugin, task string) connect.Interceptor {
 	prop := propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{})
 	return connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
 		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+			// Only the two names this constructor was handed cross the
+			// boundary. Context baggage is deliberately not consulted, even
+			// under the reserved keys: a caller who can seed baggage would
+			// otherwise choose what this host asserts about itself, and a
+			// credential or an unbounded value under a trusted name is the
+			// exact leak the filter exists to stop.
 			members := make([]baggage.Member, 0, 2)
 			values := map[string]string{"flowstate.plugin.name": plugin, "flowstate.task.name": task}
-			for _, k := range []string{"flowstate.plugin.name", "flowstate.task.name"} {
-				if m := baggage.FromContext(ctx).Member(k); m.Value() != "" {
-					values[k] = m.Value()
-				}
-			}
 			for k, v := range values {
 				if v != "" {
 					if m, err := baggage.NewMember(k, v); err == nil {
