@@ -206,6 +206,12 @@ type column struct {
 
 	name string
 	text string
+
+	// literal is appended after text is rendered, byte for byte. It carries
+	// values the prose dialect does not govern, a flag's runtime default above
+	// all: an operator's value may contain a balanced pair of backticks, and a
+	// parse over it would show a default different from the one in force.
+	literal string
 }
 
 // group is a titled list of commands.
@@ -277,7 +283,8 @@ func flagEntries(c *cobra.Command) []column {
 		}
 		seen[f.Name] = true
 
-		entries = append(entries, column{sort: f.Name, name: flagName(f), text: flagUsage(f)})
+		text, literal := flagUsage(f)
+		entries = append(entries, column{sort: f.Name, name: flagName(f), text: text, literal: literal})
 	}
 
 	c.LocalFlags().VisitAll(add)
@@ -326,7 +333,7 @@ func placeholder(kind string) string {
 //
 // An empty string and a false are not: "(default \"\")" tells a reader nothing they
 // did not already assume, and it is the majority of the flags on any command.
-func flagUsage(f *pflag.Flag) string {
+func flagUsage(f *pflag.Flag) (string, string) {
 	usage := f.Usage
 
 	// cobra writes these two itself, in a shape that describes the mechanism
@@ -340,11 +347,18 @@ func flagUsage(f *pflag.Flag) string {
 		usage = "Show the version and exit"
 	}
 
-	if f.DefValue != "" && f.DefValue != "false" && f.DefValue != "0" && f.DefValue != "[]" {
-		usage += " (default " + f.DefValue + ")"
-	}
+	return sentence(usage), flagDefault(f)
+}
 
-	return sentence(usage)
+// flagDefault renders the "(default ...)" suffix, or nothing for the zero
+// shapes cobra spells. Returned apart from the usage prose because the value is
+// runtime text: it reaches the screen byte for byte, never through the prose
+// parser, so a backtick in an operator's path stays a backtick.
+func flagDefault(f *pflag.Flag) string {
+	if f.DefValue == "" || f.DefValue == "false" || f.DefValue == "0" || f.DefValue == "[]" {
+		return ""
+	}
+	return "(default " + f.DefValue + ")"
 }
 
 // sentence starts a description with a capital.
@@ -384,7 +398,11 @@ func writeColumns(b *strings.Builder, theme ui.Theme, entries []column, widest, 
 				// characters that reach the screen before anything is cut: a cut
 				// measured on the authored string lands in the wrong column, and a
 				// cut through a styled span would leave an escape sequence open.
-				fmt.Fprintln(b, indent(indent(theme.Muted.Render(ui.Trim(theme.ProseText(e.text), width-4)))))
+				line := ui.Trim(theme.ProseText(e.text), width-4)
+				if e.literal != "" {
+					line += " " + e.literal
+				}
+				fmt.Fprintln(b, indent(indent(theme.Muted.Render(line))))
 			}
 		}
 
@@ -398,6 +416,15 @@ func writeColumns(b *strings.Builder, theme ui.Theme, entries []column, widest, 
 		// where it is wrapped rather than afterwards, because a style applied over
 		// a line that already carries one ends both at the first reset.
 		wrapped := strings.Split(wrapProse(theme, theme.Muted, e.text, textWidth), "\n")
+		if e.literal != "" {
+			styled := theme.Muted.Render(e.literal)
+			last := len(wrapped) - 1
+			if lipgloss.Width(wrapped[last])+1+lipgloss.Width(styled) <= textWidth {
+				wrapped[last] += " " + styled
+			} else {
+				wrapped = append(wrapped, styled)
+			}
+		}
 
 		fmt.Fprintln(b, indent(theme.Strong.Render(e.name)+pad+wrapped[0]))
 		for _, line := range wrapped[1:] {

@@ -207,3 +207,19 @@ func renderedHelp(c *cobra.Command, profile colorprofile.Profile) string {
 
 	return raw.String()
 }
+
+// TestAFlagDefaultIsNeverParsedAsProse pins the boundary between the authored
+// dialect and runtime values. A flag's default can come from an environment an
+// operator controls, and a balanced pair of backticks inside it is data, not
+// markup: help must show the default byte for byte, or `--help` displays a
+// different value from the one the command will use.
+func TestAFlagDefaultIsNeverParsedAsProse(t *testing.T) {
+	t.Parallel()
+
+	cmd := &cobra.Command{Use: "probe", Run: func(*cobra.Command, []string) {}}
+	cmd.Flags().String("policy", "/policies/`prod`", "Where the policy lives")
+
+	require.Contains(t, renderedHelp(cmd, colorprofile.TrueColor), "(default /policies/`prod`)",
+		"the default's backticks were interpreted as prose markup, so help shows a value "+
+			"different from the one in force")
+}
