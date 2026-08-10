@@ -554,7 +554,9 @@ flow schedule create report.yaml --name report-us --input region=us-east-1`,
 	createCmd.Flags().Bool("paused", false,
 		"create the schedule without letting it fire, so its next firing times can be read before it takes one")
 	createCmd.Flags().StringSlice("backfill", nil,
-		"bounded missed window to recover at creation, START..END in RFC3339; repeat at most 10 times (31 days total)")
+		"a missed window to recover at creation, START..END in RFC3339, repeatable up to 10 times and 31 days "+
+			"in total. Temporal evaluates the cadence after START and up to END, so write START a moment before "+
+			"the first firing you want back")
 
 	listCmd := &cobra.Command{
 		Use:   "list",

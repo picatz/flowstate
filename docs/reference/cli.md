@@ -739,7 +739,7 @@ flow schedule create report.yaml --name report-us --input region=us-east-1
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
-| `--backfill <string,...>` | `stringSlice` | — | — | bounded missed window to recover at creation, START..END in RFC3339; repeat at most 10 times (31 days total) |
+| `--backfill <string,...>` | `stringSlice` | — | — | a missed window to recover at creation, START..END in RFC3339, repeatable up to 10 times and 31 days in total. Temporal evaluates the cadence after START and up to END, so write START a moment before the first firing you want back |
 | `--input <string,...>` | `stringArray` | — | — | an argument this run is started with, as name=value (repeatable). The workflow's `inputs:` declaration decides how the value is read: an int is parsed as a number, a bool as true/false, and a list or struct as JSON |
 | `--input-file <string>` | `string` | — | — | a JSON object of arguments, keyed by input name. Values arrive with the types JSON gives them; a --input flag of the same name wins over the file |
 | `--name <string>` | `string` | — | — | what to call the schedule; unset takes the workflow's own name, which is what one cadence per workflow wants |
