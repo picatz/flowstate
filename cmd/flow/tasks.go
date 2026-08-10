@@ -125,53 +125,10 @@ func lookupTaskArg(name string) (v1.TaskDef, error) {
 			"lists what a plugin directory would add", message))
 }
 
-// nearestName returns the known name closest to what was written, when one is
-// close enough to be worth offering.
-//
-// A local copy of the rule `flowfile` applies to a misspelled key, deliberately:
-// that one is unexported, belongs to the compiler's diagnostics, and exporting it
-// to share with a CLI listing would tie the two together for the sake of nine
-// lines. The rule itself is the shared thing and it is stated in both places: at
-// most a third of the name wrong, and never more than two edits, so a suggestion
-// here cannot be wilder than a suggestion there.
-func nearestName(got string, known []string) (string, bool) {
-	best, bestDistance := "", 0
-	for _, name := range known {
-		distance := editDistance(got, name)
-		limit := min(len(name)/3+1, 2)
-		if distance > limit {
-			continue
-		}
-		if best == "" || distance < bestDistance {
-			best, bestDistance = name, distance
-		}
-	}
-
-	return best, best != ""
-}
-
-// editDistance returns the Levenshtein distance between two names.
-func editDistance(a, b string) int {
-	prev := make([]int, len(b)+1)
-	curr := make([]int, len(b)+1)
-	for j := range prev {
-		prev[j] = j
-	}
-
-	for i := 1; i <= len(a); i++ {
-		curr[0] = i
-		for j := 1; j <= len(b); j++ {
-			cost := 1
-			if a[i-1] == b[j-1] {
-				cost = 0
-			}
-			curr[j] = min(prev[j]+1, curr[j-1]+1, prev[j-1]+cost)
-		}
-		prev, curr = curr, prev
-	}
-
-	return prev[len(b)]
-}
+// The unknown-name suggestion above uses [nearestName], which lives in
+// taskrun.go: `flow task run` reached the same need first, with the same rule
+// `flowfile` applies to a misspelled key (at most a third of the name wrong,
+// never more than two edits). One copy in this package, two callers.
 
 // writeTaskIndex lists every task a step may name, one line each.
 //

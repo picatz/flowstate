@@ -136,4 +136,14 @@
 // capabilities. A plugin in another language implements what is described above;
 // the format is documented here so it can be, and the SDK is a convenience
 // rather than a requirement.
+//
+// # Telemetry boundary
+//
+// Host metrics deliberately have bounded dimensions: plugin name, task name,
+// operation, outcome, and health status. A plugin may use those same attributes.
+// Workflow, run, and step identifiers may appear on spans and structured logs,
+// but never as metric attributes. W3C trace context crosses the local Connect
+// transport. Baggage is reduced to host-created plugin and task names; arbitrary
+// caller baggage, credentials, resolved secrets, and authorization scopes never
+// cross the process boundary.
 package plugin

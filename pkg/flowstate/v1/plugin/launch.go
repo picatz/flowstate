@@ -79,6 +79,16 @@ type instance struct {
 // yields a usable instance or leaves nothing behind, because the failure paths
 // here are the ones that leak child processes.
 func launch(procCtx context.Context, cfg Config, found Found) (inst *instance, err error) {
+	procCtx, _, finish := newTelemetry(cfg).start(procCtx, "launch", found.Name, "")
+	defer func() {
+		finish(err)
+		if err != nil {
+			newTelemetry(cfg).launchFailures.Add(procCtx, 1)
+		}
+		if errors.Is(err, ErrHandshake) || errors.Is(err, ErrHandshakeTimeout) {
+			newTelemetry(cfg).protocolErrors.Add(procCtx, 1)
+		}
+	}()
 	log := cfg.logger().With("plugin", found.Name)
 
 	socketDir, socketPath, err := makeSocketDir(cfg.SocketDir)
@@ -196,7 +206,7 @@ func launch(procCtx context.Context, cfg Config, found Found) (inst *instance, e
 	}
 
 	inst.protocolVersion = handshake.ProtocolVersion
-	inst.clients = newClients(socketPath, token, cfg.MaxResponseBytes)
+	inst.clients = newClients(socketPath, token, cfg.MaxResponseBytes, found.Name)
 
 	return inst, nil
 }

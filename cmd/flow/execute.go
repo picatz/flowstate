@@ -33,6 +33,20 @@ func execute(ctx context.Context, root *cobra.Command) error {
 	root.SilenceErrors = true
 	root.Version = version
 
+	// Cobra's own did-you-mean machinery (findSuggestions, wired into the
+	// `unknown command` error text itself) is unranked and uncapped: see
+	// suggest.go's comment on maxSuggestions for what that looked like for
+	// `flow lst`. Turned off here so [commandSuggestionError] is the only
+	// source of a suggestion, drawn as this CLI's own styled element rather
+	// than arriving pre-baked into cobra's error text.
+	root.DisableSuggestions = true
+
+	// Inherited by every subcommand: cobra's FlagErrorFunc walks up to the
+	// nearest ancestor that set one, so this is the one place an unknown
+	// flag gets a suggestion rather than pflag's bare "unknown flag: --adress"
+	// with nothing pointing at "--address".
+	root.SetFlagErrorFunc(flagErrorFunc)
+
 	root.SetHelpFunc(func(c *cobra.Command, _ []string) {
 		renderHelp(newSurface(c), c)
 	})
@@ -46,7 +60,18 @@ func execute(ctx context.Context, root *cobra.Command) error {
 	// is not part of it. See docsgen.go.
 	root.AddCommand(newDocsCommand())
 
-	if err := root.ExecuteContext(ctx); err != nil {
+	if _, err := root.ExecuteContextC(ctx); err != nil {
+		// ExecuteContextC rather than ExecuteContext, so an "unknown command"
+		// error can be looked up against root's own subcommand list for a
+		// suggestion: see commandSuggestionError. The returned command is
+		// otherwise unused: SilenceErrors above is what already stops cobra
+		// printing its own report from inside Execute, which is the "whatever
+		// double-print problem" this file's own doc comment names; nothing
+		// about reading the second return value reopens that.
+		if isUsageError(err) && strings.HasPrefix(err.Error(), "unknown command ") {
+			err = commandSuggestionError(root, err)
+		}
+
 		surface := newSurface(root)
 		renderError(surface, err)
 
@@ -118,8 +143,22 @@ func renderError(surface *ui.UI, err error) {
 	// itself, and the one case where what to do next is knowable. Everything else
 	// failed for its own reasons and a suggestion would be invented.
 	if isUsageError(err) {
+		// A ranked candidate, when [flagErrorFunc] or [commandSuggestionError]
+		// found one close enough, drawn as its own muted line rather than
+		// inside err.Error(), so the error text above stays exactly what
+		// cobra or pflag produced. See suggest.go's [suggestedError] doc for
+		// why the two are kept apart.
+		if line := didYouMean(err); line != "" {
+			fmt.Fprintln(&b)
+			fmt.Fprintln(&b, theme.Muted.Render(line))
+		}
+
 		fmt.Fprintln(&b)
-		fmt.Fprintln(&b, theme.Muted.Render("Try `flow --help` for the commands and flags."))
+		// The hint is this repo's own prose and goes through the same markup pass
+		// the help page does. The error above it deliberately does not: an error's
+		// text can carry a line out of somebody's Flowfile, and a backtick in that
+		// is theirs rather than markup of ours to eat.
+		fmt.Fprintln(&b, wrapProse(theme, theme.Muted, "Try `flow --help` for the commands and flags.", width))
 	}
 
 	fmt.Fprint(w, b.String())

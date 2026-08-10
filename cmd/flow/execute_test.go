@@ -209,6 +209,62 @@ func TestExitCodeGoldenPaths(t *testing.T) {
 	})
 }
 
+// TestSuggestionsAppearForNearMissesAndNotForGarbage is #372, run through the
+// real binary rather than the unit-level helpers in suggest_test.go: those
+// prove commandSuggestions, flagSuggestions and didYouMean individually, and
+// this proves the whole path they only reach through execute(), namely
+// DisableSuggestions, the FlagErrorFunc registered on the root command, and
+// commandSuggestionError's parse of cobra's own error text, actually wires
+// up when `flow` runs as a process would run it. TestCobraUsageErrorsMatchIsUsageError
+// above calls root.Execute() directly and so exercises none of that wiring.
+func TestSuggestionsAppearForNearMissesAndNotForGarbage(t *testing.T) {
+	bin := buildFlowBinary(t)
+
+	t.Run("a near-miss command gets a ranked suggestion", func(t *testing.T) {
+		cmd := exec.Command(bin, "lst")
+		out, err := cmd.CombinedOutput()
+
+		exitErr, ok := err.(*exec.ExitError)
+		require.True(t, ok, "an unknown command did not fail the process: %v", err)
+		assert.Equal(t, exitCodeUsage, exitErr.ExitCode())
+		assert.Contains(t, string(out), "did you mean `flow list`",
+			"no ranked suggestion for a one-edit-away command:\n%s", out)
+		assert.NotContains(t, string(out), "Did you mean this?",
+			"cobra's own unranked suggestion block leaked through DisableSuggestions:\n%s", out)
+	})
+
+	t.Run("a command sharing nothing with the tree gets no suggestion", func(t *testing.T) {
+		cmd := exec.Command(bin, "zzzzzqqqq123")
+		out, err := cmd.CombinedOutput()
+
+		_, ok := err.(*exec.ExitError)
+		require.True(t, ok, "an unknown command did not fail the process")
+		assert.NotContains(t, string(out), "did you mean",
+			"a garbage command line was offered an invented suggestion:\n%s", out)
+	})
+
+	t.Run("a near-miss flag gets a ranked suggestion", func(t *testing.T) {
+		cmd := exec.Command(bin, "list", "--adress", "x")
+		out, err := cmd.CombinedOutput()
+
+		exitErr, ok := err.(*exec.ExitError)
+		require.True(t, ok, "an unknown flag did not fail the process: %v", err)
+		assert.Equal(t, exitCodeUsage, exitErr.ExitCode())
+		assert.Contains(t, string(out), "did you mean `--address`?",
+			"no ranked suggestion for a one-edit-away flag:\n%s", out)
+	})
+
+	t.Run("a flag sharing nothing with the command's flag set gets no suggestion", func(t *testing.T) {
+		cmd := exec.Command(bin, "list", "--zzzzzqqqq123", "x")
+		out, err := cmd.CombinedOutput()
+
+		_, ok := err.(*exec.ExitError)
+		require.True(t, ok, "an unknown flag did not fail the process")
+		assert.NotContains(t, string(out), "did you mean",
+			"a garbage flag was offered an invented suggestion:\n%s", out)
+	})
+}
+
 // TestExitCodeGoldenPathsForSelfValidatedFlags is the case a Codex review on this
 // branch caught: a flag that parses fine under cobra but is rejected by the
 // command's own validation used to exit 1, because [isUsageError]'s prefix list

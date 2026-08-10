@@ -47,11 +47,17 @@ func newJWTCommand() *cobra.Command {
 	jwtCmd := &cobra.Command{
 		Use:   "jwt",
 		Short: "Sign and inspect JSON Web Tokens for admin debugging",
+		// Written for a terminal, in the vocabulary the rest of the CLI teaches.
+		// The doc comment above `maxSignTTL` says the same thing in godoc's, and
+		// the two are adjacent for a reason that has already cost once: a `Long`
+		// string in godoc's dialect reaches a reader as literal brackets around a
+		// Go identifier from a package they have no reason to have heard of.
 		Long: "Sign a JWT with a key from `flow keys generate`, or inspect one a " +
 			"workload, worker, or relying party produced. For debugging identity, " +
-			"not for minting production workload assertions: those come from an " +
-			"[auth.Issuer], which adds discovery, rotation, and revocation this " +
-			"command deliberately does not.",
+			"not for minting production workload assertions: a real issuer, named " +
+			"in the trust policy `flow server` is started with (`--auth-policy`), " +
+			"publishes its keys for discovery and can rotate and revoke them, and " +
+			"this command deliberately does none of that.",
 	}
 
 	jwtCmd.AddCommand(newJWTSignCommand())
@@ -187,8 +193,12 @@ func runJWTSign(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("--ttl must be positive, got %s", ttl)
 	}
 	if ttl > maxSignTTL {
+		// The remedy names something a person can go and do, which a Go type is
+		// not: the issuer they would reach for is the one their trust policy
+		// configures, and that is what `flow server --auth-policy` points at.
 		return fmt.Errorf("--ttl %s exceeds the %s cap this command enforces; "+
-			"mint longer-lived assertions through an auth.Issuer instead", ttl, maxSignTTL)
+			"a token that outlives it comes from a real issuer, configured in the "+
+			"trust policy passed to flow server --auth-policy", ttl, maxSignTTL)
 	}
 
 	if id == "" {

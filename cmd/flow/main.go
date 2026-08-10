@@ -1404,24 +1404,11 @@ flow server --verbose`,
 	addTaskPolicyFlag(runLocalCmd)
 	addSecretFlags(workerCmd)
 	addSecretFlags(runLocalCmd)
-	runLocalCmd.Flags().String("as-subject", "local-user",
-		"authenticated subject to rehearse policy as (local runs only)")
-	runLocalCmd.Flags().String("as-issuer", "flowstate:local",
-		"authenticated issuer to rehearse policy as (local runs only)")
-	runLocalCmd.Flags().String("as-namespace", "",
-		"tenant namespace to rehearse policy as (local runs only)")
-	runLocalCmd.Flags().String("as-deployment", "local",
-		"Flowstate deployment name to rehearse policy as (local runs only)")
-	runLocalCmd.Flags().StringArray("as-claim", nil,
-		"authenticated string claim NAME=VALUE to rehearse policy as (repeatable)")
+	addLocalRehearsalFlags(runLocalCmd)
 	workerCmd.Flags().String("auth-policy", os.Getenv("FLOWSTATE_AUTH_POLICY"),
 		"path to an access policy whose secrets rules authorize worker-side resolution")
-	runLocalCmd.Flags().String("auth-policy", os.Getenv("FLOWSTATE_AUTH_POLICY"),
-		"path to an access policy whose secrets rules authorize this local rehearsal")
-	for _, c := range []*cobra.Command{workerCmd, runLocalCmd} {
-		c.Flags().String("identity-key", os.Getenv("FLOWSTATE_IDENTITY_KEY"),
-			"PKCS#8 PEM key used to mint short-lived workload assertions for federation targets")
-	}
+	workerCmd.Flags().String("identity-key", os.Getenv("FLOWSTATE_IDENTITY_KEY"),
+		"PKCS#8 PEM key used to mint short-lived workload assertions for federation targets")
 
 	serverCmd.Flags().String("auth-policy",
 		os.Getenv("FLOWSTATE_AUTH_POLICY"),
@@ -1617,6 +1604,11 @@ flow tasks http --output json | jq '.inputs'`,
 		"describe what every expression can say: the CEL functions, the duration "+
 			"constructors, `now` inside a wait, and where a value comes from")
 
+	// Task command, which runs one task without a workflow around it. Built in
+	// taskrun.go, beside the code it drives. See [newTaskCommand] for why the
+	// singular verb is not folded into the plural listing above.
+	taskCmd := newTaskCommand()
+
 	// Plugins command, which reports what a plugin directory adds to this build.
 	//
 	// Beside `tasks` rather than under `worker`, because the question it answers is
@@ -1649,6 +1641,11 @@ flow plugins -o json | jq -r '.plugins[] | select(.tasks[].name == "example.gree
 	// against, without needing a throwaway Go program to find out.
 	keysCmd := newKeysCommand()
 	jwtCmd := newJWTCommand()
+
+	// Version command, answering "which build" the way a bug report or an
+	// agent transcript needs to: see version.go for why this is a verb rather
+	// than only the `--version` line cobra already prints.
+	versionCmd := newVersionCommand()
 
 	// MCP command, which serves the control plane to an AI agent as tools.
 	mcpCmd := &cobra.Command{
@@ -1758,6 +1755,7 @@ flow lsp --plugin-dir ./plugins`,
 	runCmd.GroupID = "workflow"
 	validateCmd.GroupID = "workflow"
 	tasksCmd.GroupID = "workflow"
+	taskCmd.GroupID = "workflow"
 	getCmd.GroupID = "workflow"
 	watchCmd.GroupID = "workflow"
 	signalCmd.GroupID = "workflow"
@@ -1770,6 +1768,7 @@ flow lsp --plugin-dir ./plugins`,
 	lspCmd.GroupID = "development"
 	keysCmd.GroupID = "development"
 	jwtCmd.GroupID = "development"
+	versionCmd.GroupID = "development"
 
 	// Add commands to root.
 	rootCmd.AddCommand(runCmd)
@@ -1808,6 +1807,7 @@ flow lsp --plugin-dir ./plugins`,
 	compileCmd.GroupID = "workflow"
 	rootCmd.AddCommand(compileCmd)
 	rootCmd.AddCommand(tasksCmd)
+	rootCmd.AddCommand(taskCmd)
 	rootCmd.AddCommand(pluginsCmd)
 	rootCmd.AddCommand(mcpCmd)
 	rootCmd.AddCommand(getCmd)
@@ -1823,6 +1823,7 @@ flow lsp --plugin-dir ./plugins`,
 	rootCmd.AddCommand(lspCmd)
 	rootCmd.AddCommand(keysCmd)
 	rootCmd.AddCommand(jwtCmd)
+	rootCmd.AddCommand(versionCmd)
 
 	return rootCmd
 }

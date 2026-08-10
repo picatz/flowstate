@@ -3,10 +3,14 @@ package server
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 )
 
@@ -94,4 +98,55 @@ func TestAnIDThatIsNotOursIsNotOurs(t *testing.T) {
 		_, mine := scheduleNameFrom(id, "team-a")
 		assert.False(t, mine, "%q was read as team-a's schedule", id)
 	}
+}
+
+// TestAnUnwrittenBoundReachesTemporalUnset is the unit-level guard on the trap
+// that took every schedule's future firings away.
+//
+// `(*timestamppb.Timestamp)(nil).AsTime()` is the Unix epoch, not the zero
+// `time.Time` the Temporal SDK reads as "no bound". Copied through unconditionally,
+// a schedule with no `end_at`, which is every schedule anybody had created,
+// declared that it ended in 1970 and was created with nothing ahead of it. The
+// cluster-level proof is TestBoundedRecoveryControlsReachTemporal; this is the same
+// claim in a form that runs in milliseconds and names the field.
+func TestAnUnwrittenBoundReachesTemporalUnset(t *testing.T) {
+	t.Parallel()
+
+	spec, err := scheduleSpecOf(&v1.ScheduleTrigger{Cron: []string{"0 * * * *"}})
+	require.NoError(t, err)
+	assert.True(t, spec.StartAt.IsZero(), "an unwritten start_at reached Temporal as %s", spec.StartAt)
+	assert.True(t, spec.EndAt.IsZero(), "an unwritten end_at reached Temporal as %s", spec.EndAt)
+
+	// And a bound that *was* written is carried, so the fix cannot be "never send
+	// one", which would pass the assertions above and lose the feature.
+	written := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	spec, err = scheduleSpecOf(&v1.ScheduleTrigger{
+		Cron:    []string{"0 * * * *"},
+		StartAt: timestamppb.New(written),
+		EndAt:   timestamppb.New(written.AddDate(1, 0, 0)),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, written, spec.StartAt.UTC())
+	assert.Equal(t, written.AddDate(1, 0, 0), spec.EndAt.UTC())
+}
+
+// TestAnUnwrittenCatchupWindowTakesTheBoundedDefault holds the substitution that
+// makes the catch-up bound a bound at all.
+//
+// Temporal's default for an unset window is one year, so leaving the field absent
+// is not "no catch-up": it is the largest catch-up in the system, applied to
+// exactly the schedules whose authors never thought about it. The default is
+// therefore applied here, and this is what says so.
+func TestAnUnwrittenCatchupWindowTakesTheBoundedDefault(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, v1.DefaultScheduleCatchupWindow, scheduleCatchupWindowOf(&v1.ScheduleTrigger{}))
+	assert.Equal(t, v1.DefaultScheduleCatchupWindow, scheduleCatchupWindowOf(nil))
+	assert.Less(t, v1.DefaultScheduleCatchupWindow, v1.MaxScheduleCatchupWindow,
+		"a default at the ceiling is not a default, it is the ceiling")
+
+	// What was written wins, up to the ceiling the checker enforces.
+	assert.Equal(t, 6*time.Hour, scheduleCatchupWindowOf(&v1.ScheduleTrigger{
+		CatchupWindow: durationpb.New(6 * time.Hour),
+	}))
 }
