@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // `flow schedule` — the act a `triggers:` block does not perform.
@@ -71,12 +73,17 @@ func runScheduleCreate(cmd *cobra.Command, args []string) error {
 
 	name, _ := cmd.Flags().GetString("name")
 	paused, _ := cmd.Flags().GetBool("paused")
+	backfills, err := scheduleBackfillFlags(cmd)
+	if err != nil {
+		return err
+	}
 
 	request := &v1.CreateScheduleRequest{
 		Workflow: workflow,
 		Inputs:   inputs,
 		Name:     name,
 		Paused:   paused,
+		Backfill: backfills,
 	}
 	if err := v1.Validate(request); err != nil {
 		return err
@@ -101,6 +108,45 @@ func runScheduleCreate(cmd *cobra.Command, args []string) error {
 	// visible in the first two of these and almost never visible in the expression
 	// that produced them, so this is the moment to show them.
 	return writeScheduleText(surface, schedule)
+}
+
+// scheduleBackfillFlags reads `--backfill START..END`, repeatable.
+//
+// Bounded here through [v1.CheckScheduleBackfill], which is the same function the
+// server applies to the request that arrives. Here for the message, there for the
+// control: a bound that only the CLI applies is not a bound, since the RPC is
+// public and the caller a bound exists for is the one that is not this program.
+// Sharing the function is what keeps the sentence an operator reads and the
+// refusal a caller receives from drifting into two different rules.
+func scheduleBackfillFlags(cmd *cobra.Command) ([]*v1.ScheduleBackfill, error) {
+	values, _ := cmd.Flags().GetStringSlice("backfill")
+
+	out := make([]*v1.ScheduleBackfill, 0, len(values))
+	for _, value := range values {
+		startText, endText, ok := strings.Cut(value, "..")
+		if !ok {
+			return nil, fmt.Errorf("backfill %q must be START..END using RFC3339 timestamps, "+
+				"as in 2026-08-01T00:00:00Z..2026-08-02T00:00:00Z", value)
+		}
+
+		start, err := time.Parse(time.RFC3339, startText)
+		if err != nil {
+			return nil, fmt.Errorf("backfill start %q: %w", startText, err)
+		}
+
+		end, err := time.Parse(time.RFC3339, endText)
+		if err != nil {
+			return nil, fmt.Errorf("backfill end %q: %w", endText, err)
+		}
+
+		out = append(out, &v1.ScheduleBackfill{StartAt: timestamppb.New(start), EndAt: timestamppb.New(end)})
+	}
+
+	if err := v1.CheckScheduleBackfill(out); err != nil {
+		return nil, err
+	}
+
+	return out, nil
 }
 
 // runScheduleList reports the schedules belonging to the caller.
@@ -198,6 +244,12 @@ func runScheduleDescribe(cmd *cobra.Command, args []string) error {
 // runScheduleDelete removes a schedule.
 func runScheduleDelete(cmd *cobra.Command, args []string) error {
 	name := args[0]
+
+	format, err := resolveOutputFormat(cmd)
+	if err != nil {
+		return err
+	}
+
 	server := serverFlagsOf(cmd)
 
 	request := &v1.DeleteScheduleRequest{Name: name}
@@ -207,6 +259,14 @@ func runScheduleDelete(cmd *cobra.Command, args []string) error {
 
 	if _, err := newWorkflowServiceClient(server).DeleteSchedule(cmd.Context(), connect.NewRequest(request)); err != nil {
 		return refusedSchedule("deleting", name, server, err)
+	}
+
+	if format.Machine() {
+		return writeMutationResult(newSurface(cmd), format, &v1.MutationResult{
+			Verb:         "schedule delete",
+			ScheduleName: name,
+			Result:       resultApplied,
+		})
 	}
 
 	// Stated because what it does *not* do is the part people get wrong: deleting a
@@ -220,6 +280,12 @@ func runScheduleDelete(cmd *cobra.Command, args []string) error {
 // runSchedulePause stops a schedule firing without removing it.
 func runSchedulePause(cmd *cobra.Command, args []string) error {
 	name := args[0]
+
+	format, err := resolveOutputFormat(cmd)
+	if err != nil {
+		return err
+	}
+
 	note, _ := cmd.Flags().GetString("note")
 	server := serverFlagsOf(cmd)
 
@@ -232,6 +298,18 @@ func runSchedulePause(cmd *cobra.Command, args []string) error {
 		return refusedSchedule("pausing", name, server, err)
 	}
 
+	// Applied, and deliberately silent about whether it was already paused: the
+	// server answers the same for a live schedule and for one paused an hour ago,
+	// so a document distinguishing them would be guessing. That is the second fact
+	// picatz/flowstate#374 wants these responses to start carrying.
+	if format.Machine() {
+		return writeMutationResult(newSurface(cmd), format, &v1.MutationResult{
+			Verb:         "schedule pause",
+			ScheduleName: name,
+			Result:       resultApplied,
+		})
+	}
+
 	fmt.Fprintf(cmd.ErrOrStderr(), "paused schedule %s; `flow schedule resume %s` starts it firing again\n", name, name)
 
 	return nil
@@ -240,6 +318,12 @@ func runSchedulePause(cmd *cobra.Command, args []string) error {
 // runScheduleResume lets a paused schedule fire again.
 func runScheduleResume(cmd *cobra.Command, args []string) error {
 	name := args[0]
+
+	format, err := resolveOutputFormat(cmd)
+	if err != nil {
+		return err
+	}
+
 	note, _ := cmd.Flags().GetString("note")
 	server := serverFlagsOf(cmd)
 
@@ -252,6 +336,14 @@ func runScheduleResume(cmd *cobra.Command, args []string) error {
 		return refusedSchedule("resuming", name, server, err)
 	}
 
+	if format.Machine() {
+		return writeMutationResult(newSurface(cmd), format, &v1.MutationResult{
+			Verb:         "schedule resume",
+			ScheduleName: name,
+			Result:       resultApplied,
+		})
+	}
+
 	fmt.Fprintf(cmd.ErrOrStderr(), "resumed schedule %s\n", name)
 
 	return nil
@@ -260,6 +352,12 @@ func runScheduleResume(cmd *cobra.Command, args []string) error {
 // runScheduleTrigger fires a schedule now.
 func runScheduleTrigger(cmd *cobra.Command, args []string) error {
 	name := args[0]
+
+	format, err := resolveOutputFormat(cmd)
+	if err != nil {
+		return err
+	}
+
 	server := serverFlagsOf(cmd)
 
 	request := &v1.TriggerScheduleRequest{Name: name}
@@ -269,6 +367,20 @@ func runScheduleTrigger(cmd *cobra.Command, args []string) error {
 
 	if _, err := newWorkflowServiceClient(server).TriggerSchedule(cmd.Context(), connect.NewRequest(request)); err != nil {
 		return refusedSchedule("triggering", name, server, err)
+	}
+
+	// Requested, and `workflowId` stays empty for the reason the prose below gives:
+	// the cluster starts the run after answering, so there is no id to report and
+	// inventing one would be worse than the round trip through
+	// `flow schedule describe`. The started run id is the field
+	// picatz/flowstate#374 most wants TriggerScheduleResponse to carry, since it is
+	// what a caller needs for the follow-up `flow watch`.
+	if format.Machine() {
+		return writeMutationResult(newSurface(cmd), format, &v1.MutationResult{
+			Verb:         "schedule trigger",
+			ScheduleName: name,
+			Result:       resultRequested,
+		})
 	}
 
 	// No run id, because there is not one yet: the cluster takes the action after
@@ -359,8 +471,69 @@ func describeCadence(trigger *v1.ScheduleTrigger) string {
 	if overlap := trigger.GetOverlap(); overlap != v1.ScheduleTrigger_OVERLAP_UNSPECIFIED {
 		parts = append(parts, "on overlap "+v1.OverlapName(overlap))
 	}
+	for _, calendar := range trigger.GetCalendars() {
+		parts = append(parts, describeCalendar(calendar))
+	}
+	if start := trigger.GetStartAt(); start != nil {
+		parts = append(parts, "from "+start.AsTime().UTC().Format(time.RFC3339))
+	}
+	if end := trigger.GetEndAt(); end != nil {
+		parts = append(parts, "through "+end.AsTime().UTC().Format(time.RFC3339))
+	}
+	if window := trigger.GetCatchupWindow(); window != nil {
+		parts = append(parts, "catch up within "+window.AsDuration().String())
+	}
+	if trigger.GetPauseOnFailure() {
+		parts = append(parts, "pause on failure")
+	}
 
 	return strings.Join(parts, ", ")
+}
+
+// describeCalendar renders one calendar in the notation it was written in.
+//
+// The values rather than a count of them, because the question an operator asks a
+// describe is "is this the schedule I meant", and "1 calendar specification(s)"
+// answers a different question. Absent fields stay absent rather than being
+// rendered as the default they take, so what is printed is what the file said.
+func describeCalendar(calendar *v1.ScheduleTrigger_Calendar) string {
+	fields := [][]*v1.ScheduleTrigger_Calendar_Range{
+		calendar.GetSecond(), calendar.GetMinute(), calendar.GetHour(), calendar.GetDayOfMonth(),
+		calendar.GetMonth(), calendar.GetYear(), calendar.GetDayOfWeek(),
+	}
+
+	written := make([]string, 0, len(fields))
+	for i, name := range v1.ScheduleCalendarFieldNames() {
+		if len(fields[i]) == 0 {
+			continue
+		}
+
+		values := make([]string, 0, len(fields[i]))
+		for _, r := range fields[i] {
+			values = append(values, describeCalendarRange(r))
+		}
+
+		written = append(written, name+" "+strings.Join(values, ","))
+	}
+
+	if comment := calendar.GetComment(); comment != "" {
+		written = append(written, "("+comment+")")
+	}
+
+	return "calendar " + strings.Join(written, " ")
+}
+
+// describeCalendarRange renders one range the way a Flowfile writes it.
+func describeCalendarRange(r *v1.ScheduleTrigger_Calendar_Range) string {
+	text := strconv.Itoa(int(r.GetStart()))
+	if r.GetEnd() != 0 {
+		text += "-" + strconv.Itoa(int(r.GetEnd()))
+	}
+	if r.GetStep() != 0 {
+		text += "/" + strconv.Itoa(int(r.GetStep()))
+	}
+
+	return text
 }
 
 // refusedSchedule explains a refused request about one schedule.
@@ -446,6 +619,10 @@ flow schedule create report.yaml --name report-us --input region=us-east-1`,
 		"what to call the schedule; unset takes the workflow's own name, which is what one cadence per workflow wants")
 	createCmd.Flags().Bool("paused", false,
 		"create the schedule without letting it fire, so its next firing times can be read before it takes one")
+	createCmd.Flags().StringSlice("backfill", nil,
+		"a missed window to recover at creation, START..END in RFC3339, repeatable up to 10 times and 31 days "+
+			"in total. Temporal evaluates the cadence after START and up to END, so write START a moment before "+
+			"the first firing you want back")
 
 	listCmd := &cobra.Command{
 		Use:   "list",
@@ -486,36 +663,57 @@ flow schedule describe nightly-report -o json | jq -r '.recentRuns[].workflowId'
 		Short: "Delete a schedule",
 		Long: "Delete a schedule. Future firings stop; runs it has already started are ordinary " +
 			"workloads and keep going, so stopping one of those is `flow cancel`. Prefer `flow schedule " +
-			"pause` when the arrangement should survive whatever is wrong right now.",
+			"pause` when the arrangement should survive whatever is wrong right now." + mutationFlagHelp +
+			"\n\n`result` is \"applied\": the schedule is gone when the server answers.",
 		Args: cobra.ExactArgs(1),
 		RunE: runScheduleDelete,
 		Example: `# Delete a schedule:
-flow schedule delete nightly-report`,
+flow schedule delete nightly-report
+
+# Delete it from a script, which reads the outcome rather than the exit code alone:
+flow schedule delete nightly-report -o json | jq -r '.scheduleName, .result'`,
 	}
+
+	addOutputFlag(deleteCmd)
 
 	pauseCmd := &cobra.Command{
 		Use:   "pause [name]",
 		Short: "Stop a schedule firing, without deleting it",
 		Long: "Stop a schedule firing while leaving it in place, which is what an incident wants: " +
-			"the arrangement is still there and still reviewable, and it is not running.",
+			"the arrangement is still there and still reviewable, and it is not running." +
+			mutationFlagHelp +
+			"\n\n`result` is \"applied\" whether or not the schedule was already paused: the " +
+			"server answers the same either way, so the document does not guess.",
 		Args: cobra.ExactArgs(1),
 		RunE: runSchedulePause,
 		Example: `# Pause a schedule, saying why:
-flow schedule pause nightly-report --note "upstream API is down, INC-4471"`,
+flow schedule pause nightly-report --note "upstream API is down, INC-4471"
+
+# Pause several from a script and record what was acted on:
+flow schedule pause nightly-report --note "INC-4471" -o json | jq -r .scheduleName`,
 	}
+
+	addOutputFlag(pauseCmd)
 
 	pauseCmd.Flags().String("note", "",
 		"recorded on the schedule and shown by list and describe; a paused schedule found by "+
 			"somebody else has no explanation attached unless this is written")
 
 	resumeCmd := &cobra.Command{
-		Use:     "resume [name]",
-		Short:   "Let a paused schedule fire again",
-		Long:    "Let a paused schedule fire again, from its next scheduled time. Firings missed while it was paused are not made up.",
-		Args:    cobra.ExactArgs(1),
-		RunE:    runScheduleResume,
-		Example: `flow schedule resume nightly-report --note "upstream recovered"`,
+		Use:   "resume [name]",
+		Short: "Let a paused schedule fire again",
+		Long: "Let a paused schedule fire again, from its next scheduled time. Firings missed " +
+			"while it was paused are not made up." + mutationFlagHelp +
+			"\n\n`result` is \"applied\": the schedule is live when the server answers.",
+		Args: cobra.ExactArgs(1),
+		RunE: runScheduleResume,
+		Example: `flow schedule resume nightly-report --note "upstream recovered"
+
+# Resume from a script, confirming which schedule was acted on:
+flow schedule resume nightly-report -o json | jq -r '.scheduleName, .result'`,
 	}
+
+	addOutputFlag(resumeCmd)
 
 	resumeCmd.Flags().String("note", "",
 		"replaces the message on the schedule, which is usually still the reason it was paused")
@@ -526,13 +724,23 @@ flow schedule pause nightly-report --note "upstream API is down, INC-4471"`,
 		Long: "Fire a schedule now. This is what makes a schedule testable: it exercises the " +
 			"arguments the schedule stored, the tenant it records on the runs it starts and the queue " +
 			"it puts them on, none of which running the workflow by hand would prove. A paused " +
-			"schedule fires too, which is what `create --paused`, `trigger`, `resume` is for.",
+			"schedule fires too, which is what `create --paused`, `trigger`, `resume` is for." +
+			mutationFlagHelp +
+			"\n\n`result` is \"requested\" and `workflowId` is empty, because the cluster starts " +
+			"the run after answering: `flow schedule describe` is what names the run once it " +
+			"exists.",
 		Args: cobra.ExactArgs(1),
 		RunE: runScheduleTrigger,
 		Example: `# Fire it now and watch what it started:
 flow schedule trigger nightly-report
-flow schedule describe nightly-report`,
+flow schedule describe nightly-report
+
+# Fire it from a script, then go looking for the run it starts:
+flow schedule trigger nightly-report -o json | jq -r .result
+flow schedule describe nightly-report -o json | jq -r '.recentRuns[0].workflowId'`,
 	}
+
+	addOutputFlag(triggerCmd)
 
 	for _, c := range []*cobra.Command{createCmd, listCmd, describeCmd, deleteCmd, pauseCmd, resumeCmd, triggerCmd} {
 		addServerFlags(c)

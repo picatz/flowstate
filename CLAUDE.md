@@ -94,7 +94,9 @@ behind it too.
     go generate ./cmd/flow/internal/reference && git diff --exit-code -- cmd/flow/internal/reference/
     go run github.com/bufbuild/buf/cmd/buf@v1.72.0 lint
     go run github.com/bufbuild/buf/cmd/buf@v1.72.0 breaking --against '.git#branch=origin/main'
-    go run github.com/bufbuild/buf/cmd/buf@v1.72.0 generate && git diff --exit-code
+    go run github.com/bufbuild/buf/cmd/buf@v1.72.0 generate
+    go run github.com/bufbuild/buf/cmd/buf@v1.72.0 build --exclude-imports -o pkg/flowstate/v1/protodoc/flowstate.descriptorset.binpb
+    git diff --exit-code
     go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
     go run honnef.co/go/tools/cmd/staticcheck@2026.1 ./...
 
@@ -129,6 +131,17 @@ plugin in the wild.
 `buf generate` followed by `git diff --exit-code` is the one people skip, and it is
 the one that fails for someone else rather than for you: committed generated code
 that disagrees with its schema builds perfectly until the next person regenerates.
+
+The `buf build` line between them writes a second generated artifact under that same
+pin: `pkg/flowstate/v1/protodoc/flowstate.descriptorset.binpb`, the descriptor set
+the schema's own comments travel in. It is a separate command because `buf generate`
+cannot produce one: protoc strips `SourceCodeInfo` from what a `.pb.go` embeds, so
+protoreflect over the linked-in registry finds shape and no prose, and `buf build`
+is what keeps the comments. `--exclude-imports` keeps it to this repository's schema
+rather than googleapis and protovalidate as well. The `git diff --exit-code` that
+follows covers both artifacts, for the identical reason it covers the first: a
+checked-in descriptor set that disagrees with the schema it describes is a set of
+sentences about a file that has moved on.
 
 `flow docs generate` followed by the same `git diff --exit-code` is that mechanism
 pointed at prose. `docs/reference/` is derived from the task registry, the cobra

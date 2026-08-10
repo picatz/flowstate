@@ -21,7 +21,9 @@ check:
 	go generate ./cmd/flow/internal/reference && git diff --exit-code -- cmd/flow/internal/reference/
 	go run github.com/bufbuild/buf/cmd/buf@v1.72.0 lint
 	go run github.com/bufbuild/buf/cmd/buf@v1.72.0 breaking --against '.git#branch=origin/main'
-	go run github.com/bufbuild/buf/cmd/buf@v1.72.0 generate && git diff --exit-code
+	go run github.com/bufbuild/buf/cmd/buf@v1.72.0 generate
+	go run github.com/bufbuild/buf/cmd/buf@v1.72.0 build --exclude-imports -o pkg/flowstate/v1/protodoc/flowstate.descriptorset.binpb
+	git diff --exit-code
 	GOTOOLCHAIN=go1.26.5 go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 	GOTOOLCHAIN=go1.26.5 go run honnef.co/go/tools/cmd/staticcheck@2026.1 ./...
 

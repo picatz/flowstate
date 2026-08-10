@@ -208,6 +208,46 @@ Padding: a pill is `Padding(0, 1)` — one space each side inside the fill — w
 is enough for the label not to touch the fill's edge and no more, since a wider
 pad only pushes whatever follows it further right for no reason.
 
+### Prose: one dialect, one construct, one vocabulary
+
+The hand-written prose on a help page (a `Long`, a `Short`, an `Example`'s comment,
+a flag's description) is written in a dialect with exactly **one** inline construct
+in it: a backtick-delimited code span around a command, a flag, or a key, as in
+`` `flow schedule create` ``, `` `--check` ``, `` `triggers:` ``. That construct is
+markup, and every surface that prints prose renders it through one pass
+(`cmd/flow/internal/ui/prose.go`), applied where the text is wrapped
+(`wrapProse` in `cmd/flow/help.go`) rather than after.
+
+Each surface renders the same marks in its own vocabulary, which is the point of
+keeping them in the source string:
+
+- **Styled surface**: the marks come off and the span carries `Theme.Strong`
+  (`Theme.SpanStyle`, one token rather than a second name for the same emphasis).
+  A command named in a summary then looks the way the same command looks in the
+  EXAMPLES block.
+- **Plain surface** (a pipe, `NO_COLOR`, a profile below ANSI): the marks stay.
+  There is no style to carry the span, so the marks are the only thing left saying
+  where one starts, and they are doing honest work.
+- **Generated reference docs** (`docs/reference/`): the string is taken unrendered,
+  because in a markdown file the backticks *are* the rendering.
+
+Two rules keep this from growing:
+
+- **Nothing else is interpreted.** Not emphasis, not lists, not headings, and
+  above all not brackets: `[flags]` and `[command]` in a usage line and `.steps[0]`
+  in an example's jq filter are literal text the help means to show. A markdown
+  renderer here would be a renderer that mangles them, which is why this is one
+  pass over one construct and not goldmark.
+- **Prose names things in the user's vocabulary**: commands, flags, policy
+  concepts. Never a Go identifier, and never godoc's `[pkg.Symbol]` link syntax,
+  which reaches a terminal as literal brackets around a name from a package the
+  reader has no reason to have heard of. `flow jwt`'s summary said "those come from
+  an `[auth.Issuer]`", copied in voice and all from the doc comment a few lines
+  above it. Doc comments and `Long` strings sit adjacent in the same file, so this
+  leaks easily; the whole cobra tree is walked in `cmd/flow/helpprose_test.go` in
+  both directions, refusing a godoc link in any help string and refusing a backtick
+  in anything a styled screen receives.
+
 ### Spacing, indent, and tabular-numeric alignment
 
 - **Two-space indent** for a line subordinate to the one above it — the pending-

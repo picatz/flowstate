@@ -54,6 +54,10 @@ flow cancel [workflow-id] [flags]
 
 Ask a run to stop. Cancellation is cooperative: the run is told to stop and gets to finish responding, so a workload that has to release a lock or undo a partial change still does. A step that declares an `undo:` is taken back, in reverse order, within a bounded budget — the run reports what came off and what did not. A run wedged on something that never returns may not stop at all — `flow terminate` is the answer then, and not before.
 
+With `-o json` (or `-o jsonl` for one line), stdout carries a single result document and nothing else, while the prose above is not written: `{"verb", "workflowId", "runId", "scheduleName", "signalName", "result"}`, the schema's `flowstate.v1.MutationResult`. `result` is "applied" for an act that is done when the server answers, "requested" for one it has accepted and not yet performed, and "delivered" for a signal the server has taken, which says nothing about whether the workflow went on to observe it. Fields that do not apply to a verb are present and empty, so one expression reads every one of them.
+
+`result` is "requested" here and never "applied", because cancellation is cooperative: the run has been told and is still finishing. `flow get` is what answers whether it has stopped.
+
 Examples:
 
 ```sh
@@ -62,11 +66,15 @@ flow cancel flowstate-workflow-3f7c
 
 # Check whether it has:
 flow get flowstate-workflow-3f7c
+
+# Confirm in a script which run was asked, without asking the server again:
+flow cancel flowstate-workflow-3f7c -o json | jq -r '.workflowId, .result'
 ```
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
+| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--run-id <string>` | `string` | — | — | pin the request to one run of the workload; unset addresses whichever run is current |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
 
@@ -103,7 +111,7 @@ flow compile examples/hello-world/workflow.yaml | jq '.steps[0]'
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
-| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl carry the server's own schema, so a field is addressable by name |
+| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 
 ## `flow fix`
 
@@ -141,7 +149,7 @@ flow fix --stdout old.yaml > new.yaml
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--check` | `bool` | `false` | — | report what would change and exit non-zero if anything would, without writing |
-| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl carry the server's own schema, so a field is addressable by name |
+| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--stdout` | `bool` | `false` | — | write the result to standard output instead of back to the file |
 
 ## `flow fmt`
@@ -182,7 +190,7 @@ flow fmt --stdout old.yaml > new.yaml
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--check` | `bool` | `false` | — | report which files would change and exit non-zero if any would, without writing |
-| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl carry the server's own schema, so a field is addressable by name |
+| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--stdout` | `bool` | `false` | — | write the result to standard output instead of back to the file |
 
 ## `flow get`
@@ -211,7 +219,7 @@ flow get flowstate-workflow-3f7c --run-id 0198f1e2-...
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
-| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl carry the server's own schema, so a field is addressable by name |
+| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only — the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
 | `--run-id <string>` | `string` | — | — | ask about one attempt of the workload; unset asks about whichever is current |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
@@ -259,7 +267,7 @@ Sign and inspect JSON Web Tokens for admin debugging
 flow jwt [command]
 ```
 
-Sign a JWT with a key from `flow keys generate`, or inspect one a workload, worker, or relying party produced. For debugging identity, not for minting production workload assertions: those come from an [auth.Issuer], which adds discovery, rotation, and revocation this command deliberately does not.
+Sign a JWT with a key from `flow keys generate`, or inspect one a workload, worker, or relying party produced. For debugging identity, not for minting production workload assertions: a real issuer, named in the trust policy `flow server` is started with (`--auth-policy`), publishes its keys for discovery and can rotate and revoke them, and this command deliberately does none of that.
 
 ## `flow jwt inspect`
 
@@ -423,7 +431,7 @@ flow list --all --filter 'name == "nightly-etl"'
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
 | `--all` | `bool` | `false` | — | keep asking until the listing is exhausted, rather than returning one page |
 | `--filter <string>` | `string` | — | — | keep only the runs a CEL expression answers yes about, over `workflow_id`, `run_id`, `status`, `start_time`, `close_time`, `finished`, and `name` (the workflow's own declared name, empty for a run older than this field) — for example status == "FAILED" |
-| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl carry the server's own schema, so a field is addressable by name |
+| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--page-size <int32>` | `int32` | `0` | — | how many runs to return per page; unset takes the server's default |
 | `--page-token <string>` | `string` | — | — | continue a previous listing from where it stopped |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
@@ -557,7 +565,7 @@ flow plugins -o json | jq -r '.plugins[] | select(.tasks[].name == "example.gree
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--allow-insecure-plugin-dir` | `bool` | `false` | — | permit a plugin directory other users can write to, which lets them choose what this worker runs |
-| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl carry the server's own schema, so a field is addressable by name |
+| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
 | `--plugin-dir <string,...>` | `stringArray` | — | — | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
@@ -606,7 +614,7 @@ flow validate examples/hello-world/workflow.yaml
 | `--input <string,...>` | `stringArray` | — | — | an argument this run is started with, as name=value (repeatable). The workflow's `inputs:` declaration decides how the value is read: an int is parsed as a number, a bool as true/false, and a list or struct as JSON |
 | `--input-file <string>` | `string` | — | — | a JSON object of arguments, keyed by input name. Values arrive with the types JSON gives them; a --input flag of the same name wins over the file |
 | `--interval <duration>` | `duration` | `1s` | — | how often to ask the server, clamped to a floor of 250ms |
-| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl carry the server's own schema, so a field is addressable by name |
+| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--plain` | `bool` | `false` | — | print one line per change instead of drawing a live view, even on a terminal |
 | `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only — the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
@@ -668,7 +676,7 @@ flow run local examples/computed-outputs/workflow.yaml --input release=2026.9.0 
 | `--identity-key <string>` | `string` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets |
 | `--input <string,...>` | `stringArray` | — | — | an argument this run is started with, as name=value (repeatable). The workflow's `inputs:` declaration decides how the value is read: an int is parsed as a number, a bool as true/false, and a list or struct as JSON |
 | `--input-file <string>` | `string` | — | — | a JSON object of arguments, keyed by input name. Values arrive with the types JSON gives them; a --input flag of the same name wins over the file |
-| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl carry the server's own schema, so a field is addressable by name |
+| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only — the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
 | `--secret-command <string,...>` | `stringArray` | — | `FLOWSTATE_SECRET_COMMAND` | argv of the command that resolves command: secrets, repeatable in order (executable first);"{{name}}" and, with --secret-command-namespaced, "{{namespace}}" are substituted literally into one argument, never through a shell (default $FLOWSTATE_SECRET_COMMAND, :-separated) |
 | `--secret-command-namespaced` | `bool` | `false` | — | substitute "{{namespace}}" in --secret-command with the tenant's namespace |
@@ -739,10 +747,11 @@ flow schedule create report.yaml --name report-us --input region=us-east-1
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
+| `--backfill <string,...>` | `stringSlice` | — | — | a missed window to recover at creation, START..END in RFC3339, repeatable up to 10 times and 31 days in total. Temporal evaluates the cadence after START and up to END, so write START a moment before the first firing you want back |
 | `--input <string,...>` | `stringArray` | — | — | an argument this run is started with, as name=value (repeatable). The workflow's `inputs:` declaration decides how the value is read: an int is parsed as a number, a bool as true/false, and a list or struct as JSON |
 | `--input-file <string>` | `string` | — | — | a JSON object of arguments, keyed by input name. Values arrive with the types JSON gives them; a --input flag of the same name wins over the file |
 | `--name <string>` | `string` | — | — | what to call the schedule; unset takes the workflow's own name, which is what one cadence per workflow wants |
-| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl carry the server's own schema, so a field is addressable by name |
+| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--paused` | `bool` | `false` | — | create the schedule without letting it fire, so its next firing times can be read before it takes one |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
 
@@ -756,16 +765,24 @@ flow schedule delete [name] [flags]
 
 Delete a schedule. Future firings stop; runs it has already started are ordinary workloads and keep going, so stopping one of those is `flow cancel`. Prefer `flow schedule pause` when the arrangement should survive whatever is wrong right now.
 
+With `-o json` (or `-o jsonl` for one line), stdout carries a single result document and nothing else, while the prose above is not written: `{"verb", "workflowId", "runId", "scheduleName", "signalName", "result"}`, the schema's `flowstate.v1.MutationResult`. `result` is "applied" for an act that is done when the server answers, "requested" for one it has accepted and not yet performed, and "delivered" for a signal the server has taken, which says nothing about whether the workflow went on to observe it. Fields that do not apply to a verb are present and empty, so one expression reads every one of them.
+
+`result` is "applied": the schedule is gone when the server answers.
+
 Examples:
 
 ```sh
 # Delete a schedule:
 flow schedule delete nightly-report
+
+# Delete it from a script, which reads the outcome rather than the exit code alone:
+flow schedule delete nightly-report -o json | jq -r '.scheduleName, .result'
 ```
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
+| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
 
 ## `flow schedule describe`
@@ -791,7 +808,7 @@ flow schedule describe nightly-report -o json | jq -r '.recentRuns[].workflowId'
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
-| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl carry the server's own schema, so a field is addressable by name |
+| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
 
 ## `flow schedule list`
@@ -820,7 +837,7 @@ flow schedule list -o json | jq -r '.schedules[] | select(.paused) | .name'
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
-| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl carry the server's own schema, so a field is addressable by name |
+| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
 
 ## `flow schedule pause`
@@ -833,17 +850,25 @@ flow schedule pause [name] [flags]
 
 Stop a schedule firing while leaving it in place, which is what an incident wants: the arrangement is still there and still reviewable, and it is not running.
 
+With `-o json` (or `-o jsonl` for one line), stdout carries a single result document and nothing else, while the prose above is not written: `{"verb", "workflowId", "runId", "scheduleName", "signalName", "result"}`, the schema's `flowstate.v1.MutationResult`. `result` is "applied" for an act that is done when the server answers, "requested" for one it has accepted and not yet performed, and "delivered" for a signal the server has taken, which says nothing about whether the workflow went on to observe it. Fields that do not apply to a verb are present and empty, so one expression reads every one of them.
+
+`result` is "applied" whether or not the schedule was already paused: the server answers the same either way, so the document does not guess.
+
 Examples:
 
 ```sh
 # Pause a schedule, saying why:
 flow schedule pause nightly-report --note "upstream API is down, INC-4471"
+
+# Pause several from a script and record what was acted on:
+flow schedule pause nightly-report --note "INC-4471" -o json | jq -r .scheduleName
 ```
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
 | `--note <string>` | `string` | — | — | recorded on the schedule and shown by list and describe; a paused schedule found by somebody else has no explanation attached unless this is written |
+| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
 
 ## `flow schedule resume`
@@ -856,16 +881,24 @@ flow schedule resume [name] [flags]
 
 Let a paused schedule fire again, from its next scheduled time. Firings missed while it was paused are not made up.
 
+With `-o json` (or `-o jsonl` for one line), stdout carries a single result document and nothing else, while the prose above is not written: `{"verb", "workflowId", "runId", "scheduleName", "signalName", "result"}`, the schema's `flowstate.v1.MutationResult`. `result` is "applied" for an act that is done when the server answers, "requested" for one it has accepted and not yet performed, and "delivered" for a signal the server has taken, which says nothing about whether the workflow went on to observe it. Fields that do not apply to a verb are present and empty, so one expression reads every one of them.
+
+`result` is "applied": the schedule is live when the server answers.
+
 Examples:
 
 ```sh
 flow schedule resume nightly-report --note "upstream recovered"
+
+# Resume from a script, confirming which schedule was acted on:
+flow schedule resume nightly-report -o json | jq -r '.scheduleName, .result'
 ```
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
 | `--note <string>` | `string` | — | — | replaces the message on the schedule, which is usually still the reason it was paused |
+| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
 
 ## `flow schedule trigger`
@@ -878,17 +911,26 @@ flow schedule trigger [name] [flags]
 
 Fire a schedule now. This is what makes a schedule testable: it exercises the arguments the schedule stored, the tenant it records on the runs it starts and the queue it puts them on, none of which running the workflow by hand would prove. A paused schedule fires too, which is what `create --paused`, `trigger`, `resume` is for.
 
+With `-o json` (or `-o jsonl` for one line), stdout carries a single result document and nothing else, while the prose above is not written: `{"verb", "workflowId", "runId", "scheduleName", "signalName", "result"}`, the schema's `flowstate.v1.MutationResult`. `result` is "applied" for an act that is done when the server answers, "requested" for one it has accepted and not yet performed, and "delivered" for a signal the server has taken, which says nothing about whether the workflow went on to observe it. Fields that do not apply to a verb are present and empty, so one expression reads every one of them.
+
+`result` is "requested" and `workflowId` is empty, because the cluster starts the run after answering: `flow schedule describe` is what names the run once it exists.
+
 Examples:
 
 ```sh
 # Fire it now and watch what it started:
 flow schedule trigger nightly-report
 flow schedule describe nightly-report
+
+# Fire it from a script, then go looking for the run it starts:
+flow schedule trigger nightly-report -o json | jq -r .result
+flow schedule describe nightly-report -o json | jq -r '.recentRuns[0].workflowId'
 ```
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
+| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
 
 ## `flow server`
@@ -970,7 +1012,7 @@ flow server dev -o json
 | `--egress-policy <string>` | `string` | — | `FLOWSTATE_EGRESS_POLICY` | path to an egress policy (YAML) governing the http task (default $FLOWSTATE_EGRESS_POLICY); when set it replaces the default policy entirely, and FLOWSTATE_ALLOW_LOOPBACK_EGRESS is ignored — a file that wants loopback says allow_loopback: true |
 | `--identity-key <string>` | `string` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets |
 | `--listen <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address the Flowstate server listens on (default $FLOWSTATE_ADDRESS); loopback only, and a port of 0 takes a free one |
-| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl carry the server's own schema, so a field is addressable by name |
+| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
 | `--plugin-dir <string,...>` | `stringArray` | — | — | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
@@ -1010,6 +1052,10 @@ Deliver a signal to a run waiting for one, which is how a human approval reaches
 
 Two limits, both worth knowing before designing a payload. A payload over 64 KiB is refused synchronously, with the size and the limit named — send a reference to something large rather than the thing itself, since the payload travels with the run from then on. And a signal that arrives before its gate is reached is held for it, at most 128 across all names with the earliest kept: sending does not fail when the run is elsewhere, it waits.
 
+With `-o json` (or `-o jsonl` for one line), stdout carries a single result document and nothing else, while the prose above is not written: `{"verb", "workflowId", "runId", "scheduleName", "signalName", "result"}`, the schema's `flowstate.v1.MutationResult`. `result` is "applied" for an act that is done when the server answers, "requested" for one it has accepted and not yet performed, and "delivered" for a signal the server has taken, which says nothing about whether the workflow went on to observe it. Fields that do not apply to a verb are present and empty, so one expression reads every one of them.
+
+`result` is "delivered" once the server has taken the signal, and `signalName` is which one: two signals to one run are two acts, so the name is part of the result rather than only of the request. "delivered" rather than "applied" because it is a claim about the server and not about the workflow: being held for a gate not reached yet counts as delivered, and a signal still held when the run continues as new is dropped once the pending limit above is full, so a workflow that never sees it is a possible ending of a delivery that succeeded.
+
 Examples:
 
 ```sh
@@ -1025,41 +1071,141 @@ flow signal deploy-abc123 deploy-approved
 # A local run is given its answers up front instead, the same idea for a
 # workflow with no signals: policy to attest a sender against:
 flow run local examples/expense-approval/workflow.yaml --input-file examples/expense-approval/inputs.json --signal manager-approved='{"approved": true}'
+
+# Confirm the delivery from a script, which gets a document rather than a sentence:
+flow signal deploy-abc123 deploy-approved -o json | jq -r '.signalName, .result'
 ```
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
 | `--data <string>` | `string` | — | — | signal payload as a JSON object, whose keys become the waiting step's outputs, e.g. --data '{"approved": true}' |
+| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--run-id <string>` | `string` | — | — | pin the signal to one run of the workload; unset addresses whichever run is current, which is what approving a workload means |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
 
-## `flow tasks`
+## `flow task`
 
-List the tasks workflows can use
+Work with a single task
 
 ```
-flow tasks [flags]
+flow task [command]
 ```
 
-List the tasks available to workflow steps, along with the CEL libraries every expression reaches.
+Work with one task on its own, rather than through a workflow that contains it. `flow tasks` says what exists; this is the verb that runs one.
+
+## `flow task run`
+
+Run one task, without writing a workflow
+
+```
+flow task run [task-name] [flags]
+```
+
+Run one task on its own, with no workflow and no server.
+
+A task invocation is a one-step workflow, and that is how this executes it: the inputs are compiled into a single step and handed to the same engine `flow run local` runs a file with. So it is a real execution and gets the real gates: the egress policy denies internal and loopback addresses here exactly as it denies them there, a ${secret(...)} reference needs the same --secret-env and --auth-policy opt-ins, and retries, timeouts and the task-shape policy behave as they will in production.
+
+Arguments are given the way `flow run` takes them (--input name=value or --input-file inputs.json), and the task's own input schema plays the role a workflow's `inputs:` block plays there: it decides how a word is read, which inputs are required, and what a value may hold. A whole value written as ${...} is an expression, and ${secret('env:NAME')} is a reference, exactly as in a file.
+
+stdout is the answer and stderr is the account of it, so a task invocation pipes. --output json writes the same document `flow run local -o json` writes for a finished run.
+
+There is no state between invocations and no session, on purpose. Composition is a pipe and then a file: the moment two invocations need to share memory, the answer is `flow run local`.
 
 Examples:
 
 ```sh
-# List available tasks, their inputs, and their outputs:
-flow tasks
+# Run the log task, which needs nothing but a message:
+flow task run log --input message='hello from a task'
 
-# The same thing as a document, for a script or an agent:
-flow tasks --output json
+# Fetch something, and read one output:
+flow task run http --input url=https://example.com --output json | jq -r .outputs.stepValues.http.namedValues.status_code.literal.int64Value
 
-# What inputs does the http task take, and which are required?
-flow tasks --output json | jq '.tasks[] | select(.name == "http") | .inputs'
+# Say what a good response looks like, the way a step's expect: does:
+flow task run http --input url=https://example.com --input expect='${response.status_code == 200}'
+
+# Send a bearer token without it reaching the terminal, or history:
+flow task run http --input url=https://api.example.com/me --input bearer='${secret("env:API_TOKEN")}' --secret-env API_TOKEN --auth-policy policy.yaml
+
+# Run a task a plugin provides, through the same discovery a worker uses:
+flow task run example.greet --input name=world --plugin-dir ./plugins
 ```
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
-| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl carry the server's own schema, so a field is addressable by name |
+| `--allow-insecure-plugin-dir` | `bool` | `false` | — | permit a plugin directory other users can write to, which lets them choose what this worker runs |
+| `--as-claim <string,...>` | `stringArray` | — | — | authenticated string claim NAME=VALUE to rehearse policy as (repeatable) |
+| `--as-deployment <string>` | `string` | `local` | — | Flowstate deployment name to rehearse policy as (local runs only) |
+| `--as-issuer <string>` | `string` | `flowstate:local` | — | authenticated issuer to rehearse policy as (local runs only) |
+| `--as-namespace <string>` | `string` | — | — | tenant namespace to rehearse policy as (local runs only) |
+| `--as-subject <string>` | `string` | `local-user` | — | authenticated subject to rehearse policy as (local runs only) |
+| `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to an access policy whose secrets rules authorize this local rehearsal |
+| `--egress-policy <string>` | `string` | — | `FLOWSTATE_EGRESS_POLICY` | path to an egress policy (YAML) governing the http task (default $FLOWSTATE_EGRESS_POLICY); when set it replaces the default policy entirely, and FLOWSTATE_ALLOW_LOOPBACK_EGRESS is ignored — a file that wants loopback says allow_loopback: true |
+| `--identity-key <string>` | `string` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets |
+| `--input <string,...>` | `stringArray` | — | — | an argument this run is started with, as name=value (repeatable). The workflow's `inputs:` declaration decides how the value is read: an int is parsed as a number, a bool as true/false, and a list or struct as JSON |
+| `--input-file <string>` | `string` | — | — | a JSON object of arguments, keyed by input name. Values arrive with the types JSON gives them; a --input flag of the same name wins over the file |
+| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
+| `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
+| `--plugin-dir <string,...>` | `stringArray` | — | — | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
+| `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
+| `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only — the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
+| `--secret-command <string,...>` | `stringArray` | — | `FLOWSTATE_SECRET_COMMAND` | argv of the command that resolves command: secrets, repeatable in order (executable first);"{{name}}" and, with --secret-command-namespaced, "{{namespace}}" are substituted literally into one argument, never through a shell (default $FLOWSTATE_SECRET_COMMAND, :-separated) |
+| `--secret-command-namespaced` | `bool` | `false` | — | substitute "{{namespace}}" in --secret-command with the tenant's namespace |
+| `--secret-dir <string>` | `string` | — | `FLOWSTATE_SECRET_DIR` | directory containing file: secrets (default $FLOWSTATE_SECRET_DIR) |
+| `--secret-dir-namespaced` | `bool` | `false` | — | resolve file: secrets below a separate <secret-dir>/<namespace>/ directory |
+| `--secret-env <string,...>` | `stringSlice` | — | `FLOWSTATE_SECRET_ENV_ALLOW` | environment secret names this process may resolve (comma-separated or repeatable; values come from FLOWSTATE_SECRET_<NAME>) |
+| `--secret-env-namespace <string,...>` | `stringSlice` | — | — | tenant-to-prefix mapping NAMESPACE=PREFIX for env: secrets (repeatable) |
+| `--secret-keychain` | `bool` | `false` | — | resolve keychain: secrets from the macOS keychain (default $FLOWSTATE_SECRET_KEYCHAIN, macOS only) |
+| `--secret-keychain-namespaced` | `bool` | `false` | — | give each tenant its own keychain service, <service>/<namespace> |
+| `--secret-keychain-service <string>` | `string` | — | `FLOWSTATE_SECRET_KEYCHAIN_SERVICE` | keychain service name entries are stored under (default $FLOWSTATE_SECRET_KEYCHAIN_SERVICE, then "flowstate") |
+| `--secret-op` | `bool` | `false` | — | resolve op: secrets through the 1Password CLI (default $FLOWSTATE_SECRET_OP) |
+| `--secret-op-namespaced` | `bool` | `false` | — | give each tenant its own 1Password vault, named after the namespace |
+| `--secret-op-vault <string>` | `string` | — | `FLOWSTATE_SECRET_OP_VAULT` | 1Password vault read when a run has no namespace (default $FLOWSTATE_SECRET_OP_VAULT, then "flowstate") |
+| `--secret-require-namespace` | `bool` | `false` | — | refuse every secret read whose authenticated identity has no tenant namespace |
+| `--secret-vault-addr <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_ADDR` | address of the Vault or OpenBao instance vault: secrets are read from, such as https://vault.example.com:8200 (default $FLOWSTATE_SECRET_VAULT_ADDR) |
+| `--secret-vault-ca-file <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_CA_FILE` | PEM CA bundle to verify the vault's certificate against, instead of the system roots (default $FLOWSTATE_SECRET_VAULT_CA_FILE) |
+| `--secret-vault-kubernetes-mount <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_KUBERNETES_MOUNT` | where the Kubernetes auth method is mounted (default $FLOWSTATE_SECRET_VAULT_KUBERNETES_MOUNT, then "kubernetes") |
+| `--secret-vault-kubernetes-role <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_KUBERNETES_ROLE` | Vault role to authenticate as via the Kubernetes auth method, using this pod's projected service account token (default $FLOWSTATE_SECRET_VAULT_KUBERNETES_ROLE; exactly one of this or a token must be configured) |
+| `--secret-vault-mount <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_MOUNT` | where the KV v2 engine is mounted (default $FLOWSTATE_SECRET_VAULT_MOUNT, then "secret") |
+| `--secret-vault-namespace <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_NAMESPACE` | Vault Enterprise or OpenBao namespace header (default $FLOWSTATE_SECRET_VAULT_NAMESPACE; this is the vault's own namespace, not the tenant namespace a run authenticates with) |
+| `--secret-vault-path-prefix <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_PATH_PREFIX` | path prefix inside the mount, above the namespace segment (default $FLOWSTATE_SECRET_VAULT_PATH_PREFIX) |
+| `--secret-vault-token-file <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_TOKEN_FILE` | file holding a static Vault client token, re-read per login (default $FLOWSTATE_SECRET_VAULT_TOKEN_FILE; falls back to $FLOWSTATE_SECRET_VAULT_TOKEN directly, for a development vault or a test) |
+| `--sensitive <string,...>` | `stringArray` | — | — | treat this input as `sensitive: true` is treated in a file: withheld from the invocation echo unless --reveal-sensitive is typed (repeatable). An input the task's own schema declares as carrying authority is withheld without being named here. Display etiquette only: the value still reaches the task, and a value that must not is a ${secret(...)} reference instead |
+| `--task-policy <string>` | `string` | — | `FLOWSTATE_TASK_POLICY` | path to a task-shape policy (YAML) governing which identities may dispatch which tasks (default $FLOWSTATE_TASK_POLICY); with nothing configured, every task dispatches exactly as it does today — see #187 |
+
+## `flow tasks`
+
+List the tasks workflows can use, or describe one
+
+```
+flow tasks [name] [flags]
+```
+
+List the tasks available to workflow steps, one line each. Name one to see it in full: every input with what may be written in it, what the task evaluates itself, what it hands back, and a step to copy.
+
+Examples:
+
+```sh
+# Every task a step can name, one line each:
+flow tasks
+
+# One task in full: its inputs, their bounds, and a step to copy:
+flow tasks http
+
+# What every expression in a Flowfile can say:
+flow tasks --expressions
+
+# The whole catalog as a document, for a script or an agent:
+flow tasks --output json
+
+# One task as a document:
+flow tasks http --output json | jq '.inputs'
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `--expressions` | `bool` | `false` | — | describe what every expression can say: the CEL functions, the duration constructors, `now` inside a wait, and where a value comes from |
+| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 
 ## `flow terminate`
 
@@ -1071,16 +1217,24 @@ flow terminate [workflow-id] [flags]
 
 Stop a run immediately. No further step runs and nothing the workload would have done on the way out is done, so anything it was responsible for releasing stays held. Prefer `flow cancel`; reach for this when a run must stop now, or when cancelling did not stop it.
 
+With `-o json` (or `-o jsonl` for one line), stdout carries a single result document and nothing else, while the prose above is not written: `{"verb", "workflowId", "runId", "scheduleName", "signalName", "result"}`, the schema's `flowstate.v1.MutationResult`. `result` is "applied" for an act that is done when the server answers, "requested" for one it has accepted and not yet performed, and "delivered" for a signal the server has taken, which says nothing about whether the workflow went on to observe it. Fields that do not apply to a verb are present and empty, so one expression reads every one of them.
+
+`result` is "applied" here, unlike `flow cancel`: termination is not cooperative, so the run is already gone when the server answers.
+
 Examples:
 
 ```sh
 # Stop a wedged run, saying why:
 flow terminate flowstate-workflow-3f7c --reason "stuck on a dependency that is never coming back"
+
+# The same, with a result document a script can act on:
+flow terminate flowstate-workflow-3f7c --reason "wedged" -o json | jq -r .result
 ```
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
+| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--reason <string>` | `string` | — | — | recorded on the terminated run; a terminated run leaves no account of itself, so this is the only explanation anyone will find |
 | `--run-id <string>` | `string` | — | — | pin the request to one run of the workload; unset addresses whichever run is current |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
@@ -1114,7 +1268,7 @@ flow test -o jsonl examples/
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
-| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl carry the server's own schema, so a field is addressable by name |
+| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 
 ## `flow validate`
 
@@ -1141,7 +1295,36 @@ flow validate examples/*/workflow.yaml -o jsonl | jq 'select(.diagnostics | leng
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
-| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl carry the server's own schema, so a field is addressable by name |
+| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
+
+## `flow version`
+
+Print the version, commit, and commit date
+
+```
+flow version [flags]
+```
+
+Print what the toolchain stamped into this binary: version, commit, the commit's date, the Go version it was compiled with, and the platform it was built for. The date is the commit's, because that is what a module-aware build records; nothing stamps the moment of compilation.
+
+Answered entirely from what this binary already carries, no network call, so it works the same offline as everything else here. When nothing was stamped (a plain `go build` with no -ldflags and no module information) it says so honestly: "devel" for the version, "unknown" for the commit and its date, rather than a number invented for the occasion.
+
+Examples:
+
+```sh
+# What build is this:
+flow version
+
+# The same answer, addressable by field:
+flow version -o json | jq -r .commit
+
+# Gate a script on this being a real build rather than one compiled by hand:
+flow version -o json | jq -e '.version != "devel"'
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. The JSON shape is this command's own documented field set, not a server message |
 
 ## `flow watch`
 
@@ -1180,7 +1363,7 @@ flow watch flowstate-workflow-3f7c >/dev/null && ./promote.sh
 |---|---|---|---|---|
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
 | `--interval <duration>` | `duration` | `1s` | — | how often to ask the server, clamped to a floor of 250ms |
-| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl carry the server's own schema, so a field is addressable by name |
+| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--plain` | `bool` | `false` | — | print one line per change instead of drawing a live view, even on a terminal |
 | `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only — the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
 | `--run-id <string>` | `string` | — | — | pin the watch to one run of the workload; unset follows whichever run is current |

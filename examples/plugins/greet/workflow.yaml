@@ -24,6 +24,19 @@ description: Calls a task a plugin provides, as though it were built in.
 # This example needs setup a Flowfile cannot carry — a built plugin binary, and a
 # worker told where to look — so it has a README beside it. Read that first.
 
+# What this file needs from the deployment that runs it, and the least version of
+# it that will do. `example.greet` below is a task nothing in this repository
+# compiles: without this block a worker without the plugin accepts the run and
+# fails the step with `unknown task`, and with it the control plane refuses the
+# submission and says which plugin is missing, to the person who submitted it,
+# while they are still there to read it.
+#
+# It also pins. Whatever build of `example` the deployment resolves this to is
+# recorded on the run, and a worker holding a different one refuses to execute it
+# rather than quietly serving a different `greet`.
+plugins:
+  example: v0.1.0
+
 vars:
   who: world
 

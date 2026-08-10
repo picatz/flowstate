@@ -227,21 +227,32 @@ func writeTaskFields(b *strings.Builder, heading string, fields []*v1.TaskField,
 	}
 
 	if required {
-		b.WriteString("| Name | Type | Required | Deferred |\n|---|---|---|---|\n")
+		b.WriteString("| Name | Type | Required | Deferred | Bounds |\n|---|---|---|---|---|\n")
 	} else {
-		b.WriteString("| Name | Type |\n|---|---|\n")
+		b.WriteString("| Name | Type | Bounds |\n|---|---|---|\n")
 	}
 
 	for _, field := range fields {
+		// The bounds the schema and the task already carry, the same phrases `flow
+		// tasks <name>` prints, because they come from the same field on the same
+		// message. A reference that omitted them would send a reader who wants to
+		// know how long a `credential:` may be to the proto, which is the drift this
+		// document exists to prevent.
+		bounds := "none"
+		if constraints := field.GetConstraints(); len(constraints) > 0 {
+			bounds = cell(strings.Join(constraints, "; "))
+		}
+
 		if !required {
-			fmt.Fprintf(b, "| `%s` | `%s` |\n", cell(field.GetName()), cell(field.GetType()))
+			fmt.Fprintf(b, "| `%s` | `%s` | %s |\n",
+				cell(field.GetName()), cell(field.GetType()), bounds)
 
 			continue
 		}
 
-		fmt.Fprintf(b, "| `%s` | `%s` | %s | %s |\n",
+		fmt.Fprintf(b, "| `%s` | `%s` | %s | %s | %s |\n",
 			cell(field.GetName()), cell(field.GetType()),
-			yesNo(field.GetRequired()), yesNo(field.GetDeferred()))
+			yesNo(field.GetRequired()), yesNo(field.GetDeferred()), bounds)
 	}
 	b.WriteString("\n")
 }

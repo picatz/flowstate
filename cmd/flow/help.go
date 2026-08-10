@@ -55,7 +55,7 @@ func renderHelp(surface *ui.UI, c *cobra.Command) {
 	var b strings.Builder
 
 	if summary := cmp.Or(c.Long, c.Short); summary != "" {
-		fmt.Fprintln(&b, wrap(summary, width))
+		fmt.Fprintln(&b, wrapProse(theme, lipgloss.NewStyle(), summary, width))
 		fmt.Fprintln(&b)
 	}
 
@@ -185,8 +185,12 @@ func exampleLines(c *cobra.Command) []string {
 //
 // A comment is the reason and the command is the thing to copy, so they are styled
 // oppositely: the comment recedes, the command is the one the eye should land on.
+// The markup pass runs here too, but only to decide which characters the line is
+// made of: a whole example line is one thing, so it is styled as a unit rather
+// than piece by piece, and a code span inside a command already has the command's
+// own emphasis around it.
 func styleExample(theme ui.Theme, line string, width int) string {
-	line = ui.Trim(line, width-2)
+	line = ui.Trim(theme.ProseText(line), width-2)
 
 	if strings.HasPrefix(line, "#") {
 		return theme.Muted.Render(line)
@@ -202,6 +206,12 @@ type column struct {
 
 	name string
 	text string
+
+	// literal is appended after text is rendered, byte for byte. It carries
+	// values the prose dialect does not govern, a flag's runtime default above
+	// all: an operator's value may contain a balanced pair of backticks, and a
+	// parse over it would show a default different from the one in force.
+	literal string
 }
 
 // group is a titled list of commands.
@@ -273,7 +283,8 @@ func flagEntries(c *cobra.Command) []column {
 		}
 		seen[f.Name] = true
 
-		entries = append(entries, column{sort: f.Name, name: flagName(f), text: flagUsage(f)})
+		text, literal := flagUsage(f)
+		entries = append(entries, column{sort: f.Name, name: flagName(f), text: text, literal: literal})
 	}
 
 	c.LocalFlags().VisitAll(add)
@@ -322,7 +333,7 @@ func placeholder(kind string) string {
 //
 // An empty string and a false are not: "(default \"\")" tells a reader nothing they
 // did not already assume, and it is the majority of the flags on any command.
-func flagUsage(f *pflag.Flag) string {
+func flagUsage(f *pflag.Flag) (string, string) {
 	usage := f.Usage
 
 	// cobra writes these two itself, in a shape that describes the mechanism
@@ -336,11 +347,18 @@ func flagUsage(f *pflag.Flag) string {
 		usage = "Show the version and exit"
 	}
 
-	if f.DefValue != "" && f.DefValue != "false" && f.DefValue != "0" && f.DefValue != "[]" {
-		usage += " (default " + f.DefValue + ")"
-	}
+	return sentence(usage), flagDefault(f)
+}
 
-	return sentence(usage)
+// flagDefault renders the "(default ...)" suffix, or nothing for the zero
+// shapes cobra spells. Returned apart from the usage prose because the value is
+// runtime text: it reaches the screen byte for byte, never through the prose
+// parser, so a backtick in an operator's path stays a backtick.
+func flagDefault(f *pflag.Flag) string {
+	if f.DefValue == "" || f.DefValue == "false" || f.DefValue == "0" || f.DefValue == "[]" {
+		return ""
+	}
+	return "(default " + f.DefValue + ")"
 }
 
 // sentence starts a description with a capital.
@@ -376,7 +394,15 @@ func writeColumns(b *strings.Builder, theme ui.Theme, entries []column, widest, 
 		for _, e := range entries {
 			fmt.Fprintln(b, indent(theme.Strong.Render(e.name)))
 			if e.text != "" {
-				fmt.Fprintln(b, indent(indent(theme.Muted.Render(ui.Trim(e.text, width-4)))))
+				// Truncated rather than wrapped, so the markup is resolved to the
+				// characters that reach the screen before anything is cut: a cut
+				// measured on the authored string lands in the wrong column, and a
+				// cut through a styled span would leave an escape sequence open.
+				line := ui.Trim(theme.ProseText(e.text), width-4)
+				if e.literal != "" {
+					line += " " + e.literal
+				}
+				fmt.Fprintln(b, indent(indent(theme.Muted.Render(line))))
 			}
 		}
 
@@ -385,11 +411,24 @@ func writeColumns(b *strings.Builder, theme ui.Theme, entries []column, widest, 
 
 	for _, e := range entries {
 		pad := strings.Repeat(" ", widest-lipgloss.Width(e.name)+gutter)
-		wrapped := strings.Split(wrap(e.text, textWidth), "\n")
 
-		fmt.Fprintln(b, indent(theme.Strong.Render(e.name)+pad+theme.Muted.Render(wrapped[0])))
+		// Already styled, per line: a description is prose, and prose is styled
+		// where it is wrapped rather than afterwards, because a style applied over
+		// a line that already carries one ends both at the first reset.
+		wrapped := strings.Split(wrapProse(theme, theme.Muted, e.text, textWidth), "\n")
+		if e.literal != "" {
+			styled := theme.Muted.Render(e.literal)
+			last := len(wrapped) - 1
+			if lipgloss.Width(wrapped[last])+1+lipgloss.Width(styled) <= textWidth {
+				wrapped[last] += " " + styled
+			} else {
+				wrapped = append(wrapped, styled)
+			}
+		}
+
+		fmt.Fprintln(b, indent(theme.Strong.Render(e.name)+pad+wrapped[0]))
 		for _, line := range wrapped[1:] {
-			fmt.Fprintln(b, indent(strings.Repeat(" ", widest+gutter)+theme.Muted.Render(line)))
+			fmt.Fprintln(b, indent(strings.Repeat(" ", widest+gutter)+line))
 		}
 	}
 }
@@ -433,29 +472,182 @@ func wrap(text string, width int) string {
 
 // wrapLine wraps one line, breaking only between words.
 func wrapLine(line string, width int) string {
-	words := strings.Fields(line)
-	if len(words) == 0 {
-		return ""
+	fields := strings.Fields(line)
+
+	words := make([]word, 0, len(fields))
+	for _, field := range fields {
+		words = append(words, word{spans: []ui.Span{{Text: field}}, width: lipgloss.Width(field)})
 	}
 
-	var b strings.Builder
+	var lines []string
+	for _, broken := range breakWords(words, width) {
+		var b strings.Builder
+		for i, w := range broken {
+			if i > 0 {
+				b.WriteString(" ")
+			}
+			// One span per word here, and no markup in it: this is the path for
+			// text that arrived from somewhere the dialect does not govern.
+			b.WriteString(w.spans[0].Text)
+		}
+		lines = append(lines, b.String())
+	}
 
-	b.WriteString(words[0])
-	column := lipgloss.Width(words[0])
+	return strings.Join(lines, "\n")
+}
 
-	for _, word := range words[1:] {
-		switch w := lipgloss.Width(word); {
-		case column+1+w <= width:
-			b.WriteString(" ")
-			b.WriteString(word)
-			column += 1 + w
+// word is one unbreakable unit of a wrapped line: the spans it is written from,
+// and the columns they occupy once they reach the screen.
+//
+// The measurement is carried rather than taken later because the two differ: a
+// code span is two columns narrower on a styled surface than it was written, and
+// once styled it is escape sequences that measure zero on a terminal and non-zero
+// to anything counting bytes. Measuring at the moment the markup is resolved is
+// what lets the wrapper stay a wrapper.
+type word struct {
+	spans []ui.Span
+	width int
+}
+
+// breakWords is the one wrapping rule, and the only thing that decides where a
+// line ends: break between words, never inside one.
+//
+// It returns the lines rather than a string so that both callers fill a line
+// identically and only differ in what they write for a word. A word wider than the
+// measure gets a line of its own and overflows it, which is the deliberate failure
+// [wrap] describes.
+func breakWords(words []word, width int) [][]word {
+	if len(words) == 0 {
+		return [][]word{nil}
+	}
+
+	lines := [][]word{{words[0]}}
+	column := words[0].width
+
+	for _, w := range words[1:] {
+		switch last := len(lines) - 1; {
+		case column+1+w.width <= width:
+			lines[last] = append(lines[last], w)
+			column += 1 + w.width
 
 		default:
-			b.WriteString("\n")
-			b.WriteString(word)
-			column = w
+			lines = append(lines, []word{w})
+			column = w.width
 		}
 	}
 
+	return lines
+}
+
+// wrapProse wraps hand-written help prose, rendering its inline markup as it goes.
+//
+// The order is the whole of it. The markup pass decides which characters reach the
+// screen: a code span loses its backticks where a style can carry it and keeps them
+// where nothing can, so wrapping before that pass measures a string nobody sees and
+// the line comes out two columns short per span. Styling before wrapping is the same
+// mistake wearing the other hat, since a wrapper looking for a space cannot tell one
+// inside an escape sequence from one between two words. So the markup is resolved
+// first, the width is taken there, and the styling goes on last, per line.
+//
+// A code span is one word and is never broken across a wrap point. `flow schedule
+// create` is a single thing to read and a single thing to copy, and a break in the
+// middle of it makes it neither.
+func wrapProse(theme ui.Theme, base lipgloss.Style, text string, width int) string {
+	var out []string
+
+	for _, line := range strings.Split(text, "\n") {
+		for _, broken := range breakWords(proseWords(theme, line), width) {
+			out = append(out, renderProseLine(theme, base, broken))
+		}
+	}
+
+	return strings.Join(out, "\n")
+}
+
+// renderProseLine styles one wrapped line.
+//
+// Adjacent literal text is styled once rather than once per word: the escape
+// sequences either side of a word are the same decision repeated, and a line
+// carrying one per word is a line that is mostly escape sequences to anything
+// reading the bytes.
+func renderProseLine(theme ui.Theme, base lipgloss.Style, line []word) string {
+	var spans []ui.Span
+
+	for i, w := range line {
+		if i > 0 {
+			spans = append(spans, ui.Span{Text: " "})
+		}
+		spans = append(spans, w.spans...)
+	}
+
+	var b strings.Builder
+	for i := 0; i < len(spans); i++ {
+		if spans[i].Code {
+			b.WriteString(theme.RenderSpan(base, spans[i]))
+
+			continue
+		}
+
+		var literal strings.Builder
+		for ; i < len(spans) && !spans[i].Code; i++ {
+			literal.WriteString(spans[i].Text)
+		}
+		i--
+
+		b.WriteString(base.Render(literal.String()))
+	}
+
 	return b.String()
+}
+
+// proseWords splits one line of prose into the units a wrap may not break.
+//
+// A span binds to whatever it touches: `--check`, ends a sentence and (`--check`)
+// is parenthesised, so a word is a run of spans with no whitespace between them
+// rather than one span per word.
+func proseWords(theme ui.Theme, line string) []word {
+	var (
+		words   []word
+		current word
+	)
+
+	flush := func() {
+		if len(current.spans) > 0 {
+			words = append(words, current)
+			current = word{}
+		}
+	}
+
+	grow := func(span ui.Span) {
+		current.spans = append(current.spans, span)
+		current.width += lipgloss.Width(theme.SpanText(span))
+	}
+
+	for _, span := range ui.ParseSpans(line) {
+		if span.Code {
+			grow(span)
+
+			continue
+		}
+
+		if strings.TrimLeft(span.Text, " \t") != span.Text {
+			flush()
+		}
+
+		fields := strings.Fields(span.Text)
+		for i, field := range fields {
+			if i > 0 {
+				flush()
+			}
+			grow(ui.Span{Text: field})
+		}
+
+		if strings.TrimRight(span.Text, " \t") != span.Text {
+			flush()
+		}
+	}
+
+	flush()
+
+	return words
 }

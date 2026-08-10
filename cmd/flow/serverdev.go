@@ -536,11 +536,20 @@ func runServerDev(cmd *cobra.Command, args []string) error {
 	// executes steps, so a plugin task here needs the secret providers a worker
 	// would have given it. The server half loses nothing by it: it reads the
 	// same registry for Validate and GetCatalog either way.
-	closePlugins, err := startPlugins(cmd, secretProviders)
+	pluginCatalog, closePlugins, err := startPlugins(cmd, secretProviders)
 	if err != nil {
 		return err
 	}
 	defer closePlugins()
+
+	// This process is both halves of the plugin contract, so the catalog is
+	// installed on both. The worker's half admits a run against what this
+	// process can actually execute, before it polls; the server's half is what
+	// makes a `plugins:` requirement resolvable at submission at all. Either one
+	// alone fails closed against the other: a dev stack with only the server's
+	// pin admits a run its own worker then refuses, and one with only the
+	// worker's refuses every submission as "not installed".
+	engine.UsePluginCatalog(pluginCatalog)
 
 	runtime, err := workerRuntime(cmd, secretProviders, secretsConfigured)
 	if err != nil {
@@ -551,7 +560,10 @@ func runServerDev(cmd *cobra.Command, args []string) error {
 	// refusal, exactly as in [runServer]: a dev server with no operator setup
 	// lists and filters correctly either way, and this only decides whether the
 	// visibility store additionally carries the index.
-	serverOpts := []server.Option{server.WithDataConverter(cfg.Codec.DataConverter())}
+	serverOpts := []server.Option{
+		server.WithDataConverter(cfg.Codec.DataConverter()),
+		server.WithPluginCatalog(pluginCatalog),
+	}
 	if err := server.EnsureSearchAttributesRegistered(cmd.Context(), temporal, devTemporalNamespace); err != nil {
 		logger.Warn("could not register Flowstate's search attributes; "+
 			"`flow list --filter` still works, scanning executions rather than querying an index",

@@ -235,7 +235,7 @@ func writePluginCatalog(surface *ui.UI, catalog *v1.PluginCatalog) error {
 		for _, task := range p.GetTasks() {
 			fmt.Fprintf(out, "\n  %s\n    %s\n", theme.Accent.Render(task.GetName()), task.GetSummary())
 
-			if err := writeFields(out, theme, []fieldGroup{
+			if err := writeFields(out, theme, surface.Caps.Width, []fieldGroup{
 				{label: "inputs", fields: inputFields(task.GetInputs())},
 				{label: "outputs", fields: inputFields(task.GetOutputs())},
 			}); err != nil {
@@ -272,10 +272,11 @@ func inputFields(fields []*v1.TaskField) []v1.InputField {
 	out := make([]v1.InputField, 0, len(fields))
 	for _, field := range fields {
 		out = append(out, v1.InputField{
-			Name:     field.GetName(),
-			Type:     field.GetType(),
-			Required: field.GetRequired(),
-			Deferred: field.GetDeferred(),
+			Name:        field.GetName(),
+			Type:        field.GetType(),
+			Required:    field.GetRequired(),
+			Deferred:    field.GetDeferred(),
+			Constraints: field.GetConstraints(),
 		})
 	}
 
@@ -289,6 +290,15 @@ func inputFields(fields []*v1.TaskField) []v1.InputField {
 // else does, and a worker that exits without it leaves them behind holding the
 // sockets it created.
 //
+// The catalog is returned with it, and returning it is not a convenience. It is
+// what a `plugins:` requirement is resolved against on a server and what a
+// worker's admission check compares a run's pins to, and this function is the
+// only place in the process that has it: a caller that could not receive it would
+// have to build a second host to ask the same question, or, as this returned
+// only a stop function for one review cycle, silently answer "no plugins
+// installed" on exactly the deployments that have them. It is nil for a command
+// configured with no plugins, which is the same fact said the other way.
+//
 // Registration is against [v1.DefaultRegistry] and could not be against anything
 // else. Every lookup the engine makes — dispatching a step, deciding which inputs
 // it resolves and which the task does, deciding whether to ship prior outputs,
@@ -301,23 +311,23 @@ func inputFields(fields []*v1.TaskField) []v1.InputField {
 // It is a one-way door: there is no Unregister. A worker opens one host and holds
 // it until the process exits, which is the only lifecycle this supports and the
 // only one it needs.
-func startPlugins(cmd *cobra.Command, secretProviders *secrets.Registry) (func(), error) {
+func startPlugins(cmd *cobra.Command, secretProviders *secrets.Registry) (*v1.PluginCatalog, func(), error) {
 	noop := func() {}
 
 	flags, err := pluginFlagsOf(cmd)
 	if err != nil {
-		return noop, err
+		return nil, noop, err
 	}
 
 	if !flags.configured() {
-		return noop, nil
+		return nil, noop, nil
 	}
 
 	surface := newSurface(cmd)
 
 	host, err := flags.host(pluginLogger(surface))
 	if err != nil {
-		return noop, err
+		return nil, noop, err
 	}
 
 	stop := func() {
@@ -336,13 +346,13 @@ func startPlugins(cmd *cobra.Command, secretProviders *secrets.Registry) (func()
 	if err := host.Open(cmd.Context()); err != nil {
 		stop()
 
-		return noop, err
+		return nil, noop, err
 	}
 
 	if err := host.Register(v1.DefaultRegistry(), secretProviders); err != nil {
 		stop()
 
-		return noop, err
+		return nil, noop, err
 	}
 
 	catalog := host.Catalog()
@@ -363,7 +373,7 @@ func startPlugins(cmd *cobra.Command, secretProviders *secrets.Registry) (func()
 			"tasks", strings.Join(names, ", "))
 	}
 
-	return stop, nil
+	return catalog, stop, nil
 }
 
 // pluginShutdownGrace bounds how long a worker waits for its plugins to exit.

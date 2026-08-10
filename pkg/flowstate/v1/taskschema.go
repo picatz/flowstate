@@ -74,6 +74,168 @@ func RequiredInput(fd protoreflect.FieldDescriptor) bool {
 	return repeated != nil && repeated.GetMinItems() > 0
 }
 
+// FieldConstraints says what else the schema will accept in a field, as phrases
+// an author reads.
+//
+// The same argument as [InputTypeName], one level in: the rules are already there,
+// attached to the field the engine validates against, and the only thing missing
+// was a sentence. `method` is `3 to 6 characters, matching
+// ^(?i)(GET|POST|PUT|PATCH|DELETE)$` whether or not anything says so, and a person
+// who has to run a step to discover that is being told by the wrong teacher.
+//
+// Requiredness is deliberately not among them. It has its own field on
+// [InputField], is marked in the listing, and stating it twice would put the same
+// fact in two places that can disagree about it.
+//
+// What it omits is as deliberate: `defined_only` on an enum says nothing
+// [InputTypeName] has not already said by listing the choices, and a rule with no
+// author-facing consequence is noise in a column somebody is scanning.
+func FieldConstraints(fd protoreflect.FieldDescriptor) []string {
+	return constraintPhrases(FieldRules(fd))
+}
+
+// constraintPhrases renders one rule set, and is recursive because a map's rules
+// carry a whole rule set for its keys and another for its values.
+func constraintPhrases(rules *validate.FieldRules) []string {
+	if rules == nil {
+		return nil
+	}
+
+	var out []string
+
+	if s := rules.GetString(); s != nil {
+		if s.HasLen() {
+			out = append(out, fmt.Sprintf("exactly %d characters", s.GetLen()))
+		} else {
+			out = append(out, countPhrase("characters", s.MinLen, s.MaxLen)...)
+		}
+		if s.HasPattern() {
+			out = append(out, "matching "+s.GetPattern())
+		}
+		// The well-known formats this schema actually uses. Named one at a time
+		// rather than switched over every value protovalidate has, because each
+		// phrase is a translation into what an author would write and there is no
+		// generic rendering of one.
+		switch {
+		case s.GetUri():
+			out = append(out, "a URI")
+		case s.GetEmail():
+			out = append(out, "an email address")
+		case s.GetHostname():
+			out = append(out, "a hostname")
+		}
+	}
+
+	if r := rules.GetRepeated(); r != nil {
+		out = append(out, countPhrase("items", r.MinItems, r.MaxItems)...)
+	}
+
+	if m := rules.GetMap(); m != nil {
+		out = append(out, countPhrase("entries", m.MinPairs, m.MaxPairs)...)
+		for _, nested := range []struct {
+			label string
+			rules *validate.FieldRules
+		}{
+			{"keys", m.GetKeys()},
+			{"values", m.GetValues()},
+		} {
+			for _, phrase := range constraintPhrases(nested.rules) {
+				out = append(out, nested.label+" "+phrase)
+			}
+		}
+	}
+
+	out = append(out, numericRangePhrases(rules)...)
+
+	return out
+}
+
+// countPhrase renders a lower and an upper bound over the same unit as one phrase.
+//
+// One phrase rather than two, because `3 to 6 characters` is how the bound is
+// thought about and `at least 3 characters, at most 6 characters` is the same fact
+// made into a puzzle. Either half may be absent, and both absent says nothing.
+func countPhrase(unit string, minimum, maximum *uint64) []string {
+	switch {
+	case minimum != nil && maximum != nil:
+		return []string{fmt.Sprintf("%d to %d %s", *minimum, *maximum, unit)}
+	case minimum != nil:
+		return []string{fmt.Sprintf("at least %d %s", *minimum, unit)}
+	case maximum != nil:
+		return []string{fmt.Sprintf("at most %d %s", *maximum, unit)}
+	default:
+		return nil
+	}
+}
+
+// numericRangePhrases renders whichever numeric rule set a field carries.
+//
+// Read through protoreflect rather than by switching over the twelve numeric rule
+// messages protovalidate defines. They differ only in the Go type of the same four
+// fields (`gte`, `lte`, `gt`, `lt`), so a switch would be twelve copies of one
+// paragraph, and the thirteenth numeric type added upstream would be the one nobody
+// remembered to add. Asking the descriptor for a field by name is the same lookup
+// each of those copies would compile to, done once.
+func numericRangePhrases(rules *validate.FieldRules) []string {
+	message := rules.ProtoReflect()
+
+	oneof := message.Descriptor().Oneofs().ByName("type")
+	if oneof == nil {
+		return nil
+	}
+
+	set := message.WhichOneof(oneof)
+	if set == nil || set.Kind() != protoreflect.MessageKind {
+		return nil
+	}
+
+	nested := message.Get(set).Message()
+
+	read := func(name string) (string, bool) {
+		fd := nested.Descriptor().Fields().ByName(protoreflect.Name(name))
+		if fd == nil || !nested.Has(fd) {
+			return "", false
+		}
+
+		// Formatted through the value's own String, which renders an int as an int
+		// and a double as a double. Casting to one Go type here would print `100`
+		// for a bound of `1e2` on a double field, or lose a large uint64 outright.
+		return nested.Get(fd).String(), true
+	}
+
+	// Which rule matched decides the words, because gt and gte differ by
+	// exactly the endpoint: a field constrained `gt: 0` refuses zero, and a
+	// surface that says "at least 0" teaches an author the one value the
+	// validator will reject.
+	lower, hasLower := read("gte")
+	lowerPhrase := "at least "
+	if !hasLower {
+		lower, hasLower = read("gt")
+		lowerPhrase = "more than "
+	}
+	upper, hasUpper := read("lte")
+	upperPhrase := "at most "
+	if !hasUpper {
+		upper, hasUpper = read("lt")
+		upperPhrase = "less than "
+	}
+
+	switch {
+	case hasLower && hasUpper:
+		if lowerPhrase == "at least " && upperPhrase == "at most " {
+			// Both endpoints included is the common case and reads as a range.
+			return []string{lower + " to " + upper}
+		}
+		return []string{lowerPhrase + lower, upperPhrase + upper}
+	case hasLower:
+		return []string{lowerPhrase + lower}
+	case hasUpper:
+		return []string{upperPhrase + upper}
+	default:
+		return nil
+	}
+}
+
 // InputTypeName names a field's type the way an author would say it.
 //
 // The DSL's vocabulary, not Protobuf's: an author writes YAML and thinks in
@@ -144,6 +306,13 @@ type InputField struct {
 	// against a scope the workflow does not have. The http task's `outputs` is
 	// the example: it names response variables that exist only after the request.
 	Deferred bool
+
+	// Constraints are the rest of what may be written here, as phrases an author
+	// reads: `3 to 6 characters`, `at most 32 entries`, `may hold a secret
+	// reference`. See [FieldConstraints] for where each one comes from.
+	//
+	// Empty for a field the schema bounds no further, which is most of them.
+	Constraints []string
 }
 
 // Inputs describes what a task accepts, required fields first.
@@ -153,7 +322,44 @@ type InputField struct {
 // the schema's own field order is kept, which is the order the person who defined
 // the message chose to explain it in.
 func Inputs(def TaskDef) []InputField {
-	return describeFields(def.Inputs, def.DeferredInputs)
+	return describeFields(def.Inputs, def.DeferredInputs, taskInputNotes(def))
+}
+
+// taskInputNotes is what the *task* adds to a field's constraints, by input name.
+//
+// Read off the definition rather than restated: `ExpressionInputs` is already the
+// list `flow validate` refuses a literal against, and the two secret-accepting
+// lists are already what the compiler allows a reference in. A surface that
+// described either of those separately would be a second answer to a question the
+// engine decides.
+func taskInputNotes(def TaskDef) map[string][]string {
+	notes := map[string][]string{}
+
+	for _, name := range def.ExpressionInputs {
+		notes[name] = append(notes[name], "must be written as an expression")
+	}
+
+	// AuthorityInputs is the wrong list to read "takes a secret" from on its
+	// own, because it answers a routing question: which inputs need the
+	// identity-aware activity. A credential input needs that authority for JIT
+	// exchange while its value is a literal target name, and the task refuses a
+	// secret reference there. Saying "may hold a secret reference" about it
+	// would teach an author the one spelling that fails at execution, so the
+	// credential subset gets its own honest note and the secret note goes to
+	// what remains plus the nested list.
+	for _, name := range def.CredentialInputs {
+		notes[name] = append(notes[name], "names a deployment credential target")
+	}
+	for _, name := range slices.Sorted(slices.Values(append(
+		slices.Clone(def.AuthorityInputs), def.NestedSecretInputs...))) {
+		if slices.Contains(def.CredentialInputs, name) ||
+			slices.Contains(notes[name], "may hold a secret reference") {
+			continue
+		}
+		notes[name] = append(notes[name], "may hold a secret reference")
+	}
+
+	return notes
 }
 
 // Outputs describes what a task produces.
@@ -162,7 +368,7 @@ func Inputs(def TaskDef) []InputField {
 // author has to supply, so the distinction says nothing here. Whether a field is
 // present after a step ran is a question about that run.
 func Outputs(def TaskDef) []InputField {
-	fields := describeFields(def.Outputs, nil)
+	fields := describeFields(def.Outputs, nil, nil)
 	for i := range fields {
 		fields[i].Required = false
 	}
@@ -170,7 +376,7 @@ func Outputs(def TaskDef) []InputField {
 }
 
 // describeFields walks a message descriptor into the author's vocabulary.
-func describeFields(md protoreflect.MessageDescriptor, deferred []string) []InputField {
+func describeFields(md protoreflect.MessageDescriptor, deferred []string, notes map[string][]string) []InputField {
 	if md == nil {
 		return nil
 	}
@@ -181,10 +387,11 @@ func describeFields(md protoreflect.MessageDescriptor, deferred []string) []Inpu
 		fd := fields.Get(i)
 		name := string(fd.Name())
 		out = append(out, InputField{
-			Name:     name,
-			Type:     InputTypeName(fd),
-			Required: RequiredInput(fd),
-			Deferred: slices.Contains(deferred, name),
+			Name:        name,
+			Type:        InputTypeName(fd),
+			Required:    RequiredInput(fd),
+			Deferred:    slices.Contains(deferred, name),
+			Constraints: append(FieldConstraints(fd), notes[name]...),
 		})
 	}
 
@@ -270,10 +477,11 @@ func taskFields(fields []InputField) []*TaskField {
 	out := make([]*TaskField, 0, len(fields))
 	for _, field := range fields {
 		out = append(out, &TaskField{
-			Name:     field.Name,
-			Type:     field.Type,
-			Required: field.Required,
-			Deferred: field.Deferred,
+			Name:        field.Name,
+			Type:        field.Type,
+			Required:    field.Required,
+			Deferred:    field.Deferred,
+			Constraints: field.Constraints,
 		})
 	}
 	return out

@@ -270,6 +270,38 @@ type fakeWorkflowService struct {
 	// listErrAfter makes List fail once this many calls have succeeded, which is
 	// how a test describes a walk that breaks partway rather than at the start.
 	listErrAfter int
+
+	// The schedule mutations, whose handlers live below and whose tests live in
+	// mutation_output_test.go. Recorded rather than counted, so a test can assert
+	// the name that reached the server and not merely that something did.
+	gotScheduleDelete  *v1.DeleteScheduleRequest
+	gotSchedulePause   *v1.PauseScheduleRequest
+	gotScheduleResume  *v1.ResumeScheduleRequest
+	gotScheduleTrigger *v1.TriggerScheduleRequest
+}
+
+// DeleteSchedule implements [flowstatev1connect.WorkflowServiceHandler].
+func (f *fakeWorkflowService) DeleteSchedule(_ context.Context, req *connect.Request[v1.DeleteScheduleRequest]) (*connect.Response[v1.DeleteScheduleResponse], error) {
+	f.gotScheduleDelete = req.Msg
+	return connect.NewResponse(&v1.DeleteScheduleResponse{}), nil
+}
+
+// PauseSchedule implements [flowstatev1connect.WorkflowServiceHandler].
+func (f *fakeWorkflowService) PauseSchedule(_ context.Context, req *connect.Request[v1.PauseScheduleRequest]) (*connect.Response[v1.PauseScheduleResponse], error) {
+	f.gotSchedulePause = req.Msg
+	return connect.NewResponse(&v1.PauseScheduleResponse{}), nil
+}
+
+// ResumeSchedule implements [flowstatev1connect.WorkflowServiceHandler].
+func (f *fakeWorkflowService) ResumeSchedule(_ context.Context, req *connect.Request[v1.ResumeScheduleRequest]) (*connect.Response[v1.ResumeScheduleResponse], error) {
+	f.gotScheduleResume = req.Msg
+	return connect.NewResponse(&v1.ResumeScheduleResponse{}), nil
+}
+
+// TriggerSchedule implements [flowstatev1connect.WorkflowServiceHandler].
+func (f *fakeWorkflowService) TriggerSchedule(_ context.Context, req *connect.Request[v1.TriggerScheduleRequest]) (*connect.Response[v1.TriggerScheduleResponse], error) {
+	f.gotScheduleTrigger = req.Msg
+	return connect.NewResponse(&v1.TriggerScheduleResponse{}), nil
 }
 
 // Cancel implements [flowstatev1connect.WorkflowServiceHandler].
