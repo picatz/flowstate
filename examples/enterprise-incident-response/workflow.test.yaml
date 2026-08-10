@@ -138,3 +138,16 @@ tests:
     expect:
       failed: true
       error_contains: "must satisfy"
+
+# `authorized` is the attested-production branch, gated on `!run.local &&
+# !steps.remediation_ack.sender.local` (the workflow's own comment notes flow
+# test always produces an unattested sender). A local rehearsal is always local,
+# so no case here can reach it; it is exercised only against a real server that
+# authenticated a separate signer. Recorded so --coverage-required reads it as a
+# decision rather than a gap.
+coverage:
+  allow_unreached:
+    authorized: >-
+      gated on !run.local && !sender.local; a flow test rehearsal is always
+      local, so this attested-production branch is unreachable here by design
+      and is exercised only against a real server.

@@ -171,8 +171,13 @@ jobs:
       # examples/call-a-workflow is the one that matters most — it stubs the
       # tasks inside a *called* workflow, which is the composition #155 exists
       # to make trustworthy.
-      - name: Example workflows pass their own tests
-        run: go run ./cmd/flow test examples/
+      #
+      # --coverage-required opts the corpus into #420's branch coverage: a step
+      # no case reaches fails here unless the file records why under
+      # coverage.allow_unreached (the three enterprise gates on !run.local are
+      # the only residuals, reachable only against a real server).
+      - name: Example workflows pass their own tests, every branch reached or reasoned
+        run: go run ./cmd/flow test --coverage-required examples/
 
       # The observability lab is eight services of other people's software, so
       # standing it up here would make this repository's build depend on seven

@@ -156,3 +156,16 @@ tests:
     expect:
       failed: true
       error_contains: "must have at least"
+
+# `recorded` is the attested-production branch, gated on `!run.local &&
+# !steps.attestation.sender.local`. Every `flow test` delivery is marked local
+# and every local run has run.local true (a rehearsal must never look attested),
+# so no case here can reach it whatever sender it scripts. Reachable only against
+# a real server that authenticated the sender; recorded so --coverage-required
+# reads it as a decision rather than a gap.
+coverage:
+  allow_unreached:
+    recorded: >-
+      gated on !run.local && !sender.local; a flow test rehearsal is always
+      local, so this attested-production branch is unreachable here by design
+      and is exercised only against a real server.

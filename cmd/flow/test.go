@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -44,8 +45,13 @@ func newTestCommand() *cobra.Command {
 			"no Temporal server, and a virtual clock so a workflow that sleeps for a day resolves in " +
 			"under a second.\n\n" +
 			"A named file is taken as given. A directory is walked for *.test.yaml files.\n\n" +
+			"Per file, `flow test` reports branch coverage: the set of the workflow's steps at least " +
+			"one case ran, and the complement no case ever reached. Coverage is reported, not failed, " +
+			"unless `--coverage-required` is set, which makes an unreached step a failure for any file " +
+			"whose `coverage.allow_unreached` does not record a reason for it.\n\n" +
 			"`--output json` or `--output jsonl` reports what ran as a schema message instead of " +
-			"text, for CI that wants structured data rather than stderr text.",
+			"text, and carries the coverage sets under a `coverage` key so CI annotates rather than " +
+			"parses prose.",
 		Args:          cobra.MinimumNArgs(1),
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -64,6 +70,15 @@ flow test -o jsonl examples/`,
 
 	addOutputFlag(cmd)
 
+	// Opt-in, fail-closed once opted in: coverage is a result every run
+	// reports, and this is the flag that promotes an unreached branch from a
+	// line worth reading to a reason the command exits non-zero. A file exempts
+	// a branch it cannot reach by recording it under `coverage.allow_unreached`
+	// with a reason (see flowtest.CoverageStanza).
+	cmd.Flags().Bool("coverage-required", false,
+		"fail when a workflow has a step no test case reached and no coverage.allow_unreached "+
+			"entry records why")
+
 	return cmd
 }
 
@@ -78,6 +93,7 @@ func runTest(cmd *cobra.Command, paths []string) error {
 	if err != nil {
 		return err
 	}
+	coverageRequired, _ := cmd.Flags().GetBool("coverage-required")
 
 	files, err := collectTestFiles(paths)
 	if err != nil {
@@ -89,14 +105,21 @@ func runTest(cmd *cobra.Command, paths []string) error {
 
 	var (
 		anyFailed bool
-		reports   []*v1.TestReport
+		results   []testFileResult
 	)
 	for _, path := range files {
-		report := flowtest.RunFile(path)
-		reports = append(reports, report)
+		report, coverage := flowtest.RunFileWithCoverage(path)
+		// Attach each workflow's coverage to the report so the whole document
+		// renders through protojson: there is one rendering of the report and no
+		// second, hand-shaped encoder beside it to disagree with the first.
+		for _, c := range coverage {
+			report.Coverage = append(report.Coverage, c.Report())
+		}
+		results = append(results, testFileResult{report: report, coverage: coverage})
 
 		if !machine {
 			printTestReport(surface.Out, surface.Theme, report)
+			printCoverage(surface.Out, surface.Theme, report, coverage, coverageRequired)
 		}
 
 		if report.GetRefused() != "" {
@@ -108,16 +131,23 @@ func runTest(cmd *cobra.Command, paths []string) error {
 				anyFailed = true
 			}
 		}
+		// A failure only when the run opted in: coverage is otherwise a result,
+		// not a verdict. Both an unrecorded gap and a stale record fail, because
+		// a record that no longer describes a real residual is a false statement
+		// about the suite, not a smaller one than a gap. Checked per workflow the
+		// file targets, so a gap in one workflow is not masked by another
+		// (Finding 3).
+		if coverageRequired {
+			for _, c := range coverage {
+				if len(c.Gaps()) > 0 || len(c.Stale) > 0 {
+					anyFailed = true
+				}
+			}
+		}
 	}
 
 	if machine {
-		if format == FormatJSONL {
-			for _, report := range reports {
-				if err := writeJSON(surface, format, report); err != nil {
-					return err
-				}
-			}
-		} else if err := writeJSON(surface, format, &v1.TestReports{Files: reports}); err != nil {
+		if err := writeTestResults(surface, format, results); err != nil {
 			return err
 		}
 	}
@@ -126,6 +156,15 @@ func runTest(cmd *cobra.Command, paths []string) error {
 		return errTestsFailed
 	}
 	return nil
+}
+
+// testFileResult pairs one file's report with the branch coverage its cases
+// achieved, one entry per workflow the file targeted, so the two travel
+// together into rendering. coverage is nil for a file with no workflow to
+// account for (a refused file); see [flowtest.RunFileWithCoverage].
+type testFileResult struct {
+	report   *v1.TestReport
+	coverage []*flowtest.Coverage
 }
 
 // printTestReport renders one file's report in the CLI's ordinary text style:
@@ -156,6 +195,93 @@ func printTestReport(out io.Writer, theme ui.Theme, report *v1.TestReport) {
 			fmt.Fprintf(out, "       %s: %s\n", f.GetField(), f.GetMessage())
 		}
 	}
+}
+
+// printCoverage renders one file's branch coverage, one line per workflow the
+// file's cases targeted: how many of that workflow's steps at least one case
+// reached, and the complement it never did. A file testing one workflow, the
+// ordinary case, prints exactly one line.
+//
+// A result, not a diagnostic (#420): `flow validate` has no warning tier, but
+// `flow test` owns its own output and a coverage line is an account of what the
+// suite exercised. An unreached step with no recorded reason is a gap, coloured
+// to be found; one the file recorded under `coverage.allow_unreached` is an
+// accepted residual, named plainly with the reason. A stale record, a reason
+// kept past the branch it explained, is called out on its own line so it is not
+// mistaken for either.
+func printCoverage(out io.Writer, theme ui.Theme, report *v1.TestReport, coverage []*flowtest.Coverage, required bool) {
+	// Labelled by the test file, not the workflow, so a file testing one
+	// workflow prints the exact line it always did. A file targeting several
+	// prints one line each, sharing the label and distinguished by content and
+	// by the per-workflow identity the machine report carries.
+	file := theme.Muted.Render(report.GetFile())
+	for _, cov := range coverage {
+		summary := fmt.Sprintf("%d/%d steps reached", len(cov.Reached), cov.Total())
+
+		gaps := cov.Gaps()
+		tail := ""
+		if len(gaps) > 0 {
+			phrase := "never ran: " + strings.Join(gaps, ", ")
+			// Coloured as a fault only where the run opted in to treat it as
+			// one; otherwise it is a fact worth reading, not a failure.
+			if required {
+				phrase = theme.Danger.Render(phrase)
+			} else {
+				phrase = theme.Warning.Render(phrase)
+			}
+			tail += "; " + phrase
+		}
+		if len(cov.Accepted) > 0 {
+			accepted := make([]string, 0, len(cov.Accepted))
+			for step := range cov.Accepted {
+				accepted = append(accepted, step)
+			}
+			sort.Strings(accepted)
+			tail += "; " + theme.Muted.Render("accepted-unreached: "+strings.Join(accepted, ", "))
+		}
+
+		fmt.Fprintf(out, "%s  %s%s\n", file, summary, tail)
+
+		for _, stale := range cov.Stale {
+			fmt.Fprintf(out, "       %s\n", theme.Danger.Render(stale))
+		}
+	}
+}
+
+// writeTestResults emits the machine report.
+//
+// Coverage is a schema field on each [v1.TestReport] now
+// ([v1.TestReport.Coverage]), attached before this is called, so the whole
+// document renders through protojson (via [marshalJSON]): one encoder, the
+// schema's field names and enum spellings, and no second rendering of the
+// report to disagree with the first, which is the mixing the house rule against
+// "one thing spelled twice" warns about. JSONL emits one report per line; JSON
+// wraps them in a [v1.TestReports] envelope, the same `{"files": [...]}` shape
+// as before.
+func writeTestResults(surface *ui.UI, format OutputFormat, results []testFileResult) error {
+	if format == FormatJSONL {
+		for _, r := range results {
+			encoded, err := marshalJSON(r.report, false)
+			if err != nil {
+				return fmt.Errorf("rendering a test report: %w", err)
+			}
+			if _, err := fmt.Fprintf(surface.Out, "%s\n", encoded); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	reports := &v1.TestReports{Files: make([]*v1.TestReport, 0, len(results))}
+	for _, r := range results {
+		reports.Files = append(reports.Files, r.report)
+	}
+	encoded, err := marshalJSON(reports, true)
+	if err != nil {
+		return fmt.Errorf("rendering the test report as %s: %w", format, err)
+	}
+	_, err = fmt.Fprintf(surface.Out, "%s\n", encoded)
+	return err
 }
 
 // collectTestFiles expands the paths given into the *.test.yaml files to run,

@@ -66,6 +66,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/goccy/go-yaml"
 
@@ -100,6 +101,12 @@ const (
 	// MaxSecretsPerTest bounds how many `secrets:` entries one test may
 	// declare.
 	MaxSecretsPerTest = 200
+
+	// MaxAllowUnreachedPerFile bounds how many `coverage.allow_unreached`
+	// entries one file may declare. A workflow has few branches a suite cannot
+	// reach, and a file recording hundreds is a record that has stopped meaning
+	// anything.
+	MaxAllowUnreachedPerFile = 200
 )
 
 // File is a parsed `*.test.yaml`.
@@ -121,6 +128,30 @@ type File struct {
 	// the order [Run] runs them in and reports them in, so a reader matching a
 	// report back to the file does not have to search for it.
 	Tests []Test `yaml:"tests"`
+
+	// Coverage records branch-coverage decisions for this file (issue #420):
+	// which of the workflow's steps no case is expected to reach, and why.
+	// Optional; a file that declares none is held to the default that every
+	// step should be reached by some case.
+	Coverage *CoverageStanza `yaml:"coverage"`
+}
+
+// CoverageStanza is a file's record of the branches its cases deliberately do
+// not reach.
+//
+// The precedent is `examplesWithoutTestFile`: "an entry here is a decision with
+// a reason, never a gap." A step no case reaches is either a hole in the suite
+// or a branch that cannot be reached from a `flow test` case at all (a gate on
+// `!run.local`, which a local rehearsal can never satisfy, is the shape the
+// enterprise examples hit). The first is a bug this feature exists to surface;
+// the second is a fact about the workflow that belongs written down beside it,
+// not silently tolerated.
+type CoverageStanza struct {
+	// AllowUnreached maps a step id to the reason no case reaches it. A step
+	// named here is reported as an accepted residual rather than a gap, and
+	// does not fail `--coverage-required`. The reason is required, because an
+	// entry with none is the silent gap this record exists to refuse.
+	AllowUnreached map[string]string `yaml:"allow_unreached"`
 }
 
 // Test is one `tests:` entry: a workflow, what to run it with, what to
@@ -543,6 +574,25 @@ func parseSource(data []byte, requireWorkflow bool) (*File, error) {
 	if len(file.Tests) > MaxTestsPerFile {
 		return nil, fmt.Errorf("declares %d tests, more than the limit of %d",
 			len(file.Tests), MaxTestsPerFile)
+	}
+	if stanza := file.Coverage; stanza != nil {
+		if len(stanza.AllowUnreached) > MaxAllowUnreachedPerFile {
+			return nil, fmt.Errorf("coverage.allow_unreached declares %d entries, more than the limit of %d",
+				len(stanza.AllowUnreached), MaxAllowUnreachedPerFile)
+		}
+		for step, reason := range stanza.AllowUnreached {
+			if step == "" {
+				return nil, fmt.Errorf("coverage.allow_unreached has an entry with no step id")
+			}
+			// A reason is required, because an entry with none is exactly the
+			// silent gap this record exists to refuse: "a decision with a
+			// reason, never a gap." Name the offending step so the fix is
+			// obvious.
+			if strings.TrimSpace(reason) == "" {
+				return nil, fmt.Errorf("coverage.allow_unreached[%q] has no reason; "+
+					"record why no case reaches this step, or remove the entry and let it be a gap", step)
+			}
+		}
 	}
 
 	for i, test := range file.Tests {

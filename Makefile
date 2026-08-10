@@ -14,7 +14,7 @@ check:
 	$(MAKE) test-plugins
 	$(MAKE) test-ordering
 	go run ./cmd/flow fix --check examples/
-	go run ./cmd/flow test examples/
+	go run ./cmd/flow test --coverage-required examples/
 	$(MAKE) fuzz-smoke
 	$(MAKE) appearance
 	docker compose -f examples/observability/docker-compose.yaml config -q

@@ -63,3 +63,14 @@ tests:
       # genuinely succeed has to write `has(steps.<id>.error) ? ... : ...`.
       failed: true
       error_contains: 'step "carry_on": input "fields"'
+
+# `rollback` is the branch this file exists to show is *not* taken: `vars.check`
+# is fixed to `ready`, so `if: ${vars.check == 'failed'}` never holds, and the
+# first case asserts `rollback` stays absent. There is no input that flips the
+# var, so no case can reach it. That it is unreached is the point, recorded here
+# so `flow test --coverage-required` reads it as a decision rather than a gap.
+coverage:
+  allow_unreached:
+    rollback: >-
+      vars.check is fixed to 'ready', so this false-branch step is never taken;
+      the first case asserts it stays absent, which is what this example teaches.
