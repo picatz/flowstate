@@ -62,8 +62,20 @@ func addInputFlags(cmd *cobra.Command) {
 // Nil when neither was given and the workflow declares nothing, so a workflow with
 // no `inputs:` block is submitted exactly as it was before this existed.
 func runInputs(cmd *cobra.Command, workflow *v1.Workflow) (map[string]*v1.Value, error) {
-	declared := declaredInputs(workflow)
+	return collectInputs(cmd, declaredInputs(workflow))
+}
 
+// collectInputs is the grammar itself, over whatever declared the names.
+//
+// Split out from [runInputs] because a workflow's `inputs:` block is not the only
+// thing that can play the declaring role. `flow task run` invokes one task, and
+// there the declaration is the task's own input schema: same flags, same
+// precedence, same type-reading rules, decided by a declaration that came from a
+// different place. Reaching this function is what makes that literally true rather
+// than true by inspection: a second reader of --input is how one grammar becomes
+// two, and this repository has the scars to prove it (see inputsFromJSON's comment
+// about the MCP tool's own `inputs` argument).
+func collectInputs(cmd *cobra.Command, declared map[string]*v1.InputDeclaration) (map[string]*v1.Value, error) {
 	inputs := map[string]*v1.Value{}
 
 	if path, _ := cmd.Flags().GetString("input-file"); path != "" {
