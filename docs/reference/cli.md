@@ -259,7 +259,7 @@ Sign and inspect JSON Web Tokens for admin debugging
 flow jwt [command]
 ```
 
-Sign a JWT with a key from `flow keys generate`, or inspect one a workload, worker, or relying party produced. For debugging identity, not for minting production workload assertions: those come from an [auth.Issuer], which adds discovery, rotation, and revocation this command deliberately does not.
+Sign a JWT with a key from `flow keys generate`, or inspect one a workload, worker, or relying party produced. For debugging identity, not for minting production workload assertions: a real issuer, named in the trust policy `flow server` is started with (`--auth-policy`), publishes its keys for discovery and can rotate and revoke them, and this command deliberately does none of that.
 
 ## `flow jwt inspect`
 
