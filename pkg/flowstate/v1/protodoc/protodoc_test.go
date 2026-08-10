@@ -204,6 +204,18 @@ func TestNormalize(t *testing.T) {
 			ok:   true,
 		},
 		{
+			name: "brackets inside a code span are that span's text",
+			raw:  " The type `list[string]` stays one span, and [ValidationReport] after it still links.\n",
+			want: "The type `list[string]` stays one span, and `ValidationReport` after it still links.",
+			ok:   true,
+		},
+		{
+			name: "a bracket after a closed span links again",
+			raw:  " First `code` then [RunRequest] links.\n",
+			want: "First `code` then `RunRequest` links.",
+			ok:   true,
+		},
+		{
 			name: "unbalanced bracket is left alone",
 			raw:  " An open [bracket with no close.\n",
 			want: "An open [bracket with no close.",

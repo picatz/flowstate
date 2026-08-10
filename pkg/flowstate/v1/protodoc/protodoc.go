@@ -280,29 +280,44 @@ func isStructural(line string) bool {
 func translateLinks(s string) string {
 	var out strings.Builder
 	out.Grow(len(s))
-	for {
-		open := strings.IndexByte(s, '[')
-		if open < 0 {
-			out.WriteString(s)
-			return out.String()
+	// Brackets inside an existing code span are that span's own text, never a
+	// link: the schema writes `list[string]` as a type an author spells, and
+	// translating its inner "[string]" would nest backticks and break the span.
+	// Parity over backticks decides which side of that boundary a bracket is on.
+	inCode := false
+	for i := 0; i < len(s); {
+		c := s[i]
+		if c == '`' {
+			inCode = !inCode
+			out.WriteByte(c)
+			i++
+			continue
 		}
-		close := strings.IndexByte(s[open:], ']')
+		if c != '[' || inCode {
+			out.WriteByte(c)
+			i++
+			continue
+		}
+		close := strings.IndexByte(s[i:], ']')
 		if close < 0 {
-			out.WriteString(s)
-			return out.String()
+			out.WriteString(s[i:])
+			break
 		}
-		close += open
-		inner := s[open+1 : close]
-		out.WriteString(s[:open])
+		close += i
+		inner := s[i+1 : close]
 		if isSymbol(inner) {
 			out.WriteString("`")
 			out.WriteString(inner)
 			out.WriteString("`")
 		} else {
-			out.WriteString(s[open : close+1])
+			// Copied verbatim, so any backtick inside still toggles the span
+			// state the next bracket is judged against.
+			out.WriteString(s[i : close+1])
+			inCode = (inCode != (strings.Count(inner, "`")%2 == 1))
 		}
-		s = s[close+1:]
+		i = close + 1
 	}
+	return out.String()
 }
 
 // isSymbol reports whether text between brackets names a protobuf symbol:
