@@ -26,6 +26,7 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/protodoc"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
 
@@ -49,49 +50,89 @@ import (
 // mcpToolPrefix namespaces the tools, since a client may aggregate servers.
 const mcpToolPrefix = "flowstate_"
 
-// mcpDescriptions is the one hand-written thing on this surface: a sentence per
-// RPC for the model to choose tools by.
+// workflowServiceName addresses the service whose prose this surface reads.
+const workflowServiceName protoreflect.FullName = "flowstate.v1.WorkflowService"
+
+// mcpToolDescription is the sentence a model chooses a tool by, read from the
+// schema that declares the RPC.
 //
-// Descriptions are prose for a reader, which is the one thing a descriptor does
-// not carry at runtime — protoc-gen-go strips source comments, so deriving
-// these would mean shipping a descriptor set alongside the binary for a
-// sentence each. Hand-written is acceptable exactly because the *set* is not:
-// TestEveryToolHasADescription holds this map to the service descriptor in both
-// directions, so a method added without a sentence fails the build rather than
-// shipping mute.
-var mcpDescriptions = map[string]string{
-	"Run": "Submit a compiled workflow specification to run durably. Returns ids to watch it by; it does not wait. " +
-		"Author a Flowfile, check it with flowstate_validate, compile it with flowstate_compile, and submit the result here.",
-	"Get": "Report a run's status, timing, current position, its outputs once finished, who started it, and " +
-		"every approval gate it is parked on right now: for each, the question the gate is asking, the signal " +
-		"name that releases it, whether a deadline lapses it, and whether the workflow declares a policy over " +
-		"who may answer.\n\n" +
-		"To approve or reject one, call flowstate_signal with this run's workflowId, name set to the gate's " +
-		"signalName, and payload.namedValues.approved set to {\"literal\": {\"boolValue\": true}} or false. " +
-		"Address the workflow rather than a run: a run id pins the delivery to one attempt, and a workload " +
-		"that has been continued as new since the gate opened will refuse it.\n\n" +
+// It used to be a hand-written map here, one entry per RPC, which is the
+// written-twice defect this repository keeps refinding: the schema's service
+// section describes the same RPCs, so every description existed in two places
+// and only one of them moved when the behavior did. The prose now lives in
+// proto/flowstate/v1/flowstate.proto and arrives through
+// [protodoc.Method], so a sentence corrected in the schema is the sentence an
+// agent is handed, and there is no second copy to correct. Slice 2 of #424.
+//
+// The whole comment rather than [protodoc.FirstSentence], deliberately. A
+// one-line context needs one line, and this is not one: the sentences that make
+// these tools usable are the ones after the first: keep paging past a short
+// page, prefer Cancel to Terminate, a file that does not compile answers with
+// diagnostics rather than an error. Taking only the first sentence would drop
+// exactly the operational half the old map existed to carry.
+//
+// Fails closed on an RPC the schema does not document, returning "" so that
+// [TestEveryToolHasADescription] fails rather than an agent being handed a mute
+// tool.
+func mcpToolDescription(rpc string) string {
+	description, ok := protodoc.Method(workflowServiceName, protoreflect.Name(rpc))
+	if !ok {
+		return ""
+	}
+
+	for _, note := range []string{mcpToolNotes[rpc], mcpLocalToolNote(rpc)} {
+		if note != "" {
+			description += "\n\n" + note
+		}
+	}
+
+	return description
+}
+
+// mcpToolNotes are the per-tool paragraphs that are about this surface rather
+// than about the RPC, appended after the schema's own prose.
+//
+// The rule for what belongs here is the one #424 set: prose flows schema to
+// surface and never back, and a surface needing different words says so
+// explicitly, visibly, at the call site. So a note earns a place only by being
+// false of the RPC and true of `flow mcp`. The one entry qualifies twice over.
+// The argument recipe is spelled in JSON field names (`workflowId`,
+// `signalName`) and a tool name (`flowstate_signal`), which are this
+// transport's spellings of things the schema calls `workflow_id`, a signal name
+// and [WorkflowService.Signal]; and the identity caveat is a fact about stdio,
+// where every call arrives as this process and the schema's `Signal` knows
+// nothing of that.
+var mcpToolNotes = map[string]string{
+	"Get": "On this surface that call is flowstate_signal, with this run's workflowId, name set to the gate's " +
+		"signalName, and payload.namedValues.approved set to {\"literal\": {\"boolValue\": true}} or false.\n\n" +
 		"Over stdio the signal is delivered as this process's own identity, not as the identity of whoever " +
 		"asked for it. Nothing on this transport can attest that a particular human approved anything, and an " +
 		"interactive card rendering this result changes none of that; an attested approver waits on the remote " +
 		"MCP surface.",
-	"Signal":          "Deliver a named signal to a run waiting for one — how an approval reaches a workload.",
-	"SignalWithStart": "Deliver a named signal to the entity holding a business key — an order id, a subscription id — creating that entity if this is the first event for the key. Use this rather than flowstate_run whenever the key, not a run id, is what you have: it is atomic, so two callers racing on the same key produce one entity, not two.",
-	"List":            "List the caller's runs, paged. A short or empty page with a nextPageToken is not the end of the listing; keep paging.",
-	"Cancel":          "Ask a run to stop, letting it clean up on the way out.",
-	"Terminate":       "Stop a run immediately, running none of its cleanup. Prefer cancel.",
-	"Validate":        "Check Flowfile YAML sources and report positioned diagnostics without executing anything. Pure and safe to loop on; answers locally, no server needed.",
-	"Compile": "Compile Flowfile YAML into the workflow specification flowstate_run submits. A file with problems answers with its " +
-		"diagnostics and no specification. Answers locally, no server needed.",
-	"GetCatalog": "What this build can execute: every task with its typed inputs and outputs, and every CEL function an expression may call. " +
-		"Read this before writing a Flowfile. Answers locally, no server needed.",
-	"CreateSchedule": "Create a schedule that runs a workflow specification on the cadence its triggers.schedule declares. Arguments are bound and " +
-		"type-checked here, once, rather than at each firing. Create it paused to read its next firing times before it takes one.",
-	"ListSchedules":    "List the caller's schedules, with whether each is live and when it next fires.",
-	"DescribeSchedule": "Report one schedule: its cadence, the arguments every firing runs with, when it next fires, and what it has run lately.",
-	"DeleteSchedule":   "Delete a schedule. Future firings stop; runs it already started are unaffected and are cancelled with flowstate_cancel.",
-	"PauseSchedule":    "Stop a schedule firing without deleting it, recording a note saying why.",
-	"ResumeSchedule":   "Let a paused schedule fire again. Firings missed while it was paused are not made up.",
-	"TriggerSchedule":  "Fire a schedule now rather than waiting for its cadence, which is how a schedule is tested. It returns no run id; describe the schedule to see what it started.",
+
+	// A fact about where this surface dispatches the call, which the schema's
+	// GetCatalog cannot know: runMCP answers it from the in-process server, so
+	// against a deployment addressed with --address the catalog described is
+	// this binary's own build, and a deployment running other plugins or
+	// another version answers the wire RPC differently.
+	"GetCatalog": "On this surface the answer is this binary's own build (its task registry and any plugins " +
+		"this process started), not the deployment --address points at; a deployment with other plugins or " +
+		"another version may differ.",
+}
+
+// mcpLocalToolNote says that a tool needs nothing stood up, for the tools where
+// that is true.
+//
+// Derived from [mcpLocalTools] rather than written into each description,
+// because which side a tool answers on is one decision and the reference table
+// already renders it from there. A model reading a description is the other
+// reader of that same decision, and the two must not be able to disagree.
+func mcpLocalToolNote(rpc string) string {
+	if !mcpLocalTools[rpc] {
+		return ""
+	}
+
+	return "Answers locally, in this process. No server and no Temporal needed."
 }
 
 // mcpToolViews names the tool each UI resource renders, by RPC.
@@ -235,7 +276,7 @@ func addMCPTools(
 	for _, method := range workflowServiceMethods() {
 		tool := &mcp.Tool{
 			Name:        mcpToolName(method.name),
-			Description: mcpDescriptions[method.name],
+			Description: mcpToolDescription(method.name),
 			InputSchema: schemaForMessage(method.input),
 		}
 		if view, ok := mcpToolViews[method.name]; ok {

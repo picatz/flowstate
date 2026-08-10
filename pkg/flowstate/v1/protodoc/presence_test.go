@@ -2,6 +2,7 @@ package protodoc
 
 import (
 	"sort"
+	"strings"
 	"testing"
 
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -25,21 +26,69 @@ const workflowService protoreflect.FullName = "flowstate.v1.WorkflowService"
 // longer exists fails until it is deleted too, so a rename cannot leave a
 // forgotten exemption standing ready to excuse the next symbol that inherits the
 // name.
-var undocumented = []protoreflect.FullName{
-	// The two RPCs whose prose lives in cmd/flow's mcpDescriptions map instead
-	// of here. Moving it is slice 2 of #424, which is what empties these.
-	"flowstate.v1.WorkflowService.Get",
-	"flowstate.v1.WorkflowService.Run",
+// It is empty, and keeping it that way is the point. Slice 2 of #424 emptied it:
+// Run and Get gained the prose that had been living in cmd/flow's
+// mcpDescriptions map, and the four empty responses and the Task wrapper gained
+// the sentences their exemptions were promising. An entry appearing here again
+// is a symbol somebody decided to ship undocumented.
+var undocumented = []protoreflect.FullName{}
 
-	// Empty responses. "Nothing to say" is still worth a sentence saying what
-	// the absence of a body means for a caller.
-	"flowstate.v1.CancelResponse",
-	"flowstate.v1.SignalResponse",
-	"flowstate.v1.SignalWithStartResponse",
-	"flowstate.v1.TerminateResponse",
+// TestEveryRPCFirstSentenceStandsAlone pins the one line, not just the presence
+// of prose.
+//
+// Presence is not enough for the surfaces that read these comments. A tool list,
+// a completion item and a table cell all show [FirstSentence] and nothing else,
+// so an RPC whose comment opens with half a thought is documented and still
+// useless in the place most readers meet it. What is asserted is what a reader
+// gets: a sentence that names the RPC it describes, and that ends.
+//
+// Naming the RPC is the part that fails silently otherwise. "Returns a page of
+// runs" is a fine sentence and a bad first one, because the contexts that show it
+// show it beside a name the reader is trying to choose between.
+func TestEveryRPCFirstSentenceStandsAlone(t *testing.T) {
+	for _, m := range workflowServiceMethods(t) {
+		comment, ok := CommentOf(m)
+		if !ok {
+			// TestSchemaProseIsPresent reports this; nothing to add here.
+			continue
+		}
 
-	// The task oneof. Every arm inside it is documented; the wrapper is not.
-	"flowstate.v1.Task",
+		first := FirstSentence(comment)
+		if !strings.HasSuffix(first, ".") {
+			t.Errorf("rpc %s: first sentence does not end in a period, so a one-line context shows %q; write a complete opening sentence", m.FullName(), first)
+		}
+		if !strings.HasPrefix(first, string(m.Name())+" ") {
+			t.Errorf("rpc %s: first sentence is %q, which does not open with the RPC's own name; a tool list shows this line beside the name a reader is choosing by", m.FullName(), first)
+		}
+	}
+}
+
+// workflowServiceMethods reads the service's RPCs from the embedded descriptors.
+func workflowServiceMethods(t *testing.T) []protoreflect.MethodDescriptor {
+	t.Helper()
+
+	reg, err := Files()
+	if err != nil {
+		t.Fatalf("Files: %v", err)
+	}
+	desc, err := reg.FindDescriptorByName(workflowService)
+	if err != nil {
+		t.Fatalf("%s not found: %v", workflowService, err)
+	}
+	svc, ok := desc.(protoreflect.ServiceDescriptor)
+	if !ok {
+		t.Fatalf("%s is a %T, not a service", workflowService, desc)
+	}
+
+	var out []protoreflect.MethodDescriptor
+	for i := 0; i < svc.Methods().Len(); i++ {
+		out = append(out, svc.Methods().Get(i))
+	}
+	if len(out) == 0 {
+		t.Fatalf("%s declares no methods; a walk over them proves nothing", workflowService)
+	}
+
+	return out
 }
 
 // TestSchemaProseIsPresent walks every RPC of WorkflowService and every

@@ -82,7 +82,32 @@ const (
 
 // WorkflowServiceClient is a client for the flowstate.v1.WorkflowService service.
 type WorkflowServiceClient interface {
+	// Run submits a compiled workflow specification and starts it running durably.
+	//
+	// It answers with the ids to watch the run by, and it does not wait. A workload
+	// may take a week; a caller made to hold a connection open for one is a caller
+	// that cannot survive its own restart. Follow the run with [Get], using the ids
+	// this returns.
+	//
+	// What it takes is the specification [Compile] produces, not Flowfile source.
+	// The path from a file somebody wrote is therefore [Validate], [Compile], Run,
+	// and each step answers with something a caller can act on: diagnostics, then a
+	// specification, then a running workload.
 	Run(context.Context, *connect.Request[v1.RunRequest]) (*connect.Response[v1.RunResponse], error)
+	// Get reports one run: its status, its timing, where it has reached, its
+	// outputs once it has finished, who started it, and every approval gate it is
+	// parked on right now.
+	//
+	// For each open gate the answer carries the question the gate asks, the signal
+	// name that releases it, whether a deadline lapses it, and whether the workflow
+	// declares a policy over who may answer. That set is what an approval surface
+	// has to render, and it is what a `distinct_from_starter` policy is compared
+	// against.
+	//
+	// To answer a gate, call [Signal] with the gate's signal name and a payload
+	// carrying the decision. Address the workflow rather than a run: a run id pins
+	// delivery to one attempt, and a workload that has been continued as new since
+	// the gate opened will refuse it.
 	Get(context.Context, *connect.Request[v1.GetRequest]) (*connect.Response[v1.GetResponse], error)
 	// Signal delivers a signal to a run waiting for one, which is how a human
 	// approval reaches a workload.
@@ -90,31 +115,37 @@ type WorkflowServiceClient interface {
 	// This addresses a durable run. A local run is a process with nobody to signal
 	// it once it has started, so `flow run local` answers its gates from flags
 	// instead. What the two drivers share is the payload and everything downstream
-	// of it — the same signal name, the same outputs, the same expressions reading
-	// them — which is the part that has to match for a local run to tell an author
+	// of it: the same signal name, the same outputs, the same expressions reading
+	// them. That is the part that has to match for a local run to tell an author
 	// what production will do.
 	Signal(context.Context, *connect.Request[v1.SignalRequest]) (*connect.Response[v1.SignalResponse], error)
-	// SignalWithStart delivers a signal to an entity, creating it first — from
-	// [SignalWithStartRequest.workflow] and [SignalWithStartRequest.inputs] — if no
-	// entity is running under [SignalWithStartRequest.entity_key] yet. See
+	// SignalWithStart delivers a signal to the entity holding a business key, an
+	// order id or a subscription id, creating that entity if this is the first
+	// event for the key.
+	//
+	// Use this rather than [Run] whenever the key, and not a run id, is what a
+	// caller has. It is atomic, so two callers racing on the same key produce one
+	// entity rather than two. The entity is created from
+	// [SignalWithStartRequest.workflow] and [SignalWithStartRequest.inputs] when
+	// nothing is running under [SignalWithStartRequest.entity_key] yet. See
 	// [SignalWithStartRequest] for the two authorization questions this decides
 	// separately and the race this closes that Run-then-Signal cannot.
 	SignalWithStart(context.Context, *connect.Request[v1.SignalWithStartRequest]) (*connect.Response[v1.SignalWithStartResponse], error)
-	// List returns the runs belonging to the caller's tenant.
+	// List returns a page of the runs belonging to the caller's tenant.
 	//
 	// The filtering is done here rather than by Temporal, and that follows from how
 	// Run records a tenant: as a memo, because a memo needs no cluster-side
 	// registration and a first run therefore needs nothing but `temporal server
 	// start-dev`. Temporal cannot query a memo. A search attribute could be
 	// queried, but it would make listing your own runs fail until an operator had
-	// registered the attribute — a basic verb that does not work out of the box is
-	// worse than one that scans.
+	// registered the attribute, and a basic verb that does not work out of the box
+	// is worse than one that scans.
 	//
 	// So the scan is bounded instead, and the bound is on how many executions the
 	// server reads rather than on how many it returns: a caller asking for ten runs
 	// in a namespace holding a hundred thousand must not be able to make the server
 	// walk all of them. See ListResponse.next_page_token for what that means for a
-	// caller — a short or empty page is not the end of the listing.
+	// caller: a short or empty page is not the end of the listing.
 	List(context.Context, *connect.Request[v1.ListRequest]) (*connect.Response[v1.ListResponse], error)
 	// Cancel asks a run to stop and lets it clean up on the way out.
 	Cancel(context.Context, *connect.Request[v1.CancelRequest]) (*connect.Response[v1.CancelResponse], error)
@@ -127,7 +158,7 @@ type WorkflowServiceClient interface {
 	// needs a server is one that stops working on an aeroplane, and invariant 8
 	// says a first run needs no infrastructure. This is not a replacement for that.
 	// It is the same check for a caller who has no filesystem to point the command
-	// at — a browser, a CI service, an agent writing a file it has not saved —
+	// at (a browser, a CI service, an agent writing a file it has not saved),
 	// and it answers with the very same [ValidationReport] message the command
 	// prints, from the very same code, so there is no second validator to disagree
 	// with the first.
@@ -145,7 +176,7 @@ type WorkflowServiceClient interface {
 	//
 	// It exists because Validate alone left a caller one step short: an agent
 	// could check a file and could submit a compiled specification, and nothing
-	// on the wire connected the two — the compiler lived only in the CLI, so a
+	// on the wire connected the two, because the compiler lived only in the CLI, so a
 	// caller with no `flow` binary could author a correct file it had no way to
 	// run. Same terms as Validate: the same compiler the CLI uses, pure, bounded
 	// by the schema, authenticated like everything else.
@@ -154,11 +185,16 @@ type WorkflowServiceClient interface {
 	// RPC error, because "your file has a problem at line 12" is an answer, not a
 	// failure to answer.
 	Compile(context.Context, *connect.Request[v1.CompileRequest]) (*connect.Response[v1.CompileResponse], error)
-	// GetCatalog returns what this deployment can execute.
+	// GetCatalog returns what this deployment can execute: every task with its
+	// typed inputs and outputs, and every CEL function an expression may call.
+	//
+	// Read it before writing a workflow. What it lists is the whole of what a step
+	// may name and what an expression may call, so a file checked against it is a
+	// file this deployment can actually run.
 	//
 	// The registry is the single source of truth for capability, and until this
 	// existed the only way to ask it was to run `flow tasks` on a machine with the
-	// same build — which is not the same question. A worker that loaded plugins can
+	// same build, which is not the same question. A worker that loaded plugins can
 	// run tasks this binary has never heard of, so "what tasks exist" is a property
 	// of a deployment, and a caller writing a workflow for it needs the deployment's
 	// answer rather than their laptop's.
@@ -170,47 +206,66 @@ type WorkflowServiceClient interface {
 	// CreateSchedule arranges for a workflow to run on a cadence.
 	//
 	// The act a `triggers:` block does not perform. A file may declare that it is
-	// meant to run nightly, and that declaration does nothing until this is called
-	// — because a file that starts running on its own when it merges is a surprise,
-	// and one whose first firing is indistinguishable from somebody having meant
-	// it.
+	// meant to run nightly, and that declaration does nothing until this is called.
+	// A file that starts running on its own when it merges is a surprise, and one
+	// whose first firing is indistinguishable from somebody having meant it.
 	//
 	// Everything that can be refused is refused here, where a person is present:
 	// the specification is validated and size-checked exactly as `Run` does it, the
 	// arguments are bound against the workflow's declarations through the very same
 	// `BindRunInputs`, and the cadence must say when it fires. What fires at three
 	// in the morning has already been checked.
+	//
+	// Create it paused when the cadence is the part in doubt. A paused schedule
+	// reports the times it would fire without taking one of them, which is the
+	// cheapest way to find out that "every Monday" meant something other than what
+	// was intended.
 	CreateSchedule(context.Context, *connect.Request[v1.CreateScheduleRequest]) (*connect.Response[v1.CreateScheduleResponse], error)
-	// ListSchedules returns the schedules belonging to the caller's tenant.
+	// ListSchedules returns the schedules belonging to the caller's tenant, each
+	// with whether it is live and when it next fires.
 	//
 	// A bounded scan filtered by the tenant recorded on each schedule, for the
 	// reason `List` scans runs: the tenant is a memo, which Temporal cannot query,
 	// and a memo is what keeps this working against `temporal server start-dev`
-	// with nothing registered. Unlike runs there is no paging — see
+	// with nothing registered. Unlike runs there is no paging; see
 	// [ListSchedulesRequest] for why, and for what the response says instead.
 	ListSchedules(context.Context, *connect.Request[v1.ListSchedulesRequest]) (*connect.Response[v1.ListSchedulesResponse], error)
 	// DescribeSchedule reports one schedule: its cadence, its arguments, when it
 	// next fires and what it has done lately.
 	DescribeSchedule(context.Context, *connect.Request[v1.DescribeScheduleRequest]) (*connect.Response[v1.DescribeScheduleResponse], error)
-	// DeleteSchedule removes a schedule. Runs it already started are unaffected —
-	// they are ordinary workloads, and stopping one is `Cancel`.
+	// DeleteSchedule removes a schedule, so that it fires no more.
+	//
+	// Runs it already started are unaffected. They are ordinary workloads, and
+	// stopping one is [Cancel].
 	DeleteSchedule(context.Context, *connect.Request[v1.DeleteScheduleRequest]) (*connect.Response[v1.DeleteScheduleResponse], error)
 	// PauseSchedule stops a schedule firing without removing it, which is what an
 	// incident wants: the arrangement is still there, still reviewable, and not
 	// running.
+	//
+	// The note it records is what the next person to find it paused will read, so
+	// it is worth writing for them rather than for the person pausing it.
 	PauseSchedule(context.Context, *connect.Request[v1.PauseScheduleRequest]) (*connect.Response[v1.PauseScheduleResponse], error)
 	// ResumeSchedule lets a paused schedule fire again.
+	//
+	// Firings missed while it was paused are not made up. Resuming is the schedule
+	// starting from now, not the schedule catching up, which is the behavior an
+	// incident wants: an arrangement paused for six hours must not answer being
+	// resumed with six hours of backlog.
 	ResumeSchedule(context.Context, *connect.Request[v1.ResumeScheduleRequest]) (*connect.Response[v1.ResumeScheduleResponse], error)
 	// TriggerSchedule fires a schedule now, without waiting for its cadence.
 	//
 	// The verb that makes a schedule testable. Creating one and waiting until
 	// Tuesday to find out whether it works is not a development loop, and the
-	// alternative — running the workflow by hand — proves the workflow rather than
+	// alternative, running the workflow by hand, proves the workflow rather than
 	// the schedule: it does not exercise the arguments the schedule stored, the
 	// tenant it records on the runs it starts, or the queue it puts them on.
 	//
 	// It fires even a paused schedule, which is Temporal's behavior and the useful
 	// one: create paused, trigger once to see what happens, then resume.
+	//
+	// It answers with no run id. The cluster takes the action after answering, so
+	// what the firing started is read back with [DescribeSchedule] rather than
+	// returned here.
 	TriggerSchedule(context.Context, *connect.Request[v1.TriggerScheduleRequest]) (*connect.Response[v1.TriggerScheduleResponse], error)
 }
 
@@ -438,7 +493,32 @@ func (c *workflowServiceClient) TriggerSchedule(ctx context.Context, req *connec
 
 // WorkflowServiceHandler is an implementation of the flowstate.v1.WorkflowService service.
 type WorkflowServiceHandler interface {
+	// Run submits a compiled workflow specification and starts it running durably.
+	//
+	// It answers with the ids to watch the run by, and it does not wait. A workload
+	// may take a week; a caller made to hold a connection open for one is a caller
+	// that cannot survive its own restart. Follow the run with [Get], using the ids
+	// this returns.
+	//
+	// What it takes is the specification [Compile] produces, not Flowfile source.
+	// The path from a file somebody wrote is therefore [Validate], [Compile], Run,
+	// and each step answers with something a caller can act on: diagnostics, then a
+	// specification, then a running workload.
 	Run(context.Context, *connect.Request[v1.RunRequest]) (*connect.Response[v1.RunResponse], error)
+	// Get reports one run: its status, its timing, where it has reached, its
+	// outputs once it has finished, who started it, and every approval gate it is
+	// parked on right now.
+	//
+	// For each open gate the answer carries the question the gate asks, the signal
+	// name that releases it, whether a deadline lapses it, and whether the workflow
+	// declares a policy over who may answer. That set is what an approval surface
+	// has to render, and it is what a `distinct_from_starter` policy is compared
+	// against.
+	//
+	// To answer a gate, call [Signal] with the gate's signal name and a payload
+	// carrying the decision. Address the workflow rather than a run: a run id pins
+	// delivery to one attempt, and a workload that has been continued as new since
+	// the gate opened will refuse it.
 	Get(context.Context, *connect.Request[v1.GetRequest]) (*connect.Response[v1.GetResponse], error)
 	// Signal delivers a signal to a run waiting for one, which is how a human
 	// approval reaches a workload.
@@ -446,31 +526,37 @@ type WorkflowServiceHandler interface {
 	// This addresses a durable run. A local run is a process with nobody to signal
 	// it once it has started, so `flow run local` answers its gates from flags
 	// instead. What the two drivers share is the payload and everything downstream
-	// of it — the same signal name, the same outputs, the same expressions reading
-	// them — which is the part that has to match for a local run to tell an author
+	// of it: the same signal name, the same outputs, the same expressions reading
+	// them. That is the part that has to match for a local run to tell an author
 	// what production will do.
 	Signal(context.Context, *connect.Request[v1.SignalRequest]) (*connect.Response[v1.SignalResponse], error)
-	// SignalWithStart delivers a signal to an entity, creating it first — from
-	// [SignalWithStartRequest.workflow] and [SignalWithStartRequest.inputs] — if no
-	// entity is running under [SignalWithStartRequest.entity_key] yet. See
+	// SignalWithStart delivers a signal to the entity holding a business key, an
+	// order id or a subscription id, creating that entity if this is the first
+	// event for the key.
+	//
+	// Use this rather than [Run] whenever the key, and not a run id, is what a
+	// caller has. It is atomic, so two callers racing on the same key produce one
+	// entity rather than two. The entity is created from
+	// [SignalWithStartRequest.workflow] and [SignalWithStartRequest.inputs] when
+	// nothing is running under [SignalWithStartRequest.entity_key] yet. See
 	// [SignalWithStartRequest] for the two authorization questions this decides
 	// separately and the race this closes that Run-then-Signal cannot.
 	SignalWithStart(context.Context, *connect.Request[v1.SignalWithStartRequest]) (*connect.Response[v1.SignalWithStartResponse], error)
-	// List returns the runs belonging to the caller's tenant.
+	// List returns a page of the runs belonging to the caller's tenant.
 	//
 	// The filtering is done here rather than by Temporal, and that follows from how
 	// Run records a tenant: as a memo, because a memo needs no cluster-side
 	// registration and a first run therefore needs nothing but `temporal server
 	// start-dev`. Temporal cannot query a memo. A search attribute could be
 	// queried, but it would make listing your own runs fail until an operator had
-	// registered the attribute — a basic verb that does not work out of the box is
-	// worse than one that scans.
+	// registered the attribute, and a basic verb that does not work out of the box
+	// is worse than one that scans.
 	//
 	// So the scan is bounded instead, and the bound is on how many executions the
 	// server reads rather than on how many it returns: a caller asking for ten runs
 	// in a namespace holding a hundred thousand must not be able to make the server
 	// walk all of them. See ListResponse.next_page_token for what that means for a
-	// caller — a short or empty page is not the end of the listing.
+	// caller: a short or empty page is not the end of the listing.
 	List(context.Context, *connect.Request[v1.ListRequest]) (*connect.Response[v1.ListResponse], error)
 	// Cancel asks a run to stop and lets it clean up on the way out.
 	Cancel(context.Context, *connect.Request[v1.CancelRequest]) (*connect.Response[v1.CancelResponse], error)
@@ -483,7 +569,7 @@ type WorkflowServiceHandler interface {
 	// needs a server is one that stops working on an aeroplane, and invariant 8
 	// says a first run needs no infrastructure. This is not a replacement for that.
 	// It is the same check for a caller who has no filesystem to point the command
-	// at — a browser, a CI service, an agent writing a file it has not saved —
+	// at (a browser, a CI service, an agent writing a file it has not saved),
 	// and it answers with the very same [ValidationReport] message the command
 	// prints, from the very same code, so there is no second validator to disagree
 	// with the first.
@@ -501,7 +587,7 @@ type WorkflowServiceHandler interface {
 	//
 	// It exists because Validate alone left a caller one step short: an agent
 	// could check a file and could submit a compiled specification, and nothing
-	// on the wire connected the two — the compiler lived only in the CLI, so a
+	// on the wire connected the two, because the compiler lived only in the CLI, so a
 	// caller with no `flow` binary could author a correct file it had no way to
 	// run. Same terms as Validate: the same compiler the CLI uses, pure, bounded
 	// by the schema, authenticated like everything else.
@@ -510,11 +596,16 @@ type WorkflowServiceHandler interface {
 	// RPC error, because "your file has a problem at line 12" is an answer, not a
 	// failure to answer.
 	Compile(context.Context, *connect.Request[v1.CompileRequest]) (*connect.Response[v1.CompileResponse], error)
-	// GetCatalog returns what this deployment can execute.
+	// GetCatalog returns what this deployment can execute: every task with its
+	// typed inputs and outputs, and every CEL function an expression may call.
+	//
+	// Read it before writing a workflow. What it lists is the whole of what a step
+	// may name and what an expression may call, so a file checked against it is a
+	// file this deployment can actually run.
 	//
 	// The registry is the single source of truth for capability, and until this
 	// existed the only way to ask it was to run `flow tasks` on a machine with the
-	// same build — which is not the same question. A worker that loaded plugins can
+	// same build, which is not the same question. A worker that loaded plugins can
 	// run tasks this binary has never heard of, so "what tasks exist" is a property
 	// of a deployment, and a caller writing a workflow for it needs the deployment's
 	// answer rather than their laptop's.
@@ -526,47 +617,66 @@ type WorkflowServiceHandler interface {
 	// CreateSchedule arranges for a workflow to run on a cadence.
 	//
 	// The act a `triggers:` block does not perform. A file may declare that it is
-	// meant to run nightly, and that declaration does nothing until this is called
-	// — because a file that starts running on its own when it merges is a surprise,
-	// and one whose first firing is indistinguishable from somebody having meant
-	// it.
+	// meant to run nightly, and that declaration does nothing until this is called.
+	// A file that starts running on its own when it merges is a surprise, and one
+	// whose first firing is indistinguishable from somebody having meant it.
 	//
 	// Everything that can be refused is refused here, where a person is present:
 	// the specification is validated and size-checked exactly as `Run` does it, the
 	// arguments are bound against the workflow's declarations through the very same
 	// `BindRunInputs`, and the cadence must say when it fires. What fires at three
 	// in the morning has already been checked.
+	//
+	// Create it paused when the cadence is the part in doubt. A paused schedule
+	// reports the times it would fire without taking one of them, which is the
+	// cheapest way to find out that "every Monday" meant something other than what
+	// was intended.
 	CreateSchedule(context.Context, *connect.Request[v1.CreateScheduleRequest]) (*connect.Response[v1.CreateScheduleResponse], error)
-	// ListSchedules returns the schedules belonging to the caller's tenant.
+	// ListSchedules returns the schedules belonging to the caller's tenant, each
+	// with whether it is live and when it next fires.
 	//
 	// A bounded scan filtered by the tenant recorded on each schedule, for the
 	// reason `List` scans runs: the tenant is a memo, which Temporal cannot query,
 	// and a memo is what keeps this working against `temporal server start-dev`
-	// with nothing registered. Unlike runs there is no paging — see
+	// with nothing registered. Unlike runs there is no paging; see
 	// [ListSchedulesRequest] for why, and for what the response says instead.
 	ListSchedules(context.Context, *connect.Request[v1.ListSchedulesRequest]) (*connect.Response[v1.ListSchedulesResponse], error)
 	// DescribeSchedule reports one schedule: its cadence, its arguments, when it
 	// next fires and what it has done lately.
 	DescribeSchedule(context.Context, *connect.Request[v1.DescribeScheduleRequest]) (*connect.Response[v1.DescribeScheduleResponse], error)
-	// DeleteSchedule removes a schedule. Runs it already started are unaffected —
-	// they are ordinary workloads, and stopping one is `Cancel`.
+	// DeleteSchedule removes a schedule, so that it fires no more.
+	//
+	// Runs it already started are unaffected. They are ordinary workloads, and
+	// stopping one is [Cancel].
 	DeleteSchedule(context.Context, *connect.Request[v1.DeleteScheduleRequest]) (*connect.Response[v1.DeleteScheduleResponse], error)
 	// PauseSchedule stops a schedule firing without removing it, which is what an
 	// incident wants: the arrangement is still there, still reviewable, and not
 	// running.
+	//
+	// The note it records is what the next person to find it paused will read, so
+	// it is worth writing for them rather than for the person pausing it.
 	PauseSchedule(context.Context, *connect.Request[v1.PauseScheduleRequest]) (*connect.Response[v1.PauseScheduleResponse], error)
 	// ResumeSchedule lets a paused schedule fire again.
+	//
+	// Firings missed while it was paused are not made up. Resuming is the schedule
+	// starting from now, not the schedule catching up, which is the behavior an
+	// incident wants: an arrangement paused for six hours must not answer being
+	// resumed with six hours of backlog.
 	ResumeSchedule(context.Context, *connect.Request[v1.ResumeScheduleRequest]) (*connect.Response[v1.ResumeScheduleResponse], error)
 	// TriggerSchedule fires a schedule now, without waiting for its cadence.
 	//
 	// The verb that makes a schedule testable. Creating one and waiting until
 	// Tuesday to find out whether it works is not a development loop, and the
-	// alternative — running the workflow by hand — proves the workflow rather than
+	// alternative, running the workflow by hand, proves the workflow rather than
 	// the schedule: it does not exercise the arguments the schedule stored, the
 	// tenant it records on the runs it starts, or the queue it puts them on.
 	//
 	// It fires even a paused schedule, which is Temporal's behavior and the useful
 	// one: create paused, trigger once to see what happens, then resume.
+	//
+	// It answers with no run id. The cluster takes the action after answering, so
+	// what the firing started is read back with [DescribeSchedule] rather than
+	// returned here.
 	TriggerSchedule(context.Context, *connect.Request[v1.TriggerScheduleRequest]) (*connect.Response[v1.TriggerScheduleResponse], error)
 }
 
