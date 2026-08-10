@@ -387,6 +387,28 @@ message Workflow {
       max_pairs: 64
     }
   ];
+
+  // PluginRequirements are the minimum compatible plugin versions written in
+  // the Flowfile. ResolvedPlugins is the immutable selection made by the
+  // control plane before a durable run is accepted.
+  repeated PluginRequirement plugin_requirements = 12 [(buf.validate.field).repeated = {max_items: 64}];
+  repeated ResolvedPlugin resolved_plugins = 13 [(buf.validate.field).repeated = {max_items: 64}];
+}
+
+message PluginRequirement {
+  string name = 1 [(buf.validate.field).string = {pattern: "^[a-z][a-z0-9_-]*$"}];
+  string minimum_version = 2 [(buf.validate.field).string = {pattern: "^v[0-9]+\\.[0-9]+\\.[0-9]+$"}];
+}
+
+// ResolvedPlugin is part of the replay contract, not merely inventory. All
+// fields identify the behavior selected for this run and must match a worker
+// before it executes plugin work.
+message ResolvedPlugin {
+  string name = 1;
+  string version = 2;
+  uint32 protocol_version = 3;
+  string task_schema_digest = 4;
+  string distribution_digest = 5;
 }
 
 // SignalPolicy constrains who may deliver one named signal to a run.
@@ -2558,6 +2580,9 @@ message PluginDescription {
   // Tasks are the tasks this plugin provides, described exactly as a built-in
   // task is.
   repeated TaskDescription tasks = 6;
+  uint32 protocol_version = 7;
+  string task_schema_digest = 8;
+  string distribution_digest = 9;
 }
 
 // TaskField is one input or output, described in the DSL's vocabulary.
@@ -4632,6 +4657,7 @@ message GetCatalogRequest {}
 // GetCatalogResponse is the deployment's capability.
 message GetCatalogResponse {
   TaskCatalog catalog = 1;
+  PluginCatalog plugins = 2;
 }
 
 // Schedules are a control plane over Temporal's, and the messages below are

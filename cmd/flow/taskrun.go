@@ -81,7 +81,7 @@ func runTaskRun(cmd *cobra.Command, args []string) error {
 	// registry until its process is running. This is the same [startPlugins] every other
 	// plugin-aware verb calls, so `flow task run sql.query` resolves through the
 	// discovery, the descriptor contract and the wire codec a worker would use.
-	closePlugins, err := startPlugins(cmd, nil)
+	_, closePlugins, err := startPlugins(cmd, nil)
 	if err != nil {
 		return err
 	}
@@ -262,7 +262,7 @@ func newTaskCommand() *cobra.Command {
 			return nil, cobra.ShellCompDirectiveNoFileComp
 		}
 
-		closePlugins, err := startPlugins(cmd, nil)
+		_, closePlugins, err := startPlugins(cmd, nil)
 		if err != nil {
 			return v1.TaskNames(), cobra.ShellCompDirectiveNoFileComp
 		}

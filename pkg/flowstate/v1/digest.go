@@ -3,6 +3,7 @@ package flowstatev1
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"io"
 )
 
 // One spelling of "these exact bytes", for every surface that needs to name a
@@ -40,4 +41,20 @@ func ContentDigest(data []byte) string {
 	sum := sha256.Sum256(data)
 
 	return ContentDigestPrefix + hex.EncodeToString(sum[:])
+}
+
+// ContentDigestOf is [ContentDigest] for bytes nobody should hold all of.
+//
+// The same spelling, computed without the whole content in memory. The reader
+// that needs this is a plugin binary: the file sits in an operator-controlled
+// discovery directory, it is hashed at every launch, and a very large or sparse
+// one would otherwise be allocated in full before a worker has finished starting.
+// [io.Copy]'s buffer is the whole of what this costs, whatever the size of r.
+func ContentDigestOf(r io.Reader) (string, error) {
+	sum := sha256.New()
+	if _, err := io.Copy(sum, r); err != nil {
+		return "", err
+	}
+
+	return ContentDigestPrefix + hex.EncodeToString(sum.Sum(nil)), nil
 }
