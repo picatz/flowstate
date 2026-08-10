@@ -386,6 +386,14 @@ When several agents edit interlocking packages:
   colleague pulling tomorrow will actually get.
 - **Verify claims rather than relaying them.** Reproduce a coverage number or a
   failure before acting on it.
+- **Kill processes by PID, never by pattern.** `pkill -f 'go test'` on a shared
+  machine matches every sibling agent's suite, and once it matched the compound
+  command that contained it and killed its own shell. Three agents re-learned this
+  independently in one night, each apologizing to whoever's `make check` they had
+  just ended. Record the PIDs of what you start (`$!`, a pidfile, `ps` filtered by
+  your own worktree path) and kill exactly those. The corollary for the victim:
+  a test run that dies with SIGTERM and no failure output was probably somebody's
+  pattern, not your diff; re-run before diagnosing.
 - **Leave a green stopping point.** A package with fewer features that compiles and
   passes beats a half-migrated one. If a migration cannot finish, back it out and
   document it rather than leaving both halves.
