@@ -80,6 +80,13 @@ func TestRequiredComesFromProtovalidate(t *testing.T) {
 	}
 }
 
+// TestConstraintsAreRendered pins the phrases an editor shows, which are now the
+// phrases every other surface shows: [constraints] reads [v1.FieldConstraints],
+// the renderer behind `flow tasks` and the generated reference. The wants below
+// were rewritten when it did, and the rewrite is the point of the change rather
+// than a cost of it: the old wording was this package's alone, so "at least 3
+// characters, at most 6 characters" was what an author read in an editor about a
+// field the terminal called "3 to 6 characters".
 func TestConstraintsAreRendered(t *testing.T) {
 	t.Parallel()
 
@@ -100,13 +107,13 @@ func TestConstraintsAreRendered(t *testing.T) {
 			name:  "a uri rule",
 			task:  "http",
 			field: "url",
-			want:  []string{"must be an absolute URI"},
+			want:  []string{"a URI"},
 		},
 		{
 			name:  "length and pattern rules",
 			task:  "http",
 			field: "method",
-			want:  []string{"at least 3 characters", "at most 6 characters", "matches"},
+			want:  []string{"3 to 6 characters", "matching"},
 		},
 		{
 			// `printf`'s `args` was the input this was read from, and it retired with
@@ -116,20 +123,20 @@ func TestConstraintsAreRendered(t *testing.T) {
 			name:  "repeated item counts",
 			md:    (&v1.Workflow{}).ProtoReflect().Descriptor(),
 			field: "steps",
-			want:  []string{"at least 1 item(s)", "at most 100 item(s)"},
+			want:  []string{"1 to 100 items"},
 		},
 		{
 			name:    "numeric bounds on an output",
 			task:    "http",
 			field:   "status_code",
 			outputs: true,
-			want:    []string{"at least 100", "at most 599"},
+			want:    []string{"100 to 599"},
 		},
 		{
 			name:    "a field with no rules says nothing",
 			task:    "http",
 			field:   "headers",
-			notWant: []string{"at least", "at most", "matches"},
+			notWant: []string{"at least", "at most", "matching"},
 		},
 	}
 	for _, tt := range tests {

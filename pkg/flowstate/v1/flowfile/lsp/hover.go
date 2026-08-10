@@ -248,8 +248,19 @@ func taskDoc(def v1.TaskDef) string {
 	return b.String()
 }
 
-// inputDoc renders one input's type, whether it is required, and the constraints
-// the schema places on it.
+// inputDoc renders one input's type, whether it is required, what the schema
+// says the input is for, and the constraints it places on it.
+//
+// The description is the schema's own, through [fieldDoc]. It used to be absent
+// entirely, because the descriptor the registry holds carries no comments and
+// this package had nothing else to read; the alternative it did not take is the
+// one worth naming, since a sentence written here about a field defined there is
+// a sentence that stays behind when the field moves.
+//
+// What stays written here is what is true of the *position* rather than of the
+// field: which task's input this is, and that a deferred input is evaluated by
+// the task itself. Neither is a property of the message the field lives on, so
+// neither is something the schema's comment could say.
 func inputDoc(def v1.TaskDef, name string, fd protoreflect.FieldDescriptor) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "**`%s`** · `%s`", name, typeName(fd))
@@ -263,6 +274,9 @@ func inputDoc(def v1.TaskDef, name string, fd protoreflect.FieldDescriptor) stri
 		// Worth saying: an input the task evaluates itself has a different scope
 		// from every other input, which is otherwise surprising.
 		b.WriteString(" The task evaluates this input itself, so it may reference values that exist only while the step runs.")
+	}
+	if doc := fieldDoc(fd); doc != "" {
+		fmt.Fprintf(&b, "\n\n%s", doc)
 	}
 	if cs := constraints(fd); len(cs) > 0 {
 		fmt.Fprintf(&b, "\n\nMust be: %s.", strings.Join(cs, "; "))
@@ -540,30 +554,73 @@ func hoverBareName(from *parsedStep, name string, clock, shaping bool, ls loopSc
 	return nil
 }
 
+// The two of the wait's three result names the schema itself declares. `payload`
+// and `sender` are the pair a delivery carries, described once on the message
+// that carries them, and read from there rather than described again here.
+const (
+	signalPayloadField protoreflect.FullName = "flowstate.v1.SignalDelivery.payload"
+	signalSenderField  protoreflect.FullName = "flowstate.v1.SignalDelivery.sender"
+)
+
 // waitResultDoc describes one of the names a `wait_for_signal:`'s `outputs:`
 // shaping binds, or returns empty for anything else.
 //
-// The same three names [waitResultCandidates] offers, so accepting a completion
-// and then hovering what was accepted does not produce two accounts of one name —
-// the rule the `now` documentation is shared for.
+// The same three names [waitResultCandidates] offers, and now the same words:
+// completion renders this, so accepting a candidate and then hovering what was
+// accepted cannot produce two accounts of one name, which is the rule the `now`
+// documentation is shared for, applied to the three names it stood alone among.
+//
+// Where each sentence comes from is the point of the shape below. What the value
+// *is* belongs to the schema and is read from it; what is true of *this position*
+// (bound bare because the expression is the wait's own, absent from a later step
+// unless the shaping re-exposes it) belongs here, because no message declares a
+// fact about a shaping expression.
+//
+// `timed_out` is the deliberate exception, and it is the one to check first when
+// this file and the schema disagree: the schema declares no symbol for it at all.
+// It is synthesized by the engine ([v1.TimerOutputs]) as a reserved output name
+// rather than carried as a field, so there is no comment to inherit and the text
+// below is the only one there is. Give it a symbol in the schema and this
+// override should die with the hand-written prose it holds.
 func waitResultDoc(name string) string {
+	var b strings.Builder
 	switch name {
 	case v1.PayloadOutput:
-		return "**`" + v1.PayloadOutput + "`** — what the sender sent, unchanged and untrusted.\n\n" +
-			"Bound bare here because this expression is the wait's own, evaluated the moment the wait resolves. " +
-			"It is empty on a gate that lapsed, so `has(" + v1.PayloadOutput + ".approved)` is answerable either way.\n\n" +
-			"From a later step the same data is `${" + v1.StepsRoot + ".<id>." + v1.PayloadOutput +
-			"}`, but only if this `outputs:` block re-exposes it, since shaping *replaces* the wait's outputs."
+		fmt.Fprintf(&b, "**`%s`** · `map`", v1.PayloadOutput)
+		writeSchemaSentence(&b, signalPayloadField)
+		fmt.Fprintf(&b, "\n\nBound bare here because this expression is the wait's own, evaluated the moment "+
+			"the wait resolves. It is empty on a gate that lapsed, so `has(%s.approved)` is answerable either way.",
+			v1.PayloadOutput)
+		fmt.Fprintf(&b, "\n\nFrom a later step the same data is `${%s.<id>.%s}`, but only if this `%s:` block "+
+			"re-exposes it, since shaping *replaces* the wait's outputs.",
+			v1.StepsRoot, v1.PayloadOutput, taskShapingKey)
 	case v1.SenderOutput:
-		return "**`" + v1.SenderOutput + "`** — who the server attests sent the signal.\n\n" +
-			"`" + v1.SenderOutput + ".identity.subject`, `." + v1.SenderOutput + ".identity.issuer`, `." +
-			v1.SenderOutput + ".accepted_at`, `." + v1.SenderOutput + ".local`. Never anything the payload claims: " +
-			"a payload is evidence, a sender is identity."
+		fmt.Fprintf(&b, "**`%s`** · `map`", v1.SenderOutput)
+		writeSchemaSentence(&b, signalSenderField)
+		fmt.Fprintf(&b, "\n\nRead as `%s.identity.subject`, `%s.identity.issuer`, `%s.accepted_at`, `%s.local`. "+
+			"Never anything the payload claims: a payload is evidence, a sender is identity.",
+			v1.SenderOutput, v1.SenderOutput, v1.SenderOutput, v1.SenderOutput)
 	case v1.TimedOutOutput:
-		return "**`" + v1.TimedOutOutput + "`** — whether the wait ended because nobody answered in time.\n\n" +
-			"A lapsed gate is an ordinary outcome rather than a failure, which is why it is an output to branch on."
+		fmt.Fprintf(&b, "**`%s`** · `bool`", v1.TimedOutOutput)
+		fmt.Fprintf(&b, "\n\nWhether the wait ended because nobody answered in time.")
+		b.WriteString("\n\nA lapsed gate is an ordinary outcome rather than a failure, which is why it is an " +
+			"output to branch on.")
 	default:
 		return ""
+	}
+
+	return b.String()
+}
+
+// writeSchemaSentence appends a schema symbol's opening sentence as its own
+// paragraph, and appends nothing at all when the schema has none.
+//
+// Nothing rather than a placeholder, because a popup missing a sentence is a
+// popup with one paragraph and a popup holding "(undocumented)" is the editor
+// reporting the schema's housekeeping to somebody writing a file.
+func writeSchemaSentence(b *strings.Builder, name protoreflect.FullName) {
+	if sentence := schemaSentence(name); sentence != "" {
+		fmt.Fprintf(b, "\n\n%s", sentence)
 	}
 }
 
@@ -684,6 +741,12 @@ func hoverStepOutput(doc *document, from *parsedStep, ref reference, rng lsp.Ran
 	}
 	fmt.Fprintf(&b, " · `%s`\n\nOutput of step `%s` on line %d, produced by the `%s` task.",
 		typeName(fd), target.id, target.rng.Start.Line+1, def.Name)
+	// The output's own description, from the schema that declares it, for the
+	// reason an input's is: the step and the line are this file's facts, and what
+	// the value *is* is the message's.
+	if doc := fieldDoc(fd); doc != "" {
+		fmt.Fprintf(&b, "\n\n%s", doc)
+	}
 	if cs := constraints(fd); len(cs) > 0 {
 		fmt.Fprintf(&b, "\n\nThe task guarantees: %s.", strings.Join(cs, "; "))
 	}
