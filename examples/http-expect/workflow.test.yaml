@@ -16,12 +16,10 @@ tests:
   - name: a 404 this workflow accepts is carried forward as an ordinary output
     workflow: ./workflow.yaml
     stubs:
-      - task: http
-        where: inputs.url == 'https://httpbin.org/status/404'
+      - step: maybe_missing
         returns:
           status_code: 404
-      - task: http
-        where: inputs.url == 'https://httpbin.org/json' && inputs.parse_json
+      - step: checked
         returns:
           status_code: 200
           json:
@@ -46,12 +44,10 @@ tests:
       # actually pins is that `report_missing`'s message is built from the
       # status the step reported rather than from the literal 404 written in the
       # url, a substitution a reader could easily make and the file never says.
-      - task: http
-        where: inputs.url == 'https://httpbin.org/status/404'
+      - step: maybe_missing
         returns:
           status_code: 410
-      - task: http
-        where: inputs.url == 'https://httpbin.org/json'
+      - step: checked
         returns:
           status_code: 200
       - task: log

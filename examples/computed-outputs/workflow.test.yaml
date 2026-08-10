@@ -6,12 +6,13 @@
 # `hosts_placed` and the `summary` sentence both following the loop's own
 # `results` rather than the argument.
 edition: v2026.2
+defaults:
+  stubs:
+    - task: log
+      returns: {}
 tests:
   - name: with no arguments, every output is computed from the declared defaults
     workflow: ./workflow.yaml
-    stubs:
-      - task: log
-        returns: {}
     expect:
       ran: [roll_out, report]
       outputs:
@@ -26,9 +27,6 @@ tests:
     inputs:
       release: 2026.9.0
       targets: [alpha, beta]
-    stubs:
-      - task: log
-        returns: {}
     expect:
       ran: [roll_out, report]
       outputs:

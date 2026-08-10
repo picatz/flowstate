@@ -52,6 +52,28 @@ func ContextWithSecretStep(ctx context.Context, workflow, run, step string) cont
 	return ContextWithTaskRuntime(ctx, runtime)
 }
 
+// TaskStepFromContext reports the id of the step the currently executing task
+// was invoked for, when the engine recorded one on the context.
+//
+// The engine stamps the step id onto each node's context through
+// [ContextWithSecretStep] before it runs the node (see runNodes), so any task
+// runtime already carrying a [TaskRuntime] can read back which step it is
+// serving. It is what lets `flow test` scope a stub to a step id rather than
+// only to a task name, without threading a second, parallel channel of the same
+// fact through the engine.
+//
+// It reports ("", false) when no step id is on the context, which is the honest
+// answer for a compensation running off the run level context rather than a
+// node's: an undo call is not "the step it undoes" running again, so a stub
+// scoped to that step must not answer it.
+func TaskStepFromContext(ctx context.Context) (string, bool) {
+	runtime, ok := ctx.Value(secretRuntimeKey{}).(TaskRuntime)
+	if !ok || runtime.Step.Step == "" {
+		return "", false
+	}
+	return runtime.Step.Step, true
+}
+
 // ResolveSecret authorizes and resolves a reference from the current task's
 // execution context. Authorization runs for every resolution, before the store is
 // consulted, so a cache or provider can never turn a denied read into an allowed

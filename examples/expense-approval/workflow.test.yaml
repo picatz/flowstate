@@ -9,6 +9,10 @@
 # rather than claimed by the payload, so a case supplying `sender:` and a case
 # supplying none produce different values for the same `approved: true`.
 edition: v2026.2
+defaults:
+  stubs:
+    - task: log
+      returns: {}
 tests:
   - name: the manager answers, so nothing is escalated and the second gate never exists
     workflow: ./workflow.yaml
@@ -143,9 +147,6 @@ tests:
     inputs:
       employee: jordan
       amount: 482.50
-    stubs:
-      - task: log
-        returns: {}
     expect:
       failed: true
       error_contains: "must satisfy"

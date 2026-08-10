@@ -30,28 +30,36 @@
 # approver, and the gate's `sender.local` output reads true to say so, which
 # is why `deploy`'s `if:` may never gate on attestation itself.
 edition: v2026.2
+defaults:
+  # Every case ships the same build to the same environment and expects the
+  # same approver; only two failure cases override a single field. Stated once
+  # here, overridden per case where it differs.
+  inputs:
+    version: v1.4.2
+    environment: production
+    expected_approver: sre-lead@example.com
+  # The approver most cases name. A case that names its own `sender:` overrides
+  # this (explicit beats inherited); the "without an attested sender" case opts
+  # out with an explicit empty `sender: {}`, which is refused exactly as an
+  # omitted one was before defaults existed.
+  sender:
+    subject: sre-lead@example.com
+    issuer: https://issuer.example.com
+    claims:
+      team: release-managers
+  stubs:
+    - task: log
+      returns: {}
 tests:
   - name: "a sender satisfying signals: deploys"
     workflow: ./workflow.yaml
-    inputs:
-      version: v1.4.2
-      environment: production
-      expected_approver: sre-lead@example.com
     signals:
       - name: deploy-approved
         payload:
           approved: true
-        sender:
-          subject: sre-lead@example.com
-          issuer: https://issuer.example.com
-          claims:
-            team: release-managers
-    stubs:
-      - task: log
-        returns: {}
     expect:
       ran: [request, settle, approval, deploy]
-      skipped: [rejected, expired]
+      others: skipped
       outputs:
         decision: deployed
         approver_subject: sre-lead@example.com
@@ -65,25 +73,13 @@ tests:
     starter:
       subject: release-requester@example.com
       issuer: https://issuer.example.com
-    inputs:
-      version: v1.4.2
-      environment: production
-      expected_approver: sre-lead@example.com
     signals:
       - name: deploy-approved
         payload:
           approved: true
-        sender:
-          subject: sre-lead@example.com
-          issuer: https://issuer.example.com
-          claims:
-            team: release-managers
-    stubs:
-      - task: log
-        returns: {}
     expect:
       ran: [request, settle, approval, deploy]
-      skipped: [rejected, expired]
+      others: skipped
       outputs:
         decision: deployed
         approver_subject: sre-lead@example.com
@@ -102,25 +98,13 @@ tests:
     starter:
       subject: sre-lead@example.com
       issuer: https://issuer.example.com
-    inputs:
-      version: v1.4.2
-      environment: production
-      expected_approver: sre-lead@example.com
     signals:
       - name: deploy-approved
         payload:
           approved: true
-        sender:
-          subject: sre-lead@example.com
-          issuer: https://issuer.example.com
-          claims:
-            team: release-managers
-    stubs:
-      - task: log
-        returns: {}
     expect:
       ran: [request, settle, approval, expired]
-      skipped: [deploy, rejected]
+      others: skipped
       outputs:
         decision: expired
         approver_subject: ""
@@ -133,10 +117,6 @@ tests:
     starter:
       subject: release-requester@example.com
       issuer: https://issuer.example.com
-    inputs:
-      version: v1.4.2
-      environment: production
-      expected_approver: sre-lead@example.com
     signals:
       - name: deploy-approved
         payload:
@@ -146,22 +126,15 @@ tests:
           issuer: https://issuer.example.com
           claims:
             team: release-managers
-    stubs:
-      - task: log
-        returns: {}
     expect:
       ran: [request, settle, approval, expired]
-      skipped: [deploy, rejected]
+      others: skipped
       outputs:
         decision: expired
         approver_subject: ""
 
   - name: "an approved payload from a sender signals: refuses never reaches the gate"
     workflow: ./workflow.yaml
-    inputs:
-      version: v1.4.2
-      environment: production
-      expected_approver: sre-lead@example.com
     signals:
       - name: deploy-approved
         payload:
@@ -174,32 +147,26 @@ tests:
           issuer: https://issuer.example.com
           claims:
             team: release-managers
-    stubs:
-      - task: log
-        returns: {}
     expect:
       ran: [request, settle, approval, expired]
-      skipped: [deploy, rejected]
+      others: skipped
       outputs:
         decision: expired
         approver_subject: ""
 
   - name: an approved payload is still refused without an attested sender
     workflow: ./workflow.yaml
-    inputs:
-      version: v1.4.2
-      environment: production
-      expected_approver: sre-lead@example.com
     signals:
       - name: deploy-approved
         payload:
           approved: true
-    stubs:
-      - task: log
-        returns: {}
+        # Explicitly no sender: this case is the refusal of an unattested
+        # delivery, so it opts out of the inherited default rather than omitting
+        # `sender:` and inheriting it.
+        sender: {}
     expect:
       ran: [request, settle, approval, expired]
-      skipped: [deploy, rejected]
+      others: skipped
       outputs:
         decision: expired
         approver_subject: ""
@@ -212,67 +179,36 @@ tests:
   # than each re-deriving the predicate.
   - name: an explicit rejection is honored
     workflow: ./workflow.yaml
-    inputs:
-      version: v1.4.2
-      environment: production
-      expected_approver: sre-lead@example.com
     signals:
       - name: deploy-approved
         payload:
           approved: false
-        sender:
-          subject: sre-lead@example.com
-          issuer: https://issuer.example.com
-          claims:
-            team: release-managers
-    stubs:
-      - task: log
-        returns: {}
     expect:
       ran: [request, settle, approval, rejected]
-      skipped: [deploy, expired]
+      others: skipped
       outputs:
         decision: rejected
         approver_subject: ""
 
   - name: nobody answers, and the gate lapses at its own timeout
     workflow: ./workflow.yaml
-    inputs:
-      version: v1.4.2
-      environment: production
-      expected_approver: sre-lead@example.com
-    stubs:
-      - task: log
-        returns: {}
     expect:
       ran: [request, settle, approval, expired]
-      skipped: [deploy, rejected]
+      others: skipped
       outputs:
         decision: expired
         approver_subject: ""
 
   - name: a version that is not semver is refused before the first step runs
     workflow: ./workflow.yaml
-    inputs:
-      version: latest
-      environment: production
-      expected_approver: sre-lead@example.com
-    stubs:
-      - task: log
-        returns: {}
+    inputs: {version: latest}   # overrides only version; the rest come from defaults
     expect:
       failed: true
       error_contains: 'must satisfy'
 
   - name: an environment outside the known set is refused before the first step runs
     workflow: ./workflow.yaml
-    inputs:
-      version: v1.4.2
-      environment: prod-typo
-      expected_approver: sre-lead@example.com
-    stubs:
-      - task: log
-        returns: {}
+    inputs: {environment: prod-typo}   # overrides only environment
     expect:
       failed: true
       error_contains: 'must satisfy'
@@ -285,25 +221,13 @@ tests:
   # input produced an output naming a branch that had been skipped.
   - name: a signal carrying no decision is not a rejection
     workflow: ./workflow.yaml
-    inputs:
-      version: v1.4.2
-      environment: production
-      expected_approver: sre-lead@example.com
     signals:
       - name: deploy-approved
         payload:
           note: looking into it
-        sender:
-          subject: sre-lead@example.com
-          issuer: https://issuer.example.com
-          claims:
-            team: release-managers
-    stubs:
-      - task: log
-        returns: {}
     expect:
       ran: [request, settle, approval, expired]
-      skipped: [deploy, rejected]
+      others: skipped
       outputs:
         decision: expired
         approver_subject: ""

@@ -12,8 +12,7 @@ tests:
   - name: a body is text until json_parse indexes it, and the binding is read twice
     workflow: ./workflow.yaml
     stubs:
-      - task: http
-        where: inputs.url == 'https://httpbin.org/json'
+      - step: web
         returns:
           status_code: 200
           body: '{"slideshow": {"title": "Sample Slide Show", "author": "Yours Truly"}}'

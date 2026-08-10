@@ -6,6 +6,10 @@
 # assertion below about the digest, and there does not need to be one: a stale
 # pin means this file never gets as far as running.
 edition: v2026.2
+defaults:
+  stubs:
+    - task: log
+      returns: {}
 tests:
   - name: a pinned call runs exactly as an unpinned one does
     workflow: ./workflow.yaml
@@ -14,8 +18,6 @@ tests:
       # stubbing it changes nothing observable. It is here because the callee's
       # steps really do execute through the same local driver, which is the
       # thing worth showing about testing a composition.
-      - task: log
-        returns: {}
     expect:
       ran: [grant, announce]
       outputs:

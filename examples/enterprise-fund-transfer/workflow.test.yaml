@@ -14,32 +14,47 @@
 # [v1.NewPolicedLocalSignals] documents, and no realistic sender ever equals
 # that.
 edition: v2026.2
+
+# Stated once for every case (issue #416). Both accounts and the threshold are
+# the same transfer throughout; only the amount and the idempotency key change,
+# so each case sets just those two. The treasury-approver `sender:` is the
+# desk that approves above the threshold, inherited by every signal that does
+# not name its own (the wrong-claim case below names its own and keeps it). The
+# `log` stub answers `request`'s log line, which carries no assertion.
+defaults:
+  inputs:
+    from_account_id: acct-treasury-001
+    to_account_id: acct-supplier-042
+    approval_threshold_cents: 1000000
+  sender:
+    subject: treasury-lead@example.com
+    issuer: https://issuer.example.com
+    claims:
+      role: treasury-approver
+  stubs:
+    - task: log
+      returns: {}
 tests:
   - name: a transfer below the threshold clears without a gate
     workflow: ./workflow.yaml
     inputs:
-      from_account_id: acct-treasury-001
-      to_account_id: acct-supplier-042
       amount_cents: 250000
-      approval_threshold_cents: 1000000
       idempotency_key: transfer-2026-08-06-0001
     stubs:
-      - task: log
-        returns: {}
-      - task: http
-        where: inputs.url == 'https://ledger.internal.example.com/debit' && inputs.json.account_id == 'acct-treasury-001'
+      # Stubbed by step id, not by retyping the workflow's own urls into a
+      # `where:` clause: the reference is the step, so an endpoint rename in
+      # workflow.yaml cannot leave this test matching a url nothing calls.
+      - step: debit
         returns:
           reference: dbt-1
-      - task: http
-        where: inputs.url == 'https://ledger.internal.example.com/credit' && inputs.json.account_id == 'acct-supplier-042'
+      - step: credit
         returns:
           reference: crd-1
-      - task: http
-        where: inputs.url == 'https://settlements.internal.example.com/notify'
+      - step: notify_settlement
         returns: {}
     expect:
       ran: [request, debit, credit, notify_settlement]
-      skipped: [approval, rejected, expired, refused_malformed_payload]
+      others: skipped
       outputs:
         decision: transferred
         debit_reference: dbt-1
@@ -47,31 +62,25 @@ tests:
   - name: a settlement failure after both legs cleared undoes credit then debit
     workflow: ./workflow.yaml
     inputs:
-      from_account_id: acct-treasury-001
-      to_account_id: acct-supplier-042
       amount_cents: 250000
-      approval_threshold_cents: 1000000
       idempotency_key: transfer-2026-08-06-0002
     stubs:
-      - task: log
-        returns: {}
-      - task: http
-        where: inputs.url == 'https://ledger.internal.example.com/debit' && inputs.json.account_id == 'acct-treasury-001'
+      - step: debit
         returns:
           reference: dbt-2
-      - task: http
-        where: inputs.url == 'https://ledger.internal.example.com/credit' && inputs.json.account_id == 'acct-supplier-042'
+      - step: credit
         returns:
           reference: crd-2
-      - task: http
-        where: inputs.url == 'https://settlements.internal.example.com/notify'
+      - step: notify_settlement
         fails:
           kind: Upstream
           message: settlement service unavailable
-      # The compensations, hit for real by the local driver once notify_settlement
-      # fails - reversing amounts at the opposite endpoint from the original call,
-      # each account in the body rather than the path (see workflow.yaml's own
-      # `undo:` comment on `debit`).
+      # The compensations, hit for real by the local driver once
+      # notify_settlement fails. A compensation runs off the run level context
+      # and carries no step id, so a step-form stub never answers it; it is
+      # stubbed by task and `where:` on the reversing endpoint instead, the
+      # genuine case `where:` remains for. Each account is in the body rather
+      # than the path (see workflow.yaml's own `undo:` comment on `debit`).
       - task: http
         where: inputs.url == 'https://ledger.internal.example.com/debit' && inputs.json.account_id == 'acct-supplier-042'
         returns: {}
@@ -86,26 +95,15 @@ tests:
   - name: an explicit rejection above the threshold moves nothing
     workflow: ./workflow.yaml
     inputs:
-      from_account_id: acct-treasury-001
-      to_account_id: acct-supplier-042
       amount_cents: 5000000
-      approval_threshold_cents: 1000000
       idempotency_key: transfer-2026-08-06-0003
     signals:
       - name: transfer-approved
         payload:
           approved: false
-        sender:
-          subject: treasury-lead@example.com
-          issuer: https://issuer.example.com
-          claims:
-            role: treasury-approver
-    stubs:
-      - task: log
-        returns: {}
     expect:
       ran: [request, approval, rejected]
-      skipped: [debit, credit, notify_settlement, expired, refused_malformed_payload]
+      others: skipped
       outputs:
         decision: rejected
         debit_reference: ""
@@ -113,17 +111,11 @@ tests:
   - name: nobody answers, and the gate lapses at its own timeout
     workflow: ./workflow.yaml
     inputs:
-      from_account_id: acct-treasury-001
-      to_account_id: acct-supplier-042
       amount_cents: 5000000
-      approval_threshold_cents: 1000000
       idempotency_key: transfer-2026-08-06-0004
-    stubs:
-      - task: log
-        returns: {}
     expect:
       ran: [request, approval, expired]
-      skipped: [debit, credit, notify_settlement, rejected, refused_malformed_payload]
+      others: skipped
       outputs:
         decision: expired
         debit_reference: ""
@@ -131,37 +123,24 @@ tests:
   - name: a genuinely qualifying approver above the threshold clears the transfer
     workflow: ./workflow.yaml
     inputs:
-      from_account_id: acct-treasury-001
-      to_account_id: acct-supplier-042
       amount_cents: 5000000
-      approval_threshold_cents: 1000000
       idempotency_key: transfer-2026-08-06-0005
     signals:
       - name: transfer-approved
         payload:
           approved: true
-        sender:
-          subject: treasury-lead@example.com
-          issuer: https://issuer.example.com
-          claims:
-            role: treasury-approver
     stubs:
-      - task: log
-        returns: {}
-      - task: http
-        where: inputs.url == 'https://ledger.internal.example.com/debit' && inputs.json.account_id == 'acct-treasury-001'
+      - step: debit
         returns:
           reference: dbt-5
-      - task: http
-        where: inputs.url == 'https://ledger.internal.example.com/credit' && inputs.json.account_id == 'acct-supplier-042'
+      - step: credit
         returns:
           reference: crd-5
-      - task: http
-        where: inputs.url == 'https://settlements.internal.example.com/notify'
+      - step: notify_settlement
         returns: {}
     expect:
       ran: [request, approval, debit, credit, notify_settlement]
-      skipped: [rejected, expired, refused_malformed_payload]
+      others: skipped
       outputs:
         decision: transferred
         debit_reference: dbt-5
@@ -169,12 +148,12 @@ tests:
   - name: a sender lacking the treasury-approver claim is refused before the signal is ever delivered
     workflow: ./workflow.yaml
     inputs:
-      from_account_id: acct-treasury-001
-      to_account_id: acct-supplier-042
       amount_cents: 5000000
-      approval_threshold_cents: 1000000
       idempotency_key: transfer-2026-08-06-0008
     signals:
+      # Names its own sender rather than inheriting the desk's: explicit beats
+      # inherited, which is the whole point of this case: a sender that does
+      # not carry the treasury-approver claim.
       - name: transfer-approved
         payload:
           approved: true
@@ -183,12 +162,9 @@ tests:
           issuer: https://issuer.example.com
           claims:
             role: engineer
-    stubs:
-      - task: log
-        returns: {}
     expect:
       ran: [request, approval, expired]
-      skipped: [debit, credit, notify_settlement, rejected, refused_malformed_payload]
+      others: skipped
       outputs:
         decision: expired
         debit_reference: ""
@@ -196,10 +172,7 @@ tests:
   - name: a signal that answers with no approved field is refused, not read as a timeout
     workflow: ./workflow.yaml
     inputs:
-      from_account_id: acct-treasury-001
-      to_account_id: acct-supplier-042
       amount_cents: 5000000
-      approval_threshold_cents: 1000000
       idempotency_key: transfer-2026-08-06-0007
     signals:
       # A payload that arrived - `steps.approval.timed_out` reads false - but
@@ -210,17 +183,9 @@ tests:
       - name: transfer-approved
         payload:
           note: wrong shape entirely
-        sender:
-          subject: treasury-lead@example.com
-          issuer: https://issuer.example.com
-          claims:
-            role: treasury-approver
-    stubs:
-      - task: log
-        returns: {}
     expect:
       ran: [request, approval, refused_malformed_payload]
-      skipped: [debit, credit, notify_settlement, rejected, expired]
+      others: skipped
       outputs:
         decision: refused_malformed_payload
         debit_reference: ""
@@ -228,14 +193,8 @@ tests:
   - name: an amount below one cent is refused before the first step runs
     workflow: ./workflow.yaml
     inputs:
-      from_account_id: acct-treasury-001
-      to_account_id: acct-supplier-042
       amount_cents: 0
-      approval_threshold_cents: 1000000
       idempotency_key: transfer-2026-08-06-0006
-    stubs:
-      - task: log
-        returns: {}
     expect:
       failed: true
       error_contains: "must satisfy"

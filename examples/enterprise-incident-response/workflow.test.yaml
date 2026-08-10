@@ -15,6 +15,10 @@
 # genuinely attested, correctly-claimed remediation signer still being
 # refused by a run that cannot attest itself.
 edition: v2026.2
+defaults:
+  stubs:
+    - task: log
+      returns: {}
 tests:
   - name: a promptly claimed incident gathers evidence but cannot record a real authorization here
     workflow: ./workflow.yaml
@@ -38,18 +42,13 @@ tests:
           claims:
             role: incident-commander
     stubs:
-      - task: log
-        returns: {}
-      - task: http
-        where: inputs.url == 'https://observability.internal.example.com/logs'
+      - step: logs
         returns:
           summary: elevated 5xx rate since 14:02
-      - task: http
-        where: inputs.url == 'https://observability.internal.example.com/metrics'
+      - step: metrics
         returns:
           error_rate: 0.14
-      - task: http
-        where: inputs.url == 'https://observability.internal.example.com/deploys'
+      - step: recent_deploys
         returns:
           deployed_version: v3.9.1
     expect:
@@ -67,18 +66,13 @@ tests:
       service: checkout-api
       severity: sev1
     stubs:
-      - task: log
-        returns: {}
-      - task: http
-        where: inputs.url == 'https://observability.internal.example.com/logs'
+      - step: logs
         returns:
           summary: no anomaly detected
-      - task: http
-        where: inputs.url == 'https://observability.internal.example.com/metrics'
+      - step: metrics
         returns:
           error_rate: 0.01
-      - task: http
-        where: inputs.url == 'https://observability.internal.example.com/deploys'
+      - step: recent_deploys
         returns:
           deployed_version: v3.9.1
     expect:
@@ -104,18 +98,13 @@ tests:
           claims:
             role: on-call-responder
     stubs:
-      - task: log
-        returns: {}
-      - task: http
-        where: inputs.url == 'https://observability.internal.example.com/logs'
+      - step: logs
         returns:
           summary: elevated latency since 09:11
-      - task: http
-        where: inputs.url == 'https://observability.internal.example.com/metrics'
+      - step: metrics
         returns:
           error_rate: 0.06
-      - task: http
-        where: inputs.url == 'https://observability.internal.example.com/deploys'
+      - step: recent_deploys
         returns:
           deployed_version: v3.9.0
     expect:
@@ -132,9 +121,6 @@ tests:
       incident_id: inc-2026-0145
       service: checkout-api
       severity: sev4
-    stubs:
-      - task: log
-        returns: {}
     expect:
       failed: true
       error_contains: "must satisfy"

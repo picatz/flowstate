@@ -65,6 +65,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 
@@ -107,6 +108,21 @@ const (
 	// reach, and a file recording hundreds is a record that has stopped meaning
 	// anything.
 	MaxAllowUnreachedPerFile = 200
+
+	// MaxDefaultStubs bounds how many `stubs:` a file's `defaults:` block may
+	// declare. Defaults exist to state a handful of things once (a `log` stub,
+	// a base http answer); a block listing hundreds is a program hiding in a
+	// fixture, not a default. A test file is author-controlled but still parsed
+	// input (CLAUDE.md, "bound anything that consumes untrusted input"), and a
+	// default is copied into every case, so its size multiplies.
+	MaxDefaultStubs = 100
+
+	// maxDefaultsDepth bounds how deeply the no-expressions scan descends into a
+	// `defaults:` value before refusing it. A default is a fixture, so nesting
+	// past this is a document doing something a default is not for; the bound
+	// exists so the recursive scan cannot be driven to exhaust the stack by a
+	// pathological file rather than to constrain an ordinary one.
+	maxDefaultsDepth = 32
 )
 
 // File is a parsed `*.test.yaml`.
@@ -123,6 +139,13 @@ type File struct {
 	// for that issue's own drift example. This field exists so that migration
 	// is not itself a bug — see #203's discussion of `examples/call-a-workflow/workflow.test.yaml`.
 	Edition string `yaml:"edition"`
+
+	// Defaults are the inputs, stubs, and signal sender a file states once for
+	// every case, rather than pasting into each (issue #416). Each case
+	// inherits them and may override them, by the boring, stated rules
+	// [mergeDefaults] applies. Optional; a file that declares none behaves
+	// exactly as it did before this field existed.
+	Defaults *Defaults `yaml:"defaults"`
 
 	// Tests are the cases this file declares, in the order they were written —
 	// the order [Run] runs them in and reports them in, so a reader matching a
@@ -232,6 +255,45 @@ type Test struct {
 	Expect Expectation `yaml:"expect"`
 }
 
+// Defaults is what a file states once for every case (issue #416): the base
+// inputs, the stubs, and the signal sender each case would otherwise repeat.
+//
+// A test file is a fixture, not a program, so nothing here may hold an
+// expression: a `${...}` in a default is refused when the file loads, named by
+// its position, rather than carried silently into a case that then computes
+// something the author never wrote (CLAUDE.md, "diagnostics are a feature").
+// Expressions in a *case* are unaffected; a stub's own `returns:` is still free
+// to carry one, because a case is where a value is allowed to depend on the run.
+//
+// The merge rules [mergeDefaults] applies are deliberately boring:
+//
+//   - Inputs merge one level. A case's `inputs:` entry replaces only that key;
+//     every other default key remains. A scalar a case sets wins over the same
+//     scalar in the defaults.
+//   - A case's stubs come first and the file's defaults are appended as
+//     fallbacks, except that a case stub selecting the same thing the same way
+//     as a default replaces it rather than doubling it. "The same way" includes
+//     the `where:` filter, so a default catch-all is a true fallthrough: a
+//     case's filtered stub for the same task is tried first and still fires (see
+//     [stubTargetKey] and [mergeDefaults]).
+//   - Sender fills in only where a case's signal omits its own `sender:`.
+//     Explicit beats inherited, so a signal that names a sender keeps it.
+type Defaults struct {
+	// Inputs are the base bindings every case starts from, before its own
+	// `inputs:` are merged over them one key at a time.
+	Inputs map[string]any `yaml:"inputs"`
+
+	// Stubs are the stubs every case starts from. A case's own stubs append,
+	// unless one targets the same task or step id, which replaces the default
+	// for that target.
+	Stubs []Stub `yaml:"stubs"`
+
+	// Sender is the scripted signal sender a case's signals inherit when they
+	// omit their own. It is the one place a whole file's signals share an
+	// approver identity rather than restating the five-line stanza per signal.
+	Sender *ScriptedIdentity `yaml:"sender"`
+}
+
 // Stub replaces one task's real behavior with a canned answer.
 //
 // Stubbing happens at the task boundary and nothing lower (#155): control
@@ -240,8 +302,26 @@ type Test struct {
 // whatever the task would have done outside the process — is replaced.
 type Stub struct {
 	// Task is the task name this replaces, exactly as a step's own task key
-	// names it — `http`, `log`, a plugin task's name.
+	// names it: `http`, `log`, a plugin task's name. Mutually exclusive with
+	// Step; a stub names one or the other, never both and never neither.
 	Task string `yaml:"task"`
+
+	// Step is the id of the workflow step this replaces, as an alternative to
+	// naming the Task the step invokes. It is the workflow's own name for the
+	// thing being stubbed, checked against the compiled workflow's step ids
+	// (an unknown id is refused with a did-you-mean suggestion), so a stub
+	// scoped this way survives an endpoint rename that a `where:` clause
+	// retyping the step's url would not: the reference is the step, not a value
+	// the step happens to carry.
+	//
+	// A step stub answers only invocations of that one step, matched by the
+	// step id the engine records on each node's context ([v1.TaskStepFromContext]),
+	// so two steps sharing a task are told apart without a `where:` at all. It
+	// does not answer a compensation (`undo:`) call, which runs off the run
+	// level context carrying no step id; a case exercising an undo stubs it by
+	// task and `where:`, the genuine case `where:` remains for. Mutually
+	// exclusive with Task.
+	Step string `yaml:"step"`
 
 	// Where filters which invocations of Task this stub answers, as a CEL
 	// expression — the same language `if:` and every other expression in a
@@ -499,7 +579,30 @@ type Expectation struct {
 	// step outputs, because their `if:` did not hold or the run never reached
 	// them.
 	Skipped []string `yaml:"skipped"`
+
+	// Others, when set to "skipped", closes the `ran:` claim: every step the
+	// workflow has that Ran does not name must have been skipped (issue #416).
+	// It is the fail-closed, deny-by-default shape (CLAUDE.md, "fail closed")
+	// applied to expectations, so a case need not hand-enumerate the complement
+	// of the steps it ran, and adding a step to the workflow fails a closed
+	// claim loudly rather than passing silently around the new step.
+	//
+	// The only accepted value is "skipped"; anything else is refused when the
+	// file loads, named by its position. Empty means the claim stays open, the
+	// behavior of every case before this field existed: `ran:` asserts
+	// membership and says nothing about the rest.
+	//
+	// The complement is computed over the steps that can appear in the run's
+	// top level transcript, the same set `ran:` and `skipped:` are checked
+	// against, so a loop body step (whose outputs travel inside the loop's
+	// results, never at the top level) is not miscounted as a step that should
+	// have been skipped.
+	Others string `yaml:"others"`
 }
+
+// OthersSkipped is the one accepted value of [Expectation.Others]: the whole
+// point of the field is to state absence, so there is exactly one thing to say.
+const OthersSkipped = "skipped"
 
 // Load reads and parses a `*.test.yaml`, applying [MaxTestFileBytes] before
 // anything is unmarshaled and [MaxTestsPerFile]/[MaxStubsPerTest]/
@@ -595,6 +698,20 @@ func parseSource(data []byte, requireWorkflow bool) (*File, error) {
 		}
 	}
 
+	// Validated then merged before anything below bounds or checks a case, so
+	// every per-test check runs against the effective test a case actually
+	// runs, not the sparse one the author wrote (issue #416). A default is a
+	// fixture, so it may hold no expression; that is refused here, by position,
+	// rather than carried into a case.
+	if err := checkDefaults(file.Defaults); err != nil {
+		return nil, err
+	}
+	if file.Defaults != nil {
+		for i := range file.Tests {
+			file.Tests[i] = mergeDefaults(file.Defaults, file.Tests[i])
+		}
+	}
+
 	for i, test := range file.Tests {
 		if test.Name == "" {
 			return nil, fmt.Errorf("test %d has no name", i+1)
@@ -641,18 +758,251 @@ func parseSource(data []byte, requireWorkflow bool) (*File, error) {
 			}
 		}
 		for j, stub := range test.Stubs {
-			if stub.Task == "" {
-				return nil, fmt.Errorf("test %q stub %d names no task", test.Name, j+1)
+			switch {
+			case stub.Task == "" && stub.Step == "":
+				return nil, fmt.Errorf("test %q stub %d names neither a task nor a step; "+
+					"give one, either `task: <name>` or `step: <id>`", test.Name, j+1)
+			case stub.Task != "" && stub.Step != "":
+				return nil, fmt.Errorf("test %q stub %d names both a task (%q) and a step (%q); "+
+					"a stub targets one or the other, never both", test.Name, j+1, stub.Task, stub.Step)
 			}
 			if stub.Returns != nil && stub.Fails != nil {
 				return nil, fmt.Errorf(
-					"test %q stub %d for task %q declares both returns and fails; a stubbed call either succeeds or fails, not both",
-					test.Name, j+1, stub.Task)
+					"test %q stub %d for %s declares both returns and fails; a stubbed call either succeeds or fails, not both",
+					test.Name, j+1, stubTarget(&stub))
 			}
+		}
+		if err := checkOthers(&test); err != nil {
+			return nil, err
 		}
 	}
 
 	return &file, nil
+}
+
+// stubTarget names a stub by what it targets, for a diagnostic: `task "http"`
+// or `step "debit"`. One of the two is always set by the time this is reached.
+func stubTarget(s *Stub) string {
+	if s.Step != "" {
+		return fmt.Sprintf("step %q", s.Step)
+	}
+	return fmt.Sprintf("task %q", s.Task)
+}
+
+// stubTargetKey identifies a stub by what it selects, so a case stub can be said
+// to replace a default stub aimed at the same thing (issue #416). A task stub
+// and a step stub never collide, because the two id spaces are kept apart by the
+// prefix.
+//
+// The `where:` filter is part of the identity, and deliberately so: a task's
+// stubs are a switch tried in order (see [Stub.Where]), so two stubs for the
+// same task with different filters are different cases of that switch, not one
+// overriding the other. A default catch-all `- task: log` (no filter) and a
+// case's `- task: log where: <asserts the message>` therefore coexist: the case
+// asserts one message and the default answers every other log call, which is the
+// exact shape the corpus uses. A case stub replaces a default only when it
+// selects the same thing the same way, which is what "override this answer"
+// means.
+func stubTargetKey(s *Stub) string {
+	target := "task:" + s.Task
+	if s.Step != "" {
+		target = "step:" + s.Step
+	}
+	return target + "\x00" + s.Where
+}
+
+// checkOthers refuses an `expect.others:` value that is not the one thing the
+// field is allowed to say, named by its position (CLAUDE.md, "diagnostics are a
+// feature"). Empty is fine: it means the `ran:` claim stays open.
+func checkOthers(test *Test) error {
+	switch test.Expect.Others {
+	case "", OthersSkipped:
+		return nil
+	default:
+		return fmt.Errorf("test %q expect.others: %q is not a value it accepts; the only value is %q, "+
+			"which asserts every step not named in `ran:` was skipped",
+			test.Name, test.Expect.Others, OthersSkipped)
+	}
+}
+
+// checkDefaults refuses a `defaults:` block that holds an expression anywhere,
+// because a test file is a fixture and not a program (issue #416): a `${...}` a
+// case is free to write is, in a default, a value the author did not mean to
+// depend on a run they cannot see from the defaults block. It also bounds the
+// block's stub list, since a default is copied into every case and so its size
+// multiplies.
+//
+// Positioned the way the rest of this loader positions a diagnostic: by naming
+// the field a reader has to look at (`defaults.inputs.version`,
+// `defaults.stubs[0].returns.reference`, `defaults.sender.claims`), a
+// *.test.yaml being identified throughout here by name rather than by line and
+// column (see [checkScriptedIdentity]).
+func checkDefaults(d *Defaults) error {
+	if d == nil {
+		return nil
+	}
+	if len(d.Stubs) > MaxDefaultStubs {
+		return fmt.Errorf("defaults declares %d stubs, more than the limit of %d", len(d.Stubs), MaxDefaultStubs)
+	}
+	for name, v := range d.Inputs {
+		if err := checkNoExpressions("defaults.inputs."+name, v, 0); err != nil {
+			return err
+		}
+	}
+	for i := range d.Stubs {
+		s := d.Stubs[i]
+		where := fmt.Sprintf("defaults.stubs[%d]", i)
+		if err := checkNoExpressions(where+".where", s.Where, 0); err != nil {
+			return err
+		}
+		if err := checkNoExpressions(where+".returns", s.Returns, 0); err != nil {
+			return err
+		}
+	}
+	if d.Sender != nil {
+		if err := checkNoExpressions("defaults.sender", d.Sender, 0); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkNoExpressions descends a default value and refuses the first string that
+// carries a `${` fence, naming its position. The bound on depth is the
+// fail-closed answer to a pathological fixture rather than a constraint on an
+// ordinary one (CLAUDE.md, "bound anything that consumes untrusted input"): the
+// walk is recursive, so recursion gets its own bound.
+func checkNoExpressions(where string, v any, depth int) error {
+	if depth > maxDefaultsDepth {
+		return fmt.Errorf("%s: nests more than %d levels deep, deeper than a default is meant to go",
+			where, maxDefaultsDepth)
+	}
+	switch value := v.(type) {
+	case nil:
+		return nil
+	case string:
+		if strings.Contains(value, "${") {
+			return fmt.Errorf("%s holds the expression %q; a test file's `defaults:` is a fixture, "+
+				"so it may not hold an expression. Write the literal value, or move it into the case that needs it",
+				where, value)
+		}
+		return nil
+	case *ScriptedIdentity:
+		if value == nil {
+			return nil
+		}
+		for _, field := range []struct {
+			name  string
+			value string
+		}{
+			{"subject", value.Subject},
+			{"issuer", value.Issuer},
+			{"namespace", value.Namespace},
+		} {
+			if err := checkNoExpressions(where+"."+field.name, field.value, depth+1); err != nil {
+				return err
+			}
+		}
+		for _, name := range slices.Sorted(maps.Keys(value.Claims)) {
+			if err := checkNoExpressions(where+".claims."+name, value.Claims[name], depth+1); err != nil {
+				return err
+			}
+		}
+		return nil
+	case []any:
+		for i, element := range value {
+			if err := checkNoExpressions(fmt.Sprintf("%s[%d]", where, i), element, depth+1); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	// A nested mapping a YAML decoder hands back is its own choice of type, so
+	// it is reflected rather than switched on map[string]any alone, since missing a
+	// map would let a `${...}` inside it pass as literal text, the silent
+	// nothing "diagnostics are a feature" forbids. Mirrors [compileReturnValue].
+	rv := reflect.ValueOf(v)
+	if rv.Kind() == reflect.Map && rv.Type().Key().Kind() == reflect.String {
+		for _, key := range rv.MapKeys() {
+			if err := checkNoExpressions(where+"."+key.String(), rv.MapIndex(key).Interface(), depth+1); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if rv.Kind() == reflect.Slice {
+		for i := 0; i < rv.Len(); i++ {
+			if err := checkNoExpressions(fmt.Sprintf("%s[%d]", where, i), rv.Index(i).Interface(), depth+1); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	return nil
+}
+
+// mergeDefaults folds a file's `defaults:` into one case, producing the
+// effective test that case runs (issue #416). The rules are the boring ones
+// [Defaults] documents: inputs merge one level with the case winning per key,
+// stubs append except a case stub replaces a default targeting the same task or
+// step, and a default sender fills in only where a case's signal named none.
+//
+// It never mutates the case or the defaults in place: a case's own maps and
+// slices are the author's, and a second case merging the same defaults must see
+// them untouched.
+func mergeDefaults(d *Defaults, test Test) Test {
+	// Inputs: one level. Start from the defaults, then let the case replace
+	// whole keys. A nested map under a key is replaced wholesale by the case's,
+	// not deep-merged, which is the "one level" the rules promise.
+	if len(d.Inputs) > 0 {
+		merged := make(map[string]any, len(d.Inputs)+len(test.Inputs))
+		maps.Copy(merged, d.Inputs)
+		maps.Copy(merged, test.Inputs)
+		test.Inputs = merged
+	}
+
+	// Stubs: the case's own come first, then the file's defaults are appended as
+	// fallbacks, minus any a case stub selects the same way, which is replaced
+	// rather than doubled. Defaults last is what makes a default catch-all
+	// (`- task: log` with no filter) a fallthrough rather than a shadow: a case
+	// asserting a specific log message with `where:` is tried first and still
+	// fires, and the catch-all answers only the calls that assertion did not
+	// name. Reversing this would let an unconditional default match before a
+	// case's more specific stub, silently defeating the assertion (see
+	// [stubTargetKey]).
+	if len(d.Stubs) > 0 {
+		replaced := make(map[string]bool, len(test.Stubs))
+		for i := range test.Stubs {
+			replaced[stubTargetKey(&test.Stubs[i])] = true
+		}
+		merged := make([]Stub, 0, len(d.Stubs)+len(test.Stubs))
+		merged = append(merged, test.Stubs...)
+		for i := range d.Stubs {
+			if replaced[stubTargetKey(&d.Stubs[i])] {
+				continue
+			}
+			merged = append(merged, d.Stubs[i])
+		}
+		test.Stubs = merged
+	}
+
+	// Sender: explicit beats inherited. A signal that named its own sender
+	// keeps it; only one that omitted `sender:` inherits the default (the
+	// resolved open question in #416).
+	if d.Sender != nil && len(test.Signals) > 0 {
+		signals := make([]SignalScript, len(test.Signals))
+		copy(signals, test.Signals)
+		for i := range signals {
+			if signals[i].Sender == nil {
+				signals[i].Sender = d.Sender
+			}
+		}
+		test.Signals = signals
+	}
+
+	return test
 }
 
 // WorkflowPath resolves a test's `workflow:` relative to the *.test.yaml file

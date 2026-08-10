@@ -27,8 +27,7 @@ tests:
       # The step that does not work. Upstream, so it is the kind of failure the
       # step's `retry:` is allowed to attempt again — and when the attempts run
       # out the run cannot continue, which is the moment the compensations run.
-      - task: http
-        where: inputs.url == 'https://httpbin.org/status/500'
+      - step: attach
         fails:
           kind: Upstream
           message: could not attach the volume
@@ -66,8 +65,7 @@ tests:
         where: "'query' in inputs && 'create' in inputs.query && inputs.query.create == 'volume'"
         returns:
           id: vol-net-acme
-      - task: http
-        where: inputs.url == 'https://httpbin.org/status/500'
+      - step: attach
         returns:
           status_code: 200
     expect:

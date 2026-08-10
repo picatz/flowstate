@@ -13,6 +13,10 @@
 # would add `sender: {claims: {role: compliance-reviewer}}` to its `signals:`
 # entry, the same way `examples/approval-gate/`'s own happy-path case does.
 edition: v2026.2
+defaults:
+  stubs:
+    - task: log
+      returns: {}
 tests:
   - name: evidence is gathered for every grant, but the review times out unattested without a real sender
     workflow: ./workflow.yaml
@@ -30,8 +34,6 @@ tests:
         payload:
           attested: true
     stubs:
-      - task: log
-        returns: {}
       - task: http
         where: inputs.query.grantee == 'alice@example.com'
         returns:
@@ -75,8 +77,6 @@ tests:
           role: contributor
       expected_reviewer: compliance-lead@example.com
     stubs:
-      - task: log
-        returns: {}
       - task: http
         where: inputs.query.grantee == 'alice@example.com'
         returns:
@@ -114,8 +114,6 @@ tests:
           role: read-only
       expected_reviewer: compliance-lead@example.com
     stubs:
-      - task: log
-        returns: {}
       - task: http
         where: inputs.query.grantee == 'alice@example.com' && inputs.query.resource == 'prod-database'
         returns:
@@ -150,9 +148,6 @@ tests:
     inputs:
       access_grants: []
       expected_reviewer: compliance-lead@example.com
-    stubs:
-      - task: log
-        returns: {}
     expect:
       failed: true
       error_contains: "must have at least"

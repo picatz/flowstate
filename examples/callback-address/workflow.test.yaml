@@ -12,6 +12,10 @@
 # `pkg/flowstate/v1/tests/runaddress.go` are where those two answers are held to
 # one definition.
 edition: v2026.2
+defaults:
+  stubs:
+    - task: log
+      returns: {}
 tests:
   - name: the run registers its own address before it waits on it
     workflow: ./workflow.yaml
@@ -38,8 +42,6 @@ tests:
         returns:
           status_code: 202
           body: ''
-      - task: log
-        returns: {}
     expect:
       ran: [register, decision, accepted]
       skipped: [rejected, abandoned]
@@ -63,8 +65,6 @@ tests:
         returns:
           status_code: 202
           body: ''
-      - task: log
-        returns: {}
     expect:
       ran: [register, decision, rejected]
       skipped: [accepted, abandoned]
@@ -84,8 +84,6 @@ tests:
         returns:
           status_code: 202
           body: ''
-      - task: log
-        returns: {}
     expect:
       ran: [register, decision, abandoned]
       skipped: [accepted, rejected]
@@ -102,8 +100,6 @@ tests:
         returns:
           status_code: 202
           body: ''
-      - task: log
-        returns: {}
     expect:
       failed: true
       error_contains: 'must satisfy'
