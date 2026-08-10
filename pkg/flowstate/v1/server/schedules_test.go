@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -409,4 +410,162 @@ func TestAnIntervalScheduleIsAcceptedToo(t *testing.T) {
 	require.Equal(t, "every-hour", schedule.GetName())
 	assert.Equal(t, time.Hour, schedule.GetTrigger().GetEvery().AsDuration())
 	assert.NotEmpty(t, schedule.GetNextRunTimes(), "an interval schedule reports when it next fires")
+}
+
+// TestBoundedRecoveryControlsReachTemporal is the honesty check on the knobs the
+// bounded recovery controls added: each one is a projection onto a real Temporal
+// feature, and a projection is exactly the kind of code that compiles while
+// carrying nothing.
+//
+// It asks a real cluster, because that is the only thing that can answer. A unit
+// test on [scheduleSpecOf] would prove the struct was filled in, and the defect
+// this test exists to catch was a struct filled in *correctly by its own lights*:
+// an unset `end_at` copied through `(*timestamppb.Timestamp)(nil).AsTime()`, which
+// is 1970 rather than the zero time the SDK reads as "no end". The schedule was
+// created, reported success, and had no future firing. So the assertion that
+// matters is the one about the times the cluster says it will next fire.
+func TestBoundedRecoveryControlsReachTemporal(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTenantFixture(t)
+
+	// A window wide enough that the schedule is live now and firings remain ahead
+	// of it, since a schedule whose window has closed reports no next firing for a
+	// legitimate reason and would make this test say nothing.
+	start := time.Now().UTC().Add(-time.Hour)
+	end := start.Add(365 * 24 * time.Hour)
+
+	workflow := scheduledWorkflow("bounded-recovery")
+	workflow.DeclaredInputs = nil
+	workflow.Triggers.Schedule = &v1.ScheduleTrigger{
+		// A calendar and nothing else, so this also proves a calendar alone is a
+		// cadence Temporal accepts: every second hour between 09:00 and 17:00.
+		Calendars: []*v1.ScheduleTrigger_Calendar{{
+			Hour:    []*v1.ScheduleTrigger_Calendar_Range{{Start: 9, End: 17, Step: 2}},
+			Minute:  []*v1.ScheduleTrigger_Calendar_Range{{Start: 0}},
+			Comment: "office hours",
+		}},
+		StartAt:        timestamppb.New(start),
+		EndAt:          timestamppb.New(end),
+		CatchupWindow:  durationpb.New(6 * time.Hour),
+		PauseOnFailure: true,
+		Overlap:        v1.ScheduleTrigger_OVERLAP_SKIP,
+	}
+
+	created, err := fixture.teamA.CreateSchedule(t.Context(), connect.NewRequest(&v1.CreateScheduleRequest{
+		Workflow: workflow,
+
+		// A backfill of a window that was missed, at the count and span the bounds
+		// allow, so the path that hands ranges to Temporal is exercised rather than
+		// merely validated.
+		Backfill: []*v1.ScheduleBackfill{{
+			StartAt: timestamppb.New(start.Add(-48 * time.Hour)),
+			EndAt:   timestamppb.New(start.Add(-24 * time.Hour)),
+			Overlap: v1.ScheduleTrigger_OVERLAP_SKIP,
+		}},
+
+		// Paused, so the backfilled firings do not race the assertions below. A
+		// paused schedule still reports the times it *would* fire, which is what is
+		// being read.
+		Paused: true,
+	}))
+	require.NoError(t, err)
+	assert.NotEmpty(t, created.Msg.GetSchedule().GetNextRunTimes(),
+		"a schedule with a calendar and a window still has firings ahead of it")
+
+	described, err := fixture.teamA.DescribeSchedule(t.Context(),
+		connect.NewRequest(&v1.DescribeScheduleRequest{Name: "bounded-recovery"}))
+	require.NoError(t, err)
+
+	// Read back out of the stored specification, the way the cron case is: asking
+	// Temporal what a cadence is answers in its own vocabulary, and what an operator
+	// asked for is what a describe should say.
+	trigger := described.Msg.GetSchedule().GetTrigger()
+	require.Len(t, trigger.GetCalendars(), 1)
+	assert.Equal(t, int32(17), trigger.GetCalendars()[0].GetHour()[0].GetEnd())
+	assert.Equal(t, int32(2), trigger.GetCalendars()[0].GetHour()[0].GetStep())
+	assert.Equal(t, 6*time.Hour, trigger.GetCatchupWindow().AsDuration())
+	assert.True(t, trigger.GetPauseOnFailure())
+
+	// Every next firing falls inside the declared window and on the calendar. The
+	// hour check is what proves the calendar reached the cluster rather than being
+	// dropped on the way: a schedule with no spec at all also reports firings.
+	next := described.Msg.GetSchedule().GetNextRunTimes()
+	require.NotEmpty(t, next, "a live schedule reports when it next fires")
+	for _, at := range next {
+		assert.True(t, at.AsTime().After(start), "a firing before the declared start: %s", at.AsTime())
+		assert.True(t, at.AsTime().Before(end), "a firing after the declared end: %s", at.AsTime())
+		assert.Contains(t, []int{9, 11, 13, 15, 17}, at.AsTime().UTC().Hour(),
+			"a firing at an hour the calendar does not name: %s", at.AsTime())
+	}
+}
+
+// TestABackfillBeyondItsBoundsIsRefusedByTheServer is the other half of
+// [TestBoundedRecoveryControlsReachTemporal]: the bounds are the server's, not the
+// CLI's.
+//
+// `flow schedule create` checks a backfill before sending it, which is the right
+// place for the message an operator reads. It is not a bound: the RPC is public,
+// and a caller that is not the CLI is the caller a bound exists for. This asserts
+// the refusal comes from the server, over the wire, with the code that says the
+// request was wrong rather than the cluster.
+func TestABackfillBeyondItsBoundsIsRefusedByTheServer(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTenantFixture(t)
+
+	now := time.Now().UTC()
+	workflow := scheduledWorkflow("too-much-history")
+	workflow.DeclaredInputs = nil
+
+	t.Run("more history than the span allows", func(t *testing.T) {
+		_, err := fixture.teamA.CreateSchedule(t.Context(), connect.NewRequest(&v1.CreateScheduleRequest{
+			Workflow: workflow,
+			Backfill: []*v1.ScheduleBackfill{{
+				StartAt: timestamppb.New(now.Add(-(v1.MaxScheduleBackfillSpan + time.Hour))),
+				EndAt:   timestamppb.New(now),
+			}},
+		}))
+		require.Error(t, err)
+		assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+		assert.ErrorContains(t, err, "more than 744h0m0s of history")
+	})
+
+	t.Run("more ranges than the count allows", func(t *testing.T) {
+		var backfill []*v1.ScheduleBackfill
+		for i := range v1.MaxScheduleBackfills + 1 {
+			at := now.Add(-time.Duration(i+1) * time.Hour)
+			backfill = append(backfill, &v1.ScheduleBackfill{
+				StartAt: timestamppb.New(at), EndAt: timestamppb.New(at.Add(time.Minute)),
+			})
+		}
+
+		_, err := fixture.teamA.CreateSchedule(t.Context(), connect.NewRequest(&v1.CreateScheduleRequest{
+			Workflow: workflow,
+			Backfill: backfill,
+		}))
+		require.Error(t, err)
+		assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	})
+
+	t.Run("a calendar nobody could have meant", func(t *testing.T) {
+		refused := scheduledWorkflow("impossible-calendar")
+		refused.DeclaredInputs = nil
+		refused.Triggers.Schedule = &v1.ScheduleTrigger{
+			Calendars: []*v1.ScheduleTrigger_Calendar{{Month: []*v1.ScheduleTrigger_Calendar_Range{{Start: 13}}}},
+		}
+
+		_, err := fixture.teamA.CreateSchedule(t.Context(), connect.NewRequest(&v1.CreateScheduleRequest{
+			Workflow: refused,
+		}))
+		require.Error(t, err)
+		assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+		assert.ErrorContains(t, err, "outside 1-12")
+	})
+
+	// Nothing above may have created a schedule: a refusal that half-creates is
+	// worse than either answer, and the listing is the only thing that can say.
+	listed, err := fixture.teamA.ListSchedules(t.Context(), connect.NewRequest(&v1.ListSchedulesRequest{}))
+	require.NoError(t, err)
+	assert.Empty(t, listed.Msg.GetSchedules(), "a refused creation left a schedule behind")
 }

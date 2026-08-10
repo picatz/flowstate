@@ -76,6 +76,9 @@ import (
 	"unicode/utf8"
 
 	"connectrpc.com/connect"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -343,8 +346,21 @@ type Option func(*options)
 
 type options struct {
 	logger          *slog.Logger
+	tracerProvider  trace.TracerProvider
+	meterProvider   metric.MeterProvider
 	maxRequestBytes int
 	shutdownTimeout time.Duration
+}
+
+// WithTracerProvider configures tracing without coupling a plugin to an
+// exporter or telemetry SDK. Nil selects OpenTelemetry's no-op/global default.
+func WithTracerProvider(provider trace.TracerProvider) Option {
+	return func(o *options) { o.tracerProvider = provider }
+}
+
+// WithMeterProvider configures metrics without coupling a plugin to a backend.
+func WithMeterProvider(provider metric.MeterProvider) Option {
+	return func(o *options) { o.meterProvider = provider }
 }
 
 // WithLogger sets where the plugin's own diagnostics go.
@@ -400,6 +416,12 @@ func Run(ctx context.Context, p Plugin, opts ...Option) error {
 	}
 	if cfg.logger == nil {
 		cfg.logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
+	}
+	if cfg.tracerProvider == nil {
+		cfg.tracerProvider = otel.GetTracerProvider()
+	}
+	if cfg.meterProvider == nil {
+		cfg.meterProvider = otel.GetMeterProvider()
 	}
 
 	env, err := readEnvironment()
@@ -784,7 +806,7 @@ var hostProvidedFiles = sync.OnceValue(func() map[string]struct{} {
 func (p Plugin) handler(manifest *pluginv1.PluginManifest, token func() string, cfg options) (http.Handler, error) {
 	opts := []connect.HandlerOption{
 		connect.WithReadMaxBytes(cfg.maxRequestBytes),
-		connect.WithInterceptors(requireToken(token)),
+		connect.WithInterceptors(requireToken(token), telemetryInterceptor(cfg)),
 	}
 
 	mux := http.NewServeMux()

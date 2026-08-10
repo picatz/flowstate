@@ -180,9 +180,21 @@ func TestDecodeToleratesPayloadsItNeverWrote(t *testing.T) {
 type expandingCodec struct {
 	name     string
 	declared func(plain int) int
+
+	// keyID is what this codec claims to encrypt with. Empty means "a valid
+	// one", so that a test about sizes is not also a test about ids: the
+	// key-id tests set it, and the size tests below stay about the size check.
+	keyID string
 }
 
 func (c expandingCodec) Name() string { return c.name }
+
+func (c expandingCodec) CurrentKeyID() string {
+	if c.keyID == "" {
+		return "test-key-01"
+	}
+	return c.keyID
+}
 
 func (c expandingCodec) Encode(p []*commonpb.Payload) ([]*commonpb.Payload, error) { return p, nil }
 

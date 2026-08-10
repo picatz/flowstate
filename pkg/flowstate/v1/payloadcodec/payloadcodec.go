@@ -64,6 +64,36 @@
 // maximal run state, before any payload exists. A codec that does not fit does
 // not start.
 //
+// # Every ciphertext says which key wrote it
+//
+// A payload a real codec encodes carries the id of the key that encrypted it,
+// in payload metadata, under [KeyIDMetadataKey]. Two capabilities are
+// impossible without it, and neither can be retrofitted onto history already
+// written:
+//
+//   - Rotation. Encode uses the current key; Decode selects by the id it finds,
+//     from whatever ring the implementation still trusts. Without the id,
+//     rotation is trial decryption or a flag day.
+//   - Crypto-erasure, which is what `flow shred` will be. Destroying a key by id
+//     makes every payload written under it permanently undecodable, without
+//     touching a byte of history, and the destruction can be recorded as an
+//     administrative event that names what it orphaned. Without the id there is
+//     nothing to name.
+//
+// Metadata is plaintext, necessarily: it is how Decode knows what it is holding
+// before it has chosen a key. So the projection rule the search-attribute guard
+// enforces applies here verbatim, and for the same structural reason. A key id
+// is deployment- or identity-derived. It is never derived from a payload, and it
+// is never itself a secret: a codec whose key id reveals key material has put
+// the key in history beside the ciphertext. Deriving the id from the key through
+// a one-way function is the usual answer, and is what the toy codec does.
+//
+// [Codec.CurrentKeyID] is that id, declared rather than discovered, for the same
+// reason [Codec.MaxEncodedSize] is: it is checked at startup, against the
+// grammar [ValidateKeyID] pins, before any payload exists. An id that cannot be
+// named in an error message, or that is long enough to matter against the
+// expansion budget, is refused by the process rather than met by a run.
+//
 // # The null codec is the default, and is not a placeholder
 //
 // [Null] is what an unconfigured deployment runs, and it is deliberately a real
@@ -82,6 +112,81 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
+
+// KeyIDMetadataKey is the payload metadata entry carrying the id of the key a
+// payload was encrypted under. One name, owned here, written by every codec and
+// read by every codec.
+//
+// # Why it is namespaced
+//
+// Payload metadata is one flat map, shared with whoever else touches the
+// payload: the SDK reserves the bare names it uses for itself ("encoding",
+// "messageType"), a codec chain is a list rather than a single codec, and
+// nothing anywhere arbitrates the space. A bare "keyId" would therefore be a
+// name two independent codecs could both pick, and the collision is silent and
+// catastrophic in exactly the way this package exists to prevent: Decode would
+// select a key by an id another codec wrote. Namespacing removes the
+// possibility rather than making it unlikely.
+//
+// The spelling follows the one this project already uses where it puts a member
+// in a map it does not own, the MCP `_meta` key
+// "picatz.github.io/flowstate.contentDigest" (cmd/flow/mcpui.go). Same rule,
+// same prefix, so there is one answer in the tree to "how do we name a key in
+// somebody else's map" rather than one per protocol. The SDK's own convention
+// is the one thing it cannot be: bare lowercase names are precisely the space
+// the SDK reserves.
+const KeyIDMetadataKey = "picatz.github.io/flowstate.keyId"
+
+// MaxKeyIDBytes bounds a key id.
+//
+// The bound is not cosmetic. The id is stamped on every payload the codec
+// writes, so it is inside the expansion the codec declares through
+// [Codec.MaxEncodedSize] and inside the budget [checkRunStateFits] allots: an
+// unbounded id is an unbounded expansion, checked nowhere. Sixty-four bytes
+// holds a truncated hash, a UUID, or a KMS key version, which is every shape a
+// key id takes in practice.
+const MaxKeyIDBytes = 64
+
+// ValidateKeyID reports whether an id meets the grammar every Flowstate key id
+// meets: one to [MaxKeyIDBytes] bytes of ASCII letters, digits, '.', '_' or '-'.
+//
+// The grammar is chosen for where an id ends up rather than for what a key store
+// finds convenient. An id is quoted back in a decode failure, printed in a
+// startup line, and will be an argument to `flow shred`, so it may not carry
+// whitespace, control bytes, quotes, or the '/' and ':' that other naming
+// schemes use as structure. An id that cannot be shown to an operator verbatim
+// is an id the operator cannot act on.
+//
+// Two callers, in two directions. [Config.Validate] checks the id a codec
+// declares, at startup, before any payload exists. A codec's Decode checks the
+// id it reads off a payload, which is input an outside party chose, before doing
+// anything with it, including quoting it: the errors returned here therefore
+// never echo the id itself, only its length or the one byte that was wrong.
+func ValidateKeyID(id string) error {
+	if id == "" {
+		return fmt.Errorf("a key id must not be empty")
+	}
+	if len(id) > MaxKeyIDBytes {
+		return fmt.Errorf(
+			"a key id is at most %d bytes and this one is %d: the id is stamped on every payload "+
+				"the codec writes, so it is spent out of the same expansion budget the ciphertext is",
+			MaxKeyIDBytes, len(id))
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case c == '.', c == '_', c == '-':
+		default:
+			return fmt.Errorf(
+				"a key id holds only ASCII letters, digits, '.', '_' or '-', and this one holds %q "+
+					"at byte %d: an id is quoted back in a decode failure and named on a `flow shred` "+
+					"command line, so it must survive being shown to an operator verbatim",
+				string(rune(c)), i)
+		}
+	}
+	return nil
+}
 
 // Codec encodes and decodes payload bytes on their way to and from the
 // substrate.
@@ -104,6 +209,36 @@ type Codec interface {
 	// contain key material, a key id that is itself a secret, or anything
 	// derived from a payload.
 	Name() string
+
+	// CurrentKeyID is the id of the key Encode is using now, which Encode
+	// stamps on every payload it writes under [KeyIDMetadataKey].
+	//
+	// It is the *current* key, singular, because that is the only one anybody
+	// outside the codec has a use for: it is what will appear on new payloads,
+	// so it is what has to fit the grammar and the size budget at startup. The
+	// ring Decode selects from is wider, holding every key still trusted, and
+	// stays the implementation's business. Nothing here enumerates it, because
+	// nothing here would do anything with the enumeration: `flow shred`
+	// destroys a key in custody, which is `flow keys`' surface rather than this
+	// one.
+	//
+	// Only the null codec answers with the empty string, and it means what it
+	// says: this codec encrypts nothing, so there is no key, so a payload it
+	// wrote names none. [Config.Validate] refuses any other codec that answers
+	// that way, because a codec that stamps no id writes ciphertext that can
+	// never be attributed to a key and therefore can never be shredded, which
+	// is a promise broken silently, years later, by a deletion that deletes
+	// nothing.
+	//
+	// This is a method on the interface rather than an optional one a codec may
+	// implement, for the reason [Codec.MaxEncodedSize] is: an optional contract
+	// is one an implementation omits by accident and nothing catches. The
+	// compiler asking every codec the question is the enforcement.
+	//
+	// It must be stable for the life of the process: it is read once at startup
+	// to validate, and read again on every Encode. A codec that rotated
+	// underneath itself would declare one id and stamp another.
+	CurrentKeyID() string
 
 	// MaxEncodedSize reports the largest encoded size Encode may produce for
 	// one payload of plain bytes, where both sides are measured as proto.Size
@@ -140,12 +275,38 @@ type Codec interface {
 
 	// Encode is called on the way out, with payloads that are never nil, and
 	// must not mutate its argument.
+	//
+	// Every payload it writes carries [Codec.CurrentKeyID] under
+	// [KeyIDMetadataKey]. A codec that encrypts and does not stamp is writing
+	// history nothing can rotate off and nothing can shred.
 	Encode([]*commonpb.Payload) ([]*commonpb.Payload, error)
 
 	// Decode is called on the way in, with payloads that are never nil, and
-	// must not mutate its argument. It must tolerate payloads this codec never
-	// encoded: a deployment that turns a codec on has history written before
-	// it did.
+	// must not mutate its argument.
+	//
+	// It selects the key by the id the payload names, never by which key is
+	// current: falling back to the current key when the id does not match is
+	// how a rotated deployment turns a decode failure into a garbled success,
+	// and how a shredded payload comes back to life.
+	//
+	// Three inputs, three answers, all fail-closed:
+	//
+	//   - A payload this codec wrote, naming an id it holds: decoded.
+	//   - A payload naming an id it does not hold: an error naming the id and
+	//     nothing else, never the ciphertext and never a guess. This is the
+	//     read path of a payload whose key was destroyed, so the error text is
+	//     a product surface: it should read as "this was destroyed", because
+	//     that is usually what happened, and reading as corruption sends an
+	//     operator to look for a bug in place of the shred they performed.
+	//   - A payload this codec never wrote: tolerated only when it carries no
+	//     mark of this codec at all, which is history written before the
+	//     deployment turned a codec on. A payload marked as this codec's but
+	//     carrying no key id is not that: it is a payload claiming an origin it
+	//     does not have, and it is refused.
+	//
+	// The id read off a payload is input an outside party chose. Check it
+	// against [ValidateKeyID] before using it as a map key or putting it in an
+	// error.
 	Decode([]*commonpb.Payload) ([]*commonpb.Payload, error)
 }
 
@@ -159,6 +320,12 @@ type Codec interface {
 type nullCodec struct{}
 
 func (nullCodec) Name() string { return "none" }
+
+// CurrentKeyID is empty, and is the one codec allowed to answer that way: there
+// is no key, nothing is encrypted, and the payloads that come out are the ones
+// that went in, unmarked. Slice 1's guarantee that pre-codec history stays
+// readable is the same statement seen from the other side.
+func (nullCodec) CurrentKeyID() string { return "" }
 
 func (nullCodec) Encode(p []*commonpb.Payload) ([]*commonpb.Payload, error) { return p, nil }
 
@@ -279,7 +446,47 @@ func (c Config) Validate() error {
 	if codec.Name() == "" {
 		return fmt.Errorf("payload codec: a codec must name itself, for diagnostics")
 	}
+	if err := checkKeyID(c); err != nil {
+		return err
+	}
 	return checkRunStateFits(codec)
+}
+
+// checkKeyID refuses a codec whose current key id is missing or unspellable,
+// before it has written a payload nobody can rotate off or shred.
+//
+// It runs before [checkRunStateFits] rather than after, because the id is a term
+// in the size the size check is about: an id of unbounded length is an expansion
+// of unbounded size, and the codec's own declaration is the thing the size check
+// takes on trust.
+//
+// The null codec is the one exemption, and it is not really one: it is asked the
+// question and answers "no key", which is true, and any other codec giving that
+// answer is refused here. The rule is not "codecs that opt in declare an id", it
+// is "a codec that transforms payloads has a key, and says which".
+func checkKeyID(c Config) error {
+	codec := c.codec()
+	id := codec.CurrentKeyID()
+
+	if !c.Enabled() {
+		return nil
+	}
+
+	if id == "" {
+		return fmt.Errorf(
+			"payload codec %q names no current key id: every payload a codec writes carries the id "+
+				"of the key that encrypted it, under the %q metadata entry, because that id is what "+
+				"rotation selects by and what `flow shred` erases by. Ciphertext written without one "+
+				"cannot be attributed to a key, so it can never be shredded: the erasure would report "+
+				"success and destroy nothing",
+			codec.Name(), KeyIDMetadataKey)
+	}
+
+	if err := ValidateKeyID(id); err != nil {
+		return fmt.Errorf("payload codec %q declares a current key id it cannot use: %w", codec.Name(), err)
+	}
+
+	return nil
 }
 
 // checkRunStateFits refuses a codec whose ciphertext would not fit where its

@@ -1124,11 +1124,94 @@ The checker is deliberately generous: `L`, `W`, `15#3` and `?` are cron syntax i
 not model, and it lets them through rather than inventing a restriction Flowstate does
 not have.
 
-Not surfaced yet, each additive with no break: calendar specs and their `skip`
-exceptions (a cron expression says the same thing in a notation people already know),
-`start_at`/`end_at` bounds, the catchup window, pause-on-failure, a limit on the number
-of firings, and backfill. An operator wanting one today reaches for the `temporal` CLI
-against the schedule Flowstate created.
+**Bounded recovery: the window, the catch-up, and what happens after a failure.** The
+same block accepts four more keys, and each one exists to make a schedule's behavior
+after something has gone wrong a thing somebody wrote down rather than a default they
+inherited.
+
+```yaml
+triggers:
+  schedule:
+    cron: "0 7 * * MON-FRI"
+
+    # The window firings may happen in, inclusive at both ends. Either may be
+    # written alone, and a start that is not before its end is refused: such a
+    # schedule can never fire, and Temporal would create it happily.
+    start_at: 2026-01-01T00:00:00Z
+    end_at: 2027-01-01T00:00:00Z
+
+    # How late a missed firing may still be taken when the service comes back.
+    catchup_window: 6h
+
+    # Stop the schedule at the first firing that exhausts its retries or times
+    # out, rather than at the hundredth.
+    pause_on_failure: true
+```
+
+`catchup_window` is the one with a default worth knowing. Leaving it out does not mean
+"no catch-up": Temporal's own default for an unset window is **one year**, so a
+schedule silent on the subject would take a year of missed firings the moment a long
+outage ended. Flowstate substitutes a bounded default of one hour before the schedule
+is created, and this key is how a workload asks for more, up to thirty days. Whatever
+the window, the overlap policy still applies to what comes out of it, which is why the
+example above pairs a six-hour window with `overlap: skip`.
+
+**`calendars:` says when in a calendar's own terms.** A cron expression says the same
+thing in a notation most people arrive already knowing, so `calendars:` is for the
+cadence that is awkward to write as one, and for the range spelling that cron hides
+inside a string:
+
+```yaml
+triggers:
+  schedule:
+    calendars:
+      # Every second hour from 09:00 to 17:00, Monday to Friday.
+      - hour: {start: 9, end: 17, step: 2}
+        minute: 0
+        day_of_week: {start: 1, end: 5}
+        comment: office hours
+
+      # The first of the month, at 06:00. A field is a whole number, a list of
+      # them, or the long form above.
+      - day_of_month: 1
+        hour: 6
+```
+
+Calendars, cron expressions and `every:` are **unioned**: a schedule fires at every
+time any of them matches, so a calendar written beside a cron expression adds firings
+rather than narrowing them. Each field is bounded by what Temporal allows in it: 0-59
+for seconds and minutes, 0-23 for hours, 1-31 for days of the month, 1-12 for months,
+0-6 for days of the week (0 is Sunday), and years from 1970. So `month: 13` is reported
+with a line and a column rather than carried to a cluster that refuses it at 03:00.
+Two further refusals are about what a value *means* rather than its range: a
+calendar with no fields at all, which Temporal reads as 00:00:00 every day, and a range
+that counts down, which Temporal silently narrows to its start.
+
+A field nobody writes takes Temporal's default for that field. Seconds, minutes and
+hours default to zero; days of the month, months and days of the week match everything.
+That is why the second calendar above fires once, at 06:00, rather than sixty times in
+the 06:00 hour.
+
+**Backfill is not written here at all.** Recovering a window that was missed is an
+operator request about one moment, not a lasting property of the workload, so it lives
+on the command that creates the schedule:
+
+```console
+$ flow schedule create report.yaml --backfill 2026-08-01T00:00:00Z..2026-08-03T00:00:00Z
+```
+
+At most 10 ranges are accepted, spanning at most 31 days in total, and both bounds are
+checked by the same function whether the request came from the CLI or from the API.
+Two bounds rather than one because they bound different things: the count bounds how
+many evaluations the cluster is asked for, and the total span bounds how much history
+those evaluations cover, which is what decides how many executions come out. One 40-day
+range and forty 1-day ranges are the same burst.
+
+The interval Temporal evaluates is **half-open**: times after the start and up to and
+including the end. A start written at exactly the first firing time wanted therefore
+excludes it, and the fix is to write the start a moment earlier. Each range may name
+its own `overlap` to say what recovered work does when it meets a run already going;
+without one the schedule's own policy applies.
 
 ### `${...}` stays; `!expr` is refused
 
@@ -2224,9 +2307,11 @@ with a command whose only payload is that.
 
 A callee's own steps may carry `undo:`, and a compensation they register lands on the
 same run-level [`UndoLog`](../pkg/flowstate/v1/undo.go) a top-level step's would —
-`v1.UndoScopeCall` is one of the three placements `CheckUndoPlacement` allows,
-alongside the run's own top level and a `loop:` body; only `UndoScopeConcurrent` is
-refused. Nothing about *how* a compensation reaches the log changed to
+`v1.UndoScopeCall` is one of the placements `CheckUndoPlacement` allows, alongside
+the run's own top level, a `loop:` body, and, since concurrent scopes gained their
+structural ordering key, a `for_each` body or `parallel` branch; what stays refused
+is a compensation on a step with no effect of its own, such as the `call:` step
+itself. Nothing about *how* a compensation reaches the log changed to
 make this true: the durable executor already shared `e.undo` by pointer with the
 executor a call descends into, for the same reason it shares `signals` and `progress`
 across every level — a compensation belongs to the run, not to the level that happens
@@ -2274,20 +2359,12 @@ A third — a `loop:` body — was a narrowing when this was written and is not 
 more; it is left below with the reason it was retired, because the argument that
 retired it is the same one that keeps the first narrowing in force.
 
-**`undo:` is refused inside a `for_each` body and a `parallel:` branch.** This is
-invariant 3, not effort. Compensations run in reverse registration order, and
-registration order inside concurrent work is not the same on the two drivers: the local
-driver runs branches and iterations sequentially in declaration order, deliberately, so
-that a local run is comparable, while the durable driver runs them at once. A saga
-spanning a fan-out would therefore rehearse in one order and run in another — a local
-run lying about precisely the property sagas exist to get right. Fixing it means
-ordering by something both drivers can agree on, which is a declaration path rather than
-a sequence, and deciding what "reverse" means across branches that are unordered by
-construction. Neither answer is obvious and neither is guessed at here. The refusal is a
-positioned diagnostic that says which, and the two execution drivers refuse it too, so a
-specification that never came from a Flowfile cannot slip past. A `call:` does not share
-this narrowing — see "Compensation composes through a call" above — because it is not
-concurrent: the reason this refusal exists is exactly the reason it does not apply there.
+**`undo:` inside `for_each` and `parallel:` uses a structural ordering key.** Each
+concurrent child accumulates successful work privately. At the join, its registrations
+are merged by input iteration index or branch declaration index, followed by registration
+order inside that child. Compensation reverses that total order. Completion time is never
+part of the key, so local sequential rehearsal and durable concurrent execution agree;
+partial completion, retries, cancellation, and a nested `call:` cannot perturb it.
 
 **`undo:` is *not* refused inside a `loop:` body.** It was, and the reason it gave did
 not survive being checked (#253). The refusal said that a sequential loop's registration

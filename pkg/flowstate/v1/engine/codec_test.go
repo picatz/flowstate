@@ -38,6 +38,10 @@ type countingCodec struct {
 
 func (c *countingCodec) Name() string { return c.inner.Name() }
 
+// Counting does not re-key anything either, so the id a payload carries is the
+// wrapped codec's, for the same reason the size declaration is.
+func (c *countingCodec) CurrentKeyID() string { return c.inner.CurrentKeyID() }
+
 func (c *countingCodec) Encode(p []*commonpb.Payload) ([]*commonpb.Payload, error) {
 	c.encoded.Add(int64(len(p)))
 	return c.inner.Encode(p)

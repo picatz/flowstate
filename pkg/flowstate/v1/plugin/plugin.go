@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"google.golang.org/protobuf/proto"
 
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
@@ -165,10 +167,11 @@ type Plugin struct {
 	// [ErrDistribution]).
 	distribution string
 
-	state    State
-	lastErr  error
-	restarts int
-	health   Health
+	state     State
+	lastErr   error
+	restarts  int
+	health    Health
+	telemetry telemetry
 
 	supervisorDone chan struct{}
 	closeOnce      sync.Once
@@ -189,6 +192,7 @@ func newPlugin(hostCtx context.Context, cfg Config, found Found) (*Plugin, error
 		procCtx:        procCtx,
 		cancel:         cancel,
 		state:          StateStarting,
+		telemetry:      newTelemetry(cfg),
 		supervisorDone: make(chan struct{}),
 	}
 
@@ -334,10 +338,13 @@ func (p *Plugin) callContext(ctx context.Context) (context.Context, context.Canc
 // CheckHealth polls the plugin now, rather than waiting for the next scheduled
 // poll, and records the result.
 func (p *Plugin) CheckHealth(ctx context.Context) Health {
+	ctx, _, finish := p.telemetry.start(ctx, "health", p.name, "")
 	inst, err := p.ready()
 	if err != nil {
 		health := Health{Status: HealthUnreachable, CheckedAt: time.Now(), Err: err}
 		p.recordHealth(health)
+		p.telemetry.health.Add(ctx, 1, metric.WithAttributes(attribute.String("flowstate.plugin.name", p.name), attribute.String("flowstate.plugin.health.status", health.Status.String())))
+		finish(err)
 		return health
 	}
 
@@ -368,6 +375,8 @@ func (p *Plugin) CheckHealth(ctx context.Context) Health {
 	}
 
 	p.recordHealth(health)
+	p.telemetry.health.Add(ctx, 1, metric.WithAttributes(attribute.String("flowstate.plugin.name", p.name), attribute.String("flowstate.plugin.health.status", health.Status.String())))
+	finish(health.Err)
 	return health
 }
 
@@ -385,18 +394,25 @@ func (p *Plugin) recordHealth(h Health) {
 // the caller records the bytes that this process is running rather than the bytes
 // that answer to its path afterwards.
 func (p *Plugin) start() (*instance, *pluginv1.PluginManifest, string, error) {
+	ctx, _, finish := p.telemetry.start(p.procCtx, "start", p.name, "")
+	var startErr error
+	defer func() { finish(startErr) }()
+
 	distribution, err := distributionDigest(p.path)
 	if err != nil {
-		return nil, nil, "", pluginError(p.name, p.path, fmt.Errorf("%w: %w", ErrLaunch, err))
+		startErr = pluginError(p.name, p.path, fmt.Errorf("%w: %w", ErrLaunch, err))
+		return nil, nil, "", startErr
 	}
 
-	inst, err := launch(p.procCtx, p.cfg, Found{Name: p.name, Path: p.path})
+	inst, err := launch(ctx, p.cfg, Found{Name: p.name, Path: p.path})
 	if err != nil {
+		startErr = err
 		return nil, nil, "", err
 	}
 
-	manifest, err := p.describe(inst)
+	manifest, err := p.describe(ctx, inst)
 	if err != nil {
+		startErr = err
 		inst.stop(context.Background(), p.cfg.ShutdownGrace)
 		return nil, nil, "", err
 	}
@@ -438,8 +454,11 @@ func (p *Plugin) DistributionDigest() string {
 }
 
 // describe calls Describe and refuses anything the host cannot accept.
-func (p *Plugin) describe(inst *instance) (*pluginv1.PluginManifest, error) {
-	ctx, cancel := context.WithTimeout(p.procCtx, p.cfg.DescribeTimeout)
+// describe asks the plugin who it is, on the context its caller's span lives
+// in, so the mandatory first RPC is a child of the start trace rather than a
+// root of its own.
+func (p *Plugin) describe(ctx context.Context, inst *instance) (*pluginv1.PluginManifest, error) {
+	ctx, cancel := context.WithTimeout(ctx, p.cfg.DescribeTimeout)
 	defer cancel()
 
 	resp, err := inst.clients.plugin.Describe(ctx, connect.NewRequest(&pluginv1.DescribeRequest{
@@ -683,6 +702,11 @@ func (p *Plugin) restart() bool {
 	if !p.sleep(backoffFor(attempt, p.cfg.RestartBackoff, p.cfg.MaxRestartBackoff)) {
 		return false
 	}
+
+	// Counted here, after the budget said yes and the backoff was not cancelled
+	// by shutdown, so the metric reports relaunches actually attempted rather
+	// than intentions: a plugin with MaxRestarts zero records none.
+	p.telemetry.restarts.Add(p.procCtx, 1)
 
 	inst, manifest, distribution, err := p.start()
 	if err != nil {

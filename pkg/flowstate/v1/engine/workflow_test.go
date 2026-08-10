@@ -1418,8 +1418,7 @@ func TestRunWorkflowUndo(t *testing.T) {
 					"the failure does not carry the account of what was compensated")
 			}
 
-			require.Equal(t, test.Recorded, recorded(),
-				"the effects that happened, and their order, are not what compensating should have produced")
+			tests.AssertRecorded(t, test, recorded())
 		})
 	}
 }

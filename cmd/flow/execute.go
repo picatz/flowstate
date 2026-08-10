@@ -119,7 +119,11 @@ func renderError(surface *ui.UI, err error) {
 	// failed for its own reasons and a suggestion would be invented.
 	if isUsageError(err) {
 		fmt.Fprintln(&b)
-		fmt.Fprintln(&b, theme.Muted.Render("Try `flow --help` for the commands and flags."))
+		// The hint is this repo's own prose and goes through the same markup pass
+		// the help page does. The error above it deliberately does not: an error's
+		// text can carry a line out of somebody's Flowfile, and a backtick in that
+		// is theirs rather than markup of ours to eat.
+		fmt.Fprintln(&b, wrapProse(theme, theme.Muted, "Try `flow --help` for the commands and flags.", width))
 	}
 
 	fmt.Fprint(w, b.String())

@@ -157,7 +157,16 @@ func envSegment(s string) string {
 // named before this process ever saw the request. This function never sees a
 // reference and never has a scheme to fish with; it either receives a token or
 // it does not.
-func greet(_ context.Context, inputs map[string]*flowstatev1.Value, _ *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
+func greet(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
+	// The SDK extracted the host's W3C parent before invoking us. Using its
+	// configured tracer therefore makes this a child of the plugin RPC without
+	// selecting an exporter or telemetry backend here. Nothing below makes an
+	// outbound call, so the child context the tracer returns is discarded; a
+	// task that calls anything would thread it through instead.
+	if tracer := sdk.Tracer(ctx); tracer != nil {
+		_, span := tracer.Start(ctx, "example.greet")
+		defer span.End()
+	}
 	var in examplev1.GreetInputs
 	if err := sdk.DecodeInputs(inputs, &in); err != nil {
 		return nil, sdk.InvalidInput("%v", err)
