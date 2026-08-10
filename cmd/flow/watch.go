@@ -125,6 +125,14 @@ func (p clientPoller) Poll(ctx context.Context) (*v1.GetResponse, error) {
 // transientError marks a poll failure worth asking about again.
 type transientError struct{ error }
 
+// Unwrap keeps the refusal underneath reachable.
+//
+// Without it the chain stops here, so everything that reads an error by type
+// sees a marker with nothing inside it: [nextCommandsFor], looking for the remedy
+// a [noServerError] carries, finds none. A watch that gave up because no server
+// answered is precisely the case that wants the way out printed.
+func (e transientError) Unwrap() error { return e.error }
+
 // classifyPollError explains a refused poll and records whether it is worth another
 // attempt.
 //

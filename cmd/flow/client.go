@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -217,6 +218,16 @@ func serverBaseURL(address string) string {
 // being asked is whether to warn, and warning about something local is a smaller
 // mistake than staying quiet about something remote.
 func isLoopbackAddress(address string) bool {
+	// `--address http://localhost:9233` is a supported spelling, and handing
+	// the whole URL to SplitHostPort fails both parses below, which would read
+	// an explicitly schemed local address as remote and silently withhold the
+	// local remedies. The scheme is not part of the question being asked.
+	if strings.Contains(address, "://") {
+		if u, err := url.Parse(address); err == nil && u.Hostname() != "" {
+			address = u.Hostname()
+		}
+	}
+
 	host := address
 	if h, _, err := net.SplitHostPort(address); err == nil {
 		host = h
@@ -259,11 +270,166 @@ func refusedRun(verb, workflowID string, server serverFlags, err error) error {
 	case connect.CodeUnauthenticated, connect.CodePermissionDenied:
 		return fmt.Errorf("refused while %s %q: %w", verb, workflowID, err)
 	case connect.CodeUnavailable:
-		return fmt.Errorf("no Flowstate server answered at %s (set --address or FLOWSTATE_ADDRESS "+
-			"to point somewhere else): %w", server.address, err)
+		return unreachableServer(server, "", err)
 	default:
 		return fmt.Errorf("%s %q: %w", verb, workflowID, err)
 	}
+}
+
+// refusedStart explains a run that never started.
+//
+// Separate from [refusedRun] because there is no run id yet to be addressable or
+// not, and because this is the one refusal that has a Flowfile in hand: the path
+// the caller named is what makes `flow run local <file>` a remedy this command
+// can spell out rather than allude to. `flow run` is also the likeliest first
+// command anybody types, so it is the one that can least afford to report a bare
+// dial error.
+func refusedStart(file, name string, arguments []string, server serverFlags, err error) error {
+	switch connect.CodeOf(err) {
+	case connect.CodeUnavailable:
+		return unreachableServerWithArguments(server, file, arguments, err)
+	default:
+		return fmt.Errorf("starting %s: %w", name, err)
+	}
+}
+
+// noServerError is the one report of a Flowstate server that did not answer.
+//
+// One type rather than the four copies of one sentence this replaces, per the
+// one-constant rule: a wording change here used to be a four-file hunt, and the
+// fourth copy had already drifted.
+//
+// It carries the address rather than formatting it in at each call site, because
+// the remedies depend on which address was tried. A refusal from loopback means
+// there is very likely no server at all, which is a situation the CLI can answer
+// with a command to type; a refusal from somewhere else means a deployment that
+// is down or misnamed, and a suggestion to start a dev stack would be advice
+// about the wrong machine.
+type noServerError struct {
+	// address is what the client dialled, exactly as `--address` or
+	// FLOWSTATE_ADDRESS spelled it.
+	address string
+
+	// workflowFile is the Flowfile the verb was given, when it had one. Empty
+	// for every verb that addresses a run, a schedule, or nothing at all.
+	workflowFile string
+
+	// runArguments are the pre-quoted input flags the failed invocation
+	// carried, appended to the suggested commands so following one starts the
+	// workload that was asked for.
+	runArguments []string
+
+	// err is the dial failure underneath, kept so the reason survives: a
+	// connection refused and a TLS handshake that failed are the same code and
+	// very different afternoons.
+	err error
+}
+
+// unreachableServer reports that nothing answered at the address this command
+// dialled.
+//
+// file names the Flowfile the caller passed, or is empty when the verb has none.
+func unreachableServer(server serverFlags, file string, err error) error {
+	return unreachableServerWithArguments(server, file, nil, err)
+}
+
+// unreachableServerWithArguments is the run-shaped form: the arguments ride
+// along so the suggested command is the invocation that failed, not a flagless
+// cousin of it.
+func unreachableServerWithArguments(server serverFlags, file string, arguments []string, err error) error {
+	return &noServerError{address: server.address, workflowFile: file, runArguments: arguments, err: err}
+}
+
+// Error is the sentence every verb that dials the server now prints, written down
+// once.
+//
+// The address is named because a caller who set FLOWSTATE_ADDRESS in a shell they
+// have since forgotten about is the caller most confused by "no server"; and both
+// the flag and the variable are named because pointing at an existing deployment
+// is the remedy that has nothing to do with this machine, so it belongs in the
+// sentence rather than in a list of things to run.
+func (e *noServerError) Error() string {
+	return fmt.Sprintf("no Flowstate server answered at %s (set --address or FLOWSTATE_ADDRESS "+
+		"to point at a deployment that is already running): %v", e.address, e.err)
+}
+
+func (e *noServerError) Unwrap() error { return e.err }
+
+// nextCommands offers the way out, as runnable commands.
+//
+// `flow server dev` leads because it is the answer to the situation that is
+// actually most common on a refusal from this machine: no server exists yet. It
+// is one command since #377, and the second line of its block is the verb the
+// caller already wanted, so the two lines together are the whole path from here
+// to a durable run.
+//
+// `flow run local` comes second and only where a Flowfile was named, because it
+// is the answer to a different question: somebody who never wanted a server at
+// all. It stays below the durable path rather than beside it, the way `flow
+// init`'s NEXT block orders the same two choices, so the two surfaces teach in
+// one voice.
+//
+// Nothing is offered for a remote address. Both remedies are about this machine,
+// and telling somebody whose staging deployment is down to start a dev stack
+// would be answering a question they did not ask; the address hint in the
+// sentence above is the lead there, which is where it belongs.
+func (e *noServerError) nextCommands() []commandBlock {
+	if !isLoopbackAddress(e.address) {
+		return nil
+	}
+
+	durable := []string{"flow server dev"}
+	if e.workflowFile != "" {
+		invocation := shellArgument(e.workflowFile) + e.runArgumentSuffix()
+		durable = append(durable, "flow run "+invocation)
+
+		return append([]commandBlock{{commands: durable}}, commandBlock{
+			lead:     "or rehearse it here, with no server at all:",
+			commands: []string{"flow run local " + invocation},
+		})
+	}
+
+	return []commandBlock{{commands: durable}}
+}
+
+// runArgumentSuffix renders the input flags the failed invocation carried, so
+// the suggested command starts the workload that was asked for rather than a
+// flagless cousin a workflow with required inputs refuses outright.
+func (e *noServerError) runArgumentSuffix() string {
+	var suffix strings.Builder
+	for _, argument := range e.runArguments {
+		suffix.WriteString(" ")
+		suffix.WriteString(argument)
+	}
+
+	return suffix.String()
+}
+
+// shellArgument renders a value safe to copy into a shell.
+//
+// The path arrived through this process's argv, where the shell's quoting has
+// already been consumed, so pasting it back bare re-splits on whitespace and
+// re-expands metacharacters. A leading dash additionally reads as a flag, which
+// `./` settles without asking the copier to know about `--`.
+func shellArgument(value string) string {
+	if strings.HasPrefix(value, "-") {
+		value = "./" + value
+	}
+
+	safe := true
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.', r == '/', r == '_', r == '-', r == '=', r == ':', r == ',', r == '@', r == '%', r == '+':
+		default:
+			safe = false
+		}
+	}
+	if safe {
+		return value
+	}
+
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }
 
 // boundedTransport caps every response body, including the ones Connect's own limit

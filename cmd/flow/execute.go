@@ -161,7 +161,74 @@ func renderError(surface *ui.UI, err error) {
 		fmt.Fprintln(&b, wrapProse(theme, theme.Muted, "Try `flow --help` for the commands and flags.", width))
 	}
 
+	// An error that knows what to run next says so in the one element this CLI
+	// has for that, whatever failed. See [commandBlock].
+	if blocks := nextCommandsFor(err); len(blocks) > 0 {
+		writeNextCommands(&b, theme, blocks)
+	}
+
 	fmt.Fprint(w, b.String())
+}
+
+// commandBlock is a group of runnable commands under one optional lead-in.
+//
+// The shape `flow init`'s NEXT block already prints, moved somewhere both the
+// happy path and the sad path can reach: a first block of commands, then any
+// number of alternatives each introduced by a muted line saying what makes it a
+// different choice rather than a longer one. #327 asked for one way of suggesting
+// next commands, and an error that has a remedy is exactly as much a suggestion
+// as a scaffold that has just been written.
+type commandBlock struct {
+	// lead is the muted line above the commands, or empty for the first block,
+	// which needs no introduction beyond the heading.
+	lead string
+
+	// commands are typed verbatim, in the order somebody would type them.
+	commands []string
+}
+
+// commandSuggester is an error that knows what to run next.
+//
+// An interface rather than a check against one concrete type, so the next error
+// with a runnable remedy renders identically without editing [renderError],
+// which is the whole of what keeps this from becoming a second way of saying the
+// same thing.
+type commandSuggester interface {
+	nextCommands() []commandBlock
+}
+
+// nextCommandsFor finds the suggestion anywhere in an error's chain.
+//
+// Anywhere, because a refusal is routinely wrapped on its way out. `flow watch`
+// gives up with the last poll failure inside a sentence of its own, and a remedy
+// that disappeared the moment somebody added context would be a remedy nobody
+// could rely on.
+func nextCommandsFor(err error) []commandBlock {
+	var suggester commandSuggester
+	if !errors.As(err, &suggester) {
+		return nil
+	}
+
+	return suggester.nextCommands()
+}
+
+// writeNextCommands draws the blocks under the heading, two-space indented per the
+// design language's rule for a line subordinate to the one above it.
+func writeNextCommands(b *strings.Builder, theme ui.Theme, blocks []commandBlock) {
+	fmt.Fprintln(b)
+	fmt.Fprintln(b, theme.Accent.Render("NEXT"))
+
+	for i, block := range blocks {
+		if block.lead != "" {
+			if i > 0 {
+				fmt.Fprintln(b)
+			}
+			fmt.Fprintf(b, "  %s\n", theme.Muted.Render(block.lead))
+		}
+		for _, command := range block.commands {
+			fmt.Fprintf(b, "  %s\n", theme.Strong.Render(command))
+		}
+	}
 }
 
 // usageError marks an error this repo constructs as itself an invocation
