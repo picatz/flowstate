@@ -178,21 +178,30 @@ func printScaffold(surface *ui.UI, dir string, files []scaffoldFile, note string
 			theme.Success.Render(mark), theme.Strong.Render(filepath.Join(dir, f.name)))
 	}
 
-	fmt.Fprintln(out)
-	fmt.Fprintln(out, theme.Accent.Render("NEXT"))
-	fmt.Fprintf(out, "  %s\n", theme.Strong.Render("flow run local "+filepath.Join(dir, scaffoldWorkflow)))
-	fmt.Fprintf(out, "  %s\n", theme.Strong.Render("flow test "+dir))
+	// Through [writeNextCommands], which is the CLI's one way of suggesting next
+	// commands: the same element the unreachable-server report draws, so a reader
+	// who has met one recognizes the other. The durable venue is the second block
+	// and not the first because rehearsing locally is still the faster loop and
+	// should stay the first thing tried; it is named at all because this is the
+	// moment somebody has a workflow and no idea that running it for real is two
+	// commands, one that assembles the stack and the same `flow run` without
+	// `local`.
+	var next strings.Builder
+	writeNextCommands(&next, theme, []commandBlock{
+		{commands: []string{
+			"flow run local " + filepath.Join(dir, scaffoldWorkflow),
+			"flow test " + dir,
+		}},
+		{
+			lead: "then, durably, in two commands:",
+			commands: []string{
+				"flow server dev",
+				"flow run " + filepath.Join(dir, scaffoldWorkflow),
+			},
+		},
+	})
 
-	// And then the durable venue, which is the whole point of the tool and used
-	// to be three terminals away. Named here because this is the moment somebody
-	// has a workflow and no idea that running it for real is two commands: one
-	// that assembles the stack, and the same `flow run` without `local`. Kept
-	// below the two above rather than beside them, because rehearsing locally is
-	// still the faster loop and should stay the first thing tried.
-	fmt.Fprintln(out)
-	fmt.Fprintln(out, theme.Muted.Render("  then, durably, in two commands:"))
-	fmt.Fprintf(out, "  %s\n", theme.Strong.Render("flow server dev"))
-	fmt.Fprintf(out, "  %s\n", theme.Strong.Render("flow run "+filepath.Join(dir, scaffoldWorkflow)))
+	fmt.Fprint(out, next.String())
 }
 
 // scaffoldName decides what the workflow is called, and returns a note to print

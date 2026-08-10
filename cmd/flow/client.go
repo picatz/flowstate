@@ -259,11 +259,117 @@ func refusedRun(verb, workflowID string, server serverFlags, err error) error {
 	case connect.CodeUnauthenticated, connect.CodePermissionDenied:
 		return fmt.Errorf("refused while %s %q: %w", verb, workflowID, err)
 	case connect.CodeUnavailable:
-		return fmt.Errorf("no Flowstate server answered at %s (set --address or FLOWSTATE_ADDRESS "+
-			"to point somewhere else): %w", server.address, err)
+		return unreachableServer(server, "", err)
 	default:
 		return fmt.Errorf("%s %q: %w", verb, workflowID, err)
 	}
+}
+
+// refusedStart explains a run that never started.
+//
+// Separate from [refusedRun] because there is no run id yet to be addressable or
+// not, and because this is the one refusal that has a Flowfile in hand: the path
+// the caller named is what makes `flow run local <file>` a remedy this command
+// can spell out rather than allude to. `flow run` is also the likeliest first
+// command anybody types, so it is the one that can least afford to report a bare
+// dial error.
+func refusedStart(file, name string, server serverFlags, err error) error {
+	switch connect.CodeOf(err) {
+	case connect.CodeUnavailable:
+		return unreachableServer(server, file, err)
+	default:
+		return fmt.Errorf("starting %s: %w", name, err)
+	}
+}
+
+// noServerError is the one report of a Flowstate server that did not answer.
+//
+// One type rather than the four copies of one sentence this replaces, per the
+// one-constant rule: a wording change here used to be a four-file hunt, and the
+// fourth copy had already drifted.
+//
+// It carries the address rather than formatting it in at each call site, because
+// the remedies depend on which address was tried. A refusal from loopback means
+// there is very likely no server at all, which is a situation the CLI can answer
+// with a command to type; a refusal from somewhere else means a deployment that
+// is down or misnamed, and a suggestion to start a dev stack would be advice
+// about the wrong machine.
+type noServerError struct {
+	// address is what the client dialled, exactly as `--address` or
+	// FLOWSTATE_ADDRESS spelled it.
+	address string
+
+	// workflowFile is the Flowfile the verb was given, when it had one. Empty
+	// for every verb that addresses a run, a schedule, or nothing at all.
+	workflowFile string
+
+	// err is the dial failure underneath, kept so the reason survives: a
+	// connection refused and a TLS handshake that failed are the same code and
+	// very different afternoons.
+	err error
+}
+
+// unreachableServer reports that nothing answered at the address this command
+// dialled.
+//
+// file names the Flowfile the caller passed, or is empty when the verb has none.
+func unreachableServer(server serverFlags, file string, err error) error {
+	return &noServerError{address: server.address, workflowFile: file, err: err}
+}
+
+// Error is the sentence every verb that dials the server now prints, written down
+// once.
+//
+// The address is named because a caller who set FLOWSTATE_ADDRESS in a shell they
+// have since forgotten about is the caller most confused by "no server"; and both
+// the flag and the variable are named because pointing at an existing deployment
+// is the remedy that has nothing to do with this machine, so it belongs in the
+// sentence rather than in a list of things to run.
+func (e *noServerError) Error() string {
+	return fmt.Sprintf("no Flowstate server answered at %s (set --address or FLOWSTATE_ADDRESS "+
+		"to point at a deployment that is already running): %v", e.address, e.err)
+}
+
+func (e *noServerError) Unwrap() error { return e.err }
+
+// nextCommands offers the way out, as runnable commands.
+//
+// `flow server dev` leads because it is the answer to the situation that is
+// actually most common on a refusal from this machine: no server exists yet. It
+// is one command since #377, and the second line of its block is the verb the
+// caller already wanted, so the two lines together are the whole path from here
+// to a durable run.
+//
+// `flow run local` comes second and only where a Flowfile was named, because it
+// is the answer to a different question: somebody who never wanted a server at
+// all. It stays below the durable path rather than beside it, the way `flow
+// init`'s NEXT block orders the same two choices, so the two surfaces teach in
+// one voice.
+//
+// Nothing is offered for a remote address. Both remedies are about this machine,
+// and telling somebody whose staging deployment is down to start a dev stack
+// would be answering a question they did not ask; the address hint in the
+// sentence above is the lead there, which is where it belongs.
+func (e *noServerError) nextCommands() []commandBlock {
+	if !isLoopbackAddress(e.address) {
+		return nil
+	}
+
+	durable := []string{"flow server dev"}
+	if e.workflowFile != "" {
+		durable = append(durable, "flow run "+e.workflowFile)
+	}
+
+	blocks := []commandBlock{{commands: durable}}
+
+	if e.workflowFile != "" {
+		blocks = append(blocks, commandBlock{
+			lead:     "or rehearse it here, with no server at all:",
+			commands: []string{"flow run local " + e.workflowFile},
+		})
+	}
+
+	return blocks
 }
 
 // boundedTransport caps every response body, including the ones Connect's own limit

@@ -334,8 +334,7 @@ func refusedList(server serverFlags, err error) error {
 	case connect.CodeUnauthenticated, connect.CodePermissionDenied:
 		return fmt.Errorf("refused while listing runs: %w", err)
 	case connect.CodeUnavailable:
-		return fmt.Errorf("no Flowstate server answered at %s (set --address or FLOWSTATE_ADDRESS "+
-			"to point somewhere else): %w", server.address, err)
+		return unreachableServer(server, "", err)
 	default:
 		return fmt.Errorf("listing runs: %w", err)
 	}

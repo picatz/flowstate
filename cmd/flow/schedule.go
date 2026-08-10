@@ -553,8 +553,7 @@ func refusedSchedule(verb, name string, server serverFlags, err error) error {
 	case connect.CodeUnauthenticated, connect.CodePermissionDenied:
 		return fmt.Errorf("refused while %s schedule %q: %w", verb, name, err)
 	case connect.CodeUnavailable:
-		return fmt.Errorf("no Flowstate server answered at %s (set --address or FLOWSTATE_ADDRESS "+
-			"to point somewhere else): %w", server.address, err)
+		return unreachableServer(server, "", err)
 	default:
 		return fmt.Errorf("%s schedule %q: %w", verb, name, err)
 	}
@@ -566,8 +565,7 @@ func refusedScheduleList(server serverFlags, err error) error {
 	case connect.CodeUnauthenticated, connect.CodePermissionDenied:
 		return fmt.Errorf("refused while listing schedules: %w", err)
 	case connect.CodeUnavailable:
-		return fmt.Errorf("no Flowstate server answered at %s (set --address or FLOWSTATE_ADDRESS "+
-			"to point somewhere else): %w", server.address, err)
+		return unreachableServer(server, "", err)
 	default:
 		return fmt.Errorf("listing schedules: %w", err)
 	}
