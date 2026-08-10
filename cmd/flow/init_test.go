@@ -281,4 +281,12 @@ func TestInitReportsWhatToDoNext(t *testing.T) {
 	assert.Contains(t, out, filepath.Join(dir, scaffoldTest))
 	assert.Contains(t, out, "flow run local "+filepath.Join(dir, scaffoldWorkflow))
 	assert.Contains(t, out, "flow test "+dir)
+
+	// The durable half, which is the reason the tool exists and the half a
+	// newcomer has no way to guess: `flow server dev` assembles the stack, and
+	// the same `flow run` without `local` submits to it. Asserted here because
+	// the whole claim of #377 is that this is two commands, and a scaffold that
+	// stops at `run local` leaves the reader believing it is more.
+	assert.Contains(t, out, "flow server dev")
+	assert.Contains(t, out, "flow run "+filepath.Join(dir, scaffoldWorkflow))
 }

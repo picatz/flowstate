@@ -850,6 +850,33 @@ func documentedEnvironmentVariables() []environmentVariable {
 			read: "cmd/flow/main.go",
 		},
 		{
+			name:  "TEMPORAL_ADDRESS",
+			value: "unset",
+			purpose: "Temporal's own environment configuration, honoured by every command that dials a " +
+				"cluster: `flow server` and `flow worker` resolve it through the SDK, and `--address` " +
+				"overrides it. `flow server dev` is the exception, and refuses to start while it is set: " +
+				"that command starts a Temporal of its own, so a variable naming somebody else's cluster " +
+				"would be silently unused while its operator believed their runs were landing there.",
+			read: "cmd/flow/serverdev.go, go.temporal.io/sdk envconfig",
+		},
+		{
+			name:  "TEMPORAL_PROFILE",
+			value: "unset",
+			purpose: "Selects a profile from the same `temporal.toml` the `temporal` CLI reads, which is " +
+				"how one binary moves between a laptop, a self-hosted cluster and Cloud without a scheme " +
+				"invented here. Refused by `flow server dev` for the same reason as `TEMPORAL_ADDRESS`.",
+			read: "cmd/flow/serverdev.go, go.temporal.io/sdk envconfig",
+		},
+		{
+			name:  "TEMPORAL_CONFIG_FILE",
+			value: "unset",
+			purpose: "Path to the TOML configuration file the profile is read from, honoured by the SDK's " +
+				"environment configuration wherever a cluster is dialed. Refused by `flow server dev` for " +
+				"the same reason as `TEMPORAL_ADDRESS`: an explicit file pointing at another cluster would " +
+				"be the same silent misrouting through a different spelling.",
+			read: "cmd/flow/serverdev.go, go.temporal.io/sdk envconfig",
+		},
+		{
 			name:    "TEMPORAL_TASK_QUEUE",
 			value:   "flowstate-run-task-queue",
 			purpose: "Default for `--task-queue`: the queue workers serve and workflows are routed to.",

@@ -1845,6 +1845,12 @@ flow lsp --plugin-dir ./plugins`,
 	}
 	rootCmd.AddCommand(workerCmd)
 	rootCmd.AddCommand(serverCmd)
+
+	// The whole stack in one command, under `server` because that is where
+	// somebody looking for a server looks. Everything it is lives in
+	// serverdev.go; this is the registration. See [newServerDevCommand].
+	serverCmd.AddCommand(newServerDevCommand())
+
 	runCmd.AddCommand(runLocalCmd)
 	rootCmd.AddCommand(lspCmd)
 	rootCmd.AddCommand(keysCmd)

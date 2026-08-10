@@ -272,6 +272,13 @@ default and the primary target.
 | **Self-hosted production** | mTLS to your own cluster | OIDC or workload identity federation | default-deny plus CEL rules | environment or KMS |
 | **Temporal Cloud** (optional) | API key or mTLS, namespace and endpoint config | OIDC or WIF | default-deny plus CEL rules | KMS |
 
+The local-development row is what `flow server dev` assembles: a `temporal server start-dev`
+child process, the control plane, and a worker, in one process on loopback, stating each of
+those postures at start-up as the flags it takes on the operator's behalf. It refuses to
+start when the row stops describing it (an off-loopback listen address, ambient
+authentication configuration, or a `TEMPORAL_ADDRESS` naming somebody else's cluster), because
+the postures are defensible only together. See `cmd/flow/serverdev.go`.
+
 The connection layer is responsible for making these interchangeable, so that moving from
 a laptop to a self-hosted cluster to Cloud never requires touching a Flowfile. It follows
 Temporal's own environment configuration rather than a scheme invented here: the standard
