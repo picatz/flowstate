@@ -53,6 +53,16 @@ import (
 // written at all. Both mean the same thing to a caller: there is nothing safe to
 // write, so write nothing.
 func Format(source []byte, wf *v1.Workflow) ([]byte, error) {
+	// The same byte bound Parse and Fix hold, because this parses bytes an
+	// outside party wrote and an exported entry point does not get to assume
+	// its caller compiled them first. With the bytes bounded, the walk's node
+	// count is bounded too: goyaml's parser keeps aliases as alias nodes
+	// rather than expanding them, so breadth cannot exceed what the bytes
+	// spell out, and depth carries its own bound below.
+	if len(source) > maxBytes {
+		return nil, fmt.Errorf("the source is %d bytes, more than the %d a Flowfile may hold", len(source), maxBytes)
+	}
+
 	formatted, err := Marshal(wf)
 	if err != nil {
 		return nil, err
@@ -134,6 +144,11 @@ const (
 	// a separate kind because a mapping entry and the value under it share a
 	// path, so one kind would have them overwrite each other.
 	commentContainerFoot
+
+	// commentContainerHead is a comment the parser hangs on a container node
+	// itself, which is where prose above an inline `{}` or `[]` lands. Its own
+	// kind for the same overwrite reason as the foot.
+	commentContainerHead
 )
 
 // sourceComments collects every comment in a document, keyed by where it sits.
@@ -176,6 +191,11 @@ func collectComments(n ast.Node, path string, depth int, out map[commentAnchor]*
 
 	switch x := n.(type) {
 	case *ast.MappingNode:
+		// A comment can sit on the mapping itself as well as under it: the
+		// parser hangs prose above an inline `{}` off the container, and a
+		// collector that only read the foot would never see it, which is a
+		// silent deletion rather than a refusal.
+		record(commentContainerHead, x.GetComment())
 		record(commentContainerFoot, x.FootComment)
 		for _, value := range x.Values {
 			if err := collectComments(value, path, depth+1, out); err != nil {
@@ -243,6 +263,15 @@ func placeComments(n ast.Node, path string, depth int, in map[commentAnchor]*ast
 
 	switch x := n.(type) {
 	case *ast.MappingNode:
+		if group := take(commentContainerHead); group != nil {
+			// Attempted rather than assumed: a rendered block mapping may not
+			// carry an attached comment the way an inline one does. The byte
+			// tests hold the outcome to preserved-or-refused; what this branch
+			// guarantees is that the comment entered the anchor map at all, so
+			// a container the renderer cannot annotate refuses instead of
+			// deleting.
+			_ = x.SetComment(group)
+		}
 		if group := take(commentContainerFoot); group != nil {
 			x.FootComment = group
 		}
