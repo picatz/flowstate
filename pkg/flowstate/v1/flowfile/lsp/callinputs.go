@@ -276,21 +276,13 @@ func callInputDoc(declaration *v1.InputDeclaration, called calledWorkflow) strin
 // They are part of the contract the callee holds an argument to, checked at
 // validation exactly as `must:` is, so a hover that shows one and not the
 // other tells an author only half of what their value must be.
+//
+// The same voice literally rather than by imitation: both call into the v1
+// package's renderer, which is also what `flow tasks` prints and what the
+// generated reference tabulates. The imitation was the bug it retired, since a
+// bound spelled two ways is a bound that can be spelled two ways *wrongly*.
 func declaredBounds(declaration *v1.InputDeclaration) []string {
-	var out []string
-	if declaration.MinLen != nil {
-		out = append(out, fmt.Sprintf("at least %d characters", declaration.GetMinLen()))
-	}
-	if declaration.MaxLen != nil {
-		out = append(out, fmt.Sprintf("at most %d characters", declaration.GetMaxLen()))
-	}
-	if declaration.MinItems != nil {
-		out = append(out, fmt.Sprintf("at least %d item(s)", declaration.GetMinItems()))
-	}
-	if declaration.MaxItems != nil {
-		out = append(out, fmt.Sprintf("at most %d item(s)", declaration.GetMaxItems()))
-	}
-	return out
+	return v1.DeclaredBounds(declaration)
 }
 
 // declaredValueText renders a declared literal, a default, for a popup, and

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/nearest"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
@@ -1467,7 +1468,7 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 			"references unknown name %q; a bare name is a loop's iterator, a name this step "+
 				"declares in its own `vars:`, or `now`, and a step output is written `%s.<id>.<output>`",
 			ref, v1.StepsRoot)
-		if suggestion, ok := nearest(ref, slices.Sorted(maps.Keys(scope.steps))); ok {
+		if suggestion, ok := nearest.Name(ref, slices.Sorted(maps.Keys(scope.steps))); ok {
 			message += fmt.Sprintf("; did you mean `%s.%s`?", v1.StepsRoot, suggestion)
 		}
 		ds = append(ds, Diagnostic{
@@ -1498,7 +1499,7 @@ func unresolvedVar(stepID, inputName, ref string, scope refScope) Diagnostic {
 		message += "; this workflow declares no `vars:`, which is a top-level block of " +
 			"names and values that every step can read as `" + v1.VarsRoot + ".<name>`"
 	default:
-		if suggestion, ok := nearest(ref, declared); ok {
+		if suggestion, ok := nearest.Name(ref, declared); ok {
 			message += fmt.Sprintf("; did you mean %q?", suggestion)
 		} else {
 			message += fmt.Sprintf("; this workflow declares %s", strings.Join(declared, ", "))
@@ -1522,7 +1523,7 @@ func unresolvedInput(stepID, inputName, ref string, scope refScope) Diagnostic {
 		message += "; this workflow declares no `inputs:`, which is a top-level block naming what a " +
 			"run may be started with (each with a `type:`), read as `" + v1.InputsRoot + ".<name>`"
 	default:
-		if suggestion, ok := nearest(ref, declared); ok {
+		if suggestion, ok := nearest.Name(ref, declared); ok {
 			message += fmt.Sprintf("; did you mean %q?", suggestion)
 		} else {
 			message += fmt.Sprintf("; this workflow declares %s", strings.Join(declared, ", "))
@@ -2042,7 +2043,7 @@ var runFields = []string{"identity", "local", "workflow_id", "run_id"}
 func unknownRunField(stepID, inputName string, ref runRef) (Diagnostic, bool) {
 	if !slices.Contains(runFields, ref.Field) {
 		message := fmt.Sprintf("references unknown field %q of `run`", ref.Field)
-		if suggestion, ok := nearest(ref.Field, runFields); ok {
+		if suggestion, ok := nearest.Name(ref.Field, runFields); ok {
 			message += fmt.Sprintf("; did you mean %q?", suggestion)
 		} else {
 			// Comma-joined, as the `run.identity` branch below already is: the set
@@ -2067,7 +2068,7 @@ func unknownRunField(stepID, inputName string, ref runRef) (Diagnostic, bool) {
 	}
 
 	message := fmt.Sprintf("references unknown field %q of `run.identity`", ref.Under)
-	if suggestion, ok := nearest(ref.Under, runIdentityFields); ok {
+	if suggestion, ok := nearest.Name(ref.Under, runIdentityFields); ok {
 		message += fmt.Sprintf("; did you mean %q?", suggestion)
 	} else {
 		message += fmt.Sprintf("; `run.identity` has %s", strings.Join(runIdentityFields, ", "))
@@ -2148,7 +2149,7 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, wf *v1.Workflow) (
 		names := slices.Sorted(maps.Keys(shaped))
 		message := fmt.Sprintf("step %q has no output %q; its `outputs:` replaces what the wait produces, and it produces %s",
 			ref.ID, ref.Output, strings.Join(names, ", "))
-		if suggestion, ok := nearest(ref.Output, names); ok {
+		if suggestion, ok := nearest.Name(ref.Output, names); ok {
 			message = fmt.Sprintf("step %q has no output %q; its `outputs:` replaces what the wait produces; did you mean %q?",
 				ref.ID, ref.Output, suggestion)
 		} else if ref.Output == v1.PayloadOutput || ref.Output == v1.SenderOutput || ref.Output == v1.TimedOutOutput {
@@ -2219,7 +2220,7 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, wf *v1.Workflow) (
 			message += fmt.Sprintf(" (it does produce %q, since it may be tolerated)", toleratedErrorOutput)
 		}
 	default:
-		if suggestion, ok := nearest(ref.Output, produced); ok {
+		if suggestion, ok := nearest.Name(ref.Output, produced); ok {
 			message += fmt.Sprintf("; did you mean %q?", suggestion)
 		} else {
 			message += fmt.Sprintf("; it produces %s", strings.Join(produced, ", "))

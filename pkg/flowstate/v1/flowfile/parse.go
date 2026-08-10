@@ -12,6 +12,7 @@ import (
 	"github.com/goccy/go-yaml/token"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/nearest"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -372,7 +373,7 @@ func StepTaskKeys(keys []string) []string {
 			// that says what to write.
 			continue
 		}
-		if _, near := nearest(key, grammar); near {
+		if _, near := nearest.Name(key, grammar); near {
 			continue
 		}
 		if !couldBeATaskName(key) {

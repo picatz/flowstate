@@ -549,25 +549,30 @@ func waitResultCandidates(path []string) []refCandidate {
 		return nil
 	}
 
+	// The documentation is [waitResultDoc]'s, not a shorter retelling of it. The
+	// three candidates used to carry their own wording, which made two accounts of
+	// one name in the two places an author meets it in the same keystroke: the
+	// menu, and the hover over what the menu inserted. Now the schema's sentence
+	// about `payload` and `sender` reaches both, and there is one place left to
+	// edit when any of it changes.
 	return []refCandidate{
 		{
 			name:   v1.PayloadOutput,
 			kind:   lsp.CIKVariable,
 			detail: "map",
-			docs: "What the sender sent, unchanged and untrusted. Bound bare here because this expression is the wait's own; " +
-				"from a later step the same data is `${" + v1.StepsRoot + ".<id>." + v1.PayloadOutput + "}`, unless this `outputs:` block drops it, which it does unless a line re-exposes it.",
+			docs:   waitResultDoc(v1.PayloadOutput),
 		},
 		{
 			name:   v1.SenderOutput,
 			kind:   lsp.CIKVariable,
 			detail: "map",
-			docs:   "Who the server attests sent the signal: `" + v1.SenderOutput + ".identity.subject`, `." + v1.SenderOutput + ".local`. Never anything the payload claims.",
+			docs:   waitResultDoc(v1.SenderOutput),
 		},
 		{
 			name:   v1.TimedOutOutput,
 			kind:   lsp.CIKVariable,
 			detail: "bool",
-			docs:   "Whether the wait ended because nobody answered in time. A lapsed gate is an ordinary outcome, not a failure.",
+			docs:   waitResultDoc(v1.TimedOutOutput),
 		},
 	}
 }

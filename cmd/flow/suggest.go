@@ -10,19 +10,14 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
-)
 
-// suggestionMaxDistance is how many single-character edits a typed name may
-// be from a real one and still be offered as a correction. Two is generous
-// enough to catch a transposition or a dropped letter (`lst` -> `list` is
-// one) and tight enough that an unrelated three-letter command does not show
-// up beside it.
-const suggestionMaxDistance = 2
+	"github.com/picatz/flowstate/pkg/flowstate/v1/nearest"
+)
 
 // maxSuggestions caps how many candidates a did-you-mean line offers.
 //
 // Cobra's own suggestion machinery (SuggestionsFor, used by findSuggestions)
-// returns every command within the distance threshold above, or sharing a
+// returns every command within its own distance threshold, or sharing a
 // prefix, in whatever order Commands() holds them: unranked and uncapped.
 // For a three-letter typo like `lst` that was six names, "fmt, test, get,
 // list, lsp, jwt", one of which ("jwt") shares no letters at all with what
@@ -54,9 +49,16 @@ func commandSuggestions(parent *cobra.Command, typed string) []string {
 			continue
 		}
 
+		// Case folded on both sides, and a shared prefix accepted past the
+		// distance threshold: `LST` and `li` are both things a person types
+		// at a shell meaning `list`, and neither is a typo the edit distance
+		// can see. Both rules stay here rather than in [nearest], because
+		// they are this call site's reading of what a command line looks
+		// like, not part of how far a name may be from another one.
 		name := cmd.Name()
-		distance := levenshtein(strings.ToLower(typed), strings.ToLower(name))
-		if distance > suggestionMaxDistance && !strings.HasPrefix(strings.ToLower(name), strings.ToLower(typed)) {
+		lowered := strings.ToLower(name)
+		distance := nearest.Distance(strings.ToLower(typed), lowered)
+		if !nearest.Within(name, distance) && !strings.HasPrefix(lowered, strings.ToLower(typed)) {
 			continue
 		}
 
@@ -85,8 +87,11 @@ func flagSuggestions(cmd *cobra.Command, typed string) []string {
 			return
 		}
 
-		distance := levenshtein(typed, f.Name)
-		if distance > suggestionMaxDistance {
+		// No case folding and no prefix rule, unlike the command half above:
+		// a flag is written the way it is declared, and `--a` prefixes far
+		// too many of them to answer with any one of them.
+		distance := nearest.Distance(typed, f.Name)
+		if !nearest.Within(f.Name, distance) {
 			return
 		}
 
@@ -125,40 +130,18 @@ func rankedNames[T any](candidates []T, key func(T) (name string, distance int))
 
 // maxSuggestionInput bounds the typed name a suggestion is computed for. The
 // candidates are this CLI's own short names, but the typo arrives from a
-// command line a script may have assembled, and the distance scan below is
-// work proportional to its length times every candidate: input an outside
-// party sizes gets a bound matched to what it can spend (CLAUDE.md). Nothing
-// within two edits of a real name can be longer than the longest name plus
-// two, so refusing long input costs no suggestion anybody could have earned.
+// command line a script may have assembled, and each distance scan is work
+// proportional to its length times every candidate: input an outside party
+// sizes gets a bound matched to what it can spend (CLAUDE.md). Nothing within
+// [nearest.MaxDistance] edits of a real name can be longer than the longest
+// name plus that many, so refusing long input costs no suggestion anybody
+// could have earned.
+//
+// The bound lives here, at the two functions argv reaches, rather than inside
+// [nearest]: the Flowfile callers of that package are already reading a
+// document bounded before it was parsed, and a bound buried under the shared
+// rule would be one nobody at either edge could see or size.
 const maxSuggestionInput = 64
-
-// levenshtein returns the edit distance between a and b: the fewest single
-// character insertions, deletions, and substitutions that turn one into the
-// other. Callers bound the typed side by [maxSuggestionInput]; candidate
-// names bound themselves.
-func levenshtein(a, b string) int {
-	ar, br := []rune(a), []rune(b)
-
-	prev := make([]int, len(br)+1)
-	curr := make([]int, len(br)+1)
-	for j := range prev {
-		prev[j] = j
-	}
-
-	for i := 1; i <= len(ar); i++ {
-		curr[0] = i
-		for j := 1; j <= len(br); j++ {
-			cost := 1
-			if ar[i-1] == br[j-1] {
-				cost = 0
-			}
-			curr[j] = min(prev[j]+1, curr[j-1]+1, prev[j-1]+cost)
-		}
-		prev, curr = curr, prev
-	}
-
-	return prev[len(br)]
-}
 
 // suggestedError marks err as carrying ranked candidate corrections, so
 // renderError draws them as its own styled element rather than them arriving

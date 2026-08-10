@@ -10,6 +10,7 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/nearest"
 )
 
 // Reading a Flowfile means reading mappings: what keys are here, which of them are
@@ -127,7 +128,7 @@ func (c *compiler) check(entries []entry, r ref, known []string) *fieldSet {
 // what keeps this clear of the four bare names the two `flow fix` corruptions
 // turned on (CLAUDE.md, "A rewriter has to know what the grammar binds").
 func (c *compiler) renameKeyEdit(e entry, entries []entry, known []string) []*v1.SuggestedEdit {
-	suggestion, ok := nearest(e.name, known)
+	suggestion, ok := nearest.Name(e.name, known)
 	if !ok {
 		return nil
 	}
@@ -193,7 +194,7 @@ func positionBefore(a, b Position) bool {
 // expectedKeys says what could have been written instead, naming the nearest
 // known key when there is one because a misspelling is the common case.
 func expectedKeys(got string, known []string) string {
-	if suggestion, ok := nearest(got, known); ok {
+	if suggestion, ok := nearest.Name(got, known); ok {
 		return fmt.Sprintf("did you mean %q?", suggestion)
 	}
 	switch len(known) {
@@ -203,46 +204,6 @@ func expectedKeys(got string, known []string) string {
 		return fmt.Sprintf("the keys here are %s, and %s",
 			strings.Join(known[:len(known)-1], ", "), known[len(known)-1])
 	}
-}
-
-// nearest returns the known name closest to got, when one is close enough to be
-// worth suggesting.
-func nearest(got string, known []string) (string, bool) {
-	best, bestDistance := "", 0
-	for _, name := range known {
-		distance := editDistance(got, name)
-		// A suggestion is only helpful when it is plausibly what was meant: at
-		// most a third of the name wrong, and never more than two edits.
-		limit := min(len(name)/3+1, 2)
-		if distance > limit {
-			continue
-		}
-		if best == "" || distance < bestDistance {
-			best, bestDistance = name, distance
-		}
-	}
-	return best, best != ""
-}
-
-// editDistance returns the Levenshtein distance between two names.
-func editDistance(a, b string) int {
-	prev := make([]int, len(b)+1)
-	curr := make([]int, len(b)+1)
-	for j := range prev {
-		prev[j] = j
-	}
-	for i := 1; i <= len(a); i++ {
-		curr[0] = i
-		for j := 1; j <= len(b); j++ {
-			cost := 1
-			if a[i-1] == b[j-1] {
-				cost = 0
-			}
-			curr[j] = min(prev[j]+1, curr[j-1]+1, prev[j-1]+cost)
-		}
-		prev, curr = curr, prev
-	}
-	return prev[len(b)]
 }
 
 // An entry is one key and value of a mapping, after merge keys have been expanded

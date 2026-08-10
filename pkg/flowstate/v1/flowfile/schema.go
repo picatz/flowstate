@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/nearest"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -80,7 +81,7 @@ func validateTaskInputs(stepID string, task *v1.Task) Diagnostics {
 		// The diagnostic already names the step and the input, so the
 		// message says what is wrong with it rather than repeating both.
 		message := fmt.Sprintf("task %q has no such input", def.Name)
-		if suggestion, ok := nearest(name, declared); ok {
+		if suggestion, ok := nearest.Name(name, declared); ok {
 			misspelled[suggestion] = true
 			message += fmt.Sprintf("; did you mean %q?", suggestion)
 		} else if len(declared) > 0 {
@@ -734,11 +735,11 @@ func requiredField(field protoreflect.FieldDescriptor) bool {
 	return v1.RequiredInput(field)
 }
 
-// nearestChoice suggests a value from a small closed set, more willingly than [nearest]
+// nearestChoice suggests a value from a small closed set, more willingly than [nearest.Name]
 // does.
 //
-// [nearest] is tuned for a name typed against a large open vocabulary — step ids, task
-// inputs — where a loose match suggests something the author never heard of. A set of
+// [nearest.Name] is tuned for a name typed against a large open vocabulary (step ids,
+// task inputs), where a loose match suggests something the author never heard of. A set of
 // three words is the opposite situation: everything in it is on the author's screen in
 // the same message, so a wrong suggestion costs a glance and a missing one costs a
 // lookup.
@@ -749,7 +750,7 @@ func requiredField(field protoreflect.FieldDescriptor) bool {
 // same word, which no edit-distance threshold tight enough to be useful will ever
 // reach.
 func nearestChoice(got string, choices []string) (string, bool) {
-	if suggestion, ok := nearest(got, choices); ok {
+	if suggestion, ok := nearest.Name(got, choices); ok {
 		return suggestion, true
 	}
 
