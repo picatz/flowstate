@@ -1,0 +1,10 @@
+$ flow tasks
+TASKS
+  http  Perform an HTTP request and return the response. [takes secrets, defers
+        inputs]
+  log   Emit a message for a person to read. [no outputs]
+
+`flow tasks <name>` describes one task in full: every input, what bounds it, and
+a step to copy. `flow tasks --expressions` is what every expression in a
+Flowfile can say.
+$
