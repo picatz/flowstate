@@ -833,7 +833,8 @@ func scheduleSpecOf(trigger *v1.ScheduleTrigger) (client.ScheduleSpec, error) {
 	// enforced by whoever happened to call is not a bound.
 	if len(spec.CronExpressions) == 0 && len(spec.Intervals) == 0 && len(spec.Calendars) == 0 {
 		return client.ScheduleSpec{}, errors.New(
-			"the schedule says nothing about when to fire; write `cron:` or `every:` under `triggers.schedule`")
+			"the schedule says nothing about when to fire; write `cron:`, `every:` or `calendars:` " +
+				"under `triggers.schedule`")
 	}
 
 	return spec, nil

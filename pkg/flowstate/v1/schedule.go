@@ -37,7 +37,8 @@ import (
 // an author in an editor as often as by a caller of the API.
 func CheckScheduleTrigger(trigger *ScheduleTrigger) error {
 	if trigger == nil {
-		return fmt.Errorf("a schedule needs a cadence: write `cron:` with a cron expression, or `every:` with an interval such as 15m")
+		return fmt.Errorf("a schedule needs a cadence: write `cron:` with a cron expression, `every:` with an " +
+			"interval such as 15m, or `calendars:` with the times to match")
 	}
 
 	for _, expression := range trigger.GetCron() {
@@ -51,7 +52,8 @@ func CheckScheduleTrigger(trigger *ScheduleTrigger) error {
 	// believed it did. A schedule with no cadence at all is created successfully by
 	// Temporal and never fires, which is the silent failure worth refusing.
 	if len(trigger.GetCron()) == 0 && trigger.GetEvery() == nil && len(trigger.GetCalendars()) == 0 {
-		return fmt.Errorf("a schedule needs a cadence: write `cron:` with a cron expression, or `every:` with an interval such as 15m")
+		return fmt.Errorf("a schedule needs a cadence: write `cron:` with a cron expression, `every:` with an " +
+			"interval such as 15m, or `calendars:` with the times to match")
 	}
 	if start, end := trigger.GetStartAt(), trigger.GetEndAt(); start != nil && end != nil && !start.AsTime().Before(end.AsTime()) {
 		return fmt.Errorf("the schedule's `start_at` (%s) is not before its `end_at` (%s), so no firing time can "+

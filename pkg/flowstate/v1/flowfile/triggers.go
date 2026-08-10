@@ -281,7 +281,7 @@ func (c *compiler) calendarSpecs(n ast.Node, path string) []*v1.ScheduleTrigger_
 //
 // The long form exists because the schema has three numbers in a range and a
 // grammar that can only spell one of them makes the other two unreachable. That is
-// house rule that a capability is not done until a Flowfile can express it. The
+// the house rule that a capability is not done until a Flowfile can express it. The
 // short form stays because `hour: 9` is what almost every calendar says.
 //
 // Each number is bounded by [v1.ScheduleCalendarFieldBounds] rather than by a
